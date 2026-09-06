@@ -236,13 +236,75 @@ Filename: "{app}\{#AppExe}"; Parameters: "--sync-user-shell"; \
 Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
   StatusMsg: "Scheduling a thumbnail refresh for the next sign-in..."; \
   Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending
-; Modern Win11 context menu (signed sparse package): trust our self-signed cert
-; (machine TrustedPeople - app packages only, not a root CA), then sideload the
-; package bound to the install dir. ONE -NoProfile powershell call using native
-; cmdlets (Import-Certificate + Add-AppxPackage) - deliberately NO -ExecutionPolicy
-; Bypass (it only gates script *files*, never the inline cmdlets we pass via -Command)
-; and NO certutil, so the installer doesn't resemble a script-dropper to AV heuristics.
-; Runs only when the package was bundled.
+; Modern Win11 context menu (signed sparse package), SPLIT IN TWO STEPS since the 2026-09-05
+; audit (F08 + F09). The old combined step trusted the cert AND registered the per-user
+; package in ONE elevated PowerShell call. On a machine where a standard user supplied a
+; DIFFERENT administrator's credentials at the UAC prompt, the per-user package silently
+; registered for the ADMINISTRATOR's account instead of the person actually using the PC, and
+; uninstall had the mirror-image problem (see [UninstallRun] below).
+;
+; F08 fix: certificate trust is genuinely machine-wide (LocalMachine\TrustedPeople) and stays
+; in THIS elevated step, no `runasoriginaluser` - there is nothing per-user about a
+; LocalMachine store. Package REGISTRATION (Add-AppxPackage) is genuinely per-user and is its
+; own step below, under `runasoriginaluser`, for the same reason three entries above already
+; use that flag.
+;
+; "Setup launched already elevated" case: when Setup.exe itself was started from an already-
+; elevated shell (e.g. "Run as administrator" on Setup.exe directly, rather than a standard
+; user hitting a UAC prompt Setup raised), there is no separate pre-UAC identity to drop back
+; to. Inno's `runasoriginaluser` then runs the per-user step as that SAME elevated user, which
+; is correct here: whoever explicitly launched an elevated Setup themselves IS the intended
+; user, exactly as if no UAC had been involved at all.
+;
+; The two steps hand the install path to each other through the registry
+; (HKLM\Software\SageThumbs2K\ModernMenuInstallDir), not through an environment variable or a
+; literal {app} spliced into a quoted PowerShell string. A per-process environment variable
+; set on Setup's own elevated process is not something a process `runasoriginaluser` launches
+; under a DIFFERENT user's token is guaranteed to inherit (unlike the plain, non-`
+; runasoriginaluser` [Run] entries elsewhere in this file, which is where the old
+; $env:ST2K_APPDIR technique was proven safe), and a literal {app} path can contain an
+; apostrophe (a real, reported shape: `D:\Bob's Apps\...`) that breaks out of a single-quoted
+; PowerShell string - the exact failure the old combined step's environment-variable
+; indirection existed to avoid in the first place. A registry value, read back by a fresh
+; `Get-ItemProperty` call in the per-user process, carries the path as an opaque runtime
+; string with neither problem: no cross-context inheritance to rely on, and no path text ever
+; spliced into script source.
+;
+; The certificate import is skipped when that exact thumbprint is already trusted, which is
+; the case on every upgrade. Compared by THUMBPRINT, never by subject: a rotated signing cert
+; keeps the same subject, so a subject match would skip importing the new cert and break
+; registration. X509Certificate2 is plain .NET and Cert:\ is a built-in provider, so the test
+; is nearly free, while Import-Certificate drags in the whole PKI module.
+;
+; F09 fix: `ModernMenuCertThumbprint` is written ONLY inside the "not already trusted" branch,
+; i.e. only when this step is the one that actually imports the certificate. On every later
+; run where the thumbprint is already present (the common upgrade/repair case) nothing is
+; written here and whatever was recorded earlier is left exactly as-is - so "this installation
+; introduced this thumbprint" survives upgrades without ever being asserted falsely for a
+; thumbprint this installer did not introduce (a developer's manual trust, or another
+; install's copy of the same self-signed cert with a different key and thumbprint). See the
+; [UninstallRun] entry below for the removal half.
+;
+; Single quotes only inside the PowerShell text - no double quote appears there - so the Inno
+; string below needs only the one outer "" wrapping, no nested escaping to get wrong.
+;
+; EVERY PowerShell BRACE IS DOUBLED, and it has to be. Inno reads `{` as the start of one of
+; its own constants, so a PowerShell block like `if(...){...}` is read as a constant named
+; "if(...)" and the compile ABORTS with `Unknown constant`. `{{` is how Inno spells a literal
+; brace; a closing `}` needs no escape. This is not theoretical: an earlier version of the
+; combined registration line shipped with bare braces and broke the release build outright,
+; which nothing but a full installer compile catches - hence
+; `installer_iss::powershell_braces_are_escaped_for_inno` and check-installer.ps1's own
+; per-line brace scan, which now catch it in a second.
+Filename: "powershell.exe"; \
+  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $c=$d+'\SageThumbs2K.cer'; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($c)).Thumbprint; New-Item -Path 'HKLM:\Software\SageThumbs2K' -Force|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -Value $d; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath $c -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}"""; \
+  StatusMsg: "Trusting the modern context menu certificate..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
+; Per-user package registration (F08): Add-AppxPackage registers the sparse package into the
+; CALLING user's own profile, so - unlike the cert trust above - this step must run as the
+; person actually using the PC, via `runasoriginaluser`. See the entry above for the
+; "Setup launched already elevated" case and why the install path travels through the
+; registry instead of an environment variable or a spliced {app} literal.
+;
 ; ADD FIRST, and remove only if that fails. A leftover DEV registration (unpackaged
 ; `Add-AppxPackage -Register`, Dev Mode) blocks the signed package with 0x80073CFB
 ; ("already installed an unpackaged version") and -ForceUpdateFromAnyVersion does NOT clear
@@ -255,35 +317,13 @@ Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
 ; anything else, so ANY later failure left the user with no modern menu at all. Now the
 ; existing registration is only torn down after an Add has already failed.
 ;
-; The certificate import is skipped when that exact thumbprint is already trusted, which is
-; the case on every upgrade. Compared by THUMBPRINT, never by subject: a rotated signing cert
-; keeps the same subject, so a subject match would skip importing the new cert and break
-; registration. X509Certificate2 is plain .NET and Cert:\ is a built-in provider, so the test
-; is nearly free, while Import-Certificate drags in the whole PKI module.
-;
-; Single quotes only - no double quote appears anywhere inside the command - so the Inno
-; string below needs no nested "" escaping that could go wrong.
-;
-; {app} is NOT embedded in this command as a quoted literal. `{app}` is expanded to the real
-; install path at RUN time (not compile time), textually, inside what would otherwise be a
-; single-quoted PowerShell string - so an install path containing an apostrophe (a real,
-; reported shape: `D:\Bob's Apps\...`) breaks out of the quote and fails the whole command
-; with no exit-code check, silently leaving the modern menu unregistered. `SetEnvironmentVariableW`
-; in CurStepChanged (ssInstall) sets ST2K_APPDIR on Setup's own process before this [Run] entry
-; executes; a `[Run]`-launched child inherits the parent's environment, so PowerShell reads the
-; path from $env:ST2K_APPDIR at ITS OWN runtime instead - no path text is ever spliced into the
-; command string, so no character in it can break the command, apostrophe included.
-;
-; EVERY PowerShell BRACE IS DOUBLED, and it has to be. Inno reads `{` as the start of one of
-; its own constants, so a PowerShell block like `catch{...}` is read as a constant named
-; "catch" and the compile ABORTS with `Unknown constant`. `{{` is how Inno spells a literal
-; brace; a closing `}` needs no escape. This is not theoretical: the first version of this line
-; shipped with bare braces and broke the release build outright, which nothing but a full
-; installer compile catches - hence `installer_iss::powershell_braces_are_escaped_for_inno`,
-; which now catches it in a second.
+; If ModernMenuInstallDir is somehow missing (Check: ModernMenuUsable gates both this and the
+; cert-trust step on the identical condition, so this should not happen), $d is empty and the
+; whole block is skipped rather than handing Add-AppxPackage a malformed path.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($d+'\SageThumbs2K.cer')).Thumbprint; if(-not(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t))){{Import-Certificate -FilePath ($d+'\SageThumbs2K.cer') -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null}; try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}"""; \
-  StatusMsg: "Registering the modern context menu (this can take a moment)..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
+  Parameters: "-NoProfile -Command ""$d=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){{try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}}"""; \
+  StatusMsg: "Registering the modern context menu (this can take a moment)..."; \
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
 ; installed has long since decided about Quick preview and the capture hotkey, and greeting
 ; them as a new user would silently re-offer (and, if they clicked through, re-enable)
@@ -347,13 +387,29 @@ Filename: "{app}\{#AppExe}"; Parameters: "--update-task"; \
 ; elevated uninstaller can delete it regardless of which principal it runs as.
 Filename: "{app}\{#AppExe}"; Parameters: "--update-task remove"; \
   Flags: runhidden waituntilterminated; RunOnceId: "DelUpdateTask"
-; Remove the modern-menu package + its trusted cert (best-effort; harmless if the
-; package was never installed). ONE -NoProfile powershell call with native cmdlets,
-; no -ExecutionPolicy Bypass / certutil (see the [Run] note) so the uninstaller stays
-; off AV heuristics too. Done before the DLL unregister/file removal.
+; Remove the trusted cert (F08 + F09, 2026-09-05 audit; best-effort; harmless if nothing was
+; ever trusted). Package removal moved OUT of [UninstallRun] entirely - see
+; CurUninstallStepChanged in [Code] - because Add-AppxPackage/Remove-AppxPackage is per-user,
+; and [UninstallRun] cannot carry `runasoriginaluser` (ISCC rejects it outright), so this step
+; stays for the one half that genuinely IS machine-wide: LocalMachine\TrustedPeople.
+;
+; F09 fix: the pre-fix version here removed EVERY LocalMachine\TrustedPeople certificate whose
+; Subject matched '*SageThumbs2K*' - broad enough to delete a developer's own manual trust, or
+; another install's copy of the same self-signed certificate under a different key and
+; thumbprint, neither of which this uninstall introduced. This now removes ONLY the exact
+; thumbprint the matching [Run] step recorded as having introduced (ModernMenuCertThumbprint,
+; under HKLM\Software\SageThumbs2K - see that [Run] entry's comment for why it is written only
+; in the "not already trusted" branch). If nothing was ever recorded - a fresh trust this
+; installation did not create, or a machine where the modern menu was never bundled - $t is
+; empty and nothing is touched. The marker is cleared either way so a later reinstall starts
+; from a clean slate rather than an uninstall-time value nothing will ever read again.
+;
+; ONE -NoProfile powershell call with native cmdlets, no -ExecutionPolicy Bypass / certutil
+; (see the [Run] note) so the uninstaller stays off AV heuristics too. Done before the DLL
+; unregister/file removal.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage; Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"""; \
-  Flags: runhidden waituntilterminated; RunOnceId: "UnregAppx"
+  Parameters: "-NoProfile -Command ""$t=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue).ModernMenuCertThumbprint; if($t){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+$t) -Force -ErrorAction SilentlyContinue}; Remove-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue; Remove-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue"""; \
+  Flags: runhidden waituntilterminated; RunOnceId: "UnregAppxCert"
 ; Unregister before files are removed (our DllUnregisterServer also unhooks every
 ; registered format and fires SHChangeNotify).
 Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
@@ -1168,6 +1224,17 @@ begin
     // to that section), matching the order the per-user shell sync uses on install.
     RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-shell');
     RunAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--remove-user-state');
+    // F08 (2026-09-05 audit): the modern-menu sparse package is a PER-USER registration
+    // (Add-AppxPackage registers into the calling user's own profile - see the [Run] entry
+    // that installs it), so its removal has the same "must run as the real user, not whoever
+    // answered UAC" requirement as the two calls above. [UninstallRun] cannot carry
+    // `runasoriginaluser` (see RunAsOriginalUser's own comment), so this goes through the same
+    // scheduled-task de-elevation helper. No path text is involved - Get-AppxPackage looks the
+    // package up by name, so there is nothing here for an apostrophe in the install path to
+    // break - and the command has no failure signal worth inspecting: a missing package is a
+    // silent no-op, matching the [UninstallRun] cert-removal entry's "best-effort" framing.
+    RunAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -Command Get-AppxPackage -Name SageThumbs2K | Remove-AppxPackage -ErrorAction SilentlyContinue');
     // Belt and braces for a shared/RDS machine: --remove-user-state above only ever reaches
     // the ONE original interactive user's hive. Every OTHER signed-in account's Run-key entry
     // (which --sync-user-shell never touched for them in the first place, since it also only

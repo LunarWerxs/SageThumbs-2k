@@ -128,6 +128,49 @@ function Assert-ArchitectureContractFails([string]$Name, [string]$Text) {
     $script:passed++
 }
 
+# --- F08 + F09 (2026-09-05 audit): modern-menu per-user registration + exact-thumbprint
+# certificate cleanup. Pinned here as plain text predicates (not routed through
+# check-installer.ps1 - that script polices the payload-cleanup allowlist and the resource-
+# safe-form/brace rules, not user-context or certificate-scope semantics) so a future edit to
+# the [Run]/[UninstallRun] entries cannot silently regress either fix.
+function Test-ModernMenuRegistersAsOriginalUser([string]$Text) {
+    # The per-user step is identified by the Add-AppxPackage call it actually makes (not by
+    # position), then its OWN Flags value - up to the end of that physical line - must carry
+    # runasoriginaluser. The cert-trust step above it deliberately does NOT carry the flag
+    # (it is genuinely machine-wide), so this must anchor on the Add-AppxPackage text itself,
+    # not merely "the flag appears somewhere in the file" (it does, on unrelated entries).
+    $registerBlock = [regex]::Match($Text, 'Add-AppxPackage -Path[\s\S]*?Flags:[^\r\n]*')
+    return $registerBlock.Success -and
+        $registerBlock.Value.Contains('runasoriginaluser', [StringComparison]::Ordinal)
+}
+function Test-NoSubjectWildcardCertRemoval([string]$Text) {
+    # F09's bug, verbatim: `Get-ChildItem Cert:\...\TrustedPeople | Where-Object Subject -like
+    # '*SageThumbs2K*'` removes every certificate with a matching SUBJECT, not just the one
+    # this installer trusted - a developer's manual trust or another install's own copy of the
+    # same self-signed certificate (different key, different thumbprint) would be deleted too.
+    return -not $Text.Contains('Subject -like', [StringComparison]::Ordinal)
+}
+function Test-ExactThumbprintCertRemoval([string]$Text) {
+    # The fix's own mechanism: a thumbprint recorded ONLY when the cert-trust step actually
+    # imported the certificate (see that [Run] entry's comment), read back at uninstall so only
+    # the exact certificate this installation introduced is ever removed.
+    return $Text.Contains('ModernMenuCertThumbprint', [StringComparison]::Ordinal)
+}
+function Assert-ModernMenuUserContextContract([string]$Text) {
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $Text)) {
+        throw 'F08: the per-user Add-AppxPackage registration must run as the original ' +
+            'interactive user (runasoriginaluser), not whichever administrator answered UAC'
+    }
+    if (-not (Test-NoSubjectWildcardCertRemoval $Text)) {
+        throw 'F09: certificate cleanup must never match by subject wildcard - it can ' +
+            'delete a developer''s or another install''s trust in the same-named certificate'
+    }
+    if (-not (Test-ExactThumbprintCertRemoval $Text)) {
+        throw 'F09: certificate cleanup must remove only the exact thumbprint this ' +
+            'installer introduced (no ModernMenuCertThumbprint provenance tracking found)'
+    }
+}
+
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $source = Get-Content -LiteralPath $installer -Raw
@@ -161,6 +204,49 @@ try {
             '#define ArchitectureMatcher "x64compatible"'
         )
     )
+
+    Assert-ModernMenuUserContextContract $source
+    Write-Host '  PASS  modern-menu per-user registration + exact-thumbprint cert cleanup' -ForegroundColor Green
+    $script:passed++
+
+    # Teeth proof, one mutation per pinned property: each one individually reverts the real
+    # fixed source back to the exact pre-fix shape (2026-09-05 audit) for JUST that property,
+    # confirming the check would have caught it, then confirms the OTHER two properties still
+    # hold in that same mutated text (so a single mutation cannot be masked by the others).
+    $noRunAsUser = $source.Replace(
+        '  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable',
+        '  Flags: runhidden waituntilterminated; Check: ModernMenuUsable'
+    )
+    if ($noRunAsUser -ceq $source) { throw 'test mutation did not remove runasoriginaluser from the registration entry' }
+    if (Test-ModernMenuRegistersAsOriginalUser $noRunAsUser) {
+        throw 'expected F08 teeth proof to fail: registration entry no longer has runasoriginaluser'
+    }
+    if (-not (Test-NoSubjectWildcardCertRemoval $noRunAsUser)) { throw 'F09 subject-wildcard check should still pass here' }
+    if (-not (Test-ExactThumbprintCertRemoval $noRunAsUser)) { throw 'F09 exact-thumbprint check should still pass here' }
+    Write-Host '  PASS  F08 teeth proof: registration missing runasoriginaluser is caught' -ForegroundColor Green
+    $script:passed++
+
+    $subjectWildcard = $source.Replace(
+        "`$t=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue).ModernMenuCertThumbprint; if(`$t){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+`$t) -Force -ErrorAction SilentlyContinue}",
+        "Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -like '*SageThumbs2K*' | Remove-Item -Force"
+    )
+    if ($subjectWildcard -ceq $source) { throw 'test mutation did not reintroduce the subject-wildcard removal' }
+    if (Test-NoSubjectWildcardCertRemoval $subjectWildcard) {
+        throw 'expected F09 teeth proof to fail: subject-wildcard removal was reintroduced'
+    }
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $subjectWildcard)) { throw 'F08 runasoriginaluser check should still pass here' }
+    Write-Host '  PASS  F09 teeth proof: subject-wildcard cert removal is caught' -ForegroundColor Green
+    $script:passed++
+
+    $noThumbprintTracking = $source.Replace('ModernMenuCertThumbprint', 'DiscardedForTest')
+    if ($noThumbprintTracking -ceq $source) { throw 'test mutation did not remove ModernMenuCertThumbprint tracking' }
+    if (Test-ExactThumbprintCertRemoval $noThumbprintTracking) {
+        throw 'expected F09 teeth proof to fail: exact-thumbprint provenance tracking is gone'
+    }
+    if (-not (Test-ModernMenuRegistersAsOriginalUser $noThumbprintTracking)) { throw 'F08 runasoriginaluser check should still pass here' }
+    if (-not (Test-NoSubjectWildcardCertRemoval $noThumbprintTracking)) { throw 'F09 subject-wildcard check should still pass here' }
+    Write-Host '  PASS  F09 teeth proof: missing exact-thumbprint tracking is caught' -ForegroundColor Green
+    $script:passed++
 
     Assert-LintPasses 'real installer exact cleanup allowlist' {
         Invoke-InstallerLint -IssPath $installer

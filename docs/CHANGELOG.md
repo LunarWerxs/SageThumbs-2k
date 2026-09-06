@@ -448,6 +448,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   file first and only swapped in once it's complete, so a failed export leaves your previous
   backup exactly as it was.
 
+- **The modern Windows 11 context menu now registers for the account actually using the
+  PC, even when a different administrator's credentials were used to approve the install.**
+  Installing as a standard user and supplying another admin's password at the prompt used
+  to register the modern menu for that admin's own account instead of yours, and uninstalling
+  had the same mismatch in reverse. Both now run in the right account. Uninstalling also no
+  longer removes a certificate someone else trusted just because it shares the same name;
+  it removes only the exact one this installer added.
+
 ## 2.5.0
 
 ### Added
