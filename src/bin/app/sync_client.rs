@@ -29,6 +29,14 @@ const MAX_RESP: usize = 128 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(30);
 const PENDING_VALUE: &str = "ConnectionsSyncPending";
+// F16 (2026-09-05 audit): a SEPARATE marker from `PENDING_VALUE` above. That one means
+// "a later push, after Save, failed and must retry" and its retry (`pull_on_open`'s
+// has_pending_push branch) always re-pushes unconditionally. This one means "the very
+// first sync after sign-in never completed", whose retry must redo the GET-or-seed
+// decision (`sync_once`), not blindly push - the account may already hold real data from
+// another device that a blind push would stomp. Kept distinct on purpose; both reuse the
+// same name-parameterised marker primitives batch 1 introduced.
+const INITIAL_SYNC_PENDING_VALUE: &str = "ConnectionsInitialSyncPending";
 
 #[derive(Clone)]
 struct CachedDoc {
@@ -603,11 +611,27 @@ pub(crate) fn has_pending_push() -> bool {
     marker_set(PENDING_VALUE)
 }
 
-/// Whether `name` is this module's sync-state marker. It is retry state, not a preference,
-/// so the settings export/import (`settings_io`) neither exports it nor lets a backup from
-/// another machine set or clear it, in either storage backend.
+fn mark_initial_sync_pending() {
+    set_marker(INITIAL_SYNC_PENDING_VALUE);
+}
+
+fn clear_initial_sync_pending() {
+    clear_marker(INITIAL_SYNC_PENDING_VALUE);
+}
+
+/// Whether a sign-in on this machine authenticated but never finished its first sync
+/// (F16, 2026-09-05 audit). The Settings UI reads this to keep the button and the status
+/// line in agreement instead of each guessing from `is_signed_in()` alone.
+pub(crate) fn has_initial_sync_pending() -> bool {
+    marker_set(INITIAL_SYNC_PENDING_VALUE)
+}
+
+/// Whether `name` is one of this module's sync-state markers. Retry state, not a
+/// preference, so the settings export/import (`settings_io`) neither exports them nor
+/// lets a backup from another machine set or clear them, in either storage backend.
 pub(crate) fn is_sync_state_value(name: &str) -> bool {
     name.eq_ignore_ascii_case(PENDING_VALUE)
+        || name.eq_ignore_ascii_case(INITIAL_SYNC_PENDING_VALUE)
 }
 
 pub(crate) fn begin_push_worker() {
@@ -639,10 +663,61 @@ pub(crate) fn signed_in_label() -> Option<String> {
     }
 }
 
+/// Outcome of a sign-in that DID authenticate. Kept separate from a genuine sign-in
+/// failure (F16, 2026-09-05 audit): `sync_client::connect`'s HTTP round-trips used to
+/// persist the refresh token and identity BEFORE the initial GET/seed, then let a failure
+/// there propagate as the same `Err(String)` as a failed login. The Settings UI could then
+/// only tell "signed in" from `is_signed_in()` (true, since the credential really was
+/// saved) while the message box said "sign-in failed", an unrecoverable-looking
+/// contradiction, and retrying meant a second browser round-trip for no reason, since the
+/// credential was already good.
+pub(crate) enum ConnectOutcome {
+    /// Sign-in succeeded and the initial pull/seed completed too.
+    Synced { label: String },
+    /// Sign-in succeeded; the initial pull/seed did not. The credential is already durably
+    /// stored, and nothing here should be, or needs to be, discarded.
+    InitialSyncPending { label: String, error: String },
+}
+
+/// Pure decision: turn whether the initial GET/seed succeeded into a [`ConnectOutcome`].
+/// No network, no credential store: [`connect`] and [`retry_initial_sync`] both funnel
+/// through this so the two paths can never disagree about what a failed initial sync means.
+fn connect_outcome(label: String, initial_sync: Result<(), String>) -> ConnectOutcome {
+    match initial_sync {
+        Ok(()) => ConnectOutcome::Synced { label },
+        Err(error) => ConnectOutcome::InitialSyncPending { label, error },
+    }
+}
+
+/// Record whichever marker matches `outcome`, so the NEXT Settings open (or an explicit
+/// retry) knows whether a first sync still needs to happen.
+fn record_initial_sync_outcome(outcome: &ConnectOutcome) {
+    match outcome {
+        ConnectOutcome::Synced { .. } => clear_initial_sync_pending(),
+        ConnectOutcome::InitialSyncPending { .. } => mark_initial_sync_pending(),
+    }
+}
+
+/// GET the cloud document and either adopt it locally (it already holds data) or seed it
+/// from the current local snapshot (it's empty). This is the one decision every sync entry
+/// point (`connect`'s initial sync, `retry_initial_sync`, `pull_on_open`) needs to make the
+/// same way. Returns whether any local values were changed by an adopted remote document.
+fn sync_once(token: &str) -> Result<bool, String> {
+    let (version, settings) = store_get(token)?;
+    if version > 0 {
+        Ok(apply_remote(&settings) > 0)
+    } else {
+        push_snapshot(token)?;
+        Ok(false)
+    }
+}
+
 /// Interactive sign-in: browser round-trip, securely store the refresh token + identity,
-/// then do the initial pull (or seed the cloud from local if it's empty). Returns the
-/// display label (name/email/sub) for the UI. Blocking — run on a worker thread.
-pub(crate) fn connect() -> Result<String, String> {
+/// then do the initial pull (or seed the cloud from local if it's empty). Blocking, run
+/// on a worker thread. A failed initial sync is reported as
+/// [`ConnectOutcome::InitialSyncPending`], never as an `Err`. The sign-in itself worked,
+/// and the caller must not treat this like a failed login (F16, 2026-09-05 audit).
+pub(crate) fn connect() -> Result<ConnectOutcome, String> {
     let _guard = sync_guard();
     clear_cache();
     let tokens = oauth::login()?;
@@ -656,14 +731,7 @@ pub(crate) fn connect() -> Result<String, String> {
     let (sub, email, name, picture) = oauth::identity_from_tokens(&tokens).unwrap_or_default();
     cred_store::save_identity(&sub, &email, &name, &picture);
 
-    // Initial pull/seed using the access token we already hold (no refresh needed).
-    let (version, settings) = store_get(&tokens.access_token)?;
-    if version > 0 {
-        apply_remote(&settings);
-    } else {
-        push_snapshot(&tokens.access_token)?;
-    }
-    let who = if !name.is_empty() {
+    let mut who = if !name.is_empty() {
         name
     } else if !email.is_empty() {
         email
@@ -675,19 +743,33 @@ pub(crate) fn connect() -> Result<String, String> {
     // screen that reports success, since that is the one moment every sign-in path (the
     // banner, the sync button, a credential this machine already had) is guaranteed to pass
     // through. Folded into the returned label rather than a second dialog: the caller
-    // (`settings_dlg::sync`) already shows this string in its one "signed in" message box.
+    // (`settings_dlg::sync`) already shows this string in its "signed in" message box(es).
     if settings::portable() {
-        return Ok(format!(
-            "{who}\n\n{}",
-            crate::win::t("sync_portable_notice")
-        ));
+        who = format!("{who}\n\n{}", crate::win::t("sync_portable_notice"));
     }
-    Ok(who)
+
+    let outcome = connect_outcome(who, sync_once(&tokens.access_token).map(|_| ()));
+    record_initial_sync_outcome(&outcome);
+    Ok(outcome)
+}
+
+/// Retry the initial sync after a `connect()` that authenticated but left
+/// [`ConnectOutcome::InitialSyncPending`] (F16). Reuses the refresh token `connect` already
+/// stored via [`access_token`], never calls `oauth::login`, so retrying costs no second
+/// browser round-trip.
+pub(crate) fn retry_initial_sync() -> Result<ConnectOutcome, String> {
+    let _guard = sync_guard();
+    let token = access_token()?;
+    let label = signed_in_label().unwrap_or_default();
+    let outcome = connect_outcome(label, sync_once(&token).map(|_| ()));
+    record_initial_sync_outcome(&outcome);
+    Ok(outcome)
 }
 
 /// Pull remote settings and apply them locally; seed the cloud if it's empty. Returns
 /// `Ok(true)` if any values were applied (so the UI should refresh its controls).
-/// Blocking — run on a worker thread.
+/// Blocking, run on a worker thread. Also clears the initial-sync-pending marker on
+/// success, so simply reopening Settings is itself a valid, login-free retry path.
 pub(crate) fn pull_on_open() -> Result<bool, String> {
     let _guard = sync_guard();
     let token = access_token()?;
@@ -695,13 +777,9 @@ pub(crate) fn pull_on_open() -> Result<bool, String> {
         push_snapshot(&token)?;
         clear_push_pending();
     }
-    let (version, settings) = store_get(&token)?;
-    if version > 0 {
-        Ok(apply_remote(&settings) > 0)
-    } else {
-        push_snapshot(&token)?;
-        Ok(false)
-    }
+    let applied = sync_once(&token)?;
+    clear_initial_sync_pending();
+    Ok(applied)
 }
 
 /// Push the current local allowlisted settings to the cloud. Blocking — run on a worker
@@ -712,7 +790,10 @@ pub(crate) fn push() -> Result<(), String> {
     push_snapshot(&token).map(|_| ())
 }
 
-/// Disconnect: best-effort delete the remote doc, then forget local credentials.
+/// Disconnect: best-effort delete the remote doc, then forget local credentials. The
+/// remote delete is genuinely best-effort (no token, no connectivity, or the store
+/// rejecting the request all fall through silently here), so the UI wording that invites
+/// this action must not promise cloud erasure as a guarantee (2026-09-05 audit, F16 note).
 pub(crate) fn disconnect() {
     let _guard = sync_guard();
     if let Ok(token) = access_token() {
@@ -721,6 +802,7 @@ pub(crate) fn disconnect() {
     cred_store::clear();
     clear_cache();
     clear_push_pending();
+    clear_initial_sync_pending();
 }
 
 /// Wait for a detached Save push, then make one final bounded attempt if a
@@ -986,5 +1068,60 @@ mod tests {
         assert!(is_sync_state_value("connectionssyncpending"));
         assert!(!is_sync_state_value("Theme"));
         assert!(!is_sync_state_value("ConnectionsSyncPendingX"));
+    }
+
+    // ---- F16: initial-sync-pending state (2026-09-05 audit) ----------------------------
+
+    /// The new marker round-trips through the same name-parameterised primitives the
+    /// push-pending marker already proved (`the_pending_marker_clears_after_a_successful_push`
+    /// above), a scratch name, never the real `INITIAL_SYNC_PENDING_VALUE` key, so the
+    /// developer's real sync state is never touched.
+    #[test]
+    fn the_initial_sync_pending_marker_round_trips() {
+        let name = format!("ConnectionsInitialSyncPendingTest{}", std::process::id());
+        clear_marker(&name);
+        assert!(!marker_set(&name), "a never-set marker reads as clear");
+        set_marker(&name);
+        assert!(marker_set(&name), "mark must read back");
+        clear_marker(&name);
+        assert!(!marker_set(&name), "clear must delete the value");
+    }
+
+    #[test]
+    fn the_initial_sync_pending_marker_is_classified_as_sync_state() {
+        assert!(is_sync_state_value(INITIAL_SYNC_PENDING_VALUE));
+        assert!(is_sync_state_value("connectionsinitialsyncpending"));
+    }
+
+    #[test]
+    fn connect_outcome_is_synced_when_the_initial_sync_succeeds() {
+        match connect_outcome("Ann".to_string(), Ok(())) {
+            ConnectOutcome::Synced { label } => assert_eq!(label, "Ann"),
+            ConnectOutcome::InitialSyncPending { .. } => {
+                panic!("a successful initial sync must not read as pending")
+            }
+        }
+    }
+
+    /// This is the exact contradiction the 2026-09-05 audit (F16) found: `connect()` saves
+    /// the refresh token and identity BEFORE the initial GET/seed, then a failure there
+    /// used to propagate as a plain `Err`, indistinguishable from a failed login, even
+    /// though the credential was already durably stored. Against the pre-fix `connect`,
+    /// there was no `ConnectOutcome` at all (the return type was `Result<String, String>`),
+    /// so this test could not even compile, let alone pass: it fails against that shape and
+    /// passes once a failed initial sync is reported as `InitialSyncPending` rather than a
+    /// bare error that looks like "sign-in failed".
+    #[test]
+    fn connect_outcome_is_initial_sync_pending_when_the_initial_sync_fails() {
+        let outcome = connect_outcome("Ann".to_string(), Err("network unreachable".to_string()));
+        match outcome {
+            ConnectOutcome::InitialSyncPending { label, error } => {
+                assert_eq!(label, "Ann");
+                assert_eq!(error, "network unreachable");
+            }
+            ConnectOutcome::Synced { .. } => {
+                panic!("a failed initial sync must not silently read as fully synced")
+            }
+        }
     }
 }

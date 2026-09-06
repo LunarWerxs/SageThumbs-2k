@@ -106,6 +106,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Signing in to Settings Sync no longer looks like it failed when only the first cloud sync
+  did.** Signing in saves your account right away, but if the very first sync to the cloud
+  couldn't finish, the status line and the "Stop syncing" button used to say you were fully
+  synced while a message box, from that same sign-in, said it had failed. That case now shows
+  its own "first sync didn't finish" status with a "Retry sync" button that tries again using
+  the sign-in you already have, no second browser window needed. Disconnecting also now says
+  plainly that removing the copy stored in your account is a best-effort request, not a promise
+  it always succeeds.
+
 - **The `st2k` command line and the MCP tools can no longer overwrite a source file with their
   own output.** `st2k pdf same.png same.png` (and `cbz`, `thumbnail`, `convert`) used to read the
   file and then replace it. An output that is one of the inputs is now refused before anything is
