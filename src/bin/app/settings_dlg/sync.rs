@@ -10,8 +10,11 @@ pub(super) const WM_APP_SYNC: u32 = 0x8000 + 9;
 
 /// Outcome of a background sync op, boxed through `WM_APP_SYNC` to the UI thread.
 pub(super) enum SyncEvent {
-    Connected(Result<String, String>), // Ok(email/sub) or Err(reason)
-    Pulled(Result<bool, String>),      // Ok(applied?) or Err(reason)
+    // Ok(ConnectOutcome) covers BOTH a fully-synced sign-in and an authenticated-but-
+    // initial-sync-pending one (F16), never confuse the latter with Err(reason), a
+    // genuine authentication failure.
+    Connected(Result<crate::sync_client::ConnectOutcome, String>),
+    Pulled(Result<bool, String>), // Ok(applied?) or Err(reason)
     Pushed(Result<(), String>),
     Disconnected,
 }
@@ -19,16 +22,65 @@ pub(super) enum SyncEvent {
 pub(super) enum SyncOp {
     Connect,
     Disconnect,
+    /// Retry the initial sync after a `connect()` that authenticated but left it pending
+    /// (F16, 2026-09-05 audit). Never touches `oauth::login`; see `sync_client::retry_initial_sync`.
+    RetryInitialSync,
 }
 
-/// The sync button's label: signed out → an invite; signed in → a clean "Stop syncing".
-/// The account identity now lives in the status line (see [`sync_status_state`]) — it is
-/// deliberately NOT baked into the button anymore (a raw account id read as noise).
-pub(super) fn sync_button_label() -> String {
-    if crate::sync_client::is_signed_in() {
-        t("sync_btn_stop").to_string()
+/// The four states a signed-in-or-not account can be in, for the sync row. Extracted so
+/// the button label, the status text, and the click handler all decide from the SAME
+/// function and can never independently reach two different, contradictory answers. This is the
+/// exact failure the 2026-09-05 audit found (F16): the button read "Stop syncing" and the
+/// status line read "Synced" while a message box, from the same event, said "sign-in
+/// failed", because each of those three call sites re-derived its own answer from
+/// `is_signed_in()` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SyncRowState {
+    SignedOut,
+    /// Authenticated, but the first GET/seed after sign-in never completed. Retryable
+    /// without a browser round-trip (see [`SyncOp::RetryInitialSync`]).
+    InitialSyncPending,
+    /// Fully synced once already; a later push (after Save) failed and is retried
+    /// automatically on the next Settings open.
+    PushPending,
+    Synced,
+}
+
+/// Pure decision, no I/O: which [`SyncRowState`] applies given the three raw signals.
+pub(super) fn sync_row_state(
+    signed_in: bool,
+    initial_sync_pending: bool,
+    push_pending: bool,
+) -> SyncRowState {
+    if !signed_in {
+        SyncRowState::SignedOut
+    } else if initial_sync_pending {
+        SyncRowState::InitialSyncPending
+    } else if push_pending {
+        SyncRowState::PushPending
     } else {
-        t("sync_btn_start").to_string()
+        SyncRowState::Synced
+    }
+}
+
+/// The current [`SyncRowState`], read from the real signals.
+fn current_sync_row_state() -> SyncRowState {
+    sync_row_state(
+        crate::sync_client::is_signed_in(),
+        crate::sync_client::has_initial_sync_pending(),
+        crate::sync_client::has_pending_push(),
+    )
+}
+
+/// The sync button's label: signed out → an invite; a pending initial sync → a retry
+/// invite (no login needed); otherwise → a clean "Stop syncing". The account identity
+/// lives in the status line (see [`sync_status_state`]), never on the button (a raw
+/// account id read as noise).
+pub(super) fn sync_button_label() -> String {
+    match current_sync_row_state() {
+        SyncRowState::SignedOut => t("sync_btn_start").to_string(),
+        SyncRowState::InitialSyncPending => t("sync_btn_retry").to_string(),
+        SyncRowState::PushPending | SyncRowState::Synced => t("sync_btn_stop").to_string(),
     }
 }
 
@@ -49,24 +101,22 @@ pub(super) fn sync_status_is_green() -> bool {
     STATUS_GREEN.with(|g| g.get())
 }
 
-/// The status line beside the sync button, and whether it is a green state. Signed in → a
-/// green "● Synced" badge with a plain-language detail; signed out → a muted invite; a
-/// pending push → an ungreen "● Sync pending". `signed_in_label` prefers the account's
+/// The status line beside the sync button, and whether it is a green state. Signed in and
+/// caught up → a green "● Synced" badge with a plain-language detail; signed out → a
+/// muted invite; an initial sync still pending → an ungreen retry invite (F16); a later
+/// push pending → an ungreen "● Sync pending". `signed_in_label` prefers the account's
 /// display name (falling back to its relay email) and never returns a bare account id
 /// (`sub`), so the row never shows an ugly UUID or the opaque privacy-relay hash when a
 /// real name is available.
 pub(super) fn sync_status_state() -> (String, bool) {
-    if crate::sync_client::is_signed_in() {
-        if crate::sync_client::has_pending_push() {
-            (t("sync_state_pending").to_string(), false)
-        } else {
-            match crate::sync_client::signed_in_label() {
-                Some(who) => (t("sync_state_synced_as").replace("{who}", &who), true),
-                None => (t("sync_state_synced").to_string(), true),
-            }
-        }
-    } else {
-        (t("sync_state_off").to_string(), false)
+    match current_sync_row_state() {
+        SyncRowState::SignedOut => (t("sync_state_off").to_string(), false),
+        SyncRowState::InitialSyncPending => (t("sync_state_initial_pending").to_string(), false),
+        SyncRowState::PushPending => (t("sync_state_pending").to_string(), false),
+        SyncRowState::Synced => match crate::sync_client::signed_in_label() {
+            Some(who) => (t("sync_state_synced_as").replace("{who}", &who), true),
+            None => (t("sync_state_synced").to_string(), true),
+        },
     }
 }
 
@@ -103,36 +153,42 @@ pub(super) unsafe fn refresh_sync_ui(hwnd: HWND) {
 }
 
 /// The sync button was clicked: sign in (with a plain-English disclosure that doubles as
-/// the privacy notice) or disconnect. The network op itself runs on a worker thread.
+/// the privacy notice), retry a stalled initial sync, or disconnect. The network op itself
+/// runs on a worker thread. Dispatches on [`SyncRowState`] so this can never disagree with
+/// what the button or the status line just showed (F16, 2026-09-05 audit).
 pub(super) unsafe fn on_sync_click(hwnd: HWND) {
-    if crate::sync_client::is_signed_in() {
-        let warn = wide(t("sync_confirm_stop"));
-        let cap = wide(t("sync_title"));
-        if MessageBoxW(
-            Some(hwnd),
-            PCWSTR(warn.as_ptr()),
-            PCWSTR(cap.as_ptr()),
-            MB_YESNO | MB_ICONWARNING,
-        ) != IDYES
-        {
-            return;
+    match current_sync_row_state() {
+        SyncRowState::SignedOut => {
+            let info = wide(t("sync_confirm_start"));
+            let cap = wide(t("sync_title"));
+            if MessageBoxW(
+                Some(hwnd),
+                PCWSTR(info.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_YESNO | MB_ICONINFORMATION,
+            ) != IDYES
+            {
+                return;
+            }
+            begin_connect(hwnd);
         }
-        set_sync_button(hwnd, t("sync_btn_disconnecting"), false);
-        set_sync_status(hwnd, Some((t("sync_btn_disconnecting").to_string(), false)));
-        spawn_sync(hwnd, SyncOp::Disconnect);
-    } else {
-        let info = wide(t("sync_confirm_start"));
-        let cap = wide(t("sync_title"));
-        if MessageBoxW(
-            Some(hwnd),
-            PCWSTR(info.as_ptr()),
-            PCWSTR(cap.as_ptr()),
-            MB_YESNO | MB_ICONINFORMATION,
-        ) != IDYES
-        {
-            return;
+        SyncRowState::InitialSyncPending => begin_retry_initial_sync(hwnd),
+        SyncRowState::PushPending | SyncRowState::Synced => {
+            let warn = wide(t("sync_confirm_stop"));
+            let cap = wide(t("sync_title"));
+            if MessageBoxW(
+                Some(hwnd),
+                PCWSTR(warn.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_YESNO | MB_ICONWARNING,
+            ) != IDYES
+            {
+                return;
+            }
+            set_sync_button(hwnd, t("sync_btn_disconnecting"), false);
+            set_sync_status(hwnd, Some((t("sync_btn_disconnecting").to_string(), false)));
+            spawn_sync(hwnd, SyncOp::Disconnect);
         }
-        begin_connect(hwnd);
     }
 }
 
@@ -148,13 +204,25 @@ pub(super) unsafe fn begin_connect(hwnd: HWND) {
     spawn_sync(hwnd, SyncOp::Connect);
 }
 
-/// Run a connect/disconnect on a worker thread (they block on the network), posting the
-/// result back via `WM_APP_SYNC` so the UI updates on the message thread.
+/// Retry a stalled initial sync (F16, 2026-09-05 audit). No confirmation dialog, since
+/// nothing about the account changes, only whether the first sync has completed, and no
+/// browser round-trip: [`crate::sync_client::retry_initial_sync`] reuses the stored credential.
+pub(super) unsafe fn begin_retry_initial_sync(hwnd: HWND) {
+    set_sync_button(hwnd, t("sync_btn_retrying"), false);
+    set_sync_status(hwnd, Some((t("sync_btn_retrying").to_string(), false)));
+    spawn_sync(hwnd, SyncOp::RetryInitialSync);
+}
+
+/// Run a connect/disconnect/retry on a worker thread (they block on the network), posting
+/// the result back via `WM_APP_SYNC` so the UI updates on the message thread.
 pub(super) fn spawn_sync(hwnd: HWND, op: SyncOp) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
         let event = match op {
             SyncOp::Connect => SyncEvent::Connected(crate::sync_client::connect()),
+            SyncOp::RetryInitialSync => {
+                SyncEvent::Connected(crate::sync_client::retry_initial_sync())
+            }
             SyncOp::Disconnect => {
                 crate::sync_client::disconnect();
                 SyncEvent::Disconnected
@@ -213,7 +281,7 @@ pub(super) fn post_sync(target: isize, event: SyncEvent) {
 /// Apply a finished sync op to the UI (runs on the message thread).
 pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
-        SyncEvent::Connected(Ok(who)) => {
+        SyncEvent::Connected(Ok(crate::sync_client::ConnectOutcome::Synced { label })) => {
             refresh_sync_ui(hwnd);
             // However they got here — the banner, the sync button, or credentials this machine
             // already had — the sign-in campaign is finished. Retire it so it is never asked
@@ -221,9 +289,28 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             crate::nudge::mark_signed_in();
             msg(
                 hwnd,
-                &t("sync_signed_in").replace("{who}", &who),
+                &t("sync_signed_in").replace("{who}", &label),
                 t("sync_title"),
                 MB_ICONINFORMATION,
+            );
+        }
+        SyncEvent::Connected(Ok(crate::sync_client::ConnectOutcome::InitialSyncPending {
+            label,
+            error,
+        })) => {
+            // F16: the sign-in itself worked and the credential is already stored, so this is
+            // NOT the "sign-in failed" message. `refresh_sync_ui` reads the state-derived
+            // button/status pair, which now correctly offers "Retry sync" rather than
+            // "Stop syncing" beside a status line that would otherwise still claim "Synced".
+            refresh_sync_ui(hwnd);
+            crate::nudge::mark_signed_in();
+            msg(
+                hwnd,
+                &t("sync_signed_in_initial_pending")
+                    .replace("{who}", &label)
+                    .replace("{error}", &error),
+                t("sync_title"),
+                MB_ICONWARNING,
             );
         }
         SyncEvent::Connected(Err(e)) => {
@@ -279,5 +366,51 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
                 MB_ICONINFORMATION,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signed_out_state_ignores_pending_markers() {
+        assert_eq!(sync_row_state(false, true, true), SyncRowState::SignedOut);
+    }
+
+    #[test]
+    fn initial_sync_pending_takes_priority_over_push_pending() {
+        assert_eq!(
+            sync_row_state(true, true, true),
+            SyncRowState::InitialSyncPending
+        );
+    }
+
+    #[test]
+    fn push_pending_without_initial_pending_is_its_own_state() {
+        assert_eq!(sync_row_state(true, false, true), SyncRowState::PushPending);
+    }
+
+    #[test]
+    fn fully_synced_when_signed_in_with_no_pending_markers() {
+        assert_eq!(sync_row_state(true, false, false), SyncRowState::Synced);
+    }
+
+    /// F16 (2026-09-05 audit): before this fix, the ONLY signal available to the button, the
+    /// status line, and the click handler was `is_signed_in()`, so an authenticated-but-not-
+    /// yet-synced account was indistinguishable from a fully synced one: the status line said
+    /// "Synced" and the button said "Stop syncing" while a message box, from the very same
+    /// event, said "sign-in failed". Against that old shape there was no `InitialSyncPending`
+    /// state to return at all (the equivalent logic collapsed straight to `Synced` whenever
+    /// `is_signed_in()` was true), so this test fails there and passes now.
+    #[test]
+    fn an_authenticated_but_unsynced_account_never_reads_as_fully_synced() {
+        let state = sync_row_state(true, true, false);
+        assert_ne!(
+            state,
+            SyncRowState::Synced,
+            "must not silently claim to be caught up"
+        );
+        assert_eq!(state, SyncRowState::InitialSyncPending);
     }
 }
