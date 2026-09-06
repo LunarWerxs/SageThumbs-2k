@@ -74,6 +74,35 @@ const PROP_PREVIEWDETAILS: &str = "prop:*System.Image.Dimensions;*System.Image.B
 /// are reachable only via "All properties", so a folder of PSDs/RAWs never *offers* Dimensions/
 /// DateTaken as a sortable column. This makes the docs' "sortable/groupable columns" claim real.
 const PROP_ADDITIONAL: &str = "prop:System.Image.Dimensions;System.Image.BitDepth;System.Photo.DateTaken;System.Photo.CameraModel;System.Media.Duration;System.Audio.EncodingBitrate;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Music.Genre;System.Media.Year";
+/// The four `SystemFileAssociations\.<ext>` property-list values and the string this build
+/// writes into each. ONE table feeds both [`hook_ext_propstore`] (what gets written) and
+/// [`remove_owned_prop_lists`] (what may be removed), so the two can never disagree about which
+/// value names are ours.
+const PROP_LISTS: [(&str, &str); 4] = [
+    ("InfoTip", PROP_INFOTIP),
+    ("FullDetails", PROP_FULLDETAILS),
+    ("PreviewDetails", PROP_PREVIEWDETAILS),
+    ("AdditionalProperties", PROP_ADDITIONAL),
+];
+/// Property-list strings EARLIER builds wrote that no `PROP_*` constant above matches any more.
+/// Unhook used to delete the four list values unconditionally whenever the handler binding was
+/// ours, on the assumption that nobody else writes those value names for a format we own
+/// (2026-09-05 audit, F35). That assumption fails the moment a user or another product edits one
+/// of the lists while we stay the property handler: disabling the format or uninstalling threw
+/// their customisation away. A value is now removed only when its content is one THIS code
+/// wrote, which needs every string it has ever written and not just today's: an install that
+/// upgraded from 0.6.0 without ever re-hooking still carries these two, and matching only the
+/// current constants would orphan them on uninstall.
+/// MAINTENANCE RULE: when a `PROP_*` constant above changes, append the string it replaced here,
+/// or the upgrade-then-uninstall path leaks the old value.
+const LEGACY_PROP_LISTS: &[&str] = &[
+    // 0.6.0 InfoTip (the first release with a property handler); 0.7.0 added CameraModel and
+    // Duration and the string has not changed since.
+    "prop:System.ItemTypeText;System.Image.Dimensions;System.Music.Artist;System.Title;System.Size",
+    // 0.6.0 FullDetails; 0.7.0 grew it to today's list. 0.6.0 wrote no PreviewDetails or
+    // AdditionalProperties at all, so those two names have only ever carried today's strings.
+    "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Size;System.DateModified",
+];
 /// Marker value written next to a `PerceivedType` WE set, so [`unhook_perceived_type`] can remove
 /// ours without clobbering a value Windows or another app owns.
 const PERCEIVED_TYPE_MARK: &str = "SageThumbs2K.PerceivedTypeOwner";
@@ -359,10 +388,9 @@ fn hook_ext_propstore(classes: &Key, ext: &str) -> Result<()> {
     // registering a property handler — so the `handler` guard above (which only looked at
     // PropertyHandlers\.<ext>) can't see it. Fill each value only where it's genuinely empty,
     // so such a value is never clobbered.
-    set_assoc_value_if_empty(&a, "InfoTip", PROP_INFOTIP);
-    set_assoc_value_if_empty(&a, "FullDetails", PROP_FULLDETAILS);
-    set_assoc_value_if_empty(&a, "PreviewDetails", PROP_PREVIEWDETAILS);
-    set_assoc_value_if_empty(&a, "AdditionalProperties", PROP_ADDITIONAL);
+    for (name, value) in PROP_LISTS {
+        set_assoc_value_if_empty(&a, name, value);
+    }
     set_perceived_type(classes, ext);
     Ok(())
 }
@@ -446,25 +474,38 @@ fn unhook_ext_propstore(classes: &Key, ext: &str) {
         == Some(CLSID_PROPERTY_STORE_STR);
     if was_ours {
         let _ = LOCAL_MACHINE.remove_tree(&handler);
-        // Remove OUR property lists UNCONDITIONALLY (not by matching the CURRENT const strings):
-        // an older install wrote DIFFERENT strings, so an equality check would orphan them across
-        // an upgrade-then-uninstall. We are the only writer of these value names for a format we
-        // own. Gated on `was_ours` so we never touch lists under a foreign handler.
-        // `create`, not `open`: same read-only-handle trap as `unhook_perceived_type` above —
+        // Gated on `was_ours` so we never touch lists under a foreign handler; which of the four
+        // values then go is decided per value by their content (see `remove_owned_prop_lists`).
+        // `create`, not `open`: same read-only-handle trap as `unhook_perceived_type` above,
         // `open`'s handle makes `remove_value` a silent no-op, so these four values survived
         // every uninstall/disable.
         if let Ok(k) = classes.create(&assoc) {
-            for v in [
-                "InfoTip",
-                "FullDetails",
-                "PreviewDetails",
-                "AdditionalProperties",
-            ] {
-                let _ = k.remove_value(v);
-            }
+            remove_owned_prop_lists(&k);
         }
     }
     unhook_perceived_type(classes, ext);
+}
+
+/// True when `value` is a property list THIS code wrote, in this or any earlier build.
+fn is_owned_prop_list(value: &str) -> bool {
+    PROP_LISTS.iter().any(|(_, ours)| *ours == value) || LEGACY_PROP_LISTS.contains(&value)
+}
+
+/// Remove, from a writable association key, each of the [`PROP_LISTS`] values whose content is
+/// still one we wrote (any build, see [`LEGACY_PROP_LISTS`]). A value a user or another product
+/// has since changed, added, or stored as a non-string type is left in place: it is their
+/// customisation, not our litter (2026-09-05 audit, F35). `hook_ext_propstore` only ever fills an
+/// EMPTY slot, so there is nothing displaced to restore here; leaving the foreign value is the
+/// whole of the undo. Any other value on the key is never touched.
+fn remove_owned_prop_lists(assoc: &Key) {
+    for (name, _) in PROP_LISTS {
+        let Ok(current) = assoc.get_string(name) else {
+            continue; // absent, or not a string we could have written
+        };
+        if is_owned_prop_list(&current) {
+            let _ = assoc.remove_value(name);
+        }
+    }
 }
 
 /// Register the IPreviewHandler coclass: its COM server, the surrogate `AppID`
@@ -1373,5 +1414,148 @@ mod registry_write_tests {
             let k = classes.open(&path).expect("foreign hook key must survive");
             assert_eq!(k.get_string("").as_deref(), Ok("{some-other-vendor-clsid}"));
         }
+    }
+
+    /// Seed an association key exactly as a completed registration by THIS build leaves it.
+    fn seed_current_prop_lists(k: &Key) {
+        for (name, value) in PROP_LISTS {
+            k.set_string(name, value).expect("seed our list");
+        }
+    }
+
+    /// 2026-09-05 audit, F35 (a): `unhook_ext_propstore` deleted all four property-list values
+    /// whenever the handler binding was ours, so a list a user or another product had changed
+    /// AFTER we registered died with our uninstall or with a plain format disable. Register,
+    /// then let the user re-point the hover tip, retype another list as a DWORD, and add an
+    /// unrelated value on the same key: all three must survive while our two untouched lists go.
+    /// Against the pre-fix code the edited InfoTip and the DWORD are both removed.
+    #[test]
+    fn remove_owned_prop_lists_keeps_lists_changed_after_we_wrote_them() {
+        let (_guard, classes) = Scratch::new("proplist-changed");
+        let k = classes.create("Assoc").expect("create");
+        seed_current_prop_lists(&k);
+        k.set_string("InfoTip", "prop:System.Size;System.DateModified")
+            .expect("user edit");
+        k.set_u32("AdditionalProperties", 1).expect("retyped value");
+        k.set_string("ContentViewModeForBrowse", "prop:~System.ItemNameDisplay")
+            .expect("unrelated value");
+
+        remove_owned_prop_lists(&k);
+
+        assert_eq!(
+            k.get_string("InfoTip").as_deref(),
+            Ok("prop:System.Size;System.DateModified"),
+            "a list the user changed after registration must survive"
+        );
+        assert_eq!(
+            k.get_u32("AdditionalProperties"),
+            Ok(1),
+            "a value we could not have written (wrong type) must survive"
+        );
+        assert_eq!(
+            k.get_string("ContentViewModeForBrowse").as_deref(),
+            Ok("prop:~System.ItemNameDisplay"),
+            "an unrelated value on the same key must never be touched"
+        );
+        for name in ["FullDetails", "PreviewDetails"] {
+            assert!(
+                k.get_string(name).is_err(),
+                "our unchanged {name} must still be removed"
+            );
+        }
+    }
+
+    /// F35 (b), the "we wrote it, nobody changed it" case the fix must preserve exactly: every
+    /// list as this build writes it is removed, and a value we never write is not.
+    #[test]
+    fn remove_owned_prop_lists_removes_the_unchanged_lists_this_build_wrote() {
+        let (_guard, classes) = Scratch::new("proplist-ours");
+        let k = classes.create("Assoc").expect("create");
+        seed_current_prop_lists(&k);
+        k.set_string("ContentViewModeForBrowse", "prop:~System.ItemNameDisplay")
+            .expect("unrelated value");
+
+        remove_owned_prop_lists(&k);
+
+        for (name, _) in PROP_LISTS {
+            assert!(k.get_string(name).is_err(), "our {name} must be gone");
+        }
+        assert_eq!(
+            k.get_string("ContentViewModeForBrowse").as_deref(),
+            Ok("prop:~System.ItemNameDisplay"),
+            "the unrelated value must survive a clean unhook too"
+        );
+    }
+
+    /// F35 (c): an install that upgraded from 0.6.0 still carries that release's InfoTip and
+    /// FullDetails strings, because the later hook fills only EMPTY slots and never rewrote
+    /// them. They are ours and must go, while a PreviewDetails the user added in between (0.6.0
+    /// wrote none, so the upgrade hook skipped it) is theirs and must stay. The literals are
+    /// deliberately NOT read from `LEGACY_PROP_LISTS`: dropping an entry from that table must
+    /// fail this test. A fix that matched only today's constants would orphan both legacy values.
+    #[test]
+    fn remove_owned_prop_lists_recognises_the_lists_an_older_build_wrote() {
+        let (_guard, classes) = Scratch::new("proplist-legacy");
+        let k = classes.create("Assoc").expect("create");
+        k.set_string(
+            "InfoTip",
+            "prop:System.ItemTypeText;System.Image.Dimensions;System.Music.Artist;System.Title;System.Size",
+        )
+        .expect("0.6.0 InfoTip");
+        k.set_string(
+            "FullDetails",
+            "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Size;System.DateModified",
+        )
+        .expect("0.6.0 FullDetails");
+        k.set_string(
+            "PreviewDetails",
+            "prop:*System.Image.Dimensions;System.Size",
+        )
+        .expect("user-added list");
+
+        remove_owned_prop_lists(&k);
+
+        assert!(
+            k.get_string("InfoTip").is_err(),
+            "the 0.6.0 InfoTip is ours and must be removed"
+        );
+        assert!(
+            k.get_string("FullDetails").is_err(),
+            "the 0.6.0 FullDetails is ours and must be removed"
+        );
+        assert_eq!(
+            k.get_string("PreviewDetails").as_deref(),
+            Ok("prop:*System.Image.Dimensions;System.Size"),
+            "a list the user added between releases must survive"
+        );
+    }
+
+    /// The ownership predicate behind F35: every string this build writes and every string an
+    /// older build wrote is ours; the empty string, a foreign list and a one-token edit of our
+    /// own list are not. Also pins the maintenance rule on `LEGACY_PROP_LISTS`: it holds
+    /// REPLACED strings only, so an entry equal to a current constant means someone appended the
+    /// new value instead of the one it displaced.
+    #[test]
+    fn owned_prop_list_predicate_covers_every_build_and_nothing_else() {
+        for (name, ours) in PROP_LISTS {
+            assert!(is_owned_prop_list(ours), "today's {name} must be ours");
+        }
+        for legacy in LEGACY_PROP_LISTS {
+            assert!(
+                is_owned_prop_list(legacy),
+                "legacy list must be ours: {legacy}"
+            );
+            assert!(
+                !PROP_LISTS.iter().any(|(_, cur)| cur == legacy),
+                "LEGACY_PROP_LISTS holds replaced strings only, not a current one: {legacy}"
+            );
+        }
+        assert!(!is_owned_prop_list(""));
+        assert!(!is_owned_prop_list("prop:System.Size"));
+        let edited = format!("{PROP_INFOTIP};System.Rating");
+        assert!(
+            !is_owned_prop_list(&edited),
+            "one appended property makes the list the user's"
+        );
     }
 }
