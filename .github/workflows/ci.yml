@@ -470,6 +470,14 @@ jobs:
       - name: vendored jxl tree matches pristine + patches
         shell: pwsh
         run: ./scripts/vendor-jxl.ps1 -Check
+      # Pins that verify.ps1's OWN -Lint script loops call vendor-jxl.ps1 (mutating bare
+      # default vs. read-only -Check, see its header) in -Check mode, not folded bare into a
+      # generic no-argument loop as it was found to be (2026-09-05 audit, F25) - that used to
+      # let a local `verify.ps1 -Lint` regenerate/delete the vendored JXL trees instead of
+      # merely validating them.
+      - name: verify.ps1 lint-loop contract (vendor-jxl invoked in -Check mode)
+        shell: pwsh
+        run: ./scripts/test-verify-lint-contract.ps1
       # The reply-address rule exists three times (Pascal / Rust / JS) because it runs in three
       # runtimes; this holds them to one shared table. The Pascal leg needs ISCC, which this
       # runner does not have, so it reports SKIP here and is covered by the release pipeline.

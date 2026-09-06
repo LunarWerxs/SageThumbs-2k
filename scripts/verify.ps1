@@ -166,7 +166,8 @@ if ($Lint) {
         foreach ($scriptName in @(
             'test-architecture-release-contract.ps1',
             'test-dev-architecture.ps1',
-            'test-magick-dependency-freshness.ps1'
+            'test-magick-dependency-freshness.ps1',
+            'test-verify-lint-contract.ps1'
         )) {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot $scriptName)
             if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }
@@ -206,18 +207,31 @@ if ($Lint) {
     # curated-notes, installer cleanup/uninstaller safety, MSIX signature/signer/
     # identity, and the vendored-exr drift check). All five are dependency-free —
     # they build their own scratch fixtures rather than needing a prior release build.
+    #
+    # vendor-jxl.ps1 is deliberately NOT in the generic list below (2026-09-05 audit,
+    # F25): it has a MUTATING bare/default mode (regenerates crates/vendor/jxl-render
+    # and crates/vendor/jxl-oxide from pristine sources, DELETING each vendored tree
+    # first - see its own header) and a separate, non-mutating `-Check` mode. The
+    # generic loop invokes every entry with NO arguments, which for vendor-jxl.ps1
+    # means the mutating path: that discards uncommitted vendor edits, "fixes" drift
+    # before this ladder ever gets to see it (defeating the point of a validation
+    # gate), and can leave the vendor tree half-regenerated if the patch fails to
+    # reapply. CI's own consistency job only ever calls `vendor-jxl.ps1 -Check`
+    # (ci.yml) - call it here the same way, explicitly, instead of folding a
+    # maintenance command into a validation-only list.
     Stage 'release/installer/MSIX consistency contracts' {
         foreach ($scriptName in @(
             'test-release-size.ps1',
             'test-release-pipeline.ps1',
             'test-installer-lint.ps1',
             'test-msix-integrity.ps1',
-            'check-vendored-exr.ps1',
-            'vendor-jxl.ps1'
+            'check-vendored-exr.ps1'
         )) {
             & pwsh -NoProfile -File (Join-Path $PSScriptRoot $scriptName)
             if ($LASTEXITCODE -ne 0) { throw "$scriptName failed" }
         }
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'vendor-jxl.ps1') -Check
+        if ($LASTEXITCODE -ne 0) { throw 'vendor-jxl.ps1 -Check failed' }
     }
 }
 
