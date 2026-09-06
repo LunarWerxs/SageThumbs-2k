@@ -139,7 +139,9 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   FITS · XPM · PICT · RAS · PALM**; a per-format **Settings…** button (JPEG quality ·
   **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
   presets *or* a custom **W × H**, an output-folder picker, and a progress bar. Batch:
-  applies to the whole selection. On completion it offers to **open the output folder**.
+  applies to the whole selection. OneDrive files that are still cloud-only (not yet
+  downloaded to this PC) are skipped instead of failing the batch, and the dialog tells
+  you how many were skipped. On completion it offers to **open the output folder**.
   *(Magick-only targets are hidden if the bundled engine is ever unavailable.)*
 - **Combine into PDF**: selected images → one PDF (one image per page, sized to the
   image). Optionally with a **page margin** (Settings ▸ Saving), and the engine also
@@ -166,14 +168,16 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Files to folder**: create a folder and move the selected file(s) into it
   (works on any file type). One file → a folder named after it (no prompt); several
   → a name-prompt dialog. Always makes a *fresh* folder (never merges into an
-  existing one); collisions get a `(n)` suffix.
+  existing one); collisions get a `(n)` suffix. A progress bar tracks the move and
+  the dialog stays responsive while it works.
 - **Sort into folders ▸**
   - **By image size**: move each selected image into a `WIDTHxHEIGHT` subfolder of
     its own folder.
   - **By audio tag…**: sort selected music files into folders from their tags. A
     dialog takes a destination, a folder-name **template** (`$artist - $album`,
     tokens `$artist`/`$album`/`$title`/`$track`, `\` to nest), a "missing tag" text,
-    and **copy-vs-move**. Tags read via `lofty`.
+    and **copy-vs-move**. Tags read via `lofty`. A progress bar tracks the sort and
+    the dialog stays responsive while it works.
 - **Copy text (OCR)**: extract text from the image to the clipboard.
 - **Image info**: a verbose, **copyable** metadata window: file size & type, image
   format, colour depth/channels, dimensions, and **every EXIF tag** the file carries
@@ -187,6 +191,9 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   mouse becomes an eyedropper anywhere on screen, with a 10× magnifier loupe that
   follows the cursor; **press Space (or click)** to copy the pixel's `#RRGGBB` to
   the clipboard, Esc to cancel. Picks from anywhere, not just the selected image.
+  On an HDR display, the picker adds a small note that the reading is approximate: it
+  is sampled from the tone-mapped SDR picture, since a true HDR value can't be read
+  this way.
   The **screenshot region editor** carries the same eyedropper as a tool (the
   **pipette button** on the toolbar, or the **`E`** key): the magnifier loupe lets
   you sample any pixel of the frozen capture; a click copies its `#RRGGBB`, flashes
@@ -290,8 +297,8 @@ plus these viewer-only extras:
   read from the central directory / headers only; nothing is extracted.
 - **Local HTML rendering** (opt-in, off by default) in an embedded **locked-down** WebView2:
   JavaScript disabled and **every non-`file://` request blocked**, so a page cannot phone home or
-  load remote trackers. A separate opt-in can live-load a `.url` shortcut's real page in a throwaway
-  session; left off, a `.url` shows its target address as text. Adds next to nothing to the app size
+  load remote trackers. A separate opt-in can live-load a `.url` or `.webloc` shortcut's real page
+  in a throwaway session; left off, either one shows its target address as text. Adds next to nothing to the app size
   and never touches the shell-extension DLL (the browser engine ships with Windows 11).
 - **Rendered Markdown**, GitHub-style: headings, lists, block quotes, fenced code, and inline
   **bold**/*italic*/`code`/~~strike~~ plus **clickable links** (http/https/mailto only), including
@@ -375,8 +382,10 @@ plus these viewer-only extras:
   and fully on-screen either way.
 - **Multi-page PDF navigation**: PageUp/PageDown or the arrow keys (or on-screen ◀ ▶ buttons) page
   through the document, with a "current / total" indicator in the title bar.
-- **Zoom + pan** on images (wheel to zoom at the cursor, drag to pan, double-click to toggle
-  fit/100 %). Long text/code and rendered Markdown have wheel/touchpad scrolling plus a visible
+- **Zoom + pan** on images (wheel to zoom at the cursor, or Ctrl+=/Ctrl+- to zoom in one step at a
+  time, centred the same way; drag to pan, double-click to toggle fit/100 %). Keyboard zoom can
+  reach true 100% even in a small window showing a very large image. Long text/code and rendered
+  Markdown have wheel/touchpad scrolling plus a visible
   scrollbar: drag its thumb to scrub through the document, or click the track to move one page.
 - **Select & copy**: drag-select in text/code/log **and rendered Markdown** previews
   (double-click selects a word; **Shift+arrows**, Shift+Home/End/PgUp/PgDn and the Ctrl
@@ -398,7 +407,7 @@ plus these viewer-only extras:
   different zoom level, and it is clamped to fit whatever screen you open it on.
 - **It remembers the volume.** Turn a clip down (or mute it) and the next video or track starts
   there, rather than every file blasting at full volume again.
-- A slim caption **toolbar**: light/dark, keep-on-top, copy path, **copy text (OCR)**, file
+- A slim caption **toolbar**: light/dark, keep-on-top, copy path, **copy text (OCR)**, **save**, file
   info, upload & copy link, open with…, open, settings, close. The icons come from a font
   bundled with the app rather than from Windows, so they look the same on every machine, and
   they are drawn at one consistent size with clean edges rather than the faintly coloured ones
@@ -418,6 +427,9 @@ plus these viewer-only extras:
   the recognizer: a PSD, a camera RAW, a HEIC, a scanned DjVu all work. On a multi-page PDF it
   reads **the page you are on**, not page 1. The button only appears for picture-ish content:
   a text or Markdown preview already has selectable words.
+- **Save the page or frame you're looking at.** Click the toolbar's save button, or press
+  **Ctrl+S**, to save what's currently on screen as a PNG: the page you're on in a multi-page
+  PDF, or the frame you're paused on in an animated GIF/APNG/WebP or video.
 - A calm **info card** (icon, name, size, date) for unsupported files or folders, never an error.
 
 The viewer is a separate single-instance process, so a hostile-file decode can only take down a
@@ -509,7 +521,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   pixel readout** follows the selection so you can size a capture precisely. In the editor,
   hold **Shift** while drawing a line or arrow to snap it to the nearest **45° angle**;
   Esc first cancels the active editor action before closing the capture, and
-  **Ctrl+C copies to the clipboard and Ctrl+S saves** (Enter copies too). A **Copy text
+  **Ctrl+C copies to the clipboard, Ctrl+S saves, and Ctrl+U uploads it and copies the
+  link** (Enter copies too). A **Copy text
   (OCR)** button on the editor toolbar (or **Ctrl+T**) reads the *words* out of the region
   instead of the pixels: the text lands on the clipboard and opens in a small **editable**
   window, so a misread character can be fixed before you paste it. Works on anything on
@@ -526,6 +539,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   Settings. **Copy text on screen (OCR)** is the one-key version of the editor button: the
   capture overlay opens, you drag over the text, and it reads it and closes the moment you
   release. No editor, no toolbar, no click: press, drag, paste.
+  If you give two of these hotkeys (capture, quick-save, custom action) the same key
+  combination, Settings tells you which two collide and won't let you save until you
+  pick a different combination for one of them, instead of quietly saving both and
+  leaving one of them unreachable.
   You don't have to bind a hotkey for it either: the tray icon's menu has
   **Copy text on screen (OCR)** as a plain click.
   Screen-wide actions run instantly; the file actions operate on the
@@ -545,7 +562,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
 - **Diagnostics:** a **Verbose logging** toggle and an **Open diagnostics log** button:
   the app writes a rotating log (version/OS header + a panic hook that records any crash
   by `file:line` before `panic = abort` aborts) to `%LOCALAPPDATA%\SageThumbs2K.log`, so a
-  bug report can ship a real repro. A **Repair file associations** button re-registers
+  bug report can ship a real repro. A **Run Doctor** button checks every enabled file
+  type and reports whether SageThumbs actually owns its thumbnails, naming which other
+  program's icon handler has taken one over if so; the results can be exported as a
+  single zip file, including the relevant tail of the log, for a bug report. A **Repair
+  file associations** button re-registers
   SageThumbs for every enabled format when another app has hijacked the thumbnails, then
   clears the thumbnail cache so the fixed types redraw. Plus a **Reset all settings**
   button that restores every option to its factory default.
@@ -569,7 +590,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   is available, SageThumbs can **download and install it for you**: a progress bar shows the
   download, the file is integrity-checked, Windows asks once for permission, and the new
   version installs in the background and confirms with a quiet tray notification when it's
-  done. If antivirus or a security policy blocks the installer, it **says so** rather than
+  done. That notification is clickable: instead of waiting for Explorer's thumbnail cache
+  to expire on its own, clicking it refreshes your thumbnails right away. If antivirus or
+  a security policy blocks the installer, it **says so** rather than
   failing quietly, and points you at the releases page. You can still grab the installer from
   there by hand if you prefer.
 - **About:** a compact card: the eye logo, a **version pill that links to the GitHub
@@ -644,10 +667,21 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   dependency-closed, security-trimmed ImageMagick runtime. Its unused text-shaping stack
   (glib / harfbuzz / freetype / fribidi / raqm) is stubbed because SageThumbs never
   invokes ImageMagick's text, caption or font-rendering surfaces.
+- **Personal-or-business question on every interactive install.** The installer asks how
+  you'll use SageThumbs 2K: personal (free, every feature, non-commercial) or business
+  (needs a commercial licence under the PolyForm Noncommercial license). Your answer is
+  written machine-wide and stays in effect across silent self-updates; changing it means
+  running the installer interactively again. See section 4's Licence settings for
+  redeeming a business seat key.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - **Portable zip**, both architectures, no installer and no administrator rights. Unpack it
-  anywhere and settings live in an ini beside the exe instead of the registry. Everything that
+  anywhere and settings live in an ini beside the exe instead of the registry. Everything a
+  portable copy touches stays in that same folder: sign-in details, the custom
+  screenshot-upload host list, HTML-preview browser data, and the update-check cache all live
+  beside the portable copy instead of the host PC's own storage, and a portable copy always
+  refuses to install an update on its own (grab the installer by hand from the releases page
+  instead). Everything that
   is already an app works straight away: Settings, Convert/Resize, Quick preview, screenshots,
   OCR, the colour picker, the folder tools and the `st2k` CLI/MCP server. **Explorer thumbnails
   and the classic right-click menu work too**, opt-in: the welcome window offers them on first
@@ -679,11 +713,18 @@ genuinely-outstanding work.)*
 > Phase 1 (the
 > `st2k` command-line tool) **and** Phase 2 (`st2k --mcp`, an MCP server) are both
 > built + installed. `st2k` verbs: `thumbnail · convert · batch · rotate · strip · ocr ·
-> pdf · info [--json] · formats [--json]`: the bundled engine as an offline image
-> toolbox for scripts and agents, zero extra installs. **Ten tools** are exposed over
-> **MCP** so an AI client can discover and call them: the core verbs plus two agent-first
-> tools, **`view`** (decode any file to a PNG image block the agent can actually *see*) and
-> **`compress`** (`batch` is CLI-only).
+> pdf · cbz · info [--json] · formats [--json]`: the bundled engine as an offline image
+> toolbox for scripts and agents, zero extra installs. `batch` can also recurse into
+> subfolders with `--recurse`, and its `info` mode now returns richer per-file details,
+> including audio tag data (artist, album, title) for audio files. **Fifteen tools** are
+> exposed over **MCP** so an AI client can discover and call them: the core verbs plus
+> **`cbz`**, two agent-first tools, **`view`** (decode any file to a PNG image block the
+> agent can actually *see*) and **`compress`**, and the diagnostic/maintenance tools
+> **`doctor`**, **`prebuild`**, **`register_status`** and **`batch`**. `pdf` and
+> `cbz` also report which inputs they left out and why (unreadable, undecodable, or
+> unencodable) instead of silently skipping them, accept `--strict` to fail and write
+> nothing rather than a partial file, and `--json` returns that same detail as JSON; the
+> MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument.
 
 **Idea:** because SageThumbs already bundles real image
 capabilities (334-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
@@ -694,16 +735,20 @@ bundle anything new**; only surface existing functions.
 **Status:**
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
-   (combine), `thumbnail` (render any of the 334 types to PNG), **`batch`** (bulk
-   thumbnail/convert over many files/folders in ONE process, fanned out across all CPU
-   cores), `formats`. All logic lives in the `lib` (`verbs`, `strip`, `ocr`, `topdf`,
-   `decode`, `parallel`); the CLI is a thin arg-parser over the same functions the menu
-   uses. (Shipped as a separate binary, not a flag on the Options app.)
-2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **10** MCP
+   (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
+   the 334 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
+   a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
+   `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
+   arg-parser over the same functions the menu uses. (Shipped as a separate binary, not a
+   flag on the Options app.)
+2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **15** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs plus **`view`** (which decodes any of the 334 formats to a PNG **image
-   block**) so an AI agent can actually *see* the file, and **`compress`**. Newline-
-   delimited stdio, spawned on demand by the client (not a daemon); one small dep
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 334
+   formats to a PNG **image block**) so an AI agent can actually *see* the file,
+   **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
+   **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not
+   a daemon); one small dep
    (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at
    `C:\Program Files\SageThumbs2K\st2k.exe` with arg `--mcp`.
 3. **Net effect:** installing SageThumbs gives any local agent a free, offline
@@ -734,4 +779,7 @@ no secrets).
 The same page's **Export Settings** and **Import Settings** buttons save or apply the entire
 settings tree to a JSON file by hand; **`SageThumbs2K.exe --export-settings <file>`** and
 **`--import-settings <file>`** do the same round trip headlessly, for scripted deployment
-across a fleet of installs.
+across a fleet of installs. Importing a settings file fully replaces your settings rather
+than merging them: anything the imported file doesn't include gets removed, matching what
+most people expect import to do. Your sign-in is left alone either way, on both the app and
+the CLI round trip.

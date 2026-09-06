@@ -28,7 +28,8 @@ st2k doctor
 It is read-only, it walks the entire chain (Windows' own thumbnail switches, our four
 registrations, whether the DLL actually loads, whether another program has taken over the file
 types, your settings, and a live decode test), and it prints a specific fix under anything that
-is wrong. Paste its output into a bug report and you will get a much faster answer.
+is wrong. When asking for help, use its zip export, which bundles its findings with the relevant tail of
+the error log, instead of pasting output by hand. You will get a much faster answer.
 
 The three most common causes it finds:
 
@@ -56,6 +57,27 @@ colour, which some encoders write when asked for `yuv444p` or similar). The seco
 skipped on purpose and instantly, because the Windows 10 decoder hangs on such files rather
 than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
 yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
+
+### A video I rotated plays upright everywhere but shows sideways in the thumbnail
+
+That's fixed. Some editors write a rotation flag instead of re-encoding the pixels (for example
+`ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4`), which is instant and keeps full
+quality. Windows and practically every player honour that flag; older SageThumbs versions did
+not, so the thumbnail matched the original orientation instead of the rotated one. It now reads
+the flag and turns the picture to match, for both the MP4 family (`.mp4`, `.mov`, `.m4v`,
+`.3gp`) and Matroska (`.mkv`, `.webm`). If you still see a sideways thumbnail, run `st2k doctor`
+to check your version.
+
+### Photoshop thumbnails look soft or undersized in the large preview pane
+
+A `.psd` or `.psb` carries a small built-in thumbnail, usually about 160 pixels regardless of the
+artwork's real size. Explorer's large preview pane and Quick preview ask for something closer to
+2048 pixels, and older versions answered that request with the same small built-in thumbnail, so
+the picture never got sharper no matter how long you waited. It now renders the full-resolution
+artwork whenever the built-in thumbnail is too small for what was asked. Ordinary icon views are
+unchanged and just as fast, since the built-in thumbnail really is big enough there. The Space-bar
+Quick preview is fixed the same way, including for PSD/PSB files over about 256 MB, which
+previously stayed stuck on the small thumbnail with nothing in the log to explain why.
 
 ### Thumbnails work in a folder, but the file is blank in OneDrive
 
@@ -237,6 +259,15 @@ camera RAW, ebooks and comics, documents, audio and video.
 Ask. Use **Send feedback** in the About box, or open a GitHub issue. What decides it is whether
 the format can be read without a huge dependency: many "project" formats have a preview image
 baked inside that we can pull out cheaply, and those are easy wins.
+
+### Why did some large Photoshop files not convert?
+
+Older versions quietly skipped any PSD or PSB over about 270 MB when converting, with no error
+and no mention in the summary beyond a smaller "converted N of M" count. That was a leftover
+safety limit meant for files Explorer draws thumbnails of automatically, not files you picked
+and asked to convert. It's fixed: a file you choose to convert now gets a limit sized for the
+job, well past the 2 GB ceiling the .psd format has. The "Max file size (MB)" setting was never
+related to this, so changing it would not have helped.
 
 ### Why is the download this size?
 

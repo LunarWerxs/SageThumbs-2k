@@ -169,6 +169,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   a different combination for one of them, instead of silently saving both and leaving one of
   them unreachable.
 
+- **Settings now tells you when a save actually fails to write to the registry.**
+  Previously, if a setting couldn't be saved (for example a permissions problem or a locked
+  key), the dialog closed as though it had worked, with no error and nothing in the log. It
+  now shows a message naming what failed to save and where.
+
+- **The Settings nav rail and the settings search box are now fully usable from the
+  keyboard.** Pressing the arrow keys to move between categories now switches the page right
+  away, matching a mouse click, instead of only moving focus until you pressed Enter or Space
+  again; screen readers are also told when the selected category changes. The search box's
+  results dropdown can now be driven with the arrow keys too.
+
 - **One video Windows cannot decode can no longer take every thumbnail on the PC down with
   it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
   Windows decoder does not support; on Windows 10 the decoder hung instead of declining, our
@@ -221,6 +232,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   quotes in its metadata now shows correctly too, previously it depended on which program
   made the file.
 
+- **A malformed or oversized entry inside a compressed image or ZIP-packaged file could
+  quietly come back as an incomplete picture instead of being refused.** An SVG or EMZ
+  image's gzip data, a Paint Shop Pro file's zlib data, and a compressed entry inside any
+  ZIP-based file such as an EPUB, an Office document, an APK, or a Krita/OpenRaster/Fusion
+  360/3MF/CorelDRAW project preview could all decompress past an internal size limit and
+  still be accepted as a complete, valid read. Such an entry is now refused outright and
+  falls back to the default icon or next tier, the same way a truncated ZIP entry already
+  does.
+
 - **Matroska (.mkv/.webm) video thumbnails find a real keyframe more often.** Some Matroska
   files previously produced a black or blank thumbnail because the frame SageThumbs tried first
   wasn't actually a keyframe; it now checks and falls back to a real one, including for a less
@@ -258,6 +278,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   Compressing an image to a specific file size used to go through a more limited decoding path
   than the rest of SageThumbs's editing tools, which could make it fail on formats everything
   else handles fine; it now uses the same path as everything else.
+
+- **Converting or saving to WebP now carries its camera and location metadata across too.**
+  WebP previously dropped EXIF details (like camera model), XMP data (like GPS location) and
+  the embedded colour profile when it was the output format; all three are now preserved, the
+  same way they already were for JPEG and PNG.
 
 - **Saving an edited file back to itself now preserves its other attributes.** Rotating,
   resizing, or converting a file in place could previously lose attributes like Hidden,
@@ -408,6 +433,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **A conversion that fails now says which files it was.** The summary at the end of a batch
   reported how many succeeded and nothing else, so a run that skipped nine files out of sixty
   gave you no way to tell which nine. It now names them.
+
+- **Exporting or importing settings can no longer fail outright on a network share or a
+  cloud-sync folder like OneDrive.** Some such destinations report the write itself as
+  successful but refuse the extra step of flushing it fully to disk. SageThumbs 2K now
+  treats that flush as best-effort instead of required, so Settings ▸ Data & Backup's
+  Export and Import, and the `--export-settings`/`--import-settings` command-line flags,
+  still complete on those destinations instead of reporting a failure.
 
 - **Exporting settings can no longer destroy your previous backup if the export fails
   partway through.** Overwriting an existing settings backup and then hitting a disk-full,
