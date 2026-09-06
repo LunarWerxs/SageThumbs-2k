@@ -958,7 +958,7 @@ fn notify_shell_assoc_changed() {
 }
 
 /// Export the saved settings to a user-chosen `.json` file (Diagnostics ▸ Export). Written
-/// ATOMICALLY (`settings_io::export_settings_to_path`, 2026-09-05 audit, F13) — replacing an
+/// ATOMICALLY (`settings_io::export_settings_to_path`, 2026-09-05 audit, F13) - replacing an
 /// existing backup and then hitting a write failure must leave the OLD backup intact rather
 /// than truncated, since the dialog is reporting the export as FAILED either way.
 pub(super) unsafe fn export_settings_to_file(hwnd: HWND) {
@@ -1243,7 +1243,7 @@ unsafe fn hotkey_role_name(hwnd: HWND, role: HotkeyRole) -> String {
 /// roles collide (if any) and must refuse the whole Save. `None` means Save may proceed.
 ///
 /// Factored out of [`block_on_hotkey_conflict`] on 2026-09-05 (audit F27 follow-up) so the
-/// wiring the IDOK handler relies on — read bindings, DECIDE, show message — is three
+/// wiring the IDOK handler relies on - read bindings, DECIDE, show message - is three
 /// separately testable steps instead of one opaque HWND-driven function. Before this split,
 /// the only tests exercising the conflict math were `conflicting_hotkeys`'s own four; nothing
 /// proved the decision built from its result actually reached the Save path, so an inverted
@@ -1842,7 +1842,7 @@ mod hotkey_conflict_tests {
     /// The IDOK decision itself, not just the underlying chord math: with a conflicting pair
     /// present, `hotkey_conflict_decision` must refuse (return `Some`) and identify BOTH
     /// colliding roles, and each must actually be nameable for the message
-    /// `block_on_hotkey_conflict` builds from them (2026-09-05 audit, F27 follow-up — the gap
+    /// `block_on_hotkey_conflict` builds from them (2026-09-05 audit, F27 follow-up - the gap
     /// was that nothing proved the decision reached the message, only that the chord math was
     /// right). `HWND::default()` is enough here because neither role in this case is
     /// `CustomAction`, the only branch of `hotkey_role_name` that touches a real control.

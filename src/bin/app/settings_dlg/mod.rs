@@ -2201,7 +2201,7 @@ mod tests {
 
     // ---- IDOK source-contract guard (2026-09-05 audit, F27 follow-up) ------------------
 
-    /// `mod.rs` verbatim, embedded at compile time — same reasoning as `sync_client.rs`'s
+    /// `mod.rs` verbatim, embedded at compile time - same reasoning as `sync_client.rs`'s
     /// `SETTINGS_SRC`: `include_str!` resolves relative to this file and is checked by the
     /// compiler, so the scan below never depends on the working directory a test happens to
     /// run from.
@@ -2209,7 +2209,7 @@ mod tests {
 
     /// The `values::hotkey_conflict_decision`/`block_on_hotkey_conflict` tests prove the
     /// CONFLICT MATH is right. Nothing proved the IDOK arm in `on_command_dialog` actually
-    /// calls it, or calls it in the right order — an inverted `if !block_on_hotkey_conflict
+    /// calls it, or calls it in the right order - an inverted `if !block_on_hotkey_conflict
     /// (hwnd)` (dropping the `!`), or a reordering that ran `apply_settings`/
     /// `spawn_sync_push` unconditionally, would compile clean and pass every other test in
     /// this repo. This is a dumb textual scan on the IDOK arm's own source, in the same
@@ -2219,15 +2219,15 @@ mod tests {
     fn idok_arm_blocks_on_hotkey_conflict_before_apply_settings() {
         let start = MOD_SRC
             .find("IDOK => {")
-            .expect("IDOK arm not found in mod.rs source — did on_command_dialog change shape?");
+            .expect("IDOK arm not found in mod.rs source - did on_command_dialog change shape?");
         let end = MOD_SRC[start..]
             .find("IDCANCEL =>")
             .map(|i| start + i)
-            .expect("IDCANCEL arm not found after IDOK — on_command_dialog's match changed shape");
+            .expect("IDCANCEL arm not found after IDOK - on_command_dialog's match changed shape");
         let arm = &MOD_SRC[start..end];
 
         let guard_at = arm.find("if !block_on_hotkey_conflict(hwnd)").expect(
-            "IDOK arm no longer guards Save on `if !block_on_hotkey_conflict(hwnd)` — the \
+            "IDOK arm no longer guards Save on `if !block_on_hotkey_conflict(hwnd)` - the \
              call or its `!` negation may have been dropped, which would silently let Save \
              write a conflicting hotkey chord again",
         );

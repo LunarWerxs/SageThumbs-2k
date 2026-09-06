@@ -99,7 +99,7 @@
   reason AVIF went unnoticed for so long.
 
   EXIT CODES:
-    0  both gates pass (or the box moved too much to judge — guard 5). A suspect whose
+    0  both gates pass (or the box moved too much to judge - guard 5). A suspect whose
        CONFIRMATION re-decode itself failed is reported separately as INCONCLUSIVE (finding
        F37, 2026-09-05 audit) and does not decide the gate either way - see
        Get-ConfirmedMeasurement in decode-speed-lib.ps1.

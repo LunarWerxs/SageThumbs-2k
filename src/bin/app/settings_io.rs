@@ -767,9 +767,9 @@ mod tests {
         assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
     }
 
-    /// A successful export writes something that parses as the documented shape — the
+    /// A successful export writes something that parses as the documented shape - the
     /// `_about` field plus `values`/`subkeys` objects [`export_tree`]'s own tests already
-    /// pin the CONTENT of — and leaves no staging file behind.
+    /// pin the CONTENT of - and leaves no staging file behind.
     #[test]
     fn export_settings_to_path_writes_parseable_json_with_no_leftover_temp_file() {
         let dir = scratch_dir("success");
@@ -794,16 +794,16 @@ mod tests {
     /// **The read-only-destination version of this test had no teeth**: on Windows,
     /// `fs::write` on a read-only file fails at `CreateFileW`, before a single byte is
     /// written, so the OLD, unfixed `export_settings_to_file` (a bare `fs::write` straight
-    /// onto `path`) would ALSO have left `original` untouched in that scenario — the test
+    /// onto `path`) would ALSO have left `original` untouched in that scenario - the test
     /// passed identically before and after the fix and proved nothing, despite its doc
     /// comment claiming otherwise.
     ///
     /// This drives the same fail-point `fsutil::write_atomically`'s own tests use
-    /// (`sagethumbs2k_core::fsutil::inject_partial_write_failure` — exposed across the
+    /// (`sagethumbs2k_core::fsutil::inject_partial_write_failure` - exposed across the
     /// crate boundary rather than gated `#[cfg(test)]`, because `#[cfg(test)]` items are
     /// only compiled when the LIB itself is the crate under test and are invisible to this
     /// bin crate's own tests; see that function's doc comment) to fail the write after 4 of
-    /// the new content's bytes have already landed in the staging file — a scenario a bare
+    /// the new content's bytes have already landed in the staging file - a scenario a bare
     /// `fs::write` to `path` cannot survive.
     #[test]
     fn export_settings_to_path_never_destroys_a_prior_backup_on_failed_replace() {

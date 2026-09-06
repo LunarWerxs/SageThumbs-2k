@@ -348,7 +348,7 @@ mod store {
     /// Write `content` to `path` via a uniquely-named staging file + rename, so a crash
     /// mid-write (this runs under `panic = "abort"`, and several of our own processes can
     /// hit it) leaves either the OLD file intact or the fully-written NEW one, never a
-    /// truncated mix of both. Delegates to [`crate::fsutil::write_atomically`] — the same
+    /// truncated mix of both. Delegates to [`crate::fsutil::write_atomically`] - the same
     /// helper the app EXE's settings-export path (`settings_io::export_settings_to_path`,
     /// 2026-09-05 audit, F13) uses, so this codebase has one atomic-write implementation
     /// rather than two that could quietly drift apart.
@@ -594,11 +594,11 @@ mod store {
             }
         }
 
-        /// No entry in `dir` may end in `.tmp` — `write_atomic`'s staging files (named
+        /// No entry in `dir` may end in `.tmp` - `write_atomic`'s staging files (named
         /// `.{name}.{pid}.{n}.tmp` by `fsutil::staging_path`, not the destination's own name
         /// with its extension swapped for `tmp`) must never survive a write. A prior version
         /// of this assertion checked `path.with_extension("tmp")`, a filename the current
-        /// staging scheme never produces, so that half of the test was vacuous — it would
+        /// staging scheme never produces, so that half of the test was vacuous - it would
         /// have passed even if staging files were leaking, as long as none happened to be
         /// named exactly `probe.tmp`.
         fn assert_no_leftover_tmp_files(dir: &std::path::Path) {
