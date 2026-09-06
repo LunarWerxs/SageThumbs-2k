@@ -2,7 +2,25 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-## Unreleased
+## Unreleased - ships as 3.0
+
+> **The next release is 3.0, and it does not ship until the installer is code-signed**
+> (owner decision, Michael, 2026-09-06). Two things follow from that, and both are
+> deliberate:
+>
+> - **The version number is still 2.5.0 in `Cargo.toml` and stays there until release.**
+>   Bumping it early would make every development build claim to be 3.0, and the version
+>   string is consumed by the installer, the MSIX manifest and the website generator, so the
+>   bump is a release-time step done once, with the gate run, not a bookkeeping change made
+>   in advance.
+> - **Nothing here is waiting on engineering.** The work below is on `main` and green; it is
+>   waiting on the Azure Artifact Signing account, which is a purchase and an identity
+>   validation only the owner can complete. `docs/RELEASE-SECURITY.md` has the ordered steps
+>   and the current state.
+>
+> 3.0 rather than 2.6 because this is the release that stops shipping unsigned, on top of an
+> unusually large body of change: 60-plus user-facing entries below, and a 38-finding audit
+> burn-down behind them.
 
 ### Added
 

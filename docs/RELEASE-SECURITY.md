@@ -192,6 +192,15 @@ certificate exists. What changed the calculus was the 2.5.0 x64 installer reachi
 VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
 is the one verdict users see without going looking.
 
+#### The release gate, decided 2026-09-06
+
+**No release ships until the installer is signed, and the next one is numbered 3.0** (owner
+decision, Michael, 2026-09-06). This is now a hard gate rather than a preference: the work on
+`main` is finished and green, and it waits on the signing account rather than on engineering.
+Do not cut a release, bump `Cargo.toml`, or tag anything until the six environment variables
+below resolve and `sign-release.ps1 -Status` reports READY. The version bump is a release-time
+step for exactly that reason, so a development build never claims to be 3.0.
+
 #### Where it stands on 2026-09-05 (verified through the Connections vault, not assumed)
 
 - **The signing identity now exists; nothing else does.** An app registration named
