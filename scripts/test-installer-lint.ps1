@@ -408,22 +408,11 @@ try {
     Write-Host '  PASS  F08 AllUsers-removal teeth proof: reverted RunAsOriginalUser call site is caught' -ForegroundColor Green
     $script:passed++
 
-    # --- Baseline proof: every assertion above (old and new) must fail against main's
-    # pre-audit installer.iss, which has none of F08/F09 at all, and pass against ours. This
-    # is the requested "prove it against main" check, run against the real git history rather
-    # than a hand-written mutation.
-    $mainSource = & git show main:scripts/packaging/installer.iss 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $mainSource) {
-        throw 'could not read scripts/packaging/installer.iss from main for the baseline proof'
-    }
-    $mainSource = $mainSource -join "`r`n"
-    $mainFailed = $false
-    try { Assert-ModernMenuUserContextContract $mainSource } catch { $mainFailed = $true }
-    if (-not $mainFailed) {
-        throw 'expected the full F08/F09 contract to fail against main (pre-audit) installer.iss'
-    }
-    Write-Host '  PASS  F08/F09 contract fails against main (pre-audit) installer.iss' -ForegroundColor Green
-    $script:passed++
+    # The one-time "fails against the pre-fix installer.iss" proof was run by hand before the
+    # fix merged (git show of the pre-audit file into a scratch copy). It is deliberately NOT a
+    # permanent step: a check that reads `main:` expects main to still carry the bug, so it
+    # turns red the moment the fix lands on main, in CI and locally alike. The per-assertion
+    # mutation proofs above are the durable form of the same guarantee.
 
     Assert-LintPasses 'real installer exact cleanup allowlist' {
         Invoke-InstallerLint -IssPath $installer
