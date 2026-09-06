@@ -264,7 +264,16 @@ missing field returns an error naming the fields it found, rather than running u
 Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## 3.0.0`
 (the exporter takes exactly that heading); bump `version` in `Cargo.toml` and the
 `Version="…"` attribute in `scripts/packaging/AppxManifest.xml` to `3.0.0` / `3.0.0.0` (the
-consistency check refuses a mismatch); commit those three files on `main`. `release.ps1` reads
+consistency check refuses a mismatch); and rewrite the README FAQ answer "Why did Windows or
+my antivirus flag the installer?", which today correctly says the installer is unsigned and
+signing is planned. On release day that becomes: 3.0 and later are signed by LUNARWERX LLC
+through Azure Artifact Signing; the machine-learning "unknown binary" verdicts are what the
+signature removes; SmartScreen's reputation prompt can still appear for a while because
+reputation is earned per publisher over downloads, and the More info / Run anyway steps stay.
+Leave the two dated 2026-08-31 measurements in place as history. Do NOT make that README
+change before the signed installer exists: the README is read by people downloading the
+current release, and until 3.0 is out that release is unsigned. Commit those four files on
+`main`. `release.ps1` reads
 the version from `Cargo.toml`, refuses an existing tag, and runs the gate. After it, the
 `winget-submit.ps1` step is part of `release.ps1` and is idempotent. The proof that the
 pipeline only wants the names was run without a build or a secret on 2026-09-06: with the
