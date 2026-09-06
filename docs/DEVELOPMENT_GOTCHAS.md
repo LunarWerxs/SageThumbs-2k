@@ -820,3 +820,27 @@ it does not FAIL the harness, it HANGS it, which a plain `Command::status()` wai
 `tests/eyedropper_shot.rs` therefore runs the child under a 60 s bound and treats the bound as
 the assertion. When a function that takes a lock calls anything that might take the same lock,
 copy out under a short scope and audit every `if let`/`match`/`while let` whose scrutinee locks.
+
+## A read-only destination proves nothing about atomic writes, and `#[cfg(test)]` seams stop at the crate boundary
+
+Two traps from the same fix (2026-09-06, audit F13, `fsutil::write_atomically`).
+
+**The "failed overwrite" test that passes against the bug.** The first tests for the atomic
+export made the destination read-only and asserted the prior file survived. On Windows a bare
+`std::fs::write` onto a read-only file fails at `CreateFileW` BEFORE it truncates anything, so
+the old, non-atomic code passed those tests too. A test for "a failure mid-write must not destroy
+the previous file" has to fail AFTER bytes have started landing: a disk-full, a yanked drive, a
+crash. None of those are stageable in a unit test, so the helper carries a fail-point seam
+(`fsutil::inject_partial_write_failure`) that makes the staging write fail after N bytes. The
+proof that the test has teeth was done by hand and is recorded in the ROADMAP: revert the helper
+to `fs::write`, watch the test fail, restore.
+
+**Why that seam is `#[doc(hidden)] pub`, not `#[cfg(test)]`.** The app binary's own tests (the
+settings export lives in `src/bin/app/`) link `sagethumbs2k_core` as an ordinary dependency, and
+cargo compiles a dependency WITHOUT `--cfg test` even when the dependent is being tested. A
+`#[cfg(test)]` item in the lib is therefore invisible to every test outside the lib, verified
+empirically before the seam was shaped this way. So a seam that a bin-crate test must reach is an
+always-compiled, documented-hidden function guarded by a thread-local flag that nothing in
+production ever sets. The same rule already governs `mesh::fuzzapi` (a module, for a different
+reason: `cargo fix` strips plain re-exports); the general form is that test-only surface the lib
+must expose across a crate boundary cannot be `cfg(test)`.
