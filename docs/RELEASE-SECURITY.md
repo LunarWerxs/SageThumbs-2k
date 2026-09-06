@@ -232,6 +232,43 @@ misread as "nothing has been set up".
   code change. The `AZURE_CLIENT_SECRET` must never be written into a file in this repo or
   pasted into an agent's context: it goes into the Connections vault and is injected into the
   build shell from there.
+
+#### Release day, once the secret is in the vault (written 2026-09-06 so it is not improvised)
+
+The whole release is one `shell` call through the Connections MCP, because that is the only
+door that can lease the client secret into a process without the value ever entering a
+conversation. The three `ST2K_SIGN_*` values are names, not secrets, and are safe to write
+here; the `AZURE_*` triple is leased from the Microsoft connection that holds the pasted
+secret. A Microsoft connection stores exactly the fields `tenantId`, `clientId` and
+`clientSecret`, and the lease maps each to the env var the Azure dlib reads:
+
+```
+connections_execute { local: true, tool_name: "shell", params: {
+  cwd: "<this repo>",
+  command: "pwsh -NoProfile -File scripts\\release.ps1",
+  env: {
+    ST2K_SIGN_ENDPOINT: "https://eus.codesigning.azure.net",
+    ST2K_SIGN_ACCOUNT:  "lunawerxsigning",
+    ST2K_SIGN_PROFILE:  "lunawerx-public-trust"
+  },
+  secrets: [{ service: "microsoft", instance: "<the connection holding the secret>",
+              as: { tenantId: "AZURE_TENANT_ID", clientId: "AZURE_CLIENT_ID",
+                    clientSecret: "AZURE_CLIENT_SECRET" } }]
+} }
+```
+
+`connections_accounts { service: "microsoft" }` lists the instance names; pick the one created
+for signing, never the one that fronts `vsce` publishing. The lease is loud on failure: a
+missing field returns an error naming the fields it found, rather than running unsigned.
+
+Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## 3.0.0`
+(the exporter takes exactly that heading); bump `version` in `Cargo.toml` and the
+`Version="…"` attribute in `scripts/packaging/AppxManifest.xml` to `3.0.0` / `3.0.0.0` (the
+consistency check refuses a mismatch); commit those three files on `main`. `release.ps1` reads
+the version from `Cargo.toml`, refuses an existing tag, and runs the gate. After it, the
+`winget-submit.ps1` step is part of `release.ps1` and is idempotent. The proof that the
+pipeline only wants the names was run without a build or a secret on 2026-09-06: with the
+three `ST2K_SIGN_*` values set and nothing else, `-Status` reports READY.
 - **Timestamping is mandatory, not optional.** Artifact Signing certificates are short-lived
   by design, so an untimestamped signature stops validating within days.
   `sign-release.ps1` already timestamps through `timestamp.acs.microsoft.com`; do not remove
