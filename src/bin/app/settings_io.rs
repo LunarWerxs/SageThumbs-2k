@@ -9,6 +9,8 @@
 //! safe to hand-edit. We reuse `serde_json` (already a dependency for the MCP server /
 //! sponsor manifest) rather than add a TOML runtime crate.
 
+use std::path::Path;
+
 use serde_json::{Map, Value as Json};
 use windows_registry::{Key, CURRENT_USER};
 
@@ -120,6 +122,17 @@ pub(crate) fn export_settings() -> String {
     // touches the developer's real settings even while the rest of the process is sandboxed
     // (item 95).
     export_tree(CURRENT_USER.open(settings::hkcu_root_path()).ok().as_ref())
+}
+
+/// Export the current settings to `path` ATOMICALLY (Diagnostics ▸ Export and the hidden
+/// `--export-settings <path>` CLI flag both call this — one entry point, so the guarantee
+/// can't drift between them). Delegates to
+/// [`sagethumbs2k_core::fsutil::write_atomically`]: the JSON is staged in a temp file
+/// beside `path` and swapped in, so a failed overwrite (disk full, a removed drive, a
+/// destination that refuses the rename) can never destroy a PRIOR backup at that path —
+/// the straight `fs::write` this replaces could (2026-09-05 audit, F13).
+pub(crate) fn export_settings_to_path(path: &Path) -> std::io::Result<()> {
+    sagethumbs2k_core::fsutil::write_atomically(path, export_settings().as_bytes())
 }
 
 /// Write a JSON object's entries to a registry key: integers (and booleans) become
@@ -505,5 +518,93 @@ mod tests {
         );
 
         let _ = CURRENT_USER.remove_tree(KEY); // cleanup
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_settings_io_export_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn assert_no_leftover_temp_files(dir: &Path) {
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .expect("read scratch dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    /// A successful export writes something that parses as the documented shape — the
+    /// `_about` field plus `values`/`subkeys` objects [`export_tree`]'s own tests already
+    /// pin the CONTENT of — and leaves no staging file behind.
+    #[test]
+    fn export_settings_to_path_writes_parseable_json_with_no_leftover_temp_file() {
+        let dir = scratch_dir("success");
+        let path = dir.join("SageThumbs2K-settings.json");
+
+        export_settings_to_path(&path).expect("export_settings_to_path");
+
+        let text = std::fs::read_to_string(&path).expect("read exported file");
+        let doc: Json = serde_json::from_str(&text).expect("exported file must be valid JSON");
+        assert!(doc.get("_about").is_some(), "{text}");
+        assert!(doc.get("values").is_some(), "{text}");
+        assert!(doc.get("subkeys").is_some(), "{text}");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F13: `export_settings_to_file` (Diagnostics ▸ Export) and
+    /// `--export-settings` both used to `fs::write` straight to the chosen path, so
+    /// replacing an existing backup and then hitting a write failure left the OLD backup
+    /// truncated even though the app reported the export as failed. Proven here with a REAL
+    /// failure (a read-only destination file, which Windows refuses to rename over) rather
+    /// than a mock: if `export_settings_to_path` were reverted to a bare `fs::write`, this
+    /// destination would come back empty/partial instead of byte-identical to the original.
+    #[test]
+    fn export_settings_to_path_never_destroys_a_prior_backup_on_failed_replace() {
+        let dir = scratch_dir("readonly_dest");
+        let path = dir.join("SageThumbs2K-settings.json");
+        let original: &[u8] = b"a previous export backup, not valid JSON on purpose";
+        std::fs::write(&path, original).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let result = export_settings_to_path(&path);
+
+        assert!(
+            result.is_err(),
+            "a rename onto a read-only destination must fail, not silently succeed"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the prior backup must survive byte-identical after a failed export"
+        );
+        assert_no_leftover_temp_files(&dir);
+
+        clear_readonly(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clear the read-only bit a test set on `path` so its scratch dir can be removed
+    /// afterwards. Windows-only test helper — `clippy::permissions_set_readonly_false`
+    /// warns about `false` making a file world-writable, which is a Unix-permissions
+    /// concern this project (Windows-only) never has.
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows-only test cleanup; no Unix world-writable implication here"
+    )]
+    fn clear_readonly(path: &Path) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms).unwrap();
     }
 }

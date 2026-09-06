@@ -1,6 +1,8 @@
 //! Small filesystem helpers shared across the verb / strip write paths.
 
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 /// A fresh write or a move can briefly hit a transient Explorer / thumbnail-cache
@@ -54,6 +56,49 @@ pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
         std::thread::sleep(RENAME_BACKOFF);
     }
     last
+}
+
+/// A per-process counter folded into every staging filename [`write_atomically`] stages,
+/// so two atomic writes to the SAME destination from this process (the user clicking
+/// Settings ▸ Export twice, or two `st2k --export-settings` runs) can never stage into the
+/// same temp file and clobber each other's write.
+static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// A staging path in the SAME directory as `path` — so the swap-in rename stays on one
+/// volume and can succeed — with a name nothing else here would produce: the destination's
+/// own file name, this process id, and a counter that only goes up. Two different processes
+/// racing the same destination can't collide either (different pids).
+fn staging_path(path: &Path) -> PathBuf {
+    let n = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// Write `content` to `path` without ever leaving `path` partially written or destroyed —
+/// even when `path` already holds a file worth keeping (2026-09-05 audit, F13: exporting
+/// settings used to `fs::write` straight to the user's chosen path, so replacing an
+/// existing backup followed by a disk-full / removed-drive / permission failure left the
+/// OLD backup truncated too, with the app merely reporting failure). Stages the full
+/// content into a uniquely-named temp file beside `path`, flushes it to disk, then swaps it
+/// in via [`rename_retrying`] (absorbing the same transient AV/indexer lock every other
+/// write path here does) — so a failure at any point before the rename leaves whatever
+/// `path` already held completely untouched, and the temp file is always removed rather
+/// than left behind on failure.
+pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
+    let tmp = staging_path(path);
+    let result = stage_then_swap(&tmp, path, content);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn stage_then_swap(tmp: &Path, path: &Path, content: &[u8]) -> io::Result<()> {
+    let mut f = std::fs::File::create(tmp)?;
+    f.write_all(content)?;
+    f.sync_all()?;
+    drop(f);
+    rename_retrying(tmp, path)
 }
 
 /// Compiled out of every shipping build — see [`on_transient_failure`] for what it is for.
@@ -193,5 +238,106 @@ mod tests {
         assert!(!is_transient(&make(17))); // ERROR_NOT_SAME_DEVICE (cross-volume)
         assert!(!is_transient(&make(206))); // ERROR_FILENAME_EXCED_RANGE (path too long)
         assert!(!is_transient(&make(2))); // ERROR_FILE_NOT_FOUND
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("st2k_fsutil_atomic_{label}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// No file in `dir` may end in `.tmp` — [`write_atomically`]'s staging files must never
+    /// survive either a success or a failure.
+    fn assert_no_leftover_temp_files(dir: &Path) {
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .expect("read scratch dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    /// The success path: a fresh write replaces an existing destination's content exactly,
+    /// with no staging file left behind.
+    #[test]
+    fn write_atomically_replaces_the_destination_with_new_content() {
+        let dir = scratch_dir("success");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old content").unwrap();
+
+        write_atomically(&path, b"new content").expect("write_atomically");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new content");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F13: a bare `fs::write` to the destination starts truncating the
+    /// OLD file the instant the write begins, so a failure partway through (disk full, a
+    /// removed drive, a destination that refuses the final swap) destroys the prior backup
+    /// along with the new one. This proves `write_atomically` cannot do that — the failure
+    /// is a REAL one (a read-only destination file, which Windows refuses to rename over),
+    /// not a mock, so it also exercises the actual `rename_retrying` failure path. If
+    /// `write_atomically` were reverted to a plain `fs::write`, this test would fail: the
+    /// destination would read back as empty/new content instead of the original bytes.
+    #[test]
+    fn write_atomically_leaves_the_prior_file_untouched_on_a_failed_replace() {
+        let dir = scratch_dir("readonly_dest");
+        let path = dir.join("settings.json");
+        let original: &[u8] = b"[Settings]\nA=1\n";
+        std::fs::write(&path, original).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let result = write_atomically(&path, b"new content that must never land");
+
+        assert!(
+            result.is_err(),
+            "a rename onto a read-only destination must fail, not silently succeed"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the prior backup must survive byte-identical after a failed export"
+        );
+        assert_no_leftover_temp_files(&dir);
+
+        clear_readonly(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clear the read-only bit a test set on `path` so its scratch dir can be removed
+    /// afterwards. Windows-only test helper — `clippy::permissions_set_readonly_false`
+    /// warns about `false` making a file world-writable, which is a Unix-permissions
+    /// concern this project (Windows-only) never has.
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows-only test cleanup; no Unix world-writable implication here"
+    )]
+    fn clear_readonly(path: &Path) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// A destination that doesn't exist yet (no prior backup to protect) still succeeds and
+    /// leaves no temp file, and the staging path sits beside the destination rather than in
+    /// a shared/system temp directory (same volume — required for the rename to be atomic).
+    #[test]
+    fn write_atomically_creates_a_new_file_in_the_same_directory() {
+        let dir = scratch_dir("new_file");
+        let path = dir.join("brand-new.json");
+
+        write_atomically(&path, b"{}").expect("write_atomically");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert_no_leftover_temp_files(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -328,19 +328,15 @@ mod store {
         }
     }
 
-    /// Write `content` to `path` via a sibling `.tmp` file + rename, so a crash mid-write
-    /// (this runs under `panic = "abort"`, and several of our own processes can hit it)
-    /// leaves either the OLD file intact or the fully-written NEW one, never a truncated
-    /// mix of both. `rename_retrying` (not a bare `fs::rename`) absorbs a transient AV /
-    /// indexer lock on the destination, same as every other write path in this codebase.
+    /// Write `content` to `path` via a uniquely-named staging file + rename, so a crash
+    /// mid-write (this runs under `panic = "abort"`, and several of our own processes can
+    /// hit it) leaves either the OLD file intact or the fully-written NEW one, never a
+    /// truncated mix of both. Delegates to [`crate::fsutil::write_atomically`] — the same
+    /// helper the app EXE's settings-export path (`settings_io::export_settings_to_path`,
+    /// 2026-09-05 audit, F13) uses, so this codebase has one atomic-write implementation
+    /// rather than two that could quietly drift apart.
     fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, content)?;
-        if let Err(e) = crate::fsutil::rename_retrying(&tmp, path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-        Ok(())
+        crate::fsutil::write_atomically(path, content.as_bytes())
     }
 
     /// Apply `edit` to the parsed file and write it back. Held under [`IniLock`] for the
