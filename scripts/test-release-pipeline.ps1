@@ -208,6 +208,38 @@ Some more filler so the section clears the minimum length check that runs before
         }
     }
 
+    # 2026-09-05 audit, finding F22b: an optional stage that skips (no scanner, no artifact for
+    # this architecture, ...) must print an outcome that is not distinguishable from silence, and
+    # not distinguishable from a stage that ran. Pin the vocabulary AND the one line the audit
+    # named directly - a stale copy of this file would previously go green whether release.ps1
+    # printed that skip as a labelled outcome or dropped it back to unlabelled prose.
+    Assert-Passes 'release.ps1 labels every stage outcome PASSED/FAILED/SKIPPED (optional)/OVERRIDDEN, never silent prose' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        if ($releaseText -notmatch 'function\s+Write-ReleaseStageOutcome') {
+            throw 'release.ps1 no longer defines a standardised stage-outcome helper'
+        }
+        foreach ($word in @("'PASSED'", "'FAILED (non-fatal)'", "'SKIPPED (optional)'", "'OVERRIDDEN'")) {
+            if ($releaseText -notlike "*ValidateSet(*$word*") {
+                throw "stage-outcome helper's ValidateSet no longer offers the outcome $word"
+            }
+        }
+        # The exact stage the audit evidence named: the VirusTotal gate skips (optional) when the
+        # gitignored scanner/config/runtime inputs are absent, and used to print that as freeform
+        # "SKIPPED - ..." prose indistinguishable, at a glance, from a stage that never skips.
+        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'VirusTotal'") {
+            throw "release.ps1 no longer labels the VirusTotal skip as 'SKIPPED (optional)' - a skipped optional stage must be distinguishable from one that ran"
+        }
+        # The VT-inconclusive (queued/timeout) and self-update-smoke skip are the other two
+        # branches the audit's line range covered; keep them labelled too rather than relying on
+        # freeform Yellow prose that reads the same as any other warning.
+        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'OVERRIDDEN'\s+-Stage\s+'VirusTotal'") {
+            throw "release.ps1 no longer labels the VirusTotal timeout/queued case as an explicit OVERRIDDEN outcome"
+        }
+        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'self-update smoke'") {
+            throw "release.ps1 no longer labels the self-update-smoke skip as 'SKIPPED (optional)'"
+        }
+    }
+
     $corrupt = Join-Path $scratch 'corrupt.exe'
     [IO.File]::WriteAllBytes($corrupt, [byte[]](0x4D, 0x5A, 0, 0))
     Assert-Fails 'truncated MZ file is not accepted as a PE' {
