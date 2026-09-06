@@ -77,7 +77,7 @@ fn staging_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
 }
 
-/// Write `content` to `path` without ever leaving `path` partially written or destroyed - 
+/// Write `content` to `path` without ever leaving `path` partially written or destroyed -
 /// even when `path` already holds a file worth keeping (2026-09-05 audit, F13: exporting
 /// settings used to `fs::write` straight to the user's chosen path, so replacing an
 /// existing backup followed by a disk-full / removed-drive / permission failure left the
@@ -103,7 +103,7 @@ pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
 /// is exactly the corruption this whole module exists to prevent.
 ///
 /// `sync_all` is deliberately **best-effort** (2026-09-05 audit, F13 follow-up): some
-/// destinations - certain network shares, cloud-sync placeholder files (OneDrive, etc.) - 
+/// destinations - certain network shares, cloud-sync placeholder files (OneDrive, etc.) -
 /// refuse `fsync` even though the write itself succeeded, and this store now runs from
 /// inside the shell DLL as well as the app EXEs. Before this module existed, a plain
 /// `fs::write` gave no fsync guarantee at all and those destinations worked fine; making

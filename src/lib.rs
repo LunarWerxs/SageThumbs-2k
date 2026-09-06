@@ -49,7 +49,7 @@ pub mod flv;
 pub mod foldermenu;
 pub mod formats;
 // `pub` (hidden) so the app EXE's settings export path (`settings_io::export_settings_to_path`,
-// 2026-09-05 audit, F13) can reuse `write_atomically` rather than growing its own copy - 
+// 2026-09-05 audit, F13) can reuse `write_atomically` rather than growing its own copy -
 // same arrangement as `ocr`/`parallel`: an internal helper, not a stable public API.
 #[doc(hidden)]
 pub mod fsutil;
