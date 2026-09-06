@@ -184,7 +184,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "compress",
-            "description": "Compress an image to a target file size → a '(compressed)' JPEG sibling at or under the limit (quality binary-search, then downscale if needed).",
+            "description": "Compress an image to a target file size → a '(compressed)' JPEG sibling at or under the limit (quality binary-search, then downscale if needed). Success means at or under the limit: a limit the search cannot meet fails, writes nothing, and the error names the smallest size reachable, so ask again with at least that.",
             "inputSchema": { "type": "object", "properties": {
                 "input": str_prop("source image path"),
                 "max_size": str_prop("target size, e.g. '1MB', '500KB', or a byte count")
@@ -217,18 +217,20 @@ fn tool_defs() -> Value {
         },
         {
             "name": "pdf",
-            "description": "Combine one or more images into a single PDF (one image per page). Refuses to overwrite an existing file at 'output' unless its extension is .pdf.",
+            "description": "Combine one or more images into a single PDF (one image per page). 'output' must be a .pdf path and must not be one of the inputs (any spelling, case or hard link of an input is refused before anything is written). Returns JSON: {output, status: 'ok'|'partial', requested, combined, omitted: [{input, cause: 'unreadable'|'undecodable'|'unencodable', detail}]}; an input that cannot be used is left out and listed under 'omitted' unless 'strict' is true, in which case the call fails and writes nothing.",
             "inputSchema": { "type": "object", "properties": {
                 "output": str_prop("destination .pdf path"),
-                "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" }
+                "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" },
+                "strict": { "type": "boolean", "description": "fail and write nothing if any input would be left out (default false = build from the usable inputs and list the rest)" }
             }, "required": ["output", "inputs"] }
         },
         {
             "name": "cbz",
-            "description": "Combine one or more images into a single CBZ (comic-book zip) archive, natural-sorted, with a ComicInfo.xml sidecar. Refuses to overwrite an existing file at 'output' unless its extension is .cbz.",
+            "description": "Combine one or more images into a single CBZ (comic-book zip) archive, natural-sorted, with a ComicInfo.xml sidecar. 'output' must be a .cbz path and must not be one of the inputs (any spelling, case or hard link of an input is refused before anything is written). Returns the same JSON as 'pdf' ({output, status, requested, combined, omitted[]}); an input that cannot be read is left out and listed under 'omitted' unless 'strict' is true, in which case the call fails and writes nothing.",
             "inputSchema": { "type": "object", "properties": {
                 "output": str_prop("destination .cbz path"),
-                "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" }
+                "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" },
+                "strict": { "type": "boolean", "description": "fail and write nothing if any input would be left out (default false = build from the usable inputs and list the rest)" }
             }, "required": ["output", "inputs"] }
         },
         {
@@ -456,6 +458,21 @@ fn dispatch_convert(args: &Value) -> Result<String, String> {
     )
 }
 
+/// The `pdf`/`cbz` omission policy from the tool arguments (2026-09-05 audit, F31): the
+/// result is always the machine-readable JSON here (an agent reads it, not a person), and
+/// `"strict": true` turns a partial result into a refusal that writes nothing. Both tools
+/// go through `cli::pdf`/`cli::cbz`, so the alias and extension checks (F30) and the
+/// per-input omission report are exactly the CLI's.
+fn combine_opts(args: &Value) -> cli::CombineOpts {
+    cli::CombineOpts {
+        strict: args
+            .get("strict")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        json: true,
+    }
+}
+
 /// `pdf`: an output path plus the input file list.
 fn dispatch_pdf(args: &Value) -> Result<String, String> {
     let need = |k: &str| {
@@ -466,7 +483,11 @@ fn dispatch_pdf(args: &Value) -> Result<String, String> {
     };
     let output = need("output")?;
     refuse_foreign_overwrite(&output, &["pdf"])?;
-    cli::pdf(&output, &want_str_array(args, "inputs")?)
+    cli::pdf(
+        &output,
+        &want_str_array(args, "inputs")?,
+        combine_opts(args),
+    )
 }
 
 /// `cbz`: same shape as `pdf`, writing a comic-book zip instead.
@@ -479,7 +500,11 @@ fn dispatch_cbz(args: &Value) -> Result<String, String> {
     };
     let output = need("output")?;
     refuse_foreign_overwrite(&output, &["cbz"])?;
-    cli::cbz(&output, &want_str_array(args, "inputs")?)
+    cli::cbz(
+        &output,
+        &want_str_array(args, "inputs")?,
+        combine_opts(args),
+    )
 }
 
 /// `batch`: an operation name over the input file list, plus the same
@@ -873,6 +898,96 @@ mod tests {
         let resp = handle(&req).unwrap();
         assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
         assert!(out.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F30 + F31 over the JSON-RPC surface. A `pdf` call with one good,
+    /// one corrupt and one missing input used to answer `isError: false` with the bare output
+    /// path. It now answers a JSON object whose `status` is `partial` and whose `omitted`
+    /// list names each unusable input with a distinct cause; `"strict": true` fails and
+    /// writes nothing; an `output` that IS one of the inputs (a PDF re-combined over itself,
+    /// which the extension guard cannot see) fails with the source byte-identical. Against
+    /// the pre-fix code the first assertion on `status` fails (the text is not JSON) and the
+    /// alias call succeeds.
+    #[test]
+    fn tools_call_pdf_reports_omissions_honours_strict_and_refuses_an_alias() {
+        let dir = std::env::temp_dir().join(format!("st2k_mcp_partial_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .save(&good)
+            .unwrap();
+        let corrupt = dir.join("corrupt.png");
+        std::fs::write(&corrupt, b"not a png").unwrap();
+        let missing = dir.join("missing.png");
+        let inputs = json!([
+            good.to_str().unwrap(),
+            corrupt.to_str().unwrap(),
+            missing.to_str().unwrap()
+        ]);
+        let call = |id: u64, arguments: Value| {
+            let req = json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+                "name": "pdf", "arguments": arguments } });
+            handle(&req).unwrap()
+        };
+        let text_of = |resp: &Value| {
+            resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        let out = dir.join("out.pdf");
+        let resp = call(
+            20,
+            json!({ "output": out.to_str().unwrap(), "inputs": inputs }),
+        );
+        assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
+        let v: Value = serde_json::from_str(&text_of(&resp)).expect("the pdf tool returns JSON");
+        assert_eq!(v["status"], "partial", "{v}");
+        assert_eq!(v["requested"], 3);
+        assert_eq!(v["combined"], 1);
+        let causes: Vec<(&str, &str)> = v["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| (o["input"].as_str().unwrap(), o["cause"].as_str().unwrap()))
+            .collect();
+        assert!(
+            causes.contains(&(corrupt.to_str().unwrap(), "undecodable")),
+            "{v}"
+        );
+        assert!(
+            causes.contains(&(missing.to_str().unwrap(), "unreadable")),
+            "{v}"
+        );
+        assert!(out.exists());
+
+        let strict_out = dir.join("strict.pdf");
+        let resp = call(
+            21,
+            json!({ "output": strict_out.to_str().unwrap(), "inputs": inputs, "strict": true }),
+        );
+        assert_eq!(resp["result"]["isError"], json!(true), "got {resp}");
+        assert!(text_of(&resp).contains("strict"), "got {resp}");
+        assert!(!strict_out.exists(), "strict must write nothing");
+
+        // Same-type alias: the finished PDF as both an input and the output.
+        let before = std::fs::read(&out).unwrap();
+        let resp = call(
+            22,
+            json!({ "output": out.to_str().unwrap(),
+            "inputs": [good.to_str().unwrap(), out.to_str().unwrap()] }),
+        );
+        assert_eq!(resp["result"]["isError"], json!(true), "got {resp}");
+        assert!(text_of(&resp).contains("same file"), "got {resp}");
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            before,
+            "the source PDF was modified"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

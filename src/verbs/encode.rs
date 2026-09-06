@@ -909,7 +909,9 @@ pub fn convert_image_to_pdf_in(input: &str, out_dir: &Path, quality: u8) -> Resu
         dir.join(name)
     });
     let one = [input.to_string()];
-    crate::topdf::combine_to_pdf(&one, slot.path(), quality)?;
+    // One input: it is either the whole document or nothing, so the omission policy
+    // cannot matter here (an unusable input already fails as "none could be decoded").
+    crate::topdf::combine_to_pdf(&one, slot.path(), quality, crate::verbs::OnOmit::Report)?;
     preserve_src_time(Path::new(input), slot.path());
     Ok(slot.path().to_path_buf())
 }

@@ -26,11 +26,15 @@ USAGE:
                                                 fill Explorer's thumbnail cache ahead of browsing
                                                 (--size defaults to 96,256,768 — one per Explorer view)
   st2k rotate    <in> --by right|left|180|fliph|flipv
-  st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search)
+  st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search);
+                                                fails and writes nothing if the target can't be met
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG/WebP/SVG(Z)/HEIC/HEIF/AVIF, lossless)
   st2k ocr       <in>                           recognize text → stdout
-  st2k pdf       <out.pdf> <in> [in...]         combine images into one PDF
-  st2k cbz       <out.cbz> <in> [in...]         combine images into one CBZ (comic-book zip)
+  st2k pdf       <out.pdf> <in> [in...] [--strict] [--json]   combine images into one PDF
+  st2k cbz       <out.cbz> <in> [in...] [--strict] [--json]   combine images into one CBZ (comic-book zip)
+                                                an input that can't be read or decoded is left out and
+                                                listed (one 'omitted' line each); --strict fails instead
+                                                of writing a partial file; --json returns the same as JSON
   st2k info      <in> [--json]                  dimensions + camera/date/GPS/bit depth/DPI, or audio tags
   st2k formats   [--json]                       list supported input formats
   st2k doctor    [file] [--bundle out.zip]       self-check: why are thumbnails not showing? (add a file to probe it;
@@ -40,6 +44,9 @@ USAGE:
   st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
   st2k --version | -V                            print the version and exit
+
+Single-file commands take exactly the arguments shown: an extra file name is an error, and
+nothing is written (use `batch` for many files). An <out> that is one of the inputs is refused.
 ";
 
 /// Flags that take a following value; used to keep that value out of `pos` (the
@@ -77,7 +84,41 @@ const BOOL_FLAGS: &[&str] = &[
     "--status",
     "--off",
     "--open",
+    // pdf/cbz: fail instead of writing a partial file (2026-09-05 audit, F31).
+    "--strict",
 ];
+
+/// How many positional (file) arguments each verb accepts, or `None` for the verbs that
+/// take a list. 2026-09-05 audit, F33: `strip first.svg second.svg` exited 0, stripped the
+/// first, left the second untouched and said nothing, because `need(pos, 0)` read what it
+/// wanted and ignored the rest. The table is checked BEFORE any verb runs, so a stray
+/// argument can never cost a write.
+fn max_positionals(verb: &str) -> Option<usize> {
+    match verb {
+        "thumbnail" | "thumb" | "convert" => Some(2),
+        "rotate" | "compress" | "strip" | "ocr" | "info" | "doctor" | "diag" | "register"
+        | "unregister" | "upload-hosts" | "upload-host" | "devmode" => Some(1),
+        "formats" => Some(0),
+        // batch, prebuild, pdf, cbz and bench-decode take as many inputs as given.
+        _ => None,
+    }
+}
+
+/// Reject the positionals a verb has no meaning for, naming the first one it did not expect.
+fn check_arity(verb: &str, pos: &[&String]) -> Result<(), String> {
+    match max_positionals(verb) {
+        Some(max) if pos.len() > max => {
+            let plural = if max == 1 { "" } else { "s" };
+            Err(format!(
+                "{verb} takes at most {max} file argument{plural} but got {}: unexpected \"{}\". \
+                 Nothing was changed. (Use `st2k batch` to process many files.)",
+                pos.len(),
+                pos[max]
+            ))
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Split `rest` into positional arguments, walking by index so a known value-flag's
 /// value is consumed WITH it rather than falling through to `pos` as if it were an
@@ -245,10 +286,19 @@ fn run_register(verb: &str, pos: &[&String], rest: &[String]) -> Result<String, 
     cli::register_portable(off, status)
 }
 
+/// `pdf`/`cbz` share one argument shape: `<out> <in...> [--strict] [--json]`.
+fn combine_opts(rest: &[String]) -> cli::CombineOpts {
+    cli::CombineOpts {
+        strict: has_flag(rest, "--strict"),
+        json: has_flag(rest, "--json"),
+    }
+}
+
 fn run(args: &[String]) -> Result<String, String> {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("");
     let rest = &args[args.len().min(1)..];
     let pos = positionals(rest);
+    check_arity(verb, &pos)?;
 
     match verb {
         "thumbnail" | "thumb" => run_thumbnail(&pos, rest),
@@ -262,12 +312,12 @@ fn run(args: &[String]) -> Result<String, String> {
         "pdf" => {
             let out = need(&pos, 0)?;
             let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
-            cli::pdf(out, &inputs)
+            cli::pdf(out, &inputs, combine_opts(rest))
         }
         "cbz" => {
             let out = need(&pos, 0)?;
             let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
-            cli::cbz(out, &inputs)
+            cli::cbz(out, &inputs, combine_opts(rest))
         }
         "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
         "bench-decode" => run_bench_decode(&pos, rest),
@@ -457,5 +507,133 @@ mod tests {
             flag_num_opt::<u8>(&bad, "--webp-quality").is_err(),
             "an unparseable --webp-quality must error, not silently behave as \"not requested\""
         );
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_bin_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn save_png(path: &std::path::Path) -> String {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            40,
+            30,
+            image::Rgb([20, 120, 200]),
+        ))
+        .save(path)
+        .unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// 2026-09-05 audit, F33: `thumbnail in.png out.png extra.png` used to render out.png and
+    /// say nothing about the third name. The arity check runs before the verb, so nothing is
+    /// written and the error names the stray argument. Against the pre-fix code `out.png`
+    /// exists after the call.
+    #[test]
+    fn a_single_input_verb_rejects_an_extra_file_before_any_write() {
+        let dir = scratch("arity");
+        let src = save_png(&dir.join("in.png"));
+        let extra = save_png(&dir.join("extra.png"));
+        let extra_before = std::fs::read(&extra).unwrap();
+        let out = dir.join("out.png");
+
+        let err = run(&args(&["thumbnail", &src, out.to_str().unwrap(), &extra])).unwrap_err();
+        assert!(err.contains("takes at most 2"), "{err}");
+        assert!(
+            err.contains("extra.png"),
+            "must name the stray argument: {err}"
+        );
+        assert!(
+            !out.exists(),
+            "nothing may be written when the arguments are wrong"
+        );
+        assert_eq!(std::fs::read(&extra).unwrap(), extra_before);
+
+        // Same shape without the flag noise: `strip a b` and `rotate a b`.
+        let err = run(&args(&["strip", &src, &extra])).unwrap_err();
+        assert!(err.contains("takes at most 1"), "{err}");
+        let err = run(&args(&["rotate", &src, &extra, "--by", "right"])).unwrap_err();
+        assert!(err.contains("takes at most 1"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "no sibling may have been written"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every single-input verb in the table refuses a surplus argument with the SAME message,
+    /// so a script sees one shape; `formats` takes none at all. Against the pre-fix code
+    /// `formats foo` prints the list and the rest fail for unrelated reasons.
+    #[test]
+    fn every_fixed_arity_verb_reports_a_surplus_argument_the_same_way() {
+        for verb in [
+            "thumbnail",
+            "thumb",
+            "convert",
+            "rotate",
+            "compress",
+            "strip",
+            "ocr",
+            "info",
+            "doctor",
+            "diag",
+            "register",
+            "unregister",
+            "upload-hosts",
+            "upload-host",
+            "devmode",
+            "formats",
+        ] {
+            let err = run(&args(&[verb, "a", "b", "c"])).unwrap_err();
+            assert!(
+                err.contains("takes at most") && err.contains("unexpected"),
+                "{verb}: {err}"
+            );
+        }
+    }
+
+    /// The list verbs keep taking a list: `pdf`/`cbz` with two inputs still combine, and the
+    /// new `--strict`/`--json` flags reach the verb rather than being read as file names.
+    #[test]
+    fn multi_input_verbs_still_take_a_list_and_their_flags_are_not_inputs() {
+        let dir = scratch("multi");
+        let a = save_png(&dir.join("a.png"));
+        let b = save_png(&dir.join("b.png"));
+        let out = dir.join("out.pdf");
+        let text = run(&args(&[
+            "pdf",
+            out.to_str().unwrap(),
+            &a,
+            &b,
+            "--json",
+            "--strict",
+        ]))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["combined"], 2);
+        assert!(out.exists());
+
+        let comic = dir.join("out.cbz");
+        let text = run(&args(&["cbz", comic.to_str().unwrap(), &a, &b])).unwrap();
+        assert_eq!(text, comic.to_str().unwrap());
+        assert!(has_flag(&args(&["--strict"]), "--strict"));
+        assert!(
+            BOOL_FLAGS.contains(&"--strict"),
+            "--strict must never be read as an input"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

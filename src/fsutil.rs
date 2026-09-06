@@ -143,9 +143,134 @@ pub(crate) fn lock_until_first_retry(path: &Path) -> std::sync::Arc<std::sync::a
     failures
 }
 
+/// Volume serial number plus the 64-bit file index: the identity NTFS gives an open file,
+/// which every hard link to it, every case spelling of its name and every relative or
+/// `..`-laden path to it all share. `None` when the file cannot be opened (missing, a
+/// directory, or held with no sharing), which the caller treats as "not provably the same".
+fn file_identity(p: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let f = std::fs::File::open(p).ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `f` stays open for the duration of the call, so the handle is valid, and
+    // `info` is a correctly sized, writable out-struct the call fills in.
+    unsafe { GetFileInformationByHandle(HANDLE(f.as_raw_handle()), &mut info) }.ok()?;
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Some((info.dwVolumeSerialNumber, index))
+}
+
+/// Do `a` and `b` name the SAME file on disk? (2026-09-05 audit, F30.)
+///
+/// A verb that reads its inputs and then replaces its destination destroys the source when
+/// the two paths alias, and a plain string compare cannot see that: Windows paths fold case,
+/// `sub\..\x.png` is `x.png`, a relative path resolves against the process's directory, and a
+/// hard link is a second name with nothing in common. Canonical paths settle the first three;
+/// the volume-and-index identity settles hard links. Two files that are not both openable are
+/// reported as different, because nothing about them can be proven either way.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        if x == y {
+            return true;
+        }
+    }
+    // Hard links share one MFT record, so their lengths agree; two files whose lengths
+    // differ cannot be one file, and skipping the opens keeps a 300-page combine cheap.
+    let len = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
+    if len(a) != len(b) {
+        return false;
+    }
+    match (file_identity(a), file_identity(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The first of `inputs` that is the same file as `output` (see [`same_file`]), or `None`.
+/// The one alias check every path-taking verb runs BEFORE it reads or writes anything, so the
+/// CLI, the MCP tools and the composers all refuse the same spellings.
+pub(crate) fn aliased_input<'a>(
+    output: &Path,
+    inputs: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    inputs
+        .into_iter()
+        .find(|input| same_file(output, Path::new(input)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_fsutil_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Every spelling of one file the audit named must compare equal: the same path, a case
+    /// variant, a `..` detour, forward slashes, and a hard link (a second directory entry with
+    /// nothing in common with the first except the file behind it). A byte compare of the
+    /// paths gets all five wrong, and a canonical-path compare gets the hard link wrong.
+    #[test]
+    fn same_file_sees_through_case_dot_dot_slashes_and_hard_links() {
+        let dir = scratch("same");
+        let a = dir.join("Photo.png");
+        std::fs::write(&a, b"pixels").unwrap();
+
+        assert!(same_file(&a, &a), "a path is the same file as itself");
+        let upper = dir.join("PHOTO.PNG");
+        assert!(same_file(&a, &upper), "Windows names fold case");
+        let detour = dir.join("sub").join("..").join("Photo.png");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        assert!(
+            same_file(&a, &detour),
+            "`sub\\..\\` is a detour to the same file"
+        );
+        let slashes = std::path::PathBuf::from(a.to_string_lossy().replace('\\', "/"));
+        assert!(
+            same_file(&a, &slashes),
+            "forward slashes spell the same path"
+        );
+        let link = dir.join("link.png");
+        std::fs::hard_link(&a, &link).unwrap();
+        assert!(same_file(&a, &link), "a hard link is the same file");
+        assert_eq!(aliased_input(&link, [a.to_str().unwrap()]), a.to_str());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Distinct files, a missing path and a copy (same bytes, different file) are all
+    /// different: the guard must never refuse a legitimate destination.
+    #[test]
+    fn same_file_is_false_for_distinct_files_copies_and_missing_paths() {
+        let dir = scratch("distinct");
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        std::fs::write(&a, b"pixels").unwrap();
+        std::fs::write(&b, b"pixels").unwrap();
+
+        assert!(!same_file(&a, &b), "a copy is a different file");
+        assert!(!same_file(&a, &dir.join("missing.png")));
+        assert!(!same_file(
+            &dir.join("missing.png"),
+            &dir.join("missing.png")
+        ));
+        assert_eq!(aliased_input(&b, [a.to_str().unwrap()]), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A non-transient rename failure (here: the source doesn't exist, `ERROR_FILE_NOT_FOUND` =
     /// 2) must return on the FIRST attempt, not after `RENAME_RETRIES` sleeps. Timing the call

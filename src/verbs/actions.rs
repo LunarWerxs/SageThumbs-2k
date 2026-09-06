@@ -526,14 +526,20 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
     // from picking the same name and renaming over this one's finished file.
     let slot = combined_path(&imgs[0], "pdf");
     let out = slot.path().to_path_buf();
-    match crate::topdf::combine_to_pdf(&imgs, &out, crate::settings::jpeg_quality()) {
-        // `dropped` is how many of `imgs` were undecodable and so silently excluded
-        // from the PDF by `combine_to_pdf_paged`. This used to be invisible here - any
-        // `Ok(_)` reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many
-        // of a 10-image combine actually made it into the PDF. Report the REAL counts
-        // instead, so a partial combine surfaces via the normal `surface()` message box
-        // (which only pops for `failed() > 0`) rather than claiming full success.
-        Ok((_, dropped)) => {
+    match crate::topdf::combine_to_pdf(
+        &imgs,
+        &out,
+        crate::settings::jpeg_quality(),
+        super::OnOmit::Report,
+    ) {
+        // `omitted` names every one of `imgs` that was undecodable and so excluded from the
+        // PDF by `combine_to_pdf_paged`. This used to be invisible here - any `Ok(_)`
+        // reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many of a
+        // 10-image combine actually made it into the PDF. Report the REAL counts instead,
+        // so a partial combine surfaces via the normal `surface()` message box (which only
+        // pops for `failed() > 0`) rather than claiming full success.
+        Ok(combined) => {
+            let dropped = combined.omitted.len();
             let attempted = imgs.len();
             let done = attempted.saturating_sub(dropped);
             let report = ActionReport {
@@ -566,12 +572,13 @@ fn handle_combine_to_cbz(paths: &[String]) -> ActionReport {
     }
     let slot = combined_path(&imgs[0], "cbz");
     let out = slot.path().to_path_buf();
-    match combine_to_cbz(&imgs, &out) {
-        // `dropped` is how many of `imgs` couldn't be read and so were left out of the
-        // archive — mirrors `handle_combine_to_pdf`'s reporting of `combine_to_pdf_paged`'s
-        // dropped count, which this used to lack: any `Ok(())` reported a flat
-        // `applied(1, 1)` no matter how many of a multi-image combine actually made it in.
-        Ok(dropped) => {
+    match combine_to_cbz(&imgs, &out, super::OnOmit::Report) {
+        // `omitted` names every one of `imgs` that couldn't be read and so was left out of
+        // the archive - mirrors `handle_combine_to_pdf`'s reporting, which this used to
+        // lack: any `Ok(())` reported a flat `applied(1, 1)` no matter how many of a
+        // multi-image combine actually made it in.
+        Ok(combined) => {
+            let dropped = combined.omitted.len();
             let attempted = imgs.len();
             let done = attempted.saturating_sub(dropped);
             let report = ActionReport {

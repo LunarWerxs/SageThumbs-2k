@@ -4,7 +4,7 @@
 //! engine (the same one our thumbnailer uses).
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, RgbImage};
@@ -13,7 +13,10 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::StrCmpLogicalW;
 
 use crate::decode;
-use crate::verbs::{flatten_onto_white, read_full_fidelity_capped, write_atomic};
+use crate::verbs::{
+    flatten_onto_white, partition, read_full_fidelity_capped, refusal, write_atomic, Combined,
+    OmitCause, Omitted, OnOmit,
+};
 
 /// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
 /// `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view pixel is
@@ -164,12 +167,15 @@ impl PdfPage {
 /// Combine the decodable images in `paths` into one PDF at `out`, one per page,
 /// laid out per the user's saved page setting. Atomic temp+rename.
 ///
-/// Returns `(out_path, dropped)` — `dropped` is how many of `paths` were undecodable and so
-/// silently excluded from the PDF (see [`combine_to_pdf_paged`]). Every current caller only
-/// checks success/failure via `?`/`map_err` and never binds the `Ok` payload's exact shape, so
-/// widening it from `PathBuf` to `(PathBuf, usize)` here needed no changes at those call sites.
-pub fn combine_to_pdf(paths: &[String], out: &Path, quality: u8) -> Result<(PathBuf, usize)> {
-    combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page())
+/// Returns the [`Combined`] result: the output, how many inputs made it in, and every input
+/// that was left out with its cause (see [`combine_to_pdf_paged`]).
+pub fn combine_to_pdf(
+    paths: &[String],
+    out: &Path,
+    quality: u8,
+    on_omit: OnOmit,
+) -> Result<Combined> {
+    combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page(), on_omit)
 }
 
 /// A page's file name as a NUL-terminated UTF-16 buffer for [`StrCmpLogicalW`].
@@ -194,21 +200,51 @@ fn natural_sort_paths(paths: &[String]) -> Vec<String> {
     keyed.into_iter().map(|(_, p)| p.clone()).collect()
 }
 
+/// Decode one input to a PDF page, or say exactly why it could not be. Each failure is also
+/// logged with its path (`read_full_fidelity_capped` logs its own), so a dropped page can be
+/// traced in the doctor log.
+fn decode_page(p: &str, quality: u8) -> std::result::Result<Page, Omitted> {
+    let bytes =
+        read_full_fidelity_capped(p).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))?;
+    let img = decode::decode_full(&bytes).map_err(|e| {
+        crate::safety::log(&format!("pdf: cannot decode {p}: {e}"));
+        Omitted::new(p, OmitCause::Undecodable, e)
+    })?;
+    image_to_baseline_jpeg(&img, quality).map_err(|e| {
+        crate::safety::log(&format!("pdf: cannot encode {p}: {e}"));
+        Omitted::new(p, OmitCause::Unencodable, e)
+    })
+}
+
 /// [`combine_to_pdf`] with the layout passed in rather than read from settings -
 /// the entry point for tests, which must not depend on whatever this machine's
 /// registry happens to say.
 ///
-/// Returns `(out_path, dropped)`: `dropped` counts how many of `paths` never made it into the
-/// PDF (unreadable file, or a format `decode::decode_full`/the JPEG re-encode couldn't handle).
-/// Silently excluding them used to be invisible to the caller — `ActionReport::applied(1, 1)`
-/// on any `Ok(_)` claimed full success even when, say, 3 of 10 inputs were dropped — so the
-/// count is threaded back out here for `verbs::actions` to surface as a note.
+/// Returns the [`Combined`] result: `omitted` names every input that never made it into the
+/// PDF (unreadable file, or a format `decode::decode_full`/the JPEG re-encode couldn't handle)
+/// with its cause. Silently excluding them used to be invisible to the caller, and a bare count
+/// was invisible past the Explorer verb (2026-09-05 audit, F31), so the list is threaded back
+/// out here for every front end to surface. `OnOmit::Fail` writes nothing when the list would
+/// be non-empty.
+///
+/// Refuses an `out` that is one of `paths` before reading anything (2026-09-05 audit, F30):
+/// the write replaces the destination, so an alias would destroy a source.
 pub fn combine_to_pdf_paged(
     paths: &[String],
     out: &Path,
     quality: u8,
     page: PdfPage,
-) -> Result<(PathBuf, usize)> {
+    on_omit: OnOmit,
+) -> Result<Combined> {
+    if let Some(alias) = crate::fsutil::aliased_input(out, paths.iter().map(String::as_str)) {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "pdf: output {} is the same file as input {alias}; refusing to overwrite a source",
+                out.display()
+            ),
+        ));
+    }
     let paths = natural_sort_paths(paths);
 
     // Decode AND JPEG-encode every page inside the parallel worker, so only the
@@ -217,28 +253,21 @@ pub fn combine_to_pdf_paged(
     // pass would peak at N x decoded-image size on a hundreds-of-pages comic
     // combine. Per-worker COM init + the global magick cap are handled inside the
     // pool / decoder.
-    // Each failure is logged with its path (`read_full_fidelity_capped` logs its own), so
-    // a dropped page can be traced in the doctor log.
-    let attempts: Vec<Option<Page>> = crate::parallel::map(&paths, |_, p| {
-        let bytes = read_full_fidelity_capped(p).ok()?;
-        let img = decode::decode_full(&bytes)
-            .inspect_err(|e| crate::safety::log(&format!("pdf: cannot decode {p}: {e}")))
-            .ok()?;
-        image_to_baseline_jpeg(&img, quality)
-            .inspect_err(|e| crate::safety::log(&format!("pdf: cannot encode {p}: {e}")))
-            .ok()
-    });
-    // Undecodable inputs drop out (the `flatten` below), exactly as the old sequential
-    // `filter_map` did — but now counted first, rather than silently discarded, so a partial
-    // combine can be reported as partial instead of a bare, misleadingly-total success.
-    let dropped = attempts.iter().filter(|a| a.is_none()).count();
-    let pages: Vec<Page> = attempts.into_iter().flatten().collect();
+    let attempts = crate::parallel::map(&paths, |_, p| decode_page(p, quality));
+    let (pages, omitted) = partition(attempts);
     if pages.is_empty() {
-        return Err(Error::new(
-            E_FAIL,
-            format!("pdf: none of the {} inputs could be decoded", paths.len()),
-        ));
+        let headline = format!("pdf: none of the {} inputs could be decoded", paths.len());
+        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
     }
+    if on_omit == OnOmit::Fail && !omitted.is_empty() {
+        let headline = format!(
+            "pdf: refusing to write a partial document (strict): {} of {} inputs cannot be used",
+            omitted.len(),
+            paths.len()
+        );
+        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+    }
+    let used = pages.len();
 
     // Streamed straight into the temp file through a BufWriter (no second in-memory copy
     // of every page), then renamed into place by the shared atomic writer, which owns
@@ -257,7 +286,11 @@ pub fn combine_to_pdf_paged(
         w.flush()
             .map_err(|e| Error::new(E_FAIL, format!("flush {}: {e}", tmp.display())))
     })?;
-    Ok((out.to_path_buf(), dropped))
+    Ok(Combined {
+        output: out.to_path_buf(),
+        used,
+        omitted,
+    })
 }
 
 #[cfg(test)]
@@ -344,7 +377,7 @@ mod tests {
             .collect();
 
         let out = dir.join("c.pdf");
-        combine_to_pdf(&paths, &out, 85).unwrap();
+        combine_to_pdf(&paths, &out, 85, OnOmit::Report).unwrap();
         let bytes = std::fs::read(&out).unwrap();
         assert!(bytes.starts_with(b"%PDF-1.7"), "must be a PDF");
         assert!(
@@ -411,9 +444,19 @@ mod tests {
         paths.push(garbage.to_str().unwrap().to_string());
 
         let out = dir.join("partial.pdf");
-        let (out_path, dropped) = combine_to_pdf(&paths, &out, 85).expect("2 good pages remain");
-        assert_eq!(dropped, 1, "exactly the one garbage input must be dropped");
-        assert_eq!(out_path, out);
+        let combined =
+            combine_to_pdf(&paths, &out, 85, OnOmit::Report).expect("2 good pages remain");
+        assert_eq!(
+            combined.omitted.len(),
+            1,
+            "exactly the one garbage input must be dropped"
+        );
+        assert_eq!(combined.used, 2);
+        assert_eq!(combined.requested(), 3);
+        assert_eq!(combined.output, out);
+        // 2026-09-05 audit, F31: the omission names the input and says WHY, not just how many.
+        assert_eq!(combined.omitted[0].input, garbage.to_str().unwrap());
+        assert_eq!(combined.omitted[0].cause, OmitCause::Undecodable);
 
         // The PDF that DOES get built must contain only the pages that decoded — 2, not 3 (and
         // not silently empty either).
@@ -422,6 +465,63 @@ mod tests {
             bytes.windows(9).filter(|w| *w == b"DCTDecode").count(),
             2,
             "only the 2 decodable pages should have been embedded"
+        );
+
+        // 2026-09-05 audit, F31: the strict policy writes NOTHING when an input would be left
+        // out, and its error carries the same per-input lines the partial report does.
+        let strict_out = dir.join("strict.pdf");
+        let err = combine_to_pdf(&paths, &strict_out, 85, OnOmit::Fail)
+            .expect_err("strict must refuse a partial document");
+        assert!(!strict_out.exists(), "strict must not write a partial PDF");
+        let msg = err.message();
+        assert!(msg.contains("strict"), "{msg}");
+        assert!(
+            msg.contains("omitted\t") && msg.contains("undecodable"),
+            "{msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F30: an output that is one of the inputs (a PDF being re-combined
+    /// over itself, the same-type alias the MCP suffix guard could not see) is refused before
+    /// anything is read, and the source is byte-identical afterwards. Against the pre-fix code
+    /// the call succeeds and the one-page PDF is replaced by a fresh render of itself.
+    #[test]
+    fn combine_to_pdf_refuses_an_output_that_is_one_of_its_inputs() {
+        let dir = std::env::temp_dir().join(format!("st2k_topdf_alias_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("page.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            30,
+            20,
+            image::Rgb([10, 60, 60]),
+        ))
+        .save(&png)
+        .unwrap();
+        let doc = dir.join("doc.pdf");
+        combine_to_pdf(
+            &[png.to_str().unwrap().to_string()],
+            &doc,
+            85,
+            OnOmit::Report,
+        )
+        .unwrap();
+        let before = std::fs::read(&doc).unwrap();
+
+        let upper = dir.join("DOC.PDF");
+        let inputs = [
+            png.to_str().unwrap().to_string(),
+            doc.to_str().unwrap().to_string(),
+        ];
+        let err = combine_to_pdf(&inputs, &upper, 85, OnOmit::Report)
+            .expect_err("the output aliases an input");
+        assert!(err.message().contains("same file"), "{err}");
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            before,
+            "the source PDF was modified"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -455,7 +555,7 @@ mod tests {
         let paths = vec![b, a];
 
         let out = dir.join("sorted.pdf");
-        combine_to_pdf(&paths, &out, 85).unwrap();
+        combine_to_pdf(&paths, &out, 85, OnOmit::Report).unwrap();
         let bytes = std::fs::read(&out).unwrap();
         let text = String::from_utf8_lossy(&bytes);
 

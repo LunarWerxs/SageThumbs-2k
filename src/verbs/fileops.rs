@@ -13,6 +13,7 @@ use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR,
 
 use super::actions::is_image;
 use super::encode::{read_full_fidelity_capped, reserve, write_atomic, OutSlot};
+use super::outcome::{refusal, Combined, OmitCause, Omitted, OnOmit};
 
 /// Case-insensitive whole-path comparison (Windows file names are case-folding,
 /// so `Photo.JPG` and `photo.jpg` are the same file — don't bump the counter or
@@ -159,13 +160,28 @@ fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
 /// CBZ RFC asks for so a reader can pull metadata without scanning the whole
 /// central directory. It is the one deflated entry: it is text, and it is small.
 ///
-/// Returns how many of `imgs` couldn't be read (deleted between selection and
-/// combine, a permission error, or past `read_full_fidelity_capped`'s size cap) and so were left
-/// out of the archive — like `combine_to_pdf_paged`'s `dropped`, this used to
-/// propagate the FIRST such failure straight out of the write, aborting the whole
-/// archive instead of building one from whatever pages WERE readable.
-pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<usize> {
+/// Returns the [`Combined`] result: every one of `imgs` that couldn't be read (deleted between
+/// selection and combine, a permission error, or past `read_full_fidelity_capped`'s size cap)
+/// is listed in `omitted` with its cause rather than silently left out of the archive. This
+/// used to propagate the FIRST such failure straight out of the write, aborting the whole
+/// archive instead of building one from whatever pages WERE readable, and then reported the
+/// rest as a bare count (2026-09-05 audit, F31). `OnOmit::Fail` writes nothing when the list
+/// would be non-empty.
+///
+/// Refuses an `out` that is one of `imgs` before reading anything (2026-09-05 audit, F30):
+/// the write replaces the destination, so an alias would destroy a source.
+pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Combined> {
     use std::io::Write;
+
+    if let Some(alias) = crate::fsutil::aliased_input(out, imgs.iter().map(String::as_str)) {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "cbz: output {} is the same file as input {alias}; refusing to overwrite a source",
+                out.display()
+            ),
+        ));
+    }
 
     // Pre-encode each file name to UTF-16 ONCE (the sort key), then natural-sort
     // by the cached buffers — `StrCmpLogicalW` never re-allocates per comparison.
@@ -176,18 +192,29 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<usize> {
 
     // Read every page UP FRONT (in parallel — mirrors `combine_to_pdf_paged`), so a
     // page that can't be read drops out here instead of aborting the zip write
-    // already in progress. `dropped` is counted before the `flatten()` below
-    // discards the `None`s, exactly as `combine_to_pdf_paged` counts its own.
-    let reads: Vec<Option<Vec<u8>>> =
-        crate::parallel::map(&sorted, |_, p| read_full_fidelity_capped(p.as_str()).ok());
-    let dropped = reads.iter().filter(|r| r.is_none()).count();
-    let pages: Vec<(&String, Vec<u8>)> = sorted
-        .into_iter()
-        .zip(reads)
-        .filter_map(|(p, r)| r.map(|bytes| (p, bytes)))
-        .collect();
+    // already in progress, and is recorded with the read error as its cause.
+    let reads = crate::parallel::map(&sorted, |_, p| {
+        read_full_fidelity_capped(p.as_str()).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))
+    });
+    let mut omitted = Vec::new();
+    let mut pages: Vec<(&String, Vec<u8>)> = Vec::with_capacity(sorted.len());
+    for (p, r) in sorted.into_iter().zip(reads) {
+        match r {
+            Ok(bytes) => pages.push((p, bytes)),
+            Err(o) => omitted.push(o),
+        }
+    }
     if pages.is_empty() {
-        return Err(Error::from(E_FAIL));
+        let headline = format!("cbz: none of the {} inputs could be read", imgs.len());
+        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+    }
+    if on_omit == OnOmit::Fail && !omitted.is_empty() {
+        let headline = format!(
+            "cbz: refusing to write a partial archive (strict): {} of {} inputs cannot be used",
+            omitted.len(),
+            imgs.len()
+        );
+        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
     }
 
     // Header-only probe, before anything is written: the sidecar has to be the
@@ -224,7 +251,11 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path) -> Result<usize> {
         zw.finish().map_err(|_| Error::from(E_FAIL))?;
         Ok(())
     })?;
-    Ok(dropped)
+    Ok(Combined {
+        output: out.to_path_buf(),
+        used: pages.len(),
+        omitted,
+    })
 }
 
 /// Atomically reserve a collision-free destination for `stem[.ext]` (`src`'s
@@ -572,7 +603,7 @@ mod tests {
             png(&dir, "page1.png", 50, 60),
         ];
         let out = dir.join("book.cbz");
-        combine_to_cbz(&imgs, &out).unwrap();
+        combine_to_cbz(&imgs, &out, OnOmit::Report).unwrap();
 
         let f = std::fs::File::open(&out).unwrap();
         let mut zip = zip::ZipArchive::new(f).unwrap();
@@ -729,11 +760,17 @@ mod tests {
         imgs.push(vanished);
         let out = dir.join("book.cbz");
 
-        let dropped = combine_to_cbz(&imgs, &out).unwrap();
+        let combined = combine_to_cbz(&imgs, &out, OnOmit::Report).unwrap();
         assert_eq!(
-            dropped, 1,
+            combined.omitted.len(),
+            1,
             "exactly the one unreadable page must be counted dropped"
         );
+        // 2026-09-05 audit, F31: the omission names the page and says WHY.
+        assert_eq!(combined.omitted[0].input, imgs[2]);
+        assert_eq!(combined.omitted[0].cause, OmitCause::Unreadable);
+        assert_eq!(combined.used, 2);
+        assert_eq!(combined.output, out);
 
         let f = std::fs::File::open(&out).unwrap();
         let zip = zip::ZipArchive::new(f).unwrap();
@@ -741,6 +778,29 @@ mod tests {
             zip.len(),
             3,
             "sidecar + the 2 readable pages, not aborted to nothing"
+        );
+
+        // 2026-09-05 audit, F31: strict writes nothing and lists the same page.
+        let strict_out = dir.join("strict.cbz");
+        let err = combine_to_cbz(&imgs, &strict_out, OnOmit::Fail)
+            .expect_err("strict must refuse a partial archive");
+        assert!(!strict_out.exists(), "strict must not write a partial CBZ");
+        assert!(err.message().contains("omitted\t"), "{err}");
+
+        // 2026-09-05 audit, F30: the finished CBZ as both an input and the output (a case
+        // variant of its own path) is refused before anything is read, bytes untouched.
+        // Against the pre-fix code this call succeeds and rewrites the archive over itself.
+        let before = std::fs::read(&out).unwrap();
+        let mut aliased = imgs.clone();
+        aliased.push(out.to_string_lossy().into_owned());
+        let upper = dir.join("BOOK.CBZ");
+        let err = combine_to_cbz(&aliased, &upper, OnOmit::Report)
+            .expect_err("the output aliases an input");
+        assert!(err.message().contains("same file"), "{err}");
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            before,
+            "the source CBZ was modified"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

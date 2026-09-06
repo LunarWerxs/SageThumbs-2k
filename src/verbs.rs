@@ -22,6 +22,7 @@ mod actions;
 mod encode;
 mod fileops;
 mod menu;
+mod outcome;
 
 // ---- Public surface (matches each item's ORIGINAL visibility) -----------
 // `#[allow(unused_imports)]`: several of these re-exports are consumed only by the
@@ -55,6 +56,11 @@ pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 // Folder/sort verbs + the CBZ archiver.
 #[allow(unused_imports)]
 pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_folders};
+
+// The per-input result model the PDF/CBZ composers return (2026-09-05 audit, F31).
+pub(crate) use outcome::{partition, refusal};
+#[allow(unused_imports)]
+pub use outcome::{Combined, OmitCause, Omitted, OnOmit};
 
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]
@@ -1003,7 +1009,7 @@ mod tests {
 
         let slot = combined_path(&paths[0], "cbz");
         let out = slot.path().to_path_buf();
-        combine_to_cbz(&paths, &out).unwrap();
+        combine_to_cbz(&paths, &out, OnOmit::Report).unwrap();
         assert!(out.exists() && out.extension().unwrap() == "cbz");
 
         // Reopen the archive: the ComicInfo.xml sidecar first (the CBZ RFC wants it
