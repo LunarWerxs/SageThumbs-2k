@@ -116,3 +116,8 @@ Thumbs.db
 
 # Azure Artifact Signing client drop (sign-release.ps1 Resolve-Dlib); never committed
 /tools/artifact-signing/
+
+# Python bytecode from the repo scripts (push_to_vt.py, the audit helpers). Untracked and
+# un-ignored, it sat one `git add -A` from being committed into a public repo.
+__pycache__/
+*.pyc
