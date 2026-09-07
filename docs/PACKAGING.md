@@ -135,3 +135,14 @@ Check it after every upload with the `best_release.json` URL above: it is one re
 reports exactly what a visitor would be given. Do not check it by eye on the project page,
 because SourceForge tailors that button to the visitor's own platform, so an x64 maintainer can
 be shown the correct x64 file while everyone else is being handed ARM64.
+
+---
+
+## 6. Install/upgrade qualification: installed vs portable, standard vs admin, multi-user
+
+Before a release changes anything about installation, upgrade, or the modern (Win11)
+context-menu package, check it against **[QUALIFICATION-MATRIX.md](QUALIFICATION-MATRIX.md)**.
+That doc is the repeatable scenario suite for storage mode (installed vs portable), process
+elevation (standard vs admin), who installs versus who runs the app, and multiple sessions on
+one machine (including Remote Desktop). Run the automated half with `scripts\qualify.ps1`; the
+doc also carries the numbered VM procedures for everything that still needs a human.

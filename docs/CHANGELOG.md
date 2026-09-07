@@ -29,6 +29,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **A tester's checklist for installed, portable, admin and multi-user setups ships with the
+  source.** A documented scenario matrix and a one-command script now cover storage mode
+  (installed or portable), running as standard or as an administrator, who installs versus who
+  runs the app, and multiple sessions on the same machine (including Remote Desktop), so that
+  ground can be checked the same way every time instead of being re-worked out from scratch.
+
 - **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
   info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)
   from the command line or through the MCP tool used by AI assistants and scripts, matching
