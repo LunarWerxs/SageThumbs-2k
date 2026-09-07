@@ -225,57 +225,104 @@ pub(crate) fn read_history(path: &std::path::Path) -> Option<History> {
 
 /// Best-effort write; returns whether it stuck. A failed write degrades the
 /// downgrade-detection feature, not the app, so callers log and move on.
+///
+/// Atomic via [`sagethumbs2k_core::fsutil::write_atomically`] (temp file beside `path`,
+/// then a retrying rename over it): a reader never sees a half-written breadcrumb, and a
+/// crash mid-write leaves the old one intact. Atomicity alone does NOT stop two writers
+/// from each replacing the file with their own view of it and losing the other's update
+/// (2026-09-05 audit, F18) - that is what [`HistoryLock`] is for. This function assumes
+/// the lock is already held; the only caller in this module (`update_history_at`) takes
+/// it first.
 pub(crate) fn write_history(path: &std::path::Path, h: &History) -> bool {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    // Write beside the file and rename over it: a reader never sees a half-written
-    // breadcrumb, and a crash mid-write leaves the old one intact.
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let Ok(bytes) = serde_json::to_vec_pretty(&h.to_json()) else {
         return false;
     };
-    if std::fs::write(&tmp, bytes).is_err() {
-        return false;
-    }
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    true
+    sagethumbs2k_core::fsutil::write_atomically(path, &bytes).is_ok()
 }
 
-/// Serialises the breadcrumb's read-modify-write across the processes that share it (the
-/// resident helper's periodic check, a Settings window redeeming a key, a notice being
-/// acknowledged). `Local\` scopes it to this logon session, like the other app locks.
-struct HistoryLock(windows::Win32::Foundation::HANDLE);
+/// How many times [`HistoryLock::acquire`] retries before giving up, and how long it waits
+/// between tries. `LockFile` fails immediately rather than blocking when the region is
+/// already held (blocking needs `LockFileEx` plus an `OVERLAPPED`, which this one call
+/// site does not otherwise need), so the ~2s budget the old session-local mutex gave
+/// callers via `WaitForSingleObject` is reproduced here as bounded polling instead. Short
+/// under `cfg(test)` so a test that deliberately holds the lock costs milliseconds, not
+/// the production budget.
+#[cfg(not(test))]
+const LOCK_ATTEMPTS: u32 = 20;
+#[cfg(test)]
+const LOCK_ATTEMPTS: u32 = 6;
+#[cfg(not(test))]
+const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+#[cfg(test)]
+const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Serialises the breadcrumb's read-modify-write across every process that touches it, on
+/// this MACHINE rather than this logon session (2026-09-05 audit, F18). The lock this
+/// replaces (`Local\SageThumbs2K.LicenceHistory`) named a kernel object scoped to the
+/// caller's session, so two Windows sessions on one box - two users, or RDP layered over
+/// the console - each got their OWN mutex and could both believe they held exclusive
+/// access to the SAME shared ProgramData file, the second write silently discarding the
+/// first's. A file lock has no session namespace: `LockFile` contends on the file itself,
+/// and a file has exactly one identity no matter which session opened it.
+struct HistoryLock {
+    file: std::fs::File,
+}
 
 impl HistoryLock {
-    /// Best-effort: a lock that cannot be created, or a wait that times out, returns `None`
-    /// and the caller proceeds unlocked rather than wedging a UI thread on a leaked mutex.
-    fn acquire() -> Option<Self> {
-        use windows::core::w;
-        use windows::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
-        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-        let h =
-            unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.LicenceHistory")) }.ok()?;
-        match unsafe { WaitForSingleObject(h, 2_000) } {
-            // WAIT_ABANDONED: a previous holder died mid-edit; ownership is ours and the
-            // write below replaces the whole file in one rename anyway.
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(HistoryLock(h)),
-            _ => {
-                let _ = unsafe { CloseHandle(h) };
-                None
+    /// Open (creating if needed) the lock file beside the breadcrumb and take an exclusive
+    /// whole-file lock on it, retrying up to [`LOCK_ATTEMPTS`] times. `None` once that
+    /// budget is spent - the caller's contract is to write NOTHING in that case (see
+    /// [`update_history_at`]), never to fall back to writing unlocked the way the old
+    /// mutex path did on a timed-out wait.
+    fn acquire(lock_path: &std::path::Path) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::LockFile;
+
+        if let Some(dir) = lock_path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            // The lock file carries no content that matters - it exists only to be
+            // locked - but a truncate on every acquire would still be a pointless write
+            // to a file another process might be mid-open on. Never truncate it.
+            .truncate(false)
+            .open(lock_path)
+            .ok()?;
+        let handle = HANDLE(file.as_raw_handle());
+        for attempt in 0..LOCK_ATTEMPTS {
+            // SAFETY: `file` outlives this call and is kept alive inside the returned
+            // `HistoryLock` for as long as the lock must hold; a whole-file range (offset
+            // 0, length u32::MAX/u32::MAX) is the standard Windows idiom for "lock the
+            // file" regardless of its actual length.
+            let locked = unsafe { LockFile(handle, 0, 0, u32::MAX, u32::MAX) }.is_ok();
+            if locked {
+                return Some(HistoryLock { file });
+            }
+            if attempt + 1 < LOCK_ATTEMPTS {
+                std::thread::sleep(LOCK_RETRY_DELAY);
             }
         }
+        None
     }
 }
 
 impl Drop for HistoryLock {
     fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::UnlockFile;
+
+        let handle = HANDLE(self.file.as_raw_handle());
+        // SAFETY: the same handle and region locked in `acquire`; unlocking a region this
+        // handle does not hold is a documented failure return, never undefined behaviour.
         unsafe {
-            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            let _ = UnlockFile(handle, 0, 0, u32::MAX, u32::MAX);
         }
     }
 }
@@ -435,10 +482,36 @@ fn update_history(mutate: impl FnOnce(&mut History)) {
     let Some(path) = history_path() else {
         return;
     };
-    let _lock = HistoryLock::acquire();
-    let mut h = read_history(&path).unwrap_or_default();
+    update_history_at(&path, mutate);
+}
+
+/// The testable core of [`update_history`]: an explicit path, and a return value saying
+/// whether the update actually happened, so a test can tell "lost the lock race" apart
+/// from "wrote, and it happened to be a no-op".
+///
+/// 2026-09-05 audit, F18: no lock now means no write, not a write proceeding unlocked. The
+/// old code called `HistoryLock::acquire`, ignored a `None`, and wrote anyway - which is
+/// exactly how two sessions each racing their own separate `Local\` mutex could both
+/// believe they held exclusive access and clobber each other's write. Losing one update (a
+/// stale nag count, a downgrade notice shown once more than it should be) is a cosmetic
+/// cost; silently replacing a newer write from another session is the bug this function
+/// now refuses to reproduce.
+fn update_history_at(path: &std::path::Path, mutate: impl FnOnce(&mut History)) -> bool {
+    let Some(_lock) = HistoryLock::acquire(&lock_path(path)) else {
+        sagethumbs2k_core::safety::log_debug(
+            "license: history lock unavailable after retrying, skipping this update rather than writing over a possibly newer file",
+        );
+        return false;
+    };
+    let mut h = read_history(path).unwrap_or_default();
     mutate(&mut h);
-    let _ = write_history(&path, &h);
+    write_history(path, &h)
+}
+
+/// Where the machine-wide lock lives: a sibling of the breadcrumb, never the breadcrumb
+/// file itself, so taking the lock can never race the JSON file's own atomic replace.
+fn lock_path(path: &std::path::Path) -> std::path::PathBuf {
+    path.with_extension("lock")
 }
 
 /// The whole behaviour matrix in one place. Exhaustive over [`Mode`] so a future
@@ -1566,5 +1639,149 @@ mod tests {
             ),
             Posture::DeauthorizedLoud
         );
+    }
+
+    // ---- the machine-wide history lock (2026-09-05 audit, F18) -----------------
+
+    /// Two "sessions" (two OS threads, each opening its own `File` handle to the SAME lock
+    /// path - which is what actually distinguishes two logon sessions on Windows, not
+    /// which thread happens to run the code) both bump the breadcrumb through
+    /// [`update_history_at`] at the same time. If the lock is real mutual exclusion,
+    /// neither writer's read-modify-write critical section can overlap the other's, so
+    /// BOTH increments land - there is no interleaving in which one is lost, independent
+    /// of thread scheduling. Against the pre-fix `Local\` mutex this same shape would not
+    /// even prove anything (two threads in one test process share one logon session, so
+    /// that mutex serializes them too); what the pre-fix design could not survive is two
+    /// DIFFERENT sessions, which `without_a_shared_lock_two_racing_writers_can_lose_an_update`
+    /// below reproduces directly, since a real second session can't be created here.
+    #[test]
+    fn two_concurrent_sessions_through_the_lock_both_preserve_their_change() {
+        let dir = temp_dir("lock_concurrent");
+        let path = dir.join("license-history.json");
+        assert!(write_history(&path, &History::default()));
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut joins = Vec::new();
+        for who in 0..2u64 {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            joins.push(std::thread::spawn(move || {
+                barrier.wait(); // start both "sessions" as close together as possible
+                update_history_at(&path, |h| {
+                    h.nag_count += 1;
+                    if who == 0 {
+                        h.key_prefix = "esk_SESA".to_string();
+                    } else {
+                        h.last_status = "session-b".to_string();
+                    }
+                });
+            }));
+        }
+        for j in joins {
+            j.join().expect("writer thread must not panic");
+        }
+
+        let result = read_history(&path).expect("breadcrumb must still parse");
+        assert_eq!(
+            result.nag_count, 2,
+            "both sessions' increments must land - a lost update means the lock let a \
+             second writer through while the first's read-modify-write was in flight"
+        );
+        assert_eq!(result.key_prefix, "esk_SESA", "session A's field survives");
+        assert_eq!(
+            result.last_status, "session-b",
+            "session B's field ALSO survives"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the OLD `Local\SageThumbs2K.LicenceHistory` mutex actually gave two DIFFERENT
+    /// Windows sessions: nothing. Each session's `CreateMutexW` opens or creates a mutex
+    /// object in ITS OWN session namespace, so from a second session's point of view there
+    /// was no lock in play at all - contending with your own session's other threads,
+    /// never with the other session's. Two real logon sessions can't be created in a test
+    /// (see the finding's Acceptance note), so this pins the exact interleaving a missing
+    /// cross-session lock permits directly, in program order rather than as a timing
+    /// gamble: both "sessions" read the SAME starting state before either writes, so the
+    /// second write has no idea about the first's change and destroys it.
+    ///
+    /// This is what makes the fix's teeth visible: replace the two direct
+    /// `read_history`/`write_history` calls below with two calls to `update_history_at`
+    /// sharing one lock path, and this exact interleaving becomes impossible - the second
+    /// reader cannot observe the pre-first-write state, because the first writer's whole
+    /// read-modify-write section (including the write) completes, under the lock, before
+    /// the second's read-modify-write section is even allowed to start.
+    #[test]
+    fn without_a_shared_lock_two_racing_writers_can_lose_an_update() {
+        let dir = temp_dir("racy_no_lock");
+        let path = dir.join("license-history.json");
+        assert!(write_history(&path, &History::default()));
+
+        // "Session A" reads first...
+        let mut a = read_history(&path).expect("seed must parse");
+        a.nag_count = 1;
+        // ...then "session B" reads the SAME pre-A-write state: no shared lock stops it,
+        // exactly as two different sessions' own separate mutexes would not stop it.
+        let mut b = read_history(&path).expect("seed must parse");
+        b.last_status = "session-b".to_string();
+        // B writes first...
+        assert!(write_history(&path, &b));
+        // ...and A's write, computed from data that predates B's, silently destroys it.
+        assert!(write_history(&path, &a));
+
+        let result = read_history(&path).expect("breadcrumb must still parse");
+        assert_eq!(result.nag_count, 1, "A's change survives - it wrote last");
+        assert_eq!(
+            result.last_status, "",
+            "B's change was silently lost: this is the F18 bug, reproduced without a \
+             shared lock standing between the two writers"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lock that cannot be taken must not fall back to writing unlocked - that fallback
+    /// is exactly the old bug's other half (see the module docs on `HistoryLock`). Hold
+    /// the lock file open in this thread for the whole test, so every retry
+    /// [`update_history_at`] makes is guaranteed to fail, then assert it gives up having
+    /// written nothing: the breadcrumb on disk is still byte-for-byte the seed, never the
+    /// mutation the caller asked for.
+    #[test]
+    fn a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history() {
+        let dir = temp_dir("lock_timeout");
+        let path = dir.join("license-history.json");
+        let seed = History {
+            was_business: true,
+            last_status: "active".to_string(),
+            nag_count: 3,
+            ..History::default()
+        };
+        assert!(write_history(&path, &seed));
+
+        // Hold the lock ourselves for the whole test - every attempt inside
+        // `update_history_at` below must see it already taken.
+        let held = HistoryLock::acquire(&lock_path(&path));
+        assert!(
+            held.is_some(),
+            "the test's own lock acquisition must succeed"
+        );
+
+        let wrote = update_history_at(&path, |h| {
+            h.nag_count = 999;
+            h.last_status = "this must never reach disk".to_string();
+        });
+        assert!(!wrote, "a timed-out lock must report no write happened");
+
+        drop(held);
+
+        let result = read_history(&path).expect("breadcrumb must still parse");
+        assert_eq!(
+            result, seed,
+            "the file must be untouched: a lock timeout must never silently replace \
+             history with a write that never actually held the lock"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

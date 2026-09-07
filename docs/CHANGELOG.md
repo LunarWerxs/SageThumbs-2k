@@ -113,6 +113,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   were its own leftover junk. Creating the folder is now a single atomic step, so only a folder
   this run actually created can ever be removed on a failed move, and only while still empty.
 
+- **Licence records are safe when two people use the same PC.** A background check that
+  keeps track of licence status on shared computers could, in rare timing, have one
+  person's update quietly overwrite another's. It now waits its turn properly, and gives
+  up cleanly rather than overwriting newer information if it ever can't.
+
 - **Signing in to Settings Sync no longer looks like it failed when only the first cloud sync
   did.** Signing in saves your account right away, but if the very first sync to the cloud
   couldn't finish, the status line and the "Stop syncing" button used to say you were fully
