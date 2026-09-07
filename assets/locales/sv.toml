@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "Tangentkombination för omedelbar sparning av hela skä
 cv_open_folder = "Öppna utdatamappen?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Öppna mapp"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Försök igen med misslyckade"
 
 # Quick preview
 nav_quickpreview = "Snabbgranskning"

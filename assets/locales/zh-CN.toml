@@ -250,6 +250,8 @@ tip_shot_quick_hotkey = "用于即时全屏快速保存的快捷键（仅在启�
 cv_open_folder = "打开输出文件夹？"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "打开文件夹"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "重试失败项"
 
 # Quick preview
 nav_quickpreview = "快速预览"

@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "Kombinacija tipk za takojšnje shranjevanje celega zasl
 cv_open_folder = "Odpri izhodno mapo?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Odpri mapo"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Ponovi neuspešne"
 
 # Quick preview
 nav_quickpreview = "Hitri predogled"

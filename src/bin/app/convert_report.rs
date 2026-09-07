@@ -1,5 +1,5 @@
 //! The Convert dialog's failure report: a scrollable, COPYABLE list of the files a batch
-//! could not convert and why.
+//! could not convert and why, with a button to run just those again.
 //!
 //! 2026-09-05 audit, F11. The completion message box already named the files that failed
 //! (issue #34) but not the reason, and a message box cannot be copied out of by any means a
@@ -8,13 +8,21 @@
 //! FULL path and reason, and a Copy button; it replaces the message box only when something
 //! failed, so a clean run still gets the one-line box it always did.
 //!
+//! E01 of the same audit adds the retry. The report already knew exactly which inputs
+//! failed, but received them as rendered text, so the only way to act on it was to select
+//! those files in Explorer again by hand. It now receives the structured failures beside
+//! the text and offers "Retry failed", which hands the caller the failed inputs, verbatim,
+//! to run through the same batch with the same settings. The retry's own report comes back
+//! through this window too, so a second failure can be retried again.
+//!
 //! Built on the same `win::result_wndproc` / `win::result_layout` pair as the Image-info,
-//! Upload-links and OCR result windows, plus one button of its own: a partial run that DID
+//! Upload-links and OCR result windows, plus two buttons of its own: a partial run that DID
 //! write something must still offer to reveal it, which is what the old box's "Open output
-//! folder?" question did.
+//! folder?" question did, and the retry.
 
 use core::cell::{Cell, RefCell};
 
+use sagethumbs2k_core::FileOutcome;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -24,34 +32,59 @@ use crate::dark::dark_ctlcolor;
 use crate::win::{ctl, run_dialog, t, wide, BUTTON, EDIT, IDOK, ID_RESULT_COPY};
 
 const ID_EDIT: i32 = 100;
-/// This dialog's own button, past `ID_RESULT_COPY` (101) so it cannot collide with the
+/// This dialog's own buttons, past `ID_RESULT_COPY` (101) so they cannot collide with the
 /// shared result-dialog ids.
 const ID_OPEN_FOLDER: i32 = 102;
+const ID_RETRY: i32 = 103;
+
+/// What the user chose on the report, for the Convert dialog to act on once this window
+/// has closed and the modal loop has given the owner back its input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReportAction {
+    Close,
+    /// Reveal the run's first output in Explorer.
+    OpenFolder,
+    /// Run exactly these inputs again, with the same settings. They are the failed entries'
+    /// paths as the batch was given them, so the retry reads what the first run read.
+    Retry(Vec<String>),
+}
+
+/// The button that closed the window; [`ReportAction`] is built from it on the way out,
+/// since a `Cell` wants `Copy` and the retry list does not.
+#[derive(Clone, Copy)]
+enum Choice {
+    Close,
+    OpenFolder,
+    Retry,
+}
 
 thread_local! {
     /// The report text, set before `run_dialog`, read in WM_CREATE and by Copy.
     static REPORT: RefCell<String> = const { RefCell::new(String::new()) };
+    /// The failed inputs, verbatim: what Retry hands back.
+    static RETRY_INPUTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Whether this run produced anything to reveal (a total failure has nothing).
     static CAN_OPEN: Cell<bool> = const { Cell::new(false) };
-    /// Set by the Open-folder button, read by the caller once the window closes.
-    static OPEN_REQUESTED: Cell<bool> = const { Cell::new(false) };
+    /// Set by the Open-folder and Retry buttons, read by the caller once the window closes.
+    static CHOICE: Cell<Choice> = const { Cell::new(Choice::Close) };
 }
 
-/// Show `report` over `owner` and return whether the user asked to open the output folder.
-/// `can_open` is false when the run wrote nothing, and then no such button is offered.
-pub(crate) unsafe fn show_convert_failures(owner: HWND, report: &str, can_open: bool) -> bool {
+/// Show `report` over `owner`, with `failed` behind its Retry button, and return what the
+/// user asked for. `can_open` is false when the run wrote nothing, and then no Open-folder
+/// button is offered.
+pub(crate) unsafe fn show_convert_failures(
+    owner: HWND,
+    report: &str,
+    failed: &[FileOutcome],
+    can_open: bool,
+) -> ReportAction {
     REPORT.with(|r| *r.borrow_mut() = report.to_string());
+    RETRY_INPUTS.with(|r| *r.borrow_mut() = failed.iter().map(|f| f.input.clone()).collect());
     CAN_OPEN.with(|c| c.set(can_open));
-    OPEN_REQUESTED.with(|o| o.set(false));
+    CHOICE.with(|c| c.set(Choice::Close));
     // Modal over the Convert dialog, like the format-settings popup: the batch is over, and
     // a report that could be left behind an unrelated window would be missed entirely.
     // Title matches the message box this replaces.
-    //
-    // The shared `result_wndproc` posts a quit when this window is destroyed, which the
-    // modal pump does not consume. Harmless here and only here: the caller tears the
-    // Convert dialog down the moment this returns, so that pending quit is the very thing
-    // that ends its pump. Do not copy this window's modal form to a dialog whose owner
-    // carries on afterwards.
     run_dialog(
         w!("SageThumbs2KConvertReport"),
         Some(report_wndproc),
@@ -60,29 +93,41 @@ pub(crate) unsafe fn show_convert_failures(owner: HWND, report: &str, can_open: 
         380,
         Some(owner),
     );
-    OPEN_REQUESTED.with(Cell::get)
+    match CHOICE.with(Cell::get) {
+        Choice::Close => ReportAction::Close,
+        Choice::OpenFolder => ReportAction::OpenFolder,
+        Choice::Retry => ReportAction::Retry(RETRY_INPUTS.with(|r| r.borrow().clone())),
+    }
 }
 
 /// Headless capture of the report window (`--shot <out.png> --window convert-report`),
-/// built off-screen and `PrintWindow`ed like every other app-window shot. Canned content,
-/// so the layout (scrollable list, the three-button row inside the client) is verifiable
-/// without a batch that actually has to fail first.
+/// built off-screen and `PrintWindow`ed like every other app-window shot. Canned failures
+/// rendered through the same `failure_report` the real run uses, so the layout (scrollable
+/// list, the four-button row inside the client) is verifiable without a batch that actually
+/// has to fail first, and the shot cannot drift from what a user sees.
 pub(crate) unsafe fn run_shot_convert_report(out: &str) -> bool {
-    REPORT.with(|r| {
-        *r.borrow_mut() = concat!(
-            "Converted 2 of 5 image(s).\n\n",
-            "These files could not be converted:\n",
-            "C:\\photos\\holiday\\DSC_0043.psd\n",
-            "    cannot decode C:\\photos\\holiday\\DSC_0043.psd\n",
-            "C:\\photos\\holiday\\scan (2).tif\n",
-            "    Access is denied. (os error 5)\n",
-            "C:\\photos\\holiday\\render.exr\n",
-            "    convert: no writer for .webp"
-        )
-        .to_string();
-    });
+    let failed = [
+        FileOutcome::failed(
+            r"C:\photos\holiday\DSC_0043.psd",
+            None,
+            r"cannot decode C:\photos\holiday\DSC_0043.psd",
+        ),
+        FileOutcome::failed(
+            r"C:\photos\holiday\scan (2).tif",
+            None,
+            "Access is denied. (os error 5)",
+        ),
+        FileOutcome::failed(
+            r"C:\photos\holiday\render.exr",
+            None,
+            "convert: no writer for .webp",
+        ),
+    ];
+    let counts = t("cv_done").replace("{ok}", "2").replace("{total}", "5");
+    REPORT.with(|r| *r.borrow_mut() = crate::convert::failure_report(&counts, &failed));
+    RETRY_INPUTS.with(|r| *r.borrow_mut() = failed.iter().map(|f| f.input.clone()).collect());
     CAN_OPEN.with(|c| c.set(true));
-    OPEN_REQUESTED.with(|o| o.set(false));
+    CHOICE.with(|c| c.set(Choice::Close));
     let hinst: HINSTANCE = match GetModuleHandleW(None) {
         Ok(h) => h.into(),
         Err(_) => return false,
@@ -151,19 +196,32 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     let _ = SetWindowTextW(edit, PCWSTR(w.as_ptr()));
 
     // Buttons bottom-right, inside the client: Close rightmost, then Copy, then the
-    // optional Open-folder button.
+    // optional Open-folder button, then Retry. `leftmost` walks left as each is placed.
+    let mut leftmost = copy_x;
     if CAN_OPEN.with(Cell::get) {
+        leftmost -= gap + btn_w;
         ctl(
             hwnd,
             BUTTON,
             t("btn_open_folder"),
             WS_TABSTOP,
-            copy_x - gap - btn_w,
+            leftmost,
             btn_y,
             btn_w,
             btn_h,
             ID_OPEN_FOLDER,
             hinst,
+        );
+    }
+    if RETRY_INPUTS.with(|r| !r.borrow().is_empty()) {
+        // Sized to its label rather than the shared 82px: "Retry failed" runs long in
+        // several languages, and a clipped verb on the one button that acts is worse than
+        // an uneven row. The row has room for it, which the locale test below checks.
+        let label = t("btn_retry_failed");
+        let retry_w = crate::convert::cv_btn_w(hwnd, label, btn_w);
+        leftmost -= gap + retry_w;
+        ctl(
+            hwnd, BUTTON, label, WS_TABSTOP, leftmost, btn_y, retry_w, btn_h, ID_RETRY, hinst,
         );
     }
     ctl(
@@ -203,17 +261,61 @@ extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
         }
-        // The Open-folder button is this dialog's own; it records the request and closes,
-        // so the reveal happens after the modal loop has given the owner back its input.
-        // Everything else (create, Copy, close, quit) is the shared result-dialog behaviour.
-        if msg == WM_COMMAND && (wparam.0 & 0xFFFF) as i32 == ID_OPEN_FOLDER {
-            OPEN_REQUESTED.with(|o| o.set(true));
-            let _ = DestroyWindow(hwnd);
+        // The Open-folder and Retry buttons are this dialog's own; each records the request
+        // and closes, so the reveal or the retry happens after the modal loop has given the
+        // owner back its input. Everything else (create, Copy, close) is the shared
+        // result-dialog behaviour.
+        if msg == WM_COMMAND {
+            let choice = match (wparam.0 & 0xFFFF) as i32 {
+                ID_OPEN_FOLDER => Some(Choice::OpenFolder),
+                ID_RETRY => Some(Choice::Retry),
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                CHOICE.with(|c| c.set(choice));
+                let _ = DestroyWindow(hwnd);
+                return LRESULT(0);
+            }
+        }
+        // NOT the shared WM_DESTROY, which posts a quit for the top-level result dialogs'
+        // pump. This window is modal, and `run_dialog`'s modal pump ends the moment the
+        // window is gone with no quit needed; the posted one would sit in the queue until
+        // the Convert dialog's own pump read it, which ended that dialog mid-retry. Before
+        // the retry existed the stray quit was harmless only because the caller tore the
+        // Convert dialog down the moment this returned.
+        if msg == WM_DESTROY {
             return LRESULT(0);
         }
         if let Some(r) = crate::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
             return r;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The Retry button is sized to its label, but the row it shares is finite: Close, Copy
+    /// and Open folder take three shared-width slots from the right, and what is left of
+    /// the 560px window's client (about 254px once the frame and the margins are paid) is
+    /// the most any translation of `btn_retry_failed` may need. Walks all 36 shipped
+    /// locales through the same sizing the real window uses, so a translation long enough
+    /// to push the button off the left edge fails here rather than shipping clipped.
+    #[test]
+    fn every_locale_retry_label_fits_the_button_row() {
+        const RETRY_W_MAX: i32 = 240;
+        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+            let label = pairs
+                .iter()
+                .find(|(k, _)| *k == "btn_retry_failed")
+                .map(|(_, v)| *v)
+                .unwrap_or_else(|| panic!("{code}: btn_retry_failed missing"));
+            let w = crate::convert::cv_btn_col(unsafe { crate::win::design_text_w(label) }, 82);
+            assert!(
+                w <= RETRY_W_MAX,
+                "{code}: \"{label}\" needs a {w}px button, over the {RETRY_W_MAX}px the row \
+                 has left beside Open folder, Copy and Close; shorten the translation"
+            );
+        }
     }
 }

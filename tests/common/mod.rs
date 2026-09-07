@@ -50,3 +50,60 @@ pub unsafe fn remove_test_env(key: &str) {
     // SAFETY: forwarded to the caller's own obligation, documented above.
     unsafe { std::env::remove_var(key) };
 }
+
+/// Every entry of a zip as `(name, decompressed bytes)`, for the doctor-bundle scrub tests
+/// (2026-09-05 audit, E01). Decompressed on purpose: a deflated entry never contains its
+/// plaintext, so a scan of the raw archive bytes would pass with the secret right there.
+pub fn zip_entries(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let f = std::fs::File::open(path).expect("open the bundle");
+    let mut zip = zip::ZipArchive::new(f).expect("a zip");
+    (0..zip.len())
+        .map(|i| {
+            let mut entry = zip.by_index(i).expect("entry");
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).expect("read entry");
+            (entry.name().to_string(), bytes)
+        })
+        .collect()
+}
+
+/// The doctor-bundle contract shared by both storage backends: none of `secrets` appears in
+/// ANY entry, byte for byte; the four entries are all there; and the ordinary preferences the
+/// tests seed (`Theme=1`, `MaxSize=200`, the `[jpg]` section) survive in `settings.txt`, so
+/// a scrub that simply dropped the whole file would fail here too.
+pub fn assert_bundle_is_scrubbed(entries: &[(String, Vec<u8>)], secrets: &[&str]) {
+    let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    for (name, bytes) in entries {
+        for secret in secrets {
+            assert!(
+                !contains(bytes, secret.as_bytes()),
+                "{name} carries the sign-in state {secret:?}:\n{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    for expect in [
+        "doctor-report.txt",
+        "formats.json",
+        "log-tail.txt",
+        "settings.txt",
+    ] {
+        assert!(names.contains(&expect), "missing {expect}: {names:?}");
+    }
+    let settings = entries
+        .iter()
+        .find(|(n, _)| n == "settings.txt")
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        .expect("settings.txt");
+    for kept in ["Theme=1", "MaxSize=200", "[jpg]", "Enabled=0"] {
+        assert!(
+            settings.contains(kept),
+            "{kept} missing: the preferences must survive the scrub:\n{settings}"
+        );
+    }
+    assert!(
+        !settings.contains("[OAuth]") && !settings.contains("OAuth_"),
+        "the credential container itself must not be listed:\n{settings}"
+    );
+}

@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "La combinación de teclas para el guardado rápido de p
 cv_open_folder = "¿Abrir carpeta de salida?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Abrir carpeta"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Reintentar fallidos"
 
 # Quick preview
 nav_quickpreview = "Vista previa rápida"

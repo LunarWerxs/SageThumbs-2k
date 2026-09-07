@@ -248,6 +248,8 @@ tip_shot_quick_hotkey = "즉시 전체 화면 빠른 저장용 키 조합(빠른
 cv_open_folder = "출력 폴더를 열까요?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "폴더 열기"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "실패한 항목 다시 시도"
 
 # Quick preview
 nav_quickpreview = "빠른 미리 보기"

@@ -29,6 +29,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **Retry only the files that failed, from the command line or from the failure report.** After
+  a batch that only partly succeeded, `st2k batch --retry-from report.json` re-runs exactly the
+  files a saved `--json` report lists as failed, with whatever options you give it, and reports
+  the retry the same way so a second retry can follow on. In the app, the Convert dialog's
+  failure report now has a "Retry failed" button that runs those same files again with the same
+  settings and shows the result the same way.
+
 - **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
   info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)
   from the command line or through the MCP tool used by AI assistants and scripts, matching
@@ -105,6 +112,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   previously only double-clicking could get you there.
 
 ### Fixed
+
+- **The diagnostics bundle is safe to hand to a stranger, and complete enough to be useful.**
+  The zip that `st2k doctor --bundle` writes now carries a snapshot of your stored settings, which
+  a bug report about a format toggle, a menu item or a convert default previously needed as a
+  separate export. That snapshot leaves out your sign-in (the refresh token, the licence
+  certificate and the account identity) by the same rule the settings export already uses, so
+  anything stored alongside them later stays out as well.
 
 - **Canon CRW thumbnails are fast again.** Older Canon RAW files in the `.crw` format (as
   opposed to the newer `.cr2`/`.cr3`) were not recognised as a camera RAW container, so their

@@ -248,6 +248,8 @@ tip_shot_quick_hotkey = "Skrót klawiszowy do szybkiego zapisu całego ekranu (u
 cv_open_folder = "Otworzyć folder wyjścia?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Otwórz folder"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Ponów nieudane"
 
 # Quick preview
 nav_quickpreview = "Szybki podgląd"

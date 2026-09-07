@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "แป้นพิมพ์ลัดสำหรับ�
 cv_open_folder = "เปิดโฟลเดอร์ผลลัพธ์หรือไม่?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "เปิดโฟลเดอร์"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "ลองใหม่ที่ล้มเหลว"
 
 # Quick preview
 nav_quickpreview = "แสดงตัวอย่างด่วน"

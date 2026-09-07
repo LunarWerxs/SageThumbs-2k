@@ -269,6 +269,8 @@ cv_open_folder = "Open output folder?"
 # The same offer as a BUTTON, on the failure report window (which replaces the
 # message box when something did not convert, so the offer has to survive there).
 btn_open_folder = "Open folder"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Retry failed"
 # Resize-mode dropdown
 cv_resize_defined = "Defined size"
 cv_resize_1080 = "Fit 1920 × 1080"

@@ -250,6 +250,8 @@ tip_shot_quick_hotkey = "用於快速全螢幕快速儲存的快速鍵組合（�
 cv_open_folder = "開啟輸出資料夾？"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "開啟資料夾"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "重試失敗項目"
 
 # Quick preview
 nav_quickpreview = "快速預覽"

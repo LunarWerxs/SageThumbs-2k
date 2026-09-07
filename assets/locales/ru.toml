@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "Сочетание клавиш для мгновенн
 cv_open_folder = "Открыть папку вывода?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Открыть папку"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Повторить неудачные"
 
 # Quick preview
 nav_quickpreview = "Быстрый просмотр"

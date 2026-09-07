@@ -245,6 +245,8 @@ tip_shot_quick_hotkey = "Näppäinyhdistelmä pikatallennus-kuvakaappaukselle (k
 cv_open_folder = "Avaa tulosten kansio?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Avaa kansio"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Yritä epäonnistuneita uudelleen"
 
 # Quick preview
 nav_quickpreview = "Pikaesikatselu"

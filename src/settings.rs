@@ -33,6 +33,39 @@ pub use store::{ini_path, portable, INI_NAME, ROOT_SECTION as PORTABLE_ROOT_SECT
 /// The subkey (registry) / section (portable ini) holding per-menu-item visibility.
 const MENU_ITEMS: &str = "MenuItems";
 
+/// The registry subkey, under the settings root, that holds the sign-in state on an
+/// installed copy: the DPAPI-encrypted OAuth refresh token, the offline licence certificate
+/// and the signed-in identity. The app's `cred_store` builds its key path from this constant,
+/// so anything it ever stores lands under a name [`is_credential_subkey`] recognises.
+pub const CREDENTIAL_SUBKEY: &str = "OAuth";
+
+/// The portable-mode twin of [`CREDENTIAL_SUBKEY`]: on a portable copy the same values live
+/// as `OAuth_*` names in the ini's ROOT section, beside every ordinary preference. The
+/// `cred_store` builds every portable value name from this prefix, for the same reason.
+pub const CREDENTIAL_ROOT_PREFIX: &str = "OAuth_";
+
+/// Whether a subkey (registry) / section (ini) name is the sign-in state rather than a
+/// preference. The settings export/import and the doctor's shareable bundle both leave it
+/// out. Case-insensitive, as registry key names are.
+///
+/// Classified by the CONTAINER, never by a list of value names: the credential store
+/// writes every credential through one key path and one prefix, so a value added there
+/// later is scrubbed by construction, where a hand-written list of names would have to be
+/// remembered (2026-09-05 audit, E01). The classification lives here rather than in the
+/// app because `st2k doctor` is in this library and has to apply the same rule.
+pub fn is_credential_subkey(name: &str) -> bool {
+    name.eq_ignore_ascii_case(CREDENTIAL_SUBKEY)
+}
+
+/// Whether a ROOT value name is the sign-in state on a portable copy. See
+/// [`is_credential_subkey`] for why this is a prefix test and not a list.
+pub fn is_credential_root_value(name: &str) -> bool {
+    let n = CREDENTIAL_ROOT_PREFIX.len();
+    name.len() >= n
+        && name.is_char_boundary(n)
+        && name[..n].eq_ignore_ascii_case(CREDENTIAL_ROOT_PREFIX)
+}
+
 /// Every value in the portable ini's root section (`sub = None`) or a named subkey section.
 /// Only meaningful when [`portable`] is true — a registry install walks its own key tree.
 /// Exists so the Settings ▸ Diagnostics export/import round-trip works in portable mode
@@ -2161,6 +2194,32 @@ impl MenuVisibility {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rule the export/import and the doctor bundle both scrub by (2026-09-05 audit,
+    /// E01): the sign-in state is recognised by its container, case-insensitively, and a
+    /// name that merely resembles it is not swept up (a `Sub` value in the root, a section
+    /// called `OAuthTokens`), since a false positive here silently drops a real preference.
+    #[test]
+    fn credential_state_is_classified_by_container_not_by_value_name() {
+        assert!(is_credential_subkey("OAuth"));
+        assert!(is_credential_subkey("oauth"));
+        assert!(!is_credential_subkey("OAuthTokens"));
+        assert!(!is_credential_subkey("MenuItems"));
+        assert!(!is_credential_subkey(""));
+
+        assert!(is_credential_root_value("OAuth_RefreshToken"));
+        assert!(is_credential_root_value("oauth_licencecert"));
+        assert!(is_credential_root_value("OAuth_Whatever_Comes_Next"));
+        assert!(!is_credential_root_value("OAuth"));
+        assert!(!is_credential_root_value("Sub"));
+        assert!(!is_credential_root_value("Theme"));
+        assert!(!is_credential_root_value("\u{e9}Auth_"));
+        assert_eq!(
+            format!("{CREDENTIAL_SUBKEY}_"),
+            CREDENTIAL_ROOT_PREFIX,
+            "the two backends must name the same container"
+        );
+    }
 
     // The clamps are tested hermetically through the PURE helpers below, with
     // explicit out-of-range inputs — no dependency on whatever happens to be in

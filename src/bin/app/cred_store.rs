@@ -38,30 +38,26 @@ const V_PICTURE: &str = "Picture";
 /// root-level setting `sagethumbs2k_core::settings::set_string`/`get_string_opt` might
 /// hold, since portable mode routes through those (the root of the portable ini) rather
 /// than the `OAuth` registry subkey used on an installed copy.
-const PORTABLE_PREFIX: &str = "OAuth_";
+///
+/// The name itself is the library's: `settings_io`'s export/import and `st2k doctor`'s
+/// shareable bundle both scrub by it, and the doctor lives in the library, so the constant
+/// has to (2026-09-05 audit, E01). Every portable value this module writes goes through
+/// [`portable_key`], which is what makes the scrub hold by construction.
+const PORTABLE_PREFIX: &str = settings::CREDENTIAL_ROOT_PREFIX;
 
 /// The registry subkey (under the settings root) holding everything this module stores on an
-/// installed copy. See [`oauth_key`].
-const OAUTH_SUBKEY: &str = "OAuth";
+/// installed copy. See [`oauth_key`], and [`PORTABLE_PREFIX`] for why the name is the
+/// library's.
+const OAUTH_SUBKEY: &str = settings::CREDENTIAL_SUBKEY;
 
-/// Whether `name` is this module's registry subkey, so the settings export/import
-/// (`settings_io`) leaves it alone: it holds the DPAPI blob, the offline licence certificate
-/// and the signed-in identity, none of which is a preference. Case-insensitive, as registry
-/// key names are.
-pub(crate) fn is_credential_subkey(name: &str) -> bool {
-    name.eq_ignore_ascii_case(OAUTH_SUBKEY)
-}
-
-/// The portable-mode twin of [`is_credential_subkey`]. On a portable copy the same values
-/// live as `OAuth_*` names in the ini's ROOT section, beside every ordinary preference, and a
-/// "serialize the whole root" export carried the encrypted refresh token, the licence
-/// certificate and the account identity in a file the export itself calls safe to hand-edit,
-/// while importing another backup replaced or deleted the current sign-in (2026-09-05 audit,
-/// F05). One classification for both backends, owned here beside the names it classifies.
-pub(crate) fn is_credential_root_value(name: &str) -> bool {
-    let n = PORTABLE_PREFIX.len();
-    name.len() >= n && name.is_char_boundary(n) && name[..n].eq_ignore_ascii_case(PORTABLE_PREFIX)
-}
+/// Whether a name is this module's registry subkey, or its portable-mode root value, so the
+/// settings export/import (`settings_io`) leaves it alone: it holds the DPAPI blob, the
+/// offline licence certificate and the signed-in identity, none of which is a preference.
+/// A "serialize the whole root" export used to carry all three in a file the export itself
+/// calls safe to hand-edit, and importing another backup replaced or deleted the current
+/// sign-in (2026-09-05 audit, F05). One classification for both backends, defined beside the
+/// names it classifies; re-exported here so this module stays the app's one window onto it.
+pub(crate) use sagethumbs2k_core::settings::{is_credential_root_value, is_credential_subkey};
 
 /// The signed-in user's identity, for the "Synced as …" UI row. Not a secret. `email` is a
 /// per-app privacy-relay address (`<hex>@privaterelay.connections.icu`), never the user's

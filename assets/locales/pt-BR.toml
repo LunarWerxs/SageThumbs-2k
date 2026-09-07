@@ -248,6 +248,8 @@ tip_shot_quick_hotkey = "A combinação de teclas para o salvamento rápido de t
 cv_open_folder = "Abrir pasta de saída?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Abrir pasta"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Repetir falhas"
 
 # Quick preview (QuickLook-style "press Space, see the file")
 nav_quickpreview = "Visualização rápida"

@@ -23,6 +23,9 @@ USAGE:
                                                 a file that fails is listed with its cause, one 'failed' line
                                                 each; --json returns the whole per-file report instead;
                                                 'info' returns a JSON array (dimensions/EXIF/audio tags)
+  st2k batch <thumbnail|convert> --retry-from report.json [same options]
+                                                re-run only the files a saved --json report lists as failed,
+                                                in place of <in|dir...>; the retry reports the same way
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
   st2k prebuild  <dir|file...> [--recurse] [--size N,N] [--rebuild-all] [--jobs N]
                                                 fill Explorer's thumbnail cache ahead of browsing
@@ -72,6 +75,9 @@ const VALUE_FLAGS: &[&str] = &[
     // `doctor --bundle out.zip`'s destination path — must be excluded the same way `--out`
     // is, or "out.zip" would be read as a second doctor probe target.
     "--bundle",
+    // `batch --retry-from report.json`: the previous run's `--json` report, whose failed
+    // inputs become this run's input list (2026-09-05 audit, E01).
+    "--retry-from",
 ];
 
 /// Flags that take NO value — excluded from `pos` on their own, without consuming the
@@ -201,10 +207,45 @@ fn run_convert(pos: &[&String], rest: &[String]) -> Result<String, String> {
     cli::convert(i, o, q, wq, resize)
 }
 
-/// `batch <op> <inputs...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...] [--json]`
+/// The input list `batch --retry-from <report.json>` runs: the failed entries of a report
+/// `batch --json` wrote earlier, verbatim (2026-09-05 audit, E01). Every other option still
+/// comes from this command line, so a retry to a different `--out` folder or format is one
+/// flag away, and the retry writes a normal report, so a second retry can chain off it.
+///
+/// Refused rather than merged when inputs are ALSO given on the command line: a retry is
+/// exactly the failures, and a mixed list would make the report's counts mean two things.
+/// A report with nothing failed is refused too, the same way an empty input list is, since
+/// a run over nothing has no report to give.
+fn retry_inputs(rest: &[String], given: &[String]) -> Result<Vec<String>, String> {
+    let path = flag(rest, "--retry-from").ok_or("--retry-from needs the report's path")?;
+    if let Some(first) = given.first() {
+        return Err(format!(
+            "--retry-from takes its inputs from the report; do not also give them on the \
+             command line: unexpected \"{first}\""
+        ));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("--retry-from: cannot read {path}: {e}"))?;
+    let inputs = sagethumbs2k_core::BatchReport::failed_inputs_from_json(&text).map_err(|why| {
+        format!("--retry-from: {path} is {why}; it has to be a report `batch --json` wrote")
+    })?;
+    if inputs.is_empty() {
+        return Err(format!(
+            "--retry-from: {path} lists no failed files, nothing to retry"
+        ));
+    }
+    Ok(inputs)
+}
+
+/// `batch <op> <inputs...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...] [--json] [--retry-from report.json]`
 fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
     let op = need(pos, 0)?;
-    let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
+    let given: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
+    let inputs = if has_flag(rest, "--retry-from") {
+        retry_inputs(rest, &given)?
+    } else {
+        given
+    };
     if inputs.is_empty() {
         return Err("batch needs at least one input file or directory".to_string());
     }
@@ -671,6 +712,122 @@ mod tests {
                 "{verb}: {err}"
             );
         }
+    }
+
+    /// 2026-09-05 audit, E01: a `--json` batch report is something a script can ACT on.
+    /// `--retry-from` runs exactly the files the saved report lists as failed, with the
+    /// options given on this command line, and reports the retry the same way so a second
+    /// retry chains off the first. The refusals are the ways a script gets it wrong: a file
+    /// that is not a batch report, a report with nothing to retry, inputs given as well, or
+    /// the flag with no path. Against the pre-fix code the flag is unknown and its value is
+    /// read as an input path.
+    #[test]
+    fn retry_from_runs_only_the_failed_inputs_and_refuses_anything_else() {
+        let dir = scratch("retry");
+        let good = save_png(&dir.join("good.png"));
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"not a png").unwrap();
+        let broken = broken.to_str().unwrap().to_string();
+        let out = dir.join("out");
+        let out = out.to_str().unwrap().to_string();
+
+        let first = run(&args(&[
+            "batch", "convert", &good, &broken, "--to", "webp", "--out", &out, "--json",
+        ]))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["status"], "partial");
+        let report = dir.join("report.json");
+        std::fs::write(&report, &first).unwrap();
+        let report = report.to_str().unwrap().to_string();
+
+        // The broken file is fixed between the runs, so the retry has something to convert.
+        save_png(std::path::Path::new(&broken));
+        let retry = run(&args(&[
+            "batch",
+            "convert",
+            "--retry-from",
+            &report,
+            "--to",
+            "webp",
+            "--out",
+            &out,
+            "--json",
+        ]))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&retry).unwrap();
+        assert_eq!(v["status"], "ok", "{retry}");
+        assert_eq!(v["requested"], 1, "only the failed file is run: {retry}");
+        assert_eq!(v["results"][0]["input"], broken.as_str());
+        assert!(
+            v["results"][0]["output"]
+                .as_str()
+                .unwrap()
+                .starts_with(&out),
+            "the retry honours this command line's --out: {retry}"
+        );
+
+        // Chaining: the retry's own report is a valid report, with nothing left to retry.
+        let clean = dir.join("clean.json");
+        std::fs::write(&clean, &retry).unwrap();
+        let err = run(&args(&[
+            "batch",
+            "convert",
+            "--retry-from",
+            clean.to_str().unwrap(),
+            "--to",
+            "webp",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("nothing to retry"), "{err}");
+
+        // Not a batch report: a pdf report, a bare array, and an image.
+        for (what, bytes) in [
+            (
+                "pdf",
+                br#"{"output":"x.pdf","status":"ok","requested":1,"combined":1,"omitted":[]}"#
+                    .to_vec(),
+            ),
+            ("array", br#"[{"input":"a.png"}]"#.to_vec()),
+            ("png", std::fs::read(&good).unwrap()),
+        ] {
+            let bad = dir.join(format!("{what}.json"));
+            std::fs::write(&bad, bytes).unwrap();
+            let err = run(&args(&[
+                "batch",
+                "convert",
+                "--retry-from",
+                bad.to_str().unwrap(),
+                "--to",
+                "webp",
+            ]))
+            .unwrap_err();
+            assert!(
+                err.starts_with("--retry-from:") && err.contains("not "),
+                "{what}: the refusal must say the file is not a batch report: {err}"
+            );
+        }
+
+        // Inputs alongside the flag, and the flag with no path.
+        let err = run(&args(&[
+            "batch",
+            "convert",
+            &good,
+            "--retry-from",
+            &report,
+            "--to",
+            "webp",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("do not also give them"), "{err}");
+        let err = run(&args(&["batch", "convert", "--retry-from", "--to", "webp"])).unwrap_err();
+        assert!(err.contains("needs the report's path"), "{err}");
+        assert!(
+            VALUE_FLAGS.contains(&"--retry-from"),
+            "the report path must never be read as an input"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The list verbs keep taking a list: `pdf`/`cbz` with two inputs still combine, and the

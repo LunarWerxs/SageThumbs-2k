@@ -247,6 +247,8 @@ tip_shot_quick_hotkey = "तत्काल पूर्ण-स्क्री�
 cv_open_folder = "आउटपुट फ़ोल्डर खोलें?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "फ़ोल्डर खोलें"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "विफल फिर से आज़माएँ"
 
 # Quick preview
 nav_quickpreview = "त्वरित पूर्वावलोकन"

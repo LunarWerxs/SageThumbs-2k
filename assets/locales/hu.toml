@@ -249,6 +249,8 @@ tip_shot_quick_hotkey = "Az azonnali teljes képernyős gyorsmentés kombináci�
 cv_open_folder = "Megnyitom az output mappát?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Mappa megnyitása"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Sikertelenek újra"
 
 # Quick preview
 nav_quickpreview = "Gyors előnézet"

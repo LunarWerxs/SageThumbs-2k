@@ -9,7 +9,7 @@ use core::ffi::c_void;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
@@ -25,6 +25,7 @@ use image::ImageFormat;
 
 use sagethumbs2k_core::{settings, ConvertOpts, FileOutcome, Resize, Target};
 
+use crate::convert_report::ReportAction;
 use crate::dark::{dark_ctlcolor, dark_theme_combo};
 use crate::win::{
     checked, combo_sel, ctl, get_edit_text, make_lparam, pick_folder, read_listfile, run_dialog,
@@ -160,8 +161,9 @@ fn cv_label_col(format_w: i32, folder_w: i32) -> i32 {
 }
 
 /// A push button's design-px width: what its label measures plus padding, never below
-/// `floor` (the English width the row was built around).
-fn cv_btn_col(label_w: i32, floor: i32) -> i32 {
+/// `floor` (the English width the row was built around). Shared with the failure report's
+/// Retry button, which sizes itself the same way.
+pub(crate) fn cv_btn_col(label_w: i32, floor: i32) -> i32 {
     (label_w + CV_BTN_PAD).max(floor)
 }
 
@@ -174,7 +176,7 @@ unsafe fn cv_label_w(hwnd: HWND) -> i32 {
 }
 
 /// [`cv_btn_col`] for the language actually loaded.
-unsafe fn cv_btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
+pub(crate) unsafe fn cv_btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
     cv_btn_col(crate::win::text_width(hwnd, label), floor)
 }
 
@@ -205,6 +207,12 @@ static LAST_OUTPUT: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// 2026-09-05 audit F11). Written by the worker once the run has finished, read on the UI
 /// thread. Deliberately empty after a cancelled run.
 static FAILED_FILES: Mutex<Vec<FileOutcome>> = Mutex::new(Vec::new());
+/// Files fully converted since the Convert button was pressed, ACROSS the retry rounds
+/// (2026-09-05 audit, E01). Each round reports its own counts, but whether there is an
+/// output folder worth opening is a question about the whole chain: a first run that
+/// wrote 57 files and a retry that wrote none must still offer to reveal the 57. Reset
+/// with `LAST_OUTPUT` when a fresh run starts, added to as each round finishes.
+static CONVERTED_SO_FAR: AtomicUsize = AtomicUsize::new(0);
 /// Set true while a batch is running; the Cancel button checks it to decide
 /// between "abort the run" and "close the dialog". Cleared when the run finishes.
 static CONVERT_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -1002,8 +1010,9 @@ fn convert_one_file(
     reduce_job_outputs(is_pdf, &produced_per_job)
 }
 
-/// Read the dialog options and run the batch conversion on a worker thread,
-/// posting progress back to the window.
+/// The Convert button: a FRESH run over every file the dialog was opened with. Forgets the
+/// previous run's output and count so a later "open folder" reveals this run's file, not a
+/// stale one, then launches.
 unsafe fn start_convert(hwnd: HWND) {
     let files = match CONVERT_FILES.get() {
         Some(f) => f.clone(),
@@ -1012,6 +1021,19 @@ unsafe fn start_convert(hwnd: HWND) {
     if files.is_empty() {
         return;
     }
+    *LAST_OUTPUT.lock().unwrap() = None;
+    CONVERTED_SO_FAR.store(0, Ordering::Relaxed);
+    launch_batch(hwnd, files);
+}
+
+/// Read the dialog options and run the batch conversion over `files` on a worker thread,
+/// posting progress back to the window. The one launcher for a fresh run and for a retry
+/// of the failures (2026-09-05 audit, E01): the retry reads the same controls this reads,
+/// and they cannot have changed in between, because the report that offers the retry is
+/// modal over this dialog and hands control straight back here. Capturing the settings
+/// into a struct at the first run would say the same thing with a second copy to keep
+/// true.
+unsafe fn launch_batch(hwnd: HWND, files: Vec<String>) {
     let tgt = resolve_cv_target(combo_sel(hwnd, CID_FORMAT));
     let quality = QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8;
     let png_level = PNG_LEVEL.load(Ordering::Relaxed).clamp(0, 9) as u32;
@@ -1040,9 +1062,6 @@ unsafe fn start_convert(hwnd: HWND) {
         let _ = EnableWindow(btn, false);
     }
 
-    // Fresh run: forget any prior run's output so a later "open folder" reveals
-    // this run's file, not a stale one.
-    *LAST_OUTPUT.lock().unwrap() = None;
     CONVERT_CANCEL.store(false, Ordering::Relaxed);
     CONVERT_RUNNING.store(true, Ordering::Relaxed);
 
@@ -1430,8 +1449,9 @@ unsafe fn on_convert_progress(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 /// F11 is about, since the files it hides are the ones nobody can retry.
 ///
 /// Pure and separately testable on purpose: the surrounding function puts up a modal
-/// window, which no test can drive.
-fn failure_report(summary: &str, failed: &[FileOutcome]) -> String {
+/// window, which no test can drive. The report window's headless shot renders its canned
+/// failures through this too, so the shot cannot drift from the real text.
+pub(crate) fn failure_report(summary: &str, failed: &[FileOutcome]) -> String {
     let mut out = format!("{summary}\n\n{}", t("cv_failed_list"));
     for f in failed {
         out.push_str(&format!("\n{}", f.input));
@@ -1451,24 +1471,46 @@ unsafe fn on_convert_done(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT
         .replace("{total}", &lparam.0.to_string());
     let failed = FAILED_FILES.lock().unwrap().clone();
     // When at least one file was written, offer to open the output folder (Explorer with
-    // the first produced file selected). Nothing written → no offer.
-    let reveal = LAST_OUTPUT.lock().unwrap().clone().filter(|_| ok > 0);
-    let open_folder = if failed.is_empty() {
-        report_clean_run(hwnd, &counts, reveal.is_some())
+    // the first produced file selected). Nothing written → no offer. Counted over the whole
+    // retry chain, so a retry that converted nothing still offers the first run's output.
+    let converted = CONVERTED_SO_FAR.fetch_add(ok, Ordering::Relaxed) + ok;
+    let reveal = LAST_OUTPUT
+        .lock()
+        .unwrap()
+        .clone()
+        .filter(|_| converted > 0);
+    let action = if failed.is_empty() {
+        if report_clean_run(hwnd, &counts, reveal.is_some()) {
+            ReportAction::OpenFolder
+        } else {
+            ReportAction::Close
+        }
     } else {
         // Something failed: the report window instead of the box, because a list a user
         // cannot copy out is a list they have to reproduce by hand (2026-09-05 audit, F11).
-        // It carries the same summary line plus every failure with its full path and reason.
+        // It carries the same summary line plus every failure with its full path and reason,
+        // and the failures themselves, for its Retry button (E01).
         crate::convert_report::show_convert_failures(
             hwnd,
             &failure_report(&counts, &failed),
+            &failed,
             reveal.is_some(),
         )
     };
-    if open_folder {
-        if let Some(path) = reveal {
-            reveal_in_explorer(&path);
+    match action {
+        // The dialog stays up and runs the failed inputs through the same launcher the
+        // Convert button used, reading the same controls; its report comes back through
+        // this handler, so a second failure can be retried again.
+        ReportAction::Retry(inputs) => {
+            launch_batch(hwnd, inputs);
+            return LRESULT(0);
         }
+        ReportAction::OpenFolder => {
+            if let Some(path) = reveal {
+                reveal_in_explorer(&path);
+            }
+        }
+        ReportAction::Close => {}
     }
     let _ = DestroyWindow(hwnd);
     LRESULT(0)

@@ -247,6 +247,8 @@ tip_shot_quick_hotkey = "Genvejtaststroget for øjeblikkelig lagring af hele sk�
 cv_open_folder = "Åbn outputmappen?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Åbn mappe"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Prøv mislykkede igen"
 
 # Quick preview
 nav_quickpreview = "Hurtigforhåndsvisning"

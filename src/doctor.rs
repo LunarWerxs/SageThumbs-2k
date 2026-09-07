@@ -1467,17 +1467,155 @@ fn append_log_tail(r: &mut Report, path: &Path) {
     }
 }
 
-/// `st2k doctor --bundle <out.zip>`: the report, the log's tail, and `formats
-/// --json` in one file. `docs/FAQ.md` tells a confused user to run `st2k doctor` and paste
-/// its output, but the crash/panic log lives at a separate path found via Settings ->
-/// Advanced -> "Open diagnostics log" — nothing bundled the two (plus the format list, for
-/// "which formats does this build even enable") into one attachment a support triage or a
-/// Send-feedback box could accept as-is.
+/// One stored settings section for the bundle: `None` is the root (the registry root key,
+/// or the ini's `[Settings]`), `Some(name)` a subkey or section. Values are `(name, text)`.
+type SettingsSection = (Option<String>, Vec<(String, String)>);
+
+/// A registry key's values as text, in name order so two snapshots diff cleanly. DWORDs and
+/// strings are the only two types the app stores; anything else is named rather than
+/// skipped, because a report that silently omits a value is the one report that cannot be
+/// trusted to say what is there.
+fn registry_values(key: &windows_registry::Key) -> Vec<(String, String)> {
+    let mut values: Vec<(String, String)> = key
+        .values()
+        .map(|vs| {
+            vs.map(|(name, value)| {
+                let text = u32::try_from(value.clone())
+                    .map(|n| n.to_string())
+                    .or_else(|_| String::try_from(value))
+                    .unwrap_or_else(|_| "(a value type this snapshot does not render)".into());
+                (name, text)
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    values.sort();
+    values
+}
+
+/// The settings tree of an installed copy: the root's values plus one level of subkeys,
+/// which is the whole depth the app ever writes. Absent root means nothing configured.
+fn registry_settings() -> Vec<SettingsSection> {
+    let Ok(root) = CURRENT_USER.open(crate::settings::hkcu_root_path()) else {
+        return Vec::new();
+    };
+    let mut out = vec![(None, registry_values(&root))];
+    let mut names: Vec<String> = root.keys().map(Iterator::collect).unwrap_or_default();
+    names.sort();
+    for name in names {
+        if let Ok(sub) = root.open(&name) {
+            let values = registry_values(&sub);
+            out.push((Some(name), values));
+        }
+    }
+    out
+}
+
+/// The settings tree of a portable copy, read through the same accessors the app uses
+/// rather than by re-parsing the ini here, so a comment or a quirk the store tolerates is
+/// rendered the way the app understands it.
+fn portable_settings() -> Vec<SettingsSection> {
+    let sorted = |mut v: Vec<(String, String)>| {
+        v.sort();
+        v
+    };
+    let mut out = vec![(None, sorted(crate::settings::portable_values(None)))];
+    let mut sections = crate::settings::portable_subkeys();
+    sections.sort();
+    for name in sections {
+        let values = sorted(crate::settings::portable_values(Some(&name)));
+        out.push((Some(name), values));
+    }
+    out
+}
+
+/// Drop the sign-in state from a settings tree: the credential section on an installed copy
+/// and the prefixed root values on a portable one (2026-09-05 audit, E01). The rule is
+/// [`crate::settings::is_credential_subkey`] / [`crate::settings::is_credential_root_value`],
+/// the same one the settings export applies, and deliberately NOT a list of value names: the
+/// credential store writes everything under that one container, so a credential it grows
+/// later is scrubbed here without anyone remembering to add it. The root filter runs for
+/// both backends because a value can only be where the rule looks for it, and checking the
+/// other backend's shape as well costs nothing.
+///
+/// Both checks are on the SECTION and the VALUE NAME, never on the value text: a search for
+/// the token's bytes would need the token, and a snapshot that has to know the secret to
+/// hide it has already read it.
+fn without_credentials(mut sections: Vec<SettingsSection>) -> Vec<SettingsSection> {
+    sections.retain(|(name, _)| {
+        !name
+            .as_deref()
+            .is_some_and(crate::settings::is_credential_subkey)
+    });
+    for (_, values) in &mut sections {
+        values.retain(|(name, _)| !crate::settings::is_credential_root_value(name));
+    }
+    sections
+}
+
+/// The snapshot as ini text, the shape a portable user already knows from the file beside
+/// the EXE, so one reader serves both backends. `storage` says where it came from.
+fn render_settings(storage: &str, sections: &[SettingsSection]) -> String {
+    // The header does not name the credential container: a bundle scanner that greps for
+    // it would otherwise flag every clean bundle, and the reader gains nothing from the name.
+    let mut s = format!(
+        "; SageThumbs 2K settings as stored ({storage}).\n\
+         ; The sign-in state (refresh token, licence certificate, identity) is left out on \
+         purpose.\n"
+    );
+    if sections.is_empty() {
+        s.push_str("\n; (nothing stored yet, every setting is at its default)\n");
+        return s;
+    }
+    for (name, values) in sections {
+        let heading = name
+            .as_deref()
+            .unwrap_or(crate::settings::PORTABLE_ROOT_SECTION);
+        let _ = write!(s, "\n[{heading}]\n");
+        for (k, v) in values {
+            let _ = writeln!(s, "{k}={v}");
+        }
+        if values.is_empty() {
+            s.push_str("; (empty)\n");
+        }
+    }
+    s
+}
+
+/// Every stored preference, for the bundle's `settings.txt`, with the sign-in state
+/// scrubbed. The report's own settings section names the handful of switches that can
+/// blank a thumbnail; a bug about a format toggle, a menu item or a convert default needs
+/// the rest, which used to be a separate export the reporter had to think to attach.
+fn settings_snapshot() -> String {
+    let (storage, sections) = match crate::settings::ini_path() {
+        Some(ini) => (
+            format!("portable ini at {}", ini.display()),
+            portable_settings(),
+        ),
+        None => (
+            format!(r"registry, HKCU\{}", crate::settings::hkcu_root_path()),
+            registry_settings(),
+        ),
+    };
+    render_settings(&storage, &without_credentials(sections))
+}
+
+/// `st2k doctor --bundle <out.zip>`: the report, the log's tail, `formats --json` and the
+/// stored settings in one file. `docs/FAQ.md` tells a confused user to run `st2k doctor`
+/// and paste its output, but the crash/panic log lives at a separate path found via Settings
+/// -> Advanced -> "Open diagnostics log", and nothing bundled the two (plus the format list,
+/// for "which formats does this build even enable") into one attachment a support triage or
+/// a Send-feedback box could accept as-is.
+///
+/// The settings entry carries preferences only, never the sign-in state (2026-09-05 audit,
+/// E01): see [`without_credentials`]. A bundle is made to be handed to a stranger, and the
+/// refresh token in it would be a stranger's way into the account.
 pub fn bundle(out: &Path, file: Option<&str>) -> Result<(), String> {
     use std::io::Write;
 
     let report_text = report(file);
     let formats_json = crate::cli::list_formats(true);
+    let settings_text = settings_snapshot();
     let log_tail = match crate::safety::log_file() {
         Some(p) if p.exists() => read_log_tail(&p, LOG_TAIL_SCAN_BYTES),
         Some(_) => "(no diagnostics log yet)".to_string(),
@@ -1498,6 +1636,7 @@ pub fn bundle(out: &Path, file: Option<&str>) -> Result<(), String> {
     write_entry(&mut zw, "doctor-report.txt", report_text.as_bytes())?;
     write_entry(&mut zw, "formats.json", formats_json.as_bytes())?;
     write_entry(&mut zw, "log-tail.txt", log_tail.as_bytes())?;
+    write_entry(&mut zw, "settings.txt", settings_text.as_bytes())?;
     zw.finish().map_err(|e| format!("zip: {e}"))?;
     Ok(())
 }
@@ -1841,11 +1980,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `bundle` must produce a zip with exactly the three named entries, each
+    /// The bundle's scrub, over a synthetic tree of both backends' shapes at once: the
+    /// credential section goes, the prefixed root values go, and every ordinary preference
+    /// beside them stays, including one whose NAME resembles a credential's. The end-to-end
+    /// proof over a real ini and a real scratch registry root is `tests/doctor_bundle_scrub_*`,
+    /// one process per backend since the storage mode resolves once.
+    #[test]
+    fn settings_snapshot_scrubs_the_credential_container_and_keeps_the_rest() {
+        let tree: Vec<SettingsSection> = vec![
+            (
+                None,
+                vec![
+                    ("MaxSize".into(), "200".into()),
+                    ("OAuth_LicenceCert".into(), "cert-blob".into()),
+                    ("OAuth_Name".into(), "Some One".into()),
+                    ("OAuth_RefreshToken".into(), "token-blob".into()),
+                    ("Sub".into(), "a preference that only looks like one".into()),
+                    ("Theme".into(), "1".into()),
+                ],
+            ),
+            (
+                Some("MenuItems".into()),
+                vec![("Convert".into(), "0".into())],
+            ),
+            (
+                Some("OAuth".into()),
+                vec![
+                    ("Email".into(), "who@example.invalid".into()),
+                    ("RefreshToken".into(), "token-blob".into()),
+                ],
+            ),
+            (Some("jpg".into()), Vec::new()),
+        ];
+        let text = render_settings("test", &without_credentials(tree));
+        for kept in [
+            "[Settings]",
+            "MaxSize=200",
+            "Sub=a preference",
+            "Theme=1",
+            "[MenuItems]",
+            "Convert=0",
+            "[jpg]",
+            "; (empty)",
+        ] {
+            assert!(text.contains(kept), "{kept} missing from:\n{text}");
+        }
+        for gone in [
+            "token-blob",
+            "cert-blob",
+            "Some One",
+            "who@example.invalid",
+            "[OAuth]",
+            "OAuth_",
+        ] {
+            assert!(!text.contains(gone), "{gone} leaked into:\n{text}");
+        }
+        assert!(
+            render_settings("test", &[]).contains("nothing stored yet"),
+            "an unconfigured copy must say so rather than render an empty file"
+        );
+    }
+
+    /// `bundle` must produce a zip with exactly the four named entries, each
     /// non-empty, and readable back — the whole point is a single self-contained
     /// attachment a support triage can accept as-is.
     #[test]
-    fn bundle_writes_a_zip_with_report_formats_and_log_tail() {
+    fn bundle_writes_a_zip_with_report_formats_log_tail_and_settings() {
         let dir = std::env::temp_dir().join(format!("st2k_doctor_bundle_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("bundle.zip");
@@ -1858,12 +2058,27 @@ mod tests {
         let names: Vec<String> = (0..zip.len())
             .map(|i| zip.by_index(i).unwrap().name().to_string())
             .collect();
-        for expect in ["doctor-report.txt", "formats.json", "log-tail.txt"] {
+        for expect in [
+            "doctor-report.txt",
+            "formats.json",
+            "log-tail.txt",
+            "settings.txt",
+        ] {
             assert!(
                 names.contains(&expect.to_string()),
                 "missing {expect}: {names:?}"
             );
         }
+        let mut settings_text = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("settings.txt").unwrap(),
+            &mut settings_text,
+        )
+        .unwrap();
+        assert!(
+            settings_text.starts_with("; SageThumbs 2K settings as stored"),
+            "{settings_text}"
+        );
         let mut report_text = String::new();
         std::io::Read::read_to_string(
             &mut zip.by_name("doctor-report.txt").unwrap(),

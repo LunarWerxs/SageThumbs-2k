@@ -307,6 +307,41 @@ impl BatchReport {
             .map(|f| format!("\n{}", f.as_line()))
             .collect()
     }
+
+    /// The retry list read back out of the JSON [`Self::to_json`] wrote: every `results`
+    /// entry whose `status` is not `"ok"`, by the `input` it was given, in report order.
+    /// This is what `st2k batch --retry-from <report.json>` runs (2026-09-05 audit, E01).
+    ///
+    /// Beside the writer on purpose, so the two cannot drift: a renamed key fails the
+    /// round-trip test below before it fails a user. Anything that is not this report's
+    /// shape is refused with the reason, rather than read as an empty retry list: `pdf
+    /// --json` has `status` but no `results`, `batch info` is a bare array, and a file
+    /// that is not JSON at all is most likely an image handed to the wrong flag. An entry
+    /// with an unknown status is retried, not skipped, since only `"ok"` means done.
+    pub fn failed_inputs_from_json(text: &str) -> Result<Vec<String>, String> {
+        let doc: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+        let Some(results) = doc.get("results").and_then(serde_json::Value::as_array) else {
+            return Err("not a batch report (no \"results\" array)".to_string());
+        };
+        if !doc.get("status").is_some_and(serde_json::Value::is_string) {
+            return Err("not a batch report (no \"status\")".to_string());
+        }
+        let mut inputs = Vec::new();
+        for (i, entry) in results.iter().enumerate() {
+            let input = entry.get("input").and_then(serde_json::Value::as_str);
+            let status = entry.get("status").and_then(serde_json::Value::as_str);
+            let (Some(input), Some(status)) = (input, status) else {
+                return Err(format!(
+                    "not a batch report (results[{i}] has no \"input\" and \"status\")"
+                ));
+            };
+            if status != FileStatus::Ok.as_str() {
+                inputs.push(input.to_string());
+            }
+        }
+        Ok(inputs)
+    }
 }
 
 /// Split the composers' per-input attempts into the pages that worked and the inputs that
@@ -441,6 +476,68 @@ mod tests {
             skipped_offline: 0,
         };
         assert_eq!(all_bad.status(), "failed");
+    }
+
+    /// The retry list survives a trip through the JSON (2026-09-05 audit, E01): what
+    /// `failures()` lists is exactly what comes back from the text `to_json` wrote, and a
+    /// document of any other shape is refused with a reason rather than read as "nothing
+    /// to retry". The refusal cases are the real neighbours: `pdf --json`, `batch info`,
+    /// and a file that is not JSON.
+    #[test]
+    fn the_retry_list_round_trips_through_the_json_and_other_shapes_are_refused() {
+        let report = BatchReport {
+            files: vec![
+                FileOutcome::ok("a.png", PathBuf::from("a.webp")),
+                FileOutcome::failed("b.png", Some(OmitCause::Undecodable), "cannot decode"),
+                FileOutcome::failed("c.png", None, "no cause measured"),
+            ],
+            skipped_offline: 1,
+        };
+        let text = report.to_json().to_string();
+        assert_eq!(
+            BatchReport::failed_inputs_from_json(&text),
+            Ok(vec!["b.png".to_string(), "c.png".to_string()]),
+            "the retry list is every failure, in report order, cause or no cause"
+        );
+        let clean = BatchReport {
+            files: vec![FileOutcome::ok("a.png", PathBuf::from("a.webp"))],
+            skipped_offline: 0,
+        };
+        assert_eq!(
+            BatchReport::failed_inputs_from_json(&clean.to_json().to_string()),
+            Ok(Vec::new()),
+            "a clean report has nothing to retry, which is not an error here"
+        );
+
+        let combined = Combined {
+            output: PathBuf::from("out.pdf"),
+            used: 1,
+            omitted: vec![Omitted::new("bad.png", OmitCause::Undecodable, "x")],
+        };
+        for (what, doc) in [
+            ("a pdf/cbz report", combined.to_json().to_string()),
+            (
+                "a batch info array",
+                r#"[{"input":"a.png","width":8}]"#.to_string(),
+            ),
+            (
+                "an object with no results",
+                r#"{"status":"ok"}"#.to_string(),
+            ),
+            ("results with no status", r#"{"results":[]}"#.to_string()),
+            (
+                "a results entry with no input",
+                r#"{"status":"partial","results":[{"status":"failed"}]}"#.to_string(),
+            ),
+            ("not JSON", "\u{89}PNG\r\n".to_string()),
+        ] {
+            let err = BatchReport::failed_inputs_from_json(&doc)
+                .expect_err(&format!("{what} must be refused"));
+            assert!(
+                err.starts_with("not "),
+                "{what}: the refusal must say what the file is not: {err}"
+            );
+        }
     }
 
     /// A file whose FIRST output was written and whose second was not is a failure that

@@ -248,6 +248,8 @@ tip_shot_quick_hotkey = "La combinazione di tasti per il salvataggio rapido a sc
 cv_open_folder = "Aprire la cartella di uscita?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Apri cartella"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Riprova i falliti"
 
 # Quick preview
 nav_quickpreview = "Anteprima rapida"

@@ -243,6 +243,8 @@ tip_shot_quick_hotkey = "Ang kombinasyon ng susi para sa agarang mabilis na pag-
 cv_open_folder = "Buksan ang output folder?"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "Buksan ang folder"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "Subukang muli ang nabigo"
 
 # Quick preview
 nav_quickpreview = "Mabilis na preview"

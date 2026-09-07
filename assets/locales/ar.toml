@@ -249,6 +249,8 @@ tip_shot_quick_hotkey = "مفتاح الاختصار للحفظ السريع ل�
 cv_open_folder = "فتح مجلد الإخراج؟"
 # The same offer as a BUTTON, on the failure report window.
 btn_open_folder = "فتح المجلد"
+# Runs just the files that failed again, same settings, from that same window.
+btn_retry_failed = "إعادة محاولة الفاشلة"
 
 # Quick preview
 nav_quickpreview = "المعاينة السريعة"
