@@ -247,6 +247,8 @@ tip_shot_hotkey = "Die globale Tastenkombination, die eine Erfassung startet, we
 tip_instant_screenshot = "Aktiviert eine zweite Tastenkombination, die den gesamten Bildschirm sofort in die Zwischenablage und den Ordner \"Bildschirmfotos\" speichert, ohne einen Editor zu öffnen."
 tip_shot_quick_hotkey = "Die Tastenkombination für die direkte Speicherung des vollständigen Bildschirmfotos (wird nur verwendet, wenn die sofortige Bildschirmfoto-Funktion aktiviert ist)."
 cv_open_folder = "Ausgabeordner öffnen?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Ordner öffnen"
 
 # Quick preview
 nav_quickpreview = "Schnellvorschau"

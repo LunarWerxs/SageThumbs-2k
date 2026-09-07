@@ -246,6 +246,8 @@ tip_shot_hotkey = "La combinazione di tasti globale che avvia una cattura mentre
 tip_instant_screenshot = "Attiva un secondo hotkey che salva istantaneamente l'intero schermo negli appunti e nella cartella Catture, senza editor."
 tip_shot_quick_hotkey = "La combinazione di tasti per il salvataggio rapido a schermo intero (usata solo mentre la cattura istantanea è abilitata)."
 cv_open_folder = "Aprire la cartella di uscita?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Apri cartella"
 
 # Quick preview
 nav_quickpreview = "Anteprima rapida"

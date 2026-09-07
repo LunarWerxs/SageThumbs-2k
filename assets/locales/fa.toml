@@ -243,6 +243,8 @@ tip_shot_hotkey = "ترکیب کلید جهانی که عکس‌برداری ر�
 tip_instant_screenshot = "فعال کردن میانبر دوم که فوری تمام صفحه را در کلیپ‌بورد و پوشهٔ عکس‌برداری ذخیره می‌کند، بدون ویرایشگر."
 tip_shot_quick_hotkey = "ترکیب کلید برای ذخیرهٔ فوری تمام صفحه (تنها هنگام فعال بودن عکس‌برداری فوری استفاده می‌شود)."
 cv_open_folder = "پوشهٔ خروجی باز شود؟"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "باز کردن پوشه"
 
 # Quick preview
 nav_quickpreview = "پیش‌نمایش سریع"

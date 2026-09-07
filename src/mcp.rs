@@ -329,7 +329,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "batch",
-            "description": "Bulk-process many files/folders in one process: thumbnail, convert, or read info (dimensions/EXIF/audio tags, as one JSON array) for every supported file found. Each input directory is scanned ONE level deep unless 'recurse' is true.",
+            "description": "Bulk-process many files/folders in one process: thumbnail, convert, or read info (dimensions/EXIF/audio tags, as one JSON array) for every supported file found. Each input directory is scanned ONE level deep unless 'recurse' is true. For thumbnail/convert the result is JSON: {status, requested, succeeded, failed, skipped_offline, results[]}, one entry per input carrying {input, output, status, cause, detail, elapsed_ms} - so a failed file is retryable by path and its 'cause' says whether it was unreadable, undecodable, unencodable or unwritable. Partial success is deliberate: a file that fails does not stop the rest. Every input failing is a tool error naming each one.",
             "inputSchema": { "type": "object", "properties": {
                 "op": { "type": "string", "enum": ["thumbnail", "convert", "info"], "description": "operation to run on every input" },
                 "inputs": { "type": "array", "items": { "type": "string" }, "description": "file and/or folder paths" },
@@ -658,6 +658,11 @@ fn dispatch_cbz(args: &Value) -> Result<String, String> {
 
 /// `batch`: an operation name over the input file list, plus the same
 /// output/size/format/quality/resize options `thumbnail`/`convert` take individually.
+///
+/// The result is always the machine-readable report (2026-09-05 audit, F11), for the same
+/// reason `pdf`/`cbz` hardwire their `json` here: an agent reads it, not a person, and a
+/// "9/12 succeeded" it cannot map back to file names leaves it nothing to retry. `info`
+/// already answered this tool in JSON, so the whole tool is now one shape.
 fn dispatch_batch(args: &Value) -> Result<String, String> {
     cli::batch(
         &need_str(args, "op")?,
@@ -668,6 +673,7 @@ fn dispatch_batch(args: &Value) -> Result<String, String> {
         want_str(args, "to")?.as_deref(),
         want_quality(args, "quality", 90)?,
         cli::parse_resize(want_str(args, "resize")?.as_deref())?,
+        true,
     )
 }
 

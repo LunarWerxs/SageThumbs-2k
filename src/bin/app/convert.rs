@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k_core::{settings, ConvertOpts, Resize, Target};
+use sagethumbs2k_core::{settings, ConvertOpts, FileOutcome, Resize, Target};
 
 use crate::dark::{dark_ctlcolor, dark_theme_combo};
 use crate::win::{
@@ -137,14 +137,12 @@ static MAGICK_QUALITY: AtomicI32 = AtomicI32::new(50); // AVIF/JXL quality 1..=1
 /// its first success. (Only `Option`/`PathBuf` ops under the lock, so it can never
 /// poison.)
 static LAST_OUTPUT: Mutex<Option<PathBuf>> = Mutex::new(None);
-/// Source files the most recent run did not produce an output for, so the completion
-/// message can NAME them (issue #34 — a batch that reported "51 of 60" and nothing else
-/// left the user with no way to tell which nine, or why). Written by the worker once the
-/// run has finished, read on the UI thread. Deliberately empty after a cancelled run.
-static FAILED_FILES: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// Most failures the completion message lists by name before summarising the rest. Six
-/// keeps the box readable when a whole folder fails, which is exactly when it is longest.
-const MAX_LISTED_FAILURES: usize = 6;
+/// Source files the most recent run did not produce every output for, so the completion
+/// message can NAME them and say WHY (issue #34, a batch that reported "51 of 60" and
+/// nothing else left the user with no way to tell which nine, or why; the reason itself is
+/// 2026-09-05 audit F11). Written by the worker once the run has finished, read on the UI
+/// thread. Deliberately empty after a cancelled run.
+static FAILED_FILES: Mutex<Vec<FileOutcome>> = Mutex::new(Vec::new());
 /// Set true while a batch is running; the Cancel button checks it to decide
 /// between "abort the run" and "close the dialog". Cleared when the run finishes.
 static CONVERT_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -774,6 +772,11 @@ unsafe fn resolve_convert_outdir(hwnd: HWND) -> Option<PathBuf> {
 /// `pdf_already_written` suppresses duplicate PDF jobs: the PDF writer takes no
 /// resize, so re-running it once per size would emit N identical PDFs under
 /// confusing names, so only the first job in a file's list is honored.
+///
+/// The outer `None` is that suppressed job and ONLY that: an attempt that ran and failed
+/// comes back as `Some(Err(reason))`, so the completion report can say why (2026-09-05
+/// audit, F11). These calls each return one opaque error rather than a phase, which is why
+/// the dialog's records carry a sentence and no machine cause.
 #[allow(clippy::too_many_arguments)]
 fn produce_convert_job(
     f: &str,
@@ -785,7 +788,7 @@ fn produce_convert_job(
     png_level: u32,
     webp_quality: Option<u8>,
     pdf_already_written: bool,
-) -> Option<PathBuf> {
+) -> Option<Result<PathBuf, String>> {
     match tgt {
         CvTarget::Native(format, ext) => {
             let opts = ConvertOpts {
@@ -801,19 +804,27 @@ fn produce_convert_job(
                 webp_quality,
                 resize,
             };
-            sagethumbs2k_core::convert_file_opts_named(f, opts, dir, tag).ok()
+            Some(
+                sagethumbs2k_core::convert_file_opts_named(f, opts, dir, tag)
+                    .map_err(|e| e.message()),
+            )
         }
         // One image -> one single-page PDF (reserved name in `dir`). Page geometry
         // is a PDF page-layout setting (Settings > Saving), not a pixel resize.
         CvTarget::Pdf if pdf_already_written => None,
-        CvTarget::Pdf => sagethumbs2k_core::convert_image_to_pdf_in(f, dir, quality).ok(),
+        CvTarget::Pdf => Some(
+            sagethumbs2k_core::convert_image_to_pdf_in(f, dir, quality).map_err(|e| e.message()),
+        ),
         // Exotic target written by the bundled ImageMagick (reserved name).
         CvTarget::Magick(ext) => {
             // AVIF/JXL honor the quality slider; the lossless exotic targets
             // (PSD/DDS/…) get magick's default (None).
             let q = matches!(ext, "avif" | "jxl")
                 .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
-            sagethumbs2k_core::convert_to_magick_in_named(f, dir, ext, resize, q, tag).ok()
+            Some(
+                sagethumbs2k_core::convert_to_magick_in_named(f, dir, ext, resize, q, tag)
+                    .map_err(|e| e.message()),
+            )
         }
     }
 }
@@ -827,30 +838,46 @@ fn produce_convert_job(
 /// mean holding a full-resolution image while three encodes run, which is the
 /// trade this deliberately does not make.
 /// Reduces one file's per-job outputs (in job order) into the first produced output
-/// (for the "open folder" reveal) and whether EVERY job succeeded (issue #28: a
-/// file used to count as fully converted the moment job 0 succeeded, even when
-/// "write every preset size" left jobs 1/2 unwritten). `is_pdf` suppresses the
-/// duplicate-PDF-job case: `produce_convert_job` intentionally returns `None` for
-/// every PDF job after the first (a PDF ignores resize, so re-running it would
-/// only emit identical copies), and that intentional `None` must not count as a
-/// failure.
+/// (for the "open folder" reveal) and the first REASON a job did not produce one, or
+/// `None` when every job succeeded (issue #28: a file used to count as fully converted
+/// the moment job 0 succeeded, even when "write every preset size" left jobs 1/2
+/// unwritten). `is_pdf` suppresses the duplicate-PDF-job case: `produce_convert_job`
+/// intentionally returns `None` for every PDF job after the first (a PDF ignores resize,
+/// so re-running it would only emit identical copies), and that intentional `None` must
+/// not count as a failure.
 ///
-/// Pure and separately testable on purpose, same reasoning as `failed_summary`
+/// The FIRST reason, not all of them: a file with three failed sizes usually failed them
+/// for one reason, and the report gets one entry per file.
+///
+/// Pure and separately testable on purpose, same reasoning as `failure_report`
 /// below: the surrounding `convert_one_file` does real file I/O per job, which no
 /// unit test here can drive without a fixture image on disk.
-fn reduce_job_outputs(is_pdf: bool, produced: &[Option<PathBuf>]) -> (Option<PathBuf>, bool) {
+fn reduce_job_outputs(
+    is_pdf: bool,
+    produced: &[Option<Result<PathBuf, String>>],
+) -> (Option<PathBuf>, Option<String>) {
     let mut first: Option<PathBuf> = None;
-    let mut all_ok = true;
-    for (i, out) in produced.iter().enumerate() {
+    let mut reason: Option<String> = None;
+    for (i, job) in produced.iter().enumerate() {
         let pdf_duplicate = is_pdf && i > 0;
-        if out.is_none() && !pdf_duplicate {
-            all_ok = false;
-        }
-        if first.is_none() {
-            first = out.clone();
+        match job {
+            Some(Ok(p)) if first.is_none() => first = Some(p.clone()),
+            Some(Ok(_)) => {}
+            Some(Err(e)) if reason.is_none() => reason = Some(e.clone()),
+            Some(Err(_)) => {}
+            // Nothing ran. Only the suppressed duplicate PDF job reaches here; anything
+            // else would be a job that silently vanished, which is a failure.
+            None if !pdf_duplicate && reason.is_none() => reason = Some(String::new()),
+            None => {}
         }
     }
-    (first.clone(), all_ok && first.is_some())
+    // No output at all is a failure even when no single job reported one (an empty job
+    // list, or a PDF whose only honored job was suppressed). Before this, `all_ok` was
+    // ANDed with `first.is_some()` for exactly the same reason.
+    if reason.is_none() && first.is_none() {
+        reason = Some(String::new());
+    }
+    (first, reason)
 }
 
 fn convert_one_file(
@@ -861,20 +888,23 @@ fn convert_one_file(
     png_level: u32,
     webp_quality: Option<u8>,
     outdir: &Option<PathBuf>,
-) -> (Option<PathBuf>, bool) {
+) -> (Option<PathBuf>, Option<String>) {
     // Cancelled mid-run: skip the rest cheaply so the batch winds down fast.
     if CONVERT_CANCEL.load(Ordering::Relaxed) {
-        return (None, false);
+        return (None, Some(String::new()));
     }
     let dir = match outdir
         .clone()
         .or_else(|| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))
     {
         Some(d) => d,
-        None => return (None, false),
+        // No reason text for either of these two: a cancel is the user's own act and a
+        // path with no parent folder has nothing to tell them. `failure_report` lists a
+        // bare path for an empty reason, exactly as it did before there were reasons.
+        None => return (None, Some(String::new())),
     };
     let is_pdf = matches!(tgt, CvTarget::Pdf);
-    let mut produced_per_job: Vec<Option<PathBuf>> = Vec::with_capacity(jobs.len());
+    let mut produced_per_job: Vec<Option<Result<PathBuf, String>>> = Vec::with_capacity(jobs.len());
     for (i, (resize, tag)) in jobs.iter().enumerate() {
         let pdf_already_written = is_pdf && i > 0;
         let produced = produce_convert_job(
@@ -947,9 +977,9 @@ unsafe fn start_convert(hwnd: HWND) {
         // Progress is posted as each file finishes (from worker threads;
         // `PostMessageW` is thread-safe), keeping the bar live.
         let done = std::sync::atomic::AtomicUsize::new(0);
-        // Each entry is (first produced output, whether EVERY requested size/job for
-        // that file was written — issue #28).
-        let outs: Vec<(Option<PathBuf>, bool)> = sagethumbs2k_core::parallel::map_indexed(
+        // Each entry is (first produced output, why the file is not fully converted;
+        // `None` means every requested size/job for it was written, issue #28).
+        let outs: Vec<(Option<PathBuf>, Option<String>)> = sagethumbs2k_core::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
             |_, f| convert_one_file(f, tgt, &jobs, quality, png_level, webp_quality, &outdir),
@@ -963,21 +993,29 @@ unsafe fn start_convert(hwnd: HWND) {
                 );
             },
         );
-        let ok = outs.iter().filter(|(_, all_ok)| *all_ok).count();
-        // Name the ones that did NOT fully convert (issue #34, #28). `map_indexed` returns
-        // results in input order, so entry i IS `files[i]` — no plumbing needed to find out
-        // which. A file whose first job wrote output but a later preset size did not is now
-        // listed here too, rather than being silently folded into "N of N converted".
-        // Skipped when the user cancelled: everything queued behind the cancel is a `None`
-        // too, and listing those as failures would be a lie about the user's own act.
+        let ok = outs.iter().filter(|(_, why)| why.is_none()).count();
+        // Name the ones that did NOT fully convert, AND why (issue #34, #28; 2026-09-05
+        // audit, F11 for the reason). `map_indexed` returns results in input order, so
+        // entry i IS `files[i]`, no plumbing needed to find out which. A file whose first
+        // job wrote output but a later preset size did not is listed here too, rather than
+        // being silently folded into "N of N converted"; it keeps the output it did write,
+        // which is why the record carries both.
+        // Skipped when the user cancelled: everything queued behind the cancel failed with
+        // no reason too, and listing those as failures would be a lie about the user's own
+        // act.
         *FAILED_FILES.lock().unwrap() = if CONVERT_CANCEL.load(Ordering::Relaxed) {
             Vec::new()
         } else {
             files
                 .iter()
                 .zip(&outs)
-                .filter(|(_, (_, all_ok))| !*all_ok)
-                .map(|(f, _)| f.clone())
+                .filter_map(|(f, (out, why))| {
+                    why.as_ref().map(|reason| {
+                        // No cause token: the dialog's converters each return one opaque
+                        // error, so a bucket here would be a guess. See `FileOutcome`.
+                        FileOutcome::failed(f, None, reason).produced(out.clone())
+                    })
+                })
                 .collect()
         };
         // Remember the first produced output (ordered results → lowest-index success,
@@ -1303,33 +1341,25 @@ unsafe fn on_convert_progress(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 
 /// `WM_CONVERT_DONE`: report the summary, offer to open the output folder when at
 /// least one file was written, then close.
-/// The block appended to the completion message when files did not convert (issue #34), or
-/// an empty string when they all did.
+/// The copyable report the failure window shows (issue #34 for the names, 2026-09-05 audit
+/// F11 for the reasons): the same summary line the message box carries, then EVERY failure
+/// with its full path and reason.
 ///
-/// Pure and separately testable on purpose: this is the part with an off-by-one in it (the
-/// "and N more" tail), and the surrounding function puts up a modal message box, which no test
-/// can drive. File NAMES only, not full paths — the box is a summary, not a log, and a batch
-/// of 60 documents from one folder would otherwise be sixty copies of the same directory.
-fn failed_summary(failed: &[String]) -> String {
-    if failed.is_empty() {
-        return String::new();
-    }
-    let mut out = format!("\n\n{}", t("cv_failed_list"));
-    for f in failed.iter().take(MAX_LISTED_FAILURES) {
-        let name = std::path::Path::new(f)
-            .file_name()
-            .map_or_else(|| f.clone(), |n| n.to_string_lossy().into_owned());
-        out.push_str(&format!("\n  {name}"));
-    }
-    if let Some(rest) = failed
-        .len()
-        .checked_sub(MAX_LISTED_FAILURES)
-        .filter(|n| *n > 0)
-    {
-        out.push_str(&format!(
-            "\n  {}",
-            t("cv_failed_more").replace("{n}", &rest.to_string())
-        ));
+/// Nothing is elided. The message box this replaces listed six names and summarised the
+/// rest, because a box cannot scroll and a sixty-line one is unreadable; a scrollable,
+/// copyable window has no such limit, and a truncated failure list is the exact problem
+/// F11 is about, since the files it hides are the ones nobody can retry.
+///
+/// Pure and separately testable on purpose: the surrounding function puts up a modal
+/// window, which no test can drive.
+fn failure_report(summary: &str, failed: &[FileOutcome]) -> String {
+    let mut out = format!("{summary}\n\n{}", t("cv_failed_list"));
+    for f in failed {
+        out.push_str(&format!("\n{}", f.input));
+        let reason = f.detail.lines().next().unwrap_or("").trim();
+        if !reason.is_empty() {
+            out.push_str(&format!("\n    {reason}"));
+        }
     }
     out
 }
@@ -1337,39 +1367,57 @@ fn failed_summary(failed: &[String]) -> String {
 unsafe fn on_convert_done(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     CONVERT_RUNNING.store(false, Ordering::Relaxed);
     let ok = wparam.0;
-    let summary = t("cv_done")
+    let counts = t("cv_done")
         .replace("{ok}", &ok.to_string())
-        .replace("{total}", &lparam.0.to_string())
-        + &failed_summary(&FAILED_FILES.lock().unwrap());
-    let cap = wide("SageThumbs 2K");
-    // When at least one file was written, offer to open the output
-    // folder (Explorer with the first produced file selected). Nothing
-    // written → just the plain summary.
-    match LAST_OUTPUT.lock().unwrap().clone().filter(|_| ok > 0) {
-        Some(path) => {
-            let text = wide(&format!("{summary}\n\n{}", t("cv_open_folder")));
-            let r = MessageBoxW(
-                Some(hwnd),
-                PCWSTR(text.as_ptr()),
-                PCWSTR(cap.as_ptr()),
-                MB_YESNO | MB_ICONINFORMATION,
-            );
-            if r == IDYES {
-                reveal_in_explorer(&path);
-            }
-        }
-        None => {
-            let text = wide(&summary);
-            MessageBoxW(
-                Some(hwnd),
-                PCWSTR(text.as_ptr()),
-                PCWSTR(cap.as_ptr()),
-                MB_OK | MB_ICONINFORMATION,
-            );
+        .replace("{total}", &lparam.0.to_string());
+    let failed = FAILED_FILES.lock().unwrap().clone();
+    // When at least one file was written, offer to open the output folder (Explorer with
+    // the first produced file selected). Nothing written → no offer.
+    let reveal = LAST_OUTPUT.lock().unwrap().clone().filter(|_| ok > 0);
+    let open_folder = if failed.is_empty() {
+        report_clean_run(hwnd, &counts, reveal.is_some())
+    } else {
+        // Something failed: the report window instead of the box, because a list a user
+        // cannot copy out is a list they have to reproduce by hand (2026-09-05 audit, F11).
+        // It carries the same summary line plus every failure with its full path and reason.
+        crate::convert_report::show_convert_failures(
+            hwnd,
+            &failure_report(&counts, &failed),
+            reveal.is_some(),
+        )
+    };
+    if open_folder {
+        if let Some(path) = reveal {
+            reveal_in_explorer(&path);
         }
     }
     let _ = DestroyWindow(hwnd);
     LRESULT(0)
+}
+
+/// The completion message for a run where every file converted: one line, plus the
+/// "Open output folder?" question when there is something to reveal. Unchanged since long
+/// before the failure report existed, and deliberately so, a clean run needs one glance.
+unsafe fn report_clean_run(hwnd: HWND, counts: &str, can_open: bool) -> bool {
+    let cap = wide("SageThumbs 2K");
+    if !can_open {
+        let text = wide(counts);
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(text.as_ptr()),
+            PCWSTR(cap.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return false;
+    }
+    let text = wide(&format!("{counts}\n\n{}", t("cv_open_folder")));
+    let r = MessageBoxW(
+        Some(hwnd),
+        PCWSTR(text.as_ptr()),
+        PCWSTR(cap.as_ptr()),
+        MB_YESNO | MB_ICONINFORMATION,
+    );
+    r == IDYES
 }
 
 extern "system" fn convert_wndproc(
@@ -1489,85 +1537,93 @@ mod tests {
         );
     }
 
-    /// Issue #34, the half that is not about the cap. A batch that reported "51 of 60" and
-    /// stopped told the user nothing they could act on — not which nine, and not why. The cap
-    /// fix means those nine convert now, but SOME file will always fail, so the summary has to
-    /// be able to name them.
+    /// Issue #34, the half that is not about the cap, plus 2026-09-05 audit F11. A batch
+    /// that reported "51 of 60" and stopped told the user nothing they could act on, not
+    /// which nine and not why. The report has to name every one of them, say why, and give
+    /// the full path, since that path is what the user retries.
     #[test]
-    fn the_completion_message_names_the_files_that_failed() {
-        assert_eq!(failed_summary(&[]), "", "a clean run adds nothing at all");
-
-        let one = failed_summary(&[r"C:\work\photos\huge.psd".to_string()]);
-        assert!(one.contains("huge.psd"), "the name must appear: {one}");
+    fn the_completion_report_names_every_failure_and_says_why() {
+        let counts = "Converted 2 of 3 image(s).";
+        let failed = [
+            FileOutcome::failed(r"C:\work\photos\huge.psd", None, "cannot decode huge.psd"),
+            FileOutcome::failed(r"C:\work\photos\locked.tif", None, "Access is denied."),
+        ];
+        let s = failure_report(counts, &failed);
+        assert!(s.starts_with(counts), "the counts line comes first: {s}");
         assert!(
-            !one.contains(r"C:\work\photos"),
-            "the box is a summary, not a log — no directories: {one}"
+            s.contains(r"C:\work\photos\huge.psd"),
+            "the FULL path is what a user retries: {s}"
         );
         assert!(
-            !one.contains("more"),
-            "one failure must not claim there are others: {one}"
+            s.contains("cannot decode huge.psd") && s.contains("Access is denied."),
+            "each failure carries its own reason, and they differ: {s}"
         );
 
-        // Exactly at the listing limit: every name, still no tail.
-        let at_limit: Vec<String> = (0..MAX_LISTED_FAILURES)
-            .map(|i| format!("f{i}.psd"))
+        // Nothing is elided, however long the run's failure list is: the whole point is
+        // that every failed file can be found and retried.
+        let many: Vec<FileOutcome> = (0..60)
+            .map(|i| FileOutcome::failed(&format!(r"C:\work\f{i}.psd"), None, "boom"))
             .collect();
-        let s = failed_summary(&at_limit);
-        for f in &at_limit {
-            assert!(s.contains(f.as_str()), "{f} missing from {s}");
+        let s = failure_report(counts, &many);
+        for f in &many {
+            assert!(s.contains(&f.input), "{} missing from the report", f.input);
         }
-        assert!(!s.contains("more"), "no tail at exactly the limit: {s}");
 
-        // One past it: the tail appears, and its COUNT is the number left over, not the total.
-        let over: Vec<String> = (0..MAX_LISTED_FAILURES + 3)
-            .map(|i| format!("f{i}.psd"))
-            .collect();
-        let s = failed_summary(&over);
+        // A failure with no reason to show (a cancel, a path with no parent folder) lists
+        // the file and nothing else, rather than an empty "reason" line.
+        let bare = failure_report(counts, &[FileOutcome::failed(r"C:\a.psd", None, "")]);
         assert!(
-            s.contains("3 more"),
-            "the tail must count the remainder: {s}"
-        );
-        assert!(
-            !s.contains(&format!("f{}.psd", MAX_LISTED_FAILURES)),
-            "names past the limit must be summarised, not listed: {s}"
+            bare.ends_with(r"C:\a.psd"),
+            "no trailing blank line: {bare}"
         );
     }
 
     /// Issue #28: "write every preset size" must not report a file as fully
     /// converted just because its FIRST job produced output — every job in the
     /// list has to succeed, and the ones that did not must not be masked from the
-    /// completion summary.
+    /// completion summary. F11 adds the reason to that: the reduction carries WHY
+    /// the file is not fully converted, not just that it isn't.
     #[test]
     fn reduce_job_outputs_catches_a_later_job_failing() {
+        let wrote = |p: &str| Some(Ok(PathBuf::from(p)));
+
         // Job 0 wrote a file, job 1 (a second preset size) did not: not fully ok,
         // but the first output is still offered for "open folder".
-        let one_of_two = vec![Some(PathBuf::from(r"C:\out\a_1080.png")), None];
-        let (first, all_ok) = reduce_job_outputs(false, &one_of_two);
+        let one_of_two = vec![wrote(r"C:\out\a_1080.png"), Some(Err("no space".into()))];
+        let (first, why) = reduce_job_outputs(false, &one_of_two);
         assert_eq!(first, Some(PathBuf::from(r"C:\out\a_1080.png")));
-        assert!(
-            !all_ok,
+        assert_eq!(
+            why.as_deref(),
+            Some("no space"),
             "one of two requested sizes missing must not read as a full success"
         );
 
         // Every job wrote: fully ok.
-        let two_of_two = vec![
-            Some(PathBuf::from(r"C:\out\a_1080.png")),
-            Some(PathBuf::from(r"C:\out\a_720.png")),
-        ];
-        let (_, all_ok) = reduce_job_outputs(false, &two_of_two);
-        assert!(all_ok, "every requested size present must read as ok");
+        let two_of_two = vec![wrote(r"C:\out\a_1080.png"), wrote(r"C:\out\a_720.png")];
+        let (_, why) = reduce_job_outputs(false, &two_of_two);
+        assert_eq!(why, None, "every requested size present must read as ok");
 
-        // Nothing wrote at all: not ok, no reveal path.
-        let (first, all_ok) = reduce_job_outputs(false, &[None, None]);
+        // Nothing wrote at all: not ok, no reveal path, and the FIRST reason is the one
+        // reported (a file usually fails all its sizes for one reason).
+        let none_wrote = vec![
+            Some(Err("cannot decode a.psd".to_string())),
+            Some(Err("cannot decode a.psd".to_string())),
+        ];
+        let (first, why) = reduce_job_outputs(false, &none_wrote);
         assert_eq!(first, None);
-        assert!(!all_ok);
+        assert_eq!(why.as_deref(), Some("cannot decode a.psd"));
 
         // PDF's intentionally-suppressed duplicate job (index > 0 returns `None`
-        // by design) must not count against `all_ok`.
-        let pdf = vec![Some(PathBuf::from(r"C:\out\a.pdf")), None, None];
-        let (first, all_ok) = reduce_job_outputs(true, &pdf);
+        // by design) must not count as a failure.
+        let pdf = vec![wrote(r"C:\out\a.pdf"), None, None];
+        let (first, why) = reduce_job_outputs(true, &pdf);
         assert_eq!(first, Some(PathBuf::from(r"C:\out\a.pdf")));
-        assert!(all_ok, "a suppressed duplicate PDF job is not a failure");
+        assert_eq!(why, None, "a suppressed duplicate PDF job is not a failure");
+
+        // A job that vanished for any OTHER reason is still a failure, even with no
+        // message to show for it.
+        let (_, why) = reduce_job_outputs(false, &[None, None]);
+        assert_eq!(why, Some(String::new()));
     }
 
     /// A016: a typed dimension must be capped, not passed straight through toward

@@ -245,6 +245,8 @@ tip_shot_hotkey = "Globalni prečac tipki koji počinje hvatanje kada je pomoćn
 tip_instant_screenshot = "Uključi drugi prečac koji odmah sprema cijeli zaslon u međuspremnik i mapu Snimke bez urejenika."
 tip_shot_quick_hotkey = "Prečac tipki za trenutno spremanje cijelog zaslona (koristi se samo kada je brzo spremanje omogućeno)."
 cv_open_folder = "Otvoriti izlaznu mapu?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Otvori mapu"
 
 # Quick preview
 nav_quickpreview = "Brzi pregled"

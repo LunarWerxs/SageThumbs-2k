@@ -247,6 +247,8 @@ tip_shot_hotkey = "A globális kombinációbillentyű, amely elindítja a rögz�
 tip_instant_screenshot = "Kapcsoljon be egy második gyorsbillentyűt, amely azonnal elmenti a teljes képernyőt a vágólapra és a Képernyőfotók mappába, szerkesztő nélkül."
 tip_shot_quick_hotkey = "Az azonnali teljes képernyős gyorsmentés kombinációbillentyűje (csak akkor használatos, ha az azonnali képernyőfotó-mentés engedélyezve van)."
 cv_open_folder = "Megnyitom az output mappát?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Mappa megnyitása"
 
 # Quick preview
 nav_quickpreview = "Gyors előnézet"

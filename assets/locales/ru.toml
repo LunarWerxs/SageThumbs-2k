@@ -243,6 +243,8 @@ tip_shot_hotkey = "Глобальное сочетание клавиш, кот�
 tip_instant_screenshot = "Включить вторую горячую клавишу, которая мгновенно сохраняет весь экран в буфер обмена и папку Снимки экрана без редактора."
 tip_shot_quick_hotkey = "Сочетание клавиш для мгновенного сохранения всего экрана (используется только при включённом быстром скриншоте)."
 cv_open_folder = "Открыть папку вывода?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Открыть папку"
 
 # Quick preview
 nav_quickpreview = "Быстрый просмотр"

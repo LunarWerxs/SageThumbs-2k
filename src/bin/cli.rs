@@ -17,9 +17,11 @@ st2k — SageThumbs 2K command line
 
 USAGE:
   st2k thumbnail <in> <out.png> [--size N]      render any format to an image (N px, default 256)
-  st2k batch <thumbnail|convert|info> <in|dir...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%]
+  st2k batch <thumbnail|convert|info> <in|dir...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize WxH|N%] [--json]
                                                 bulk-process many files/folders in parallel (one process);
                                                 each input dir is scanned one level deep unless --recurse;
+                                                a file that fails is listed with its cause, one 'failed' line
+                                                each; --json returns the whole per-file report instead;
                                                 'info' returns a JSON array (dimensions/EXIF/audio tags)
   st2k convert   <in> <out> [--quality N] [--webp-quality N] [--resize WxH|N%]   (--webp-quality → lossy WebP)
   st2k prebuild  <dir|file...> [--recurse] [--size N,N] [--rebuild-all] [--jobs N]
@@ -199,7 +201,7 @@ fn run_convert(pos: &[&String], rest: &[String]) -> Result<String, String> {
     cli::convert(i, o, q, wq, resize)
 }
 
-/// `batch <op> <inputs...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...]`
+/// `batch <op> <inputs...> [--recurse] [--out DIR] [--size N] [--to EXT] [--quality N] [--resize ...] [--json]`
 fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
     let op = need(pos, 0)?;
     let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
@@ -218,6 +220,7 @@ fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
         flag(rest, "--to").as_deref(),
         q,
         resize,
+        has_flag(rest, "--json"),
     )
 }
 

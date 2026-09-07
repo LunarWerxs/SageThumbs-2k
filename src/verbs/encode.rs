@@ -13,6 +13,7 @@ use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
 use super::menu::{EmailSize, Transform};
+use super::outcome::OmitCause;
 use crate::decode;
 
 /// A conversion target: the image-crate format and the file extension to use.
@@ -784,9 +785,12 @@ pub fn convert_to_reporting(
         .and_then(|e| e.to_str())
         .filter(|e| !e.is_empty())
         .ok_or_else(|| {
-            Error::new(
-                E_FAIL,
-                format!("convert: {} has no extension", out.display()),
+            (
+                OmitCause::Unencodable,
+                Error::new(
+                    E_FAIL,
+                    format!("convert: {} has no extension", out.display()),
+                ),
             )
         })?
         .to_ascii_lowercase();
@@ -795,15 +799,26 @@ pub fn convert_to_reporting(
         // None = magick's default quality, so the quick verb's out-of-process (`st2k convert`)
         // path stays byte-identical to its in-process twin. The Convert… dialog uses
         // `convert_to_magick_in` with an explicit quality instead.
-        return convert_to_magick(input, out, resize, None);
+        //
+        // One cause for the whole subprocess: magick decodes AND encodes behind one exit
+        // code, so splitting the two here would be a guess. The message it carries names
+        // which coder refused.
+        return convert_to_magick(input, out, resize, None)
+            .map_err(|e| (OmitCause::Unencodable, e));
     }
     // Validate the requested writer before touching the input. Besides avoiding
     // wasted decode work, this guarantees an unknown suffix fails even when the
     // input path is missing or hostile.
-    let format = native_output_format(&ext)
-        .ok_or_else(|| Error::new(E_FAIL, format!("convert: no writer for .{ext}")))?;
-    let bytes = read_full_fidelity_capped(input)?;
-    let mut img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
+    let format = native_output_format(&ext).ok_or_else(|| {
+        (
+            OmitCause::Unencodable,
+            Error::new(E_FAIL, format!("convert: no writer for .{ext}")),
+        )
+    })?;
+    let bytes = read_full_fidelity_capped(input).map_err(|e| (OmitCause::Unreadable, e))?;
+    let decoded =
+        decode::decode_full_for_path(&bytes, input).map_err(|e| (OmitCause::Undecodable, e))?;
+    let mut img = apply_resize(decoded, resize);
     if matches!(format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
     }
@@ -817,7 +832,8 @@ pub fn convert_to_reporting(
             &ext,
             tmp,
         )
-    })?;
+    })
+    .map_err(|e| (OmitCause::Unencodable, e))?;
     preserve_src_time(Path::new(input), out);
     Ok(())
 }

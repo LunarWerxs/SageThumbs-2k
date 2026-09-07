@@ -248,6 +248,8 @@ tip_shot_hotkey = "Глобальне сполучення клавіш, яке 
 tip_instant_screenshot = "Увімкнути другу гарячу клавішу, яка миттєво зберігає весь екран до буфера обміну й папки «Знімки екрану» без редактора."
 tip_shot_quick_hotkey = "Сполучення клавіш для миттєвого збереження всього екрану (використовується лише при включеному швидкому знімку)."
 cv_open_folder = "Відкрити вихідну теку?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Відкрити папку"
 
 # Quick preview
 nav_quickpreview = "Швидкий перегляд"

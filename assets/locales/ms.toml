@@ -244,6 +244,8 @@ tip_shot_hotkey = "Gabungan kunci sejagat yang memulai tangkapan ketika pembantu
 tip_instant_screenshot = "Hidupkan pintasan kedua yang langsung simpan seluruh skrin ke papan keratan dan folder Tangkap Skrin, tanpa editor."
 tip_shot_quick_hotkey = "Gabungan kunci untuk simpan pantas skrin penuh serta-merta (hanya digunakan ketika simpan pantas tangkap skrin dihidupkan)."
 cv_open_folder = "Buka folder keluaran?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Buka folder"
 
 # Quick preview
 nav_quickpreview = "Pratonton pantas"

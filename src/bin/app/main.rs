@@ -27,6 +27,7 @@
 
 mod about;
 mod convert;
+mod convert_report;
 mod cred_store;
 mod dark;
 mod dialog_hook;
@@ -514,6 +515,9 @@ unsafe fn run_shot_mode(hinst: HINSTANCE, dark: bool, args: &[String], pos: usiz
     };
     match window {
         "convert" => crate::convert::run_shot_convert(out),
+        // The Convert dialog's failure report, over canned failures: it only appears when a
+        // batch actually fails, which a shot cannot arrange.
+        "convert-report" => crate::convert_report::run_shot_convert_report(out),
         "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
         "feedback" => crate::feedback::run_shot_feedback(out),
         "about" => crate::about::run_shot_about(out),

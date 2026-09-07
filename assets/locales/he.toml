@@ -247,6 +247,8 @@ tip_shot_hotkey = "שילוב המקשים הגלובלי שמתחיל צילו�
 tip_instant_screenshot = "הפעלת קיצור דרך שני שמשמיר את כל המסך מיד ללוח ולתיקיית צילומי המסך, ללא עורך."
 tip_shot_quick_hotkey = "שילוב המקשים לשמירה מהירה של כל המסך (משמש רק כשהשמירה המהירה מופעלת)."
 cv_open_folder = "פתוח תיקיית פלט?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "פתח תיקייה"
 
 # Quick preview
 nav_quickpreview = "תצוגה מקדימה מהירה"

@@ -245,6 +245,8 @@ tip_shot_hotkey = "वैश्विक कुंजी संयोजन ज�
 tip_instant_screenshot = "एक दूसरी हॉटकी चालू करें जो तुरंत पूरी स्क्रीन को क्लिपबोर्ड और स्क्रीनशॉट फ़ोल्डर में सेव करे, बिना एडिटर के।"
 tip_shot_quick_hotkey = "तत्काल पूर्ण-स्क्रीन तत्काल-सेव के लिए कुंजी संयोजन (केवल तत्काल स्क्रीनशॉट सक्षम होने पर उपयोग होता है)।"
 cv_open_folder = "आउटपुट फ़ोल्डर खोलें?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "फ़ोल्डर खोलें"
 
 # Quick preview
 nav_quickpreview = "त्वरित पूर्वावलोकन"

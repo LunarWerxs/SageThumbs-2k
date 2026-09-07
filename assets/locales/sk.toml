@@ -241,6 +241,8 @@ tip_shot_hotkey = "Globálna klávesová skratka, ktorá spustí zachytenie, ke�
 tip_instant_screenshot = "Zapnúť druhú skratku, ktorá okamžite uloží celú obrazovku do schránky a do priečinka Snímky bez editora."
 tip_shot_quick_hotkey = "Klávesová skratka na okamžité uloženie celej obrazovky (používa sa iba s povoleným rýchlym snímkom)."
 cv_open_folder = "Otvoriť výstupný priečinok?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Otvoriť priečinok"
 
 # Quick preview
 nav_quickpreview = "Rýchly náhľad"

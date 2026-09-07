@@ -6,7 +6,7 @@
 //! AI agents — no extra installs. Each verb returns `Ok(stdout text)` or
 //! `Err(message)`; the binary prints and maps to an exit code.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::E_FAIL;
 
@@ -244,15 +244,39 @@ fn fit_for_cli(img: image::DynamicImage, max_dim: u32) -> image::DynamicImage {
 /// Refuses an `output` that is the `input` under any spelling, and an `output` whose
 /// extension names no writable format, before any decode work (2026-09-05 audit, F30).
 pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, String> {
-    reject_output_alias(output, [input])?;
-    let format = image::ImageFormat::from_path(output)
-        .map_err(|_| format!("cannot write {output}: the extension names no image format"))?;
+    thumbnail_reporting(input, output, max_dim).map_err(|(_, e)| e)
+}
+
+/// [`thumbnail`], keeping the PHASE that failed alongside the message (2026-09-05 audit,
+/// F11), so `batch` can say whether a file was unreadable, undecodable or simply had a
+/// destination it could not use. The message is handed back unchanged, so `thumbnail`
+/// above reads exactly as it always did.
+///
+/// The save phase reports as `Unencodable` for the same reason `convert_to_reporting`'s
+/// does: `save_atomic` returns encode and rename failures through one error, and `batch`
+/// has already created the destination file by the time this runs, so an unwritable
+/// destination has failed earlier as `Unwritable`.
+fn thumbnail_reporting(
+    input: &str,
+    output: &str,
+    max_dim: u32,
+) -> std::result::Result<String, (verbs::OmitCause, String)> {
+    use verbs::OmitCause;
+
+    reject_output_alias(output, [input]).map_err(|e| (OmitCause::Unwritable, e))?;
+    let format = image::ImageFormat::from_path(output).map_err(|_| {
+        (
+            OmitCause::Unencodable,
+            format!("cannot write {output}: the extension names no image format"),
+        )
+    })?;
     let archive_ext = Path::new(input)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
     if crate::formats::is_archive(archive_ext) {
-        reject_oversized_archive(input, crate::settings::max_file_size_bytes())?;
+        reject_oversized_archive(input, crate::settings::max_file_size_bytes())
+            .map_err(|e| (OmitCause::Unreadable, e))?;
     }
     // Generic archive (.zip/.rar/.7z): the same list-then-extract path Explorer
     // uses — including the user's MaxSize gate before archive parsing — and the
@@ -261,7 +285,7 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
     // tiers still get their shot.
     if let Some(img) = archive_thumbnail(input) {
         let out = fit_for_cli(img, max_dim);
-        save_atomic(&out, output, format)?;
+        save_atomic(&out, output, format).map_err(|e| (OmitCause::Unencodable, e))?;
         return Ok(output.to_string());
     }
     // Cap the read at the shared input budget (metadata-checked before allocating)
@@ -286,16 +310,17 @@ pub fn thumbnail(input: &str, output: &str, max_dim: u32) -> Result<String, Stri
         None => {
             // `..._for`: this verb named a size, so a head prefix whose baked preview
             // cannot reach it must not stand in for the real picture (issue #33).
-            let bytes = decode::read_preview_capped_for(input, edge).map_err(|e| e.to_string())?;
+            let bytes = decode::read_preview_capped_for(input, edge)
+                .map_err(|e| (OmitCause::Unreadable, e.to_string()))?;
             // Cap the decode at the edge we're about to shrink to anyway — the streamed
             // path above already takes `edge`, and rendering ImageMagick's full 4096 first
             // costs seconds on a big scan for pixels this immediately discards.
             decode::decode_preview_capped_for_path(&bytes, edge, input)
-                .map_err(|_| format!("cannot decode {input}"))?
+                .map_err(|_| (OmitCause::Undecodable, format!("cannot decode {input}")))?
         }
     };
     let out = fit_for_cli(img, max_dim);
-    save_atomic(&out, output, format)?;
+    save_atomic(&out, output, format).map_err(|e| (OmitCause::Unencodable, e))?;
     Ok(output.to_string())
 }
 
@@ -943,7 +968,14 @@ pub fn prebuild(
 ///
 /// The returned path is a real, empty, already-created file — the caller fills it
 /// in (a plain encoder save overwrites the empty placeholder).
-fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::path::PathBuf {
+///
+/// `Err` carries the OS reason the name could not be claimed (2026-09-05 audit, F11).
+/// This used to hand the candidate path back anyway and let the encode pass surface the
+/// error, which cost the caller the ONE fact it needed to classify the failure: an
+/// unwritable destination then arrived indistinguishable from a corrupt input. The file
+/// count is unchanged either way, since a name this call cannot create is a name the
+/// encoder's own temp-write-then-rename cannot land on either.
+fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::result::Result<PathBuf, String> {
     let mut n = 0u32;
     loop {
         let cand = if n == 0 {
@@ -956,11 +988,12 @@ fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::path::PathBuf
             .create_new(true)
             .open(&cand)
         {
-            Ok(_) => return cand,
+            Ok(_) => return Ok(cand),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
-            // Couldn't create for another reason (permission / missing dir): hand
-            // the name back anyway — the encode pass surfaces the real error.
-            Err(_) => return cand,
+            // Couldn't create for another reason: permission, a missing directory, or a
+            // FOLDER already sitting on that exact name (Windows answers that with access
+            // denied, not already-exists, so bumping the suffix would not help).
+            Err(e) => return Err(format!("cannot write {}: {e}", cand.display())),
         }
     }
 }
@@ -974,6 +1007,13 @@ fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::path::PathBuf
 /// needed) or next to each source. `recurse = false` (the default) scans each input
 /// directory ONE level deep; `true` walks the whole tree — see [`expand_inputs`]. Returns a
 /// `done/total` summary for `thumbnail`/`convert`, or the JSON array for `info`.
+///
+/// `json` (the CLI's `--json`, always on over MCP, exactly as `pdf`/`cbz` and `info` do it)
+/// returns the whole [`verbs::BatchReport`] instead: input, output, status, cause and
+/// elapsed time per file, so a script knows precisely which files to retry and why
+/// (2026-09-05 audit, F11). The human text is unchanged for a clean run and grows one
+/// `failed` line per failure otherwise, the same shape `pdf`/`cbz` print for an omitted
+/// input.
 #[allow(clippy::too_many_arguments)]
 pub fn batch(
     op: &str,
@@ -984,6 +1024,7 @@ pub fn batch(
     to_ext: Option<&str>,
     quality: u8,
     resize: verbs::Resize,
+    json: bool,
 ) -> Result<String, String> {
     // Same clamp `convert` applies — one place both front ends agree on.
     let quality = quality.clamp(1, 100);
@@ -1016,70 +1057,144 @@ pub fn batch(
         std::fs::create_dir_all(d).map_err(|e| format!("cannot create output dir {d}: {e}"))?;
     }
 
-    // Reserve collision-free output paths SERIALLY and ATOMICALLY, so neither the
-    // parallel pass below nor an EXTERNAL writer (a concurrent `st2k` invocation,
-    // Explorer, a right-click verb) can land on the same name. See
-    // `reserve_batch_output` for why (and why not a plain `used`/`exists()` check).
-    let mut pairs: Vec<(String, std::path::PathBuf)> = Vec::with_capacity(files.len());
-    for f in &files {
+    let pairs = reserve_batch_outputs(&files, out_dir, &ext);
+    let job = BatchJob {
+        is_convert,
+        size,
+        quality,
+        ext: &ext,
+        resize,
+    };
+    // Fan out: each (input, pre-reserved output) is independent → no naming race.
+    let outcomes = crate::parallel::map(&pairs, |_, (input, slot)| job.run(input, slot));
+    let report = verbs::BatchReport {
+        files: outcomes,
+        skipped_offline,
+    };
+    clean_failed_placeholders(&pairs, &report);
+    batch_report(&report, json)
+}
+
+/// Reserve one collision-free output path per input, SERIALLY and ATOMICALLY, so neither
+/// the parallel pass nor an EXTERNAL writer (a concurrent `st2k` invocation, Explorer, a
+/// right-click verb) can land on the same name. See [`reserve_batch_output`] for why (and
+/// why not a plain `used`/`exists()` check). A reservation that fails is carried as the
+/// `Err` it was, not dropped: it is that file's whole result.
+fn reserve_batch_outputs(
+    files: &[String],
+    out_dir: Option<&str>,
+    ext: &str,
+) -> Vec<(String, std::result::Result<PathBuf, String>)> {
+    let mut pairs = Vec::with_capacity(files.len());
+    for f in files {
         let src = Path::new(f);
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
         let dir = match out_dir {
-            Some(d) => std::path::PathBuf::from(d),
+            Some(d) => PathBuf::from(d),
             None => src
                 .parent()
                 .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+                .unwrap_or_else(|| PathBuf::from(".")),
         };
-        let out = reserve_batch_output(&dir, stem, &ext);
-        pairs.push((f.clone(), out));
+        pairs.push((f.clone(), reserve_batch_output(&dir, stem, ext)));
     }
+    pairs
+}
 
-    // Fan out: each (input, pre-reserved output) is independent → no naming race.
-    let results = crate::parallel::map(&pairs, |_, (input, output)| -> bool {
-        if is_convert {
+/// The one op a `batch` run repeats over every input. A struct rather than seven arguments
+/// threaded through the worker: the settings are fixed for the whole run, only the file
+/// changes.
+struct BatchJob<'a> {
+    is_convert: bool,
+    size: u32,
+    quality: u8,
+    ext: &'a str,
+    resize: verbs::Resize,
+}
+
+impl BatchJob<'_> {
+    /// One input, start to finish, as the per-file record both front ends report through
+    /// (2026-09-05 audit, F11). Before this the whole thing was `.is_ok()`, so the reason
+    /// died here.
+    fn run(&self, input: &str, slot: &std::result::Result<PathBuf, String>) -> verbs::FileOutcome {
+        let started = std::time::Instant::now();
+        let out = match slot {
+            Ok(p) => p,
+            Err(e) => {
+                return verbs::FileOutcome::failed(input, Some(verbs::OmitCause::Unwritable), e)
+                    .timed(started.elapsed())
+            }
+        };
+        let attempt = if self.is_convert {
             // `quality` is the only quality knob `batch` exposes; before this fix it
             // was dropped for WebP specifically (`None` = lossless, unconditionally),
             // so `batch convert --to webp --quality N` silently ignored N and always
             // wrote a large lossless file. Reuse it as the WebP quality too.
-            let webp_quality = (ext == "webp").then_some(quality);
-            verbs::convert_to(input, output, quality, webp_quality, resize).is_ok()
+            let webp_quality = (self.ext == "webp").then_some(self.quality);
+            verbs::convert_to_reporting(input, out, self.quality, webp_quality, self.resize)
+                .map_err(|(cause, e)| (cause, e.message()))
         } else {
-            thumbnail(input, &output.to_string_lossy(), size).is_ok()
+            thumbnail_reporting(input, &out.to_string_lossy(), self.size).map(|_| ())
+        };
+        match attempt {
+            Ok(()) => verbs::FileOutcome::ok(input, out.clone()),
+            Err((cause, detail)) => verbs::FileOutcome::failed(input, Some(cause), detail),
         }
-    });
-    // A failed encode never got past the reserved placeholder — clean up any that
-    // are still zero bytes (mirrors OutSlot's own drop behavior), so a failed batch
-    // item leaves nothing behind, same as before this fix reserved ahead of time.
-    for ((_, out), &ok) in pairs.iter().zip(results.iter()) {
-        if !ok {
-            let empty = std::fs::metadata(out)
-                .map(|m| m.len() == 0)
-                .unwrap_or(false);
-            if empty {
-                let _ = std::fs::remove_file(out);
-            }
+        .timed(started.elapsed())
+    }
+}
+
+/// A failed encode never got past the reserved placeholder, so clean up any that are still
+/// zero bytes (mirrors OutSlot's own drop behavior), so a failed batch item leaves nothing
+/// behind, same as before the reservation happened ahead of time. Entries whose name was
+/// never claimed at all have nothing to clean.
+fn clean_failed_placeholders(
+    pairs: &[(String, std::result::Result<PathBuf, String>)],
+    report: &verbs::BatchReport,
+) {
+    for ((_, slot), outcome) in pairs.iter().zip(report.files.iter()) {
+        let Ok(out) = slot else { continue };
+        if outcome.is_ok() {
+            continue;
+        }
+        let empty = std::fs::metadata(out)
+            .map(|m| m.len() == 0)
+            .unwrap_or(false);
+        if empty {
+            let _ = std::fs::remove_file(out);
         }
     }
-    let done = results.iter().filter(|&&ok| ok).count();
-    let total = files.len();
-    let offline_note = if skipped_offline > 0 {
+}
+
+/// Render a finished run. The clean-run text is exactly what it has always been; a run with
+/// failures adds one tab-separated `failed` line each, matching the `omitted` lines
+/// `pdf`/`cbz` print, so one parser reads every verb here.
+///
+/// Total failure stays an `Err` in BOTH forms: it must FAIL the command (nonzero exit for
+/// scripts/CI/MCP callers), and an `Err` carrying the JSON body would be printed to stderr
+/// behind the tool's own `st2k:` prefix, i.e. not parseable as JSON anyway. The failure
+/// lines go with it, so even the refusal names every file and cause.
+fn batch_report(report: &verbs::BatchReport, json: bool) -> Result<String, String> {
+    let (done, total) = (report.succeeded(), report.requested());
+    if done == 0 {
+        return Err(format!("0/{total} succeeded{}", report.failure_lines()));
+    }
+    if json {
+        return Ok(report.to_json().to_string());
+    }
+    let offline_note = if report.skipped_offline > 0 {
         format!(
-            "\n  skipped  {skipped_offline} cloud placeholder(s) — opening these would download them"
+            "\n  skipped  {} cloud placeholder(s), opening these would download them",
+            report.skipped_offline
         )
     } else {
         String::new()
     };
-    // Total failure must FAIL the command (nonzero exit for scripts/CI/MCP callers) — a
-    // "0/12 succeeded" with exit code 0 was indistinguishable from a good run without
-    // parsing English stdout. Partial success stays Ok but now names the failure count.
-    if done == 0 {
-        return Err(format!("0/{total} succeeded"));
-    }
     if done < total {
         return Ok(format!(
-            "{done}/{total} succeeded ({} failed){offline_note}",
-            total - done
+            "{done}/{total} succeeded ({} failed){offline_note}{}",
+            total - done,
+            report.failure_lines()
         ));
     }
     Ok(format!("{done}/{total} succeeded{offline_note}"))
@@ -1412,9 +1527,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("img.webp"), b"external writer").unwrap();
 
-        let first = reserve_batch_output(&dir, "img", "webp");
+        let first = reserve_batch_output(&dir, "img", "webp").unwrap();
         assert_eq!(first, dir.join("img (1).webp"));
-        let second = reserve_batch_output(&dir, "img", "webp");
+        let second = reserve_batch_output(&dir, "img", "webp").unwrap();
         assert_eq!(second, dir.join("img (2).webp"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1467,6 +1582,7 @@ mod tests {
             Some("webp"),
             10, // aggressively lossy
             verbs::Resize::None,
+            false,
         )
         .unwrap();
         let lossy_len = std::fs::metadata(dir.join("noise.webp")).unwrap().len();
@@ -1600,6 +1716,7 @@ mod tests {
             None,
             90,
             verbs::Resize::None,
+            false,
         )
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -1608,6 +1725,120 @@ mod tests {
         assert_eq!(arr[0]["width"], serde_json::json!(64));
         assert_eq!(arr[0]["height"], serde_json::json!(48));
         assert!(arr[0]["input"].as_str().unwrap().ends_with("ok.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-05 audit, F11, the whole acceptance case in one run: one file that converts,
+    /// one whose bytes no decoder takes, and one whose output name cannot be claimed. The
+    /// counts have to add up, the two failures have to carry DIFFERENT causes (they need
+    /// different fixes: replace the file, versus write somewhere else), and every failure
+    /// has to name its input path exactly as it was passed, because that path IS the retry.
+    /// Before this, all three came back as `1/3 succeeded (2 failed)` and nothing else.
+    ///
+    /// The unwritable destination is a FOLDER already sitting on the output name, not an
+    /// ACL: Windows answers `create_new` on a directory with access-denied, so this is a
+    /// real permission failure the test can set up in one line and clean up in one more.
+    #[test]
+    fn batch_reports_a_distinct_cause_per_failure_and_a_retryable_list() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_cli_causes_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .save(&good)
+            .unwrap();
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"this is not a PNG, or anything else").unwrap();
+        let blocked = dir.join("blocked.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .save(&blocked)
+            .unwrap();
+        std::fs::create_dir(dir.join("blocked.webp")).unwrap();
+
+        let inputs: Vec<String> = [&good, &broken, &blocked]
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let run = |json| {
+            batch(
+                "convert",
+                &inputs,
+                false,
+                None,
+                256,
+                Some("webp"),
+                90,
+                verbs::Resize::None,
+                json,
+            )
+        };
+
+        let v: serde_json::Value = serde_json::from_str(&run(true).unwrap()).unwrap();
+        assert_eq!(v["status"], "partial");
+        assert_eq!(v["requested"], 3);
+        assert_eq!(v["succeeded"], 1);
+        assert_eq!(v["failed"], 2);
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3, "one entry per input, in input order");
+
+        assert_eq!(results[0]["status"], "ok");
+        assert_eq!(results[0]["cause"], serde_json::Value::Null);
+        assert!(results[0]["output"]
+            .as_str()
+            .unwrap()
+            .ends_with("good.webp"));
+
+        assert_eq!(results[1]["status"], "failed");
+        assert_eq!(
+            results[1]["cause"], "undecodable",
+            "bytes no decoder takes is a bad INPUT: {}",
+            results[1]
+        );
+        assert_eq!(results[2]["status"], "failed");
+        assert_eq!(
+            results[2]["cause"], "unwritable",
+            "a destination that cannot be claimed is a bad OUTPUT: {}",
+            results[2]
+        );
+        assert_ne!(
+            results[1]["cause"], results[2]["cause"],
+            "two different problems must not report one cause"
+        );
+        for (i, expected) in [(1usize, &broken), (2, &blocked)] {
+            assert_eq!(
+                results[i]["input"].as_str().unwrap(),
+                expected.to_string_lossy(),
+                "a failed entry must be retryable by the path it was given"
+            );
+            assert!(
+                !results[i]["detail"].as_str().unwrap().is_empty(),
+                "a cause without a sentence explains nothing to a person"
+            );
+        }
+        assert!(
+            results[2]["output"].is_null(),
+            "nothing was written for the blocked file"
+        );
+
+        // The human form keeps its one-line summary and adds one tab-separated line per
+        // failure, the same shape `pdf`/`cbz` print for an omitted input.
+        let text = run(false).unwrap();
+        assert!(
+            text.starts_with("1/3 succeeded (2 failed)"),
+            "the summary line is unchanged: {text}"
+        );
+        assert!(
+            text.contains(&format!("failed\t{}\tundecodable\t", broken.display()))
+                && text.contains(&format!("failed\t{}\tunwritable\t", blocked.display())),
+            "each failure is named with its cause: {text}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

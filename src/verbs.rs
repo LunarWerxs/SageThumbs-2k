@@ -61,7 +61,7 @@ pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_f
 // per-file one every bulk run reports through (F11).
 pub(crate) use outcome::{partition, refusal};
 #[allow(unused_imports)]
-pub use outcome::{BatchReport, Combined, FileOutcome, OmitCause, Omitted, OnOmit};
+pub use outcome::{BatchReport, Combined, FileOutcome, FileStatus, OmitCause, Omitted, OnOmit};
 
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]

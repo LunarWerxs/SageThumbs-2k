@@ -247,6 +247,8 @@ tip_shot_hotkey = "La combinaison de touches globale qui lance une capture tandi
 tip_instant_screenshot = "Active un deuxième raccourci qui enregistre instantanément l'écran entier dans le presse-papiers et le dossier Captures, sans éditeur."
 tip_shot_quick_hotkey = "La combinaison de touches pour l'enregistrement rapide du plein écran (utilisée uniquement quand la capture instantanée est activée)."
 cv_open_folder = "Ouvrir le dossier de sortie ?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Ouvrir le dossier"
 
 # Quick preview
 nav_quickpreview = "Aperçu rapide"

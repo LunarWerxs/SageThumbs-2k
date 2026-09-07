@@ -248,6 +248,8 @@ tip_shot_hotkey = "在協助程式啟用時開始擷取的全域快速鍵組合�
 tip_instant_screenshot = "開啟第二個快速鍵，立即將整個螢幕儲存到剪貼簿和螢幕擷取資料夾，無需編輯器。"
 tip_shot_quick_hotkey = "用於快速全螢幕快速儲存的快速鍵組合（僅在啟用快速螢幕擷取時使用）。"
 cv_open_folder = "開啟輸出資料夾？"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "開啟資料夾"
 
 # Quick preview
 nav_quickpreview = "快速預覽"

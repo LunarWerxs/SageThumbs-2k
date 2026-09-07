@@ -243,6 +243,8 @@ tip_shot_hotkey = "Maailmanlaajuinen näppäinyhdistelmä, joka aloittaa kaappau
 tip_instant_screenshot = "Kytke päälle toinen pikanäppäin, joka tallentaa koko näytön välittömästi leikepöydällä ja kuvakaappauskansioihin ilman editoria."
 tip_shot_quick_hotkey = "Näppäinyhdistelmä pikatallennus-kuvakaappaukselle (käytetään vain, kun pikaisten kuvakaappauksien tallennus on käytössä)."
 cv_open_folder = "Avaa tulosten kansio?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Avaa kansio"
 
 # Quick preview
 nav_quickpreview = "Pikaesikatselu"

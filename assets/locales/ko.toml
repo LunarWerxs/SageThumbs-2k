@@ -246,6 +246,8 @@ tip_shot_hotkey = "헬퍼가 활성화된 동안 캡처를 시작하는 전역 �
 tip_instant_screenshot = "두 번째 단축키를 켜면 전체 화면을 클립보드와 스크린샷 폴더에 즉시 저장할 수 있으며, 편집기는 필요하지 않습니다."
 tip_shot_quick_hotkey = "즉시 전체 화면 빠른 저장용 키 조합(빠른 스크린샷이 활성화된 경우에만 사용)."
 cv_open_folder = "출력 폴더를 열까요?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "폴더 열기"
 
 # Quick preview
 nav_quickpreview = "빠른 미리 보기"

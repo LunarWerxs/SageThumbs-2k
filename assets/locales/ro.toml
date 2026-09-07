@@ -244,6 +244,8 @@ tip_shot_hotkey = "Combinația globală de taste care inițiază o captură în 
 tip_instant_screenshot = "Activează un al doilea hotkey care salvează instantaneu tot ecranul în clipboard și în dosarul Capturi, fără editor."
 tip_shot_quick_hotkey = "Combinația de taste pentru salvarea rapidă a ecranului complet (utilizată doar în timp ce captura instantanee este activată)."
 cv_open_folder = "Deschideți dosarul de ieșire?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Deschide folderul"
 
 # Quick preview
 nav_quickpreview = "Previzualizare rapidă"

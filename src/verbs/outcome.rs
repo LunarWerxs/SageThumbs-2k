@@ -132,6 +132,27 @@ impl Combined {
     }
 }
 
+/// Whether one input got everything the run asked of it. A field rather than "is `detail`
+/// empty": a front end that fails a file without a sentence to show for it must still count
+/// as a failure, and deriving the verdict from the text would silently make that a success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+    /// Every requested output for this input was written.
+    Ok,
+    /// At least one was not. `FileOutcome::output` may still hold what did get written.
+    Failed,
+}
+
+impl FileStatus {
+    /// The stable token the CLI lines and the JSON carry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileStatus::Ok => "ok",
+            FileStatus::Failed => "failed",
+        }
+    }
+}
+
 /// What one input produced in a BULK run: the shared per-file record the Convert dialog
 /// and the CLI/MCP `batch` verb both report through (2026-09-05 audit, F11).
 ///
@@ -150,6 +171,7 @@ pub struct FileOutcome {
     /// The input path exactly as the caller passed it, so a failed entry is retryable
     /// verbatim.
     pub input: String,
+    pub status: FileStatus,
     /// What was written, when anything was. A file whose first output landed but whose
     /// second requested size did not carries BOTH a path and a failure.
     pub output: Option<PathBuf>,
@@ -166,6 +188,7 @@ impl FileOutcome {
     pub fn ok(input: &str, output: PathBuf) -> Self {
         FileOutcome {
             input: input.to_string(),
+            status: FileStatus::Ok,
             output: Some(output),
             cause: None,
             detail: String::new(),
@@ -178,6 +201,7 @@ impl FileOutcome {
     pub fn failed(input: &str, cause: Option<OmitCause>, detail: impl std::fmt::Display) -> Self {
         FileOutcome {
             input: input.to_string(),
+            status: FileStatus::Failed,
             output: None,
             cause,
             detail: detail.to_string(),
@@ -200,16 +224,7 @@ impl FileOutcome {
     }
 
     pub fn is_ok(&self) -> bool {
-        self.cause.is_none() && self.detail.is_empty()
-    }
-
-    /// The one word a caller has to look at.
-    pub fn status(&self) -> &'static str {
-        if self.is_ok() {
-            "ok"
-        } else {
-            "failed"
-        }
+        matches!(self.status, FileStatus::Ok)
     }
 
     /// One tab-separated line, `failed<TAB>input<TAB>cause<TAB>detail`, deliberately the
@@ -228,7 +243,7 @@ impl FileOutcome {
         serde_json::json!({
             "input": self.input,
             "output": self.output.as_ref().map(|p| p.display().to_string()),
-            "status": self.status(),
+            "status": self.status.as_str(),
             "cause": self.cause.map(OmitCause::as_str),
             "detail": self.detail,
             "elapsed_ms": self.elapsed_ms,
@@ -358,6 +373,86 @@ mod tests {
             partial.omitted[0].as_line(),
             "omitted\tbad.png\tundecodable\tnot a png"
         );
+    }
+
+    /// The batch JSON is the contract a script reads (2026-09-05 audit, F11): the counts
+    /// add up, `status` says whether it needs to look further, and each entry carries the
+    /// input path it was given plus a stable cause token. A front end that could not
+    /// measure the phase reports no cause at all rather than a guessed one.
+    #[test]
+    fn batch_report_json_carries_counts_causes_and_the_retry_paths() {
+        let report = BatchReport {
+            files: vec![
+                FileOutcome::ok("a.png", PathBuf::from("a.webp")),
+                FileOutcome::failed("b.png", Some(OmitCause::Undecodable), "cannot decode b.png"),
+                FileOutcome::failed("c.png", Some(OmitCause::Unwritable), "Access is denied.")
+                    .timed(std::time::Duration::from_millis(7)),
+                FileOutcome::failed("d.png", None, "something the dialog cannot bucket"),
+            ],
+            skipped_offline: 2,
+        };
+        let v = report.to_json();
+        assert_eq!(v["status"], "partial");
+        assert_eq!(v["requested"], 4);
+        assert_eq!(v["succeeded"], 1);
+        assert_eq!(v["failed"], 3);
+        assert_eq!(v["skipped_offline"], 2);
+        assert_eq!(v["results"][0]["status"], "ok");
+        assert_eq!(v["results"][0]["output"], "a.webp");
+        assert_eq!(v["results"][0]["cause"], serde_json::Value::Null);
+        assert_eq!(v["results"][1]["cause"], "undecodable");
+        assert_eq!(v["results"][2]["cause"], "unwritable");
+        assert_eq!(v["results"][2]["elapsed_ms"], 7);
+        assert_eq!(v["results"][3]["cause"], serde_json::Value::Null);
+        assert_eq!(
+            v["results"][3]["status"], "failed",
+            "no cause is not the same thing as no failure"
+        );
+        assert_eq!(
+            report
+                .failures()
+                .map(|f| f.input.as_str())
+                .collect::<Vec<_>>(),
+            ["b.png", "c.png", "d.png"],
+            "the retry list is every failure, in input order"
+        );
+        assert_eq!(
+            report.failures().next().map(FileOutcome::as_line),
+            Some("failed\tb.png\tundecodable\tcannot decode b.png".to_string())
+        );
+        assert!(
+            report.failure_lines().starts_with("\nfailed\tb.png"),
+            "the lines append straight onto a summary"
+        );
+
+        // The two ends of the scale, which the counts above cannot show.
+        let all_good = BatchReport {
+            files: vec![FileOutcome::ok("a.png", PathBuf::from("a.webp"))],
+            skipped_offline: 0,
+        };
+        assert_eq!(all_good.status(), "ok");
+        assert_eq!(all_good.failure_lines(), "");
+        let all_bad = BatchReport {
+            files: vec![FileOutcome::failed(
+                "a.png",
+                Some(OmitCause::Unreadable),
+                "gone",
+            )],
+            skipped_offline: 0,
+        };
+        assert_eq!(all_bad.status(), "failed");
+    }
+
+    /// A file whose FIRST output was written and whose second was not is a failure that
+    /// still has something to reveal, so the record has to carry both.
+    #[test]
+    fn a_partly_written_file_keeps_its_output_and_its_failure() {
+        let partial = FileOutcome::failed("a.png", None, "the 720p size did not write")
+            .produced(Some(PathBuf::from("a_1080.png")));
+        assert!(!partial.is_ok());
+        assert_eq!(partial.output, Some(PathBuf::from("a_1080.png")));
+        assert_eq!(partial.to_json()["output"], "a_1080.png");
+        assert_eq!(partial.to_json()["status"], "failed");
     }
 
     #[test]

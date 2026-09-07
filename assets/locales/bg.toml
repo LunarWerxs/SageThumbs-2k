@@ -245,6 +245,8 @@ tip_shot_hotkey = "Глобалната клавишна комбинация, �
 tip_instant_screenshot = "Включи втория клавиш, който веднага запазва целия екран в буфера и папката Снимки без редактор."
 tip_shot_quick_hotkey = "Клавишната комбинация за моментално запазване на целия екран (използва се само когато бързото запазване е включено)."
 cv_open_folder = "Отворете изходната папка?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Отваряне на папката"
 
 # Quick preview
 nav_quickpreview = "Бърз преглед"

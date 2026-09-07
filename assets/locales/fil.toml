@@ -241,6 +241,8 @@ tip_shot_hotkey = "Ang pandaigdigang kombinasyon ng susi na nagsisimula ng pagku
 tip_instant_screenshot = "Gawin ang pangalawang shortcut na agad na nagsasave ng buong screen sa clipboard at screenshots folder, nang walang editor."
 tip_shot_quick_hotkey = "Ang kombinasyon ng susi para sa agarang mabilis na pag-save ng buong screen (ginagamit lamang habang naka-enable ang instant screenshot)."
 cv_open_folder = "Buksan ang output folder?"
+# The same offer as a BUTTON, on the failure report window.
+btn_open_folder = "Buksan ang folder"
 
 # Quick preview
 nav_quickpreview = "Mabilis na preview"
