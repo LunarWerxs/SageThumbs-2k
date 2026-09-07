@@ -156,6 +156,22 @@ if ($Check) {
         $b = Join-Path $dest $name
         $diff = & git diff --no-index --stat -- $a $b 2>&1
         if ($LASTEXITCODE -ne 0 -and $diff) { $drift += "$name`n$diff" }
+        # The diff above compares the WORKING TREE, and the working tree can hold files git
+        # will never commit. That is exactly how CI stayed red for a day while this check
+        # passed here (2026-09-07): pristine jxl-oxide ships examples/image-integration.rs,
+        # a per-machine .git/info/exclude line hid every `examples/` directory from `git add`,
+        # so the file sat on disk satisfying this diff and never reached a commit. A file
+        # under a vendored tree that is untracked OR ignored is drift CI will see and this
+        # machine cannot, so it fails here by name instead of passing by accident.
+        $rel = "crates/vendor/$name"
+        $untracked = @(& git -C $root ls-files --others --exclude-standard -- $rel 2>$null)
+        $ignored = @(& git -C $root ls-files --others --ignored --exclude-standard -- $rel 2>$null)
+        $uncommitted = @($untracked + $ignored | Where-Object { $_ } | Sort-Object -Unique)
+        if ($uncommitted) {
+            $drift += "$name`n  present on disk but NOT committed (CI's checkout will not have these):`n" +
+                (($uncommitted | ForEach-Object { "    $_" }) -join "`n") +
+                "`n  git add -f each one, or fix the ignore rule that is hiding it."
+        }
     }
     Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
     if ($drift) {

@@ -907,3 +907,23 @@ destroy the window must be copied out BEFORE that call**, and the post-call code
 modal dialog, `SendMessage` to another thread's window, and anything documented as
 "busy-deferral". A timer around such a call also measures the user, not the code, so a stage
 that pumps is excluded from the stall budget by definition rather than logged as a stall.
+
+## A local git exclude turns a working-tree diff into a false green
+
+CI's vendored-JPEG-XL check was red on every run for a day while the same check passed on
+this machine. The pristine jxl-oxide crate ships `examples/image-integration.rs`; the committed
+vendor tree did not have it, and CI's fresh checkout compared pristine-plus-patches against a
+tree with one file fewer. Locally the file was there all along, because this machine's
+`.git/info/exclude` carried a bare `examples/` line: every `git add` of the vendor directory
+silently skipped it, and `vendor-jxl.ps1 -Check` diffed the regenerated tree against the
+WORKING copy, which had the file. The audit's F25 agent named exactly this missing file weeks
+earlier and was overruled on the strength of that local pass.
+
+Two rules fall out. **A check that says "the committed tree matches" must compare against
+what is committed, not what is on disk**: `vendor-jxl.ps1 -Check` now also fails when
+`git ls-files --others` (with and without `--ignored`) finds anything under a vendored tree,
+naming the file and saying CI will not have it. And **`.git/info/exclude` is per-machine and
+invisible to every review**: a pattern there that is not anchored (`examples/` rather than
+`/examples/`) hides the same-named directory anywhere in the tree, including inside a vendored
+crate. Anchor such rules, or keep them in the tracked `.gitignore` where a reviewer can see
+them; the root `/examples/` rule there already did the job the local line was meant to do.
