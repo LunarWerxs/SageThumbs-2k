@@ -35,7 +35,20 @@ param(
     [string]$Render = '0.12.4',
     [string]$Oxide = '0.12.6',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
-    [switch]$Check
+    [switch]$Check,
+    # Refuse to skip. Without this, a `-Check` run that cannot find the pristine sources
+    # prints a loud SKIPPED and exits 0, which is right on a developer machine that has never
+    # built (going red there says nothing about the tree) and WRONG in CI, where exit 0 is
+    # read as "the vendored tree was compared and matches".
+    #
+    # It was wrong in CI for this check's whole life: the consistency job runs
+    # `cargo fetch --locked` immediately above precisely to populate the registry cache, but
+    # the workspace's own `[patch.crates-io]` resolves these two crates from the vendored
+    # PATH, so the plain crates.io tarballs are never downloaded and the check had nothing to
+    # diff. Every green run printed SKIPPED and passed. See
+    # `scripts/fetch-pristine-jxl.ps1`, which populates the cache for real, and note that a
+    # guard which has never once fired is indistinguishable from a guard over a clean tree.
+    [switch]$RequireReal
 )
 $ErrorActionPreference = 'Stop'
 
@@ -65,6 +78,9 @@ if (-not $registry) {
     # -Check also runs in CI's consistency job, which does not build, so the extracted registry
     # cache may not exist there. Skip LOUDLY rather than going red for a reason that says
     # nothing about the tree; the guard that matters is the local one, before a push.
+    if ($Check -and $RequireReal) {
+        throw "no cargo registry source cache found, so the vendored tree was NOT compared. -RequireReal forbids reporting that as a pass. Run scripts\fetch-pristine-jxl.ps1 first."
+    }
     if ($Check) {
         Write-Host "[vendor-jxl] SKIPPED - no cargo registry source cache on this machine, so the" -ForegroundColor Yellow
         Write-Host "             committed vendor tree was NOT compared against pristine + patches." -ForegroundColor Yellow
@@ -87,6 +103,10 @@ foreach ($name in $crates.Keys) {
         # has never fetched these, so testing only for the directory let this throw and turned
         # a green tree red. A check that fails for a reason unrelated to the tree is worse than
         # one that does not run.
+        if ($Check -and $RequireReal) {
+            if (Test-Path $dest) { Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue }
+            throw "$name $ver is not in this machine's cargo source cache, so the vendored tree was NOT compared. -RequireReal forbids reporting that as a pass. Run scripts\fetch-pristine-jxl.ps1 first."
+        }
         if ($Check) {
             Write-Host "[vendor-jxl] SKIPPED - $name $ver is not in this machine's cargo source cache," -ForegroundColor Yellow
             Write-Host "             so the committed vendor tree was NOT compared against pristine + patches." -ForegroundColor Yellow

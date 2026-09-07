@@ -469,17 +469,25 @@ jobs:
         shell: pwsh
         run: ./scripts/check-vendored-exr.ps1
       # The jxl vendor tree is GENERATED from crates.io sources plus crates/vendor/jxl-patches,
-      # so this catches a hand-edit that the next regeneration would silently discard. Without
-      # a populated registry source cache, vendor-jxl.ps1 -Check has nothing to diff against
-      # and skips loudly instead of comparing anything - this job does no `cargo build`, so
-      # that cache never existed here on its own. `cargo fetch --locked` populates it (no
-      # compile, just download+extract) so the check performs a REAL comparison in CI, the
-      # same one a manual `verify.ps1 -Lint` run gets locally after building.
-      - name: Fetch cargo registry sources (for the jxl vendor-drift check below)
-        run: cargo fetch --locked
+      # so this catches a hand-edit that the next regeneration would silently discard.
+      #
+      # It needs the PRISTINE crates.io sources to diff against, and `cargo fetch --locked` at
+      # the repo root cannot supply them: the workspace's own `[patch.crates-io]` resolves
+      # these two crates from the vendored PATH, so cargo never downloads the tarballs. That
+      # is not a theory, it is what happened for this check's whole life. Every green run
+      # printed "SKIPPED - not in this machine's cargo source cache" and exited 0, so the
+      # comparison this step is named after had never once run in CI.
+      #
+      # fetch-pristine-jxl.ps1 asks for the crates from outside the workspace, where no patch
+      # table applies, and -RequireReal makes the checker treat "nothing to compare" as a
+      # failure instead of a pass. Both halves are needed: the fetch alone would still skip
+      # silently the day it broke.
+      - name: Fetch pristine jxl sources (the vendor-drift check has nothing to diff without them)
+        shell: pwsh
+        run: ./scripts/fetch-pristine-jxl.ps1
       - name: vendored jxl tree matches pristine + patches
         shell: pwsh
-        run: ./scripts/vendor-jxl.ps1 -Check
+        run: ./scripts/vendor-jxl.ps1 -Check -RequireReal
       # Pins that verify.ps1's OWN -Lint script loops call vendor-jxl.ps1 (mutating bare
       # default vs. read-only -Check, see its header) in -Check mode, not folded bare into a
       # generic no-argument loop as it was found to be (2026-09-05 audit, F25) - that used to
