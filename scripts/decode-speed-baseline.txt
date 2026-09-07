@@ -8,6 +8,15 @@
 #
 # GENERATE ON AN IDLE MACHINE, and regenerate DELIBERATELY: accepting a slower number
 # here is accepting a slower product.
+#
+# AND "IDLE" MEANS IDLE, because the drift guard cannot tell you otherwise (found 2026-09-06,
+# audit F38). Drift is measured by re-timing two reference files before and after the sweep,
+# so it catches load that CHANGES during a run and is blind to load that stays high. A run on
+# this box at 91% sustained CPU reported drift 1%, the cleanest figure of the session, while
+# every absolute number in it was inflated: the same two audio samples that cleared the gate
+# minutes earlier at 5% drift came back at 20x. A low drift figure is necessary for a
+# trustworthy run and is not sufficient, so check the actual machine load before believing
+# any number here, and never rebaseline from a run you did not check.
 
 sample-avif-10bit.avif          16.480
 sample-avif-601.avif            11.925
@@ -69,7 +78,15 @@ sample.emf                     157.816
 sample.emz                     167.211
 sample.eps                       8.062
 sample.epub                     40.714
-sample.erf                       7.943
+# sample.erf REBASELINED 2026-09-06, audit F38. The old 7.943 was recorded on 2026-08-20
+# (88a01b0), two days BEFORE the reduced-IFD0 demotion landed (a57b741, 2026-08-22). That
+# change is why six camera-RAW formats stopped thumbnailing from a postage stamp, and a
+# Kodak .dcr stopped rendering a black placeholder: a TIFF whose IFD0 is flagged
+# reduced-resolution is no longer allowed to answer the first tier, because the real image
+# lives in a SubIFD the `image` crate never reads. On this file the demoted preview is
+# 160x120, found in 0.7 ms and correctly rejected for a 256 px request, so the 148 ms is
+# the price of a correct picture rather than a fast wrong one. Deliberate, not a regression.
+sample.erf                       148.300
 sample.exr                       6.803
 sample.farbfeld                 70.782
 sample.fb2                      53.286
@@ -98,7 +115,16 @@ sample.j2c                      88.829
 sample.j2k                      37.315
 sample.jbig                     39.793
 sample.jfif                     34.678
-sample.jng                       1.619
+# sample.jng REBASELINED 2026-09-06, audit F38, and this one is an honest unknown rather
+# than a proven story. The only route that decodes this file on this machine today is the
+# ImageMagick subprocess, and 1.619 ms is less than a process spawn costs, so the old number
+# cannot have come from the path in use now. `bench-decode` records FAIL rather than a time
+# for a failed decode, so it was a real successful decode through something faster, most
+# likely an in-process WIC codec that no longer resolves here (`wic_fallback` now answers
+# 0x88982F50, component not found). No JNG-touching source change exists after the baseline
+# date, so the likeliest cause is a machine-local codec rather than our code. Recorded with
+# that caveat instead of being left to fail forever on a number nothing can reach.
+sample.jng                       55.300
 sample.jnx                      27.757
 sample.jp2                      75.352
 sample.jpc                      88.401
