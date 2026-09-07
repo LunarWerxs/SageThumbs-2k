@@ -1466,8 +1466,16 @@ mod render_size_tests {
     /// of the published one would cancel itself, i.e. live work would be silently dropped and
     /// the viewer would sit on "Loading…" forever. Wasting some work is recoverable; cancelling
     /// the work someone is waiting for is not.
+    /// The generation is one process-wide atomic, and the two tests below each publish 100 and
+    /// then reset it to 0. Run in parallel by the default test runner they interleave (A
+    /// publishes, B publishes, A resets, B asserts against 0) and fail on whichever assertion
+    /// lands after the other's reset; it surfaced as a one-in-several flake on the first full
+    /// run after audit batch 3. Both hold this lock for their whole body.
+    static GEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn only_a_newer_generation_abandons_a_worker() {
+        let _serial = GEN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         begin_generation(100);
         assert!(!abandoned(100), "the live generation must never abandon");
         assert!(abandoned(99), "an older worker has been superseded");
@@ -1483,6 +1491,7 @@ mod render_size_tests {
     /// accessor `copy_shown_image` actually calls.
     #[test]
     fn generation_current_rejects_only_a_superseded_generation() {
+        let _serial = GEN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         begin_generation(100);
         assert!(generation_current(100), "the live generation is current");
         assert!(!generation_current(99), "a superseded generation is not");
