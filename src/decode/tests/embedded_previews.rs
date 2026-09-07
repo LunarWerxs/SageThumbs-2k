@@ -62,6 +62,31 @@ fn largest_embedded_jpeg_skips_lossless_frames_like_a_cr2_sensor_stream() {
     }
 }
 
+/// The full F38 route decision on a CIFF-shaped buffer matching the real corpus
+/// `sample.crw` (`II 1A 00`, then the offset word CIFF puts there, then the `HEAPCCDR`
+/// heap magic): [`looks_raw_container`]'s signature gate must accept it, AND the
+/// embedded-JPEG scan below must still find a preview placed far into a non-TIFF body,
+/// exactly as the real file does (its only embedded JPEG sits near the very end of a
+/// 2.3 MB file). Before the fix, `looks_raw_container` declined this signature outright,
+/// so `try_raw_preview_tier` never even ran the scan for a real .crw and it fell through
+/// to the far slower named-RAW/ImageMagick demosaic path instead.
+#[test]
+fn looks_raw_container_and_preview_scan_agree_on_a_crw_shaped_buffer() {
+    let mut crw = b"II\x1A\0\x00\x00\x00\0HEAPCCDR".to_vec();
+    crw.extend(std::iter::repeat_n(0xABu8, 4096)); // stand-in CIFF heap/sensor body
+    let preview_off = crw.len();
+    let preview = mini_jpeg(&[], MIN_RAW_PREVIEW + 1024);
+    crw.extend_from_slice(&preview);
+
+    assert!(
+        looks_raw_container(&crw),
+        "the CRW signature (II 1A 00) must gate the raw-preview tier in"
+    );
+    let pick = largest_embedded_jpeg(&crw, MIN_RAW_PREVIEW)
+        .expect("the embedded preview must still be found in a non-TIFF container");
+    assert_eq!(pick, &crw[preview_off..preview_off + preview.len()]);
+}
+
 #[test]
 fn largest_embedded_jpeg_prefers_the_real_preview() {
     // A fake RAW: leading header junk, a tiny thumb (< MIN_RAW_PREVIEW), junk, then
