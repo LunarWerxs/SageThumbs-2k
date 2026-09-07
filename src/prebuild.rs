@@ -120,6 +120,106 @@ pub fn normalize_sizes(requested: &[u32]) -> Vec<u32> {
     out
 }
 
+// ---- the one prebuild size-list policy (2026-09-05 audit, F12/F20) -------------------
+//
+// Both front ends built their list with a `filter_map` that DROPPED whatever did not parse:
+// `st2k prebuild --size 96,typo,768` ran as `96,768`, and the MCP `prebuild` tool did the
+// same to a mixed JSON array and then fell back to the defaults when nothing survived. Both
+// reported success for a run the caller never asked for. The parsing lives here, once, so
+// the two surfaces cannot drift apart on what a size list means.
+//
+// THE POLICY, identical on the command line and over MCP:
+//
+// * ABSENT (no `--size`, no `"sizes"` key, or a JSON `null`) means [`DEFAULT_SIZES`]. That
+//   is the only route to a default: a list that WAS supplied is never quietly replaced.
+// * SUPPLIED must be a non-empty list of whole numbers of pixels. Surrounding whitespace is
+//   accepted (`--size " 96 , 256 "`), because a shell quoting a list is not a mistake.
+// * REJECTED, naming the 1-based element that did it, before any cache work starts: empty
+//   text (a stray or trailing comma), text that is not a number, a negative or fractional
+//   number, a value past `u32::MAX`, a JSON element that is not a number (a `"96"` STRING is
+//   a different type, not a size), and an empty list.
+// * ZERO IS REJECTED. `0` is the documented "full size" sentinel for the single-image tools
+//   (`thumbnail`, `view`), but a zero-pixel cache bucket is not a thing Windows keeps:
+//   `normalize_sizes` above filters it out and then substitutes 256, so `--size 0` used to
+//   run as a 256 build without saying so. Refusing is the only answer that cannot be misread.
+// * A LARGE VALUE IS STILL ACCEPTED and clamped to the top bucket by `normalize_sizes`,
+//   which is unchanged. Asking for more than Windows keeps is a request that can be
+//   honoured, unlike everything above.
+
+/// Parse one element of a supplied size list, whatever front end supplied it: the CLI hands
+/// over the text between two commas, the MCP server the compact JSON of one array element
+/// (so a `"96"` string arrives quotes and all, and is rejected as the wrong type it is).
+/// `field` is the caller's own spelling of the argument and `pos` its 1-based position, so
+/// the message names the offender rather than saying the list is bad.
+fn parse_size_element(field: &str, pos: usize, raw: &str) -> Result<u32, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err(format!(
+            "{field}: element {pos} is empty, every element must be a whole number of pixels"
+        ));
+    }
+    // Checked before the parse so a negative number gets its own message instead of the
+    // generic "not a whole number", which reads as a typo rather than an out-of-range size.
+    if text.starts_with('-') {
+        return Err(format!(
+            "{field}: element {pos} is negative: {text}, a thumbnail edge is a whole number of pixels"
+        ));
+    }
+    // Parsed as u128 rather than u32 so overflow can be told apart from junk text: both fail
+    // a u32 parse, and only one of them is a number the caller could usefully shrink.
+    let value: u128 = text
+        .parse()
+        .map_err(|_| format!("{field}: element {pos} is not a whole number of pixels: {text}"))?;
+    let value = u32::try_from(value).map_err(|_| {
+        format!(
+            "{field}: element {pos} is too large: {text}, the largest accepted size is {}",
+            u32::MAX
+        )
+    })?;
+    if value == 0 {
+        return Err(format!(
+            "{field}: element {pos} is 0, which is not a cache bucket. 0 means \"full size\" \
+             only for the single-image tools, so give a real edge in pixels here"
+        ));
+    }
+    Ok(value)
+}
+
+/// Parse a supplied size list from its already-split elements, under the policy above. The
+/// FIRST bad element fails the whole call, so nothing is built from a list that was only
+/// partly understood.
+pub fn parse_size_list<'a>(
+    field: &str,
+    elements: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<u32>, String> {
+    let sizes = elements
+        .into_iter()
+        .enumerate()
+        .map(|(i, raw)| parse_size_element(field, i + 1, raw))
+        .collect::<Result<Vec<u32>, String>>()?;
+    if sizes.is_empty() {
+        return Err(format!(
+            "{field}: no sizes given, omit it entirely to build the default {}",
+            default_sizes_spelled()
+        ));
+    }
+    Ok(sizes)
+}
+
+/// The comma-separated spelling the command line uses (`--size 96,256,768`).
+pub fn parse_size_list_str(field: &str, spec: &str) -> Result<Vec<u32>, String> {
+    parse_size_list(field, spec.split(','))
+}
+
+/// [`DEFAULT_SIZES`] as the caller would type it, for the "omit it entirely" hint.
+fn default_sizes_spelled() -> String {
+    DEFAULT_SIZES
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<String>>()
+        .join(",")
+}
+
 /// The order buckets must be extracted in: **LARGEST FIRST**. This is the whole of the
 /// "pre-build didn't do anything for my folder" bug, and it is the opposite of what the code
 /// did for its entire life, so the reasoning is recorded rather than asserted.
@@ -926,6 +1026,81 @@ mod tests {
             shipped,
             "build_order must actually reorder; if these ever match, the guard is vacuous"
         );
+    }
+
+    /// The 2026-09-05 audit's F12, at the one place both front ends now go through. Each row
+    /// is (what the caller supplied, what the policy must answer): `Ok` for a list that is
+    /// entirely understood, `Err(fragment)` for one that is not, where the fragment is what
+    /// the message MUST name so the caller can find the element that did it.
+    #[test]
+    fn the_size_list_policy_parses_every_element_or_names_the_one_that_failed() {
+        let cases: &[(&str, Result<Vec<u32>, &str>)] = &[
+            // Accepted, and unchanged from what the old filter_map did with a clean list.
+            ("96,256,768", Ok(vec![96, 256, 768])),
+            ("256", Ok(vec![256])),
+            // Whitespace around an element is a shell quoting a list, not a mistake.
+            (" 96 , 256 ", Ok(vec![96, 256])),
+            ("\t96\t", Ok(vec![96])),
+            // Bigger than any bucket is still a request that can be honoured; normalize_sizes
+            // clamps it, which is deliberately NOT this function's job.
+            ("99999", Ok(vec![99999])),
+            // The headline case: one bad element used to be dropped and the run went ahead.
+            ("96,typo,768", Err("element 2")),
+            ("typo", Err("element 1")),
+            ("96.5", Err("element 1")),
+            // An empty element, from a stray or trailing comma.
+            ("96,,768", Err("element 2")),
+            ("96,", Err("element 2")),
+            ("", Err("element 1")),
+            // Zero and negatives are not thumbnail edges.
+            ("0", Err("element 1")),
+            ("96,0", Err("element 2")),
+            ("-96", Err("element 1")),
+            // Overflow: one past u32::MAX, told apart from junk text.
+            ("4294967296", Err("too large")),
+            ("99999999999999999999999999", Err("too large")),
+        ];
+        for (spec, want) in cases {
+            let got = parse_size_list_str("--size", spec);
+            match want {
+                Ok(sizes) => assert_eq!(got.as_ref(), Ok(sizes), "--size {spec:?}"),
+                Err(fragment) => {
+                    let err = got.expect_err(&format!("--size {spec:?} must be refused"));
+                    assert!(
+                        err.contains(*fragment),
+                        "--size {spec:?}: message must name {fragment:?}, got {err:?}"
+                    );
+                }
+            }
+        }
+        // An empty SUPPLIED list is refused rather than silently becoming the default: the
+        // caller asked for something specific, so answering with something else is the bug.
+        let err = parse_size_list("'sizes'", std::iter::empty::<&str>()).expect_err("empty list");
+        assert!(err.contains("no sizes given"), "got {err}");
+        assert!(
+            err.contains("96,256,768"),
+            "the message should name the default it is NOT silently using, got {err}"
+        );
+    }
+
+    /// The MCP front end hands each JSON array element over as its compact JSON text, so the
+    /// same parser sees a wrong-typed element as the wrong type it is. Proven here rather
+    /// than only in `mcp.rs`, since it is the policy that has to hold, not one caller.
+    #[test]
+    fn a_json_element_of_the_wrong_type_is_refused_by_the_same_policy() {
+        for (element, fragment) in [
+            ("\"96\"", "not a whole number"),
+            ("true", "not a whole number"),
+            ("null", "not a whole number"),
+            ("[96]", "not a whole number"),
+        ] {
+            let err = parse_size_list("'sizes'", ["96", element])
+                .expect_err("a non-number element must be refused");
+            assert!(
+                err.contains("element 2") && err.contains(fragment),
+                "{element}: got {err}"
+            );
+        }
     }
 
     /// Reordering must not lose, duplicate or invent a bucket — the run would then report

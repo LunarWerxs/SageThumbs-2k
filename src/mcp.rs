@@ -21,6 +21,10 @@ use crate::formats;
 /// MCP protocol revision we implement (the stable 2024-11-05 spec).
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// The only JSON-RPC version this server speaks. Spelled once so the envelope check and the
+/// replies cannot drift apart.
+const JSONRPC_VERSION: &str = "2.0";
+
 /// `BufRead::read_line` with a ceiling: reads one `\n`-terminated line into `line`, returning the
 /// bytes consumed, or `Ok(0)` on EOF **or** once the line exceeds `max` (the caller treats both as
 /// "stop"). Byte-oriented so an over-long line is abandoned without ever materializing.
@@ -108,19 +112,90 @@ pub fn serve() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Dispatch one parsed message. Returns `Some(response)` for a request (has an
-/// `id`), `None` for a notification (no `id`) or a no-reply method.
-fn handle(req: &Value) -> Option<Value> {
+/// A request envelope that has been CHECKED, not merely read (2026-09-05 audit, F20).
+///
+/// The old dispatcher took `req.get("id").cloned()` and `req.get("method").and_then(as_str)
+/// .unwrap_or("")` straight off the raw value, so it never looked at `jsonrpc` at all and
+/// could not tell a malformed member from a missing one: a `{"jsonrpc":"1.0","method":"ping"}`
+/// was answered as a perfectly good ping, and `"method": 7` became the empty string and came
+/// back as "method not found: ", which names nothing.
+struct Envelope<'a> {
+    /// `None` only when the `id` member is genuinely ABSENT, which is what makes a message a
+    /// notification. A present `"id": null` is a request that spelled its id as null (the
+    /// spec discourages it but allows it), and is answered with a null id.
+    id: Option<Value>,
+    method: &'a str,
+}
+
+/// Validate the envelope before anything is dispatched. `Err` is the ready-made reply.
+///
+/// These are TRANSPORT faults, so they come back as JSON-RPC `error` objects with -32600
+/// Invalid Request, never as a tool result with `isError` (which is reserved for a tool that
+/// ran and could not do the job). The id is echoed when it was itself well formed, so a
+/// client can match the rejection to what it sent; it is null when the id could not be
+/// determined, which is what the spec asks for.
+fn parse_envelope(req: &Value) -> Result<Envelope<'_>, Value> {
     // A JSON-RPC batch array or a bare scalar isn't an object, so `Value::get` (which only
-    // resolves string keys on `Object`) silently returns `None` for both "id" and "method"
-    // below — that used to fall to the wildcard arm's `id.map(...)`, which is `None` too, so
+    // resolves string keys on `Object`) silently returns `None` for both "id" and "method".
+    // That used to fall to the wildcard arm's `id.map(...)`, which is `None` too, so
     // `serve()` wrote nothing back and the caller hung waiting for a reply that never came.
     // Answer immediately instead: id is unknowable for a non-object request, so it's null.
     if !req.is_object() {
-        return Some(error_resp(Value::Null, -32600, "Invalid Request"));
+        return Err(error_resp(Value::Null, -32600, "Invalid Request"));
     }
-    let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    // Read the id FIRST so every rejection below can name it. Only the three types the spec
+    // allows count; an array/object/boolean id is a request we cannot correlate a reply to.
+    let id = match req.get("id") {
+        None => None,
+        Some(v @ (Value::String(_) | Value::Number(_) | Value::Null)) => Some(v.clone()),
+        Some(other) => {
+            return Err(invalid_request(
+                Value::Null,
+                &format!("\"id\" must be a string, a number or null, found {other}"),
+            ))
+        }
+    };
+    let echo = id.clone().unwrap_or(Value::Null);
+    match req.get("jsonrpc") {
+        Some(Value::String(v)) if v == JSONRPC_VERSION => {}
+        None => {
+            return Err(invalid_request(
+                echo,
+                "\"jsonrpc\": \"2.0\" is required on every message",
+            ))
+        }
+        Some(other) => {
+            return Err(invalid_request(
+                echo,
+                &format!("\"jsonrpc\" must be the string \"2.0\", found {other}"),
+            ))
+        }
+    }
+    match req.get("method") {
+        Some(Value::String(m)) => Ok(Envelope { id, method: m }),
+        None => Err(invalid_request(echo, "\"method\" is required")),
+        Some(other) => Err(invalid_request(
+            echo,
+            &format!("\"method\" must be a string, found {other}"),
+        )),
+    }
+}
+
+fn invalid_request(id: Value, why: &str) -> Value {
+    error_resp(id, -32600, &format!("Invalid Request: {why}"))
+}
+
+/// Dispatch one parsed message. Returns `Some(response)` for a request (has an
+/// `id`), `None` for a notification (no `id`) or a no-reply method.
+fn handle(req: &Value) -> Option<Value> {
+    let env = match parse_envelope(req) {
+        Ok(env) => env,
+        // A malformed message is answered even when it looks like a notification: nothing
+        // about it can be trusted, including the absence of an id.
+        Err(resp) => return Some(resp),
+    };
+    let id = env.id;
+    let method = env.method;
     match method {
         "initialize" => Some(result(id?, initialize_result())),
         "tools/list" => Some(result(id?, json!({ "tools": tool_defs() }))),
@@ -272,7 +347,7 @@ fn tool_defs() -> Value {
             "inputSchema": { "type": "object", "properties": {
                 "inputs": { "type": "array", "items": { "type": "string" }, "description": "file and/or folder paths" },
                 "recurse": { "type": "boolean", "description": "walk input directories recursively (default false = one level deep)" },
-                "sizes": { "type": "array", "items": { "type": "integer" }, "description": "edge sizes in px to build (default 96,256,768 — Explorer's Medium/Large/Extra-large buckets)" },
+                "sizes": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 1, "description": "edge sizes in px to build (omit for the default 96,256,768, Explorer's Medium/Large/Extra-large buckets). If given it must be a non-empty array of whole numbers above 0; every element is checked and one bad element fails the call, rather than being dropped" },
                 "rebuild_all": { "type": "boolean", "description": "skip the already-cached probe and rebuild every file (default false)" },
                 "jobs": { "type": "integer", "description": "worker threads (default 3)" }
             }, "required": ["inputs"] }
@@ -327,58 +402,44 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
     let Some(params) = params else {
         return error_resp(id, -32602, "missing params");
     };
-    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    // The `params` SHAPE is part of the transport contract, so a malformed one is -32602
+    // rather than a tool result: a missing `name` used to read as the empty string and come
+    // back as the tool error "unknown tool ''", which describes the caller's typo as a
+    // failure of a tool that does not exist. `arguments` is optional (a tool can take none)
+    // but must be an object when supplied, since every validator below indexes it by key.
+    if !params.is_object() {
+        return error_resp(id, -32602, "params must be an object");
+    }
+    let Some(name) = params.get("name").and_then(|n| n.as_str()) else {
+        return error_resp(
+            id,
+            -32602,
+            "'name' must be a string naming the tool to call",
+        );
+    };
     let empty = json!({});
-    let args = params.get("arguments").unwrap_or(&empty);
+    let args = match params.get("arguments") {
+        None | Some(Value::Null) => &empty,
+        Some(v) if v.is_object() => v,
+        Some(_) => return error_resp(id, -32602, "'arguments' must be an object"),
+    };
 
     // Reject a UNC path anywhere in the arguments before EITHER of the two dispatch paths
     // below ever sees them — a same-desktop or prompt-injected caller could otherwise force
     // an SMB/NTLM handshake against an attacker-controlled path.
     if let Some(bad) = find_unc_arg(args) {
-        return result(
-            id,
-            json!({ "content": [{ "type": "text", "text": format!("UNC paths are not accepted: {bad}") }], "isError": true }),
-        );
+        return tool_error(id, format!("UNC paths are not accepted: {bad}"));
     }
 
     // `view` returns an IMAGE content block (base64 PNG) so the agent can SEE the file —
     // handled before the text-returning dispatch below.
     if name == "view" {
-        let Some(input) = args.get("input").and_then(|v| v.as_str()) else {
-            return result(
+        return match view_png_bytes(args) {
+            Ok(png) => result(
                 id,
-                json!({ "content": [{ "type": "text", "text": "missing string argument 'input'" }], "isError": true }),
-            );
-        };
-        // Clamp to the decoder's own bomb-guard ceiling — 0 stays 0 ("full size", the
-        // documented sentinel `cli::view_png` already handles); anything above the ceiling
-        // is clamped rather than reaching the decoder unbounded.
-        let size = clamp_requested_size(args.get("size").and_then(|v| v.as_u64()).unwrap_or(512));
-        return match cli::view_png(input, size) {
-            Ok(png) => {
-                // `view` has no output-size cap, unlike the strict inbound
-                // `MAX_MSG_BYTES` — a legitimate large image (or `size: 0`, "full size")
-                // can base64-encode into tens-to-hundreds of MB written into ONE JSON-RPC
-                // line with nothing warning the caller. Refuse rather than write it.
-                const MAX_VIEW_PNG_BYTES: usize = 24 * 1024 * 1024;
-                if png.len() > MAX_VIEW_PNG_BYTES {
-                    return result(
-                        id,
-                        json!({ "content": [{ "type": "text", "text": format!(
-                            "decoded image is {} MB, over the {}-MB view limit — pass a smaller 'size'",
-                            png.len() / (1024 * 1024), MAX_VIEW_PNG_BYTES / (1024 * 1024)
-                        ) }], "isError": true }),
-                    );
-                }
-                result(
-                    id,
-                    json!({ "content": [{ "type": "image", "data": STANDARD.encode(&png), "mimeType": "image/png" }], "isError": false }),
-                )
-            }
-            Err(msg) => result(
-                id,
-                json!({ "content": [{ "type": "text", "text": msg }], "isError": true }),
+                json!({ "content": [{ "type": "image", "data": STANDARD.encode(&png), "mimeType": "image/png" }], "isError": false }),
             ),
+            Err(msg) => tool_error(id, msg),
         };
     }
 
@@ -387,23 +448,130 @@ fn tools_call(id: Value, params: Option<&Value>) -> Value {
             id,
             json!({ "content": [{ "type": "text", "text": text }], "isError": false }),
         ),
-        Err(msg) => result(
-            id,
-            json!({ "content": [{ "type": "text", "text": msg }], "isError": true }),
-        ),
+        Err(msg) => tool_error(id, msg),
     }
+}
+
+/// A tool that RAN and could not do the job. Per MCP this is a result with `isError: true`,
+/// not a JSON-RPC error: those are reserved for transport faults (a malformed envelope or
+/// malformed `params`), so a client can tell "I sent you nonsense" from "your file is
+/// unreadable". Both halves of that split are exercised by the envelope tests below.
+fn tool_error(id: Value, message: String) -> Value {
+    result(
+        id,
+        json!({ "content": [{ "type": "text", "text": message }], "isError": true }),
+    )
+}
+
+/// `view`'s decode, size cap included, as a plain `Result` so the argument validators can be
+/// the same ones every other tool uses. Split out of [`tools_call`] when those validators
+/// landed (2026-09-05 audit, F20); the caps and messages are unchanged.
+fn view_png_bytes(args: &Value) -> Result<Vec<u8>, String> {
+    let input = need_str(args, "input")?;
+    // Clamp to the decoder's own bomb-guard ceiling. 0 stays 0 ("full size", the
+    // documented sentinel `cli::view_png` already handles); anything above the ceiling
+    // is clamped rather than reaching the decoder unbounded.
+    let size = want_size(args, "size", 512)?;
+    let png = cli::view_png(&input, size)?;
+    // `view` has no output-size cap, unlike the strict inbound `MAX_MSG_BYTES`: a
+    // legitimate large image (or `size: 0`, "full size") can base64-encode into
+    // tens-to-hundreds of MB written into ONE JSON-RPC line with nothing warning the
+    // caller. Refuse rather than write it.
+    const MAX_VIEW_PNG_BYTES: usize = 24 * 1024 * 1024;
+    if png.len() > MAX_VIEW_PNG_BYTES {
+        return Err(format!(
+            "decoded image is {} MB, over the {}-MB view limit, pass a smaller 'size'",
+            png.len() / (1024 * 1024),
+            MAX_VIEW_PNG_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(png)
+}
+
+// ---- argument validators (2026-09-05 audit, F20) ------------------------------------
+//
+// One place where a tool argument becomes a Rust value, so every tool answers a malformed
+// argument the same way. The rule, in one line: an ABSENT optional keeps its documented
+// default, a SUPPLIED value of the wrong type or shape is an error naming the argument,
+// never a silent substitution. The old accessors (`args.get(k).and_then(Value::as_u64)
+// .unwrap_or(d)`) could not tell "you left `size` out" from "you sent `size: \"big\"`" or
+// `size: -1`, and ran all three at the default, so the reply described work the caller had
+// not asked for. These are tool-argument faults, so they surface as `isError` results.
+//
+// A JSON `null` counts as ABSENT rather than invalid: clients spell an omitted optional
+// that way, and every accessor these replace already read it as absent.
+
+/// The value at `k` if it was really supplied, `None` for absent or an explicit `null`.
+fn present<'a>(args: &'a Value, k: &str) -> Option<&'a Value> {
+    match args.get(k) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v),
+    }
+}
+
+/// A supplied string argument, `None` when absent.
+fn want_str(args: &Value, k: &str) -> Result<Option<String>, String> {
+    match present(args, k) {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!("'{k}' must be a string, found {other}")),
+    }
+}
+
+/// A required string argument. The message is the one this server has always used for a
+/// missing one, so an agent that learned it keeps reading the same sentence.
+fn need_str(args: &Value, k: &str) -> Result<String, String> {
+    want_str(args, k)?.ok_or_else(|| format!("missing string argument '{k}'"))
+}
+
+/// A supplied whole number, `None` when absent. A negative number, a fractional one and a
+/// non-number type are all refused: `as_u64` answered `None` to all three, which is exactly
+/// what made them indistinguishable from absent.
+fn want_u64(args: &Value, k: &str) -> Result<Option<u64>, String> {
+    match present(args, k) {
+        None => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("'{k}' must be a whole number 0 or greater, found {v}")),
+    }
+}
+
+/// A supplied boolean, `None` when absent.
+fn want_bool(args: &Value, k: &str) -> Result<Option<bool>, String> {
+    match present(args, k) {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(format!("'{k}' must be true or false, found {other}")),
+    }
+}
+
+/// A pixel size argument with its documented default. The CLAMP is deliberately kept: an
+/// out-of-range NUMBER is a request this server has always answered by bounding it (see
+/// [`clamp_requested_size`], and `0` still means "full size"), which is a documented
+/// behaviour rather than a silent type substitution. What changes is that `"big"` or `-1`
+/// is now an error instead of quietly becoming `default`.
+fn want_size(args: &Value, k: &str, default: u64) -> Result<u32, String> {
+    Ok(clamp_requested_size(want_u64(args, k)?.unwrap_or(default)))
+}
+
+/// An encoder-quality argument, clamped to the advertised 1-100 for the same reason.
+fn want_quality(args: &Value, k: &str, default: u64) -> Result<u8, String> {
+    Ok(want_u64(args, k)?.unwrap_or(default).clamp(1, 100) as u8)
 }
 
 /// Collect the string array at `k`. `Err` when the key is present as an array but carries a
 /// non-string element (before this fix, such an element was silently DROPPED — a mixed-type
 /// `inputs` array built a PDF/CBZ/batch with fewer pages/files than requested and reported
-/// success); missing/non-array/absent stays `Ok(vec![])`, same as before.
+/// success), and `Err` when it is present as something other than an array at all (which
+/// used to read as an empty list, so `"inputs": "a.png"` became "you gave me no inputs").
+/// Absent stays `Ok(vec![])`, same as before.
 fn want_str_array(args: &Value, k: &str) -> Result<Vec<String>, String> {
-    let Some(v) = args.get(k) else {
+    let Some(v) = present(args, k) else {
         return Ok(Vec::new());
     };
     let Some(a) = v.as_array() else {
-        return Ok(Vec::new());
+        return Err(format!("'{k}' must be an array of strings, found {v}"));
     };
     a.iter()
         .map(|x| {
@@ -441,20 +609,16 @@ fn refuse_foreign_overwrite(output: &str, produced_exts: &[&str]) -> Result<(), 
 
 /// `convert`: input/output paths, JPEG/WebP quality, and an optional resize spec.
 fn dispatch_convert(args: &Value) -> Result<String, String> {
-    let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-    let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
-    let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
-    let q = u64_or("quality", 90).clamp(1, 100) as u8;
-    let wq = args
-        .get("webp_quality")
-        .and_then(|v| v.as_u64())
-        .map(|w| w.clamp(1, 100) as u8);
+    let q = want_quality(args, "quality", 90)?;
+    // `webp_quality` has no default on purpose: absent means "lossless WebP", so it must stay
+    // an Option rather than collapsing into a number.
+    let wq = want_u64(args, "webp_quality")?.map(|w| w.clamp(1, 100) as u8);
     cli::convert(
-        &need("input")?,
-        &need("output")?,
+        &need_str(args, "input")?,
+        &need_str(args, "output")?,
         q,
         wq,
-        cli::parse_resize(want("resize").as_deref())?,
+        cli::parse_resize(want_str(args, "resize")?.as_deref())?,
     )
 }
 
@@ -463,70 +627,68 @@ fn dispatch_convert(args: &Value) -> Result<String, String> {
 /// `"strict": true` turns a partial result into a refusal that writes nothing. Both tools
 /// go through `cli::pdf`/`cli::cbz`, so the alias and extension checks (F30) and the
 /// per-input omission report are exactly the CLI's.
-fn combine_opts(args: &Value) -> cli::CombineOpts {
-    cli::CombineOpts {
-        strict: args
-            .get("strict")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+fn combine_opts(args: &Value) -> Result<cli::CombineOpts, String> {
+    Ok(cli::CombineOpts {
+        strict: want_bool(args, "strict")?.unwrap_or(false),
         json: true,
-    }
+    })
 }
 
 /// `pdf`: an output path plus the input file list.
 fn dispatch_pdf(args: &Value) -> Result<String, String> {
-    let need = |k: &str| {
-        args.get(k)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("missing string argument '{k}'"))
-    };
-    let output = need("output")?;
+    let output = need_str(args, "output")?;
     refuse_foreign_overwrite(&output, &["pdf"])?;
     cli::pdf(
         &output,
         &want_str_array(args, "inputs")?,
-        combine_opts(args),
+        combine_opts(args)?,
     )
 }
 
 /// `cbz`: same shape as `pdf`, writing a comic-book zip instead.
 fn dispatch_cbz(args: &Value) -> Result<String, String> {
-    let need = |k: &str| {
-        args.get(k)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("missing string argument '{k}'"))
-    };
-    let output = need("output")?;
+    let output = need_str(args, "output")?;
     refuse_foreign_overwrite(&output, &["cbz"])?;
     cli::cbz(
         &output,
         &want_str_array(args, "inputs")?,
-        combine_opts(args),
+        combine_opts(args)?,
     )
 }
 
 /// `batch`: an operation name over the input file list, plus the same
 /// output/size/format/quality/resize options `thumbnail`/`convert` take individually.
 fn dispatch_batch(args: &Value) -> Result<String, String> {
-    let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-    let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
-    let u64_or = |k: &str, d: u64| args.get(k).and_then(|v| v.as_u64()).unwrap_or(d);
-    let recurse = args
-        .get("recurse")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     cli::batch(
-        &need("op")?,
+        &need_str(args, "op")?,
         &want_str_array(args, "inputs")?,
-        recurse,
-        want("out").as_deref(),
-        clamp_requested_size(u64_or("size", 256)),
-        want("to").as_deref(),
-        u64_or("quality", 90).clamp(1, 100) as u8,
-        cli::parse_resize(want("resize").as_deref())?,
+        want_bool(args, "recurse")?.unwrap_or(false),
+        want_str(args, "out")?.as_deref(),
+        want_size(args, "size", 256)?,
+        want_str(args, "to")?.as_deref(),
+        want_quality(args, "quality", 90)?,
+        cli::parse_resize(want_str(args, "resize")?.as_deref())?,
     )
+}
+
+/// The `prebuild` size list, under the ONE policy `prebuild::parse_size_list` states and the
+/// CLI's `--size` also goes through (2026-09-05 audit, F12/F20). Absent (or `null`) means the
+/// default buckets; a SUPPLIED list is validated element by element and the first bad element
+/// fails the call before any cache work starts. Elements are handed over as their compact
+/// JSON text, so a `"96"` STRING reaches the shared parser as the wrong-typed thing it is
+/// rather than being dropped, and an empty array is refused rather than quietly becoming the
+/// default. This function is the JSON front end of that policy, not a second copy of it.
+fn prebuild_sizes(args: &Value) -> Result<Vec<u32>, String> {
+    let Some(v) = present(args, "sizes") else {
+        return Ok(crate::prebuild::DEFAULT_SIZES.to_vec());
+    };
+    let Some(elements) = v.as_array() else {
+        return Err(format!(
+            "'sizes' must be an array of whole numbers, found {v}"
+        ));
+    };
+    let texts: Vec<String> = elements.iter().map(Value::to_string).collect();
+    crate::prebuild::parse_size_list("'sizes'", texts.iter().map(String::as_str))
 }
 
 /// `prebuild`: fill Explorer's thumbnail cache for whole folders.
@@ -535,53 +697,41 @@ fn dispatch_prebuild(args: &Value) -> Result<String, String> {
     if inputs.is_empty() {
         return Err("missing or empty array argument 'inputs'".to_string());
     }
-    let recurse = args
-        .get("recurse")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let sizes: Vec<u32> = args
-        .get("sizes")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_u64())
-                .map(saturating_u32)
-                .collect::<Vec<u32>>()
-        })
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| crate::prebuild::DEFAULT_SIZES.to_vec());
-    let rebuild_all = args
-        .get("rebuild_all")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let jobs = args
-        .get("jobs")
-        .and_then(|v| v.as_u64())
-        .map(|j| j as usize)
-        .unwrap_or(3);
-    cli::prebuild(&inputs, recurse, sizes, rebuild_all, jobs)
+    let sizes = prebuild_sizes(args)?;
+    // `jobs` is clamped to 1..=4 by `prebuild::run` itself, so a 0 or a silly large number is
+    // still a request that can be honoured; only a non-number is refused.
+    let jobs = want_u64(args, "jobs")?.unwrap_or(3);
+    cli::prebuild(
+        &inputs,
+        want_bool(args, "recurse")?.unwrap_or(false),
+        sizes,
+        want_bool(args, "rebuild_all")?.unwrap_or(false),
+        usize::try_from(jobs).unwrap_or(usize::MAX),
+    )
 }
 
 /// Map a tool name + arguments to a [`crate::cli`] verb. `Err` = a tool error
 /// (bad/missing args or the verb failing), surfaced to the agent as text.
 fn dispatch_tool(name: &str, args: &Value) -> Result<String, String> {
-    let want = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-    let need = |k: &str| want(k).ok_or_else(|| format!("missing string argument '{k}'"));
-    let u32_or =
-        |k: &str, d: u64| clamp_requested_size(args.get(k).and_then(|v| v.as_u64()).unwrap_or(d));
-
     match name {
-        "thumbnail" => cli::thumbnail(&need("input")?, &need("output")?, u32_or("size", 256)),
+        "thumbnail" => cli::thumbnail(
+            &need_str(args, "input")?,
+            &need_str(args, "output")?,
+            want_size(args, "size", 256)?,
+        ),
         "convert" => dispatch_convert(args),
-        "compress" => cli::compress(&need("input")?, cli::parse_size(&need("max_size")?)?),
-        "rotate" => cli::rotate(&need("input")?, &need("by")?),
-        "strip" => cli::strip_meta(&need("input")?),
-        "ocr" => cli::ocr(&need("input")?),
+        "compress" => cli::compress(
+            &need_str(args, "input")?,
+            cli::parse_size(&need_str(args, "max_size")?)?,
+        ),
+        "rotate" => cli::rotate(&need_str(args, "input")?, &need_str(args, "by")?),
+        "strip" => cli::strip_meta(&need_str(args, "input")?),
+        "ocr" => cli::ocr(&need_str(args, "input")?),
         "pdf" => dispatch_pdf(args),
         "cbz" => dispatch_cbz(args),
-        "info" => cli::info(&need("input")?, true),
+        "info" => cli::info(&need_str(args, "input")?, true),
         "formats" => Ok(cli::list_formats(true)),
-        "doctor" => Ok(crate::doctor::report(want("file").as_deref())),
+        "doctor" => Ok(crate::doctor::report(want_str(args, "file")?.as_deref())),
         "batch" => dispatch_batch(args),
         "prebuild" => dispatch_prebuild(args),
         "register_status" => cli::register_portable(false, true),
@@ -764,6 +914,266 @@ mod tests {
         let resp = handle(&req).expect("a non-object request must still get a reply");
         assert_eq!(resp["error"]["code"], json!(-32600));
         assert_eq!(resp["id"], Value::Null);
+    }
+
+    /// 2026-09-05 audit, F20: the envelope is CHECKED, not merely read. Each row is (the
+    /// message, the JSON-RPC error code it must come back with). Before this, `jsonrpc` was
+    /// never looked at, so row 1 was dispatched as a perfectly good ping, and a non-string
+    /// `method` became `""` and came back as "method not found: ", naming nothing.
+    #[test]
+    fn a_malformed_envelope_is_an_invalid_request_and_is_never_dispatched() {
+        let cases: &[(&str, Value)] = &[
+            (
+                "wrong jsonrpc version",
+                json!({ "jsonrpc": "1.0", "id": 1, "method": "ping" }),
+            ),
+            (
+                "jsonrpc as a number",
+                json!({ "jsonrpc": 2.0, "id": 1, "method": "ping" }),
+            ),
+            ("jsonrpc absent", json!({ "id": 1, "method": "ping" })),
+            (
+                "id as an array",
+                json!({ "jsonrpc": "2.0", "id": [1], "method": "ping" }),
+            ),
+            (
+                "id as an object",
+                json!({ "jsonrpc": "2.0", "id": {"n": 1}, "method": "ping" }),
+            ),
+            (
+                "id as a boolean",
+                json!({ "jsonrpc": "2.0", "id": true, "method": "ping" }),
+            ),
+            (
+                "method as a number",
+                json!({ "jsonrpc": "2.0", "id": 1, "method": 7 }),
+            ),
+            (
+                "method as an array",
+                json!({ "jsonrpc": "2.0", "id": 1, "method": ["ping"] }),
+            ),
+            ("method absent", json!({ "jsonrpc": "2.0", "id": 1 })),
+            (
+                "a wrong-version NOTIFICATION is still malformed",
+                json!({ "jsonrpc": "1.0", "method": "notifications/initialized" }),
+            ),
+        ];
+        for (why, req) in cases {
+            let resp = handle(req).unwrap_or_else(|| panic!("{why}: must get a reply"));
+            assert_eq!(resp["error"]["code"], json!(-32600), "{why}: got {resp}");
+            assert!(
+                resp["result"].is_null(),
+                "{why}: a rejected envelope must not be dispatched, got {resp}"
+            );
+        }
+    }
+
+    /// The other half of the same rule: a WELL-FORMED envelope is answered exactly as it was
+    /// before, so this is a tightening and not a behaviour change. A notification (no `id`)
+    /// gets no reply, a request does, and the reply echoes the id it was sent with.
+    #[test]
+    fn a_well_formed_envelope_still_dispatches() {
+        assert!(
+            handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none(),
+            "a valid notification must not be answered"
+        );
+        assert!(
+            handle(&json!({ "jsonrpc": "2.0", "method": "ping" })).is_none(),
+            "a request-only method arriving without an id is a notification: no reply"
+        );
+        for id in [json!(1), json!("abc"), json!(-4), Value::Null] {
+            let resp = handle(&json!({ "jsonrpc": "2.0", "id": id.clone(), "method": "ping" }))
+                .expect("a request must be answered");
+            assert_eq!(resp["id"], id, "the reply must echo the id it was sent");
+            assert!(resp["result"].is_object(), "got {resp}");
+            assert_eq!(resp["jsonrpc"], json!(JSONRPC_VERSION));
+        }
+        // A rejected envelope echoes a well-formed id too, so a client can match the
+        // rejection to what it sent.
+        let resp = handle(&json!({ "jsonrpc": "1.0", "id": 42, "method": "ping" }))
+            .expect("must be answered");
+        assert_eq!(resp["id"], json!(42));
+    }
+
+    /// `tools/call`'s params are transport shape, so a malformed one is a JSON-RPC error
+    /// (-32602), NOT a tool result. Keeping the two apart is what lets a client tell "I sent
+    /// you nonsense" from "your file is unreadable"; a missing `name` used to be reported as
+    /// the tool error "unknown tool ''".
+    #[test]
+    fn malformed_tools_call_params_are_transport_errors_not_tool_errors() {
+        for params in [
+            json!("formats"),
+            json!([{ "name": "formats" }]),
+            json!({ "arguments": {} }),
+            json!({ "name": 7 }),
+            json!({ "name": "formats", "arguments": [] }),
+            json!({ "name": "formats", "arguments": "none" }),
+        ] {
+            let req =
+                json!({ "jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": params });
+            let resp = handle(&req).expect("must be answered");
+            assert_eq!(
+                resp["error"]["code"],
+                json!(-32602),
+                "params {params}: {resp}"
+            );
+            assert!(resp["result"].is_null(), "params {params}: {resp}");
+        }
+        // Absent `arguments` is fine for a tool that takes none, and stays a normal result.
+        let req = json!({ "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": { "name": "formats" } });
+        let resp = handle(&req).expect("must be answered");
+        assert_eq!(resp["result"]["isError"], json!(false), "got {resp}");
+    }
+
+    /// The argument validators (F20) and the shared size-list policy (F12) at the JSON front
+    /// end. Each row is (tool, arguments, a fragment the refusal must name). All of these
+    /// used to run at a DEFAULT and report success for work nobody asked for.
+    #[test]
+    fn a_malformed_supplied_argument_is_refused_instead_of_becoming_a_default() {
+        let cases: &[(&str, Value, &str)] = &[
+            // A scalar where an array is required: read as "no inputs at all" before.
+            (
+                "pdf",
+                json!({ "output": "o.pdf", "inputs": "a.png" }),
+                "array",
+            ),
+            ("batch", json!({ "op": "info", "inputs": 5 }), "array"),
+            // Mixed-type list.
+            (
+                "pdf",
+                json!({ "output": "o.pdf", "inputs": ["a.png", 5] }),
+                "array of strings",
+            ),
+            // Wrong scalar types.
+            (
+                "thumbnail",
+                json!({ "input": "a.png", "output": "b.png", "size": "big" }),
+                "'size'",
+            ),
+            (
+                "thumbnail",
+                json!({ "input": "a.png", "output": "b.png", "size": -1 }),
+                "'size'",
+            ),
+            (
+                "thumbnail",
+                json!({ "input": "a.png", "output": "b.png", "size": 64.5 }),
+                "'size'",
+            ),
+            (
+                "thumbnail",
+                json!({ "input": 7, "output": "b.png" }),
+                "'input'",
+            ),
+            (
+                "batch",
+                json!({ "op": "info", "inputs": ["a.png"], "recurse": "yes" }),
+                "'recurse'",
+            ),
+            (
+                "convert",
+                json!({ "input": "a.png", "output": "b.jpg", "quality": "high" }),
+                "'quality'",
+            ),
+            (
+                "pdf",
+                json!({ "output": "o.pdf", "inputs": ["a.png"], "strict": 1 }),
+                "'strict'",
+            ),
+            // The size list, one policy with the CLI: mixed types, invalid text, an empty
+            // list, zero, a negative and an overflow.
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [96, "typo", 768] }),
+                "element 2",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [96, "256"] }),
+                "element 2",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [] }),
+                "no sizes given",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [0] }),
+                "element 1",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [96, 0] }),
+                "element 2",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [-96] }),
+                "element 1",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": [4294967296u64] }),
+                "too large",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "sizes": 96 }),
+                "'sizes'",
+            ),
+            (
+                "prebuild",
+                json!({ "inputs": ["."], "jobs": "many" }),
+                "'jobs'",
+            ),
+        ];
+        for (tool, args, fragment) in cases {
+            let req = json!({ "jsonrpc": "2.0", "id": 22, "method": "tools/call",
+                "params": { "name": tool, "arguments": args } });
+            let resp = handle(&req).expect("must be answered");
+            assert_eq!(
+                resp["result"]["isError"],
+                json!(true),
+                "{tool} {args}: a malformed argument is a TOOL error, got {resp}"
+            );
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(
+                text.contains(*fragment),
+                "{tool} {args}: message must name {fragment:?}, got {text:?}"
+            );
+        }
+    }
+
+    /// The distinction the validators exist for: ABSENT keeps the documented default, and
+    /// only a SUPPLIED value can be malformed. A `null` is how clients spell an omitted
+    /// optional, so it counts as absent, exactly as the accessors it replaced read it.
+    #[test]
+    fn an_absent_optional_still_takes_its_default() {
+        assert_eq!(want_u64(&json!({}), "size").unwrap(), None);
+        assert_eq!(
+            want_u64(&json!({ "size": Value::Null }), "size").unwrap(),
+            None
+        );
+        assert_eq!(want_u64(&json!({ "size": 64 }), "size").unwrap(), Some(64));
+        assert!(want_u64(&json!({ "size": "64" }), "size").is_err());
+        assert_eq!(want_size(&json!({}), "size", 256).unwrap(), 256);
+        assert_eq!(want_str(&json!({}), "out").unwrap(), None);
+        assert_eq!(want_bool(&json!({}), "recurse").unwrap(), None);
+        // The size list: absent means the documented buckets, and only those.
+        assert_eq!(
+            prebuild_sizes(&json!({})).unwrap(),
+            crate::prebuild::DEFAULT_SIZES.to_vec()
+        );
+        assert_eq!(
+            prebuild_sizes(&json!({ "sizes": Value::Null })).unwrap(),
+            crate::prebuild::DEFAULT_SIZES.to_vec()
+        );
+        assert_eq!(
+            prebuild_sizes(&json!({ "sizes": [96, 512] })).unwrap(),
+            vec![96, 512]
+        );
     }
 
     #[test]

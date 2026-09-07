@@ -223,15 +223,19 @@ fn run_batch(pos: &[&String], rest: &[String]) -> Result<String, String> {
 
 /// `--size` takes a comma-separated LIST because the shell caches per size bucket; a
 /// single number leaves every other Explorer view still building its tiles by hand.
+///
+/// The list is parsed by `prebuild::parse_size_list_str`, which is also what the MCP
+/// `prebuild` tool's `sizes` array goes through (2026-09-05 audit, F12/F20): ONE policy,
+/// one implementation, so the two front ends cannot disagree about what a size list means.
+/// That module states the policy in full. The short version: every element is parsed, the
+/// first bad one fails the whole call before any cache work starts, and only an ABSENT
+/// `--size` means the defaults. Before this, `--size 96,typo,768` silently ran as
+/// `96,768` and reported success.
 fn prebuild_sizes(rest: &[String]) -> Result<Vec<u32>, String> {
     let Some(s) = flag(rest, "--size") else {
         return Ok(sagethumbs2k_core::prebuild::DEFAULT_SIZES.to_vec());
     };
-    let parsed: Vec<u32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-    if parsed.is_empty() {
-        return Err(format!("--size: no number found in \"{s}\""));
-    }
-    Ok(parsed)
+    sagethumbs2k_core::prebuild::parse_size_list_str("--size", &s)
 }
 
 /// `prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]`
@@ -507,6 +511,69 @@ mod tests {
             flag_num_opt::<u8>(&bad, "--webp-quality").is_err(),
             "an unparseable --webp-quality must error, not silently behave as \"not requested\""
         );
+    }
+
+    /// 2026-09-05 audit, F12: `prebuild --size 96,typo,768` used to DROP the unparseable
+    /// element and fill the cache for 96 and 768, reporting success for a run nobody asked
+    /// for. Every element is parsed now, and the first bad one names itself. The rows below
+    /// are the CLI half of the shared policy; `prebuild::parse_size_list_str` states it and
+    /// `mcp.rs` runs the same rows through the JSON front end, so the two cannot drift.
+    #[test]
+    fn prebuild_size_list_parses_every_element_or_refuses_the_whole_flag() {
+        let default = sagethumbs2k_core::prebuild::DEFAULT_SIZES.to_vec();
+        assert_eq!(
+            prebuild_sizes(&args(&["--recurse"])),
+            Ok(default),
+            "an ABSENT --size is the only route to the defaults"
+        );
+
+        for (spec, want) in [
+            ("96,256,768", Ok(vec![96u32, 256, 768])),
+            ("512", Ok(vec![512])),
+            (" 96 , 256 ", Ok(vec![96, 256])),
+            ("99999", Ok(vec![99999])),
+            ("96,typo,768", Err("element 2")),
+            ("96,,768", Err("element 2")),
+            ("96,", Err("element 2")),
+            ("0", Err("element 1")),
+            ("96,0", Err("element 2")),
+            ("-96", Err("element 1")),
+            ("4294967296", Err("too large")),
+            ("", Err("element 1")),
+        ] {
+            let got = prebuild_sizes(&args(&["--size", spec]));
+            match want {
+                Ok(sizes) => assert_eq!(got, Ok(sizes), "--size {spec:?}"),
+                Err(fragment) => {
+                    let err = got.expect_err("must be refused");
+                    assert!(
+                        err.starts_with("--size:") && err.contains(fragment),
+                        "--size {spec:?}: got {err:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The refusal has to happen BEFORE any cache work: the run is rejected at argument
+    /// parsing, so `cli::prebuild` (and its elevation guard, and the folder walk) is never
+    /// reached. Checked through `run` rather than the helper, since that is the path a user
+    /// actually takes.
+    #[test]
+    fn a_bad_prebuild_size_fails_before_the_run_starts() {
+        let dir = scratch("prebuild_size");
+        let err = run(&args(&[
+            "prebuild",
+            dir.to_str().unwrap(),
+            "--size",
+            "96,typo",
+        ]))
+        .expect_err("a partly invalid --size must not start a run");
+        assert!(
+            err.starts_with("--size:") && err.contains("typo"),
+            "got {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

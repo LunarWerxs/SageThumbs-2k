@@ -242,8 +242,9 @@ fn token_error(status: u16, body: &[u8]) -> String {
 
 /// Bounded, nonblocking accept loop: wait for the browser to hit
 /// `/oauth/callback?code=…&state=…`, verify `state`, ack with a friendly page, and return
-/// the code. Non-callback hits (favicon, etc.) get a 404 and the loop keeps waiting until
-/// `timeout` elapses.
+/// the code. Anything else on this port (a favicon probe, a path that merely starts with
+/// the callback's, a response carrying no matching `state`) gets a 404 and the loop keeps
+/// waiting until `timeout` elapses.
 fn catch_code(
     listener: &TcpListener,
     timeout: Duration,
@@ -278,8 +279,10 @@ fn catch_code(
 const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
 
 /// Handle one accepted connection. Returns `Some(Ok(code))` / `Some(Err(..))` when this was
-/// the real callback (success or an explicit provider error), or `None` for an unrelated
-/// request (which was answered with 404) so the caller keeps waiting.
+/// OUR callback (the exact path, carrying the `state` we minted: success, an explicit
+/// provider error, or a correlated response with no code), or `None` for anything else
+/// (which was answered with 404) so the caller keeps waiting. See [`route_callback`] for
+/// what counts as ours and why.
 fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<String, String>> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     // Issue #94/G98: a single `read()` only sees whatever arrived in the first TCP segment —
@@ -311,40 +314,96 @@ fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<St
         .and_then(|l| l.split_whitespace().nth(1))
         .unwrap_or("");
 
-    if !target.starts_with("/oauth/callback") {
-        respond_404(stream);
-        return None;
-    }
-
-    let params = parse_query(target);
-    if let Some(err) = params.get("error") {
-        // i18n::t reads a process-wide atomic, so it is safe from this loopback thread.
-        respond_html(
-            stream,
-            crate::win::t("oauth_canceled_title"),
-            crate::win::t("oauth_close_tab"),
-        );
-        return Some(Err(format!("sign-in was canceled ({err})")));
-    }
-    match (params.get("code"), params.get("state")) {
-        (Some(code), Some(state)) if state == expected_state => {
+    match route_callback(target, expected_state) {
+        Callback::NotOurs => {
+            respond_404(stream);
+            None
+        }
+        Callback::Canceled(err) => {
+            // i18n::t reads a process-wide atomic, so it is safe from this loopback thread.
+            respond_html(
+                stream,
+                crate::win::t("oauth_canceled_title"),
+                crate::win::t("oauth_close_tab"),
+            );
+            Some(Err(format!("sign-in was canceled ({err})")))
+        }
+        Callback::Code(code) => {
             respond_html(
                 stream,
                 crate::win::t("oauth_signed_in_title"),
                 crate::win::t("oauth_close_tab"),
             );
-            Some(Ok(code.clone()))
+            Some(Ok(code))
         }
-        _ => {
+        Callback::NoCode => {
             respond_html(
                 stream,
                 crate::win::t("oauth_failed_title"),
                 crate::win::t("oauth_failed_body"),
             );
             Some(Err(
-                "sign-in response was missing a code or the state didn't match".to_string(),
+                "the sign-in response carried no authorization code".to_string()
             ))
         }
+    }
+}
+
+/// The exact path our `redirect_uri` names. A request target is `path[?query]`, so the path
+/// has to be compared whole: `starts_with` also said yes to `/oauth/callbackXYZ` and
+/// `/oauth/callback/anything`.
+const CALLBACK_PATH: &str = "/oauth/callback";
+
+/// What one loopback request turns out to be.
+#[derive(Debug, PartialEq, Eq)]
+enum Callback {
+    /// Not this sign-in's callback: answered with 404, and the accept loop keeps waiting.
+    NotOurs,
+    /// A correlated success: the authorization code to exchange.
+    Code(String),
+    /// A correlated `?error=` redirect, i.e. the user declined or the provider refused.
+    Canceled(String),
+    /// Correlated, but carrying neither a code nor an error. A provider fault worth
+    /// reporting straight away rather than waiting out the timeout.
+    NoCode,
+}
+
+/// Route one request target (2026-09-05 audit, F19).
+///
+/// Two tightenings, both about telling OUR callback from any other local request. This is a
+/// local input-validation and interruption issue, NOT an authentication bypass: the code
+/// path always did check the random `state` before accepting an authorization code, and it
+/// still does. What a stray or hostile local process could do was END a pending sign-in.
+///
+/// 1. The path is matched EXACTLY. `target.starts_with("/oauth/callback")` accepted
+///    `/oauth/callback-anything?error=x`, and the `error` branch below then terminated the
+///    login. Anything on the loopback port could kill a sign-in in progress with one GET.
+/// 2. The `state` is checked FIRST and for EVERY outcome, not only for the success branch.
+///    RFC 6749 §4.1.2.1 requires the authorization server to echo `state` on the error
+///    redirect too, so a response without our own random value did not come from the request
+///    we made. Uncorrelated now means "not ours": 404, and the listener keeps waiting, which
+///    is the same answer any other stray request gets. Previously a bare `/oauth/callback`
+///    with no parameters at all was enough to end someone's sign-in.
+fn route_callback(target: &str, expected_state: &str) -> Callback {
+    // The request target is `path[?query][#fragment]`. A fragment is not legal in one, but
+    // splitting on it costs nothing and keeps a stray `#` out of the path comparison.
+    let path = match target.find(['?', '#']) {
+        Some(i) => &target[..i],
+        None => target,
+    };
+    if path != CALLBACK_PATH {
+        return Callback::NotOurs;
+    }
+    let params = parse_query(target);
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        return Callback::NotOurs;
+    }
+    if let Some(err) = params.get("error") {
+        return Callback::Canceled(err.clone());
+    }
+    match params.get("code") {
+        Some(code) => Callback::Code(code.clone()),
+        None => Callback::NoCode,
     }
 }
 
@@ -511,6 +570,127 @@ mod tests {
                 "https://example.com/p.jpg".into()
             ))
         );
+    }
+
+    /// 2026-09-05 audit, F19. `starts_with("/oauth/callback")` accepted every path that
+    /// merely BEGAN with the callback's, so `/oauth/callback-anything?error=x` was read as a
+    /// callback and ended the sign-in. Each row is (request target, what it must be routed
+    /// as). Not an authentication bypass, an interruption: a valid success still has to
+    /// carry the random state, and always did.
+    #[test]
+    fn only_the_exact_callback_path_with_our_state_counts_as_our_callback() {
+        let state = "STATE-xyz";
+        let cases: &[(&str, Callback)] = &[
+            // The real thing, and the real cancellation, both still work.
+            (
+                "/oauth/callback?code=abc&state=STATE-xyz",
+                Callback::Code("abc".to_string()),
+            ),
+            (
+                "/oauth/callback?state=STATE-xyz&code=abc",
+                Callback::Code("abc".to_string()),
+            ),
+            (
+                "/oauth/callback?error=access_denied&state=STATE-xyz",
+                Callback::Canceled("access_denied".to_string()),
+            ),
+            // A correlated response with neither code nor error is a provider fault, and is
+            // still reported immediately rather than waiting out the 3-minute timeout.
+            ("/oauth/callback?state=STATE-xyz", Callback::NoCode),
+            // THE FINDING: a prefix route.
+            (
+                "/oauth/callback-anything?error=x&state=STATE-xyz",
+                Callback::NotOurs,
+            ),
+            (
+                "/oauth/callbackx?code=abc&state=STATE-xyz",
+                Callback::NotOurs,
+            ),
+            // And a suffix route.
+            (
+                "/oauth/callback/extra?code=abc&state=STATE-xyz",
+                Callback::NotOurs,
+            ),
+            (
+                "/oauth/callback/?code=abc&state=STATE-xyz",
+                Callback::NotOurs,
+            ),
+            // Unrelated traffic on the loopback port, which browsers really do send.
+            ("/favicon.ico", Callback::NotOurs),
+            ("/", Callback::NotOurs),
+            ("", Callback::NotOurs),
+            // Correlation, checked the same way for every outcome: no state, or someone
+            // else's, is not our callback, so the listener keeps waiting.
+            ("/oauth/callback?error=x", Callback::NotOurs),
+            ("/oauth/callback", Callback::NotOurs),
+            ("/oauth/callback?code=abc", Callback::NotOurs),
+            (
+                "/oauth/callback?code=abc&state=SOMEONE-ELSE",
+                Callback::NotOurs,
+            ),
+        ];
+        for (target, want) in cases {
+            assert_eq!(&route_callback(target, state), want, "target {target:?}");
+        }
+    }
+
+    /// The routing decision is one thing; what the socket does with it is another. A prefix
+    /// route must get a real 404 AND leave the accept loop waiting (`None`), which is what
+    /// makes the interruption harmless rather than merely misrouted.
+    #[test]
+    fn a_prefix_route_gets_a_404_and_leaves_the_listener_waiting() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("loopback bind");
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(addr).expect("loopback connect");
+            client
+                .write_all(
+                    b"GET /oauth/callback-anything?error=x&state=xyz HTTP/1.1\r\n\
+                      Host: 127.0.0.1\r\n\r\n",
+                )
+                .unwrap();
+            let mut reply = String::new();
+            let _ = client.read_to_string(&mut reply);
+            reply
+        });
+        let (mut stream, _) = listener.accept().expect("loopback accept");
+        let routed = handle_conn(&mut stream, "xyz");
+        // The client is blocked in `read_to_string` until this end closes, so let it go
+        // before joining, or the test deadlocks on its own reply.
+        drop(stream);
+        let reply = writer.join().unwrap();
+        assert_eq!(
+            routed, None,
+            "a prefix route must not end the sign-in; the loop has to keep waiting"
+        );
+        assert!(
+            reply.starts_with("HTTP/1.1 404"),
+            "a prefix route must be answered with 404, got {reply:?}"
+        );
+    }
+
+    /// The other half of the acceptance: a real cancellation, which DOES carry our state,
+    /// still terminates the wait with the "canceled" message rather than hanging.
+    #[test]
+    fn a_valid_cancellation_still_ends_the_wait() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("loopback bind");
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(addr).expect("loopback connect");
+            client
+                .write_all(
+                    b"GET /oauth/callback?error=access_denied&state=xyz HTTP/1.1\r\n\
+                      Host: 127.0.0.1\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let (mut stream, _) = listener.accept().expect("loopback accept");
+        let routed = handle_conn(&mut stream, "xyz");
+        writer.join().unwrap();
+        match routed {
+            Some(Err(msg)) => assert!(msg.contains("canceled"), "got {msg}"),
+            other => panic!("a valid cancellation must end the wait, got {other:?}"),
+        }
     }
 
     /// Issue #94/G98: a request split across two TCP writes (simulating two packets) must
