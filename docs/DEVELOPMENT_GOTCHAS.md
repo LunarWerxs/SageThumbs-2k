@@ -844,3 +844,46 @@ always-compiled, documented-hidden function guarded by a thread-local flag that 
 production ever sets. The same rule already governs `mesh::fuzzapi` (a module, for a different
 reason: `cargo fix` strips plain re-exports); the general form is that test-only surface the lib
 must expose across a crate boundary cannot be `cfg(test)`.
+
+## A capture harness that silently ignores its own flag proves nothing, and nobody notices
+
+`--shot --dpi 192` was wired for exactly one window, `preview`. Every other window parsed the
+flag and dropped it, and worse, `create_shot_window` sized the window FRAME from the real
+monitor DPI even where the flag did reach the child controls. So a 192-DPI capture of the
+Convert dialog was a correctly-scaled dialog rendered into a frame a quarter of the size it
+needed, and the PNG showed the top-left corner. Found in 2026-09-06 while fixing F36, months
+after the modes were added.
+
+The reason it survived is the lesson. Nothing ever compared those captures to anything. A
+human glancing at a shot sees "a dialog, looks fine"; the clipping only becomes obvious when
+you put the 96 and 192 captures side by side and notice the second is not the same dialog
+bigger, it is the same dialog cropped. Two rules follow:
+
+- **A flag that some modes honour and others ignore is worse than an unimplemented flag**,
+  because the output looks plausible either way. If `--shot` grows an option, it applies to
+  every window or it errors for the ones it does not cover.
+- **Verify a capture against a measurement, not an eyeball.** The F36 tests iterate the baked
+  locale table, measure with `GetTextExtentPoint32W` in the dialog's real font, and assert the
+  text fits the allocated rect; one of them additionally asserts that at least one real locale
+  WOULD have overflowed the old fixed widths, so the test cannot pass vacuously if the layout
+  is later re-frozen. That assertion is the whole difference between a regression test and a
+  screenshot nobody reads.
+
+## A string a test parses is an API, so localizing it breaks the test in silence
+
+The screenshot overlay publishes its state into its own window title for the automation
+harness, and `tests/screenshot_automation.rs` parses `tool=Rect` out of it. When F29 moved the
+editor's hard-coded English into the locale system (2026-09-06), the obvious move was to
+localize `Tool::label()`, which feeds both the UI hint and that channel. On a French machine
+the harness would then have been looking for `Rect` in a title that said `Rectangle`, and the
+F28 accessibility test that had landed hours earlier would have failed for a reason having
+nothing to do with accessibility.
+
+The split that shipped: `label()` stays fixed English and is documented as the machine-facing
+name, `hint_label()` is the localized human-facing one. The general rule for this codebase,
+which has a window-title automation channel, a registry of setting names, and MCP tool names
+all in the same files as UI text: **before localizing any string, grep for it in `tests/` and
+`scripts/`.** If a test or a script matches on it, that string is an interface. Give the
+interface its own accessor and localize the other one. Related: `button_tip()` interpolates the
+real accelerator letter into a `{key}` placeholder rather than translating the key name, for
+the same reason in the other direction, a translated "Ctrl" describes a key nobody has.
