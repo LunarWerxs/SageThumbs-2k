@@ -1,10 +1,10 @@
 //! Tiered image decode (the GFL/XnView replacement).
 //!
 //! Tier 0: our own magic-gated pure-Rust decoders that OWN their format because no
-//!         general tier reads it properly - JPEG XL, and DDS (`decode/dds.rs`:
+//!         general tier reads it properly — JPEG XL, and DDS (`decode/dds.rs`:
 //!         BC1–BC7 incl. BC6H HDR plus the uncompressed layouts; the `image` crate
 //!         and WIC both stop at DXT1/3/5).
-//! Tier 1: the `image` crate (pure Rust) - PNG, JPEG, GIF, BMP, ICO, TIFF,
+//! Tier 1: the `image` crate (pure Rust) — PNG, JPEG, GIF, BMP, ICO, TIFF,
 //!         WebP, PNM, TGA, OpenEXR, farbfeld, QOI, HDR.
 //! Tier 2: Windows WIC for formats `image` can't read (HEIC/HEIF, AVIF, camera
 //!         RAW, JPEG 2000) via OS codecs the user already has.
@@ -45,7 +45,7 @@ use crate::CREATE_NO_WINDOW;
 /// Derived from [`limits::MAGICK_WALL_SECS`] so the external watchdog and magick's own
 /// `-limit time` can't drift apart.
 const MAGICK_TIMEOUT: Duration = Duration::from_secs(limits::MAGICK_WALL_SECS);
-/// The CPU-time budget the watchdog actually enforces - see [`limits::MAGICK_CPU_SECS`]
+/// The CPU-time budget the watchdog actually enforces — see [`limits::MAGICK_CPU_SECS`]
 /// for why the containment number is CPU rather than elapsed time.
 const MAGICK_CPU_BUDGET: Duration = Duration::from_secs(limits::MAGICK_CPU_SECS);
 // The CPU budget is what must bite first for a child that is genuinely working; the wall
@@ -72,7 +72,7 @@ pub struct Decoded {
 /// Every decode tier and container extractor routes its size caps through this
 /// one block so the guards can be reasoned about (and tuned) in a single place
 /// instead of being re-derived as magic numbers scattered across the codebase.
-/// Loosening any value here widens the attack surface for every tier at once -
+/// Loosening any value here widens the attack surface for every tier at once —
 /// treat these as security parameters.
 pub(crate) mod limits {
     /// Hard ceiling on either image edge (px). A 600-dpi A3 scan is ~14k px;
@@ -82,36 +82,36 @@ pub(crate) mod limits {
     pub const MAX_DIM: u32 = 16_384;
 
     /// Hard ceiling on total pixels (≈268 MP at MAX_DIM²). At 4 bytes/px that is
-    /// ~1 GiB of RGBA - the absolute worst case we'll let a decoder materialize.
+    /// ~1 GiB of RGBA — the absolute worst case we'll let a decoder materialize.
     /// Used as the WIC pixel cap and as the container area cap.
     pub const MAX_PIXELS: u64 = (MAX_DIM as u64) * (MAX_DIM as u64);
 
-    /// Source-pixel ceiling for a WIC decode that SCALES on the way out - four times
+    /// Source-pixel ceiling for a WIC decode that SCALES on the way out — four times
     /// [`MAX_PIXELS`], and the gap is not bravado. The two bound different things.
     ///
     /// [`MAX_PIXELS`] answers "how much will we materialize", which is the right question
     /// when the caller wants the whole image. Ask WIC for a 256 px thumbnail and the answer
     /// stops depending on the source at all: the codec streams into `IWICBitmapScaler` and we
-    /// copy out `cx` squared. Measured on a 24000x14160 PNG (309 MB, 340 MP - a 4x upscale,
+    /// copy out `cx` squared. Measured on a 24000x14160 PNG (309 MB, 340 MP — a 4x upscale,
     /// the kind of file this ceiling exists to have an opinion about): 2.1 s to a 256 px
     /// thumbnail with NO measurable growth in the process working set. PNG has no
     /// reduced-size mode, so that is the unfavourable case, not the flattering one.
     ///
     /// What still needs a ceiling is a decompression bomb, whose cost tracks neither the file
-    /// size nor the output size - a few MB of nearly-incompressible-looking headers can declare
+    /// size nor the output size — a few MB of nearly-incompressible-looking headers can declare
     /// billions of pixels, and streaming them is cheap in MEMORY but not in TIME.
     ///
     /// **The worst allowed case was measured, not estimated.** A hand-built 32000x32000 PNG
     /// (1024 MP, just under this ceiling) costs 0.2 s when its rows are zeros, and **4.2 s**
-    /// when every row is Paeth-filtered over a non-trivial pattern - the adversarial shape,
+    /// when every row is Paeth-filtered over a non-trivial pattern — the adversarial shape,
     /// since Paeth forces a per-byte predictor instead of a memcpy. 34000x34000 and 60000x60000
     /// are refused at the header in under 0.1 s. Four seconds is well inside what this codebase
     /// already tolerates from a hostile file (the ImageMagick tier carries a 20 s CPU budget),
     /// and it buys real gigapixel panoramas rather than only the owner's 340 MP upscales.
     ///
     /// **This ceiling is reachable ONLY from the isolated hosts.** It applies when a target edge
-    /// is supplied, and the in-process path that runs inside `explorer.exe` - the classic
-    /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any_with_wic_target` -
+    /// is supplied, and the in-process path that runs inside `explorer.exe` — the classic
+    /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any_with_wic_target` —
     /// passes `None`, so it keeps the strict [`MAX_PIXELS`]/[`MAX_DIM`] guard and refuses these
     /// files at the header. That is the property that makes 4 s acceptable at all, and it is
     /// pinned by `tests::the_in_process_menu_path_never_gets_the_widened_ceiling` rather than
@@ -128,7 +128,7 @@ pub(crate) mod limits {
     /// deliberately different ceilings, not an oversight:
     ///   * `image` decodes in pure Rust inside OUR address space, may allocate
     ///     several transient buffers (palette expansion, row caches, the final
-    ///     RGBA), and runs under `panic = "abort"` - so we keep its per-alloc
+    ///     RGBA), and runs under `panic = "abort"` — so we keep its per-alloc
     ///     budget tight (512 MiB) to bound peak memory in the shell host.
     ///   * WIC hands back ONE already-decoded frame copied into a single RGBA
     ///     buffer we size ourselves (`stride * h`); the OS codec did its work in
@@ -153,14 +153,14 @@ pub(crate) mod limits {
     pub const FULL_FIDELITY_EDGE: &str = "16384x16384>";
 
     /// Hard ceiling on the whole-file bytes we'll buffer in memory for ONE decode of a
-    /// file that ARRIVED AT US - an Explorer thumbnail, a preview pane, a CLI/MCP call
+    /// file that ARRIVED AT US — an Explorer thumbnail, a preview pane, a CLI/MCP call
     /// naming a path we did not choose. It is a DoS budget: the shell hands us whatever
     /// the user happens to be browsing past, so the cost of the largest such file is a
     /// cost we pay uninvited, and 256 MiB is comfortably more than any thumbnail needs.
     pub const MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
-    /// The same ceiling for a **user-initiated full-fidelity verb** - Convert, Resize,
-    /// Rotate, Strip, Combine - where the file is one the user picked and asked us to
+    /// The same ceiling for a **user-initiated full-fidelity verb** — Convert, Resize,
+    /// Rotate, Strip, Combine — where the file is one the user picked and asked us to
     /// process, and the answer they want is the whole picture.
     ///
     /// Issue #34: this used to be [`MAX_INPUT_BYTES`], and a folder of Photoshop work
@@ -172,7 +172,7 @@ pub(crate) mod limits {
     ///
     /// Why a ceiling at all, rather than none: the verb reads the document into one
     /// contiguous buffer, and an allocation this crate cannot satisfy is an ABORT, not an
-    /// error - `panic = "abort"`, and the in-process fallback path can be inside
+    /// error — `panic = "abort"`, and the in-process fallback path can be inside
     /// `explorer.exe`. `readers::read_full_fidelity` therefore reserves fallibly so a
     /// machine that is merely short of memory reports it, and this number bounds what is
     /// worth attempting in the first place.
@@ -180,7 +180,7 @@ pub(crate) mod limits {
     /// 2 GiB because that is Photoshop's OWN limit: a `.psd` cannot exceed it, which is the
     /// entire reason `.psb` exists. So every PSD ever written now converts, and the number
     /// is one the format chose rather than one we invented. A genuinely larger `.psb` is
-    /// refused - with a message that says so, which is the half of this bug that was never
+    /// refused — with a message that says so, which is the half of this bug that was never
     /// about the cap.
     pub const MAX_FULL_FIDELITY_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
@@ -188,20 +188,20 @@ pub(crate) mod limits {
     /// child's `-limit` CLI flags, the external kill-timeout ([`super::MAGICK_TIMEOUT`]),
     /// and the shipped `scripts/packaging/imagemagick-policy.xml` (pinned by the
     /// `magick_limits_agree*` tests). Tune here and all three stay in agreement.
-    /// CPU-TIME budget for one ImageMagick child - the real containment number. A decoder
+    /// CPU-TIME budget for one ImageMagick child — the real containment number. A decoder
     /// stuck in a loop or grinding a decompression bomb burns CPU and is killed here.
     ///
     /// This used to be a WALL-CLOCK budget, which conflated "this file will never finish"
     /// with "this machine is busy". Measured on issue #9: the reporter's AVIF needs 0.34 s
     /// of CPU, but while a batch AV1 encode saturated every core the same decode was still
-    /// unscheduled at 20 s of wall clock and got killed - dropping AVIF onto the WIC codec
+    /// unscheduled at 20 s of wall clock and got killed — dropping AVIF onto the WIC codec
     /// we deliberately route around, so a busy machine produced wrong-coloured thumbnails
     /// for some files and not others. Charging the budget to CPU keeps the guard strict for
     /// hostile input (a spinning child hits 20 s of CPU sooner than it hits any wall clock)
     /// while a starved-but-healthy child is left alone.
     pub const MAGICK_CPU_SECS: u64 = 20;
     /// Absolute WALL-CLOCK backstop, for a child that hangs without consuming CPU (blocked
-    /// on I/O rather than looping) - which [`MAGICK_CPU_SECS`] alone would never catch.
+    /// on I/O rather than looping) — which [`MAGICK_CPU_SECS`] alone would never catch.
     /// Deliberately generous: nothing legitimate approaches it, and every path that reaches
     /// it is isolated in a throwaway host with its own caller-side budget on top.
     pub const MAGICK_WALL_SECS: u64 = 120;
@@ -221,8 +221,8 @@ use limits::{MAX_ALLOC, MAX_DIM, MAX_PIXELS, MAX_SCALED_SOURCE_PIXELS};
 
 /// Session-wide cap on concurrent ImageMagick child processes. Each child can use
 /// up to `MAGICK_MEMORY_LIMIT` (512 MiB) of RAM, so an unbounded fan-out from a
-/// parallel batch - the Convert dialog or a multi-file context-menu verb, which may
-/// spawn one `st2k.exe` (hence one magick) PER FILE across many cores - could
+/// parallel batch — the Convert dialog or a multi-file context-menu verb, which may
+/// spawn one `st2k.exe` (hence one magick) PER FILE across many cores — could
 /// exhaust memory. A NAMED semaphore bounds the total across BOTH our in-process
 /// decodes AND every `st2k.exe` the DLL spawns (they share the one kernel object by
 /// name). The fast tiers (`image`/WIC/SVG) never touch this, so pure-Rust batches
@@ -233,7 +233,7 @@ pub(crate) mod magick_gate {
 
     // kernel32 is always linked; declaring these here avoids enabling the `windows`
     // crate's `Win32_System_Threading` feature just for three calls (kept off
-    // deliberately - see the CREATE_NO_WINDOW note in lib.rs).
+    // deliberately — see the CREATE_NO_WINDOW note in lib.rs).
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateSemaphoreW(
@@ -246,12 +246,12 @@ pub(crate) mod magick_gate {
         fn ReleaseSemaphore(handle: *mut c_void, count: i32, prev: *mut i32) -> i32;
     }
 
-    /// Max concurrent magick children. 4 × ~512 MiB ≈ 2 GiB worst case - safe on any
+    /// Max concurrent magick children. 4 × ~512 MiB ≈ 2 GiB worst case — safe on any
     /// modern machine, still ~4× faster than serial on the exotic long tail.
     const MAX: i32 = 4;
-    /// Bounded acquire deadline (ms). A LEAKED permit - a host process hard-killed
+    /// Bounded acquire deadline (ms). A LEAKED permit — a host process hard-killed
     /// mid-decode never runs `Permit::drop`, and Windows does NOT restore a semaphore
-    /// count when a holder dies (semaphores have no abandoned-state, unlike a mutex) -
+    /// count when a holder dies (semaphores have no abandoned-state, unlike a mutex) —
     /// would otherwise wedge the gate to 0 for the whole logon session, so every later
     /// magick decode blocks forever (a must-kill/reboot hang in prevhost/dllhost). With
     /// a finite wait we fall back to UNCAPPED instead of blocking the calling (often a
@@ -260,7 +260,7 @@ pub(crate) mod magick_gate {
     const GATE_WAIT_MS: u32 = 5_000;
     const WAIT_OBJECT_0: u32 = 0;
 
-    /// The shared semaphore handle (created once, kept for the process lifetime -
+    /// The shared semaphore handle (created once, kept for the process lifetime —
     /// the OS reclaims it on exit). Stored as `usize` because the raw `HANDLE`
     /// pointer is not `Send`/`Sync`.
     fn handle() -> Option<*mut c_void> {
@@ -284,7 +284,7 @@ pub(crate) mod magick_gate {
     }
 
     /// Acquire a magick slot, waiting at most [`GATE_WAIT_MS`]. Returns `None` if the
-    /// semaphore couldn't be created, the wait timed out, or it otherwise failed - in
+    /// semaphore couldn't be created, the wait timed out, or it otherwise failed — in
     /// every such case the caller proceeds UNCAPPED (best-effort: a missing or wedged
     /// cap must never block decoding, only bound its memory). A genuine permit is always
     /// released on drop; a timed-out wait acquired nothing, so there is nothing to
@@ -328,10 +328,10 @@ fn finish_wic_fallback(
         // about to be produced by the codec we KNOW misreads this file, so say so
         // rather than returning a quietly wrong picture. A wrong-coloured tile still
         // beats no tile (it is what the Compact install shows anyway), but it must be
-        // diagnosable - the alternative is issue #9's "some files are just wrong
+        // diagnosable — the alternative is issue #9's "some files are just wrong
         // sometimes", with nothing in the log to point at.
         crate::safety::log_debug(
-            "decode: fell back to WIC after routing around it - colours may be off",
+            "decode: fell back to WIC after routing around it — colours may be off",
         );
     }
     img
@@ -366,14 +366,14 @@ fn last_resort_tiers(
     // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
     // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
     // preview ([`decode_menu_preview`]) runs on explorer.exe's OWN UI thread and cannot
-    // afford a subprocess (≤20s) there - it falls back to the cheap embedded-JPEG slice
+    // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
     // below, or a caption-only tile.
     let mut last_err = route.magick_error.unwrap_or_else(|| Error::from(E_FAIL));
     if external {
         if !magick_attempted {
             // Ask magick for no more than the caller's target edge. Rendering the fixed
             // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
-            // (issue #11) - over the preview pane's 12s budget, so the pane showed nothing
+            // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
             // for a file that decodes perfectly well.
             match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
                 Ok(img) => return Ok(img),
@@ -391,15 +391,15 @@ fn last_resort_tiers(
     }
     // The reduced-resolution IFD0 held back above. Every real decoder has now failed or is
     // absent, and a small genuine preview beats both the byte-scan carve below and a blank
-    // tile - so this is where it is finally spent.
+    // tile — so this is where it is finally spent.
     if let Some(img) = reduced_ifd0 {
         return Ok(img);
     }
-    // Last resort (CHEAP - a linear byte scan + image-tier decode, no subprocess, so the
-    // menu path runs it too): every real decoder failed (or is absent - e.g. a clean
+    // Last resort (CHEAP — a linear byte scan + image-tier decode, no subprocess, so the
+    // menu path runs it too): every real decoder failed (or is absent — e.g. a clean
     // compact install with no Microsoft RAW Image Extension and no bundled ImageMagick).
-    // If the file still embeds ANY decodable JPEG - a camera RAW's small EXIF thumbnail, a
-    // document preview - show that rather than a blank tile. Strictly additive: only
+    // If the file still embeds ANY decodable JPEG — a camera RAW's small EXIF thumbnail, a
+    // document preview — show that rather than a blank tile. Strictly additive: only
     // reached AFTER every higher-fidelity tier above has failed, so it can't downgrade a
     // good result.
     if let Some(img) = try_embedded_jpeg_last_resort(bytes) {
@@ -410,7 +410,7 @@ fn last_resort_tiers(
 
 /// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
 /// except HEIC auxiliary-alpha files may prefer ImageMagick before WIC (see below).
-/// Stops at the first tier that decodes. No resize, no orientation - raw pixels.
+/// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
 /// `wic_target` is a longest-edge hint for the WIC tier only (a scaling codec decodes
 /// straight to it); every full-fidelity caller passes `None`.
 fn decode_any_with_wic_target(
@@ -443,7 +443,7 @@ fn decode_any_with_wic_target(
     // A TIFF whose IFD0 says `NewSubfileType = reduced-resolution` is a container whose
     // MAIN image lives elsewhere (SubIFDs), and the `image` crate only ever decodes IFD0.
     // Letting the first tier answer from it is how six camera-RAW formats thumbnailed from
-    // a postage stamp - and a Kodak `.dcr` from a black placeholder - while WIC decoded the
+    // a postage stamp — and a Kodak `.dcr` from a black placeholder — while WIC decoded the
     // same files at full resolution. So we keep the decode as a LAST-RESORT stash and let
     // the real tiers run: nothing that rendered before can stop rendering, it just stops
     // winning. See `streamsrc::tiff_ifd0_is_reduced`.
@@ -592,7 +592,7 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
                     DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
                 ) =>
         {
-            // Color-manage immediately (not after a reduce) - `reduced_ifd0_serves` below
+            // Color-manage immediately (not after a reduce) — `reduced_ifd0_serves` below
             // reads the pixel content (`luma_sd`), so it must see the same colour-managed
             // pixels a served result would actually return.
             let img = apply_icc_to_srgb(img, icc);
@@ -644,7 +644,7 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
             // deviation of the same order as the gamma-space box reduce every thumbnail
             // already accepts, visible at most as a slight shift on saturated edges, and the
             // accepted price of not colour-managing a 50-megapixel source for a 256 px tile.
-            // Full-fidelity callers (`wic_thumbnail_cx == None`) are unaffected - no
+            // Full-fidelity callers (`wic_thumbnail_cx == None`) are unaffected — no
             // reduction happens, and the transform runs on every pixel.
             let img = match wic_thumbnail_cx {
                 Some(cx) => pre_reduce(img, cx),
@@ -663,11 +663,11 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
 /// TIFF-based RAW container (classic or BigTIFF), or one of the handful of non-TIFF RAW
 /// signatures? Every HEIC/AVIF/JXR/WebP/etc. that reaches [`decode_any_with_wic_target`]
 /// used to pay an O(file) embedded-JPEG scan here for a preview those containers never
-/// carry - this is a byte-count check, not a decode, so it costs nothing to run first.
+/// carry — this is a byte-count check, not a decode, so it costs nothing to run first.
 /// Deliberately looser than `streamsrc::rawsniff::looks_like_raw_container` (no extension
 /// or IFD-marker refinement): a false positive here only means the real scan below still
 /// runs, same as before, while a false negative would regress a RAW that decoded fine
-/// yesterday - so this stays a strict superset of "might be RAW", not a precise classifier.
+/// yesterday — so this stays a strict superset of "might be RAW", not a precise classifier.
 fn looks_raw_container(bytes: &[u8]) -> bool {
     bytes.starts_with(b"II\x2A\0")
         || bytes.starts_with(b"MM\0\x2A")
@@ -979,17 +979,17 @@ pub fn os_codec_available(codec: crate::formats::OsCodec) -> bool {
     }
 }
 
-/// FULL-FIDELITY decode - what the Convert/Resize/Copy/Image-info verbs (and
+/// FULL-FIDELITY decode — what the Convert/Resize/Copy/Image-info verbs (and
 /// the eyedropper) use. Differs from [`decode_preview`] only for PSD/PSB: the
 /// container tier surfaces the baked-in ~160px thumbnail (resource 1036), which
-/// is fine for a thumbnail but wrong for an edit - a 4700×800 PSD would
+/// is fine for a thumbnail but wrong for an edit — a 4700×800 PSD would
 /// "convert" to 160×26. Decode the real composite via ImageMagick first (full
 /// install); fall back to the preview path when magick is missing or fails.
 pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.starts_with(b"8BPS") {
         match decode_psd_composite(bytes) {
             Ok(img) => return Ok(img),
-            // Fall back to the preview path (the 160px baked-in thumbnail) - note
+            // Fall back to the preview path (the 160px baked-in thumbnail) — note
             // it so a surprising "my big PSD converted tiny" is diagnosable.
             Err(e) => crate::safety::log_debug(&format!(
                 "PSD composite decode failed ({e}); falling back to baked preview"
@@ -1004,7 +1004,7 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
 /// BMP is the extreme case of "cheap to decode, expensive to materialise": there is no
 /// decompression to speak of, so essentially the whole cost is turning 12 MP into pixels we
 /// then throw away. WIC scales during the read; the `image` tier cannot. Measured on the
-/// 12 MP tier: 258.6 ms ours against 22.1 ms Windows, and 2.3 ms against 0.6 ms at 0.08 MP -
+/// 12 MP tier: 258.6 ms ours against 22.1 ms Windows, and 2.3 ms against 0.6 ms at 0.08 MP —
 /// the gap is entirely a function of size, which is why only the bounded-thumbnail callers
 /// take this path and the full-fidelity ones are untouched.
 ///
@@ -1156,8 +1156,8 @@ fn gif_skip_subblocks(bytes: &[u8], mut i: usize) -> Option<usize> {
 /// Is this a STILL, non-ICC WebP that the OS codec should decode ahead of the `image` tier?
 ///
 /// The gate is deliberately narrow, and each exclusion is load-bearing:
-/// * `VP8 `/`VP8L` directly after the RIFF header - a simple still with no feature flags at
-///   all - is always eligible.
+/// * `VP8 `/`VP8L` directly after the RIFF header — a simple still with no feature flags at
+///   all — is always eligible.
 /// * `VP8X` is eligible only with the ANIMATION and ICC bits clear. Animated WebP must stay
 ///   on the pure-Rust path because which frame becomes the thumbnail is the DECODER's choice
 ///   and `sample-decoy-frames.webp` pins that choice; ICC-tagged WebP stays because colour
@@ -1165,7 +1165,7 @@ fn gif_skip_subblocks(bytes: &[u8], mut i: usize) -> Option<usize> {
 /// * Anything unparseable is ineligible, so a truncated or lying header simply keeps the
 ///   existing tier order.
 ///
-/// VP8X flags byte (WebP container spec): `RR I L E X A R` - bit 5 ICC, bit 4 alpha,
+/// VP8X flags byte (WebP container spec): `RR I L E X A R` — bit 5 ICC, bit 4 alpha,
 /// bit 3 EXIF, bit 2 XMP, bit 1 animation. Alpha/EXIF/XMP stay eligible: WIC preserves the
 /// alpha plane through the same 32bppRGBA conversion every other WIC format uses, and EXIF
 /// orientation is applied by our own pipeline from the file bytes, identically on either
@@ -1185,18 +1185,18 @@ fn webp_prefers_wic(bytes: &[u8]) -> bool {
     }
 }
 
-/// PREVIEW-fidelity decode - used by the thumbnail provider and the in-menu
+/// PREVIEW-fidelity decode — used by the thumbnail provider and the in-menu
 /// preview, where a container's embedded preview is exactly what we want (fast,
 /// no subprocess). SVG is rasterized; raster formats get EXIF orientation.
 pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     // PSD/PSB with transparency: Photoshop's baked-in preview (resource 1036) is a
-    // JPEG - no alpha - so a background-removed document would thumbnail with a flat
+    // JPEG — no alpha — so a background-removed document would thumbnail with a flat
     // WHITE background. Render the real layer composite (which preserves alpha)
     // instead; fall back to the baked-preview path when there's no compositor (the
     // compact / no-ImageMagick install) or the composite fails. Opaque PSDs skip
     // this and keep the fast embedded-preview path. (`decode_full` runs its own
     // composite attempt before falling back here, so this lives on the preview entry
-    // only - never double-running magick.)
+    // only — never double-running magick.)
     if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
         match decode_psd_composite(bytes) {
             Ok(img) => return Ok(img),
@@ -1275,7 +1275,7 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
             Ok(full)
         }
         // Succeeded, just not meaningfully bigger. The capped variant of the SAME decode can
-        // only be smaller still, so retrying it would spend seconds to learn nothing - which
+        // only be smaller still, so retrying it would spend seconds to learn nothing — which
         // is exactly what it did on a .cr2 before this arm existed (6.5 s against 4.4 s).
         Ok(_) => Ok(small),
         Err(_) => match decode_by_extension(bytes, &ext, None) {
@@ -1295,15 +1295,15 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
 ///
 /// ImageMagick picks most coders by sniffing the bytes, which is what lets the magick
 /// tier feed it a nameless stdin stream. A handful of the formats we register have no
-/// signature to sniff - `magick identify sample.rla` works only because the extension
-/// named the coder - so those files reached magick and came straight back with "no
+/// signature to sniff — `magick identify sample.rla` works only because the extension
+/// named the coder — so those files reached magick and came straight back with "no
 /// decode delegate for this image format". They were registered, advertised, and could
 /// not thumbnail anywhere. Same for a camera RAW whose embedded preview is missing, which
 /// left magick's (equally name-selected) `dng` coder unreachable behind the same wall.
 ///
 /// Ordering is the safety property: this runs only once the normal decode has failed, so
 /// a wrong guess costs nothing but the failure the caller already had. Callers that have
-/// no name - the shell hands some handlers a stream with no `pwcsName` - simply skip it
+/// no name — the shell hands some handlers a stream with no `pwcsName` — simply skip it
 /// and keep today's behaviour exactly.
 pub fn decode_by_extension(bytes: &[u8], ext: &str, max_edge: Option<u32>) -> Result<DynamicImage> {
     decode_named_extension(bytes, ext, max_edge)
@@ -1319,7 +1319,7 @@ pub fn extension_has_named_coder(ext: &str) -> bool {
 /// [`decode_preview_capped`] (or [`decode_preview`] when `max_edge` is 0), then the
 /// [`decode_by_extension`] last resort if every tier declined.
 ///
-/// It exists as one function because the path-shaped callers do not otherwise converge -
+/// It exists as one function because the path-shaped callers do not otherwise converge —
 /// the CLI, the MCP `view` tool and [`decode_preview_path`] each grew their own copy of
 /// "read the file, then decode the bytes", and a fallback bolted onto one of them reaches
 /// none of the others. The failing decode is what is returned on a failed retry, so no
@@ -1360,7 +1360,7 @@ pub fn decode_preview_capped(bytes: &[u8], max_edge: u32) -> Result<DynamicImage
 /// Try SVG or gzip-wrapped SVG (`.svgz`). Returns `(Some(image), _)` when resvg decoded it.
 ///
 /// The second element is the gzip-inflated bytes, handed back whenever `bytes` was
-/// gzip-wrapped but the inner content wasn't SVG (or resvg couldn't parse it) - so a
+/// gzip-wrapped but the inner content wasn't SVG (or resvg couldn't parse it) — so a
 /// caller that also needs to try a raster decode on gzip-wrapped non-SVG vector formats
 /// (`.emz`) doesn't have to inflate the bytes a second time. Callers that don't need that
 /// (the menu/cover paths, which just fall back to the ORIGINAL bytes) ignore it.
@@ -1387,7 +1387,7 @@ fn decode_svg_if_svg(bytes: &[u8]) -> (Option<DynamicImage>, Option<Vec<u8>>) {
 /// (`contextmenu.rs`'s `PREVIEW_WIDE`/`PREVIEW_BOX`); this is a little above that rather
 /// than an exact mirror of those private constants, so it stays a safe upper bound even if
 /// the tile size changes there. Passing a real target (instead of `None`) is what lets the
-/// DDS tier's existing mip selection and block-average reduction engage here - without it,
+/// DDS tier's existing mip selection and block-average reduction engage here — without it,
 /// a mipless full-resolution BC1 texture decodes at its full size on explorer.exe's own UI
 /// thread before this function ever gets to shrink it.
 const MENU_PREVIEW_TARGET_EDGE: u32 = 256;
@@ -1402,8 +1402,8 @@ const MENU_SVG_MAX_BYTES: usize = 256 * 1024;
 /// `IContextMenu` loads IN-PROCESS, unlike the isolated thumbnail/preview hosts). Uses
 /// the container baked-preview extractor + the fast pure-Rust / WIC image tiers, PLUS
 /// pure-Rust resvg for SVG/SVGZ (see below), and deliberately SKIPS the genuinely heavy
-/// tiers - the ImageMagick subprocess (≤20s), Media Foundation video, and the WinRT PDF
-/// rasterizer - so a single right-click can never freeze the shell. A file whose only
+/// tiers — the ImageMagick subprocess (≤20s), Media Foundation video, and the WinRT PDF
+/// rasterizer — so a single right-click can never freeze the shell. A file whose only
 /// decodable tier is one of THOSE gets a caption-only menu tile (the caller degrades to
 /// name + size) instead of hanging explorer. Container covers are themselves cheap (a
 /// baked JPEG/PNG slice), so epub/cbz/psd/… still show a thumbnail here.
@@ -1455,8 +1455,8 @@ fn decode_cheap(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Result<DynamicIm
 /// Decode ONE archive-cover image for the contact sheet ([`thumbnail_from_covers`]).
 /// Like [`decode_cheap`] but ALSO rasterizes SVG/SVGZ. `decode_cheap` deliberately
 /// omits SVG because its caller ([`decode_menu_preview`]) can run in-process on
-/// explorer's UI thread; the cover compositor never does - it runs only in the
-/// ISOLATED thumbnail / preview hosts and the CLI - so resvg (pure-Rust, in-process,
+/// explorer's UI thread; the cover compositor never does — it runs only in the
+/// ISOLATED thumbnail / preview hosts and the CLI — so resvg (pure-Rust, in-process,
 /// `SVG_TIMEOUT`-bounded) is safe here. Without this, a `.7z`/`.zip` of SVG logos
 /// (every cover an `.svg`) decoded nothing and fell back to the stock icon.
 fn decode_cover(bytes: &[u8]) -> Result<DynamicImage> {
@@ -1490,8 +1490,8 @@ pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
 /// the wavelet levels the target needs. On the 76 MP corpus scan that is ~0.5s against
 /// ~4s for a full ImageMagick decode, and the output is a true resolution level (often
 /// SHARPER than decode-then-downscale). Gated on a cap on purpose: full-fidelity
-/// callers (Convert, Image info) keep the established tiers, and ANY error here - the
-/// declined coding styles, subsampled chroma, malformed data - falls through to those
+/// callers (Convert, Image info) keep the established tiers, and ANY error here — the
+/// declined coding styles, subsampled chroma, malformed data — falls through to those
 /// same tiers, so no JP2 that rendered before can render worse. Correctness evidence:
 /// bit-exact on every lossless corpus file (see decode/jp2 exactness tests), verified
 /// against ImageMagick on the lossy ones.
@@ -1514,7 +1514,7 @@ fn try_jp2_reduced_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<D
 
 /// Large JPEG: decode DCT-SCALED instead of decoding every pixel and then throwing almost
 /// all of them away. Exactly the same bargain as the JP2 tier above: ask the codec for a
-/// reduced resolution level rather than the full image - and gated the same way, on a
+/// reduced resolution level rather than the full image — and gated the same way, on a
 /// caller that actually wants a thumbnail.
 ///
 /// This is the difference between a 7680x2160 wallpaper costing ~4 s a tile and costing a
@@ -1523,7 +1523,7 @@ fn try_jp2_reduced_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<D
 /// count was NOT the cause (3 -> 16 workers moved it 6 %), nor the three size buckets; it
 /// was that every tile decoded its source in full.
 ///
-/// Only JPEG, and only above a size floor - see `wic_scaled_from_bytes_if_codec_scales` for
+/// Only JPEG, and only above a size floor — see `wic_scaled_from_bytes_if_codec_scales` for
 /// why widening it is a re-measurement rather than a one-line change. Any failure falls
 /// straight through to the tiers below, so nothing that rendered before can stop rendering.
 ///
@@ -1540,7 +1540,7 @@ fn try_wic_scaled_jpeg_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Opti
 /// Video: grab a representative frame via the OS Media Foundation codecs (no bundled
 /// bytes). Magic-gated, so only actual videos pay the MF cost (HEIC/AVIF share the
 /// `ftyp` box but are excluded). Any decode failure falls through to the image tiers,
-/// which then fail to the file's default icon - never worse than before.
+/// which then fail to the file's default icon — never worse than before.
 fn try_video_tier(
     bytes: &[u8],
     raw_preview: RawPreviewOrder,
@@ -1555,7 +1555,7 @@ fn try_video_tier(
     //
     // `tried_cover_art` remembers whether this pass ran (G123, mirroring streamsrc's
     // `tried_cover_art`): if it did and found nothing, the fallback rescue below (after
-    // every frame tier also fails) must not call `vcodec::cover_art` a second time - the
+    // every frame tier also fails) must not call `vcodec::cover_art` a second time — the
     // bytes haven't changed, so it would just re-scan the same moov to the same null answer.
     let mut tried_cover_art = false;
     if crate::settings::prefer_cover_art() {
@@ -1569,7 +1569,7 @@ fn try_video_tier(
         }
     }
     // Prefer the smart targeted read for a representative keyframe built from the
-    // container's own index - MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
+    // container's own index — MP4/MOV via the `moov` (`crate::mp4`), Matroska/WebM via the
     // Cues (`crate::mkv`). Each self-gates to its container and returns None otherwise (or
     // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
     // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
@@ -1610,7 +1610,7 @@ fn try_video_tier(
         .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
-        // never opens at all. No index to honour `at` with - first keyframe (see `flv`).
+        // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
         .or_else(|| {
             if !mf {
                 return None;
@@ -1636,7 +1636,7 @@ fn try_video_tier(
         // when every MF tier above came back empty AND the container says V_VP9, the
         // keyframe is decoded out of process by the sibling st2k.exe (`crate::vp9` for
         // why the pure-Rust decoder must never run in THIS process). Deliberately LAST:
-        // Profile 0 is the common case and MF is hardware-accelerated and in-process -
+        // Profile 0 is the common case and MF is hardware-accelerated and in-process —
         // it must keep winning, and only otherwise-blank tiles pay for a spawn.
         .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
     if let Some(frame) = frame {
@@ -1647,7 +1647,7 @@ fn try_video_tier(
         // double-rotate whichever tier above produced the frame.
         //
         // Only fall back to the standalone probe when NEITHER container tier parsed the
-        // file - a tier that did, already answered this exact question.
+        // file — a tier that did, already answered this exact question.
         let rotation = if container_ran {
             container_rotation
         } else {
@@ -1662,7 +1662,7 @@ fn try_video_tier(
             None => frame,
         }));
     }
-    // No decodable frame - usually a missing OS codec (HEVC/AV1 are Store add-ons).
+    // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
     // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
     // rips and media managers routinely write) is still a faithful picture of the file,
     // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
@@ -1682,7 +1682,7 @@ fn try_video_tier(
 
 /// GIMP `.xcf` FIRST, and only when the caller told us how big a picture it can use.
 /// `extract_cover` reaches the same decoder, but its signature carries no target, so it
-/// flattens the full canvas - measured at 5.7 s of layer decode plus 4.6 s of compositing
+/// flattens the full canvas — measured at 5.7 s of layer decode plus 4.6 s of compositing
 /// for one 6000x4000 file with 15 layers, all of it to produce a 256 px tile. Handing the
 /// target in drops that to milliseconds. Falls through to `extract_cover` below when there
 /// is no target (the full-fidelity callers), so the picture they get is unchanged.
@@ -1711,7 +1711,7 @@ fn try_djvu_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicI
 /// Ebook / comic-archive cover extraction (EPUB, CBZ, MOBI, FB2, CB7, CBR,
 /// DjVu…). If this is a container, pull the cover and decode THAT. The cover
 /// bytes go through `decode_image` (not back through here) so a maliciously
-/// nested container can't recurse - depth is capped at 1.
+/// nested container can't recurse — depth is capped at 1.
 fn try_container_cover_tier(
     bytes: &[u8],
     raw_preview: RawPreviewOrder,
@@ -1734,8 +1734,8 @@ fn try_container_cover_tier(
 /// to get this wrong, both avoided here:
 ///   - A fixed 1024 (what shipped before) would make PDFs the one format that upscales a
 ///     too-small source once the ceiling can exceed 1024 (issue #26.5).
-///   - Deriving it from `settings::max_thumb_size()` instead - which is what the first cut
-///     of this fix did - reads the user's global CEILING rather than what Explorer asked
+///   - Deriving it from `settings::max_thumb_size()` instead — which is what the first cut
+///     of this fix did — reads the user's global CEILING rather than what Explorer asked
 ///     for, so a 32 px icon-view request would rasterize a 2560 px page and throw almost
 ///     all of it away. `wic_thumbnail_cx` is already clamped per request
 ///     (`thumbprovider`: `cx.min(max_thumb)`), which is exactly the number wanted here, and
@@ -1802,22 +1802,22 @@ fn decode_image_with_raw_order(
     // Gzip-wrapped vector formats: `.svgz` (gzipped SVG) and `.emz` (gzipped
     // EMF/WMF metafile). The `image`/resvg tiers can't see through gzip and
     // ImageMagick has no EMZ coder, so inflate once (bounded) and decode the
-    // inner bytes. We decode the inflated bytes inline - never re-entering on a
-    // gzip magic - so a gzip-in-gzip payload can't recurse.
+    // inner bytes. We decode the inflated bytes inline — never re-entering on a
+    // gzip magic — so a gzip-in-gzip payload can't recurse.
     let (svg_img, inner) = decode_svg_if_svg(bytes);
     if let Some(img) = svg_img {
         return Ok(img); // vector; no EXIF orientation
     }
-    // 3D meshes (STL/OBJ/PLY): sniffed and RENDERED up front, mirroring the SVG shape -
+    // 3D meshes (STL/OBJ/PLY): sniffed and RENDERED up front, mirroring the SVG shape —
     // these are geometry, not pixels, so no raster tier can touch them. Runs only in the
     // isolated hosts and the CLI (this prelude); `decode_menu_preview` deliberately skips
-    // it, like video/PDF/magick - a 2M-triangle rasterization has no place in-process
+    // it, like video/PDF/magick — a 2M-triangle rasterization has no place in-process
     // inside explorer.exe, so the classic-menu tile stays caption-only for meshes.
     if let Some(img) = decode_mesh_sniffed(bytes) {
         return Ok(img); // rendered; no EXIF to apply
     }
     // `inner` is only `Some` when `bytes` was gzip-wrapped and inflated but wasn't SVG
-    // (e.g. `.emz`) - decode THAT, so a gzip-in-gzip payload still can't recurse.
+    // (e.g. `.emz`) — decode THAT, so a gzip-in-gzip payload still can't recurse.
     if let Some(inner) = inner {
         return Ok(apply_exif_orientation(
             decode_any_with_wic_target(&inner, raw_preview, true, wic_thumbnail_cx)?,
@@ -1837,7 +1837,7 @@ fn decode_with_image(bytes: &[u8]) -> Result<DynamicImage> {
 /// As [`decode_with_image_alloc`] but with the embedded ICC profile left UN-applied,
 /// returned alongside the decoded image instead. Lets a thumbnail caller reduce the
 /// image first and run the (otherwise identical) colour transform on the small result
-/// rather than the full-resolution one - see [`try_image_tier`].
+/// rather than the full-resolution one — see [`try_image_tier`].
 fn decode_with_image_alloc_raw(
     bytes: &[u8],
     max_alloc: u64,
@@ -1873,7 +1873,7 @@ fn decode_with_image_alloc_raw(
     // impl (used by decoders that don't override it, e.g. the HDR/Radiance codec) checks
     // dimensions only and never enforces `max_alloc` against the output buffer it is
     // about to materialize. A 16384x16384 frame is dimension-legal at MAX_DIM but, at
-    // Rgb32F's 12 bytes/px, ~3.2 GiB - 6x this call's own budget. Check the buffer size
+    // Rgb32F's 12 bytes/px, ~3.2 GiB — 6x this call's own budget. Check the buffer size
     // ourselves, from the header alone (before `from_decoder` allocates it), so every
     // decoder gets the same allocation ceiling regardless of whether it opted in.
     let (w, h) = decoder.dimensions();
@@ -1886,7 +1886,7 @@ fn decode_with_image_alloc_raw(
     Ok((img, icc))
 }
 
-/// Whether a `(w, h)` frame at `bytes_per_pixel` would allocate more than `max_alloc` -
+/// Whether a `(w, h)` frame at `bytes_per_pixel` would allocate more than `max_alloc` —
 /// pulled out of [`decode_with_image_alloc`] so the header-only bomb check is unit-testable
 /// without decoding gigabytes of real pixel data (see the call site for why the check is
 /// needed at all: not every decoder's `set_limits` enforces this itself).
@@ -1914,8 +1914,8 @@ mod hub_tests {
 
     #[test]
     fn exceeds_alloc_budget_flags_a_max_dim_legal_hdr_frame_that_blows_the_alloc_cap() {
-        // 16000x16000 clears MAX_DIM (16384) - the only guard `HdrDecoder::set_limits`
-        // actually applies, since it never overrides the trait's dimension-only default -
+        // 16000x16000 clears MAX_DIM (16384) — the only guard `HdrDecoder::set_limits`
+        // actually applies, since it never overrides the trait's dimension-only default —
         // but at Rgb32F's 12 bytes/px that is ~2.86 GiB, more than 5x MAX_ALLOC.
         assert!(exceeds_alloc_budget(16_000, 16_000, 12, limits::MAX_ALLOC));
     }
@@ -1954,7 +1954,7 @@ mod hub_tests {
         assert!(looks_raw_container(
             &[b"    ftypcrx ".as_slice(), b"rest of a Canon CR3"].concat()
         ));
-        // HEIC/AVIF share the same `ftyp` box shape but a different brand - must not match.
+        // HEIC/AVIF share the same `ftyp` box shape but a different brand — must not match.
         assert!(!looks_raw_container(
             &[b"    ftypheic".as_slice(), b"rest of an HEIC"].concat()
         ));
@@ -1964,7 +1964,7 @@ mod hub_tests {
     }
 
     /// `decode_menu_preview` must hand a real target edge down through
-    /// `decode_cheap` (`MENU_PREVIEW_TARGET_EDGE`, not `None`) - that is what lets the
+    /// `decode_cheap` (`MENU_PREVIEW_TARGET_EDGE`, not `None`) — that is what lets the
     /// DDS tier's mip selection engage for a mipless texture, and it is directly
     /// observable here for an ordinary large image via `try_image_tier`'s pre-reduce:
     /// with `None` the source would come back at full resolution.

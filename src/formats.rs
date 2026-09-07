@@ -1,4 +1,4 @@
-//! The image formats SageThumbs 2K hooks - extension + friendly name.
+//! The image formats SageThumbs 2K hooks — extension + friendly name.
 //!
 //! Curated from ImageMagick's readable raster formats plus the ones our safe
 //! `image`/WIC/resvg tiers handle. This drives BOTH the per-extension
@@ -27,7 +27,7 @@ pub enum Category {
 
 // The non-Image membership lists, the second copy of the category data that
 // `FORMATS`'s section grouping also encodes. Module-scoped (not inlined in
-// `category()`) so the test module can assert them against `FORMATS` directly -
+// `category()`) so the test module can assert them against `FORMATS` directly —
 // keeping this the single place the lists live, instead of a mirrored copy.
 // Each MUST stay a subset of `FORMATS` (enforced by `category_lists_are_subset_of_formats`).
 const EBOOK_EXTS: &[&str] = &[
@@ -51,29 +51,29 @@ const RAW_EXTS: &[&str] = &[
     // MysticThumbs-parity additions (must mirror the Camera RAW block in FORMATS).
     "bay", "cap", "dcs", "drf", "ori", "ptx", "pxn",
 ];
-// Video - a frame is grabbed via the OS Media Foundation codecs (no bundled bytes),
+// Video — a frame is grabbed via the OS Media Foundation codecs (no bundled bytes),
 // streamed from disk. MF decodes what the OS has a codec for; the rest keep their
 // default icon. Must mirror the Video block in FORMATS.
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
     "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
 ];
-// Generic archives - thumbnail = the contained images (first image, or the up-to-4
+// Generic archives — thumbnail = the contained images (first image, or the up-to-4
 // contact sheet per Settings). Deliberately ONLY the big three: the zip-in-disguise
 // long tail (jar/apk/appx/…) would mostly surface a random bundled icon as its
 // "cover", which reads as noise, and the Quick preview already lists those. An
 // archive with no readable image keeps its stock icon. Must mirror the Archives
 // block in FORMATS. These also gate the context-menu OFF (`is_archive`): the image
-// verbs (Convert/Rotate/…) would act on the extracted cover, not the archive -
+// verbs (Convert/Rotate/…) would act on the extracted cover, not the archive —
 // surprising, so v1 keeps archives thumbnail-only.
 const ARCHIVE_EXTS: &[&str] = &["7z", "rar", "zip"];
 
 /// Extensions SageThumbs hooked in PAST versions but dropped in the 2026-06-11 triage
 /// (unrenderable). They are NOT in `FORMATS`, so the normal register/unregister
-/// loops never touch their keys - an upgrade or uninstall would otherwise leave OUR stale
+/// loops never touch their keys — an upgrade or uninstall would otherwise leave OUR stale
 /// thumbnail/preview `shellex` hooks behind on any machine that ran an older build. `register()`
 /// and `unregister()` sweep this list to clean those orphans. MUST stay disjoint from `FORMATS`
-/// (enforced by `removed_extensions_disjoint_from_formats`). NOTE: `mpc` is NOT here - the
+/// (enforced by `removed_extensions_disjoint_from_formats`). NOTE: `mpc` is NOT here — the
 /// Magick-Pixel-Cache `.mpc` was dropped, but `.mpc` is now LIVE as Musepack audio.
 pub const REMOVED_EXTENSIONS: &[&str] = &[
     "aai", "art", "avs", "cache", "hrz", "ipl", "mtv", "palm", "six", "jpt", "fax", "g3", "g4",
@@ -305,7 +305,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("icns", "Apple Icon Image"),
     ("j2c", "JPEG-2000 Code Stream Syntax"),
     ("j2k", "JPEG-2000 Code Stream Syntax"),
-    // NOTE: `jbig` was REMOVED (2026-07-08) - a registered dead hook. No tier can
+    // NOTE: `jbig` was REMOVED (2026-07-08) — a registered dead hook. No tier can
     // decode it: no image-crate/WIC support, no container path, and ImageMagick's
     // own format table reports JBIG as `---` (the delegate isn't compiled in), so
     // the hook only ever produced a doomed 20s magick attempt. Don't re-add
@@ -321,7 +321,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("jpm", "JPEG-2000 File Format Syntax"),
     ("jps", "Stereo JPEG"),
     ("jxl", "JPEG XL (ISO/IEC 18181)"),
-    // JPEG XR / HD Photo (a.k.a. Windows Media Photo) - one codec, three extensions;
+    // JPEG XR / HD Photo (a.k.a. Windows Media Photo) — one codec, three extensions;
     // decoded by the OS via WIC's built-in WMPhoto codec (no bundled decoder).
     ("jxr", "JPEG XR (ISO/IEC 29199-2)"),
     ("wdp", "HD Photo / Windows Media Photo (JPEG XR)"),
@@ -335,7 +335,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("mng", "Multiple-image Network Graphics"),
     ("mpo", "Multi-Picture (3D) JPEG"),
     ("ora", "OpenRaster format"),
-    // Art / CAD / 3D-print project files - we extract their embedded preview.
+    // Art / CAD / 3D-print project files — we extract their embedded preview.
     ("kra", "Krita document"),
     ("3mf", "3D Manufacturing Format"),
     ("stl", "Stereolithography 3D model"),
@@ -354,14 +354,14 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("pspimage", "Paint Shop Pro image"),
     ("psp", "Paint Shop Pro image"),
     // The rest of the Paint Shop Pro family: same "~BK\0" block container as .pspimage,
-    // so `container::psp` reads them unchanged (dispatch is by CONTENT magic - see
-    // `container::extract_cover` - the extension only decides what we hook in Explorer).
+    // so `container::psp` reads them unchanged (dispatch is by CONTENT magic — see
+    // `container::extract_cover` — the extension only decides what we hook in Explorer).
     // A preview is NOT guaranteed in these: PSP writes the Composite Image Bank when it
     // has a flattened preview to store, and `psp::extract` additionally falls back to a
     // bounded whole-file JPEG carve. When neither finds one we return None and Explorer
-    // shows its default icon - exactly the pre-registration behaviour, so this is upside-
+    // shows its default icon — exactly the pre-registration behaviour, so this is upside-
     // only. `.pspmask` is the odd one: it can be a plain Windows BMP instead of a PSP
-    // container, which needs no special case - the PSP sniff simply fails and it falls
+    // container, which needs no special case — the PSP sniff simply fails and it falls
     // through to the normal `image`-crate tier that already decodes BMP.
     ("pspbrush", "Paint Shop Pro brush"),
     ("pspframe", "Paint Shop Pro picture frame"),
@@ -380,7 +380,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("xd", "Adobe XD design"),
     ("max", "Autodesk 3ds Max scene"),
     ("c4d", "Cinema 4D scene"),
-    // Android packages - the manifest-declared launcher icon (container/apk.rs); the
+    // Android packages — the manifest-declared launcher icon (container/apk.rs); the
     // split-bundle wrappers carry a base.apk inside another zip. Deliberately NOT in
     // ARCHIVE_EXTS: these get a real single-icon cover, not the archive contact sheet.
     ("apk", "Android application package"),
@@ -440,7 +440,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("xv", "Khoros Visualization image"),
     // --- MysticThumbs-parity aliases (Tier A) ---
     // Extra extensions for formats we ALREADY decode. Decoding is content-sniffed,
-    // so each rides the same tier as its cousin - registering the extension is all
+    // so each rides the same tier as its cousin — registering the extension is all
     // that's needed.
     ("heics", "HEIF image sequence"),
     ("heifs", "HEIF image sequence"),
@@ -461,7 +461,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("aftemplate", "Affinity template document"),
     ("skb", "SketchUp backup model"),
     ("ph", "Photo CD"),
-    // Blender keeps rolling auto-save backups (.blend1 … .blend32) - same container
+    // Blender keeps rolling auto-save backups (.blend1 … .blend32) — same container
     // as .blend, so the Blender cover extractor reads them all.
     ("blend1", "Blender auto-save backup"),
     ("blend2", "Blender auto-save backup"),
@@ -573,7 +573,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     // Microsoft Word / Excel / PowerPoint. OOXML packages carry a docProps/thumbnail
     // (present when the author saved a preview) handled by the generic `office.rs`
     // path; legacy 97-2003 docs are OLE compound files whose \x05SummaryInformation
-    // holds a CF_DIB preview, handled by `max.rs`. No new decode code - both ride the
+    // holds a CF_DIB preview, handled by `max.rs`. No new decode code — both ride the
     // existing container extractors, so an absent preview just falls back to the icon.
     ("docx", "Word document"),
     ("docm", "Word macro-enabled document"),
@@ -645,11 +645,11 @@ pub const FORMATS: &[(&str, &str)] = &[
 /// Is `ext` (no dot) one we hook? ASCII-case-insensitive, so callers need not
 /// pre-lowercase (and allocate). Backed by a one-time sorted index of the FORMATS
 /// extensions so the lookup is a binary search rather than a linear scan over all
-/// ~280 entries - it's on the menu-build / selection-gating hot path.
+/// ~280 entries — it's on the menu-build / selection-gating hot path.
 pub fn is_known(ext: &str) -> bool {
     use std::sync::OnceLock;
     // FORMATS is ordered by category (the Settings list relies on that), so it is
-    // NOT sorted by extension - keep a separate sorted slice for the search. Built
+    // NOT sorted by extension — keep a separate sorted slice for the search. Built
     // once; the FORMATS extensions are already lowercase ASCII.
     static SORTED: OnceLock<Vec<&'static str>> = OnceLock::new();
     let sorted = SORTED.get_or_init(|| {
@@ -658,13 +658,13 @@ pub fn is_known(ext: &str) -> bool {
         v
     });
     // Compare against the (lowercase) table entries by lowercasing `ext`'s bytes on
-    // the fly - no allocation, and matches a mixed-case ".PNG" against "png".
+    // the fly — no allocation, and matches a mixed-case ".PNG" against "png".
     sorted
         .binary_search_by(|&e| e.bytes().cmp(ext.bytes().map(|b| b.to_ascii_lowercase())))
         .is_ok()
 }
 
-// ---- Quick preview: text/markdown lists (VIEWER-ONLY - Phase 3) --------------------------
+// ---- Quick preview: text/markdown lists (VIEWER-ONLY — Phase 3) --------------------------
 // Consulted ONLY by the Quick preview viewer to decide "render this as markdown / as
 // syntax-highlighted text". DELIBERATELY NOT in FORMATS: adding them there would register
 // thumbnail/property/preview-pane handlers + enable the image verbs on .md/.txt files. So
@@ -674,8 +674,8 @@ pub fn is_known(ext: &str) -> bool {
 pub const PREVIEW_MD_EXTS: &[&str] = &["md", "markdown", "mdown", "mkd", "mdwn", "mdtxt", "mdtext"];
 
 /// Text/code extensions the viewer renders as text (gated on `preview_text()`). A CURATED set,
-/// not "every text file" - the viewer's content sniff catches unknown-but-textual files too.
-/// (`csv` moved to [`PREVIEW_DOC_EXTS`] - it renders as a real table now.)
+/// not "every text file" — the viewer's content sniff catches unknown-but-textual files too.
+/// (`csv` moved to [`PREVIEW_DOC_EXTS`] — it renders as a real table now.)
 /// `srt`/`vtt` subtitles are here because they ARE plain text and people do want to glance
 /// at one next to the video, which is the same reason PowerToys' Peek added them.
 pub const PREVIEW_TEXT_EXTS: &[&str] = &[
@@ -712,7 +712,7 @@ mod tests {
     use super::*;
 
     // The category lists under test are the REAL module-scoped consts that
-    // `category()` uses - not a copy - so the data lives in exactly one place.
+    // `category()` uses — not a copy — so the data lives in exactly one place.
     const EBOOK: &[&str] = EBOOK_EXTS;
     const DOCUMENT: &[&str] = DOCUMENT_EXTS;
     const AUDIO: &[&str] = AUDIO_EXTS;
@@ -725,7 +725,7 @@ mod tests {
     }
 
     /// Every extension a category list names must actually be a registered
-    /// `FORMATS` entry - otherwise `category()` classifies a phantom extension we
+    /// `FORMATS` entry — otherwise `category()` classifies a phantom extension we
     /// never hook. Catches a typo or a `FORMATS` removal that leaves a stale list.
     #[test]
     fn category_lists_are_subset_of_formats() {
@@ -751,7 +751,7 @@ mod tests {
     /// The lists here ARE the consts `category()` reads, so the loop's value is the
     /// final guard: a known non-Image ext that fell out of its list would default to
     /// `Image`, and any list-less ext that somehow classified as non-Image trips the
-    /// guard below - either way, drift between the two encodings fails the test.
+    /// guard below — either way, drift between the two encodings fails the test.
     #[test]
     fn category_verdict_matches_lists() {
         for &(ext, _) in FORMATS {
@@ -796,8 +796,8 @@ mod tests {
 
     /// Per-category counts are DERIVED from `FORMATS` (not hardcoded), so adding a
     /// format updates the totals automatically. We only assert the partition is
-    /// exhaustive - every `FORMATS` entry lands in exactly one bucket and the
-    /// buckets sum back to `FORMATS.len()` - plus that each non-Image bucket equals
+    /// exhaustive — every `FORMATS` entry lands in exactly one bucket and the
+    /// buckets sum back to `FORMATS.len()` — plus that each non-Image bucket equals
     /// its list length. No magic "179" lives here; it falls out of the table.
     #[test]
     fn category_counts_partition_formats() {
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(n[Category::Raw as usize], RAW.len(), "Camera RAW");
         assert_eq!(n[Category::Video as usize], VIDEO.len(), "Video");
         assert_eq!(n[Category::Archive as usize], ARCHIVE.len(), "Archive");
-        // Image is whatever remains - derived, not asserted to a literal.
+        // Image is whatever remains — derived, not asserted to a literal.
         let non_image =
             EBOOK.len() + DOCUMENT.len() + AUDIO.len() + RAW.len() + VIDEO.len() + ARCHIVE.len();
         assert_eq!(
@@ -838,19 +838,19 @@ mod tests {
     }
 
     /// `REMOVED_EXTENSIONS` (the historically-dropped exts we sweep on register/unregister)
-    /// MUST NOT overlap `FORMATS` - otherwise the cleanup would unhook a LIVE format.
+    /// MUST NOT overlap `FORMATS` — otherwise the cleanup would unhook a LIVE format.
     #[test]
     fn removed_extensions_disjoint_from_formats() {
         for &ext in REMOVED_EXTENSIONS {
             assert!(
                 !FORMATS.iter().any(|&(e, _)| e == ext),
-                "REMOVED_EXTENSIONS contains \"{ext}\" which is still a live FORMATS entry - \
+                "REMOVED_EXTENSIONS contains \"{ext}\" which is still a live FORMATS entry — \
                  the register/unregister cleanup sweep would unhook it",
             );
         }
     }
 
-    /// `FORMATS` must have no duplicate extensions - a dupe would double-count in
+    /// `FORMATS` must have no duplicate extensions — a dupe would double-count in
     /// the partition and silently mis-size the Options list.
     #[test]
     fn formats_has_no_duplicate_extensions() {

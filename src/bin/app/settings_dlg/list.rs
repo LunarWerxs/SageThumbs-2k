@@ -1,5 +1,5 @@
 //! A single subclass on the ListView does the three things SetWindowTheme can't:
-//!   * dark HEADER text - the header is a child of the ListView, so its
+//!   * dark HEADER text — the header is a child of the ListView, so its
 //!     NM_CUSTOMDRAW arrives here (the theme darkens the header fill but leaves
 //!     the text drawn black; only custom-draw overrides the per-item color);
 //!   * SPACE bulk-toggles the checkboxes of every selected row (the control would
@@ -30,8 +30,8 @@ unsafe fn bulk_set_selected(list: HWND, target: bool) {
     }
 }
 
-/// Toggle the checkboxes of all selected rows to a single uniform state - the
-/// inverse of the focused row - so a mixed selection collapses predictably.
+/// Toggle the checkboxes of all selected rows to a single uniform state — the
+/// inverse of the focused row — so a mixed selection collapses predictably.
 unsafe fn bulk_toggle_selected(list: HWND) {
     let focus = lv_next(list, -1, LVNI_FOCUSED);
     let target = if focus >= 0 {
@@ -53,8 +53,8 @@ pub(super) fn ctx_menu_label(id: usize) -> &'static str {
 }
 
 pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
-    // Keyboard invocation (Shift+F10 / Apps key) sets BOTH coords to -1 - not the
-    // whole lParam - and real multi-monitor coords can be negative, so test the
+    // Keyboard invocation (Shift+F10 / Apps key) sets BOTH coords to -1 — not the
+    // whole lParam — and real multi-monitor coords can be negative, so test the
     // sign-extended halves separately.
     let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
     let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
@@ -117,9 +117,9 @@ thread_local! {
     /// The menu-items row being drag-reordered, or -1 when idle. The subclass is shared
     /// with the format list, but a drag only ever STARTS on the menu list (see the
     /// dialog's LVN_BEGINDRAG handler), and mouse-capture routes the moves/drop back
-    /// here - so gating the move/drop handlers on `>= 0` is sufficient.
+    /// here — so gating the move/drop handlers on `>= 0` is sufficient.
     static DRAG_SRC: Cell<i32> = const { Cell::new(-1) };
-    /// Current drop-indicator position during a drag: `(anchor_row, after)` - the line
+    /// Current drop-indicator position during a drag: `(anchor_row, after)` — the line
     /// draws just above `anchor_row` (after=false) or just below it (after=true).
     /// `anchor_row < 0` hides it. We paint it ourselves (WM_PAINT) rather than via the
     /// native insertion mark, which crashes comctl32 in REPORT view.
@@ -251,7 +251,7 @@ unsafe fn draw_insert_line(list: HWND) {
 /// Collapse meaningless dividers so the list shows EXACTLY the menu it produces: drop a
 /// leading divider, collapse consecutive dividers to one, drop a trailing divider (the
 /// menu builder normalizes identically + adds its own divider before Settings). Keeps the
-/// list truly WYSIWYG - no confusing double/edge dividers that the menu wouldn't show.
+/// list truly WYSIWYG — no confusing double/edge dividers that the menu wouldn't show.
 pub(super) fn normalize_rows(rows: &[(isize, bool)]) -> Vec<(isize, bool)> {
     let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
     for &(p, c) in rows {
@@ -290,12 +290,12 @@ unsafe fn snapshot_rows(list: HWND) -> Vec<(isize, bool)> {
 
 /// A persisted divider row's `lParam` sentinel (item rows carry their toggle index 0..N).
 pub(super) const SEP_PARAM: isize = -1;
-/// The divider row's label - a run of box-drawing rules that reads as one horizontal line.
+/// The divider row's label — a run of box-drawing rules that reads as one horizontal line.
 pub(super) const SEP_LABEL: &str = "──────────────────────────────────────";
 
 /// Rebuild the list from `(lParam, checked)` rows: item rows (lParam = toggle index) get
 /// their translated label + checkbox; divider rows (lParam == [`SEP_PARAM`]) get the rule
-/// label and no checkbox. Optionally selects the row at display INDEX `select` - not by
+/// label and no checkbox. Optionally selects the row at display INDEX `select` — not by
 /// lParam key, because every divider shares [`SEP_PARAM`] and a key match would always land
 /// on the FIRST divider rather than whichever one the caller actually means (see A266 at
 /// [`finish_menu_drag`]).
@@ -377,7 +377,7 @@ unsafe fn finish_menu_drag(list: HWND, x: i32, y: i32) {
     rows.insert(dest, elem);
     // Collapse any double/edge divider the drop created so the list mirrors the menu, while
     // tracking where the JUST-DROPPED row (not merely "a row with the same key") ends up. A
-    // plain lParam-key lookup can't tell dividers apart - every one shares SEP_PARAM - so it
+    // plain lParam-key lookup can't tell dividers apart — every one shares SEP_PARAM — so it
     // always resolves to the FIRST divider in the list rather than the one just dragged (A266).
     let (rows, sel_idx) = normalize_rows_tracking(&rows, dest);
     rebuild_rows(list, &rows, sel_idx);
@@ -473,7 +473,7 @@ pub(super) unsafe extern "system" fn list_subclass(
             return LRESULT(0);
         }
         WM_CAPTURECHANGED if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            // Capture pulled away (Esc / another window) - cancel cleanly.
+            // Capture pulled away (Esc / another window) — cancel cleanly.
             DRAG_SRC.with(|s| s.set(-1));
             set_insert_mark(h, -1, false);
         }
@@ -496,10 +496,10 @@ unsafe fn on_notify(h: HWND, l: LPARAM) -> Option<LRESULT> {
     // GATED ON ID_LIST, and that is load-bearing: this subclass is installed on TWO
     // listviews (the file-types list in `build.rs`, and the single-column checklist in
     // `mod.rs::checklist`, which reuses it for the SPACE bulk-toggle). The checklist
-    // has no visible header to drag, so this cannot fire for it today - but `fit_columns`
+    // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
     // is written for the four-column file-types list specifically, so pointing it at
     // any other list would be wrong the moment that changes.
-    // DESCRIPTION IS NOT DRAGGABLE - refuse the drag before it starts.
+    // DESCRIPTION IS NOT DRAGGABLE — refuse the drag before it starts.
     //
     // It is the LAST column and `fit_columns` sizes it to exactly fill the list, so the
     // only thing dragging it can do is make it narrower and leave dead space against the
@@ -508,7 +508,7 @@ unsafe fn on_notify(h: HWND, l: LPARAM) -> Option<LRESULT> {
     // layout. Returning TRUE from HDN_BEGINTRACK is the documented way to say no.
     //
     // This replaces a "remember that the user dragged Description and stop auto-fitting
-    // it" flag. That flag existed only to stop the auto-fit snapping such a drag back -
+    // it" flag. That flag existed only to stop the auto-fit snapping such a drag back —
     // once the drag itself is refused, it had nothing left to do.
     if (*nmhdr).hwndFrom == list_header(h)
         && refuses_header_drag(
@@ -543,7 +543,7 @@ unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Con
     // (Defaults resets the format ticks, not the layout). Snapping back to a
     // usable minimum keeps the column reachable; the user can still make it
     // genuinely narrow, just not vanish it.
-    // 40 design px, scaled to this window's DPI - `LVM_GETCOLUMNWIDTH` reports device px,
+    // 40 design px, scaled to this window's DPI — `LVM_GETCOLUMNWIDTH` reports device px,
     // so comparing it against a bare 40 floored the column far too aggressively (or not at
     // all) off the 96-DPI display this constant was tuned on.
     let min_col_w = dpi_scale(h, 40);
@@ -587,7 +587,7 @@ unsafe fn on_notify_header_customdraw(nmcd: *const NMCUSTOMDRAW, header: HWND) -
     }
     if stage == CDDS_ITEMPOSTPAINT {
         // Kill the LAST column's right-hand divider. The theme draws it as a
-        // bright vertical line against the dark header - it reads as a drag
+        // bright vertical line against the dark header — it reads as a drag
         // grabber, and since HDS_NOSIZING the columns can't be dragged at all.
         // The inner dividers stay: those separate real columns.
         let cols = SendMessageW(
@@ -651,7 +651,7 @@ mod header_drag_tests {
         // The one case that is refused.
         assert!(refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, DESC_COLUMN));
 
-        // Extension and Category stay draggable - refusing those would be a regression of the
+        // Extension and Category stay draggable — refusing those would be a regression of the
         // original issue, which was that the columns could not be resized at all.
         assert!(!refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, 0));
         assert!(!refuses_header_drag(HDN_BEGINTRACKW, ID_LIST, 1));
@@ -676,9 +676,9 @@ mod menu_drag_reorder_tests {
     use super::*;
 
     /// A266: dragging a divider row past ANOTHER divider must reselect the one that was just
-    /// dropped, not merely "a row with the same lParam" - every divider shares [`SEP_PARAM`],
+    /// dropped, not merely "a row with the same lParam" — every divider shares [`SEP_PARAM`],
     /// so a naive key match always resolves to the FIRST divider in the list. Here the two
-    /// dividers aren't adjacent (an item sits between them), so normalize collapses nothing -
+    /// dividers aren't adjacent (an item sits between them), so normalize collapses nothing —
     /// this pins that the tracker still finds the SECOND one, not the first.
     #[test]
     fn tracks_the_dropped_divider_past_an_earlier_divider() {
@@ -703,7 +703,7 @@ mod menu_drag_reorder_tests {
 
     /// Dropping a divider directly after an existing one collapses the pair (normalize_rows'
     /// existing rule): the JUST-DROPPED instance is the one that gets skipped, so there is no
-    /// surviving row that IS the one the user dropped - `None` (no forced selection) is the
+    /// surviving row that IS the one the user dropped — `None` (no forced selection) is the
     /// honest answer, and strictly better than the old bug of highlighting an unrelated divider.
     #[test]
     fn tracks_none_when_the_dropped_divider_collapses_into_an_earlier_one() {
@@ -721,7 +721,7 @@ mod menu_drag_reorder_tests {
         );
     }
 
-    /// A divider dropped at the very end is trimmed as a trailing divider - there is no row
+    /// A divider dropped at the very end is trimmed as a trailing divider — there is no row
     /// left to select, so the tracker must say so rather than pointing past the end (or, worse,
     /// silently pointing at whatever now happens to occupy that index).
     #[test]
