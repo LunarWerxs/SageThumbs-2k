@@ -106,6 +106,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Closing the Quick preview while a slow file is still loading now actually stops that
+  work, instead of leaving it running unseen.** A network share or a removable drive that
+  reads slowly used to leave a decode running in the background even after you closed the
+  preview window; it never affected anything you could see, but it kept using a thread
+  until the read finished on its own. Closing the window now tells that work to give up
+  right away, the same way switching to a different file already did.
+
 - **Canon CRW thumbnails are fast again.** Older Canon RAW files in the `.crw` format (as
   opposed to the newer `.cr2`/`.cr3`) were not recognised as a camera RAW container, so their
   thumbnail always fell back to the slow full demosaic path instead of using the fast preview

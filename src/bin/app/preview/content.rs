@@ -137,6 +137,21 @@ fn abandoned(gen: u64) -> bool {
     stale
 }
 
+/// [`abandoned`], plus a rate-limited debug line the moment it actually causes a worker to give
+/// up early (audit E02, 2026-09-07: abandoned work must stay OBSERVABLE, not just bounded).
+/// `worker` names which of the decode workers gave up, for the log line only: it never affects
+/// the decision. The `ABANDONED`/`bench_abandoned_count` counter above is unconditional and
+/// untouched by this; only the log line is rate-limited (see
+/// `window::log_abandoned_worker`'s doc comment), so `--bench-mash` keeps seeing an exact count
+/// even while a held key holds the log to one line every so often.
+fn abandoned_logged(gen: u64, worker: &str) -> bool {
+    let gave_up = abandoned(gen);
+    if gave_up {
+        super::window::log_abandoned_worker(worker);
+    }
+    gave_up
+}
+
 /// Same `LIVE_GEN` counter [`abandoned`] reads, for a CORRECTNESS fence rather than a decode
 /// worker's optional early-exit — the Ctrl+C image-copy worker uses this to drop a stale copy
 /// instead of landing the wrong image on the clipboard. Unlike `abandoned`, this is
@@ -1172,7 +1187,17 @@ unsafe fn decode_and_post_static(
     path: &str,
     bytes: Option<std::sync::Arc<Vec<u8>>>,
 ) -> Option<(i32, i32)> {
+    let stage_start = std::time::Instant::now();
     let decoded = bytes.and_then(decode_loaded).map(std::sync::Arc::new);
+    if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+        "decode",
+        stage_start.elapsed(),
+        sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET,
+        gen,
+        path,
+    ) {
+        sagethumbs2k_core::safety::log_debug(&line);
+    }
     // Cache and hand over the SAME allocation — one decode, no copy of the pixels.
     let shown = decoded.as_ref().map(|d| (d.w, d.h));
     if let Some(d) = &decoded {
@@ -1209,7 +1234,7 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
         // Held-down arrow key: by the time the scheduler gets here the user may already be two
         // files further on. Nothing has been read or decoded yet, so this costs one atomic load
         // and reclaims the entire worker.
-        if abandoned(gen) {
+        if abandoned_logged(gen, "decode") {
             return;
         }
         if try_post_streamed(hwnd, gen, &path) {
@@ -1271,7 +1296,7 @@ pub(super) unsafe fn spawn_decode_full(hwnd: HWND, path: String, gen: u64) {
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut c_void);
-        if abandoned(gen) {
+        if abandoned_logged(gen, "full-resolution decode") {
             return; // zoomed, then navigated away before this got a slice of CPU
         }
         let decoded = read_and_decode(&path).map(std::sync::Arc::new);
@@ -1320,7 +1345,7 @@ unsafe fn spawn_sharpen(
         // Worth the most of any of these checks: the composite shells out to ImageMagick and
         // can take SECONDS. Running one to completion for a document the user has already
         // arrowed past is the single largest piece of wasted work the viewer could do.
-        if abandoned(gen) {
+        if abandoned_logged(gen, "sharpen composite") {
             return;
         }
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -1695,7 +1720,7 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
         let hwnd = HWND(hwnd_raw as *mut c_void);
         // Page-turn key held down: the OS rasteriser is the expensive part, so bail before it
         // rather than render a page nobody is on any more.
-        if abandoned(gen) {
+        if abandoned_logged(gen, "PDF page render") {
             return;
         }
         let rendered = sagethumbs2k_core::decode::read_capped(&path)
@@ -1795,9 +1820,20 @@ fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
 /// fix the same 12s-budget risk previewhandler's issue #11 fix addressed, but it would also
 /// silently cap every zoom and screenshot in the viewer — that needs a separate, smaller-edge
 /// decode path for the background-prefetch case specifically, not a blanket cap here.
+///
+/// **Holds a [`safety::AbandonTicket`] for the whole worker lifetime (audit E02, 2026-09-07):**
+/// before this fix, a worker that outlived `PREVIEW_DECODE_BUDGET` was simply forgotten by this
+/// function on timeout: it kept running and pinning a thread, but never counted against
+/// `safety::abandoned_workers()`/`MAX_ABANDONED_WORKERS`, unlike every other detached-worker path
+/// in the process (`spawn_budgeted`, the menu-preview decode). A share that hung this call
+/// repeatedly could grow the viewer's thread count past the documented cap with nothing to show
+/// for it. The ticket closes that gap: `caller_gave_up` on timeout, `worker_finished` when the
+/// worker actually returns, exactly the handshake `spawn_budgeted` itself uses.
 fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::DynamicImage> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     let (tx, rx) = std::sync::mpsc::channel();
+    let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+    let worker_ticket = ticket.clone();
     std::thread::spawn(move || {
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let out = sagethumbs2k_core::decode::decode_preview(&bytes).ok();
@@ -1805,10 +1841,15 @@ fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::Dyna
             unsafe { CoUninitialize() };
         }
         let _ = tx.send(out);
+        worker_ticket.worker_finished();
     });
-    rx.recv_timeout(sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET)
-        .ok()
-        .flatten()
+    match rx.recv_timeout(sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET) {
+        Ok(out) => out,
+        Err(_) => {
+            ticket.caller_gave_up();
+            None
+        }
+    }
 }
 
 /// Build a top-down 32bpp DIB of `rgba` composited over the opaque `bg` (`COLORREF`

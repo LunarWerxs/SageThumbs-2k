@@ -389,14 +389,25 @@ static PENDING_PREPARE: std::sync::Mutex<Option<sagethumbs2k_core::safety::Aband
     std::sync::Mutex::new(None);
 
 /// Mark any still-outstanding prepare worker as abandoned. Called at the start of every new
-/// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step.
-fn abandon_pending_prepare() {
+/// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step,
+/// and from `window::on_destroy` (closing the viewer is a cancel too, audit E02 2026-09-07).
+///
+/// Logs (rate-limited via `window::log_abandoned_worker`) exactly when this actually gives up a
+/// LIVE ticket, determined by comparing `safety::abandoned_workers()` before and after, since
+/// the ticket itself can only report that to a test (`AbandonTicket::is_counted` is
+/// `#[cfg(test)]`-only, so a bin-crate caller like this one cannot ask it directly). A worker
+/// that had already finished by the time this runs must not be reported as newly abandoned.
+pub(super) fn abandon_pending_prepare() {
     let prev = PENDING_PREPARE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     if let Some(ticket) = prev {
+        let before = sagethumbs2k_core::safety::abandoned_workers();
         ticket.caller_gave_up();
+        if sagethumbs2k_core::safety::abandoned_workers() > before {
+            super::window::log_abandoned_worker("prepare");
+        }
     }
 }
 
@@ -443,7 +454,17 @@ unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_act
     let spawned = std::thread::Builder::new()
         .name("st2k-preview-load".to_string())
         .spawn(move || {
+            let stage_start = std::time::Instant::now();
             let resolved = resolve_load(&worker_path, view_source_active);
+            if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+                "prepare",
+                stage_start.elapsed(),
+                sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET,
+                gen,
+                &worker_path,
+            ) {
+                sagethumbs2k_core::safety::log_debug(&line);
+            }
             ticket.worker_finished();
             let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
             post_resolved(hwnd, gen, resolved);
@@ -1425,6 +1446,61 @@ mod tests {
         // Defensive: `decode_gen` only ever increases, so this can't happen in practice, but the
         // check must be exact equality, not merely "not older".
         assert!(!is_load_current(7, 5));
+    }
+
+    /// The concrete scenario audit E02 asks for: open a slow file, then switch (via
+    /// `CMD_SET_PATH`, which reaches `load()` the same way a direct open does) to a fast file
+    /// before the slow file's worker has finished. The `--shot` headless harness decodes
+    /// synchronously and cannot observe this live async race from outside the process (see
+    /// `tests/preview_async_load.rs`'s header comment), so this pins the exact fence that
+    /// makes it safe: the two loads get two different generations, and only the CURRENT one's
+    /// completion may ever apply.
+    #[test]
+    fn switching_to_a_fast_file_mid_slow_load_never_lets_the_slow_completion_win() {
+        // The slow file's load starts at generation 1 (`reset_viewer_state` bumps and returns
+        // the new generation for every load, slow or fast, identically).
+        let slow_gen = 1;
+        // Before the slow worker reports back, the user switches to a fast file: generation 2.
+        let fast_gen = 2;
+        // The fast file's own worker finishes first (that's the whole point of it being fast)
+        // and its completion is for the CURRENT generation: it must apply.
+        assert!(
+            is_load_current(fast_gen, fast_gen),
+            "the fast file's own completion must be allowed to paint"
+        );
+        // The slow file's worker finishes afterwards and posts its stale completion: it must
+        // never be allowed to paint over the fast file now showing.
+        assert!(
+            !is_load_current(slow_gen, fast_gen),
+            "a slow file's completion arriving after a newer selection must never apply"
+        );
+    }
+
+    /// `abandon_pending_prepare` over a LIVE ticket must raise `safety::abandoned_workers()`,
+    /// and the ticket's own worker finishing must bring it back down (audit E02, 2026-09-07:
+    /// abandoned prepare work must stay OBSERVABLE). Exercised through this module's actual
+    /// `PENDING_PREPARE` slot, the same one `load()`/`window::on_destroy` use. Relative counts
+    /// only, never exact: other tests in this binary run budgeted workers concurrently.
+    #[test]
+    fn abandon_pending_prepare_counts_a_live_ticket_and_releases_it_on_finish() {
+        let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+        let worker = ticket.clone();
+        *super::PENDING_PREPARE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
+
+        let before = sagethumbs2k_core::safety::abandoned_workers();
+        super::abandon_pending_prepare();
+        assert!(
+            sagethumbs2k_core::safety::abandoned_workers() > before,
+            "giving up a live ticket must raise the shared abandoned-worker count"
+        );
+
+        worker.worker_finished();
+        assert!(
+            sagethumbs2k_core::safety::abandoned_workers() <= before,
+            "the worker finishing must release what it was counted for"
+        );
     }
 
     #[test]
