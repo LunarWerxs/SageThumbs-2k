@@ -154,6 +154,14 @@ pub(crate) fn text_flyout_layout(
     (panel, items)
 }
 
+/// The Bold/Underline row caption: a plain-text checkbox glyph plus the localized name
+/// (audit F29, 2026-09-06) — the pre-fix code hardcoded "Bold"/"Underline" so the checkbox
+/// never varied with the active language.
+pub(crate) fn checkbox_label(checked: bool, name_key: &str) -> String {
+    let mark = if checked { "[x]" } else { "[  ]" };
+    format!("{mark}  {}", crate::win::t(name_key))
+}
+
 /// A small dark button with a centred label.
 unsafe fn draw_btn(hdc: HDC, r: RECT, label: &str) {
     let bg = CreateSolidBrush(rgb(60, 60, 60));
@@ -293,14 +301,14 @@ pub(crate) unsafe fn draw_text_flyout(
             TextItem::Bold => {
                 SelectObject(hdc, HGDIOBJ(gui_font().0));
                 SetTextColor(hdc, rgb(235, 235, 235));
-                let label = if bold { "[x]  Bold" } else { "[  ]  Bold" };
+                let label = checkbox_label(bold, "shot_text_bold");
                 let mut tr = RECT {
                     left: r.left + 4,
                     top: r.top,
                     right: r.right,
                     bottom: r.bottom,
                 };
-                let mut w = wide(label);
+                let mut w = wide(&label);
                 let n = w.len().saturating_sub(1);
                 DrawTextW(
                     hdc,
@@ -312,18 +320,14 @@ pub(crate) unsafe fn draw_text_flyout(
             TextItem::Underline => {
                 SelectObject(hdc, HGDIOBJ(gui_font().0));
                 SetTextColor(hdc, rgb(235, 235, 235));
-                let label = if underline {
-                    "[x]  Underline"
-                } else {
-                    "[  ]  Underline"
-                };
+                let label = checkbox_label(underline, "shot_text_underline");
                 let mut tr = RECT {
                     left: r.left + 4,
                     top: r.top,
                     right: r.right,
                     bottom: r.bottom,
                 };
-                let mut w = wide(label);
+                let mut w = wide(&label);
                 let n = w.len().saturating_sub(1);
                 DrawTextW(
                     hdc,
@@ -332,7 +336,7 @@ pub(crate) unsafe fn draw_text_flyout(
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE,
                 );
             }
-            TextItem::More => draw_btn(hdc, *r, "Font\u{2026} (more)"),
+            TextItem::More => draw_btn(hdc, *r, crate::win::t("shot_text_more_fonts")),
         }
     }
 

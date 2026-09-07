@@ -156,7 +156,7 @@ unsafe fn paint_selection_chrome(mem: HDC, s: &Shot, sel: RECT) {
             // Hover tooltip (after the short delay) over the hovered button.
             if let Some(btn) = s.hover_btn {
                 if let Some((_, r)) = buttons.iter().find(|(b, _)| *b == btn) {
-                    toolbar::draw_tooltip(mem, *r, toolbar::button_tip(btn), s.vw, s.vh, dpi);
+                    toolbar::draw_tooltip(mem, *r, &toolbar::button_tip(btn), s.vw, s.vh, dpi);
                 }
             }
         }
@@ -435,18 +435,56 @@ pub(super) unsafe fn draw_dim_badge(hdc: HDC, s: &Shot, sel: RECT) {
     );
 }
 
+/// The size readout in the committed-selection hint: text point-size for the Text tool, line/
+/// shape thickness otherwise. Localized (audit F29, 2026-09-06) — pre-fix this built the same
+/// two words with a hardcoded, non-localized `format!` that never varied with the active
+/// language. Pure so it can be tested without a live overlay window.
+fn size_readout(tool: Tool, thickness: i32, text_size: i32) -> String {
+    if tool == Tool::Text {
+        crate::win::t("shot_hint_size_text").replace("{n}", &text_size.to_string())
+    } else {
+        crate::win::t("shot_hint_size_generic").replace("{n}", &thickness.to_string())
+    }
+}
+
+/// The 45-degree snap suffix appended to the Line/Arrow hint, or `""` for every other tool.
+/// `forced` is `Some(on)` under `--screenshot-automation` (F8 toggles a forced snap state
+/// instead of the live Shift key); `None` is the normal interactive Shift-key hint.
+fn snap_suffix(tool: Tool, forced: Option<bool>) -> &'static str {
+    if !matches!(tool, Tool::Line | Tool::Arrow) {
+        return "";
+    }
+    match forced {
+        Some(true) => crate::win::t("shot_hint_snap_on"),
+        Some(false) => crate::win::t("shot_hint_snap_off"),
+        None => crate::win::t("shot_hint_snap_shift"),
+    }
+}
+
+/// Assemble the committed-selection hint line from its localized template and the
+/// already-computed pieces. Pure so the locale coverage can be proven without a live overlay
+/// (audit F29): pre-fix, the whole line — including the key-hint sentence at the end — was one
+/// hardcoded English `format!`.
+fn format_active_hint(tool: &str, size: &str, color_hex: &str, snap: &str) -> String {
+    crate::win::t("shot_hint_active")
+        .replace("{tool}", tool)
+        .replace("{size}", size)
+        .replace("{color}", color_hex)
+        .replace("{snap}", snap)
+}
+
 /// The instructional strip. Pinned to the selection's top-left once a region is
 /// committed (so it's right by what you're working on, not stranded in the screen
 /// corner); shown at the screen corner during the initial drag.
 pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
     let c = s.cur_color.0;
-    let (cr, cg, cb) = (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF);
-    // `[ ]` controls text size for the Text tool, line thickness otherwise.
-    let sz = if s.tool == Tool::Text {
-        format!("text {}", -s.text_font.lfHeight)
-    } else {
-        format!("size {}", s.thickness)
-    };
+    let color_hex = format!(
+        "#{:02X}{:02X}{:02X}",
+        c & 0xFF,
+        (c >> 8) & 0xFF,
+        (c >> 16) & 0xFF
+    );
+    let sz = size_readout(s.tool, s.thickness, -s.text_font.lfHeight);
     let txt = if s.sel.is_none() {
         match (s.ocr_mode, s.sel_dragging) {
             // OCR launch mode: the drag is the whole interaction, so say what it does.
@@ -456,23 +494,11 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
             (false, true) => crate::win::t("shot_hint_release").to_string(),
         }
     } else {
-        let snap = if matches!(s.tool, Tool::Line | Tool::Arrow) {
-            if let Some(state) = s.automation.as_ref() {
-                if state.forced_shift {
-                    "  ·  F8 snap 45° ON"
-                } else {
-                    "  ·  F8 snap 45° OFF"
-                }
-            } else {
-                "  ·  Shift snaps 45°"
-            }
-        } else {
-            ""
-        };
-        format!(
-            "[{tool}]  ·  [ ] {sz}  ·  #{cr:02X}{cg:02X}{cb:02X}{snap}  ·  Ctrl-drag moves  ·  Enter copy  ·  Ctrl+T text  ·  Ctrl+S save  ·  Esc close",
-            tool = s.tool.label(),
-        )
+        // `forced_shift` only exists under `--screenshot-automation`, which drives F8 instead
+        // of a live Shift key; `None` means the normal interactive Shift-key hint.
+        let forced = s.automation.as_ref().map(|state| state.forced_shift);
+        let snap = snap_suffix(s.tool, forced);
+        format_active_hint(s.tool.hint_label(), &sz, &color_hex, snap)
     };
     // Size the strip for the monitor it sits on: the selection's monitor once
     // committed, else the monitor under the in-progress drag (or the cursor before a
@@ -552,5 +578,71 @@ mod tests {
         assert!(!frame_cache_hit(Some((1920, 1080)), 3840, 2160));
         assert!(!frame_cache_hit(Some((1920, 1080)), 1920, 1081)); // height-only mismatch
         assert!(!frame_cache_hit(Some((1920, 1080)), 1921, 1080)); // width-only mismatch
+    }
+
+    /// Audit F29: the size readout must read the locale table, not a hardcoded `format!`.
+    #[test]
+    fn size_readout_reads_the_locale_table() {
+        assert_eq!(
+            size_readout(Tool::Text, 4, 32),
+            crate::win::t("shot_hint_size_text").replace("{n}", "32"),
+            "the Text tool must report the FONT size, not the line thickness"
+        );
+        assert_eq!(
+            size_readout(Tool::Rect, 4, 32),
+            crate::win::t("shot_hint_size_generic").replace("{n}", "4"),
+            "every non-Text tool must report the line/shape THICKNESS, not the font size"
+        );
+    }
+
+    /// Audit F29: the 45-degree snap suffix only applies to Line/Arrow, and each of its three
+    /// states (no automation / forced on / forced off) must read the locale table.
+    #[test]
+    fn snap_suffix_only_applies_to_line_and_arrow_and_is_localized() {
+        for other in [
+            Tool::Rect,
+            Tool::Ellipse,
+            Tool::Pen,
+            Tool::Text,
+            Tool::Number,
+        ] {
+            assert_eq!(snap_suffix(other, None), "");
+            assert_eq!(snap_suffix(other, Some(true)), "");
+        }
+        for tool in [Tool::Line, Tool::Arrow] {
+            assert_eq!(
+                snap_suffix(tool, None),
+                crate::win::t("shot_hint_snap_shift")
+            );
+            assert_eq!(
+                snap_suffix(tool, Some(true)),
+                crate::win::t("shot_hint_snap_on")
+            );
+            assert_eq!(
+                snap_suffix(tool, Some(false)),
+                crate::win::t("shot_hint_snap_off")
+            );
+        }
+    }
+
+    /// Audit F29: every placeholder in `shot_hint_active` must be substituted — a template
+    /// change that drops a `{tool}`/`{size}`/`{color}`/`{snap}` slot, or code that forgets to
+    /// fill one, would leave the literal braces on screen instead of failing to compile.
+    #[test]
+    fn format_active_hint_fills_every_placeholder() {
+        let out = format_active_hint("Rect", "size 4", "#FF0000", "");
+        assert!(
+            !out.contains('{'),
+            "a template slot was left unfilled: {out}"
+        );
+        assert!(out.contains("Rect"));
+        assert!(out.contains("size 4"));
+        assert!(out.contains("#FF0000"));
+
+        // A distinct marker rather than a real snap string: this test only cares that whatever
+        // `snap` holds ends up in the output, not what a real snap suffix says.
+        let snapped = format_active_hint("Line", "size 2", "#00FF00", "  ·  MARKER");
+        assert!(!snapped.contains('{'));
+        assert!(snapped.contains("MARKER"));
     }
 }
