@@ -106,6 +106,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Canon CRW thumbnails are fast again.** Older Canon RAW files in the `.crw` format (as
+  opposed to the newer `.cr2`/`.cr3`) were not recognised as a camera RAW container, so their
+  thumbnail always fell back to the slow full demosaic path instead of using the fast preview
+  already embedded in the file.
+
 - **Sorting images into folders by size no longer deletes a folder someone else just made.**
   "Sort into folders by image size" used to check whether a `WIDTHxHEIGHT` folder existed and
   create it a moment later; if another program (or another SageThumbs action) created that same

@@ -673,6 +673,12 @@ fn looks_raw_container(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"MM\0\x2A")
         || bytes.starts_with(b"II\x2B\0")
         || bytes.starts_with(b"MM\0\x2B")
+        // Canon CRW (CIFF, not TIFF at all): "II" little-endian marker followed by 0x1A00
+        // rather than TIFF's 0x2A00. 2026-09-05 audit F38: missing this signature meant a
+        // .crw skipped the embedded-preview carve here and fell through to the far slower
+        // named-RAW/ImageMagick demosaic path even though `largest_embedded_jpeg` below
+        // does not assume any TIFF/IFD structure and finds the JPEG fine once it runs.
+        || bytes.starts_with(b"II\x1A\0")
         || bytes.starts_with(b"FUJIFILMCCD-RAW")
         || bytes.starts_with(b"FFF\0")
         || bytes.starts_with(b"FOVb")
@@ -1923,6 +1929,9 @@ mod hub_tests {
         ));
         assert!(looks_raw_container(b"II\x2B\0rest of a BigTIFF"));
         assert!(looks_raw_container(b"MM\0\x2Brest of a big-endian BigTIFF"));
+        // 2026-09-05 audit F38: Canon CRW (CIFF, not TIFF) starts `II 1A 00`, one byte off
+        // from the TIFF magic `II 2A 00` above, and used to fall through this gate entirely.
+        assert!(looks_raw_container(b"II\x1A\0rest of a Canon CRW"));
         assert!(looks_raw_container(b"FUJIFILMCCD-RAW rest of a Fuji RAF"));
         assert!(looks_raw_container(b"FFF\0rest of a Hasselblad 3FR"));
         assert!(looks_raw_container(b"IIU\0rest of a Panasonic RW2"));
