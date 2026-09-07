@@ -18,18 +18,13 @@ use core::ffi::c_void;
 
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    DrawTextW, GetDC, ReleaseDC, SelectObject, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_WORDBREAK,
-    HGDIOBJ,
-};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
 use crate::win::{
-    check, checked, ctl, dpi_scale, gui_font, run_dialog, t, wide, wm_dpichanged, BUTTON, IDOK,
-    STATIC,
+    check, checked, ctl, dpi_scale, run_dialog, t, wm_dpichanged, BUTTON, IDOK, STATIC,
 };
 
 /// HKCU flag: has the welcome window been shown? Written on ANY dismissal.
@@ -96,56 +91,73 @@ fn offers_thumbnails() -> bool {
     sagethumbs2k_core::settings::portable()
 }
 
-// ---- Intro-line height measurement (2026-09-05 audit finding F36) -------------------
+// ---- Measured row heights (2026-09-05 audit finding F36) ----------------------------
 //
-// `build()` used to give `ID_HEAD` a flat 34px (2 lines' worth of the English copy) no
-// matter what language was active. `fr_intro`/`fr_intro_portable` run noticeably longer in
-// several translations (French, German, Hungarian, ...), so the third wrapped line ran
-// straight past the box and was never drawn, invisible in the code and in an English
-// screenshot, visible only once someone captured the window in one of those languages.
+// Every text row on both pages used to get a flat box sized to the ENGLISH copy: 34px for
+// the intro, 32 for a switch's caption, 18 for the one under the screenshot switch, 20 for a
+// switch label. A STATIC and a BS_AUTOCHECKBOX both clip silently, so a translation that
+// needed one more wrapped line simply lost it, with nothing in the code or in an English
+// screenshot to show for it.
+//
+// The finding's own citation (`first_run.rs:363-376` in the pre-fix file) is the PORTABLE
+// explanation under the thumbnails switch, `fr_thumbs_sub` at 32px. Measured against the 36
+// shipped locales it needs 45 in 26 of them, and the headless capture agrees: the German
+// portable welcome stops at "und in den Einstellungen" and never draws "schalten Sie es
+// wieder aus." `fr_shot_sub` is the same defect at 18px (needs 30 in 28 locales), page 2's
+// `fr2_badge_sub` at 32 (needs 45 in four), and `fr2_scanlation`'s own checkbox label runs
+// past the 400px row in Bulgarian and Greek.
+//
+// So no row here carries a fixed height any more. Each is measured for the language actually
+// loaded, floored at the height English was laid out in (so an English build is unchanged),
+// and [`fit_window`] then grows the window if the rows genuinely need more room than
+// [`dlg_h`] guessed. Growing after the fact rather than predicting perfectly is deliberate:
+// it means the sizing pass and the layout pass are the SAME pass, so they cannot disagree,
+// which is how the intro ended up measured while the caption under it did not.
 
-/// The pre-fix fixed height: the floor a terse translation must not shrink below.
+/// The pre-fix fixed heights, kept as floors so a terse translation cannot pull a row
+/// tighter than the English layout these numbers were chosen for.
 const INTRO_H_MIN: i32 = 34;
+const SUB_H_MIN: i32 = 32;
+/// The caption under the screenshot switch is a single line, because the PrtScn switch it
+/// governs sits directly beneath it rather than a full row away.
+const SHOT_SUB_H_MIN: i32 = 18;
+const SWITCH_H_MIN: i32 = 20;
+const PRTSCN_H_MIN: i32 = 34;
+/// The checkbox glyph plus its gap to the label: a measurement of the text alone does not
+/// know about the box Windows draws in front of it.
+const CHK_GLYPH_W: i32 = 24;
+/// Left/right margin, and the indent a dependent row (a caption, the PrtScn switch) sits at
+/// under the switch it belongs to.
+const MARGIN: i32 = 20;
+const INDENT: i32 = 20;
+/// The button block at the bottom: the gap above it, the button, and the margin below.
+const BTN_W: i32 = 130;
+const BTN_H: i32 = 30;
+const BOTTOM_BLOCK: i32 = 12 + BTN_H + 16;
 
-/// Design-px column the intro STATIC gets (`build`'s own `w = cw - m*2`), approximated here
-/// because [`dlg_h`] needs to know this BEFORE the window, and so before any real client
-/// rect, exists. `NC_SLACK` deliberately shaves a few px off the estimate: the real client
-/// area measured in `build()` is always at least this close to `DLG_W`, so erring narrow
-/// here can only make this function reserve a line MORE than the real layout ever needs,
-/// never fewer, and "too few" is the exact failure this fix closes.
-fn intro_col_w() -> i32 {
-    const NC_SLACK: i32 = 12;
-    (DLG_W - 2 * 20 - NC_SLACK).max(60)
+/// Height `text` needs in this window wrapped to `col_w`, never below `min_h`.
+///
+/// `hwnd` may be `HWND::default()`: [`crate::win::wrapped_text_h`] then measures at the
+/// headless-shot DPI override, or 96, which is what [`dlg_h`] needs before any window exists.
+unsafe fn block_h(hwnd: HWND, text: &str, col_w: i32, min_h: i32) -> i32 {
+    crate::win::wrapped_text_h(hwnd, text, col_w).max(min_h)
 }
 
-/// Height `text` needs wrapped to [`intro_col_w`], in 96-dpi design px. Measured against a
-/// screen DC with no live window required, the same technique
-/// `settings_dlg::nudge::measure_body_h` uses, and for the same reason: this has to be
-/// callable before the window exists, since [`dlg_h`] uses it to decide how tall to create
-/// that window in the first place.
-unsafe fn intro_h(text: &str) -> i32 {
-    let hdc = GetDC(None);
-    if hdc.is_invalid() {
-        return INTRO_H_MIN;
+/// The window's text column in design px: the real client area less both margins, or the
+/// same figure derived from [`DLG_W`] when there is no window yet.
+///
+/// `NC_SLACK` deliberately shaves a few px off the window-less estimate. The real client
+/// area is always at least this close to `DLG_W`, so erring narrow can only reserve a line
+/// MORE than the live layout needs, never fewer, and "fewer" is the failure being fixed.
+unsafe fn content_w(hwnd: HWND) -> i32 {
+    if hwnd.is_invalid() {
+        const NC_SLACK: i32 = 12;
+        return (DLG_W - 2 * MARGIN - NC_SLACK).max(60);
     }
-    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
-    let mut wtext = wide(text);
-    let n = wtext.len().saturating_sub(1);
-    let mut rc = RECT {
-        left: 0,
-        top: 0,
-        right: intro_col_w(),
-        bottom: 0,
-    };
-    DrawTextW(
-        hdc,
-        &mut wtext[..n],
-        &mut rc,
-        DT_CALCRECT | DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-    );
-    SelectObject(hdc, old);
-    ReleaseDC(None, hdc);
-    (rc.bottom - rc.top).max(INTRO_H_MIN)
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    (rc.right - rc.left) * 100 / unit - MARGIN * 2
 }
 
 /// The locale key `build()` picks for the intro line: the ONE place that decision is made,
@@ -162,11 +174,16 @@ fn intro_key() -> &'static str {
 /// English (what the floor was originally tuned to), positive whenever the live translation
 /// genuinely needs a third wrapped line.
 fn intro_extra_h() -> i32 {
-    (unsafe { intro_h(t(intro_key())) } - INTRO_H_MIN).max(0)
+    let est = unsafe {
+        let w = content_w(HWND::default());
+        block_h(HWND::default(), t(intro_key()), w, INTRO_H_MIN)
+    };
+    (est - INTRO_H_MIN).max(0)
 }
 
-/// Window height: the portable build carries one extra row, and every build reserves
-/// whatever the active language's intro sentence actually measures to.
+/// Starting window height: the portable build carries one extra row, and every build
+/// reserves whatever the active language's intro sentence measures to. Only a STARTING
+/// height, since [`build`] fits the window to the rows it actually laid out.
 fn dlg_h() -> i32 {
     let base = if offers_thumbnails() {
         DLG_H + THUMBS_ROW_H
@@ -174,6 +191,112 @@ fn dlg_h() -> i32 {
         DLG_H
     };
     base + intro_extra_h()
+}
+
+/// One row of this window: a switch, and the muted line under it that says what the switch
+/// does. Both pages are built entirely out of these, so a row's heights are decided in one
+/// place instead of once per page.
+struct SwitchRow {
+    id: i32,
+    key: &'static str,
+    sub_id: i32,
+    sub_key: &'static str,
+    /// Height floor for the caption: the flat box English was laid out in.
+    sub_min_h: i32,
+    /// Space between the caption and the next row.
+    gap: i32,
+}
+
+/// Place one [`SwitchRow`] at `y` and answer with the `y` the next row starts at.
+///
+/// The checkbox is BS_MULTILINE: at one line that renders identically to the plain style it
+/// replaces, and it is what lets a label like Bulgarian's `fr2_scanlation` (418px against a
+/// 400px row) wrap onto a second line instead of losing its tail.
+unsafe fn place_switch_row(hwnd: HWND, hinst: HINSTANCE, y: i32, row: &SwitchRow) -> i32 {
+    let w = content_w(hwnd);
+    let label = t(row.key);
+    let label_h = block_h(hwnd, label, w - CHK_GLYPH_W, SWITCH_H_MIN);
+    ctl(
+        hwnd,
+        BUTTON,
+        label,
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32) | WS_TABSTOP,
+        MARGIN,
+        y,
+        w,
+        label_h,
+        row.id,
+        hinst,
+    );
+    let mut y = y + label_h + 2;
+    let sub = t(row.sub_key);
+    let sub_h = block_h(hwnd, sub, w - INDENT, row.sub_min_h);
+    ctl(
+        hwnd,
+        STATIC,
+        sub,
+        WINDOW_STYLE(0),
+        MARGIN + INDENT,
+        y,
+        w - INDENT,
+        sub_h,
+        row.sub_id,
+        hinst,
+    );
+    y += sub_h + row.gap;
+    y
+}
+
+/// Where the Next / Get started button belongs, in design px, for the client area as it is
+/// NOW. Shared by the page-1 build (which creates it) and [`reanchor_button`] (which moves
+/// it after the window grows), so the two can never place it differently.
+unsafe fn button_rect(hwnd: HWND) -> (i32, i32) {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    let cw = (rc.right - rc.left) * 100 / unit;
+    let ch = (rc.bottom - rc.top) * 100 / unit;
+    (cw - MARGIN - BTN_W, ch - BTN_H - 16)
+}
+
+/// Design-px height of the window frame: the difference between the WINDOW height
+/// [`DLG_H`]/[`page2_h`] speak in and the CLIENT height the rows are laid out in.
+unsafe fn nonclient_h(hwnd: HWND) -> i32 {
+    let mut wr = RECT::default();
+    let mut rc = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut wr);
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    ((wr.bottom - wr.top) - (rc.bottom - rc.top)) * 100 / unit
+}
+
+/// Grow the window until `client_h` design px fit inside its client area. Never shrinks: a
+/// terse language must not make the window smaller than the layout these numbers were tuned
+/// for, and only growth can rescue a translation that needs another line.
+///
+/// Called from WM_CREATE, before the window is ever shown, so the common "it already fits"
+/// case is free and the rare growth is invisible rather than a resize the user watches.
+/// The window grows upward by half so it stays centred on where it was placed.
+unsafe fn fit_window(hwnd: HWND, client_h: i32) {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    let have = (rc.bottom - rc.top) * 100 / unit;
+    if client_h <= have {
+        return;
+    }
+    let grow = dpi_scale(hwnd, client_h - have);
+    let mut wr = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut wr);
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        wr.left,
+        (wr.top - grow / 2).max(0),
+        wr.right - wr.left,
+        (wr.bottom - wr.top) + grow,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 /// Has the welcome window already been shown on this account?
@@ -221,119 +344,93 @@ unsafe fn sync_prtscn(hwnd: HWND) {
     }
 }
 
-/// Build page 2: two more opt-ins, page-1 style. Created lazily when Next is clicked.
-unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) {
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let m = 20;
-    let w = cw - m * 2;
+/// Page 2's three opt-ins, in order. Same shape as page 1's rows, so the same placement
+/// code measures and lays them out.
+const PAGE2_ROWS: [SwitchRow; 3] = [
+    SwitchRow {
+        id: ID_P_COVERS,
+        key: "fr2_covers",
+        sub_id: ID_P_COVERS_SUB,
+        sub_key: "fr2_covers_sub",
+        sub_min_h: SUB_H_MIN,
+        gap: 14,
+    },
+    SwitchRow {
+        id: ID_P_SCANLATION,
+        key: "fr2_scanlation",
+        sub_id: ID_P_SCANLATION_SUB,
+        sub_key: "fr2_scanlation_sub",
+        sub_min_h: SUB_H_MIN,
+        gap: 14,
+    },
+    SwitchRow {
+        id: ID_P_BADGE,
+        key: "fr2_badge",
+        sub_id: ID_P_BADGE_SUB,
+        sub_key: "fr2_badge_sub",
+        sub_min_h: SUB_H_MIN,
+        gap: 14,
+    },
+];
+
+/// Build page 2: three more opt-ins, page-1 style. Created lazily when Next is clicked.
+/// Answers with the client height its rows need, which [`flip_to_page2`] then fits the
+/// window to.
+unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) -> i32 {
+    let w = content_w(hwnd);
     let mut y = 16;
 
+    let head = t("fr2_head");
+    let head_h = block_h(hwnd, head, w, SWITCH_H_MIN);
     ctl(
         hwnd,
         STATIC,
-        t("fr2_head"),
+        head,
         WINDOW_STYLE(0),
-        m,
+        MARGIN,
         y,
         w,
-        20,
+        head_h,
         ID_P2_HEAD,
         hinst,
     );
-    y += 32;
-    for (id, sub_id, key, sub_key) in [
-        (ID_P_COVERS, ID_P_COVERS_SUB, "fr2_covers", "fr2_covers_sub"),
-        (
-            ID_P_SCANLATION,
-            ID_P_SCANLATION_SUB,
-            "fr2_scanlation",
-            "fr2_scanlation_sub",
-        ),
-        (ID_P_BADGE, ID_P_BADGE_SUB, "fr2_badge", "fr2_badge_sub"),
-    ] {
-        ctl(
-            hwnd,
-            BUTTON,
-            t(key),
-            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-            m,
-            y,
-            w,
-            20,
-            id,
-            hinst,
-        );
-        y += 22;
-        ctl(
-            hwnd,
-            STATIC,
-            t(sub_key),
-            WINDOW_STYLE(0),
-            m + 20,
-            y,
-            w - 20,
-            32,
-            sub_id,
-            hinst,
-        );
-        y += 46;
+    y += head_h + 12;
+    for row in &PAGE2_ROWS {
+        y = place_switch_row(hwnd, hinst, y, row);
     }
     y += 4;
+    let foot = t("fr2_sub");
+    let foot_h = block_h(hwnd, foot, w, SWITCH_H_MIN);
     ctl(
         hwnd,
         STATIC,
-        t("fr2_sub"),
+        foot,
         WINDOW_STYLE(0),
-        m,
+        MARGIN,
         y,
         w,
-        20,
+        foot_h,
         ID_P2_SUB,
         hinst,
     );
+    y + foot_h + BOTTOM_BLOCK
 }
 
-/// Grow the window so page 2's third opt-in fits, and re-anchor the button to the new bottom.
+/// Re-anchor the button to the client area's CURRENT bottom-right.
 ///
-/// [`build`] placed the button against the client rect as it was THEN, and a child window keeps
-/// its absolute position when the parent resizes — so without the move the button would stay
-/// where the old bottom edge used to be, floating in the middle of page 2. The window also
-/// grows upward by half, keeping it centred where the user's eye already is rather than making
-/// it appear to slide down the screen.
-unsafe fn grow_for_page2(hwnd: HWND) {
-    let target = dpi_scale(hwnd, page2_h());
-    let mut wr = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut wr);
-    let (cur_w, cur_h) = (wr.right - wr.left, wr.bottom - wr.top);
-    if target > cur_h {
-        let grow = target - cur_h;
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            wr.left,
-            (wr.top - grow / 2).max(0),
-            cur_w,
-            target,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
-
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let (bw, bh, m) = (130, 30, 20);
+/// [`build`] placed it against the client rect as it was THEN, and a child window keeps its
+/// absolute position when the parent resizes, so without this the button would stay where
+/// the old bottom edge used to be, floating in the middle of page 2.
+unsafe fn reanchor_button(hwnd: HWND) {
+    let (bx, by) = button_rect(hwnd);
     if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
         let _ = SetWindowPos(
             b,
             None,
-            dpi_scale(hwnd, cw - m - bw),
-            dpi_scale(hwnd, (rc.bottom - rc.top) * 100 / unit - bh - 16),
-            dpi_scale(hwnd, bw),
-            dpi_scale(hwnd, bh),
+            dpi_scale(hwnd, bx),
+            dpi_scale(hwnd, by),
+            dpi_scale(hwnd, BTN_W),
+            dpi_scale(hwnd, BTN_H),
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
@@ -355,8 +452,14 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
-    grow_for_page2(hwnd);
-    build_page2(hwnd, hinst);
+    // Grow to the height page 2 is expected to need FIRST, so the rows below are measured
+    // and placed against the client area they will actually live in, then again to whatever
+    // those rows really came to. The second pass is what carries a translation that needs an
+    // extra wrapped line (audit F36).
+    fit_window(hwnd, page2_h() - nonclient_h(hwnd));
+    let needed = build_page2(hwnd, hinst);
+    fit_window(hwnd, needed);
+    reanchor_button(hwnd);
     if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
         let txt = crate::win::wide(t("fr_go"));
         let _ = SetWindowTextW(b, windows::core::PCWSTR(txt.as_ptr()));
@@ -392,16 +495,38 @@ unsafe fn apply_persona(hwnd: HWND) {
     }
 }
 
+/// Page 1's switch rows, in order. The thumbnails row is portable-only and skipped
+/// otherwise; the screenshot row's caption is a single line because the PrtScn switch it
+/// governs sits directly under it.
+const PAGE1_THUMBS_ROW: SwitchRow = SwitchRow {
+    id: ID_THUMBS,
+    key: "fr_thumbs",
+    sub_id: ID_THUMBS_SUB,
+    sub_key: "fr_thumbs_sub",
+    sub_min_h: SUB_H_MIN,
+    gap: 14,
+};
+const PAGE1_PREVIEW_ROW: SwitchRow = SwitchRow {
+    id: ID_PREVIEW,
+    key: "fr_preview",
+    sub_id: ID_PREVIEW_SUB,
+    sub_key: "fr_preview_sub",
+    sub_min_h: SUB_H_MIN,
+    gap: 14,
+};
+const PAGE1_SHOT_ROW: SwitchRow = SwitchRow {
+    id: ID_SHOT,
+    key: "fr_shot",
+    sub_id: ID_SHOT_SUB,
+    sub_key: "fr_shot_sub",
+    sub_min_h: SHOT_SUB_H_MIN,
+    gap: 6,
+};
+
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // Lay out against the REAL client area in design px (`run_dialog`'s w/h size the whole
     // WINDOW), the same way the feedback dialog does.
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-
-    let m = 20; // margin
-    let w = cw - m * 2;
+    let w = content_w(hwnd);
     let mut y = 16;
 
     // The stock intro says thumbnails are ALREADY working, which is true of an installed copy
@@ -409,15 +534,16 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // A portable user who read the installed wording would reasonably conclude the app is broken.
     let portable = offers_thumbnails();
     let intro_text = t(intro_key());
-    // MEASURED, not the old flat 34; see the module's F36 comment above `intro_h`. A
-    // translation longer than English gets the extra room `dlg_h()` already reserved for it.
-    let head_h = unsafe { intro_h(intro_text) };
+    // MEASURED, not the old flat 34; see the module's F36 comment above `block_h`. A
+    // translation longer than English gets the extra room, and `fit_window` below makes sure
+    // the window has it.
+    let head_h = block_h(hwnd, intro_text, w, INTRO_H_MIN);
     ctl(
         hwnd,
         STATIC,
         intro_text,
         WINDOW_STYLE(0),
-        m,
+        MARGIN,
         y,
         w,
         head_h,
@@ -427,99 +553,26 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     y += head_h + 12; // 12 = the original 46 - 34 gap below the intro block
 
     if portable {
-        ctl(
-            hwnd,
-            BUTTON,
-            t("fr_thumbs"),
-            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-            m,
-            y,
-            w,
-            20,
-            ID_THUMBS,
-            hinst,
-        );
-        y += 22;
-        ctl(
-            hwnd,
-            STATIC,
-            t("fr_thumbs_sub"),
-            WINDOW_STYLE(0),
-            m + 20,
-            y,
-            w - 20,
-            32,
-            ID_THUMBS_SUB,
-            hinst,
-        );
-        y += 46;
+        y = place_switch_row(hwnd, hinst, y, &PAGE1_THUMBS_ROW);
     }
+    y = place_switch_row(hwnd, hinst, y, &PAGE1_PREVIEW_ROW);
+    y = place_switch_row(hwnd, hinst, y, &PAGE1_SHOT_ROW);
 
+    let prtscn = t("fr_prtscn");
+    let prtscn_h = block_h(hwnd, prtscn, w - INDENT - CHK_GLYPH_W, PRTSCN_H_MIN);
     ctl(
         hwnd,
         BUTTON,
-        t("fr_preview"),
-        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-        m,
-        y,
-        w,
-        20,
-        ID_PREVIEW,
-        hinst,
-    );
-    y += 22;
-    ctl(
-        hwnd,
-        STATIC,
-        t("fr_preview_sub"),
-        WINDOW_STYLE(0),
-        m + 20,
-        y,
-        w - 20,
-        32,
-        ID_PREVIEW_SUB,
-        hinst,
-    );
-    y += 46;
-
-    ctl(
-        hwnd,
-        BUTTON,
-        t("fr_shot"),
-        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-        m,
-        y,
-        w,
-        20,
-        ID_SHOT,
-        hinst,
-    );
-    y += 22;
-    ctl(
-        hwnd,
-        STATIC,
-        t("fr_shot_sub"),
-        WINDOW_STYLE(0),
-        m + 20,
-        y,
-        w - 20,
-        18,
-        ID_SHOT_SUB,
-        hinst,
-    );
-    y += 24;
-    ctl(
-        hwnd,
-        BUTTON,
-        t("fr_prtscn"),
+        prtscn,
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32) | WS_TABSTOP,
-        m + 20,
+        MARGIN + INDENT,
         y,
-        w - 20,
-        34,
+        w - INDENT,
+        prtscn_h,
         ID_PRTSCN,
         hinst,
     );
+    y += prtscn_h;
 
     // Both offers start ticked — this window exists because nobody was finding these
     // features, and the button is an explicit confirmation either way. PrtScn does NOT:
@@ -535,17 +588,21 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     }
     sync_prtscn(hwnd);
 
-    let bw = 130;
-    let bh = 30;
+    // Only NOW is the window sized, from the rows that were actually placed rather than from
+    // a prediction of them, and only then is the button anchored against the result. In
+    // English (and in every locale whose copy fits the original boxes) nothing grows and this
+    // is the layout that always shipped.
+    fit_window(hwnd, y + BOTTOM_BLOCK);
+    let (bx, by) = button_rect(hwnd);
     ctl(
         hwnd,
         BUTTON,
         t("fr_next"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        cw - m - bw,
-        (rc.bottom - rc.top) * 100 / unit - bh - 16,
-        bw,
-        bh,
+        bx,
+        by,
+        BTN_W,
+        BTN_H,
         IDOK,
         hinst,
     );
@@ -746,27 +803,35 @@ pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Design-px height one string needs in the window's full-width column, pinned to 96
+    /// DPI. Pinned rather than measured through `block_h`, whose answer follows the
+    /// process-wide shot-DPI override that a sibling test in `scaling.rs` flips underneath
+    /// this one; see `win::design_wrapped_text_h`. The floor is applied here, so this asks
+    /// exactly the question `block_h` asks.
+    fn head_h(text: &str) -> i32 {
+        need(text, unsafe { content_w(HWND::default()) }, INTRO_H_MIN)
+    }
+
+    /// [`head_h`] for an arbitrary column and floor.
+    fn need(text: &str, col_w: i32, min_h: i32) -> i32 {
+        unsafe { crate::win::design_wrapped_text_h(text, col_w) }.max(min_h)
+    }
+
     /// Every shipped locale's `fr_intro`/`fr_intro_portable` stays within a sane band:
     /// never below the design floor (a terse translation must not shrink the box) and never
     /// past a generous ceiling (which would mean the measurement itself is broken, e.g.
     /// wrapping to the wrong column). Iterates the baked locale table rather than eyeballing
     /// a screenshot of two or three of them, the acceptance bar this finding sets.
-    ///
-    /// As shipped today every translation happens to fit in the same two lines English
-    /// does (measured, not assumed, see `intro_h_grows_for_a_paragraph_the_old_fixed_height_
-    /// could_not_hold` below for the case that actually exercises growth), so this test's
-    /// job is regression coverage: it fails the moment a translation update makes some
-    /// locale's copy wrap taller than the box `build()` gives it, which the pre-fix flat
-    /// `34` constant could never notice.
     #[test]
     fn every_locale_intro_line_stays_within_a_sane_height_band() {
-        const SANE_MAX: i32 = INTRO_H_MIN * 4; // generous: catches a broken measurement, not a long sentence
+        // Generous: catches a broken measurement, not a long sentence.
+        const SANE_MAX: i32 = INTRO_H_MIN * 4;
         for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
             for key in ["fr_intro", "fr_intro_portable"] {
                 let Some((_, text)) = pairs.iter().find(|(k, _)| *k == key) else {
                     continue;
                 };
-                let h = unsafe { intro_h(text) };
+                let h = head_h(text);
                 assert!(
                     (INTRO_H_MIN..=SANE_MAX).contains(&h),
                     "{code}/{key}: measured height {h}px is outside the sane [{INTRO_H_MIN}, \
@@ -776,24 +841,31 @@ mod tests {
         }
     }
 
-    /// Has teeth: a version of `intro_h` that ignores its `text` argument and always returns
-    /// `INTRO_H_MIN`, i.e. the exact pre-fix behavior, a flat height regardless of the
-    /// active language, fails this immediately. A paragraph nearly three times the length
-    /// of the longest shipped intro line cannot possibly wrap into the two-line floor.
+    /// Has teeth: a version of `block_h` that ignores its `text` argument and always returns
+    /// the floor, i.e. the exact pre-fix behavior of a flat height regardless of the active
+    /// language, fails this immediately. A paragraph nearly three times the length of the
+    /// longest shipped intro line cannot possibly wrap into the two-line floor.
     #[test]
-    fn intro_h_grows_for_a_paragraph_the_old_fixed_height_could_not_hold() {
+    fn a_measured_block_grows_for_a_paragraph_the_old_fixed_height_could_not_hold() {
         let long = "SageThumbs is already adding thumbnails to Explorer, and this sentence \
             keeps going well past the point where two ordinary lines could possibly hold it, \
             because the whole point of measuring is to stop assuming a length in advance.";
-        let h = unsafe { intro_h(long) };
+        let h = head_h(long);
         assert!(
             h > INTRO_H_MIN,
             "a paragraph this long must measure taller than the old fixed {INTRO_H_MIN}px \
-             box; got {h}px, intro_h has stopped measuring and gone back to guessing"
+             box; got {h}px, the row heights have stopped measuring and gone back to guessing"
         );
     }
 
-    /// `dlg_h()` must grow by exactly the same amount `intro_h` measures for the ACTIVE
+    /// A short synthetic string must sit exactly at the floor: the measurement is not
+    /// supposed to pad a one-line sentence, only to grow the box for a genuinely longer one.
+    #[test]
+    fn a_measured_block_floors_a_short_string_at_the_design_minimum() {
+        assert_eq!(head_h("Short."), INTRO_H_MIN);
+    }
+
+    /// `dlg_h()` must grow by exactly the same amount the intro measures for the ACTIVE
     /// language, not a second, independently-tuned number: this is the arithmetic that
     /// reserves the window space `build()`'s control then actually uses.
     #[test]
@@ -810,10 +882,77 @@ mod tests {
         );
     }
 
-    /// A short synthetic string must sit exactly at the floor: `intro_h` is not supposed to
-    /// pad a one-line sentence, only to grow the box for a genuinely longer one.
+    /// The heart of F36 in this window, over all 36 shipped locales rather than the two a
+    /// screenshot samples: walk the SAME row tables `build`/`build_page2` walk, add up what
+    /// each row's copy really measures to, and check the page against two bounds.
+    ///
+    /// The ceiling is the assertion that can fail on real copy. Rows are measured now, so
+    /// "does the text fit its box" is true by construction; what a measured layout CAN still
+    /// get wrong is needing a window taller than a modest screen, which `fit_window` would
+    /// deliver silently. The second half is the teeth: it records, per locale, every row
+    /// whose copy exceeds the flat box that row used to be given, and fails when that list
+    /// is empty, since a list of none would mean this test no longer proves the measured
+    /// rows do anything.
     #[test]
-    fn intro_h_floors_a_short_string_at_the_design_minimum() {
-        assert_eq!(unsafe { intro_h("Short.") }, INTRO_H_MIN);
+    fn every_locale_first_run_page_fits_a_reasonable_window() {
+        // 340 shipped for years; twice that still opens on a 768px-tall laptop screen. A
+        // page past it means a translation, or the measurement, has gone wrong.
+        const SANE_MAX_CLIENT_H: i32 = 680;
+        let w = unsafe { content_w(HWND::default()) };
+        let mut grew_past_the_old_box: Vec<String> = Vec::new();
+
+        // Page 1 in its PORTABLE shape, the taller of the two and the one the finding cites,
+        // then page 2 with its three opt-ins. Each entry is (heading key, rows, closing key).
+        let pages: [(&str, &[&SwitchRow], &str); 2] = [
+            (
+                "fr_intro_portable",
+                &[&PAGE1_THUMBS_ROW, &PAGE1_PREVIEW_ROW, &PAGE1_SHOT_ROW],
+                "fr_prtscn",
+            ),
+            (
+                "fr2_head",
+                &[&PAGE2_ROWS[0], &PAGE2_ROWS[1], &PAGE2_ROWS[2]],
+                "fr2_sub",
+            ),
+        ];
+
+        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+            let value = |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| *v)
+                    .unwrap_or("")
+            };
+            for (head_key, rows, tail_key) in pages {
+                let mut y = 16 + need(value(head_key), w, SWITCH_H_MIN) + 12;
+                for row in rows {
+                    let label_h = need(value(row.key), w - CHK_GLYPH_W, SWITCH_H_MIN);
+                    let sub_h = need(value(row.sub_key), w - INDENT, row.sub_min_h);
+                    if label_h > SWITCH_H_MIN {
+                        grew_past_the_old_box.push(format!("{code}/{}", row.key));
+                    }
+                    if sub_h > row.sub_min_h {
+                        grew_past_the_old_box.push(format!("{code}/{}", row.sub_key));
+                    }
+                    y += label_h + 2 + sub_h + row.gap;
+                }
+                // Page 1 closes with the indented PrtScn switch, page 2 with its footer
+                // line; both are one measured block, so one term covers either.
+                y += need(value(tail_key), w - INDENT - CHK_GLYPH_W, SWITCH_H_MIN);
+                let client_h = y + BOTTOM_BLOCK;
+                assert!(
+                    client_h <= SANE_MAX_CLIENT_H,
+                    "{code}/{head_key}: the measured rows come to {client_h}px of client \
+                     height, past the {SANE_MAX_CLIENT_H}px this window should ever need"
+                );
+            }
+        }
+
+        assert!(
+            !grew_past_the_old_box.is_empty(),
+            "expected some shipped locale to need more than the pre-fix flat boxes; if none \
+             do, this test can no longer prove the measured rows do anything"
+        );
     }
 }

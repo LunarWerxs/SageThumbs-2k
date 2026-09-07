@@ -63,6 +63,8 @@ const WM_CONVERT_DONE: u32 = 0x8000 + 31;
 // `CV_RESIZE_RIGHT - CV_RESIZE_X` (or minus the indent, for the three dependent rows)
 // design px, comfortably more than the longest real label needs (measured: Hungarian's
 // "Az összes előre beállított méret létrehozása", 46 chars, well under the column).
+/// Left edge of the resize section, and of every other row in this dialog: it is the
+/// dialog's left margin, which the measured label/field rows below start from too.
 const CV_RESIZE_X: i32 = 16;
 /// Dependent rows (the mode combo, the W×H fields, Pad/All) sit indented under the master
 /// checkbox, the same visual nesting `navrail`'s dependent-switch rows use.
@@ -91,29 +93,89 @@ const CV_ROW_BUTTONS: i32 = 283;
 const CV_DLG_H: i32 = CV_ROW_BUTTONS + 28 + 44;
 const CV_DLG_W: i32 = 500;
 
-/// Pixel width of `text` in the (unscaled, 96-DPI design) GUI font, measured against a
-/// screen DC with NO live window required. Test-only: backs the regression test below,
-/// which checks every baked locale's real label against the allocated column instead of
-/// eyeballing the couple of languages a screenshot happens to sample. Same technique
-/// `settings_dlg::nudge::measure_body_h`/`btn_w` use, for the same reason.
+// ---- Measured rows: labels, fields and buttons (2026-09-05 audit finding F36) --------
+//
+// The resize checkboxes above were the two widths the finding NAMED, but they were not the
+// only ones: every other row here also handed a translated string a box sized to the English
+// text. Measured across all 36 shipped locales, five more overflowed - "Output format:"
+// (92px; Hungarian needs 107), "Output folder:" (92px; Slovak 104), "Settings…" (96px;
+// Ukrainian 113), "Convert" (88px; Russian 106) and even "px" (24px; Persian 32). A STATIC
+// and a push button clip exactly as silently as the checkboxes did.
+//
+// So these rows are laid out from a MEASUREMENT of the active language instead: the label
+// column is as wide as the longer of the two labels really needs, the field beside it starts
+// after that column and still ends at the same right edge, and the buttons are placed
+// right-to-left from that edge at whatever width their own label needs. Every floor is the
+// English width the row shipped with, so an English build is laid out identically to before.
+
+/// Right edge the FIELDS and the two dialog buttons align to. Four px inside
+/// [`CV_RESIZE_RIGHT`] because a checkbox's glyph starts a little inside its control rect,
+/// where an edit/button border is the rect.
+const CV_FIELD_RIGHT: i32 = 468;
+/// English width of the two field labels, and so the floor the measured column never drops
+/// below: a terse translation must not pull the fields left of where they have always sat.
+const CV_LABEL_W_MIN: i32 = 92;
+/// Ceiling on the measured label column, so a pathologically long translation eats the row's
+/// own slack rather than squeezing the field it labels down to nothing. No shipped locale is
+/// anywhere near it (the widest measures 107), which is the point: it is a backstop for a
+/// future string, not a number the current ones are tuned against.
+const CV_LABEL_W_MAX: i32 = 200;
+/// Slack between the measured label text and the field beside it.
+const CV_LABEL_TEXT_PAD: i32 = 8;
+/// Gap between the label column and the field.
+const CV_LABEL_GAP: i32 = 2;
+/// Slack a measured push-button label needs either side of the text. Same value (and same
+/// reason) as `settings_dlg::nudge`'s `BTN_PAD`.
+const CV_BTN_PAD: i32 = 22;
+/// Gap between the Convert and Cancel buttons.
+const CV_BTN_GAP: i32 = 12;
+/// Gap between the format combo and the Settings… button to its right.
+const CV_COMBO_GAP: i32 = 10;
+/// Right edge of the output-folder edit. The browse button beside it carries no translated
+/// text (it is a literal "…"), so unlike Settings… it keeps its fixed 408..468 box and this
+/// stays a constant rather than a measurement.
+const CV_OUTDIR_RIGHT: i32 = 402;
+/// Narrowest the format combo may become once the label column has taken its share. Only
+/// [`CV_LABEL_W_MAX`] can push it there, and the regression test below asserts no shipped
+/// locale does.
+const CV_COMBO_W_MIN: i32 = 120;
+/// The resize-mode combo. Fixed, not measured: unlike a STATIC, a dropdown that is too narrow
+/// still SHOWS its selection (it just truncates the visible part), and the regression test
+/// checks every locale's six mode names against it rather than trusting that.
+const CV_RESIZE_COMBO_W: i32 = 220;
+/// Room a dropdown's own arrow takes out of its width before any text is drawn. Test-only:
+/// the combo is a fixed box, so this is what the regression test measures the mode names
+/// against rather than a number production code sizes anything with.
 #[cfg(test)]
-unsafe fn measure_design_w(text: &str) -> i32 {
-    use windows::Win32::Foundation::SIZE;
-    use windows::Win32::Graphics::Gdi::{
-        GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, HGDIOBJ,
-    };
-    let hdc = GetDC(None);
-    if hdc.is_invalid() {
-        return 0;
-    }
-    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font().0));
-    let w = wide(text);
-    let n = w.len().saturating_sub(1);
-    let mut sz = SIZE::default();
-    let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
-    SelectObject(hdc, old);
-    ReleaseDC(None, hdc);
-    sz.cx
+const CV_COMBO_ARROW_W: i32 = 24;
+/// The "px" suffix's offset from the start of the W×H row: after both number fields and the
+/// "×" between them.
+const CV_PX_DX: i32 = 158;
+
+/// Design-px width of the shared label column, from the two labels' own measured widths.
+/// Pure, so the regression test can ask the same question of every locale without building
+/// 36 dialogs; [`cv_label_w`] is the one-line wrapper that measures the ACTIVE language.
+fn cv_label_col(format_w: i32, folder_w: i32) -> i32 {
+    (format_w.max(folder_w) + CV_LABEL_TEXT_PAD).clamp(CV_LABEL_W_MIN, CV_LABEL_W_MAX)
+}
+
+/// A push button's design-px width: what its label measures plus padding, never below
+/// `floor` (the English width the row was built around).
+fn cv_btn_col(label_w: i32, floor: i32) -> i32 {
+    (label_w + CV_BTN_PAD).max(floor)
+}
+
+/// [`cv_label_col`] for the language actually loaded, measured against `hwnd`'s real DPI.
+unsafe fn cv_label_w(hwnd: HWND) -> i32 {
+    cv_label_col(
+        crate::win::text_width(hwnd, t("cv_output_format")),
+        crate::win::text_width(hwnd, t("cv_output_folder")),
+    )
+}
+
+/// [`cv_btn_col`] for the language actually loaded.
+unsafe fn cv_btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
+    cv_btn_col(crate::win::text_width(hwnd, label), floor)
 }
 
 /// A checkbox row's design-px width: the full remaining column (not shrink-wrapped to the
@@ -385,6 +447,13 @@ pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
 
 unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     let lbl = WINDOW_STYLE(0);
+    // Measured once for the whole dialog (see the F36 comment above `CV_FIELD_RIGHT`): the
+    // shared label column, and the Settings… button that the format combo has to stop short
+    // of. Both are the English numbers exactly (92 / 96 / x=110 / x=372) in an English build.
+    let label_w = cv_label_w(hwnd);
+    let field_x = CV_RESIZE_X + label_w + CV_LABEL_GAP;
+    let settings_w = cv_btn_w(hwnd, t("cv_settings"), 96);
+    let settings_x = CV_FIELD_RIGHT - settings_w;
 
     // Row 1 — output format + per-format Settings…
     ctl(
@@ -392,9 +461,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         STATIC,
         t("cv_output_format"),
         lbl,
-        16,
+        CV_RESIZE_X,
         23,
-        92,
+        label_w,
         18,
         -1,
         hinst,
@@ -404,9 +473,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         COMBOBOX,
         "",
         WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
-        110,
+        field_x,
         20,
-        252,
+        (settings_x - CV_COMBO_GAP - field_x).max(CV_COMBO_W_MIN),
         360,
         CID_FORMAT,
         hinst,
@@ -439,9 +508,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         BUTTON,
         t("cv_settings"),
         WS_TABSTOP,
-        372,
+        settings_x,
         19,
-        96,
+        settings_w,
         26,
         CID_SETTINGS,
         hinst,
@@ -468,7 +537,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
         CV_RESIZE_X + CV_RESIZE_INDENT,
         CV_ROW_RESIZE_COMBO,
-        220,
+        CV_RESIZE_COMBO_W,
         240,
         CID_RESIZE,
         hinst,
@@ -529,9 +598,12 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         STATIC,
         t("cv_px"),
         lbl,
-        wh_x + 158,
+        wh_x + CV_PX_DX,
         CV_ROW_WH + 3,
-        24,
+        // Nothing sits to its right, so this one takes the whole rest of the row rather
+        // than the old flat 24 the English "px" happened to need: Persian's "پیکسل" wants
+        // 32 and Arabic 28, and a STATIC clips silently (audit F36).
+        CV_RESIZE_RIGHT - (wh_x + CV_PX_DX),
         18,
         -1,
         hinst,
@@ -564,15 +636,16 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
 
-    // Row 6, output folder
+    // Row 6, output folder. Same measured label column as row 1, so the two labels and the
+    // two fields still line up as a column whatever the language does to their widths.
     ctl(
         hwnd,
         STATIC,
         t("cv_output_folder"),
         lbl,
-        16,
+        CV_RESIZE_X,
         CV_ROW_OUTDIR + 3,
-        92,
+        label_w,
         18,
         -1,
         hinst,
@@ -582,9 +655,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         EDIT,
         "",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        110,
+        field_x,
         CV_ROW_OUTDIR,
-        292,
+        CV_OUTDIR_RIGHT - field_x,
         24,
         CID_OUTDIR,
         hinst,
@@ -618,14 +691,20 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
+    // Placed right-to-left from `CV_FIELD_RIGHT` at their measured widths (English: 380 and
+    // 280 at 88px each, exactly where they were). "Преобразовать" needs 106 and would
+    // otherwise have been trimmed at both ends inside an 88px button.
+    let cancel_w = cv_btn_w(hwnd, t("btn_cancel"), 88);
+    let cancel_x = CV_FIELD_RIGHT - cancel_w;
+    let ok_w = cv_btn_w(hwnd, t("cv_convert"), 88);
     ctl(
         hwnd,
         BUTTON,
         t("cv_convert"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        280,
+        cancel_x - CV_BTN_GAP - ok_w,
         CV_ROW_BUTTONS,
-        88,
+        ok_w,
         28,
         IDOK,
         hinst,
@@ -635,9 +714,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         BUTTON,
         t("btn_cancel"),
         WS_TABSTOP,
-        380,
+        cancel_x,
         CV_ROW_BUTTONS,
-        88,
+        cancel_w,
         28,
         IDCANCEL,
         hinst,
@@ -1504,7 +1583,7 @@ mod tests {
             let value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
 
             if let Some(label) = value("cv_resize") {
-                let needed = unsafe { measure_design_w(label) } + CV_CHK_GLYPH_W;
+                let needed = measure_label(label) + CV_CHK_GLYPH_W;
                 if needed > OLD_CHK_W {
                     old_width_would_have_clipped = true;
                 }
@@ -1517,7 +1596,7 @@ mod tests {
 
             for key in ["cv_resize_pad", "cv_resize_all"] {
                 let Some(label) = value(key) else { continue };
-                let needed = unsafe { measure_design_w(label) } + CV_CHK_GLYPH_W;
+                let needed = measure_label(label) + CV_CHK_GLYPH_W;
                 if needed > OLD_PAD_ALL_W {
                     old_width_would_have_clipped = true;
                 }
@@ -1534,6 +1613,110 @@ mod tests {
             "expected at least one shipped locale to need more than the old fixed \
              90px/172px boxes; if none do, this test can no longer prove the fix does \
              anything"
+        );
+    }
+
+    /// Design-px width of a label, pinned to 96 DPI. Pinned rather than measured through
+    /// `text_width`, whose answer follows the process-wide shot-DPI override that a sibling
+    /// test in `scaling.rs` flips underneath this one; see `win::design_text_w`.
+    fn measure_label(text: &str) -> i32 {
+        unsafe { crate::win::design_text_w(text) }
+    }
+
+    /// The second half of F36 in this dialog: every OTHER row also handed a translated
+    /// string a box cut to the English text. This walks all 36 shipped locales through the
+    /// same sizing functions `build_convert_controls` calls, and checks both that each label
+    /// fits what it is given and that the row it lives in still adds up: the format combo
+    /// keeps a usable width once the label column has taken its share, and the two buttons
+    /// plus their gap still fit between the dialog's margins.
+    ///
+    /// Has teeth in both directions. Pinning any of these back to a literal (92 for a label,
+    /// 96 for Settings…, 88 for a button) fails on the locales listed in
+    /// `would_have_clipped`, and a future translation long enough to hit
+    /// [`CV_LABEL_W_MAX`] or squeeze the combo fails the geometry assertions instead of
+    /// shipping a clipped dialog.
+    #[test]
+    fn every_locale_fits_the_convert_row_it_is_laid_out_into() {
+        let mut would_have_clipped: Vec<String> = Vec::new();
+
+        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+            let value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            let width = |key: &str| value(key).map(measure_label).unwrap_or(0);
+
+            // Row 1 and row 6 share one measured label column.
+            let (format_w, folder_w) = (width("cv_output_format"), width("cv_output_folder"));
+            let label_col = cv_label_col(format_w, folder_w);
+            for (key, w) in [
+                ("cv_output_format", format_w),
+                ("cv_output_folder", folder_w),
+            ] {
+                if w > CV_LABEL_W_MIN {
+                    would_have_clipped.push(format!("{code}/{key} {w}>{CV_LABEL_W_MIN}"));
+                }
+                assert!(
+                    w <= label_col,
+                    "{code}: {key} needs {w}px but the column caps at {label_col}px \
+                     (CV_LABEL_W_MAX is too tight for this translation)"
+                );
+            }
+
+            let field_x = CV_RESIZE_X + label_col + CV_LABEL_GAP;
+            let settings_w = cv_btn_col(width("cv_settings"), 96);
+            if settings_w > 96 {
+                would_have_clipped.push(format!("{code}/cv_settings {settings_w}>96"));
+            }
+            let combo_w = CV_FIELD_RIGHT - settings_w - CV_COMBO_GAP - field_x;
+            assert!(
+                combo_w >= CV_COMBO_W_MIN,
+                "{code}: the format combo would be {combo_w}px, under the {CV_COMBO_W_MIN}px \
+                 minimum (label column {label_col}, Settings… {settings_w})"
+            );
+            assert!(
+                CV_OUTDIR_RIGHT - field_x >= CV_COMBO_W_MIN,
+                "{code}: the output-folder edit would be {}px, under the {CV_COMBO_W_MIN}px \
+                 minimum",
+                CV_OUTDIR_RIGHT - field_x
+            );
+
+            // The two buttons, placed right-to-left from CV_FIELD_RIGHT.
+            let (ok_w, cancel_w) = (
+                cv_btn_col(width("cv_convert"), 88),
+                cv_btn_col(width("btn_cancel"), 88),
+            );
+            for (key, w) in [("cv_convert", ok_w), ("btn_cancel", cancel_w)] {
+                if w > 88 {
+                    would_have_clipped.push(format!("{code}/{key} {w}>88"));
+                }
+            }
+            let ok_x = CV_FIELD_RIGHT - cancel_w - CV_BTN_GAP - ok_w;
+            assert!(
+                ok_x >= CV_RESIZE_X,
+                "{code}: Convert + Cancel ({ok_w} + {cancel_w}) overflow the row, starting at \
+                 x={ok_x}"
+            );
+
+            // The rows that are still a fixed box, and so are only safe because this checks
+            // them: the "px" suffix, and the six resize-mode names inside their dropdown.
+            let px_w = CV_RESIZE_RIGHT - (CV_RESIZE_X + CV_RESIZE_INDENT + CV_PX_DX);
+            let px = width("cv_px");
+            assert!(
+                px <= px_w,
+                "{code}: cv_px needs {px}px of the {px_w}px left on its row"
+            );
+            for (key, _) in CV_RESIZE {
+                let w = width(key);
+                assert!(
+                    w <= CV_RESIZE_COMBO_W - CV_COMBO_ARROW_W,
+                    "{code}: resize mode {key} needs {w}px, the combo shows only {}px",
+                    CV_RESIZE_COMBO_W - CV_COMBO_ARROW_W
+                );
+            }
+        }
+
+        assert!(
+            !would_have_clipped.is_empty(),
+            "expected some shipped locale to need more than the pre-fix fixed boxes; if none \
+             do, this test can no longer prove the measured layout does anything"
         );
     }
 

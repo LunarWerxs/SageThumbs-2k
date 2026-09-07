@@ -492,12 +492,24 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   a row, only the newest one you selected is ever shown, even if an older, slower read finishes
   later.
 
-- **The Convert window's resize checkboxes, and the welcome window's opening line, no longer
-  get cut off in languages that need more room than English.** "Resize", "Pad to the exact
-  size" and "Write every preset size" used to be boxes just wide enough for the English
-  wording, which clipped several translations; they now sit in their own full-width rows sized
-  from the actual translated text. The welcome window's opening paragraph is measured the same
-  way, so a longer translation gets the extra line it needs instead of losing it.
+- **Text in the Convert and welcome windows no longer gets cut off in languages that need
+  more room than English.** Both windows were built out of boxes just wide (or tall) enough
+  for the English wording, and Windows silently trims anything that does not fit, so several
+  translations lost the end of a label or a whole line of an explanation. Every row in both
+  windows is now sized from the translated text that actually goes in it.
+
+  In Convert that covers the "Resize", "Pad to the exact size" and "Write every preset size"
+  checkboxes, which now sit in their own full-width rows, and also the "Output format:" and
+  "Output folder:" labels, the "Settings…" and "Convert" buttons and the "px" suffix, which
+  are measured and given the width their own translation needs. Filipino showed "Format ng"
+  where the label reads "Format ng output:", and Russian's "Преобразовать" filled its button
+  edge to edge.
+
+  In the welcome window it covers the opening paragraph, every switch label, and the muted
+  explanation under each switch. The portable copy's thumbnails explanation was the worst
+  case: in 26 of the 36 languages it stopped mid-sentence after two lines, so the German
+  copy said what the option does but never that Settings can turn it back off. The window
+  grows if a translation genuinely needs the room. English is laid out exactly as before.
 
 ## 2.5.0
 

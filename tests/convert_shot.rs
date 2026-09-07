@@ -78,15 +78,21 @@ fn shot(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
     bytes
 }
 
-/// French and German (two of the audit's flagged longer-running translations) render
-/// successfully at both 96 and 192 DPI. `--dpi` was previously unwired for this window
-/// entirely, so this also guards `main.rs::run_shot_mode`'s `--dpi` parsing and
+/// The locales this file sweeps: the four the finding names as long-running, plus one CJK
+/// locale whose copy is SHORT but whose glyph metrics are nothing like the others. Filipino
+/// and Russian are not decoration here, they are the two that were still clipping after the
+/// first pass at this finding: "Format ng output:" rendered as "Format ng", and
+/// "Преобразовать" filled its 88px button edge to edge.
+const LONG_TEXT_LOCALES: [&str; 5] = ["fr", "de", "ru", "fil", "ja"];
+
+/// Every long-text locale renders at both 96 and 192 DPI. `--dpi` was previously unwired for
+/// this window entirely, so this also guards `main.rs::run_shot_mode`'s `--dpi` parsing and
 /// `win::create_shot_window`'s window-frame DPI fix (both added by this finding); without
 /// the frame fix, a 192-DPI capture renders only the top-left quarter of the dialog with
 /// everything past it laid out outside the captured window.
 #[test]
 fn convert_dialog_renders_in_long_text_locales_at_96_and_192_dpi() {
-    for lang in ["fr", "de"] {
+    for lang in LONG_TEXT_LOCALES {
         for dpi in [96u32, 192] {
             let case = format!("locale_{lang}_{dpi}");
             let (w, h) = png_size(&shot(&case, lang, dpi));
@@ -103,7 +109,7 @@ fn convert_dialog_renders_in_long_text_locales_at_96_and_192_dpi() {
 fn convert_dialog_size_does_not_depend_on_locale() {
     for dpi in [96u32, 192] {
         let (ew, eh) = png_size(&shot(&format!("size_en_{dpi}"), "en", dpi));
-        for lang in ["fr", "de"] {
+        for lang in LONG_TEXT_LOCALES {
             let case = format!("size_{lang}_{dpi}");
             let (w, h) = png_size(&shot(&case, lang, dpi));
             assert_eq!(

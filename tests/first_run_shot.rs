@@ -117,7 +117,7 @@ fn page_two_grows_to_fit_its_third_opt_in() {
     assert!(
         h2 > h1,
         "page 2 must be taller than page 1 to fit its third opt-in \
-         (page 1 {w1}x{h1}, page 2 {w2}x{h2}) — equal heights mean `grow_for_page2` is not \
+         (page 1 {w1}x{h1}, page 2 {w2}x{h2}): equal heights mean the page-2 fit pass is not \
          running and the last row is drawn under the Get started button"
     );
 
@@ -143,11 +143,16 @@ fn installed_welcome_is_stable_across_runs() {
 
 // ---- Locale + DPI coverage (2026-09-05 audit finding F36) ---------------------------
 //
-// The portable-mode explanation (`fr_intro_portable`, or `fr_intro` on an installed copy)
-// used to get a flat 34px box no matter which language was active; see `first_run.rs`'s
-// `intro_h` for the measurement that replaced it. These captures are the acceptance bar
-// itself: French and German (two of the longer-running shipped translations) at 96 AND 192
-// DPI, non-portable so the window shows `fr_intro`, the exact string the finding names.
+// Every text row on this window used to get a flat box sized to the English copy; see
+// `first_run.rs`'s "Measured row heights" comment for what replaced them. These captures are
+// the acceptance bar itself, across the languages the finding calls out as long (German,
+// French, Russian, Filipino) plus Japanese, which is SHORT but has entirely different font
+// metrics, at 96 AND 192 DPI.
+//
+// Both shapes are captured, and the portable one is the important half: the row the finding
+// cites by line number is `fr_thumbs_sub`, the explanation under the thumbnails switch, and
+// that switch exists ONLY in a portable copy. A locale sweep of the installed shape (which is
+// all this file used to do) renders a window that does not contain the defective control.
 
 /// Throwaway HKCU subkey this file's language override writes to, named by case + this TEST
 /// PROCESS's pid so parallel `cargo test` runs and other test binaries never collide, never
@@ -160,18 +165,31 @@ fn scratch_reg_root(case: &str) -> String {
     )
 }
 
-/// [`shot_window`], but with `lang` (a shipped locale code) forced via a scratch HKCU key and
-/// `dpi` forced via the `--dpi` override `main.rs::run_shot_mode` now applies to every
-/// `--shot` window (previously wired for `preview` only). Always non-portable, so the
-/// window shows `fr_intro`, not `fr_intro_portable`.
-fn shot_locale(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
-    let root = scratch_reg_root(case);
-    CURRENT_USER
-        .create(&root)
-        .and_then(|k| k.set_string("Lang", lang))
-        .unwrap_or_else(|e| panic!("{case}: failed to write scratch Lang={lang}: {e}"));
+/// The locales this file sweeps: the four the finding names as long-running, plus one CJK
+/// locale whose copy is SHORT but whose glyph metrics are nothing like the others.
+const LONG_TEXT_LOCALES: [&str; 5] = ["fr", "de", "ru", "fil", "ja"];
 
+/// [`shot_window`], but with `lang` (a shipped locale code) forced and `dpi` forced via the
+/// `--dpi` override `main.rs::run_shot_mode` applies to every `--shot` window (it was wired
+/// for `preview` only before this finding).
+///
+/// `portable` picks the shape AND where the language override has to be written: a portable
+/// copy reads every setting, `Lang` included, out of its ini rather than HKCU, so forcing the
+/// language through the registry alone would silently render a portable window in English.
+fn shot_locale(case: &str, lang: &str, dpi: u32, portable: bool) -> Vec<u8> {
+    let root = scratch_reg_root(case);
     let dir = scratch(case);
+    let ini = dir.join("SageThumbs2K.ini");
+    if portable {
+        std::fs::write(&ini, format!("[Settings]\nLang={lang}\n"))
+            .unwrap_or_else(|e| panic!("{case}: failed to write scratch ini Lang={lang}: {e}"));
+    } else {
+        CURRENT_USER
+            .create(&root)
+            .and_then(|k| k.set_string("Lang", lang))
+            .unwrap_or_else(|e| panic!("{case}: failed to write scratch Lang={lang}: {e}"));
+    }
+
     let out = dir.join(format!("{case}.png"));
     let _ = std::fs::remove_file(&out);
 
@@ -179,10 +197,14 @@ fn shot_locale(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
     cmd.arg("--shot")
         .arg(&out)
         .args(["--window", "firstrun", "--dpi", &dpi.to_string()])
-        .env("ST2K_SETTINGS_ROOT", &root)
+        .env("ST2K_SETTINGS_ROOT", &root);
+    if portable {
+        cmd.env("ST2K_PORTABLE_INI", &ini);
+    } else {
         // A parent shell with a leaked portable ini would otherwise force portable mode
         // (and `fr_intro_portable`) regardless of the HKCU override above.
-        .env_remove("ST2K_PORTABLE_INI");
+        cmd.env_remove("ST2K_PORTABLE_INI");
+    }
     let status = cmd.status().expect("spawn SageThumbs2K --shot");
     assert!(
         status.success(),
@@ -197,17 +219,46 @@ fn shot_locale(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
     bytes
 }
 
-/// French and German (`fr_intro`, `de_intro`) render successfully at both 96 and 192 DPI:
-/// the harness itself previously had no `--dpi` wiring for this window at all, so this is
-/// also the regression guard for `main.rs::run_shot_mode`'s `--dpi` parsing and
-/// `win::create_shot_window`'s window-frame DPI fix (both added by this finding).
+/// Both shapes of the welcome window render in every long-text locale at both 96 and 192
+/// DPI. The harness had no `--dpi` wiring for this window at all before this finding, so
+/// this is also the regression guard for `main.rs::run_shot_mode`'s `--dpi` parsing and
+/// `win::create_shot_window`'s window-frame DPI fix.
 #[test]
 fn welcome_renders_in_long_text_locales_at_96_and_192_dpi() {
-    for lang in ["fr", "de"] {
+    for lang in LONG_TEXT_LOCALES {
         for dpi in [96u32, 192] {
-            let case = format!("locale_{lang}_{dpi}");
-            let (w, h) = png_size(&shot_locale(&case, lang, dpi));
-            assert!(w > 0 && h > 0, "{case}: decoded to a zero-size image");
+            for portable in [false, true] {
+                let shape = if portable { "portable" } else { "installed" };
+                let case = format!("locale_{lang}_{dpi}_{shape}");
+                let (w, h) = png_size(&shot_locale(&case, lang, dpi, portable));
+                assert!(w > 0 && h > 0, "{case}: decoded to a zero-size image");
+            }
+        }
+    }
+}
+
+/// The window is sized from its rows, so a locale whose copy needs an extra wrapped line
+/// must never end up in a SMALLER window than English: `fit_window` only ever grows, and a
+/// regression that let a translation shrink the window would be hiding rows under the button.
+#[test]
+fn no_locale_gets_a_shorter_welcome_window_than_english() {
+    for portable in [false, true] {
+        let shape = if portable { "portable" } else { "installed" };
+        let (ew, eh) = png_size(&shot_locale(
+            &format!("floor_en_{shape}"),
+            "en",
+            96,
+            portable,
+        ));
+        for lang in LONG_TEXT_LOCALES {
+            let case = format!("floor_{lang}_{shape}");
+            let (w, h) = png_size(&shot_locale(&case, lang, 96, portable));
+            assert_eq!(w, ew, "{case}: width must not vary by locale ({w} vs {ew})");
+            assert!(
+                h >= eh,
+                "{case}: {h}px tall against English's {eh}px, so a row has been squeezed \
+                 rather than measured"
+            );
         }
     }
 }
@@ -219,8 +270,8 @@ fn welcome_renders_in_long_text_locales_at_96_and_192_dpi() {
 /// top-left corner rendered outside the captured window).
 #[test]
 fn a_192_dpi_welcome_capture_is_larger_than_a_96_dpi_one() {
-    let (w96, h96) = png_size(&shot_locale("dpi_fr_96", "fr", 96));
-    let (w192, h192) = png_size(&shot_locale("dpi_fr_192", "fr", 192));
+    let (w96, h96) = png_size(&shot_locale("dpi_fr_96", "fr", 96, false));
+    let (w192, h192) = png_size(&shot_locale("dpi_fr_192", "fr", 192, false));
     assert!(
         w192 > w96 && h192 > h96,
         "192 DPI ({w192}x{h192}) must be larger than 96 DPI ({w96}x{h96}); if it isn't, the \
