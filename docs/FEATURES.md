@@ -441,8 +441,10 @@ has gone to sleep) can never freeze the preview window. The window appears right
 file is even read, and it keeps answering to clicks, closes, and key presses the whole time a slow
 read is happening in the background. If you switch to a different file before the slow one has
 finished loading, only the file you're now looking at can ever appear, never a leftover result
-from the one you left. Closing the window while something is still loading in the background stops
-that work right away instead of leaving it running unseen.
+from the one you left. Each loading stage is held to a stated time budget, a stall or an
+abandoned load is logged with the current count against a cap on how much of that can pile up,
+and closing the window while something is still loading cancels that load's own bookkeeping
+right away.
 
 ---
 

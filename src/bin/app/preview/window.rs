@@ -949,24 +949,50 @@ unsafe fn on_app_load_resolved(hwnd: HWND, lparam: LPARAM) {
     if !is_load_current(gen, st.decode_gen.get()) {
         return; // stale: the user already switched files
     }
+    // Clone the path BEFORE `apply_resolved`, never read `st` after it: `apply_resolved` can
+    // reach `try_load_web` -> `create_web`, which PUMPS the message loop while WebView2 creates,
+    // and a close arriving during that pump destroys `hwnd` synchronously (`request_close`),
+    // freeing the boxed `ViewerState` this `st` points at.
+    let path = st.path.borrow().clone().unwrap_or_default();
+    // A `Dispatch` result for an HTML/`.url` path can reach that same pump; timing it as an
+    // "apply" stall would log a false stall on every web load (hundreds of ms is normal
+    // WebView2 startup, not stalled work), so it is excluded rather than timed.
+    let time_apply = {
+        #[cfg(feature = "html-preview")]
+        {
+            !(matches!(resolved, Resolved::Dispatch(_)) && is_web_route_ext(&ext_of(&path)))
+        }
+        #[cfg(not(feature = "html-preview"))]
+        {
+            true
+        }
+    };
     let stage_start = std::time::Instant::now();
     apply_resolved(hwnd, st, resolved);
-    log_ui_stage_stall("apply", stage_start.elapsed(), gen, st);
+    // `st`/`hwnd` may be dangling/destroyed now (see above), re-validate before touching either.
+    if time_apply && IsWindow(Some(hwnd)).as_bool() {
+        log_ui_stage_stall("apply", stage_start.elapsed(), gen, &path);
+    }
 }
 
 /// Log one debug line when a UI-thread pipeline stage (`apply_resolved`, the render post-back
 /// handler `on_render`) took longer than [`sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET`]:
 /// see that constant's doc comment for the whole responsiveness contract this is part of
 /// (audit E02, 2026-09-07). Diagnostic only: the stage has already run to completion by the
-/// time this is called, nothing is aborted or retried.
-fn log_ui_stage_stall(stage: &str, elapsed: std::time::Duration, gen: u64, st: &ViewerState) {
-    let path = st.path.borrow().clone().unwrap_or_default();
+/// time this is called, nothing is aborted or retried. A stage that PUMPS the message loop
+/// (WebView2 creation) is not a stall by definition: callers must exclude that route from
+/// timing rather than rely on this to filter it out.
+///
+/// Takes the path as an owned `&str`, never a `&ViewerState`: a stage that can pump/destroy the
+/// window may have freed the state by the time this runs, so the caller must capture whatever it
+/// needs from `st` before making that call, not after.
+fn log_ui_stage_stall(stage: &str, elapsed: std::time::Duration, gen: u64, path: &str) {
     if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
         stage,
         elapsed,
         sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET,
         gen,
-        &path,
+        path,
     ) {
         sagethumbs2k_core::safety::log_debug(&line);
     }
@@ -1973,6 +1999,9 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         return; // stale — the user already switched files
     }
     let _ = wparam;
+    // Cloned up front, same discipline as `on_app_load_resolved`: nothing here currently pumps
+    // the message loop, but the stage timer must never read `st` after a call that might.
+    let path = st.path.borrow().clone().unwrap_or_default();
     let stage_start = std::time::Instant::now();
     // A decode landing while the kind is STILL Video is the audio cover art (loader only asks for
     // one in that case, and the video fallback path sets Loading before it asks). It is a backdrop,
@@ -1998,7 +2027,7 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
                     st.kind.set(ContentKind::Image);
                 }
                 // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
-                // under memory pressure) must not orphan a valid image already on screen —
+                // under memory pressure) must not orphan a valid image already on screen,
                 // mirrors the None-decode guard just below rather than falling to InfoCard.
                 None if st.render.borrow().is_some() => st.full_pending.set(false),
                 None => fallback_card(st),
@@ -2015,7 +2044,7 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         ensure_shown(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
-    log_ui_stage_stall("render", stage_start.elapsed(), gen, st);
+    log_ui_stage_stall("render", stage_start.elapsed(), gen, &path);
 }
 
 /// Fetch the real pixels if the zoom has outgrown the codec-scaled ones the fit view is served

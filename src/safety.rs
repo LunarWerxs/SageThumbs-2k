@@ -533,9 +533,9 @@ impl AbandonTicket {
     }
 
     /// Whether this worker is counted against the budget right now: the caller gave up and
-    /// the worker has not finished. For tests, which cannot read the process-wide count
-    /// deterministically while other tests run budgeted workers beside them.
-    #[cfg(test)]
+    /// the worker has not finished. Public (not test-only) so a caller outside this crate can
+    /// observe its own ticket's state directly instead of racing a before/after read of the
+    /// shared process-wide count against every other ticket's concurrent activity.
     pub fn is_counted(&self) -> bool {
         self.state.load(Ordering::Acquire) == WORKER_ABANDONED
     }

@@ -1825,10 +1825,12 @@ fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
 /// before this fix, a worker that outlived `PREVIEW_DECODE_BUDGET` was simply forgotten by this
 /// function on timeout: it kept running and pinning a thread, but never counted against
 /// `safety::abandoned_workers()`/`MAX_ABANDONED_WORKERS`, unlike every other detached-worker path
-/// in the process (`spawn_budgeted`, the menu-preview decode). A share that hung this call
-/// repeatedly could grow the viewer's thread count past the documented cap with nothing to show
-/// for it. The ticket closes that gap: `caller_gave_up` on timeout, `worker_finished` when the
-/// worker actually returns, exactly the handshake `spawn_budgeted` itself uses.
+/// in the process (`spawn_budgeted`, the menu-preview decode). `decode_preview(&bytes)` is
+/// in-memory and CPU-bound, not I/O, so what can outlive the budget here is a decode that never
+/// returns; repeated cases of that could grow the viewer's thread count past the documented cap
+/// with nothing to show for it. The ticket closes that gap: `caller_gave_up` on timeout,
+/// `worker_finished` when the worker actually returns, exactly the handshake `spawn_budgeted`
+/// itself uses.
 fn decode_preview_budgeted(bytes: std::sync::Arc<Vec<u8>>) -> Option<image::DynamicImage> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     let (tx, rx) = std::sync::mpsc::channel();
