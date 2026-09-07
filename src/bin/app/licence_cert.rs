@@ -138,6 +138,11 @@ pub(crate) struct Verified {
     /// This build is inside the maintenance window. Gate the UPDATER on this, and
     /// nothing else.
     pub updates_allowed: bool,
+    /// The certificate's own `exp` claim, in Unix seconds (E05 audit). Exposed so the
+    /// Licence page can warn before a machine that relies on this certificate as its
+    /// FLOOR (no relay answer, see `license::entitlement_and_cert_expiry`) goes dark -
+    /// never used to gate anything here, `verify` already refuses an expired one above.
+    pub exp_unix: i64,
 }
 
 /// Why a certificate did not verify. Every variant means "no certificate" to the caller,
@@ -214,6 +219,7 @@ pub(crate) fn verify(
         licensed: true,
         // No `maint` means updates never lapse. Reading it as 0 would refuse everything.
         updates_allowed: claims.maint.is_none_or(|m| build_date_unix <= m),
+        exp_unix: claims.exp,
     })
 }
 

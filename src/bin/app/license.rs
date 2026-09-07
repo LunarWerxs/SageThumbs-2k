@@ -380,16 +380,32 @@ pub(crate) fn entitlement_from_cache(now_unix: u64, last_positive_unix: u64) -> 
 /// Only `licensed` is consumed today. The certificate also carries `updates_allowed`, but
 /// answering that honestly needs THIS BUILD's own release date stamped in at compile time,
 /// and until that exists asking the question would compare against the wrong thing.
-fn certificate_licenses_this_machine(now_unix: u64) -> bool {
-    let Some(cert) = crate::cred_store::load_licence_cert() else {
-        return false;
-    };
-    let Some(fingerprint) = machine_fingerprint() else {
-        return false;
-    };
+/// Does a stored offline certificate license THIS machine right now, and if so, when does
+/// it expire? (E05 audit: folded the old boolean `certificate_licenses_this_machine` into
+/// this - the only caller needed the expiry too, and re-verifying the certificate a second
+/// time just to get at a field the boolean threw away would be wasted work.)
+///
+/// Reads the breadcrumb's neighbour rather than the network: see [`crate::licence_cert`]
+/// for the whole model. Every failure - no certificate, no fingerprint, a blob from
+/// another machine, an expired one - answers `None`, which only ever means "the
+/// certificate has nothing to add", never "unlicensed".
+fn certificate_expiry_if_licensed(now_unix: u64) -> Option<i64> {
+    let cert = crate::cred_store::load_licence_cert()?;
+    let fingerprint = machine_fingerprint()?;
     let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
-    crate::licence_cert::verify(&cert, &fingerprint, now, now).is_ok_and(|v| v.licensed)
+    let verified = crate::licence_cert::verify(&cert, &fingerprint, now, now).ok()?;
+    verified.licensed.then_some(verified.exp_unix)
 }
+
+/// How long before a certificate's `exp` the Licence page starts warning
+/// ([`Posture`]/`Entitlement` are unaffected - a valid certificate keeps licensing the
+/// machine right up to the moment it actually expires; this only controls when the UI
+/// starts saying so). 30 days: long enough that a business relying on the certificate as
+/// its floor (no relay reachable, or none configured) has a real window to re-redeem
+/// before the machine would fall back to [`Entitlement::Unlicensed`], short enough that
+/// the warning isn't visible for a meaningful fraction of a typical one-year maintenance
+/// term.
+pub(crate) const CERT_EXPIRY_WARNING_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// The entitlement this machine actually has: the relay breadcrumb, with a valid offline
 /// certificate as a FLOOR under it.
@@ -407,15 +423,33 @@ fn certificate_licenses_this_machine(now_unix: u64) -> bool {
 /// floor win there would keep a revoked seat running for the certificate's whole life and
 /// silently disarm [`Posture::DeauthorizedLoud`].
 fn entitlement_now(now_unix: u64, history: Option<&History>) -> Entitlement {
+    entitlement_and_cert_expiry(now_unix, history).0
+}
+
+/// Same decision as [`entitlement_now`], additionally reporting the certificate's expiry
+/// (E05 audit) when the certificate is the REASON this machine is licensed - never when a
+/// healthier relay answer already grants it, and never when the relay has recorded a
+/// revocation (a certificate has no revocation reach beyond its own expiry, so it must not
+/// be allowed to look reassuring next to a status that says otherwise). `None` means no
+/// certificate participated in the answer at all - whether because none is stored, none
+/// matches this machine, or the relay's own verdict made checking one pointless.
+fn entitlement_and_cert_expiry(
+    now_unix: u64,
+    history: Option<&History>,
+) -> (Entitlement, Option<i64>) {
     let cached = entitlement_from_cache(now_unix, history.map_or(0, |h| h.last_positive_unix));
     let revoked = history.is_some_and(|h| h.last_status == "revoked");
     // Only reach for the certificate when it could actually change the answer: reading and
     // verifying one is cheap, but doing it on a machine already known to be licensed (or
     // known to be revoked) would be work whose result is discarded.
     if cached == Entitlement::Licensed || revoked {
-        return combine_entitlement(cached, revoked, false);
+        return (combine_entitlement(cached, revoked, false), None);
     }
-    combine_entitlement(cached, revoked, certificate_licenses_this_machine(now_unix))
+    let cert_expiry = certificate_expiry_if_licensed(now_unix);
+    (
+        combine_entitlement(cached, revoked, cert_expiry.is_some()),
+        cert_expiry,
+    )
 }
 
 /// The ordering rule itself, with the I/O lifted out so it can be pinned by tests.
@@ -986,15 +1020,25 @@ pub(crate) struct LicenceSnapshot {
     pub last_status: String,
     /// See [`History::last_reason`].
     pub last_reason: String,
+    /// The offline certificate's `exp`, in Unix seconds, ONLY when the certificate is the
+    /// reason this machine is licensed (E05 audit; see
+    /// [`entitlement_and_cert_expiry`]). `None` whenever a relay verification already
+    /// grants the licence, or there is simply no matching certificate.
+    pub cert_expires_unix: Option<i64>,
+    /// The instant this snapshot was built - the same `now_unix` [`at`] was given.
+    /// Carried alongside `cert_expires_unix` so a renderer compares the two against each
+    /// other rather than reading the wall clock a second time (the whole point of
+    /// threading a clock through instead of calling [`now_unix`] wherever one is needed).
+    pub now_unix: u64,
 }
 
-/// Build a [`LicenceSnapshot`]. Never touches the network - purely local reads, same
-/// as [`current_posture`].
-pub(crate) fn snapshot() -> LicenceSnapshot {
+/// Build a [`LicenceSnapshot`] as of `now_unix`. The one place this module's wall clock is
+/// read is [`snapshot`] below; every decision in here is a pure function of `now_unix`, so
+/// a test (or a fake-clock caller) can pin any instant it likes by calling this directly.
+pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
-    let now = now_unix();
-    let entitlement = entitlement_now(now, history.as_ref());
+    let (entitlement, cert_expires_unix) = entitlement_and_cert_expiry(now_unix, history.as_ref());
     let posture = posture(mode, entitlement, history.as_ref());
     LicenceSnapshot {
         mode,
@@ -1007,7 +1051,16 @@ pub(crate) fn snapshot() -> LicenceSnapshot {
             .as_ref()
             .map_or_else(String::new, |h| h.last_status.clone()),
         last_reason: history.map_or_else(String::new, |h| h.last_reason),
+        cert_expires_unix,
+        now_unix,
     }
+}
+
+/// Build a [`LicenceSnapshot`] for right now. Never touches the network - purely local
+/// reads, same as [`current_posture`]. Thin wrapper over [`at`] so every other caller
+/// (tests included) can pin the clock instead.
+pub(crate) fn snapshot() -> LicenceSnapshot {
+    at(now_unix())
 }
 
 #[cfg(test)]
@@ -1026,6 +1079,104 @@ mod tests {
         let d = std::env::temp_dir().join(format!("st2k_license_{tag}_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d
+    }
+
+    /// E05 audit: `entitlement_and_cert_expiry` must short-circuit BEFORE ever consulting a
+    /// certificate whenever the relay already answers `Licensed` - the certificate is a
+    /// floor under an unreachable/lapsed relay, never a second vote once the relay has
+    /// spoken. Provable without touching real cert I/O because this is exactly the branch
+    /// that returns before `certificate_expiry_if_licensed` is ever called: against the
+    /// PRE-E05 code (which only ever returned a bare `Entitlement`) this test doesn't even
+    /// compile, since `cert_expires_unix` didn't exist to be `None`.
+    #[test]
+    fn a_relay_licensed_machine_never_reports_a_certificate_expiry() {
+        let now = 1_760_000_000u64;
+        // A history the relay just confirmed - `entitlement_from_cache` reads this as
+        // `Licensed`, which is the branch that must skip the certificate entirely.
+        let history = History {
+            last_positive_unix: now,
+            last_status: "active".into(),
+            ..Default::default()
+        };
+        let (ent, cert_expires) = entitlement_and_cert_expiry(now, Some(&history));
+        assert_eq!(ent, Entitlement::Licensed);
+        assert_eq!(
+            cert_expires, None,
+            "a relay verification must never surface a certificate expiry line"
+        );
+    }
+
+    /// A KNOWN REVOCATION must blank the certificate expiry too, for the same reason
+    /// `combine_entitlement` already refuses to let a certificate override a revocation
+    /// (see the tests below): a certificate cannot be withdrawn, so showing "expires in 20
+    /// days" next to a machine the relay just revoked would read as reassurance the relay
+    /// explicitly contradicted.
+    #[test]
+    fn a_revoked_machine_never_reports_a_certificate_expiry_either() {
+        let now = 1_760_000_000u64;
+        let history = History {
+            last_status: "revoked".into(),
+            last_positive_unix: 0,
+            ..Default::default()
+        };
+        let (ent, cert_expires) = entitlement_and_cert_expiry(now, Some(&history));
+        assert_eq!(ent, Entitlement::Unlicensed);
+        assert_eq!(cert_expires, None);
+    }
+
+    /// A failing entitlement check (5xx, or a body the relay contract doesn't recognise)
+    /// must never advance `last_positive_unix` — mirrors exactly what
+    /// `refresh_entitlement_inner` does around its network call: bump `last_check_unix`
+    /// unconditionally (the throttle), then apply the parsed result only if there is one.
+    /// `parse_check_response`'s `?`-propagated `None` is what makes the real function's
+    /// history-mutation code unreachable on failure; this test exercises the same two real
+    /// functions (`parse_check_response`, `update_history_at`) against a temp file so the
+    /// claim is checked against actual code, not restated as a comment.
+    ///
+    /// Against code that updated `last_positive_unix` unconditionally (the bug this
+    /// invariant rules out), this test fails: `after.last_positive_unix` would read `now`
+    /// instead of `earlier`.
+    #[test]
+    fn a_failed_check_does_not_advance_last_verified() {
+        let dir = temp_dir("failed_check");
+        let path = dir.join("history.json");
+        let earlier = 1_700_000_000u64;
+        write_history(
+            &path,
+            &History {
+                last_positive_unix: earlier,
+                last_status: "active".into(),
+                ..Default::default()
+            },
+        );
+
+        // A 500 (or any non-200/unparsable body) is a failure, not a "not entitled" answer.
+        assert!(parse_check_response(500, b"{}").is_none());
+        assert!(parse_check_response(200, b"not json").is_none());
+
+        let now = earlier + 1_000;
+        update_history_at(&path, |h| h.last_check_unix = now);
+        if let Some(result) = parse_check_response(500, b"{}") {
+            // Unreachable on a 500 - if this ever runs, the failure classification broke.
+            update_history_at(&path, |h| {
+                h.last_positive_unix = now;
+                h.last_status = if result.entitled {
+                    "active".to_string()
+                } else {
+                    h.last_status.clone()
+                };
+            });
+        }
+
+        let after = read_history(&path).expect("history file must still parse");
+        assert_eq!(
+            after.last_positive_unix, earlier,
+            "a failed check must not advance last verified"
+        );
+        assert_eq!(
+            after.last_check_unix, now,
+            "the throttle still records the attempt"
+        );
     }
 
     #[test]

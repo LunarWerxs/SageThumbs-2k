@@ -610,7 +610,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
 - **Licence:** shows whether the copy is running as personal or business, a field to enter
   and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
   business copy with no key redeemed yet, this is also where the reminder lives, alongside the
-  launch notice and the strip across every Settings page.
+  launch notice and the strip across every Settings page. The line shows one of: no key
+  entered, licensed (with the last verified date), revoked (with why, when known), personal
+  use, or - on a machine currently relying on its offline certificate rather than a live
+  check - an early warning once that certificate is nearing its own expiry. A failed check
+  never moves the "last verified" date forward.
 
 ---
 
@@ -775,6 +779,24 @@ anytime (it removes the cloud copy). **The shell-extension DLL never touches the
 all sign-in/sync code lives in the Settings app only, preserving the crash-isolation guarantee.
 The refresh token is stored encrypted (Windows DPAPI); the store is a settings locker (≤64 KB,
 no secrets).
+
+The status line next to the sync button always reflects one of these states, so it never
+claims a completed sync that did not happen:
+
+- **Not syncing** - signed out.
+- **Connecting...** - a sign-in or retry is in progress.
+- **Signed in, first sync didn't finish** - authenticated, but the very first sync has not
+  completed yet; retry with one click, no browser needed.
+- **Offline** - the last attempt could not reach the server at all (no connection), and is
+  retried automatically.
+- **Sync pending** - the server was reached but a save could not be written; retried
+  automatically, and the message names why when one is known.
+- **Synced** - caught up, optionally showing who is signed in, or that another device's
+  changes were just pulled in.
+
+Disconnecting always removes your local sign-in immediately; if the copy stored in your
+account could not be deleted (for example because the server could not be reached), you are
+told so rather than being given a blanket "disconnected" message.
 
 The same page's **Export Settings** and **Import Settings** buttons save or apply the entire
 settings tree to a JSON file by hand; **`SageThumbs2K.exe --export-settings <file>`** and

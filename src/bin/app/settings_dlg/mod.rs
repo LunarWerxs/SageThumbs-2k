@@ -137,6 +137,19 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
             None => line,
         };
     }
+    // E05 audit: a certificate nearing its own `exp` gets its own line rather than the
+    // ordinary "Licensed" one, but ONLY when the certificate is actually what licenses this
+    // machine (`cert_expires_unix` is `None` whenever a relay verification already grants
+    // it - see `entitlement_and_cert_expiry`). Compares against `snap.now_unix`, the SAME
+    // instant the snapshot was built with, never a fresh clock read.
+    if let Some(expires) = snap.cert_expires_unix {
+        let remaining = expires.saturating_sub(snap.now_unix as i64);
+        if remaining >= 0 && (remaining as u64) <= crate::license::CERT_EXPIRY_WARNING_SECS {
+            let expires_unix = u64::try_from(expires).unwrap_or(0);
+            return t("licence_state_cert_expiring")
+                .replace("{date}", &format_unix_date(expires_unix));
+        }
+    }
     t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
 }
 
@@ -2045,31 +2058,48 @@ unsafe fn on_timer_rotate(hwnd: HWND) -> LRESULT {
 mod tests {
     use super::*;
 
+    /// Hand-build a [`crate::license::LicenceSnapshot`] for `licence_state_line` tests.
+    /// Module-scope (not nested in one test fn) so both the four-states test below and the
+    /// E05 certificate-expiry tests can share it.
+    fn snap(
+        mode: crate::license::Mode,
+        key_prefix: &str,
+        last_status: &str,
+        last_positive_unix: u64,
+    ) -> crate::license::LicenceSnapshot {
+        snap_at(mode, key_prefix, last_status, last_positive_unix, None, 0)
+    }
+
+    /// [`snap`] plus the two E05 fields, for the certificate-expiry tests below.
+    fn snap_at(
+        mode: crate::license::Mode,
+        key_prefix: &str,
+        last_status: &str,
+        last_positive_unix: u64,
+        cert_expires_unix: Option<i64>,
+        now_unix: u64,
+    ) -> crate::license::LicenceSnapshot {
+        crate::license::LicenceSnapshot {
+            mode,
+            // `posture` isn't read by `licence_state_line` at all (it derives the same
+            // fact from `mode`/`key_prefix`/`last_status` directly) — any value proves
+            // that independence.
+            posture: crate::license::Posture::Silent,
+            key_prefix: key_prefix.to_string(),
+            last_positive_unix,
+            last_status: last_status.to_string(),
+            last_reason: String::new(),
+            cert_expires_unix,
+            now_unix,
+        }
+    }
+
     /// `licence_state_line` given a hand-built snapshot for each of the four states it must
     /// tell apart — the same four the Settings status line and the About box's line both
     /// show. Pure over its argument (no registry, no file, no network), so every boundary
     /// pins without touching the real breadcrumb.
     #[test]
     fn licence_state_line_covers_all_four_states() {
-        fn snap(
-            mode: crate::license::Mode,
-            key_prefix: &str,
-            last_status: &str,
-            last_positive_unix: u64,
-        ) -> crate::license::LicenceSnapshot {
-            crate::license::LicenceSnapshot {
-                mode,
-                // `posture` isn't read by `licence_state_line` at all (it derives the same
-                // fact from `mode`/`key_prefix`/`last_status` directly) — any value proves
-                // that independence.
-                posture: crate::license::Posture::Silent,
-                key_prefix: key_prefix.to_string(),
-                last_positive_unix,
-                last_status: last_status.to_string(),
-                last_reason: String::new(),
-            }
-        }
-
         // A revocation WITH the relay's reason says why; an unknown token adds nothing.
         let mut why = snap(
             crate::license::Mode::Business,
@@ -2128,6 +2158,76 @@ mod tests {
         assert_eq!(
             licensed,
             t("licence_state_licensed").replace("{date}", &format_unix_date(1_700_000_000))
+        );
+    }
+
+    /// E05 audit: a certificate that licenses the machine (relay unreachable or lapsed)
+    /// gets its own line once it is inside `CERT_EXPIRY_WARNING_SECS` of its own `exp`,
+    /// pinned on both sides of that boundary the way the grace window is pinned elsewhere
+    /// in this codebase. Against the pre-E05 `licence_state_line` (no `cert_expires_unix`
+    /// field to read at all) this test fails to compile, which is the strongest possible
+    /// "fails against the old code."
+    #[test]
+    fn licence_state_line_shows_certificate_expiry_only_inside_the_warning_window() {
+        let warning = crate::license::CERT_EXPIRY_WARNING_SECS as i64;
+        let now = 1_700_000_000i64;
+
+        // Far from expiry: the ordinary "Licensed" line, using whatever last_positive_unix
+        // the snapshot carries (a cert-only-licensed machine may have none from the relay).
+        let far = snap_at(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "active",
+            1_650_000_000,
+            Some(now + warning + 1),
+            now as u64,
+        );
+        assert_eq!(
+            licence_state_line(&far),
+            t("licence_state_licensed").replace("{date}", &format_unix_date(1_650_000_000)),
+            "outside the window, the certificate must not preempt the ordinary line"
+        );
+
+        // Exactly at the boundary: inside (inclusive).
+        let boundary = snap_at(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "active",
+            1_650_000_000,
+            Some(now + warning),
+            now as u64,
+        );
+        assert_eq!(
+            licence_state_line(&boundary),
+            t("licence_state_cert_expiring")
+                .replace("{date}", &format_unix_date((now + warning) as u64)),
+            "the boundary instant itself counts as inside the window"
+        );
+
+        // Well inside the window.
+        let soon = snap_at(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "active",
+            1_650_000_000,
+            Some(now + 10),
+            now as u64,
+        );
+        assert_eq!(
+            licence_state_line(&soon),
+            t("licence_state_cert_expiring")
+                .replace("{date}", &format_unix_date((now + 10) as u64))
+        );
+
+        // Expired already (verify() would have refused it, so a real snapshot never
+        // carries this - but a renderer that used `saturating_sub` incorrectly could still
+        // show a nonsense expiring line): make sure the ordinary "no key" wording is what
+        // shows for a machine with no key on record and no certificate contribution at all.
+        let expired_no_relay = snap_at(crate::license::Mode::Business, "", "", 0, None, now as u64);
+        assert_eq!(
+            licence_state_line(&expired_no_relay),
+            t("licence_state_none"),
+            "no key, no certificate contribution — must not claim to be verified"
         );
     }
 

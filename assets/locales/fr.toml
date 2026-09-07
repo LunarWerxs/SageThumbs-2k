@@ -498,6 +498,7 @@ sync_state_synced_as = "● Synchronisé en tant que {who} · à jour"
 sync_state_updated = "● Synchronisé · mis à jour depuis un autre appareil"
 sync_state_pending = "● Synchro en attente · enregistré ici, nouvelle tentative"
 sync_state_pending_err = "● Synchro en attente · enregistré localement ; {error}"
+sync_state_offline = "● Hors ligne · impossible de joindre le serveur, nouvelle tentative automatique"
 sync_signed_in = "Connecté en tant que {who}.\n\nVos réglages se synchronisent maintenant entre vos PC. Ce qui a été synchronisé depuis un autre appareil est déjà appliqué, rouvrez les Options pour le voir ici."
 sync_signed_in_initial_pending = "Connecté en tant que {who}, mais la première synchro n'a pas abouti : {error}\n\nVotre connexion est enregistrée, donc cela ne vous redemandera pas de vous connecter, cliquez simplement sur \"Réessayer la synchro\"."
 sync_signin_failed = "Connexion impossible : {error}"
@@ -585,6 +586,7 @@ msg_save_failed = "Certains réglages n'ont pas pu être enregistrés dans {path
 msg_hotkey_conflict = "\"{a}\" et \"{b}\" utilisent le même raccourci. Attribuez une combinaison de touches différente à l'un des deux, puis enregistrez de nouveau."
 save_failed_registry = "le Registre"
 sync_disconnected_body = "Synchronisation déconnectée. Vos réglages restent sur ce PC."
+sync_disconnected_cloud_copy_kept = "Synchronisation déconnectée, mais nous n'avons pas pu supprimer la copie enregistrée dans votre compte. Vos réglages locaux restent sur ce PC."
 sync_portable_notice = "Copie portable : cette connexion est enregistrée à côté de cette copie de SageThumbs 2K, et non dans le compte de ce PC. Toute personne utilisant la même copie portable peut synchroniser vos réglages ; déconnectez-vous donc avant de remettre le disque."
 
 # Convert / Files to folder: partial-result notices
@@ -611,6 +613,7 @@ licence_mode_business = "Installé pour un usage professionnel. Réinstallez pou
 licence_mode_personal = "Installé pour un usage personnel."
 licence_mode_portable = "Copie portable."
 licence_state_licensed = "Sous licence, dernière vérification {date}"
+licence_state_cert_expiring = "Sous licence via certificat hors ligne, expire le {date}"
 licence_state_none = "Aucune clé de licence saisie"
 licence_state_revoked = "Licence révoquée (clé {key})"
 licence_state_personal = "Usage personnel, aucune licence requise"

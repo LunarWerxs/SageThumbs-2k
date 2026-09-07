@@ -496,6 +496,7 @@ sync_state_synced_as = "● Synchronisiert als {who} · aktuell"
 sync_state_updated = "● Synchronisiert · von einem anderen Gerät aktualisiert"
 sync_state_pending = "● Sync ausstehend · lokal gespeichert, erneuter Versuch"
 sync_state_pending_err = "● Sync ausstehend · lokal gespeichert; {error}"
+sync_state_offline = "● Offline · Server nicht erreichbar, automatischer erneuter Versuch"
 sync_signed_in = "Angemeldet als {who}.\n\nDeine Einstellungen werden jetzt zwischen deinen PCs synchronisiert. Von einem anderen Gerät übernommene Werte sind bereits aktiv, öffne die Einstellungen neu, um sie hier zu sehen."
 sync_signed_in_initial_pending = "Angemeldet als {who}, aber die erste Synchronisierung wurde nicht abgeschlossen: {error}\n\nDeine Anmeldung ist gespeichert, du musst dich also nicht erneut anmelden, klicke einfach auf \"Sync wiederholen\"."
 sync_signin_failed = "Anmeldung fehlgeschlagen: {error}"
@@ -583,6 +584,7 @@ msg_save_failed = "Einige Einstellungen konnten nicht gespeichert werden: {path}
 msg_hotkey_conflict = "\"{a}\" und \"{b}\" sind auf dieselbe Tastenkombination eingestellt. Weisen Sie einer von beiden eine andere Kombination zu und speichern Sie erneut."
 save_failed_registry = "die Registrierung"
 sync_disconnected_body = "Synchronisierung getrennt. Deine Einstellungen bleiben auf diesem PC."
+sync_disconnected_cloud_copy_kept = "Synchronisierung getrennt, aber die Kopie in deinem Konto konnte nicht gelöscht werden. Deine lokalen Einstellungen bleiben auf diesem PC."
 sync_portable_notice = "Portable Version: Diese Anmeldung wird neben dieser Kopie von SageThumbs 2K gespeichert, nicht im Konto dieses PCs. Jeder, der dieselbe portable Kopie nutzt, kann deine Einstellungen synchronisieren – melde dich also ab, bevor du das Laufwerk weitergibst."
 
 # Convert / Files to folder: partial-result notices
@@ -609,6 +611,7 @@ licence_mode_business = "Für den geschäftlichen Einsatz installiert. Zum Ände
 licence_mode_personal = "Für den privaten Einsatz installiert."
 licence_mode_portable = "Portable Kopie."
 licence_state_licensed = "Lizenziert, zuletzt geprüft am {date}"
+licence_state_cert_expiring = "Lizenziert über Offline-Zertifikat, läuft ab am {date}"
 licence_state_none = "Kein Lizenzschlüssel eingegeben"
 licence_state_revoked = "Lizenz widerrufen (Schlüssel {key})"
 licence_state_personal = "Privater Einsatz, keine Lizenz erforderlich"
