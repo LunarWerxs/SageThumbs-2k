@@ -31,8 +31,8 @@ pub(crate) use pickers::{
     set_clipboard_text,
 };
 pub(crate) use scaling::{
-    dpi_scale, dpi_scale_dpi, dpi_unscale, gui_font, gui_font_for, gui_font_header, gui_font_sized,
-    gui_font_title, set_dpi_override, wm_dpichanged,
+    dpi_override, dpi_scale, dpi_scale_dpi, dpi_unscale, gui_font, gui_font_for, gui_font_header,
+    gui_font_sized, gui_font_title, set_dpi_override, wm_dpichanged,
 };
 
 /// Shorthand for a translated UI string in the active language.
@@ -740,7 +740,16 @@ pub(crate) unsafe fn create_shot_window(
     // → invisible to the user, while PrintWindow still captures the real (opaque) content;
     // SW_SHOWNOACTIVATE + tool-window means it steals no focus and shows no taskbar entry. Sizing
     // to the cursor monitor's DPI also matches the per-control layout DPI (GetDpiForWindow).
-    let (dpi, work) = cursor_monitor_metrics();
+    //
+    // A `--dpi N` shot override wins over the monitor's real DPI: every `ctl()` in this window
+    // lays its children out via `dpi_scale`, which already honors the override (via
+    // `effective_dpi`), but until this line the WINDOW FRAME here was sized from the real
+    // monitor DPI regardless, so a forced high-DPI capture laid out children for e.g. 192 DPI
+    // inside a frame still sized for the dev box's real 96, and every control past the top-left
+    // corner rendered outside the captured window (2026-09-05 audit F36's DPI coverage, caught
+    // by actually capturing at `--dpi 192`, not by reasoning about it).
+    let (mon_dpi, work) = cursor_monitor_metrics();
+    let dpi = dpi_override().unwrap_or(mon_dpi);
     let (sw, sh) = (dpi_scale_dpi(design_w, dpi), dpi_scale_dpi(design_h, dpi));
     let x = work.left + ((work.right - work.left) - sw).max(0) / 2;
     let y = work.top + ((work.bottom - work.top) - sh).max(0) / 2;
