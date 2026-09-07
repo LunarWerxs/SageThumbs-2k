@@ -16,6 +16,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use windows_registry::CURRENT_USER;
+
 /// Big-endian `u32` at `off` — PNG stores IHDR width/height that way.
 fn be32(b: &[u8], off: usize) -> u32 {
     u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
@@ -137,4 +139,91 @@ fn installed_welcome_is_stable_across_runs() {
     );
     let _ = std::fs::remove_dir_all(scratch("stable_a"));
     let _ = std::fs::remove_dir_all(scratch("stable_b"));
+}
+
+// ---- Locale + DPI coverage (2026-09-05 audit finding F36) ---------------------------
+//
+// The portable-mode explanation (`fr_intro_portable`, or `fr_intro` on an installed copy)
+// used to get a flat 34px box no matter which language was active; see `first_run.rs`'s
+// `intro_h` for the measurement that replaced it. These captures are the acceptance bar
+// itself: French and German (two of the longer-running shipped translations) at 96 AND 192
+// DPI, non-portable so the window shows `fr_intro`, the exact string the finding names.
+
+/// Throwaway HKCU subkey this file's language override writes to, named by case + this TEST
+/// PROCESS's pid so parallel `cargo test` runs and other test binaries never collide, never
+/// the real `Software\SageThumbs2K` a developer's own Explorer reads (same isolation
+/// `tests/settings_gate.rs` uses for its own scratch key).
+fn scratch_reg_root(case: &str) -> String {
+    format!(
+        r"Software\SageThumbs2K\__test_firstrunshot_{}_{case}",
+        std::process::id()
+    )
+}
+
+/// [`shot_window`], but with `lang` (a shipped locale code) forced via a scratch HKCU key and
+/// `dpi` forced via the `--dpi` override `main.rs::run_shot_mode` now applies to every
+/// `--shot` window (previously wired for `preview` only). Always non-portable, so the
+/// window shows `fr_intro`, not `fr_intro_portable`.
+fn shot_locale(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
+    let root = scratch_reg_root(case);
+    CURRENT_USER
+        .create(&root)
+        .and_then(|k| k.set_string("Lang", lang))
+        .unwrap_or_else(|e| panic!("{case}: failed to write scratch Lang={lang}: {e}"));
+
+    let dir = scratch(case);
+    let out = dir.join(format!("{case}.png"));
+    let _ = std::fs::remove_file(&out);
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"));
+    cmd.arg("--shot")
+        .arg(&out)
+        .args(["--window", "firstrun", "--dpi", &dpi.to_string()])
+        .env("ST2K_SETTINGS_ROOT", &root)
+        // A parent shell with a leaked portable ini would otherwise force portable mode
+        // (and `fr_intro_portable`) regardless of the HKCU override above.
+        .env_remove("ST2K_PORTABLE_INI");
+    let status = cmd.status().expect("spawn SageThumbs2K --shot");
+    assert!(
+        status.success(),
+        "{case} shot failed: exit {:?} (0xC000041D = abort())",
+        status.code()
+    );
+    let bytes = std::fs::read(&out).unwrap_or_else(|e| panic!("{case} wrote no PNG: {e}"));
+    assert!(!bytes.is_empty(), "{case} wrote an empty PNG");
+
+    let _ = CURRENT_USER.remove_tree(&root);
+    let _ = std::fs::remove_dir_all(&dir);
+    bytes
+}
+
+/// French and German (`fr_intro`, `de_intro`) render successfully at both 96 and 192 DPI:
+/// the harness itself previously had no `--dpi` wiring for this window at all, so this is
+/// also the regression guard for `main.rs::run_shot_mode`'s `--dpi` parsing and
+/// `win::create_shot_window`'s window-frame DPI fix (both added by this finding).
+#[test]
+fn welcome_renders_in_long_text_locales_at_96_and_192_dpi() {
+    for lang in ["fr", "de"] {
+        for dpi in [96u32, 192] {
+            let case = format!("locale_{lang}_{dpi}");
+            let (w, h) = png_size(&shot_locale(&case, lang, dpi));
+            assert!(w > 0 && h > 0, "{case}: decoded to a zero-size image");
+        }
+    }
+}
+
+/// A 192-DPI capture must be visibly larger than a 96-DPI one of the SAME language: the
+/// window frame has to scale with the override, not just the controls inside it (a bug this
+/// finding found and fixed in `create_shot_window`: the frame used to stay at the real
+/// monitor's DPI while children laid out for the forced one, so every control past the
+/// top-left corner rendered outside the captured window).
+#[test]
+fn a_192_dpi_welcome_capture_is_larger_than_a_96_dpi_one() {
+    let (w96, h96) = png_size(&shot_locale("dpi_fr_96", "fr", 96));
+    let (w192, h192) = png_size(&shot_locale("dpi_fr_192", "fr", 192));
+    assert!(
+        w192 > w96 && h192 > h96,
+        "192 DPI ({w192}x{h192}) must be larger than 96 DPI ({w96}x{h96}); if it isn't, the \
+         --dpi override never reached the window frame"
+    );
 }

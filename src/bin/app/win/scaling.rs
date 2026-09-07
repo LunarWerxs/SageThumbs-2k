@@ -59,6 +59,16 @@ pub(crate) fn set_dpi_override(dpi: i32) {
     DPI_OVERRIDE.store(dpi.max(0), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The active headless-shot DPI override, or `None` in the production no-override state.
+/// [`create_shot_window`](super::create_shot_window) needs this BEFORE any window exists (to
+/// size the window ITSELF at the forced DPI, not just the controls inside it): every other
+/// override consumer takes an `HWND` to fall back to that window's real DPI, which is exactly
+/// what a not-yet-created window doesn't have.
+pub(crate) fn dpi_override() -> Option<i32> {
+    let ov = DPI_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    (ov > 0).then_some(ov)
+}
+
 /// The effective DPI for `hwnd`: the shot override when one is set, else the real
 /// per-window DPI (0 on a bad HWND → callers treat as 96).
 fn effective_dpi(hwnd: HWND) -> i32 {

@@ -18,13 +18,18 @@ use core::ffi::c_void;
 
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    DrawTextW, GetDC, ReleaseDC, SelectObject, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_WORDBREAK,
+    HGDIOBJ,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
 use crate::win::{
-    check, checked, ctl, dpi_scale, run_dialog, t, wm_dpichanged, BUTTON, IDOK, STATIC,
+    check, checked, ctl, dpi_scale, gui_font, run_dialog, t, wide, wm_dpichanged, BUTTON, IDOK,
+    STATIC,
 };
 
 /// HKCU flag: has the welcome window been shown? Written on ANY dismissal.
@@ -91,13 +96,84 @@ fn offers_thumbnails() -> bool {
     sagethumbs2k_core::settings::portable()
 }
 
-/// Window height — the portable build carries one extra row.
-fn dlg_h() -> i32 {
+// ---- Intro-line height measurement (2026-09-05 audit finding F36) -------------------
+//
+// `build()` used to give `ID_HEAD` a flat 34px (2 lines' worth of the English copy) no
+// matter what language was active. `fr_intro`/`fr_intro_portable` run noticeably longer in
+// several translations (French, German, Hungarian, ...), so the third wrapped line ran
+// straight past the box and was never drawn, invisible in the code and in an English
+// screenshot, visible only once someone captured the window in one of those languages.
+
+/// The pre-fix fixed height: the floor a terse translation must not shrink below.
+const INTRO_H_MIN: i32 = 34;
+
+/// Design-px column the intro STATIC gets (`build`'s own `w = cw - m*2`), approximated here
+/// because [`dlg_h`] needs to know this BEFORE the window, and so before any real client
+/// rect, exists. `NC_SLACK` deliberately shaves a few px off the estimate: the real client
+/// area measured in `build()` is always at least this close to `DLG_W`, so erring narrow
+/// here can only make this function reserve a line MORE than the real layout ever needs,
+/// never fewer, and "too few" is the exact failure this fix closes.
+fn intro_col_w() -> i32 {
+    const NC_SLACK: i32 = 12;
+    (DLG_W - 2 * 20 - NC_SLACK).max(60)
+}
+
+/// Height `text` needs wrapped to [`intro_col_w`], in 96-dpi design px. Measured against a
+/// screen DC with no live window required, the same technique
+/// `settings_dlg::nudge::measure_body_h` uses, and for the same reason: this has to be
+/// callable before the window exists, since [`dlg_h`] uses it to decide how tall to create
+/// that window in the first place.
+unsafe fn intro_h(text: &str) -> i32 {
+    let hdc = GetDC(None);
+    if hdc.is_invalid() {
+        return INTRO_H_MIN;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+    let mut wtext = wide(text);
+    let n = wtext.len().saturating_sub(1);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: intro_col_w(),
+        bottom: 0,
+    };
+    DrawTextW(
+        hdc,
+        &mut wtext[..n],
+        &mut rc,
+        DT_CALCRECT | DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+    );
+    SelectObject(hdc, old);
+    ReleaseDC(None, hdc);
+    (rc.bottom - rc.top).max(INTRO_H_MIN)
+}
+
+/// The locale key `build()` picks for the intro line: the ONE place that decision is made,
+/// so [`dlg_h`]'s measurement and `build()`'s actual control always measure the same string.
+fn intro_key() -> &'static str {
     if offers_thumbnails() {
+        "fr_intro_portable"
+    } else {
+        "fr_intro"
+    }
+}
+
+/// How much taller than [`INTRO_H_MIN`] the ACTIVE language's intro line measures: 0 for
+/// English (what the floor was originally tuned to), positive whenever the live translation
+/// genuinely needs a third wrapped line.
+fn intro_extra_h() -> i32 {
+    (unsafe { intro_h(t(intro_key())) } - INTRO_H_MIN).max(0)
+}
+
+/// Window height: the portable build carries one extra row, and every build reserves
+/// whatever the active language's intro sentence actually measures to.
+fn dlg_h() -> i32 {
+    let base = if offers_thumbnails() {
         DLG_H + THUMBS_ROW_H
     } else {
         DLG_H
-    }
+    };
+    base + intro_extra_h()
 }
 
 /// Has the welcome window already been shown on this account?
@@ -332,23 +408,23 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // and flatly false of a portable one — nothing is registered until the row below is ticked.
     // A portable user who read the installed wording would reasonably conclude the app is broken.
     let portable = offers_thumbnails();
+    let intro_text = t(intro_key());
+    // MEASURED, not the old flat 34; see the module's F36 comment above `intro_h`. A
+    // translation longer than English gets the extra room `dlg_h()` already reserved for it.
+    let head_h = unsafe { intro_h(intro_text) };
     ctl(
         hwnd,
         STATIC,
-        t(if portable {
-            "fr_intro_portable"
-        } else {
-            "fr_intro"
-        }),
+        intro_text,
         WINDOW_STYLE(0),
         m,
         y,
         w,
-        34,
+        head_h,
         ID_HEAD,
         hinst,
     );
-    y += 46;
+    y += head_h + 12; // 12 = the original 46 - 34 gap below the intro block
 
     if portable {
         ctl(
@@ -664,4 +740,80 @@ pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
     let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
     let _ = DestroyWindow(hwnd);
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shipped locale's `fr_intro`/`fr_intro_portable` stays within a sane band:
+    /// never below the design floor (a terse translation must not shrink the box) and never
+    /// past a generous ceiling (which would mean the measurement itself is broken, e.g.
+    /// wrapping to the wrong column). Iterates the baked locale table rather than eyeballing
+    /// a screenshot of two or three of them, the acceptance bar this finding sets.
+    ///
+    /// As shipped today every translation happens to fit in the same two lines English
+    /// does (measured, not assumed, see `intro_h_grows_for_a_paragraph_the_old_fixed_height_
+    /// could_not_hold` below for the case that actually exercises growth), so this test's
+    /// job is regression coverage: it fails the moment a translation update makes some
+    /// locale's copy wrap taller than the box `build()` gives it, which the pre-fix flat
+    /// `34` constant could never notice.
+    #[test]
+    fn every_locale_intro_line_stays_within_a_sane_height_band() {
+        const SANE_MAX: i32 = INTRO_H_MIN * 4; // generous: catches a broken measurement, not a long sentence
+        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+            for key in ["fr_intro", "fr_intro_portable"] {
+                let Some((_, text)) = pairs.iter().find(|(k, _)| *k == key) else {
+                    continue;
+                };
+                let h = unsafe { intro_h(text) };
+                assert!(
+                    (INTRO_H_MIN..=SANE_MAX).contains(&h),
+                    "{code}/{key}: measured height {h}px is outside the sane [{INTRO_H_MIN}, \
+                     {SANE_MAX}] band for {text:?}"
+                );
+            }
+        }
+    }
+
+    /// Has teeth: a version of `intro_h` that ignores its `text` argument and always returns
+    /// `INTRO_H_MIN`, i.e. the exact pre-fix behavior, a flat height regardless of the
+    /// active language, fails this immediately. A paragraph nearly three times the length
+    /// of the longest shipped intro line cannot possibly wrap into the two-line floor.
+    #[test]
+    fn intro_h_grows_for_a_paragraph_the_old_fixed_height_could_not_hold() {
+        let long = "SageThumbs is already adding thumbnails to Explorer, and this sentence \
+            keeps going well past the point where two ordinary lines could possibly hold it, \
+            because the whole point of measuring is to stop assuming a length in advance.";
+        let h = unsafe { intro_h(long) };
+        assert!(
+            h > INTRO_H_MIN,
+            "a paragraph this long must measure taller than the old fixed {INTRO_H_MIN}px \
+             box; got {h}px, intro_h has stopped measuring and gone back to guessing"
+        );
+    }
+
+    /// `dlg_h()` must grow by exactly the same amount `intro_h` measures for the ACTIVE
+    /// language, not a second, independently-tuned number: this is the arithmetic that
+    /// reserves the window space `build()`'s control then actually uses.
+    #[test]
+    fn dlg_h_grows_by_exactly_the_measured_intro_extra() {
+        let extra = intro_extra_h();
+        assert_eq!(
+            dlg_h(),
+            (if offers_thumbnails() {
+                DLG_H + THUMBS_ROW_H
+            } else {
+                DLG_H
+            }) + extra,
+            "dlg_h() must reserve exactly intro_extra_h() beyond the base layout height"
+        );
+    }
+
+    /// A short synthetic string must sit exactly at the floor: `intro_h` is not supposed to
+    /// pad a one-line sentence, only to grow the box for a genuinely longer one.
+    #[test]
+    fn intro_h_floors_a_short_string_at_the_design_minimum() {
+        assert_eq!(unsafe { intro_h("Short.") }, INTRO_H_MIN);
+    }
 }

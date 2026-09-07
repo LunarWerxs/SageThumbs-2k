@@ -487,7 +487,22 @@ unsafe fn run_shot_settings_window(
 /// The body of `--shot <out.png> [--tab N] [--window settings|convert|eyedropper|...]`:
 /// picks the window named by `--window` (default `settings`) and renders it INVISIBLY
 /// (off-screen) to `out`. `pos` is the index of the `--shot` flag itself.
+///
+/// `--dpi N` (any window, not just `preview`) forces the headless-shot DPI override BEFORE
+/// the window is built, so a locale/layout regression test can capture the same dialog at
+/// 96 and 192 without a physical high-DPI monitor (2026-09-05 audit finding F36 wants both
+/// covered for the Convert and first-run windows, which previously had no `--dpi` wiring at
+/// all). `preview`'s own `ShotOpts.dpi` re-applies the same value, which is harmless: `set_dpi_override`
+/// is an idempotent store, not a toggle.
 unsafe fn run_shot_mode(hinst: HINSTANCE, dark: bool, args: &[String], pos: usize) -> bool {
+    if let Some(dpi) = args
+        .iter()
+        .position(|a| a == "--dpi")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|s| s.parse::<i32>().ok())
+    {
+        crate::win::set_dpi_override(dpi);
+    }
     let window = args
         .iter()
         .position(|a| a == "--window")

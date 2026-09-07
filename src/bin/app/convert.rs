@@ -51,6 +51,80 @@ const CID_RESIZE_ALL: i32 = 3013;
 const WM_CONVERT_PROGRESS: u32 = 0x8000 + 30; // WM_APP + 30
 const WM_CONVERT_DONE: u32 = 0x8000 + 31;
 
+// ---- Resize-section layout (2026-09-05 audit finding F36) ---------------------------
+//
+// The pre-fix layout packed CID_RESIZE_CHK ("Resize") and its mode combo onto one row,
+// with CID_RESIZE_PAD / CID_RESIZE_ALL squeezed into a second column at flat 90px / 172px
+// widths. Those widths are exactly the English text plus a little slack, and BS_AUTOCHECKBOX
+// clips silently, it never wraps or grows, so "Redimensionner" (fr) and "Alle
+// voreingestellten Größen schreiben" (de, 39 chars) ran past their boxes. A two-column
+// split can't be tuned to fit every one of the 36 shipped translations no matter what the
+// two numbers are, so this drops it for a single column, which gives every row up to
+// `CV_RESIZE_RIGHT - CV_RESIZE_X` (or minus the indent, for the three dependent rows)
+// design px, comfortably more than the longest real label needs (measured: Hungarian's
+// "Az összes előre beállított méret létrehozása", 46 chars, well under the column).
+const CV_RESIZE_X: i32 = 16;
+/// Dependent rows (the mode combo, the W×H fields, Pad/All) sit indented under the master
+/// checkbox, the same visual nesting `navrail`'s dependent-switch rows use.
+const CV_RESIZE_INDENT: i32 = 18;
+/// Right edge every row in this dialog stays clear of (matches CID_SETTINGS/CID_BROWSE,
+/// which already end at 468).
+const CV_RESIZE_RIGHT: i32 = 472;
+/// The checkbox glyph plus its gap to the label: `GetTextExtentPoint32W` only measures the
+/// text itself, not the box BS_AUTOCHECKBOX draws in front of it. Test-only: production
+/// sizes every checkbox to the full column ([`cv_checkbox_w`]) rather than to its content,
+/// so this only matters for the regression test's "does the real label fit" check below.
+#[cfg(test)]
+const CV_CHK_GLYPH_W: i32 = 24;
+const CV_CHK_H: i32 = 20;
+
+const CV_ROW_RESIZE_CHK: i32 = 58;
+const CV_ROW_RESIZE_COMBO: i32 = 86;
+const CV_ROW_WH: i32 = 116;
+const CV_ROW_RESIZE_PAD: i32 = 148;
+const CV_ROW_RESIZE_ALL: i32 = 176;
+const CV_ROW_OUTDIR: i32 = 212;
+const CV_ROW_PROGRESS: i32 = 253;
+const CV_ROW_BUTTONS: i32 = 283;
+/// Dialog height: `CV_ROW_BUTTONS` + the button height (28) + the same bottom margin the
+/// pre-fix 274px dialog left below its buttons at 202+28=230 (274-230=44).
+const CV_DLG_H: i32 = CV_ROW_BUTTONS + 28 + 44;
+const CV_DLG_W: i32 = 500;
+
+/// Pixel width of `text` in the (unscaled, 96-DPI design) GUI font, measured against a
+/// screen DC with NO live window required. Test-only: backs the regression test below,
+/// which checks every baked locale's real label against the allocated column instead of
+/// eyeballing the couple of languages a screenshot happens to sample. Same technique
+/// `settings_dlg::nudge::measure_body_h`/`btn_w` use, for the same reason.
+#[cfg(test)]
+unsafe fn measure_design_w(text: &str) -> i32 {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{
+        GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, HGDIOBJ,
+    };
+    let hdc = GetDC(None);
+    if hdc.is_invalid() {
+        return 0;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font().0));
+    let w = wide(text);
+    let n = w.len().saturating_sub(1);
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
+    SelectObject(hdc, old);
+    ReleaseDC(None, hdc);
+    sz.cx
+}
+
+/// A checkbox row's design-px width: the full remaining column (not shrink-wrapped to the
+/// label) so trailing space is just blank rather than a second thing to size correctly.
+/// `indented` selects which column: the master checkbox starts flush at `CV_RESIZE_X`,
+/// its three dependents start `CV_RESIZE_INDENT` further in.
+fn cv_checkbox_w(indented: bool) -> i32 {
+    let x = CV_RESIZE_X + if indented { CV_RESIZE_INDENT } else { 0 };
+    CV_RESIZE_RIGHT - x
+}
+
 static CONVERT_FILES: OnceLock<Vec<String>> = OnceLock::new();
 /// Per-format encode settings, chosen in the Settings… popup, read by the worker.
 static QUALITY: AtomicI32 = AtomicI32::new(90); // JPEG quality 1..=100
@@ -263,8 +337,8 @@ pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
         w!("SageThumbs2KConvert"),
         Some(convert_wndproc),
         &title,
-        500,
-        274,
+        CV_DLG_W,
+        CV_DLG_H,
         None,
     );
 }
@@ -297,8 +371,8 @@ pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
         w!("SageThumbs2KConvert"),
         Some(convert_wndproc),
         &title,
-        500,
-        274,
+        CV_DLG_W,
+        CV_DLG_H,
     ) else {
         return false;
     };
@@ -375,16 +449,17 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         hinst,
     );
 
-    // Row 2 — resize on/off + mode
+    // Row 2, resize on/off, single column (2026-09-05 audit F36, see the layout
+    // constants above for why this replaced the old two-column split).
     ctl(
         hwnd,
         BUTTON,
         t("cv_resize"),
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-        16,
-        58,
-        90,
-        20,
+        CV_RESIZE_X,
+        CV_ROW_RESIZE_CHK,
+        cv_checkbox_w(false),
+        CV_CHK_H,
         CID_RESIZE_CHK,
         hinst,
     );
@@ -393,9 +468,9 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         COMBOBOX,
         "",
         WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
-        110,
-        56,
-        180,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_RESIZE_COMBO,
+        220,
         240,
         CID_RESIZE,
         hinst,
@@ -412,14 +487,16 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     SendMessageW(rcombo, CB_SETCURSEL, Some(WPARAM(0)), None);
     dark_theme_combo(rcombo);
 
-    // Row 3 — custom W × H (only used when Resize is on + mode is "Defined size")
+    // Row 3, custom W × H (only used when Resize is on + mode is "Defined size").
+    // Numeric fields plus a one-character "×" separator, so no translation risk here.
+    let wh_x = CV_RESIZE_X + CV_RESIZE_INDENT;
     ctl(
         hwnd,
         EDIT,
         "1280",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        110,
-        88,
+        wh_x,
+        CV_ROW_WH,
         64,
         24,
         CID_RESIZE_W,
@@ -430,8 +507,8 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         STATIC,
         "\u{00d7}",
         WINDOW_STYLE(crate::win::SS_CENTER),
-        178,
-        91,
+        wh_x + 68,
+        CV_ROW_WH + 3,
         16,
         18,
         -1,
@@ -442,26 +519,37 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         EDIT,
         "720",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        198,
-        88,
+        wh_x + 88,
+        CV_ROW_WH,
         64,
         24,
         CID_RESIZE_H,
         hinst,
     );
-    ctl(hwnd, STATIC, t("cv_px"), lbl, 268, 91, 24, 18, -1, hinst);
+    ctl(
+        hwnd,
+        STATIC,
+        t("cv_px"),
+        lbl,
+        wh_x + 158,
+        CV_ROW_WH + 3,
+        24,
+        18,
+        -1,
+        hinst,
+    );
 
-    // The two resize modifiers sit in the empty column to the right of rows 2-3,
-    // so nothing below has to move.
+    // Rows 4-5, the two resize modifiers, each its own full-width row now instead of a
+    // 172px-wide second column: see the module-level comment on `CV_RESIZE_RIGHT`.
     ctl(
         hwnd,
         BUTTON,
         t("cv_resize_pad"),
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-        300,
-        58,
-        172,
-        20,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_RESIZE_PAD,
+        cv_checkbox_w(true),
+        CV_CHK_H,
         CID_RESIZE_PAD,
         hinst,
     );
@@ -470,22 +558,22 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         BUTTON,
         t("cv_resize_all"),
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-        300,
-        88,
-        172,
-        20,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_RESIZE_ALL,
+        cv_checkbox_w(true),
+        CV_CHK_H,
         CID_RESIZE_ALL,
         hinst,
     );
 
-    // Row 4 — output folder
+    // Row 6, output folder
     ctl(
         hwnd,
         STATIC,
         t("cv_output_folder"),
         lbl,
         16,
-        131,
+        CV_ROW_OUTDIR + 3,
         92,
         18,
         -1,
@@ -497,7 +585,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         "",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         110,
-        128,
+        CV_ROW_OUTDIR,
         292,
         24,
         CID_OUTDIR,
@@ -505,7 +593,16 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     );
     set_edit_text(hwnd, CID_OUTDIR, t("cv_same_folder"));
     ctl(
-        hwnd, BUTTON, "\u{2026}", WS_TABSTOP, 408, 127, 60, 26, CID_BROWSE, hinst,
+        hwnd,
+        BUTTON,
+        "\u{2026}",
+        WS_TABSTOP,
+        408,
+        CV_ROW_OUTDIR - 1,
+        60,
+        26,
+        CID_BROWSE,
+        hinst,
     );
 
     // Progress bar stays hidden until a conversion is actually running.
@@ -515,7 +612,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         "",
         WINDOW_STYLE(0),
         16,
-        172,
+        CV_ROW_PROGRESS,
         452,
         14,
         CID_PROGRESS,
@@ -529,7 +626,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         t("cv_convert"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         280,
-        202,
+        CV_ROW_BUTTONS,
         88,
         28,
         IDOK,
@@ -541,7 +638,7 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         t("btn_cancel"),
         WS_TABSTOP,
         380,
-        202,
+        CV_ROW_BUTTONS,
         88,
         28,
         IDCANCEL,
@@ -1333,6 +1430,64 @@ unsafe fn request_close(hwnd: HWND) {
 mod tests {
     use super::*;
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+
+    /// 2026-09-05 audit finding F36: `CID_RESIZE_CHK` used to be squeezed into a flat 90px
+    /// box and `CID_RESIZE_PAD`/`CID_RESIZE_ALL` into a flat 172px one, exactly the
+    /// English text's width plus a little slack, so a longer translation ran past the box
+    /// and BS_AUTOCHECKBOX clipped it silently (it never wraps). Measures every ONE of the
+    /// 36 shipped locales against the column the current single-row layout actually
+    /// allocates, rather than eyeballing a screenshot of two or three of them.
+    ///
+    /// Has teeth: reverting `build_convert_controls` to the old 90/172px widths (or
+    /// widening the OLD literals in place, `assert!(w <= 90)`/`assert!(w <= 172)`) fails
+    /// this test immediately, because several real locales measure wider than that: the
+    /// `old_width_would_have_clipped` assertion at the end is what proves it, so the test
+    /// cannot pass vacuously if some future edit removes every long translation.
+    #[test]
+    fn every_locale_resize_checkbox_label_fits_its_allocated_column() {
+        const OLD_CHK_W: i32 = 90; // the pre-fix CID_RESIZE_CHK width
+        const OLD_PAD_ALL_W: i32 = 172; // the pre-fix CID_RESIZE_PAD / CID_RESIZE_ALL width
+
+        let master_col = cv_checkbox_w(false);
+        let dependent_col = cv_checkbox_w(true);
+        let mut old_width_would_have_clipped = false;
+
+        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+            let value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+
+            if let Some(label) = value("cv_resize") {
+                let needed = unsafe { measure_design_w(label) } + CV_CHK_GLYPH_W;
+                if needed > OLD_CHK_W {
+                    old_width_would_have_clipped = true;
+                }
+                assert!(
+                    needed <= master_col,
+                    "{code}: cv_resize {label:?} needs {needed}px, the column is only \
+                     {master_col}px"
+                );
+            }
+
+            for key in ["cv_resize_pad", "cv_resize_all"] {
+                let Some(label) = value(key) else { continue };
+                let needed = unsafe { measure_design_w(label) } + CV_CHK_GLYPH_W;
+                if needed > OLD_PAD_ALL_W {
+                    old_width_would_have_clipped = true;
+                }
+                assert!(
+                    needed <= dependent_col,
+                    "{code}: {key} {label:?} needs {needed}px, the column is only \
+                     {dependent_col}px"
+                );
+            }
+        }
+
+        assert!(
+            old_width_would_have_clipped,
+            "expected at least one shipped locale to need more than the old fixed \
+             90px/172px boxes; if none do, this test can no longer prove the fix does \
+             anything"
+        );
+    }
 
     /// Issue #34, the half that is not about the cap. A batch that reported "51 of 60" and
     /// stopped told the user nothing they could act on — not which nine, and not why. The cap

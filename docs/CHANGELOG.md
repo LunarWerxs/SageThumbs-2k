@@ -492,6 +492,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   a row, only the newest one you selected is ever shown, even if an older, slower read finishes
   later.
 
+- **The Convert window's resize checkboxes, and the welcome window's opening line, no longer
+  get cut off in languages that need more room than English.** "Resize", "Pad to the exact
+  size" and "Write every preset size" used to be boxes just wide enough for the English
+  wording, which clipped several translations; they now sit in their own full-width rows sized
+  from the actual translated text. The welcome window's opening paragraph is measured the same
+  way, so a longer translation gets the extra line it needs instead of losing it.
+
 ## 2.5.0
 
 ### Added
