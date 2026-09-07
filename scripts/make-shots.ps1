@@ -142,4 +142,11 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host '  SKIPPED - Pillow not installed (pip install pillow)' -ForegroundColor Yellow
 }
 
+# Drop the scratch settings key. Deliberately NOT a try/finally: a run that threw has already
+# stopped at the failing asset, and the key is torn down and recreated at the top of the next
+# run anyway, so a crash leaves one empty scratch subkey rather than an unbalanced cleanup
+# wrapped around sixty lines of shot calls.
+Remove-Item Env:\ST2K_SETTINGS_ROOT -ErrorAction SilentlyContinue
+Remove-Item -Path "HKCU:\$shotRoot" -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host 'Done.' -ForegroundColor Green
