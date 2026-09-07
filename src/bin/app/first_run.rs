@@ -666,6 +666,7 @@ fn is_dim_caption(id: i32) -> bool {
         || id == ID_THUMBS_SUB
         || id == ID_P_COVERS_SUB
         || id == ID_P_SCANLATION_SUB
+        || id == ID_P_BADGE_SUB
         || id == ID_P2_SUB
 }
 
@@ -710,8 +711,8 @@ extern "system" fn first_run_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-        // The intro and the two sub-captions are supporting text, not labels — muted before
-        // the generic static coloring claims them.
+        // The intro and the sub-captions are supporting text, not labels, so they are
+        // muted before the generic static coloring claims them.
         if msg == WM_CTLCOLORSTATIC {
             let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
             if is_dim_caption(id) {
@@ -954,5 +955,32 @@ mod tests {
             "expected some shipped locale to need more than the pre-fix flat boxes; if none \
              do, this test can no longer prove the measured rows do anything"
         );
+    }
+
+    /// Every row's caption renders muted. A row names its caption in one place (its
+    /// [`SwitchRow`]) and is given its colour in another ([`is_dim_caption`]), with nothing
+    /// linking the two, so a row added to a page still builds, still lays out and still
+    /// renders. It just draws its caption in the full-strength foreground beside its muted
+    /// neighbours, which reads as emphasis nobody chose. `fr2_badge_sub` shipped that way,
+    /// and no size-based capture could see it; this is the guard.
+    #[test]
+    fn every_switch_row_caption_is_a_dim_caption() {
+        let rows: [&SwitchRow; 6] = [
+            &PAGE1_THUMBS_ROW,
+            &PAGE1_PREVIEW_ROW,
+            &PAGE1_SHOT_ROW,
+            &PAGE2_ROWS[0],
+            &PAGE2_ROWS[1],
+            &PAGE2_ROWS[2],
+        ];
+        for row in rows {
+            assert!(
+                is_dim_caption(row.sub_id),
+                "the caption under `{}` (id {}) is missing from `is_dim_caption`, so it \
+                 renders in the normal foreground while the captions around it stay muted",
+                row.key,
+                row.sub_id
+            );
+        }
     }
 }

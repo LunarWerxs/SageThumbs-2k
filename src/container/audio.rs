@@ -4,11 +4,18 @@
 //! pull the front-cover picture (or the first one) and hand its bytes to the
 //! normal image tiers — same flow as an ebook cover.
 //!
-//! Two formats can't ride lofty for art and get hand-rolled extractors here:
-//! APEv2 "Cover Art (Front)" (lofty reads the tag but not the cover item), and
+//! FOUR families can't ride lofty for art and get their own extractors here, in the order
+//! `extract_reader` tries them:
+//! APEv2 "Cover Art (Front)" (lofty reads the tag but not the cover item);
 //! ASF/WMA — lofty has NO ASF support at all (its `FileType` enum has no Wma/Asf
-//! variant), so a real WMP/foobar-tagged `.wma` never reaches a picture via lofty.
-//! `asf_cover` parses the `WM/Picture` attribute out of the ASF header directly.
+//! variant), so a real WMP/foobar-tagged `.wma` never reaches a picture via lofty, and
+//! `asf_cover` parses the `WM/Picture` attribute out of the ASF header directly;
+//! DSD `.dsf`, whose trailing ID3v2 tag lofty 0.22 also cannot reach;
+//! and MP4-family audio (.m4a/.m4b/.m4p/ALAC), where lofty returns no picture for the
+//! iTunes `covr` atom, so `mp4_cover` reuses the video side's atom walk. That last one was
+//! costing about 113 ms per thumbnail instead of 0.2 ms, because with no branch here the
+//! cover was only ever found by the brute-force embedded-JPEG scan at the end of the
+//! decode chain (2026-09-05 audit F38).
 //!
 //! `extract_reader` takes a seekable reader so the thumbnail provider can hand us
 //! the shell's IStream directly: lofty seeks to the metadata/art and reads only
@@ -51,6 +58,24 @@ pub fn extract_reader<R: Read + Seek>(mut reader: R) -> Option<Vec<u8>> {
     // header's pointer to its trailing ID3v2 tag and pull the cover out. Non-DSF
     // input bails on the magic → the lofty path runs as before.
     if let Some(cover) = dsf_cover(&mut reader) {
+        return Some(cover);
+    }
+    // MP4-family audio (.m4a/.m4b/.m4p/ALAC) FOURTH, ahead of lofty, because lofty does
+    // not return the `covr` artwork for these files and the atom read that does is both
+    // exact and effectively free.
+    //
+    // 2026-09-05 audit F38 found this as a 45x thumbnail slowdown on `sample.m4a` and
+    // `sample.m4b`, and the measurement is worth recording because the shape recurs:
+    // `mp4::cover_art` finds the file's 143 KB JPEG in 0.19 ms, `lofty_cover` answers None,
+    // and with no branch here the whole decode fell through every remaining tier to the
+    // brute-force embedded-JPEG scan, which finds the same picture in about 113 ms. Nothing
+    // was broken in the visible sense: the right cover appeared, just 45 times slower than
+    // its recorded baseline, which is exactly the class of regression a correctness test
+    // cannot see.
+    //
+    // Placed before lofty rather than after, so the cheap exact answer wins on every file
+    // that has one, and non-MP4 input falls straight through on the `ftyp` mismatch.
+    if let Some(cover) = mp4_cover(&mut reader) {
         return Some(cover);
     }
     // lofty for every other tagged format. Borrowed (`&mut`) so we keep ownership
@@ -141,6 +166,29 @@ fn lofty_pic_rank(t: PictureType) -> u8 {
 /// blank white tile. Real-world files hit this constantly: ID3 type 1 is a 32x32 file
 /// icon and plenty of taggers write one alongside the cover. So: rank by picture type,
 /// then take the biggest inside the winning rank.
+/// The `covr` artwork of MP4-family audio (.m4a/.m4b/.m4p and Apple Lossless), read by the
+/// same atom walk the video side already uses ([`crate::mp4::cover_art`]) rather than a
+/// second parser of the same container.
+///
+/// Cheap rejection first: an MP4 has `ftyp` as its first box, so four bytes settle whether
+/// this branch applies at all and every non-MP4 caller pays one short read. Without that,
+/// putting this ahead of lofty would make it the thing that touches every audio file.
+///
+/// Size and content are already enforced inside `cover_art` (its own 32 MB ceiling plus an
+/// image-signature check), so this deliberately does not re-check them; duplicating the cap
+/// here would be a second number to drift.
+fn mp4_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
+    reader.seek(SeekFrom::Start(0)).ok()?;
+    let mut head = [0u8; 12];
+    // A short file is not an MP4, and a read error is not this branch's business to report.
+    reader.read_exact(&mut head).ok()?;
+    if &head[4..8] != b"ftyp" {
+        return None;
+    }
+    reader.seek(SeekFrom::Start(0)).ok()?;
+    crate::mp4::cover_art(reader)
+}
+
 fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
     reader.seek(SeekFrom::Start(0)).ok()?;
     let bounded = BudgetedReader {
@@ -569,6 +617,65 @@ mod tests {
 
     /// DSD `.dsf` carries its cover in a trailing ID3v2 tag that lofty can't read; the
     /// hand-rolled `dsf_cover` must pull the front-cover APIC out.
+    /// Build a minimal MP4 audio file whose only content is the iTunes cover path,
+    /// `ftyp` then `moov > udta > meta > ilst > covr > data`. `meta` is written as a FULL
+    /// box (four bytes of version and flags before its children), which is what iTunes and
+    /// every tagger that follows it emit.
+    fn m4a_with_cover(img: &[u8]) -> Vec<u8> {
+        fn atom(name: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(name);
+            v.extend_from_slice(body);
+            v
+        }
+        // data: 4 bytes of type indicator (13 = JPEG), 4 bytes of locale, then the image.
+        let mut data_body = 13u32.to_be_bytes().to_vec();
+        data_body.extend_from_slice(&0u32.to_be_bytes());
+        data_body.extend_from_slice(img);
+        let covr = atom(b"covr", &atom(b"data", &data_body));
+        let ilst = atom(b"ilst", &covr);
+        let mut meta_body = 0u32.to_be_bytes().to_vec(); // full-box version and flags
+        meta_body.extend_from_slice(&ilst);
+        let meta = atom(b"meta", &meta_body);
+        let udta = atom(b"udta", &meta);
+        let moov = atom(b"moov", &udta);
+        let mut out = atom(b"ftyp", b"M4A isomM4A ");
+        out.extend_from_slice(&moov);
+        out
+    }
+
+    /// 2026-09-05 audit F38. `.m4a`/`.m4b` cover art was reaching the shell only through the
+    /// brute-force embedded-JPEG scan, about 113 ms, because nothing in the audio chain read
+    /// the `covr` atom and lofty does not surface it. The atom read costs about 0.2 ms, so
+    /// the thumbnail was roughly 45 times its recorded baseline while still showing the right
+    /// picture, which is why no correctness test noticed.
+    #[test]
+    fn mp4_audio_cover_is_read_from_the_covr_atom() {
+        assert_eq!(
+            extract(&m4a_with_cover(FAKE_JPEG)),
+            Some(FAKE_JPEG.to_vec()),
+            "an .m4a covr atom must be read by the audio chain, not left to a later fallback"
+        );
+    }
+
+    /// The branch must not become the thing every audio file pays for. A non-MP4 input has
+    /// to be rejected on the `ftyp` check rather than walked, and must still reach the
+    /// handler that does own it.
+    #[test]
+    fn the_mp4_cover_branch_declines_anything_that_is_not_an_mp4() {
+        assert_eq!(
+            mp4_cover(&mut Cursor::new(b"not an mp4 at all".to_vec())),
+            None
+        );
+        assert_eq!(mp4_cover(&mut Cursor::new(Vec::new())), None);
+        // A DSF file still reaches the DSF handler with the MP4 branch in front of it.
+        assert_eq!(
+            extract(&dsf_with_cover(FAKE_JPEG)),
+            Some(FAKE_JPEG.to_vec()),
+            "the MP4 branch must not shadow the other hand-parsed formats"
+        );
+    }
+
     #[test]
     fn dsf_cover_reads_id3v2_apic() {
         assert_eq!(
