@@ -106,6 +106,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Sorting images into folders by size no longer deletes a folder someone else just made.**
+  "Sort into folders by image size" used to check whether a `WIDTHxHEIGHT` folder existed and
+  create it a moment later; if another program (or another SageThumbs action) created that same
+  folder in between and this run's own move then failed, it removed that other folder as if it
+  were its own leftover junk. Creating the folder is now a single atomic step, so only a folder
+  this run actually created can ever be removed on a failed move, and only while still empty.
+
 - **Signing in to Settings Sync no longer looks like it failed when only the first cloud sync
   did.** Signing in saves your account right away, but if the very first sync to the cloud
   couldn't finish, the status line and the "Stop syncing" button used to say you were fully

@@ -427,6 +427,45 @@ fn dims(path: &str) -> Option<(u32, u32)> {
     crate::container::real_or_decoded_dims(&bytes)
 }
 
+/// Whether an already-performed attempt to `create_dir` means THIS caller now owns the
+/// directory it names, and so is responsible for removing it again if what it wanted the
+/// directory for then fails. `Ok(())` means we created it just now; `AlreadyExists` (or any
+/// other error) means we did not — either another actor got there first, or the directory
+/// never came to exist at all, and either way it is not ours to clean up.
+///
+/// Pulled out as a pure function (2026-09-05 audit, F14) so the ownership decision itself is
+/// unit-testable without touching a filesystem: the prior code decided ownership from a
+/// separate `!dir.exists()` check taken BEFORE the create, which raced against any other
+/// actor (another `st2k` call, Explorer, an AV scan) creating the same bucket in between —
+/// the loser of that race still believed it owned the directory and could remove it out from
+/// under the winner's use of it.
+fn owns_new_dir(create_result: &std::io::Result<()>) -> bool {
+    create_result.is_ok()
+}
+
+/// Atomically claim `dir` as a fresh bucket. Returns `(usable, owned_by_this_call)`:
+/// `usable` says the directory exists and callers may move into it; `owned_by_this_call` says
+/// THIS call is the one that created it, so a later failure is this call's to clean up.
+///
+/// `create_dir` (non-recursive) IS the ownership claim, not a `!dir.exists()` check followed
+/// by a separate create: `create_dir` either creates the directory and hands back `Ok(())`, or
+/// fails `AlreadyExists` if it was already there — one atomic OS call, no window in which
+/// another actor's create can land unseen (2026-09-05 audit, F14). The recursive form is used
+/// only as a fallback when the PARENT itself is missing (not the case a sibling image's own
+/// folder can hit, since that parent already exists); a create performed in that fallback still
+/// counts as ownership.
+fn claim_bucket_dir(dir: &Path) -> (bool, bool) {
+    let result = std::fs::create_dir(dir);
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+        return (true, false);
+    }
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        let fallback = std::fs::create_dir_all(dir);
+        return (fallback.is_ok(), owns_new_dir(&fallback));
+    }
+    (result.is_ok(), owns_new_dir(&result))
+}
+
 /// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own parent
 /// folder (skwire "Dimensions 2 Folders"). Returns (moved, skipped).
 pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
@@ -445,12 +484,8 @@ pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
         match d {
             Some((w, h)) => {
                 let dir = parent.join(format!("{w}x{h}"));
-                // Whether THIS call is the one creating the bucket — if the move into it
-                // then fails, the bucket is empty junk we just made and should remove,
-                // not a pre-existing folder (from an earlier file, or the user) that
-                // simply doesn't have this file's dimensions in it.
-                let bucket_is_new = !dir.exists();
-                if std::fs::create_dir_all(&dir).is_ok() && move_into(src, &dir).is_ok() {
+                let (usable, bucket_is_new) = claim_bucket_dir(&dir);
+                if usable && move_into(src, &dir).is_ok() {
                     moved += 1;
                     if !touched.iter().any(|t| t == parent) {
                         touched.push(parent.to_path_buf());
@@ -901,6 +936,107 @@ mod tests {
         assert!(
             !dir.join("5x5").exists(),
             "the bucket this call created must be removed after its only move failed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pure unit coverage for the ownership decision itself (2026-09-05 audit, F14): a
+    /// successful `create_dir` means we own the directory we just made; `AlreadyExists`
+    /// (the shape a raced-away creation attempt returns) means we do not, whatever a separate
+    /// `exists()` check might have said a moment earlier.
+    #[test]
+    fn owns_new_dir_is_true_only_for_a_create_this_call_actually_performed() {
+        let created: std::io::Result<()> = Ok(());
+        assert!(owns_new_dir(&created));
+
+        let raced_away: std::io::Result<()> =
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        assert!(!owns_new_dir(&raced_away));
+    }
+
+    /// F14's actual race, reproduced for real rather than simulated: two threads call
+    /// `claim_bucket_dir` on the SAME path, released together by a `Barrier` so the OS sees
+    /// both `create_dir` attempts as close to simultaneous as it can. `create_dir` is atomic
+    /// at the OS level, so exactly one of them must come back `owned == true` however the
+    /// scheduler interleaves them — this is deterministic, not a timing gamble.
+    ///
+    /// Revert `claim_bucket_dir` to the pre-fix shape (`let bucket_is_new = !dir.exists();`
+    /// then `create_dir_all(&dir)`) and this test can fail: with the barrier forcing both
+    /// threads to reach the `exists()` check before either has created anything, BOTH observe
+    /// "not there yet" and BOTH get `bucket_is_new = true` — `create_dir_all` succeeds
+    /// unconditionally for both since it treats an already-present directory as a no-op — so
+    /// `owners` comes back 2, not 1. That double ownership is exactly the F14 bug: either side
+    /// believes it alone made the folder and may remove it out from under the other's use of
+    /// it on a later failed move.
+    #[test]
+    fn claim_bucket_dir_gives_ownership_to_exactly_one_racing_caller() {
+        let dir = std::env::temp_dir().join(format!("st2k_dims_race_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bucket = std::sync::Arc::new(dir.join("bucket"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let bucket = std::sync::Arc::clone(&bucket);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim_bucket_dir(&bucket)
+                })
+            })
+            .collect();
+        let results: Vec<(bool, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        assert!(
+            results.iter().all(|(usable, _)| *usable),
+            "both racing callers must see a usable directory afterwards"
+        );
+        let owners = results.iter().filter(|(_, owned)| *owned).count();
+        assert_eq!(
+            owners, 1,
+            "exactly one racing caller must own the directory it created"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The end-to-end shape of F14: a bucket directory that ALREADY EXISTS before this call
+    /// even starts (standing in for one a genuinely concurrent creator just won, or a leftover
+    /// from an earlier run) must survive when this call's own move into it then fails. This is
+    /// the mirror of the pre-existing-file test above, but for the exact case F14 is about: a
+    /// pre-existing DIRECTORY, not a blocking file.
+    #[test]
+    fn sort_by_dimensions_never_removes_a_bucket_it_did_not_create_when_the_move_into_it_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = std::env::temp_dir().join(format!("st2k_dims_notowned_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Simulate "someone else already made this bucket" by creating it before the call.
+        let bucket_path = dir.join("5x5");
+        std::fs::create_dir_all(&bucket_path).unwrap();
+
+        let img = png(&dir, "photo.png", 5, 5);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ only — no FILE_SHARE_DELETE
+            .open(Path::new(&img))
+            .unwrap();
+
+        let (moved, skipped) = sort_by_dimensions(&[img]);
+        drop(held);
+
+        assert_eq!(
+            moved, 0,
+            "the rename must fail while the source denies delete access"
+        );
+        assert_eq!(skipped, 1);
+        assert!(
+            bucket_path.is_dir(),
+            "a bucket this call did not create must survive its own failed move"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
