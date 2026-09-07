@@ -887,3 +887,23 @@ all in the same files as UI text: **before localizing any string, grep for it in
 interface its own accessor and localize the other one. Related: `button_tip()` interpolates the
 real accelerator letter into a `{key}` placeholder rather than translating the key name, for
 the same reason in the other direction, a translated "Ctrl" describes a key nobody has.
+
+## Anything after a call that pumps messages may be running on a freed window
+
+The E02 responsiveness work (2026-09-07) added a per-stage stall log at the tail of the
+viewer's `WM_APP_LOAD_RESOLVED` handler: call `apply_resolved`, then read `st.path` to name
+the file in the log line. The flagship review found the crash before it shipped. For an HTML
+or web-shortcut file, `apply_resolved` reaches `try_load_web` and `create_web`, and WebView2
+creation PUMPS THE MESSAGE LOOP. A close arriving during that pump runs `DestroyWindow`
+synchronously, `on_destroy` frees the boxed `ViewerState`, and control then returns to the
+handler, which dereferences the dangling `st`. With `panic=abort` that is a crash on Esc
+during a web load, in every release build (the html-preview feature is on in all of them).
+`request_close`'s own comment names this hazard; the new line simply did not know it was
+downstream of it.
+
+The rule: **in a window procedure, anything you need AFTER a call that can pump messages or
+destroy the window must be copied out BEFORE that call**, and the post-call code must check
+`IsWindow(hwnd)` before touching window state. Calls that pump here: WebView2 creation, any
+modal dialog, `SendMessage` to another thread's window, and anything documented as
+"busy-deferral". A timer around such a call also measures the user, not the code, so a stage
+that pumps is excluded from the stall budget by definition rather than logged as a stall.
