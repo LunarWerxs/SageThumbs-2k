@@ -831,21 +831,6 @@ fn finish_push_worker_on(counter: &AtomicUsize, marker_name: &str, success: bool
     }
 }
 
-// Name-parameterised so the outstanding-worker accounting is testable against a scratch
-// counter and a scratch marker name, the same pattern `set_marker`/`clear_marker`/
-// `marker_set` already use, rather than the real `PUSH_WORKERS` static and the real
-// `PENDING_VALUE` marker.
-fn begin_push_worker_on(counter: &AtomicUsize) {
-    counter.fetch_add(1, Ordering::AcqRel);
-}
-
-fn finish_push_worker_on(counter: &AtomicUsize, marker_name: &str, success: bool) {
-    let remaining = counter.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
-    if success && remaining == 0 {
-        clear_marker(marker_name);
-    }
-}
-
 pub(crate) fn begin_push_worker() {
     begin_push_worker_on(&PUSH_WORKERS);
 }
