@@ -8,8 +8,14 @@
   what the theme was (their issue #1797). That class of bug is invisible to a
   normal test suite and to anyone who only ever runs one theme.
 
-  So this renders every window, and every Quick-preview CONTENT TYPE, twice: once
-  with ST2K_THEME=dark and once with ST2K_THEME=light. For each pair it asserts
+  So this renders every window that has a `--shot` mode AND is supposed to follow
+  the theme, plus every Quick-preview CONTENT TYPE, twice: once with
+  ST2K_THEME=dark and once with ST2K_THEME=light. (That claim was false until
+  2026-09-06: doctor, convert-report, firstrun and firstrun2 were omitted while
+  the text said "every window", and the first two were covered by no check of any
+  kind. The one deliberate exclusion is `eyedropper`, for the reason recorded
+  beside the cases list - read it before "fixing" its absence. Add new --window
+  modes HERE when you add them to main.rs.) For each pair it asserts
 
     1. the two images DIFFER — a window that ignores the theme produces identical
        bytes, which is exactly the failure mode; and
@@ -38,6 +44,17 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
 
 $outDir = Join-Path ([IO.Path]::GetTempPath()) ("st2k-theme-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+# Same settings isolation make-shots.ps1 uses, and for the same two reasons: `--shot` is not
+# read-only (building the Settings window persists NavDotsSeen, SignInNudge and
+# InstallReported), and a run that reads the operator's live settings is not comparing the
+# same dialog on two machines. Redirect the whole read/write to a scratch subkey.
+$shotRoot = 'Software\SageThumbs2K-ThemeCheckScratch'
+Remove-Item -Path "HKCU:\$shotRoot" -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -Path "HKCU:\$shotRoot" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\$shotRoot" -Name PreviewEnabled -Value 1 -Type DWord
+Set-ItemProperty -Path "HKCU:\$shotRoot" -Name NavDotsSeen -Value 2047 -Type DWord
+$env:ST2K_SETTINGS_ROOT = $shotRoot
 
 Add-Type -AssemblyName System.Drawing
 
@@ -102,6 +119,25 @@ $cases = @(
     @{ Name = 'about'; Args = @('--window', 'about') }
     @{ Name = 'feedback'; Args = @('--window', 'feedback') }
     @{ Name = 'ocr'; Args = @('--window', 'ocr') }
+    # Licence, the category added 2026-09-02. `settings` above only ever builds tab 0, so a
+    # new page is covered by nothing until it is named here.
+    @{ Name = 'settings-licence'; Args = @('--window', 'settings', '--tab', '10') }
+    # These five have dedicated run_shot_* capture code and were covered by NOTHING here
+    # (doctor and convert-report by nothing anywhere), so a theme regression on them shipped
+    # silently. The docstring above claimed "every window" while omitting them.
+    @{ Name = 'doctor'; Args = @('--window', 'doctor') }
+    @{ Name = 'convert-report'; Args = @('--window', 'convert-report') }
+    @{ Name = 'firstrun'; Args = @('--window', 'firstrun') }
+    @{ Name = 'firstrun2'; Args = @('--window', 'firstrun2') }
+    # ⛔ `--window eyedropper` is DELIBERATELY NOT HERE, and adding it makes this script lie.
+    # Tried on 2026-09-06: it reports FAIL with dark and light byte-identical, and both halves
+    # of that are correct behaviour. The loupe never consults `is_dark` (eyedropper.rs imports
+    # only `rgb` from dark.rs) because a COLOUR PICKER must not tint the colours it is
+    # reporting - its chrome is fixed rgb(24,24,24) on rgb(240,240,240) by design. And
+    # `run_shot_eyedropper` BitBlts the live primary monitor as its backdrop, so the mean
+    # luminance this script measures is whatever is on the desktop, not anything the app drew.
+    # A surface that must not follow the theme, photographed against a non-deterministic
+    # background, cannot be judged by "is light brighter than dark".
     @{ Name = 'preview-code'; Args = @('--window', 'preview', '--file', $code) }
     @{ Name = 'preview-markdown'; Args = @('--window', 'preview', '--file', $md) }
     @{ Name = 'preview-source'; Args = @('--window', 'preview', '--file', $md, '--source') }
@@ -152,6 +188,9 @@ $rows | ForEach-Object {
 }
 
 if ($Keep) { "`nPNGs kept in $outDir" } else { Remove-Item -Recurse -Force $outDir -EA SilentlyContinue }
+
+Remove-Item Env:\ST2K_SETTINGS_ROOT -ErrorAction SilentlyContinue
+Remove-Item -Path "HKCU:\$shotRoot" -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($fail) {
     Write-Host "`n[theme] FAIL - $fail of $($cases.Count) surfaces do not follow the theme" -ForegroundColor Red
