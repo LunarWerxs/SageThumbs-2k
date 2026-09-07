@@ -46,10 +46,19 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const CHECK = argv.includes('--check');
 const SELF_TEST = argv.includes('--self-test');
-const siteFlagAt = argv.indexOf('--site');
-const SITE_ARG = siteFlagAt >= 0 ? argv[siteFlagAt + 1] : undefined;
-const positional = argv.filter((a, i) => a !== '--check' && a !== '--self-test' && a !== '--site' && i !== siteFlagAt + 1);
-const ST2K_ARG = positional[0];
+/** Split argv into the flags and the one positional (the st2k executable). Pure, so the
+ *  self-test can pin it: without `--site`, `siteFlagAt` is -1 and a bare `i !== siteFlagAt + 1`
+ *  used to drop argv[0], which is the executable itself, so `node gen-site.mjs path\to\st2k.exe`
+ *  silently ignored the path and generated from whatever stale release binary was lying around
+ *  (found 2026-09-07 when a page came out with no capability sentences at all). */
+function parseArgs(argv) {
+  const siteFlagAt = argv.indexOf('--site');
+  const SITE_ARG = siteFlagAt >= 0 ? argv[siteFlagAt + 1] : undefined;
+  const positional = argv.filter((a, i) =>
+    a !== '--check' && a !== '--self-test' && a !== '--site' && (siteFlagAt < 0 || i !== siteFlagAt + 1));
+  return { SITE_ARG, ST2K_ARG: positional[0] };
+}
+const { SITE_ARG, ST2K_ARG } = parseArgs(argv);
 
 // ---- resolve the cargo target dir, mirroring scripts/_targetdir.ps1 --------
 function resolveTargetDir() {
@@ -168,7 +177,7 @@ function capabilitySentence(items) {
   if (sourceKeys.length <= 1) {
     const source = items[0] && items[0].source;
     s = SOURCE_SENTENCE[source];
-    if (source !== undefined && s === undefined) {
+    if (s === undefined) {
       throw new Error(`gen-site: unknown capability source "${source}" - add it to SOURCE_SENTENCE (and SOURCE_COUNT_PHRASE)`);
     }
   } else {
@@ -209,6 +218,25 @@ function capabilitySentence(items) {
  *  used to strip it) and each group gets a single focusable toggle button that reveals a
  *  plain-text description list, so every format's description is keyboard- and
  *  touch-reachable without adding one tab stop per chip (hundreds of them). */
+/** Every item `st2k formats --json` hands us must carry the capability fields (audit E03).
+ *  A binary built before those fields existed still answers with ext/category/description
+ *  only, and `capabilitySentence` then quietly emits NOTHING for every group - a page with no
+ *  capability sentences at all, from a run that exited 0 (that is exactly what a stale
+ *  release st2k.exe produced on 2026-09-07). So the absence of the fields is an error naming
+ *  the binary, not a blank. */
+function assertCapabilityFields(formats, exePath) {
+  const bad = formats.filter(x =>
+    typeof x.source !== 'string' || typeof x.convertible !== 'boolean' ||
+    typeof x.preview_listing !== 'boolean' || !('os_codec' in x) ||
+    (x.os_codec !== null && typeof x.os_codec !== 'string'));
+  if (bad.length) {
+    throw new Error(
+      `gen-site: ${bad.length} of ${formats.length} format entries lack the capability fields ` +
+      `(source/convertible/preview_listing/os_codec), first: ${JSON.stringify(bad[0])}. ` +
+      `${exePath} predates them - rebuild st2k and pass that executable.`);
+  }
+}
+
 function buildFormatWall(formats, CR) {
   const TOTAL = formats.length;
   const by = {};
@@ -317,21 +345,42 @@ function runSelfTest() {
     catch (e) { results.push([name, false, e.message]); }
   };
 
+  check('the executable argument is honoured with and without --site', () => {
+    assert.equal(parseArgs(['x.exe']).ST2K_ARG, 'x.exe');
+    assert.equal(parseArgs(['x.exe', '--check']).ST2K_ARG, 'x.exe');
+    const both = parseArgs(['--site', 'p.html', 'x.exe']);
+    assert.equal(both.ST2K_ARG, 'x.exe');
+    assert.equal(both.SITE_ARG, 'p.html');
+    const flagLast = parseArgs(['x.exe', '--site', 'p.html']);
+    assert.equal(flagLast.ST2K_ARG, 'x.exe');
+    assert.equal(flagLast.SITE_ARG, 'p.html');
+    assert.equal(parseArgs(['--check']).ST2K_ARG, undefined);
+  });
+
+  check('a binary without the capability fields is refused, never rendered blank', () => {
+    const stale = [{ ext: 'png', category: 'Image', description: 'PNG' }];
+    assert.throws(() => assertCapabilityFields(stale, 'old.exe'), /lack the capability fields.*old\.exe predates them/s);
+    const fresh = [{ ext: 'png', category: 'Image', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }];
+    assert.doesNotThrow(() => assertCapabilityFields(fresh, 'new.exe'));
+    const halfway = [{ ...fresh[0], os_codec: undefined }];
+    assert.throws(() => assertCapabilityFields(halfway, 'x.exe'), /lack the capability fields/);
+  });
+
   check('missing marker (no pills) fails', () => {
     const html = fixtureHtml({ pills: 0 });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG' }], '\r\n');
+    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
     assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /js-app-version pills/);
   });
 
   check('missing marker (no softwareVersion) fails', () => {
     const html = fixtureHtml({ schema: 0 });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG' }], '\r\n');
+    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
     assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /softwareVersion/);
   });
 
   check('missing marker (no format-wall region) fails', () => {
     const html = fixtureHtml({ withBarRegion: false });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG' }], '\r\n');
+    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
     assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /could not locate the format-wall region/);
   });
 
@@ -442,6 +491,7 @@ if (SELF_TEST) {
 const SITE = SITE_ARG ? path.resolve(SITE_ARG) : path.join(ROOT, 'site', 'index.html');
 const ST2K = findSt2k(ST2K_ARG);
 const formats = JSON.parse(execFileSync(ST2K, ['formats', '--json'], { encoding: 'utf8' }));
+assertCapabilityFields(formats, ST2K);
 
 const VERSION = readCargoVersion(ROOT);
 const exeVersion = getExeVersion(ST2K);
