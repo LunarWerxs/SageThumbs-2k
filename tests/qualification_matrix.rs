@@ -168,16 +168,80 @@ fn extract_references(evidence: &str) -> Vec<Reference> {
     out
 }
 
+/// Strips `/* ... */` block comments (non-nested), replacing their content with spaces
+/// (newlines kept as newlines) so line structure survives. None of the Rust/PowerShell
+/// files this test reads are known to nest block comments, so a simple non-nested strip is
+/// enough; an unterminated `/*` blanks out to the end of the file rather than panicking.
+fn strip_block_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text[i..].starts_with("/*") {
+            let comment_len = text[i..].find("*/").map_or(text.len() - i, |end| end + 2);
+            for c in text[i..i + comment_len].chars() {
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+            i += comment_len;
+        } else {
+            let ch = text[i..].chars().next().expect("i < text.len()");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// True if `text` defines `<keyword> <func>` (for example `"fn"`/`"push_snapshot"` or
+/// `"function"`/`"Test-Foo"`) on a live, non-comment line, at a word boundary on both
+/// sides: neither the character before `<keyword>` nor the character after `<func>` may be
+/// an identifier character, so a search for `fn push` cannot match `fn push_snapshot`
+/// (trailing collision) or `myfn push` (leading collision). A line is ignored entirely
+/// (never counts as a definition, commented-out or not) when its first non-whitespace
+/// characters are `//`, `///`, or `#` (a PowerShell comment); `/* */` block comments are
+/// stripped first via `strip_block_comments`.
+fn defines_fn(text: &str, keyword: &str, func: &str) -> bool {
+    let stripped = strip_block_comments(text);
+    let needle = format!("{keyword} {func}");
+    let is_ident_char = |c: char| c.is_alphanumeric() || c == '_';
+    for line in stripped.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        let mut consumed = 0usize;
+        while let Some(at) = rest.find(&needle) {
+            let abs_start = consumed + at;
+            let before_ok = line[..abs_start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident_char(c));
+            let abs_end = abs_start + needle.len();
+            let after_ok = line[abs_end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_ident_char(c));
+            if before_ok && after_ok {
+                return true;
+            }
+            let advance = at + 1;
+            rest = &rest[advance..];
+            consumed += advance;
+        }
+    }
+    false
+}
+
 /// Reads `file` and asserts it defines `fn <func>` (a Rust test/free function).
 fn assert_rust_fn_exists(file: &str, func: &str) {
     let full = repo_root().join(file);
     let text = std::fs::read_to_string(&full)
         .unwrap_or_else(|e| panic!("evidence names {file}, but it could not be read: {e}"));
-    let needle = format!("fn {func}");
     assert!(
-        text.contains(&needle),
-        "evidence names `{file}::{func}`, but no `{needle}` was found in {file}. Either the \
-         function was renamed/removed, or the matrix row's evidence is stale."
+        defines_fn(&text, "fn", func),
+        "evidence names `{file}::{func}`, but no live `fn {func}` was found in {file}. \
+         Either the function was renamed/removed, it is commented out, or the matrix row's \
+         evidence is stale."
     );
 }
 
@@ -186,11 +250,11 @@ fn assert_ps_fn_exists(file: &str, func: &str) {
     let full = repo_root().join(file);
     let text = std::fs::read_to_string(&full)
         .unwrap_or_else(|e| panic!("evidence names {file}, but it could not be read: {e}"));
-    let needle = format!("function {func}");
     assert!(
-        text.contains(&needle),
-        "evidence names `{file}::{func}`, but no `{needle}` was found in {file}. Either the \
-         function was renamed/removed, or the matrix row's evidence is stale."
+        defines_fn(&text, "function", func),
+        "evidence names `{file}::{func}`, but no live `function {func}` was found in {file}. \
+         Either the function was renamed/removed, it is commented out, or the matrix row's \
+         evidence is stale."
     );
 }
 
@@ -308,4 +372,52 @@ fn every_manual_row_names_a_procedure_that_exists() {
             row.raw
         );
     }
+}
+
+// ---- the `defines_fn` matcher itself (the checker the audit found could be fooled) -----
+
+#[test]
+fn defines_fn_matches_a_real_definition() {
+    assert!(defines_fn("fn push_snapshot() {}", "fn", "push_snapshot"));
+    assert!(defines_fn(
+        "    pub(crate) fn push_snapshot(x: u32) {}",
+        "fn",
+        "push_snapshot"
+    ));
+    assert!(defines_fn(
+        "function Test-ModernMenuRegistersAsOriginalUser {",
+        "function",
+        "Test-ModernMenuRegistersAsOriginalUser"
+    ));
+}
+
+#[test]
+fn defines_fn_rejects_a_prefix_collision() {
+    // The original bug: `text.contains("fn push")` matched `fn push_snapshot` too.
+    assert!(!defines_fn("fn push_snapshot() {}", "fn", "push"));
+    assert!(!defines_fn(
+        "function Test-FooBar {",
+        "function",
+        "Test-Foo"
+    ));
+}
+
+#[test]
+fn defines_fn_rejects_a_commented_out_definition() {
+    assert!(!defines_fn(
+        "// fn push_snapshot() {}",
+        "fn",
+        "push_snapshot"
+    ));
+    assert!(!defines_fn(
+        "    /// fn push_snapshot() {}",
+        "fn",
+        "push_snapshot"
+    ));
+    assert!(!defines_fn("# function Test-Foo {", "function", "Test-Foo"));
+    assert!(!defines_fn(
+        "/* fn push_snapshot() {} */",
+        "fn",
+        "push_snapshot"
+    ));
 }

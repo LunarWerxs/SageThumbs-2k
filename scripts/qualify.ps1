@@ -64,6 +64,11 @@ function Get-MatrixRows {
         if ($cells.Count -ne 8) {
             throw "expected 8 columns, got $($cells.Count) in row: $trimmed"
         }
+        for ($col = 0; $col -lt $cells.Count; $col++) {
+            if ([string]::IsNullOrEmpty($cells[$col])) {
+                throw "blank cell in column $col of row $($cells[0]): $trimmed"
+            }
+        }
         $rows += [pscustomobject]@{
             Number   = $cells[0]
             Scenario = $cells[1]
