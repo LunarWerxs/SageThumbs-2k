@@ -678,7 +678,7 @@ mod tests {
     /// bubble on hover.
     ///
     /// `button_tip` is now locale-dependent (audit F29), so this forces English explicitly
-    /// rather than trusting whatever the test machine's Windows UI language happens to be —
+    /// rather than trusting whatever the test machine's Windows UI language happens to be -
     /// the assertion below checks a literal English substring.
     #[test]
     fn ocr_button_sits_next_to_copy_and_is_described() {
@@ -708,7 +708,7 @@ mod tests {
 
     /// Audit F29: every tooltip must come from the locale table, not a hardcoded literal.
     /// Compares `button_tip` against `t(key)` (with the tool letter substituted the same way
-    /// `button_tip` itself does it) for every button — a hardcoded `&'static str` could not
+    /// `button_tip` itself does it) for every button - a hardcoded `&'static str` could not
     /// track a key it never looks up. Also proves the `{key}` placeholder actually gets filled:
     /// a missing `.replace()` would leave the literal text `{key}` in the tooltip.
     #[test]

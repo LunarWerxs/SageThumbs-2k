@@ -5,7 +5,7 @@
 //! `tests/preview_markdown_shot.rs` uses) twice on the SAME Markdown file: once under the
 //! default (English) locale, once with the language forced to French via a scratch HKCU key
 //! redirected through `ST2K_SETTINGS_ROOT` (see `settings::hkcu_root`), so the developer's real
-//! `HKCU\Software\SageThumbs2K\Lang` is never touched. The two renders must differ — proving the
+//! `HKCU\Software\SageThumbs2K\Lang` is never touched. The two renders must differ - proving the
 //! header text (and everything else this finding covers) actually changes with the locale
 //! rather than being baked in.
 
@@ -36,7 +36,7 @@ fn shot_markdown_with_lang(
         .stderr(Stdio::null());
 
     if let Some(code) = lang {
-        // A scratch HKCU subkey rather than the developer's real `Software\SageThumbs2K\Lang` —
+        // A scratch HKCU subkey rather than the developer's real `Software\SageThumbs2K\Lang` -
         // see settings::hkcu_root's ST2K_SETTINGS_ROOT redirect. Unique per case + pid so
         // parallel test runs (and repeated local runs) never collide.
         let root = format!(

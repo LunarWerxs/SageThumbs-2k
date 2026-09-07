@@ -436,7 +436,7 @@ pub(super) unsafe fn draw_dim_badge(hdc: HDC, s: &Shot, sel: RECT) {
 }
 
 /// The size readout in the committed-selection hint: text point-size for the Text tool, line/
-/// shape thickness otherwise. Localized (audit F29, 2026-09-06) — pre-fix this built the same
+/// shape thickness otherwise. Localized (audit F29, 2026-09-06) - pre-fix this built the same
 /// two words with a hardcoded, non-localized `format!` that never varied with the active
 /// language. Pure so it can be tested without a live overlay window.
 fn size_readout(tool: Tool, thickness: i32, text_size: i32) -> String {
@@ -463,7 +463,7 @@ fn snap_suffix(tool: Tool, forced: Option<bool>) -> &'static str {
 
 /// Assemble the committed-selection hint line from its localized template and the
 /// already-computed pieces. Pure so the locale coverage can be proven without a live overlay
-/// (audit F29): pre-fix, the whole line — including the key-hint sentence at the end — was one
+/// (audit F29): pre-fix, the whole line - including the key-hint sentence at the end - was one
 /// hardcoded English `format!`.
 fn format_active_hint(tool: &str, size: &str, color_hex: &str, snap: &str) -> String {
     crate::win::t("shot_hint_active")
@@ -625,7 +625,7 @@ mod tests {
         }
     }
 
-    /// Audit F29: every placeholder in `shot_hint_active` must be substituted — a template
+    /// Audit F29: every placeholder in `shot_hint_active` must be substituted - a template
     /// change that drops a `{tool}`/`{size}`/`{color}`/`{snap}` slot, or code that forgets to
     /// fill one, would leave the literal braces on screen instead of failing to compile.
     #[test]

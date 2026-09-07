@@ -155,7 +155,7 @@ pub(crate) fn text_flyout_layout(
 }
 
 /// The Bold/Underline row caption: a plain-text checkbox glyph plus the localized name
-/// (audit F29, 2026-09-06) — the pre-fix code hardcoded "Bold"/"Underline" so the checkbox
+/// (audit F29, 2026-09-06) - the pre-fix code hardcoded "Bold"/"Underline" so the checkbox
 /// never varied with the active language.
 pub(crate) fn checkbox_label(checked: bool, name_key: &str) -> String {
     let mark = if checked { "[x]" } else { "[  ]" };

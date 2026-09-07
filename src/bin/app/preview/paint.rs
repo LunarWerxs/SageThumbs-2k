@@ -1039,7 +1039,7 @@ mod tests {
 
     /// Audit F29 (2026-09-06): the outline sidebar's English header text is unchanged from the
     /// pre-fix value, so the visible English UI never moved. That alone proves nothing about
-    /// localization — it only means something once paired with the source-contract test
+    /// localization - it only means something once paired with the source-contract test
     /// (`tests/f29_screenshot_i18n_contract.rs`), which shows the old code shape feeding
     /// straight into `encode_utf16` is gone from this file, and the locale-diff test showing
     /// another shipped locale's translation of this key actually differs from English.

@@ -5,13 +5,13 @@
 //! Two independent checks, neither of which a build or the existing test suite could catch on
 //! its own:
 //!
-//! 1. **Literal removal** — the exact English sentences these five files used to hardcode must
+//! 1. **Literal removal** - the exact English sentences these five files used to hardcode must
 //!    be GONE from the source (a translator fixing the locale tables cannot fix code that still
 //!    ignores them). `tools.rs` gets a narrower rule: its hint-strip words must vanish from the
 //!    localized `hint_label` function specifically, while the deliberately-unlocalized
 //!    `label()` (the `--screenshot-automation` window-title identifier `tests/screenshot_automation.rs`
-//!    parses) keeps them — see that function's doc comment for why.
-//! 2. **Real translation, not a copy** — for a sample of the new keys, `assets/locales/fr.toml`
+//!    parses) keeps them - see that function's doc comment for why.
+//! 2. **Real translation, not a copy** - for a sample of the new keys, `assets/locales/fr.toml`
 //!    must carry a DIFFERENT value than `assets/locales/en.toml`. A locale file that just
 //!    copy-pasted the English text would pass every other gate (key parity, placeholder parity,
 //!    `cargo check`'s duplicate-key guard) while shipping unfixed.
@@ -96,7 +96,7 @@ fn toolbar_tooltips_no_longer_hardcode_english() {
 #[test]
 fn selection_hint_strip_no_longer_hardcodes_english() {
     // Precise old CODE shapes (a quoted literal immediately where the removed source had one),
-    // not bare words — a bare "Ctrl-drag moves" or "Shift snaps 45°" could coincidentally match
+    // not bare words - a bare "Ctrl-drag moves" or "Shift snaps 45°" could coincidentally match
     // a doc comment or a test fixture using an unrelated marker string, which would make this
     // test cry wolf on unrelated, legitimate text.
     assert_literals_absent(
@@ -140,7 +140,7 @@ fn preview_outline_header_no_longer_hardcodes_contents() {
 
 /// `tools.rs` is special: `label()` MUST keep the bare English words (the
 /// `--screenshot-automation` window-title contract depends on it staying fixed), so this checks
-/// the narrower claim — the localized `hint_label` function's own body is free of them. Extracted
+/// the narrower claim - the localized `hint_label` function's own body is free of them. Extracted
 /// by locating the function's signature and its balanced closing brace rather than a fixed line
 /// count, so a later edit that shifts the function doesn't silently stop checking anything.
 #[test]
@@ -190,7 +190,7 @@ fn tool_hint_label_body_has_no_hardcoded_display_words() {
              string up via t(\"shot_tool_short_...\") instead"
         );
     }
-    // And it must actually call into the locale system at all — an empty/no-op body would
+    // And it must actually call into the locale system at all - an empty/no-op body would
     // trivially pass the check above too.
     assert!(
         body.contains("t(match self"),
@@ -198,7 +198,7 @@ fn tool_hint_label_body_has_no_hardcoded_display_words() {
     );
 }
 
-/// A sample of the new F29 keys must carry a REAL French translation, not an English copy —
+/// A sample of the new F29 keys must carry a REAL French translation, not an English copy -
 /// key/placeholder parity (`scripts/check-locale-keys.ps1`) cannot see this, and neither can
 /// `cargo check`'s duplicate-key guard.
 #[test]
@@ -232,7 +232,7 @@ fn a_sample_of_the_new_keys_are_actually_translated_in_french() {
 }
 
 /// Every new key this finding introduced must exist, with matching `{token}` placeholders, in
-/// EVERY shipped locale — the mechanical half `scripts/check-locale-keys.ps1` already owns, run
+/// EVERY shipped locale - the mechanical half `scripts/check-locale-keys.ps1` already owns, run
 /// here too so `cargo test` alone (no PowerShell) still catches a locale a fan-out batch missed.
 #[test]
 fn every_new_key_exists_with_matching_placeholders_in_every_locale() {

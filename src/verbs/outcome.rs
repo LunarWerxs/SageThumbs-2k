@@ -8,6 +8,11 @@
 //! the MCP JSON and the Explorer report all read the same thing. A later batch grows this
 //! into the per-file result model every bulk verb reports through; keep additions here, not
 //! in the callers.
+//!
+//! That batch is F11, and it is [`FileOutcome`] / [`BatchReport`] below: the Convert dialog
+//! kept the NAMES of the files that failed and `st2k batch` reduced each file to a bool, so
+//! neither surface could tell a corrupt input from a destination it could not write, and a
+//! script had nothing to retry from. Both front ends build the same per-file record now.
 
 use std::path::PathBuf;
 
@@ -22,6 +27,11 @@ pub enum OmitCause {
     Undecodable,
     /// Decoded, but re-encoding it for the output format failed.
     Unencodable,
+    /// The output could not be claimed or replaced: something else owns that name, the
+    /// destination is read-only or locked, or the volume is full. A retry to a different
+    /// folder is what fixes this one, which is why it is not folded into `Unencodable`
+    /// (2026-09-05 audit, F11).
+    Unwritable,
 }
 
 impl OmitCause {
@@ -31,6 +41,7 @@ impl OmitCause {
             OmitCause::Unreadable => "unreadable",
             OmitCause::Undecodable => "undecodable",
             OmitCause::Unencodable => "unencodable",
+            OmitCause::Unwritable => "unwritable",
         }
     }
 }
@@ -118,6 +129,168 @@ impl Combined {
             "combined": self.used,
             "omitted": self.omitted.iter().map(Omitted::to_json).collect::<Vec<_>>(),
         })
+    }
+}
+
+/// What one input produced in a BULK run: the shared per-file record the Convert dialog
+/// and the CLI/MCP `batch` verb both report through (2026-09-05 audit, F11).
+///
+/// `cause` is what a machine branches on, `detail` is the sentence a person reads. `cause`
+/// is `Option` on purpose: a front end that cannot say WHICH phase failed leaves it unset
+/// rather than guessing a bucket, so an absent cause is never mistaken for a measured one.
+/// The dialog is that case, and deliberately so, its three converters each return one
+/// opaque error and its report shows the sentence, not a token.
+///
+/// There is no `decoder` field even though the audit offers one: the tier chain only LOGS
+/// which decoder took a file (`decode.rs`), and threading a name back out of every tier is
+/// a change to the hot path that this report does not justify. `elapsed_ms` is carried,
+/// since timing one call needs nothing from the decoder at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileOutcome {
+    /// The input path exactly as the caller passed it, so a failed entry is retryable
+    /// verbatim.
+    pub input: String,
+    /// What was written, when anything was. A file whose first output landed but whose
+    /// second requested size did not carries BOTH a path and a failure.
+    pub output: Option<PathBuf>,
+    /// `None` means this file succeeded.
+    pub cause: Option<OmitCause>,
+    /// The underlying error text; empty on success.
+    pub detail: String,
+    /// Wall-clock time this one file took, including its decode.
+    pub elapsed_ms: u64,
+}
+
+impl FileOutcome {
+    /// A file every requested output was written for.
+    pub fn ok(input: &str, output: PathBuf) -> Self {
+        FileOutcome {
+            input: input.to_string(),
+            output: Some(output),
+            cause: None,
+            detail: String::new(),
+            elapsed_ms: 0,
+        }
+    }
+
+    /// A file that did not fully convert. `cause` is `None` where the caller cannot tell
+    /// which phase failed (see the type doc).
+    pub fn failed(input: &str, cause: Option<OmitCause>, detail: impl std::fmt::Display) -> Self {
+        FileOutcome {
+            input: input.to_string(),
+            output: None,
+            cause,
+            detail: detail.to_string(),
+            elapsed_ms: 0,
+        }
+    }
+
+    /// Attach the output a partly-successful file did manage to write.
+    #[must_use]
+    pub fn produced(mut self, output: Option<PathBuf>) -> Self {
+        self.output = output;
+        self
+    }
+
+    /// Attach how long this file took.
+    #[must_use]
+    pub fn timed(mut self, elapsed: std::time::Duration) -> Self {
+        self.elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        self
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.cause.is_none() && self.detail.is_empty()
+    }
+
+    /// The one word a caller has to look at.
+    pub fn status(&self) -> &'static str {
+        if self.is_ok() {
+            "ok"
+        } else {
+            "failed"
+        }
+    }
+
+    /// One tab-separated line, `failed<TAB>input<TAB>cause<TAB>detail`, deliberately the
+    /// same shape as [`Omitted::as_line`] so a script parses one format across every verb
+    /// here. `-` stands in for a cause the front end did not measure, never a blank column.
+    pub fn as_line(&self) -> String {
+        format!(
+            "failed\t{}\t{}\t{}",
+            self.input,
+            self.cause.map_or("-", OmitCause::as_str),
+            self.detail
+        )
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "input": self.input,
+            "output": self.output.as_ref().map(|p| p.display().to_string()),
+            "status": self.status(),
+            "cause": self.cause.map(OmitCause::as_str),
+            "detail": self.detail,
+            "elapsed_ms": self.elapsed_ms,
+        })
+    }
+}
+
+/// Everything one bulk run did, in input order. Partial success is deliberate policy here
+/// (one bad file must not cost the other 999), so the report has to carry enough for a
+/// caller to act on the difference.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatchReport {
+    pub files: Vec<FileOutcome>,
+    /// Cloud placeholders left alone rather than downloaded. Counted, not listed, matching
+    /// what the CLI already said about them.
+    pub skipped_offline: usize,
+}
+
+impl BatchReport {
+    /// How many inputs were attempted.
+    pub fn requested(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn succeeded(&self) -> usize {
+        self.files.iter().filter(|f| f.is_ok()).count()
+    }
+
+    /// The failures, in input order: the retry list.
+    pub fn failures(&self) -> impl Iterator<Item = &FileOutcome> {
+        self.files.iter().filter(|f| !f.is_ok())
+    }
+
+    /// `"ok"` when every input converted, `"failed"` when none did, `"partial"` between.
+    /// An empty run reports `"ok"`; the callers refuse an empty input list before they get
+    /// this far, so there is no run to call failed.
+    pub fn status(&self) -> &'static str {
+        match self.succeeded() {
+            n if n == self.requested() => "ok",
+            0 => "failed",
+            _ => "partial",
+        }
+    }
+
+    /// The machine-readable form `--json` prints and the MCP tool returns.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status(),
+            "requested": self.requested(),
+            "succeeded": self.succeeded(),
+            "failed": self.requested() - self.succeeded(),
+            "skipped_offline": self.skipped_offline,
+            "results": self.files.iter().map(FileOutcome::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// One [`FileOutcome::as_line`] per failure, newline-separated and empty when there
+    /// were none, for appending to a human summary.
+    pub fn failure_lines(&self) -> String {
+        self.failures()
+            .map(|f| format!("\n{}", f.as_line()))
+            .collect()
     }
 }
 

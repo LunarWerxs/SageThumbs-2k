@@ -759,6 +759,26 @@ pub fn convert_to(
     webp_quality: Option<u8>,
     resize: Resize,
 ) -> Result<()> {
+    convert_to_reporting(input, out, quality, webp_quality, resize).map_err(|(_, e)| e)
+}
+
+/// [`convert_to`], keeping the PHASE that failed alongside the error (2026-09-05 audit,
+/// F11) so a bulk caller can tell a corrupt input from an output it cannot produce. The
+/// error itself is handed back untouched, so `convert_to` above still reports exactly the
+/// text and HRESULT it always did.
+///
+/// The write phase reports as `Unencodable` rather than splitting encode from rename: both
+/// come back through one `write_atomic` error, and the caller that reads this cause
+/// (`cli::batch`) has already created the destination file when it reserved the name, so a
+/// failure this late is the encoder's. A destination the process cannot write at all fails
+/// at that reservation instead, which is what `Unwritable` is for.
+pub fn convert_to_reporting(
+    input: &str,
+    out: &Path,
+    quality: u8,
+    webp_quality: Option<u8>,
+    resize: Resize,
+) -> std::result::Result<(), (OmitCause, Error)> {
     let ext = out
         .extension()
         .and_then(|e| e.to_str())

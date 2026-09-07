@@ -873,7 +873,7 @@ fn swatch_name(swatch: Swatch) -> String {
 ///
 /// Localized (audit F29, 2026-09-06): pre-fix these were a SECOND, independent set of hardcoded
 /// English strings that happened to describe the same controls `textflyout`'s own paint code
-/// already localizes — a screen reader user got English regardless of the active language even
+/// already localizes - a screen reader user got English regardless of the active language even
 /// after the visible captions were fixed. `Bold`/`Underline` now go through the exact same
 /// locale keys `checkbox_label` paints with, so the two can never drift apart again; the
 /// remaining three have no on-screen caption of their own ("−"/"+" are language-neutral, and the

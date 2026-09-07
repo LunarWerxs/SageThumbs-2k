@@ -48,8 +48,8 @@ pub(crate) use menu::leaf_count;
 pub use encode::{
     compress_to_size, convert_file, convert_file_opts, convert_file_opts_named,
     convert_image_to_pdf_in, convert_to, convert_to_magick, convert_to_magick_in,
-    convert_to_magick_in_named, resize_file, shrink_for_email, transform_file, ConvertOpts, Resize,
-    Target,
+    convert_to_magick_in_named, convert_to_reporting, resize_file, shrink_for_email,
+    transform_file, ConvertOpts, Resize, Target,
 };
 pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 
@@ -57,10 +57,11 @@ pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 #[allow(unused_imports)]
 pub use fileops::{combine_to_cbz, files_to_folder, sort_by_dimensions, tags_to_folders};
 
-// The per-input result model the PDF/CBZ composers return (2026-09-05 audit, F31).
+// The per-input result model the PDF/CBZ composers return (2026-09-05 audit, F31), and the
+// per-file one every bulk run reports through (F11).
 pub(crate) use outcome::{partition, refusal};
 #[allow(unused_imports)]
-pub use outcome::{Combined, OmitCause, Omitted, OnOmit};
+pub use outcome::{BatchReport, Combined, FileOutcome, OmitCause, Omitted, OnOmit};
 
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]

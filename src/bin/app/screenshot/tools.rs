@@ -45,7 +45,7 @@ pub(super) enum Tool {
 }
 
 impl Tool {
-    /// Stable, non-localized identifier — ALWAYS English, deliberately never routed through
+    /// Stable, non-localized identifier - ALWAYS English, deliberately never routed through
     /// `t()`. Two things depend on that: `automation::automation_title` publishes it verbatim
     /// into the `--screenshot-automation` window-title channel, and
     /// `tests/screenshot_automation.rs` parses that title for a literal `tool=Rect`/`tool=Line`
@@ -70,7 +70,7 @@ impl Tool {
     }
 
     /// Localized short label for the on-screen hint strip (audit F29, 2026-09-06). Distinct
-    /// from [`Tool::label`], which must stay fixed English for the automation title channel —
+    /// from [`Tool::label`], which must stay fixed English for the automation title channel -
     /// this is the one a real user sees, so it goes through the locale table.
     pub(super) fn hint_label(self) -> &'static str {
         t(match self {
@@ -159,7 +159,7 @@ mod default_tool_tests {
     }
 
     /// Audit F29: the hint-strip label must come from the locale table, not a hardcoded
-    /// literal — assert every variant's `hint_label()` is EXACTLY its `t(key)` value (a
+    /// literal - assert every variant's `hint_label()` is EXACTLY its `t(key)` value (a
     /// hardcoded `&'static str` here, as `label()` still has above it, could never equal a
     /// runtime-looked-up translation except by accident on the one locale that happens to
     /// match, so this fails the moment the two diverge from the key it claims to use).
@@ -190,7 +190,7 @@ mod default_tool_tests {
     }
 
     /// `label()` (the automation-stable identifier) and `hint_label()` (the localized display
-    /// string) must stay two DIFFERENT functions — a well-meaning refactor that collapses them
+    /// string) must stay two DIFFERENT functions - a well-meaning refactor that collapses them
     /// back into one would silently re-localize the automation window-title channel that
     /// `tests/screenshot_automation.rs` parses. Under the active (English) test locale the two
     /// happen to read the same word for most tools, so this checks the one thing that would
