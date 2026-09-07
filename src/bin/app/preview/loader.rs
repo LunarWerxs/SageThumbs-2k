@@ -30,7 +30,17 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     let gen = reset_viewer_state(hwnd, st, path);
 
     st.kind.set(ContentKind::Loading);
-    ensure_shown(hwnd);
+    // An already-shown window (an arrow-key step through a folder) must never be resized down
+    // to the Loading box only to snap back once content lands (2026-09-05 audit, F10 review;
+    // `client_size` sizes by `kind`, and `ensure_shown` resizes an already-shown window to
+    // whatever that is). Only the very-first-open case wants the full show-and-size call; an
+    // already-visible window just repaints to show the Loading state, exactly the pattern
+    // `dispatch_image_kind` already uses below. See [`should_size_for_loading`].
+    if should_size_for_loading(st.shown.get()) {
+        ensure_shown(hwnd);
+    } else {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
 
     // Font specimens stay synchronous: the extension check is free, and unlike the branches
     // below a font read/parse is not a case the audit evidence names, kept out of the async
@@ -40,7 +50,56 @@ pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     }
 
     let view_source_active = st.src_capable.get() && st.src_view.get();
+
+    // HTML / .url / .webloc: the web route must be decided HERE, on the UI thread, before
+    // anything is handed to the worker (2026-09-05 audit, F10 adversarial review). WebView2
+    // needs the STA (its creation already pumps the message loop via `create_web`'s
+    // busy-deferral), so it can never move to a background thread the way the rest of this
+    // function's work did. The old synchronous `load()` ran this exact check before its
+    // `classify` call for the same reason; leaving it to `resolve_load`'s worker-side
+    // `classify` is wrong because "html" (and an unregistered `.url`/`.webloc`) both sniff as
+    // plain text once the Text toggle is on, so `resolve_by_content_kind` returns
+    // `Resolved::TextOrMarkdown` and `apply_resolved_dispatch` (which still carries the
+    // `try_load_web` call for the `Resolved::Dispatch` arm) never runs at all; every release
+    // build (html-preview ships in every release EXE) then previewed HTML as raw source and a
+    // web shortcut as its raw INI/plist instead of the card or live view. With the feature off
+    // `decide_load_route` doesn't compile at all, so this whole block does not exist and
+    // behaviour is unchanged: straight through to the worker's classify-based text/card
+    // fall-through, exactly like before this audit's change.
+    #[cfg(feature = "html-preview")]
+    if decide_load_route(&ext_of(path), view_source_active) == LoadRoute::Web
+        && try_load_web(hwnd, path)
+    {
+        return; // sets its own title/find-refresh (or defers via busy/pending)
+    }
+
     spawn_prepare_load(hwnd, path.to_string(), gen, view_source_active);
+}
+
+/// Which route `load()` takes for a file whose extension is `ext`, decided BEFORE anything is
+/// read (2026-09-05 audit, F10 adversarial review). Pure (extension + `view_source_active`
+/// only, no settings/IO), so the ordering fix is unit-testable without a live window or a
+/// WebView2 runtime. `Web` means the caller must evaluate `try_load_web` right now, on the UI
+/// thread; `Worker` means hand off to the async prepare worker exactly as before. View-source
+/// mode always wins over the web route (matches the pre-audit ordering, where `show_source` was
+/// checked ahead of `try_load_web`), so the `{ }` toggle still shows raw HTML source rather than
+/// the live render. `Web` is a NECESSARY step, not a guarantee of the final content kind:
+/// `try_load_web` still falls through to the worker itself when the relevant Settings toggle
+/// (`preview_html`/`preview_url_live`) is off, same as before this audit's change.
+#[cfg(feature = "html-preview")]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LoadRoute {
+    Web,
+    Worker,
+}
+
+#[cfg(feature = "html-preview")]
+pub(super) fn decide_load_route(ext: &str, view_source_active: bool) -> LoadRoute {
+    if !view_source_active && matches!(ext, "html" | "htm" | "xhtml" | "url" | "webloc") {
+        LoadRoute::Web
+    } else {
+        LoadRoute::Worker
+    }
 }
 
 /// Reset all per-document viewer state ahead of loading `path`. Returns the new decode
@@ -372,6 +431,7 @@ unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_act
             "preview load: too many workers still running past their budget; leaving {path} \
              in its Loading state"
         ));
+        show_load_refused(hwnd, &path);
         return;
     }
     let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
@@ -379,20 +439,34 @@ unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_act
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket.clone());
     let hwnd_raw = hwnd.0 as isize;
+    let worker_path = path.clone(); // keep `path` for the fallback below if `spawn` itself fails
     let spawned = std::thread::Builder::new()
         .name("st2k-preview-load".to_string())
         .spawn(move || {
-            let resolved = resolve_load(&path, view_source_active);
+            let resolved = resolve_load(&worker_path, view_source_active);
             ticket.worker_finished();
             let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
             post_resolved(hwnd, gen, resolved);
         });
     if spawned.is_err() {
         // `Builder::spawn` refused to create the OS thread: nothing was started (and the
-        // closure, with it the ticket, was dropped unstarted), so the window is simply
-        // left in its Loading state, the same degraded outcome a budget refusal leaves it in.
+        // closure, with it the ticket, was dropped unstarted).
         sagethumbs2k_core::safety::log_debug("preview load: failed to start the prepare worker");
+        show_load_refused(hwnd, &path);
     }
+}
+
+/// Fall through to the fallback info card when the prepare worker could not even be started:
+/// the abandoned-worker budget is exhausted, or the OS refused to create the thread (2026-09-05
+/// audit, F10 adversarial review). Without this the window was left in its `Loading` state (an
+/// endless spinner, indistinguishable from "still working") for that file, with no way for the
+/// user to tell "waiting" from "will never finish". Same fall-through an unsupported/unreadable
+/// file already gets via [`apply_resolved_dispatch`]'s `_ => dispatch_fallback_kind` arm.
+unsafe fn show_load_refused(hwnd: HWND, path: &str) {
+    let st = &*state(hwnd);
+    dispatch_fallback_kind(hwnd, st, path);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
 }
 
 /// Install a resolved `Text`/`Markdown` read. `md_flags` is `Some` only for Markdown, mirrors
@@ -415,8 +489,14 @@ unsafe fn apply_text_or_markdown(
 }
 
 /// `Resolved::Dispatch`: neither view-source, archive, DB nor mail matched, so fall back to
-/// `classify`'s verdict, the same tail `dispatch_by_content_kind` used to run synchronously,
-/// including the html-preview check (still synchronous: it needs the UI thread for WebView2).
+/// `classify`'s verdict, the same tail `dispatch_by_content_kind` used to run synchronously.
+/// The `try_load_web` call here is a defensive fallback, not the primary route any more
+/// (2026-09-05 audit, F10 adversarial review fix): `load()`'s `decide_load_route` now decides
+/// the web route on the UI thread BEFORE `spawn_prepare_load` ever runs, so an html/`.url`/
+/// `.webloc` path never reaches `resolve_load`'s worker-side `classify` in the first place and
+/// this arm sees only the extensions `try_load_web` already declines (it returns `false` for
+/// them). Kept here rather than removed so a future caller of `apply_resolved_dispatch` outside
+/// `load()`'s gate can't silently regress back to showing HTML/`.url` as raw source.
 unsafe fn apply_resolved_dispatch(hwnd: HWND, st: &ViewerState, path: &str, kind: ContentKind) {
     #[cfg(feature = "html-preview")]
     if try_load_web(hwnd, path) {
@@ -982,6 +1062,18 @@ pub(super) fn is_audio(path: &str) -> bool {
     matches!(formats::category(&ext_of(path)), formats::Category::Audio)
 }
 
+/// Whether entering the `Loading` state should call the full `ensure_shown` (which can
+/// `SetWindowPos` an already-shown window down to the Loading box) rather than just repaint the
+/// current window in place (2026-09-05 audit, F10 review). Pure so the rule is testable without
+/// a window: a window that is not shown yet (the very first load) wants the full show-and-size
+/// call, since nothing else will show it; a window that IS already shown (an arrow-key step
+/// through a folder, or a daemon selection switch) must never resize to the Loading box only to
+/// snap back once content lands moments later: `on_render`/`apply_resolved`/
+/// `dispatch_image_kind` all already resize/repaint appropriately once real content is ready.
+pub(super) fn should_size_for_loading(shown: bool) -> bool {
+    !shown
+}
+
 /// Show the window at the right size (first time) or resize to fit the current content
 /// (subsequent switches keep the current position, per QuickLook's keep-anchored rule).
 pub(super) unsafe fn ensure_shown(hwnd: HWND) {
@@ -1247,9 +1339,74 @@ pub(super) unsafe fn forget_size(hwnd: HWND) {
 
 #[cfg(test)]
 mod tests {
+    use super::{clamp_remembered_size, is_load_current, should_size_for_loading, source_capable};
     #[cfg(feature = "html-preview")]
-    use super::parse_url_shortcut;
-    use super::{clamp_remembered_size, is_load_current, source_capable};
+    use super::{decide_load_route, parse_url_shortcut, LoadRoute};
+
+    /// 2026-09-05 audit, F10 adversarial review (P1): `resolve_load`'s worker-side `classify`
+    /// finds "html" already in `PREVIEW_TEXT_EXTS`, so if `load()` ever again ran the worker
+    /// (the text/classify route) for these extensions instead of deciding the web route on the
+    /// UI thread first, every release build (html-preview ships in every release EXE) would
+    /// preview HTML as raw source and a `.url`/`.webloc` shortcut as its raw INI/plist, never
+    /// the web card or the live render. This pins the routing gate directly.
+    #[cfg(feature = "html-preview")]
+    #[test]
+    fn html_and_url_extensions_are_gated_to_the_web_route() {
+        for ext in ["html", "htm", "xhtml", "url", "webloc"] {
+            assert_eq!(
+                decide_load_route(ext, false),
+                LoadRoute::Web,
+                "{ext} must take the web route, not the worker/text route"
+            );
+        }
+        // Unrelated extensions still take the worker's normal classify/read path.
+        for ext in ["txt", "md", "png", ""] {
+            assert_eq!(decide_load_route(ext, false), LoadRoute::Worker);
+        }
+    }
+
+    /// View-source wins over the web route: matches the pre-audit ordering (view-source was
+    /// checked before `try_load_web`): the `{ }` toggle must still show raw HTML source, never
+    /// hand an html/url file to WebView2 while the user asked to see its source.
+    #[cfg(feature = "html-preview")]
+    #[test]
+    fn view_source_mode_overrides_the_web_route() {
+        assert_eq!(decide_load_route("html", true), LoadRoute::Worker);
+        assert_eq!(decide_load_route("url", true), LoadRoute::Worker);
+    }
+
+    /// Without the html-preview feature, `decide_load_route`/`LoadRoute` do not exist at all,
+    /// so `load()` has no web-route branch and falls straight through to the worker's
+    /// classify-based text/card path for every extension, exactly the pre-audit fall-through
+    /// for a non-html-preview build. `classify` itself is what decides at that point, and
+    /// "html" living in `PREVIEW_TEXT_EXTS` is what resolves it to Text (compared against the
+    /// live toggle, not assumed on, so this can't flake on a machine where it was changed).
+    #[test]
+    fn html_falls_back_to_worker_text_classification_without_the_web_route() {
+        let kind = super::content::classify("nonexistent_probe.html");
+        let want = if sagethumbs2k_core::settings::preview_text() {
+            super::ContentKind::Text
+        } else {
+            // Text toggle off and no other match: `classify`'s last resort for a nonexistent
+            // path (no bytes to sniff) is the info card.
+            super::ContentKind::InfoCard
+        };
+        assert!(
+            kind == want,
+            "html should classify as the worker's text/card fall-through"
+        );
+    }
+
+    /// 2026-09-05 audit, F10 adversarial review (P2): an already-shown window (an arrow-key
+    /// step through a folder) must never be resized down to the Loading box only to snap back
+    /// once content lands: `client_size` sizes by `kind`, and `ensure_shown` resizes an
+    /// already-shown window to whatever that current kind's size is. Only the very-first-open
+    /// case (not shown yet) wants the full show-and-size call.
+    #[test]
+    fn loading_state_only_resizes_before_the_window_is_shown() {
+        assert!(should_size_for_loading(false));
+        assert!(!should_size_for_loading(true));
+    }
 
     /// 2026-09-05 audit, F10 acceptance: "switching selections repeatedly never displays an
     /// older selection's completion over the newest one". A completion is current for exactly

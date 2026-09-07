@@ -26,7 +26,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA,
+    FindWindowW, IsWindowVisible, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA,
 };
 
 /// Quick preview viewer's window class (`preview/mod.rs::VIEWER_CLASS`).
@@ -61,12 +61,19 @@ fn find_viewer() -> Option<HWND> {
     unsafe { FindWindowW(PCWSTR(wide.as_ptr()), PCWSTR::null()).ok() }
 }
 
-/// Poll for the viewer window, up to `timeout`.
+/// Poll for the viewer window, up to `timeout`. Requires `IsWindowVisible` as well as
+/// `FindWindowW` finding a handle: `FindWindowW` matches a hidden window too (the class exists
+/// from `CreateWindowExW` on, before `ensure_shown`'s `SW_SHOWNOACTIVATE` ever runs), so a
+/// find-only check would prove creation, not the "appears" this test is named for. The
+/// close-while-blocked assertion right after this is still the real proof the message pump is
+/// alive; this addition only tightens what "appears" means for the first wait.
 fn wait_for_viewer(timeout: Duration) -> Option<HWND> {
     let start = Instant::now();
     loop {
         if let Some(h) = find_viewer() {
-            return Some(h);
+            if unsafe { IsWindowVisible(h) }.as_bool() {
+                return Some(h);
+            }
         }
         if start.elapsed() > timeout {
             return None;
