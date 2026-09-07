@@ -634,17 +634,27 @@ pub(crate) fn is_sync_state_value(name: &str) -> bool {
         || name.eq_ignore_ascii_case(INITIAL_SYNC_PENDING_VALUE)
 }
 
+// Name-parameterised so the outstanding-worker accounting is testable against a scratch
+// counter and a scratch marker name, the same pattern `set_marker`/`clear_marker`/
+// `marker_set` already use, rather than the real `PUSH_WORKERS` static and the real
+// `PENDING_VALUE` marker.
+fn begin_push_worker_on(counter: &AtomicUsize) {
+    counter.fetch_add(1, Ordering::AcqRel);
+}
+
+fn finish_push_worker_on(counter: &AtomicUsize, marker_name: &str, success: bool) {
+    let remaining = counter.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+    if success && remaining == 0 {
+        clear_marker(marker_name);
+    }
+}
+
 pub(crate) fn begin_push_worker() {
-    PUSH_WORKERS.fetch_add(1, Ordering::AcqRel);
+    begin_push_worker_on(&PUSH_WORKERS);
 }
 
 pub(crate) fn finish_push_worker(success: bool) {
-    let remaining = PUSH_WORKERS
-        .fetch_sub(1, Ordering::AcqRel)
-        .saturating_sub(1);
-    if success && remaining == 0 {
-        clear_push_pending();
-    }
+    finish_push_worker_on(&PUSH_WORKERS, PENDING_VALUE, success);
 }
 
 /// The name (or, failing that, the relay email) to show in the "Synced as …" row, if
@@ -1058,6 +1068,56 @@ mod tests {
             !marker_set(&name),
             "clear must DELETE the value, not fail silently on a read-only key"
         );
+    }
+
+    /// F06, the actual clearing condition: `finish_push_worker` only clears the pending
+    /// marker when the push that just finished both succeeded AND was the last outstanding
+    /// worker. `the_pending_marker_clears_after_a_successful_push` above only round-trips
+    /// `set_marker`/`clear_marker` directly and never calls `begin_push_worker`/
+    /// `finish_push_worker` at all, so it would stay green even if the `success &&
+    /// remaining == 0` guard were removed or inverted. This drives the worker-accounting
+    /// helpers themselves, against a scratch counter and a scratch marker name so the real
+    /// `PUSH_WORKERS` static and the real marker are never touched.
+    #[test]
+    fn finish_push_worker_only_clears_the_marker_on_a_successful_last_finish() {
+        let name = format!("ConnectionsSyncPendingWorkerTest{}", std::process::id());
+        let counter = AtomicUsize::new(0);
+        clear_marker(&name);
+
+        // A single worker that fails must leave the marker set for retry.
+        set_marker(&name);
+        begin_push_worker_on(&counter);
+        finish_push_worker_on(&counter, &name, false);
+        assert!(
+            marker_set(&name),
+            "a failed push must not clear the pending marker"
+        );
+
+        // A fresh single worker finishing successfully must clear it.
+        begin_push_worker_on(&counter);
+        finish_push_worker_on(&counter, &name, true);
+        assert!(
+            !marker_set(&name),
+            "the last outstanding worker succeeding must clear the pending marker"
+        );
+
+        // Two outstanding workers: the first to finish (even successfully) must not clear
+        // the marker while the other is still outstanding.
+        set_marker(&name);
+        begin_push_worker_on(&counter);
+        begin_push_worker_on(&counter);
+        finish_push_worker_on(&counter, &name, true);
+        assert!(
+            marker_set(&name),
+            "the marker must stay set while another worker is still outstanding"
+        );
+        finish_push_worker_on(&counter, &name, true);
+        assert!(
+            !marker_set(&name),
+            "the marker must clear once the last outstanding worker finishes successfully"
+        );
+
+        clear_marker(&name);
     }
 
     /// The marker is state, not a preference: the settings export/import consults this to
