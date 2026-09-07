@@ -68,6 +68,46 @@ static STORE_CACHE: Mutex<Option<CachedDoc>> = Mutex::new(None);
 static SYNC_LOCK: Mutex<()> = Mutex::new(());
 static PUSH_WORKERS: AtomicUsize = AtomicUsize::new(0);
 
+// ---- test-only network/sleep injection (see `sync_http_request`/`sync_sleep`) -----------
+
+/// One scripted network response: `None` = a dead connection (no HTTP response at all);
+/// `Some((status, body))` = the relay answered.
+#[cfg(test)]
+type ScriptedResponse = Option<(u16, Vec<u8>)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Scripted relay responses for [`push_snapshot`]-loop tests, drained front-to-back, so
+    /// a test scripts a whole exchange (the base-version GET first, then each POST retry) in
+    /// the order the real loop will make the calls.
+    static SCRIPTED_RESPONSES: std::cell::RefCell<std::collections::VecDeque<ScriptedResponse>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// Every duration [`sync_sleep`] was asked to wait, in call order, for a test to assert
+    /// against instead of a real test run actually waiting.
+    static RECORDED_SLEEPS: std::cell::RefCell<Vec<Duration>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue one scripted response for the next [`sync_http_request`] call on THIS thread.
+/// Thread-local, so parallel `cargo test` threads never see each other's script.
+#[cfg(test)]
+fn script_response(resp: ScriptedResponse) {
+    SCRIPTED_RESPONSES.with(|q| q.borrow_mut().push_back(resp));
+}
+
+/// Clear this thread's scripted-response queue and recorded sleeps, so one test's leftovers
+/// (an unconsumed response, an unread sleep) can never leak into the next test on a reused
+/// test-harness thread.
+#[cfg(test)]
+fn reset_test_network_state() {
+    SCRIPTED_RESPONSES.with(|q| q.borrow_mut().clear());
+    RECORDED_SLEEPS.with(|s| s.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn recorded_sleeps() -> Vec<Duration> {
+    RECORDED_SLEEPS.with(|s| s.borrow().clone())
+}
+
 fn cache() -> MutexGuard<'static, Option<CachedDoc>> {
     STORE_CACHE
         .lock()
@@ -302,7 +342,7 @@ fn clear_cache() {
 fn store_get(token: &str) -> Result<(u64, Value), String> {
     let cached = cache().clone();
     let headers = auth_headers_with_etag(token, cached.as_ref().map(|doc| doc.etag.as_str()));
-    let Some(resp) = http::request("GET", &store_url(), &headers, &[], TIMEOUT_SECS, MAX_RESP)
+    let Some(resp) = sync_http_request("GET", &store_url(), &headers, &[], TIMEOUT_SECS, MAX_RESP)
     else {
         mark_offline();
         return Err("couldn't reach the sync server".to_string());
@@ -347,7 +387,7 @@ fn push_snapshot(token: &str) -> Result<u64, String> {
     loop {
         let body = serde_json::json!({ "settings": snapshot, "baseVersion": base, "merge": true });
         let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-        let Some(resp) = http::request(
+        let Some(resp) = sync_http_request(
             "POST",
             &store_url(),
             &auth_headers(token),
@@ -357,7 +397,7 @@ fn push_snapshot(token: &str) -> Result<u64, String> {
         ) else {
             if transient_retries < MAX_PUSH_TRANSIENT_RETRIES {
                 transient_retries += 1;
-                std::thread::sleep(Duration::from_secs(1 << (transient_retries - 1)));
+                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
                 continue;
             }
             mark_offline();
@@ -374,13 +414,18 @@ fn push_snapshot(token: &str) -> Result<u64, String> {
                     .unwrap_or(base + 1));
             }
             409 => {
-                conflicts += 1;
+                // E05 follow-up audit, review item 5: checked BEFORE incrementing, so
+                // `MAX_PUSH_CONFLICT_RETRIES` really does mean that many RETRIES (this many
+                // 409s get a re-fetch-and-retry) rather than one fewer - the old
+                // post-increment `conflicts >= MAX` gave up after only two retries against a
+                // constant named and documented as three.
                 if conflicts >= MAX_PUSH_CONFLICT_RETRIES {
                     return Err(
-                        "sync kept conflicting with another device — please try again".to_string(),
+                        "sync kept conflicting with another device, please try again".to_string(),
                     );
                 }
-                // Stale baseVersion — take the server's current version and retry.
+                conflicts += 1;
+                // Stale baseVersion, take the server's current version and retry.
                 let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
                 base = json
                     .get("current")
@@ -391,19 +436,63 @@ fn push_snapshot(token: &str) -> Result<u64, String> {
             }
             429 if rate_limit_retries < MAX_PUSH_RATE_LIMIT_RETRIES => {
                 rate_limit_retries += 1;
-                std::thread::sleep(rate_limit_wait(&resp.body));
+                sync_sleep(rate_limit_wait(&resp.body));
             }
             status if status >= 500 && transient_retries < MAX_PUSH_TRANSIENT_RETRIES => {
                 transient_retries += 1;
-                std::thread::sleep(Duration::from_secs(1 << (transient_retries - 1)));
+                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
             }
             _ => return Err(store_error(resp.status, &resp.body)),
         }
     }
 }
 
+/// The one place every store call in this module actually reaches the network - GET
+/// (`store_get`), POST (`push_snapshot`'s retry loop), and DELETE (`store_delete`) all go
+/// through this instead of `http::request` directly.
+///
+/// In `#[cfg(test)]` builds it first drains [`SCRIPTED_RESPONSES`] (a thread-local queue set
+/// up with [`script_response`]) before ever touching the real HTTP stack, so a test can
+/// splice in scripted relay behaviour - a 409 conflict, a 429 with `retry_after_seconds`, a
+/// 5xx, a dead connection - and drive the REAL `push_snapshot` retry loop end to end, rather
+/// than a re-implementation of its if-lets (E05 follow-up audit, review item 4a). When the
+/// queue is empty (the common case, and always in a release build) this is exactly
+/// `http::request`.
+fn sync_http_request(
+    method: &str,
+    url: &str,
+    headers: &str,
+    body: &[u8],
+    timeout_secs: u64,
+    max_resp: usize,
+) -> Option<http::Resp> {
+    #[cfg(test)]
+    {
+        if let Some(scripted) = SCRIPTED_RESPONSES.with(|q| q.borrow_mut().pop_front()) {
+            return scripted.map(|(status, body)| http::Resp {
+                status,
+                etag: None,
+                body,
+            });
+        }
+    }
+    http::request(method, url, headers, body, timeout_secs, max_resp)
+}
+
+/// The one place [`push_snapshot`]'s retry loop actually sleeps between attempts. In
+/// `#[cfg(test)]` builds this records the requested duration into [`RECORDED_SLEEPS`]
+/// instead of blocking the thread, so a test can assert the loop computed the RIGHT wait
+/// (a capped 429 `retry_after_seconds`, an exponential transient backoff) without a real
+/// test run actually waiting out up to 30 seconds per case.
+fn sync_sleep(duration: Duration) {
+    #[cfg(test)]
+    RECORDED_SLEEPS.with(|s| s.borrow_mut().push(duration));
+    #[cfg(not(test))]
+    std::thread::sleep(duration);
+}
+
 fn store_delete(token: &str) -> Result<(), String> {
-    let Some(resp) = http::request(
+    let Some(resp) = sync_http_request(
         "DELETE",
         &store_url(),
         &auth_headers(token),
@@ -589,14 +678,49 @@ fn persist_rotation(rotated: Option<&str>, save: impl FnOnce(&str) -> bool) -> R
 }
 
 /// Mint a fresh access token from the stored refresh token (rotating + re-persisting it).
+///
+/// E05 follow-up audit: this is the ONE place every sync entry point (`pull_on_open`,
+/// `push`, `disconnect`, `retry_initial_sync`) mints a token before doing anything else, so
+/// it is the single choke point for the offline classification too. A dead network
+/// (`oauth::RefreshOutcome::Unreachable`) marks offline; ANY response - including a
+/// rejection - clears it, because a server that answered "no" is not the same failure as a
+/// server nobody could reach, and a stale marker left by an earlier STORE failure must not
+/// keep reading as offline once the sign-in server has since answered.
 fn access_token() -> Result<String, String> {
     let rt = cred_store::load_refresh_token().ok_or_else(|| "not signed in".to_string())?;
-    let tokens = oauth::refresh(&rt)?;
+    let tokens = match oauth::refresh(&rt) {
+        Ok(tokens) => {
+            clear_offline();
+            tokens
+        }
+        Err(outcome) => {
+            let (offline, message) = classify_refresh_error(outcome);
+            if offline {
+                mark_offline();
+            } else {
+                clear_offline();
+            }
+            return Err(message);
+        }
+    };
     persist_rotation(
         tokens.refresh_token.as_deref(),
         cred_store::save_refresh_token,
     )?;
     Ok(tokens.access_token)
+}
+
+/// Pure classification, no I/O: turn `oauth::refresh`'s outcome into (a) whether it counts
+/// as offline for [`mark_offline`]/[`clear_offline`] purposes and (b) the error text
+/// [`access_token`] returns. Split out so the mapping itself can be pinned by a test without
+/// a real network call or touching this machine's registry/portable-ini state.
+fn classify_refresh_error(outcome: oauth::RefreshOutcome) -> (bool, String) {
+    match outcome {
+        oauth::RefreshOutcome::Unreachable => {
+            (true, "couldn't reach the sign-in server".to_string())
+        }
+        oauth::RefreshOutcome::Rejected(message) => (false, message),
+    }
 }
 
 // ---- public orchestration (UI-facing) ------------------------------------
@@ -688,17 +812,31 @@ pub(crate) fn is_sync_state_value(name: &str) -> bool {
         || name.eq_ignore_ascii_case(OFFLINE_VALUE)
 }
 
+/// Name-parameterised core of [`begin_push_worker`] (E05 follow-up audit, review item 4c):
+/// takes the counter explicitly so a test can drive the real increment/decrement/clear
+/// logic against a throwaway counter and marker name, instead of mirroring the conditional
+/// on its own. The real counter is process-global (there is only one push in-flight tally),
+/// but the DECISION doesn't need to be, and testing it through the real primitive is the
+/// whole point of the split.
+fn begin_push_worker_on(counter: &AtomicUsize) {
+    counter.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Name-parameterised core of [`finish_push_worker`]. `marker_name` is whichever durable
+/// pending marker `success` should clear once `counter` reaches zero.
+fn finish_push_worker_on(counter: &AtomicUsize, marker_name: &str, success: bool) {
+    let remaining = counter.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+    if success && remaining == 0 {
+        clear_marker(marker_name);
+    }
+}
+
 pub(crate) fn begin_push_worker() {
-    PUSH_WORKERS.fetch_add(1, Ordering::AcqRel);
+    begin_push_worker_on(&PUSH_WORKERS);
 }
 
 pub(crate) fn finish_push_worker(success: bool) {
-    let remaining = PUSH_WORKERS
-        .fetch_sub(1, Ordering::AcqRel)
-        .saturating_sub(1);
-    if success && remaining == 0 {
-        clear_push_pending();
-    }
+    finish_push_worker_on(&PUSH_WORKERS, PENDING_VALUE, success);
 }
 
 /// The name (or, failing that, the relay email) to show in the "Synced as …" row, if
@@ -846,7 +984,7 @@ pub(crate) fn push() -> Result<(), String> {
 
 /// Whether `disconnect`'s best-effort cloud-copy delete actually reached and succeeded
 /// against the server (E05 audit). The credential and local markers are ALWAYS forgotten
-/// regardless — disconnecting locally must not fail just because the network is down —
+/// regardless, disconnecting locally must not fail just because the network is down,
 /// this exists so the UI can say honestly when the server copy might still be there,
 /// rather than silently discarding a real failure the way `disconnect` used to (the whole
 /// result was `let _ = store_delete(&token);`).
@@ -854,28 +992,48 @@ pub(crate) fn push() -> Result<(), String> {
 pub(crate) enum DisconnectOutcome {
     /// The server confirmed the document is gone (or was already gone).
     CloudCopyDeleted,
-    /// Nothing to delete — this machine had no usable credential to delete with.
+    /// Nothing to delete, this machine had no usable credential to delete with.
     WasNotSignedIn,
     /// The delete request reached the server and it refused, or never reached the server
-    /// at all — [`last_attempt_was_offline`] tells the two apart if a caller needs to.
+    /// at all, [`last_attempt_was_offline`] tells the two apart if a caller needs to.
     CloudCopyKept,
+}
+
+/// Pure decision, no I/O (E05 follow-up audit, review item 2): turn "was this machine
+/// signed in beforehand" plus "did the delete even get attempted, and how did it go" into a
+/// [`DisconnectOutcome`]. [`disconnect`] funnels through this so the outcome can be pinned
+/// without a real credential store or network.
+///
+/// `delete_attempted` is `None` when `access_token()` never even produced a token to delete
+/// with (no credential, offline, or the sign-in server rejected the refresh), that is
+/// `WasNotSignedIn` ONLY when this machine genuinely had no credential (`was_signed_in ==
+/// false`); a signed-in machine whose token mint merely failed still has a cloud copy that
+/// was never touched, so it must read as `CloudCopyKept`, never as "was never signed in."
+fn disconnect_outcome(
+    was_signed_in: bool,
+    delete_attempted: Option<Result<(), String>>,
+) -> DisconnectOutcome {
+    match delete_attempted {
+        Some(Ok(())) => DisconnectOutcome::CloudCopyDeleted,
+        Some(Err(_)) => DisconnectOutcome::CloudCopyKept,
+        None if was_signed_in => DisconnectOutcome::CloudCopyKept,
+        None => DisconnectOutcome::WasNotSignedIn,
+    }
 }
 
 /// Disconnect: best-effort delete the remote doc, then forget local credentials. The
 /// remote delete is genuinely best-effort (no token, no connectivity, or the store
 /// rejecting the request all fall through here), so the UI wording that invites this
-/// action must not promise cloud erasure as a guarantee (2026-09-05 audit, F16 note) — but
+/// action must not promise cloud erasure as a guarantee (2026-09-05 audit, F16 note), but
 /// the RETURNED outcome, unlike the old `()`, lets the caller say so honestly instead of
 /// claiming success it doesn't know it had.
 pub(crate) fn disconnect() -> DisconnectOutcome {
     let _guard = sync_guard();
-    let outcome = match access_token() {
-        Ok(token) => match store_delete(&token) {
-            Ok(()) => DisconnectOutcome::CloudCopyDeleted,
-            Err(_) => DisconnectOutcome::CloudCopyKept,
-        },
-        Err(_) => DisconnectOutcome::WasNotSignedIn,
-    };
+    // Read BEFORE `access_token()` can fail and BEFORE `cred_store::clear()` below removes
+    // it, see `disconnect_outcome`'s doc for why this matters.
+    let was_signed_in = cred_store::is_signed_in();
+    let delete_attempted = access_token().ok().map(|token| store_delete(&token));
+    let outcome = disconnect_outcome(was_signed_in, delete_attempted);
     cred_store::clear();
     clear_cache();
     clear_push_pending();
@@ -1229,7 +1387,7 @@ mod tests {
     }
 
     /// The retry bounds are supposed to be STATED facts, not accidents of a hardcoded
-    /// literal buried in a loop — pin the exact numbers so a future edit that quietly
+    /// literal buried in a loop, pin the exact numbers so a future edit that quietly
     /// changes one shows up as a diff to a named test, not a silent behavior change.
     #[test]
     fn the_named_retry_bounds_have_the_documented_values() {
@@ -1240,37 +1398,28 @@ mod tests {
     }
 
     /// The exact invariant `finish_push_worker` relies on ("success clears the marker,
-    /// failure never does"), driven through the same scratch-value-name primitives the
-    /// other marker tests in this module use rather than the real `PENDING_VALUE` — this
-    /// worktree's tests must never touch the app's real registry key. `mark_push_pending`/
-    /// `has_pending_push`/`finish_push_worker` are not name-parameterised (they always
-    /// address `PENDING_VALUE`), so this mirrors their body's conditional exactly against a
-    /// throwaway name instead of calling them directly. Separately: `push`/`push_snapshot`
-    /// have no code path that writes a LOCAL setting at all — they only `read_local()` and
-    /// send it — so "a failed push leaves the local value unchanged" holds structurally,
-    /// not merely by this marker not being cleared.
+    /// failure never does"), driven through the REAL [`begin_push_worker_on`]/
+    /// [`finish_push_worker_on`] primitives (E05 follow-up audit, review item 4c) against a
+    /// throwaway counter and marker name, rather than mirroring their conditional in the
+    /// test itself. Against the pre-split shape (a bare `if success && remaining == 0`
+    /// inline in `finish_push_worker`, addressing `PENDING_VALUE` unconditionally) there was
+    /// no name-parameterised function to call here at all.
     #[test]
     fn a_failed_push_never_clears_the_pending_marker_only_a_successful_one_does() {
         let name = format!("ConnectionsSyncPendingMirrorTest{}", std::process::id());
+        let counter = AtomicUsize::new(0);
         clear_marker(&name);
         set_marker(&name); // mirrors `mark_push_pending()` after Save
 
-        // mirrors `finish_push_worker(false)`: never clears, whatever `remaining` is.
-        let remaining = 0usize;
-        let success = false;
-        if success && remaining == 0 {
-            clear_marker(&name);
-        }
+        begin_push_worker_on(&counter);
+        finish_push_worker_on(&counter, &name, false);
         assert!(
             marker_set(&name),
             "a failed push must leave the retry marker set for the next Settings open"
         );
 
-        // mirrors `finish_push_worker(true)` with no other worker still in flight: clears.
-        let success = true;
-        if success && remaining == 0 {
-            clear_marker(&name);
-        }
+        begin_push_worker_on(&counter);
+        finish_push_worker_on(&counter, &name, true);
         assert!(
             !marker_set(&name),
             "a successful push with no other worker in flight must clear it"
@@ -1287,5 +1436,178 @@ mod tests {
             DisconnectOutcome::WasNotSignedIn,
             DisconnectOutcome::CloudCopyKept
         );
+    }
+
+    /// E05 follow-up audit, review item 2: the exact bug, a signed-in machine whose token
+    /// refresh failed (offline, or the sign-in server rejected it) used to report
+    /// `WasNotSignedIn`, the same "nothing to delete" wording as a machine that was never
+    /// signed in at all, even though the cloud copy was never touched. Against the pre-fix
+    /// `disconnect` (no `was_signed_in` capture, `Err(_) => WasNotSignedIn` unconditionally)
+    /// this is exactly the case that read wrong.
+    #[test]
+    fn a_signed_in_machine_whose_token_mint_failed_keeps_the_cloud_copy_not_was_not_signed_in() {
+        assert_eq!(
+            disconnect_outcome(true, None),
+            DisconnectOutcome::CloudCopyKept,
+            "signed in, but no token to delete with, must not read as never-signed-in"
+        );
+    }
+
+    #[test]
+    fn a_machine_that_was_never_signed_in_reports_was_not_signed_in() {
+        assert_eq!(
+            disconnect_outcome(false, None),
+            DisconnectOutcome::WasNotSignedIn
+        );
+    }
+
+    #[test]
+    fn a_successful_delete_reports_cloud_copy_deleted_regardless_of_prior_state() {
+        assert_eq!(
+            disconnect_outcome(true, Some(Ok(()))),
+            DisconnectOutcome::CloudCopyDeleted
+        );
+    }
+
+    /// E05 follow-up audit, review item 1: the exact bug, every sync entry point called
+    /// `access_token()`, which on a dead network returned `Err(...)` WITHOUT ever calling
+    /// `mark_offline()`, so a dead network plus Save rendered `SavedLocally`, never
+    /// `Offline`. Against the pre-fix `access_token` (a bare `oauth::refresh(&rt)?` with no
+    /// classification at all) there was no such mapping to call here.
+    #[test]
+    fn an_unreachable_refresh_classifies_as_offline_with_the_reach_error_text() {
+        assert_eq!(
+            classify_refresh_error(oauth::RefreshOutcome::Unreachable),
+            (true, "couldn't reach the sign-in server".to_string())
+        );
+    }
+
+    /// The other half of item 1: ANY response, including a rejection, must clear the
+    /// offline classification, because a server that answered "no" is not the same failure
+    /// as a server nobody could reach.
+    #[test]
+    fn a_rejected_refresh_classifies_as_not_offline_with_the_servers_own_message() {
+        assert_eq!(
+            classify_refresh_error(oauth::RefreshOutcome::Rejected(
+                "bad refresh token".to_string()
+            )),
+            (false, "bad refresh token".to_string())
+        );
+    }
+
+    #[test]
+    fn a_failed_delete_attempt_keeps_the_cloud_copy() {
+        assert_eq!(
+            disconnect_outcome(true, Some(Err("sync failed (HTTP 500)".to_string()))),
+            DisconnectOutcome::CloudCopyKept
+        );
+    }
+
+    // ---- E05 follow-up audit: fake-server tests driving the REAL push_snapshot loop -----
+
+    /// A GET response for `store_get` carrying the given version and empty settings, plus
+    /// however many scripted responses the caller queues after it, every scenario below
+    /// starts with `push_snapshot` fetching a base version before its retry loop even begins.
+    fn script_base_version(version: u64) {
+        script_response(Some((
+            200,
+            format!(r#"{{"version":{version},"settings":{{}}}}"#).into_bytes(),
+        )));
+    }
+
+    fn conflict_body(current_version: u64) -> Vec<u8> {
+        format!(r#"{{"current":{{"version":{current_version}}}}}"#).into_bytes()
+    }
+
+    /// Item 4a(i): a 409 is retried up to the bound, then the push gives up. Also pins the
+    /// fix for item 5, `MAX_PUSH_CONFLICT_RETRIES` (3) must mean three RETRIES (four total
+    /// conflict responses before giving up), not two. Against the pre-fix `conflicts >= 3`
+    /// checked AFTER incrementing, this test's fourth queued 409 would never be reached ,
+    /// the push gave up on the THIRD one instead.
+    #[test]
+    fn push_retries_a_409_conflict_up_to_the_bound_then_gives_up() {
+        reset_test_network_state();
+        script_base_version(1);
+        for v in 2..=5 {
+            script_response(Some((409, conflict_body(v))));
+        }
+        let err = push_snapshot("tok").unwrap_err();
+        assert!(
+            err.contains("kept conflicting"),
+            "must give up with the conflict message, got {err:?}"
+        );
+    }
+
+    /// The other half of item 5: exactly `MAX_PUSH_CONFLICT_RETRIES` conflicts, then a
+    /// success, must succeed, proving the bound really does grant that many retries rather
+    /// than one fewer.
+    #[test]
+    fn push_succeeds_after_exactly_the_conflict_bound_worth_of_retries() {
+        reset_test_network_state();
+        script_base_version(1);
+        for v in 2..=(1 + u64::from(MAX_PUSH_CONFLICT_RETRIES)) {
+            script_response(Some((409, conflict_body(v))));
+        }
+        script_response(Some((200, br#"{"version":99}"#.to_vec())));
+        assert_eq!(push_snapshot("tok"), Ok(99));
+    }
+
+    /// Item 4a(ii): a 429 honours the relay's `retry_after_seconds`, capped by
+    /// `MAX_RATE_LIMIT_WAIT`, asserted on the computed wait via [`recorded_sleeps`], never
+    /// by actually sleeping.
+    #[test]
+    fn push_honours_retry_after_capped_by_the_rate_limit_ceiling() {
+        reset_test_network_state();
+        script_base_version(1);
+        script_response(Some((429, br#"{"retry_after_seconds":9999}"#.to_vec())));
+        script_response(Some((200, br#"{"version":2}"#.to_vec())));
+        assert_eq!(push_snapshot("tok"), Ok(2));
+        assert_eq!(
+            recorded_sleeps(),
+            vec![MAX_RATE_LIMIT_WAIT],
+            "an outrageous retry_after_seconds must be capped, not honoured verbatim"
+        );
+    }
+
+    #[test]
+    fn push_honours_retry_after_when_it_is_under_the_cap() {
+        reset_test_network_state();
+        script_base_version(1);
+        script_response(Some((429, br#"{"retry_after_seconds":5}"#.to_vec())));
+        script_response(Some((200, br#"{"version":2}"#.to_vec())));
+        assert_eq!(push_snapshot("tok"), Ok(2));
+        assert_eq!(recorded_sleeps(), vec![Duration::from_secs(5)]);
+    }
+
+    /// Item 4a(iii): a 5xx is retried up to `MAX_PUSH_TRANSIENT_RETRIES`, then gives up.
+    #[test]
+    fn push_retries_a_5xx_up_to_the_transient_bound_then_gives_up() {
+        reset_test_network_state();
+        script_base_version(1);
+        for _ in 0..=MAX_PUSH_TRANSIENT_RETRIES {
+            script_response(Some((503, b"{}".to_vec())));
+        }
+        let err = push_snapshot("tok").unwrap_err();
+        assert!(
+            err.contains("sync failed"),
+            "must give up with the store's own error mapping, got {err:?}"
+        );
+    }
+
+    /// Item 4a(iv): no response at all (`None`) is retried as a transient failure and, once
+    /// the bound is exhausted, `push_snapshot` reports the SAME "couldn't reach" wording
+    /// `mark_offline` is paired with everywhere else in this module (see the
+    /// `store_get`/`store_delete` branches, and `access_token`'s own classification test) -
+    /// deliberately NOT asserted here via the real `last_attempt_was_offline()` marker, so
+    /// this test never writes to this machine's actual registry/portable-ini state.
+    #[test]
+    fn push_gives_up_with_the_offline_wording_after_exhausting_transient_retries_on_no_response() {
+        reset_test_network_state();
+        script_base_version(1);
+        for _ in 0..=MAX_PUSH_TRANSIENT_RETRIES {
+            script_response(None);
+        }
+        let err = push_snapshot("tok").unwrap_err();
+        assert_eq!(err, "couldn't reach the sync server");
     }
 }

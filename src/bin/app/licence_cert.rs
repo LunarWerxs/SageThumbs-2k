@@ -224,7 +224,7 @@ pub(crate) fn verify(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A REAL certificate, minted 2026-09-04 by the live public redeem door against the
@@ -234,7 +234,11 @@ mod tests {
     ///
     /// Its claims: sub `ce12…cafe`, product ST2K, `maint` 1819977955 (2027-09-03),
     /// `ceil` null (the window is still open), `exp` 1791130974 (2026-10-04).
-    const REAL_CERT: &str = concat!(
+    // `pub(crate)`, not private: `license.rs`'s own tests reuse this exact fixture (E05
+    // follow-up audit, review item 4d) rather than a hand-rolled certificate, so the 30-day
+    // cert-expiry-warning window gets pinned against what Pay actually issues at least once,
+    // not only through a `LicenceSnapshot` built by hand.
+    pub(crate) const REAL_CERT: &str = concat!(
         "eyJhdWQiOiJjb25uZWN0aW9ucy1saWNlbmNlIiwibGljIjoiMWQxZjNkMjktODM5OS00YTY5LTk4ZTgt",
         "ZmI1Y2ViNWI1M2E2IiwicHJvZHVjdCI6IjI0NTQ0NDYxLTk1MzAtNGVkYi04NGU1LTRmMzQ3MTg3NmQ5",
         "OCIsInN1YiI6ImNlMTIwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
@@ -246,7 +250,8 @@ mod tests {
         "EH6jAg"
     );
 
-    const REAL_SUB: &str = "ce1200000000000000000000000000000000000000000000000000000000cafe";
+    pub(crate) const REAL_SUB: &str =
+        "ce1200000000000000000000000000000000000000000000000000000000cafe";
     /// Inside the fixture's window. Pinned, never `now()`: a test that passes until a
     /// date and then fails on its own is not a test.
     const INSIDE: i64 = 1_788_600_000;

@@ -2082,7 +2082,7 @@ mod tests {
         crate::license::LicenceSnapshot {
             mode,
             // `posture` isn't read by `licence_state_line` at all (it derives the same
-            // fact from `mode`/`key_prefix`/`last_status` directly) — any value proves
+            // fact from `mode`/`key_prefix`/`last_status` directly), any value proves
             // that independence.
             posture: crate::license::Posture::Silent,
             key_prefix: key_prefix.to_string(),
@@ -2227,7 +2227,7 @@ mod tests {
         assert_eq!(
             licence_state_line(&expired_no_relay),
             t("licence_state_none"),
-            "no key, no certificate contribution — must not claim to be verified"
+            "no key, no certificate contribution, must not claim to be verified"
         );
     }
 

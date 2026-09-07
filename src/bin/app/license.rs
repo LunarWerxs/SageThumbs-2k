@@ -392,8 +392,20 @@ pub(crate) fn entitlement_from_cache(now_unix: u64, last_positive_unix: u64) -> 
 fn certificate_expiry_if_licensed(now_unix: u64) -> Option<i64> {
     let cert = crate::cred_store::load_licence_cert()?;
     let fingerprint = machine_fingerprint()?;
+    certificate_expiry_from(&cert, &fingerprint, now_unix)
+}
+
+/// The I/O-free core of [`certificate_expiry_if_licensed`]: verify `cert` against
+/// `fingerprint` at `now_unix` and report its expiry when it licenses this machine. Split
+/// out (E05 follow-up audit, review item 4d) so a test can drive
+/// [`entitlement_and_cert_expiry`]'s certificate path with a REAL certificate object - the
+/// same fixture [`crate::licence_cert`]'s own tests pin the crypto against - rather than
+/// only ever exercising the 30-day cert-expiry-warning window through a hand-built
+/// `LicenceSnapshot` in `licence_state_line`'s tests, which never touches `licence_cert::verify`
+/// at all.
+fn certificate_expiry_from(cert: &str, fingerprint: &str, now_unix: u64) -> Option<i64> {
     let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
-    let verified = crate::licence_cert::verify(&cert, &fingerprint, now, now).ok()?;
+    let verified = crate::licence_cert::verify(cert, fingerprint, now, now).ok()?;
     verified.licensed.then_some(verified.exp_unix)
 }
 
@@ -946,17 +958,31 @@ fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
         RELAY_OVERALL_SECS,
         RELAY_MAX_RESP_BYTES,
     )?;
-    let result = parse_check_response(resp.status, &resp.body)?;
+    apply_check_response(&path, now, resp.status, &resp.body)
+}
+
+/// The response-handling half of [`refresh_entitlement_inner`] (E05 follow-up audit, review
+/// item 4b): given the relay's raw status/body for `GET /license/check`, decide what (if
+/// anything) to write to the breadcrumb and return the resulting entitlement. Split out so a
+/// test can drive the REAL decision with a hand-written failure response, rather than
+/// re-implementing its if-let in the test and only ever proving the test's own copy correct.
+fn apply_check_response(
+    path: &std::path::Path,
+    now: u64,
+    status: u16,
+    body: &[u8],
+) -> Option<Entitlement> {
+    let result = parse_check_response(status, body)?;
 
     if result.entitled {
-        update_history(|h| {
+        update_history_at(path, |h| {
             h.last_positive_unix = now;
             h.last_status = "active".to_string();
             h.last_reason.clear();
             h.was_business = true;
         });
     } else if result.status == "revoked" {
-        update_history(|h| {
+        update_history_at(path, |h| {
             h.last_status = "revoked".to_string();
             h.last_reason = result.reason.clone().unwrap_or_default();
         });
@@ -965,7 +991,7 @@ fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
     // machine that never redeemed anything) - the throttle bump already happened
     // and there's nothing else to change.
 
-    let refreshed = read_history(&path)?;
+    let refreshed = read_history(path)?;
     Some(entitlement_from_cache(now, refreshed.last_positive_unix))
 }
 
@@ -1124,18 +1150,54 @@ mod tests {
         assert_eq!(cert_expires, None);
     }
 
+    /// E05 follow-up audit, review item 4d: pins the 30-day cert-expiry-warning window's
+    /// SOURCE data through a REAL certificate object - the exact fixture
+    /// `licence_cert`'s own tests pin the crypto against (`exp` 1791130974, i.e.
+    /// 2026-10-04) - rather than only ever exercising it through a hand-built
+    /// `LicenceSnapshot` in `licence_state_line`'s tests, which never calls
+    /// `licence_cert::verify` at all. Both instants sit before the certificate's `exp` (so
+    /// it verifies either way); only their distance to `exp` differs.
+    #[test]
+    fn a_real_certificate_reports_its_own_expiry_both_inside_and_outside_the_warning_window() {
+        use crate::licence_cert::tests::{REAL_CERT, REAL_SUB};
+        let exp = 1_791_130_974i64;
+
+        // Well outside the 30-day window (40 days before `exp`).
+        let far = (exp - 40 * 24 * 60 * 60) as u64;
+        assert_eq!(certificate_expiry_from(REAL_CERT, REAL_SUB, far), Some(exp));
+        let remaining_far = exp - i64::try_from(far).unwrap();
+        assert!(
+            remaining_far as u64 > CERT_EXPIRY_WARNING_SECS,
+            "the far instant must genuinely be outside the warning window"
+        );
+
+        // Inside the 30-day window (5 days before `exp`).
+        let near = (exp - 5 * 24 * 60 * 60) as u64;
+        assert_eq!(
+            certificate_expiry_from(REAL_CERT, REAL_SUB, near),
+            Some(exp)
+        );
+        let remaining_near = exp - i64::try_from(near).unwrap();
+        assert!(
+            remaining_near as u64 <= CERT_EXPIRY_WARNING_SECS,
+            "the near instant must genuinely be inside the warning window"
+        );
+
+        // A machine with a different fingerprint gets nothing from this certificate at all.
+        assert_eq!(
+            certificate_expiry_from(REAL_CERT, "some-other-machine", near),
+            None
+        );
+    }
+
     /// A failing entitlement check (5xx, or a body the relay contract doesn't recognise)
-    /// must never advance `last_positive_unix` — mirrors exactly what
-    /// `refresh_entitlement_inner` does around its network call: bump `last_check_unix`
-    /// unconditionally (the throttle), then apply the parsed result only if there is one.
-    /// `parse_check_response`'s `?`-propagated `None` is what makes the real function's
-    /// history-mutation code unreachable on failure; this test exercises the same two real
-    /// functions (`parse_check_response`, `update_history_at`) against a temp file so the
-    /// claim is checked against actual code, not restated as a comment.
-    ///
-    /// Against code that updated `last_positive_unix` unconditionally (the bug this
-    /// invariant rules out), this test fails: `after.last_positive_unix` would read `now`
-    /// instead of `earlier`.
+    /// must never advance `last_positive_unix`. E05 follow-up audit (review item 4b): this
+    /// now drives [`apply_check_response`] itself, the extracted response-handling half of
+    /// `refresh_entitlement_inner`, with a hand-written failure response, instead of
+    /// reimplementing its if-let inline. Against the pre-extraction shape there was no such
+    /// function to call, that logic lived only inline inside `refresh_entitlement_inner`,
+    /// reachable solely through a real network call, so this test could only ever prove its
+    /// own copy of the decision correct, never the production code's.
     #[test]
     fn a_failed_check_does_not_advance_last_verified() {
         let dir = temp_dir("failed_check");
@@ -1150,28 +1212,28 @@ mod tests {
             },
         );
 
-        // A 500 (or any non-200/unparsable body) is a failure, not a "not entitled" answer.
-        assert!(parse_check_response(500, b"{}").is_none());
-        assert!(parse_check_response(200, b"not json").is_none());
-
         let now = earlier + 1_000;
+        // Mirrors the unconditional throttle bump `refresh_entitlement_inner` does before
+        // ever making the network call.
         update_history_at(&path, |h| h.last_check_unix = now);
-        if let Some(result) = parse_check_response(500, b"{}") {
-            // Unreachable on a 500 - if this ever runs, the failure classification broke.
-            update_history_at(&path, |h| {
-                h.last_positive_unix = now;
-                h.last_status = if result.entitled {
-                    "active".to_string()
-                } else {
-                    h.last_status.clone()
-                };
-            });
-        }
+
+        // A 500 (or any non-200/unparsable body) is a failure, not a "not entitled" answer -
+        // drive the REAL production function with a hand-written failure response.
+        let result = apply_check_response(&path, now, 500, b"{}");
+        assert!(
+            result.is_none(),
+            "a failing check must not report an entitlement"
+        );
+        assert!(apply_check_response(&path, now, 200, b"not json").is_none());
 
         let after = read_history(&path).expect("history file must still parse");
         assert_eq!(
             after.last_positive_unix, earlier,
             "a failed check must not advance last verified"
+        );
+        assert_eq!(
+            after.last_status, "active",
+            "a failed check must not touch the last-known status either"
         );
         assert_eq!(
             after.last_check_unix, now,

@@ -16,7 +16,7 @@ pub(super) enum SyncEvent {
     Connected(Result<crate::sync_client::ConnectOutcome, String>),
     Pulled(Result<bool, String>), // Ok(applied?) or Err(reason)
     Pushed(Result<(), String>),
-    /// Carries whether the best-effort cloud-copy delete actually succeeded (E05 audit) —
+    /// Carries whether the best-effort cloud-copy delete actually succeeded (E05 audit),
     /// `disconnect()` used to return `()`, so this was thrown away and the dialog always
     /// said the same reassuring thing regardless of what really happened.
     Disconnected(crate::sync_client::DisconnectOutcome),
@@ -87,14 +87,14 @@ pub(super) fn sync_button_label() -> String {
     }
 }
 
-/// The states the sync STATUS LINE can show (E05 audit) — a superset of [`SyncRowState`]'s
+/// The states the sync STATUS LINE can show (E05 audit), a superset of [`SyncRowState`]'s
 /// distinctions, extracted into its own enum + pure derive function so `sync_status_state`
 /// and `sync_status_is_green` can never again drift from a shared source, and so the
 /// "never claims a completed sync that did not happen" invariant is one thing to test
 /// rather than a property of scattered `t()` calls.
 ///
 /// `Off`/`Connecting` are never returned by [`derive_sync_state`] (the persistent signals
-/// it reads have no notion of "mid sign-in") — `Connecting` is only ever constructed
+/// it reads have no notion of "mid sign-in"), `Connecting` is only ever constructed
 /// directly, for the transient overlay `begin_connect`/`begin_retry_initial_sync` show
 /// while their worker thread is running. Everything else is reachable from
 /// [`derive_sync_state`] given the right [`SyncSignals`].
@@ -109,7 +109,7 @@ pub(super) enum SyncState {
     /// `error` carries the server's own message when one is known this session.
     InitialSyncPending { error: Option<String> },
     /// The last automatic attempt (an initial sync retry, or a Save's push) never reached
-    /// the server at all — no HTTP response came back at all (DNS/TCP/TLS/timeout via
+    /// the server at all, no HTTP response came back at all (DNS/TCP/TLS/timeout via
     /// `http::request` returning `None`), as opposed to [`SyncState::InitialSyncPending`]
     /// or [`SyncState::SavedLocally`], where the server DID answer, just not with success.
     Offline,
@@ -125,7 +125,7 @@ pub(super) enum SyncState {
     },
 }
 
-/// The raw inputs [`derive_sync_state`] decides from — kept as a struct (rather than a long
+/// The raw inputs [`derive_sync_state`] decides from, kept as a struct (rather than a long
 /// parameter list) so a unit test can hand-build every combination by name.
 pub(super) struct SyncSignals {
     pub signed_in: bool,
@@ -135,7 +135,7 @@ pub(super) struct SyncSignals {
     /// [`crate::sync_client::last_attempt_was_offline`].
     pub offline: bool,
     /// A fresh error message from the attempt that just finished, if any. Idle
-    /// re-derivation (Settings just opened, nothing running) always passes `None` here —
+    /// re-derivation (Settings just opened, nothing running) always passes `None` here,
     /// there is no persisted text for it, only the bool markers above.
     pub error: Option<String>,
     pub who: Option<String>,
@@ -150,22 +150,22 @@ pub(super) fn derive_sync_state(signals: &SyncSignals) -> SyncState {
     if !signals.signed_in {
         return SyncState::Off;
     }
+    // E05 follow-up audit: `offline` wins whenever it is set, whatever the pending markers
+    // say, checked BEFORE either pending branch, not nested inside them. A pull can fail
+    // to reach the server without setting either durable marker (only a push/initial-sync
+    // failure marks one of those), and the old shape silently fell through such a case all
+    // the way to `Synced` below.
+    if signals.offline {
+        return SyncState::Offline;
+    }
     if signals.initial_sync_pending {
-        return if signals.offline {
-            SyncState::Offline
-        } else {
-            SyncState::InitialSyncPending {
-                error: signals.error.clone(),
-            }
+        return SyncState::InitialSyncPending {
+            error: signals.error.clone(),
         };
     }
     if signals.push_pending {
-        return if signals.offline {
-            SyncState::Offline
-        } else {
-            SyncState::SavedLocally {
-                error: signals.error.clone(),
-            }
+        return SyncState::SavedLocally {
+            error: signals.error.clone(),
         };
     }
     SyncState::Synced {
@@ -179,7 +179,7 @@ pub(super) fn derive_sync_state(signals: &SyncSignals) -> SyncState {
 /// the status line, so `sync_status_state`/`sync_status_is_green` (and every transient
 /// override in [`handle_sync_event`]) can never disagree about what a given state means.
 ///
-/// `updated_from_other_device` wins over `who` on purpose — matches the pre-E05 behavior
+/// `updated_from_other_device` wins over `who` on purpose, matches the pre-E05 behavior
 /// exactly (the Pulled(Ok(true)) branch always showed the plain "updated" line, never the
 /// account name), so this refactor changes NOTHING a screenshot would catch.
 pub(super) fn render_sync_state(state: &SyncState) -> (String, bool) {
@@ -206,7 +206,7 @@ pub(super) fn render_sync_state(state: &SyncState) -> (String, bool) {
 }
 
 /// [`SyncSignals`] read from the real, persistent signals (never a fresh attempt's error
-/// text — see the field doc). Used both by [`sync_status_state`] and by
+/// text, see the field doc). Used both by [`sync_status_state`] and by
 /// [`handle_sync_event`]'s fallback (`None`) branches.
 fn current_sync_signals() -> SyncSignals {
     SyncSignals {
@@ -429,7 +429,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             // "Stop syncing" beside a status line that would otherwise still claim "Synced".
             refresh_sync_ui(hwnd);
             // E05 audit: a failed initial sync can be either "the server said no" or
-            // "never reached the server at all" — `SyncState::Offline` says so honestly
+            // "never reached the server at all", `SyncState::Offline` says so honestly
             // instead of always claiming the generic "first sync didn't finish" wording.
             let state = if crate::sync_client::last_attempt_was_offline() {
                 SyncState::Offline
@@ -479,7 +479,22 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
                         })),
                     )
                 }
-                _ => set_sync_status(hwnd, None), // the state-derived "● Synced" line
+                Ok(false) => set_sync_status(hwnd, None), // the state-derived "● Synced" line
+                Err(error) => {
+                    // E05 follow-up audit: a failed pull must NEVER fall through to the
+                    // plain "Synced" line just because a pull sets neither pending marker
+                    // of its own. Classify it the same way `Pushed(Err(..))` already does ,
+                    // offline (never reached the server) or a rejection it did answer with ,
+                    // instead of `set_sync_status(hwnd, None)`, which re-derives from the
+                    // persisted markers alone and, before this fix, read as caught-up
+                    // whenever neither pending marker happened to be set.
+                    let state = if crate::sync_client::last_attempt_was_offline() {
+                        SyncState::Offline
+                    } else {
+                        SyncState::SavedLocally { error: Some(error) }
+                    };
+                    set_sync_status(hwnd, Some(render_sync_state(&state)));
+                }
             }
         }
         SyncEvent::Pushed(Ok(())) => {
@@ -489,7 +504,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
         SyncEvent::Pushed(Err(error)) => {
             set_sync_button(hwnd, &sync_button_label(), true);
             // E05 audit: a push that never reached the server at all is `Offline`, not
-            // `SavedLocally` with a server-shaped error message — the two used to be the
+            // `SavedLocally` with a server-shaped error message, the two used to be the
             // same rendered line no matter which one actually happened.
             let state = if crate::sync_client::last_attempt_was_offline() {
                 SyncState::Offline
@@ -590,7 +605,7 @@ mod tests {
     }
 
     /// Against pre-E05 code (`SyncRowState`, no `Offline` variant at all) this is simply
-    /// `InitialSyncPending` — the whole point of this test is that a transport failure and
+    /// `InitialSyncPending`, the whole point of this test is that a transport failure and
     /// a server rejection, both surfacing as "the initial sync hasn't finished", must now
     /// render two DIFFERENT lines.
     #[test]
@@ -617,6 +632,19 @@ mod tests {
         );
     }
 
+    /// E05 follow-up audit: `offline` must win even when NEITHER pending marker is set, a
+    /// pull that failed to reach the server sets no marker of its own (only a push/initial-
+    /// sync failure does). Against the old nested shape this fell straight through to
+    /// `Synced` below, rendering "up to date" right after a sync attempt that never left
+    /// this machine.
+    #[test]
+    fn offline_wins_even_with_no_pending_markers_set() {
+        assert_eq!(
+            derive_sync_state(&signals(true, false, false, true)),
+            SyncState::Offline
+        );
+    }
+
     #[test]
     fn no_pending_markers_derives_synced_with_the_given_who() {
         let mut s = signals(true, false, false, false);
@@ -630,7 +658,7 @@ mod tests {
         );
     }
 
-    /// `Connecting` is never derived — it's constructed directly by `begin_connect`/
+    /// `Connecting` is never derived, it's constructed directly by `begin_connect`/
     /// `begin_retry_initial_sync` for the transient overlay. Reachable all the same: this
     /// is what "every variant reachable from hand-built inputs" means for a variant with
     /// no signals of its own.
@@ -689,18 +717,18 @@ mod tests {
     fn saved_locally_with_error_renders_the_error_text() {
         assert_eq!(
             render_sync_state(&SyncState::SavedLocally {
-                error: Some("syncing too often — retry after 5 seconds".to_string())
+                error: Some("syncing too often, retry after 5 seconds".to_string())
             }),
             (
                 t("sync_state_pending_err")
-                    .replace("{error}", "syncing too often — retry after 5 seconds"),
+                    .replace("{error}", "syncing too often, retry after 5 seconds"),
                 false
             )
         );
     }
 
     /// Matches the pre-E05 behavior exactly (the Pulled(Ok(true)) branch always showed the
-    /// plain "updated" line, ignoring the account name) — `who` must not leak in here.
+    /// plain "updated" line, ignoring the account name), `who` must not leak in here.
     #[test]
     fn updated_from_other_device_wins_over_who() {
         assert_eq!(
