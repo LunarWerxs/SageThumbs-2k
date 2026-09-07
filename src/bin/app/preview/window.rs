@@ -54,6 +54,11 @@ pub(super) const WM_APP_PDFTEXT: u32 = WM_APP + 13;
 pub(super) const WM_APP_MDIMG: u32 = WM_APP + 9;
 /// Follow-selection switch posted from the poll thread (`WM_APP + 2`); LPARAM = `Box<String>` path.
 pub(super) const WM_APP_SWITCH: u32 = WM_APP + 2;
+/// The async classify/read step landed (`WM_APP + 14`); LPARAM = `Box<(gen, Resolved)>`
+/// (2026-09-05 audit, F10). Posted by [`super::loader::spawn_prepare_load`] for the work that
+/// used to run synchronously in `load()` before the window could even show: the extension
+/// sniff, archive listing, DB/mail markdown and the text/markdown read.
+pub(super) const WM_APP_LOAD_RESOLVED: u32 = WM_APP + 14;
 /// Timer that shows the window even if the decode hasn't finished (so we never wait hidden).
 pub(super) const SHOW_TIMER_ID: usize = 1;
 /// Ticks ~4x/sec while a video plays to repaint the scrub position.
@@ -562,10 +567,14 @@ pub(super) unsafe fn create_viewer(
         load_sync(hwnd, initial_path.as_deref(), opts);
     } else {
         (*state(hwnd)).tip.set(create_tooltips(hwnd, hinst));
+        // Armed BEFORE `load`, not after (2026-09-05 audit, F10): `load` now shows the window
+        // itself before it reads anything, but this fallback stays first regardless, so a
+        // future change to `load` can never again leave the show-fallback waiting behind a
+        // synchronous read.
+        SetTimer(Some(hwnd), SHOW_TIMER_ID, 120, None);
         if let Some(p) = initial_path {
             load(hwnd, &p);
         }
-        SetTimer(Some(hwnd), SHOW_TIMER_ID, 120, None);
     }
     Some(hwnd)
 }
@@ -793,6 +802,10 @@ unsafe fn on_app_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Op
             LRESULT(0)
         }
         WM_APP_SWITCH => on_app_switch(hwnd, lparam),
+        WM_APP_LOAD_RESOLVED => {
+            on_app_load_resolved(hwnd, lparam);
+            LRESULT(0)
+        }
         _ => return None,
     })
 }
@@ -923,6 +936,20 @@ unsafe fn on_app_mdimg(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
     LRESULT(0)
+}
+
+/// `WM_APP_LOAD_RESOLVED`: the async classify/read step landed (2026-09-05 audit, F10). A
+/// stale generation (the user already switched files while this was in flight) is dropped
+/// exactly like `on_render` drops a stale decode, the boxed payload is still reclaimed either
+/// way so it never leaks.
+unsafe fn on_app_load_resolved(hwnd: HWND, lparam: LPARAM) {
+    let boxed = Box::from_raw(lparam.0 as *mut (u64, Resolved));
+    let (gen, resolved) = *boxed;
+    let st = &*state(hwnd);
+    if !is_load_current(gen, st.decode_gen.get()) {
+        return; // stale: the user already switched files
+    }
+    apply_resolved(hwnd, st, resolved);
 }
 
 /// `WM_APP_PDFDOC`: the opened PDF session for the continuous view landed.

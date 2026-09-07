@@ -467,6 +467,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   added, and an upgrade from an older version now correctly picks up that it was the one that
   trusted it in the first place.
 
+- **Opening the Quick preview on a file from a slow or unresponsive network share or removable
+  drive no longer freezes the preview window before it can even appear.** The window now shows
+  right away with its usual loading spinner while the file is read in the background, so it can
+  still be closed or switched to another file immediately; if you flip through several files in
+  a row, only the newest one you selected is ever shown, even if an older, slower read finishes
+  later.
+
 ## 2.5.0
 
 ### Added
