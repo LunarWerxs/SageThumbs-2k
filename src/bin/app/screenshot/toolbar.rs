@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use crate::dark::rgb;
-use crate::win::{dpi_scale_dpi, gui_font, wide};
+use crate::win::{dpi_scale_dpi, gui_font, t, wide};
 
 use super::tools::{face_name, Tool};
 use crate::gdip;
@@ -284,30 +284,34 @@ pub(super) unsafe fn draw_focus_ring_outside(hdc: HDC, r: RECT) {
     }
 }
 
-/// One-line description of a button, shown as a hover tooltip.
-pub(super) fn button_tip(btn: Button) -> &'static str {
+/// One-line description of a button, shown as a hover tooltip. Localized (audit F29,
+/// 2026-09-06): every branch reads its sentence from the locale table; the tool branches carry
+/// a `{key}` slot for the tool's single-letter keyboard shortcut, filled in HERE (never by a
+/// translation) because it names a real key on the keyboard, not a word.
+pub(super) fn button_tip(btn: Button) -> String {
+    let key = |tpl: &str, letter: &str| t(tpl).replace("{key}", letter);
     match btn {
-        Button::Tool(Tool::Rect) => "Rectangle (R) — drag to draw",
-        Button::Tool(Tool::Ellipse) => "Ellipse (O) — drag to draw",
-        Button::Tool(Tool::Arrow) => "Arrow (A) — drag tail to head · Shift snaps 45°",
-        Button::Tool(Tool::Line) => "Line (L) — drag to draw · Shift snaps 45°",
-        Button::Tool(Tool::Pen) => "Pen (P) — freehand draw",
-        Button::Tool(Tool::Text) => "Text (T) — click then type · [ ] resize",
-        Button::Tool(Tool::Number) => "Number (N) — click to drop 1, 2, 3…",
-        Button::Tool(Tool::Highlight) => "Highlight (H) — translucent marker",
-        Button::Tool(Tool::Pixelate) => "Pixelate (B) — blur/blockify a region",
-        Button::Tool(Tool::Invert) => "Invert (I) — invert a region's colours",
-        Button::Tool(Tool::Eyedropper) => "Pick colour (E) — click a pixel to copy its hex",
-        Button::Tool(Tool::Move) => "Move (M) — drag a shape · Del removes · or Ctrl-drag",
-        Button::Color => "Colour (K) — cycle the palette",
-        Button::Undo => "Undo (Ctrl+Z)",
-        Button::Redo => "Redo (Ctrl+Y / Ctrl+Shift+Z)",
-        Button::Copy => "Copy to the clipboard (Ctrl+C / Enter)",
-        Button::Ocr => "Copy text (OCR) (Ctrl+T) — read the words in the region",
-        Button::Save => "Save a PNG (Ctrl+S)",
-        Button::Upload => "Upload & copy the link (Ctrl+U)",
-        Button::Close => "Close (Esc)",
-        Button::Sep => "",
+        Button::Tool(Tool::Rect) => key("shot_tip_rect", "R"),
+        Button::Tool(Tool::Ellipse) => key("shot_tip_ellipse", "O"),
+        Button::Tool(Tool::Arrow) => key("shot_tip_arrow", "A"),
+        Button::Tool(Tool::Line) => key("shot_tip_line", "L"),
+        Button::Tool(Tool::Pen) => key("shot_tip_pen", "P"),
+        Button::Tool(Tool::Text) => key("shot_tip_text", "T"),
+        Button::Tool(Tool::Number) => key("shot_tip_number", "N"),
+        Button::Tool(Tool::Highlight) => key("shot_tip_highlight", "H"),
+        Button::Tool(Tool::Pixelate) => key("shot_tip_pixelate", "B"),
+        Button::Tool(Tool::Invert) => key("shot_tip_invert", "I"),
+        Button::Tool(Tool::Eyedropper) => key("shot_tip_eyedropper", "E"),
+        Button::Tool(Tool::Move) => key("shot_tip_move", "M"),
+        Button::Color => key("shot_tip_color", "K"),
+        Button::Undo => t("shot_tip_undo").to_string(),
+        Button::Redo => t("shot_tip_redo").to_string(),
+        Button::Copy => t("shot_tip_copy").to_string(),
+        Button::Ocr => t("shot_tip_ocr").to_string(),
+        Button::Save => t("shot_tip_save").to_string(),
+        Button::Upload => t("shot_tip_upload").to_string(),
+        Button::Close => t("shot_tip_close").to_string(),
+        Button::Sep => String::new(),
     }
 }
 
@@ -672,8 +676,13 @@ mod tests {
     /// The OCR button ships in the action group next to Copy (copy pixels / copy words),
     /// and every button carries a tooltip — `button_tip` returning "" would show an empty
     /// bubble on hover.
+    ///
+    /// `button_tip` is now locale-dependent (audit F29), so this forces English explicitly
+    /// rather than trusting whatever the test machine's Windows UI language happens to be —
+    /// the assertion below checks a literal English substring.
     #[test]
     fn ocr_button_sits_next_to_copy_and_is_described() {
+        sagethumbs2k_core::i18n::apply_override_or_system(Some("en"));
         let order: Vec<Button> = items().iter().map(|(b, _)| *b).collect();
         let copy = order
             .iter()
@@ -695,6 +704,51 @@ mod tests {
             assert!(!button_tip(btn).is_empty());
         }
         assert!(button_tip(Button::Ocr).contains("Ctrl+T"));
+    }
+
+    /// Audit F29: every tooltip must come from the locale table, not a hardcoded literal.
+    /// Compares `button_tip` against `t(key)` (with the tool letter substituted the same way
+    /// `button_tip` itself does it) for every button — a hardcoded `&'static str` could not
+    /// track a key it never looks up. Also proves the `{key}` placeholder actually gets filled:
+    /// a missing `.replace()` would leave the literal text `{key}` in the tooltip.
+    #[test]
+    fn button_tip_reads_the_locale_table_and_fills_the_key_placeholder() {
+        sagethumbs2k_core::i18n::apply_override_or_system(Some("en"));
+        let pairs = [
+            (Button::Tool(Tool::Rect), "shot_tip_rect", "R"),
+            (Button::Tool(Tool::Ellipse), "shot_tip_ellipse", "O"),
+            (Button::Tool(Tool::Arrow), "shot_tip_arrow", "A"),
+            (Button::Tool(Tool::Line), "shot_tip_line", "L"),
+            (Button::Tool(Tool::Pen), "shot_tip_pen", "P"),
+            (Button::Tool(Tool::Text), "shot_tip_text", "T"),
+            (Button::Tool(Tool::Number), "shot_tip_number", "N"),
+            (Button::Tool(Tool::Highlight), "shot_tip_highlight", "H"),
+            (Button::Tool(Tool::Pixelate), "shot_tip_pixelate", "B"),
+            (Button::Tool(Tool::Invert), "shot_tip_invert", "I"),
+            (Button::Tool(Tool::Eyedropper), "shot_tip_eyedropper", "E"),
+            (Button::Tool(Tool::Move), "shot_tip_move", "M"),
+            (Button::Color, "shot_tip_color", "K"),
+        ];
+        for (btn, key, letter) in pairs {
+            let tip = button_tip(btn);
+            assert_eq!(tip, crate::win::t(key).replace("{key}", letter));
+            assert!(
+                !tip.contains("{key}"),
+                "the {{key}} placeholder was never substituted in {key}"
+            );
+            assert!(tip.contains(letter), "{key} lost its shortcut letter");
+        }
+        for (btn, key) in [
+            (Button::Undo, "shot_tip_undo"),
+            (Button::Redo, "shot_tip_redo"),
+            (Button::Copy, "shot_tip_copy"),
+            (Button::Ocr, "shot_tip_ocr"),
+            (Button::Save, "shot_tip_save"),
+            (Button::Upload, "shot_tip_upload"),
+            (Button::Close, "shot_tip_close"),
+        ] {
+            assert_eq!(button_tip(btn), crate::win::t(key));
+        }
     }
 
     /// Keyboard focus has to reach every button the mouse can click, in both directions,

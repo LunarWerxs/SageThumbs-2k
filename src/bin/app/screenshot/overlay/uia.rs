@@ -774,7 +774,7 @@ fn button_enabled(s: &Shot, btn: Button) -> bool {
 
 /// The name a screen reader should speak for a toolbar item.
 fn button_name(btn: Button) -> String {
-    spoken_name(toolbar::button_tip(btn)).to_string()
+    spoken_name(&toolbar::button_tip(btn)).to_string()
 }
 
 /// Reduce a toolbar tooltip to a spoken name.
@@ -870,17 +870,25 @@ fn swatch_name(swatch: Swatch) -> String {
 
 /// `face` is the font currently in force, so the field announces what it is set TO rather than
 /// just what it is.
+///
+/// Localized (audit F29, 2026-09-06): pre-fix these were a SECOND, independent set of hardcoded
+/// English strings that happened to describe the same controls `textflyout`'s own paint code
+/// already localizes — a screen reader user got English regardless of the active language even
+/// after the visible captions were fixed. `Bold`/`Underline` now go through the exact same
+/// locale keys `checkbox_label` paints with, so the two can never drift apart again; the
+/// remaining three have no on-screen caption of their own ("−"/"+" are language-neutral, and the
+/// font dropdown toggle has no separate label), so they get their own keys.
 fn text_item_name(item: TextItem, face: &str) -> String {
     match item {
-        TextItem::FontField => format!("Font, {face}"),
+        TextItem::FontField => crate::win::t("shot_text_font_field").replace("{face}", face),
         TextItem::FontOption(i) => toolbar::PRESET_FONTS
             .get(i)
             .map_or_else(|| "Font".to_string(), |n| (*n).to_string()),
-        TextItem::SizeDown => "Smaller text".to_string(),
-        TextItem::SizeUp => "Larger text".to_string(),
-        TextItem::Bold => "Bold".to_string(),
-        TextItem::Underline => "Underline".to_string(),
-        TextItem::More => "More font options".to_string(),
+        TextItem::SizeDown => crate::win::t("shot_text_size_down").to_string(),
+        TextItem::SizeUp => crate::win::t("shot_text_size_up").to_string(),
+        TextItem::Bold => crate::win::t("shot_text_bold").to_string(),
+        TextItem::Underline => crate::win::t("shot_text_underline").to_string(),
+        TextItem::More => crate::win::t("shot_text_more_options").to_string(),
     }
 }
 

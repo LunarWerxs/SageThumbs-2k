@@ -106,6 +106,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The screenshot editor and the Quick preview's outline sidebar now follow your chosen
+  language.** Every tool name, toolbar tooltip, on-screen hint, and the text-formatting flyout
+  in the screenshot editor, plus the Markdown outline sidebar's "Contents" header, used to show
+  fixed English text no matter which language you picked. All of it is translated now, in every
+  shipped language.
+
 - **Signing in to Settings Sync no longer looks like it failed when only the first cloud sync
   did.** Signing in saves your account right away, but if the very first sync to the cloud
   couldn't finish, the status line and the "Stop syncing" button used to say you were fully

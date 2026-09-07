@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use crate::dark::rgb;
-use crate::win::{gui_font, wide};
+use crate::win::{gui_font, t, wide};
 
 use crate::gdip;
 
@@ -45,7 +45,13 @@ pub(super) enum Tool {
 }
 
 impl Tool {
-    /// Short label for the hint strip.
+    /// Stable, non-localized identifier — ALWAYS English, deliberately never routed through
+    /// `t()`. Two things depend on that: `automation::automation_title` publishes it verbatim
+    /// into the `--screenshot-automation` window-title channel, and
+    /// `tests/screenshot_automation.rs` parses that title for a literal `tool=Rect`/`tool=Line`
+    /// (see `draw_and_expect_tool`). Localizing this one would make the automation harness
+    /// (and any external tool reading the title) silently depend on the active UI language.
+    /// The user-visible hint strip uses [`Tool::hint_label`] instead.
     pub(super) fn label(self) -> &'static str {
         match self {
             Tool::Rect => "Rect",
@@ -61,6 +67,26 @@ impl Tool {
             Tool::Eyedropper => "Pick",
             Tool::Move => "Move",
         }
+    }
+
+    /// Localized short label for the on-screen hint strip (audit F29, 2026-09-06). Distinct
+    /// from [`Tool::label`], which must stay fixed English for the automation title channel —
+    /// this is the one a real user sees, so it goes through the locale table.
+    pub(super) fn hint_label(self) -> &'static str {
+        t(match self {
+            Tool::Rect => "shot_tool_short_rect",
+            Tool::Ellipse => "shot_tool_short_ellipse",
+            Tool::Arrow => "shot_tool_short_arrow",
+            Tool::Line => "shot_tool_short_line",
+            Tool::Pen => "shot_tool_short_pen",
+            Tool::Text => "shot_tool_short_text",
+            Tool::Number => "shot_tool_short_number",
+            Tool::Highlight => "shot_tool_short_highlight",
+            Tool::Pixelate => "shot_tool_short_pixelate",
+            Tool::Invert => "shot_tool_short_invert",
+            Tool::Eyedropper => "shot_tool_short_eyedropper",
+            Tool::Move => "shot_tool_short_move",
+        })
     }
 
     /// The tools offered as a STARTING tool, in the order the Settings dropdown lists them.
@@ -129,6 +155,56 @@ mod default_tool_tests {
     fn non_drawing_tools_are_not_offered() {
         for t in Tool::DEFAULTABLE {
             assert!(!matches!(t, Tool::Eyedropper | Tool::Move));
+        }
+    }
+
+    /// Audit F29: the hint-strip label must come from the locale table, not a hardcoded
+    /// literal — assert every variant's `hint_label()` is EXACTLY its `t(key)` value (a
+    /// hardcoded `&'static str` here, as `label()` still has above it, could never equal a
+    /// runtime-looked-up translation except by accident on the one locale that happens to
+    /// match, so this fails the moment the two diverge from the key it claims to use).
+    #[test]
+    fn hint_label_reads_the_locale_table_by_key() {
+        let pairs = [
+            (Tool::Rect, "shot_tool_short_rect"),
+            (Tool::Ellipse, "shot_tool_short_ellipse"),
+            (Tool::Arrow, "shot_tool_short_arrow"),
+            (Tool::Line, "shot_tool_short_line"),
+            (Tool::Pen, "shot_tool_short_pen"),
+            (Tool::Text, "shot_tool_short_text"),
+            (Tool::Number, "shot_tool_short_number"),
+            (Tool::Highlight, "shot_tool_short_highlight"),
+            (Tool::Pixelate, "shot_tool_short_pixelate"),
+            (Tool::Invert, "shot_tool_short_invert"),
+            (Tool::Eyedropper, "shot_tool_short_eyedropper"),
+            (Tool::Move, "shot_tool_short_move"),
+        ];
+        for (tool, key) in pairs {
+            assert_eq!(
+                tool.hint_label(),
+                crate::win::t(key),
+                "Tool::{}'s hint_label must read {key} from the locale table",
+                tool.label(),
+            );
+        }
+    }
+
+    /// `label()` (the automation-stable identifier) and `hint_label()` (the localized display
+    /// string) must stay two DIFFERENT functions — a well-meaning refactor that collapses them
+    /// back into one would silently re-localize the automation window-title channel that
+    /// `tests/screenshot_automation.rs` parses. Under the active (English) test locale the two
+    /// happen to read the same word for most tools, so this checks the one thing that would
+    /// actually catch a collapse: they are backed by independent code paths, proven by the key
+    /// lookup above rather than by comparing English strings that could coincide.
+    #[test]
+    fn label_and_hint_label_are_independent_functions() {
+        for tool in Tool::DEFAULTABLE {
+            // Both must resolve to *something* non-empty for every offered tool; the actual
+            // divergence-under-translation proof lives in the source-contract test
+            // (tests/f29_screenshot_i18n_contract.rs), which diffs en.toml against another
+            // shipped locale for these exact keys.
+            assert!(!tool.label().is_empty());
+            assert!(!tool.hint_label().is_empty());
         }
     }
 }

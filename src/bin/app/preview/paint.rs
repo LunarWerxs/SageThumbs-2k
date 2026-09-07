@@ -657,7 +657,8 @@ pub(super) unsafe fn paint_message(
     SelectObject(hdc, old);
 }
 
-/// Draw the Markdown outline (table-of-contents) sidebar into `rc`: a "CONTENTS" header + one row
+/// Draw the Markdown outline (table-of-contents) sidebar into `rc`: a localized header (English
+/// default: CONTENTS) + one row
 /// per heading (indented by level, deeper levels muted, the current section accent-highlighted),
 /// each recorded in `hits` as `(row_rect, target_scroll)` for click-to-jump. Overflowing entries
 /// are clipped (no sidebar scroll in v1). Uses the cached UI font (must not be deleted).
@@ -695,7 +696,12 @@ unsafe fn paint_toc(
     let mut y = rc.top + pad;
 
     SetTextColor(hdc, COLORREF(muted));
-    let mut hdr: Vec<u16> = "CONTENTS".encode_utf16().collect();
+    // Localized (audit F29, 2026-09-06): pre-fix this fed the bare word CONTENTS straight to
+    // encode_utf16, so a portable install with the language set to anything but English showed
+    // an English header on top of an otherwise fully translated app.
+    let mut hdr: Vec<u16> = crate::win::t("preview_outline_header")
+        .encode_utf16()
+        .collect();
     let mut hr = RECT {
         left: rc.left + pad,
         top: y,
@@ -1029,5 +1035,16 @@ mod tests {
         // The client size actually changed (WM_SIZE) — the cached bitmap no longer matches the
         // window and MUST be rebuilt, or the next paint would blit a stale-size buffer.
         assert!(back_buffer_needs_alloc(Some((800, 600)), (1024, 768)));
+    }
+
+    /// Audit F29 (2026-09-06): the outline sidebar's English header text is unchanged from the
+    /// pre-fix value, so the visible English UI never moved. That alone proves nothing about
+    /// localization — it only means something once paired with the source-contract test
+    /// (`tests/f29_screenshot_i18n_contract.rs`), which shows the old code shape feeding
+    /// straight into `encode_utf16` is gone from this file, and the locale-diff test showing
+    /// another shipped locale's translation of this key actually differs from English.
+    #[test]
+    fn outline_header_matches_the_locale_tables_english_value() {
+        assert_eq!(crate::win::t("preview_outline_header"), "CONTENTS");
     }
 }
