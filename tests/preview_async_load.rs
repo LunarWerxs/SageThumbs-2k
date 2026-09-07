@@ -140,16 +140,18 @@ fn slow_file_read_never_blocks_the_message_pump() {
         .arg(&doc);
     let mut child = cmd.spawn().expect("spawn SageThumbs2K --preview");
 
-    // The window must appear almost immediately (Loading state), long before the 4 s slow read
-    // finishes; this bound is generous for a cold/loaded CI box and still far under 4 s.
-    let hwnd = match wait_for_viewer(Duration::from_millis(1500)) {
+    // The window must appear within the documented responsiveness contract
+    // (`safety::PREVIEW_APPEARANCE_BUDGET`), long before the 4 s slow read finishes.
+    let appearance_budget = sagethumbs2k_core::safety::PREVIEW_APPEARANCE_BUDGET;
+    let hwnd = match wait_for_viewer(appearance_budget) {
         Some(h) => h,
         None => {
             let _ = child.kill();
             cleanup(case);
             panic!(
-                "preview window did not appear within 1.5s of a 4s slow read starting \
-                 (pre-fix: `load()` reads the file synchronously before the window can show)"
+                "preview window did not appear within {}ms of a 4s slow read starting \
+                 (pre-fix: `load()` reads the file synchronously before the window can show)",
+                appearance_budget.as_millis()
             );
         }
     };

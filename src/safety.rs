@@ -42,6 +42,79 @@ pub const PREVIEW_TARGET_EDGE: u32 = 1024;
 /// decode (1-4 s) and well under the ~20 s the host could otherwise be frozen for.
 pub const PREVIEW_DECODE_BUDGET: Duration = Duration::from_secs(12);
 
+/// ─── The Quick preview responsiveness contract (audit E02, 2026-09-07) ───
+///
+/// Slow files must not be able to block the viewer's message pump, and switching away from a
+/// slow file must never let its stale output land on screen. That contract is:
+///
+/// 1. **Show within [`PREVIEW_APPEARANCE_BUDGET`].** `preview::loader::load` shows the window
+///    in its `Loading` state before it reads a single byte of the target file (2026-09-05 audit,
+///    F10); everything that can block (archive listing, DB/mail markdown, the text/markdown
+///    read) runs on a worker thread instead. `tests/preview_async_load.rs` proves this against a
+///    4 s slow-read seam and asserts this exact budget as its bound.
+/// 2. **No single UI-thread pipeline stage may run past [`PREVIEW_UI_STAGE_BUDGET`]** without
+///    it being logged as a stall (`stage_stall_report`, `safety::log_debug`): `apply_resolved`
+///    and the render post-back handler (`on_render`) are the two stages this covers. This is a
+///    DIAGNOSTIC ceiling, not an enforced one: a stage that legitimately needs longer (e.g.
+///    compositing a very large decoded bitmap) still runs to completion, it is just recorded.
+/// 3. **A decode worker is abandoned after [`PREVIEW_DECODE_BUDGET`]** (12 s, above) if it has
+///    not returned by then; the caller stops waiting and the worker, if it ever finishes, throws
+///    its result away. The same budget is used as the "worth logging as slow" threshold for the
+///    worker-side prepare/decode stages, since neither has a tighter enforced ceiling of its own.
+/// 4. **At most [`MAX_ABANDONED_WORKERS`] abandoned workers may be alive at once.** Past that,
+///    [`spawn_budgeted`] and every other [`AbandonTicket`] user refuse to start another one; the
+///    Quick preview's `spawn_prepare_load` is one such caller, and past the cap it leaves the window
+///    in its `Loading` state (falling through to the fallback card) rather than piling on more
+///    blocked threads. Every abandonment that actually counts against this budget is observable:
+///    a debug line naming the live count and the cap (rate-limited, since a held arrow key can
+///    abandon a worker on every repeat).
+///
+/// `PREVIEW_UI_STAGE_BUDGET < PREVIEW_APPEARANCE_BUDGET < PREVIEW_DECODE_BUDGET` is an invariant
+/// (see `safety::tests::responsiveness_budgets_are_ordered`): the window must appear before a
+/// slow decode could possibly finish, and any one UI-thread stage must be far cheaper than the
+/// whole appearance budget, or it alone could blow it.
+///
+/// Wall-clock budget for the viewer to become VISIBLE after `load()` is called on a slow file,
+/// measured from process/window-message start (see `tests/preview_async_load.rs`). 1.5 s is
+/// generous for a cold/loaded CI box (a real appearance is typically tens of milliseconds, this
+/// is showing the `Loading` state, not decoding) while remaining far under the seconds a slow
+/// network read or the 12 s decode budget could otherwise stall for.
+pub const PREVIEW_APPEARANCE_BUDGET: Duration = Duration::from_millis(1500);
+
+/// Longest a single UI-thread stage of the preview pipeline (`apply_resolved`, the render
+/// post-back handler) may take before it is logged as a stall via [`log_debug`]. 100 ms is the
+/// commonly-cited threshold past which a UI action stops reading as instantaneous to a human, and
+/// every UI-thread stage here is bookkeeping over an already-decoded result (never a decode
+/// itself), so it should stay well under it in the overwhelming majority of cases. Exceeding it
+/// is diagnostic, not fatal: the stage still runs to completion.
+pub const PREVIEW_UI_STAGE_BUDGET: Duration = Duration::from_millis(100);
+
+/// Pure decision + formatting for one pipeline stage's timing, shared by the prepare/decode
+/// worker stages and the UI-thread apply/render stages: `Some(line)` (shaped for
+/// [`log_debug`]) when `elapsed` exceeded `budget`, `None` when the stage was within budget and
+/// nothing should be logged.
+///
+/// Kept pure (no clock, no I/O) so the log line's SHAPE is unit-tested directly here rather than
+/// parsed by any test or script downstream (see `docs/DEVELOPMENT_GOTCHAS.md`, "a string a test
+/// parses is an API": this is deliberately not that kind of interface; nothing outside these
+/// unit tests should ever match against its text).
+pub fn stage_stall_report(
+    stage: &str,
+    elapsed: Duration,
+    budget: Duration,
+    generation: u64,
+    path: &str,
+) -> Option<String> {
+    if elapsed <= budget {
+        return None;
+    }
+    Some(format!(
+        "preview stage '{stage}' took {}ms (budget {}ms) for generation {generation}: {path}",
+        elapsed.as_millis(),
+        budget.as_millis(),
+    ))
+}
+
 /// Wrap a COM method body that returns a raw `HRESULT`.
 pub fn guard_hr<F: FnOnce() -> HRESULT>(f: F) -> HRESULT {
     install_panic_hook("dll");
@@ -460,9 +533,9 @@ impl AbandonTicket {
     }
 
     /// Whether this worker is counted against the budget right now: the caller gave up and
-    /// the worker has not finished. For tests, which cannot read the process-wide count
-    /// deterministically while other tests run budgeted workers beside them.
-    #[cfg(test)]
+    /// the worker has not finished. Public (not test-only) so a caller outside this crate can
+    /// observe its own ticket's state directly instead of racing a before/after read of the
+    /// shared process-wide count against every other ticket's concurrent activity.
     pub fn is_counted(&self) -> bool {
         self.state.load(Ordering::Acquire) == WORKER_ABANDONED
     }
@@ -952,5 +1025,78 @@ mod worker_tests {
             POOL.slots.iter().all(|s| s.load(Ordering::Acquire) == 0),
             "released slots must read as free"
         );
+    }
+}
+
+#[cfg(test)]
+mod responsiveness_contract_tests {
+    use super::*;
+
+    /// The whole point of the ordering: the window must appear before a slow decode could
+    /// possibly finish, and any single UI-thread stage must be far cheaper than the whole
+    /// appearance budget, or it alone could blow it. See the doc comment above
+    /// `PREVIEW_APPEARANCE_BUDGET` for the full contract this pins.
+    #[test]
+    fn responsiveness_budgets_are_ordered() {
+        assert!(
+            PREVIEW_UI_STAGE_BUDGET < PREVIEW_APPEARANCE_BUDGET,
+            "a single UI-thread stage must be cheaper than the whole appearance budget"
+        );
+        assert!(
+            PREVIEW_APPEARANCE_BUDGET < PREVIEW_DECODE_BUDGET,
+            "the window must be able to appear well before a slow decode could time out"
+        );
+    }
+
+    /// A stage that finished within its budget is silent: nothing worth logging happened.
+    #[test]
+    fn stage_stall_report_is_silent_within_budget() {
+        assert_eq!(
+            stage_stall_report(
+                "prepare",
+                Duration::from_millis(50),
+                Duration::from_millis(100),
+                7,
+                "x.txt"
+            ),
+            None
+        );
+    }
+
+    /// The boundary itself is still within budget (`elapsed <= budget`), not a stall: a stage
+    /// that finishes exactly on the budget should not flap between logged/silent on jitter.
+    #[test]
+    fn stage_stall_report_treats_the_exact_budget_as_not_stalled() {
+        assert_eq!(
+            stage_stall_report(
+                "decode",
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+                1,
+                "a.png"
+            ),
+            None
+        );
+    }
+
+    /// Over budget: a line naming the stage, elapsed/budget in ms, the generation, and the
+    /// path. This is the shape this whole function exists to test (see the doc comment: this
+    /// shape is asserted here and nowhere else, so localizing/reformatting it later cannot
+    /// silently break a hidden parser).
+    #[test]
+    fn stage_stall_report_names_stage_elapsed_budget_generation_and_path() {
+        let line = stage_stall_report(
+            "apply",
+            Duration::from_millis(250),
+            Duration::from_millis(100),
+            42,
+            r"C:\slow\file.txt",
+        )
+        .expect("over budget must report");
+        assert!(line.contains("apply"), "{line}");
+        assert!(line.contains("250"), "{line}");
+        assert!(line.contains("100"), "{line}");
+        assert!(line.contains("42"), "{line}");
+        assert!(line.contains(r"C:\slow\file.txt"), "{line}");
     }
 }

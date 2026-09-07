@@ -389,14 +389,24 @@ static PENDING_PREPARE: std::sync::Mutex<Option<sagethumbs2k_core::safety::Aband
     std::sync::Mutex::new(None);
 
 /// Mark any still-outstanding prepare worker as abandoned. Called at the start of every new
-/// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step.
-fn abandon_pending_prepare() {
+/// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step,
+/// and from `window::on_destroy` (closing the viewer is a cancel too, audit E02 2026-09-07).
+///
+/// Logs (rate-limited via `window::log_abandoned_worker`) exactly when this actually gives up a
+/// LIVE ticket, asked directly via `AbandonTicket::is_counted` rather than a before/after read
+/// of the shared process-wide count, which races any other ticket's concurrent activity. A
+/// worker that had already finished by the time this runs must not be reported as newly
+/// abandoned.
+pub(super) fn abandon_pending_prepare() {
     let prev = PENDING_PREPARE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     if let Some(ticket) = prev {
         ticket.caller_gave_up();
+        if ticket.is_counted() {
+            super::window::log_abandoned_worker("prepare");
+        }
     }
 }
 
@@ -443,7 +453,17 @@ unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_act
     let spawned = std::thread::Builder::new()
         .name("st2k-preview-load".to_string())
         .spawn(move || {
+            let stage_start = std::time::Instant::now();
             let resolved = resolve_load(&worker_path, view_source_active);
+            if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+                "prepare",
+                stage_start.elapsed(),
+                sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET,
+                gen,
+                &worker_path,
+            ) {
+                sagethumbs2k_core::safety::log_debug(&line);
+            }
             ticket.worker_finished();
             let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
             post_resolved(hwnd, gen, resolved);
@@ -824,6 +844,15 @@ unsafe fn render_font_to_state(st: &ViewerState, path: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether `path`'s extension is one [`try_load_web`] handles at all (`html`/`htm`/`xhtml`/
+/// `url`/`webloc`). Used by `window::on_app_load_resolved` to exclude the `try_load_web` route
+/// from its own "apply" stage timing: creating the WebView2 host pumps the message loop for
+/// hundreds of ms, which is not a stall, see `window::log_ui_stage_stall`'s doc comment.
+#[cfg(feature = "html-preview")]
+pub(super) fn is_web_route_ext(ext: &str) -> bool {
+    matches!(ext, "html" | "htm" | "xhtml" | "url" | "webloc")
 }
 
 /// Build an HTML/`.url` WebView2 preview when the ext + Settings toggle allow it. Returns true if
@@ -1425,6 +1454,61 @@ mod tests {
         // Defensive: `decode_gen` only ever increases, so this can't happen in practice, but the
         // check must be exact equality, not merely "not older".
         assert!(!is_load_current(7, 5));
+    }
+
+    /// The concrete scenario audit E02 asks for: open a slow file, then switch (via
+    /// `CMD_SET_PATH`, which reaches `load()` the same way a direct open does) to a fast file
+    /// before the slow file's worker has finished. The `--shot` headless harness decodes
+    /// synchronously and cannot observe this live async race from outside the process (see
+    /// `tests/preview_async_load.rs`'s header comment), so this pins the exact fence that
+    /// makes it safe: a superseded generation (the slow file's) is never current once a newer
+    /// one (the fast file's) exists, whichever completion lands first.
+    #[test]
+    fn a_superseded_generation_is_never_current() {
+        // The slow file's load starts at generation 1 (`reset_viewer_state` bumps and returns
+        // the new generation for every load, slow or fast, identically).
+        let slow_gen = 1;
+        // Before the slow worker reports back, the user switches to a fast file: generation 2.
+        let fast_gen = 2;
+        // The fast file's own worker finishes first (that's the whole point of it being fast)
+        // and its completion is for the CURRENT generation: it must apply.
+        assert!(
+            is_load_current(fast_gen, fast_gen),
+            "the fast file's own completion must be allowed to paint"
+        );
+        // The slow file's worker finishes afterwards and posts its stale completion: it must
+        // never be allowed to paint over the fast file now showing.
+        assert!(
+            !is_load_current(slow_gen, fast_gen),
+            "a slow file's completion arriving after a newer selection must never apply"
+        );
+    }
+
+    /// `abandon_pending_prepare` over a LIVE ticket must count it (`AbandonTicket::is_counted`),
+    /// and the ticket's own worker finishing must release it (audit E02, 2026-09-07: abandoned
+    /// prepare work must stay OBSERVABLE). Exercised through this module's actual
+    /// `PENDING_PREPARE` slot, the same one `load()`/`window::on_destroy` use. Asserted on the
+    /// ticket's own state directly, never on the shared process-wide count: other tests in this
+    /// binary run budgeted workers concurrently, so a before/after read of that count races them.
+    #[test]
+    fn abandon_pending_prepare_counts_a_live_ticket_and_releases_it_on_finish() {
+        let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+        let worker = ticket.clone();
+        *super::PENDING_PREPARE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
+
+        super::abandon_pending_prepare();
+        assert!(
+            worker.is_counted(),
+            "giving up a live ticket must count it against the abandoned-worker budget"
+        );
+
+        worker.worker_finished();
+        assert!(
+            !worker.is_counted(),
+            "the worker finishing must release what it was counted for"
+        );
     }
 
     #[test]

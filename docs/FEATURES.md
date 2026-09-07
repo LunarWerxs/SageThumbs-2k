@@ -436,6 +436,16 @@ The viewer is a separate single-instance process, so a hostile-file decode can o
 throwaway window, never Explorer or the hotkey helper. It rides the same opt-in background helper
 as the screenshot/custom-action hotkeys, so turning it on adds no extra resident process.
 
+**Responsiveness, in plain words:** a slow file (a stalled network share, a removable drive that
+has gone to sleep) can never freeze the preview window. The window appears right away, before the
+file is even read, and it keeps answering to clicks, closes, and key presses the whole time a slow
+read is happening in the background. If you switch to a different file before the slow one has
+finished loading, only the file you're now looking at can ever appear, never a leftover result
+from the one you left. Each loading stage is held to a stated time budget, a stall or an
+abandoned load is logged with the current count against a cap on how much of that can pile up,
+and closing the window while something is still loading cancels that load's own bookkeeping
+right away.
+
 ---
 
 ## 4. Options dialog

@@ -119,6 +119,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   separate export. That snapshot leaves out your sign-in (the refresh token, the licence
   certificate and the account identity) by the same rule the settings export already uses, so
   anything stored alongside them later stays out as well.
+- **Quick preview loading is now held to a stated time budget, and slow or stuck work is
+  tracked instead of running unseen.** Each stage of opening a file has a time budget written
+  down in the code; a stage that runs past it, and any load that gets abandoned (for example
+  by switching to a different file, or closing the window while a slow network share or
+  removable drive is still being read), is now logged with the current count of abandoned
+  work against its cap, and a decode that hangs is counted against that same cap instead of
+  being invisible to it. Closing the window while something is still loading now cancels
+  that load's own bookkeeping right away.
 
 - **Canon CRW thumbnails are fast again.** Older Canon RAW files in the `.crw` format (as
   opposed to the newer `.cr2`/`.cr3`) were not recognised as a camera RAW container, so their

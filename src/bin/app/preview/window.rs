@@ -949,7 +949,90 @@ unsafe fn on_app_load_resolved(hwnd: HWND, lparam: LPARAM) {
     if !is_load_current(gen, st.decode_gen.get()) {
         return; // stale: the user already switched files
     }
+    // Clone the path BEFORE `apply_resolved`, never read `st` after it: `apply_resolved` can
+    // reach `try_load_web` -> `create_web`, which PUMPS the message loop while WebView2 creates,
+    // and a close arriving during that pump destroys `hwnd` synchronously (`request_close`),
+    // freeing the boxed `ViewerState` this `st` points at.
+    let path = st.path.borrow().clone().unwrap_or_default();
+    // A `Dispatch` result for an HTML/`.url` path can reach that same pump; timing it as an
+    // "apply" stall would log a false stall on every web load (hundreds of ms is normal
+    // WebView2 startup, not stalled work), so it is excluded rather than timed.
+    let time_apply = {
+        #[cfg(feature = "html-preview")]
+        {
+            !(matches!(resolved, Resolved::Dispatch(_)) && is_web_route_ext(&ext_of(&path)))
+        }
+        #[cfg(not(feature = "html-preview"))]
+        {
+            true
+        }
+    };
+    let stage_start = std::time::Instant::now();
     apply_resolved(hwnd, st, resolved);
+    // `st`/`hwnd` may be dangling/destroyed now (see above), re-validate before touching either.
+    if time_apply && IsWindow(Some(hwnd)).as_bool() {
+        log_ui_stage_stall("apply", stage_start.elapsed(), gen, &path);
+    }
+}
+
+/// Log one debug line when a UI-thread pipeline stage (`apply_resolved`, the render post-back
+/// handler `on_render`) took longer than [`sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET`]:
+/// see that constant's doc comment for the whole responsiveness contract this is part of
+/// (audit E02, 2026-09-07). Diagnostic only: the stage has already run to completion by the
+/// time this is called, nothing is aborted or retried. A stage that PUMPS the message loop
+/// (WebView2 creation) is not a stall by definition: callers must exclude that route from
+/// timing rather than rely on this to filter it out.
+///
+/// Takes the path as an owned `&str`, never a `&ViewerState`: a stage that can pump/destroy the
+/// window may have freed the state by the time this runs, so the caller must capture whatever it
+/// needs from `st` before making that call, not after.
+fn log_ui_stage_stall(stage: &str, elapsed: std::time::Duration, gen: u64, path: &str) {
+    if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+        stage,
+        elapsed,
+        sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET,
+        gen,
+        path,
+    ) {
+        sagethumbs2k_core::safety::log_debug(&line);
+    }
+}
+
+/// Rate-limited debug line for an abandoned decode/prepare worker, shared by
+/// `loader::abandon_pending_prepare` and `content::abandoned_logged` (audit E02, 2026-09-07:
+/// abandoned work must stay OBSERVABLE, not just bounded). A held arrow key can abandon a worker
+/// on every repeat (the mash bench's exact case, see `content::bench_abandoned_count`, which
+/// stays an EXACT, un-rate-limited counter: only this log line is throttled), and logging every
+/// single one would flood the diagnostics log for no extra signal, so this logs at most once per
+/// `ABANDON_LOG_WINDOW`. `context` names which worker gave up, for the log line only.
+pub(super) fn log_abandoned_worker(context: &str) {
+    const ABANDON_LOG_WINDOW: std::time::Duration = std::time::Duration::from_millis(250);
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    // A short, explicit lock scope, never held across the `log_debug` call below (see
+    // docs/DEVELOPMENT_GOTCHAS.md, "`if let Some(x) = *MUTEX.lock()` holds the lock for the
+    // whole body": this copies the decision out and drops the guard before doing anything else).
+    let should_log = {
+        let mut last = LAST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let due = match *last {
+            Some(prev) => now.duration_since(prev) >= ABANDON_LOG_WINDOW,
+            None => true,
+        };
+        if due {
+            *last = Some(now);
+        }
+        due
+    };
+    if !should_log {
+        return;
+    }
+    sagethumbs2k_core::safety::log_debug(&format!(
+        "preview {context}: abandoned a worker ({} of {} abandoned-worker budget slots live)",
+        sagethumbs2k_core::safety::abandoned_workers(),
+        sagethumbs2k_core::safety::MAX_ABANDONED_WORKERS,
+    ));
 }
 
 /// `WM_APP_PDFDOC`: the opened PDF session for the continuous view landed.
@@ -1745,6 +1828,17 @@ unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
     }
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ViewerState;
     if !ptr.is_null() {
+        // Close is a CANCEL, not silence (audit E02, 2026-09-07): a decode/prepare worker still
+        // running for this window must be told nobody is waiting, the same way switching files
+        // already tells it via `reset_viewer_state`. Bumping the generation trips
+        // `content::abandoned`'s check for any in-flight decode worker; giving up the pending
+        // prepare ticket counts it against the abandoned-worker budget like any other
+        // abandonment. Without this a worker orphaned by closing the window was neither told
+        // nor counted: it just kept running unseen until it finished or hit its own budget.
+        let next_gen = (*ptr).decode_gen.get() + 1;
+        (*ptr).decode_gen.set(next_gen);
+        content::begin_generation(next_gen);
+        abandon_pending_prepare();
         let tip = (*ptr).tip.get();
         if !tip.is_invalid() {
             let _ = DestroyWindow(tip); // owned popup; destroy before the state frees
@@ -1905,6 +1999,10 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         return; // stale — the user already switched files
     }
     let _ = wparam;
+    // Cloned up front, same discipline as `on_app_load_resolved`: nothing here currently pumps
+    // the message loop, but the stage timer must never read `st` after a call that might.
+    let path = st.path.borrow().clone().unwrap_or_default();
+    let stage_start = std::time::Instant::now();
     // A decode landing while the kind is STILL Video is the audio cover art (loader only asks for
     // one in that case, and the video fallback path sets Loading before it asks). It is a backdrop,
     // not the content: install it into `art`, leave the kind alone, and never fall back to the card
@@ -1916,36 +2014,37 @@ unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
             }
         }
         let _ = InvalidateRect(Some(hwnd), None, false);
-        return;
-    }
-    match decoded {
-        Some(d) => match content::make_render_for(&d, letterbox_bg(st)) {
-            Some(rd) => {
-                // A full-resolution decode landing clears any pending request for one, whether
-                // this IS that decode or the user simply navigated to a small image.
-                if d.is_full() {
-                    st.full_pending.set(false);
+    } else {
+        match decoded {
+            Some(d) => match content::make_render_for(&d, letterbox_bg(st)) {
+                Some(rd) => {
+                    // A full-resolution decode landing clears any pending request for one,
+                    // whether this IS that decode or the user simply navigated to a small image.
+                    if d.is_full() {
+                        st.full_pending.set(false);
+                    }
+                    *st.render.borrow_mut() = Some(rd);
+                    st.kind.set(ContentKind::Image);
                 }
-                *st.render.borrow_mut() = Some(rd);
-                st.kind.set(ContentKind::Image);
-            }
-            // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
-            // under memory pressure) must not orphan a valid image already on screen —
-            // mirrors the None-decode guard just below rather than falling to InfoCard.
+                // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
+                // under memory pressure) must not orphan a valid image already on screen,
+                // mirrors the None-decode guard just below rather than falling to InfoCard.
+                None if st.render.borrow().is_some() => st.full_pending.set(false),
+                None => fallback_card(st),
+            },
+            // A failed decode must never REPLACE a picture that is already on screen. That only
+            // became reachable once the fit view started being served by a scaled decode: a
+            // subsequent full-resolution fetch can fail (a file deleted mid-zoom, a format the
+            // scaled path opened and the buffered one refuses) and swapping the visible image
+            // for an error card would be a plain downgrade. With nothing installed yet, the card
+            // is still the right answer.
             None if st.render.borrow().is_some() => st.full_pending.set(false),
-            None => fallback_card(st),
-        },
-        // A failed decode must never REPLACE a picture that is already on screen. That only
-        // became reachable once the fit view started being served by a scaled decode: a
-        // subsequent full-resolution fetch can fail (a file deleted mid-zoom, a format the
-        // scaled path opened and the buffered one refuses) and swapping the visible image for
-        // an error card would be a plain downgrade. With nothing installed yet, the card is
-        // still the right answer.
-        None if st.render.borrow().is_some() => st.full_pending.set(false),
-        None => fallback_card(st), // decode failure / timeout → the calm card
+            None => fallback_card(st), // decode failure / timeout → the calm card
+        }
+        ensure_shown(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
     }
-    ensure_shown(hwnd);
-    let _ = InvalidateRect(Some(hwnd), None, false);
+    log_ui_stage_stall("render", stage_start.elapsed(), gen, &path);
 }
 
 /// Fetch the real pixels if the zoom has outgrown the codec-scaled ones the fit view is served
