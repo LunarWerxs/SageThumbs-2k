@@ -115,14 +115,34 @@ pub(crate) fn login() -> Result<Tokens, String> {
     exchange_code(&code, &redirect, &verifier)
 }
 
+/// Whether a failed [`refresh`] ever got a response from the sign-in server at all, or the
+/// request never reached it (DNS/TCP/TLS/timeout via `http::request` returning `None`).
+///
+/// `sync_client`'s offline classification (E05 follow-up audit) needs exactly this split at
+/// the one place every sync entry point mints a fresh token, and a plain `Result<Tokens,
+/// String>` throws the distinction away before it gets there. Kept separate from
+/// `login`/`exchange_code`'s error type (still a bare `String`) on purpose - oauth stays
+/// agnostic about what sync does with the split; it only reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefreshOutcome {
+    /// The request never reached the sign-in server.
+    Unreachable,
+    /// The server answered - with a rejection, or an unreadable/malformed reply.
+    Rejected(String),
+}
+
 /// Mint a fresh set of tokens from a stored refresh token (no browser). Used before every
 /// store call so we always present a valid access token.
-pub(crate) fn refresh(refresh_token: &str) -> Result<Tokens, String> {
+pub(crate) fn refresh(refresh_token: &str) -> Result<Tokens, RefreshOutcome> {
     let body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={CLIENT_ID}",
         enc(refresh_token)
     );
-    token_request(body.as_bytes())
+    match token_request(body.as_bytes()) {
+        TokenReply::Ok(tokens) => Ok(tokens),
+        TokenReply::Unreachable => Err(RefreshOutcome::Unreachable),
+        TokenReply::Rejected(message) => Err(RefreshOutcome::Rejected(message)),
+    }
 }
 
 /// Extract `(sub, email, name, picture)` from the id_token's JWT payload for the "Synced
@@ -183,23 +203,40 @@ fn exchange_code(code: &str, redirect: &str, verifier: &str) -> Result<Tokens, S
         enc(redirect),
         enc(verifier)
     );
-    token_request(body.as_bytes())
+    match token_request(body.as_bytes()) {
+        TokenReply::Ok(tokens) => Ok(tokens),
+        TokenReply::Unreachable => Err("couldn't reach the sign-in server".to_string()),
+        TokenReply::Rejected(message) => Err(message),
+    }
 }
 
-fn token_request(body: &[u8]) -> Result<Tokens, String> {
-    let resp = http::request(
+/// A token-endpoint call's outcome, keeping "never got a response" distinguishable from
+/// "the server responded but refused" - see [`RefreshOutcome`]. `login`/`refresh` each map
+/// this down to whatever error shape their own caller expects.
+enum TokenReply {
+    Ok(Tokens),
+    Unreachable,
+    Rejected(String),
+}
+
+fn token_request(body: &[u8]) -> TokenReply {
+    let Some(resp) = http::request(
         "POST",
         TOKEN,
         "Content-Type: application/x-www-form-urlencoded",
         body,
         20,
         128 * 1024,
-    )
-    .ok_or_else(|| "couldn't reach the sign-in server".to_string())?;
+    ) else {
+        return TokenReply::Unreachable;
+    };
     if resp.status != 200 {
-        return Err(token_error(resp.status, &resp.body));
+        return TokenReply::Rejected(token_error(resp.status, &resp.body));
     }
-    parse_tokens(&resp.body)
+    match parse_tokens(&resp.body) {
+        Ok(tokens) => TokenReply::Ok(tokens),
+        Err(message) => TokenReply::Rejected(message),
+    }
 }
 
 fn parse_tokens(body: &[u8]) -> Result<Tokens, String> {

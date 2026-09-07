@@ -46,6 +46,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   `st2k formats --json` output carries the same detail for scripts and the website, and
   `st2k doctor` reports which formats depend on an optional Windows codec and whether it's
   actually installed on your machine.
+- **The sync and licence status lines are more honest about what is actually happening.**
+  Settings ▸ Data & Backup now shows a plain "Offline" state when a sync attempt could not
+  reach the server at all, instead of describing it the same way as a save that reached the
+  server and was rejected. Disconnecting an account now tells you if the copy stored in your
+  account could not be deleted, rather than always saying it was. On the Licence page, a
+  machine running on an offline certificate now gets an early warning as that certificate's
+  own expiry approaches, separate from the ordinary "Licensed" line.
 
 - **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
   info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)

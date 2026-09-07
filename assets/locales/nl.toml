@@ -511,6 +511,7 @@ sync_state_synced_as = "● Gesynchroniseerd als {who} · bij"
 sync_state_updated = "● Gesynchroniseerd · bijgewerkt vanaf een ander apparaat"
 sync_state_pending = "● Synchronisatie in wachtrij · lokaal opgeslagen, opnieuw"
 sync_state_pending_err = "● Synchronisatie in wachtrij · lokaal opgeslagen; {error}"
+sync_state_offline = "● Offline · kon de server niet bereiken, probeert het automatisch opnieuw"
 sync_signed_in = "Aangemeld als {who}.\n\nJe instellingen synchroniseren nu tussen je pc's. Wat vanaf een ander apparaat is gesynchroniseerd, is al toegepast; open Opties opnieuw om het hier te zien."
 sync_signed_in_initial_pending = "Aangemeld als {who}, maar de eerste synchronisatie is niet voltooid: {error}\n\nJe aanmelding is opgeslagen, dus dit zal je niet opnieuw vragen om aan te melden, klik gewoon op \"Opnieuw synchroniseren\"."
 sync_signin_failed = "Aanmelden mislukt: {error}"
@@ -598,6 +599,7 @@ msg_save_failed = "Sommige instellingen konden niet worden opgeslagen in {path}.
 msg_hotkey_conflict = "\"{a}\" en \"{b}\" zijn ingesteld op dezelfde sneltoets. Geef een van beide een andere toetsencombinatie en sla opnieuw op."
 save_failed_registry = "het register"
 sync_disconnected_body = "Synchronisatie verbroken. Je instellingen blijven op deze pc."
+sync_disconnected_cloud_copy_kept = "Synchronisatie verbroken, maar de kopie in je account kon niet worden verwijderd. Je lokale instellingen blijven op deze pc."
 sync_portable_notice = "Draagbare kopie: deze aanmelding wordt opgeslagen naast deze kopie van SageThumbs 2K, niet in het account van deze pc. Iedereen die dezelfde draagbare kopie gebruikt, kan je instellingen synchroniseren, dus meld je af voordat je de schijf overhandigt."
 
 # Convert / Files to folder: partial-result notices
@@ -624,6 +626,7 @@ licence_mode_business = "Geïnstalleerd voor zakelijk gebruik. Installeer opnieu
 licence_mode_personal = "Geïnstalleerd voor persoonlijk gebruik."
 licence_mode_portable = "Draagbare kopie."
 licence_state_licensed = "Gelicentieerd, laatst geverifieerd op {date}"
+licence_state_cert_expiring = "Gelicentieerd via offline-certificaat, verloopt op {date}"
 licence_state_none = "Geen licentiesleutel ingevoerd"
 licence_state_revoked = "Licentie ingetrokken (sleutel {key})"
 licence_state_personal = "Persoonlijk gebruik, geen licentie nodig"
