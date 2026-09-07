@@ -790,6 +790,135 @@ fn check_engine(r: &mut Report) {
     }
 }
 
+/// Audit E03: the format table hooks 300+ extensions, but "hooked" doesn't mean "full
+/// decode" - a RAW file's thumbnail is its embedded JPEG, an archive shows contents, and a
+/// handful of formats depend on an OS codec that may or may not be installed. This block
+/// makes that visible: a per-source-kind count over the whole table, then each OS-codec
+/// dependency named with whether the codec is actually present HERE. A missing codec is a
+/// WARNING, never an error - the plain-English consequence is always "these keep their
+/// default icon", same severity `check_engine`'s Media Foundation line already uses.
+fn check_format_capability(r: &mut Report) {
+    r.head("Format capability");
+
+    let mut counts: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for &(ext, _) in FORMATS {
+        *counts
+            .entry(crate::formats::capability(ext).source.as_str())
+            .or_insert(0) += 1;
+    }
+    let by_source: Vec<String> = counts.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    r.line(S::Info, "By source", &by_source.join(", "));
+
+    use crate::formats::OsCodec;
+    // `Av1` is deliberately NOT in this array - it has no `os_codec_available` component
+    // lookup to run at all (no WIC container GUID exists for it), so it gets its own honest
+    // block below instead of a present/MISSING verdict this loop can't actually back up.
+    for codec in [OsCodec::MediaFoundation, OsCodec::WmPhoto, OsCodec::Heif] {
+        let exts: Vec<&str> = FORMATS
+            .iter()
+            .filter(|&&(ext, _)| crate::formats::capability(ext).os_codec == Some(codec))
+            .map(|&(ext, _)| ext)
+            .collect();
+        if exts.is_empty() {
+            continue;
+        }
+        let label = match codec {
+            OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
+            OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
+            OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
+            OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
+        };
+        if crate::decode::os_codec_available(codec) {
+            if codec == OsCodec::Heif {
+                // The WIC container-decoder lookup above proves HEIC/HEIF CONTAINERS parse,
+                // not that the HEVC pixels inside decode - that needs the separate "HEVC
+                // Video Extension" Store package. Audit E03 #4: printing bare "present" here
+                // let doctor claim success on a machine where `.heic` still fails. Probe the
+                // same way `video_codec_note` does for a video HEVC stream - a real Media
+                // Foundation decoder-presence query (`vcodec::decoder_installed`), not a guess.
+                use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
+                match crate::vcodec::decoder_installed(MFVideoFormat_HEVC) {
+                    Some(true) => r.line(
+                        S::Ok,
+                        label,
+                        &format!(
+                            "container decoder present; the HEVC Video Extension it needs is \
+                             ALSO installed - {} format(s) decode here ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                    ),
+                    Some(false) => r.fail_with_fix(
+                        label,
+                        &format!(
+                            "container decoder present, but the HEVC Video Extension it needs \
+                             is NOT installed - {} format(s) keep their default icon ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                        "install the \"HEVC Video Extensions\" (or \"HEIF Image Extensions\", \
+                         which bundles it) from the Microsoft Store",
+                    ),
+                    None => r.line(
+                        S::Info,
+                        label,
+                        &format!(
+                            "container decoder present; the HEVC Video Extension it needs was \
+                             not verified (Media Foundation unavailable) - {} format(s) may or \
+                             may not decode here ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                    ),
+                }
+            } else {
+                r.line(
+                    S::Ok,
+                    label,
+                    &format!(
+                        "present - {} format(s) decode here ({})",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                );
+            }
+        } else {
+            r.line(
+                S::Warn,
+                label,
+                &format!(
+                    "MISSING - {} format(s) keep their default icon ({})",
+                    exts.len(),
+                    exts.join(", ")
+                ),
+            );
+        }
+    }
+
+    // AV1 (AVIF): no WIC container GUID exists to probe (see `OsCodec::Av1`'s doc), so - unlike
+    // the loop above - this is reported honestly as unverified rather than guessed at (audit
+    // E03 #2). Consistent with `video_codec_note`'s AV1 handling: both name the dependency
+    // without claiming a verdict the code can't actually back up.
+    let av1_exts: Vec<&str> = FORMATS
+        .iter()
+        .filter(|&&(ext, _)| crate::formats::capability(ext).os_codec == Some(OsCodec::Av1))
+        .map(|&(ext, _)| ext)
+        .collect();
+    if !av1_exts.is_empty() {
+        r.line(
+            S::Info,
+            "OS codec: AV1 (AVIF)",
+            &format!(
+                "needs the AV1 Video Extension; not probed (no WIC container GUID for it) - \
+                 {} format(s) affected ({})",
+                av1_exts.len(),
+                av1_exts.join(", ")
+            ),
+        );
+    }
+}
+
 /// Probe ONE specific file end-to-end: is its extension one we hook, is that format
 /// enabled, and — the part the global checks can't tell you — does THIS file actually
 /// DECODE? The global report proves registration is healthy; it stays silent on "we're
@@ -1704,6 +1833,7 @@ pub fn report(file: Option<&str>) -> String {
     check_settings(&mut r);
     check_space_preview(&mut r);
     check_engine(&mut r);
+    check_format_capability(&mut r);
     if let Some(f) = file {
         probe_file(&mut r, f, &snap);
     }

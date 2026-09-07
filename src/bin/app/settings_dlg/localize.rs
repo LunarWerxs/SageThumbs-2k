@@ -217,13 +217,20 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         }
     }
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-        // Columns are Extension | Category | Description (matching build_controls).
+        // Columns are Extension | Category | How | Description (matching build_controls).
         // The old code relabeled column 1 with the *description* header (wrong index)
         // and never touched column 2, so a live language switch left "Category"
-        // English and "Description" stale — fixed: correct indices + all three.
+        // English and "Description" stale - fixed: correct indices + all four.
         set_column_text(list, 0, t("col_extension"));
         set_column_text(list, 1, t("col_category"));
-        set_column_text(list, 2, t("col_description"));
+        set_column_text(list, 2, t("col_capability"));
+        set_column_text(list, 3, t("col_description"));
+        // Unlike Category/Description (always English format names), the "How" cell TEXT
+        // itself is localized (`capability_label` -> `t("cap_*")`), so the rows have to be
+        // rebuilt here too - waiting for the next search keystroke (as the header-only path
+        // used to) would leave every row's "How" text in the old language until the user
+        // typed something.
+        populate_list(list, &get_edit_text(hwnd, ID_SEARCH));
     }
     // The preview-placement combo holds translated items: rebuild, keep selection.
     rebuild_combo(

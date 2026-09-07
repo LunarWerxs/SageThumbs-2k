@@ -40,6 +40,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   (installed or portable), running as standard or as an administrator, who installs versus who
   runs the app, and multiple sessions on the same machine (including Remote Desktop), so that
   ground can be checked the same way every time instead of being re-worked out from scratch.
+- **The format list now explains HOW each file type's thumbnail is made, not just that it's
+  supported.** The Settings file-types list has a new "How" column (full decode, embedded
+  preview, cover art, cover or first page, video frame, or contents of the archive), the
+  `st2k formats --json` output carries the same detail for scripts and the website, and
+  `st2k doctor` reports which formats depend on an optional Windows codec and whether it's
+  actually installed on your machine.
 
 - **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
   info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)

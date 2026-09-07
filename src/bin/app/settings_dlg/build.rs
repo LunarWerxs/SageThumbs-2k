@@ -595,13 +595,17 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Subclass for dark header text, the column-drag reflow, and the SPACE/right-click bulk
     // checkbox toggle.
     let _ = SetWindowSubclass(list, Some(list::list_subclass), 0, 0);
-    // Extension | Category | Description. FORMATS is ordered by category, so the
+    // Extension | Category | How | Description. FORMATS is ordered by category, so the
     // list naturally clusters: Images, then Camera RAW, then Ebooks & comics —
     // and the Category column labels each (robust in dark mode, unlike native
-    // ListView group headers, which the dark theme refuses to render).
+    // ListView group headers, which the dark theme refuses to render). "How" (audit E03)
+    // names the capability's source kind (`settings_dlg::capability_label`) - Extension
+    // and Category keep their existing widths; the room comes out of Description, which
+    // `fit_columns` auto-sizes to fill whatever is left.
     insert_column(list, 0, t("col_extension"), 64);
     insert_column(list, 1, t("col_category"), 92);
-    insert_column(list, 2, t("col_description"), 196);
+    insert_column(list, 2, t("col_capability"), 110);
+    insert_column(list, 3, t("col_description"), 196);
 
     // The per-format checked state lives in a model (FMT_STATE), not the list —
     // so the search can rebuild the list view without losing toggles. Seed it from

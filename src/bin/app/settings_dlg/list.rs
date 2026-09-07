@@ -497,7 +497,7 @@ unsafe fn on_notify(h: HWND, l: LPARAM) -> Option<LRESULT> {
     // listviews (the file-types list in `build.rs`, and the single-column checklist in
     // `mod.rs::checklist`, which reuses it for the SPACE bulk-toggle). The checklist
     // has no visible header to drag, so this cannot fire for it today — but `fit_columns`
-    // is written for the three-column file-types list specifically, so pointing it at
+    // is written for the four-column file-types list specifically, so pointing it at
     // any other list would be wrong the moment that changes.
     // DESCRIPTION IS NOT DRAGGABLE — refuse the drag before it starts.
     //
@@ -548,7 +548,9 @@ unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Con
     // all) off the 96-DPI display this constant was tuned on.
     let min_col_w = dpi_scale(h, 40);
     let col = (*hdn).iItem;
-    if (0..2).contains(&col) {
+    // Every draggable column floors - that's everything except Description (`DESC_COLUMN`,
+    // refused outright above and never reaches here).
+    if (0..DESC_COLUMN).contains(&col) {
         let w = SendMessageW(
             h,
             windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
@@ -616,8 +618,9 @@ unsafe fn on_notify_header_customdraw(nmcd: *const NMCUSTOMDRAW, header: HWND) -
     None
 }
 
-/// Index of the Description column in the file-types list: the LAST of the three.
-pub(super) const DESC_COLUMN: i32 = 2;
+/// Index of the Description column in the file-types list: the LAST of the four
+/// (Extension | Category | How | Description - audit E03 inserted "How" at index 2).
+pub(super) const DESC_COLUMN: i32 = 3;
 
 /// Should this header notification be refused outright?
 ///

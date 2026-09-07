@@ -1343,15 +1343,46 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
     Ok(out)
 }
 
+/// A short bracketed marker naming the extension's decode route, but ONLY where it differs
+/// from the plain "full decode, convertible, no OS dependency" case - audit E03: the text
+/// output should not repeat a marker on the ~250 ordinary image entries.
+fn capability_markers(cap: formats::Capability) -> String {
+    let mut parts = Vec::new();
+    match cap.source {
+        formats::Source::FullDecode => {}
+        formats::Source::EmbeddedPreview => parts.push("raw preview"),
+        formats::Source::CoverArt => parts.push("cover art"),
+        formats::Source::CoverOrFirstPage => parts.push("cover/first page"),
+        formats::Source::VideoFrame => parts.push("video frame"),
+        formats::Source::ContainedImages => parts.push("archive contents"),
+    }
+    if cap.os_codec.is_some() {
+        parts.push("needs OS codec");
+    }
+    if !cap.convertible {
+        parts.push("not convertible");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join("] ["))
+    }
+}
+
 pub fn list_formats(json: bool) -> String {
     if json {
         let items: Vec<_> = formats::FORMATS
             .iter()
             .map(|(ext, desc)| {
+                let cap = formats::capability(ext);
                 serde_json::json!({
                     "ext": ext,
                     "category": formats::category_label(formats::category(ext)),
                     "description": desc,
+                    "source": cap.source.as_str(),
+                    "convertible": cap.convertible,
+                    "preview_listing": cap.preview_listing,
+                    "os_codec": cap.os_codec.map(formats::OsCodec::as_str),
                 })
             })
             .collect();
@@ -1359,7 +1390,8 @@ pub fn list_formats(json: bool) -> String {
     } else {
         let mut s = format!("{} supported input formats:\n", formats::FORMATS.len());
         for (ext, desc) in formats::FORMATS {
-            s.push_str(&format!("  .{ext:<6} {desc}\n"));
+            let markers = capability_markers(formats::capability(ext));
+            s.push_str(&format!("  .{ext:<6} {desc}{markers}\n"));
         }
         s
     }
@@ -1433,6 +1465,109 @@ mod tests {
         assert!(list_formats(false).contains(".png"));
         assert!(list_formats(true).starts_with('['));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `st2k formats --json` gains the capability fields ADDITIVELY (audit E03) - no
+    /// existing key renamed, and the new keys carry the stable lowercase wire vocabulary.
+    /// Against the pre-change `list_formats`, this fails on the very first `assert!` below
+    /// with: `expected value at line 1 column ... assertion failed:
+    /// item.get("source").is_some()` (the old JSON objects have no `source`/`convertible`/
+    /// `preview_listing`/`os_codec` keys at all - the site generator or any other JSON
+    /// consumer would silently see them as absent, which is exactly what this test guards).
+    #[test]
+    fn list_formats_json_carries_capability_fields() {
+        let text = list_formats(true);
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let items = parsed.as_array().unwrap();
+        assert_eq!(items.len(), formats::FORMATS.len());
+
+        let valid_sources = [
+            "full_decode",
+            "embedded_preview",
+            "cover_art",
+            "cover_or_first_page",
+            "video_frame",
+            "contained_images",
+        ];
+        let valid_codecs = ["media_foundation", "wmphoto", "heif", "av1"];
+
+        let mut saw_wmphoto = false;
+        let mut saw_heif = false;
+        let mut saw_av1 = false;
+        let mut saw_media_foundation = false;
+        let mut saw_archive = false;
+        for item in items {
+            // The pre-existing keys are untouched.
+            assert!(item.get("ext").is_some());
+            assert!(item.get("category").is_some());
+            assert!(item.get("description").is_some());
+            // The new keys, additive.
+            let source = item
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("missing/non-string `source` on {item}"));
+            assert!(
+                valid_sources.contains(&source),
+                "unknown source `{source}` on {item}"
+            );
+            let convertible = item
+                .get("convertible")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| panic!("missing/non-bool `convertible` on {item}"));
+            let preview_listing = item
+                .get("preview_listing")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| panic!("missing/non-bool `preview_listing` on {item}"));
+            assert!(
+                item.get("os_codec").is_some(),
+                "missing `os_codec` key on {item}"
+            );
+            match item.get("os_codec").unwrap() {
+                serde_json::Value::Null => {}
+                serde_json::Value::String(s) => {
+                    assert!(
+                        valid_codecs.contains(&s.as_str()),
+                        "unknown os_codec `{s}` on {item}"
+                    );
+                    match s.as_str() {
+                        "wmphoto" => saw_wmphoto = true,
+                        "heif" => saw_heif = true,
+                        "av1" => saw_av1 = true,
+                        "media_foundation" => saw_media_foundation = true,
+                        _ => {}
+                    }
+                }
+                other => panic!("os_codec must be null or a string, got {other} on {item}"),
+            }
+            if source == "contained_images" {
+                saw_archive = true;
+                assert!(
+                    preview_listing,
+                    "archive entry must be preview_listing: {item}"
+                );
+                assert!(
+                    !convertible,
+                    "archive entry must not be convertible: {item}"
+                );
+            }
+        }
+        assert!(
+            saw_wmphoto,
+            "expected at least one wmphoto os_codec entry (jxr/wdp/hdp/wmp)"
+        );
+        assert!(
+            saw_heif,
+            "expected at least one heif os_codec entry (heic/heif/...)"
+        );
+        assert!(saw_av1, "expected at least one av1 os_codec entry (avif)");
+        assert!(
+            saw_media_foundation,
+            "expected at least one media_foundation entry (video)"
+        );
+        assert!(
+            saw_archive,
+            "expected at least one contained_images (archive) entry"
+        );
     }
 
     #[test]

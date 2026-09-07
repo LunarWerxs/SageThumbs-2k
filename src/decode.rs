@@ -963,6 +963,28 @@ pub use thumb::{
 };
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
 
+/// Is the OS codec `codec` present on THIS machine? Audit E03: `st2k doctor`'s "Format
+/// capability" block uses this to name which OS-codec-dependent formats will actually
+/// decode here, without decoding a single byte. `MediaFoundation` is answered by
+/// [`crate::video::media_foundation_available`] (a delay-load probe, not WIC); the two
+/// WIC-based codecs are answered by [`wic::wic_container_codec_available`] against their
+/// real container-format GUIDs - the same component lookup a real decode would do.
+pub fn os_codec_available(codec: crate::formats::OsCodec) -> bool {
+    use crate::formats::OsCodec;
+    use windows::Win32::Graphics::Imaging::{GUID_ContainerFormatHeif, GUID_ContainerFormatWmp};
+    match codec {
+        OsCodec::MediaFoundation => crate::video::media_foundation_available(),
+        OsCodec::WmPhoto => wic_container_codec_available(&GUID_ContainerFormatWmp),
+        OsCodec::Heif => wic_container_codec_available(&GUID_ContainerFormatHeif),
+        // No `GUID_ContainerFormat*` for AVIF/AV1 exists in the `windows` crate (see
+        // `OsCodec::Av1`'s doc), so there is no real component lookup to run here - unlike
+        // the two arms above, `false` is NOT "checked and absent", it is "can't check".
+        // `st2k doctor` knows this and never calls this function for `Av1`; it reports the
+        // format honestly as unverified instead of printing a guess this arm could produce.
+        OsCodec::Av1 => false,
+    }
+}
+
 /// FULL-FIDELITY decode — what the Convert/Resize/Copy/Image-info verbs (and
 /// the eyedropper) use. Differs from [`decode_preview`] only for PSD/PSB: the
 /// container tier surfaces the baked-in ~160px thumbnail (resource 1036), which

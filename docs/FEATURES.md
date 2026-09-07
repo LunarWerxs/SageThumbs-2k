@@ -45,6 +45,11 @@ Photoshop files thumbnail from their embedded preview, and a **transparent** PSD
 transparency instead of flattening to white, while Convert / Resize / Image info
 always use the REAL full-resolution composite.*
 
+The table above is prose; the per-format ground truth is `st2k formats --json`, whose
+`source`/`convertible`/`preview_listing`/`os_codec` fields on every entry say exactly how
+that extension's thumbnail is produced and whether it depends on an OS codec. Run it (or
+`st2k doctor`'s "Format capability" section) rather than trusting a stale table cell.
+
 **Notable wins Windows itself can't do:** ebook/comic covers, Office/ODF previews
 (no in-box handler), PDF first page (no in-box thumbnailer), Ogg/Opus/APE album
 art, any RAW/HEIC the OS codec is missing, and a deep set of **art / CAD / 3D / design

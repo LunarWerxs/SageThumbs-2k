@@ -776,6 +776,26 @@ impl Drop for PopulateGuard {
     }
 }
 
+/// Localized short label for the Settings format list's "How" column (audit E03):
+/// the capability's source kind, with an " (OS codec)" suffix when the format's decode
+/// route depends on one that may not be installed. `formats::capability` is the single
+/// source of truth for the underlying fact; this is presentation only.
+pub(super) fn capability_label(ext: &str) -> String {
+    let cap = formats::capability(ext);
+    let base = match cap.source {
+        formats::Source::FullDecode => t("cap_full_decode"),
+        formats::Source::EmbeddedPreview => t("cap_embedded_preview"),
+        formats::Source::CoverArt => t("cap_cover_art"),
+        formats::Source::CoverOrFirstPage => t("cap_cover_or_first_page"),
+        formats::Source::VideoFrame => t("cap_video_frame"),
+        formats::Source::ContainedImages => t("cap_contained_images"),
+    };
+    match cap.os_codec {
+        Some(_) => format!("{base} ({})", t("cap_os_codec")),
+        None => base.to_string(),
+    }
+}
+
 /// Rebuild the list to show the formats matching `filter` (extension / category /
 /// description, case-insensitive; empty = all), each row's checkbox from FMT_STATE.
 pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
@@ -811,7 +831,8 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
             Some(LPARAM(&mut item as *mut _ as isize)),
         );
         set_subitem(list, row, 1, cat);
-        set_subitem(list, row, 2, desc);
+        set_subitem(list, row, 2, &capability_label(ext));
+        set_subitem(list, row, 3, desc);
         set_check(list, row, *state.get(i).unwrap_or(&false));
         row += 1;
     }
@@ -825,8 +846,8 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
 /// It is now UNCONDITIONAL. There used to be a thread-local "the user dragged Description, so
 /// leave it alone" flag guarding this, which existed only so the auto-fit would not snap such a
 /// drag straight back. `list.rs` refuses that drag outright (dragging the last column can only
-/// open dead space against the scrollbar), so the flag guarded a case that can no longer happen
-/// — and it carried a real hazard of its own: being thread-local rather than per-window, a
+/// open dead space against the scrollbar), so the flag guarded a case that can no longer happen,
+/// and it carried a real hazard of its own: being thread-local rather than per-window, a
 /// second Settings window in the same process inherited it and could keep a permanent dead gap.
 pub(super) unsafe fn fit_columns(list: HWND) {
     let mut crc = RECT::default();
@@ -835,7 +856,7 @@ pub(super) unsafe fn fit_columns(list: HWND) {
     // creation widths, and they were also a silent dependency: the moment the user could drag
     // them (issue #26.3) a hard-coded pair would leave Description overlapping or short by
     // exactly however far the drag went.
-    let fixed: i32 = (0..2)
+    let fixed: i32 = (0..3)
         .map(|c| {
             SendMessageW(
                 list,
@@ -850,7 +871,7 @@ pub(super) unsafe fn fit_columns(list: HWND) {
     SendMessageW(
         list,
         LVM_SETCOLUMNWIDTH,
-        Some(WPARAM(2)),
+        Some(WPARAM(3)),
         Some(LPARAM(descw as isize)),
     );
 }

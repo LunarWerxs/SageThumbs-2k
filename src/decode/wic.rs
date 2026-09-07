@@ -26,6 +26,21 @@ pub(super) fn wic_fallback(bytes: &[u8], thumbnail_cx: Option<u32>) -> Result<Dy
     unsafe { wic_decode_with_thumbnail(bytes, thumbnail_cx) }
 }
 
+/// Is a WIC codec registered for `container_format`? `st2k doctor` uses this to report on
+/// the OS-codec-dependent formats (audit E03: JPEG XR / HD Photo, HEIC/HEIF) without
+/// decoding anything - this is the same component lookup `CreateDecoderFromStream` does
+/// internally to pick a decoder, asked directly instead of waiting for a real decode to
+/// fail. `CreateDecoder` looks the format up by GUID against every registered WIC decoder
+/// (inbox + Store-installed codec extensions), so a missing "HEIF Image Extensions" or
+/// "Image Extension for JPEG XR" package answers `false` here exactly as it would fail a
+/// real decode - no bytes, no file, no network.
+pub(super) fn wic_container_codec_available(container_format: &windows::core::GUID) -> bool {
+    let Ok(factory) = wic_factory() else {
+        return false;
+    };
+    unsafe { factory.CreateDecoder(container_format, std::ptr::null()) }.is_ok()
+}
+
 /// WIC decode without a target edge, retained for focused tests.
 #[cfg(test)]
 pub(super) unsafe fn wic_decode(bytes: &[u8]) -> Result<DynamicImage> {
