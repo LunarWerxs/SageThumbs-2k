@@ -628,6 +628,9 @@ shot_text_more_options = "More font options"
 shot_text_font_field = "Font, {face}"
 # Quick preview's Markdown outline (table-of-contents) sidebar header (audit F29).
 preview_outline_header = "CONTENTS"
+# Quick preview's placeholder while a file is still being decoded (audit F29 follow-up:
+# the guard test below found this one still hardcoded English).
+preview_loading = "Loading…"
 find_no_results = "No results"
 find_indexing = "Read {done}/{total} pages"
 find_no_text = "No text found"

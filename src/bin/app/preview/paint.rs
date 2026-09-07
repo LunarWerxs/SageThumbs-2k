@@ -197,9 +197,17 @@ unsafe fn paint_content(
             paint_content_markdown(hwnd, hdc, st, content_rc, content_bg, text, subtle)
         }
         ContentKind::Video => paint_content_video(hwnd, hdc, st, text, subtle),
-        ContentKind::Loading => {
-            paint_message(hwnd, hdc, content_rc, content_bg, subtle, "Loading…")
-        }
+        // Localized (audit F29 follow-up): the guard test added with that finding flagged this
+        // as a user-visible literal that never became a key, so a non-English preview showed an
+        // English placeholder for the whole decode.
+        ContentKind::Loading => paint_message(
+            hwnd,
+            hdc,
+            content_rc,
+            content_bg,
+            subtle,
+            crate::win::t("preview_loading"),
+        ),
         // The WebView2 child window renders over the content area; just fill behind it.
         ContentKind::Html => fill(hdc, content_rc, content_bg),
     }
@@ -264,7 +272,16 @@ unsafe fn paint_content_image(
             checker,
         );
     } else {
-        paint_message(hwnd, hdc, content_rc, content_bg, subtle, "Loading…");
+        // Same localized placeholder as the `ContentKind::Loading` arm above: this is the
+        // still-decoding branch of the image path, and it must not disagree with it.
+        paint_message(
+            hwnd,
+            hdc,
+            content_rc,
+            content_bg,
+            subtle,
+            crate::win::t("preview_loading"),
+        );
     }
 }
 

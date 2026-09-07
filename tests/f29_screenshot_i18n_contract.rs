@@ -284,6 +284,9 @@ fn every_new_key_exists_with_matching_placeholders_in_every_locale() {
         "shot_text_more_options",
         "shot_text_font_field",
         "preview_outline_header",
+        // Found by `no_new_hardcoded_display_strings` below, not by the original audit sweep:
+        // the Quick preview's decode placeholder was still a bare English literal.
+        "preview_loading",
     ];
     for key in new_keys {
         assert!(
@@ -335,4 +338,318 @@ fn every_new_key_exists_with_matching_placeholders_in_every_locale() {
         }
     }
     assert_eq!(checked_locales, 35, "expected 35 non-English locale files");
+}
+
+// ---------------------------------------------------------------------------------------
+// Forward-looking guard: a string that NEVER became a key.
+//
+// The audit's own acceptance note for F29 says static key parity cannot detect this class,
+// and it is right: `scripts/check-locale-keys.ps1` compares en.toml against the other 35
+// files, so a sentence that only ever existed as a Rust literal is invisible to it, and so
+// is every test above (they name the specific literals the fix removed, which catches a
+// revert but not the NEXT hardcoded string somebody adds).
+//
+// So this scans the files F29 localized and requires every display-looking literal in them
+// to be either routed through `t()` or listed in `ALLOWED_LITERALS` with a stated reason.
+// Adding a line to that table is a deliberate, reviewable act; forgetting to localize is not.
+//
+// It deliberately does NOT assert that every allowed entry is still present. Deleting a
+// literal is tidying, not a defect, and a gate that goes red on tidy-up gets ignored, which
+// is how it would come to miss the real thing.
+// ---------------------------------------------------------------------------------------
+
+/// The paint/label files F29 localized. New user-visible text overwhelmingly lands here.
+const SCANNED_FILES: [&str; 5] = [
+    "src/bin/app/screenshot/tools.rs",
+    "src/bin/app/screenshot/toolbar.rs",
+    "src/bin/app/screenshot/overlay/paint.rs",
+    "src/bin/app/screenshot/toolbar/textflyout.rs",
+    "src/bin/app/preview/paint.rs",
+];
+
+/// `(file, literal, why it is not translatable)`. Every entry is a literal a human decided
+/// must stay fixed, not a shape the scan happens to miss.
+const ALLOWED_LITERALS: &[(&str, &str, &str)] = &[
+    // `Tool::label()` is the fixed-English `--screenshot-automation` window-title identifier
+    // that `tests/screenshot_automation.rs` parses (`tool=Rect`). Localizing it would make
+    // that harness depend on the machine's UI language. Its localized twin is `hint_label`,
+    // which `tool_hint_label_body_has_no_hardcoded_display_words` above guards.
+    ("tools.rs", "Rect", "Tool::label automation identifier"),
+    ("tools.rs", "Ellipse", "Tool::label automation identifier"),
+    ("tools.rs", "Arrow", "Tool::label automation identifier"),
+    ("tools.rs", "Line", "Tool::label automation identifier"),
+    ("tools.rs", "Pen", "Tool::label automation identifier"),
+    ("tools.rs", "Text", "Tool::label automation identifier"),
+    ("tools.rs", "Number", "Tool::label automation identifier"),
+    ("tools.rs", "Highlight", "Tool::label automation identifier"),
+    ("tools.rs", "Pixelate", "Tool::label automation identifier"),
+    ("tools.rs", "Invert", "Tool::label automation identifier"),
+    ("tools.rs", "Pick", "Tool::label automation identifier"),
+    ("tools.rs", "Move", "Tool::label automation identifier"),
+    (
+        "tools.rs",
+        "Tool::DEFAULTABLE and settings::SHOT_TOOL_COUNT disagree",
+        "compile-time assert message, seen by a developer building the crate, never by a user",
+    ),
+    // Windows font FACE names. These are looked up by name in the system font table, so a
+    // translated value would silently fall back to a substitute face.
+    ("tools.rs", "Segoe UI", "Windows font face name"),
+    ("textflyout.rs", "Segoe UI", "Windows font face name"),
+    ("textflyout.rs", "Arial", "Windows font face name"),
+    ("textflyout.rs", "Calibri", "Windows font face name"),
+    ("textflyout.rs", "Verdana", "Windows font face name"),
+    ("textflyout.rs", "Tahoma", "Windows font face name"),
+    ("textflyout.rs", "Consolas", "Windows font face name"),
+    ("textflyout.rs", "Times New Roman", "Windows font face name"),
+    ("textflyout.rs", "Comic Sans MS", "Windows font face name"),
+    ("preview/paint.rs", "Consolas", "Windows font face name"),
+    (
+        "textflyout.rs",
+        "{size} px",
+        "px is the unit abbreviation, written px in every locale this app ships; a key here \
+         would be the same string 36 times",
+    ),
+    // The `--screenshot-automation` stand-in desktop. It exists so the harness never captures
+    // real screen pixels, and it is drawn only under that flag, so no shipped run can show it.
+    (
+        "overlay/paint.rs",
+        "SYNTHETIC FULL-SCREEN AUTOMATION CANVAS",
+        "test-harness canvas, only ever drawn under --screenshot-automation",
+    ),
+    (
+        "overlay/paint.rs",
+        "Safe test surface: no desktop pixels, clipboard, files, dialogs, or uploads",
+        "test-harness canvas, only ever drawn under --screenshot-automation",
+    ),
+];
+
+/// Overwrite `from..to` with spaces so later offsets and line numbers still line up.
+fn blank(out: &mut [char], from: usize, to: usize) {
+    for slot in out.iter_mut().take(to).skip(from) {
+        *slot = ' ';
+    }
+}
+
+/// Index just past the line comment starting at `i`.
+fn line_comment_end(c: &[char], i: usize) -> usize {
+    (i..c.len()).find(|&k| c[k] == '\n').unwrap_or(c.len())
+}
+
+/// Index just past the raw string (`r"..."`, `r#"..."#`) starting at `i`, or `None` if one
+/// does not start there. Raw strings in these files are format/path helpers, never display
+/// text, so their contents are skipped rather than scanned.
+fn raw_string_end(c: &[char], i: usize) -> Option<usize> {
+    if c[i] != 'r' {
+        return None;
+    }
+    // `r` immediately after an identifier character is the tail of a name, not a prefix.
+    if i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_') {
+        return None;
+    }
+    let mut j = i + 1;
+    let mut hashes = 0usize;
+    while c.get(j) == Some(&'#') {
+        hashes += 1;
+        j += 1;
+    }
+    if c.get(j) != Some(&'"') {
+        return None;
+    }
+    let mut k = j + 1;
+    while k < c.len() {
+        if c[k] == '"' && c[k + 1..].iter().take(hashes).all(|ch| *ch == '#') {
+            return Some(k + 1 + hashes);
+        }
+        k += 1;
+    }
+    Some(c.len())
+}
+
+/// Index just past the ordinary string literal starting at `i`.
+fn string_end(c: &[char], i: usize) -> usize {
+    let mut j = i + 1;
+    while j < c.len() {
+        match c[j] {
+            '\\' => j += 2,
+            '"' => return j + 1,
+            _ => j += 1,
+        }
+    }
+    c.len()
+}
+
+/// One pass over the source producing both halves this guard needs: every ordinary string
+/// literal with its start offset, and a "skeleton" in which those literals, raw strings and
+/// comments are blanked. The skeleton is what the `#[cfg(test)]` brace matching runs on, so a
+/// stray `{` inside an assertion message cannot throw the brace count off.
+fn scan_source(src: &str) -> (Vec<char>, Vec<(usize, String)>) {
+    let c: Vec<char> = src.chars().collect();
+    let mut skeleton = c.clone();
+    let mut literals = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        if let Some(end) = raw_string_end(&c, i) {
+            blank(&mut skeleton, i, end);
+            i = end;
+        } else if c[i] == '"' {
+            let end = string_end(&c, i);
+            // An UNTERMINATED literal ends at EOF with no closing quote to step back over, so
+            // clamp rather than letting `end - 1` fall below the opening quote and panic.
+            let inner = end.saturating_sub(1).max(i + 1);
+            literals.push((i, c[i + 1..inner].iter().collect()));
+            blank(&mut skeleton, i, end);
+            i = end;
+        } else if c[i] == '/' && c.get(i + 1) == Some(&'/') {
+            let end = line_comment_end(&c, i);
+            blank(&mut skeleton, i, end);
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    (skeleton, literals)
+}
+
+/// First index of `needle` in `hay` at or after `from`.
+fn find_chars(hay: &[char], needle: &str, from: usize) -> Option<usize> {
+    let pat: Vec<char> = needle.chars().collect();
+    let last = hay.len().checked_sub(pat.len())?;
+    (from..=last).find(|&i| hay[i..i + pat.len()] == pat[..])
+}
+
+/// The char ranges covered by `#[cfg(test)]` modules.
+///
+/// Brace-matched rather than "cut the file at the first marker", which is the obvious
+/// shortcut and is wrong here: `tools.rs` has TWO test modules and the first starts at line
+/// 132 of 840, so cutting there would stop scanning three quarters of the production code and
+/// report a clean file.
+fn test_module_ranges(skeleton: &[char]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(at) = find_chars(skeleton, "#[cfg(test)]", from) {
+        let Some(open) = (at..skeleton.len()).find(|&i| skeleton[i] == '{') else {
+            ranges.push((at, skeleton.len()));
+            break;
+        };
+        let mut depth = 0i32;
+        let mut end = skeleton.len();
+        for (i, ch) in skeleton.iter().enumerate().skip(open) {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                end = i + 1;
+                break;
+            }
+        }
+        ranges.push((at, end));
+        from = end;
+    }
+    ranges
+}
+
+/// The literal with every `{...}` group removed, so a pure substitution template such as
+/// `"{tool}"` or an escape such as `"\u{25BE}"` is not mistaken for a sentence.
+fn without_braced_groups(v: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for ch in v.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Does this literal read as text a user would see, rather than a key, an identifier or a
+/// format token? Two adjacent ASCII letters outside any `{...}` group is the "is it a word"
+/// test; an all-lowercase-and-underscores value is a locale key or an ident, not prose.
+fn looks_like_display_text(v: &str) -> bool {
+    let bare = without_braced_groups(v);
+    let letters: Vec<char> = bare.chars().collect();
+    let has_word = letters
+        .windows(2)
+        .any(|w| w[0].is_ascii_alphabetic() && w[1].is_ascii_alphabetic());
+    if !has_word {
+        return false;
+    }
+    !v.chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+#[test]
+fn no_new_hardcoded_display_strings() {
+    let mut offenders: Vec<String> = Vec::new();
+    for rel in SCANNED_FILES {
+        let src = read(rel);
+        let (skeleton, literals) = scan_source(&src);
+        let skipped = test_module_ranges(&skeleton);
+        let chars: Vec<char> = src.chars().collect();
+        for (at, value) in literals {
+            if skipped.iter().any(|(a, b)| at >= *a && at < *b) {
+                continue;
+            }
+            if !looks_like_display_text(&value) {
+                continue;
+            }
+            let allowed = ALLOWED_LITERALS
+                .iter()
+                .any(|(file, lit, _)| rel.ends_with(file) && *lit == value);
+            if allowed {
+                continue;
+            }
+            let line = 1 + chars[..at].iter().filter(|ch| **ch == '\n').count();
+            offenders.push(format!("{rel}:{line}: {value:?}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "user-visible text is hardcoded in these files instead of coming from the locale \
+         tables (audit F29). Route each one through t(\"some_key\") and add the key to ALL \
+         of assets/locales/*.toml, or, if it genuinely must not be translated, add it to \
+         ALLOWED_LITERALS in this file with the reason:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// The guard is only worth having if it actually fires, and a scan that silently matched
+/// nothing would pass `no_new_hardcoded_display_strings` just as quietly as a clean tree.
+/// This pins the machinery against fixtures instead of trusting the real files to exercise it.
+#[test]
+fn the_hardcoded_string_guard_detects_what_it_claims_to() {
+    assert!(looks_like_display_text("Loading…"));
+    assert!(looks_like_display_text("Rectangle (R) drag to draw"));
+    // Not prose: a locale key, a bare substitution template, punctuation, a single letter.
+    assert!(!looks_like_display_text("preview_loading"));
+    assert!(!looks_like_display_text("{tool}"));
+    assert!(!looks_like_display_text("{mark}  {}"));
+    assert!(!looks_like_display_text("-"));
+
+    // A literal inside a #[cfg(test)] module is skipped, one in the production code above it
+    // is not, and the module is found by brace matching rather than by cutting to end of file.
+    let src = "fn a() { m(\"Live text\"); }\n#[cfg(test)]\nmod t { fn b() { m(\"Test text\"); } }\nfn c() { m(\"After text\"); }\n";
+    let (skeleton, literals) = scan_source(src);
+    let skipped = test_module_ranges(&skeleton);
+    let visible: Vec<String> = literals
+        .into_iter()
+        .filter(|(at, _)| !skipped.iter().any(|(a, b)| at >= a && at < b))
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(
+        visible,
+        vec!["Live text".to_string(), "After text".to_string()],
+        "the test-module filter must skip only the #[cfg(test)] body"
+    );
+
+    // A comment that looks like code must not be scanned, and a raw string must be skipped.
+    let (_, lits) = scan_source("// m(\"Commented out\");\nlet p = r\"C:\\Windows\\Fonts\";\n");
+    assert!(
+        lits.iter().all(|(_, v)| v != "Commented out"),
+        "line comments must not be scanned"
+    );
 }
