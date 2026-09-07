@@ -430,13 +430,13 @@ fn dims(path: &str) -> Option<(u32, u32)> {
 /// Whether an already-performed attempt to `create_dir` means THIS caller now owns the
 /// directory it names, and so is responsible for removing it again if what it wanted the
 /// directory for then fails. `Ok(())` means we created it just now; `AlreadyExists` (or any
-/// other error) means we did not — either another actor got there first, or the directory
+/// other error) means we did not - either another actor got there first, or the directory
 /// never came to exist at all, and either way it is not ours to clean up.
 ///
 /// Pulled out as a pure function (2026-09-05 audit, F14) so the ownership decision itself is
 /// unit-testable without touching a filesystem: the prior code decided ownership from a
 /// separate `!dir.exists()` check taken BEFORE the create, which raced against any other
-/// actor (another `st2k` call, Explorer, an AV scan) creating the same bucket in between —
+/// actor (another `st2k` call, Explorer, an AV scan) creating the same bucket in between -
 /// the loser of that race still believed it owned the directory and could remove it out from
 /// under the winner's use of it.
 fn owns_new_dir(create_result: &std::io::Result<()>) -> bool {
@@ -449,7 +449,7 @@ fn owns_new_dir(create_result: &std::io::Result<()>) -> bool {
 ///
 /// `create_dir` (non-recursive) IS the ownership claim, not a `!dir.exists()` check followed
 /// by a separate create: `create_dir` either creates the directory and hands back `Ok(())`, or
-/// fails `AlreadyExists` if it was already there — one atomic OS call, no window in which
+/// fails `AlreadyExists` if it was already there - one atomic OS call, no window in which
 /// another actor's create can land unseen (2026-09-05 audit, F14). The recursive form is used
 /// only as a fallback when the PARENT itself is missing (not the case a sibling image's own
 /// folder can hit, since that parent already exists); a create performed in that fallback still
@@ -959,13 +959,13 @@ mod tests {
     /// `claim_bucket_dir` on the SAME path, released together by a `Barrier` so the OS sees
     /// both `create_dir` attempts as close to simultaneous as it can. `create_dir` is atomic
     /// at the OS level, so exactly one of them must come back `owned == true` however the
-    /// scheduler interleaves them — this is deterministic, not a timing gamble.
+    /// scheduler interleaves them - this is deterministic, not a timing gamble.
     ///
     /// Revert `claim_bucket_dir` to the pre-fix shape (`let bucket_is_new = !dir.exists();`
     /// then `create_dir_all(&dir)`) and this test can fail: with the barrier forcing both
     /// threads to reach the `exists()` check before either has created anything, BOTH observe
-    /// "not there yet" and BOTH get `bucket_is_new = true` — `create_dir_all` succeeds
-    /// unconditionally for both since it treats an already-present directory as a no-op — so
+    /// "not there yet" and BOTH get `bucket_is_new = true` - `create_dir_all` succeeds
+    /// unconditionally for both since it treats an already-present directory as a no-op - so
     /// `owners` comes back 2, not 1. That double ownership is exactly the F14 bug: either side
     /// believes it alone made the folder and may remove it out from under the other's use of
     /// it on a later failed move.
@@ -1022,7 +1022,7 @@ mod tests {
         let img = png(&dir, "photo.png", 5, 5);
         let held = std::fs::OpenOptions::new()
             .read(true)
-            .share_mode(1) // FILE_SHARE_READ only — no FILE_SHARE_DELETE
+            .share_mode(1) // FILE_SHARE_READ only - no FILE_SHARE_DELETE
             .open(Path::new(&img))
             .unwrap();
 
