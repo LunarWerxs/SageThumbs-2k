@@ -221,7 +221,37 @@ fn video_frame_thumbnail_comes_from_a_real_decoded_frame() {
 #[test]
 #[ignore = "no RAW fixture available in tests/fixtures; needs a real CR2/NEF/DNG sample to prove the embedded-JPEG-preview claim rather than a hand-built stub"]
 fn embedded_preview_raw_thumbnail_matches_its_own_embedded_jpeg() {
-    unreachable!("ignored - see the #[ignore] reason above");
+    assert_eq!(
+        sagethumbs2k_core::formats::capability("cr2").source,
+        sagethumbs2k_core::formats::Source::EmbeddedPreview
+    );
+    // Documented drop-in path (see the `#[ignore]` reason above): a real CR2/NEF/DNG sample.
+    let fixture: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "raw",
+        "sample.dng",
+    ]
+    .iter()
+    .collect();
+    if !fixture.exists() {
+        eprintln!(
+            "skipping: no RAW fixture at {} - drop a real CR2/NEF/DNG sample there (see the \
+             #[ignore] reason on this test) to run the embedded-preview assertion",
+            fixture.display()
+        );
+        return;
+    }
+    let out = scratch("raw_out.png");
+    cli::thumbnail(fixture.to_str().unwrap(), out.to_str().unwrap(), 0)
+        .unwrap_or_else(|e| panic!("expected the embedded JPEG preview to decode: {e}"));
+    let decoded = image::open(&out).unwrap();
+    assert!(
+        decoded.width() > 0 && decoded.height() > 0,
+        "expected a real decoded preview, not an empty image"
+    );
+    let _ = std::fs::remove_file(&out);
 }
 
 /// `Source::CoverOrFirstPage` (Ebook + Document categories) has no PDF/EPUB fixture in
@@ -232,5 +262,35 @@ fn embedded_preview_raw_thumbnail_matches_its_own_embedded_jpeg() {
 #[test]
 #[ignore = "no PDF/EPUB fixture available in tests/fixtures; needs a real sample to prove the cover/first-page claim rather than a hand-built stub"]
 fn cover_or_first_page_document_thumbnail_matches_its_first_page() {
-    unreachable!("ignored - see the #[ignore] reason above");
+    assert_eq!(
+        sagethumbs2k_core::formats::capability("pdf").source,
+        sagethumbs2k_core::formats::Source::CoverOrFirstPage
+    );
+    // Documented drop-in path (see the `#[ignore]` reason above): a real multi-page PDF.
+    let fixture: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "pdf",
+        "sample.pdf",
+    ]
+    .iter()
+    .collect();
+    if !fixture.exists() {
+        eprintln!(
+            "skipping: no PDF fixture at {} - drop a real sample there (see the #[ignore] \
+             reason on this test) to run the cover/first-page assertion",
+            fixture.display()
+        );
+        return;
+    }
+    let out = scratch("pdf_out.png");
+    cli::thumbnail(fixture.to_str().unwrap(), out.to_str().unwrap(), 0)
+        .unwrap_or_else(|e| panic!("expected page 1 to render: {e}"));
+    let decoded = image::open(&out).unwrap();
+    assert!(
+        decoded.width() > 0 && decoded.height() > 0,
+        "expected a real rendered first page, not an empty image"
+    );
+    let _ = std::fs::remove_file(&out);
 }

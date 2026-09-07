@@ -811,6 +811,9 @@ fn check_format_capability(r: &mut Report) {
     r.line(S::Info, "By source", &by_source.join(", "));
 
     use crate::formats::OsCodec;
+    // `Av1` is deliberately NOT in this array - it has no `os_codec_available` component
+    // lookup to run at all (no WIC container GUID exists for it), so it gets its own honest
+    // block below instead of a present/MISSING verdict this loop can't actually back up.
     for codec in [OsCodec::MediaFoundation, OsCodec::WmPhoto, OsCodec::Heif] {
         let exts: Vec<&str> = FORMATS
             .iter()
@@ -824,17 +827,62 @@ fn check_format_capability(r: &mut Report) {
             OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
             OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
             OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
+            OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
         };
         if crate::decode::os_codec_available(codec) {
-            r.line(
-                S::Ok,
-                label,
-                &format!(
-                    "present - {} format(s) decode here ({})",
-                    exts.len(),
-                    exts.join(", ")
-                ),
-            );
+            if codec == OsCodec::Heif {
+                // The WIC container-decoder lookup above proves HEIC/HEIF CONTAINERS parse,
+                // not that the HEVC pixels inside decode - that needs the separate "HEVC
+                // Video Extension" Store package. Audit E03 #4: printing bare "present" here
+                // let doctor claim success on a machine where `.heic` still fails. Probe the
+                // same way `video_codec_note` does for a video HEVC stream - a real Media
+                // Foundation decoder-presence query (`vcodec::decoder_installed`), not a guess.
+                use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
+                match crate::vcodec::decoder_installed(MFVideoFormat_HEVC) {
+                    Some(true) => r.line(
+                        S::Ok,
+                        label,
+                        &format!(
+                            "container decoder present; the HEVC Video Extension it needs is \
+                             ALSO installed - {} format(s) decode here ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                    ),
+                    Some(false) => r.fail_with_fix(
+                        label,
+                        &format!(
+                            "container decoder present, but the HEVC Video Extension it needs \
+                             is NOT installed - {} format(s) keep their default icon ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                        "install the \"HEVC Video Extensions\" (or \"HEIF Image Extensions\", \
+                         which bundles it) from the Microsoft Store",
+                    ),
+                    None => r.line(
+                        S::Info,
+                        label,
+                        &format!(
+                            "container decoder present; the HEVC Video Extension it needs was \
+                             not verified (Media Foundation unavailable) - {} format(s) may or \
+                             may not decode here ({})",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                    ),
+                }
+            } else {
+                r.line(
+                    S::Ok,
+                    label,
+                    &format!(
+                        "present - {} format(s) decode here ({})",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                );
+            }
         } else {
             r.line(
                 S::Warn,
@@ -846,6 +894,28 @@ fn check_format_capability(r: &mut Report) {
                 ),
             );
         }
+    }
+
+    // AV1 (AVIF): no WIC container GUID exists to probe (see `OsCodec::Av1`'s doc), so - unlike
+    // the loop above - this is reported honestly as unverified rather than guessed at (audit
+    // E03 #2). Consistent with `video_codec_note`'s AV1 handling: both name the dependency
+    // without claiming a verdict the code can't actually back up.
+    let av1_exts: Vec<&str> = FORMATS
+        .iter()
+        .filter(|&&(ext, _)| crate::formats::capability(ext).os_codec == Some(OsCodec::Av1))
+        .map(|&(ext, _)| ext)
+        .collect();
+    if !av1_exts.is_empty() {
+        r.line(
+            S::Info,
+            "OS codec: AV1 (AVIF)",
+            &format!(
+                "needs the AV1 Video Extension; not probed (no WIC container GUID for it) - \
+                 {} format(s) affected ({})",
+                av1_exts.len(),
+                av1_exts.join(", ")
+            ),
+        );
     }
 }
 

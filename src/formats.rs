@@ -154,6 +154,15 @@ pub enum OsCodec {
     /// different Store package underneath. `st2k doctor` probes for it the same way, via WIC's
     /// own `IWICImagingFactory::CreateDecoder(GUID_ContainerFormatHeif, ...)` component lookup.
     Heif,
+    /// AVIF - decoded via WIC's AV1 image codec (the "AV1 Video Extension" Store package),
+    /// then Media Foundation, then external `magick`, per `Cargo.toml`'s `image` crate feature
+    /// list (no `avif`/`av1` feature enabled - there is no in-process AV1 decoder here at all).
+    /// UNLIKE `Heif`/`WmPhoto`, there is no `GUID_ContainerFormat*` for AVIF/AV1 in the
+    /// `windows` crate (checked against `windows` 0.62.2's
+    /// `Win32::Graphics::Imaging` module, which defines Heif/Wmp/… but nothing AV1-shaped) -
+    /// so `st2k doctor` cannot do the same `CreateDecoder` component lookup it does for the
+    /// other two, and reports this one honestly as unverified rather than guessing.
+    Av1,
 }
 
 impl OsCodec {
@@ -163,6 +172,7 @@ impl OsCodec {
             OsCodec::MediaFoundation => "media_foundation",
             OsCodec::WmPhoto => "wmphoto",
             OsCodec::Heif => "heif",
+            OsCodec::Av1 => "av1",
         }
     }
 }
@@ -226,6 +236,110 @@ const WMPHOTO_EXTS: &[&str] = &["jxr", "wdp", "hdp", "wmp"];
 /// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
 const HEIF_OS_CODEC_EXTS: &[&str] = &["heic", "heif", "heics", "heifs", "hif", "avci"];
 
+/// AVIF (AV1 Image File Format) - see [`OsCodec::Av1`] for why this can't be probed the
+/// way `WMPHOTO_EXTS`/`HEIF_OS_CODEC_EXTS` are. One extension today; a future `avifs`-style
+/// sibling belongs here, not hand-added at the call site.
+/// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
+const AV1_OS_CODEC_EXTS: &[&str] = &["avif"];
+
+/// `Category::Image` extensions whose cover is an EMBEDDED preview the container already
+/// carries (`container::extract_cover`), never a full raster decode of the image itself -
+/// audit E03 finding #1: `capability()` used to give every Image-category extension
+/// `Source::FullDecode` from `category()` alone, which was FALSE for this whole list (PSD's
+/// baked resource-1036 thumbnail, an Illustrator/EPS file's already-embedded raster preview,
+/// an APK's declared launcher icon, a Blender/Krita/OpenRaster/3MF/FreeCAD/Fusion-360/
+/// Sketch/Procreate/Adobe-XD/CorelDRAW baked-in thumbnail, and so on - none of these decode
+/// the file's actual image/scene/document content).
+///
+/// Derived by READING `container/mod.rs`'s `extract_cover` dispatch, not from memory:
+/// `try_creative_app_cover` (eps/ai, psd/psb, icns, blend, affinity, psp family, ilbm
+/// family, c4d, cdr/cdt/cmx, clip), `try_ebook_and_cad_cover` (skp, dwg, 3dm, max - mobi/
+/// tarfmt/fb2/indd/indt are Ebook/Document category already and need no override),
+/// `try_misc_cover` (gcode/gco - audio is Audio category already), PLUS the ZIP-family
+/// cascade `extract_cover` reaches through `try_generic_archive_cover` ->
+/// `zipfmt::extract_from_archive` -> `dedicated_preview` -> `container::project::extract`
+/// (kra, ora, 3mf, fcstd, f3d, sketch, procreate, xd - key/pages/numbers/vsdx/vsdm/ggb from
+/// that same cascade are Document category already) and the APK branch ahead of it
+/// (apk/apks/xapk/apkm - deliberately NOT `Category::Archive`, see the `FORMATS` comment).
+/// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
+const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
+    // EPS / Illustrator: an already-embedded raster preview only (DOS-EPS TIFF, EPSI, or a
+    // Photoshop-resource JPEG), sniffed by content in `container::eps` - never a from-scratch
+    // PostScript render. `ai` is PDF/EPS-compatible and rides the same content-sniffed cascade.
+    "eps",
+    "ai",
+    // Photoshop PSD/PSB: the baked resource-1036 JPEG thumbnail (`container::psd`) unless the
+    // file has no usable alpha-free preview stored, in which case `decode_full`'s magick tier
+    // composites the real layers - but the THUMBNAIL path (what this claims) is preview-first.
+    "psd",
+    "psb",
+    // Apple Icon Image: the largest embedded PNG/JPEG-2000 member (`container::icns`).
+    "icns",
+    // Blender: the RGBA thumbnail baked into the TEST file-block (`container::blend`), incl.
+    // the gzip/zstd-"Compressed" save variant.
+    "blend",
+    // Affinity Photo/Designer/Publisher: an embedded PNG preview (`container::affinity`).
+    "afphoto",
+    "afdesign",
+    "afpub",
+    "af",
+    // Paint Shop Pro family: the Composite Image Bank JPEG, or a bounded whole-file JPEG
+    // carve (`container::psp`) - not guaranteed present, but never a from-scratch render.
+    "psp",
+    "pspimage",
+    "pspbrush",
+    "pspframe",
+    "psptube",
+    "pspshape",
+    "pspselection",
+    "pspmask",
+    "tub",
+    // Amiga/Deluxe Paint ILBM: a real planar decode of the file's OWN embedded bitmap
+    // (`container::ilbm`) - not a codec render of a different representation.
+    "iff",
+    "ilbm",
+    "lbm",
+    // Cinema 4D: the document/scene preview JPEG carved from the header slot (`container::c4d`).
+    "c4d",
+    // CorelDRAW/Corel Presentation Exchange: the RIFF `DISP` preview DIB (`container::cdr`),
+    // or - for the newer ZIP/OPC `.cdr` - the packaged thumbnail bitmap (`container::project`).
+    "cdr",
+    "cdt",
+    "cmx",
+    // Paint.NET: the base64 PNG preview in the XML preamble (`container::pdn`).
+    "pdn",
+    // Clip Studio Paint: the preview PNG inside the embedded SQLite database (`container::clip`).
+    "clip",
+    // SketchUp / AutoCAD / Rhino: a thumbnail carved from the model file (`container::skp`/
+    // `dwg`/`rhino`) - never a 3-D render (unlike STL/OBJ/PLY, which `decode/mesh.rs` DOES
+    // render, so those correctly keep `Source::FullDecode`).
+    "skp",
+    "dwg",
+    "3dm",
+    // Autodesk 3ds Max: the OLE2 `\x05SummaryInformation` thumbnail (`container::max`).
+    "max",
+    // 3D-printer G-code: an embedded base64 PNG preview some slicers bake into the header
+    // comments (`container::gcode`) - not a render of the sliced print.
+    "gcode",
+    "gco",
+    // ZIP-packaged project/design files: a ready-made preview baked into the package
+    // (`container::project`, reached through the same ZIP dispatch as EPUB/CBZ).
+    "kra",
+    "ora",
+    "3mf",
+    "fcstd",
+    "f3d",
+    "sketch",
+    "procreate",
+    "xd",
+    // Android packages: the manifest-declared launcher icon (`container::apk`), never a
+    // decode/render of the app's actual UI.
+    "apk",
+    "apks",
+    "xapk",
+    "apkm",
+];
+
 /// The capability of a hooked extension - derived from `category()` plus the small explicit
 /// lists above for the handful of extensions whose route is genuinely per-extension rather
 /// than per-category (the OS-codec dependencies). Not a second hand-maintained table: every
@@ -234,6 +348,9 @@ const HEIF_OS_CODEC_EXTS: &[&str] = &["heic", "heif", "heics", "heifs", "hif", "
 pub fn capability(ext: &str) -> Capability {
     let convertible = is_known(ext) && !is_archive(ext);
     let source = match category(ext) {
+        // Most Image-category formats really are a full decode, but a fixed subset carve an
+        // already-embedded preview instead (see `EMBEDDED_PREVIEW_EXTS`'s doc) - audit E03 #1.
+        Category::Image if EMBEDDED_PREVIEW_EXTS.contains(&ext) => Source::EmbeddedPreview,
         Category::Image => Source::FullDecode,
         Category::Raw => Source::EmbeddedPreview,
         Category::Ebook | Category::Document => Source::CoverOrFirstPage,
@@ -241,7 +358,15 @@ pub fn capability(ext: &str) -> Capability {
         Category::Video => Source::VideoFrame,
         Category::Archive => Source::ContainedImages,
     };
-    let os_codec = if VIDEO_EXTS.contains(&ext) {
+    let os_codec = if AV1_OS_CODEC_EXTS.contains(&ext) {
+        Some(OsCodec::Av1)
+    // `flv`'s OWN codecs (VP6 / Sorenson Spark) are decoded IN-PROCESS by
+    // `container::flv`/`st2k flv-frame` - never Media Foundation - so it is excluded from
+    // the blanket video->MediaFoundation rule below (audit E03 #5). An H.264-coded FLV
+    // does still ride Media Foundation via the remux path, but `capability()` answers at
+    // the EXTENSION level (like every other field here), not per-file content-sniff; `st2k
+    // doctor`'s per-file `video_codec_note` is the byte-accurate answer for one file.
+    } else if VIDEO_EXTS.contains(&ext) && ext != "flv" {
         Some(OsCodec::MediaFoundation)
     } else if WMPHOTO_EXTS.contains(&ext) {
         Some(OsCodec::WmPhoto)
@@ -903,17 +1028,100 @@ mod tests {
                 "HEIF_OS_CODEC_EXTS names `{ext}`, which is not in FORMATS"
             );
         }
+        for &ext in AV1_OS_CODEC_EXTS {
+            assert!(
+                in_formats(ext),
+                "AV1_OS_CODEC_EXTS names `{ext}`, which is not in FORMATS"
+            );
+        }
+        for &ext in EMBEDDED_PREVIEW_EXTS {
+            assert!(
+                in_formats(ext),
+                "EMBEDDED_PREVIEW_EXTS names `{ext}`, which is not in FORMATS"
+            );
+            assert_eq!(
+                category(ext),
+                Category::Image,
+                "EMBEDDED_PREVIEW_EXTS names `{ext}`, which is not Category::Image - it \
+                 already gets its Source from its own category and needs no override"
+            );
+        }
     }
 
-    /// Every video extension depends on Media Foundation - the whole category rides one
-    /// OS codec, no per-extension exceptions.
+    /// Audit E03 #1: `container/mod.rs`'s `extract_cover` dispatch (`try_creative_app_cover`,
+    /// `try_ebook_and_cad_cover`, `try_misc_cover`, plus the ZIP-family `project::extract`
+    /// cascade) serves an EMBEDDED preview for exactly `EMBEDDED_PREVIEW_EXTS`, never a full
+    /// decode - so every one of them must classify as `Source::EmbeddedPreview`, not the
+    /// `Source::FullDecode` the rest of `Category::Image` gets.
+    #[test]
+    fn embedded_preview_exts_are_classified_embedded_preview() {
+        for &ext in EMBEDDED_PREVIEW_EXTS {
+            assert_eq!(
+                capability(ext).source,
+                Source::EmbeddedPreview,
+                "container-derived `{ext}` must be Source::EmbeddedPreview, not a claimed \
+                 full decode of the image itself"
+            );
+        }
+    }
+
+    /// The flip side of the test above: no RAW extension (embedded-JPEG-preview-first by
+    /// design) and no `EMBEDDED_PREVIEW_EXTS` container extension is ever misclassified as
+    /// `Source::FullDecode` - the exact false claim audit E03 #1 found live on the website.
+    #[test]
+    fn no_raw_or_container_extension_is_full_decode() {
+        for &ext in RAW.iter().chain(EMBEDDED_PREVIEW_EXTS) {
+            assert_ne!(
+                capability(ext).source,
+                Source::FullDecode,
+                "`{ext}` rides an embedded/carried preview, not a full decode"
+            );
+        }
+    }
+
+    /// Every video extension depends on Media Foundation, with ONE named exception: `flv`'s
+    /// own codecs (VP6/Sorenson Spark) are decoded in-process by `container::flv`, never MF
+    /// (audit E03 #5) - `st2k doctor`'s per-file `video_codec_note` says the same thing.
     #[test]
     fn video_category_maps_to_media_foundation() {
         for &ext in VIDEO {
+            let expected = if ext == "flv" {
+                None
+            } else {
+                Some(OsCodec::MediaFoundation)
+            };
             assert_eq!(
                 capability(ext).os_codec,
-                Some(OsCodec::MediaFoundation),
-                "video extension `{ext}` must depend on Media Foundation"
+                expected,
+                "video extension `{ext}` os_codec expectation"
+            );
+        }
+    }
+
+    /// Audit E03 #5, pinned directly: FLV keeps its default icon claim honest - its own
+    /// codecs never depend on an OS codec that might be missing.
+    #[test]
+    fn flv_os_codec_is_none() {
+        assert_eq!(capability("flv").os_codec, None);
+    }
+
+    /// Audit E03 #2: AVIF has no in-process AV1 decoder (`Cargo.toml`'s `image` feature list
+    /// excludes it) - its route is the OS's AV1 codec, named `OsCodec::Av1` even though it
+    /// can't be probed the way `WmPhoto`/`Heif` can (see that variant's doc).
+    #[test]
+    fn avif_os_codec_is_av1() {
+        assert_eq!(capability("avif").os_codec, Some(OsCodec::Av1));
+    }
+
+    /// `capability().convertible` must mirror `verbs::actions::is_image` EXACTLY (its own doc
+    /// says so) - it is not a second hand-maintained rule, so prove the two never drift apart.
+    #[test]
+    fn convertible_matches_is_image() {
+        for &(ext, _) in FORMATS {
+            assert_eq!(
+                capability(ext).convertible,
+                crate::verbs::is_image(&format!("x.{ext}")),
+                "`{ext}`: capability().convertible must match verbs::is_image"
             );
         }
     }
@@ -940,7 +1148,11 @@ mod tests {
             ("png", Source::FullDecode, None),
             ("jxr", Source::FullDecode, Some(OsCodec::WmPhoto)),
             ("heic", Source::FullDecode, Some(OsCodec::Heif)),
+            ("avif", Source::FullDecode, Some(OsCodec::Av1)),
             ("cr2", Source::EmbeddedPreview, None),
+            ("psd", Source::EmbeddedPreview, None),
+            ("apk", Source::EmbeddedPreview, None),
+            ("flv", Source::VideoFrame, None),
             ("mp3", Source::CoverArt, None),
             ("wav", Source::CoverArt, None),
             ("epub", Source::CoverOrFirstPage, None),
@@ -969,6 +1181,7 @@ mod tests {
             OsCodec::MediaFoundation.as_str(),
             OsCodec::WmPhoto.as_str(),
             OsCodec::Heif.as_str(),
+            OsCodec::Av1.as_str(),
         ] {
             assert_eq!(s, s.to_ascii_lowercase(), "`{s}` must be lowercase");
             assert!(!s.is_empty());

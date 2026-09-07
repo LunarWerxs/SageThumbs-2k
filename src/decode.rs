@@ -976,6 +976,12 @@ pub fn os_codec_available(codec: crate::formats::OsCodec) -> bool {
         OsCodec::MediaFoundation => crate::video::media_foundation_available(),
         OsCodec::WmPhoto => wic_container_codec_available(&GUID_ContainerFormatWmp),
         OsCodec::Heif => wic_container_codec_available(&GUID_ContainerFormatHeif),
+        // No `GUID_ContainerFormat*` for AVIF/AV1 exists in the `windows` crate (see
+        // `OsCodec::Av1`'s doc), so there is no real component lookup to run here - unlike
+        // the two arms above, `false` is NOT "checked and absent", it is "can't check".
+        // `st2k doctor` knows this and never calls this function for `Av1`; it reports the
+        // format honestly as unverified instead of printing a guess this arm could produce.
+        OsCodec::Av1 => false,
     }
 }
 

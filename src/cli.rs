@@ -1489,10 +1489,11 @@ mod tests {
             "video_frame",
             "contained_images",
         ];
-        let valid_codecs = ["media_foundation", "wmphoto", "heif"];
+        let valid_codecs = ["media_foundation", "wmphoto", "heif", "av1"];
 
         let mut saw_wmphoto = false;
         let mut saw_heif = false;
+        let mut saw_av1 = false;
         let mut saw_media_foundation = false;
         let mut saw_archive = false;
         for item in items {
@@ -1531,6 +1532,7 @@ mod tests {
                     match s.as_str() {
                         "wmphoto" => saw_wmphoto = true,
                         "heif" => saw_heif = true,
+                        "av1" => saw_av1 = true,
                         "media_foundation" => saw_media_foundation = true,
                         _ => {}
                     }
@@ -1557,6 +1559,7 @@ mod tests {
             saw_heif,
             "expected at least one heif os_codec entry (heic/heif/...)"
         );
+        assert!(saw_av1, "expected at least one av1 os_codec entry (avif)");
         assert!(
             saw_media_foundation,
             "expected at least one media_foundation entry (video)"
