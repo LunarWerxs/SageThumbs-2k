@@ -1,11 +1,11 @@
-//! The main Settings window — a faithful, modernized port of the original
+//! The main Settings window - a faithful, modernized port of the original
 //! SageThumbs Options dialog. Edits HKCU\Software\SageThumbs2K via the crate's
 //! `settings` module, plus a per-format checkbox list (a ListView). Built
 //! programmatically (CreateWindowExW) rather than from a dialog-template resource.
 //!
 //! Reachable settings take effect immediately (the provider reads them per
 //! request). Changing the per-format list rewrites the HKCR `shellex` keys, which
-//! needs elevation — handled by re-running `regsvr32` elevated.
+//! needs elevation - handled by re-running `regsvr32` elevated.
 
 use core::ffi::c_void;
 
@@ -78,7 +78,7 @@ mod build;
 use build::*;
 /// The Business-licence reminder strip: its pixels, its click, and where it sits. Sibling of
 /// `nudge` below (same strip mechanism), but for `license::Posture::BusinessNag` /
-/// `DeauthorizedLoud` instead of the sign-in campaign — see that module's doc comment.
+/// `DeauthorizedLoud` instead of the sign-in campaign - see that module's doc comment.
 mod biznag;
 mod helpers;
 /// The Licence Settings page: seeding its two status lines, the Redeem/Check-now worker
@@ -106,7 +106,7 @@ pub(crate) fn sign_in_nudge_height() -> i32 {
 }
 
 /// Ask the licence engine whether the Business-nag strip will show, the same way
-/// [`decide_sign_in_nudge`] asks the sign-in one — before the window is created, because the
+/// [`decide_sign_in_nudge`] asks the sign-in one - before the window is created, because the
 /// answer changes how tall it is.
 pub(crate) fn decide_business_nag() -> bool {
     biznag::decide()
@@ -118,8 +118,8 @@ pub(crate) fn business_nag_height() -> i32 {
     biznag::strip_h()
 }
 
-/// The licence-state line — "Licensed, last verified …" / "No licence key entered" /
-/// "Licence revoked (key esk_XXXX)" / "Personal use, no licence needed" — the ONE formatter
+/// The licence-state line - "Licensed, last verified …" / "No licence key entered" /
+/// "Licence revoked (key esk_XXXX)" / "Personal use, no licence needed" - the ONE formatter
 /// for it, shared between this window's status line and the About box's licence line (see
 /// `about.rs`) so the two surfaces cannot silently drift into disagreeing over what the exact
 /// same [`crate::license::snapshot`] means.
@@ -154,8 +154,8 @@ pub(crate) fn licence_reason_line(reason: &str) -> Option<&'static str> {
     }
 }
 
-/// The "how did this copy get here" line — "Installed for business use. Reinstall to
-/// change." / "Installed for personal use." / "Portable copy." — shown above
+/// The "how did this copy get here" line - "Installed for business use. Reinstall to
+/// change." / "Installed for personal use." / "Portable copy." - shown above
 /// [`licence_state_line`] on the Licence page. Portable wins over the recorded [`Mode`]:
 /// a portable copy never saw the installer's Personal/Business question (see
 /// `license::read_mode`'s doc comment on how it can still end up `Business` after a
@@ -173,7 +173,7 @@ fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
     }
 }
 
-/// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
+/// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time - the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
 /// line has no use for a time-of-day). No chrono/time dependency for one call site.
 fn format_unix_date(unix_secs: u64) -> String {
@@ -225,7 +225,7 @@ pub(super) struct SponsorLayout {
 /// Initial creation-time position for the footer row (About/Close/Save) and the
 /// credit line. `apply_v3_layout` (`navrail.rs`) unconditionally repositions all
 /// three afterward, so this only matters for the brief window between control
-/// creation and that reflow — always the no-banner spacing since ID_BANNER is
+/// creation and that reflow - always the no-banner spacing since ID_BANNER is
 /// permanently hidden in the v3 shell (see build.rs's sponsor-promotion comment;
 /// A093/A264, 2026-08-15).
 pub(super) fn sponsor_layout(_dark: bool) -> SponsorLayout {
@@ -236,22 +236,22 @@ pub(super) fn sponsor_layout(_dark: bool) -> SponsorLayout {
     }
 }
 
-// Left-column vertical rhythm (96-dpi design px). These are TOP MARGINS — the gap
-// ABOVE each control, keyed to its type — so a dropdown always gets more breathing
+// Left-column vertical rhythm (96-dpi design px). These are TOP MARGINS - the gap
+// ABOVE each control, keyed to its type - so a dropdown always gets more breathing
 // room above it than a checkbox, regardless of what precedes it (a control's spacing
 // shouldn't depend on the previous row's type). The cursor adds the margin, places
 // the control, then advances by the control's own height. EVERY left-column control
 // goes through a LeftCol method (header/checkbox/edit/combo/checklist/button/status)
-// so the rhythm is uniform — retune the whole column HERE, never via individual y's.
+// so the rhythm is uniform - retune the whole column HERE, never via individual y's.
 // Control heights: header 18, checkbox 20, edit 18, combo 23, button 24, status 18.
 const MT_SECTION: i32 = 20; // above a (non-first) section header
 const MT_CHECK: i32 = 6; // above a checkbox / status line (compact rhythm)
 const MT_FIELD: i32 = 14; // above a label+combo / label+edit (roomier than a checkbox)
-const MT_BUTTON: i32 = 12; // above a push button (an action — between a checkbox and a field)
+const MT_BUTTON: i32 = 12; // above a push button (an action - between a checkbox and a field)
 
 /// A top-to-bottom layout cursor for the scrolling left options column. Each call
 /// drops a control at the running `y`, then advances `y` by the type-based amount
-/// above — so spacing stays uniform no matter how the sections are reordered.
+/// above - so spacing stays uniform no matter how the sections are reordered.
 pub(super) struct LeftCol {
     hwnd: HWND,
     hinst: HINSTANCE,
@@ -340,7 +340,7 @@ impl LeftCol {
         c
     }
 
-    /// A full-width, fixed-height checkbox ListView (the "Menu items" checklist) —
+    /// A full-width, fixed-height checkbox ListView (the "Menu items" checklist) -
     /// one compact card instead of a tall stack of checkboxes, mirroring the
     /// Supported File Types list's dark styling. Caller inserts the single column +
     /// rows. Returns its hwnd.
@@ -361,7 +361,7 @@ impl LeftCol {
             self.hinst,
         );
         // Theme the list surface (SURFACE()/DARK_TEXT() are theme-aware). NOT
-        // applying DarkMode_Explorer in either theme — it gives dark check glyphs +
+        // applying DarkMode_Explorer in either theme - it gives dark check glyphs +
         // a scrollbar that vanishes on the surface.
         theme_checkbox_list(list);
         // Reuse the format list's subclass (SPACE bulk-toggle; header custom-draw is
@@ -371,7 +371,7 @@ impl LeftCol {
         list
     }
 
-    /// A push-button action row (e.g. Restart hotkey service / Open diagnostics log) —
+    /// A push-button action row (e.g. Restart hotkey service / Open diagnostics log) -
     /// `INDENT`-aligned, fixed 24px tall, with a button-sized top margin. Advances the
     /// cursor past the button so the NEXT section header isn't crowded.
     unsafe fn button(&mut self, text: &str, w: i32, id: i32) {
@@ -382,7 +382,7 @@ impl LeftCol {
         self.y += 24;
     }
 
-    /// A row of equal-width push buttons sharing ONE line — so the Reset / Import /
+    /// A row of equal-width push buttons sharing ONE line - so the Reset / Import /
     /// Export trio fits on a single row instead of three stacked rows. Spans the full
     /// column-content width (like `header`) with small gaps, and advances the cursor once.
     unsafe fn button_row(&mut self, buttons: &[(&str, i32)]) {
@@ -475,7 +475,7 @@ pub(super) fn saved_menu_rows() -> Vec<(isize, bool)> {
     })
 }
 
-/// The factory (default) menu-list rows — items + dividers in tree order, each item
+/// The factory (default) menu-list rows - items + dividers in tree order, each item
 /// checked per `check`. Backs "Reset order" (current checks) and "Defaults" (all on).
 pub(super) fn default_menu_rows(check: impl Fn(usize) -> bool) -> Vec<(isize, bool)> {
     let tokens: Vec<String> = default_menu_tokens()
@@ -553,7 +553,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_SIZE, "tip_max_thumb"),
     (ID_JPEG, "tip_jpeg"),
     (ID_PNG, "tip_png"),
-    // The same hints on the field LABELS (the natural hover target — the edit box is tiny).
+    // The same hints on the field LABELS (the natural hover target - the edit box is tiny).
     (ID_LBL_MAXFILE, "tip_max_file"),
     (ID_LBL_MAXTHUMB, "tip_max_thumb"),
     (ID_LBL_JPEG, "tip_jpeg"),
@@ -617,7 +617,7 @@ const TTM_UPDATETIPTEXTW: u32 = WM_USER + 57;
 /// dialog's wndproc needs no extra handling. Hint text is localized with an
 /// English fallback, so untranslated locales still get a hint. Labels stay plain
 /// STATICs (no SS_NOTIFY = no mouse messages), so the hint rides the control they
-/// describe — which is what a user actually hovers. The tooltip window HWND is
+/// describe - which is what a user actually hovers. The tooltip window HWND is
 /// stashed in the dialog's GWLP_USERDATA so `refresh_tooltips` can re-text it.
 pub(super) unsafe fn add_tooltips(hwnd: HWND, hinst: HINSTANCE) {
     let Ok(tip) = CreateWindowExW(
@@ -757,11 +757,11 @@ pub(super) unsafe fn set_subitem(list: HWND, row: i32, col: i32, text: &str) {
 thread_local! {
     static FMT_STATE: core::cell::RefCell<Vec<bool>> = const { core::cell::RefCell::new(Vec::new()) };
     static POPULATING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
-    /// Last normalized search needle the list was rebuilt for — lets the EN_CHANGE
+    /// Last normalized search needle the list was rebuilt for - lets the EN_CHANGE
     /// handler skip an identical rebuild. Cleared on a live language change (rows may
     /// re-localize) so the next search re-filters.
     static LAST_FILTER: core::cell::RefCell<Option<String>> = const { core::cell::RefCell::new(None) };
-    /// GDI+ token for this window's lifetime — started in `WM_CREATE`, shut down in
+    /// GDI+ token for this window's lifetime - started in `WM_CREATE`, shut down in
     /// `WM_DESTROY`. GDI+ must be live on the thread before the anti-aliased owner-draw
     /// (toggle switches, checkbox glyphs, nav icons, rounded buttons) can render.
     static GDIP_TOKEN: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -773,6 +773,26 @@ pub(super) struct PopulateGuard;
 impl Drop for PopulateGuard {
     fn drop(&mut self) {
         POPULATING.with(|p| p.set(false));
+    }
+}
+
+/// Localized short label for the Settings format list's "How" column (audit E03):
+/// the capability's source kind, with an " (OS codec)" suffix when the format's decode
+/// route depends on one that may not be installed. `formats::capability` is the single
+/// source of truth for the underlying fact; this is presentation only.
+pub(super) fn capability_label(ext: &str) -> String {
+    let cap = formats::capability(ext);
+    let base = match cap.source {
+        formats::Source::FullDecode => t("cap_full_decode"),
+        formats::Source::EmbeddedPreview => t("cap_embedded_preview"),
+        formats::Source::CoverArt => t("cap_cover_art"),
+        formats::Source::CoverOrFirstPage => t("cap_cover_or_first_page"),
+        formats::Source::VideoFrame => t("cap_video_frame"),
+        formats::Source::ContainedImages => t("cap_contained_images"),
+    };
+    match cap.os_codec {
+        Some(_) => format!("{base} ({})", t("cap_os_codec")),
+        None => base.to_string(),
     }
 }
 
@@ -811,22 +831,23 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
             Some(LPARAM(&mut item as *mut _ as isize)),
         );
         set_subitem(list, row, 1, cat);
-        set_subitem(list, row, 2, desc);
+        set_subitem(list, row, 2, &capability_label(ext));
+        set_subitem(list, row, 3, desc);
         set_check(list, row, *state.get(i).unwrap_or(&false));
         row += 1;
     }
     fit_columns(list);
 }
 
-/// Size the Description column to fill the list's current visible width — no dead
+/// Size the Description column to fill the list's current visible width - no dead
 /// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
 /// after the user drags either of the two columns to its left.
 ///
 /// It is now UNCONDITIONAL. There used to be a thread-local "the user dragged Description, so
 /// leave it alone" flag guarding this, which existed only so the auto-fit would not snap such a
 /// drag straight back. `list.rs` refuses that drag outright (dragging the last column can only
-/// open dead space against the scrollbar), so the flag guarded a case that can no longer happen
-/// — and it carried a real hazard of its own: being thread-local rather than per-window, a
+/// open dead space against the scrollbar), so the flag guarded a case that can no longer happen,
+/// and it carried a real hazard of its own: being thread-local rather than per-window, a
 /// second Settings window in the same process inherited it and could keep a permanent dead gap.
 pub(super) unsafe fn fit_columns(list: HWND) {
     let mut crc = RECT::default();
@@ -835,7 +856,7 @@ pub(super) unsafe fn fit_columns(list: HWND) {
     // creation widths, and they were also a silent dependency: the moment the user could drag
     // them (issue #26.3) a hard-coded pair would leave Description overlapping or short by
     // exactly however far the drag went.
-    let fixed: i32 = (0..2)
+    let fixed: i32 = (0..3)
         .map(|c| {
             SendMessageW(
                 list,
@@ -850,7 +871,7 @@ pub(super) unsafe fn fit_columns(list: HWND) {
     SendMessageW(
         list,
         LVM_SETCOLUMNWIDTH,
-        Some(WPARAM(2)),
+        Some(WPARAM(3)),
         Some(LPARAM(descw as isize)),
     );
 }
@@ -947,7 +968,7 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     // so toggling it updates the status line + Restart button immediately.
     let enabled = checked(hwnd, ID_SHOT_ENABLE);
     // The daemon reports per-chord RegisterHotKey failures via the HotkeyBindFailed
-    // bitmask (bit0 capture, bit1 quick-save, bit2 custom action) — a chord grabbed by
+    // bitmask (bit0 capture, bit1 quick-save, bit2 custom action) - a chord grabbed by
     // another app otherwise looked identical to a working one ("Running" while the
     // hotkey silently never fires). Only trust the flag while the daemon is actually
     // alive (it rewrites the mask on every re-arm; a dead daemon's value is stale).
@@ -958,7 +979,7 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     };
     let daemon_running = enabled && crate::screenshot::is_daemon_running();
     let txt = if !enabled {
-        // Screenshot feature off — but a bound CUSTOM action hotkey still runs through
+        // Screenshot feature off - but a bound CUSTOM action hotkey still runs through
         // the same daemon, and ITS conflict (bit2) would otherwise be invisible in the
         // whole UI (this is the only status line).
         if bind_failed & 4 != 0 {
@@ -979,7 +1000,7 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     // Green exactly when the daemon is actually confirmed running: a bind conflict still
     // shows "Running" text (the daemon IS up) but the color question is the same either way.
     set_shot_status(hwnd, txt, daemon_running);
-    // The Restart button does nothing when the hotkey is off — disable + repaint it.
+    // The Restart button does nothing when the hotkey is off - disable + repaint it.
     if let Ok(btn) = GetDlgItem(Some(hwnd), ID_SHOT_RESTART) {
         let _ = EnableWindow(btn, enabled);
         let _ = InvalidateRect(Some(btn), None, true);
@@ -989,14 +1010,14 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
 // ---- Vertical resize (v2-era; harmless leftover, see A048) ------------------------
 // Originally: the window grew in HEIGHT only (width locked in WM_GETMINMAXINFO); on
 // WM_SIZE the bottom-anchored controls slid down / the stretchy ones grew, and the
-// left scroll viewport recomputed — so a taller window simply showed more options.
+// left scroll viewport recomputed - so a taller window simply showed more options.
 // The v3 nav-rail shell (`navrail::apply_v3_layout`) dropped WS_THICKFRAME (see
 // main.rs), so the window is fixed-size now and WM_SIZE only ever fires once, at
-// creation — the "first call just captures the design layout" branch below, which
+// creation - the "first call just captures the design layout" branch below, which
 // never falls through to an actual reflow. Left in place rather than deleted
 // outright: fully retiring it means retiring its scroll-module counterpart too
 // (`scroll::recompute_scroll`/`on_vscroll`/`scroll_to`, in the sibling `scroll.rs`),
-// which is a wider cut than this pass makes — REFLOW_CTLS below is trimmed to drop
+// which is a wider cut than this pass makes - REFLOW_CTLS below is trimmed to drop
 // the controls the v3 layout keeps permanently hidden either way (A048/A261).
 
 pub(super) struct ReflowCtl {
@@ -1019,7 +1040,7 @@ thread_local! {
 
 /// Controls reflowed on resize: the right file-types list GROWs in height; the
 /// footer buttons slide down with the bottom. Does NOT list `ID_SCROLLBAR` /
-/// `ID_LEFT_MASK` / `ID_BANNER` — `navrail::V3_ALWAYS_HIDDEN` hides those on every
+/// `ID_LEFT_MASK` / `ID_BANNER` - `navrail::V3_ALWAYS_HIDDEN` hides those on every
 /// page with no page that ever un-hides them, so reflowing them would just move
 /// invisible controls (A048/A261; `reflow_ctls_never_targets_a_permanently_hidden_control`
 /// below locks this against a future entry re-adding one of them).
@@ -1067,7 +1088,7 @@ pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
                 ctrls,
             });
         });
-        return; // the first size IS the design layout — nothing to reflow yet
+        return; // the first size IS the design layout - nothing to reflow yet
     }
     RESIZE.with(|s| {
         let s = s.borrow();
@@ -1105,7 +1126,7 @@ pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
-/// How many Settings pages exist — the bound `--tab N` is validated against.
+/// How many Settings pages exist - the bound `--tab N` is validated against.
 pub(crate) const NAV_CATEGORY_COUNT: usize = navrail::NCAT;
 /// Control id of the FIRST nav-rail item; page `n`'s item is `NAV_ID_BASE + n`.
 pub(crate) const NAV_ID_BASE: i32 = ID_NAV_BASE;
@@ -1152,7 +1173,7 @@ pub(crate) extern "system" fn wndproc(
 }
 
 /// The dialog's WM_CTLCOLORSTATIC overrides that key off LIVE control state (a
-/// dependent checkbox, a running/synced status word) rather than just window class —
+/// dependent checkbox, a running/synced status word) rather than just window class -
 /// `dark_ctlcolor` handles the class-generic theming. Checked once, before the main
 /// message dispatch; `None` means fall through to it. `Some` short-circuits the whole
 /// wndproc, exactly like the pre-match block this replaces.
@@ -1164,7 +1185,7 @@ unsafe fn special_ctlcolor(
 ) -> Option<LRESULT> {
     // The Quick-save hotkey label stays ENABLED (a disabled static draws an
     // etched/blurry look in dark mode) but reads as greyed when instant
-    // screenshot is off — paint its text dim here instead of the normal color.
+    // screenshot is off - paint its text dim here instead of the normal color.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_LBL_SHOT_QUICK_HK).is_ok_and(|l| l.0 as isize == lparam.0)
         && !checked(hwnd, ID_SHOT_QUICK_ENABLE)
@@ -1172,7 +1193,7 @@ unsafe fn special_ctlcolor(
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
     // The save-folder display greys with the "Save to a set folder" toggle (same as
-    // the quick-hotkey label — a disabled static draws etched in dark mode).
+    // the quick-hotkey label - a disabled static draws etched in dark mode).
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_SHOT_DIR).is_ok_and(|l| l.0 as isize == lparam.0)
         && !checked(hwnd, ID_SHOT_USE_DIR)
@@ -1217,7 +1238,7 @@ unsafe fn special_ctlcolor(
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
     // The licence-state line: green when actively licensed, red when revoked, the plain
-    // theme colour otherwise (Personal / no key entered yet — a normal state, not a
+    // theme colour otherwise (Personal / no key entered yet - a normal state, not a
     // problem one). Same green/red pair the hotkey-service and sync badges above use.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
@@ -1270,7 +1291,7 @@ unsafe fn special_ctlcolor(
 
 /// Window-lifecycle + app-posted messages: creation, teardown, resize limits, the
 /// background update/sync callbacks, and the sponsor feed arriving. `None` means the
-/// message isn't one of these — fall through to the next dispatch group.
+/// message isn't one of these - fall through to the next dispatch group.
 unsafe fn on_lifecycle_msg(
     hwnd: HWND,
     msg: u32,
@@ -1303,7 +1324,7 @@ unsafe fn on_lifecycle_msg(
     }
 }
 
-/// The dialog's one exit path — WM_CLOSE (the window X / Alt+F4) and IDCANCEL (the "Close"
+/// The dialog's one exit path - WM_CLOSE (the window X / Alt+F4) and IDCANCEL (the "Close"
 /// button) used to each carry their own copy of this. Blocks up to 6s flushing any pending
 /// sync push before tearing the window down, so a Save right before closing isn't lost to a
 /// race with the background push.
@@ -1325,7 +1346,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let _ = SetTimer(Some(hwnd), TIMER_SHOT_STATUS, 1000, None);
     // Lazy, throttled, background update check: it never blocks this window
     // opening, hits GitHub at most once a day (cached on disk in between), and
-    // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
+    // stays silent unless a newer release exists - then it posts WM_APP_UPDATE
     // to quietly nudge (no popup). See `update::lazy_check`.
     let target = hwnd.0 as isize;
     crate::update::lazy_check(move |tag| {
@@ -1337,7 +1358,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
             LPARAM(raw as isize),
         );
         if posted.is_err() {
-            // The window vanished before delivery — reclaim the boxed tag.
+            // The window vanished before delivery - reclaim the boxed tag.
             drop(Box::from_raw(raw));
         }
     });
@@ -1380,7 +1401,7 @@ unsafe fn on_app_sync(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 }
 
 /// A background licence op (redeem / check-now) finished on a worker thread. Reclaim the
-/// boxed event and update the Licence page on this message thread — same reclaim shape as
+/// boxed event and update the Licence page on this message thread - same reclaim shape as
 /// [`on_app_sync`] just above.
 unsafe fn on_app_licence(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     if lparam.0 != 0 {
@@ -1441,7 +1462,7 @@ unsafe fn on_app_sponsors(hwnd: HWND, lparam: LPARAM) -> LRESULT {
                 // The banner tooltip pulls its text by pointer from the
                 // shown sponsor (callback-driven). If a hint for the *prev*
                 // feed is on screen, dismiss it (TTM_POP) before freeing
-                // that feed — otherwise it would point at freed memory.
+                // that feed - otherwise it would point at freed memory.
                 let tip = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut c_void);
                 if !tip.is_invalid() {
                     SendMessageW(tip, TTM_POP, None, None);
@@ -1466,8 +1487,8 @@ unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
             SetWindowLongPtrW(banner, GWLP_USERDATA, 0);
             drop_sponsor_rotator(rot);
         } else {
-            // No sponsor feed ever installed (the gate passed — the manifest
-            // listed sponsors — but every image download/decode failed, so
+            // No sponsor feed ever installed (the gate passed - the manifest
+            // listed sponsors - but every image download/decode failed, so
             // WM_APP_SPONSORS never posted a rotator). The banner still holds
             // the embedded placeholder set in build_controls; a STATIC does
             // NOT free a STM_SETIMAGE bitmap, so reclaim it here or it leaks
@@ -1495,7 +1516,7 @@ unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
 }
 
 /// WM_COMMAND (button clicks / menu picks / control notifications) and WM_NOTIFY (list
-/// custom-draw, drag-reorder, tooltips) — plus the format list's context menu, which is
+/// custom-draw, drag-reorder, tooltips) - plus the format list's context menu, which is
 /// keyed off the same target control as the format list's other notifications.
 unsafe fn on_command_or_notify_msg(
     hwnd: HWND,
@@ -1556,7 +1577,7 @@ unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
                 list::reset_menu_order(mlist);
             }
         }
-        // The checklist itself lives in a popup editor now — room it never
+        // The checklist itself lives in a popup editor now - room it never
         // had on the page, and the page gets its breathing space back.
         ID_MENU_ITEMS_EDIT => menuitems::open(hwnd),
         _ => {}
@@ -1602,7 +1623,7 @@ unsafe fn on_search_filter_changed(hwnd: HWND) {
 /// enable toggles, the save-folder picker + toggle, and the restart button.
 unsafe fn on_command_shot(hwnd: HWND, id: i32) {
     match id {
-        // Instant-screenshot checkbox: enable/disable its hotkey picker live —
+        // Instant-screenshot checkbox: enable/disable its hotkey picker live -
         // and re-grey its dependent rows (Quick screenshot / save-folder toggle).
         ID_SHOT_ENABLE => {
             refresh_shot_status(hwnd);
@@ -1648,10 +1669,10 @@ unsafe fn on_shot_restart(hwnd: HWND) {
 unsafe fn on_command_sync_nav(hwnd: HWND, id: i32, notify: u32) {
     match id {
         // Parent switches with greyed dependents (the menu rows, the Quick-preview
-        // rows): one table drives them all — see `DEPENDENT_SWITCHES`.
+        // rows): one table drives them all - see `DEPENDENT_SWITCHES`.
         ID_ENABLE_MENU | ID_PREVIEW_ENABLED => sync_dependent_switches(hwnd),
         // The badge-style row's parent is a COMBO, not a checkbox, so it arrives as
-        // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
+        // a selection change rather than a click - see `DEPENDENT_ON_COMBO`.
         ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
         ID_SYNC_BTN => on_sync_click(hwnd),
         ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
@@ -1703,7 +1724,7 @@ unsafe fn on_command_admin(hwnd: HWND, id: i32) {
     }
 }
 
-/// The Licence page's two network buttons — Redeem and Check now. Both run on a worker
+/// The Licence page's two network buttons - Redeem and Check now. Both run on a worker
 /// thread and post back through `WM_APP_LICENCE`; see `licence_ui.rs`.
 unsafe fn on_command_licence(hwnd: HWND, id: i32) {
     match id {
@@ -1755,7 +1776,7 @@ unsafe fn on_notify_customdraw(hwnd: HWND, lparam: LPARAM) -> LRESULT {
             lparam.0 as *const NMCUSTOMDRAW,
         ));
     }
-    // SysLink credit etc. — let it draw itself.
+    // SysLink credit etc. - let it draw itself.
     LRESULT(CDRF_DODEFAULT as isize)
 }
 
@@ -1833,7 +1854,7 @@ unsafe fn on_paint_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> 
         }
         // All background painting is owned by WM_PAINT (double-buffered below), so
         // suppress the default erase: returning 1 stops DefWindowProcW from filling
-        // the invalid band with the class brush as a SEPARATE deferred frame — that
+        // the invalid band with the class brush as a SEPARATE deferred frame - that
         // erase-then-paint two-step is the white/gray flash on a fast left scroll.
         WM_ERASEBKGND => Some(LRESULT(1)),
         WM_PAINT => Some(on_paint(hwnd)),
@@ -1925,7 +1946,7 @@ unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
 /// Paint the dialog background + the "chrome" (rounded list card / input +
 /// dropdown field frames behind their controls / hairline dividers) into an
-/// off-screen buffer, then blit once — so the fill and the chrome land in the
+/// off-screen buffer, then blit once - so the fill and the chrome land in the
 /// SAME frame instead of flashing the bare background between them. The blit is
 /// clipped to non-child pixels by WS_CLIPCHILDREN, so the child controls keep
 /// their own (SetWindowPos-preserved) pixels and aren't briefly overpainted.
@@ -2031,7 +2052,7 @@ unsafe fn on_timer_banner(hwnd: HWND) -> LRESULT {
 }
 
 /// Rotate to the next sponsor / image: advance the rotator, then show the
-/// new art (raw STM_SETIMAGE so the prior bitmap survives — the rotator
+/// new art (raw STM_SETIMAGE so the prior bitmap survives - the rotator
 /// still owns it). The tooltip pulls the fresh text on the next hover.
 unsafe fn on_timer_rotate(hwnd: HWND) -> LRESULT {
     if let Some((banner, rot)) = banner_rotator(hwnd) {
@@ -2046,7 +2067,7 @@ mod tests {
     use super::*;
 
     /// `licence_state_line` given a hand-built snapshot for each of the four states it must
-    /// tell apart — the same four the Settings status line and the About box's line both
+    /// tell apart - the same four the Settings status line and the About box's line both
     /// show. Pure over its argument (no registry, no file, no network), so every boundary
     /// pins without touching the real breadcrumb.
     #[test]
@@ -2060,7 +2081,7 @@ mod tests {
             crate::license::LicenceSnapshot {
                 mode,
                 // `posture` isn't read by `licence_state_line` at all (it derives the same
-                // fact from `mode`/`key_prefix`/`last_status` directly) — any value proves
+                // fact from `mode`/`key_prefix`/`last_status` directly) - any value proves
                 // that independence.
                 posture: crate::license::Posture::Silent,
                 key_prefix: key_prefix.to_string(),
@@ -2092,7 +2113,7 @@ mod tests {
             t("licence_state_revoked").replace("{key}", "esk_A1B2")
         );
 
-        // Personal wins over everything else — even a stale key/status from a former
+        // Personal wins over everything else - even a stale key/status from a former
         // Business install (the downgrade notice, not this line, owns that story).
         assert_eq!(
             licence_state_line(&snap(
@@ -2118,7 +2139,7 @@ mod tests {
             )),
             t("licence_state_revoked").replace("{key}", "esk_A1B2")
         );
-        // Business, a key on record and no revocation — "Licensed", with the verify date.
+        // Business, a key on record and no revocation - "Licensed", with the verify date.
         let licensed = licence_state_line(&snap(
             crate::license::Mode::Business,
             "esk_A1B2",
@@ -2131,7 +2152,7 @@ mod tests {
         );
     }
 
-    /// `format_unix_date` — the two edges a caller can actually hit: no timestamp on record
+    /// `format_unix_date` - the two edges a caller can actually hit: no timestamp on record
     /// (0, the serde default for a field that was never written) reads as empty rather than
     /// 1970-01-01, and a real timestamp comes back as a plain 4-digit year.
     #[test]
@@ -2165,7 +2186,7 @@ mod tests {
     }
 
     /// A048/A261: `REFLOW_CTLS` must never target a control `navrail::V3_ALWAYS_HIDDEN`
-    /// keeps permanently hidden — reflowing an invisible control on resize is pure
+    /// keeps permanently hidden - reflowing an invisible control on resize is pure
     /// waste and is exactly what got trimmed here (ID_SCROLLBAR/ID_LEFT_MASK/
     /// ID_BANNER). Fails if a future edit re-adds one of those ids to REFLOW_CTLS
     /// without noticing the v3 layout hides it unconditionally.
@@ -2186,7 +2207,7 @@ mod tests {
     /// pointless now that `build_controls` never creates ID_BANNER in the first
     /// place (`navrail::V3_ALWAYS_HIDDEN` hides it on every page with no page
     /// that un-hides it), so the footer position must be the single fixed
-    /// no-banner value regardless — this guards against a future edit
+    /// no-banner value regardless - this guards against a future edit
     /// reintroducing a sponsor-state-dependent gap without also reinstating a
     /// way to show the banner.
     #[test]

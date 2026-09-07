@@ -121,6 +121,47 @@ const ORDER = [
 ];
 const ARIA = { img: 'image', doc: 'document', raw: 'camera raw', vid: 'video', aud: 'audio', ebk: 'ebook and comics', arc: 'archive' };
 
+// Audit E03: one sentence per category, derived from `st2k formats --json`'s capability
+// fields (`source`/`os_codec`) rather than hand-typed prose that can drift from what the
+// app actually does. Every category maps to exactly one `source` by construction
+// (`formats::capability` in the Rust source derives it from the same category), so the
+// FIRST item's source stands for the whole group; OS-codec-dependent extensions within
+// the group are named (or, when the dependency covers the whole group, said once).
+const SOURCE_SENTENCE = {
+  full_decode: 'Each thumbnail is a full decode of the image itself.',
+  embedded_preview: "Each thumbnail rides the file's embedded preview, with a full demosaic as the backstop when there isn't one.",
+  cover_art: "Each thumbnail is the file's embedded cover art (a waveform when there is none and the format is uncompressed PCM).",
+  cover_or_first_page: "Each thumbnail is the format's own cover image, or its first page rendered.",
+  video_frame: 'Each thumbnail is a representative frame grabbed from the video.',
+  contained_images: 'Each thumbnail shows the images found inside the archive, not one photo.',
+};
+const CODEC_NAMES = {
+  media_foundation: 'the OS Media Foundation codecs',
+  wmphoto: "the OS's WIC JPEG XR codec",
+  heif: "the OS's WIC HEIF codec",
+};
+
+/** One capability sentence for a category's items, built from the data (never hand-typed
+ *  per category) - see the `SOURCE_SENTENCE`/`CODEC_NAMES` maps above. */
+function capabilitySentence(items) {
+  const source = items[0] && items[0].source;
+  const s = SOURCE_SENTENCE[source] || '';
+  const byCodec = {};
+  for (const x of items) {
+    if (x.os_codec) (byCodec[x.os_codec] = byCodec[x.os_codec] || []).push(x.ext);
+  }
+  const parts = [];
+  for (const [codec, exts] of Object.entries(byCodec)) {
+    const name = CODEC_NAMES[codec] || codec;
+    if (exts.length === items.length) {
+      parts.push(`Every format here needs ${name}.`);
+    } else {
+      parts.push(`.${exts.slice().sort().join(', .')} additionally need${exts.length === 1 ? 's' : ''} ${name}.`);
+    }
+  }
+  return [s, ...parts].filter(Boolean).join(' ');
+}
+
 /** Builds the bar + fmtwall block from `formats` (the parsed `st2k formats --json` array).
  *  Throws if `formats` names a category ORDER does not know about - failing loudly beats
  *  quietly shipping a wall that omits a whole category. Each chip keeps a native `title`
@@ -150,9 +191,11 @@ function buildFormatWall(formats, CR) {
     const chips = items.map(x => `<span class="fc" title="${esc(x.description)}">.${x.ext}</span>`).join(' ');
     const panelId = `fgdesc-${dc}`;
     const descList = items.map(x => `<li><code>.${x.ext}</code> ${esc(x.description)}</li>`).join(CR + '            ');
+    const capSentence = n ? capabilitySentence(items) : '';
     groups.push(
       `      <div class="fmtgroup reveal" data-cat="${dc}">${CR}` +
       `        <h3 class="fgh"><span class="sw"></span>${label} <span class="cnt">${n}</span></h3>${CR}` +
+      (capSentence ? `        <p class="fgcap">${esc(capSentence)}</p>${CR}` : '') +
       `        <div class="fgchips">${chips}</div>${CR}` +
       `        <button type="button" class="fgtoggle" aria-expanded="false" aria-controls="${panelId}">Show ${label} format descriptions</button>${CR}` +
       `        <div class="fgdesc" id="${panelId}" hidden>${CR}` +
@@ -259,6 +302,18 @@ function runSelfTest() {
     assertVersionMatch('2.5.0', '2.5.0', 'fake.exe'); // must not throw
   });
 
+  check('capability sentence names a PARTIAL os_codec dependency by extension', () => {
+    const items = [
+      { ext: 'png', source: 'full_decode', os_codec: null },
+      { ext: 'jxr', source: 'full_decode', os_codec: 'wmphoto' },
+      { ext: 'heic', source: 'full_decode', os_codec: 'heif' },
+    ];
+    const sentence = capabilitySentence(items);
+    assert.match(sentence, /^Each thumbnail is a full decode of the image itself\./);
+    assert.match(sentence, /\.jxr additionally needs the OS's WIC JPEG XR codec\./);
+    assert.match(sentence, /\.heic additionally needs the OS's WIC HEIF codec\./);
+  });
+
   check('unknown category fails', () => {
     assert.throws(
       () => buildFormatWall([{ category: 'Nonsense', ext: 'zzz', description: 'made up' }], '\r\n'),
@@ -267,14 +322,14 @@ function runSelfTest() {
 
   check('healthy run passes and is idempotent', () => {
     const formats = [
-      { category: 'Image', ext: 'png', description: 'Portable Network Graphics' },
-      { category: 'Image', ext: 'jpg', description: 'JPEG' },
-      { category: 'Document', ext: 'pdf', description: 'Portable Document Format' },
-      { category: 'Camera RAW', ext: 'cr2', description: 'Canon RAW' },
-      { category: 'Video', ext: 'mp4', description: 'MPEG-4 Video' },
-      { category: 'Audio', ext: 'mp3', description: 'MPEG Audio' },
-      { category: 'Ebook', ext: 'epub', description: 'EPUB' },
-      { category: 'Archive', ext: 'zip', description: 'Zip archive' },
+      { category: 'Image', ext: 'png', description: 'Portable Network Graphics', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Image', ext: 'jpg', description: 'JPEG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Document', ext: 'pdf', description: 'Portable Document Format', source: 'cover_or_first_page', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Camera RAW', ext: 'cr2', description: 'Canon RAW', source: 'embedded_preview', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Video', ext: 'mp4', description: 'MPEG-4 Video', source: 'video_frame', convertible: true, preview_listing: false, os_codec: 'media_foundation' },
+      { category: 'Audio', ext: 'mp3', description: 'MPEG Audio', source: 'cover_art', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Ebook', ext: 'epub', description: 'EPUB', source: 'cover_or_first_page', convertible: true, preview_listing: false, os_codec: null },
+      { category: 'Archive', ext: 'zip', description: 'Zip archive', source: 'contained_images', convertible: false, preview_listing: true, os_codec: null },
     ];
     const html0 = fixtureHtml({ eyebrow: '6' });
     const wall1 = buildFormatWall(formats, '\r\n');
@@ -283,6 +338,10 @@ function runSelfTest() {
     assert.ok(run1.changed, 'first run over stale fixture should change something');
     assert.match(run1.html, /hundreds of formats, 7 categories/);
     assert.match(run1.html, /v9\.9\.9/);
+    // Audit E03: the per-category capability sentence is DERIVED from the data, not
+    // hand-typed - the video group must name its Media Foundation dependency.
+    assert.match(run1.html, /Each thumbnail is a representative frame grabbed from the video\.\s*Every format here needs the OS Media Foundation codecs\./);
+    assert.match(run1.html, /Each thumbnail shows the images found inside the archive, not one photo\./);
 
     const wall2 = buildFormatWall(formats, '\r\n');
     const run2 = applyAll(run1.html, { block: wall2.block, VERSION: '9.9.9', presentCategories: wall2.presentCategories });

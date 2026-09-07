@@ -41,7 +41,7 @@ pub(super) unsafe fn selected_lang(hwnd: HWND) -> Option<&'static str> {
 }
 
 /// Live language preview: re-resolve the locale and re-label every control
-/// (without persisting — persistence happens on OK).
+/// (without persisting - persistence happens on OK).
 pub(super) unsafe fn on_lang_change(hwnd: HWND) {
     i18n::apply_override_or_system(selected_lang(hwnd));
     apply_labels(hwnd);
@@ -165,7 +165,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_RUN_DOCTOR, "btn_run_doctor"),
         // Seeds the OFF-state caption; the call at the end of this function immediately
         // corrects it to the on/off variant that matches the live registration. Listing it
-        // here is what makes it retranslate at all — `on_lang_change` only calls
+        // here is what makes it retranslate at all - `on_lang_change` only calls
         // `apply_labels`, it does not re-run `load_values`.
         (ID_PORTABLE_REG, "btn_portable_register"),
         (ID_UPDATE_AUTO, "chk_update_auto"),
@@ -182,7 +182,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (IDCANCEL, "btn_close"), // see build.rs: this button closes, it does not revert
     ];
     // The two WebView2 toggles only exist when `html-preview` is compiled in (build.rs
-    // gates their creation, and ids.rs gates the constants) — same cfg here, or the
+    // gates their creation, and ids.rs gates the constants) - same cfg here, or the
     // default feature-less build fails on unknown ids.
     #[cfg(feature = "html-preview")]
     let gated: &[(i32, &str)] = &[
@@ -206,7 +206,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         let _ = InvalidateRect(Some(ph), None, true);
     }
     // The "Menu items" checklist rows relabel from their own menu keys (single col).
-    // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam —
+    // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam -
     // relabeling by fixed toggle index would scramble the labels after a reorder.
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
@@ -217,13 +217,20 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         }
     }
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-        // Columns are Extension | Category | Description (matching build_controls).
+        // Columns are Extension | Category | How | Description (matching build_controls).
         // The old code relabeled column 1 with the *description* header (wrong index)
         // and never touched column 2, so a live language switch left "Category"
-        // English and "Description" stale — fixed: correct indices + all three.
+        // English and "Description" stale - fixed: correct indices + all four.
         set_column_text(list, 0, t("col_extension"));
         set_column_text(list, 1, t("col_category"));
-        set_column_text(list, 2, t("col_description"));
+        set_column_text(list, 2, t("col_capability"));
+        set_column_text(list, 3, t("col_description"));
+        // Unlike Category/Description (always English format names), the "How" cell TEXT
+        // itself is localized (`capability_label` -> `t("cap_*")`), so the rows have to be
+        // rebuilt here too - waiting for the next search keystroke (as the header-only path
+        // used to) would leave every row's "How" text in the old language until the user
+        // typed something.
+        populate_list(list, &get_edit_text(hwnd, ID_SEARCH));
     }
     // The preview-placement combo holds translated items: rebuild, keep selection.
     rebuild_combo(
@@ -278,7 +285,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         let w = wide(&credit);
         let _ = SetWindowTextW(promo, PCWSTR(w.as_ptr()));
     }
-    // The hover hints were also baked in the old language — re-text them.
+    // The hover hints were also baked in the old language - re-text them.
     refresh_tooltips(hwnd);
     // The portable registration button's caption and its status word are state-dependent, so
     // the table above can only seed one of the two variants. Re-derive them in the new

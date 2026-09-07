@@ -1,4 +1,4 @@
-//! The big `build_controls` — creates every dialog control (extracted from settings_dlg).
+//! The big `build_controls` - creates every dialog control (extracted from settings_dlg).
 
 use super::*;
 
@@ -14,7 +14,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // width is widened so the dark-mode divider runs to the column edge.
     let hdr = WINDOW_STYLE(SS_OWNERDRAW);
 
-    // ===== Left column: options — one vertical rhythm via the LeftCol cursor =====
+    // ===== Left column: options - one vertical rhythm via the LeftCol cursor =====
     let mut lc = LeftCol::new(hwnd, hinst);
 
     lc.header(t("grp_thumbnails"), hdr, ID_LBL_THUMBS, true);
@@ -55,7 +55,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     );
     lc.button(t("btn_menu_items_edit"), 200, ID_MENU_ITEMS_EDIT);
 
-    // Limits & quality — numeric label+edit rows. Single-line edits top-align +
+    // Limits & quality - numeric label+edit rows. Single-line edits top-align +
     // ignore EM_SETRECT, so they're kept snug; the rounded field panel behind them
     // (biased up) supplies the box height and centers the digits.
     lc.header(t("grp_limits"), hdr, ID_LBL_LIMITS, false);
@@ -110,7 +110,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // The corner of the tile: Explorer's own type icon, our format mark, or nothing. One
     // three-way choice, because those three are mutually exclusive answers to one question and
     // the two checkboxes it replaced could be set to a combination that produced neither
-    // (see `settings::CornerMark`). Option order IS the stored value — `CornerMark::as_dword`.
+    // (see `settings::CornerMark`). Option order IS the stored value - `CornerMark::as_dword`.
     // Created at the width `navrail::cat_rows` also lays it out at, so the two agree if anyone
     // reads only one of them; the layout is what actually wins.
     let corner = lc.combo(
@@ -202,7 +202,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     restyle::dark_combo_subclass(shot_tool, ID_SHOT_TOOL);
 
     // Delay before a capture freezes the screen. Option order comes from
-    // settings::SHOT_DELAY_STEPS — the array is the wire format, so the dropdown and the
+    // settings::SHOT_DELAY_STEPS - the array is the wire format, so the dropdown and the
     // stored seconds cannot drift apart.
     let delay = lc.combo(t("lbl_shot_delay"), ID_LBL_SHOT_DELAY, 160, ID_SHOT_DELAY);
     for key in ["delay_off", "delay_1", "delay_2", "delay_3", "delay_5"] {
@@ -233,7 +233,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // XnShell-style "Displayed menu items" checklist; each label reuses the menu
     // item's own translated name. (Settings is always shown, so it isn't listed.)
     lc.header(t("grp_menu_items"), hdr, ID_LBL_MENU_ITEMS, false);
-    // The checklist is sized to fit EXACTLY its rows (measured below) — no inner
+    // The checklist is sized to fit EXACTLY its rows (measured below) - no inner
     // scrollbar, no slack/gap. Wheeling over it scrolls the OUTER column (wheel-forward
     // subclass), so a nested scroll would strand the bottom rows.
     let list_y_before = lc.y;
@@ -245,7 +245,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     let rows = saved_menu_rows();
     list::rebuild_rows(mlist, &rows, None);
     // Exact-fit: resize the list to its REAL measured report-row height × N rows
-    // (font/DPI-proof — no estimate, no clip, no bottom gap), then re-anchor the cursor
+    // (font/DPI-proof - no estimate, no clip, no bottom gap), then re-anchor the cursor
     // to the list's true bottom so the sections below sit right under it.
     {
         let mut r = RECT::default(); // .left = LVIR_BOUNDS (0)
@@ -269,7 +269,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         );
         lc.y = list_y_before + MT_CHECK + needed_dev * 96 / dpi;
     }
-    // A subtle "Reset order" button under the list — restores the default drag order
+    // A subtle "Reset order" button under the list - restores the default drag order
     // when a reorder gets messy (keeps each item's checkbox state).
     lc.button(t("btn_menu_reset"), 110, ID_MENU_RESET);
     // Check states are seeded in load_values (rows exist now).
@@ -284,21 +284,21 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // combo further down (that combo greys out while this is unchecked).
     lc.checkbox(t("chk_hide_tray"), cb, 300, ID_SHOT_HIDE_TRAY);
     lc.checkbox(t("chk_instant_screenshot"), cb, 300, ID_SHOT_QUICK_ENABLE);
-    // Ctrl+S destination toggle — kept WITH the other screenshot checkboxes (owner pref:
+    // Ctrl+S destination toggle - kept WITH the other screenshot checkboxes (owner pref:
     // checkboxes grouped, then dropdowns). On → auto-save to the fixed folder below
     // (Desktop by default); off → Ctrl+S prompts each time. (Ctrl+C always copies.)
     lc.checkbox(t("chk_shot_use_dir"), cb, 300, ID_SHOT_USE_DIR);
     let shot = lc.combo(t("lbl_shot_hotkey"), ID_LBL_SHOT_HK, 200, ID_SHOT_HOTKEY);
     // Select the preset matching the stored hotkey (default = first = Ctrl+PrtScn).
     // A legacy/foreign chord (not in the curated list) gets its own trailing item
-    // instead of collapsing to the default — see `populate_hotkey_presets`.
+    // instead of collapsing to the default - see `populate_hotkey_presets`.
     let (m, v) = settings::screenshot_hotkey();
     let packed = (m << 8) | v;
     let sel = populate_hotkey_presets(shot, packed, 0);
     SendMessageW(shot, CB_SETCURSEL, Some(WPARAM(sel)), None);
     dark_theme_combo(shot);
     restyle::dark_combo_subclass(shot, ID_SHOT_HOTKEY);
-    // Quick-save hotkey picker — grouped directly under the capture-hotkey combo.
+    // Quick-save hotkey picker - grouped directly under the capture-hotkey combo.
     // Gated by the "instant screenshot" checkbox above (see `update_quick_enabled`);
     // greyed out while that box is unchecked.
     let quick = lc.combo(
@@ -393,7 +393,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     restyle::dark_combo_subclass(ahk, ID_SHOT_ACTION_HK);
     // The Ctrl+S save folder: a read-only path display + the picker button. (The "Save to
     // a set folder" toggle lives up with the checkboxes.) Both grey out while that toggle is
-    // off — see `update_save_dir_enabled`. The display seeds in load_values; the button
+    // off - see `update_save_dir_enabled`. The display seeds in load_values; the button
     // persists the pick immediately.
     lc.status(ID_SHOT_DIR);
     lc.button(t("btn_set_save_dir"), 150, ID_SHOT_SET_DIR);
@@ -426,24 +426,24 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // when something is wrong: it tells you which of the others (if any) is worth pressing.
     lc.button(t("btn_run_doctor"), 184, ID_RUN_DOCTOR);
     // Background update check (default ON; only acts while the resident hotkey helper
-    // runs — no separate scheduled task). The manual button below works regardless.
+    // runs - no separate scheduled task). The manual button below works regardless.
     lc.checkbox(t("chk_update_auto"), cb, 300, ID_UPDATE_AUTO);
     lc.button(t("btn_check_updates"), 184, ID_CHECK_UPDATES);
 
     // ===== Settings sync (optional, opt-in) =====
     // Sign in with a Connections account to sync portable preferences across machines.
-    // OFF by default — NO network happens unless the user clicks this. Only the
+    // OFF by default - NO network happens unless the user clicks this. Only the
     // allowlisted prefs sync (never file paths, secrets, or per-machine state); see
     // `sync_client::ALLOW`.
     lc.header(t("sync_title"), hdr, ID_LBL_SYNC, false);
     // A green "● Synced · up to date" badge (or a muted invite when signed out) sits on the
     // left of the row; the button ("Stop syncing" / "Sync settings…") is right-aligned. Both
-    // are seeded in refresh_sync_ui — NO raw account id ever lands in the button label.
+    // are seeded in refresh_sync_ui - NO raw account id ever lands in the button label.
     lc.status(ID_SYNC_STATUS);
     lc.button(&sync_button_label(), 300, ID_SYNC_BTN);
 
     // ===== Quick preview (QuickLook-style "press Space, see the file") =====
-    // The master toggle drives daemon residency (like the screenshot service — see
+    // The master toggle drives daemon residency (like the screenshot service - see
     // apply_settings, which persists it before the reconcile); the rest are viewer
     // behavior prefs. All are placed into the "Quick preview" nav category by cat_rows.
     lc.checkbox(t("chk_preview_enabled"), cb, 312, ID_PREVIEW_ENABLED);
@@ -463,7 +463,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     lc.checkbox(t("chk_preview_url_live"), cb, 312, ID_PREVIEW_URL_LIVE);
 
     // Reset / Import / Export share one row. Reset sets every control to factory
-    // defaults (the user clicks Save to persist, like any other change — the top-right
+    // defaults (the user clicks Save to persist, like any other change - the top-right
     // "Defaults" only resets the file-type list). Import/Export round-trip the whole
     // settings tree to a human-readable JSON file.
     lc.button_row(&[
@@ -546,7 +546,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         Some(LPARAM(cue.as_ptr() as isize)),
     );
 
-    // Dark mode drops the square WS_BORDER — a rounded card frame is drawn behind
+    // Dark mode drops the square WS_BORDER - a rounded card frame is drawn behind
     // the list in WM_PAINT. Light mode keeps the native border.
     let list_style = WINDOW_STYLE(LVS_REPORT | LVS_NOSORTHEADER) | WS_TABSTOP;
     // Shorter list in dark mode (scrollable left column lets the window be shorter);
@@ -564,7 +564,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LIST,
         hinst,
     );
-    // Lift the list onto SURFACE() (a card) so the zebra alternates against it —
+    // Lift the list onto SURFACE() (a card) so the zebra alternates against it -
     // theme-aware: a white card in light, a near-black one in dark.
     theme_checkbox_list(list);
     let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
@@ -581,13 +581,13 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     //
     // DESCRIPTION ITSELF IS REFUSED, in `list::list_subclass` via HDN_BEGINTRACK. It is the last
     // column and it is auto-fitted to fill, so a drag can only shrink it and leave dead space
-    // against the scrollbar — which looks like a rendering fault, not a layout the user chose.
+    // against the scrollbar - which looks like a rendering fault, not a layout the user chose.
     // An earlier attempt allowed the drag and turned the auto-fit off to stop it snapping back;
     // that traded a snap-back for a permanent gap, so the drag is simply not offered now.
     //
     // The last column's right-hand divider is also painted out in `list::list_subclass`: it sits
-    // at the far edge of the list where there is nothing to drag INTO. The INNER dividers — the
-    // ones that do something — are left alone.
+    // at the far edge of the list where there is nothing to drag INTO. The INNER dividers - the
+    // ones that do something - are left alone.
     if is_dark() {
         // Native dark item-view theme is dark-only; light keeps the native light header.
         dark_control(header, w!("DarkMode_ItemsView"));
@@ -595,15 +595,19 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // Subclass for dark header text, the column-drag reflow, and the SPACE/right-click bulk
     // checkbox toggle.
     let _ = SetWindowSubclass(list, Some(list::list_subclass), 0, 0);
-    // Extension | Category | Description. FORMATS is ordered by category, so the
-    // list naturally clusters: Images, then Camera RAW, then Ebooks & comics —
+    // Extension | Category | How | Description. FORMATS is ordered by category, so the
+    // list naturally clusters: Images, then Camera RAW, then Ebooks & comics -
     // and the Category column labels each (robust in dark mode, unlike native
-    // ListView group headers, which the dark theme refuses to render).
+    // ListView group headers, which the dark theme refuses to render). "How" (audit E03)
+    // names the capability's source kind (`settings_dlg::capability_label`) - Extension
+    // and Category keep their existing widths; the room comes out of Description, which
+    // `fit_columns` auto-sizes to fill whatever is left.
     insert_column(list, 0, t("col_extension"), 64);
     insert_column(list, 1, t("col_category"), 92);
-    insert_column(list, 2, t("col_description"), 196);
+    insert_column(list, 2, t("col_capability"), 110);
+    insert_column(list, 3, t("col_description"), 196);
 
-    // The per-format checked state lives in a model (FMT_STATE), not the list —
+    // The per-format checked state lives in a model (FMT_STATE), not the list -
     // so the search can rebuild the list view without losing toggles. Seed it from
     // settings, then populate the (unfiltered) view.
     FMT_STATE.with(|s| {
@@ -639,7 +643,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
             ID_SCROLLBAR as usize,
             0,
         );
-        // Full-width, owner-drawn (opaque) mask below the viewport — hides scrolled
+        // Full-width, owner-drawn (opaque) mask below the viewport - hides scrolled
         // controls + their field panels, and draws the divider above the banner.
         ctl(
             hwnd,
@@ -664,7 +668,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // with no page that ever un-hides it. Creating the (permanently invisible)
     // control itself is cheap and kept, so its message handlers keep a live
     // control to safely no-op against, same as every other permanently-hidden
-    // v3 control — but the real cost, the remote art download/decode + rotator
+    // v3 control - but the real cost, the remote art download/decode + rotator
     // timers, no longer runs at all: nothing loads a bitmap into it and
     // `spawn_remote_sponsors` (the download/decode pipeline) is never called
     // (A093/A264, 2026-08-15).
@@ -733,7 +737,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // ===== The Business-licence reminder strip (see `settings_dlg/biznag.rs`) =====
     //
     // Created only when the licence engine has decided to show it (an unlicensed Business
-    // install, or a revoked seat) — rare, same reasoning as the sign-in banner just above,
+    // install, or a revoked seat) - rare, same reasoning as the sign-in banner just above,
     // and the same z-order rule (card, then its button).
     if biznag::showing() {
         ctl(
@@ -791,7 +795,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_PROMO_LINK,
         hinst,
     );
-    // Close (secondary) on the left, Save (primary, wider + accent) rightmost —
+    // Close (secondary) on the left, Save (primary, wider + accent) rightmost -
     // a clear prominence/size difference, matching the mockup.
     // "Close", not "Cancel": Save applies immediately and leaves the window open, so
     // this button only dismisses it. Labelling it Cancel implied it would revert.
@@ -924,7 +928,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LBL_LICENCE_KEY,
         hinst,
     );
-    // Borderless + a painted rounded frame in dark mode, native bordered edit in light —
+    // Borderless + a painted rounded frame in dark mode, native bordered edit in light -
     // same shape as the settings-wide search box (`ID_SEARCH`), which is the other wide,
     // single-line edit on this dialog.
     let licence_key_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
@@ -1007,9 +1011,9 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     apply_v3_layout(hwnd, hinst);
 }
 
-/// Format a hotkey chord that isn't one of the curated [`SHOT_PRESETS`] — e.g. a
+/// Format a hotkey chord that isn't one of the curated [`SHOT_PRESETS`] - e.g. a
 /// value an older preset list offered and has since dropped, or one written by
-/// hand into the registry — so Save can round-trip it instead of silently
+/// hand into the registry - so Save can round-trip it instead of silently
 /// replacing it with preset 0. Deliberately plain (modifier names + a raw VK
 /// hex byte), not a friendly key name: this is a recovery display for values
 /// outside the curated list, not worth a `GetKeyNameTextW` round trip for.
@@ -1057,7 +1061,7 @@ unsafe fn append_unknown_chord_item(combo: HWND, packed: u32) -> usize {
 /// Decide which combo index a stored chord should select: a curated preset's
 /// index, `default_when_unset` when nothing is genuinely saved yet (`current ==
 /// 0`), or `None` when `current` is a real value that just isn't in the curated
-/// list — the caller must then append a dedicated item for it rather than
+/// list - the caller must then append a dedicated item for it rather than
 /// falling back to a default. This is the exact decision the original bug got
 /// wrong (`SHOT_PRESETS.position(...).unwrap_or(0)` treated "unknown" and
 /// "unset" as the same thing, both collapsing to preset 0).
@@ -1070,7 +1074,7 @@ fn preset_index_for(current: u32, default_when_unset: usize) -> Option<usize> {
 
 /// Populate a hotkey combo with the curated [`SHOT_PRESETS`] (each item's data =
 /// its packed chord), append a trailing item for `current` when it's a real
-/// (non-zero) chord absent from that list, and return the index to select —
+/// (non-zero) chord absent from that list, and return the index to select -
 /// `default_when_unset` when `current` is 0 (a combo-specific "nothing saved
 /// yet" default; see callers). Save-time code reads the selection back with
 /// `CB_GETITEMDATA`, so the appended item round-trips exactly like a curated
@@ -1097,7 +1101,7 @@ mod tests {
     use super::*;
 
     /// A stored chord that isn't in `SHOT_PRESETS` must NOT resolve to the same
-    /// index as "nothing saved" — that collapse (both cases returning
+    /// index as "nothing saved" - that collapse (both cases returning
     /// `unwrap_or(0)`) is exactly what made Save silently replace a legacy/
     /// foreign chord with preset 0.
     #[test]
@@ -1108,7 +1112,7 @@ mod tests {
         assert_eq!(preset_index_for(foreign, 0), None);
     }
 
-    /// A genuinely unset chord (0 — no hotkey saved yet, e.g. the quick-save
+    /// A genuinely unset chord (0 - no hotkey saved yet, e.g. the quick-save
     /// combo before the user ever touches it) still gets the caller's default.
     #[test]
     fn unset_chord_uses_the_caller_default() {

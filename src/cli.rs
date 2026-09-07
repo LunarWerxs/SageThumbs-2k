@@ -1,9 +1,9 @@
-//! Command-line / agent API — the verbs the `st2k` console binary exposes.
+//! Command-line / agent API - the verbs the `st2k` console binary exposes.
 //!
 //! Every verb reuses the exact same engine the shell extension uses (every format
 //! we decode via `decode_full`, the convert/rotate/strip/OCR/PDF logic), so an
 //! installed SageThumbs 2K doubles as an offline image toolbox for scripts and
-//! AI agents — no extra installs. Each verb returns `Ok(stdout text)` or
+//! AI agents - no extra installs. Each verb returns `Ok(stdout text)` or
 //! `Err(message)`; the binary prints and maps to an exit code.
 
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ fn save_atomic(
 /// (`prebuild.rs`'s module doc promises "v1 offers cancel (Ctrl+C) instead" of pause/resume).
 ///
 /// A raw kernel32 import rather than pulling in the `windows` crate's `Win32_System_Console`
-/// feature for one call — the same tradeoff `decode.rs`'s `magick_gate` makes for its
+/// feature for one call - the same tradeoff `decode.rs`'s `magick_gate` makes for its
 /// semaphore calls: kernel32 is always linked, so declaring the one function here avoids
 /// growing the feature list (and the generated bindings) for a single call site.
 mod ctrlc_cancel {
@@ -86,7 +86,7 @@ mod ctrlc_cancel {
 
     const CTRL_C_EVENT: u32 = 0;
 
-    /// Runs on a dedicated OS thread Windows creates for it, NOT the main thread — so this
+    /// Runs on a dedicated OS thread Windows creates for it, NOT the main thread - so this
     /// must stay to a single atomic store and nothing that could block or panic (panic=abort
     /// would take the whole process down from a thread `run`'s cancel-check loop never sees).
     /// Returning TRUE (handled) for Ctrl+C stops Windows from ALSO running its own terminate
@@ -102,7 +102,7 @@ mod ctrlc_cancel {
         }
     }
 
-    /// Install the handler (once per process — a second `SetConsoleCtrlHandler(Some(_), TRUE)`
+    /// Install the handler (once per process - a second `SetConsoleCtrlHandler(Some(_), TRUE)`
     /// would just chain a duplicate) and reset the flag, so a second `prebuild` call in the
     /// same process (tests; a future long-lived host) starts from "not cancelled" rather than
     /// inheriting a stale Ctrl+C from a previous run.
@@ -150,14 +150,14 @@ pub fn register_portable(off: bool, status: bool) -> Result<String, String> {
     // PORTABLE ONLY, and "the DLL is beside us" is NOT a good enough test for that: an installed
     // build has sagethumbs2k.dll right next to st2k.exe in Program Files, so the exists-check
     // below passes there too. Registering from an installed copy writes OUR CLSID into
-    // HKCU\Software\Classes, which the shell merges AHEAD of the machine-wide view — and the
+    // HKCU\Software\Classes, which the shell merges AHEAD of the machine-wide view - and the
     // uninstaller only removes HKCU\Software\SageThumbs2K (the settings), never these class keys.
     // The result is a per-user handler that outlives the uninstall, still pointing at a deleted
     // Program Files DLL, silently killing thumbnails for that user with nothing to blame.
     if !settings::portable() {
         return Err(
             "this is an installed copy, which already registers thumbnails machine-wide.\n\
-             `st2k register` is for the portable zip only — using it here would leave a per-user \
+             `st2k register` is for the portable zip only - using it here would leave a per-user \
              registration behind that survives uninstall and blocks thumbnails.\n\
              Use Settings ▸ Diagnostics ▸ Repair file associations instead.\n\
              (If a previous run already did this, `st2k register --off` clears it.)"
@@ -279,7 +279,7 @@ fn thumbnail_reporting(
             .map_err(|e| (OmitCause::Unreadable, e))?;
     }
     // Generic archive (.zip/.rar/.7z): the same list-then-extract path Explorer
-    // uses — including the user's MaxSize gate before archive parsing — and the
+    // uses - including the user's MaxSize gate before archive parsing - and the
     // contact sheet composes per the same Setting. Falls through to the normal
     // decode if it isn't really an archive (renamed file) so the magic-dispatch
     // tiers still get their shot.
@@ -289,10 +289,10 @@ fn thumbnail_reporting(
         return Ok(output.to_string());
     }
     // Cap the read at the shared input budget (metadata-checked before allocating)
-    // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same
+    // so a scripted/agent/MCP call can't load a multi-GB file wholesale - the same
     // ceiling Explorer thumbnailing and the path verbs apply. Head-preview
     // containers (.blend / PSD-PSB) past the cap still render from a bounded prefix.
-    // Preview fidelity (embedded/container previews OK) — that's what a
+    // Preview fidelity (embedded/container previews OK) - that's what a
     // thumbnail is; `convert` is the full-fidelity verb. By PATH, so the streaming
     // rescues apply: an OpenEXR is scaled straight off the file handle instead of
     // being refused for exceeding the shared input budget (which a 12K render pass
@@ -312,7 +312,7 @@ fn thumbnail_reporting(
             // cannot reach it must not stand in for the real picture (issue #33).
             let bytes = decode::read_preview_capped_for(input, edge)
                 .map_err(|e| (OmitCause::Unreadable, e.to_string()))?;
-            // Cap the decode at the edge we're about to shrink to anyway — the streamed
+            // Cap the decode at the edge we're about to shrink to anyway - the streamed
             // path above already takes `edge`, and rendering ImageMagick's full 4096 first
             // costs seconds on a big scan for pixels this immediately discards.
             decode::decode_preview_capped_for_path(&bytes, edge, input)
@@ -342,7 +342,7 @@ fn reject_oversized_archive(input: &str, configured_max: u64) -> Result<(), Stri
 
 /// The generic-archive cover/contact-sheet for a `.zip`/`.rar`/`.7z` PATH, or None
 /// to take the normal decode route (not an archive extension, unreadable, or no
-/// image entries — the CLI then reports "cannot decode", mirroring the shell's
+/// image entries - the CLI then reports "cannot decode", mirroring the shell's
 /// stock-icon fallback). 1024px edge matches the preview pane's compose target.
 fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
     use std::io::Read;
@@ -364,7 +364,7 @@ fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
     let prefs = crate::container::select::CoverPrefs::from_settings();
     let covers = if crate::container::archive_needs_buffer(&head) {
-        // RAR buffers whole (`rars` accepts no reader) — same bounded read as the
+        // RAR buffers whole (`rars` accepts no reader) - same bounded read as the
         // normal path, so a multi-GB .rar fails to the normal decode error.
         let bytes = decode::read_preview_capped(input).ok()?;
         crate::container::archive_covers(&bytes, want, &prefs)?
@@ -419,7 +419,7 @@ pub fn rotate(input: &str, by: &str) -> Result<String, String> {
 }
 
 /// Decode `input` and return it as in-memory PNG bytes, fit within `max_dim` (0 = full
-/// size). Powers the MCP `view` tool — lets an AI agent SEE any of our supported formats
+/// size). Powers the MCP `view` tool - lets an AI agent SEE any of our supported formats
 /// directly (HEIC/RAW/PSD/ebook covers/CAD previews/…), not just convert them to a file.
 pub fn view_png(input: &str, max_dim: u32) -> Result<Vec<u8>, String> {
     // An agent asking for a big view of a PSD wants the composite, not the 160 px baked
@@ -446,7 +446,7 @@ pub fn compress(input: &str, target_bytes: u64) -> Result<String, String> {
         .map_err(|e| format!("compress failed: {input}: {e}"))
 }
 
-/// Parse a human size — `"1MB"`, `"500KB"`, `"800kb"`, or a bare byte count `"800000"` —
+/// Parse a human size - `"1MB"`, `"500KB"`, `"800kb"`, or a bare byte count `"800000"` -
 /// into bytes. Decimal units (1KB = 1000 B), case-insensitive, optional trailing `B`.
 pub fn parse_size(s: &str) -> Result<u64, String> {
     let lower = s.trim().to_ascii_lowercase();
@@ -464,7 +464,7 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("bad size '{s}' (try 1MB / 500KB / 800000)"))?;
     // f64::from_str accepts "inf"/"infinity"/"nan" (any case). Neither is caught by
     // `v <= 0.0` (INFINITY > 0.0 is true; every NaN comparison is false), and the
-    // trailing `as u64` cast is Rust's SATURATING float->int cast — inf would
+    // trailing `as u64` cast is Rust's SATURATING float->int cast - inf would
     // silently become u64::MAX and nan would become 0 as a "compress target".
     if !v.is_finite() {
         return Err(format!("size must be a finite number: '{s}'"));
@@ -487,11 +487,11 @@ pub fn ocr(input: &str) -> Result<String, String> {
     // Same shared input cap as `thumbnail`. (The buffer is MOVED onto the OCR worker
     // thread, so it isn't held twice.)
     let bytes = decode::read_capped(input).map_err(|e| e.to_string())?;
-    // Propagate the REAL error — "no text", "no language pack", and "decode failed" are
+    // Propagate the REAL error - "no text", "no language pack", and "decode failed" are
     // three different, actionable situations (especially for an MCP/AI caller parsing this).
     ocr::recognize_bytes(bytes).map_err(|e| {
         // "Too large for the recognizer" is a different, actionable answer from "no text /
-        // no language pack" — an MCP or AI caller parsing this should be told to downscale,
+        // no language pack" - an MCP or AI caller parsing this should be told to downscale,
         // not to go install something.
         if e.code() == ocr::OCR_IMAGE_TOO_LARGE {
             format!("OCR failed: {e} (the image is larger than the recognizer's maximum dimension)")
@@ -554,7 +554,7 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
     }
     require_output_ext(output, "pdf")?;
     // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
-    // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
+    // setting) - a hardcoded 85 silently diverged from the menu path for no reason.
     let combined = topdf::combine_to_pdf(
         inputs,
         Path::new(output),
@@ -567,7 +567,7 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
 
 /// Combine images into one CBZ (comic-book zip) archive, natural-sorted, with a
 /// `ComicInfo.xml` sidecar as the first entry. Same combiner the right-click
-/// "Combine to CBZ" verb uses (`verbs::actions::handle_combine_to_cbz`) — this is
+/// "Combine to CBZ" verb uses (`verbs::actions::handle_combine_to_cbz`) - this is
 /// just its CLI/MCP front door, which never existed even though the PDF sibling
 /// always had one. Same destination and omission contract as [`pdf`].
 pub fn cbz(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
@@ -580,7 +580,7 @@ pub fn cbz(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
     Ok(combined_report(&combined, opts))
 }
 
-/// Image dimensions + EXIF (camera/date/GPS/bit depth/DPI), as text or JSON — or, for one
+/// Image dimensions + EXIF (camera/date/GPS/bit depth/DPI), as text or JSON - or, for one
 /// of the 18 audio extensions this product already reads tags for (via the property
 /// handler and the "Rename by tag" verb), the artist/album/title/track/duration/bitrate
 /// tag set instead. Before this fix, every audio `info` call hit the `width == 0` guard
@@ -647,7 +647,7 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
 
 /// The audio half of [`info`]: tags via `strip::read_audio_tags` (the same `lofty`
 /// read path the "Rename by tag" verb uses), returned as text or JSON. Only errors when
-/// NOTHING useful was read (no tag AND no duration AND no bitrate) — per the fix, a file
+/// NOTHING useful was read (no tag AND no duration AND no bitrate) - per the fix, a file
 /// with some tags found must not be reported as unreadable just because others are absent.
 fn info_audio(input: &str, json: bool) -> Result<String, String> {
     let t = strip::read_audio_tags(input);
@@ -739,10 +739,10 @@ pub fn parse_resize(s: Option<&str>) -> Result<verbs::Resize, String> {
 /// itself never triggers a download just to answer this.
 ///
 /// `FILE_ATTRIBUTE_OFFLINE` | `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` |
-/// `FILE_ATTRIBUTE_RECALL_ON_OPEN` — the same trio `prebuild.rs`'s `OFFLINE_ATTRS`
+/// `FILE_ATTRIBUTE_RECALL_ON_OPEN` - the same trio `prebuild.rs`'s `OFFLINE_ATTRS`
 /// checks (and `doctor.rs` diagnoses). A OneDrive/Dropbox placeholder carries one
 /// of these; opening it to decode/convert DOWNLOADS the whole file, so `st2k batch`
-/// over a cloud-synced folder used to silently hydrate every placeholder it met —
+/// over a cloud-synced folder used to silently hydrate every placeholder it met -
 /// `prebuild` already guards against exactly this, `batch` did not. Shares
 /// `prebuild::OFFLINE_ATTRS` rather than a second hand-typed copy of the three flags
 /// (which is exactly how `doctor.rs`'s own copy once drifted); its own test pins them.
@@ -753,18 +753,18 @@ fn is_cloud_placeholder(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Cap on `expand_inputs`'s recursive descent — a junction/symlink cycle would otherwise
+/// Cap on `expand_inputs`'s recursive descent - a junction/symlink cycle would otherwise
 /// spin forever. Matches `prebuild::Options::default()`'s own `max_depth`, so `st2k batch
 /// --recurse` and `st2k prebuild --recurse` behave the same on a pathological tree.
 const MAX_RECURSE_DEPTH: u32 = 64;
 
-/// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions and symlinks, which `expand_inputs`'s
+/// `FILE_ATTRIBUTE_REPARSE_POINT` - junctions and symlinks, which `expand_inputs`'s
 /// recursive walk does not follow (mirrors `prebuild.rs`'s private `walk`, which cannot be
-/// called from here — see [`expand_inputs`]'s doc comment).
+/// called from here - see [`expand_inputs`]'s doc comment).
 const REPARSE_ATTR: u32 = 0x0000_0400;
 
 fn expand_inputs_is_supported(p: &Path) -> bool {
-    // `is_known` is ASCII-case-insensitive — no lowercase allocation needed.
+    // `is_known` is ASCII-case-insensitive - no lowercase allocation needed.
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(formats::is_known)
@@ -823,15 +823,15 @@ fn expand_inputs_walk(
 }
 
 /// Expand `inputs` (files and/or directories) into a flat list of SUPPORTED image files;
-/// unsupported extensions dropped; cloud placeholders dropped too — see
+/// unsupported extensions dropped; cloud placeholders dropped too - see
 /// [`is_cloud_placeholder`]. Second element is how many were skipped as placeholders, so
 /// callers can tell the user rather than silently hydrating them.
 ///
 /// `recurse = false` scans each directory ONE level deep (the historical, still-default
-/// behaviour — an agent pointed at a photo tree with subfolders used to get a partial
+/// behaviour - an agent pointed at a photo tree with subfolders used to get a partial
 /// result and a clean "N/N succeeded" with no way to ask for more). `recurse = true` walks
 /// the whole tree, never following a reparse point (junction/symlink) and capped at
-/// [`MAX_RECURSE_DEPTH`] so a cycle can't spin forever — the same two guards
+/// [`MAX_RECURSE_DEPTH`] so a cycle can't spin forever - the same two guards
 /// `prebuild::walk` applies, duplicated rather than shared because that function is
 /// private to `prebuild.rs` and unreachable from here.
 fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
@@ -853,7 +853,7 @@ fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
 }
 
 /// BULK process many inputs (files and/or folders) in ONE process, fanned out
-/// across all cores via the shared batch pool — the fast path for the regression
+/// across all cores via the shared batch pool - the fast path for the regression
 /// harness and AI agents (no more one `st2k` spawn per file). `op` is `thumbnail`
 /// (→ PNG at `size`px) or `convert` (→ `to_ext`, honoring `quality`/`resize`).
 /// Outputs go to `out_dir` (created if needed) or next to each source. Returns a
@@ -863,7 +863,7 @@ fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
 ///
 /// Refuses to run elevated on purpose: the thumbnail cache is per-user, so an admin prompt
 /// would faithfully build every thumbnail into the ADMINISTRATOR's cache and the user would
-/// see no change at all — a total success that accomplishes nothing.
+/// see no change at all - a total success that accomplishes nothing.
 pub fn prebuild(
     inputs: &[String],
     recurse: bool,
@@ -892,7 +892,7 @@ pub fn prebuild(
 
     // Wire up the graceful cancel `run`'s own doc promises ("v1 offers cancel (Ctrl+C)
     // instead"): without a handler installed, Windows' default action on Ctrl+C is to kill the
-    // process outright, so a long prebuild had no way to stop early with a partial report — only
+    // process outright, so a long prebuild had no way to stop early with a partial report - only
     // `taskkill`, which loses the report entirely. `ctrlc_cancel::install` sets `CANCEL` and
     // returns TRUE so the default terminate never runs; `run` checks the flag between files.
     ctrlc_cancel::install();
@@ -922,16 +922,16 @@ pub fn prebuild(
     // the CLI out would reintroduce "the run says it finished" on the other surface.
     if rep.partial > 0 {
         out.push_str(&format!(
-            "\n  partial  {} — cached at some sizes but not all; those views still rebuild on first browse",
+            "\n  partial  {} - cached at some sizes but not all; those views still rebuild on first browse",
             rep.partial
         ));
     }
     if rep.cancelled {
-        out.push_str("\n  stopped early: Ctrl+C — the counts above are a partial report");
+        out.push_str("\n  stopped early: Ctrl+C - the counts above are a partial report");
     }
     if rep.skipped_offline > 0 {
         out.push_str(&format!(
-            "\n  skipped  {} cloud placeholder(s) — extracting these would download them",
+            "\n  skipped  {} cloud placeholder(s) - extracting these would download them",
             rep.skipped_offline
         ));
     }
@@ -948,17 +948,17 @@ pub fn prebuild(
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!(
-        "\n\nBuilt at {px} px — the buckets Explorer's Medium, Large and Extra-large views \
+        "\n\nBuilt at {px} px - the buckets Explorer's Medium, Large and Extra-large views \
          read. The largest is rendered once and the smaller views are derived from it, so the \
          run costs one render per file rather than one per size. Windows caps the cache and \
-         evicts the oldest entries, so very large runs can lose their earliest work — prefer \
+         evicts the oldest entries, so very large runs can lose their earliest work - prefer \
          folders over whole drives."
     ));
     Ok(out)
 }
 
 /// Atomically claim the first available `<stem>[ (n)].<ext>` path under `dir` by
-/// creating it with `create_new` — no separate "does it exist" check followed by a
+/// creating it with `create_new` - no separate "does it exist" check followed by a
 /// later write, so nothing (not the parallel pass below, not an external writer
 /// like a concurrent `st2k` invocation, Explorer, or a right-click verb) can land
 /// on the same name in between. `verbs::encode::slots::reserve` documents this
@@ -966,7 +966,7 @@ pub fn prebuild(
 /// `verbs` and unreachable from here, hence the local copy of the technique
 /// rather than a plain `exists()` loop (the bug this replaces).
 ///
-/// The returned path is a real, empty, already-created file — the caller fills it
+/// The returned path is a real, empty, already-created file - the caller fills it
 /// in (a plain encoder save overwrites the empty placeholder).
 ///
 /// `Err` carries the OS reason the name could not be claimed (2026-09-05 audit, F11).
@@ -999,13 +999,13 @@ fn reserve_batch_output(dir: &Path, stem: &str, ext: &str) -> std::result::Resul
 }
 
 /// BULK process many inputs (files and/or folders) in ONE process, fanned out across all
-/// cores via the shared batch pool — the fast path for the regression harness and AI
+/// cores via the shared batch pool - the fast path for the regression harness and AI
 /// agents (no more one `st2k` spawn per file). `op` is `thumbnail` (→ PNG at `size`px),
 /// `convert` (→ `to_ext`, honoring `quality`/`resize`), or `info` (dimensions/EXIF/audio
 /// tags → one JSON array, see [`batch_info`]; `out_dir`/`size`/`to_ext`/`quality`/`resize`
 /// are ignored for that op). Outputs (for `thumbnail`/`convert`) go to `out_dir` (created if
 /// needed) or next to each source. `recurse = false` (the default) scans each input
-/// directory ONE level deep; `true` walks the whole tree — see [`expand_inputs`]. Returns a
+/// directory ONE level deep; `true` walks the whole tree - see [`expand_inputs`]. Returns a
 /// `done/total` summary for `thumbnail`/`convert`, or the JSON array for `info`.
 ///
 /// `json` (the CLI's `--json`, always on over MCP, exactly as `pdf`/`cbz` and `info` do it)
@@ -1026,7 +1026,7 @@ pub fn batch(
     resize: verbs::Resize,
     json: bool,
 ) -> Result<String, String> {
-    // Same clamp `convert` applies — one place both front ends agree on.
+    // Same clamp `convert` applies - one place both front ends agree on.
     let quality = quality.clamp(1, 100);
     if op == "info" {
         return batch_info(inputs, recurse);
@@ -1202,7 +1202,7 @@ fn batch_report(report: &verbs::BatchReport, json: bool) -> Result<String, Strin
 
 /// `batch`'s `"info"` op: fan [`info`] (JSON form, so the audio branch is included) across
 /// every expanded input via the same `parallel::map` `thumbnail`/`convert` already use, and
-/// return one JSON array — a folder of RAW photos or music files becomes ONE call instead
+/// return one JSON array - a folder of RAW photos or music files becomes ONE call instead
 /// of one `info` round-trip per file. A per-file failure becomes an `"error"` field in that
 /// file's element rather than failing the whole batch (a single unreadable file must not
 /// hide the other 999 results).
@@ -1232,7 +1232,7 @@ fn batch_info(inputs: &[String], recurse: bool) -> Result<String, String> {
     Ok(serde_json::Value::Array(results).to_string())
 }
 
-/// `st2k upload-hosts [--open]` — show (or open) the user-editable upload-hosts config
+/// `st2k upload-hosts [--open]` - show (or open) the user-editable upload-hosts config
 /// file. The right-click "Upload" verb and the screenshot Upload button read this file
 /// to decide which keyless host(s) to POST to; editing it lets you reorder / add hosts
 /// or point at your own server. The documented template is created on first use. Path +
@@ -1282,7 +1282,7 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
 /// never part of what we actually wanted to measure.
 ///
 /// Reports the MINIMUM of `runs`, which is the right statistic under background load: the
-/// fastest observation is the one least polluted by other work. Decode only — no PNG is
+/// fastest observation is the one least polluted by other work. Decode only - no PNG is
 /// written, since encoding the output is not what any of this is trying to measure.
 ///
 /// A dev/measurement verb, deliberately undocumented in `--help`, like the app EXE's
@@ -1343,15 +1343,46 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
     Ok(out)
 }
 
+/// A short bracketed marker naming the extension's decode route, but ONLY where it differs
+/// from the plain "full decode, convertible, no OS dependency" case - audit E03: the text
+/// output should not repeat a marker on the ~250 ordinary image entries.
+fn capability_markers(cap: formats::Capability) -> String {
+    let mut parts = Vec::new();
+    match cap.source {
+        formats::Source::FullDecode => {}
+        formats::Source::EmbeddedPreview => parts.push("raw preview"),
+        formats::Source::CoverArt => parts.push("cover art"),
+        formats::Source::CoverOrFirstPage => parts.push("cover/first page"),
+        formats::Source::VideoFrame => parts.push("video frame"),
+        formats::Source::ContainedImages => parts.push("archive contents"),
+    }
+    if cap.os_codec.is_some() {
+        parts.push("needs OS codec");
+    }
+    if !cap.convertible {
+        parts.push("not convertible");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join("] ["))
+    }
+}
+
 pub fn list_formats(json: bool) -> String {
     if json {
         let items: Vec<_> = formats::FORMATS
             .iter()
             .map(|(ext, desc)| {
+                let cap = formats::capability(ext);
                 serde_json::json!({
                     "ext": ext,
                     "category": formats::category_label(formats::category(ext)),
                     "description": desc,
+                    "source": cap.source.as_str(),
+                    "convertible": cap.convertible,
+                    "preview_listing": cap.preview_listing,
+                    "os_codec": cap.os_codec.map(formats::OsCodec::as_str),
                 })
             })
             .collect();
@@ -1359,7 +1390,8 @@ pub fn list_formats(json: bool) -> String {
     } else {
         let mut s = format!("{} supported input formats:\n", formats::FORMATS.len());
         for (ext, desc) in formats::FORMATS {
-            s.push_str(&format!("  .{ext:<6} {desc}\n"));
+            let markers = capability_markers(formats::capability(ext));
+            s.push_str(&format!("  .{ext:<6} {desc}{markers}\n"));
         }
         s
     }
@@ -1376,7 +1408,7 @@ mod tests {
     use std::io::Write;
 
     /// The flag part of the Ctrl+C wiring: `install` must start a fresh run from
-    /// "not cancelled" even if a previous run's Ctrl+C left it set — the actual OS-level
+    /// "not cancelled" even if a previous run's Ctrl+C left it set - the actual OS-level
     /// `SetConsoleCtrlHandler` registration and CTRL_C_EVENT delivery can't be exercised
     /// in-process (there is no safe way to raise a real console control event against the
     /// test runner itself), so this pins the one behaviour that IS a pure state check.
@@ -1433,6 +1465,106 @@ mod tests {
         assert!(list_formats(false).contains(".png"));
         assert!(list_formats(true).starts_with('['));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `st2k formats --json` gains the capability fields ADDITIVELY (audit E03) - no
+    /// existing key renamed, and the new keys carry the stable lowercase wire vocabulary.
+    /// Against the pre-change `list_formats`, this fails on the very first `assert!` below
+    /// with: `expected value at line 1 column ... assertion failed:
+    /// item.get("source").is_some()` (the old JSON objects have no `source`/`convertible`/
+    /// `preview_listing`/`os_codec` keys at all - the site generator or any other JSON
+    /// consumer would silently see them as absent, which is exactly what this test guards).
+    #[test]
+    fn list_formats_json_carries_capability_fields() {
+        let text = list_formats(true);
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let items = parsed.as_array().unwrap();
+        assert_eq!(items.len(), formats::FORMATS.len());
+
+        let valid_sources = [
+            "full_decode",
+            "embedded_preview",
+            "cover_art",
+            "cover_or_first_page",
+            "video_frame",
+            "contained_images",
+        ];
+        let valid_codecs = ["media_foundation", "wmphoto", "heif"];
+
+        let mut saw_wmphoto = false;
+        let mut saw_heif = false;
+        let mut saw_media_foundation = false;
+        let mut saw_archive = false;
+        for item in items {
+            // The pre-existing keys are untouched.
+            assert!(item.get("ext").is_some());
+            assert!(item.get("category").is_some());
+            assert!(item.get("description").is_some());
+            // The new keys, additive.
+            let source = item
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("missing/non-string `source` on {item}"));
+            assert!(
+                valid_sources.contains(&source),
+                "unknown source `{source}` on {item}"
+            );
+            let convertible = item
+                .get("convertible")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| panic!("missing/non-bool `convertible` on {item}"));
+            let preview_listing = item
+                .get("preview_listing")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| panic!("missing/non-bool `preview_listing` on {item}"));
+            assert!(
+                item.get("os_codec").is_some(),
+                "missing `os_codec` key on {item}"
+            );
+            match item.get("os_codec").unwrap() {
+                serde_json::Value::Null => {}
+                serde_json::Value::String(s) => {
+                    assert!(
+                        valid_codecs.contains(&s.as_str()),
+                        "unknown os_codec `{s}` on {item}"
+                    );
+                    match s.as_str() {
+                        "wmphoto" => saw_wmphoto = true,
+                        "heif" => saw_heif = true,
+                        "media_foundation" => saw_media_foundation = true,
+                        _ => {}
+                    }
+                }
+                other => panic!("os_codec must be null or a string, got {other} on {item}"),
+            }
+            if source == "contained_images" {
+                saw_archive = true;
+                assert!(
+                    preview_listing,
+                    "archive entry must be preview_listing: {item}"
+                );
+                assert!(
+                    !convertible,
+                    "archive entry must not be convertible: {item}"
+                );
+            }
+        }
+        assert!(
+            saw_wmphoto,
+            "expected at least one wmphoto os_codec entry (jxr/wdp/hdp/wmp)"
+        );
+        assert!(
+            saw_heif,
+            "expected at least one heif os_codec entry (heic/heif/...)"
+        );
+        assert!(
+            saw_media_foundation,
+            "expected at least one media_foundation entry (video)"
+        );
+        assert!(
+            saw_archive,
+            "expected at least one contained_images (archive) entry"
+        );
     }
 
     #[test]
@@ -1505,14 +1637,14 @@ mod tests {
         assert_eq!(
             got.len(),
             before,
-            "two concurrent callers claimed the SAME output path — the exact race this fix closes"
+            "two concurrent callers claimed the SAME output path - the exact race this fix closes"
         );
 
         let _ = std::fs::remove_dir_all(&*dir);
     }
 
     /// A name a batch's OWN earlier iteration already claimed, and a name some
-    /// external writer created before `batch` ever ran, must both be skipped —
+    /// external writer created before `batch` ever ran, must both be skipped -
     /// the reservation itself is what proves it, not the (now-removed) `used` set.
     #[test]
     fn reserve_batch_output_skips_names_already_on_disk() {
@@ -1536,7 +1668,7 @@ mod tests {
     }
 
     /// `batch convert --to webp --quality N` must actually vary output size with
-    /// N — before this fix `webp_quality` was hard-coded to `None` (lossless) no
+    /// N - before this fix `webp_quality` was hard-coded to `None` (lossless) no
     /// matter what quality was requested. Gated like `verbs.rs`'s own
     /// `lossy_webp_is_smaller_and_keeps_alpha`: without `webp-lossy`, WebP is
     /// ALWAYS encoded losslessly regardless of `webp_quality`, so this can only
@@ -1555,7 +1687,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // Genuine per-pixel noise (an integer hash, not a linear/periodic formula):
         // a plain modular formula like `x*53 + y*17` has constant row/column
-        // differences, which a LOSSLESS predictive coder crushes to near-nothing —
+        // differences, which a LOSSLESS predictive coder crushes to near-nothing -
         // the opposite of what this test needs. Real noise is what quality-10
         // LOSSY WebP shrinks a lot and lossless does not.
         let img = image::RgbImage::from_fn(200, 200, |x, y| {
@@ -1603,7 +1735,7 @@ mod tests {
         assert!(
             lossy_len < lossless_len,
             "batch webp at quality 10 ({lossy_len} bytes) should be smaller than lossless \
-             ({lossless_len} bytes) — quality is not reaching the encoder"
+             ({lossless_len} bytes) - quality is not reaching the encoder"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1652,7 +1784,7 @@ mod tests {
     }
 
     /// `expand_inputs` must find only the top-level file when `recurse` is false (the
-    /// historical default — an agent pointed at a photo tree with subfolders used to get a
+    /// historical default - an agent pointed at a photo tree with subfolders used to get a
     /// partial result and a clean "N/N succeeded" with no way to ask for more), and every
     /// file at every depth when `recurse` is true.
     #[test]
@@ -1689,7 +1821,7 @@ mod tests {
     }
 
     /// `batch`'s `"info"` op returns a JSON array, one element per input, in the same
-    /// shape `info(_, true)` returns for a single file — and a per-file decode failure must
+    /// shape `info(_, true)` returns for a single file - and a per-file decode failure must
     /// not fail the whole batch, just carry an `"error"` field on that one element.
     #[test]
     fn batch_info_op_returns_a_json_array_with_per_file_results() {
@@ -1844,7 +1976,7 @@ mod tests {
     }
 
     /// A caller that bypasses both front ends' own clamping (a raw library call, or a
-    /// future front end that forgets to clamp) must still get a sane encoder quality —
+    /// future front end that forgets to clamp) must still get a sane encoder quality -
     /// `convert`/`batch` own the clamp now, not just `mcp.rs`.
     #[test]
     fn convert_and_batch_clamp_quality_into_1_to_100() {
@@ -1862,7 +1994,7 @@ mod tests {
             .save(&src)
             .unwrap();
 
-        // quality: 0 must not panic/misbehave the encoder — it should behave as if 1 was
+        // quality: 0 must not panic/misbehave the encoder - it should behave as if 1 was
         // requested, not literally zero.
         let out = dir.join("a.jpg");
         convert(
@@ -1878,7 +2010,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The CBZ front door must exist and actually produce a readable archive —
+    /// The CBZ front door must exist and actually produce a readable archive -
     /// `combine_to_cbz` itself is already tested in `verbs.rs`; this pins the CLI/MCP-facing
     /// `cli::cbz` wrapper specifically (the missing piece the review found).
     #[test]
@@ -1928,7 +2060,7 @@ mod tests {
     }
 
     /// An audio file must never hit the "cannot read" path just because it has
-    /// no width/height — and a file with NO readable tags at all (garbage bytes) must still
+    /// no width/height - and a file with NO readable tags at all (garbage bytes) must still
     /// error, rather than claiming success with an empty tag set.
     #[test]
     fn info_on_unparseable_audio_bytes_still_errors() {
@@ -2323,7 +2455,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `compress`'s `map_err` must not drop the underlying error — an MCP/agent caller
+    /// `compress`'s `map_err` must not drop the underlying error - an MCP/agent caller
     /// needs the REAL reason (missing file, decode failure, ...), not a bare "compress
     /// failed: <input>" with nothing else to act on.
     #[test]
