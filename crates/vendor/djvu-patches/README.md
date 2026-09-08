@@ -1,5 +1,7 @@
 # SageThumbs 2K patch to `djvu-rs`: bilevel-mask fallback bounds fix
 
+**Upstream: <https://github.com/matyushkin/djvu-rs/pull/801> (opened 2026-09-08).**
+
 **Delete all of this the moment a djvu-rs release carries the fix** (the `[patch.crates-io]`
 line in the workspace `Cargo.toml`, its `[workspace] exclude` entry, `crates/vendor/djvu-rs`,
 this directory, and `scripts/vendor-djvu.ps1` + `scripts/fetch-pristine-djvu.ps1`). The call
