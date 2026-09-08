@@ -402,30 +402,79 @@ fn run(args: &[String]) -> Result<String, String> {
     let pos = positionals(rest);
     check_arity(verb, &pos)?;
 
+    if let Some(r) = dispatch_file_verb(verb, &pos, rest) {
+        return r;
+    }
+    if let Some(r) = dispatch_helper_verb(verb, &pos, rest) {
+        return r;
+    }
+    if let Some(r) = dispatch_admin_verb(verb, &pos, rest) {
+        return r;
+    }
     match verb {
-        "thumbnail" | "thumb" => run_thumbnail(&pos, rest),
-        "convert" => run_convert(&pos, rest),
-        "batch" => run_batch(&pos, rest),
-        "prebuild" => run_prebuild(&pos, rest),
-        "rotate" => run_rotate(&pos, rest),
-        "compress" => run_compress(&pos, rest),
-        "strip" => cli::strip_meta(need(&pos, 0)?),
-        "wallpaper-prepare" => run_wallpaper_prepare(&pos, rest),
-        "folder-icon" => cli::folder_icon(need(&pos, 0)?),
-        "ocr" => cli::ocr(need(&pos, 0)?),
-        "pdf" => {
-            let out = need(&pos, 0)?;
+        "" | "-h" | "--help" | "help" => Ok(USAGE.to_string()),
+        other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
+    }
+}
+
+/// File-processing verbs (the bulk of the surface: decode/convert/combine/inspect one or
+/// more images). `None` means "not one of mine" — [`run`] tries the next group.
+fn dispatch_file_verb(
+    verb: &str,
+    pos: &[&String],
+    rest: &[String],
+) -> Option<Result<String, String>> {
+    Some(match verb {
+        "thumbnail" | "thumb" => run_thumbnail(pos, rest),
+        "convert" => run_convert(pos, rest),
+        "batch" => run_batch(pos, rest),
+        "prebuild" => run_prebuild(pos, rest),
+        "rotate" => run_rotate(pos, rest),
+        "compress" => run_compress(pos, rest),
+        "strip" => need(pos, 0).and_then(cli::strip_meta),
+        "wallpaper-prepare" => run_wallpaper_prepare(pos, rest),
+        "folder-icon" => need(pos, 0).and_then(cli::folder_icon),
+        "ocr" => need(pos, 0).and_then(cli::ocr),
+        "pdf" => need(pos, 0).and_then(|out| {
             let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
             cli::pdf(out, &inputs, combine_opts(rest))
-        }
-        "cbz" => {
-            let out = need(&pos, 0)?;
+        }),
+        "cbz" => need(pos, 0).and_then(|out| {
             let inputs: Vec<String> = pos.iter().skip(1).map(|s| s.to_string()).collect();
             cli::cbz(out, &inputs, combine_opts(rest))
-        }
-        "info" => cli::info(need(&pos, 0)?, has_flag(rest, "--json")),
-        "bench-decode" => run_bench_decode(&pos, rest),
+        }),
+        "info" => need(pos, 0).and_then(|f| cli::info(f, has_flag(rest, "--json"))),
+        _ => return None,
+    })
+}
+
+/// Helper / child-process verbs: bench harness, format listing, and the keyless-upload
+/// pair. `None` means "not one of mine".
+fn dispatch_helper_verb(
+    verb: &str,
+    pos: &[&String],
+    rest: &[String],
+) -> Option<Result<String, String>> {
+    Some(match verb {
+        "bench-decode" => run_bench_decode(pos, rest),
         "formats" => Ok(cli::list_formats(has_flag(rest, "--json"))),
+        "upload" => need(pos, 0).and_then(|f| cli::upload(f, has_flag(rest, "--copy"))),
+        "upload-hosts" | "upload-host" => {
+            let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
+            cli::upload_hosts(open)
+        }
+        _ => return None,
+    })
+}
+
+/// Admin / diagnostic verbs: doctor, register/unregister, devmode. `None` means "not one
+/// of mine".
+fn dispatch_admin_verb(
+    verb: &str,
+    pos: &[&String],
+    rest: &[String],
+) -> Option<Result<String, String>> {
+    Some(match verb {
         // Read-only; never fails, so it always prints a report rather than an error —
         // a user running this already has something broken. An optional file path adds a
         // per-file probe ("st2k doctor C:\path\to\that.xcf") that actually tries to decode
@@ -442,16 +491,10 @@ fn run(args: &[String]) -> Result<String, String> {
                 pos.first().map(|s| s.as_str()),
             )),
         },
-        "register" | "unregister" => run_register(verb, &pos, rest),
-        "upload" => cli::upload(need(&pos, 0)?, has_flag(rest, "--copy")),
-        "upload-hosts" | "upload-host" => {
-            let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
-            cli::upload_hosts(open)
-        }
+        "register" | "unregister" => run_register(verb, pos, rest),
         "devmode" => cli::devmode(pos.first().map(|s| s.as_str()).unwrap_or("status")),
-        "" | "-h" | "--help" | "help" => Ok(USAGE.to_string()),
-        other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
-    }
+        _ => return None,
+    })
 }
 
 fn need<'a>(pos: &'a [&'a String], i: usize) -> Result<&'a str, String> {

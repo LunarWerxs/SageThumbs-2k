@@ -467,54 +467,83 @@ pub(super) fn switch_bar(
 /// Tab / Shift+Tab: the caption bar and the transport strip read as ONE linear sequence, so
 /// stepping off either end of one bar lands on the start (or end) of the other — the "or Tab
 /// again" half of the caption-to-transport transition; [`switch_bar`] (Down/Up) is the direct
-/// jump between bars instead.
+/// jump between bars instead. Dispatches to one of four flat per-direction helpers below —
+/// each keeps its own if/else-if chain but none of the "which bar, which direction" nesting
+/// that used to wrap all four together.
 pub(super) fn tab_step(
     from: FocusTarget,
     caption_len: usize,
     transport_len: usize,
     forward: bool,
 ) -> Option<FocusTarget> {
-    match from {
-        FocusTarget::Caption(i) => {
-            if forward {
-                if i + 1 < caption_len {
-                    Some(FocusTarget::Caption(i + 1))
-                } else if transport_len > 0 {
-                    Some(FocusTarget::Transport(0))
-                } else if caption_len > 0 {
-                    Some(FocusTarget::Caption(0))
-                } else {
-                    None
-                }
-            } else if i > 0 {
-                Some(FocusTarget::Caption(i - 1))
-            } else if transport_len > 0 {
-                Some(FocusTarget::Transport(transport_len - 1))
-            } else if caption_len > 0 {
-                Some(FocusTarget::Caption(caption_len - 1))
-            } else {
-                None
-            }
-        }
-        FocusTarget::Transport(i) => {
-            if forward {
-                if i + 1 < transport_len {
-                    Some(FocusTarget::Transport(i + 1))
-                } else if caption_len > 0 {
-                    Some(FocusTarget::Caption(0))
-                } else if transport_len > 0 {
-                    Some(FocusTarget::Transport(0))
-                } else {
-                    None
-                }
-            } else if i > 0 {
-                Some(FocusTarget::Transport(i - 1))
-            } else if caption_len > 0 {
-                Some(FocusTarget::Caption(caption_len - 1))
-            } else {
-                None
-            }
-        }
+    match (from, forward) {
+        (FocusTarget::Caption(i), true) => caption_tab_forward(i, caption_len, transport_len),
+        (FocusTarget::Caption(i), false) => caption_tab_backward(i, caption_len, transport_len),
+        (FocusTarget::Transport(i), true) => transport_tab_forward(i, caption_len, transport_len),
+        (FocusTarget::Transport(i), false) => transport_tab_backward(i, caption_len, transport_len),
+    }
+}
+
+/// Tab forward off the caption bar: next caption button, else the transport strip's first
+/// control, else (defensively, no transport strip) wrap back to the caption bar's own start.
+fn caption_tab_forward(i: usize, caption_len: usize, transport_len: usize) -> Option<FocusTarget> {
+    if i + 1 < caption_len {
+        Some(FocusTarget::Caption(i + 1))
+    } else if transport_len > 0 {
+        Some(FocusTarget::Transport(0))
+    } else if caption_len > 0 {
+        Some(FocusTarget::Caption(0))
+    } else {
+        None
+    }
+}
+
+/// Shift+Tab backward off the caption bar: previous caption button, else the transport strip's
+/// last control, else (defensively) wrap back to the caption bar's own end.
+fn caption_tab_backward(i: usize, caption_len: usize, transport_len: usize) -> Option<FocusTarget> {
+    if i > 0 {
+        Some(FocusTarget::Caption(i - 1))
+    } else if transport_len > 0 {
+        Some(FocusTarget::Transport(transport_len - 1))
+    } else if caption_len > 0 {
+        Some(FocusTarget::Caption(caption_len - 1))
+    } else {
+        None
+    }
+}
+
+/// Tab forward off the transport strip: next control, else wrap to the caption bar's start,
+/// else (defensively, no caption buttons) wrap back to the transport strip's own start.
+fn transport_tab_forward(
+    i: usize,
+    caption_len: usize,
+    transport_len: usize,
+) -> Option<FocusTarget> {
+    if i + 1 < transport_len {
+        Some(FocusTarget::Transport(i + 1))
+    } else if caption_len > 0 {
+        Some(FocusTarget::Caption(0))
+    } else if transport_len > 0 {
+        Some(FocusTarget::Transport(0))
+    } else {
+        None
+    }
+}
+
+/// Shift+Tab backward off the transport strip: previous control, else wrap to the caption
+/// bar's end. Unlike the other three directions this has NO self-wrap fallback (matches the
+/// original behaviour exactly — the transport strip never wraps to its own end on Shift+Tab).
+fn transport_tab_backward(
+    i: usize,
+    caption_len: usize,
+    _transport_len: usize,
+) -> Option<FocusTarget> {
+    if i > 0 {
+        Some(FocusTarget::Transport(i - 1))
+    } else if caption_len > 0 {
+        Some(FocusTarget::Caption(caption_len - 1))
+    } else {
+        None
     }
 }
 
@@ -545,66 +574,128 @@ pub(super) unsafe fn keydown_toolbar_focus(
     let focus = repair_focus(live, caption_len, transport_len);
     st.focus.set(focus);
 
+    let intent = focus_key_intent(vk, shift, focus, caption_len, transport_len);
+    execute_focus_intent(hwnd, st, &buttons, intent)
+}
+
+/// What a handled toolbar-focus keypress should DO, computed with no side effects — kept
+/// separate from [`execute_focus_intent`] so the "which key means what" logic (this function)
+/// and the "how do we actually apply it" logic (the executor) are each independently readable.
+enum FocusIntent {
+    /// Set (Tab, arrow move, Escape-clears-to-`None`) or leave unchanged-but-consumed focus.
+    SetFocus(Option<FocusTarget>),
+    /// Activate whatever is currently focused (Enter / Space).
+    Activate(FocusTarget),
+    /// Not this cluster's key, or nowhere to go (e.g. Up from the caption bar) — the caller
+    /// leaves the keystroke unhandled rather than eating a no-op press.
+    Unhandled,
+}
+
+/// Decide the [`FocusIntent`] for one keydown, given the already-repaired `focus`. Mirrors the
+/// original inline dispatch order exactly: Tab first (works with no focus set), then every
+/// other key requires `focus` to already be `Some`.
+fn focus_key_intent(
+    vk: u16,
+    shift: bool,
+    focus: Option<FocusTarget>,
+    caption_len: usize,
+    transport_len: usize,
+) -> FocusIntent {
     if vk == VK_TAB.0 {
         let next = match focus {
             None => first_focus(caption_len, transport_len),
             Some(f) => tab_step(f, caption_len, transport_len, !shift),
         };
-        set_focus(hwnd, st, next);
-        return Some(LRESULT(0));
+        return FocusIntent::SetFocus(next);
     }
-
-    let focus = focus?; // everything below requires focus already set
-
+    let Some(focus) = focus else {
+        return FocusIntent::Unhandled;
+    };
     if vk == VK_ESCAPE.0 {
-        set_focus(hwnd, st, None);
-        return Some(LRESULT(0));
+        return FocusIntent::SetFocus(None);
     }
-
     if vk == VK_RETURN.0 || vk == VK_SPACE.0 {
-        match focus {
-            FocusTarget::Caption(i) => {
-                if let Some((btn, _)) = buttons.get(i).copied() {
-                    super::window::do_action(hwnd, btn);
-                    // `do_action` can destroy `hwnd` (Close, or Open on a successful launch) —
-                    // never touch `st`/`hwnd` again once that has happened.
-                    if IsWindow(Some(hwnd)).as_bool() {
-                        invalidate_focus_bars(hwnd);
-                    }
-                }
-            }
-            FocusTarget::Transport(i) => {
-                if let Some(&tb) = TBTNS.get(i) {
-                    super::transport::activate(hwnd, tb);
-                    invalidate_focus_bars(hwnd);
-                }
-            }
-        }
-        return Some(LRESULT(0));
+        return FocusIntent::Activate(focus);
     }
+    arrow_focus_intent(vk, focus, caption_len, transport_len)
+}
 
-    let arrow = match vk {
+/// The arrow-key quarter of [`focus_key_intent`]: Left/Right step within a bar, Up/Down switch
+/// bars, everything else is unhandled.
+fn arrow_focus_intent(
+    vk: u16,
+    focus: FocusTarget,
+    caption_len: usize,
+    transport_len: usize,
+) -> FocusIntent {
+    let Some((forward, vertical)) = arrow_direction(vk) else {
+        return FocusIntent::Unhandled;
+    };
+    let next = if vertical {
+        switch_bar(focus, caption_len, transport_len, forward)
+    } else {
+        arrow_step(focus, caption_len, transport_len, forward)
+    };
+    match next {
+        Some(n) => FocusIntent::SetFocus(Some(n)),
+        None => FocusIntent::Unhandled,
+    }
+}
+
+/// Left/Right/Up/Down as `(forward, vertical)`, or `None` for any other key.
+fn arrow_direction(vk: u16) -> Option<(bool, bool)> {
+    match vk {
         v if v == VK_LEFT.0 => Some((false, false)),
         v if v == VK_RIGHT.0 => Some((true, false)),
         v if v == VK_UP.0 => Some((false, true)),
         v if v == VK_DOWN.0 => Some((true, true)),
         _ => None,
-    };
-    if let Some((forward, vertical)) = arrow {
-        let next = if vertical {
-            switch_bar(focus, caption_len, transport_len, forward)
-        } else {
-            arrow_step(focus, caption_len, transport_len, forward)
-        };
-        if next.is_some() {
-            set_focus(hwnd, st, next);
-            return Some(LRESULT(0));
-        }
-        // Nowhere to go (e.g. Up from the caption bar, or Down with no transport strip
-        // showing) — leave the key unhandled rather than eating a no-op press.
-        return None;
     }
-    None
+}
+
+/// Apply a [`FocusIntent`]: the only part of this cluster that touches `hwnd`/`st`/the button
+/// list, so it is the only part a Win32-side-effect bug can hide in.
+unsafe fn execute_focus_intent(
+    hwnd: HWND,
+    st: &super::window::ViewerState,
+    buttons: &[(Btn, RECT)],
+    intent: FocusIntent,
+) -> Option<LRESULT> {
+    match intent {
+        FocusIntent::Unhandled => None,
+        FocusIntent::SetFocus(next) => {
+            set_focus(hwnd, st, next);
+            Some(LRESULT(0))
+        }
+        FocusIntent::Activate(focus) => {
+            activate_focus(hwnd, buttons, focus);
+            Some(LRESULT(0))
+        }
+    }
+}
+
+/// Enter/Space on whichever bar has focus: run the caption button's action, or trigger the
+/// transport control, then repaint. A focus index whose target has since vanished is a no-op
+/// (the keystroke was still consumed — see [`execute_focus_intent`]).
+unsafe fn activate_focus(hwnd: HWND, buttons: &[(Btn, RECT)], focus: FocusTarget) {
+    match focus {
+        FocusTarget::Caption(i) => {
+            if let Some((btn, _)) = buttons.get(i).copied() {
+                super::window::do_action(hwnd, btn);
+                // `do_action` can destroy `hwnd` (Close, or Open on a successful launch) —
+                // never touch `st`/`hwnd` again once that has happened.
+                if IsWindow(Some(hwnd)).as_bool() {
+                    invalidate_focus_bars(hwnd);
+                }
+            }
+        }
+        FocusTarget::Transport(i) => {
+            if let Some(&tb) = TBTNS.get(i) {
+                super::transport::activate(hwnd, tb);
+                invalidate_focus_bars(hwnd);
+            }
+        }
+    }
 }
 
 /// Set (or clear) focus, recording the load generation it was set under, and repaint both bars.

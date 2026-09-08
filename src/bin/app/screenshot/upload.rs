@@ -395,27 +395,11 @@ fn save_recovery_copy(bytes: &[u8]) -> Option<std::path::PathBuf> {
 /// binary, still gets stderr/exit-status from this windows-subsystem one because both are
 /// plain inherited OS handles — no console window is involved either way.
 pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
-    let hosts = match upload_hosts() {
-        Ok(h) => h,
-        Err(msg) => {
-            let _ = std::fs::remove_file(list_path);
-            if url_to.is_some() {
-                eprintln!("{msg}");
-                std::process::exit(1);
-            }
-            notify(&msg, file_caption(), true);
-            return;
-        }
+    let hosts = match resolve_hosts(list_path, url_to) {
+        Some(h) => h,
+        None => return,
     };
-    // The DLL writes the selection CRLF-joined; tolerate either ending, drop blanks.
-    let files: Vec<String> = std::fs::read_to_string(list_path)
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect();
-    let _ = std::fs::remove_file(list_path); // the list is ours; the images are NOT
+    let files = load_file_list(list_path);
     if files.is_empty() {
         if url_to.is_some() {
             eprintln!("no file to upload");
@@ -429,38 +413,109 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
     // reason so an all-fail run can show WHY (host paused vs. no connection). The
     // whole batch runs behind the "Uploading…" pill — multi-file menu uploads can
     // take a while and previously gave zero sign anything was happening.
-    let busy = if total == 1 {
+    let busy = busy_message(total);
+    // SAFETY: run_upload_keep is itself unsafe for the same reason (WinInet handles
+    // scoped to this call), but a closure doesn't inherit its enclosing fn's unsafety.
+    let (urls, last_reason) = with_busy_pill(&busy, move || unsafe { upload_all(&files, &hosts) });
+    match url_to {
+        Some(url_to) => report_to_file(url_to, &urls, last_reason),
+        None => report_interactively(total, &urls, last_reason),
+    }
+}
+
+/// Load the configured upload hosts. On failure the list file is removed (nothing was
+/// uploaded) and the outcome is reported the same way [`run_upload_keep`]'s own failures
+/// are: `Err` to stderr + exit(1) for the CLI (`url_to.is_some()`), a dialog otherwise.
+/// Returns `None` when the caller should stop.
+unsafe fn resolve_hosts(list_path: &str, url_to: Option<&str>) -> Option<Vec<UploadHost>> {
+    match upload_hosts() {
+        Ok(h) => Some(h),
+        Err(msg) => {
+            let _ = std::fs::remove_file(list_path);
+            if url_to.is_some() {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+            notify(&msg, file_caption(), true);
+            None
+        }
+    }
+}
+
+/// The DLL writes the selection CRLF-joined; tolerate either ending, drop blanks. Removes
+/// `list_path` either way — the list is ours; the images are NOT.
+fn load_file_list(list_path: &str) -> Vec<String> {
+    let files = std::fs::read_to_string(list_path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let _ = std::fs::remove_file(list_path);
+    files
+}
+
+/// The "Uploading…" pill's text — singular for one file, a `{n}`-filled count otherwise.
+fn busy_message(total: usize) -> String {
+    if total == 1 {
         t("up_busy_one").to_string()
     } else {
         t("up_busy_many").replace("{n}", &total.to_string())
-    };
-    let (urls, last_reason) = with_busy_pill(&busy, move || {
-        let mut urls: Vec<String> = Vec::new();
-        let mut last_reason: Option<String> = None;
-        for f in &files {
-            let name = std::path::Path::new(f)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("upload");
-            match std::fs::read(f) {
-                // SAFETY: upload_any only touches WinInet handles it creates + closes
-                // itself, so running it on the pill's worker thread is fine.
-                Ok(bytes) => match unsafe { upload_any(&bytes, name, &hosts) } {
-                    Ok(u) => urls.push(u),
-                    Err(why) => last_reason = Some(why),
-                },
-                Err(e) => last_reason = Some(format!("couldn't read {name} — {e}")),
-            }
+    }
+}
+
+/// Upload every file, returning the URLs that succeeded plus the last failure reason (if
+/// any) so an all-fail run can still show WHY.
+///
+/// SAFETY: upload_any only touches WinInet handles it creates + closes itself, so running
+/// it on the pill's worker thread is fine.
+unsafe fn upload_all(files: &[String], hosts: &[UploadHost]) -> (Vec<String>, Option<String>) {
+    let mut urls: Vec<String> = Vec::new();
+    let mut last_reason: Option<String> = None;
+    for f in files {
+        let name = std::path::Path::new(f)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("upload");
+        match std::fs::read(f) {
+            // Already in an unsafe fn body — no nested `unsafe` block needed here (unlike
+            // the closure this loop used to run inside).
+            Ok(bytes) => match upload_any(&bytes, name, hosts) {
+                Ok(u) => urls.push(u),
+                Err(why) => last_reason = Some(why),
+            },
+            Err(e) => last_reason = Some(format!("couldn't read {name} — {e}")),
         }
-        (urls, last_reason)
-    });
+    }
+    (urls, last_reason)
+}
+
+/// CLI path (`url_to` set): no clipboard, no dialog — just the file `st2k` is waiting to
+/// read. Success writes the URL(s) LF-joined and exits `0`; any failure writes nothing,
+/// puts the reason on stderr, and exits `1`.
+fn report_to_file(url_to: &str, urls: &[String], last_reason: Option<String>) -> ! {
     if urls.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
-        if let Some(url_to) = url_to {
-            let _ = std::fs::remove_file(url_to);
-            eprintln!("{reasons}");
+        let _ = std::fs::remove_file(url_to);
+        eprintln!("{reasons}");
+        std::process::exit(1);
+    }
+    match std::fs::write(url_to, urls.join("\n")) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("uploaded, but couldn't write the result to {url_to}: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Interactive path (`url_to` unset): a failure dialog naming every host's own reason, or
+/// success — clipboard + the result window with a heading matched to how many of `total`
+/// files made it.
+unsafe fn report_interactively(total: usize, urls: &[String], last_reason: Option<String>) {
+    if urls.is_empty() {
+        let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
         let what = if total == 1 {
             t("up_what_file")
         } else {
@@ -468,16 +523,6 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
         };
         notify(&upload_failed_msg(what, &reasons), file_caption(), true);
         return;
-    }
-    if let Some(url_to) = url_to {
-        // CLI path: no clipboard, no dialog — just the file `st2k` is waiting to read.
-        match std::fs::write(url_to, urls.join("\n")) {
-            Ok(()) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("uploaded, but couldn't write the result to {url_to}: {e}");
-                std::process::exit(1);
-            }
-        }
     }
     let joined = urls.join("\r\n");
     let _ = set_clipboard_text(&joined);
