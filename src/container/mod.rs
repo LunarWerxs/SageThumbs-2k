@@ -49,6 +49,9 @@ mod indd;
 mod ilbm;
 mod max;
 mod mobi;
+// Shared entry-name decoding (Shift-JIS / CP437 fallback for a name with no UTF-8 flag),
+// used by zipfmt and rar so a Japanese or DOS-era archive listing doesn't come back mojibake.
+mod names;
 mod office;
 pub mod ole;
 mod pdn;

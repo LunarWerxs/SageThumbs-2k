@@ -15,7 +15,9 @@ use core::cell::RefCell;
 use windows::core::{Error, Ref, Result};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER};
 use windows::Win32::Graphics::Gdi::HBITMAP;
-use windows::Win32::System::Com::{IStream, STATFLAG_NONAME, STATSTG};
+use windows::Win32::System::Com::{
+    CoTaskMemFree, IStream, STATFLAG_DEFAULT, STATFLAG_NONAME, STATSTG,
+};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithStream, IInitializeWithStream_Impl,
 };
@@ -25,7 +27,7 @@ use windows::Win32::UI::Shell::{
 use windows_implement::implement;
 
 use crate::streamsrc::{self, StreamSource};
-use crate::{decode, dib, safety, settings};
+use crate::{decode, dib, failmemo, safety, settings};
 
 #[implement(IThumbnailProvider, IInitializeWithStream)]
 pub struct ThumbnailProvider {
@@ -84,12 +86,27 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
                 return Err(Error::from(E_FAIL));
             }
 
+            // Circuit breaker: a file already known to fail is refused here, before any
+            // decode work, instead of paying full cost again on every Explorer redraw.
+            // `id` is `None` for a nameless stream, which has no stable identity to
+            // remember a failure against.
+            let id = self.current_identity();
+            if let Some(id) = &id {
+                if failmemo::is_remembered_failure(id) {
+                    safety::log_debug("GetThumbnail: skipped, remembered failure");
+                    return Err(Error::from(E_FAIL));
+                }
+            }
+
             let r = self.get_thumbnail_inner(cx, phbmp, pdwalpha, &cfg);
             if let Err(e) = &r {
                 // Always-on breadcrumb: the shell swallows the HRESULT and just falls
                 // back to the default icon, so without this line the most common report
                 // ("X shows the generic icon") produced an empty log.
                 self.log_failure(e);
+                if let Some(id) = id {
+                    failmemo::record_failure(id);
+                }
             }
             r
         })
@@ -102,6 +119,28 @@ unsafe fn stream_len(stream: &IStream) -> Option<u64> {
     let mut stat = STATSTG::default();
     stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
     Some(stat.cbSize)
+}
+
+/// The stream's identity for the failure memory ([`failmemo::Identity`]): its reported
+/// name, size, and modified time, from one `IStream::Stat` call. `None` when the stream
+/// reports no name - a nameless stream has no stable identity to remember a failure
+/// against, so such a file is simply decoded fresh every time. `pwcsName` is a
+/// CoTaskMem allocation we own and must free.
+unsafe fn stream_identity(stream: &IStream) -> Option<failmemo::Identity> {
+    let mut stat = STATSTG::default();
+    stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
+    if stat.pwcsName.is_null() {
+        return None;
+    }
+    let name = stat.pwcsName.to_string().ok();
+    CoTaskMemFree(Some(stat.pwcsName.0 as *const core::ffi::c_void));
+    let name = name?;
+    let mtime = ((stat.mtime.dwHighDateTime as u64) << 32) | stat.mtime.dwLowDateTime as u64;
+    Some(failmemo::Identity {
+        name,
+        size: stat.cbSize,
+        mtime,
+    })
 }
 
 impl ThumbnailProvider_Impl {
@@ -125,6 +164,16 @@ impl ThumbnailProvider_Impl {
             size.map(|n| n.to_string())
                 .unwrap_or_else(|| "?".to_string()),
         ));
+    }
+
+    /// This call's identity for the failure memory, or `None` when the stream is
+    /// unavailable or reports no name. `try_borrow`, never `borrow`: this crate is
+    /// `panic = "abort"`, so an already-borrowed `RefCell` must decline the lookup
+    /// rather than take the host down.
+    fn current_identity(&self) -> Option<failmemo::Identity> {
+        let borrow = self.stream.try_borrow().ok()?;
+        let stream = borrow.as_ref()?;
+        unsafe { stream_identity(stream) }
     }
 
     /// Every registered-format tier declined a `StreamSource::Bytes` payload. A few
@@ -151,7 +200,7 @@ impl ThumbnailProvider_Impl {
         });
         match ext.filter(|x| decode::extension_has_named_coder(x)) {
             Some(ext) => {
-                safety::log_debug(&format!("GetThumbnail: tiers declined; retrying as .{ext}"));
+                safety::log_debugf!("GetThumbnail: tiers declined; retrying as .{ext}");
                 let img =
                     decode::decode_by_extension(bytes, &ext, Some(cx)).map_err(|_| original_err)?;
                 Ok(decode::thumbnail_from_image(img, cx))
@@ -172,14 +221,14 @@ impl ThumbnailProvider_Impl {
         match source {
             StreamSource::Frame(frame) => Ok(decode::thumbnail_from_image(frame, cx)),
             StreamSource::Bytes(bytes) => {
-                safety::log_debug(&format!("GetThumbnail: cx={cx} bytes={}", bytes.len()));
+                safety::log_debugf!("GetThumbnail: cx={cx} bytes={}", bytes.len());
                 match decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded) {
                     Ok(img) => Ok(img),
                     Err(e) => self.retry_decode_by_extension(&bytes, cx, e),
                 }
             }
             StreamSource::Covers(covers) => {
-                safety::log_debug(&format!("GetThumbnail: cx={cx} covers={}", covers.len()));
+                safety::log_debugf!("GetThumbnail: cx={cx} covers={}", covers.len());
                 decode::thumbnail_from_covers(&covers, cx)
             }
         }
@@ -229,10 +278,7 @@ impl ThumbnailProvider_Impl {
         // hang the OS-level isolation already survives, at the cost of a second COM-apartment
         // hazard on whatever the tiered decoders (WIC/magick) assume about the calling thread.
         let img = self.decode_thumb_source(source, cx, cfg)?;
-        safety::log_debug(&format!(
-            "GetThumbnail: decoded {}x{}",
-            img.width, img.height
-        ));
+        safety::log_debugf!("GetThumbnail: decoded {}x{}", img.width, img.height);
 
         // Optional transparency checkerboard (`ThumbChecker`, off by default). Runs BEFORE
         // the badge: the badge is an overlay on the finished picture, and a checkerboard

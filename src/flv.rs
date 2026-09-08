@@ -473,13 +473,13 @@ pub(crate) fn child_frame_png(
     match png {
         Ok(png) if !png.is_empty() && png.len() <= png_cap => Some(png),
         Ok(_) => {
-            crate::safety::log_debug(&format!(
+            crate::safety::log_debugf!(
                 "{verb} decode: child produced no/oversized output (status {status:?})"
-            ));
+            );
             None
         }
         Err(why) => {
-            crate::safety::log_debug(&format!("{verb} decode: {why} (status {status:?})"));
+            crate::safety::log_debugf!("{verb} decode: {why} (status {status:?})");
             None
         }
     }

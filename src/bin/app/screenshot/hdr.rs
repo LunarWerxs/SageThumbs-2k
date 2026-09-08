@@ -103,10 +103,10 @@ pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) 
     }
     // Worth a line in the diagnostics log: if someone reports a washed-out or an
     // oddly-coloured screenshot, the first thing to know is which path ran.
-    sagethumbs2k_core::safety::log_debug(&format!(
+    sagethumbs2k_core::safety::log_debugf!(
         "screenshot: HDR capture for {n} of {} monitor(s)",
         mons.len()
-    ));
+    );
     // One D3D11 device for the WHOLE capture (item 145's D3D half) instead of one per HDR
     // monitor: creating a device is the single most expensive step in this path, and a
     // multi-monitor HDR rig previously paid it again for every monitor on every screenshot.

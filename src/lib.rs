@@ -41,6 +41,9 @@ pub mod decode;
 mod dib;
 pub mod doctor;
 mod factory;
+// Bounded, process-local memory of thumbnail decode failures (a circuit breaker), so a
+// hostile or broken file already known to fail is not re-decoded on every redraw.
+mod failmemo;
 // `pub` (hidden) because the `st2k` bin's `flv-frame` child verb reuses the FLV tag walk
 // (`flv::scan_flash_keyframe`) — one parser, so the parent's probe and the child's
 // extraction can never disagree about what counts as the first Flash-codec keyframe.
@@ -123,9 +126,9 @@ pub use topdf::{combine_to_pdf, combine_to_pdf_paged, PdfPage};
 pub use verbs::{
     convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in, convert_to_magick_in,
     convert_to_magick_in_named, copy_rgba_to_clipboard, copy_to_clipboard, default_menu_tokens,
-    files_to_folder, resize_file, run_action, tags_to_folders, BatchReport, Combined, ConvertOpts,
-    FileOutcome, FileStatus, OmitCause, Omitted, OnOmit, Resize, Target, Transform, VerbAction,
-    MENU_SEP_TOKEN,
+    files_to_folder, rename_by_pattern, rename_pattern_preview, resize_file, run_action,
+    tags_to_folders, BatchReport, Combined, ConvertOpts, Corner, FileOutcome, FileStatus,
+    OmitCause, Omitted, OnOmit, Resize, Target, Transform, VerbAction, Watermark, MENU_SEP_TOKEN,
 };
 
 /// Is ImageMagick available? Gates the magick-backed Convert targets (PSD/DDS/…),

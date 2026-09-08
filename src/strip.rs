@@ -499,9 +499,7 @@ fn resolve_dims_via_full_decode(path: &str, info: &mut ImageInfo) {
         // All probes (image-crate header, container canvas, full decode, video frame)
         // failed — leave a breadcrumb so a "shows no dimensions" report is diagnosable
         // instead of silently surfacing the 0×0 sentinel.
-        crate::safety::log_debug(&format!(
-            "read_info: could not determine dimensions for {path}"
-        ));
+        crate::safety::log_debugf!("read_info: could not determine dimensions for {path}");
     }
 }
 

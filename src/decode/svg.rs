@@ -125,7 +125,7 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     // Keep the usvg cause: "this looked like SVG but won't parse" is the single
     // most common SVG triage question, and a bare E_FAIL discards the reason.
     let tree = usvg::Tree::from_data(bytes, &opt).map_err(|e| {
-        crate::safety::log_debug(&format!("SVG parse failed: {e:?}"));
+        crate::safety::log_debugf!("SVG parse failed: {e:?}");
         Error::from(E_FAIL)
     })?;
     let size = tree.size();

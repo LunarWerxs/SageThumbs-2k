@@ -274,9 +274,11 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1148, "menu_pick_color"),
     (1149, "menu_strip_meta"),
     (1161, "menu_copy"),
+    (1257, "menu_copy_data_uri"),
     (1234, "menu_upload"), // moved off 1183 - collided with ID_RUN_DOCTOR, see the comment there
     (1162, "menu_set_folder_icon"),
     (1163, "menu_wallpaper"),
+    (1258, "menu_lock_screen"),
 ];
 
 /// Capture-hotkey presets offered in the Settings dropdown, each paired with its

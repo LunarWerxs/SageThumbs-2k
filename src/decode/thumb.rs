@@ -85,9 +85,7 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
                 // below and decoding the same baked JPEG a second time (G145a).
                 CompositeVerdict::UseBakedPreview(preview) => return Ok(preview),
             },
-            Err(e) => crate::safety::log_debug(&format!(
-                "PSD composite failed ({e}); using baked preview"
-            )),
+            Err(e) => crate::safety::log_debugf!("PSD composite failed ({e}); using baked preview"),
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))

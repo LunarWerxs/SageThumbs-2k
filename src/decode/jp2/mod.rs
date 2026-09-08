@@ -1478,6 +1478,97 @@ mod dim_tests {
     }
 }
 
+/// A one-component, one-tile codestream whose header multipliers are the caller's (image
+/// edge, decomposition levels, layer count, progression, one precinct byte repeated per
+/// resolution), followed by a single tile-part carrying `body` bytes. Code-blocks are the
+/// smallest legal 4x4 so the block count is at its maximum.
+///
+/// Lives at module scope (moved out of `fuzz_tests`, which is `#[cfg(test)]`-only) so
+/// `fuzzapi` — and `crate::fuzz`'s harness, once wired to it — can build a codestream
+/// without reaching into a private test module. `fuzz_tests` still calls it unqualified via
+/// its own `use super::*;`.
+#[cfg(test)]
+pub(crate) fn hostile_codestream(
+    edge: u32,
+    levels: u8,
+    layers: u16,
+    progression: u8,
+    precinct_byte: Option<u8>,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut cs: Vec<u8> = vec![0xFF, 0x4F]; // SOC
+
+    let mut siz = vec![0u8; 36];
+    siz[2..6].copy_from_slice(&edge.to_be_bytes()); // Xsiz
+    siz[6..10].copy_from_slice(&edge.to_be_bytes()); // Ysiz
+    siz[18..22].copy_from_slice(&edge.to_be_bytes()); // XTsiz
+    siz[22..26].copy_from_slice(&edge.to_be_bytes()); // YTsiz
+    siz[34..36].copy_from_slice(&1u16.to_be_bytes()); // Csiz
+    siz.extend_from_slice(&[7, 1, 1]); // Ssiz, XRsiz, YRsiz
+    cs.extend_from_slice(&[0xFF, 0x51]);
+    cs.extend_from_slice(&((siz.len() + 2) as u16).to_be_bytes());
+    cs.extend_from_slice(&siz);
+
+    let mut cod = vec![u8::from(precinct_byte.is_some()), progression];
+    cod.extend_from_slice(&layers.to_be_bytes());
+    cod.extend_from_slice(&[0, levels, 0, 0, 0, 1]); // MCT, NL, cbw, cbh, style, 5/3
+    if let Some(pb) = precinct_byte {
+        cod.extend(std::iter::repeat_n(pb, levels as usize + 1));
+    }
+    cs.extend_from_slice(&[0xFF, 0x52]);
+    cs.extend_from_slice(&((cod.len() + 2) as u16).to_be_bytes());
+    cs.extend_from_slice(&cod);
+
+    // QCD style 0, two guard bits, one exponent byte per subband.
+    let mut qcd = vec![0x40u8];
+    qcd.extend(std::iter::repeat_n(8u8 << 3, 3 * levels as usize + 1));
+    cs.extend_from_slice(&[0xFF, 0x5C]);
+    cs.extend_from_slice(&((qcd.len() + 2) as u16).to_be_bytes());
+    cs.extend_from_slice(&qcd);
+
+    // One tile-part: SOT (Psot spans marker, segment, SOD and body), SOD, body.
+    cs.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A]);
+    cs.extend_from_slice(&0u16.to_be_bytes()); // Isot
+    cs.extend_from_slice(&((14 + body.len()) as u32).to_be_bytes()); // Psot
+    cs.extend_from_slice(&[0x00, 0x01]); // TPsot, TNsot
+    cs.extend_from_slice(&[0xFF, 0x93]); // SOD
+    cs.extend_from_slice(body);
+    cs.extend_from_slice(&[0xFF, 0xD9]); // EOC
+    cs
+}
+
+/// Direct fuzz entry points into `dimensions` and `decode_reduced`, plus the seed this
+/// module's mutation fuzz needs to reach either one — JPEG 2000's own mutation-fuzz harness
+/// (`fuzz_tests` below) already red-teams this code, but was never wired into
+/// `crate::fuzz`'s cross-format harness, which is test-only itself, so `#[cfg(test)]` here
+/// changes no shipped behavior.
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) mod fuzzapi {
+    use super::*;
+
+    pub(crate) fn dimensions(bytes: &[u8]) {
+        let _ = super::dimensions(bytes);
+    }
+
+    pub(crate) fn decode_reduced(bytes: &[u8]) {
+        let _ = super::decode_reduced(bytes, 64);
+    }
+
+    /// A codestream `dimensions`/`decode_reduced` actually decode, for
+    /// `crate::fuzz`'s reach assertion — the same shape `fuzz_tests::sane_header_passes_the_
+    /// walk_budget` already proves decodes cleanly.
+    pub(crate) fn seed() -> Vec<u8> {
+        hostile_codestream(64, 2, 1, 0, None, &[0u8; 64])
+    }
+
+    /// Whether [`seed`] reaches both parsers, for `crate::fuzz`'s reach assertion.
+    pub(crate) fn seed_decodes() -> bool {
+        let cs = seed();
+        super::dimensions(&cs).is_some() && super::decode_reduced(&cs, 64).is_ok()
+    }
+}
+
 #[cfg(test)]
 mod fuzz_tests {
     //! Red team for the half of this module that is WIRED IN.
@@ -1638,59 +1729,6 @@ mod fuzz_tests {
         );
     }
 
-    /// A one-component, one-tile codestream whose header multipliers are the caller's
-    /// (image edge, decomposition levels, layer count, progression, one precinct byte
-    /// repeated per resolution), followed by a single tile-part carrying `body` bytes.
-    /// Code-blocks are the smallest legal 4x4 so the block count is at its maximum.
-    fn hostile_codestream(
-        edge: u32,
-        levels: u8,
-        layers: u16,
-        progression: u8,
-        precinct_byte: Option<u8>,
-        body: &[u8],
-    ) -> Vec<u8> {
-        let mut cs: Vec<u8> = vec![0xFF, 0x4F]; // SOC
-
-        let mut siz = vec![0u8; 36];
-        siz[2..6].copy_from_slice(&edge.to_be_bytes()); // Xsiz
-        siz[6..10].copy_from_slice(&edge.to_be_bytes()); // Ysiz
-        siz[18..22].copy_from_slice(&edge.to_be_bytes()); // XTsiz
-        siz[22..26].copy_from_slice(&edge.to_be_bytes()); // YTsiz
-        siz[34..36].copy_from_slice(&1u16.to_be_bytes()); // Csiz
-        siz.extend_from_slice(&[7, 1, 1]); // Ssiz, XRsiz, YRsiz
-        cs.extend_from_slice(&[0xFF, 0x51]);
-        cs.extend_from_slice(&((siz.len() + 2) as u16).to_be_bytes());
-        cs.extend_from_slice(&siz);
-
-        let mut cod = vec![u8::from(precinct_byte.is_some()), progression];
-        cod.extend_from_slice(&layers.to_be_bytes());
-        cod.extend_from_slice(&[0, levels, 0, 0, 0, 1]); // MCT, NL, cbw, cbh, style, 5/3
-        if let Some(pb) = precinct_byte {
-            cod.extend(std::iter::repeat_n(pb, levels as usize + 1));
-        }
-        cs.extend_from_slice(&[0xFF, 0x52]);
-        cs.extend_from_slice(&((cod.len() + 2) as u16).to_be_bytes());
-        cs.extend_from_slice(&cod);
-
-        // QCD style 0, two guard bits, one exponent byte per subband.
-        let mut qcd = vec![0x40u8];
-        qcd.extend(std::iter::repeat_n(8u8 << 3, 3 * levels as usize + 1));
-        cs.extend_from_slice(&[0xFF, 0x5C]);
-        cs.extend_from_slice(&((qcd.len() + 2) as u16).to_be_bytes());
-        cs.extend_from_slice(&qcd);
-
-        // One tile-part: SOT (Psot spans marker, segment, SOD and body), SOD, body.
-        cs.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A]);
-        cs.extend_from_slice(&0u16.to_be_bytes()); // Isot
-        cs.extend_from_slice(&((14 + body.len()) as u32).to_be_bytes()); // Psot
-        cs.extend_from_slice(&[0x00, 0x01]); // TPsot, TNsot
-        cs.extend_from_slice(&[0xFF, 0x93]); // SOD
-        cs.extend_from_slice(body);
-        cs.extend_from_slice(&[0xFF, 0xD9]); // EOC
-        cs
-    }
-
     /// Header-only bombs: a few hundred bytes declaring a MAX_PIXELS-sized image whose
     /// layer x resolution x precinct product runs to billions of packets and tens of
     /// millions of precinct-bands. Each must come back as an error promptly, before any
@@ -1745,6 +1783,24 @@ mod fuzz_tests {
             Ok((rgb, w, h)) => assert_eq!((w, h, rgb.len()), (64, 64, 64 * 64 * 3)),
             Err(e) => panic!("a 64x64 single-layer file must not trip the walk budget: {e}"),
         }
+    }
+
+    /// `fuzzapi::seed()` must actually reach a real decode, not just survive one — a seed
+    /// its own parser rejects is worse than no seed (see `container::fuzzseed`'s
+    /// `every_seed_reaches_its_parser` doc for why this class of check matters).
+    #[test]
+    fn fuzzapi_seed_reaches_a_real_decode() {
+        let cs = fuzzapi::seed();
+        assert!(
+            dimensions(&cs).is_some(),
+            "fuzzapi seed must expose real dimensions"
+        );
+        assert!(
+            decode_reduced(&cs, 64).is_ok(),
+            "fuzzapi seed must decode cleanly"
+        );
+        fuzzapi::dimensions(&cs);
+        fuzzapi::decode_reduced(&cs);
     }
 }
 

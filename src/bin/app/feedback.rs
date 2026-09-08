@@ -104,28 +104,21 @@ pub(crate) unsafe fn show_feedback(owner: HWND) {
 /// `PrintWindow`ed like every other app-window shot, so the layout is verifiable
 /// without opening a window or touching the network.
 pub(crate) unsafe fn run_shot_feedback(out: &str) -> bool {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         crate::dark::is_dark(),
-        w!("SageThumbs2KFeedback"),
-        Some(feedback_wndproc),
-        t("fb_title"),
-        DLG_W,
-        DLG_H,
-    ) else {
-        return false;
-    };
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KFeedback"),
+            wndproc: Some(feedback_wndproc),
+            title: t("fb_title"),
+            design_w: DLG_W,
+            design_h: DLG_H,
+        },
+        |_hwnd, _hinst| {},
+        20,
+        8,
+        false,
+    )
 }
 
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {

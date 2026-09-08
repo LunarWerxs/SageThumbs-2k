@@ -12,6 +12,9 @@ pub enum WallpaperMode {
     Stretch,
     Tile,
     Center,
+    Fill,
+    Fit,
+    Span,
 }
 
 /// A lossy-but-non-destructive pixel transform (writes a new file, never the
@@ -87,10 +90,15 @@ pub enum VerbAction {
     Convert(Target),
     Transform(Transform),
     Clipboard,
+    /// Base64-encode the file's raw bytes into a `data:<mime>;base64,…` URI and place
+    /// it on the clipboard as text (the original file is untouched).
+    CopyDataUri,
     /// Upload the selected image(s) to a keyless host — the companion app POSTs each
     /// and copies the returned link(s) to the clipboard; the originals are untouched.
     Upload,
     Wallpaper(WallpaperMode),
+    /// Set as the Windows lock screen background (`Windows.System.UserProfile.LockScreen`).
+    LockScreen,
     CombineToPdf,
     /// Combine the selected images into one CBZ (zip) comic archive.
     CombineToCbz,
@@ -108,6 +116,10 @@ pub enum VerbAction {
     CompressToSize(CompressSize),
     /// Batch-rename the selected images from their EXIF capture metadata.
     RenameByExif(RenamePattern),
+    /// Open the "Rename with pattern…" dialog (companion app): a free-form template
+    /// (`{name}`/`{ext}`/`{n}`/`{date}`/`{w}`/`{h}` + find/replace) with a live
+    /// preview, for any file type — not just the four fixed metadata patterns above.
+    RenameWithPattern,
     /// Make the selected image the icon of the folder that contains it.
     SetFolderIcon,
     /// Open the eyedropper window (in the companion app) to pick a color.
@@ -117,6 +129,10 @@ pub enum VerbAction {
     FilesToFolder,
     /// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own folder.
     SortByDimensions,
+    /// Move each selected image into a `YYYY-MM-DD` subfolder of its own folder, named
+    /// from its EXIF capture date (the same date [`RenamePattern::DateTaken`] uses). A
+    /// file with no capture date is skipped.
+    SortByDateTaken,
     /// Sort selected audio files into folders by their tags (opens a dialog in
     /// the companion app: destination, template, copy/move).
     TagsToFolders,
@@ -268,6 +284,7 @@ pub const MENU: &[MenuItem] = &[
                 "menu_rename_track_title",
                 VerbAction::RenameByExif(RenamePattern::TrackTitle),
             ),
+            MenuItem::Verb("menu_rename_pattern", VerbAction::RenameWithPattern),
         ],
     ),
     MenuItem::Verb("menu_files_to_folder", VerbAction::FilesToFolder),
@@ -275,6 +292,7 @@ pub const MENU: &[MenuItem] = &[
         "menu_sort",
         &[
             MenuItem::Verb("menu_sort_dimensions", VerbAction::SortByDimensions),
+            MenuItem::Verb("menu_sort_date", VerbAction::SortByDateTaken),
             MenuItem::Verb("menu_sort_tags", VerbAction::TagsToFolders),
         ],
     ),
@@ -288,6 +306,7 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::Verb("menu_pick_color", VerbAction::Eyedropper),
     MenuItem::Verb("menu_strip_meta", VerbAction::StripMetadata),
     MenuItem::Verb("menu_copy", VerbAction::Clipboard),
+    MenuItem::Verb("menu_copy_data_uri", VerbAction::CopyDataUri),
     MenuItem::Verb("menu_upload", VerbAction::Upload),
     MenuItem::Separator,
     MenuItem::Verb("menu_set_folder_icon", VerbAction::SetFolderIcon),
@@ -306,8 +325,21 @@ pub const MENU: &[MenuItem] = &[
                 "menu_wallpaper_center",
                 VerbAction::Wallpaper(WallpaperMode::Center),
             ),
+            MenuItem::Verb(
+                "menu_wallpaper_fill",
+                VerbAction::Wallpaper(WallpaperMode::Fill),
+            ),
+            MenuItem::Verb(
+                "menu_wallpaper_fit",
+                VerbAction::Wallpaper(WallpaperMode::Fit),
+            ),
+            MenuItem::Verb(
+                "menu_wallpaper_span",
+                VerbAction::Wallpaper(WallpaperMode::Span),
+            ),
         ],
     ),
+    MenuItem::Verb("menu_lock_screen", VerbAction::LockScreen),
     MenuItem::Group(
         "menu_compress",
         &[
@@ -582,9 +614,12 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
 /// dispatch is unchanged (a click maps to the same action as on the full menu).
 pub fn condensed_top_level() -> Vec<(&'static MenuItem, u32)> {
     // Only verbs that actually DO something on a file we can't read: move-to-folder + the
-    // system-wide colour picker. Sort-into-folders and Rename are dropped here — they key off
-    // image dimensions / EXIF / audio tags, so on a truly unsupported file (e.g. a .docx) they'd
-    // silently no-op. (Audio files take `audio_top_level` instead, where Sort/Rename DO apply.)
+    // system-wide colour picker. Sort-into-folders and the whole Rename group are dropped here
+    // — MOST of Rename keys off image dimensions / EXIF / audio tags, so on a truly unsupported
+    // file (e.g. a .docx) it'd silently no-op. "Rename with pattern…" alone would actually work
+    // on any file, but it lives in the same group and this list is group-granular, not
+    // leaf-granular, so it's excluded along with its siblings rather than split out.
+    // (Audio files take `audio_top_level` instead, where Sort/Rename DO apply.)
     const KEYS: &[&str] = &["menu_files_to_folder", "menu_pick_color"];
     top_level_subset(KEYS)
 }
@@ -758,7 +793,7 @@ mod tests {
     fn leaf_count_snapshot() {
         assert_eq!(
             leaf_count(),
-            46,
+            53,
             "MENU leaf count changed — re-check quick_items()/preview-slot math, then update this snapshot",
         );
     }
@@ -972,6 +1007,7 @@ mod tests {
             "menu_resize",
             "menu_rotate",
             "menu_wallpaper",
+            "menu_lock_screen",
             "menu_copy",
             "menu_set_folder_icon",
         ] {

@@ -231,6 +231,12 @@ use asf::asf_cover;
 use id3::dsf_cover;
 
 pub(crate) use asf::{asf_tags, AsfTags};
+// Test-only re-exports so `container::fuzzseed` can aim at the APEv2 / DSF-ID3v2 cover-art
+// sub-parsers directly. The format modules themselves (`ape`, `id3`) stay private to `audio`.
+#[cfg(test)]
+pub(crate) use ape::fuzzapi as ape_fuzzapi;
+#[cfg(test)]
+pub(crate) use id3::fuzzapi as id3_fuzzapi;
 
 /// Cheap magic sniff so we only run lofty on actual audio containers. (Cover art
 /// in MP3 lives in ID3v2, which sits at the file start, so "ID3" covers MP3.)

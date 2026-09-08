@@ -20,7 +20,6 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, FF_MODERN, FIXED_PITCH, FW_NORMAL, HFONT, LOGFONTW,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
@@ -59,29 +58,22 @@ pub(crate) fn run_doctor_report(owner: Option<HWND>) {
 /// `PrintWindow`ed like every other app window, so the layout is verifiable without opening
 /// anything. It runs the real report, so what it captures is a real machine's real answer.
 pub(crate) unsafe fn run_shot_doctor(out: &str) -> bool {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
     REPORT.with(|r| *r.borrow_mut() = sagethumbs2k_core::doctor::report(None));
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         crate::dark::is_dark(),
-        w!("SageThumbs2KDoctorShot"),
-        Some(doctor_wndproc),
-        t("btn_run_doctor"),
-        760,
-        560,
-    ) else {
-        return false;
-    };
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KDoctorShot"),
+            wndproc: Some(doctor_wndproc),
+            title: t("btn_run_doctor"),
+            design_w: 760,
+            design_h: 560,
+        },
+        |_hwnd, _hinst| {},
+        20,
+        8,
+        false,
+    )
 }
 
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {

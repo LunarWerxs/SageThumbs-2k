@@ -204,50 +204,44 @@ pub(crate) unsafe fn show_about(parent: HWND) {
 /// exactly `CW`×`CH`, but `create_shot_window`'s `design_w/h` size the whole WINDOW
 /// — so the frame is added back here rather than guessed at the call.
 pub(crate) unsafe fn run_shot_about(out: &str) -> bool {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         is_dark(),
-        w!("SageThumbs2KAbout"),
-        Some(about_wndproc),
-        "About SageThumbs 2K",
-        CW,
-        CH,
-    ) else {
-        return false;
-    };
-    // Grow the frame so the CLIENT is the design size the controls were placed against.
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-    let mut rc = RECT {
-        left: 0,
-        top: 0,
-        right: dpi_scale_dpi(CW, dpi),
-        bottom: dpi_scale_dpi(CH, dpi),
-    };
-    let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
-    let exstyle = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
-    let _ = AdjustWindowRectExForDpi(&mut rc, style, BOOL(0).into(), exstyle, dpi as u32);
-    let _ = SetWindowPos(
-        hwnd,
-        None,
-        0,
-        0,
-        rc.right - rc.left,
-        rc.bottom - rc.top,
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-    );
-    // Pump past MIN_SPIN_FRAMES (≈2 s) so the status pill settles on a real result
-    // instead of catching the deliberate "Checking…" spinner mid-animation.
-    crate::win::pump_msgs(140);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KAbout"),
+            wndproc: Some(about_wndproc),
+            title: "About SageThumbs 2K",
+            design_w: CW,
+            design_h: CH,
+        },
+        |hwnd, _hinst| unsafe {
+            // Grow the frame so the CLIENT is the design size the controls were placed against.
+            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: dpi_scale_dpi(CW, dpi),
+                bottom: dpi_scale_dpi(CH, dpi),
+            };
+            let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+            let exstyle = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
+            let _ = AdjustWindowRectExForDpi(&mut rc, style, BOOL(0).into(), exstyle, dpi as u32);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                rc.right - rc.left,
+                rc.bottom - rc.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        },
+        // Pump past MIN_SPIN_FRAMES (≈2 s) so the status pill settles on a real result
+        // instead of catching the deliberate "Checking…" spinner mid-animation.
+        140,
+        8,
+        false,
+    )
 }
 
 // ---- Colour helpers -----------------------------------------------------

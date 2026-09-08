@@ -484,9 +484,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
                 // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
                 // unless someone has turned diagnostics on to find exactly this.
                 Err(e) => {
-                    crate::safety::log_debug(&format!(
-                        "prebuild: {abs} size {size} not built: {e}"
-                    ));
+                    crate::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
                     missing.push(size);
                 }
             }
@@ -509,9 +507,9 @@ fn one(path: &str, opts: &Options) -> Outcome {
                         false // landed on the retry — no longer missing
                     }
                     Err(e) => {
-                        crate::safety::log_debug(&format!(
+                        crate::safety::log_debugf!(
                             "prebuild: {abs} size {size} still not built after retry: {e}"
-                        ));
+                        );
                         true
                     }
                 }
@@ -523,9 +521,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
             // No size produced anything AND none was already cached. Worth a line even at
             // normal verbosity would be too much for a big run, so it stays debug-gated, but
             // it is the one that names a file the user will actually notice.
-            crate::safety::log_debug(&format!(
-                "prebuild: {abs} produced no thumbnail at any size"
-            ));
+            crate::safety::log_debugf!("prebuild: {abs} produced no thumbnail at any size");
             Ok(Outcome::Failed)
         }
     })();

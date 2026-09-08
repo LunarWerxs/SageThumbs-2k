@@ -70,6 +70,98 @@ impl Fonts {
     }
 }
 
+/// One [`Fonts`] set's cache key: the same `(px, base_bold, base_italic)` triple
+/// [`Fonts::new`] takes. `mono` isn't part of it — a `Fonts` always carries a fixed
+/// Consolas variant at `px - 1` regardless of the base style, so it never varies per key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FontKey {
+    px: i32,
+    bold: bool,
+    italic: bool,
+}
+
+/// Cache of [`Fonts`] sets keyed by the style that built them, so one `render` pass over a
+/// document with N headings/paragraphs/list-items/quotes builds each distinct
+/// `(px, bold, italic)` combination once instead of once per block. Before this, every block
+/// paint called `Fonts::new` + `free` on its own, so scrolling a long document created and
+/// freed hundreds of `HFONT`s per repaint even though a typical document only ever mixes a
+/// handful of distinct styles (the heading sizes + body + quote). A `FontCache` is meant to be
+/// created once per paint pass (or held longer, by whoever owns it) and dropped when done —
+/// `Drop` frees every cached handle, so there's no separate teardown call to remember.
+#[derive(Default)]
+pub(super) struct FontCache {
+    /// The DPI the cached entries were built at. 0 = empty/never built (real DPI is always
+    /// >= 96), matching the "0 means unset" convention `win::scaling`'s DPI helpers use.
+    dpi: i32,
+    entries: Vec<(FontKey, Fonts)>,
+}
+
+impl FontCache {
+    /// Look up (or build) the `(px, bold, italic)` entry and return its index. Shared by
+    /// [`FontCache::get`]/[`FontCache::get2`] so the DPI-invalidation and build-or-reuse logic
+    /// lives in exactly one place.
+    unsafe fn ensure(&mut self, hwnd: HWND, px: i32, bold: bool, italic: bool) -> usize {
+        // `dpi_scale` is the only DPI accessor this module has; 9600 (96 * 100) round-trips
+        // through its MulDiv with no rounding, so dividing back by 100 recovers the window's
+        // real DPI without a second public accessor in `win::scaling`.
+        let dpi = crate::win::dpi_scale(hwnd, 9600) / 100;
+        if dpi != self.dpi {
+            self.clear();
+            self.dpi = dpi;
+        }
+        let key = FontKey { px, bold, italic };
+        match self.entries.iter().position(|(k, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                self.entries.push((key, Fonts::new(hwnd, px, bold, italic)));
+                self.entries.len() - 1
+            }
+        }
+    }
+
+    /// Borrowed handles for `(px, base_bold, base_italic)` at `hwnd`'s current DPI —
+    /// building and caching a new [`Fonts`] set the first time this exact combination is
+    /// asked for. If `hwnd`'s DPI has changed since the last call (a monitor move), every
+    /// cached entry is freed and rebuilt first: a `Fonts` bakes in the DPI-scaled pixel size
+    /// at creation, so a stale-DPI entry would be wrong, not just wasted.
+    ///
+    /// Safety: same requirement as [`Fonts::new`] — `hwnd` must be a live window.
+    pub(super) unsafe fn get(&mut self, hwnd: HWND, px: i32, bold: bool, italic: bool) -> &Fonts {
+        let idx = self.ensure(hwnd, px, bold, italic);
+        &self.entries[idx].1
+    }
+
+    /// Two entries at once, e.g. a table's body + header style, which several helpers need
+    /// live together. Both are resolved (built if missing) before either reference is taken, so
+    /// the second lookup's possible `Vec` growth can never invalidate the first.
+    ///
+    /// Safety: same requirement as [`FontCache::get`].
+    pub(super) unsafe fn get2(
+        &mut self,
+        hwnd: HWND,
+        a: (i32, bool, bool),
+        b: (i32, bool, bool),
+    ) -> (&Fonts, &Fonts) {
+        let ia = self.ensure(hwnd, a.0, a.1, a.2);
+        let ib = self.ensure(hwnd, b.0, b.1, b.2);
+        (&self.entries[ia].1, &self.entries[ib].1)
+    }
+
+    /// Free every cached handle now, rather than waiting for `Drop`. [`FontCache::ensure`]
+    /// calls this itself on a DPI change; nothing else needs to.
+    fn clear(&mut self) {
+        for (_, fonts) in self.entries.drain(..) {
+            unsafe { fonts.free() };
+        }
+    }
+}
+
+impl Drop for FontCache {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
 /// Palette + DPI-scaled constants shared by every `run_block` call of one render pass.
 pub(super) struct RunCtx {
     pub(super) code_bg: u32,
@@ -774,4 +866,58 @@ pub(super) unsafe fn font(hwnd: HWND, px: i32, bold: bool, italic: bool, mono: b
         Default::default(),
         PCWSTR(face.as_ptr()),
     )
+}
+
+#[cfg(test)]
+mod font_cache_tests {
+    use super::FontKey;
+
+    // `FontKey` equality is what makes cache lookups hit/miss correctly; it's the one part of
+    // `FontCache` that's pure enough to test without a live HWND. The `get`/`clear`/`Drop`
+    // behavior around it is exercised indirectly by every existing `--shot --window preview`
+    // markdown capture, same as `Fonts` always was.
+    #[test]
+    fn same_style_is_the_same_key() {
+        let a = FontKey {
+            px: 16,
+            bold: false,
+            italic: false,
+        };
+        let b = FontKey {
+            px: 16,
+            bold: false,
+            italic: false,
+        };
+        assert!(a == b);
+    }
+
+    #[test]
+    fn px_bold_and_italic_each_change_the_key() {
+        let base = FontKey {
+            px: 16,
+            bold: false,
+            italic: false,
+        };
+        assert!(
+            base != FontKey {
+                px: 17,
+                bold: false,
+                italic: false
+            }
+        );
+        assert!(
+            base != FontKey {
+                px: 16,
+                bold: true,
+                italic: false
+            }
+        );
+        assert!(
+            base != FontKey {
+                px: 16,
+                bold: false,
+                italic: true
+            }
+        );
+    }
 }

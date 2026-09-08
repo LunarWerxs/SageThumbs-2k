@@ -74,6 +74,7 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
         Btn::Upload => on_btn_upload(path),
         Btn::Open => on_btn_open(hwnd, path),
         Btn::OpenWith => on_btn_open_with(hwnd, path),
+        Btn::Print => crate::preview::print::do_print(hwnd, st, path),
     }
 }
 

@@ -745,7 +745,7 @@ fn decode_via_magick_spec_alloc(
     // is how issue #9 stayed invisible. Process creation really can fail on a machine that
     // is out of resources, so it needs a breadcrumb like every other tier has.
     let mut child = cmd.spawn().map_err(|e| {
-        crate::safety::log_debug(&format!("magick decode: could not start the child: {e}"));
+        crate::safety::log_debugf!("magick decode: could not start the child: {e}");
         Error::from(E_FAIL)
     })?;
 
@@ -815,10 +815,10 @@ fn decode_via_magick_spec_alloc(
     // we may have killed a child that had already produced a complete PNG).
     // image::Limits bound this safe-tier decode.
     decode_with_image_alloc(&png, max_alloc).inspect_err(|e| {
-        crate::safety::log_debug(&format!(
+        crate::safety::log_debugf!(
             "magick decode: could not re-decode the {} byte PNG it returned: {e}",
             png.len()
-        ));
+        );
     })
 }
 
@@ -931,10 +931,10 @@ fn drain_capped<R: Read>(mut r: R) -> Vec<u8> {
 fn log_magick_failure(what: &str, status: Option<std::process::ExitStatus>, stderr: &[u8]) {
     let err = String::from_utf8_lossy(stderr);
     let err = err.trim();
-    crate::safety::log_debug(&format!(
+    crate::safety::log_debugf!(
         "magick {what} (status {status:?}): {}",
         if err.is_empty() { "<no stderr>" } else { err }
-    ));
+    );
 }
 
 /// Is the bundled (or system) ImageMagick available? Gates the magick-backed
@@ -943,28 +943,49 @@ pub fn magick_available() -> bool {
     magick_exe().is_some()
 }
 
-/// Return the explicit ImageMagick coder for every Magick-backed output exposed
-/// by the Convert dialog. Never let ImageMagick infer these from a filename:
-/// when a module is absent, it can otherwise preserve the input encoding and
-/// still exit successfully, producing (for example) PNG bytes in an `.avif` file.
+/// (extension, ImageMagick coder name) for every Magick-backed output exposed by
+/// the Convert dialog. This is the ONE source of truth for what ImageMagick can
+/// write: `output_coder`, `magick_output_supported`, and `magick_output_extensions`
+/// all read it, and `src/bin/app/convert.rs`'s `CV_MAGICK_FORMATS` (the dialog's
+/// hand-typed labels) is asserted against `magick_output_extensions()` by a test
+/// there, so a coder added here without a matching label fails the build's tests.
+const OUTPUT_CODERS: &[(&str, &str)] = &[
+    ("avif", "AVIF"),
+    ("jxl", "JXL"),
+    ("psd", "PSD"),
+    ("dds", "DDS"),
+    ("jp2", "JP2"),
+    ("pcx", "PCX"),
+    ("sgi", "SGI"),
+    ("pfm", "PFM"),
+    ("dpx", "DPX"),
+    ("fits", "FITS"),
+    ("xpm", "XPM"),
+    ("pict", "PICT"),
+    ("ras", "RAS"),
+    ("palm", "PALM"),
+];
+
+/// Return the explicit ImageMagick coder for a Magick-backed output extension.
+/// Never let ImageMagick infer these from a filename: when a module is absent,
+/// it can otherwise preserve the input encoding and still exit successfully,
+/// producing (for example) PNG bytes in an `.avif` file.
 fn output_coder(extension: &str) -> Option<&'static str> {
-    match extension.to_ascii_lowercase().as_str() {
-        "avif" => Some("AVIF"),
-        "jxl" => Some("JXL"),
-        "psd" => Some("PSD"),
-        "dds" => Some("DDS"),
-        "jp2" => Some("JP2"),
-        "pcx" => Some("PCX"),
-        "sgi" => Some("SGI"),
-        "pfm" => Some("PFM"),
-        "dpx" => Some("DPX"),
-        "fits" => Some("FITS"),
-        "xpm" => Some("XPM"),
-        "pict" => Some("PICT"),
-        "ras" => Some("RAS"),
-        "palm" => Some("PALM"),
-        _ => None,
-    }
+    let ext = extension.to_ascii_lowercase();
+    OUTPUT_CODERS
+        .iter()
+        .find(|(candidate, _)| *candidate == ext)
+        .map(|(_, coder)| *coder)
+}
+
+/// Every extension ImageMagick has a tested output coder for. The Convert
+/// dialog's `CV_MAGICK_FORMATS` must carry exactly this set (a unit test there
+/// checks both directions).
+pub fn magick_output_extensions() -> &'static [&'static str] {
+    static EXTENSIONS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    EXTENSIONS
+        .get_or_init(|| OUTPUT_CODERS.iter().map(|(ext, _)| *ext).collect())
+        .as_slice()
 }
 
 /// Whether `extension` has an explicit, tested ImageMagick output coder.
@@ -973,7 +994,10 @@ fn output_coder(extension: &str) -> Option<&'static str> {
 /// writer list. An extension merely being decodable does not mean either
 /// `image` or ImageMagick can safely encode it.
 pub fn magick_output_supported(extension: &str) -> bool {
-    output_coder(extension).is_some()
+    let ext = extension.to_ascii_lowercase();
+    magick_output_extensions()
+        .iter()
+        .any(|candidate| *candidate == ext)
 }
 
 /// What the [`encode_via_magick`] watchdog loop should do after one process poll.
@@ -1043,11 +1067,11 @@ fn magick_encode_target(
         Error::from(E_FAIL)
     })?;
     if !encode_target_length_ok(out) {
-        crate::safety::log_debug(&format!(
+        crate::safety::log_debugf!(
             "encode_via_magick: target path too long for magick's raw, unprefixed coder \
              spec: {}",
             out.display()
-        ));
+        );
         return Err(Error::from(E_FAIL));
     }
     let out_str = out.to_str().ok_or_else(|| Error::from(E_FAIL))?;
@@ -1248,12 +1272,27 @@ pub fn encode_via_magick(
     target_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    let (exe, output_spec) = magick_encode_target(target_ext, out)?;
-    let args = magick_encode_args(output_spec, quality);
-
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|_| Error::from(E_FAIL))?;
+    encode_via_magick_png(png, out, target_ext, quality)
+}
+
+/// Same as [`encode_via_magick`], but takes PNG bytes the caller already built
+/// instead of re-encoding `img` here with no metadata of its own. Callers that
+/// need EXIF/XMP/ICC to survive an exotic magick-only target graft the carried
+/// chunks onto the PNG bytes first (see `verbs::encode::carry`). ImageMagick
+/// reads `eXIf`/`iTXt`-XMP/`iCCP` off the PNG it receives on stdin and
+/// propagates that metadata into whatever it writes, for the formats that can
+/// hold it.
+pub fn encode_via_magick_png(
+    png: Vec<u8>,
+    out: &std::path::Path,
+    target_ext: &str,
+    quality: Option<u8>,
+) -> Result<()> {
+    let (exe, output_spec) = magick_encode_target(target_ext, out)?;
+    let args = magick_encode_args(output_spec, quality);
 
     // Bound concurrent magick children (memory) across in-process + st2k fan-out.
     let (mut child, _permit) = spawn_magick_child(exe, &args)?;
@@ -1273,10 +1312,10 @@ pub fn encode_via_magick(
 mod tests {
     use super::{
         add_magick_limits, add_metafile_magick_limits, apply_magick_environment,
-        encode_wait_decision, magick_output_supported, magick_stdin_spec, output_coder, EncodeWait,
-        FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES,
-        METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
-        METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
+        encode_wait_decision, magick_output_extensions, magick_output_supported, magick_stdin_spec,
+        output_coder, EncodeWait, FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP,
+        MAX_ISOBMFF_TOP_LEVEL_BOXES, METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT,
+        METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
     };
     use std::collections::HashMap;
     use std::process::Command;
@@ -1395,6 +1434,19 @@ mod tests {
         assert!(!magick_output_supported(""));
         assert!(!magick_output_supported("png"));
         assert!(!magick_output_supported("not-a-real-format"));
+
+        let extensions = magick_output_extensions();
+        assert_eq!(
+            extensions.len(),
+            expected.len(),
+            "magick_output_extensions() drifted from the coder table"
+        );
+        for (extension, _) in expected {
+            assert!(
+                extensions.contains(&extension),
+                "{extension} missing from magick_output_extensions()"
+            );
+        }
     }
 
     #[test]

@@ -748,56 +748,41 @@ extern "system" fn first_run_wndproc(
 /// before capturing; page-1 choices are NOT applied (the flip path that applies them is
 /// the button handler, deliberately not exercised here).
 pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         crate::dark::is_dark(),
-        w!("SageThumbs2KFirstRunShot2"),
-        Some(first_run_wndproc),
-        t("fr_title"),
-        DLG_W,
-        dlg_h(),
-    ) else {
-        return false;
-    };
-    flip_to_page2(hwnd, hinst);
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KFirstRunShot2"),
+            wndproc: Some(first_run_wndproc),
+            title: t("fr_title"),
+            design_w: DLG_W,
+            design_h: dlg_h(),
+        },
+        |hwnd, hinst| unsafe { flip_to_page2(hwnd, hinst) },
+        20,
+        8,
+        false,
+    )
 }
 
 /// Headless capture (`--shot <out.png> --window firstrun`) so the layout is verifiable
 /// without opening a window or touching any setting.
 pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         crate::dark::is_dark(),
-        w!("SageThumbs2KFirstRunShot"),
-        Some(first_run_wndproc),
-        t("fr_title"),
-        DLG_W,
-        dlg_h(),
-    ) else {
-        return false;
-    };
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KFirstRunShot"),
+            wndproc: Some(first_run_wndproc),
+            title: t("fr_title"),
+            design_w: DLG_W,
+            design_h: dlg_h(),
+        },
+        |_hwnd, _hinst| {},
+        20,
+        8,
+        false,
+    )
 }
 
 #[cfg(test)]

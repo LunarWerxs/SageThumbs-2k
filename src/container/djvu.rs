@@ -329,6 +329,56 @@ mod tests {
         );
     }
 
+    /// **The fuzzer's crash.** A mutated INFO chunk can declare a page WIDER than the bilevel
+    /// mask the file actually ships: djvu-rs 0.27.0's render fallback loop clamped the source
+    /// column to `page_w - 1` but then indexed `mask_row[px >> 3]`, where `mask_row` is only
+    /// as wide as the mask itself - `index out of bounds: the len is N but the index is N`
+    /// inside `composite_rows_bilevel_one`. Reached from here via `extract`, and from
+    /// `container::fuzzseed::synthetic_djvu` via `container::extract_cover` in the always-on
+    /// fuzz gate. This code runs inside Explorer's thumbnail host under `panic = "abort"`, so
+    /// the crash used to abort the shell outright on a crafted `.djvu`.
+    ///
+    /// Fixed by vendoring djvu-rs with
+    /// `crates/vendor/djvu-patches/djvu-rs.patch`, which clamps the fallback's source column
+    /// to the mask's own width too, not just the page width.
+    #[test]
+    fn survives_a_page_width_wider_than_its_bilevel_mask() {
+        let (w, h) = (32u32, 24u32);
+        let mut bitmap = djvu_rs::Bitmap::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                bitmap.set(x, y, (x + y) % 2 == 0);
+            }
+        }
+        let mut bytes = PageEncoder::from_bitmap(&bitmap)
+            .with_quality(EncodeQuality::Lossless)
+            .with_dpi(300)
+            .encode()
+            .expect("djvu-rs encodes a bilevel page");
+
+        // Locate the INFO chunk and overwrite its width field: the container framing is a
+        // 4-byte id + a 4-byte big-endian length (applied by djvu-rs's own IFF emission seam),
+        // then a 10-byte payload whose first two bytes are the big-endian page width
+        // (djvu-rs's `chunk_encode::encode_info`). Declaring the page wider than the encoded
+        // bilevel mask is exactly the mismatch the fuzzer found.
+        let info_at = bytes
+            .windows(4)
+            .position(|w| w == b"INFO")
+            .expect("encoded page must carry an INFO chunk");
+        let width_at = info_at + 4 + 4;
+        let mutated_width = w * 4;
+        bytes[width_at..width_at + 2].copy_from_slice(&(mutated_width as u16).to_be_bytes());
+
+        // Must not panic - a rejected page (None) or a best-effort render (Some) are both an
+        // acceptable answer to a corrupt INFO chunk; aborting the process is not.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract(&bytes)));
+        assert!(
+            result.is_ok(),
+            "extract panicked on a page width wider than its bilevel mask - the fallback \
+             compositor indexed past the end of the (narrower) mask row"
+        );
+    }
+
     /// Write the two `.djvu` corpus samples that the unit tests above cover in memory, so the
     /// END-TO-END gates cover them too: `check-render-sanity.ps1` renders the whole corpus
     /// through the shipped binary and flags a tile that is a flat rectangle, which is precisely

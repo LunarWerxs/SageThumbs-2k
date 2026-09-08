@@ -154,7 +154,31 @@ pub fn guard_val<T, F: FnOnce() -> Result<T>>(f: F) -> Result<T> {
 /// A blanket `OnceLock` cache violated that (the first read won forever). We
 /// re-read the registry at most every `DEBUG_TTL_MS`, so a toggle is honored
 /// within that window while a busy log loop still avoids a registry hit per line.
+///
+/// Callers that would `format!` a message first should use [`log_debugf!`] instead, which
+/// only formats when the flag is on; this function is for messages that already exist.
 pub fn log_debug(msg: &str) {
+    if debug_logging_on() {
+        log(msg);
+    }
+}
+
+/// Formats and logs a debug line only when debug logging is on, so the `format!` (and any
+/// `Display` work behind it) is skipped entirely on the production path.
+#[macro_export]
+macro_rules! log_debugf {
+    ($($arg:tt)*) => {
+        if $crate::safety::debug_logging_on() {
+            $crate::safety::log_debug(&format!($($arg)*));
+        }
+    };
+}
+pub use crate::log_debugf;
+
+/// Whether `HKCU\Software\SageThumbs2K\Debug = 1` is set, cached for `DEBUG_TTL_MS`.
+/// Shared by [`log_debug`] and [`log_debugf!`]; see [`log_debug`] for why it is a TTL and
+/// not a one-time read.
+pub fn debug_logging_on() -> bool {
     const DEBUG_TTL_MS: u64 = 1000;
     // Packed: high 63 bits = elapsed-ms timestamp of the last probe, low bit = on.
     // 0 means "never probed". Relaxed is fine: a stale read just costs one extra
@@ -164,7 +188,7 @@ pub fn log_debug(msg: &str) {
     let now_ms = elapsed_ms();
     let packed = CACHE.load(Ordering::Relaxed);
     let last_ms = packed >> 1;
-    let on = if packed == 0 || now_ms.wrapping_sub(last_ms) >= DEBUG_TTL_MS {
+    if packed == 0 || now_ms.wrapping_sub(last_ms) >= DEBUG_TTL_MS {
         let fresh = CURRENT_USER
             .open(crate::settings::ROOT)
             .and_then(|k| k.get_u32("Debug"))
@@ -174,9 +198,6 @@ pub fn log_debug(msg: &str) {
         fresh
     } else {
         packed & 1 != 0
-    };
-    if on {
-        log(msg);
     }
 }
 

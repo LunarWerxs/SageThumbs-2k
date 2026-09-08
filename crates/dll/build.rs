@@ -1,10 +1,11 @@
 //! Embed VERSIONINFO into sagethumbs2k.dll so right-click -> Properties -> Details
 //! shows a file version (critical for telling which build a given dllhost.exe loaded).
 //!
-//! Self-contained on purpose: build scripts can't share code across crates, so this
-//! mirrors the `versioninfo_rc` helper in the core crate's `build/build.rs` (which now
-//! only emits the EXE resources). Best-effort: if OUT_DIR/windres is unavailable, emit
-//! a `cargo:warning` and move on — the DLL just lacks a version (REPORTED, never fatal).
+//! The SDK-rc lookup + VERSIONINFO `.rc` template live in the shared `build-support` crate
+//! (a `[build-dependencies]`-only crate under `crates/build-support`, so none of it reaches
+//! the shipped DLL) - build scripts can't share code across crates any other way. Best-effort:
+//! if OUT_DIR/windres is unavailable, emit a `cargo:warning` and move on - the DLL just lacks
+//! a version (REPORTED, never fatal).
 
 fn main() {
     delay_load_media_foundation();
@@ -34,7 +35,13 @@ fn main() {
         println!("cargo:rustc-link-arg-cdylib=/IGNORE:4104");
     }
 
-    let rc = versioninfo_rc("SageThumbs 2K shell extension", "sagethumbs2k.dll");
+    let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let rc = build_support::versioninfo_rc(
+        "SageThumbs 2K shell extension",
+        "sagethumbs2k.dll",
+        &ver,
+        build_support::FileType::Dll,
+    );
     if std::fs::write(format!("{out}/dll_version.rc"), rc).is_err() {
         println!("cargo:warning=DLL VERSIONINFO: couldn't write dll_version.rc; DLL will have no version");
         return;
@@ -42,7 +49,7 @@ fn main() {
     let input = format!("{out}/dll_version.rc");
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
         let res = format!("{out}/dll_version.res");
-        if compile_with_windows_sdk_rc(&input, &res) {
+        if build_support::compile_with_windows_sdk_rc(&input, &res) {
             println!("cargo:rustc-link-arg={res}");
             return;
         }
@@ -67,77 +74,6 @@ fn main() {
         "cargo:warning=DLL VERSIONINFO: windres unavailable; sagethumbs2k.dll will have no \
          file version. Install binutils/llvm-windres to enable it."
     );
-}
-
-fn compile_with_windows_sdk_rc(input: &str, output: &str) -> bool {
-    windows_sdk_rc_candidates().into_iter().any(|rc| {
-        let status = std::process::Command::new(rc)
-            .args(["/nologo", &format!("/fo{output}"), input])
-            .status();
-        matches!(status, Ok(s) if s.success())
-    })
-}
-
-fn windows_sdk_rc_candidates() -> Vec<std::path::PathBuf> {
-    let mut candidates = vec![std::path::PathBuf::from("rc.exe")];
-    let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") else {
-        return candidates;
-    };
-    let sdk_bin = std::path::PathBuf::from(program_files_x86).join("Windows Kits/10/bin");
-    let Ok(entries) = std::fs::read_dir(sdk_bin) else {
-        return candidates;
-    };
-    let host = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x64"
-    };
-    let mut versions: Vec<std::path::PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path().join(host).join("rc.exe"))
-        .filter(|path| path.is_file())
-        .collect();
-    versions.sort_by(|a, b| b.cmp(a));
-    candidates.extend(versions);
-    candidates
-}
-
-/// A Windows `VERSIONINFO` `.rc` with FileVersion / ProductVersion pinned to
-/// `CARGO_PKG_VERSION` (the shared workspace version). Mirrors the core build.rs.
-fn versioninfo_rc(file_desc: &str, orig_name: &str) -> String {
-    let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
-    let mut nums = [0u32; 3];
-    for (i, part) in ver.split(['.', '-', '+']).take(3).enumerate() {
-        nums[i] = part.parse().unwrap_or(0);
-    }
-    let (maj, min, pat) = (nums[0], nums[1], nums[2]);
-    format!(
-        "1 VERSIONINFO\n\
-         FILEVERSION {maj},{min},{pat},0\n\
-         PRODUCTVERSION {maj},{min},{pat},0\n\
-         FILEOS 0x40004\n\
-         FILETYPE 0x2\n\
-         BEGIN\n\
-         \x20 BLOCK \"StringFileInfo\"\n\
-         \x20 BEGIN\n\
-         \x20\x20\x20 BLOCK \"040904b0\"\n\
-         \x20\x20\x20 BEGIN\n\
-         \x20\x20\x20\x20\x20 VALUE \"CompanyName\", \"LunarWerx\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"FileDescription\", \"{file_desc}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"FileVersion\", \"{ver}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"InternalName\", \"SageThumbs2K\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"LegalCopyright\", \"(C) 2026 LunarWerx\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"OriginalFilename\", \"{orig_name}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"ProductName\", \"SageThumbs 2K\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"ProductVersion\", \"{ver}\"\n\
-         \x20\x20\x20 END\n\
-         \x20 END\n\
-         \x20 BLOCK \"VarFileInfo\"\n\
-         \x20 BEGIN\n\
-         \x20\x20\x20 VALUE \"Translation\", 0x409, 1200\n\
-         \x20 END\n\
-         END\n",
-    )
 }
 
 /// Delay-load Media Foundation (`mfplat.dll` / `mfreadwrite.dll`).

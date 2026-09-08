@@ -1,6 +1,58 @@
-//! Putting an image on the Windows clipboard as CF_DIB.
+//! Putting an image on the Windows clipboard as CF_DIB, or a file as a `data:` URI.
 
 use super::*;
+
+/// Extension -> MIME type for `data:` URIs, covering the formats named in scope; anything
+/// else falls back to the generic binary type rather than refusing the file (`is_image`
+/// accepts many formats — HEIC, RAW, PSD, … — outside this short list).
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Build a `data:<mime>;base64,<payload>` URI from raw file bytes and the source
+/// extension (used only to pick the MIME type — the bytes themselves are copied
+/// verbatim, never re-encoded). Pure, so it's unit-testable without touching a file.
+pub(crate) fn build_data_uri(ext: &str, bytes: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    format!(
+        "data:{};base64,{}",
+        mime_for_ext(ext),
+        STANDARD.encode(bytes)
+    )
+}
+
+/// `VerbAction::CopyDataUri` - read the file through the same bounded reader
+/// [`copy_to_clipboard`] uses (refuses + logs over the same size cap), base64 its raw
+/// bytes into a `data:` URI, and place it on the clipboard as CF_UNICODETEXT.
+pub fn copy_data_uri_to_clipboard(path: &str) -> Result<()> {
+    let bytes = read_full_fidelity_capped(path)?;
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let uri = build_data_uri(ext, &bytes);
+    let ok = unsafe {
+        crate::clipboard::set_clipboard(
+            crate::clipboard::CF_UNICODETEXT,
+            &crate::clipboard::utf16_nul_bytes(&uri),
+        )
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::new(E_FAIL, "copy to clipboard failed"))
+    }
+}
 
 /// Decode `path` and place it on the clipboard as CF_DIB (32bpp, bottom-up
 /// BGRA — the conventional packed-DIB layout other apps expect).
@@ -75,7 +127,43 @@ fn build_dib(w: i32, h: i32, rgba: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_dib;
+    use super::{build_data_uri, build_dib, mime_for_ext};
+
+    /// Every extension in the MIME table maps to the exact type named in scope, and
+    /// anything else — including extensions `is_image` accepts that aren't in this
+    /// short list (HEIC, RAW, PSD, …) — falls back to the generic binary type rather
+    /// than refusing the file.
+    #[test]
+    fn mime_for_ext_covers_the_table_and_falls_back() {
+        assert_eq!(mime_for_ext("png"), "image/png");
+        assert_eq!(mime_for_ext("PNG"), "image/png", "case-insensitive");
+        assert_eq!(mime_for_ext("jpg"), "image/jpeg");
+        assert_eq!(mime_for_ext("jpeg"), "image/jpeg");
+        assert_eq!(mime_for_ext("gif"), "image/gif");
+        assert_eq!(mime_for_ext("webp"), "image/webp");
+        assert_eq!(mime_for_ext("svg"), "image/svg+xml");
+        assert_eq!(mime_for_ext("avif"), "image/avif");
+        assert_eq!(mime_for_ext("bmp"), "image/bmp");
+        assert_eq!(mime_for_ext("ico"), "image/x-icon");
+        assert_eq!(mime_for_ext("heic"), "application/octet-stream");
+        assert_eq!(mime_for_ext(""), "application/octet-stream");
+    }
+
+    /// A known byte string's base64 is a fixed, checkable value — pins the URI shape
+    /// (`data:<mime>;base64,<payload>`) and that the payload is real base64, not just
+    /// "some string that happens to look encoded."
+    #[test]
+    fn build_data_uri_known_bytes() {
+        assert_eq!(
+            build_data_uri("png", b"hello"),
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert_eq!(build_data_uri("jpg", b"hi"), "data:image/jpeg;base64,aGk=");
+        assert_eq!(
+            build_data_uri("xyz", b""),
+            "data:application/octet-stream;base64,"
+        );
+    }
 
     /// A 2x2 RGBA input with a distinct color per pixel, laid out top-down:
     /// ```text

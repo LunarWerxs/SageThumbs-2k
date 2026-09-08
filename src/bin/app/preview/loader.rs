@@ -437,10 +437,10 @@ unsafe fn post_resolved(hwnd: HWND, gen: u64, resolved: Resolved) {
 /// worker and leaves the window in its Loading state instead of adding one more blocked thread.
 unsafe fn spawn_prepare_load(hwnd: HWND, path: String, gen: u64, view_source_active: bool) {
     if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
-        sagethumbs2k_core::safety::log_debug(&format!(
+        sagethumbs2k_core::safety::log_debugf!(
             "preview load: too many workers still running past their budget; leaving {path} \
              in its Loading state"
-        ));
+        );
         show_load_refused(hwnd, &path);
         return;
     }

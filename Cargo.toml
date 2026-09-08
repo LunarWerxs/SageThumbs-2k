@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/dll", "crates/dlghook"]
-exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide"]
+members = ["crates/dll", "crates/dlghook", "crates/build-support"]
+exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/djvu-rs"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
@@ -32,6 +32,13 @@ exr = { path = "crates/vendor/exr" }
 # next run overwrites it and the change is lost with nothing to say so.
 jxl-render = { path = "crates/vendor/jxl-render" }
 jxl-oxide = { path = "crates/vendor/jxl-oxide" }
+# DjVu decode, patched for a fuzzer-found panic: a mutated INFO chunk can declare a page
+# width larger than the bilevel mask it ships, and djvu-rs 0.27.0's render fallback loop
+# clamped the source column to the page width only, then indexed the (narrower) mask row -
+# `index out of bounds` inside Explorer's thumbnail host, which runs `panic = "abort"`. The
+# vendored crate is the exact crates.io 0.27.0 source plus the documented patch in
+# crates/vendor/djvu-patches/README.md. Remove this override after upstream ships the fix.
+djvu-rs = { path = "crates/vendor/djvu-rs" }
 
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
 # build-release.ps1 reads this line; keep it in sync with
@@ -351,6 +358,9 @@ dll-i18n-subset = []
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["compress"] }
 
 [build-dependencies]
+# The SDK-rc lookup + VERSIONINFO .rc template shared with crates/dll and crates/dlghook's
+# build scripts (build-dependency only; never reaches the shipped binary).
+build-support = { path = "crates/build-support" }
 # Embeds the app manifest (Common-Controls v6 + DPI awareness) into the EXE so
 # the Options dialog renders with the native Win11 control theme.
 embed-manifest = "1.4"
@@ -415,7 +425,9 @@ features = [
     # WinRT: the OS PDF rasterizer (Windows.Data.Pdf) — PDF first-page thumbnails
     # with zero bundled bytes (no pdfium.dll, no Ghostscript). Windows 10+.
     "Data_Pdf",
+    "Storage",
     "Storage_Streams",
+    "System_UserProfile",
     "Foundation",
     # WinRT OCR (Windows.Media.Ocr) — image → text, in-box, zero bundled bytes.
     "Media_Ocr",

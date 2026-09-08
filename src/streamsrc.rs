@@ -130,7 +130,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     match audio_art(stream, &head) {
         AudioArt::Art(art) => return Ok(StreamSource::Bytes(art)),
         AudioArt::NoArt => {
-            safety::log_debug(&format!("{who}: audio file has no embedded art"));
+            safety::log_debugf!("{who}: audio file has no embedded art");
             return Err(Error::from(E_FAIL));
         }
         AudioArt::NotAudio => {}
@@ -152,7 +152,7 @@ pub(crate) unsafe fn stream_source_with_caps(
             // A recognized generic archive with no readable image: fail now so
             // Explorer shows the stock zip icon — buffering the whole file just to
             // fail the image tiers on raw archive bytes would prove nothing.
-            safety::log_debug(&format!("{who}: generic archive with no image entries"));
+            safety::log_debugf!("{who}: generic archive with no image entries");
             return Err(Error::from(E_FAIL));
         }
         ArchiveProbe::Found(src) => return Ok(src),
@@ -174,10 +174,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     // for `target_edge` (issue #33): the prefix would otherwise be the only bytes
     // the decoder ever sees, and the composite unreachable however big the request.
     if let Some(prefix) = head_preview_fast(stream, &head, target_edge) {
-        safety::log_debug(&format!(
-            "{who}: head-preview fast path ({} bytes)",
-            prefix.len()
-        ));
+        safety::log_debugf!("{who}: head-preview fast path ({} bytes)", prefix.len());
         return Ok(StreamSource::Bytes(prefix));
     }
 
@@ -214,9 +211,7 @@ pub(crate) unsafe fn stream_source_with_caps(
             // cannot prove this is a bounded CB7 rather than a huge project 7z.
             // Do not pull up to hundreds of MiB over a marshaled/network stream
             // merely to discover that after the fact.
-            safety::log_debug(&format!(
-                "{who}: refusing name-less 7z with unavailable stream size"
-            ));
+            safety::log_debugf!("{who}: refusing name-less 7z with unavailable stream size");
             Err(Error::from(E_FAIL))
         }
         _ => {
@@ -260,10 +255,10 @@ unsafe fn try_video_source(
         if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
             stream: stream.clone(),
         }) {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "{who}: cover art preferred over a frame ({} bytes)",
                 cover.len()
-            ));
+            );
             return Some(Ok(StreamSource::Bytes(cover)));
         }
     }
@@ -295,9 +290,9 @@ unsafe fn try_video_source(
     // inside MF past its grace (issue #35) has MF but must not feed it another file.
     let mf = crate::video::mf_usable();
     if !mf {
-        safety::log_debug(&format!(
+        safety::log_debugf!(
             "{who}: Media Foundation unavailable or wedged, in-process frame tiers skipped"
-        ));
+        );
     }
     // The user's MaxSize gates the two non-targeted fallbacks (tiers 4 and 5): they read
     // a bounded head, or head plus tail, wherever the keyframe is, and a file the user has
@@ -524,16 +519,12 @@ unsafe fn resolve_decoded_frame(
     };
     let frame = match rotation {
         Some(deg) => {
-            safety::log_debug(&format!("{who}: display matrix asks for {deg} deg"));
+            safety::log_debugf!("{who}: display matrix asks for {deg} deg");
             crate::video::apply_display_rotation(frame, deg)
         }
         None => frame,
     };
-    safety::log_debug(&format!(
-        "{who}: video frame {}x{}",
-        frame.width(),
-        frame.height()
-    ));
+    safety::log_debugf!("{who}: video frame {}x{}", frame.width(), frame.height());
     StreamSource::Frame(frame)
 }
 
@@ -548,21 +539,21 @@ unsafe fn video_undecodable_fallback(
     who: &str,
 ) -> Option<Result<StreamSource>> {
     if head.is_ogg() {
-        safety::log_debug(&format!("{who}: OggS not video - trying album art"));
+        safety::log_debugf!("{who}: OggS not video - trying album art");
         return None;
     }
     if needs_fallback_cover_art(tried_cover_art) {
         if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
             stream: stream.clone(),
         }) {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "{who}: video frame undecodable - using attached cover art ({} bytes)",
                 cover.len()
-            ));
+            );
             return Some(Ok(StreamSource::Bytes(cover)));
         }
     }
-    safety::log_debug(&format!("{who}: video with no decodable frame"));
+    safety::log_debugf!("{who}: video with no decodable frame");
     Some(Err(Error::from(E_FAIL)))
 }
 
@@ -588,15 +579,11 @@ unsafe fn try_exr_source(
     };
     match decode::exr_scaled_from_reader(source, target_edge) {
         Ok(img) => {
-            safety::log_debug(&format!(
-                "{who}: scaled EXR {}x{}",
-                img.width(),
-                img.height()
-            ));
+            safety::log_debugf!("{who}: scaled EXR {}x{}", img.width(), img.height());
             Some(StreamSource::Frame(img))
         }
         Err(e) => {
-            safety::log_debug(&format!("{who}: scaled EXR decode failed ({e})"));
+            safety::log_debugf!("{who}: scaled EXR decode failed ({e})");
             let _ = stream.Seek(0, STREAM_SEEK_SET, None);
             None
         }
@@ -617,10 +604,10 @@ unsafe fn try_raw_preview_fast(
     };
     match raw {
         RawFastSource::Preview(preview) => {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "{who}: RAW embedded-preview fast path ({} bytes)",
                 preview.len()
-            ));
+            );
             Ok(Some(StreamSource::Bytes(preview)))
         }
         RawFastSource::Prefix(prefix, size) => {
@@ -651,14 +638,14 @@ unsafe fn oversized_rescue(
     who: &str,
 ) -> Result<StreamSource> {
     if let Some(cover) = archive_cover_streamed(stream, head) {
-        safety::log_debug(&format!("{who}: streamed cover from {size}-byte archive"));
+        safety::log_debugf!("{who}: streamed cover from {size}-byte archive");
         return Ok(StreamSource::Bytes(cover));
     }
     if let Some(prefix) = head_preview_prefix(stream, head) {
-        safety::log_debug(&format!(
+        safety::log_debugf!(
             "{who}: head-preview prefix ({} bytes) of {size}-byte file",
             prefix.len()
-        ));
+        );
         return Ok(StreamSource::Bytes(prefix));
     }
     // GIMP `.xcf`. Every rescue around this one needs something a GIMP file does not
@@ -681,11 +668,11 @@ unsafe fn oversized_rescue(
         // also the one that used to spend seconds building a full-resolution canvas
         // nobody would look at.
         if let Some(img) = crate::container::xcf_from_reader(&mut reader, Some(target_edge)) {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
                 img.width(),
                 img.height()
-            ));
+            );
             return Ok(StreamSource::Frame(img));
         }
         let _ = stream.Seek(0, STREAM_SEEK_SET, None);
@@ -706,16 +693,16 @@ unsafe fn oversized_rescue(
     if size <= max_file_bytes {
         let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
         if let Some(img) = decode::wic_scaled_from_stream(stream, target_edge, &head) {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}",
                 img.width(),
                 img.height()
-            ));
+            );
             return Ok(StreamSource::Frame(img));
         }
         let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     }
-    safety::log_debug(&format!("{who}: skip, {size} bytes over limit"));
+    safety::log_debugf!("{who}: skip, {size} bytes over limit");
     Err(Error::from(E_FAIL))
 }
 
@@ -900,9 +887,7 @@ unsafe fn stream_path(stream: &IStream) -> Option<String> {
     if p.is_absolute() && p.is_file() {
         Some(s)
     } else {
-        safety::log_debug(&format!(
-            "stream_path: {s:?} is not an absolute path to an existing file"
-        ));
+        safety::log_debugf!("stream_path: {s:?} is not an absolute path to an existing file");
         None
     }
 }

@@ -19,7 +19,7 @@
 //! This file is the facade / entry point. The UI is split into submodules:
 //! `win` (shared Win32 primitives), `dark` (dark mode), `sponsors` (the remote
 //! banner), `settings_dlg` (the main window), `about`, `convert`,
-//! `files_to_folder`, `tags_to_folders`, and `eyedropper`.
+//! `files_to_folder`, `rename_dlg`, `tags_to_folders`, and `eyedropper`.
 // `not(test)`: under `cargo test` we need the console subsystem so the harness can
 // print results; the shipped binary stays a GUI ("windows") subsystem app.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
@@ -38,6 +38,7 @@ mod feedback;
 mod files_to_folder;
 mod first_run;
 mod gdip;
+mod gif_frames;
 mod hotkey;
 mod http;
 mod image_info;
@@ -60,6 +61,7 @@ mod oauth;
 mod ocr_result;
 mod prebuild_dlg;
 mod preview;
+mod rename_dlg;
 mod screenshot;
 mod settings_dlg;
 mod settings_io;
@@ -88,6 +90,7 @@ use crate::convert::run_convert_dialog;
 use crate::dark::{dark_bg_brush, dark_control, dark_titlebar, init_dark_app, is_dark};
 use crate::eyedropper::run_eyedropper;
 use crate::files_to_folder::run_files_to_folder_dialog;
+use crate::rename_dlg::run_rename_with_pattern_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
 use crate::win::{app_icon, t};
 
@@ -423,8 +426,10 @@ unsafe fn dispatch_update_modes(args: &[String]) -> bool {
 
 /// Builds the `ShotOpts` for `--shot --window preview`: `--file <path>` input (synthetic
 /// gradient if absent), plus optional headless state forcing — `--hot N` (button N
-/// hovered), `--pinned`, `--pdf-page N`, `--frame N` (animation frame), `--play` (video
-/// strip), `--source` (raw text of a normally-rendered file), and the rest.
+/// hovered), `--focus N` (caption-toolbar button N keyboard-focused, same `N` numbering as
+/// `--hot`), `--focus-transport N` (transport-strip button N keyboard-focused), `--pinned`,
+/// `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip), `--source` (raw
+/// text of a normally-rendered file), and the rest.
 fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOpts {
     let val = |name: &str| {
         args.iter()
@@ -434,6 +439,8 @@ fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOpts {
     crate::preview::ShotOpts {
         file: val("--file").cloned(),
         hot: val("--hot").and_then(|s| s.parse().ok()),
+        focus: val("--focus").and_then(|s| s.parse().ok()),
+        focus_transport: val("--focus-transport").and_then(|s| s.parse().ok()),
         pinned: args.iter().any(|a| a == "--pinned"),
         pdf_page: val("--pdf-page").and_then(|s| s.parse().ok()),
         frame: val("--frame").and_then(|s| s.parse().ok()),
@@ -699,10 +706,16 @@ unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     // Upload-keep mode: uploads the USER files listed to the keyless host and copies the
     // link(s) to the clipboard, WITHOUT deleting the originals (only `--upload` deletes,
     // since its file is a throwaway capture). Exact-match above means `--upload` never
-    // swallows this longer flag.
+    // swallows this longer flag. An optional trailing `--url-to <file>` is how `st2k upload`
+    // reuses this same path headlessly: see `run_upload_keep`'s doc comment for the contract.
     if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
         if let Some(listfile) = args.get(pos + 1) {
-            crate::screenshot::run_upload_keep(listfile);
+            let url_to = args
+                .iter()
+                .position(|a| a == "--url-to")
+                .and_then(|p| args.get(p + 1))
+                .map(String::as_str);
+            crate::screenshot::run_upload_keep(listfile, url_to);
         }
         return true;
     }
@@ -714,13 +727,19 @@ unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     false
 }
 
-/// `--files-to-folder <listfile>` and `--tags-to-folders <listfile>` (both spawned by DLL
-/// verbs over a multi-file selection). Returns `true` if a flag fired (caller should
-/// return).
+/// `--files-to-folder <listfile>`, `--rename-with-pattern <listfile>`, and
+/// `--tags-to-folders <listfile>` (all spawned by DLL verbs over a multi-file
+/// selection). Returns `true` if a flag fired (caller should return).
 unsafe fn dispatch_folder_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     if let Some(pos) = args.iter().position(|a| a == "--files-to-folder") {
         if let Some(listfile) = args.get(pos + 1) {
             run_files_to_folder_dialog(hinst, listfile);
+        }
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--rename-with-pattern") {
+        if let Some(listfile) = args.get(pos + 1) {
+            run_rename_with_pattern_dialog(hinst, listfile);
         }
         return true;
     }
@@ -1175,6 +1194,7 @@ mod tests {
             vec!["--preview", "a.png"],
             vec!["--eyedropper"],
             vec!["--files-to-folder", "list.txt"],
+            vec!["--rename-with-pattern", "list.txt"],
         ] {
             assert!(
                 update_piggyback_wanted(&argv(&ordinary)),

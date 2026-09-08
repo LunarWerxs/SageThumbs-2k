@@ -37,6 +37,7 @@ mod compress;
 mod samplers;
 mod slots;
 mod streaming;
+mod watermark;
 
 // Parent-hub imports: children are glob-imported PRIVATELY so the pipeline below reads
 // as one flat namespace and each child's `use super::*` sees the shared types. The
@@ -49,6 +50,7 @@ pub(crate) use slots::{
     predict_unique_suffix, preserve_src_time, reserve, reserve_unique_suffix, unique_output,
     with_tmp_suffix, write_atomic, OutSlot,
 };
+pub use watermark::{Corner, Watermark};
 
 // pub(crate): the routed CLI path (verbs::actions::helper::shrink_one) formats this
 // into `--quality` instead of hard-coding "82", so the two paths can't silently desync.
@@ -98,6 +100,28 @@ pub(crate) fn read_full_fidelity_capped(path: &str) -> Result<Vec<u8>> {
 /// transforms, and resizes from disagreeing about formats such as PSD or DDS.
 pub(crate) fn ext_needs_magick(ext: &str) -> bool {
     decode::magick_output_supported(ext)
+}
+
+/// Encode `img` to `out` via ImageMagick, carrying `carried`'s EXIF/XMP/ICC onto
+/// the intermediate PNG handed to magick - the same PNG magick decodes before it
+/// writes the exotic target (PSD/DDS/AVIF/JXL/...), so magick propagates that
+/// metadata into whatever it writes, for the formats that can hold it. The ONE
+/// path every magick-backed convert/resize/rotate verb goes through, so none of
+/// them can drift from the others on what gets carried.
+fn encode_via_magick_carrying(
+    img: &DynamicImage,
+    carried: Option<&carry::Carried>,
+    out: &Path,
+    out_ext: &str,
+    quality: Option<u8>,
+) -> Result<()> {
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+        .map_err(|e| Error::new(E_FAIL, format!("encode intermediate PNG: {e}")))?;
+    if let Some(meta) = carried {
+        png = carry::apply_to_png_bytes(meta, png);
+    }
+    decode::encode_via_magick_png(png, out, out_ext, quality)
 }
 
 /// Map file extensions to formats this build can actually WRITE natively.
@@ -153,8 +177,9 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
     if ext_needs_magick(target.ext) {
         // The quick "Convert into ▸ AVIF/JXL" verb: magick's default quality (None) — kept
         // byte-identical to before. The Convert… dialog carries an explicit quality instead.
+        let carried = carry::read(&bytes, &src_ext(path));
         write_atomic(slot.path(), |tmp| {
-            decode::encode_via_magick(&img, tmp, target.ext, None)
+            encode_via_magick_carrying(&img, carried.as_ref(), tmp, target.ext, None)
         })?;
         preserve_src_time(Path::new(path), slot.path());
         return Ok(slot.path().to_path_buf());
@@ -251,11 +276,11 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     write_atomic(slot.path(), |tmp| {
         if let Some(format) = native_format {
             encode_to(&out_img, format, out_ext, tmp)?;
+            if let Some(m) = &carried {
+                carry::apply(m, tmp, out_ext)?;
+            }
         } else {
-            decode::encode_via_magick(&out_img, tmp, out_ext, None)?;
-        }
-        if let Some(m) = &carried {
-            carry::apply(m, tmp, out_ext)?;
+            encode_via_magick_carrying(&out_img, carried.as_ref(), tmp, out_ext, None)?;
         }
         Ok(())
     })?;
@@ -449,11 +474,11 @@ pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
     write_atomic(slot.path(), |tmp| {
         if let Some(format) = native_format {
             encode_to(&img, format, out_ext, tmp)?;
+            if let Some(m) = &carried {
+                carry::apply(m, tmp, out_ext)?;
+            }
         } else {
-            decode::encode_via_magick(&img, tmp, out_ext, None)?;
-        }
-        if let Some(m) = &carried {
-            carry::apply(m, tmp, out_ext)?;
+            encode_via_magick_carrying(&img, carried.as_ref(), tmp, out_ext, None)?;
         }
         Ok(())
     })?;
@@ -624,7 +649,11 @@ pub enum Resize {
 }
 
 /// Convert options chosen in the Convert… dialog.
-#[derive(Clone, Copy)]
+///
+/// `Clone`, not `Copy`: [`Watermark`] carries an owned path, so a caller that
+/// needs the same options more than once (the dialog's "write every preset
+/// size" mode runs one `ConvertOpts` per size) clones explicitly.
+#[derive(Clone)]
 pub struct ConvertOpts {
     pub target: Target,
     pub jpeg_quality: u8,
@@ -633,6 +662,20 @@ pub struct ConvertOpts {
     /// non-WebP formats).
     pub webp_quality: Option<u8>,
     pub resize: Resize,
+    /// `Some(mark)` overlays an image watermark after resize and before encode.
+    /// `None` (the common case) leaves the pipeline exactly as it was.
+    pub watermark: Option<Watermark>,
+}
+
+/// Read and decode `wm`'s mark image through the same bounded reader/decoder
+/// the source image goes through, then alpha-blend it onto `img`. A mark that
+/// fails to read or decode fails the file's conversion via `?`, exactly like
+/// any other convert error - never a silent skip.
+fn apply_watermark(img: &mut DynamicImage, wm: &Watermark) -> Result<()> {
+    let bytes = read_full_fidelity_capped(&wm.path)?;
+    let mark = decode::decode_full(&bytes)?;
+    watermark::apply(img, &mark, wm.corner, wm.scale_pct, wm.opacity_pct);
+    Ok(())
 }
 
 pub(crate) fn apply_resize(img: DynamicImage, r: Resize) -> DynamicImage {
@@ -703,6 +746,9 @@ pub fn convert_file_opts_named(
 ) -> Result<PathBuf> {
     let bytes = read_full_fidelity_capped(path)?;
     let mut img = apply_resize(decode::decode_full_for_path(&bytes, path)?, opts.resize);
+    if let Some(wm) = &opts.watermark {
+        apply_watermark(&mut img, wm)?;
+    }
     if matches!(opts.target.format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
     }
@@ -848,6 +894,23 @@ pub fn convert_to_magick(
     resize: Resize,
     quality: Option<u8>,
 ) -> Result<()> {
+    convert_to_magick_watermarked(input, out, resize, quality, None)
+}
+
+/// [`convert_to_magick`] with an optional watermark applied after resize and
+/// before the intermediate PNG magick decodes - the Convert… dialog's own
+/// entry point for the exotic (magick-backed) targets, so a watermark lands
+/// there exactly as it does for the native encoders. Kept separate from the
+/// public [`convert_to_magick`] so its no-watermark callers (the quick "Convert
+/// into" verb, the `st2k` out-of-process routing) keep their existing 4-argument
+/// signature.
+fn convert_to_magick_watermarked(
+    input: &str,
+    out: &Path,
+    resize: Resize,
+    quality: Option<u8>,
+    watermark: Option<&Watermark>,
+) -> Result<()> {
     let target_ext = out
         .extension()
         .and_then(|extension| extension.to_str())
@@ -864,9 +927,13 @@ pub fn convert_to_magick(
         ));
     }
     let bytes = read_full_fidelity_capped(input)?;
-    let img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
+    let mut img = apply_resize(decode::decode_full_for_path(&bytes, input)?, resize);
+    if let Some(wm) = watermark {
+        apply_watermark(&mut img, wm)?;
+    }
+    let carried = carry::read(&bytes, &src_ext(input));
     write_atomic(out, |tmp| {
-        decode::encode_via_magick(&img, tmp, target_ext, quality)
+        encode_via_magick_carrying(&img, carried.as_ref(), tmp, target_ext, quality)
     })?;
     preserve_src_time(Path::new(input), out);
     Ok(())
@@ -883,14 +950,17 @@ pub fn convert_to_magick_in(
     resize: Resize,
     quality: Option<u8>,
 ) -> Result<PathBuf> {
-    convert_to_magick_in_named(input, out_dir, ext, resize, quality, None)
+    convert_to_magick_in_named(input, out_dir, ext, resize, quality, None, None)
 }
 
 /// [`convert_to_magick_in`] with the same name tag [`convert_file_opts_named`]
 /// takes, so the dialog's "write every preset size" mode names its AVIF/JXL/PSD
 /// outputs the same way it names the native ones. Without it three sizes would
 /// land as `photo.avif`, `photo (2).avif`, `photo (3).avif` with nothing to say
-/// which is which.
+/// which is which. `watermark` is the same optional image overlay
+/// [`ConvertOpts::watermark`] carries for the native encoders - the Convert…
+/// dialog's exotic (magick-backed) targets go through this entry point rather
+/// than a `ConvertOpts`, so the overlay is threaded through as its own argument.
 #[allow(clippy::too_many_arguments)]
 pub fn convert_to_magick_in_named(
     input: &str,
@@ -899,6 +969,7 @@ pub fn convert_to_magick_in_named(
     resize: Resize,
     quality: Option<u8>,
     tag: Option<&str>,
+    watermark: Option<&Watermark>,
 ) -> Result<PathBuf> {
     if !decode::magick_output_supported(ext) {
         return Err(Error::new(
@@ -922,7 +993,7 @@ pub fn convert_to_magick_in_named(
         };
         dir.join(name)
     });
-    convert_to_magick(input, slot.path(), resize, quality)?;
+    convert_to_magick_watermarked(input, slot.path(), resize, quality, watermark)?;
     Ok(slot.path().to_path_buf())
 }
 

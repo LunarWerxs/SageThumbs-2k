@@ -5,20 +5,35 @@
 //!   chain, and the Settings ▸ Screenshots "Edit upload hosts…" button opens it;
 //! - the `st2k` CLI (`st2k upload-hosts [--open]`) — prints / opens it.
 //!
-//! The file lives at `%APPDATA%\SageThumbs2K\upload-hosts.conf`. The parsing itself
-//! stays with each consumer (the app turns lines into its own `UploadHost` type); this
+//! The file lives at `%APPDATA%\SageThumbs2K\upload-hosts.conf` normally, or beside the
+//! portable ini when running portable (a portable copy must not leave anything in the host
+//! profile - same split `settings.rs`/`update.rs::cache_path()` already apply). The parsing
+//! itself stays with each consumer (the app turns lines into its own `UploadHost` type); this
 //! module only owns the *path*, the *template*, and "create it if missing".
 
 use std::path::{Path, PathBuf};
 
-/// Path to the config: `%APPDATA%\SageThumbs2K\upload-hosts.conf` (None if `%APPDATA%`
-/// is somehow unset).
-pub fn config_path() -> Option<PathBuf> {
-    let base = std::env::var("APPDATA").ok()?;
-    Some(
-        Path::new(&base)
+/// Pure path derivation, over an already-resolved portable-ini path and `%APPDATA%` value -
+/// no registry or env access here, so it's unit-testable directly. Beside the portable ini's
+/// directory when `ini` is `Some` (mirrors `update.rs`'s `cache_path()` - a portable copy
+/// must not leave anything in the host's `%APPDATA%`); `%APPDATA%\SageThumbs2K\...` otherwise.
+fn resolve_config_path(ini: Option<&Path>, appdata: Option<&str>) -> Option<PathBuf> {
+    if let Some(ini) = ini {
+        return ini.parent().map(|d| d.join("upload-hosts.conf"));
+    }
+    appdata.map(|base| {
+        Path::new(base)
             .join("SageThumbs2K")
-            .join("upload-hosts.conf"),
+            .join("upload-hosts.conf")
+    })
+}
+
+/// Path to the config: beside the portable ini when running portable; otherwise
+/// `%APPDATA%\SageThumbs2K\upload-hosts.conf` (`None` if `%APPDATA%` is somehow unset).
+pub fn config_path() -> Option<PathBuf> {
+    resolve_config_path(
+        crate::settings::ini_path().map(PathBuf::as_path),
+        std::env::var("APPDATA").ok().as_deref(),
     )
 }
 
@@ -132,16 +147,75 @@ pub fn template() -> String {
     )
 }
 
-/// Write the [`template`] if the file doesn't exist yet (best-effort — a failure just
-/// means no file to edit; uploads still run off the built-ins). Returns the resolved
-/// path (whether or not the write happened), so callers can print / open it.
-pub fn ensure_config() -> Option<PathBuf> {
-    let path = config_path()?;
+/// Write the [`template`] at `path` if it doesn't exist yet (best-effort - a failure just
+/// means no file to edit; uploads still run off the built-ins). Returns `path` unchanged, so
+/// callers can print / open it. Split out from [`ensure_config`] so the round trip is
+/// testable against a scratch path without going through the real portable-ini resolution.
+fn ensure_config_at(path: PathBuf) -> PathBuf {
     if !path.exists() {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(&path, template());
     }
-    Some(path)
+    path
+}
+
+/// Write the [`template`] if the file doesn't exist yet. Returns the resolved path (whether
+/// or not the write happened), so callers can print / open it.
+pub fn ensure_config() -> Option<PathBuf> {
+    Some(ensure_config_at(config_path()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_config_path_prefers_the_portable_ini_dir() {
+        let ini = Path::new(r"C:\Portable\SageThumbs2K.ini");
+        assert_eq!(
+            resolve_config_path(Some(ini), Some(r"C:\Users\someone\AppData\Roaming")),
+            Some(PathBuf::from(r"C:\Portable\upload-hosts.conf")),
+        );
+    }
+
+    #[test]
+    fn resolve_config_path_falls_back_to_appdata_when_not_portable() {
+        assert_eq!(
+            resolve_config_path(None, Some(r"C:\Users\someone\AppData\Roaming")),
+            Some(PathBuf::from(
+                r"C:\Users\someone\AppData\Roaming\SageThumbs2K\upload-hosts.conf"
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_config_path_is_none_when_neither_is_available() {
+        assert_eq!(resolve_config_path(None, None), None);
+    }
+
+    #[test]
+    fn ensure_config_at_writes_and_round_trips_through_the_portable_branch() {
+        let dir =
+            std::env::temp_dir().join(format!("st2k-upload-config-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ini = dir.join("SageThumbs2K.ini");
+        let path = resolve_config_path(Some(&ini), None).expect("portable branch always resolves");
+
+        let written = ensure_config_at(path.clone());
+        assert_eq!(written, path);
+        assert_eq!(path, dir.join("upload-hosts.conf"));
+
+        let contents =
+            std::fs::read_to_string(&path).expect("ensure_config_at should have written the file");
+        assert_eq!(contents, template());
+
+        // Second call must not clobber a user's edits.
+        std::fs::write(&path, "# user-edited\n").expect("overwrite for round-trip check");
+        ensure_config_at(path.clone());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# user-edited\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

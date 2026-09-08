@@ -195,9 +195,9 @@ impl PropertyStore_Impl {
         // cheap budget. Only PLAIN data crosses back; the `PROPVARIANT`s are built on this COM
         // thread.
         let Some((info, tags)) = probe_budgeted(path.clone()) else {
-            safety::log_debug(&format!(
+            safety::log_debugf!(
                 "PropStore::build_props: probe over budget or unreadable -> 0 props for {path}"
-            ));
+            );
             return out;
         };
 
@@ -287,12 +287,12 @@ impl PropertyStore_Impl {
             ));
         }
 
-        safety::log_debug(&format!(
+        safety::log_debugf!(
             "PropStore::build_props: dims {}x{} -> {} props",
             info.width,
             info.height,
             out.len()
-        ));
+        );
         out
     }
 }

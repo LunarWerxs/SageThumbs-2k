@@ -141,6 +141,18 @@ fn header_targets() -> Vec<Target> {
         ("container::audio_art_from_reader", |b| {
             let _ = crate::container::audio_art_from_reader(Cursor::new(b));
         }),
+        // The ASF/WMA tag reader (artist/album/title/track), which walks the same
+        // GUID-tagged object stream as `audio_art_from_reader`'s WM/Picture path but had no
+        // target of its own before this: a mutation that broke the picture parse while
+        // leaving the tag walk reachable would never have been exercised here.
+        ("container::audio_asf_tags", |b| {
+            let _ = crate::container::audio_asf_tags(&mut Cursor::new(b));
+        }),
+        // Streaming OpenEXR: reads only the chunks a downscale samples, straight off a
+        // Read + Seek source. No target existed at all before this.
+        ("decode::exr_scaled_from_reader", |b| {
+            let _ = crate::decode::exr_scaled_from_reader(Cursor::new(b), 64);
+        }),
     ]
 }
 
@@ -176,6 +188,7 @@ fn all_targets() -> Vec<Target> {
 fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
     use crate::decode::dds_fuzzapi as dds;
+    use crate::decode::jp2_fuzzapi as jp2;
     use crate::decode::mesh_fuzzapi as mesh;
     use crate::flv::fuzzapi as flv;
     vec![
@@ -209,6 +222,9 @@ fn inner_targets() -> Vec<Target> {
         ("mesh::ascii_stl", mesh::ascii_stl),
         ("mesh::obj", mesh::obj),
         ("mesh::ply", mesh::ply),
+        // JPEG 2000 codestream walk, reached in-process by the thumbnail host.
+        ("jp2::dimensions", jp2::dimensions),
+        ("jp2::decode_reduced", jp2::decode_reduced),
         ("flv::sps_dims", flv::sps_dims),
         ("flv::parse_sps", flv::parse_sps),
         (
@@ -901,7 +917,8 @@ fn hammer_n(
                 .collect::<Vec<_>>()
                 .join(" ");
             return Some(format!(
-                "PANIC in {name} on seed '{label}' iter {it}: {msg}\n  input[{}] head: {head}",
+                "PANIC in {name} on seed '{label}' iter {it}: {msg} at {}\n  input[{}] head: {head}",
+                last_panic_site(),
                 input.len()
             ));
         }
@@ -929,8 +946,9 @@ fn truncation_sweep(
         let input = &seed[..n];
         if catch_unwind(AssertUnwindSafe(|| f(input))).is_err() {
             return Some(format!(
-                "PANIC in {name} on seed '{label}' truncated to {n}/{} bytes",
-                seed.len()
+                "PANIC in {name} on seed '{label}' truncated to {n}/{} bytes at {}",
+                seed.len(),
+                last_panic_site()
             ));
         }
         n += if n < trunc_exhaustive {
@@ -942,11 +960,29 @@ fn truncation_sweep(
     None
 }
 
+thread_local! {
+    /// `file:line` of the most recent caught panic on this thread, recorded by the quiet
+    /// hook so a report can name the site; the payload alone ("index out of bounds") cannot.
+    static LAST_PANIC_SITE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Where the last caught panic happened, as `file:line`, or `?` when the hook saw none.
+fn last_panic_site() -> String {
+    LAST_PANIC_SITE.with(|c| c.borrow().clone().unwrap_or_else(|| "?".into()))
+}
+
 /// Silence the panic hook for the duration of `body` so the thousands of intentionally
 /// caught panics (in a failing run) don't flood stderr with backtraces; restore it after.
+/// The quiet hook still records each panic's location for [`last_panic_site`].
 fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
     let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(|info| {
+        let site = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        LAST_PANIC_SITE.with(|c| *c.borrow_mut() = site);
+    }));
     let out = body();
     std::panic::set_hook(prev);
     out
@@ -1089,6 +1125,27 @@ end_header
     .to_vec()
 }
 
+/// A minimal uncompressed OpenEXR scanline image, built with the `exr` crate's own writer —
+/// the same technique `exrscale::tests::ramp_exr` uses for the non-fuzz downscale tests.
+/// Hand-assembling a valid attribute list, offset table and chunk layout byte-by-byte is
+/// exactly the class of format this harness exists to stress rather than to reimplement, and
+/// a seed built by hand risks being wrong in a way that only bounces off the real parser's
+/// magic/header checks — worse than no seed at all. Uncompressed so a mutation lands on a raw
+/// scanline instead of a compressed block's own internal framing.
+fn synthetic_exr() -> Vec<u8> {
+    use exr::prelude::{Encoding, Image, SpecificChannels, Vec2, WritableImage};
+    let (w, h) = (8usize, 6usize);
+    let pixels = SpecificChannels::rgba(|p: Vec2<usize>| {
+        (p.x() as f32 * 0.1, p.y() as f32 * 0.1, 0.25f32, 1.0f32)
+    });
+    let image = Image::from_encoded_channels((w, h), Encoding::UNCOMPRESSED, pixels);
+    let mut out = Cursor::new(Vec::new());
+    if image.write().non_parallel().to_buffered(&mut out).is_err() {
+        return Vec::new();
+    }
+    out.into_inner()
+}
+
 fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
     use crate::container::fuzzseed as fs;
     const ICON: &str = "res/mipmap/ic_launcher.png";
@@ -1136,6 +1193,8 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("wav-pcm", synthetic_wav()),
         ("aiff-pcm", synthetic_aiff()),
         ("asf-wm-picture", synthetic_asf()),
+        ("exr-scanline", synthetic_exr()),
+        ("jp2-codestream", crate::decode::jp2_fuzzapi::seed()),
     ]
 }
 
@@ -1213,6 +1272,18 @@ fn every_new_surface_seed_reaches_its_parser() {
     assert!(
         crate::container::audio_art_from_reader(Cursor::new(synthetic_asf())).is_some(),
         "asf-wm-picture seed no longer reaches asf_cover's WM/Picture parse"
+    );
+    assert!(
+        crate::container::audio_asf_tags(&mut Cursor::new(synthetic_asf())).is_some(),
+        "asf-wm-picture seed no longer reaches asf_tags's object walk"
+    );
+    assert!(
+        crate::decode::exr_scaled_from_reader(Cursor::new(synthetic_exr()), 64).is_ok(),
+        "exr-scanline seed no longer reaches exrscale::decode_scaled"
+    );
+    assert!(
+        crate::decode::jp2_fuzzapi::seed_decodes(),
+        "jp2-codestream seed no longer reaches the JPEG 2000 decoder"
     );
 }
 
@@ -1333,6 +1404,7 @@ fn deep_session_over_the_new_parsers() {
     let donors: Vec<&[u8]> = seeds.iter().map(|(_, b)| b.as_slice()).collect();
 
     let mut targets = inner_targets();
+    let before_header_targets = targets.len();
     for t in header_targets() {
         if matches!(
             t.0,
@@ -1341,6 +1413,17 @@ fn deep_session_over_the_new_parsers() {
             targets.push(t);
         }
     }
+    // The three names above are matched by string, not carried as a slice from a shared
+    // constant, so a rename of any one of them would silently drop that target from this
+    // session instead of failing to compile. Assert the count instead of trusting the match.
+    const EXPECTED_NAMED_HEADER_TARGETS: usize = 3;
+    assert_eq!(
+        targets.len() - before_header_targets,
+        EXPECTED_NAMED_HEADER_TARGETS,
+        "deep_session_over_the_new_parsers expected {EXPECTED_NAMED_HEADER_TARGETS} header \
+         targets by name (mkv::vp9_keyframe, flv::scan_flash_keyframe, flv::video_codec_id) — \
+         a rename dropped one silently"
+    );
     targets.push(("container::extract_cover", |b| {
         let _ = crate::container::extract_cover(b);
     }));

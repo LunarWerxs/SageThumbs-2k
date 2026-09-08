@@ -14,16 +14,22 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     PBM_SETPOS, PBM_SETRANGE32, TBM_SETPOS, TBM_SETRANGE, TBS_HORZ,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::{
+    FileOpenDialog, IFileOpenDialog, IShellItem, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k_core::{settings, ConvertOpts, FileOutcome, Resize, Target};
+use sagethumbs2k_core::parallel::ComGuard;
+use sagethumbs2k_core::{settings, ConvertOpts, Corner, FileOutcome, Resize, Target, Watermark};
 
 use crate::convert_report::ReportAction;
 use crate::dark::{dark_ctlcolor, dark_theme_combo};
@@ -49,6 +55,15 @@ const CID_RESIZE_H: i32 = 3011;
 const CID_RESIZE_PAD: i32 = 3012;
 /// "Write every preset size" — one job emits the three Fit presets per source.
 const CID_RESIZE_ALL: i32 = 3013;
+/// "Watermark" master checkbox for the image-overlay section below the resize rows.
+const CID_CV_WATERMARK_CHK: i32 = 3020;
+/// "Choose image…" button that opens the mark-file picker.
+const CID_CV_WATERMARK_BROWSE: i32 = 3021;
+/// Read-only label showing the chosen mark file's name (or "none chosen").
+const CID_CV_WATERMARK_FILE: i32 = 3022;
+const CID_CV_WATERMARK_CORNER: i32 = 3023;
+const CID_CV_WATERMARK_SCALE: i32 = 3024;
+const CID_CV_WATERMARK_OPACITY: i32 = 3025;
 const WM_CONVERT_PROGRESS: u32 = 0x8000 + 30; // WM_APP + 30
 const WM_CONVERT_DONE: u32 = 0x8000 + 31;
 
@@ -86,9 +101,15 @@ const CV_ROW_RESIZE_COMBO: i32 = 86;
 const CV_ROW_WH: i32 = 116;
 const CV_ROW_RESIZE_PAD: i32 = 148;
 const CV_ROW_RESIZE_ALL: i32 = 176;
-const CV_ROW_OUTDIR: i32 = 212;
-const CV_ROW_PROGRESS: i32 = 253;
-const CV_ROW_BUTTONS: i32 = 283;
+// ---- Watermark section: four rows inserted below the resize rows, pushing the
+// output-folder row (and everything after it) down by the same amount they add.
+const CV_ROW_WATERMARK_CHK: i32 = 212;
+const CV_ROW_WATERMARK_BROWSE: i32 = 240;
+const CV_ROW_WATERMARK_CORNER: i32 = 268;
+const CV_ROW_WATERMARK_OPTS: i32 = 296;
+const CV_ROW_OUTDIR: i32 = 324;
+const CV_ROW_PROGRESS: i32 = 365;
+const CV_ROW_BUTTONS: i32 = 395;
 /// Dialog height: `CV_ROW_BUTTONS` + the button height (28) + the same bottom margin the
 /// pre-fix 274px dialog left below its buttons at 202+28=230 (274-230=44).
 const CV_DLG_H: i32 = CV_ROW_BUTTONS + 28 + 44;
@@ -196,6 +217,16 @@ static WEBP_QUALITY: AtomicI32 = AtomicI32::new(80); // lossy WebP quality 1..=1
 static WEBP_LOSSLESS: AtomicI32 = AtomicI32::new(0); // 1 = lossless, 0 = lossy (default — WebP is for small files)
 static PNG_LEVEL: AtomicI32 = AtomicI32::new(6); // PNG compression 0..=9
 static MAGICK_QUALITY: AtomicI32 = AtomicI32::new(50); // AVIF/JXL quality 1..=100 (-quality N)
+/// Watermark section state, persisted the same way the quality statics above are:
+/// loaded from settings when the dialog opens, written back as each control changes.
+static WATERMARK_ON: AtomicI32 = AtomicI32::new(0); // 0/1, the checkbox
+/// Index into `CV_WM_CORNERS`.
+static WATERMARK_CORNER: AtomicI32 = AtomicI32::new(CV_WM_CORNER_DEFAULT as i32);
+static WATERMARK_SCALE: AtomicI32 = AtomicI32::new(CV_WM_SCALE_DEFAULT as i32); // percent
+static WATERMARK_OPACITY: AtomicI32 = AtomicI32::new(CV_WM_OPACITY_DEFAULT as i32); // percent
+/// The chosen mark file's path. A `String`, not an atomic, so it lives in a `Mutex`
+/// like [`LAST_OUTPUT`] below.
+static WATERMARK_PATH: Mutex<String> = Mutex::new(String::new());
 /// First output file produced by the most recent run — drives the "Open output
 /// folder?" prompt on completion. Reset when a run starts; set by the worker on
 /// its first success. (Only `Option`/`PathBuf` ops under the lock, so it can never
@@ -358,6 +389,26 @@ const CV_RESIZE: &[(&str, ResizeMode)] = &[
     ("cv_resize_25", ResizeMode::Pct(25)),
 ];
 
+/// The watermark corner combo's entries, in display order. Index into this list
+/// is what gets persisted (`CvWatermarkCorner`), not the `Corner` value itself,
+/// so the stored setting stays a small stable integer.
+const CV_WM_CORNERS: &[(&str, Corner)] = &[
+    ("cv_watermark_corner_tl", Corner::TopLeft),
+    ("cv_watermark_corner_tr", Corner::TopRight),
+    ("cv_watermark_corner_bl", Corner::BottomLeft),
+    ("cv_watermark_corner_br", Corner::BottomRight),
+    ("cv_watermark_corner_center", Corner::Center),
+];
+/// Default corner index into [`CV_WM_CORNERS`] - bottom-right, the conventional
+/// spot for a logo watermark.
+const CV_WM_CORNER_DEFAULT: usize = 3;
+/// Percent-of-shorter-edge presets for the mark's size.
+const CV_WM_SCALES: &[u8] = &[10, 15, 20, 25, 33, 50];
+const CV_WM_SCALE_DEFAULT: u8 = 20;
+/// Opacity presets, percent of the mark's own alpha.
+const CV_WM_OPACITIES: &[u8] = &[25, 50, 65, 75, 80, 90, 100];
+const CV_WM_OPACITY_DEFAULT: u8 = 80;
+
 pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
     let listed = read_listfile(listfile);
     if listed.is_empty() {
@@ -399,6 +450,7 @@ pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
     WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
     PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
     MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
+    load_watermark_settings();
 
     let title = t("cv_title").replace("{n}", &n.to_string());
     run_dialog(
@@ -426,31 +478,114 @@ pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
     WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
     PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
     MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
+    load_watermark_settings();
 
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let dark = crate::dark::is_dark();
     let title = t("cv_title").replace("{n}", "1");
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
-        dark,
-        w!("SageThumbs2KConvert"),
-        Some(convert_wndproc),
-        &title,
-        CV_DLG_W,
-        CV_DLG_H,
-    ) else {
-        return false;
+    crate::win::capture_shot_window(
+        out,
+        crate::dark::is_dark(),
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KConvert"),
+            wndproc: Some(convert_wndproc),
+            title: &title,
+            design_w: CV_DLG_W,
+            design_h: CV_DLG_H,
+        },
+        |_hwnd, _hinst| {},
+        20,
+        8,
+        false,
+    )
+}
+
+/// Restore the persisted watermark section (checkbox, mark path, corner, size,
+/// opacity) into the module statics, the same way the quality statics just
+/// above this call are restored. Read-only settings access; the CONTROLS pick
+/// these values up afterward, in `build_convert_controls`.
+fn load_watermark_settings() {
+    WATERMARK_ON.store(
+        settings::get_dword_opt("CvWatermarkOn").unwrap_or(0) as i32,
+        Ordering::Relaxed,
+    );
+    let corner_max = (CV_WM_CORNERS.len() as u32).saturating_sub(1);
+    WATERMARK_CORNER.store(
+        settings::get_dword_opt("CvWatermarkCorner")
+            .unwrap_or(CV_WM_CORNER_DEFAULT as u32)
+            .min(corner_max) as i32,
+        Ordering::Relaxed,
+    );
+    WATERMARK_SCALE.store(
+        settings::get_dword_opt("CvWatermarkScale")
+            .unwrap_or(CV_WM_SCALE_DEFAULT as u32)
+            .clamp(1, 100) as i32,
+        Ordering::Relaxed,
+    );
+    WATERMARK_OPACITY.store(
+        settings::get_dword_opt("CvWatermarkOpacity")
+            .unwrap_or(CV_WM_OPACITY_DEFAULT as u32)
+            .clamp(0, 100) as i32,
+        Ordering::Relaxed,
+    );
+    *WATERMARK_PATH.lock().unwrap() =
+        settings::get_string_opt("CvWatermarkPath").unwrap_or_default();
+}
+
+/// "Choose image…" picker for the watermark mark file. This mirrors the
+/// `IFileOpenDialog` pattern `win::pickers` already uses for the settings-file
+/// pickers (see `pick_open_settings`), filtered for common raster formats
+/// instead of `.json`. Kept here, local to the dialog that needs it, rather
+/// than added to that read-only module.
+unsafe fn pick_watermark_image(owner: HWND) -> Option<String> {
+    let _com = ComGuard::sta();
+    let dlg: IFileOpenDialog =
+        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    if let Ok(opts) = dlg.GetOptions() {
+        let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
+    }
+    let spec_name = wide(t("cv_watermark_filter"));
+    let spec_ext = wide("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff");
+    let specs = [COMDLG_FILTERSPEC {
+        pszName: PCWSTR(spec_name.as_ptr()),
+        pszSpec: PCWSTR(spec_ext.as_ptr()),
+    }];
+    let _ = dlg.SetFileTypes(&specs);
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// Show the chosen mark file's name in the watermark row, or the "none chosen"
+/// placeholder when `path` is empty.
+unsafe fn set_watermark_file_label(hwnd: HWND, path: &str) {
+    let text = if path.is_empty() {
+        t("cv_watermark_none").to_string()
+    } else {
+        Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+            .to_string()
     };
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    crate::win::force_repaint(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+    set_edit_text(hwnd, CID_CV_WATERMARK_FILE, &text);
+}
+
+/// Enable the watermark sub-controls only when the master checkbox is on -
+/// same pattern as [`update_resize_enabled`].
+unsafe fn update_watermark_enabled(hwnd: HWND) {
+    let on = checked(hwnd, CID_CV_WATERMARK_CHK);
+    for id in [
+        CID_CV_WATERMARK_BROWSE,
+        CID_CV_WATERMARK_CORNER,
+        CID_CV_WATERMARK_SCALE,
+        CID_CV_WATERMARK_OPACITY,
+    ] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = EnableWindow(c, on);
+        }
+    }
 }
 
 unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
@@ -643,6 +778,180 @@ unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         CID_RESIZE_ALL,
         hinst,
     );
+
+    // Watermark section: master checkbox, then three indented rows (choose image,
+    // corner, size/opacity) - same nesting the resize section above uses.
+    let wchk = ctl(
+        hwnd,
+        BUTTON,
+        t("cv_watermark"),
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        CV_RESIZE_X,
+        CV_ROW_WATERMARK_CHK,
+        cv_checkbox_w(false),
+        CV_CHK_H,
+        CID_CV_WATERMARK_CHK,
+        hinst,
+    );
+
+    let wm_btn_w = cv_btn_w(hwnd, t("cv_watermark_choose"), 140);
+    ctl(
+        hwnd,
+        BUTTON,
+        t("cv_watermark_choose"),
+        WS_TABSTOP,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_WATERMARK_BROWSE,
+        wm_btn_w,
+        26,
+        CID_CV_WATERMARK_BROWSE,
+        hinst,
+    );
+    let wm_file_x = CV_RESIZE_X + CV_RESIZE_INDENT + wm_btn_w + 10;
+    ctl(
+        hwnd,
+        STATIC,
+        t("cv_watermark_none"),
+        lbl,
+        wm_file_x,
+        CV_ROW_WATERMARK_BROWSE + 6,
+        (CV_RESIZE_RIGHT - wm_file_x).max(1),
+        18,
+        CID_CV_WATERMARK_FILE,
+        hinst,
+    );
+
+    ctl(
+        hwnd,
+        STATIC,
+        t("cv_watermark_corner"),
+        lbl,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_WATERMARK_CORNER + 3,
+        100,
+        18,
+        -1,
+        hinst,
+    );
+    let ccombo = ctl(
+        hwnd,
+        COMBOBOX,
+        "",
+        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        CV_RESIZE_X + CV_RESIZE_INDENT + 108,
+        CV_ROW_WATERMARK_CORNER,
+        180,
+        160,
+        CID_CV_WATERMARK_CORNER,
+        hinst,
+    );
+    for (key, _) in CV_WM_CORNERS {
+        let w = wide(t(key));
+        SendMessageW(
+            ccombo,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    dark_theme_combo(ccombo);
+
+    ctl(
+        hwnd,
+        STATIC,
+        t("cv_watermark_scale"),
+        lbl,
+        CV_RESIZE_X + CV_RESIZE_INDENT,
+        CV_ROW_WATERMARK_OPTS + 3,
+        100,
+        18,
+        -1,
+        hinst,
+    );
+    let scombo = ctl(
+        hwnd,
+        COMBOBOX,
+        "",
+        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        CV_RESIZE_X + CV_RESIZE_INDENT + 108,
+        CV_ROW_WATERMARK_OPTS,
+        80,
+        160,
+        CID_CV_WATERMARK_SCALE,
+        hinst,
+    );
+    for pct in CV_WM_SCALES {
+        let w = wide(&format!("{pct}%"));
+        SendMessageW(
+            scombo,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    dark_theme_combo(scombo);
+
+    ctl(
+        hwnd,
+        STATIC,
+        t("cv_watermark_opacity"),
+        lbl,
+        CV_RESIZE_X + CV_RESIZE_INDENT + 208,
+        CV_ROW_WATERMARK_OPTS + 3,
+        90,
+        18,
+        -1,
+        hinst,
+    );
+    let ocombo = ctl(
+        hwnd,
+        COMBOBOX,
+        "",
+        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        CV_RESIZE_X + CV_RESIZE_INDENT + 304,
+        CV_ROW_WATERMARK_OPTS,
+        80,
+        160,
+        CID_CV_WATERMARK_OPACITY,
+        hinst,
+    );
+    for pct in CV_WM_OPACITIES {
+        let w = wide(&format!("{pct}%"));
+        SendMessageW(
+            ocombo,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    dark_theme_combo(ocombo);
+
+    // Seed the four watermark controls from the persisted statics (loaded by
+    // `load_watermark_settings` before this dialog was created).
+    SendMessageW(
+        wchk,
+        BM_SETCHECK_MSG,
+        Some(WPARAM(WATERMARK_ON.load(Ordering::Relaxed) as usize)),
+        Some(LPARAM(0)),
+    );
+    SendMessageW(
+        ccombo,
+        CB_SETCURSEL,
+        Some(WPARAM(WATERMARK_CORNER.load(Ordering::Relaxed) as usize)),
+        None,
+    );
+    let scale_idx = CV_WM_SCALES
+        .iter()
+        .position(|&p| p as i32 == WATERMARK_SCALE.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    SendMessageW(scombo, CB_SETCURSEL, Some(WPARAM(scale_idx)), None);
+    let opacity_idx = CV_WM_OPACITIES
+        .iter()
+        .position(|&p| p as i32 == WATERMARK_OPACITY.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    SendMessageW(ocombo, CB_SETCURSEL, Some(WPARAM(opacity_idx)), None);
+    set_watermark_file_label(hwnd, &WATERMARK_PATH.lock().unwrap().clone());
+    update_watermark_enabled(hwnd);
 
     // Row 6, output folder. Same measured label column as row 1, so the two labels and the
     // two fields still line up as a column whatever the language does to their widths.
@@ -864,6 +1173,9 @@ unsafe fn resolve_convert_outdir(hwnd: HWND) -> Option<PathBuf> {
 /// comes back as `Some(Err(reason))`, so the completion report can say why (2026-09-05
 /// audit, F11). These calls each return one opaque error rather than a phase, which is why
 /// the dialog's records carry a sentence and no machine cause.
+/// `watermark`: the same optional image overlay `ConvertOpts::watermark` carries,
+/// applied to every target this dispatches to except PDF (the PDF writer goes
+/// through `topdf`, a separate pipeline this does not touch).
 #[allow(clippy::too_many_arguments)]
 fn produce_convert_job(
     f: &str,
@@ -875,6 +1187,7 @@ fn produce_convert_job(
     png_level: u32,
     webp_quality: Option<u8>,
     pdf_already_written: bool,
+    watermark: Option<&Watermark>,
 ) -> Option<Result<PathBuf, String>> {
     match tgt {
         CvTarget::Native(format, ext) => {
@@ -890,6 +1203,7 @@ fn produce_convert_job(
                 png_level,
                 webp_quality,
                 resize,
+                watermark: watermark.cloned(),
             };
             Some(
                 sagethumbs2k_core::convert_file_opts_named(f, opts, dir, tag)
@@ -909,8 +1223,10 @@ fn produce_convert_job(
             let q = matches!(ext, "avif" | "jxl")
                 .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
             Some(
-                sagethumbs2k_core::convert_to_magick_in_named(f, dir, ext, resize, q, tag)
-                    .map_err(|e| e.message()),
+                sagethumbs2k_core::convert_to_magick_in_named(
+                    f, dir, ext, resize, q, tag, watermark,
+                )
+                .map_err(|e| e.message()),
             )
         }
     }
@@ -967,6 +1283,7 @@ fn reduce_job_outputs(
     (first, reason)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn convert_one_file(
     f: &str,
     tgt: CvTarget,
@@ -975,6 +1292,7 @@ fn convert_one_file(
     png_level: u32,
     webp_quality: Option<u8>,
     outdir: &Option<PathBuf>,
+    watermark: &Option<Watermark>,
 ) -> (Option<PathBuf>, Option<String>) {
     // Cancelled mid-run: skip the rest cheaply so the batch winds down fast.
     if CONVERT_CANCEL.load(Ordering::Relaxed) {
@@ -1004,6 +1322,7 @@ fn convert_one_file(
             png_level,
             webp_quality,
             pdf_already_written,
+            watermark.as_ref(),
         );
         produced_per_job.push(produced);
     }
@@ -1047,6 +1366,20 @@ unsafe fn launch_batch(hwnd: HWND, files: Vec<String>) {
     // Normally one job per file; three when "write every preset size" is on.
     let jobs = read_resize_jobs(hwnd);
     let outdir = resolve_convert_outdir(hwnd);
+    // Checked but no image chosen behaves as "no watermark" rather than an error -
+    // there is nothing to read yet, so nothing has failed.
+    let watermark = checked(hwnd, CID_CV_WATERMARK_CHK)
+        .then(|| WATERMARK_PATH.lock().unwrap().clone())
+        .filter(|p| !p.is_empty())
+        .map(|path| Watermark {
+            path,
+            corner: CV_WM_CORNERS
+                .get(combo_sel(hwnd, CID_CV_WATERMARK_CORNER))
+                .map(|(_, c)| *c)
+                .unwrap_or(Corner::BottomRight),
+            scale_pct: WATERMARK_SCALE.load(Ordering::Relaxed).clamp(1, 100) as u8,
+            opacity_pct: WATERMARK_OPACITY.load(Ordering::Relaxed).clamp(0, 100) as u8,
+        });
 
     if let Ok(prog) = GetDlgItem(Some(hwnd), CID_PROGRESS) {
         let _ = ShowWindow(prog, SW_SHOW);
@@ -1080,7 +1413,18 @@ unsafe fn launch_batch(hwnd: HWND, files: Vec<String>) {
         let outs: Vec<(Option<PathBuf>, Option<String>)> = sagethumbs2k_core::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
-            |_, f| convert_one_file(f, tgt, &jobs, quality, png_level, webp_quality, &outdir),
+            |_, f| {
+                convert_one_file(
+                    f,
+                    tgt,
+                    &jobs,
+                    quality,
+                    png_level,
+                    webp_quality,
+                    &outdir,
+                    &watermark,
+                )
+            },
             || {
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let _ = PostMessageW(
@@ -1424,6 +1768,40 @@ unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
         CID_FORMAT if notify == CBN_SELCHANGE => update_settings_enabled(hwnd),
         CID_RESIZE_CHK | CID_RESIZE_ALL => update_resize_enabled(hwnd),
         CID_RESIZE if notify == CBN_SELCHANGE => update_resize_enabled(hwnd),
+        CID_CV_WATERMARK_CHK => {
+            let on = checked(hwnd, CID_CV_WATERMARK_CHK);
+            WATERMARK_ON.store(on as i32, Ordering::Relaxed);
+            let _ = settings::set_dword("CvWatermarkOn", on as u32);
+            update_watermark_enabled(hwnd);
+        }
+        CID_CV_WATERMARK_BROWSE => {
+            if let Some(path) = pick_watermark_image(hwnd) {
+                *WATERMARK_PATH.lock().unwrap() = path.clone();
+                let _ = settings::set_string("CvWatermarkPath", &path);
+                set_watermark_file_label(hwnd, &path);
+            }
+        }
+        CID_CV_WATERMARK_CORNER if notify == CBN_SELCHANGE => {
+            let idx = combo_sel(hwnd, CID_CV_WATERMARK_CORNER);
+            WATERMARK_CORNER.store(idx as i32, Ordering::Relaxed);
+            let _ = settings::set_dword("CvWatermarkCorner", idx as u32);
+        }
+        CID_CV_WATERMARK_SCALE if notify == CBN_SELCHANGE => {
+            let pct = CV_WM_SCALES
+                .get(combo_sel(hwnd, CID_CV_WATERMARK_SCALE))
+                .copied()
+                .unwrap_or(CV_WM_SCALE_DEFAULT);
+            WATERMARK_SCALE.store(pct as i32, Ordering::Relaxed);
+            let _ = settings::set_dword("CvWatermarkScale", pct as u32);
+        }
+        CID_CV_WATERMARK_OPACITY if notify == CBN_SELCHANGE => {
+            let pct = CV_WM_OPACITIES
+                .get(combo_sel(hwnd, CID_CV_WATERMARK_OPACITY))
+                .copied()
+                .unwrap_or(CV_WM_OPACITY_DEFAULT);
+            WATERMARK_OPACITY.store(pct as i32, Ordering::Relaxed);
+            let _ = settings::set_dword("CvWatermarkOpacity", pct as u32);
+        }
         _ => {}
     }
     LRESULT(0)
@@ -1949,5 +2327,37 @@ mod tests {
             CONVERT_RUNNING.store(false, Ordering::Relaxed);
             CONVERT_CANCEL.store(false, Ordering::Relaxed);
         }
+    }
+
+    /// `CV_MAGICK_FORMATS` is a hand-typed (label, extension) list; the extensions must
+    /// match `magick_output_extensions()` exactly, in both directions, or the dialog
+    /// either offers a format ImageMagick cannot write or silently omits one it can.
+    #[test]
+    fn cv_magick_formats_matches_the_authoritative_extension_list() {
+        let dialog_exts: std::collections::HashSet<&str> =
+            CV_MAGICK_FORMATS.iter().map(|(_, ext)| *ext).collect();
+        let authoritative: std::collections::HashSet<&str> =
+            sagethumbs2k_core::decode::magick_output_extensions()
+                .iter()
+                .copied()
+                .collect();
+
+        for ext in &authoritative {
+            assert!(
+                dialog_exts.contains(ext),
+                "magick can write {ext:?} but CV_MAGICK_FORMATS has no entry for it"
+            );
+        }
+        for ext in &dialog_exts {
+            assert!(
+                authoritative.contains(ext),
+                "CV_MAGICK_FORMATS lists {ext:?} but magick_output_extensions() does not"
+            );
+        }
+        assert_eq!(
+            dialog_exts.len(),
+            CV_MAGICK_FORMATS.len(),
+            "CV_MAGICK_FORMATS has a duplicate extension"
+        );
     }
 }

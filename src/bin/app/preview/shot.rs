@@ -65,11 +65,11 @@ pub(super) unsafe fn run_shot(
         super::window::do_action(hwnd, super::window::Btn::Theme);
         crate::win::pump_msgs(8);
     }
+    apply_focus(hwnd, opts.focus, opts.focus_transport);
     apply_sel(hwnd, opts.sel);
     apply_find(hwnd, opts.find.as_deref());
     bench_repaint_if_requested(hwnd);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
+    let ok = crate::win::capture_and_destroy(hwnd, out);
     if let Some(t) = &tmp {
         let _ = std::fs::remove_file(t);
     }
@@ -176,6 +176,44 @@ unsafe fn apply_scroll(hwnd: HWND, scroll: Option<i32>) {
         let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
         crate::win::pump_msgs(8);
     }
+}
+
+/// `--focus N` / `--focus-transport N`: set the toolbar's keyboard focus onto a specific
+/// button after loading, exactly as pressing Tab/arrow keys would land on it, so
+/// `paint::draw_toolbar_focus_ring` is shot-verifiable without driving real key input.
+///
+/// `--focus N` takes a caption-toolbar `BTNS` index — the SAME numbering `--hot N` uses — not
+/// the position `toolbar::FocusTarget::Caption` actually stores (an index into the CURRENT
+/// visible, right-to-left `button_rects`, which shrinks/reorders per document); this
+/// translates one into the other by locating `BTNS[N]` in `toolbar::button_rects(hwnd)`. A
+/// hidden button (see `window::btn_visible`) is simply not found and focus is left untouched,
+/// same as `--hot` on a hidden index does nothing visible.
+///
+/// `--focus-transport N` indexes `transport::TBTNS` directly (0..7) — the strip carries no
+/// per-document visibility filter, so it needs no translation.
+unsafe fn apply_focus(hwnd: HWND, focus: Option<usize>, focus_transport: Option<usize>) {
+    if focus.is_none() && focus_transport.is_none() {
+        return;
+    }
+    let stp = super::window::state(hwnd);
+    if stp.is_null() {
+        return;
+    }
+    let st = &*stp;
+    if let Some(n) = focus {
+        if let Some(&btn) = super::window::BTNS.get(n) {
+            let rects = super::toolbar::button_rects(hwnd);
+            if let Some(i) = rects.iter().position(|(b, _)| *b == btn) {
+                super::toolbar::set_focus(hwnd, st, Some(super::toolbar::FocusTarget::Caption(i)));
+            }
+        }
+    }
+    if let Some(n) = focus_transport {
+        if n < super::transport::TBTNS.len() {
+            super::toolbar::set_focus(hwnd, st, Some(super::toolbar::FocusTarget::Transport(n)));
+        }
+    }
+    crate::win::pump_msgs(8);
 }
 
 /// `--sel A,B`: force a text-pane selection before capture (verifies the highlight

@@ -780,6 +780,83 @@ pub(crate) unsafe fn create_shot_window(
     Some(hwnd)
 }
 
+/// Everything [`capture_shot_window`] needs to build its headless dialog window via
+/// [`create_shot_window`], bundled into one value so callers don't hand five loose
+/// parameters through every `run_shot_*`.
+pub(crate) struct ShotWindowSpec<'a> {
+    pub(crate) class: PCWSTR,
+    pub(crate) wndproc: WNDPROC,
+    pub(crate) title: &'a str,
+    pub(crate) design_w: i32,
+    pub(crate) design_h: i32,
+}
+
+/// The ritual eight `run_shot_*` functions (About, Convert, the Convert failure report,
+/// Doctor, Send-feedback, both first-run pages, the OCR result window) used to hand-repeat:
+/// resolve this process's own module handle, build `spec`'s window off-screen via
+/// [`create_shot_window`], run `after_create` for whatever that one dialog needs done to the
+/// fresh window before it settles (About grows the frame back to its design client size,
+/// first-run page 2 flips itself to page 2, most pass a no-op), settle with [`settle_pump`],
+/// capture to `out`, and destroy the window. Returns whether the PNG was written.
+///
+/// The Settings window (its priming needs a REAL category transition, not a fixed pump count,
+/// see `settings_dlg::shot::settle_pane`) and the eyedropper overlay (a fullscreen
+/// `WS_POPUP` built off the virtual desktop, not a dialog frame `create_shot_window`
+/// produces) build their own window and don't call this, but both still settle and capture
+/// through [`settle_pump`]/[`capture_and_destroy`] below, so that half of the ritual still
+/// lives in exactly one place.
+pub(crate) unsafe fn capture_shot_window(
+    out: &str,
+    dark: bool,
+    spec: ShotWindowSpec<'_>,
+    after_create: impl FnOnce(HWND, HINSTANCE),
+    pump1: usize,
+    pump2: usize,
+    skip_final_repaint: bool,
+) -> bool {
+    let Ok(h) = GetModuleHandleW(None) else {
+        return false;
+    };
+    let hinst: HINSTANCE = h.into();
+    let Some(hwnd) = create_shot_window(
+        hinst,
+        dark,
+        spec.class,
+        spec.wndproc,
+        spec.title,
+        spec.design_w,
+        spec.design_h,
+    ) else {
+        return false;
+    };
+    after_create(hwnd, hinst);
+    settle_pump(hwnd, pump1, pump2, skip_final_repaint);
+    capture_and_destroy(hwnd, out)
+}
+
+/// The settle shape every headless `--shot` capture uses before grabbing the frame: pump
+/// `pump1` frames, force a repaint, pump `pump2` frames, then, unless `skip_final_repaint`,
+/// force a second repaint. Only the counts and the final repaint differ per dialog (About's
+/// "Checking…" spinner needs ~2s of pumping to settle past `MIN_SPIN_FRAMES`; the Convert
+/// failure report is the one capture that skips the final repaint), so those stay parameters
+/// rather than being assumed.
+pub(crate) unsafe fn settle_pump(hwnd: HWND, pump1: usize, pump2: usize, skip_final_repaint: bool) {
+    pump_msgs(pump1);
+    force_repaint(hwnd);
+    pump_msgs(pump2);
+    if !skip_final_repaint {
+        force_repaint(hwnd);
+    }
+}
+
+/// `PrintWindow`-capture `hwnd` to a PNG at `out` and destroy it - the tail every headless
+/// `--shot` capture shares, whatever built the window.
+pub(crate) unsafe fn capture_and_destroy(hwnd: HWND, out: &str) -> bool {
+    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let _ = DestroyWindow(hwnd);
+    ok
+}
+
 /// Effective DPI + work-area rect of the monitor under the cursor (where the user is).
 /// A top-level window sizes AND positions itself for the monitor it actually opens on,
 /// so the window frame's DPI matches the per-control `dpi_scale()` (`GetDpiForWindow`) —

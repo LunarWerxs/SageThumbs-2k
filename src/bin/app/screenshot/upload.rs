@@ -386,11 +386,23 @@ fn save_recovery_copy(bytes: &[u8]) -> Option<std::path::PathBuf> {
 /// and report. Unlike [`run_upload`], these are the user's own files and are **never
 /// deleted**; only the temporary list file is removed. Spawned by the DLL verb via
 /// `--upload-keep <list>`.
-pub(crate) unsafe fn run_upload_keep(list_path: &str) {
+///
+/// `url_to`, when set (only `st2k upload` passes it — the DLL verb never does), redirects
+/// the whole result path away from the GUI: no MessageBox, no clipboard write. On success
+/// the resulting URL(s) are written LF-joined to that path and the process exits `0`; on
+/// any failure (including the hosts-config error below) nothing is written there, the
+/// reason goes to stderr instead, and the process exits `1`. `st2k`, a console-subsystem
+/// binary, still gets stderr/exit-status from this windows-subsystem one because both are
+/// plain inherited OS handles — no console window is involved either way.
+pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
     let hosts = match upload_hosts() {
         Ok(h) => h,
         Err(msg) => {
             let _ = std::fs::remove_file(list_path);
+            if url_to.is_some() {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
             notify(&msg, file_caption(), true);
             return;
         }
@@ -405,6 +417,10 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
         .collect();
     let _ = std::fs::remove_file(list_path); // the list is ours; the images are NOT
     if files.is_empty() {
+        if url_to.is_some() {
+            eprintln!("no file to upload");
+            std::process::exit(1);
+        }
         return;
     }
     let total = files.len();
@@ -440,6 +456,11 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
     });
     if urls.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
+        if let Some(url_to) = url_to {
+            let _ = std::fs::remove_file(url_to);
+            eprintln!("{reasons}");
+            std::process::exit(1);
+        }
         let what = if total == 1 {
             t("up_what_file")
         } else {
@@ -447,6 +468,16 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str) {
         };
         notify(&upload_failed_msg(what, &reasons), file_caption(), true);
         return;
+    }
+    if let Some(url_to) = url_to {
+        // CLI path: no clipboard, no dialog — just the file `st2k` is waiting to read.
+        match std::fs::write(url_to, urls.join("\n")) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("uploaded, but couldn't write the result to {url_to}: {e}");
+                std::process::exit(1);
+            }
+        }
     }
     let joined = urls.join("\r\n");
     let _ = set_clipboard_text(&joined);

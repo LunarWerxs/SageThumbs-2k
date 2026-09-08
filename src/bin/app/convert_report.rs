@@ -25,7 +25,6 @@ use core::cell::{Cell, RefCell};
 use sagethumbs2k_core::FileOutcome;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
@@ -128,27 +127,22 @@ pub(crate) unsafe fn run_shot_convert_report(out: &str) -> bool {
     RETRY_INPUTS.with(|r| *r.borrow_mut() = failed.iter().map(|f| f.input.clone()).collect());
     CAN_OPEN.with(|c| c.set(true));
     CHOICE.with(|c| c.set(Choice::Close));
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return false,
-    };
-    let Some(hwnd) = crate::win::create_shot_window(
-        hinst,
+    crate::win::capture_shot_window(
+        out,
         crate::dark::is_dark(),
-        w!("SageThumbs2KConvertReport"),
-        Some(report_wndproc),
-        "SageThumbs 2K",
-        560,
-        380,
-    ) else {
-        return false;
-    };
-    crate::win::pump_msgs(20);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(8);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+        crate::win::ShotWindowSpec {
+            class: w!("SageThumbs2KConvertReport"),
+            wndproc: Some(report_wndproc),
+            title: "SageThumbs 2K",
+            design_w: 560,
+            design_h: 380,
+        },
+        |_hwnd, _hinst| {},
+        20,
+        8,
+        // This is the one capture that skips the final repaint (matches the original ritual).
+        true,
+    )
 }
 
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {

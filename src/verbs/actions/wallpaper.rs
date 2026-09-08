@@ -4,7 +4,10 @@
 use super::*;
 
 /// %APPDATA%\SageThumbs2K (created on demand) — where the wallpaper image lives.
-fn appdata_dir() -> Result<PathBuf> {
+/// `pub(super)` so [`super::helper::wallpaper_one`] can pass this SAME directory as
+/// the routed `st2k wallpaper-prepare <file> <out-dir>` child's `<out-dir>` — the
+/// routed and in-process arms have to agree on where the wallpaper PNG lands.
+pub(super) fn appdata_dir() -> Result<PathBuf> {
     let base = std::env::var("APPDATA")
         .map_err(|e| Error::new(E_FAIL, format!("%APPDATA% not set: {e}")))?;
     let dir = Path::new(&base).join("SageThumbs2K");
@@ -75,16 +78,31 @@ pub fn prepare_wallpaper(path: &str) -> Result<PathBuf> {
     prepare_wallpaper_in(&appdata_dir()?, path)
 }
 
-/// Set the selected image as the desktop wallpaper with the given placement.
-pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
-    let wp = prepare_wallpaper(path)?;
-
-    // Placement: HKCU\Control Panel\Desktop {WallpaperStyle, TileWallpaper}.
-    let (style, tile) = match mode {
+/// The `HKCU\Control Panel\Desktop` `WallpaperStyle`/`TileWallpaper` pair for a
+/// placement mode. Pure (no registry access) so the mapping is unit-testable without
+/// touching the live desktop settings - split out 2026-09-07 when Fill/Fit/Span were
+/// added, so the enumeration test below can check every mode against the real Windows
+/// values without mocking `windows_registry`.
+fn style_and_tile(mode: WallpaperMode) -> (&'static str, &'static str) {
+    match mode {
         WallpaperMode::Stretch => ("2", "0"),
         WallpaperMode::Tile => ("0", "1"),
         WallpaperMode::Center => ("0", "0"),
-    };
+        WallpaperMode::Fill => ("10", "0"),
+        WallpaperMode::Fit => ("6", "0"),
+        WallpaperMode::Span => ("22", "0"),
+    }
+}
+
+/// Apply an already-prepared wallpaper PNG (e.g. what [`prepare_wallpaper_in`] just
+/// wrote) with the given placement: HKCU\Control Panel\Desktop
+/// {WallpaperStyle,TileWallpaper} + `SystemParametersInfoW`. No decode - this is the
+/// half [`super::helper::wallpaper_one`] calls after the routed `st2k
+/// wallpaper-prepare` child (or the in-process [`prepare_wallpaper`] fallback) has
+/// already produced `wp`, so this process never runs an image parser on this path.
+pub(super) fn apply_wallpaper(wp: &Path, mode: WallpaperMode) -> Result<()> {
+    // Placement: HKCU\Control Panel\Desktop {WallpaperStyle, TileWallpaper}.
+    let (style, tile) = style_and_tile(mode);
     if let Ok(k) = windows_registry::CURRENT_USER.create("Control Panel\\Desktop") {
         let _ = k.set_string("WallpaperStyle", style);
         let _ = k.set_string("TileWallpaper", tile);
@@ -104,10 +122,49 @@ pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
     Ok(())
 }
 
+/// Apply an already-prepared image (e.g. what [`prepare_wallpaper_in`] just wrote, since
+/// Set-as-lock-screen shares the SAME decode/resize/encode half as Set-as-wallpaper) as the
+/// Windows lock screen background, via `Windows.System.UserProfile.LockScreen`. No decode -
+/// this is the half [`super::helper::lock_screen_one`] calls after the routed `st2k
+/// wallpaper-prepare` child (or the in-process [`prepare_wallpaper`] fallback) has already
+/// produced `path`, so this process never runs an image parser on this path. Verified on this
+/// machine: `LockScreen` activates fine from an unpackaged desktop process.
+pub(super) fn apply_lock_screen(path: &Path) -> Result<()> {
+    use windows::core::HSTRING;
+    use windows::Storage::StorageFile;
+    use windows::System::UserProfile::LockScreen;
+
+    let hpath = HSTRING::from(path.to_string_lossy().as_ref());
+    let file: StorageFile = crate::pdf::block_op(&StorageFile::GetFileFromPathAsync(&hpath)?)?;
+    crate::pdf::block_action(&LockScreen::SetImageFileAsync(&file)?)
+}
+
+/// Prepare and apply in one call, in-process. Production goes through the routed
+/// `prepare_wallpaper_routed` + [`apply_wallpaper`] pair instead (the decode half runs in
+/// the `st2k` helper); this composition remains for the end-to-end test only.
+#[cfg(test)]
+pub fn set_wallpaper(path: &str, mode: WallpaperMode) -> Result<()> {
+    let wp = prepare_wallpaper(path)?;
+    apply_wallpaper(&wp, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// Every `WallpaperMode` maps to the exact `WallpaperStyle`/`TileWallpaper` pair
+    /// Windows itself uses for that placement — pins all six modes at once so a future
+    /// addition can't land with the wrong registry values (or forget this test).
+    #[test]
+    fn style_and_tile_matches_every_mode() {
+        assert_eq!(style_and_tile(WallpaperMode::Stretch), ("2", "0"));
+        assert_eq!(style_and_tile(WallpaperMode::Tile), ("0", "1"));
+        assert_eq!(style_and_tile(WallpaperMode::Center), ("0", "0"));
+        assert_eq!(style_and_tile(WallpaperMode::Fill), ("10", "0"));
+        assert_eq!(style_and_tile(WallpaperMode::Fit), ("6", "0"));
+        assert_eq!(style_and_tile(WallpaperMode::Span), ("22", "0"));
+    }
 
     /// A transient Explorer/AV lock on the destination (Windows os error 5/32) must not
     /// fail the wallpaper write outright — `prepare_wallpaper_in`'s final rename has to

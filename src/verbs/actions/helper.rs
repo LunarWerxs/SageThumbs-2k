@@ -346,6 +346,234 @@ pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
     }
 }
 
+/// Compress one file to a target size. Routes to `st2k compress <in> --max-size
+/// <bytes>` (same `compress_to_size` engine, same batch pool), reading the produced
+/// path back off stdout like [`transform_one`]; a non-zero exit's stderr carries the
+/// same "the smallest JPEG this can make is N bytes" text `compress_to_size` returns
+/// in-process, parsed the same way `compress_one_to_size` already is. Falls back to
+/// in-process `compress_one_to_size` otherwise.
+pub(super) fn compress_one(
+    exe: Option<&Path>,
+    p: &str,
+    target: u64,
+) -> std::result::Result<PathBuf, u64> {
+    match exe {
+        Some(exe) => {
+            let target_s = target.to_string();
+            match run_st2k_capture_text(exe, p, &["compress", p, "--max-size", &target_s]) {
+                TextOutcome::Ok(path) => Ok(path),
+                TextOutcome::Failed(stderr) => {
+                    crate::safety::log(&format!("Compress (st2k) failed for {p}"));
+                    Err(parse_smallest_achievable(&stderr).unwrap_or(target))
+                }
+                TextOutcome::SpawnFailed => compress_one(None, p, target),
+            }
+        }
+        None => compress_one_to_size(p, target),
+    }
+}
+
+/// Put the first image's pixels on the clipboard. Routes to `st2k clip-pixels <file>`
+/// (decode entirely inside the disposable child; this process runs no image parser on
+/// the routed path, only a bounded memcpy after [`parse_clip_pixels`] validates the
+/// stream), else falls back to in-process `copy_to_clipboard`.
+pub(super) fn clipboard_one(exe: Option<&Path>, p: &str) -> Result<()> {
+    match exe {
+        Some(exe) => match run_st2k_capture_bytes(exe, p, &["clip-pixels", p]) {
+            BytesOutcome::Ok(stdout) => match parse_clip_pixels(&stdout) {
+                Some((w, h, rgba)) => copy_rgba_to_clipboard(w as i32, h as i32, rgba),
+                None => {
+                    crate::safety::log(&format!(
+                        "Copy to clipboard (st2k) produced an unreadable pixel stream for {p}"
+                    ));
+                    Err(Error::new(
+                        E_FAIL,
+                        "clipboard helper produced an invalid pixel stream",
+                    ))
+                }
+            },
+            BytesOutcome::Failed => {
+                crate::safety::log(&format!("Copy to clipboard (st2k) failed for {p}"));
+                Err(Error::new(E_FAIL, "couldn't decode or copy the image"))
+            }
+            BytesOutcome::SpawnFailed => clipboard_one(None, p),
+        },
+        None => copy_to_clipboard(p),
+    }
+}
+
+/// Parse and validate the wire format `st2k clip-pixels` writes to stdout: `w h` as
+/// two little-endian u32 followed by exactly `w * h * 4` bytes of top-down RGBA8.
+/// Rejects a stream shorter than the 8-byte header, a `w`/`h` of zero, a `w`/`h` over
+/// [`decode::limits::MAX_DIM`] (the same bomb guard every decode path in this crate
+/// enforces, applied here to a stream that never touches a real image parser), a
+/// pixel count over [`decode::limits::MAX_ALLOC`], and a payload whose length doesn't
+/// match `w * h * 4` exactly. Pure (no I/O), so it's testable without spawning
+/// anything - a hostile/buggy child can't hand the parent anything it will trust.
+pub(super) fn parse_clip_pixels(stdout: &[u8]) -> Option<(u32, u32, &[u8])> {
+    if stdout.len() < 8 {
+        return None;
+    }
+    let w = u32::from_le_bytes(stdout[0..4].try_into().ok()?);
+    let h = u32::from_le_bytes(stdout[4..8].try_into().ok()?);
+    if w == 0 || h == 0 || w > decode::limits::MAX_DIM || h > decode::limits::MAX_DIM {
+        return None;
+    }
+    let want = u64::from(w) * u64::from(h) * 4;
+    if want > decode::limits::MAX_ALLOC {
+        return None;
+    }
+    let rgba = &stdout[8..];
+    if rgba.len() as u64 != want {
+        return None;
+    }
+    Some((w, h, rgba))
+}
+
+/// Prepare the wallpaper PNG for one file - the decode/resize/encode half of
+/// Set-as-wallpaper. Routes to `st2k wallpaper-prepare <file> <out-dir>`, passing the
+/// SAME `%APPDATA%\SageThumbs2K` directory the in-process [`prepare_wallpaper`] uses
+/// (via [`wallpaper::appdata_dir`]) so the routed and in-process arms agree on where
+/// the file lands, else falls back to in-process `prepare_wallpaper`. Split out from
+/// [`wallpaper_one`] so this - the only decode-heavy half - is testable without
+/// touching the live desktop; applying the result is a separate, decode-free step.
+pub(super) fn prepare_wallpaper_routed(exe: Option<&Path>, p: &str) -> Result<PathBuf> {
+    match exe {
+        Some(exe) => {
+            let dir = wallpaper::appdata_dir()?;
+            let Some(dir_s) = dir.to_str() else {
+                return prepare_wallpaper_routed(None, p);
+            };
+            match run_st2k_capture(exe, p, &["wallpaper-prepare", p, dir_s]) {
+                CaptureOutcome::Ok(wp) => Ok(wp),
+                CaptureOutcome::Failed => {
+                    crate::safety::log(&format!("Set wallpaper (st2k) failed for {p}"));
+                    Err(Error::new(E_FAIL, "couldn't set the wallpaper"))
+                }
+                CaptureOutcome::SpawnFailed => prepare_wallpaper_routed(None, p),
+            }
+        }
+        None => prepare_wallpaper(p),
+    }
+}
+
+/// `VerbAction::Wallpaper` - decode/resize/encode routed via
+/// [`prepare_wallpaper_routed`], then applied in-process
+/// (`wallpaper::apply_wallpaper` - registry write + `SystemParametersInfoW`, no
+/// decode either way).
+pub(super) fn wallpaper_one(exe: Option<&Path>, p: &str, mode: WallpaperMode) -> Result<()> {
+    let wp = prepare_wallpaper_routed(exe, p)?;
+    wallpaper::apply_wallpaper(&wp, mode)
+}
+
+/// `VerbAction::LockScreen` - decode/resize/encode routed via the SAME
+/// [`prepare_wallpaper_routed`] (shares `prepare_wallpaper`/`wallpaper-prepare`'s output with
+/// Set-as-wallpaper — no separate prepare path), then applied in-process
+/// (`wallpaper::apply_lock_screen` - WinRT `LockScreen::SetImageFileAsync`, no decode either
+/// way).
+pub(super) fn lock_screen_one(exe: Option<&Path>, p: &str) -> Result<()> {
+    let wp = prepare_wallpaper_routed(exe, p)?;
+    wallpaper::apply_lock_screen(&wp)
+}
+
+/// Set the selected image as its folder's icon. Routes to `st2k folder-icon <file>`,
+/// which runs the WHOLE verb (writes the .ico + desktop.ini) in the disposable child;
+/// the parent only collects the exit status. Falls back to in-process
+/// `set_folder_icon`.
+pub(super) fn folder_icon_one(exe: Option<&Path>, p: &str) -> Result<()> {
+    match exe {
+        Some(exe) => match run_st2k(exe, p, &["folder-icon", p]) {
+            RunOutcome::Ok => Ok(()),
+            RunOutcome::Failed => {
+                crate::safety::log(&format!("Set folder icon (st2k) failed for {p}"));
+                Err(Error::new(E_FAIL, "couldn't set the folder icon"))
+            }
+            RunOutcome::SpawnFailed => folder_icon_one(None, p),
+        },
+        None => set_folder_icon(p),
+    }
+}
+
+/// Like [`run_st2k_capture`], but returns the child's stderr text (trimmed) on a
+/// non-zero exit instead of discarding it after logging - [`compress_one`] needs the
+/// real error text to pull the "smallest reachable" byte count back out via
+/// [`parse_smallest_achievable`], the same text `compress_to_size` returns in-process.
+enum TextOutcome {
+    /// Exited 0 with a non-empty stdout line - the real path `st2k` wrote to.
+    Ok(PathBuf),
+    /// The child ran but failed; carries its stderr (trimmed) for the caller to parse.
+    Failed(String),
+    /// The child could not be spawned at all.
+    SpawnFailed,
+}
+
+fn run_st2k_capture_text(exe: &Path, path: &str, args: &[&str]) -> TextOutcome {
+    match Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let stdout_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stdout_path.is_empty() {
+                TextOutcome::Failed(String::new())
+            } else {
+                TextOutcome::Ok(PathBuf::from(stdout_path))
+            }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            crate::safety::log_error(&format!("st2k helper failed for {path}: {stderr}"));
+            TextOutcome::Failed(stderr)
+        }
+        Err(e) => {
+            crate::safety::log_error(&format!(
+                "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
+            ));
+            TextOutcome::SpawnFailed
+        }
+    }
+}
+
+/// Outcome of a routed `st2k` run whose stdout IS binary data (`clip-pixels`'s pixel
+/// stream), not text - so it's read back as raw bytes rather than through
+/// `String::from_utf8_lossy`, which would corrupt non-UTF8 pixel values.
+enum BytesOutcome {
+    /// Exited 0 - `stdout` is the raw bytes the child wrote.
+    Ok(Vec<u8>),
+    /// The child ran but failed (non-zero exit / crash / abort) on this file.
+    Failed,
+    /// The child could not be spawned at all.
+    SpawnFailed,
+}
+
+fn run_st2k_capture_bytes(exe: &Path, path: &str, args: &[&str]) -> BytesOutcome {
+    match Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(out) if out.status.success() => BytesOutcome::Ok(out.stdout),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            BytesOutcome::Failed
+        }
+        Err(e) => {
+            crate::safety::log_error(&format!(
+                "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
+            ));
+            BytesOutcome::SpawnFailed
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +697,243 @@ mod tests {
             contents.contains(&marker),
             "the child's real stderr must reach the diagnostics log"
         );
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_helper_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Pure validation, no subprocess: rejects a stream shorter than the header, a
+    /// `w`/`h` over `MAX_DIM`, and a payload whose length doesn't match `w * h * 4`
+    /// exactly — the checks that keep a hostile or buggy `clip-pixels` child from
+    /// handing the parent anything it will trust with a bounded memcpy.
+    #[test]
+    fn parse_clip_pixels_rejects_short_oversized_and_mismatched_streams() {
+        // Shorter than the 8-byte header.
+        assert!(parse_clip_pixels(&[1, 2, 3]).is_none());
+
+        // A well-formed 2x2 header with only 4 of the required 16 payload bytes.
+        let mut short_payload = 2u32.to_le_bytes().to_vec();
+        short_payload.extend_from_slice(&2u32.to_le_bytes());
+        short_payload.extend_from_slice(&[0u8; 4]);
+        assert!(parse_clip_pixels(&short_payload).is_none());
+
+        // A width over MAX_DIM must be refused outright, whatever the rest of the
+        // stream looks like — an attacker-controlled header claiming a huge canvas.
+        let mut oversized = (decode::limits::MAX_DIM + 1).to_le_bytes().to_vec();
+        oversized.extend_from_slice(&1u32.to_le_bytes());
+        assert!(parse_clip_pixels(&oversized).is_none());
+
+        // A correctly-sized, in-bounds stream parses to the exact dimensions + bytes.
+        let mut good = 2u32.to_le_bytes().to_vec();
+        good.extend_from_slice(&2u32.to_le_bytes());
+        let rgba = [9u8; 16];
+        good.extend_from_slice(&rgba);
+        let (w, h, pixels) = parse_clip_pixels(&good).expect("a well-formed stream must parse");
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(pixels, &rgba[..]);
+    }
+
+    /// `clipboard_one`'s ROUTED arm (`st2k clip-pixels` on the batch pool) must decode
+    /// the exact same pixels the in-process arm would hand to `copy_rgba_to_clipboard`
+    /// — checked without touching the real clipboard (shared, process-global state a
+    /// test can't safely claim) by comparing the RGBA bytes each side produces.
+    #[test]
+    fn clip_pixels_routed_output_matches_the_in_process_decode() {
+        let dir = scratch("clip_pixels");
+        let src = dir.join("swatch.png");
+        let img = image::RgbaImage::from_fn(3, 2, |x, y| {
+            image::Rgba([(x * 40) as u8, (y * 60) as u8, 200, 255])
+        });
+        DynamicImage::ImageRgba8(img.clone()).save(&src).unwrap();
+        let path = src.to_str().unwrap();
+        let expected = img.into_raw();
+
+        let Some(exe) = st2k_exe() else {
+            panic!("st2k.exe must be resolvable under test — see the module docs' fallback note");
+        };
+        match run_st2k_capture_bytes(&exe, path, &["clip-pixels", path]) {
+            BytesOutcome::Ok(stdout) => {
+                let (w, h, rgba) = parse_clip_pixels(&stdout)
+                    .expect("clip-pixels must print a well-formed header + payload");
+                assert_eq!((w, h), (3, 2));
+                assert_eq!(rgba, expected.as_slice());
+            }
+            BytesOutcome::Failed => panic!("st2k clip-pixels failed for {path}"),
+            BytesOutcome::SpawnFailed => panic!("st2k.exe must be spawnable under test"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `clipboard_one(None, …)` must degrade straight to `copy_to_clipboard`, never
+    /// trying to spawn anything — checked by comparing outcomes rather than reading
+    /// the real clipboard back (no test in this file touches it directly, matching
+    /// `clipboard.rs`'s own tests, which stop at the pure DIB-building functions).
+    #[test]
+    fn clipboard_one_with_no_helper_takes_the_in_process_fallback() {
+        let dir = scratch("clip_fallback");
+        let src = dir.join("swatch.png");
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])))
+            .save(&src)
+            .unwrap();
+        let path = src.to_str().unwrap();
+
+        assert_eq!(
+            clipboard_one(None, path).is_ok(),
+            copy_to_clipboard(path).is_ok(),
+            "None must delegate straight to copy_to_clipboard, whatever this session's \
+             clipboard access turns out to be"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `prepare_wallpaper_routed`'s ROUTED arm (`st2k wallpaper-prepare` on the batch
+    /// pool) must decode/resize/encode the exact same PNG bytes the in-process
+    /// `prepare_wallpaper` arm does, and the `None` arm must succeed standalone (the
+    /// fallback). Both arms target the SAME persistent `%APPDATA%\SageThumbs2K`
+    /// destination by design (the desktop needs a fixed path to keep reading from,
+    /// not a scratch one) — this is the exact file every real Set-as-wallpaper click
+    /// already overwrites, so reading it back here carries no extra risk.
+    #[test]
+    fn wallpaper_prepare_routed_matches_the_in_process_decode() {
+        let dir = scratch("wallpaper_routed");
+        let src = dir.join("swatch.png");
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 4, image::Rgb([12, 200, 90])))
+            .save(&src)
+            .unwrap();
+        let path = src.to_str().unwrap();
+
+        let Some(exe) = st2k_exe() else {
+            panic!("st2k.exe must be resolvable under test — see the module docs' fallback note");
+        };
+        let routed = prepare_wallpaper_routed(Some(&exe), path)
+            .expect("the routed arm must succeed for a valid PNG");
+        let routed_bytes = std::fs::read(&routed).unwrap();
+
+        let in_process = prepare_wallpaper_routed(None, path)
+            .expect("the in-process (fallback) arm must succeed for the same PNG");
+        let in_process_bytes = std::fs::read(&in_process).unwrap();
+
+        assert_eq!(
+            routed, in_process,
+            "both arms must target the same persistent path"
+        );
+        assert_eq!(
+            routed_bytes, in_process_bytes,
+            "the routed and in-process arms must encode identical PNG bytes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `folder_icon_one`'s ROUTED arm (`st2k folder-icon` on the batch pool) must
+    /// produce the exact same `.ico` bytes and `desktop.ini` content the in-process
+    /// `set_folder_icon` arm does, each in a folder it owns; the `None` arm succeeding
+    /// on its own is the fallback proof.
+    #[test]
+    fn folder_icon_routed_matches_the_in_process_output() {
+        let base = scratch("foldericon_routed");
+        let routed_dir = base.join("routed");
+        let direct_dir = base.join("direct");
+        std::fs::create_dir_all(&routed_dir).unwrap();
+        std::fs::create_dir_all(&direct_dir).unwrap();
+
+        let make_src = |dir: &Path| {
+            let p = dir.join("src.png");
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                5,
+                5,
+                image::Rgb([30, 60, 90]),
+            ))
+            .save(&p)
+            .unwrap();
+            p
+        };
+        let routed_src = make_src(&routed_dir);
+        let direct_src = make_src(&direct_dir);
+
+        let Some(exe) = st2k_exe() else {
+            panic!("st2k.exe must be resolvable under test — see the module docs' fallback note");
+        };
+        folder_icon_one(Some(&exe), routed_src.to_str().unwrap())
+            .expect("the routed arm must succeed for a valid PNG");
+        folder_icon_one(None, direct_src.to_str().unwrap())
+            .expect("the in-process (fallback) arm must succeed for the same PNG");
+
+        let routed_ico = std::fs::read(routed_dir.join("SageThumbsFolder.ico")).unwrap();
+        let direct_ico = std::fs::read(direct_dir.join("SageThumbsFolder.ico")).unwrap();
+        assert_eq!(
+            routed_ico, direct_ico,
+            "both arms must encode an identical .ico"
+        );
+
+        let routed_ini = std::fs::read_to_string(routed_dir.join("desktop.ini")).unwrap();
+        let direct_ini = std::fs::read_to_string(direct_dir.join("desktop.ini")).unwrap();
+        assert_eq!(
+            routed_ini, direct_ini,
+            "both arms must write an identical desktop.ini"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `compress_one`'s ROUTED arm (`st2k compress` on the batch pool) must reach the
+    /// same meetable target the in-process `compress_one_to_size` arm does, with
+    /// byte-identical output (same engine, same deterministic search); the `None` arm
+    /// succeeding on its own is the fallback proof.
+    #[test]
+    fn compress_one_routed_matches_the_in_process_result_for_a_meetable_target() {
+        let dir = scratch("compress_routed");
+        // Per-pixel noise so the JPEG has real size to search over (a flat image would
+        // compress to almost nothing regardless of target).
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            let h = (x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B)).rotate_left(7);
+            image::Rgb([h as u8, (h >> 8) as u8, (h >> 16) as u8])
+        });
+        let src = dir.join("noise.png");
+        DynamicImage::ImageRgb8(img).save(&src).unwrap();
+        let path = src.to_str().unwrap();
+        // Generous relative to the 96x96 noise source — easily meetable either way.
+        let target = 40_000u64;
+
+        let Some(exe) = st2k_exe() else {
+            panic!("st2k.exe must be resolvable under test — see the module docs' fallback note");
+        };
+        let routed =
+            compress_one(Some(&exe), path, target).expect("the routed arm must meet the target");
+        let routed_bytes = std::fs::read(&routed).unwrap();
+        assert!(
+            routed_bytes.len() as u64 <= target,
+            "routed output {} exceeds target {target}",
+            routed_bytes.len()
+        );
+
+        let in_process = compress_one(None, path, target)
+            .expect("the in-process (fallback) arm must meet the same target");
+        let in_process_bytes = std::fs::read(&in_process).unwrap();
+        assert!(
+            in_process_bytes.len() as u64 <= target,
+            "in-process output {} exceeds target {target}",
+            in_process_bytes.len()
+        );
+
+        assert_eq!(
+            routed_bytes, in_process_bytes,
+            "the routed and in-process arms must produce byte-identical output"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -504,9 +504,9 @@ pub(crate) fn current_posture() -> Posture {
     let now = now_unix();
     let ent = entitlement_now(now, history.as_ref());
     let p = posture(mode, ent, history.as_ref());
-    sagethumbs2k_core::safety::log_debug(&format!(
+    sagethumbs2k_core::safety::log_debugf!(
         "license: mode={mode:?} entitlement={ent:?} -> posture={p:?}"
-    ));
+    );
     p
 }
 

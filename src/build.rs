@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use embed_manifest::{embed_manifest, new_manifest};
 
@@ -145,16 +145,20 @@ fn embed_manifest_and_icon() -> bool {
         ),
     ];
     // Build EVERY per-bin object first; only emit link args once all succeeded.
+    let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
     let mut links: Vec<(&str, String)> = Vec::new();
     for (bin, rc_name, obj_name, desc, orig) in bins {
-        let rc = format!("{prelude}{}", versioninfo_rc(desc, orig));
+        let rc = format!(
+            "{prelude}{}",
+            build_support::versioninfo_rc(desc, orig, &ver, build_support::FileType::App)
+        );
         if std::fs::write(format!("{out}/{rc_name}"), rc).is_err() {
             return false;
         }
         let rc_path = format!("{out}/{rc_name}");
         let (obj, built) = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
             let res = format!("{out}/{}.res", obj_name.trim_end_matches(".o"));
-            let built = compile_with_windows_sdk_rc(&rc_path, &res);
+            let built = build_support::compile_with_windows_sdk_rc(&rc_path, &res);
             (res, built)
         } else {
             let obj = format!("{out}/{obj_name}");
@@ -180,86 +184,6 @@ fn embed_manifest_and_icon() -> bool {
         println!("cargo:rerun-if-changed=assets/app.ico");
     }
     true
-}
-
-/// Compile an architecture-neutral Windows `.res` with the SDK resource compiler.
-/// GNU windres installations on x64 emit x64 COFF objects even for ARM targets;
-/// `link.exe` can instead consume this `.res` while producing the final ARM64 PE.
-fn compile_with_windows_sdk_rc(input: &str, output: &str) -> bool {
-    windows_sdk_rc_candidates().into_iter().any(|rc| {
-        let status = std::process::Command::new(rc)
-            .args(["/nologo", &format!("/fo{output}"), input])
-            .status();
-        matches!(status, Ok(s) if s.success())
-    })
-}
-
-fn windows_sdk_rc_candidates() -> Vec<PathBuf> {
-    let mut candidates = vec![PathBuf::from("rc.exe")];
-    let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") else {
-        return candidates;
-    };
-    let sdk_bin = PathBuf::from(program_files_x86).join("Windows Kits/10/bin");
-    let Ok(entries) = std::fs::read_dir(sdk_bin) else {
-        return candidates;
-    };
-    let host = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x64"
-    };
-    let mut versions: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path().join(host).join("rc.exe"))
-        .filter(|path| path.is_file())
-        .collect();
-    versions.sort_by(|a, b| b.cmp(a));
-    candidates.extend(versions);
-    candidates
-}
-
-/// Build a Windows `VERSIONINFO` resource statement (as `.rc` text) with
-/// FileVersion / ProductVersion pinned to `CARGO_PKG_VERSION`, CompanyName
-/// `LunarWerx`, ProductName `SageThumbs 2K`. `file_desc` is the per-artifact
-/// FileDescription and `orig_name` the OriginalFilename. The four numeric
-/// version fields come from the `MAJOR.MINOR.PATCH` cargo version (4th field 0).
-fn versioninfo_rc(file_desc: &str, orig_name: &str) -> String {
-    let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
-    // Split "MAJOR.MINOR.PATCH[-pre]" → numeric quad "MAJOR,MINOR,PATCH,0".
-    let mut nums = [0u32; 3];
-    for (i, part) in ver.split(['.', '-', '+']).take(3).enumerate() {
-        nums[i] = part.parse().unwrap_or(0);
-    }
-    let (maj, min, pat) = (nums[0], nums[1], nums[2]);
-    // \r\n in the .rc string keeps rc.exe/windres happy; the version string shown
-    // in Properties is the human-readable cargo version (incl. any -pre suffix).
-    format!(
-        "1 VERSIONINFO\n\
-         FILEVERSION {maj},{min},{pat},0\n\
-         PRODUCTVERSION {maj},{min},{pat},0\n\
-         FILEOS 0x40004\n\
-         FILETYPE 0x1\n\
-         BEGIN\n\
-         \x20 BLOCK \"StringFileInfo\"\n\
-         \x20 BEGIN\n\
-         \x20\x20\x20 BLOCK \"040904b0\"\n\
-         \x20\x20\x20 BEGIN\n\
-         \x20\x20\x20\x20\x20 VALUE \"CompanyName\", \"LunarWerx\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"FileDescription\", \"{file_desc}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"FileVersion\", \"{ver}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"InternalName\", \"SageThumbs2K\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"LegalCopyright\", \"(C) 2026 LunarWerx\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"OriginalFilename\", \"{orig_name}\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"ProductName\", \"SageThumbs 2K\"\n\
-         \x20\x20\x20\x20\x20 VALUE \"ProductVersion\", \"{ver}\"\n\
-         \x20\x20\x20 END\n\
-         \x20 END\n\
-         \x20 BLOCK \"VarFileInfo\"\n\
-         \x20 BEGIN\n\
-         \x20\x20\x20 VALUE \"Translation\", 0x409, 1200\n\
-         \x20 END\n\
-         END\n",
-    )
 }
 
 /// Parse every `locales/<code>.toml` into a generated `LOCALES` table that

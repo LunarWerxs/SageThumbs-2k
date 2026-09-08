@@ -58,6 +58,16 @@ pub(crate) const BANNER_PNG: &[u8] = include_bytes!("../../../assets/banner.png"
 /// a real limit — an over-cap response is treated as a failed fetch.
 const MAX_REMOTE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The decode pipeline's own ceilings, shared so the banner's canvas probe and budget can
+/// never drift from the thumbnail path's.
+const CORE_MAX_DIM: u32 = sagethumbs2k_core::decode::limits::MAX_DIM;
+const CORE_MAX_ALLOC: u64 = sagethumbs2k_core::decode::limits::MAX_ALLOC;
+
+/// The banner's own, deliberately smaller multi-frame budget — the sponsor art is a small
+/// fixed-size control, not the general decode path, so it never needs the full budget above.
+const BANNER_MAX_FRAMES: usize = 256;
+const BANNER_MAX_TOTAL_BYTES: u64 = CORE_MAX_ALLOC / 2; // 256 MiB
+
 /// How long the startup manifest check may block before we give up and treat the
 /// feed as unreachable (→ sponsors off). A small text file off a CDN is well under
 /// this; the bound just stops a slow/dead network from freezing the Settings open.
@@ -479,17 +489,16 @@ fn build_sponsors_from_manifest(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<Spo
                 continue;
             };
             // Animated GIF → many frames; anything else → one still frame.
-            let (frames, delay_ms) = if let Some((fr, d)) =
-                sagethumbs2k_core::app_image::decode_gif_frames_sized(&img_bytes, w, h)
-            {
-                (fr, d)
-            } else if let Some(handle) =
-                sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h)
-            {
-                (vec![handle], 0)
-            } else {
-                continue;
-            };
+            let (frames, delay_ms) =
+                if let Some((fr, d)) = decode_gif_frames_sized(&img_bytes, w, h) {
+                    (fr, d)
+                } else if let Some(handle) =
+                    sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h)
+                {
+                    (vec![handle], 0)
+                } else {
+                    continue;
+                };
             if frames.is_empty() {
                 continue;
             }
@@ -595,6 +604,75 @@ pub(crate) unsafe fn show_current_image(
     if img.frames.len() > 1 {
         let _ = SetTimer(Some(hwnd), TIMER_BANNER, img.delay_ms.max(20), None);
     }
+}
+
+/// Free one HBITMAP handle. Shared by the GIF decode's failure path (below) and
+/// [`drop_sponsor_rotator`].
+fn free_hbitmap(h: isize) {
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(h as *mut c_void));
+    }
+}
+
+/// Decode an animated GIF into one `w`x`h` HBITMAP per frame plus the inter-frame delay in
+/// ms (so the banner can animate it). `None` if `bytes` isn't a multi-frame GIF — the caller
+/// then falls back to the single-image path. Uses the same shared, capped decode loop as the
+/// Quick preview viewer (`crate::gif_frames`), with the banner's own deliberately smaller
+/// budget ([`BANNER_MAX_FRAMES`]/[`BANNER_MAX_TOTAL_BYTES`]) so a many-huge-frame bomb can't
+/// blow memory here either.
+fn decode_gif_frames_sized(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<isize>, u32)> {
+    use std::io::Cursor;
+
+    use image::AnimationDecoder;
+
+    if w == 0 || h == 0 {
+        return None;
+    }
+    // Bomb guard: a tiny GIF can still declare an enormous logical-screen size; refuse it
+    // before the decoder ever allocates a frame buffer for it.
+    if !crate::gif_frames::declared_canvas_ok(bytes, CORE_MAX_DIM, CORE_MAX_ALLOC) {
+        return None;
+    }
+    let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).ok()?;
+    // A partial animation (some frames decoded before the budget or a mid-stream error hit)
+    // is fine for a banner — matches this loader's long-standing behaviour of keeping what
+    // it has rather than failing the whole banner outright.
+    let raw = crate::gif_frames::collect_capped(
+        decoder.into_frames(),
+        BANNER_MAX_FRAMES,
+        CORE_MAX_DIM,
+        BANNER_MAX_TOTAL_BYTES,
+        crate::gif_frames::OverBudget::KeepPartial,
+    )?;
+    // Only the first frame's delay is kept — every frame of a banner animates at one rate.
+    let delay_ms = raw.first().map_or(100, |f| {
+        let (n, d) = f.delay.numer_denom_ms();
+        n.checked_div(d).map_or(100, |q| q.clamp(20, 1000))
+    });
+    // Resize each frame to w×h AS IT ARRIVES rather than retaining every full-canvas frame:
+    // peak memory becomes (frame count)×w×h×4 (a banner's worth), not the GIF's declared
+    // canvas. An early failure frees every handle already built rather than leaking them.
+    let mut handles: Vec<isize> = Vec::with_capacity(raw.len());
+    for f in raw {
+        let Some(buf) = image::RgbaImage::from_raw(f.w, f.h, f.rgba) else {
+            handles.into_iter().for_each(free_hbitmap);
+            return None;
+        };
+        let resized = image::DynamicImage::ImageRgba8(buf)
+            .resize_exact(w, h, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        let Some(hbmp) = sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, resized.as_raw())
+        else {
+            handles.into_iter().for_each(free_hbitmap);
+            return None;
+        };
+        handles.push(hbmp);
+    }
+    if handles.len() < 2 {
+        handles.into_iter().for_each(free_hbitmap);
+        return None;
+    }
+    Some((handles, delay_ms))
 }
 
 /// Free a sponsor rotator: every frame of every image of every sponsor, then the box.

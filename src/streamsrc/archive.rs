@@ -69,9 +69,7 @@ pub(super) unsafe fn generic_archive(
         let detail = reported_size
             .map(|n| format!("{n} > {max} bytes"))
             .unwrap_or_else(|| "stream size unavailable".to_string());
-        safety::log_debug(&format!(
-            "{who}: refusing generic archive before parse ({detail})"
-        ));
+        safety::log_debugf!("{who}: refusing generic archive before parse ({detail})");
         return ArchiveProbe::NoCover;
     };
 
@@ -113,11 +111,11 @@ pub(super) unsafe fn generic_archive(
         Some(covers) if covers.is_empty() => ArchiveProbe::NoCover,
         Some(mut covers) if covers.len() == 1 => {
             // One image: the normal aspect-preserving single-cover pipeline.
-            safety::log_debug(&format!("{who}: generic archive single cover"));
+            safety::log_debugf!("{who}: generic archive single cover");
             ArchiveProbe::Found(StreamSource::Bytes(covers.swap_remove(0)))
         }
         Some(covers) => {
-            safety::log_debug(&format!("{who}: generic archive {} covers", covers.len()));
+            safety::log_debugf!("{who}: generic archive {} covers", covers.len());
             ArchiveProbe::Found(StreamSource::Covers(covers))
         }
     }

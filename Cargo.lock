@@ -127,6 +127,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-support"
+version = "2.5.0"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -428,8 +432,6 @@ checksum = "17ccda29cda6e77bb0ff165dd6f6d8ced7b7cf055fbe3b4d4570dfec915900ec"
 [[package]]
 name = "djvu-rs"
 version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d2ad03e6cfe732e884de3921b2c05878c680a0d3223375c890b61dff518ae33"
 dependencies = [
  "djvu-bitmap",
  "djvu-bzz",
@@ -1426,6 +1428,7 @@ version = "2.5.0"
 dependencies = [
  "base64",
  "bcdec_rs",
+ "build-support",
  "djvu-rs",
  "ed25519-dalek",
  "embed-manifest",
@@ -1466,6 +1469,7 @@ dependencies = [
 name = "sagethumbs2k-dlghook"
 version = "2.5.0"
 dependencies = [
+ "build-support",
  "windows",
 ]
 
@@ -1473,6 +1477,7 @@ dependencies = [
 name = "sagethumbs2k-dll"
 version = "2.5.0"
 dependencies = [
+ "build-support",
  "sagethumbs2k",
  "windows-core",
 ]

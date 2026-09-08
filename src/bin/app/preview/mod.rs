@@ -30,6 +30,7 @@ mod markdown;
 mod mdhtml;
 mod paint;
 mod pdfview;
+mod print;
 mod selection;
 mod shot;
 mod toolbar;
@@ -800,6 +801,21 @@ pub(crate) struct ShotOpts {
     /// does (a real `SetWindowPos` → `WM_SIZE`), then capture. This is how "does the content
     /// re-flow when the window gets wider" is verified headlessly instead of on the desktop.
     pub size: Option<(i32, i32)>,
+    /// Force keyboard focus onto caption-toolbar button `N` after loading (`--focus N`),
+    /// setting `toolbar::FocusTarget::Caption` exactly as Tab/arrow key navigation would land
+    /// on it — proves `paint::draw_toolbar_focus_ring` headlessly. `N` is a `BTNS` index, the
+    /// SAME numbering `--hot N` uses (0..17, shifts whenever `BTNS` gains an entry — see
+    /// `window.rs`'s `BTNS`), not the visible-only position the focus model stores internally;
+    /// `shot.rs` translates one into the other by locating the button in `button_rects`. A
+    /// button that is not currently visible (see `btn_visible`) is silently ignored, same as a
+    /// Tab landing on nothing.
+    pub focus: Option<usize>,
+    /// Force keyboard focus onto transport-strip button `N` after loading
+    /// (`--focus-transport N`), setting `toolbar::FocusTarget::Transport`. `N` indexes
+    /// `transport::TBTNS` (0..7) directly — the strip carries no per-document visibility
+    /// filter, so unlike `--focus` this needs no translation. Meaningless (silently ignored)
+    /// unless the transport strip is showing (video/audio); combine with `--play`.
+    pub focus_transport: Option<usize>,
 }
 
 /// The app's `--shot --window preview` mode: build the viewer OFF-SCREEN per `opts`, render it to

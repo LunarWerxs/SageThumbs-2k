@@ -542,6 +542,17 @@ pub(super) fn apply(meta: &Carried, path: &Path, out_ext: &str) -> Result<()> {
     Ok(())
 }
 
+/// Graft `meta` onto in-memory PNG bytes bound for ImageMagick's stdin, for an
+/// exotic magick-only output (PSD/DDS/AVIF/JXL/…) our own writer can't touch
+/// directly: magick reads the `eXIf`/`iTXt`-XMP/`iCCP` chunks off the PNG it
+/// decodes and propagates that metadata into whatever it writes, when the
+/// target format can hold it. Best-effort, like [`apply`]: falls back to the
+/// original bytes unchanged rather than failing the conversion.
+pub(super) fn apply_to_png_bytes(meta: &Carried, png: Vec<u8>) -> Vec<u8> {
+    let input = Bytes::from(png);
+    apply_png(meta, input.clone()).unwrap_or_else(|| input.to_vec())
+}
+
 fn apply_jpeg(meta: &Carried, input: Bytes) -> Option<Vec<u8>> {
     let mut jpeg = Jpeg::from_bytes(input).ok()?;
     // Our encoder writes a JFIF APP0 first; EXIF conventionally follows it rather
@@ -1377,5 +1388,127 @@ mod tests {
         other.extend_from_slice(&[0, 0, 0, 0, 0]);
         other.extend_from_slice(b"hello");
         assert!(itxt_xmp(&other).is_none());
+    }
+
+    /// A JPEG with EXIF (orientation 6, Make) and XMP, built the same way
+    /// `convert_carries_exif_and_neutralises_orientation` does.
+    fn jpeg_with_exif_and_xmp() -> Vec<u8> {
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            8,
+            image::Rgb([70, 80, 90]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut base),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+
+        let mut exif_payload = EXIF_PREFIX.to_vec();
+        exif_payload.extend_from_slice(&tiff_with_orientation(6));
+        let mut xmp_payload = XMP_PREFIX.to_vec();
+        xmp_payload.extend_from_slice(b"<x:xmpmeta/>");
+
+        let mut out = base[0..2].to_vec(); // SOI
+        for payload in [&exif_payload, &xmp_payload] {
+            out.extend_from_slice(&[0xFF, markers::APP1]);
+            out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(payload);
+        }
+        out.extend_from_slice(&base[2..]);
+        out
+    }
+
+    /// Item 2: `convert_file`'s magick-only targets (AVIF/JXL) used to call
+    /// `encode_via_magick` with no carried metadata at all, dropping EXIF/XMP that
+    /// the native-format branch already keeps. This checks the mechanism
+    /// `verbs::encode::encode_via_magick_carrying` now uses: it PNG-encodes the
+    /// decoded image, then grafts the carried chunks onto that PNG (via
+    /// `apply_to_png_bytes` below) before handing it to magick.
+    ///
+    /// Asserted directly on the intermediate PNG rather than on the AVIF/JXL
+    /// magick writes: whether ImageMagick's own AVIF/JXL coder re-embeds a PNG's
+    /// `eXIf`/XMP `iTXt` into its output is a property of the bundled magick
+    /// binary, not of this code, so it is not a fact this crate can assert.
+    /// The end-to-end run below (gated on ImageMagick being present) proves the
+    /// carry step does not break the real convert - the file still comes out a
+    /// valid AVIF - which is what this crate DOES control.
+    #[test]
+    fn magick_branch_grafts_carried_metadata_onto_the_intermediate_png() {
+        use exif::{In, Tag, Value};
+
+        let jpg = jpeg_with_exif_and_xmp();
+        let carried = read(&jpg, "jpg").expect("keep-metadata default is on");
+
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            16,
+            8,
+            image::Rgb([70, 80, 90]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+
+        let grafted = apply_to_png_bytes(&carried, png);
+        let decoded = Png::from_bytes(Bytes::from(grafted)).expect("must still be a valid PNG");
+
+        let exif_chunk = decoded
+            .chunk_by_type(*b"eXIf")
+            .expect("no eXIf chunk on the intermediate PNG")
+            .contents();
+        let exif = exif::Reader::new()
+            .read_raw(exif_chunk.to_vec())
+            .expect("the eXIf chunk must parse");
+        let make = match &exif.get_field(Tag::Make, In::PRIMARY).unwrap().value {
+            Value::Ascii(v) => String::from_utf8_lossy(v.first().unwrap()).into_owned(),
+            other => panic!("Make: not ASCII: {other:?}"),
+        };
+        assert_eq!(make, "SageT");
+        assert_eq!(
+            exif.get_field(Tag::Orientation, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0)),
+            Some(1),
+            "orientation must be reset for the already-upright pixels"
+        );
+
+        let xmp_chunk = decoded
+            .chunks_by_type(*b"iTXt")
+            .find_map(|c| itxt_xmp(c.contents()))
+            .expect("no XMP iTXt chunk on the intermediate PNG");
+        assert_eq!(xmp_chunk.as_slice(), &b"<x:xmpmeta/>"[..]);
+
+        // End-to-end: the real convert_file magick branch must still produce a
+        // valid AVIF once the carry step is wired in (skipped, with a printed
+        // reason, when ImageMagick is not installed).
+        if !crate::decode::magick_available() {
+            eprintln!(
+                "SKIPPED magick_branch_grafts_carried_metadata_onto_the_intermediate_png \
+                 (end-to-end half): no ImageMagick"
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("st2k_carry_magick_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg_path = dir.join("shot.jpg");
+        std::fs::write(&jpg_path, jpeg_with_exif_and_xmp()).unwrap();
+
+        let out = super::convert_file(
+            jpg_path.to_str().unwrap(),
+            Target {
+                format: ImageFormat::Avif,
+                ext: "avif",
+                webp_quality: None,
+            },
+        )
+        .expect("convert to AVIF via the magick branch must still succeed");
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(
+            bytes.len() > 12 && &bytes[4..8] == b"ftyp",
+            "output is not a valid ISOBMFF/AVIF file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,12 +35,32 @@
 //!
 //! Routed verbs (helper-if-present): **Convert**, **Transform** (→ `rotate`),
 //! **ResizeImg** (→ `convert --resize`), **ShrinkForEmail** (→ `convert --resize`),
-//! **StripMetadata** (→ `strip`). Each maps cleanly to a `st2k` CLI verb that drives
-//! the *same* engine (`decode_full` + the same convert/transform/strip code), so the
-//! produced file is byte-identical and lands at the *same* auto-named path the
-//! in-process verb would write — we compute that path and pass it to the CLI as
-//! `<out>` where the verb takes one (`rotate`/`strip` auto-name in place, exactly
-//! like their in-process twins, so they need no `<out>`).
+//! **StripMetadata** (→ `strip`), **CompressToSize** (→ `compress`), **Clipboard**
+//! (→ the `clip-pixels` stdout-only child), **Wallpaper** (→ `wallpaper-prepare`),
+//! and **SetFolderIcon** (→ `folder-icon`). The first five map cleanly to a `st2k`
+//! CLI verb that drives the *same* engine (`decode_full` + the same
+//! convert/transform/strip/compress code), so the produced file is byte-identical
+//! and lands at the *same* auto-named path the in-process verb would write — we
+//! compute that path and pass it to the CLI as `<out>` where the verb takes one
+//! (`rotate`/`strip` auto-name in place, exactly like their in-process twins, so
+//! they need no `<out>`).
+//!
+//! The last three touch shell/desktop state a plain "write the same file" verb
+//! doesn't have, so each gets its own child verb instead of reusing an existing one:
+//! - **`clip-pixels <file>`** decodes and writes `w h` (two little-endian u32) then
+//!   top-down RGBA8 straight to stdout — no clipboard API runs in the child at all.
+//!   The parent reads that stdout back, validates it against
+//!   `decode::limits::MAX_DIM`/`MAX_ALLOC` and the exact `w*h*4` byte count
+//!   ([`helper::parse_clip_pixels`]), and hands the bytes to the existing
+//!   `copy_rgba_to_clipboard` — the only in-process work on the routed path is that
+//!   bounded memcpy; no image parser ever runs in the shell host.
+//! - **`wallpaper-prepare <file> <out-dir>`** runs the decode/resize-to-screen half
+//!   (`prepare_wallpaper_in`) in the child and prints the produced PNG's path; the
+//!   parent supplies its own `%APPDATA%\SageThumbs2K` as `<out-dir>` and applies the
+//!   result (`apply_wallpaper` — registry write + `SystemParametersInfoW`) without
+//!   decoding anything itself.
+//! - **`folder-icon <file>`** runs the *whole* verb (the .ico + desktop.ini writes)
+//!   in the child; the parent only collects the exit status, same as `strip`.
 //!
 //! Deliberately **not** routed (kept in-process) — and *why*, since the task scoped
 //! these as routing candidates:
@@ -53,14 +73,8 @@
 //!   quality (`settings::jpeg_quality()`); `st2k pdf` has no quality flag and
 //!   hard-codes 85, so the bytes would diverge whenever the setting ≠ 85. The
 //!   "identical output" guarantee can't hold, so it stays in-process.
-//! - Clipboard / Wallpaper / SetFolderIcon (touch shell/desktop state),
-//!   CombineToCbz (no CLI verb), and the info/sort/rename/dialog/settings/eyedropper
+//! - CombineToCbz (no CLI verb) and the info/sort/rename/dialog/settings/eyedropper
 //!   verbs (UI or pure file moves, not decode-heavy) — never in scope.
-//! - **CompressToSize**: `st2k compress` exists and shares the same
-//!   `compress_to_size` engine, so it COULD route the same way ResizeImg does — but
-//!   doing so needs a `compress_one` shim in `helper.rs`, a file outside this
-//!   change's ownership. Runs in-process (still on the batch pool) until that
-//!   routing is added.
 //!
 //! Crucially, the [`ActionReport`] returned is **identical** between the routed and
 //! the fallback path: a routed per-file success increments `done` exactly as an
@@ -108,7 +122,7 @@ use super::encode::{
 };
 use super::fileops::{
     combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,
-    sort_by_dimensions,
+    sort_by_date_taken, sort_by_dimensions,
 };
 use super::menu::{CompressSize, EmailSize, RenamePattern, Transform, VerbAction, WallpaperMode};
 use crate::decode;
@@ -125,16 +139,26 @@ mod wallpaper;
 
 // Parent-hub import model: pull the children's `pub(super)` items in privately so this
 // file reads as if nothing moved, then re-export the public names BY NAME.
-use helper::{convert_one, resize_one, shrink_one, st2k_exe, strip_one, transform_one};
+use helper::{
+    clipboard_one, compress_one, convert_one, folder_icon_one, lock_screen_one, resize_one,
+    shrink_one, st2k_exe, strip_one, transform_one, wallpaper_one,
+};
 use rename::rename_by_exif;
 
-pub use clipboard::{copy_rgba_to_clipboard, copy_to_clipboard};
+pub use clipboard::{copy_data_uri_to_clipboard, copy_rgba_to_clipboard, copy_to_clipboard};
 pub(crate) use foldericon::set_folder_icon;
-pub use wallpaper::{prepare_wallpaper, prepare_wallpaper_in, set_wallpaper};
+#[cfg(test)]
+pub use wallpaper::set_wallpaper;
+pub use wallpaper::{prepare_wallpaper, prepare_wallpaper_in};
 // Re-exported onward by the `verbs` facade (and consumed from the bin crates through
 // it), which this module can't see - so the lint reads them as unused here.
 #[allow(unused_imports)]
 pub(crate) use rename::{rename_one, tag_base};
+// The free-pattern rename engine's crate-external surface: the companion app's
+// "Rename with pattern…" dialog (`rename_dlg.rs`) calls `rename_pattern_preview` on
+// every keystroke for its live list and `rename_by_pattern` from OK's worker thread —
+// both re-exported onward by `verbs.rs` / `lib.rs`, same path `files_to_folder` takes.
+pub use rename::{rename_by_pattern, rename_pattern_preview};
 
 /// Does `path` have an extension we can decode? A cheap extension-only gate
 /// shared by both menu surfaces (classic `IContextMenu` + modern
@@ -374,6 +398,7 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::Convert(target) => handle_convert(paths, target),
         VerbAction::Transform(t) => handle_transform(paths, t),
         VerbAction::Clipboard => handle_clipboard(paths),
+        VerbAction::CopyDataUri => handle_copy_data_uri(paths),
         VerbAction::Upload => {
             // Upload the selected image(s) to the keyless host in the companion app,
             // which copies the resulting link(s) to the clipboard. The originals are
@@ -388,6 +413,7 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             }
         }
         VerbAction::Wallpaper(mode) => handle_wallpaper(paths, mode),
+        VerbAction::LockScreen => handle_lock_screen(paths),
         VerbAction::CombineToPdf => handle_combine_to_pdf(paths),
         VerbAction::CombineToCbz => handle_combine_to_cbz(paths),
         VerbAction::Ocr => handle_ocr(paths),
@@ -421,7 +447,9 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
             ActionReport::delegated()
         }
         VerbAction::FilesToFolder => handle_files_to_folder(paths),
+        VerbAction::RenameWithPattern => handle_rename_with_pattern(paths),
         VerbAction::SortByDimensions => handle_sort_by_dimensions(paths),
+        VerbAction::SortByDateTaken => handle_sort_by_date_taken(paths),
         VerbAction::TagsToFolders => handle_tags_to_folders(paths),
     }
 }
@@ -480,14 +508,36 @@ fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
 
 /// `VerbAction::Clipboard` - clipboard holds one image. Use the first *image* in the
 /// selection (not `paths.first()`): the menu gate only requires *some* image, so for a
-/// mixed selection the first item may be a non-image.
+/// mixed selection the first item may be a non-image. Routed per file to `st2k
+/// clip-pixels` (helper-if-present) - the child decodes and prints raw pixels, the
+/// parent only does a bounded memcpy - else falls back to in-process `copy_to_clipboard`.
 fn handle_clipboard(paths: &[String]) -> ActionReport {
     match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => match copy_to_clipboard(p) {
+        Some(p) => {
+            let exe = st2k_exe();
+            match clipboard_one(exe.as_deref(), p) {
+                Ok(()) => ActionReport::applied(1, 1),
+                Err(e) => {
+                    crate::safety::log(&format!("Copy to clipboard failed for {p}: {e:?}"));
+                    ActionReport::applied(1, 0).with_note("couldn't decode or copy the image")
+                }
+            }
+        }
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::CopyDataUri` - same "first image in the selection" rule as
+/// [`handle_clipboard`]. Reads the file's raw bytes (not decoded pixels - the URI
+/// carries the original file byte for byte) and places `data:<mime>;base64,…` on the
+/// clipboard as text.
+fn handle_copy_data_uri(paths: &[String]) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => match copy_data_uri_to_clipboard(p) {
             Ok(()) => ActionReport::applied(1, 1),
             Err(e) => {
-                crate::safety::log(&format!("Copy to clipboard failed for {p}: {e:?}"));
-                ActionReport::applied(1, 0).with_note("couldn't decode or copy the image")
+                crate::safety::log(&format!("Copy as data URI failed for {p}: {e:?}"));
+                ActionReport::applied(1, 0).with_note("couldn't read or copy the file")
             }
         },
         None => ActionReport::default(),
@@ -495,16 +545,43 @@ fn handle_clipboard(paths: &[String]) -> ActionReport {
 }
 
 /// `VerbAction::Wallpaper` - one wallpaper. Use the first *image* in the selection (see
-/// [`handle_clipboard`]).
+/// [`handle_clipboard`]). The decode/resize half is routed to `st2k wallpaper-prepare`
+/// (helper-if-present, else in-process `prepare_wallpaper`); applying the result
+/// (registry + `SystemParametersInfoW`) always runs in-process either way - see
+/// [`helper::wallpaper_one`].
 fn handle_wallpaper(paths: &[String], mode: WallpaperMode) -> ActionReport {
     match paths.iter().find(|p| is_image(p.as_str())) {
         Some(p) => {
-            crate::safety::log_debug(&format!("Set wallpaper: using {p}"));
-            match set_wallpaper(p, mode) {
+            crate::safety::log_debugf!("Set wallpaper: using {p}");
+            let exe = st2k_exe();
+            match wallpaper_one(exe.as_deref(), p, mode) {
                 Ok(()) => ActionReport::applied(1, 1),
                 Err(e) => {
                     crate::safety::log(&format!("Set wallpaper failed for {p}: {e:?}"));
                     ActionReport::applied(1, 0).with_note("couldn't set the wallpaper")
+                }
+            }
+        }
+        None => ActionReport::default(),
+    }
+}
+
+/// `VerbAction::LockScreen` - one lock-screen image. Use the first *image* in the selection
+/// (see [`handle_clipboard`]). The decode/resize half is routed to `st2k wallpaper-prepare`
+/// (helper-if-present, else in-process `prepare_wallpaper`) - the SAME child verb Set-as-
+/// wallpaper uses, since both apply the identical prepared PNG; applying it as the lock
+/// screen (`LockScreen::SetImageFileAsync`, no decode) always runs in-process - see
+/// [`helper::lock_screen_one`].
+fn handle_lock_screen(paths: &[String]) -> ActionReport {
+    match paths.iter().find(|p| is_image(p.as_str())) {
+        Some(p) => {
+            crate::safety::log_debugf!("Set lock screen: using {p}");
+            let exe = st2k_exe();
+            match lock_screen_one(exe.as_deref(), p) {
+                Ok(()) => ActionReport::applied(1, 1),
+                Err(e) => {
+                    crate::safety::log(&format!("Set lock screen failed for {p}: {e:?}"));
+                    ActionReport::applied(1, 0).with_note("couldn't set the lock screen")
                 }
             }
         }
@@ -687,17 +764,17 @@ fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
     rep
 }
 
-/// `VerbAction::CompressToSize` - per-image, IN-PROCESS (not routed through the st2k
-/// helper - `helper.rs` is outside this change's file ownership, so no `compress_one`
-/// routing shim exists; see the module doc's routing list). Runs on the batch pool like
-/// the other per-image verbs above.
+/// `VerbAction::CompressToSize` - per-image, on the batch pool. Routed per file to
+/// `st2k compress` (helper-if-present, same `compress_to_size` engine), else
+/// in-process `compress_one_to_size`; see the module doc's routing list.
 fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport {
     let imgs: Vec<String> = paths
         .iter()
         .filter(|p| is_image(p.as_str()))
         .cloned()
         .collect();
-    compress_batch_report(&imgs, size.target_bytes())
+    let exe = st2k_exe();
+    compress_batch_report(exe.as_deref(), &imgs, size.target_bytes())
 }
 
 /// The byte-target half of [`handle_compress_to_size`], split out so the shortfall
@@ -710,8 +787,8 @@ fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport
 /// and report a generic "couldn't compress some images" - a right-click on an unmeetable
 /// target told the user nothing they could act on, unlike its CLI/MCP siblings. It now
 /// names the same numbers, in the same units (bytes), that `st2k compress` would.
-fn compress_batch_report(imgs: &[String], target: u64) -> ActionReport {
-    let results = crate::parallel::map(imgs, |_, p| compress_one_to_size(p, target));
+fn compress_batch_report(exe: Option<&Path>, imgs: &[String], target: u64) -> ActionReport {
+    let results = crate::parallel::map(imgs, |_, p| compress_one(exe, p, target));
     let attempted = imgs.len();
     let mut outs = Vec::with_capacity(results.len());
     // The largest of the per-image "smallest reachable" numbers among the failures: asking
@@ -787,16 +864,20 @@ fn compress_shortfall_note(target_bytes: u64, achievable_bytes: u64, failed: usi
 }
 
 /// `VerbAction::SetFolderIcon` - one folder icon. Use the first *image* in the
-/// selection.
+/// selection. Routed to `st2k folder-icon` (helper-if-present), which runs the whole
+/// verb in the disposable child; else falls back to in-process `set_folder_icon`.
 fn handle_set_folder_icon(paths: &[String]) -> ActionReport {
     match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => match set_folder_icon(p) {
-            Ok(()) => ActionReport::applied(1, 1),
-            Err(e) => {
-                crate::safety::log(&format!("Set folder icon failed for {p}: {e:?}"));
-                ActionReport::applied(1, 0).with_note("couldn't set the folder icon")
+        Some(p) => {
+            let exe = st2k_exe();
+            match folder_icon_one(exe.as_deref(), p) {
+                Ok(()) => ActionReport::applied(1, 1),
+                Err(e) => {
+                    crate::safety::log(&format!("Set folder icon failed for {p}: {e:?}"));
+                    ActionReport::applied(1, 0).with_note("couldn't set the folder icon")
+                }
             }
-        },
+        }
         None => ActionReport::default(),
     }
 }
@@ -839,6 +920,22 @@ fn handle_files_to_folder(paths: &[String]) -> ActionReport {
     }
 }
 
+/// `VerbAction::RenameWithPattern` - always opens the companion app's dialog (the
+/// pattern/find/replace live in the user's head, not the menu), unlike
+/// `VerbAction::FilesToFolder`'s single-file no-prompt shortcut. Any file type, like
+/// `FilesToFolder` - the pattern engine only *optionally* reads image metadata.
+fn handle_rename_with_pattern(paths: &[String]) -> ActionReport {
+    if paths.is_empty() {
+        return ActionReport::default();
+    }
+    match launch_rename_with_pattern(paths) {
+        ListLaunch::Failed => {
+            ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+        }
+        _ => ActionReport::delegated(),
+    }
+}
+
 /// `VerbAction::SortByDimensions`.
 fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
     let (moved, skipped) = sort_by_dimensions(paths);
@@ -848,6 +945,22 @@ fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
         ));
         ActionReport::applied(moved + skipped, moved)
             .with_note(format!("{skipped} couldn't be read or moved"))
+    } else {
+        ActionReport::applied(moved + skipped, moved)
+    }
+}
+
+/// `VerbAction::SortByDateTaken` - same shape as [`handle_sort_by_dimensions`]; a file
+/// with no EXIF capture date is skipped and counted, not treated as an error.
+fn handle_sort_by_date_taken(paths: &[String]) -> ActionReport {
+    let (moved, skipped) = sort_by_date_taken(paths);
+    if skipped > 0 {
+        crate::safety::log(&format!(
+            "Sort by date taken: {moved} moved, {skipped} skipped (no capture date / couldn't move)"
+        ));
+        ActionReport::applied(moved + skipped, moved).with_note(format!(
+            "{skipped} had no capture date or couldn't be moved"
+        ))
     } else {
         ActionReport::applied(moved + skipped, moved)
     }
@@ -1027,6 +1140,12 @@ fn launch_files_to_folder(paths: &[String]) -> ListLaunch {
     launch_with_list(paths, |_| true, "f2f", "--files-to-folder")
 }
 
+/// Launch the companion EXE's "Rename with pattern…" dialog over the selected files
+/// (unfiltered — any file type, same as [`launch_files_to_folder`]).
+fn launch_rename_with_pattern(paths: &[String]) -> ListLaunch {
+    launch_with_list(paths, |_| true, "rnpattern", "--rename-with-pattern")
+}
+
 /// Launch the companion EXE's "Tags to folders" dialog over the selected audio files.
 fn launch_tags_to_folders(audio: &[String]) -> ListLaunch {
     launch_with_list(audio, |_| true, "ttf", "--tags-to-folders")
@@ -1149,7 +1268,9 @@ mod tests {
         image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
         let path = src.to_str().unwrap().to_string();
 
-        let report = super::compress_batch_report(&[path], 1);
+        // `None` - the in-process arm - keeps this test's error text deterministic and
+        // independent of whether a built `st2k.exe` happens to be resolvable here.
+        let report = super::compress_batch_report(None, &[path], 1);
         assert_eq!(report.attempted, 1);
         assert_eq!(report.done, 0, "an impossible target must write nothing");
         assert!(report.output.is_none());

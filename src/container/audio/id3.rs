@@ -127,3 +127,27 @@ fn id3_synchsafe(b: &[u8]) -> Option<u32> {
             | (b[3] as u32 & 0x7f),
     )
 }
+
+/// Direct fuzz entry point into the ID3v2 frame walk, for `container::fuzzseed`. Going
+/// through [`dsf_cover`]'s trailing-pointer + tag-size gate only reaches this once a
+/// mutation leaves that framing intact — see `container::apk_fuzzapi` for the same argument
+/// made about zip-wrapped parsers. Calls the existing parser directly and changes no
+/// behavior. Major version 3 (plain big-endian frame sizes) is fixed here; the seed this
+/// drives is built the same way.
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) mod fuzzapi {
+    use super::*;
+
+    /// The frame walk on raw frame bytes, robustness only (result discarded).
+    pub(crate) fn front_cover(body: &[u8]) {
+        let _ = id3v2_front_cover(body, 3);
+    }
+
+    // ── seed self-check ──────────────────────────────────────────────────────────────
+    // Returns its result so `container::fuzzseed::tests::every_seed_reaches_its_parser` can
+    // assert the seed actually gets past the front door.
+    pub(crate) fn front_cover_result(body: &[u8]) -> Option<Vec<u8>> {
+        id3v2_front_cover(body, 3)
+    }
+}

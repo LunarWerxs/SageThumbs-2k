@@ -25,12 +25,13 @@ pub(super) unsafe fn draw_image(
     imgs: &mut ImgCache,
     doc_dir: Option<&Path>,
     gen: u64,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     const MAX_IMAGES: usize = 24; // bound decode/fetch work per document
     if !imgs.contains_key(&ib.src) {
         if imgs.len() >= MAX_IMAGES {
-            return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links);
+            return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
         }
         if is_remote_src(&ib.src) {
             // Only reachable when the remote-images toggle is ON (Builder pills them
@@ -46,7 +47,7 @@ pub(super) unsafe fn draw_image(
         }
     }
     let Some(ImgSlot::Ready(rd)) = imgs.get(&ib.src) else {
-        return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links);
+        return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
     };
     let mut dw = match ib.width {
         ImgW::Natural => sc(rd.iw),
@@ -94,6 +95,7 @@ pub(super) unsafe fn pill_fallback(
     full_w: i32,
     c: &MdColors,
     links: &mut Vec<LinkHit>,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let label = if ib.alt.trim().is_empty() {
@@ -110,13 +112,13 @@ pub(super) unsafe fn pill_fallback(
         strike: false,
         link: ib.link.clone(),
     }];
-    let fonts = Fonts::new(hwnd, 13, false, false);
+    let fonts = fonts_cache.get(hwnd, 13, false, false);
     let ctx = ctx_for(hwnd, c, c.muted);
     // Synthesized label, not part of the document — no selection wiring.
     let (ny, _) = run_block(
         hdc,
         &runs,
-        &fonts,
+        fonts,
         x0,
         y,
         full_w,
@@ -126,7 +128,6 @@ pub(super) unsafe fn pill_fallback(
         links,
         None,
     );
-    fonts.free();
     ny + sc(8)
 }
 

@@ -211,11 +211,11 @@ fn cache_get(path: &str) -> Option<SharedRgba> {
     let key = cache_key(path)?;
     let mut c = CACHE.lock().ok()?;
     let found = c.iter().position(|(k, _)| *k == key);
-    sagethumbs2k_core::safety::log_debug(&format!(
+    sagethumbs2k_core::safety::log_debugf!(
         "preview cache: {} for {path} ({} entries held)",
         if found.is_some() { "HIT" } else { "miss" },
         c.len()
-    ));
+    );
     let pos = found?;
     let hit = c.remove(pos);
     let out = std::sync::Arc::clone(&hit.1);
@@ -435,10 +435,11 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     if rw <= (shown.0.max(1) as u32).saturating_mul(3) / 2
         && rh <= (shown.1.max(1) as u32).saturating_mul(3) / 2
     {
-        sagethumbs2k_core::safety::log_debug(&format!(
+        sagethumbs2k_core::safety::log_debugf!(
             "preview: keeping the baked preview of {path} (document {rw}x{rh}, showing {}x{})",
-            shown.0, shown.1
-        ));
+            shown.0,
+            shown.1
+        );
         return None;
     }
     // Re-read the file WHOLE. The bytes the preview stage worked from came from
@@ -456,19 +457,19 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     let whole = match sagethumbs2k_core::decode::read_full_fidelity(path) {
         Ok(bytes) => bytes,
         Err(e) => {
-            sagethumbs2k_core::safety::log_debug(&format!(
+            sagethumbs2k_core::safety::log_debugf!(
                 "preview: cannot re-read {path} for the composite (document {rw}x{rh}): {e}"
-            ));
+            );
             return None;
         }
     };
     let full = match sagethumbs2k_core::decode::decode_full(&whole) {
         Ok(img) => img,
         Err(e) => {
-            sagethumbs2k_core::safety::log_debug(&format!(
+            sagethumbs2k_core::safety::log_debugf!(
                 "preview: composite decode failed for {path} (document {rw}x{rh}, {} bytes): {e}",
                 whole.len()
-            ));
+            );
             return None;
         }
     };
@@ -477,17 +478,19 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     // Guard the no-compositor case explicitly: on a compact install `decode_full` falls back
     // to the same baked preview, and swapping in an identical image is a repaint for nothing.
     if w <= shown.0 && h <= shown.1 {
-        sagethumbs2k_core::safety::log_debug(&format!(
+        sagethumbs2k_core::safety::log_debugf!(
             "preview: no sharper composite for {path} (document {rw}x{rh}, \
              full decode {w}x{h}, already showing {}x{})",
-            shown.0, shown.1
-        ));
+            shown.0,
+            shown.1
+        );
         return None;
     }
-    sagethumbs2k_core::safety::log_debug(&format!(
+    sagethumbs2k_core::safety::log_debugf!(
         "preview: sharpened {path} from {}x{} to {w}x{h} (document is {rw}x{rh})",
-        shown.0, shown.1
-    ));
+        shown.0,
+        shown.1
+    );
     Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
@@ -743,6 +746,12 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
 }
 
 /// Human-readable byte size (B/KB/MB/GB/TB, one decimal above bytes).
+///
+/// The decimal separator is always `.`, whatever the UI locale: the info card's other
+/// figures (pixel dimensions, frame counts) are locale-neutral too, and a size like
+/// `1,5 MB` next to `1920 x 1080` reads as a typo rather than as a localized number. If
+/// this ever changes, the number format has to change for every figure on the card at
+/// once, not for the size alone.
 pub(super) fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let (mut v, mut i) = (b as f64, 0usize);
@@ -947,7 +956,14 @@ fn sniff_utf16(bytes: &[u8]) -> Option<bool> {
 /// mojibake (`ÖÐÄÄ`) beats the correct `中文` on any per-character scoring you care to invent. A
 /// DBCS codepage validating the WHOLE buffer under `MB_ERR_INVALID_CHARS` is real evidence,
 /// because it requires every high byte to form a well-formed lead/trail pair — an ordinary
-/// Latin-1 file with isolated accented characters fails that immediately.
+/// Latin-1 file with SEVERAL isolated accented characters fails that immediately, since it is
+/// unlikely every one of them happens to pair with its neighbor.
+///
+/// A SHORT buffer with only one or two accented characters doesn't get that protection for
+/// free: one stray byte pairing with the very next ASCII letter is enough to validate the
+/// whole (tiny) buffer, and [`cjk_score`]'s majority check has nothing else to weigh it
+/// against. Below [`SHORT_BUFFER_RESCUE_BYTES`], a non-dominant win is treated as inconclusive
+/// and the system code page is preferred instead - see the check at the end of this function.
 ///
 /// Ties fall to the system ANSI codepage when it is itself DBCS, which is the case that matters
 /// most: a Chinese/Japanese/Korean user opening a local file on their own localized Windows,
@@ -983,7 +999,26 @@ fn decode_legacy(bytes: &[u8]) -> String {
             best = Some((score, s));
         }
     }
-    if let Some((_, s)) = best {
+    if let Some((score, s)) = best {
+        // A short buffer starves the majority/dominance check of samples: a single accented
+        // Latin-1 byte followed by an ordinary ASCII letter (the shape of "caf\xE9e" or
+        // "Stra\xDFe") can happen to be a validly-assigned DBCS lead/trail pair, and with only
+        // ONE non-ASCII character in the whole buffer, "100% of the non-ASCII content looks
+        // like CJK" is trivially true. That is not evidence at this size. The tell is the
+        // trail byte: a Latin-1 accent only ever pairs with the plain ASCII letter after it,
+        // while the hanzi a short Chinese line is made of pair high byte with high byte. So
+        // below the rescue threshold a non-dominant reading (no kana or hangul carrying it)
+        // that had to swallow an ASCII byte as a trail is treated as inconclusive and the
+        // system code page is preferred; a reading built from high-high pairs stands.
+        let short_and_inconclusive = bytes.len() < SHORT_BUFFER_RESCUE_BYTES
+            && score < CJK_DOMINANT_BONUS
+            && pairs_an_ascii_trail(bytes);
+        if !short_and_inconclusive {
+            return s;
+        }
+        if let Some(acp_s) = decode_codepage(bytes, acp, true) {
+            return acp_s;
+        }
         return s;
     }
 
@@ -1005,6 +1040,37 @@ const DBCS_CODEPAGES: &[u32] = &[
     949, // EUC-KR / Unified Hangul — Korean
     950, // Big5 — Traditional Chinese
 ];
+
+/// Below this many bytes, a DBCS win that paired a high byte with an ASCII trail needs to be
+/// DOMINANT (see [`CJK_DOMINANT_BONUS`]) to beat the system code page - see the comment in
+/// [`decode_legacy`] for why a short buffer's score can't be trusted otherwise.
+const SHORT_BUFFER_RESCUE_BYTES: usize = 64;
+
+/// Whether reading `bytes` as double-byte pairs (any high byte starts a pair) ever pairs a
+/// high lead with an ASCII trail. Every DBCS code page tested here allows such trails, and it
+/// is exactly what a lone Latin-1 accent inside a Latin word produces (`\xDF` + `e`); the
+/// GB2312 range that ordinary Chinese text is written in never does (trails are 0xA1 and up).
+fn pairs_an_ascii_trail(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] >= 0x80 {
+            if let Some(&trail) = bytes.get(i + 1) {
+                if trail < 0x80 {
+                    return true;
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// The score bonus [`cjk_score`] awards a reading whose letters are genuinely dominated by kana
+/// or hangul. Shared with [`decode_legacy`] so the "is this win actually confident" check can't
+/// drift from the value that put it there.
+const CJK_DOMINANT_BONUS: i64 = 1_000;
 
 /// Is `cp` one of the double-byte codepages we test?
 fn is_dbcs(cp: u32) -> bool {
@@ -1091,7 +1157,7 @@ fn cjk_score(s: &str) -> i64 {
     // Chinese matches neither and wins on the base score alone, plus the ACP/list ordering that
     // breaks its tie with Big5.
     let dominant = letters > 0 && ((hangul * 20 >= letters * 13) || (kana * 20 >= letters * 3));
-    let bonus = if dominant { 1_000 } else { 0 };
+    let bonus = if dominant { CJK_DOMINANT_BONUS } else { 0 };
     (good - bad + bonus).max(1)
 }
 
@@ -2326,5 +2392,98 @@ mod encoding_tests {
         assert_eq!(cjk_score("ﾖﾐﾄﾄﾊﾟ"), 0);
         // Real Japanese does.
         assert!(cjk_score("これは日本語です") > 0);
+    }
+
+    /// A trailing accented byte has no following byte to pair with, so no DBCS codepage can
+    /// even validate the buffer - this one was never broken, but it's the smallest case in the
+    /// short-file family below, so it gets its own locked-down test.
+    #[test]
+    fn short_trailing_accent_with_no_pairing_partner_falls_to_acp() {
+        // "caf" + U+00E9 (e-acute, cp1252 0xE9) with nothing after it to form a DBCS trail byte.
+        let out = decode_text(b"caf\xe9", false);
+        assert!(
+            !has_cjk(&out),
+            "a lone trailing accent decoded as CJK: {out:?}"
+        );
+        assert!(out.starts_with("caf"), "unexpected decode: {out:?}");
+    }
+
+    /// The bug this fix closes. Verified against the real Windows codepage tables: 0xDF
+    /// (cp1252 sharp-s/eszett) followed by 0x65 ('e') is a validly-assigned GBK lead/trail
+    /// pair, decoding to a real Chinese character. With only ONE non-ASCII byte in the whole
+    /// buffer, `cjk_score`'s majority check ("is most of the non-ASCII content plausible CJK")
+    /// is trivially satisfied by a sample of one, so before this fix `decode_legacy` returned
+    /// that Chinese character in place of "e" and threw the accent away entirely.
+    #[test]
+    fn short_latin_words_with_two_accidental_pairs_still_read_as_the_system_codepage() {
+        // "père Noël\r\n" in Windows-1252: both accents pair with the ASCII letter after them,
+        // which several DBCS code pages accept, so the count of pairs alone cannot tell it
+        // from a two-character Chinese line; the ASCII trails can.
+        const PERE_NOEL: &[u8] = &[
+            0x70, 0xE8, 0x72, 0x65, 0x20, 0x4E, 0x6F, 0xEB, 0x6C, 0x0D, 0x0A,
+        ];
+        let out = decode_text(PERE_NOEL, false);
+        assert!(
+            !has_cjk(&out),
+            "accents inside Latin words decoded as CJK: {out:?}"
+        );
+        assert!(
+            out.starts_with('p') && out.contains("re No") && out.ends_with("l\r\n"),
+            "the surrounding ASCII text must survive verbatim: {out:?}"
+        );
+    }
+
+    #[test]
+    fn short_high_high_pairs_are_not_rescued_into_the_system_codepage() {
+        // Two GBK hanzi ("你好") plus a newline: 6 bytes, every pair high byte + high byte,
+        // which no Latin-1 accent produces. Which CJK reading wins between GBK and EUC-KR for
+        // a hanzi-only line is the documented ambiguity above and not asserted here; what is
+        // asserted is that the short-buffer rescue leaves it a CJK reading instead of
+        // handing it to the system code page as Latin-1 mojibake.
+        const NIHAO: &[u8] = &[0xC4, 0xE3, 0xBA, 0xC3, 0x0D, 0x0A];
+        let out = decode_text(NIHAO, false);
+        assert!(
+            !out.chars().any(|c| (0x80..=0xFF).contains(&(c as u32))),
+            "a short high-high line was rescued into the system code page: {out:?}"
+        );
+        assert!(out.ends_with("\r\n"), "the newline must survive: {out:?}");
+    }
+
+    #[test]
+    fn short_single_accent_no_longer_loses_to_a_stray_gbk_pairing() {
+        // A short, real-world Windows-1252 fragment: "Straße\r\n".
+        const STRASSE: &[u8] = &[0x53, 0x74, 0x72, 0x61, 0xDF, 0x65, 0x0D, 0x0A];
+        let out = decode_text(STRASSE, false);
+        assert!(
+            !has_cjk(&out),
+            "a single accented Latin-1 byte decoded as CJK: {out:?}"
+        );
+        assert!(
+            out.starts_with("Stra") && out.ends_with("e\r\n"),
+            "the surrounding ASCII text must survive verbatim: {out:?}"
+        );
+    }
+
+    /// The fix above must not blunt genuine short CJK text: real Japanese still carries the
+    /// kana that gives `cjk_score` its dominance bonus, which stays trusted even under the
+    /// short-buffer rescue (the bonus is far above `SHORT_BUFFER_RESCUE_BYTES`'s bar).
+    #[test]
+    fn short_real_shift_jis_greeting_still_beats_the_system_codepage() {
+        // "こんにちは" (konnichiwa) in Shift-JIS - 10 bytes, all kana, no kanji.
+        const SJIS_GREETING: &[u8] = &[0x82, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD];
+        assert_eq!(decode_text(SJIS_GREETING, false), "こんにちは");
+    }
+
+    /// Bytes that are neither valid UTF-8 nor valid under any DBCS table must still decode to
+    /// something via the system code page rather than panicking or silently dropping the
+    /// trailing ASCII - this locks in the pre-existing fallback for a plain invalid-UTF-8
+    /// fixture (`0xC3` is a UTF-8 lead byte with no valid continuation).
+    #[test]
+    fn invalid_utf8_garbage_falls_back_without_losing_trailing_ascii() {
+        let out = decode_text(b"\xC3\x28\x41", false);
+        assert!(
+            out.ends_with("(A"),
+            "trailing ASCII bytes must survive verbatim: {out:?}"
+        );
     }
 }

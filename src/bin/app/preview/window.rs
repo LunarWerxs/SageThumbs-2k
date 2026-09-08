@@ -147,11 +147,18 @@ pub(super) enum Btn {
     /// Open Settings on its **Quick preview** page — the options that govern this window are
     /// otherwise several clicks away in a program you reach from a right-click menu.
     Settings,
+    /// Print the CURRENTLY SHOWN content bitmap (Ctrl+P) — the same navigated-to PDF page /
+    /// animation frame [`Btn::SavePage`] would write to disk, or the plain decode for a static
+    /// image — through the standard Windows print dialog, fit to page and centred. Image-only
+    /// (see [`btn_visible`]), the same gate [`Btn::Ocr`] uses: there is nothing to rasterize in
+    /// a text/Markdown/HTML pane or a video frame that printing would add over the OS's own
+    /// "print from" path for that document type.
+    Print,
     Close,
 }
 
 /// All buttons, in left-to-right caption order (rightmost drawn is Close).
-pub(super) const BTNS: [Btn; 16] = [
+pub(super) const BTNS: [Btn; 17] = [
     Btn::Toc,
     Btn::MdImages,
     Btn::Source,
@@ -170,6 +177,9 @@ pub(super) const BTNS: [Btn; 16] = [
     // Settings then Close: the gear is an app action, and Close stays hard right where a
     // window's close button belongs.
     Btn::Settings,
+    // Appended here (immediately left of Close) deliberately: every OTHER button keeps its
+    // `--hot` index (see main.rs / DEVELOPMENT_GOTCHAS), and only `Btn::Close` shifts, by one.
+    Btn::Print,
     Btn::Close,
 ];
 
@@ -201,7 +211,9 @@ pub(super) fn btn_visible(st: &ViewerState, b: Btn) -> bool {
         }
         // OCR needs pixels to read. A text/Markdown/HTML pane already has selectable words
         // (Ctrl+C), and an InfoCard is our own chrome, so the button would be a no-op there.
-        Btn::Ocr => st.kind.get() == ContentKind::Image,
+        // Print shares the same gate: it prints the decoded bitmap, and a text/Markdown/HTML
+        // pane or a video frame has no such bitmap to print (see `Btn::Print`).
+        Btn::Ocr | Btn::Print => st.kind.get() == ContentKind::Image,
         _ => true,
     }
 }
@@ -254,6 +266,15 @@ pub(super) struct ViewerState {
     /// Bumped on every (re)load; a `WM_APP_RENDER` with a stale gen is dropped.
     pub(super) decode_gen: Cell<u64>,
     pub(super) hot: Cell<Option<usize>>, // index into BTNS currently hovered
+    /// Keyboard focus on the caption toolbar / transport strip (Tab-reachable, mouse-only
+    /// before this). `None` = focus is in the content pane, same as before this existed.
+    /// `toolbar::live_focus` treats this as stale (i.e. as `None`) once `focus_gen` no longer
+    /// matches `decode_gen` — see that function's doc comment for why a load path never has to
+    /// remember to clear it.
+    pub(super) focus: Cell<Option<super::toolbar::FocusTarget>>,
+    /// The `decode_gen` that was current when `focus` was last SET (not merely repainted).
+    /// Meaningless while `focus` is `None`.
+    pub(super) focus_gen: Cell<u64>,
     /// The caption toolbar's tooltip control (one RECT tool per button); `HWND::default()` if none.
     pub(super) tip: Cell<HWND>,
     /// The rects currently registered with `tip`, in tool-id order (see `toolbar::tool_rects`).
@@ -507,6 +528,8 @@ pub(super) unsafe fn create_viewer(
         shown: Cell::new(false),
         decode_gen: Cell::new(0),
         hot: Cell::new(None),
+        focus: Cell::new(None),
+        focus_gen: Cell::new(0),
         tip: Cell::new(HWND::default()),
         tip_rects: RefCell::new(Vec::new()),
         tip_texts: RefCell::new(Vec::new()),
@@ -1028,11 +1051,11 @@ pub(super) fn log_abandoned_worker(context: &str) {
     if !should_log {
         return;
     }
-    sagethumbs2k_core::safety::log_debug(&format!(
+    sagethumbs2k_core::safety::log_debugf!(
         "preview {context}: abandoned a worker ({} of {} abandoned-worker budget slots live)",
         sagethumbs2k_core::safety::abandoned_workers(),
         sagethumbs2k_core::safety::MAX_ABANDONED_WORKERS,
-    ));
+    );
 }
 
 /// `WM_APP_PDFDOC`: the opened PDF session for the continuous view landed.
@@ -1319,6 +1342,12 @@ unsafe fn on_mouseleave(hwnd: HWND) -> LRESULT {
 /// `WM_LBUTTONDOWN`: a toolbar button, a PDF strip thumbnail, or something in the content pane.
 unsafe fn on_lbuttondown(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let (x, y) = lparam_xy(lparam);
+    let st = &*state(hwnd);
+    if st.focus.get().is_some() {
+        // A mouse click always clears keyboard toolbar focus, whatever it lands on — the ring
+        // it left behind is stale the instant the mouse takes over.
+        set_focus(hwnd, st, None);
+    }
     if let Some(i) = hit_button(hwnd, x, y) {
         do_action(hwnd, BTNS[i]);
     } else if super::pdfview::strip_click(hwnd, x, y) {
@@ -1616,6 +1645,12 @@ unsafe fn keydown_edit_actions(
         do_action(hwnd, Btn::SavePage);
         return Some(LRESULT(0));
     }
+    // Ctrl+P: print the shown content — same action as the `Btn::Print` toolbar button,
+    // self-guarding via `print::do_print` when the pane has no bitmap to print.
+    if ctrl && vk == 'P' as u16 {
+        do_action(hwnd, Btn::Print);
+        return Some(LRESULT(0));
+    }
     None
 }
 
@@ -1805,6 +1840,14 @@ unsafe fn on_keydown(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     }
     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+    // The toolbar keyboard-focus cluster goes FIRST: while a caption/transport button has
+    // focus it must own Left/Right/Up/Down/Enter/Space/Escape ahead of every other cluster
+    // below (video seek, PDF/file nav, the manual-mode Esc/Space/Enter close) — see
+    // `toolbar::keydown_toolbar_focus`'s doc comment. It is a cheap no-op bail whenever focus
+    // is not on the toolbar, so every existing key path is otherwise untouched.
+    if let Some(r) = keydown_toolbar_focus(hwnd, st, vk, shift) {
+        return r;
+    }
     if let Some(r) = keydown_copy_select(hwnd, st, vk, ctrl, shift) {
         return r;
     }

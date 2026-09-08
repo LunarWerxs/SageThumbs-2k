@@ -34,6 +34,13 @@ USAGE:
   st2k compress  <in> --max-size 1MB|500KB|N    shrink to a target file size (JPEG, quality+scale search);
                                                 fails and writes nothing if the target can't be met
   st2k strip     <in>                           strip EXIF/GPS metadata (JPEG/PNG/WebP/SVG(Z)/HEIC/HEIF/AVIF, lossless)
+  st2k clip-pixels <in>                         decode -> stdout: `w h` (two little-endian u32) then
+                                                top-down RGBA8 bytes, binary (no other output); powers
+                                                the routed Copy-to-clipboard context menu verb
+  st2k wallpaper-prepare <in> <out-dir>         decode + resize-to-screen -> a PNG written into <out-dir>;
+                                                powers the routed Set-as-wallpaper context menu verb
+  st2k folder-icon <in>                         set <in> as its containing folder's icon (hidden .ico +
+                                                desktop.ini); powers the routed context menu verb
   st2k ocr       <in>                           recognize text → stdout
   st2k pdf       <out.pdf> <in> [in...] [--strict] [--json]   combine images into one PDF
   st2k cbz       <out.cbz> <in> [in...] [--strict] [--json]   combine images into one CBZ (comic-book zip)
@@ -45,6 +52,10 @@ USAGE:
   st2k doctor    [file] [--bundle out.zip]       self-check: why are thumbnails not showing? (add a file to probe it;
                                                 --bundle zips the report + log tail + formats --json for a bug report)
   st2k register  [--off|--status]               portable build: turn Explorer thumbnails on for this user
+  st2k upload    <file> [--copy]                 upload a file to a keyless host, print the URL (--copy
+                                                also puts it on the clipboard); needs SageThumbs2K.exe
+                                                installed alongside st2k.exe (spawns it — no network
+                                                code lives in the CLI itself)
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
   st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
@@ -94,6 +105,8 @@ const BOOL_FLAGS: &[&str] = &[
     "--open",
     // pdf/cbz: fail instead of writing a partial file (2026-09-05 audit, F31).
     "--strict",
+    // upload: also put the resulting URL on the clipboard (printing it is the default).
+    "--copy",
 ];
 
 /// How many positional (file) arguments each verb accepts, or `None` for the verbs that
@@ -103,9 +116,10 @@ const BOOL_FLAGS: &[&str] = &[
 /// argument can never cost a write.
 fn max_positionals(verb: &str) -> Option<usize> {
     match verb {
-        "thumbnail" | "thumb" | "convert" => Some(2),
+        "thumbnail" | "thumb" | "convert" | "wallpaper-prepare" => Some(2),
         "rotate" | "compress" | "strip" | "ocr" | "info" | "doctor" | "diag" | "register"
-        | "unregister" | "upload-hosts" | "upload-host" | "devmode" => Some(1),
+        | "unregister" | "upload" | "upload-hosts" | "upload-host" | "devmode" | "clip-pixels"
+        | "folder-icon" => Some(1),
         "formats" => Some(0),
         // batch, prebuild, pdf, cbz and bench-decode take as many inputs as given.
         _ => None,
@@ -311,6 +325,46 @@ fn run_compress(pos: &[&String], rest: &[String]) -> Result<String, String> {
     cli::compress(i, cli::parse_size(&max)?)
 }
 
+/// `wallpaper-prepare <in> <out-dir>` — the decode/resize-to-screen half of
+/// Set-as-wallpaper, routed out of the shell host. See `cli::wallpaper_prepare`.
+fn run_wallpaper_prepare(pos: &[&String], _rest: &[String]) -> Result<String, String> {
+    let (i, out_dir) = (need(pos, 0)?, need(pos, 1)?);
+    cli::wallpaper_prepare(i, out_dir)
+}
+
+/// `st2k clip-pixels <in>` — binary on success (a `w h` little-endian-u32 header then
+/// top-down RGBA8), so it can't go through `run`'s `Result<String, String>` →
+/// `println!` machinery like every other verb; `main` calls this directly instead of
+/// dispatching through `run`, the same way the hidden `flv-frame`/`vp9-frame` verbs
+/// do for their own binary stdout. Writes nothing to stderr on success.
+fn run_clip_pixels(rest: &[String]) -> i32 {
+    let pos = positionals(rest);
+    if let Err(e) = check_arity("clip-pixels", &pos) {
+        eprintln!("st2k: {e}");
+        return 1;
+    }
+    let path = match need(&pos, 0) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("st2k: {e}");
+            return 1;
+        }
+    };
+    match cli::clip_pixels(path) {
+        Ok(bytes) => {
+            use std::io::Write;
+            match std::io::stdout().write_all(&bytes) {
+                Ok(()) => 0,
+                Err(_) => 1,
+            }
+        }
+        Err(e) => {
+            eprintln!("st2k: {e}");
+            1
+        }
+    }
+}
+
 // Dev/measurement verb (undocumented in --help, like the app EXE's --bench-* modes): time
 // the decode of many files inside ONE process, so the numbers carry no per-file
 // process-start noise. Used by scripts\check-decode-speed.ps1.
@@ -356,6 +410,8 @@ fn run(args: &[String]) -> Result<String, String> {
         "rotate" => run_rotate(&pos, rest),
         "compress" => run_compress(&pos, rest),
         "strip" => cli::strip_meta(need(&pos, 0)?),
+        "wallpaper-prepare" => run_wallpaper_prepare(&pos, rest),
+        "folder-icon" => cli::folder_icon(need(&pos, 0)?),
         "ocr" => cli::ocr(need(&pos, 0)?),
         "pdf" => {
             let out = need(&pos, 0)?;
@@ -387,6 +443,7 @@ fn run(args: &[String]) -> Result<String, String> {
             )),
         },
         "register" | "unregister" => run_register(verb, &pos, rest),
+        "upload" => cli::upload(need(&pos, 0)?, has_flag(rest, "--copy")),
         "upload-hosts" | "upload-host" => {
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
             cli::upload_hosts(open)
@@ -451,6 +508,13 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    // `clip-pixels` writes binary (a header + raw RGBA8) on success, which can't go
+    // through `run`'s `Result<String, String>` → `println!` path — handled directly,
+    // the same way the hidden `flv-frame`/`vp9-frame` verbs are above.
+    if args.first().is_some_and(|a| a == "clip-pixels") {
+        std::process::exit(run_clip_pixels(&args[1..]));
     }
 
     match run(&args) {
@@ -701,10 +765,13 @@ mod tests {
             "diag",
             "register",
             "unregister",
+            "upload",
             "upload-hosts",
             "upload-host",
             "devmode",
             "formats",
+            "wallpaper-prepare",
+            "folder-icon",
         ] {
             let err = run(&args(&[verb, "a", "b", "c"])).unwrap_err();
             assert!(

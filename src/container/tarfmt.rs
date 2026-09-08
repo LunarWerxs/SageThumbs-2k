@@ -62,7 +62,9 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 fn tar_name(header: &[u8]) -> String {
     let raw = &header[0..100];
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-    String::from_utf8_lossy(&raw[..end]).into_owned()
+    // ustar carries no encoding flag; a DOS or Japanese archive needs the same code-page
+    // fallback the zip and rar listings use.
+    super::names::decode_entry_name(&raw[..end], false)
 }
 
 /// A TAR numeric field: ASCII octal, space/NUL padded.

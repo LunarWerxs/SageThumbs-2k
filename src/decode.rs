@@ -74,7 +74,7 @@ pub struct Decoded {
 /// instead of being re-derived as magic numbers scattered across the codebase.
 /// Loosening any value here widens the attack surface for every tier at once —
 /// treat these as security parameters.
-pub(crate) mod limits {
+pub mod limits {
     /// Hard ceiling on either image edge (px). A 600-dpi A3 scan is ~14k px;
     /// 16384 covers legitimate art/scans while keeping a single dimension
     /// bounded. Shared by the `image` tier, the WIC tier, and the container
@@ -354,14 +354,14 @@ fn last_resort_tiers(
     let magick_attempted = route.magick_attempted;
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => return Ok(finish_wic_fallback(img, &route, magick_attempted)),
-        Err(e) => crate::safety::log_debug(&format!("decode tier `WIC` failed: {e}")),
+        Err(e) => crate::safety::log_debugf!("decode tier `WIC` failed: {e}"),
     }
     // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss
     // it; detect it by a header sanity check and decode with an explicit format
     // BEFORE magick, so a real TGA skips a doomed (20s-capped) subprocess.
     match decode_tga(bytes) {
         Ok(img) => return Ok(img),
-        Err(e) => crate::safety::log_debug(&format!("decode tier `TGA` failed: {e}")),
+        Err(e) => crate::safety::log_debugf!("decode tier `TGA` failed: {e}"),
     }
     // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
     // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
@@ -378,7 +378,7 @@ fn last_resort_tiers(
             match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
                 Ok(img) => return Ok(img),
                 Err(e) => {
-                    crate::safety::log_debug(&format!("decode tier `magick` failed: {e}"));
+                    crate::safety::log_debugf!("decode tier `magick` failed: {e}");
                     last_err = e;
                 }
             }
@@ -492,7 +492,7 @@ fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicIm
     match decode_jxl(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `jxl` failed: {e}"));
+            crate::safety::log_debugf!("decode tier `jxl` failed: {e}");
             None
         }
     }
@@ -526,7 +526,7 @@ fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicIm
             },
         ),
         Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `dds` failed: {e}"));
+            crate::safety::log_debugf!("decode tier `dds` failed: {e}");
             None
         }
     }
@@ -560,9 +560,9 @@ fn try_wic_thumbnail_fastpath(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Op
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!(
+            crate::safety::log_debugf!(
                 "decode: WIC fast path unavailable, using the image tier: {e}"
-            ));
+            );
             None
         }
     }
@@ -653,7 +653,7 @@ fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> ImageTierOutco
             ImageTierOutcome::Decoded(apply_icc_to_srgb(img, icc))
         }
         Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `image` failed: {e}"));
+            crate::safety::log_debugf!("decode tier `image` failed: {e}");
             ImageTierOutcome::Failed
         }
     }
@@ -701,7 +701,7 @@ fn try_raw_preview_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<D
     match decode_raw_preview(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `raw-preview` failed: {e}"));
+            crate::safety::log_debugf!("decode tier `raw-preview` failed: {e}");
             None
         }
     }
@@ -766,7 +766,7 @@ fn route_isobmff_wic_quirks(
     } else {
         "AVIF nclx colour"
     };
-    crate::safety::log_debug(&format!("decode: routing around WIC ({why})"));
+    crate::safety::log_debugf!("decode: routing around WIC ({why})");
     // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
     // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
     // the ~180 ms this route used to cost. Narrowly gated and best-effort - anything it
@@ -796,7 +796,7 @@ fn route_isobmff_wic_quirks(
         // was fixed for JPEG XL in 1.7.1.
         Ok(img) => Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
         Err(e) => {
-            crate::safety::log_debug(&format!("decode tier `magick ({why})` failed: {e}"));
+            crate::safety::log_debugf!("decode tier `magick ({why})` failed: {e}");
             Err(WicQuirkRoute {
                 magick_attempted,
                 avif_verdict,
@@ -818,9 +818,7 @@ fn try_embedded_jpeg_last_resort(bytes: &[u8]) -> Option<DynamicImage> {
     match decode_with_image(jpeg) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!(
-                "decode tier `embedded-jpeg (lenient)` failed: {e}"
-            ));
+            crate::safety::log_debugf!("decode tier `embedded-jpeg (lenient)` failed: {e}");
             None
         }
     }
@@ -919,7 +917,10 @@ pub(crate) use magick::await_magick_output as await_child_output;
 use magick::metafile_min_density;
 use magick::{decode_named_extension, has_name_selected_coder};
 use magick::{decode_psd_composite, decode_via_magick_capped};
-pub use magick::{encode_via_magick, magick_available, magick_output_supported};
+pub use magick::{
+    encode_via_magick, encode_via_magick_png, magick_available, magick_output_extensions,
+    magick_output_supported,
+};
 mod mesh;
 mod readers;
 pub(crate) mod svg;
@@ -947,6 +948,8 @@ use wic::*;
 /// can reach it without widening `dds`'s own visibility.
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;
+#[cfg(test)]
+pub(crate) use jp2::fuzzapi as jp2_fuzzapi;
 #[cfg(test)]
 pub(crate) use mesh::fuzzapi as mesh_fuzzapi;
 pub(crate) use readers::effective_input_cap;
@@ -997,9 +1000,9 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
             Ok(img) => return Ok(img),
             // Fall back to the preview path (the 160px baked-in thumbnail) — note
             // it so a surprising "my big PSD converted tiny" is diagnosable.
-            Err(e) => crate::safety::log_debug(&format!(
+            Err(e) => crate::safety::log_debugf!(
                 "PSD composite decode failed ({e}); falling back to baked preview"
-            )),
+            ),
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::AfterExternal, None)
@@ -1206,9 +1209,9 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
         match decode_psd_composite(bytes) {
             Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debug(&format!(
+            Err(e) => crate::safety::log_debugf!(
                 "transparent PSD composite failed ({e}); using baked preview"
-            )),
+            ),
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, None)
@@ -1662,7 +1665,7 @@ fn try_video_tier(
         };
         return Some(Ok(match rotation {
             Some(deg) => {
-                crate::safety::log_debug(&format!("video: display matrix asks for {deg} deg"));
+                crate::safety::log_debugf!("video: display matrix asks for {deg} deg");
                 crate::video::apply_display_rotation(frame, deg)
             }
             None => frame,

@@ -11,8 +11,9 @@
 
 use std::io::{Cursor, Read, Seek};
 
-use zip::ZipArchive;
+use zip::{HasZipMetadata, ZipArchive};
 
+use super::names;
 use super::select::{pick_covers, CoverPrefs, Entry};
 
 /// Stream a comic/image-zip cover from a SEEKABLE reader without buffering the whole
@@ -228,31 +229,29 @@ pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
     Some(out)
 }
 
-/// The listing DISPLAY name for an entry. `zip` already applies the spec's own rule when it
-/// parses the central directory (general-purpose bit 11 set -> UTF-8, unset -> CP437, via its
-/// own embedded table), so a correctly-flagged archive already comes back right (see
-/// `zip::types::CentralDirectoryHeader::from_le`). The gap this closes: some real-world writers
-/// (older Info-ZIP on Linux, some 7-Zip configurations) store raw UTF-8 bytes but never set the
-/// flag, so those names get CP437-decoded into mojibake even though the crate followed the flag
-/// correctly. `read_named`/`by_name` lookups must keep using `f.name()` verbatim (it's the
-/// crate's own index key); this override is for display/selection only.
+/// The listing DISPLAY name for an entry. `zip` parses the central directory's general-purpose
+/// bit 11 itself (set -> UTF-8, unset -> CP437, via its own embedded table), so a correctly-
+/// flagged archive already comes back right. This is layered on top of that for two gaps the
+/// crate's own decode doesn't cover: some real-world writers (older Info-ZIP on Linux, some
+/// 7-Zip configurations) store raw UTF-8 bytes but never set the flag, and an unflagged name
+/// may not be CP437 at all (a Shift-JIS name written on a Japanese system, for instance) - see
+/// [`names::decode_entry_name`] for the fallback chain. `read_named`/`by_name` lookups must keep
+/// using `f.name()` verbatim (it's the crate's own index key); this is for display/selection
+/// only.
 // `ZipFile` gained a reader type parameter in zip 8 (`ZipFile<'a, R: Read + ?Sized>`), so this
 // is generic over it rather than over one concrete reader. `?Sized` is required: the crate hands
 // out `ZipFile<'_, dyn Read>` on some paths.
 fn entry_display_name<R: std::io::Read + ?Sized>(f: &zip::read::ZipFile<'_, R>) -> String {
-    prefer_utf8(f.name_raw(), f.name())
+    prefer_utf8(f.name_raw(), f.get_metadata().is_utf8)
 }
 
-/// If `raw` decodes cleanly as UTF-8, prefer that over `decoded` (whatever the crate already
-/// produced for the bit-11 branch it took). A genuine CP437 name contains at least one byte
-/// `>= 0x80` that, standing alone or paired with its neighbours, essentially never forms valid
-/// UTF-8 by chance, so this only ever fires for the unflagged-UTF-8 case it targets, and a real
-/// CP437/plain-ASCII name passes through `decoded` unchanged.
-fn prefer_utf8(raw: &[u8], decoded: &str) -> String {
-    match std::str::from_utf8(raw) {
-        Ok(s) => s.to_string(),
-        Err(_) => decoded.to_string(),
-    }
+/// Decode `raw` via [`names::decode_entry_name`], passing along the zip crate's own
+/// general-purpose-bit-11 UTF-8 flag (`utf8_flagged`) as the encoding hint. Named `prefer_utf8`
+/// because valid UTF-8 bytes always win regardless of the flag - a genuine CP437 or Shift-JIS
+/// name contains at least one byte that, standing alone or paired with its neighbours,
+/// essentially never forms valid UTF-8 by chance.
+fn prefer_utf8(raw: &[u8], utf8_flagged: bool) -> String {
+    names::decode_entry_name(raw, utf8_flagged)
 }
 
 pub(crate) fn read_index<R: Read + Seek>(zip: &mut ZipArchive<R>, idx: usize) -> Option<Vec<u8>> {
@@ -429,32 +428,30 @@ mod tests {
     }
 
     /// Bit-11-unset writers that stored raw UTF-8 anyway (real-world Linux zip/7-Zip output)
-    /// must NOT come back mojibake: valid multi-byte UTF-8 wins over whatever CP437 fallback
-    /// the crate produced for the unflagged branch.
+    /// must NOT come back mojibake: valid multi-byte UTF-8 wins even when the flag is clear.
     #[test]
     fn prefer_utf8_overrides_an_unflagged_utf8_name() {
         let raw = "第01話/表紙.png".as_bytes();
-        // Stand-in for the crate's CP437 decode of those same bytes when bit 11 is clear;
-        // deliberately a different string, so a pass here proves the override actually ran
-        // rather than merely returning its second argument.
-        assert_eq!(prefer_utf8(raw, "cp437-mojibake"), "第01話/表紙.png");
+        assert_eq!(prefer_utf8(raw, false), "第01話/表紙.png");
     }
 
     /// A genuine CP437 name (accented Western-European bytes with the high bit set, no UTF-8
-    /// flag) is NOT valid UTF-8 on its own, so the override must leave the crate's already-
-    /// correct CP437 decode alone instead of corrupting it.
+    /// flag) is NOT valid UTF-8 on its own, so this must fall through to the CP437 decode
+    /// instead of corrupting it. `0x82` (CP437 'é') is a Shift-JIS lead byte, so this also
+    /// proves the Shift-JIS attempt is tried and rejected first: the first `0x82` pairs with
+    /// the following `s` (a legal trail byte) but the second pairs with `.` (not a legal trail
+    /// byte), so `MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, ..)` rejects the whole name
+    /// and this falls through to CP437 as intended.
     #[test]
     fn prefer_utf8_keeps_the_cp437_fallback_for_non_utf8_bytes() {
-        // 0x82 is a lone UTF-8 continuation byte (invalid standing alone), and is CP437's 'é'.
         let raw = [b'r', 0x82, b's', b'u', b'm', 0x82, b'.', b't', b'x', b't'];
-        let cp437_decoded = "r\u{e9}sum\u{e9}.txt";
-        assert_eq!(prefer_utf8(&raw, cp437_decoded), cp437_decoded);
+        assert_eq!(prefer_utf8(&raw, false), "r\u{e9}sum\u{e9}.txt");
     }
 
-    /// Plain ASCII must pass through unchanged regardless of which branch the crate took.
+    /// Plain ASCII must pass through unchanged regardless of the flag.
     #[test]
     fn prefer_utf8_is_a_no_op_for_ascii() {
-        assert_eq!(prefer_utf8(b"readme.txt", "readme.txt"), "readme.txt");
+        assert_eq!(prefer_utf8(b"readme.txt", false), "readme.txt");
     }
 
     /// F15 (2026-09-05 audit): `read_named` used to `.take(MAX_COVER)` (no `+1`) and hand

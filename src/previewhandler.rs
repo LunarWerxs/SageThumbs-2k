@@ -243,7 +243,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 let borrow = self.stream.borrow();
                 let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
                 if let Some(name) = unsafe { stream_name(stream) } {
-                    safety::log_debug(&format!("DoPreview: file {name}"));
+                    safety::log_debugf!("DoPreview: file {name}");
                 }
                 // 1024 px matches the PDF/contact-sheet rasterize target below —
                 // crisp at any pane size, and it is what the streaming EXR tier
@@ -269,7 +269,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 // slow/exotic decode can't freeze the preview host's message pump.
                 Ok(StreamSource::Bytes(bytes)) => {
                     let len = bytes.len();
-                    safety::log_debug(&format!("DoPreview: read {len} bytes from stream"));
+                    safety::log_debugf!("DoPreview: read {len} bytes from stream");
                     match decode_preview_budgeted(bytes) {
                         Ok(img) => Some(img),
                         Err(why) => {
@@ -286,7 +286,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 // no video/PDF), so no wall-clock budget is needed. The pane's edge
                 // matches the PDF rasterize target — crisp at any pane size.
                 Ok(StreamSource::Covers(covers)) => {
-                    safety::log_debug(&format!("DoPreview: {} archive covers", covers.len()));
+                    safety::log_debugf!("DoPreview: {} archive covers", covers.len());
                     match decode::thumbnail_from_covers(&covers, safety::PREVIEW_TARGET_EDGE) {
                         Ok(d) => image::RgbaImage::from_raw(d.width, d.height, d.rgba)
                             .map(image::DynamicImage::ImageRgba8),
@@ -310,11 +310,9 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 }
             };
             match &decoded {
-                Some(img) => safety::log_debug(&format!(
-                    "DoPreview: decoded {}x{}",
-                    img.width(),
-                    img.height()
-                )),
+                Some(img) => {
+                    safety::log_debugf!("DoPreview: decoded {}x{}", img.width(), img.height())
+                }
                 None => safety::log_debug("DoPreview: decode failed/timed out -> blank pane"),
             }
             *self.pixels.borrow_mut() = decoded.map(|img| {

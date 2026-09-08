@@ -506,6 +506,56 @@ pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
     (moved, skipped)
 }
 
+/// The `YYYY-MM-DD` folder name for `path`'s EXIF capture date, or `None` when the
+/// file has none. Shares the exact date source `RenamePattern::DateTaken` uses
+/// (`crate::strip::read_capture`) rather than re-parsing EXIF here — that field is
+/// already formatted `"YYYY-MM-DD HH.MM.SS"`, so this just takes the date half.
+fn date_taken_folder_name(path: &str) -> Option<String> {
+    let time = crate::strip::read_capture(path).time?;
+    time.split_once(' ').map(|(date, _)| date.to_string())
+}
+
+/// Move each selected image into a `YYYY-MM-DD` subfolder of its own parent folder,
+/// named from its EXIF capture date (mirrors [`sort_by_dimensions`] exactly — same
+/// parallel probe / serial move / collision handling / cleanup-on-failure shape). A
+/// file with no capture date is skipped and counted, same as an unreadable image
+/// there. Returns (moved, skipped).
+pub fn sort_by_date_taken(paths: &[String]) -> (usize, usize) {
+    let mut moved = 0usize;
+    let mut skipped = 0usize;
+    let mut touched: Vec<PathBuf> = Vec::new();
+    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
+    // Reading EXIF can fall back to a full decode for formats without a fast header
+    // path, so probe in parallel like `sort_by_dimensions` does; moves stay serial.
+    let probed = crate::parallel::map(&images, |_, p| date_taken_folder_name(p.as_str()));
+    for (p, date) in images.iter().zip(probed) {
+        let src = Path::new(p.as_str());
+        let parent = src.parent().unwrap_or_else(|| Path::new("."));
+        match date {
+            Some(name) => {
+                let dir = parent.join(name);
+                let (usable, bucket_is_new) = claim_bucket_dir(&dir);
+                if usable && move_into(src, &dir).is_ok() {
+                    moved += 1;
+                    if !touched.iter().any(|t| t == parent) {
+                        touched.push(parent.to_path_buf());
+                    }
+                } else {
+                    skipped += 1;
+                    if bucket_is_new {
+                        let _ = std::fs::remove_dir(&dir);
+                    }
+                }
+            }
+            None => skipped += 1,
+        }
+    }
+    for dir in &touched {
+        refresh_dir(dir);
+    }
+    (moved, skipped)
+}
+
 /// Expand a folder-name template against one file's tags. Tokens: `$artist`,
 /// `$album`, `$title`, `$track` (zero-padded). A missing tag becomes `missing`.
 pub(crate) fn expand_template(
@@ -1037,6 +1087,38 @@ mod tests {
         assert!(
             bucket_path.is_dir(),
             "a bucket this call did not create must survive its own failed move"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `date_taken_folder_name` reads the exact same `"YYYY-MM-DD HH.MM.SS"` shape
+    /// `RenamePattern::DateTaken` renames by, and takes just the date half.
+    #[test]
+    fn date_taken_folder_name_takes_the_date_half_of_the_capture_time() {
+        assert_eq!(
+            "2024-03-07 12.30.00".split_once(' ').map(|(d, _)| d),
+            Some("2024-03-07")
+        );
+    }
+
+    /// A plain PNG carries no EXIF capture date, so `sort_by_date_taken` must skip it
+    /// (not create a folder, not move it) — the same "no metadata → skip and count"
+    /// contract `sort_by_dimensions` has for an unreadable image.
+    #[test]
+    fn sort_by_date_taken_skips_a_file_with_no_capture_date() {
+        let dir = std::env::temp_dir().join(format!("st2k_datetaken_skip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let img = png(&dir, "photo.png", 5, 5);
+        let (moved, skipped) = sort_by_date_taken(&[img]);
+        assert_eq!(moved, 0, "no capture date means nothing gets moved");
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "no date-named bucket folder should have been created"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -1,10 +1,14 @@
 //! Caption toolbar: button rects, tooltips, and button hit-testing.
 
 use windows::core::{w, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Controls::{
     TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
     TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -100,6 +104,7 @@ pub(super) fn btn_tip(b: Btn, pinned: bool, src_view: bool) -> &'static str {
         Btn::Upload => "preview_tip_upload",
         Btn::OpenWith => "preview_tip_openwith",
         Btn::Open => "preview_tip_open",
+        Btn::Print => "preview_tip_print",
         Btn::Close => "preview_tip_close",
     })
 }
@@ -325,6 +330,308 @@ unsafe fn move_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT) {
     );
 }
 
+// ===== Keyboard focus model =====
+//
+// The caption toolbar and the video transport strip (`transport.rs`) are painted onto the
+// client area and were mouse-only. This gives Tab a way in: Tab/Shift+Tab move through the
+// two bars as one linear sequence, Left/Right move within whichever bar has focus, Up/Down
+// jump straight to the other bar, Enter/Space activate exactly what a click would, and Escape
+// leaves the bar without closing the window. Mirrors the conventions the screenshot editor's
+// overlay focus model (`screenshot/overlay/input.rs`) already established: an index-based
+// `FocusTarget`, a cheap `is_focus_key` bail, and "not mine" returns `None` so every other key
+// cluster is unaffected until the user actually presses Tab.
+
+/// Where keyboard focus sits among the toolbar's two bars. Stores an index into whichever bar
+/// is CURRENTLY VISIBLE (the same list [`button_rects`] / [`TBTNS`] give the mouse), never a
+/// `BTNS` index — visibility changes per document (`btn_visible`), and a stored `BTNS` index
+/// would silently point at a different button, or none, the moment the visible set shifts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum FocusTarget {
+    /// Index into `button_rects(hwnd)` (the caption bar's visible buttons).
+    Caption(usize),
+    /// Index into `TBTNS` (the transport strip's controls).
+    Transport(usize),
+}
+
+/// Whether a keypress could possibly matter to the toolbar focus model — a cheap bail so a key
+/// that is never Tab/arrow/Enter/Space/Escape costs one comparison rather than laying the
+/// toolbar out.
+fn is_focus_key(vk: u16) -> bool {
+    vk == VK_TAB.0
+        || vk == VK_RETURN.0
+        || vk == VK_SPACE.0
+        || vk == VK_ESCAPE.0
+        || vk == VK_LEFT.0
+        || vk == VK_RIGHT.0
+        || vk == VK_UP.0
+        || vk == VK_DOWN.0
+}
+
+/// The focus to actually honour: `None` once the load that set it has moved on. Every load
+/// bumps `ViewerState::decode_gen` — including the in-place video-fallback path in `window.rs`
+/// that never goes through `loader::load` at all — so comparing generations catches both a
+/// full file switch and a same-file content-kind change ("focus is cleared ... on a content
+/// change") without any load path having to remember to clear focus itself.
+pub(super) fn live_focus(
+    focus: Option<FocusTarget>,
+    focus_gen: u64,
+    decode_gen: u64,
+) -> Option<FocusTarget> {
+    if focus_gen != decode_gen {
+        None
+    } else {
+        focus
+    }
+}
+
+/// Pull a maybe-stale focus back inside the CURRENT visible bars, or drop it. A shrunk bar —
+/// fewer buttons than when focus was set, e.g. a mid-load content-kind change swapping which
+/// buttons `btn_visible` allows — leaves a stored index out of bounds; rather than clamp it
+/// onto a DIFFERENT button, this drops focus entirely: "focus resets ... when the bar's
+/// contents change".
+pub(super) fn repair_focus(
+    focus: Option<FocusTarget>,
+    caption_len: usize,
+    transport_len: usize,
+) -> Option<FocusTarget> {
+    match focus {
+        Some(FocusTarget::Caption(i)) if i < caption_len => focus,
+        Some(FocusTarget::Transport(i)) if i < transport_len => focus,
+        _ => None,
+    }
+}
+
+/// Tab's landing spot with nothing focused yet: the first visible caption button (there is
+/// always at least Close), or the transport strip's first control if the caption bar is
+/// somehow empty (defensive only).
+fn first_focus(caption_len: usize, transport_len: usize) -> Option<FocusTarget> {
+    if caption_len > 0 {
+        Some(FocusTarget::Caption(0))
+    } else if transport_len > 0 {
+        Some(FocusTarget::Transport(0))
+    } else {
+        None
+    }
+}
+
+/// One step of a wrapping `len`-item cycle from `from`, or `None` for an empty list.
+fn wrap_index(len: usize, from: usize, forward: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let from = from.min(len - 1); // a stale index clamps rather than wraps oddly
+    Some(if forward {
+        (from + 1) % len
+    } else {
+        (from + len - 1) % len
+    })
+}
+
+/// Left/Right: one step `forward`/back, WITHIN the current bar only, wrapping at both ends —
+/// Left/Right never cross from the caption bar to the transport strip (that is Up/Down's job).
+pub(super) fn arrow_step(
+    from: FocusTarget,
+    caption_len: usize,
+    transport_len: usize,
+    forward: bool,
+) -> Option<FocusTarget> {
+    match from {
+        FocusTarget::Caption(i) => wrap_index(caption_len, i, forward).map(FocusTarget::Caption),
+        FocusTarget::Transport(i) => {
+            wrap_index(transport_len, i, forward).map(FocusTarget::Transport)
+        }
+    }
+}
+
+/// Down (`to_transport = true`) / Up (`false`): jump straight to the OTHER bar, landing on the
+/// same index clamped to its length. `None` when there is nowhere to go — no transport strip to
+/// move into, or already on the bar that direction would leave the key unhandled instead of
+/// eaten for nothing.
+pub(super) fn switch_bar(
+    from: FocusTarget,
+    caption_len: usize,
+    transport_len: usize,
+    to_transport: bool,
+) -> Option<FocusTarget> {
+    match (from, to_transport) {
+        (FocusTarget::Caption(i), true) if transport_len > 0 => {
+            Some(FocusTarget::Transport(i.min(transport_len - 1)))
+        }
+        (FocusTarget::Transport(i), false) if caption_len > 0 => {
+            Some(FocusTarget::Caption(i.min(caption_len - 1)))
+        }
+        _ => None,
+    }
+}
+
+/// Tab / Shift+Tab: the caption bar and the transport strip read as ONE linear sequence, so
+/// stepping off either end of one bar lands on the start (or end) of the other — the "or Tab
+/// again" half of the caption-to-transport transition; [`switch_bar`] (Down/Up) is the direct
+/// jump between bars instead.
+pub(super) fn tab_step(
+    from: FocusTarget,
+    caption_len: usize,
+    transport_len: usize,
+    forward: bool,
+) -> Option<FocusTarget> {
+    match from {
+        FocusTarget::Caption(i) => {
+            if forward {
+                if i + 1 < caption_len {
+                    Some(FocusTarget::Caption(i + 1))
+                } else if transport_len > 0 {
+                    Some(FocusTarget::Transport(0))
+                } else if caption_len > 0 {
+                    Some(FocusTarget::Caption(0))
+                } else {
+                    None
+                }
+            } else if i > 0 {
+                Some(FocusTarget::Caption(i - 1))
+            } else if transport_len > 0 {
+                Some(FocusTarget::Transport(transport_len - 1))
+            } else if caption_len > 0 {
+                Some(FocusTarget::Caption(caption_len - 1))
+            } else {
+                None
+            }
+        }
+        FocusTarget::Transport(i) => {
+            if forward {
+                if i + 1 < transport_len {
+                    Some(FocusTarget::Transport(i + 1))
+                } else if caption_len > 0 {
+                    Some(FocusTarget::Caption(0))
+                } else if transport_len > 0 {
+                    Some(FocusTarget::Transport(0))
+                } else {
+                    None
+                }
+            } else if i > 0 {
+                Some(FocusTarget::Transport(i - 1))
+            } else if caption_len > 0 {
+                Some(FocusTarget::Caption(caption_len - 1))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// `WM_KEYDOWN`'s toolbar-keyboard-focus cluster: Tab/Shift+Tab, arrow movement, Enter/Space to
+/// activate, Escape to leave the bar. `None` means "not mine" — the caller falls through to
+/// every other key cluster exactly as before this model existed, so a user who never presses
+/// Tab cannot observe any of it, not even a swallowed keystroke. Everything except Tab is
+/// additionally gated on focus already being set: Space and Escape already mean "close the
+/// window" in manual mode (`window::keydown_lifecycle`), and this must only steal them while a
+/// toolbar button HAS focus, never on every keypress.
+pub(super) unsafe fn keydown_toolbar_focus(
+    hwnd: HWND,
+    st: &super::window::ViewerState,
+    vk: u16,
+    shift: bool,
+) -> Option<LRESULT> {
+    if !is_focus_key(vk) || (st.focus.get().is_none() && vk != VK_TAB.0) {
+        return None;
+    }
+    let buttons = button_rects(hwnd);
+    let caption_len = buttons.len();
+    let transport_len = if super::transport::transport_showing(hwnd) {
+        TBTNS.len()
+    } else {
+        0
+    };
+    let live = live_focus(st.focus.get(), st.focus_gen.get(), st.decode_gen.get());
+    let focus = repair_focus(live, caption_len, transport_len);
+    st.focus.set(focus);
+
+    if vk == VK_TAB.0 {
+        let next = match focus {
+            None => first_focus(caption_len, transport_len),
+            Some(f) => tab_step(f, caption_len, transport_len, !shift),
+        };
+        set_focus(hwnd, st, next);
+        return Some(LRESULT(0));
+    }
+
+    let focus = focus?; // everything below requires focus already set
+
+    if vk == VK_ESCAPE.0 {
+        set_focus(hwnd, st, None);
+        return Some(LRESULT(0));
+    }
+
+    if vk == VK_RETURN.0 || vk == VK_SPACE.0 {
+        match focus {
+            FocusTarget::Caption(i) => {
+                if let Some((btn, _)) = buttons.get(i).copied() {
+                    super::window::do_action(hwnd, btn);
+                    // `do_action` can destroy `hwnd` (Close, or Open on a successful launch) —
+                    // never touch `st`/`hwnd` again once that has happened.
+                    if IsWindow(Some(hwnd)).as_bool() {
+                        invalidate_focus_bars(hwnd);
+                    }
+                }
+            }
+            FocusTarget::Transport(i) => {
+                if let Some(&tb) = TBTNS.get(i) {
+                    super::transport::activate(hwnd, tb);
+                    invalidate_focus_bars(hwnd);
+                }
+            }
+        }
+        return Some(LRESULT(0));
+    }
+
+    let arrow = match vk {
+        v if v == VK_LEFT.0 => Some((false, false)),
+        v if v == VK_RIGHT.0 => Some((true, false)),
+        v if v == VK_UP.0 => Some((false, true)),
+        v if v == VK_DOWN.0 => Some((true, true)),
+        _ => None,
+    };
+    if let Some((forward, vertical)) = arrow {
+        let next = if vertical {
+            switch_bar(focus, caption_len, transport_len, forward)
+        } else {
+            arrow_step(focus, caption_len, transport_len, forward)
+        };
+        if next.is_some() {
+            set_focus(hwnd, st, next);
+            return Some(LRESULT(0));
+        }
+        // Nowhere to go (e.g. Up from the caption bar, or Down with no transport strip
+        // showing) — leave the key unhandled rather than eating a no-op press.
+        return None;
+    }
+    None
+}
+
+/// Set (or clear) focus, recording the load generation it was set under, and repaint both bars.
+pub(super) unsafe fn set_focus(
+    hwnd: HWND,
+    st: &super::window::ViewerState,
+    focus: Option<FocusTarget>,
+) {
+    st.focus.set(focus);
+    if focus.is_some() {
+        st.focus_gen.set(st.decode_gen.get());
+    }
+    invalidate_focus_bars(hwnd);
+}
+
+/// Repaint both toolbar bars — the caption strip and (if showing) the transport strip — so a
+/// focus-ring move, or a click that clears focus, is never left half-drawn on either.
+pub(super) unsafe fn invalidate_focus_bars(hwnd: HWND) {
+    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
+    let mut r = RECT::default();
+    let _ = GetClientRect(hwnd, &mut r);
+    r.bottom = cap;
+    let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+    let sr = super::transport::scrub_rect(hwnd);
+    let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
+}
+
 /// Which button (if any) contains the client-space point.
 pub(super) unsafe fn hit_button(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     for (b, r) in button_rects(hwnd) {
@@ -338,6 +645,117 @@ pub(super) unsafe fn hit_button(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Left/Right steps one place and wraps at both ends of the CURRENT bar, and never
+    /// crosses into the other bar (that is Up/Down's job, tested separately below).
+    #[test]
+    fn arrow_step_wraps_within_the_bar_and_never_crosses_bars() {
+        assert_eq!(
+            arrow_step(FocusTarget::Caption(0), 3, 7, true),
+            Some(FocusTarget::Caption(1))
+        );
+        // Right off the last caption button wraps to the first, not into the transport strip.
+        assert_eq!(
+            arrow_step(FocusTarget::Caption(2), 3, 7, true),
+            Some(FocusTarget::Caption(0))
+        );
+        // Left off the first wraps to the last.
+        assert_eq!(
+            arrow_step(FocusTarget::Caption(0), 3, 7, false),
+            Some(FocusTarget::Caption(2))
+        );
+        assert_eq!(
+            arrow_step(FocusTarget::Transport(6), 3, 7, true),
+            Some(FocusTarget::Transport(0))
+        );
+        // A single-item bar stays put rather than looping forever or panicking.
+        assert_eq!(
+            arrow_step(FocusTarget::Caption(0), 1, 0, true),
+            Some(FocusTarget::Caption(0))
+        );
+    }
+
+    /// Down/Up jump straight to the other bar, landing on the same index (clamped), and are a
+    /// no-op — `None`, so the caller leaves the key unhandled — when there is nowhere to go.
+    #[test]
+    fn switch_bar_moves_between_bars_and_stays_put_with_no_transport() {
+        assert_eq!(
+            switch_bar(FocusTarget::Caption(2), 5, 7, true),
+            Some(FocusTarget::Transport(2))
+        );
+        assert_eq!(
+            switch_bar(FocusTarget::Transport(1), 5, 7, false),
+            Some(FocusTarget::Caption(1))
+        );
+        // Caption index is clamped into a shorter transport strip.
+        assert_eq!(
+            switch_bar(FocusTarget::Caption(4), 5, 2, true),
+            Some(FocusTarget::Transport(1))
+        );
+        // No transport strip showing: Down from the caption bar goes nowhere.
+        assert_eq!(switch_bar(FocusTarget::Caption(0), 5, 0, true), None);
+        // Already on the caption bar: Up has nowhere further to go.
+        assert_eq!(switch_bar(FocusTarget::Transport(0), 0, 7, false), None);
+    }
+
+    /// Tab/Shift+Tab treat the two bars as ONE sequence: stepping off either end of one bar
+    /// lands on the start/end of the other — the "or Tab again" half of the caption-to-transport
+    /// transition (the direct jump is `switch_bar`, tested above).
+    #[test]
+    fn tab_step_crosses_from_the_caption_bar_into_the_transport_strip_and_back() {
+        // Last caption button, Tab forward -> first transport control.
+        assert_eq!(
+            tab_step(FocusTarget::Caption(2), 3, 7, true),
+            Some(FocusTarget::Transport(0))
+        );
+        // First transport control, Shift+Tab -> last caption button.
+        assert_eq!(
+            tab_step(FocusTarget::Transport(0), 3, 7, false),
+            Some(FocusTarget::Caption(2))
+        );
+        // Last transport control, Tab forward wraps back to the first caption button.
+        assert_eq!(
+            tab_step(FocusTarget::Transport(6), 3, 7, true),
+            Some(FocusTarget::Caption(0))
+        );
+        // No transport strip showing: Tab off the last caption button wraps within the caption
+        // bar instead of landing on a strip that isn't there.
+        assert_eq!(
+            tab_step(FocusTarget::Caption(2), 3, 0, true),
+            Some(FocusTarget::Caption(0))
+        );
+    }
+
+    /// Focus resets when the VISIBLE SET CHANGES: an index that is still in range survives a
+    /// repaint untouched, but one a shrunk bar has left out of bounds is dropped rather than
+    /// silently clamped onto a different button.
+    #[test]
+    fn repair_focus_clears_when_the_index_falls_out_of_bounds() {
+        assert_eq!(
+            repair_focus(Some(FocusTarget::Caption(4)), 5, 7),
+            Some(FocusTarget::Caption(4))
+        );
+        // The bar shrank (e.g. a content-kind change hid some buttons) — index 4 no longer
+        // exists, so focus drops rather than landing on whatever is now at 4.
+        assert_eq!(repair_focus(Some(FocusTarget::Caption(4)), 3, 7), None);
+        assert_eq!(
+            repair_focus(Some(FocusTarget::Transport(1)), 5, 2),
+            Some(FocusTarget::Transport(1))
+        );
+        assert_eq!(repair_focus(Some(FocusTarget::Transport(1)), 5, 1), None);
+        assert_eq!(repair_focus(None, 5, 7), None);
+    }
+
+    /// The other half of "focus resets ... on a content change": a focus set under an OLD load
+    /// generation is dropped even though nothing explicitly cleared it, the moment the current
+    /// generation has moved on (a new file, or an in-place content-kind change).
+    #[test]
+    fn live_focus_drops_a_focus_from_a_stale_load_generation() {
+        let f = Some(FocusTarget::Caption(0));
+        assert_eq!(live_focus(f, 5, 5), f);
+        assert_eq!(live_focus(f, 5, 6), None);
+        assert_eq!(live_focus(None, 5, 5), None);
+    }
 
     /// Every caption button must have a REAL translated tooltip. `i18n::t` returns a
     /// `⟨?⟩` sentinel when a key is missing from both the active locale and `en`, so this

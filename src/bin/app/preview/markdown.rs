@@ -416,6 +416,12 @@ pub(super) unsafe fn render(
     let _ = DeleteObject(brush.into());
     SetBkMode(hdc, TRANSPARENT);
 
+    // One font cache for this whole paint pass: every block below asks it for the
+    // (px, bold, italic) it needs instead of creating its own `Fonts` set, so a document with
+    // many headings/paragraphs/list-items/quotes builds each distinct style once per repaint
+    // rather than once per block. Freed automatically (`Drop`) when this function returns.
+    let mut fonts_cache = FontCache::default();
+
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let margin = sc(18);
     // Content column = the whole pane minus margins, so a wider window really does
@@ -472,12 +478,36 @@ pub(super) unsafe fn render(
         match block {
             Block::Heading(level, runs, center) => {
                 y = paint_heading(
-                    hwnd, hdc, rc, *level, runs, *center, first, x0, y, full_w, c, links, &mut rsel,
+                    hwnd,
+                    hdc,
+                    rc,
+                    *level,
+                    runs,
+                    *center,
+                    first,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    &mut rsel,
+                    &mut fonts_cache,
                 );
             }
             Block::Para(runs, center) => {
                 y = paint_para(
-                    hwnd, hdc, rc, runs, *center, x0, y, full_w, c, links, &mut rsel,
+                    hwnd,
+                    hdc,
+                    rc,
+                    runs,
+                    *center,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    &mut rsel,
+                    &mut fonts_cache,
                 );
             }
             Block::Code(text, lang) => {
@@ -502,11 +532,36 @@ pub(super) unsafe fn render(
             }
             Block::Item(depth, marker, runs, task) => {
                 y = paint_item(
-                    hwnd, hdc, rc, *depth, marker, runs, *task, x0, y, full_w, c, links, &mut rsel,
+                    hwnd,
+                    hdc,
+                    rc,
+                    *depth,
+                    marker,
+                    runs,
+                    *task,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    &mut rsel,
+                    &mut fonts_cache,
                 );
             }
             Block::Quote(runs) => {
-                y = paint_quote(hwnd, hdc, rc, runs, x0, y, full_w, c, links, &mut rsel);
+                y = paint_quote(
+                    hwnd,
+                    hdc,
+                    rc,
+                    runs,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    &mut rsel,
+                    &mut fonts_cache,
+                );
             }
             Block::Rule => {
                 // GitHub hr: a short solid bar, not a hairline.
@@ -550,12 +605,25 @@ pub(super) unsafe fn render(
                     links,
                     &mut tsel,
                     (rc.top, rc.bottom),
+                    &mut fonts_cache,
                 );
                 y += sc(14);
             }
             Block::Image(ib) => {
                 y = draw_image(
-                    hwnd, hdc, rc, ib, x0, y, full_w, c, links, imgs, doc_dir, gen,
+                    hwnd,
+                    hdc,
+                    rc,
+                    ib,
+                    x0,
+                    y,
+                    full_w,
+                    c,
+                    links,
+                    imgs,
+                    doc_dir,
+                    gen,
+                    &mut fonts_cache,
                 );
             }
         }
@@ -594,18 +662,19 @@ unsafe fn paint_heading(
     c: &MdColors,
     links: &mut Vec<LinkHit>,
     rsel: &mut RunSel,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     if !first {
         y += sc(8); // extra top margin before a heading (GitHub 24px total)
     }
     let px = heading_px(level);
-    let fonts = Fonts::new(hwnd, px, true, false);
+    let fonts = fonts_cache.get(hwnd, px, true, false);
     let ctx = ctx_for(hwnd, c, c.fg);
     let (ny, _) = run_block(
         hdc,
         runs,
-        &fonts,
+        fonts,
         x0,
         y,
         full_w,
@@ -615,7 +684,6 @@ unsafe fn paint_heading(
         links,
         Some(rsel),
     );
-    fonts.free();
     y = ny;
     if level <= 2 {
         // GitHub-style hairline under h1/h2.
@@ -639,14 +707,15 @@ unsafe fn paint_para(
     c: &MdColors,
     links: &mut Vec<LinkHit>,
     rsel: &mut RunSel,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let fonts = Fonts::new(hwnd, BODY_PX, false, false);
+    let fonts = fonts_cache.get(hwnd, BODY_PX, false, false);
     let ctx = ctx_for(hwnd, c, c.fg);
     let (ny, _) = run_block(
         hdc,
         runs,
-        &fonts,
+        fonts,
         x0,
         y,
         full_w,
@@ -656,7 +725,6 @@ unsafe fn paint_para(
         links,
         Some(rsel),
     );
-    fonts.free();
     if ny > y {
         ny + sc(14)
     } else {
@@ -756,26 +824,25 @@ unsafe fn paint_item(
     c: &MdColors,
     links: &mut Vec<LinkHit>,
     rsel: &mut RunSel,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let indent = sc(22) * (depth as i32 + 1);
     let mx = x0 + indent - sc(18);
+    // Both the marker and the item's runs draw in the plain body style, so one cache lookup
+    // covers both (the marker just borrows `.reg` instead of running the wrapper's own layout).
+    let fonts = fonts_cache.get(hwnd, BODY_PX, false, false);
     match task {
         // GFM task item: a GitHub-style checkbox in place of the bullet.
         Some(done) => draw_checkbox(hwnd, hdc, mx, y, done, c),
         // Ordinary bullet / number in the muted colour.
-        None => {
-            let mf = font(hwnd, BODY_PX, false, false, false);
-            draw_at(hdc, marker, mx, y, mf, c.muted);
-            let _ = DeleteObject(mf.into());
-        }
+        None => draw_at(hdc, marker, mx, y, fonts.reg, c.muted),
     }
-    let fonts = Fonts::new(hwnd, BODY_PX, false, false);
     let ctx = ctx_for(hwnd, c, c.fg);
     let (ny, _) = run_block(
         hdc,
         runs,
-        &fonts,
+        fonts,
         x0 + indent,
         y,
         full_w - indent,
@@ -785,7 +852,6 @@ unsafe fn paint_item(
         links,
         Some(rsel),
     );
-    fonts.free();
     ny + sc(4)
 }
 
@@ -802,16 +868,17 @@ unsafe fn paint_quote(
     c: &MdColors,
     links: &mut Vec<LinkHit>,
     rsel: &mut RunSel,
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let indent = sc(16);
     let y_start = y;
-    let fonts = Fonts::new(hwnd, BODY_PX, false, true);
+    let fonts = fonts_cache.get(hwnd, BODY_PX, false, true);
     let ctx = ctx_for(hwnd, c, c.muted);
     let (ny, _) = run_block(
         hdc,
         runs,
-        &fonts,
+        fonts,
         x0 + indent,
         y,
         full_w - indent,
@@ -821,7 +888,6 @@ unsafe fn paint_quote(
         links,
         Some(rsel),
     );
-    fonts.free();
     let y = ny;
     // GitHub-style gray quote bar spanning the quote's height.
     let pen = CreatePen(PS_SOLID, sc(4), COLORREF(c.border));

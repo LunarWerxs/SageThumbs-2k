@@ -346,12 +346,9 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
         return false;
     };
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    crate::win::pump_msgs(10);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(6);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd); // WM_DESTROY frees the snapshot (EYE_SHOT)
-    ok
+    crate::win::settle_pump(hwnd, 10, 6, true);
+    // WM_DESTROY frees the snapshot (EYE_SHOT).
+    crate::win::capture_and_destroy(hwnd, out)
 }
 
 /// Sample the screen-snapshot pixel at (x, y) as (r, g, b) via GetPixel.

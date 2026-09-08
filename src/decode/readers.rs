@@ -170,7 +170,7 @@ pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicIm
         {
             Ok(img) => Some(img),
             Err(e) => {
-                crate::safety::log_debug(&format!("scaled EXR decode failed: {e}"));
+                crate::safety::log_debugf!("scaled EXR decode failed: {e}");
                 None
             }
         };
@@ -219,7 +219,7 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
         // here is what keeps a large rotated phone photo from rendering sideways.
         Ok(img) => Some(apply_exif_orientation(img, &head)),
         Err(e) => {
-            crate::safety::log_debug(&format!("WIC-by-path declined {path}: {e}"));
+            crate::safety::log_debugf!("WIC-by-path declined {path}: {e}");
             None
         }
     }
@@ -313,7 +313,7 @@ pub fn wic_scaled_from_bytes_if_codec_scales(
     match unsafe { wic::wic_decode_bytes_if_codec_scales(bytes, target_edge, bytes) } {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("WIC scaled-from-bytes declined: {e}"));
+            crate::safety::log_debugf!("WIC scaled-from-bytes declined: {e}");
             None
         }
     }
@@ -324,7 +324,7 @@ pub fn wic_scaled_from_path_if_codec_scales(path: &str, target_edge: u32) -> Opt
     match unsafe { wic::wic_decode_path_if_codec_scales(path, target_edge, &head) } {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("WIC scaled pre-pass declined {path}: {e}"));
+            crate::safety::log_debugf!("WIC scaled pre-pass declined {path}: {e}");
             None
         }
     }
@@ -349,7 +349,7 @@ pub unsafe fn wic_scaled_from_stream(
     match wic::wic_decode_stream(stream, Some(target_edge), head) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debug(&format!("WIC-from-stream declined: {e}"));
+            crate::safety::log_debugf!("WIC-from-stream declined: {e}");
             None
         }
     }

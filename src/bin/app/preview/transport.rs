@@ -2,9 +2,9 @@
 
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect, InvalidateRect,
-    LineTo, MoveToEx, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PS_SOLID, TRANSPARENT,
+    CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect, FrameRect,
+    InvalidateRect, LineTo, MoveToEx, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetCapture;
 
@@ -55,8 +55,11 @@ pub(super) struct Parts {
 
 /// The strip's clickable controls, in the order [`transport_rects`] reports them. Used for
 /// tooltips (the strip is owner-drawn, so every control needs a registered tip rect or it is a
-/// mystery glyph) and nothing else; the click dispatch is a straight rect test in
-/// [`scrub_mouse_down`].
+/// mystery glyph), and for the keyboard focus model in `toolbar.rs` — Tab/arrow traversal and
+/// Enter/Space activation (see [`activate`]) both walk this list. The seek track and the volume
+/// slider are deliberately NOT here: both are drag surfaces with nothing for Enter/Space to do,
+/// and a keyboard user still reaches volume via the ↑/↓ volume keys and the mute toggle. The
+/// click dispatch is a straight rect test in [`scrub_mouse_down`].
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum TBtn {
     Prev,
@@ -101,15 +104,62 @@ pub(super) fn tbtn_tip(b: TBtn, muted: bool, looping: bool) -> &'static str {
     })
 }
 
+/// Whether the transport strip is currently painted at all. The same "is there a playing
+/// video/track" gate [`transport_rects`] uses internally, exposed so the keyboard focus model
+/// (`toolbar.rs`) can tell whether Tab/Down has a second bar to move into — a plain image or a
+/// Markdown document never spawns one, so Down from the caption bar must be a no-op there.
+pub(super) unsafe fn transport_showing(hwnd: HWND) -> bool {
+    let st = state(hwnd);
+    !st.is_null()
+        && (*st).kind.get() == super::window::ContentKind::Video
+        && (*st).video.borrow().is_some()
+}
+
+/// Perform a transport control's action directly — the keyboard-focus counterpart of
+/// [`scrub_mouse_down`]'s click dispatch, called on Enter/Space when [`TBtn`] `tb` has focus.
+/// Only these six controls are reachable here; the seek track and volume slider are excluded
+/// from [`TBTNS`] entirely (see its doc comment) because a discrete keypress has nothing
+/// sensible to do to a drag surface.
+pub(super) unsafe fn activate(hwnd: HWND, tb: TBtn) {
+    if tb == TBtn::Prev || tb == TBtn::Next {
+        // File switching must not run while `st.video` is borrowed (same ordering
+        // `scrub_mouse_down` uses for the mouse click on these same two controls).
+        super::window::nav_sibling(hwnd, if tb == TBtn::Prev { -1 } else { 1 });
+        return;
+    }
+    let st = &*state(hwnd);
+    let vb = st.video.borrow();
+    let Some(v) = vb.as_ref() else { return };
+    match tb {
+        TBtn::Play => v.toggle_play(),
+        TBtn::Mute => {
+            v.set_muted(!v.muted());
+            persist_volume(v); // a press is the whole gesture — remember it now
+        }
+        TBtn::Loop => {
+            let on = !v.looping();
+            v.set_looping(on);
+            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+        }
+        TBtn::Arrows => {
+            let on = !st.arrow_nav.get();
+            st.arrow_nav.set(on);
+            let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(on);
+        }
+        TBtn::Speed => {
+            let s = next_speed(v.speed());
+            v.set_speed(s);
+            let _ = sagethumbs2k_core::settings::set_preview_speed((s * 100.0).round() as u32);
+        }
+        TBtn::Prev | TBtn::Next => unreachable!("handled above, before the video borrow"),
+    }
+}
+
 /// Rects for the strip's controls, or EMPTY when the strip is not showing (anything that is not a
 /// playing video/track). An empty rect can never trigger a tooltip, which is exactly what we want
 /// when the strip is not on screen.
 pub(super) unsafe fn transport_rects(hwnd: HWND) -> Vec<(TBtn, RECT)> {
-    let st = state(hwnd);
-    let showing = !st.is_null()
-        && (*st).kind.get() == super::window::ContentKind::Video
-        && (*st).video.borrow().is_some();
-    if !showing {
+    if !transport_showing(hwnd) {
         return TBTNS.iter().map(|&b| (b, RECT::default())).collect();
     }
     let sr = scrub_rect(hwnd);
@@ -395,6 +445,7 @@ pub(super) unsafe fn draw_scrub_strip(
     v: &super::video::VideoPlayer,
     text: u32,
     subtle: u32,
+    focus: Option<TBtn>,
 ) {
     let sc = |val: i32| crate::win::dpi_scale(hwnd, val);
     let bg = CreateSolidBrush(COLORREF(crate::dark::DARK_BG().0));
@@ -529,7 +580,38 @@ pub(super) unsafe fn draw_scrub_strip(
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
     SelectObject(hdc, oldf2);
+
+    // Keyboard focus ring, drawn last so it always sits on top of whatever it outlines.
+    if let Some(tb) = focus {
+        let r = match tb {
+            TBtn::Prev => prev,
+            TBtn::Play => play,
+            TBtn::Next => next,
+            TBtn::Mute => mute,
+            TBtn::Loop => loopb,
+            TBtn::Arrows => arrows,
+            TBtn::Speed => speed,
+        };
+        draw_focus_ring(hdc, &r);
+    }
+
     let _ = DeleteObject(icon.into());
+}
+
+/// Keyboard-focus ring for one transport control: a 1px accent frame drawn just inside its
+/// rect — same convention as the caption toolbar's ring
+/// (`paint::draw_toolbar_focus_ring`), so a keyboard user reads focus identically on both bars.
+unsafe fn draw_focus_ring(hdc: HDC, r: &RECT) {
+    let inset = 2;
+    let pr = RECT {
+        left: r.left + inset,
+        top: r.top + inset,
+        right: r.right - inset,
+        bottom: r.bottom - inset,
+    };
+    let b = CreateSolidBrush(COLORREF(crate::dark::ACCENT().0));
+    FrameRect(hdc, &pr, b);
+    let _ = DeleteObject(b.into());
 }
 
 // Segoe Fluent Icons codepoints for the transport (same family as `paint::btn_glyph`).

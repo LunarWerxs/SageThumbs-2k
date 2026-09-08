@@ -91,10 +91,14 @@ pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
 
 /// Build the RGBA pixels the viewer is currently SHOWING: the given PDF page / animation frame
 /// when navigated. `None` for anything else (the caller decides what to fall back to) — this
-/// deliberately does NOT cover the "neither navigated" case, since that one differs between the
-/// two callers (clipboard falls back to the file's own full-fidelity decode; a save has nothing
+/// deliberately does NOT cover the "neither navigated" case, since that differs between callers
+/// (clipboard and print fall back to the file's own full-fidelity decode; a save has nothing
 /// sensible to fall back to when the toolbar button is only shown while one of the two applies).
-fn navigated_shown_image_rgba(
+///
+/// `pub(in crate::preview)`, not private: `print::shown_image_rgba` reuses this exact logic
+/// (print wants precisely what Ctrl+C would copy / `Btn::SavePage` would save), re-exported to
+/// the rest of `preview` via `window.rs`'s `pub(in crate::preview) use clipboard::*`.
+pub(in crate::preview) fn navigated_shown_image_rgba(
     path: &str,
     pdf_page: Option<u32>,
     anim_frame: Option<usize>,

@@ -8,6 +8,11 @@ publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 description = "SageThumbs 2K Open/Save-dialog selection reader — a tiny in-context hook DLL"
 
+[build-dependencies]
+# The SDK-rc lookup + VERSIONINFO .rc template shared with the root and dll build scripts
+# (build-dependency only; never reaches the shipped DLL).
+build-support = { path = "../build-support" }
+
 # WHY THIS IS ITS OWN CRATE, AND WHY IT IS TINY.
 #
 # A Vista+ common file dialog (`#32770` hosting a `DUIViewWndClassName`) hands out its

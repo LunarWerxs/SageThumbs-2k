@@ -18,7 +18,9 @@ use windows::Win32::System::SystemInformation::{
     PROCESSOR_ARCHITECTURE_ARM64, SYSTEM_INFO,
 };
 
-use crate::sponsors::{http_fetch, os_tag, BANNER_URL};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+use crate::sponsors::{http_fetch, http_fetch_capped, os_tag, BANNER_URL};
 
 /// The GitHub "latest release" endpoint for this repo.
 const RELEASES_API: &str = "https://api.github.com/repos/LunarWerxs/SageThumbs-2k/releases/latest";
@@ -357,6 +359,30 @@ const MAX_INSTALLER_BYTES: usize = 128 * 1024 * 1024;
 /// since this pulls multiple MB over whatever connection the user has.
 const DOWNLOAD_TIMEOUT_SECS: u64 = 120;
 
+/// The detached signature file is 128 hex characters plus a little slack for whitespace -
+/// this cap is generous by three orders of magnitude, purely to bound a hostile response.
+const MAX_SIG_BYTES: usize = 4096;
+
+/// Receive window (seconds) for the `.sig` fetch - it is a few hundred bytes, so this stays
+/// tight rather than reusing the multi-MB installer's [`DOWNLOAD_TIMEOUT_SECS`].
+const SIG_TIMEOUT_SECS: u64 = 15;
+
+/// The public half of the ed25519 key that signs every release artifact
+/// (`examples/update-sign.rs` holds the private half; `examples/update-keygen.rs` mints the
+/// pair). Every release asset's bytes must carry a valid detached signature against this key
+/// before the installer is ever launched - see [`verify_signature`] and [`download_and_install`].
+///
+/// PLACEHOLDER: all zeros until the integrator runs `examples/update-keygen.rs` and pastes its
+/// printed array literal here. An all-zero key is not a parse error for `ed25519-dalek` - it
+/// decodes to a (weak, useless) point on the curve - so nothing verifies against it, and every
+/// self-update correctly refuses rather than silently accepting an unsigned release. The
+/// `the_compiled_in_key_is_not_the_placeholder` test below fails until this is a real key; that
+/// is the point of the test, not a bug in it.
+pub const UPDATE_PUBLIC_KEY: [u8; 32] = [
+    0x16, 0x9f, 0xce, 0x0a, 0xde, 0x4a, 0xec, 0xed, 0x2d, 0xcb, 0x36, 0xa3, 0x76, 0xc1, 0x27, 0x74,
+    0x38, 0x44, 0x77, 0x91, 0x84, 0xf5, 0x10, 0x9b, 0xc3, 0x8c, 0x00, 0x60, 0x3f, 0xa8, 0x32, 0x5b,
+];
+
 /// Switches handed to the freshly-downloaded Inno setup for an unattended in-place upgrade.
 /// `/SILENT` = bare progress bar, no wizard; `/SUPPRESSMSGBOXES` + `/FORCECLOSEAPPLICATIONS`
 /// let it close+restart Explorer to swap the in-use DLL without prompting; `/NORESTART`
@@ -370,6 +396,10 @@ struct InstallerAsset {
     url: String,
     size: u64,
     sha256: String, // lowercase hex, no "sha256:" prefix
+    /// The `browser_download_url` of the sibling `<installer-name>.sig` asset, when the
+    /// release published one. `None` means the release is unsigned - [`download_and_install`]
+    /// refuses to launch in that case rather than skipping the check.
+    sig_url: Option<String>,
 }
 
 /// Pull the Windows installer asset out of GitHub's latest-release JSON — the exact versioned
@@ -448,7 +478,31 @@ fn installer_asset_from_json_for_arch(
         .and_then(|d| d.strip_prefix("sha256:"))
         .map(str::to_ascii_lowercase)
         .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))?;
-    Some((tag, InstallerAsset { url, size, sha256 }))
+
+    // The detached signature ships as a SEPARATE release asset named "<installer-name>.sig"
+    // beside the installer, not a field on the installer's own JSON - `release.ps1` uploads it
+    // that way so the existing digest-verification loop (step 5) covers it for free. Its
+    // absence is not a lookup failure: an unsigned release is a real (refused) state, not a
+    // malformed one, so this stays `Option` rather than folding into the `?` chain above.
+    let sig_name = format!("{expected_name}.sig");
+    let sig_url = json.get("assets")?.as_array()?.iter().find_map(|a| {
+        a.get("name")
+            .and_then(|n| n.as_str())
+            .filter(|n| n.eq_ignore_ascii_case(&sig_name))
+            .and_then(|_| a.get("browser_download_url"))
+            .and_then(|u| u.as_str())
+            .map(str::to_string)
+    });
+
+    Some((
+        tag,
+        InstallerAsset {
+            url,
+            size,
+            sha256,
+            sig_url,
+        },
+    ))
 }
 
 /// SHA-256 of `data` as lowercase hex, via Windows CNG (no extra crate). None on failure.
@@ -459,6 +513,40 @@ fn sha256_hex(data: &[u8]) -> Option<String> {
     status
         .is_ok()
         .then(|| out.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Parse 128 lowercase-or-uppercase hex characters into a raw 64-byte ed25519 signature.
+/// `None` on anything else - wrong length, non-ASCII, non-hex - worked byte-wise so a
+/// downloaded `.sig` file can never panic this on a bad char boundary.
+fn parse_sig_hex(sig_hex: &str) -> Option<[u8; 64]> {
+    let bytes = sig_hex.as_bytes();
+    if bytes.len() != 128 || !bytes.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    for i in 0..64 {
+        let hi = (bytes[i * 2] as char).to_digit(16)?;
+        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
+        out[i] = ((hi << 4) | lo) as u8;
+    }
+    Some(out)
+}
+
+/// Verify a detached ed25519 signature over `bytes`. `sig_hex` is the `.sig` asset's raw
+/// content - 128 hex characters, no framing. Any parse failure (bad length, non-hex, a `key`
+/// that doesn't decode to a curve point) is simply `false`, same as a bad signature: there is
+/// no distinguishable "malformed" outcome for the caller to accidentally treat as anything
+/// other than "not verified".
+fn verify_signature(key: &[u8; 32], bytes: &[u8], sig_hex: &str) -> bool {
+    let Some(sig_bytes) = parse_sig_hex(sig_hex) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(key) else {
+        return false;
+    };
+    verifying_key
+        .verify(bytes, &Signature::from_bytes(&sig_bytes))
+        .is_ok()
 }
 
 /// Validate downloaded installer bytes before we ever run them elevated: a real PE, the
@@ -548,7 +636,7 @@ fn write_locked_installer(
 /// failure — user cancel, antivirus block, group policy, a dead network — collapsed into
 /// "the update was cancelled at the Windows permission prompt", which the caller then
 /// swallowed on the word "cancel". A user whose antivirus ate the installer saw NOTHING.
-/// Keep these three cases distinct: only [`UpdateError::Cancelled`] may be silent.
+/// Keep these cases distinct: only [`UpdateError::Cancelled`] may be silent.
 pub(crate) enum UpdateError {
     /// The user backed out themselves (progress-dialog Cancel, or declining the Windows
     /// permission prompt). The one case that must not nag.
@@ -558,6 +646,12 @@ pub(crate) enum UpdateError {
     Blocked(String),
     /// Everything else: offline, no matching release asset, a failed integrity check.
     Failed(String),
+    /// The release's detached signature was missing, unreadable, or did not verify against
+    /// [`UPDATE_PUBLIC_KEY`]. Distinct from [`UpdateError::Failed`] because this is a trust
+    /// refusal, not an environment problem - the size + sha256 checks can pass while this
+    /// still refuses, exactly when the trust anchor they both come from (the same GitHub API
+    /// response) is the thing being spoofed.
+    Unverified(String),
 }
 
 impl UpdateError {
@@ -565,9 +659,20 @@ impl UpdateError {
     pub(crate) fn message(&self) -> &str {
         match self {
             UpdateError::Cancelled => "",
-            UpdateError::Blocked(m) | UpdateError::Failed(m) => m,
+            UpdateError::Blocked(m) | UpdateError::Failed(m) | UpdateError::Unverified(m) => m,
         }
     }
+}
+
+/// The refusal used for every signature-trust failure - missing `.sig` asset, an unreadable
+/// download, or a signature that doesn't verify. One message for all three: the caller can't
+/// usefully act differently on any of them, and naming a moving GitHub-hosted trust anchor as
+/// the culprit is more honest than trying to distinguish "attacker" from "network hiccup".
+fn unverified_release_error() -> UpdateError {
+    UpdateError::Unverified(format!(
+        "This update's signature couldn't be verified, so SageThumbs 2K didn't install it. \
+         Download it by hand from {RELEASES_URL} instead."
+    ))
 }
 
 /// Is Smart App Control on and ENFORCING? SAC blocks unsigned executables outright and is
@@ -700,7 +805,7 @@ fn launch_installer_silent(path: &Path, owner: HWND) -> Result<(), UpdateError> 
         path.exists(),
         match &err {
             UpdateError::Cancelled => "user cancelled",
-            UpdateError::Blocked(m) | UpdateError::Failed(m) => m,
+            UpdateError::Blocked(m) | UpdateError::Failed(m) | UpdateError::Unverified(m) => m,
         }
     ));
     Err(err)
@@ -750,6 +855,10 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
             "Couldn't find the installer for this PC on the GitHub releases page.".into(),
         )
     })?;
+    // Fail fast on an unsigned release BEFORE spending a multi-MB download on it: the size +
+    // sha256 the JSON also carries come from the same response an attacker who controlled it
+    // would control too, so a missing signature is refused exactly like a bad one.
+    let sig_url = asset.sig_url.clone().ok_or_else(unverified_release_error)?;
 
     // The shell progress dialog needs COM on this thread. Leaving it initialized afterward is
     // benign (one extra init on the UI thread); we never run the matching uninit, because the
@@ -811,6 +920,20 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
             return Err(UpdateError::Failed(
                 "The downloaded update failed its integrity check, so it was not run.".into(),
             ));
+        }
+        // The size + sha256 above only prove the download matches what the GitHub API's JSON
+        // claimed - the same response an attacker who controlled that endpoint (or the asset
+        // it points at) would also control. The signature is the actual trust anchor: it must
+        // verify against the key COMPILED INTO THIS BINARY, which such an attacker cannot
+        // rewrite. Never launch on a missing or failing signature, whatever the digest says.
+        let sig_hex = http_fetch_capped(&sig_url, true, MAX_SIG_BYTES, SIG_TIMEOUT_SECS)
+            .and_then(|b| String::from_utf8(b).ok());
+        let signed = sig_hex
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|hex| verify_signature(&UPDATE_PUBLIC_KEY, &bytes, hex));
+        if !signed {
+            return Err(unverified_release_error());
         }
         let written = write_locked_installer(&tag, &bytes, &asset)
             .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
@@ -881,6 +1004,7 @@ pub(crate) fn run_selftest(setup: &Path) -> bool {
         url: String::new(),
         size: bytes.len() as u64,
         sha256,
+        sig_url: None, // this harness substitutes only the download; see the doc comment above
     };
     if !verify_installer_bytes(&bytes, &asset) {
         log("verification refused the installer bytes");
@@ -956,6 +1080,7 @@ fn updated_toast_text(installed: &str, running: &str) -> (&'static str, String) 
 #[cfg(test)]
 mod tests {
     use super::{cleanup_installer_payload, parse_ver};
+    use ed25519_dalek::{Signer, SigningKey};
     use std::os::windows::process::CommandExt;
     use std::path::Path;
 
@@ -1039,6 +1164,131 @@ mod tests {
             super::sha256_hex(b"").as_deref(),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
+    }
+
+    /// A fixed-seed key so the test is deterministic - not the real signing key, and never
+    /// will be; see `the_compiled_in_key_is_not_the_placeholder` below for that one.
+    fn test_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn hex_sig(sig: &ed25519_dalek::Signature) -> String {
+        sig.to_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn sign_then_verify_round_trips() {
+        let key = test_signing_key();
+        let bytes = b"a release artifact's exact bytes";
+        let sig_hex = hex_sig(&key.sign(bytes));
+        assert!(super::verify_signature(
+            &key.verifying_key().to_bytes(),
+            bytes,
+            &sig_hex
+        ));
+    }
+
+    #[test]
+    fn a_flipped_byte_fails_verification() {
+        let key = test_signing_key();
+        let bytes = b"a release artifact's exact bytes";
+        let sig_hex = hex_sig(&key.sign(bytes));
+        let tampered = b"A release artifact's exact bytes"; // first byte flipped
+        assert!(!super::verify_signature(
+            &key.verifying_key().to_bytes(),
+            tampered,
+            &sig_hex
+        ));
+    }
+
+    #[test]
+    fn a_wrong_key_fails_verification() {
+        let key = test_signing_key();
+        let other_key = SigningKey::from_bytes(&[9u8; 32]);
+        let bytes = b"a release artifact's exact bytes";
+        let sig_hex = hex_sig(&key.sign(bytes));
+        assert!(!super::verify_signature(
+            &other_key.verifying_key().to_bytes(),
+            bytes,
+            &sig_hex
+        ));
+    }
+
+    #[test]
+    fn malformed_hex_is_refused_without_panicking() {
+        let key = test_signing_key().verifying_key().to_bytes();
+        for junk in [
+            "",
+            "not-hex-at-all-but-128-chars-long-so-length-alone-cannot-be-what-refuses-itxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "deadbeef", // far too short
+            "gg", // not hex, and too short
+        ] {
+            assert!(
+                !super::verify_signature(&key, b"anything", junk),
+                "{junk:?} should not verify"
+            );
+        }
+        // Exactly 128 chars but with one non-hex character - the length check alone must not
+        // be enough to pass this.
+        let mut almost_valid = "a".repeat(128);
+        almost_valid.replace_range(0..1, "z");
+        assert!(!super::verify_signature(&key, b"anything", &almost_valid));
+        // A non-ASCII (multi-byte) 128-char string must not panic on the byte-index slicing.
+        let non_ascii: String = "é".repeat(64); // 128 bytes, but not ASCII hex
+        assert!(!super::verify_signature(&key, b"anything", &non_ascii));
+    }
+
+    #[test]
+    fn the_compiled_in_key_is_not_the_placeholder() {
+        // Fails until the integrator runs `examples/update-keygen.rs` and pastes its printed
+        // public-key array literal over `UPDATE_PUBLIC_KEY` in this file. That is intentional:
+        // an all-zero key makes every signature check refuse (see the constant's doc comment),
+        // so a build that still carries the placeholder is safe, just permanently un-updatable
+        // - this test is what turns "permanently un-updatable" into a build-time signal instead
+        // of a silent trap discovered only when a real self-update is attempted.
+        assert_ne!(
+            super::UPDATE_PUBLIC_KEY,
+            [0u8; 32],
+            "UPDATE_PUBLIC_KEY is still the placeholder - paste in the real key from \
+             examples/update-keygen.rs before shipping a build that must self-update"
+        );
+    }
+
+    #[test]
+    fn finds_the_sibling_sig_asset_beside_the_installer() {
+        let json = serde_json::json!({
+            "tag_name": "v0.7.0",
+            "assets": [
+                { "name": "SageThumbs2K-Setup-0.7.0.exe",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.7.0/SageThumbs2K-Setup-0.7.0.exe",
+                  "size": 100u64,
+                  "digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+                { "name": "SageThumbs2K-Setup-0.7.0.exe.sig",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.7.0/SageThumbs2K-Setup-0.7.0.exe.sig" }
+            ]
+        });
+        let (_, asset) =
+            super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
+        assert_eq!(
+            asset.sig_url.as_deref(),
+            Some("https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.7.0/SageThumbs2K-Setup-0.7.0.exe.sig")
+        );
+    }
+
+    #[test]
+    fn a_release_with_no_sig_asset_has_no_sig_url() {
+        let json = serde_json::json!({
+            "tag_name": "v0.7.0",
+            "assets": [
+                { "name": "SageThumbs2K-Setup-0.7.0.exe",
+                  "browser_download_url": "https://github.com/LunarWerxs/SageThumbs-2k/releases/download/v0.7.0/SageThumbs2K-Setup-0.7.0.exe",
+                  "size": 100u64,
+                  "digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+            ]
+        });
+        let (_, asset) =
+            super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
+        assert_eq!(asset.sig_url, None);
     }
 
     #[test]
@@ -1211,6 +1461,7 @@ mod tests {
             url: String::new(),
             size: bytes.len() as u64,
             sha256: super::sha256_hex(bytes).expect("SHA-256"),
+            sig_url: None,
         };
         let (path, lock) =
             super::write_locked_installer("test", bytes, &asset).expect("create locked installer");
@@ -1247,6 +1498,7 @@ mod tests {
             url: String::new(),
             size: bytes.len() as u64,
             sha256: super::sha256_hex(&bytes).expect("SHA-256"),
+            sig_url: None,
         };
         let (path, lock) = super::write_locked_installer("launch", &bytes, &asset)
             .expect("create locked installer");

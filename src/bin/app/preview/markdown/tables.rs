@@ -24,6 +24,7 @@ pub(super) unsafe fn draw_table(
     links: &mut Vec<LinkHit>,
     sel: &mut TblSel,
     vis: (i32, i32),
+    fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let all_cols = header
@@ -45,8 +46,7 @@ pub(super) unsafe fn draw_table(
     let ncols = columns_that_fit(all_cols, avail, 2 * sc(6) + sc(46));
     let dropped_cols = all_cols - ncols;
     let vpad = sc(6);
-    let fonts = Fonts::new(hwnd, BODY_PX, false, false);
-    let hfonts = Fonts::new(hwnd, BODY_PX, true, false);
+    let (fonts, hfonts) = fonts_cache.get2(hwnd, (BODY_PX, false, false), (BODY_PX, true, false));
     let ctx = ctx_for(hwnd, c, c.fg);
 
     // Every row to draw, in order, with its "is the header row" flag (HTML tables may have none).
@@ -61,8 +61,7 @@ pub(super) unsafe fn draw_table(
 
     let mut scratch: Vec<LinkHit> = Vec::new();
     // Step 1: each column's natural (unwrapped) TEXT width.
-    let nat_text =
-        measure_natural_col_widths(hdc, &all, ncols, &fonts, &hfonts, &ctx, &mut scratch);
+    let nat_text = measure_natural_col_widths(hdc, &all, ncols, fonts, hfonts, &ctx, &mut scratch);
 
     // Step 2: GitHub's roomy 13px side padding is most of a column once a CSV export brings
     // nine of them (26px of every ~107px slice). When the table cannot fit at natural width the
@@ -97,8 +96,8 @@ pub(super) unsafe fn draw_table(
         hdc,
         &all,
         ncols,
-        &fonts,
-        &hfonts,
+        fonts,
+        hfonts,
         &ctx,
         &colw,
         hpad,
@@ -108,8 +107,8 @@ pub(super) unsafe fn draw_table(
 
     // Step 5: draw. Zebra fill first, then text, then the grid on top.
     let mut y = draw_table_rows(
-        hwnd, hdc, &all, &row_h, ncols, &colw, x0, y0, table_w, hpad, vpad, &fonts, &hfonts,
-        aligns, c, &ctx, links, sel, vis,
+        hwnd, hdc, &all, &row_h, ncols, &colw, x0, y0, table_w, hpad, vpad, fonts, hfonts, aligns,
+        c, &ctx, links, sel, vis,
     );
     draw_table_grid(hdc, x0, y0, y, table_w, ncols, &colw, c);
     // Say what was left out. Silently dropping columns would be the same sin as silently
@@ -122,12 +121,10 @@ pub(super) unsafe fn draw_table(
         x0,
         y,
         avail,
-        &fonts,
+        fonts,
         c,
         &mut scratch,
     );
-    fonts.free();
-    hfonts.free();
     y
 }
 

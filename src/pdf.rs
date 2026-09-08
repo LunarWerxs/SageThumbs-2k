@@ -352,8 +352,9 @@ pub(crate) fn block_op<T: RuntimeType>(op: &IAsyncOperation<T>) -> Result<T> {
     Err(E_FAIL.into())
 }
 
-/// Block until a WinRT `IAsyncAction` finishes.
-fn block_action(op: &IAsyncAction) -> Result<()> {
+/// Block until a WinRT `IAsyncAction` finishes. Shared with the lock-screen verb, which
+/// waits on `LockScreen::SetImageFileAsync` the same way.
+pub(crate) fn block_action(op: &IAsyncAction) -> Result<()> {
     for _ in 0..WAIT_BUDGET {
         if op.Status()? != AsyncStatus::Started {
             return op.GetResults();

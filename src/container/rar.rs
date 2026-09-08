@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use rars::ArchiveReader;
 
+use super::names::decode_entry_name;
 use super::select::{dedupe_by_name, pick_covers, CoverPrefs, Entry};
 
 /// Ceiling on how much of the archive we'll decompress-and-throw-away while walking TOWARDS the
@@ -106,7 +107,12 @@ pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Ve
         .members()
         .take(super::MAX_LIST_ENTRIES)
         .map(|m| Entry {
-            name: String::from_utf8_lossy(&m.meta.name).into_owned(),
+            // `false`: `ArchiveMemberMeta` carries no per-entry UTF-8 flag we can rely on here
+            // (RAR3/4 raw local-codepage bytes vs. RAR5's spec-mandated UTF-8 aren't
+            // distinguished by a flag on this type), and the SAME decode must run here and in
+            // the `extract_to` closure below (which has no family info at all) so the name used
+            // to PICK a cover and the name used to MATCH it while streaming stay identical.
+            name: decode_entry_name(&m.meta.name, false),
             is_dir: m.meta.is_directory,
             size: m.meta.unpacked_size,
         })
@@ -145,7 +151,9 @@ pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Ve
         if remaining == 0 {
             return Err(std::io::Error::other("covers captured").into());
         }
-        let name = String::from_utf8_lossy(&meta.name).into_owned();
+        // Must match the `decode_entry_name` call used to build `entries`/`targets` above
+        // exactly (same function, same `false`), or a non-ASCII pick can never be found here.
+        let name = decode_entry_name(&meta.name, false);
         if let Some(rank) = targets.remove(name.as_str()) {
             remaining -= 1;
             Ok(Box::new(CapBuf {
@@ -174,7 +182,11 @@ pub fn list(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
             .members()
             .take(max)
             .map(|m| Entry {
-                name: String::from_utf8_lossy(&m.meta.name).into_owned(),
+                // `false`: `ArchiveMemberMeta` carries no per-entry UTF-8 flag we can rely on
+                // (RAR3/4 raw local-codepage bytes vs. RAR5's spec-mandated UTF-8 aren't
+                // distinguished by a flag on this type), so this is decoded the same way
+                // `extract_n` decodes it - see the comment there.
+                name: decode_entry_name(&m.meta.name, false),
                 is_dir: m.meta.is_directory,
                 size: m.meta.unpacked_size,
             })

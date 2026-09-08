@@ -8,6 +8,11 @@ publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 description = "SageThumbs 2K shell-extension DLL — a thin cdylib over the sagethumbs2k rlib"
 
+[build-dependencies]
+# The SDK-rc lookup + VERSIONINFO .rc template shared with the root and dlghook build
+# scripts (build-dependency only; never reaches the shipped DLL).
+build-support = { path = "../build-support" }
+
 # The shipped shell-extension DLL. `name = "sagethumbs2k"` so the output is
 # `sagethumbs2k.dll` (the name regsvr32 / the installer / Explorer expect). This crate
 # is cdylib-ONLY; the core logic + the two EXEs live in the `sagethumbs2k` package

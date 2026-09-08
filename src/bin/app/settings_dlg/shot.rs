@@ -35,14 +35,25 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
 /// then double `RDW_UPDATENOW` around pumps so every control has actually painted.
 pub(super) unsafe fn settle_pane(hwnd: HWND, tab: usize) {
     let tab = tab.min(NCAT - 1);
-    let prime = if tab == 0 { NCAT - 1 } else { 0 };
-    switch_category(hwnd, prime);
+    switch_category(hwnd, prime_category(tab, NCAT));
     crate::win::pump_msgs(5);
     switch_category(hwnd, tab);
     crate::win::force_repaint(hwnd);
     crate::win::pump_msgs(12);
     crate::win::force_repaint(hwnd);
     crate::win::pump_msgs(4);
+}
+
+/// Which category [`settle_pane`] should switch to FIRST so the switch to `tab` lands as a
+/// REAL transition (a same-tab re-select is a no-op and leaves the owner-drawn chrome
+/// blank, see `settle_pane`'s doc). Split out from it purely so this bit of arithmetic is
+/// unit-testable without a window.
+fn prime_category(tab: usize, ncat: usize) -> usize {
+    if tab == 0 {
+        ncat - 1
+    } else {
+        0
+    }
 }
 
 /// The app's `--shot` mode: build the Settings window off-screen, switch to category `tab`,
@@ -54,9 +65,7 @@ pub(crate) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, tab: usiz
         return false;
     };
     settle_pane(hwnd, tab);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+    crate::win::capture_and_destroy(hwnd, out)
 }
 
 /// `--shot … --search <needle>[!]` : drive the settings-wide search headlessly and capture
@@ -96,9 +105,7 @@ pub(crate) unsafe fn run_shot_search(hinst: HINSTANCE, dark: bool, out: &str, ar
     }
     crate::win::force_repaint(hwnd);
     crate::win::pump_msgs(4);
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
-    let _ = DestroyWindow(hwnd);
-    ok
+    crate::win::capture_and_destroy(hwnd, out)
 }
 
 /// The app's `--shot-gif` mode: build the Settings window off-screen ONCE, walk every category
@@ -142,4 +149,20 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
     }
     // ~1.6 s per tab so a reader can take each pane in before it advances.
     crate::screenshot::encode_gif(&frames, std::path::Path::new(out), 1600)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prime_category_targets_the_last_tab_when_the_wanted_tab_is_the_first() {
+        assert_eq!(prime_category(0, 10), 9);
+    }
+
+    #[test]
+    fn prime_category_targets_the_first_tab_for_any_other_wanted_tab() {
+        assert_eq!(prime_category(1, 10), 0);
+        assert_eq!(prime_category(9, 10), 0);
+    }
 }

@@ -106,6 +106,33 @@ fn parse_apev2_cover(buf: &[u8], count: usize) -> Option<Vec<u8>> {
     best.map(|(_, img)| img)
 }
 
+/// Direct fuzz entry point into the APEv2 item walk, for `container::fuzzseed`. Going
+/// through [`apev2_cover`]'s Read+Seek footer wrapper only reaches this once a mutation
+/// leaves the footer's own `tag_size`/`count` fields intact — see `container::apk_fuzzapi`
+/// for the same argument made about zip-wrapped parsers. Calls the existing parser directly
+/// and changes no behavior.
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) mod fuzzapi {
+    use super::*;
+
+    /// The item walk on raw item bytes, robustness only (result discarded).
+    pub(crate) fn cover_from_items(buf: &[u8]) {
+        let _ = parse_apev2_cover(buf, 512);
+    }
+
+    // ── seed self-check ──────────────────────────────────────────────────────────────
+    // Returns its result so `container::fuzzseed::tests::every_seed_reaches_its_parser` can
+    // assert the seed actually gets past the front door. Takes the real item count rather
+    // than the fuzz target's oversized sentinel: `parse_apev2_cover` bails via `?` the
+    // moment one more item is requested than the buffer holds, which would otherwise
+    // discard an already-found cover the instant the (deliberately generous) 512 runs past
+    // a small seed's single item.
+    pub(crate) fn cover_from_items_result(buf: &[u8], count: usize) -> Option<Vec<u8>> {
+        parse_apev2_cover(buf, count)
+    }
+}
+
 // ── ASF / WMA album art ──────────────────────────────────────────────────────
 // A `.wma` stores cover art as a `WM/Picture` attribute inside the ASF Header
 // Object — in the Extended Content Description Object (value length is u16, so

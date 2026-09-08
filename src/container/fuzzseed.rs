@@ -179,6 +179,13 @@ pub(crate) fn targets() -> Vec<Target> {
         ("djvu::extract", |b| {
             let _ = djvu::extract(b);
         }),
+        // Generic 7-Zip (.7z/cb7) metadata parse + one-entry decode.
+        ("sevenz::extract", |b| {
+            let _ = sevenz::extract(b);
+        }),
+        ("sevenz::list", |b| {
+            let _ = sevenz::list(b, 64);
+        }),
         // Raw-PCM waveform rendering (`.wav`/`.aiff` with no embedded cover art). Takes a
         // `Read + Seek` rather than raw bytes, so a mutated buffer is fed in through a Cursor —
         // same input surface Explorer's shell IStream drives in production.
@@ -193,6 +200,39 @@ pub(crate) fn targets() -> Vec<Target> {
             if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
                 let _ = project::extract(&mut zip);
             }
+        }),
+        // APEv2 "Cover Art (Front)" item parsing, on raw item bytes rather than through the
+        // Read+Seek footer wrapper (see `synthetic_apev2_item`).
+        (
+            "audio::apev2_cover_from_items",
+            audio::ape_fuzzapi::cover_from_items,
+        ),
+        // DSF's trailing ID3v2 tag's APIC frame, on the frame bytes directly.
+        ("audio::id3v2_front_cover", audio::id3_fuzzapi::front_cover),
+        // EPUB: container.xml -> OPF -> manifest/guide/brute-force cover cascade, then the
+        // xhtml-wrapper-follow step.
+        ("epub::extract", |b| {
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
+                let _ = epub::extract(&mut zip);
+            }
+        }),
+        // Office (ODF/OOXML) detection + thumbnail extraction. Chained like the real
+        // dispatcher: `extract` only ever runs on a kind `detect` itself committed to.
+        ("office::detect", |b| {
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
+                let _ = office::detect(&mut zip);
+            }
+        }),
+        ("office::extract", |b| {
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
+                if let Some(kind) = office::detect(&mut zip) {
+                    let _ = office::extract(&mut zip, kind);
+                }
+            }
+        }),
+        // CBT (TAR-of-images) comic archives.
+        ("tarfmt::extract", |b| {
+            let _ = tarfmt::extract(b);
         }),
     ]
 }
@@ -1155,6 +1195,133 @@ fn synthetic_project() -> Vec<u8> {
     ])
 }
 
+/// Raw APEv2 items (no footer): `size(4) flags(4) key\0 value[size]`, one "Cover Art
+/// (Front)" binary item whose value is `description\0 imagedata`. Fed directly to
+/// `audio::ape_fuzzapi::cover_from_items` — see that module for why the footer wrapper is
+/// bypassed.
+fn synthetic_apev2_item() -> Vec<u8> {
+    let mut value = vec![0u8]; // empty description + its NUL terminator
+    value.extend_from_slice(&jpeg(24, 16));
+    let key = b"Cover Art (Front)";
+    let mut item = Vec::new();
+    item.extend_from_slice(&(value.len() as u32).to_le_bytes()); // size
+    item.extend_from_slice(&0u32.to_le_bytes()); // flags
+    item.extend_from_slice(key);
+    item.push(0); // NUL after key
+    item.extend_from_slice(&value);
+    item
+}
+
+/// A raw ID3v2.3 frame area (no 10-byte tag header) carrying one `APIC` front-cover
+/// frame — the shape both an MP3's leading tag and a `.dsf`'s trailing one share. Fed
+/// directly to `audio::id3_fuzzapi::front_cover`.
+fn synthetic_id3v2_apic() -> Vec<u8> {
+    let jpeg_bytes = jpeg(24, 16);
+    let mut apic = vec![0u8]; // text encoding: ISO-8859-1
+    apic.extend_from_slice(b"image/jpeg\0");
+    apic.push(3); // picture type: front cover
+    apic.push(0); // empty description + its NUL terminator
+    apic.extend_from_slice(&jpeg_bytes);
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(b"APIC");
+    frame.extend_from_slice(&(apic.len() as u32).to_be_bytes()); // major 3: plain big-endian
+    frame.extend_from_slice(&[0, 0]); // flags
+    frame.extend_from_slice(&apic);
+    frame
+}
+
+/// A minimal real DjVu page via djvu-rs's OWN encoder. Hand-assembling a `FORM DJVU`
+/// container with a working IW44/JB2 payload is not realistic by hand (see the module doc
+/// on `djvu::extract`); the crate's own test module already does exactly this for its
+/// `a_page_with_no_background_still_renders` case, so this mirrors that shape rather than
+/// keeping a second, driftable encoder call. A tiny bilevel page keeps the file small.
+fn synthetic_djvu() -> Vec<u8> {
+    let (w, h) = (32u32, 24u32);
+    let mut bitmap = djvu_rs::Bitmap::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            bitmap.set(x, y, (x + y) % 2 == 0);
+        }
+    }
+    djvu_rs::djvu_encode::PageEncoder::from_bitmap(&bitmap)
+        .with_quality(djvu_rs::djvu_encode::EncodeQuality::Lossless)
+        .with_dpi(300)
+        .encode()
+        .unwrap_or_default()
+}
+
+/// An EPUB: `META-INF/container.xml` pointing at an OPF, whose manifest names an EPUB3
+/// `cover-image` item — the cascade's third rung (`item_href_by_marker`). Rootdir
+/// ("OEBPS/") comes from the OPF's own path, matching `epub::extract`'s own join logic.
+fn synthetic_epub() -> Vec<u8> {
+    let container: &[u8] = br#"<?xml version="1.0"?><container><rootfiles>
+        <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+        </rootfiles></container>"#;
+    let opf: &[u8] = br#"<?xml version="1.0"?><package><manifest>
+        <item id="cover-image" href="cover.jpg" properties="cover-image"/>
+        </manifest></package>"#;
+    stored_zip(&[
+        ("mimetype", b"application/epub+zip"),
+        ("META-INF/container.xml", container),
+        ("OEBPS/content.opf", opf),
+        ("OEBPS/cover.jpg", &jpeg(24, 16)),
+    ])
+}
+
+/// A stored (COPY-coder) `.7z` via sevenz-rust2's OWN writer - hand-assembling a real 7z
+/// header block (folders/coders/substreams/CRC) is not realistic by hand, same reasoning as
+/// the DjVu and EPUB seeds above. The writer only exists under the crate's `compress`
+/// feature, which the `[dev-dependencies]` override in Cargo.toml turns on for test builds
+/// only (the shipped `[dependencies]` copy stays decode-only). One tiny JPEG entry is enough
+/// for `sevenz::extract`/`list` to have something real to walk.
+fn synthetic_sevenz() -> Vec<u8> {
+    use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod};
+    let mut bytes = Vec::new();
+    {
+        let mut writer = ArchiveWriter::new(std::io::Cursor::new(&mut bytes)).expect("7z writer");
+        writer.set_encrypt_header(false);
+        writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
+        let img = jpeg(24, 16);
+        writer
+            .push_archive_entry(ArchiveEntry::new_file("cover.jpg"), Some(img.as_slice()))
+            .expect("7z entry");
+        writer.finish().expect("7z finish");
+    }
+    bytes
+}
+
+/// An OOXML Office package (PowerPoint-shaped): `[Content_Types].xml` + a `ppt/` part so
+/// `office::detect` commits to `Kind::Ooxml`, then `docProps/thumbnail.jpeg` for
+/// `ooxml_thumbnail`'s conventional-path fallback (no `_rels/.rels`, so that branch is
+/// exercised too).
+fn synthetic_office_ooxml() -> Vec<u8> {
+    stored_zip(&[
+        ("[Content_Types].xml", b"<Types/>"),
+        ("ppt/presentation.xml", b"<p/>"),
+        ("docProps/thumbnail.jpeg", &jpeg(24, 16)),
+    ])
+}
+
+/// A single ustar entry (one 512-byte header + a tiny image, padded to the next 512-byte
+/// boundary) — the shape `tarfmt::extract` walks. No terminating zero block; the walk
+/// stops cleanly when the buffer runs out.
+fn synthetic_tar_cover() -> Vec<u8> {
+    let img = jpeg(24, 16);
+    let mut header = [0u8; 512];
+    let name = b"page1.jpg";
+    header[0..name.len()].copy_from_slice(name);
+    let size_field = format!("{:o}\0", img.len());
+    header[124..124 + size_field.len()].copy_from_slice(size_field.as_bytes());
+    header[156] = b'0'; // regular file
+    let mut out = Vec::new();
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&img);
+    let pad = img.len().div_ceil(512) * 512 - img.len();
+    out.extend(std::iter::repeat_n(0u8, pad));
+    out
+}
+
 /// Every seed, labelled. Handed to the fuzzer alongside its synthetic MKV/MP4 pair.
 pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     vec![
@@ -1187,6 +1354,13 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("rhino", synthetic_rhino()),
         ("wav", synthetic_wav()),
         ("project", synthetic_project()),
+        ("apev2-item", synthetic_apev2_item()),
+        ("dsf-id3v2-apic", synthetic_id3v2_apic()),
+        ("djvu", synthetic_djvu()),
+        ("epub", synthetic_epub()),
+        ("sevenz", synthetic_sevenz()),
+        ("office-ooxml", synthetic_office_ooxml()),
+        ("tar-cover", synthetic_tar_cover()),
     ]
 }
 
@@ -1317,6 +1491,47 @@ mod tests {
                 "project krita mimetype preview"
             );
         }
+        assert!(
+            audio::ape_fuzzapi::cover_from_items_result(&by("apev2-item"), 1).is_some(),
+            "apev2 cover item"
+        );
+        assert!(
+            audio::id3_fuzzapi::front_cover_result(&by("dsf-id3v2-apic")).is_some(),
+            "dsf/id3v2 APIC front cover"
+        );
+        assert!(
+            djvu::extract(&by("djvu")).is_some(),
+            "djvu bilevel page render"
+        );
+        {
+            let bytes = by("epub");
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip seed");
+            assert!(epub::extract(&mut zip).is_some(), "epub cover-image item");
+        }
+        assert!(
+            sevenz::extract(&by("sevenz")).is_some(),
+            "7z stored-entry cover decode"
+        );
+        assert_eq!(
+            sevenz::list(&by("sevenz"), 8).map(|v| v.len()),
+            Some(1),
+            "7z metadata listing"
+        );
+        {
+            let bytes = by("office-ooxml");
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip seed");
+            let kind = office::detect(&mut zip).expect("ooxml package detected");
+            assert!(
+                office::extract(&mut zip, kind).is_some(),
+                "office docProps thumbnail"
+            );
+        }
+        assert!(
+            tarfmt::extract(&by("tar-cover")).is_some(),
+            "tar cover entry"
+        );
     }
 
     /// The dispatcher has to route them too — that is the path the shell actually takes, and a
@@ -1333,6 +1548,7 @@ mod tests {
         for name in [
             "psd", "ilbm", "cdr", "icns", "pdn", "psp", "c4d", "max", "fb2", "gcode", "affinity",
             "indd", "mobi", "blend", "dwg", "apk", "xapk", "xcf", "skp", "rhino", "project",
+            "sevenz",
         ] {
             let bytes = seeds()
                 .into_iter()

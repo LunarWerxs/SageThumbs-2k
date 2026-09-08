@@ -3,18 +3,18 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject, LineTo, MoveToEx, SelectObject,
-    SetBkMode, SetDCBrushColor, SetTextColor, DC_BRUSH, DRAW_TEXT_FORMAT, DT_CENTER,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
-    HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateSolidBrush,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetStockObject, LineTo,
+    MoveToEx, SelectObject, SetBkMode, SetDCBrushColor, SetTextColor, DC_BRUSH, DRAW_TEXT_FORMAT,
+    DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HBRUSH,
+    HDC, HFONT, HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self};
 use super::selection::sel_range;
-use super::toolbar::button_rects;
-use super::transport::{draw_scrub_strip, scrub_rect, video_rect};
+use super::toolbar::{button_rects, live_focus, FocusTarget};
+use super::transport::{draw_scrub_strip, scrub_rect, video_rect, TBTNS};
 use super::window::{
     clamp_text_scroll, state, text_scrollbar, Btn, ContentKind, ViewerState, BTNS, CAPTION_H, PAD,
 };
@@ -474,7 +474,11 @@ unsafe fn paint_content_video(hwnd: HWND, hdc: HDC, st: &ViewerState, text: u32,
         None => fill(hdc, &vr, 0x0000_0000),
     }
     if let Some(v) = st.video.borrow().as_ref() {
-        draw_scrub_strip(hwnd, hdc, &scrub_rect(hwnd), v, text, subtle);
+        let focus_tb = match live_focus(st.focus.get(), st.focus_gen.get(), st.decode_gen.get()) {
+            Some(FocusTarget::Transport(i)) => TBTNS.get(i).copied(),
+            _ => None,
+        };
+        draw_scrub_strip(hwnd, hdc, &scrub_rect(hwnd), v, text, subtle, focus_tb);
     }
 }
 
@@ -593,7 +597,11 @@ unsafe fn paint_caption_title(
 /// whole toolbar (crisp ClearType native glyphs, like the screenshot tool).
 unsafe fn paint_caption_toolbar(hwnd: HWND, hdc: HDC, st: &ViewerState, buttons: &[(Btn, RECT)]) {
     let icon = icon_font(hwnd);
-    for (b, r) in buttons.iter() {
+    let focus_i = match live_focus(st.focus.get(), st.focus_gen.get(), st.decode_gen.get()) {
+        Some(FocusTarget::Caption(i)) => Some(i),
+        _ => None,
+    };
+    for (idx, (b, r)) in buttons.iter().enumerate() {
         let hot = st.hot.get() == BTNS.iter().position(|&bb| bb == *b);
         draw_button(
             hwnd,
@@ -606,8 +614,28 @@ unsafe fn paint_caption_toolbar(hwnd: HWND, hdc: HDC, st: &ViewerState, buttons:
             st.src_view.get(),
             icon,
         );
+        if focus_i == Some(idx) {
+            draw_toolbar_focus_ring(hwnd, hdc, r);
+        }
     }
     let _ = DeleteObject(icon.into());
+}
+
+/// Keyboard-focus ring for one caption toolbar button: a 1px accent frame drawn just inside the
+/// button's hover-pill rect (same inset [`draw_button`] uses for the hover pill itself), so
+/// focus reads as an outline around that pill rather than a second hover state, and never
+/// overlaps a neighbouring button.
+unsafe fn draw_toolbar_focus_ring(hwnd: HWND, hdc: HDC, r: &RECT) {
+    let pad = crate::win::dpi_scale(hwnd, 3);
+    let pr = RECT {
+        left: r.left + pad,
+        top: r.top + pad,
+        right: r.right - pad,
+        bottom: r.bottom - pad,
+    };
+    let b = CreateSolidBrush(COLORREF(crate::dark::ACCENT().0));
+    FrameRect(hdc, &pr, b);
+    let _ = DeleteObject(b.into());
 }
 
 thread_local! {
@@ -923,6 +951,7 @@ pub(super) fn btn_glyph(btn: Btn, pinned: bool) -> u16 {
         Btn::Upload => 0xE898,   // Upload (up-arrow to line)
         Btn::Open => 0xE8A7,     // OpenInNewWindow
         Btn::OpenWith => 0xE7AC, // OpenWith
+        Btn::Print => 0xE749,    // Print
         Btn::Close => 0xE711,    // Cancel (X)
     }
 }

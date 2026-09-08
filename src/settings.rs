@@ -407,10 +407,10 @@ mod store {
         let mut doc = match load() {
             Ok(d) => d,
             Err(e) => {
-                crate::safety::log_debug(&format!(
+                crate::safety::log_debugf!(
                     "portable ini: aborting write, could not read the existing file at {}: {e}",
                     path.display()
-                ));
+                );
                 return Err(e);
             }
         };
