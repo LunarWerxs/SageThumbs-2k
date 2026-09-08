@@ -7,10 +7,10 @@
 # checks read the ARM64 DLLs' import tables rather than running them. So a bundled ARM64
 # ImageMagick that loads on nobody's machine would pass every existing gate and reach users.
 #
-# This closes that by downloading the release asset itself and running it. It verifies AFTER
-# publish rather than gating it, which is the trade for not cross-building a 22 MB engine
-# payload inside CI; a failure here means "pull or fix that asset", and finding out at all is
-# the improvement.
+# This closes that by downloading the release asset itself and running it. Since 2026-09-08
+# it is also a GATE: release.ps1 dispatches it against the DRAFT release at step [5a/6] and
+# publishes only on green, so a broken ARM64 payload never becomes downloadable. The
+# `release: published` trigger stays as the record for anything published another way.
 name: ARM64 portable verify
 
 on:
@@ -24,7 +24,9 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # write, not read: a DRAFT release (the pre-publish gate case) is only visible to a token
+  # with push access. Nothing here writes; the download below is a plain asset GET.
+  contents: write
 
 jobs:
   verify:
@@ -54,7 +56,7 @@ jobs:
           Write-Host "PROCESSOR_ARCHITECTURE = $arch"
           if ($arch -ne 'ARM64') { throw "expected ARM64 host, got '$arch'" }
 
-      - name: Download the published ARM64 portable zip
+      - name: Download the ARM64 portable zip (draft or published release)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,9 +64,22 @@ jobs:
           $tag = '${{ steps.tag.outputs.tag }}'
           $ver = $tag.TrimStart('v')
           $asset = "SageThumbs2K-Portable-$ver-arm64.zip"
-          gh release download $tag --repo '${{ github.repository }}' --pattern $asset --dir "$env:RUNNER_TEMP"
-          if ($LASTEXITCODE -ne 0) { throw "could not download $asset from $tag" }
+          $repo = '${{ github.repository }}'
+          # Not `gh release download <tag>`: that resolves through /releases/tags/, which never
+          # returns a DRAFT, and the pre-publish gate runs against exactly that. List the
+          # releases (drafts included for a push-access token) and fetch the asset by id.
+          $assetId = gh api "repos/$repo/releases?per_page=30" `
+            --jq ".[] | select(.tag_name == `"$tag`") | .assets[] | select(.name == `"$asset`") | .id" 2>&1
+          if ($LASTEXITCODE -ne 0 -or -not "$assetId".Trim()) { throw "no asset $asset on release $tag (draft or published): $assetId" }
+          $assetId = ("$assetId" -split "`n")[0].Trim()
           $zip = Join-Path $env:RUNNER_TEMP $asset
+          # Invoke-WebRequest, not `gh api ... > file`: a pwsh redirection re-encodes the bytes
+          # as text. pwsh 7 drops the Authorization header on the cross-host redirect to the
+          # asset CDN, which is what that CDN requires.
+          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$assetId" `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'X-GitHub-Api-Version' = '2022-11-28' } `
+            -OutFile $zip -MaximumRedirection 5
+          if (-not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1MB) { throw "could not download asset $assetId ($asset) from $tag" }
           "zip=$zip" >> $env:GITHUB_ENV
           Write-Host ("downloaded {0:N2} MB" -f ((Get-Item $zip).Length / 1MB))
 

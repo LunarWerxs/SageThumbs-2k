@@ -17,7 +17,14 @@
   ignored installer, stage, and provenance manifest are all re-hashed before use.
 #>
 [CmdletBinding()]
-param([switch]$SkipBuild)
+param(
+    [switch]$SkipBuild,
+    # Publish without waiting for the ARM64 portable zip to run on real ARM64 silicon
+    # (step [5a/6]). Only for a release with no ARM64 artifact of its own to prove, or when
+    # the windows-11-arm runner pool is down; the outcome line says OVERRIDDEN so the record
+    # shows the gate was not run.
+    [switch]$SkipArm64Gate
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
@@ -564,6 +571,48 @@ try {
             throw "uploaded digest mismatch for $($asset.Name) (local $localDigest, GitHub $remoteDigest); $tag remains a draft"
         }
     }
+    # ---- [5a/6] the ARM64 payload on real ARM64 silicon, BEFORE anyone can download it ----
+    # `arm64-portable-verify.yml` runs the portable zip (our binaries, the bundled ARM64
+    # ImageMagick, the out-of-process decoders) on a windows-11-arm runner. It used to trigger
+    # only on `release: published`, i.e. after users could already have the file (queue item
+    # G35): a wrong-architecture DLL or a magick bundle that loads on nobody's machine passed
+    # every static packaging check and reached the public release before the one job that runs
+    # it ever started. Dispatching it here against the DRAFT (the workflow resolves draft
+    # releases through the API, which is why it carries `contents: write`) and waiting for green
+    # turns it into a gate: a failure leaves $tag a draft, nothing public. Same polling shape as
+    # the CI wait at [3/6]; no `gh run watch` (headless TTY trap, see there).
+    Write-Host "[5a/6] ARM64 portable zip on real ARM64 silicon (gate)" -ForegroundColor Green
+    $armArtifact = $releaseArtifacts | Where-Object Architecture -eq 'arm64' | Select-Object -First 1
+    if (-not $armArtifact) {
+        Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'ARM64 silicon verify' -Reason 'this release ships no ARM64 artifact'
+    } elseif ($SkipArm64Gate) {
+        Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'ARM64 silicon verify' -Reason (
+            "-SkipArm64Gate flag: $($armArtifact.Portable.Name) was NOT run on ARM64 silicon before publishing; " +
+            'the post-publish run of arm64-portable-verify.yml is the only proof it works')
+    } else {
+        $dispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
+        gh workflow run 'arm64-portable-verify.yml' -f "tag=$tag"
+        if ($LASTEXITCODE) { throw "could not dispatch arm64-portable-verify.yml for $tag; $tag remains a draft" }
+        $armRunId = $null
+        for ($i = 0; $i -lt 40 -and -not $armRunId; $i++) {
+            Start-Sleep -Seconds 6
+            $armRunId = (gh run list --workflow 'arm64-portable-verify.yml' --event workflow_dispatch --limit 10 `
+                    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$dispatchedAt`")][0].databaseId" 2>$null)
+        }
+        if (-not $armRunId) { throw "arm64-portable-verify.yml was dispatched for $tag but no run appeared in 4 min; $tag remains a draft" }
+        Write-Host "      run $armRunId found - waiting for the ARM64 runner..." -ForegroundColor Green
+        $armStatus = ''
+        for ($i = 0; $i -lt 160 -and ($armStatus -eq '' -or $armStatus -eq 'queued' -or $armStatus -eq 'in_progress'); $i++) {
+            Start-Sleep -Seconds 15
+            $armStatus = (gh run view $armRunId --json status --jq .status 2>$null)
+        }
+        $armConcl = (gh run view $armRunId --json conclusion --jq .conclusion 2>$null)
+        if ($armConcl -ne 'success') {
+            throw "the ARM64 portable zip failed on real ARM64 silicon (run $armRunId finished '$armConcl'); $tag remains a draft - pull the artifact apart before anyone downloads it"
+        }
+        Write-ReleaseStageOutcome -Outcome 'PASSED' -Stage 'ARM64 silicon verify' -Reason "$($armArtifact.Portable.Name) ran on windows-11-arm (run $armRunId)"
+    }
+
     gh release edit $tag --draft=false
     if ($LASTEXITCODE) { throw "draft verified but publication failed; $tag remains a draft" }
 
