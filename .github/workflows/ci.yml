@@ -346,9 +346,13 @@ jobs:
           Copy-Item (Join-Path $target 'SageThumbs2K.exe') $drop
           # Take the marker filename from the Rust const; a literal here could drift, and the
           # failure mode is silent (no marker found means it quietly uses HKCU and passes).
-          $iniName = [regex]::Match((Get-Content ./src/settings.rs -Raw),
+          # The settings module is a hub plus children (src/settings.rs + src/settings/*.rs since
+          # 2026-09-08; INI_NAME lives in store.rs). Scan all of them so a later move cannot turn
+          # this proof into a false red the way the split did.
+          $settingsSrc = @(Get-Content ./src/settings.rs -Raw) + @(Get-ChildItem ./src/settings -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })
+          $iniName = [regex]::Match(($settingsSrc -join "`n"),
             '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"').Groups[1].Value
-          if (-not $iniName) { throw 'Could not read INI_NAME from src/settings.rs' }
+          if (-not $iniName) { throw 'Could not read INI_NAME from src/settings.rs or src/settings/*.rs' }
           # Values no default would ever produce, so a match cannot be a coincidence.
           Set-Content (Join-Path $drop $iniName) -Value @('[Settings]', 'Width=137', 'Height=137', 'MaxSize=42')
 

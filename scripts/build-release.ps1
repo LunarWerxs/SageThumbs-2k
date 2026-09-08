@@ -738,7 +738,9 @@ if ($Portable) {
     # doing the one thing it promised not to. So take the name from the Rust const rather than
     # trusting a literal here to stay in sync with it.
     $iniConst = [regex]::Match(
-        (Get-Content "$root\src\settings.rs" -Raw),
+        # The hub plus its children (src/settings/*.rs; INI_NAME lives in store.rs since the
+        # 2026-09-08 split, and this read went red the day it moved).
+        ((@(Get-Content "$root\src\settings.rs" -Raw) + @(Get-ChildItem "$root\src\settings" -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })) -join "`n"),
         '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"'
     )
     if (-not $iniConst.Success) {
