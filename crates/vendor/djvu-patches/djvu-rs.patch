@@ -23,7 +23,25 @@ diff -ruN pristine/djvu-rs/src/djvu_render.rs patched/djvu-rs/src/djvu_render.rs
 diff -ruN pristine/djvu-rs/Cargo.toml patched/djvu-rs/Cargo.toml
 --- pristine/djvu-rs/Cargo.toml
 +++ patched/djvu-rs/Cargo.toml
-@@ -741,3 +741,8 @@
+@@ -161,10 +161,13 @@
+ 
+ [lib]
+ name = "djvu_rs"
+-crate-type = [
+-    "cdylib",
+-    "rlib",
+-]
++# SageThumbs 2K vendoring: upstream also declares "cdylib". A PATH crate that is both
++# cdylib and rlib is exactly the cargo#6313 shape this workspace already removed from its
++# own crates: on Windows cargo drops the metadata hash from a local cdylib's outputs, so
++# the two units `cargo test --release --lib --tests` needs (panic=abort for the bins,
++# panic=unwind for the test harnesses) overwrite each other's djvu_rs.dll/.pdb/.rlib and
++# the dependents fail with E0463. We only ever link the rlib.
++crate-type = ["rlib"]
+ path = "src/lib.rs"
+ 
+ [[bin]]
+@@ -741,3 +744,8 @@
  [profile.release]
  lto = "fat"
  codegen-units = 1

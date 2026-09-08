@@ -971,3 +971,23 @@ apply. So: write vendor patches in the `diff -ruN pristine/<crate>/... patched/<
 form, never from `git diff`, and treat `Skipped patch` in the output as a failure even when
 the exit code is 0 (`vendor-djvu.ps1` does; the older scripts trust the exit code).
 
+
+## A vendored PATH crate that is cdylib+rlib brings cargo#6313 back
+
+Found 2026-09-08, the day after `djvu-rs` was vendored. Upstream's `Cargo.toml` declares
+`crate-type = ["cdylib", "rlib"]`. As a crates.io dependency that is harmless: cargo hashes
+every output name. As a PATH dependency it is the collision this workspace removed from its
+own crates on 2026-06-20 (see `[lib]` in `Cargo.toml`): on Windows cargo drops the metadata
+hash from a LOCAL cdylib's outputs so the `.pdb` name stays stable, and
+`cargo test --release --lib --tests` needs the crate twice (panic=abort for the bins the
+integration tests spawn, panic=unwind for the test harnesses). The two units then wrote the
+same `djvu_rs.dll` / `.pdb` / `libdjvu_rs.rlib`, cargo warned "output filename collision",
+and the dependents failed with `E0463: can't find crate for sagethumbs2k_core`, which names
+the wrong crate and sent the first diagnosis after the workspace's own rlib. The pre-push
+preflight is the only step that builds that exact graph, so `verify.ps1` stayed green while
+every push was refused.
+
+The fix lives in the vendor PATCH (`crates/vendor/djvu-patches/djvu-rs.patch`): trim the
+vendored crate to `crate-type = ["rlib"]`. We only ever link the rlib; the cdylib was 650 KB
+of wasted link per build even when it did not collide. When vendoring any crate, read its
+`[lib]` first and trim `cdylib`/`dylib` in the patch; do not wait for the collision.

@@ -30,6 +30,18 @@ well-formed file (where `mask.width == page_w` already holds, per the fast path'
 invariant) - only the out-of-bounds case is affected, and it now degrades to reading the
 mask's last real column instead of panicking.
 
+Two `Cargo.toml` hunks ride along, both vendoring mechanics rather than fixes:
+
+- `crate-type = ["rlib"]` instead of upstream's `["cdylib", "rlib"]`. A path crate that is
+  both is the cargo#6313 output-name collision this workspace already removed from its own
+  crates: on Windows cargo drops the metadata hash from a local cdylib's outputs, and
+  `cargo test --release --lib --tests` builds the crate twice (panic=abort for the bins,
+  panic=unwind for the test harnesses), so the two units overwrote each other's
+  `djvu_rs.dll` / `.pdb` / `libdjvu_rs.rlib` and the dependents failed with `E0463`. We only
+  link the rlib. (DEVELOPMENT_GOTCHAS: "A vendored PATH crate that is cdylib+rlib".)
+- `[package.metadata.cargo-machete] ignored = ["flate2", "wide"]`: upstream declares both and
+  references neither, and our cargo-machete gate scans vendored trees.
+
 ## Maintaining it
 
 **The patch file is the source of truth. The vendored copy is GENERATED.** Do not edit

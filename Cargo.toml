@@ -37,7 +37,10 @@ jxl-oxide = { path = "crates/vendor/jxl-oxide" }
 # clamped the source column to the page width only, then indexed the (narrower) mask row -
 # `index out of bounds` inside Explorer's thumbnail host, which runs `panic = "abort"`. The
 # vendored crate is the exact crates.io 0.27.0 source plus the documented patch in
-# crates/vendor/djvu-patches/README.md. Remove this override after upstream ships the fix.
+# crates/vendor/djvu-patches/README.md. The same patch trims upstream's `crate-type` to
+# rlib-only: a PATH crate that is cdylib+rlib is the cargo#6313 collision (see `[lib]` below),
+# and it broke `cargo test --release --lib --tests` with E0463 the day this landed.
+# Remove this override after upstream ships the fix.
 djvu-rs = { path = "crates/vendor/djvu-rs" }
 
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
