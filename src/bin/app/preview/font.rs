@@ -148,10 +148,8 @@ fn read_name_record(bytes: &[u8], str_base: usize, r: usize) -> NameRecordOutcom
         return NameRecordOutcome::Malformed;
     };
     let s = if plat == 3 || plat == 0 {
-        let u16s: Vec<u16> = data
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
+        let (chunks, _) = data.as_chunks::<2>();
+        let u16s: Vec<u16> = chunks.iter().map(|c| u16::from_be_bytes(*c)).collect();
         String::from_utf16_lossy(&u16s)
     } else {
         String::from_utf8_lossy(data).into_owned()

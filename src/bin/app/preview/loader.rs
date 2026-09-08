@@ -975,17 +975,13 @@ fn file_uri(path: &str) -> String {
 #[cfg(feature = "html-preview")]
 fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        let units: Vec<u16> = rest
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let (chunks, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
         return String::from_utf16(&units).ok();
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let units: Vec<u16> = rest
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
+        let (chunks, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = chunks.iter().map(|c| u16::from_be_bytes(*c)).collect();
         return String::from_utf16(&units).ok();
     }
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes); // UTF-8 BOM

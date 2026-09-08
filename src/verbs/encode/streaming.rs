@@ -194,7 +194,8 @@ pub(super) fn encode_farbfeld_streaming<W: Write>(
         for x in 0..img.width() {
             let channels = rgba_u16_at(img, x, y);
             let mut bytes = [0u8; 8];
-            for (slot, channel) in bytes.chunks_exact_mut(2).zip(channels) {
+            let (chunks, _) = bytes.as_chunks_mut::<2>();
+            for (slot, channel) in chunks.iter_mut().zip(channels) {
                 slot.copy_from_slice(&channel.to_be_bytes());
             }
             writer.write_all(&bytes)?;

@@ -295,19 +295,22 @@ fn accumulate_line(
     };
     match sample_type {
         SampleType::F16 => {
-            for (i, b) in bytes.chunks_exact(2).enumerate() {
+            let (chunks, _) = bytes.as_chunks::<2>();
+            for (i, b) in chunks.iter().enumerate() {
                 add(i, f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32());
             }
         }
         SampleType::F32 => {
-            for (i, b) in bytes.chunks_exact(4).enumerate() {
+            let (chunks, _) = bytes.as_chunks::<4>();
+            for (i, b) in chunks.iter().enumerate() {
                 add(i, f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
             }
         }
         // UINT channels are ID/object passes rather than colour, but showing their
         // magnitude beats showing nothing.
         SampleType::U32 => {
-            for (i, b) in bytes.chunks_exact(4).enumerate() {
+            let (chunks, _) = bytes.as_chunks::<4>();
+            for (i, b) in chunks.iter().enumerate() {
                 add(i, u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32);
             }
         }

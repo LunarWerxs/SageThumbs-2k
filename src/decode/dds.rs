@@ -1287,7 +1287,8 @@ fn write_channels(out: &mut [u8], i: usize, n: usize, c0: u8, c1: u8, c2: u8, c3
 fn apply_alpha_mode(out: &mut [u8], mode: u32) {
     match mode {
         ALPHA_MODE_PREMULTIPLIED => {
-            for px in out.chunks_exact_mut(4) {
+            let (chunks, _) = out.as_chunks_mut::<4>();
+            for px in chunks {
                 let a = px[3];
                 if a > 0 && a < 255 {
                     for c in &mut px[..3] {
@@ -1297,7 +1298,8 @@ fn apply_alpha_mode(out: &mut [u8], mode: u32) {
             }
         }
         ALPHA_MODE_OPAQUE => {
-            for px in out.chunks_exact_mut(4) {
+            let (chunks, _) = out.as_chunks_mut::<4>();
+            for px in chunks {
                 px[3] = 255;
             }
         }

@@ -146,7 +146,7 @@ pub fn is_video_magic(head: &[u8]) -> bool {
         if head.len() >= 16 {
             let box_end = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
             let end = box_end.clamp(16, head.len());
-            if head[16..end].chunks_exact(4).any(is_still) {
+            if head[16..end].as_chunks::<4>().0.iter().any(|b| is_still(b)) {
                 return false;
             }
         }
@@ -887,7 +887,9 @@ fn is_near_black(rgba: &[u8]) -> bool {
         return false; // nothing to judge — don't call an unusable buffer black and skip it
     }
     !rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|px| px[0] > BLACK_LEVEL || px[1] > BLACK_LEVEL || px[2] > BLACK_LEVEL)
 }
 

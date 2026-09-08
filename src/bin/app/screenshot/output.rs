@@ -36,7 +36,9 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
 /// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).
 fn to_rgba(top_down_bgra: &[u8], w: i32, h: i32) -> Option<image::RgbaImage> {
     let mut rgba = vec![0u8; top_down_bgra.len()];
-    for (dst, src) in rgba.chunks_exact_mut(4).zip(top_down_bgra.chunks_exact(4)) {
+    let (dst_chunks, _) = rgba.as_chunks_mut::<4>();
+    let (src_chunks, _) = top_down_bgra.as_chunks::<4>();
+    for (dst, src) in dst_chunks.iter_mut().zip(src_chunks.iter()) {
         dst[0] = src[2];
         dst[1] = src[1];
         dst[2] = src[0];

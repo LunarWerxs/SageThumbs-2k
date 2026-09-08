@@ -48,13 +48,16 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
     if is_fully_transparent(&decoded.rgba) {
         if decoded
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
         {
             crate::safety::log_debug(
                 "decode: all-transparent but has RGB content — forcing opaque",
             );
-            for px in decoded.rgba.chunks_exact_mut(4) {
+            let (chunks, _) = decoded.rgba.as_chunks_mut::<4>();
+            for px in chunks {
                 px[3] = 255;
             }
         } else {
@@ -170,7 +173,7 @@ fn psd_composite_wanted(bytes: &[u8], cx: u32) -> bool {
 
 /// True when every pixel is fully transparent (alpha 0) — i.e. nothing visible.
 pub(super) fn is_fully_transparent(rgba: &[u8]) -> bool {
-    !rgba.is_empty() && rgba.chunks_exact(4).all(|px| px[3] == 0)
+    !rgba.is_empty() && rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0)
 }
 
 /// Sources at or below this size (longest edge) are treated as pixel-art / icons and

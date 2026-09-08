@@ -473,8 +473,10 @@ fn decode_utf16_entry(b: &[u8], at: usize) -> Option<String> {
     // The slice above already bounds `units` by the chunk length, so this collect
     // cannot allocate more than the file itself provided.
     let utf16: Vec<u16> = raw
-        .chunks_exact(2)
-        .filter_map(|c| c.try_into().ok().map(u16::from_le_bytes))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     Some(String::from_utf16_lossy(&utf16))
 }

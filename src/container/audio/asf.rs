@@ -305,7 +305,9 @@ pub(super) fn name_eq(name: &[u8], want: &[u8]) -> bool {
 /// if empty after trimming.
 fn utf16_string(bytes: &[u8]) -> Option<String> {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     let s = String::from_utf16_lossy(&units);

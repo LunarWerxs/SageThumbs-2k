@@ -253,7 +253,7 @@ fn validate_cmap(cmap: Option<&[u8]>, npc: usize) -> Result<(), Jp2Error> {
     if cm.len() % 4 != 0 || cm.is_empty() {
         return Err(Jp2Error::Malformed("cmap length"));
     }
-    for (i, ch) in cm.chunks_exact(4).enumerate() {
+    for (i, ch) in cm.as_chunks::<4>().0.iter().enumerate() {
         let cmp = u16::from_be_bytes([ch[0], ch[1]]);
         let (mtyp, pcol) = (ch[2], ch[3]);
         if cmp != 0 || mtyp != 1 || pcol as usize != (if npc == 1 { 0 } else { i }) {

@@ -518,7 +518,8 @@ fn mesh_bounds(tris: &[[f32; 9]], view: &MeshView) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for t in tris {
-        for v in t.chunks_exact(3) {
+        let (chunks, _) = t.as_chunks::<3>();
+        for v in chunks {
             let p = view.project([v[0], v[1], v[2]]);
             for a in 0..3 {
                 min[a] = min[a].min(p[a]);
@@ -573,7 +574,9 @@ fn rasterize_triangle(
     shade: &mut [u8],
 ) -> u64 {
     let p: Vec<[f32; 3]> = t
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|v| view.project([v[0], v[1], v[2]]))
         .collect();
     // Screen coords (y flipped: +y up in view space, down in the image).
@@ -840,7 +843,8 @@ mod tests {
         let mut s = String::from("solid cube\n");
         for t in parse_binary_stl(&cube_stl()).unwrap() {
             s.push_str("facet normal 0 0 0\nouter loop\n");
-            for v in t.chunks_exact(3) {
+            let (chunks, _) = t.as_chunks::<3>();
+            for v in chunks {
                 s.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
             }
             s.push_str("endloop\nendfacet\n");

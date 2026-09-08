@@ -78,7 +78,12 @@ fn parse_chunks(bytes: &[u8]) -> Option<IlbmChunks<'_>> {
                 });
             }
             b"CMAP" => {
-                cmap = data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                cmap = data
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
             }
             b"CAMG" if data.len() >= 4 => {
                 camg = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
@@ -384,9 +389,13 @@ fn parse_sham(chunk: Option<&[u8]>) -> Vec<Vec<[u8; 3]>> {
     let Some(data) = chunk else { return Vec::new() };
     data.get(2..)
         .unwrap_or(&[])
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .map(|line| {
-            line.chunks_exact(2)
+            line.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     let v = u16::from_be_bytes([c[0], c[1]]);
                     let (r, g, b) = (

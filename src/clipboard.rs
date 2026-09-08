@@ -131,7 +131,9 @@ mod tests {
     fn round_trip(text: &str) -> String {
         let bytes = utf16_nul_bytes(text);
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         assert_eq!(units.last(), Some(&0), "payload must be NUL-terminated");

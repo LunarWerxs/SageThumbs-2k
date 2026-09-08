@@ -114,7 +114,8 @@ fn build_dib(w: i32, h: i32, rgba: &[u8]) -> Vec<u8> {
     // Pixels: bottom-up, RGBA -> BGRA. Walk source rows in reverse (last to
     // first) and swap R/B per pixel.
     for src in rgba.chunks_exact(row).rev() {
-        for px in src.chunks_exact(4) {
+        let (chunks, _) = src.as_chunks::<4>();
+        for px in chunks {
             dib.push(px[2]); // B
             dib.push(px[1]); // G
             dib.push(px[0]); // R

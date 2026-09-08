@@ -158,7 +158,8 @@ fn find_directory_entries(
     }
     let mut targets: Vec<(u32, u64)> = Vec::new();
     let mut root: Option<(u32, u64)> = None;
-    for e in dir.chunks_exact(128) {
+    let (dir_chunks, _) = dir.as_chunks::<128>();
+    for e in dir_chunks {
         let etype = e[66];
         if etype != 1 && etype != 2 && etype != 5 {
             continue; // unused/free

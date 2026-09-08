@@ -114,7 +114,8 @@ mod tests {
         let (w, h) = (64u32, 64u32);
         // Half-alpha black over the top-left (LIGHT) cell -> mid grey, and opaque.
         let mut px = vec![0u8; (w * h * 4) as usize];
-        for p in px.chunks_exact_mut(4) {
+        let (chunks, _) = px.as_chunks_mut::<4>();
+        for p in chunks {
             p[3] = 128;
         }
         compose_under(&mut px, w, h);

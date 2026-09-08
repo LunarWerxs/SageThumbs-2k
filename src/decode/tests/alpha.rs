@@ -30,11 +30,15 @@ fn a_zeroed_alpha_png_is_shown_opaque_not_rejected() {
     let d = decode_thumbnail_opts(&hidden, 256, false)
         .expect("a zeroed-alpha PNG with real colour must still produce a thumbnail");
     assert!(
-        d.rgba.chunks_exact(4).all(|px| px[3] == 255),
+        d.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255),
         "it must come back fully opaque, or the shell composites it away to nothing"
     );
     assert!(
-        d.rgba.chunks_exact(4).any(|px| px[0] != 0 || px[1] != 0),
+        d.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| px[0] != 0 || px[1] != 0),
         "and it must still carry the picture that was hidden under the zeroed alpha"
     );
 }
@@ -86,7 +90,7 @@ fn zero_alpha_exr_thumbnails_end_to_end() {
         .unwrap();
     let out = decode_thumbnail_opts(&exr, 64, false)
         .expect("zero-alpha EXR must thumbnail, not be rejected as blank");
-    assert!(out.rgba.chunks_exact(4).any(|px| px[3] != 0));
+    assert!(out.rgba.as_chunks::<4>().0.iter().any(|px| px[3] != 0));
 }
 
 #[test]

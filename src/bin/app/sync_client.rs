@@ -1186,14 +1186,23 @@ mod tests {
 
     // ---- the classification guard ------------------------------------------------------
 
-    /// `settings.rs` verbatim, embedded at COMPILE time.
+    /// The settings module's source, verbatim, embedded at COMPILE time: the hub and its three
+    /// children (`settings.rs` was split into `settings/{store,thumbs,app_prefs}.rs` on
+    /// 2026-09-08, and `the_scan_actually_finds_settings` went red the moment the scan still
+    /// read only the hub, which is exactly the rot that test exists to catch; a new child
+    /// module must be listed here or its keys are invisible to `every_setting_is_classified`).
     ///
-    /// Reading it from disk at runtime would make this test depend on the working directory,
+    /// Reading from disk at runtime would make this test depend on the working directory,
     /// which differs between `cargo test`, the CI job and a packaged run. `include_str!` resolves
-    /// relative to THIS file, so the path is checked by the compiler and cannot silently miss.
-    const SETTINGS_SRC: &str = include_str!("../../settings.rs");
+    /// relative to THIS file, so each path is checked by the compiler and cannot silently miss.
+    const SETTINGS_SRC: &[&str] = &[
+        include_str!("../../settings.rs"),
+        include_str!("../../settings/store.rs"),
+        include_str!("../../settings/thumbs.rs"),
+        include_str!("../../settings/app_prefs.rs"),
+    ];
 
-    /// Every setting name `settings.rs` reads or writes.
+    /// Every setting name the settings module reads or writes.
     ///
     /// Deliberately a dumb scan for `…("Name"` after one of the registry accessors, rather than
     /// anything clever: a clever matcher that stops matching is indistinguishable from a repo
@@ -1210,8 +1219,11 @@ mod tests {
             "set_string(",
         ];
         let mut names = Vec::new();
-        for accessor in ACCESSORS {
-            let mut rest = SETTINGS_SRC;
+        for (accessor, src) in ACCESSORS
+            .iter()
+            .flat_map(|a| SETTINGS_SRC.iter().map(move |s| (a, *s)))
+        {
+            let mut rest = src;
             while let Some(at) = rest.find(accessor) {
                 rest = &rest[at + accessor.len()..];
                 let trimmed = rest.trim_start();
@@ -1263,7 +1275,7 @@ mod tests {
         for expected in ["EnableThumbs", "ShotSaveDir", "PreviewEnabled", "Lang"] {
             assert!(
                 found.iter().any(|k| k == expected),
-                "the scan missed {expected}, so it is no longer reading settings.rs correctly"
+                "the scan missed {expected}, so it is no longer reading the settings sources correctly"
             );
         }
     }

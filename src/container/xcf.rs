@@ -199,7 +199,12 @@ fn parse_image_properties(r: &mut Rd) -> Option<(u8, Vec<[u8; 3]>)> {
                 let n =
                     u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 let rgb = payload.get(4..4 + n.saturating_mul(3))?;
-                colormap = rgb.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                colormap = rgb
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
             }
             _ => {} // resolution, guides, parasites, etc. — irrelevant to the pixels
         }

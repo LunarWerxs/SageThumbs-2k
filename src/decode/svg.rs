@@ -154,7 +154,8 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     // tiny-skia pixels are premultiplied RGBA; un-premultiply so they flow
     // through the same straight-RGBA path as every other decoder.
     let mut buf = pixmap.data().to_vec();
-    for px in buf.chunks_exact_mut(4) {
+    let (chunks, _) = buf.as_chunks_mut::<4>();
+    for px in chunks {
         let a = px[3] as u32;
         if a != 0 && a != 255 {
             let un = |c: u8| (((c as u32) * 255 + a / 2) / a).min(255) as u8;

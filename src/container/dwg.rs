@@ -55,7 +55,8 @@ pub fn preview_prefix_len<R: std::io::Read + std::io::Seek>(r: &mut R) -> Option
     r.read_exact(&mut table).ok()?;
     // The table itself must be covered even if every record is filtered out.
     let mut end = imgptr.checked_add(21)?.checked_add(table.len() as u64)?;
-    for rec in table.chunks_exact(9) {
+    let (table_chunks, _) = table.as_chunks::<9>();
+    for rec in table_chunks {
         let off = u32::from_le_bytes(rec[1..5].try_into().ok()?) as u64;
         let size = u32::from_le_bytes(rec[5..9].try_into().ok()?) as u64;
         // Same filter as `extract`: zero-size and oversized records are skipped

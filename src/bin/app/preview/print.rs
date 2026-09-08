@@ -231,7 +231,9 @@ pub(super) fn rgba_to_bgra_top_down(w: i32, h: i32, rgba: &[u8]) -> Option<Vec<u
         return None;
     }
     let mut out = vec![0u8; want];
-    for (src, dst) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+    let (src_chunks, _) = rgba.as_chunks::<4>();
+    let (dst_chunks, _) = out.as_chunks_mut::<4>();
+    for (src, dst) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
         dst[0] = src[2]; // B
         dst[1] = src[1]; // G
         dst[2] = src[0]; // R

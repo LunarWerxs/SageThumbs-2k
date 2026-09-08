@@ -655,10 +655,8 @@ fn collapse_blank_lines(text: &str) -> String {
 /// (001F = UTF-16LE string, 001E = 8-bit string).
 fn msg_string(bytes: &[u8], prop: &str) -> Option<String> {
     if let Some(s) = ole::read_stream(bytes, &format!("__substg1.0_{prop}001F")) {
-        let utf16: Vec<u16> = s
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let (chunks, _) = s.as_chunks::<2>();
+        let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
         return Some(String::from_utf16_lossy(&utf16));
     }
     ole::read_stream(bytes, &format!("__substg1.0_{prop}001E")).map(|s| cp1252(s.as_slice()))
@@ -677,10 +675,8 @@ fn msg_to_markdown(bytes: &[u8]) -> Option<String> {
         .unwrap_or_default()
         .iter()
         .map(|s| {
-            let utf16: Vec<u16> = s
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
+            let (chunks, _) = s.as_chunks::<2>();
+            let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
             String::from_utf16_lossy(&utf16)
         })
         .collect();
@@ -689,10 +685,8 @@ fn msg_to_markdown(bytes: &[u8]) -> Option<String> {
             .unwrap_or_default()
             .iter()
             .map(|s| {
-                let utf16: Vec<u16> = s
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect();
+                let (chunks, _) = s.as_chunks::<2>();
+                let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
                 String::from_utf16_lossy(&utf16)
             })
             .collect();
@@ -718,7 +712,8 @@ fn msg_to_markdown(bytes: &[u8]) -> Option<String> {
 /// stream: a 32-byte header, then 16-byte records of tag(4) flags(4) value(8).
 fn msg_submit_time(bytes: &[u8]) -> Option<String> {
     let props = ole::read_stream(bytes, "__properties_version1.0")?;
-    for rec in props.get(32..)?.chunks_exact(16) {
+    let (recs, _) = props.get(32..)?.as_chunks::<16>();
+    for rec in recs {
         let tag = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
         if tag == 0x0039_0040 {
             let ft = u64::from_le_bytes(rec[8..16].try_into().ok()?);

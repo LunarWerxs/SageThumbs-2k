@@ -593,7 +593,12 @@ fn ftyp_describes_mini_avif(body: &[u8]) -> bool {
     if body.len() < 8 || !(body.len() - 8).is_multiple_of(4) {
         return false;
     }
-    let has_mif3 = body[..4] == *b"mif3" || body[8..].chunks_exact(4).any(|brand| brand == b"mif3");
+    let has_mif3 = body[..4] == *b"mif3"
+        || body[8..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|brand| brand == b"mif3");
     has_mif3 && body[4..8] == *b"avif"
 }
 
