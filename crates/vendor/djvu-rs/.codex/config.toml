@@ -1,0 +1,8 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_DISABLE_1M_CONTEXT = "1"
+CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING = "1"
+CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1"
+CLAUDE_CODE_SUBAGENT_MODEL = "sonnet"

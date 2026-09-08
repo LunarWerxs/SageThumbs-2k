@@ -488,6 +488,15 @@ jobs:
       - name: vendored jxl tree matches pristine + patches
         shell: pwsh
         run: ./scripts/vendor-jxl.ps1 -Check -RequireReal
+      # Same shape as the jxl pair above, for djvu-rs: once [patch.crates-io] resolves it
+      # from the vendored PATH, cargo never downloads the plain crates.io tarball, so the
+      # fetch step is what gives the -Check step something real to diff against.
+      - name: Fetch pristine djvu-rs source (the vendor-drift check has nothing to diff without it)
+        shell: pwsh
+        run: ./scripts/fetch-pristine-djvu.ps1
+      - name: vendored djvu-rs tree matches pristine + patch
+        shell: pwsh
+        run: ./scripts/vendor-djvu.ps1 -Check -RequireReal
       # Pins that verify.ps1's OWN -Lint script loops call vendor-jxl.ps1 (mutating bare
       # default vs. read-only -Check, see its header) in -Check mode, not folded bare into a
       # generic no-argument loop as it was found to be (2026-09-05 audit, F25) - that used to

@@ -1,0 +1,277 @@
+[workspace]
+members = [".", "djvu-py", "crates/djvu-zp", "crates/djvu-bzz", "crates/djvu-iff", "crates/djvu-bitmap", "crates/djvu-jb2", "crates/djvu-pixmap", "crates/djvu-iw44"]
+exclude = ["fuzz", "tests/no_std_smoke"]
+
+[package]
+name = "djvu-rs"
+version = "0.27.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Read, render, convert, and create DjVu files. Pure-Rust DjVu decoder/encoder with CLI, WebAssembly, and Python bindings. DjVu to PDF, EPUB, TIFF, PNG, and text. MIT licensed, no GPL dependencies."
+repository = "https://github.com/matyushkin/djvu-rs"
+documentation = "https://docs.rs/djvu-rs"
+readme = "README.md"
+keywords = ["djvu", "decoder", "encoder", "pdf", "converter"]
+categories = ["parser-implementations", "multimedia::images", "encoding"]
+publish = true
+exclude = [
+    ".cargo/config.toml",
+    "tests/corpus/*",
+    "tests/golden/*",
+    "tests/fixtures/*",
+    "references/*",
+    "benches/*",
+    "fuzz/*",
+    "scripts/*",
+    "BENCHMARKS_RESULTS.md",
+    "BENCHMARKS.md",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+thiserror = "2"
+wide = "0.7"
+djvu-zp = { version = "0.27.0", path = "crates/djvu-zp", default-features = false }
+djvu-bzz = { version = "0.27.0", path = "crates/djvu-bzz", default-features = false }
+djvu-iff = { version = "0.27.0", path = "crates/djvu-iff", default-features = false }
+djvu-bitmap = { version = "0.27.0", path = "crates/djvu-bitmap", default-features = false }
+djvu-jb2 = { version = "0.27.0", path = "crates/djvu-jb2", default-features = false }
+djvu-pixmap = { version = "0.27.0", path = "crates/djvu-pixmap", default-features = false }
+djvu-iw44 = { version = "0.27.0", path = "crates/djvu-iw44", default-features = false }
+# Used only by the djvu CLI binary.
+clap = { version = "4", features = ["derive"], optional = true }
+png = { version = "0.17", optional = true }
+# `deflate-flate2` + `flate2` only (NOT the `deflate` umbrella): zip 2.x's
+# `deflate` also enables `deflate-zopfli`, dragging zopfli + bumpalo into the
+# build for a compression backend we never select (#509). zip declares flate2
+# without a backend, so we depend on flate2 directly (below) to pick the
+# pure-Rust backend via feature unification.
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
+# Backend selector for zip's deflate (see comment on `zip` above).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+miniz_oxide = { version = "0.8", optional = true }
+zune-jpeg = { version = "0.5", optional = true }
+tiff = { version = "0.9", optional = true }
+jpeg-encoder = { version = "0.6", optional = true }
+tokio = { version = "1", features = ["rt", "macros", "io-util", "sync"], optional = true }
+async-stream = { version = "0.3", optional = true }
+futures-core = { version = "0.3", optional = true }
+rayon = { version = "1", optional = true }
+memmap2 = { version = "0.9", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+image = { version = "0.25", default-features = false, optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+# wasm32 threads only — requires a nightly toolchain + `-Z build-std` with
+# atomics/bulk-memory target features (see WASM_THREADS in PERF_EXPERIMENTS.md).
+# Never pulled in by the default `wasm` feature or any CI-required gate.
+wasm-bindgen-rayon = { version = "1.3", optional = true }
+tesseract = { version = "0.15", optional = true }
+# Dev-only allocation profiling (#600): global allocator for examples/alloc_profile.rs.
+dhat = { version = "0.3", optional = true }
+tract-onnx = { version = "0.21", optional = true }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["std"]
+# Decode-only surface. Writer-side dependencies live with the features that
+# use them (`pdf`, `epub`, `cli`), NOT here — a plain-`std` (decode-only)
+# consumer must not compile zip/zopfli/jpeg-encoder/miniz_oxide (#509).
+# Guarded by scripts/check_feature_hygiene.sh (part of `make check` and CI).
+std = ["dep:png", "dep:zune-jpeg", "djvu-zp/std", "djvu-bzz/std", "djvu-iff/std", "djvu-bitmap/std", "djvu-jb2/std", "djvu-pixmap/std", "djvu-iw44/std"]
+# PDF writer owns its stream-compression deps (#509).
+pdf = ["std", "dep:miniz_oxide", "dep:jpeg-encoder"]
+# The CLI also writes CBZ archives, so it owns zip (+ flate2, see the `zip`
+# dependency comment) alongside the PDF writer it exposes.
+cli = ["pdf", "cbz", "dep:clap", "dep:zip", "dep:flate2"]
+jpeg = ["dep:zune-jpeg"]
+tiff = ["dep:tiff", "std"]
+async = ["dep:tokio", "dep:async-stream", "dep:futures-core", "std"]
+parallel = ["dep:rayon", "std", "djvu-bzz/parallel", "djvu-iw44/parallel", "djvu-jb2/parallel"]
+mmap = ["dep:memmap2", "std"]
+serde = ["dep:serde"]
+image = ["dep:image", "std"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "std"]
+# Lazy Range-based document open for the browser (#588): a JS-supplied
+# `(offset, len) -> Promise<Uint8Array>` reader drives the native
+# `LazyDocument` index/fetch machinery, so page 1 renders after fetching
+# ~index + one page instead of the whole bundle.
+wasm-lazy = ["wasm", "async", "dep:wasm-bindgen-futures"]
+# Allocation-profiling harness (#600): dhat global allocator in examples/alloc_profile.rs.
+# Dev-only; never enabled by default or in CI-required gates.
+alloc-profile = ["dep:dhat", "std"]
+# Opt-in wasm32 thread pool (rayon workers via Web Workers). Layers over
+# `wasm` + `parallel` to reuse the existing rayon-parallel compositor/IDWT
+# paths (PARALLEL/IW44_PAR, 3.8x/2.2x on native) inside the browser. Building
+# this target requires a nightly toolchain (`-Z build-std=panic_abort,std`
+# with `+atomics,+bulk-memory` codegen plus `--shared-memory`/`--import-memory`
+# linker flags) — it is NOT part of the stable `wasm32 build check` CI gate
+# and must never be pulled in by it. See `make wasm-threads-check` and
+# PERF_EXPERIMENTS.md (WASM_THREADS).
+wasm-threads = ["wasm", "parallel", "dep:wasm-bindgen-rayon"]
+# EPUB writer owns the zip dependency (#509). `dep:flate2` selects the
+# pure-Rust deflate backend for zip (see the `zip` dependency comment).
+epub = ["std", "dep:zip", "dep:flate2", "dep:jpeg-encoder"]
+cbz = ["std", "dep:zip", "dep:flate2"]
+ocr-tesseract = ["dep:tesseract", "std"]
+ocr-onnx = ["dep:tract-onnx", "std"]
+# ocr-neural: experimental placeholder only. It exposes the CandleBackend type
+# but no supported model contract or CLI backend; load() returns a clear error.
+ocr-neural = ["std"]
+# Deprecated compatibility alias. Kept as a no-op to avoid pulling the former
+# Candle/tokenizers dependency stack into --all-features builds.
+ocr-neural-candle = ["ocr-neural"]
+# Experiment-only encoder surface in the codec crates (e.g. the #322 cross-size
+# rec-6 refinement probe and its analysis helpers). Off by default; not part of
+# the published API. Implies `std` since the encoders are std-only.
+experimental = ["std", "djvu-jb2/experimental"]
+# Diagnostic-only IW44 encoder bit/byte attribution counters (IW44_ENTROPY_PROBE,
+# round 51). See `djvu_iw44::encode::probe`. Off by default; adds no runtime cost
+# and cannot change emitted bytes when disabled.
+iw44-probe = ["std", "djvu-iw44/iw44-probe"]
+
+[dev-dependencies]
+criterion = "0.5"
+# Tests/examples synthesize JPEG fixtures and deflate streams directly; as
+# dev-deps these stay available regardless of which crate features are on
+# (they left the `std` feature in #509).
+jpeg-encoder = "0.6"
+miniz_oxide = "0.8"
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+serde_json = "1"
+futures = "0.3"
+# README doctests: the lazy-loading example opens files with tokio::fs, and the
+# async examples declare #[tokio::main]. The `async` feature's tokio stays
+# minimal (rt/macros/io-util/sync) — consumers bring their own tokio; only the
+# doc-sync gate needs `fs` here.
+tokio = { version = "1", features = ["fs", "rt", "macros", "io-util", "sync"] }
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+# Backend for the dev zip's deflate — mirrors the normal-deps trick so test
+# builds without the `epub` feature still give flate2 a backend.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+proptest = "1"
+# cold_open_bench only: F_NOCACHE fcntl for the cold-copy strategy (macOS).
+libc = "0.2"
+
+[[bin]]
+name = "djvu"
+path = "src/bin/djvu.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "async_lazy_first_page"
+required-features = ["async"]
+
+[[example]]
+name = "async_http_first_page"
+required-features = ["async"]
+
+[[example]]
+name = "pdf_memory_probe"
+required-features = ["pdf"]
+
+[[example]]
+name = "pdf_g4_export"
+required-features = ["pdf"]
+
+[[example]]
+name = "pdf_fg_color_probe"
+required-features = ["pdf"]
+
+[[example]]
+name = "pdf_mrc_probe"
+required-features = ["pdf"]
+
+[[example]]
+name = "txtz_ocr_demo"
+required-features = ["pdf"]
+
+[[example]]
+name = "cold_open_bench"
+required-features = ["mmap", "parallel"]
+
+[[example]]
+name = "probe_tiff_streaming_memory"
+required-features = ["tiff"]
+
+[[example]]
+name = "alloc_profile"
+required-features = ["alloc-profile", "pdf"]
+
+[[example]]
+name = "ocr_input_ab"
+required-features = ["ocr-tesseract"]
+
+[[example]]
+name = "ocr_preset_grid"
+required-features = ["ocr-tesseract"]
+
+[[example]]
+name = "encode_quality_djbz"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_same_size_a0"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_same_size_a2"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_crosssize_b1probe"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_same_size_a3_density_sweep"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_same_size_a3_auto"
+required-features = ["experimental"]
+
+[[example]]
+name = "jb2_lossy_b0"
+required-features = ["std"]
+
+[[example]]
+name = "iw44_band_probe"
+required-features = ["iw44-probe"]
+
+[[example]]
+name = "iw44_forward_transform_probe"
+required-features = ["iw44-probe"]
+
+[[bench]]
+name = "codecs"
+harness = false
+
+[[bench]]
+name = "render"
+harness = false
+
+[[bench]]
+name = "document"
+harness = false
+
+[[bench]]
+name = "viewer"
+harness = false
+
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1

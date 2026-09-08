@@ -1,0 +1,41 @@
+[graph]
+targets = []
+
+[advisories]
+version = 2
+ignore = [
+    # Transitive deps from optional OCR backends (tesseract, tract, candle).
+    # These are behind feature flags and not compiled by default.
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (via indicatif → tokenizers)
+    "RUSTSEC-2024-0436", # paste unmaintained (via candle-core)
+]
+
+[licenses]
+version = 2
+# Only explicitly allowed licenses are accepted.
+# Anything not listed here (including GPL/LGPL/AGPL) will be rejected,
+# protecting the "no GPL code" guarantee stated in SOURCES.md.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "Zlib",
+    # jpeg-encoder uses "(MIT OR Apache-2.0) AND IJG"; IJG is the Independent
+    # JPEG Group License (FSF Free/Libre, permissive for non-commercial and
+    # commercial use with attribution).
+    "IJG",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

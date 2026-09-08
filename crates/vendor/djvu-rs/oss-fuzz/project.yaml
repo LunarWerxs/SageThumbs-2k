@@ -1,0 +1,13 @@
+homepage: "https://github.com/matyushkin/djvu-rs"
+language: rust
+primary_contact: "leva.matyushkin@gmail.com"
+auto_ccs:
+  - "leva.matyushkin@gmail.com"
+main_repo: "https://github.com/matyushkin/djvu-rs.git"
+sanitizers:
+  - address
+  # MemorySanitizer is not yet supported for Rust by cargo-fuzz; revisit later.
+fuzzing_engines:
+  - libfuzzer
+  - afl
+file_github_issue: true

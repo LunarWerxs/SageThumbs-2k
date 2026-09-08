@@ -1,0 +1,34 @@
+diff -ruN pristine/djvu-rs/src/djvu_render.rs patched/djvu-rs/src/djvu_render.rs
+--- pristine/djvu-rs/src/djvu_render.rs
++++ patched/djvu-rs/src/djvu_render.rs
+@@ -2593,8 +2593,17 @@ fn composite_rows_bilevel_one(
+         }
+ 
+         // Fallback: branchless per-pixel expansion with .min() clamp for partial/offset views.
++        //
++        // SageThumbs 2K patch: `px` used to clamp only to `page_w - 1`, but `mask_row` is
++        // `mask.width` pixels wide (row_stride() bytes), not `page_w` wide. A mutated INFO
++        // chunk that declares a page width larger than the bilevel mask it ships used to walk
++        // `px` straight past the end of `mask_row` here (the fast path above already guards
++        // this with `ox0 + out_w <= mask.width`; this loop did not). Clamp to the mask's own
++        // width too, so `px >> 3` can never reach past `mask_row`'s end.
+         for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+-            let px = (ox as u32 + ctx.offset_x).min(ctx.page_w.saturating_sub(1)) as usize;
++            let px = (ox as u32 + ctx.offset_x)
++                .min(ctx.page_w.saturating_sub(1))
++                .min(mask.width.saturating_sub(1)) as usize;
+             let is_fg = ((mask_row[px >> 3] >> (7 - (px & 7))) & 1) as u32;
+             let ch = (is_fg.wrapping_sub(1) & 0xFF) as u8; // 0 when fg, 255 when bg
+             pixel[0] = ch;
+diff -ruN pristine/djvu-rs/Cargo.toml patched/djvu-rs/Cargo.toml
+--- pristine/djvu-rs/Cargo.toml
++++ patched/djvu-rs/Cargo.toml
+@@ -741,3 +741,8 @@
+ [profile.release]
+ lto = "fat"
+ codegen-units = 1
++
++# SageThumbs 2K vendoring: upstream declares these but its sources never reference them;
++# our cargo-machete gate would otherwise flag the vendored copy on every run.
++[package.metadata.cargo-machete]
++ignored = ["flate2", "wide"]

@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- #588: lazy Range-based open vs full-download-then-open, in a real browser.
+
+     Serve with the throttled Range server (it simulates a fixed bandwidth for
+     .djvu responses only):
+
+         python3 examples/wasm/serve_lazy_bench.py --bandwidth-mib 12.5
+
+     then open http://localhost:8080/bench_lazy_open.html and press Run. -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>djvu-rs lazy Range open bench (#588)</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 2em; max-width: 60em; }
+    pre { background: #f4f4f4; padding: 1em; overflow-x: auto; }
+    canvas { border: 1px solid #ccc; max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>Lazy Range open vs full download (#588)</h1>
+  <label>File: <input id="file" value="corpus/pathogenic_bacteria_1896.djvu" size="40"></label>
+  <label>DPI: <input id="dpi" value="150" size="4"></label>
+  <button id="run">Run</button>
+  <pre id="log"></pre>
+  <canvas id="cv"></canvas>
+
+  <script type="module">
+    import init, { WasmDocument, WasmLazyDocument } from './pkg/djvu_rs.js';
+
+    const log = (m) => { document.getElementById('log').textContent += m + '\n'; };
+    window.addEventListener('error', (e) => log(`ERROR: ${e.message}`));
+    window.addEventListener('unhandledrejection', (e) => log(`REJECTED: ${e.reason}`));
+
+    async function headLen(url) {
+      const r = await fetch(url, { method: 'HEAD' });
+      return Number(r.headers.get('content-length'));
+    }
+
+    function paint(pm) {
+      const cv = document.getElementById('cv');
+      cv.width = pm.width(); cv.height = pm.height();
+      const v = pm.view();
+      const px = v instanceof Uint8ClampedArray
+        ? v
+        : new Uint8ClampedArray(v.buffer, v.byteOffset, v.length);
+      cv.getContext('2d').putImageData(
+        new ImageData(px, pm.width(), pm.height()), 0, 0);
+    }
+
+    document.getElementById('run').onclick = async () => {
+      document.getElementById('log').textContent = '';
+      await init();
+      const url = document.getElementById('file').value;
+      const dpi = Number(document.getElementById('dpi').value);
+      const len = await headLen(url);
+      log(`${url}: ${(len / 1048576).toFixed(1)} MiB`);
+
+      // A: full download (throttled), then from_bytes + render page 0.
+      let t0 = performance.now();
+      const resp = await fetch(url, { cache: 'no-store' });
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      const doc = WasmDocument.from_bytes(bytes);
+      const page = doc.page(0);
+      const pmFull = new (await import('./pkg/djvu_rs.js')).WasmPixmap();
+      page.render_into_pixmap(dpi, pmFull);
+      const fullMs = performance.now() - t0;
+      log(`full download + open + render p0: ${fullMs.toFixed(0)} ms (${len} bytes fetched)`);
+
+      // B: lazy Range open + render page 0.
+      let fetched = 0, gets = 0;
+      t0 = performance.now();
+      const lazy = await WasmLazyDocument.open(len, async (offset, n) => {
+        gets += 1; fetched += n;
+        const r = await fetch(url, {
+          cache: 'no-store',
+          headers: { Range: `bytes=${offset}-${offset + n - 1}` },
+        });
+        return new Uint8Array(await r.arrayBuffer());
+      });
+      const openMs = performance.now() - t0;
+      log(`lazy open: ${openMs.toFixed(0)} ms, ${(fetched / 1024).toFixed(0)} KiB in ${gets} GETs, ${lazy.page_count()} pages`);
+      const pmLazy = await lazy.render_page(0, dpi);
+      const lazyMs = performance.now() - t0;
+      log(`lazy open + render p0: ${lazyMs.toFixed(0)} ms, ${(fetched / 1024).toFixed(0)} KiB in ${gets} GETs (${(100 * fetched / len).toFixed(2)}% of file)`);
+      log(`time-to-first-page: ${(fullMs / lazyMs).toFixed(1)}x`);
+
+      // Pixel identity.
+      const a = pmFull.to_bytes(), b = pmLazy.to_bytes();
+      let same = a.length === b.length;
+      if (same) for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { same = false; break; }
+      log(`pixels identical to full open: ${same}`);
+      paint(pmLazy);
+    };
+  </script>
+</body>
+</html>

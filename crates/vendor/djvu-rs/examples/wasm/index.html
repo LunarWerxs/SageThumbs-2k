@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>djvu-rs WASM demo</title>
+  <style>
+    body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    #drop-zone {
+      border: 2px dashed #888; border-radius: 8px; padding: 2rem;
+      text-align: center; cursor: pointer; color: #555;
+      transition: border-color .2s, background .2s;
+    }
+    #drop-zone.hover { border-color: #333; background: #f5f5f5; }
+    #controls { margin: 1rem 0; display: none; }
+    #controls label { font-weight: bold; }
+    canvas { display: block; max-width: 100%; border: 1px solid #ddd; margin-top: 1rem; }
+    #status { color: #666; font-size: .9rem; margin-top: .5rem; }
+    #error  { color: red; }
+  </style>
+</head>
+<body>
+<h1>djvu-rs WASM demo</h1>
+<p>Pure-Rust DjVu decoder compiled to WebAssembly — no server, no plugins.</p>
+
+<div id="drop-zone">
+  Drop a <strong>.djvu</strong> file here, or <label style="color:#0070f3;cursor:pointer">
+    browse<input type="file" accept=".djvu" id="file-input" style="display:none">
+  </label>
+</div>
+
+<div id="controls">
+  <label for="dpi-range">DPI: <span id="dpi-value">150</span></label><br>
+  <input type="range" id="dpi-range" min="36" max="600" step="6" value="150">
+  <span style="margin-left:1rem">
+    Page: <button id="prev-btn">◀</button>
+    <span id="page-label">1 / 1</span>
+    <button id="next-btn">▶</button>
+  </span>
+</div>
+
+<canvas id="canvas"></canvas>
+<div id="status"></div>
+<div id="error"></div>
+
+<script type="module">
+import init, { WasmDocument, selectedWasmVariant } from './pkg/djvu_rs.js';
+
+let doc = null;
+let currentPage = 0;
+let currentDpi = 150;
+
+async function setup() {
+  await init();
+  document.getElementById('status').textContent =
+    `djvu-rs loaded (${selectedWasmVariant()} wasm) — drop a file to begin.`;
+}
+
+async function loadBytes(bytes) {
+  document.getElementById('error').textContent = '';
+  document.getElementById('status').textContent = 'Parsing…';
+  try {
+    doc = WasmDocument.from_bytes(bytes);
+    currentPage = 0;
+    document.getElementById('controls').style.display = 'block';
+    updatePageLabel();
+    await renderPage();
+  } catch (e) {
+    document.getElementById('error').textContent = `Error: ${e.message}`;
+    document.getElementById('status').textContent = '';
+  }
+}
+
+async function renderPage() {
+  if (!doc) return;
+  const page = doc.page(currentPage);
+  const w = page.width_at(currentDpi);
+  const h = page.height_at(currentDpi);
+  document.getElementById('status').textContent = `Rendering page ${currentPage + 1} at ${currentDpi} dpi (${w}×${h} px)…`;
+
+  // Yield to browser so the status message paints before the (possibly slow) render.
+  await new Promise(r => setTimeout(r, 0));
+
+  const t0 = performance.now();
+  const pixels = page.render(currentDpi);
+  const ms = (performance.now() - t0).toFixed(1);
+
+  const canvas = document.getElementById('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.putImageData(new ImageData(pixels, w, h), 0, 0);
+
+  document.getElementById('status').textContent =
+    `Page ${currentPage + 1} rendered in ${ms} ms (${w}×${h} px @ ${currentDpi} dpi).`;
+}
+
+function updatePageLabel() {
+  document.getElementById('page-label').textContent =
+    `${currentPage + 1} / ${doc ? doc.page_count() : 1}`;
+  document.getElementById('prev-btn').disabled = currentPage === 0;
+  document.getElementById('next-btn').disabled = !doc || currentPage >= doc.page_count() - 1;
+}
+
+// ── Controls ─────────────────────────────────────────────────────────────────
+
+document.getElementById('dpi-range').addEventListener('input', e => {
+  currentDpi = Number(e.target.value);
+  document.getElementById('dpi-value').textContent = currentDpi;
+  renderPage();
+});
+
+document.getElementById('prev-btn').addEventListener('click', () => {
+  if (currentPage > 0) { currentPage--; updatePageLabel(); renderPage(); }
+});
+
+document.getElementById('next-btn').addEventListener('click', () => {
+  if (doc && currentPage < doc.page_count() - 1) { currentPage++; updatePageLabel(); renderPage(); }
+});
+
+// ── File input ────────────────────────────────────────────────────────────────
+
+document.getElementById('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) file.arrayBuffer().then(buf => loadBytes(new Uint8Array(buf)));
+});
+
+const zone = document.getElementById('drop-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('hover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('hover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('hover');
+  const file = e.dataTransfer.files[0];
+  if (file) file.arrayBuffer().then(buf => loadBytes(new Uint8Array(buf)));
+});
+
+setup();
+</script>
+</body>
+</html>

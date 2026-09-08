@@ -1,0 +1,16 @@
+# cargo-nextest configuration
+# https://nexte.st/docs/configuration
+
+[profile.default]
+# Mark tests that run longer than 60 s as "slow" (informational only)
+slow-timeout = "60s"
+
+[profile.ci]
+slow-timeout = "60s"
+# Retry flaky tests once before failing
+retries = 1
+
+# PDF export and large IW44 decode tests are legitimately slow — allow up to 5 min
+[[profile.ci.overrides]]
+filter = 'binary(pdf_conversion) or test(iw44_new_decode_big)'
+slow-timeout = "120s"

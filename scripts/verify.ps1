@@ -208,17 +208,17 @@ if ($Lint) {
     # identity, and the vendored-exr drift check). All five are dependency-free —
     # they build their own scratch fixtures rather than needing a prior release build.
     #
-    # vendor-jxl.ps1 is deliberately NOT in the generic list below (2026-09-05 audit,
-    # F25): it has a MUTATING bare/default mode (regenerates crates/vendor/jxl-render
-    # and crates/vendor/jxl-oxide from pristine sources, DELETING each vendored tree
-    # first - see its own header) and a separate, non-mutating `-Check` mode. The
-    # generic loop invokes every entry with NO arguments, which for vendor-jxl.ps1
-    # means the mutating path: that discards uncommitted vendor edits, "fixes" drift
-    # before this ladder ever gets to see it (defeating the point of a validation
-    # gate), and can leave the vendor tree half-regenerated if the patch fails to
-    # reapply. CI's own consistency job only ever calls `vendor-jxl.ps1 -Check`
-    # (ci.yml) - call it here the same way, explicitly, instead of folding a
-    # maintenance command into a validation-only list.
+    # vendor-jxl.ps1 and vendor-djvu.ps1 are deliberately NOT in the generic list below
+    # (2026-09-05 audit, F25, same reasoning extended to djvu-rs): each has a MUTATING
+    # bare/default mode (regenerates its vendored tree from pristine sources, DELETING
+    # the vendored tree first - see each script's own header) and a separate,
+    # non-mutating `-Check` mode. The generic loop invokes every entry with NO
+    # arguments, which for either script means the mutating path: that discards
+    # uncommitted vendor edits, "fixes" drift before this ladder ever gets to see it
+    # (defeating the point of a validation gate), and can leave the vendor tree
+    # half-regenerated if the patch fails to reapply. CI's own consistency job only
+    # ever calls each with `-Check` (ci.yml) - call them here the same way,
+    # explicitly, instead of folding a maintenance command into a validation-only list.
     Stage 'release/installer/MSIX consistency contracts' {
         foreach ($scriptName in @(
             'test-release-size.ps1',
@@ -232,6 +232,8 @@ if ($Lint) {
         }
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'vendor-jxl.ps1') -Check
         if ($LASTEXITCODE -ne 0) { throw 'vendor-jxl.ps1 -Check failed' }
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'vendor-djvu.ps1') -Check
+        if ($LASTEXITCODE -ne 0) { throw 'vendor-djvu.ps1 -Check failed' }
     }
 }
 

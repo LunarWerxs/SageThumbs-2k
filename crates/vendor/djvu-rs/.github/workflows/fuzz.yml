@@ -1,0 +1,85 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'  # every Monday at 03:00 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_iff
+          - fuzz_bzz
+          - fuzz_jb2
+          - fuzz_iw44
+          - fuzz_full
+          - fuzz_encode
+          - fuzz_bzz_encode
+          - fuzz_g4
+          - fuzz_metadata
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Per-target key: each fuzz binary compiles different code, avoid cache contention
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz-${{ matrix.target }}
+
+      # Cache the cargo-fuzz binary so cargo install --locked is a no-op on cache hit
+      - name: Cache cargo-fuzz binary
+        id: cargo-fuzz-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.lock') }}
+
+      - name: Install cargo-fuzz
+        if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo +stable install cargo-fuzz --locked
+
+      # Restore corpus from previous runs so coverage improves over time
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run ${{ matrix.target }} for 60 s
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60 -timeout=10
+
+      # Save updated corpus (unique key ensures this run's findings are always stored)
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30

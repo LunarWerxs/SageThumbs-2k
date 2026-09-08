@@ -1,0 +1,554 @@
+name: Benchmarks
+
+on:
+  # Track regressions on every PR that touches code or benchmarks.
+  # Workflow file itself is included so changes to bench.yml re-run on PR.
+  # Root Cargo.toml/Cargo.lock are deliberately NOT in the PR list (#548):
+  # feature/metadata manifest changes were paying ~10 min of benchmarks with no
+  # perf-relevant diff (Cargo.lock is gitignored, so that entry never fired
+  # anyway). Dependency changes still get benchmarked on the main push (below),
+  # and code changes are covered by the src/crates/benches paths.
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'benches/**'
+      - '.github/workflows/bench.yml'
+
+  # Update the baseline when code or benchmarks actually change on main / release tags.
+  # Tags always bump Cargo.toml so the paths filter still fires for releases.
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'benches/**'
+      - 'Cargo.toml'
+      - '.github/workflows/bench.yml'
+
+  # Allow manual runs (e.g. to seed the initial baseline).
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # Detect whether a change touches the AVX2/SIMD hot paths. The x86-64-v3
+  # validation job below is only meaningful when iw44 SIMD code changes, so we
+  # skip it on PRs that don't — most refactors never touch these files, and
+  # running it there is ~5.5 min of compute and an irrelevant red/green check.
+  detect:
+    name: Detect SIMD-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      simd: ${{ steps.filter.outputs.simd }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'crates/**'
+              - 'benches/**'
+            simd:
+              # IW44 SIMD lives in the djvu-iw44 crate since the codec extraction
+              # (#344); the old `src/iw44_*.rs` are thin re-export shims now.
+              - 'crates/djvu-iw44/src/lib.rs'
+              - 'crates/djvu-iw44/src/encode.rs'
+              - 'benches/codecs.rs'
+              - 'benches/render.rs'
+              - '.github/workflows/bench.yml'
+
+  bench:
+    name: Benchmark
+    # Single platform for reproducible comparisons.
+    # (macos-latest numbers are kept separately via workflow_dispatch / tags.)
+    runs-on: ubuntu-latest
+    needs: detect
+
+    permissions:
+      actions: read         # needed by dawidd6/action-download-artifact to list artifacts
+      pull-requests: write  # needed to post the comparison comment
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-ubuntu
+
+      # ── Download baseline from last successful main-branch run (PR only) ────
+      - name: Download baseline
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: bench-baseline
+          branch: main
+          workflow: bench.yml
+          workflow_conclusion: success
+          path: baseline
+          if_no_artifact_found: warn
+
+      # ── Run djvu-rs Criterion benchmarks ─────────────────────────────────────
+      - name: Bench codecs
+        run: cargo bench --bench codecs -- --output-format bencher 2>&1 | tee codec_bench.txt
+
+      - name: Bench render
+        run: cargo bench --bench render --features pdf -- --output-format bencher 2>&1 | tee render_bench.txt
+
+      # ── Run DjVuLibre benchmarks on the same machine ─────────────────────────
+      # Both djvu-rs (above) and DjVuLibre (below) run in the same job so the
+      # ratio numbers are directly comparable without platform skew.
+      - name: Bench vs DjVuLibre
+        run: bash scripts/bench_djvulibre.sh .
+        continue-on-error: true
+
+      # ── Print summary ────────────────────────────────────────────────────────
+      - name: Print results
+        run: |
+          echo "--- Codec benchmarks ---"
+          grep "bench:" codec_bench.txt || echo "(no codec results)"
+          echo ""
+          echo "--- Render benchmarks ---"
+          grep "bench:" render_bench.txt || echo "(no render results)"
+          echo ""
+          echo "--- vs DjVuLibre (decode/render) ---"
+          python3 scripts/djvulibre_compare.py \
+            --criterion target/criterion \
+            --djvulibre-bench djvulibre_bench.txt \
+            --ddjvu-timing ddjvu_timing.txt \
+            2>/dev/null || echo "(no DjVuLibre results)"
+          echo ""
+          echo "--- DjVuLibre encode timing (cjb2/c44; vs criterion jb2_encode/iw44_encode_color) ---"
+          cat encode_timing.txt 2>/dev/null || echo "(no encode timing)"
+
+      # ── Compare against baseline and generate Markdown table (PR only) ──────
+      - name: Compare benchmarks
+        if: github.event_name == 'pull_request'
+        id: compare
+        run: |
+          set +e
+          python3 scripts/bench_compare.py \
+            baseline \
+            target/criterion \
+            --suspects-out suspects.txt \
+            > bench_comment.md
+          compare_exit=$?
+          set -e
+          echo "compare_exit=$compare_exit" >> "$GITHUB_OUTPUT"
+          cat bench_comment.md
+
+      # ── Same-runner re-check (PR only, only when the artifact compare flags) ──
+      # The artifact baseline comes from a different runner whose CPU generation
+      # can differ enough to flag phantom regressions on micro benches (observed
+      # +11%/+34% on bzz_decode/bzz_encode across PRs that do not touch BZZ).
+      # Re-measure ONLY the flagged benches from the merge base on THIS runner
+      # and let that comparison be the verdict.
+      - name: Re-check suspects against merge base (same runner)
+        if: github.event_name == 'pull_request' && steps.compare.outputs.compare_exit == '1'
+        id: recheck
+        run: |
+          set +e
+          filter=$(paste -sd'|' suspects.txt | sed 's/[^a-zA-Z0-9_|\/]/./g')
+          echo "suspect filter: $filter"
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+          git worktree add ../base-src "${{ github.event.pull_request.base.sha }}"
+          pushd ../base-src
+          cargo bench --bench codecs -- "$filter" || true
+          cargo bench --bench render --features pdf -- "$filter" || true
+          popd
+          # Re-measure the PR side of the suspects too, back-to-back with the
+          # merge-base numbers: comparing a fresh baseline against PR numbers
+          # taken ~20 minutes earlier in the job reintroduces thermal/order
+          # skew (observed as a borderline +5.8% on an untouched bench in
+          # #622's run; locally that PR was 2.3% faster on the same bench).
+          # Criterion only overwrites the filtered benches, so the archived
+          # full results keep every other bench's numbers.
+          cargo bench --bench codecs -- "$filter" || true
+          cargo bench --bench render --features pdf -- "$filter" || true
+          python3 scripts/bench_compare.py \
+            ../base-src/target/criterion \
+            target/criterion \
+            --restrict suspects.txt \
+            --title "Same-runner re-check (merge base rebuilt on this runner)" \
+            > recheck_comment.md
+          recheck_exit=$?
+          set -e
+          echo "recheck_exit=$recheck_exit" >> "$GITHUB_OUTPUT"
+          cat recheck_comment.md
+          cat recheck_comment.md >> bench_comment.md
+
+      - name: Append DjVuLibre comparison
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/djvulibre_compare.py \
+            --criterion target/criterion \
+            --djvulibre-bench djvulibre_bench.txt \
+            --ddjvu-timing ddjvu_timing.txt \
+            >> bench_comment.md 2>/dev/null || true
+        continue-on-error: true
+
+      - name: Post benchmark comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: bench
+          path: bench_comment.md
+        continue-on-error: true  # comment failure must not hide regression result
+
+      # Preserve the comment even when compare detects a regression, then make
+      # every non-zero compare result fail the job (1 = regression, 2 = bad or
+      # missing current Criterion output).  This must not be `bash -e`'s direct
+      # exit: that would skip writing the step output and fail open.
+      - name: Fail on benchmark comparison
+        if: github.event_name == 'pull_request' && needs.detect.outputs.code == 'true' && steps.compare.outputs.compare_exit != '0'
+        run: |
+          if [ "${{ steps.compare.outputs.compare_exit }}" = "1" ]; then
+            if [ "${{ steps.recheck.outputs.recheck_exit }}" = "0" ]; then
+              echo "Artifact-baseline regressions did not reproduce against the merge base on this runner — phantom (cross-runner variance)."
+              exit 0
+            fi
+            echo "Benchmark regressions detected and confirmed on a same-runner merge-base re-check — see PR comment."
+          else
+            echo "Benchmark comparison failed: current Criterion results are missing or invalid."
+          fi
+          exit 1
+
+      # ── Upload baseline (main branch + tags) ─────────────────────────────────
+      - name: Upload baseline
+        if: >
+          github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline
+          # Overwrite the previous baseline so PRs always compare against HEAD of main.
+          overwrite: true
+          path: target/criterion/
+          retention-days: 90
+
+      # ── Always archive full results ──────────────────────────────────────────
+      - name: Upload full results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: |
+            codec_bench.txt
+            render_bench.txt
+            djvulibre_bench.txt
+            ddjvu_timing.txt
+            encode_timing.txt
+            target/criterion/
+          retention-days: 30
+
+  # ── x86-64-v3 (AVX2) validation: measures whether the AVX2 hot paths in
+  # iw44_new actually beat the scalar/wide::i32x8 fallback when AVX2 is
+  # enabled at the codegen level. The default Bench job above runs with
+  # whatever target-cpu cargo picks (typically `x86-64` baseline = SSE2),
+  # which means our `cfg(target_feature = "avx2")` branches are dead code
+  # on CI — every PR claiming "AVX2 path" was effectively unmeasured.
+  #
+  # This job reruns the AVX2-relevant benches twice (default RUSTFLAGS vs
+  # `-C target-cpu=x86-64-v3`) on the same runner and posts the delta.
+  # Tracks the validation gate added after #251/#252/#253 shipped without
+  # baseline numbers — see PERF_EXPERIMENTS.md follow-up for context.
+  #
+  # This is also the only x86 host the repo has (local dev is Apple Silicon —
+  # see PERF_EXPERIMENTS.md "Platform" lines). Two backlog items are gated on
+  # x86 numbers and can only be resolved from this job's output:
+  #   - AVX2_IDWT (round-5 #8): covered by the iw44_decode/iw44_to_rgb benches
+  #     below — `to_rgb`/`to_rgb_subsample` run `inverse_wavelet_transform`,
+  #     which is exactly the IDWT row/col pass this item is about.
+  #   - ZP-U64 (round-3/4 deferred list): the jb2/bzz decode benches added
+  #     below cover the ZP-decoder `refill!` hot loop shared by jb2/iw44/bzz —
+  #     needed to tell whether the 32-bit refill is measurably dearer on x86
+  #     than on the aarch64 numbers already in the journal.
+  # Trigger on demand via `workflow_dispatch` (top of file) on any branch/ref
+  # that already contains this workflow file.
+  bench-x86-64-v3:
+    name: Benchmark (x86-64-v3 AVX2 validation)
+    runs-on: ubuntu-latest
+    needs: detect
+    # Always run on main / tags / manual dispatch (keep the validation current).
+    # On PRs, run only when iw44/SIMD files actually changed — see `detect`.
+    if: >
+      github.event_name != 'pull_request' ||
+      needs.detect.outputs.simd == 'true'
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-ubuntu-x86-64-v3
+
+      # Bound scope to AVX2/ZP-relevant benches to keep CI time tractable.
+      # Filters target iw44 SIMD hot paths (load8s/store8s, ycbcr_row_from_i16,
+      # the IDWT row/col passes exercised via to_rgb) plus jb2_decode/bzz_decode
+      # so the shared ZP-decoder `refill!` loop is measured on x86 too (see the
+      # ZP-U64 note in the job comment above) — those two are cheap to add
+      # since the binary/runner are already built for this job.
+      - name: Bench codecs (default RUSTFLAGS — baseline)
+        run: |
+          cargo bench --bench codecs -- 'iw44_to_rgb|iw44_decode|jb2_decode|bzz_decode' --output-format bencher 2>&1 \
+            | tee codec_bench_default.txt
+        continue-on-error: true
+
+      - name: Bench render (default RUSTFLAGS — baseline)
+        run: |
+          cargo bench --bench render -- 'render_corpus_color|render_colorbook' --output-format bencher 2>&1 \
+            | tee render_bench_default.txt
+        continue-on-error: true
+
+      # Discard criterion state so the +x86-64-v3 run starts clean and
+      # criterion treats it as an independent baseline.
+      - name: Reset criterion state
+        run: rm -rf target/criterion
+
+      - name: Bench codecs (RUSTFLAGS=-C target-cpu=x86-64-v3)
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+        run: |
+          cargo bench --bench codecs -- 'iw44_to_rgb|iw44_decode|jb2_decode|bzz_decode' --output-format bencher 2>&1 \
+            | tee codec_bench_v3.txt
+        continue-on-error: true
+
+      - name: Bench render (RUSTFLAGS=-C target-cpu=x86-64-v3)
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+        run: |
+          cargo bench --bench render -- 'render_corpus_color|render_colorbook' --output-format bencher 2>&1 \
+            | tee render_bench_v3.txt
+        continue-on-error: true
+
+      - name: Compare default vs +x86-64-v3
+        run: |
+          python3 - <<'PYEOF' | tee bench_v3_comment.md
+          import re, os
+          BENCHER_RE = re.compile(
+              r"^test\s+(?P<name>\S+)\s+\.\.\.\s+bench:\s+"
+              r"(?P<ns>[\d,]+)\s+ns/iter"
+          )
+
+          def parse(path):
+              out = {}
+              if not os.path.exists(path):
+                  return out
+              for line in open(path):
+                  m = BENCHER_RE.match(line.strip())
+                  if not m:
+                      continue
+                  out[m.group("name")] = int(m.group("ns").replace(",", ""))
+              return out
+
+          sections = [
+              ("Codecs", "codec_bench_default.txt", "codec_bench_v3.txt"),
+              ("Render", "render_bench_default.txt", "render_bench_v3.txt"),
+          ]
+
+          print("## AVX2 validation: default RUSTFLAGS vs `-C target-cpu=x86-64-v3`")
+          print()
+          print("Same runner, same benches, run back-to-back. Negative Δ% = AVX2 path is faster.")
+          print()
+          any_speedup = False
+          any_regression = False
+          for title, default_path, v3_path in sections:
+              d = parse(default_path)
+              v = parse(v3_path)
+              names = sorted(set(d) | set(v))
+              if not names:
+                  continue
+              print(f"### {title}")
+              print()
+              print("| Bench | default ns | +x86-64-v3 ns | Δ% |")
+              print("|---|---:|---:|---:|")
+              for n in names:
+                  a = d.get(n)
+                  b = v.get(n)
+                  if a is None or b is None:
+                      print(f"| `{n}` | {a if a is not None else '—'} | {b if b is not None else '—'} | — |")
+                      continue
+                  delta = (b - a) / a * 100.0
+                  if delta <= -3.0:
+                      any_speedup = True
+                  elif delta >= 3.0:
+                      any_regression = True
+                  print(f"| `{n}` | {a:,} | {b:,} | {delta:+.2f}% |")
+              print()
+
+          print("---")
+          if any_speedup and not any_regression:
+              print("**Verdict.** AVX2 path measurably faster (≥3% on ≥1 bench, no regressions).")
+          elif any_regression and not any_speedup:
+              print("**Verdict.** No AVX2 speedup — and at least one regression (≥3%). "
+                    "The shipped SIMD path is hurting on x86-64-v3; "
+                    "consider reverting #251/#252.")
+          elif not any_speedup and not any_regression:
+              print("**Verdict.** No measurable difference (all benches within ±3%). "
+                    "The AVX2 hot paths are not earning their keep — "
+                    "consider reverting #251/#252 with a "
+                    "_Reverted: no measurable speedup_ entry in PERF_EXPERIMENTS.md.")
+          else:
+              print("**Verdict.** Mixed: some speedup, some regression. Investigate per-bench.")
+          PYEOF
+
+      - name: Post AVX2 validation comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: bench-x86-64-v3
+          path: bench_v3_comment.md
+        continue-on-error: true
+
+      - name: Upload AVX2 validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-x86-64-v3-${{ github.sha }}
+          path: |
+            codec_bench_default.txt
+            codec_bench_v3.txt
+            render_bench_default.txt
+            render_bench_v3.txt
+            bench_v3_comment.md
+          retention-days: 30
+
+  # ── macOS run: tags and manual only (for BENCHMARKS.md) ─────────────────────
+  bench-macos:
+    name: Benchmark (macOS)
+    runs-on: macos-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-macos
+
+      # ── Run djvu-rs Criterion benchmarks ─────────────────────────────────────
+      - name: Bench codecs
+        run: cargo bench --bench codecs -- --output-format bencher 2>&1 | tee codec_bench.txt
+        continue-on-error: true
+
+      - name: Bench render
+        run: cargo bench --bench render --features pdf -- --output-format bencher 2>&1 | tee render_bench.txt
+        continue-on-error: true
+
+      # ── Run DjVuLibre benchmarks on the same machine ─────────────────────────
+      - name: Bench vs DjVuLibre
+        run: bash scripts/bench_djvulibre.sh .
+        continue-on-error: true
+
+      # ── Print summary ────────────────────────────────────────────────────────
+      - name: Print results
+        run: |
+          echo "--- Codec benchmarks (macOS) ---"
+          grep "bench:" codec_bench.txt || echo "(no codec results)"
+          echo ""
+          echo "--- Render benchmarks (macOS) ---"
+          grep "bench:" render_bench.txt || echo "(no render results)"
+          echo ""
+          echo "--- vs DjVuLibre (macOS) ---"
+          python3 scripts/djvulibre_compare.py \
+            --criterion target/criterion \
+            --djvulibre-bench djvulibre_bench.txt \
+            --ddjvu-timing ddjvu_timing.txt \
+            2>/dev/null || echo "(no DjVuLibre results)"
+
+      - name: Upload full results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-macos-${{ github.sha }}
+          path: |
+            codec_bench.txt
+            render_bench.txt
+            djvulibre_bench.txt
+            ddjvu_timing.txt
+            target/criterion/
+          retention-days: 90
+
+
+  # ── #566: bisect which x86-64-v3 features move ZP decode (Callgrind Ir) ──
+  x86-feature-bisect:
+    name: x86 feature bisect (Callgrind, #566)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: callgrind-x86-bisect
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install --yes valgrind
+      - name: Bisect target features
+        run: bash scripts/x86_feature_callgrind.sh
+      - name: Upload bisect results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86-feature-bisect-${{ github.sha }}
+          path: target/x86-feature-bisect/
+          if-no-files-found: warn
+          retention-days: 30
+
+  instruction-count:
+    name: Instruction counts (Callgrind)
+    runs-on: ubuntu-latest
+    # Diagnostic while #557 calibrates same-code variance and baseline policy.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: callgrind-ubuntu
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install --yes valgrind
+      - name: Count instructions
+        run: |
+          cargo build --release --example callgrind_workload
+          for workload in bzz jb2 iw44; do
+            valgrind --tool=callgrind --callgrind-out-file="target/callgrind.${workload}" \
+              target/release/examples/callgrind_workload "$workload"
+          done
+      - name: Upload Callgrind results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: callgrind-${{ github.sha }}
+          path: target/callgrind.*
+          if-no-files-found: warn
+          retention-days: 30

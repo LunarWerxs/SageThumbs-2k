@@ -1,0 +1,376 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual runs — e.g. collecting Coverage for a PR branch (main-only otherwise).
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Fast lint gate (runs in ~15s) ────────────────────────────────────────────
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (all targets)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Writer surface moved out of the default features in #509, so the
+      # default-features pass above no longer sees src/pdf.rs / src/epub.rs.
+      # Lint them explicitly (cli implies pdf; epub added on top).
+      - name: Clippy (all targets, cli+epub features)
+        run: cargo clippy --all-targets --features cli,epub -- -D warnings
+
+      # #509 regression guard: writer/feature-owned crates (zip, zopfli,
+      # jpeg-encoder, clap, …) must not leak into the default (decode-only)
+      # dependency tree. Part of the required Lint gate on purpose.
+      - name: Feature hygiene (decode-only default tree)
+        run: scripts/check_feature_hygiene.sh
+
+  # ── Tests ────────────────────────────────────────────────────────────────────
+  # stable: every push + PRs, full suite on main
+  test-stable:
+    name: Test (stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # No extra key — shares cache with the lint job (same toolchain + Cargo.lock hash)
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # main: all 452 tests in one pass — slow PDF/IW44 run in parallel with fast ones
+      - name: Test (all)
+        if: github.ref == 'refs/heads/main'
+        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+
+      # PR / other branch: fast tests only (~440 tests, skip 200s PDF + large IW44)
+      - name: Test (fast — skip slow PDF + IW44)
+        if: github.ref != 'refs/heads/main'
+        run: >
+          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+          --filter-expr 'not (binary(pdf_conversion) or test(iw44_new_decode_big))'
+
+      # nextest does not run doctests; this compiles every ```rust block in
+      # README.md via the ReadmeDoctests include in src/lib.rs (doc-sync gate).
+      - name: README doctests
+        run: cargo test --doc --features cli,tiff,async,serde,image,epub
+
+      - name: Build (no_std check)
+        run: cargo build --no-default-features
+
+  # beta: push to main only — rarely catches different issues from stable
+  test-beta:
+    name: Test (beta)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust beta
+        uses: dtolnay/rust-toolchain@beta
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: beta
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # beta only checks fast tests — no_std and slow PDF/IW44 are covered by test-stable
+      - name: Test fast
+        run: >
+          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+          --filter-expr 'not (binary(pdf_conversion) or test(iw44_new_decode_big))'
+
+  # ── Windows smoke ───────────────────────────────────────────────────────────
+  windows-msvc:
+    name: Windows MSVC smoke
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-msvc
+
+      - name: Build CLI
+        run: cargo build --features cli
+
+      - name: CLI smoke (djvu info)
+        run: .\target\debug\djvu.exe info tests\fixtures\boy_jb2.djvu
+
+  # ── Linux aarch64 smoke ─────────────────────────────────────────────────────
+  linux-aarch64:
+    name: Linux aarch64 smoke
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-aarch64
+
+      # Native Linux aarch64 runner. NEON is part of baseline aarch64, but this
+      # job is support coverage only; #308 owns ARM64 performance validation.
+      - name: Build workspace + CLI
+        run: cargo build --workspace --exclude djvu-py --features cli
+
+      - name: Test libraries
+        run: cargo test --lib --workspace --exclude djvu-py
+
+      - name: CLI smoke (djvu info)
+        run: ./target/debug/djvu info tests/fixtures/boy_jb2.djvu
+
+  # ── MSRV ─────────────────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.88
+
+      - name: Build
+        run: cargo build
+
+  # ── wasm32 build check ───────────────────────────────────────────────────────
+  wasm:
+    name: wasm32 build check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      - name: cargo check --target wasm32-unknown-unknown
+        run: cargo check --target wasm32-unknown-unknown --features wasm
+
+      # Lazy Range-based browser open (#588): wasm + async + wasm-bindgen-futures.
+      - name: cargo check --target wasm32-unknown-unknown (wasm-lazy)
+        run: cargo check --target wasm32-unknown-unknown --features wasm-lazy
+
+      # Pure no_std build for wasm32 (no std feature, no wasm-bindgen).
+      # This is the strictest test of the README "no_std compatible — IFF/BZZ/JB2/IW44/ZP
+      # codec modules work with alloc only" claim — wasm32-unknown-unknown has no std
+      # runtime, so any leaked `std::*` reference fails to link. Catches bit-rot like
+      # the recent `core::arch` vs `std::arch` regression.
+      - name: cargo build --no-default-features --target wasm32-unknown-unknown
+        run: cargo build --no-default-features --target wasm32-unknown-unknown
+
+      # simd128 build verification (#190 Phase 1). The IW44 hot kernels gate on
+      # `cfg(all(target_arch = "wasm32", target_feature = "simd128"))`; without
+      # this step the simd128 path is reachable only via local opt-in and would
+      # silently bit-rot.
+      - name: cargo check --target wasm32-unknown-unknown +simd128
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
+        run: cargo check --target wasm32-unknown-unknown --features wasm
+
+      # Timing is intentionally not run in CI; Node/runner variance is too high.
+      # Keep the reproducible local scalar-vs-simd128 harness syntax-checked.
+      - name: wasm simd128 benchmark harness syntax check
+        run: |
+          bash -n scripts/bench_wasm_simd128.sh
+          node --check scripts/bench_wasm_simd128.mjs
+
+      # Consumer-side no_std smoke (#227). The wasm32 build above proves the
+      # lib *itself* is no_std-clean; this sub-crate proves the four codec
+      # entry points (iff::parse_form, bzz::bzz_decode, jb2::decode_dict,
+      # iw44::Iw44Image::decode_chunk) are *callable* from a `#![no_std]`
+      # consumer. A leaked std type in any of those signatures fails here.
+      - name: cargo build (no_std smoke crate, wasm32)
+        run: cargo build --manifest-path tests/no_std_smoke/Cargo.toml --target wasm32-unknown-unknown
+
+  # ── Tesseract OCR integration ────────────────────────────────────────────────
+  ocr-tesseract:
+    name: OCR (tesseract)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ocr-tesseract
+
+      - name: Install Tesseract and English language data
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng libtesseract-dev libleptonica-dev
+
+      - name: Build (ocr-tesseract feature)
+        run: cargo build --features cli,ocr-tesseract
+
+      - name: Test (ocr-tesseract integration)
+        run: cargo test --test ocr_tesseract --features cli,ocr-tesseract
+
+  # ── Python bindings (djvu-py) ────────────────────────────────────────────────
+  # Non-required (informational): builds the extension module via maturin into
+  # a uv-managed venv and runs the pytest suite covering the public API surface,
+  # including the round-41 (PY_GIL_DETACH/PY_ZEROCOPY, #530) additions — buffer
+  # protocol, zero-copy numpy/PIL views, Pixmap lifetime safety, and GIL release.
+  # Not part of the branch-protection required-checks list (see CLAUDE.md);
+  # kept fast: one Python version, cached cargo build. See djvu-py/Makefile.
+  djvu-py:
+    name: djvu-py (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: djvu-py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Build + test djvu-py (maturin develop + pytest)
+        run: make -C djvu-py py-test
+
+  # ── Licenses & security audit (combined — both are fast, one runner) ─────────
+  deps-check:
+    name: Dependencies (deny + audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Licenses & advisories (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Security audit (cargo audit)
+        run: cargo audit
+
+  # ── Code coverage (report-only, non-gating) ─────────────────────────────────
+  # Surfaces the line-coverage trend and an lcov.info artifact. Intentionally not
+  # a required check / no --fail-under gate: it informs review, it does not block.
+  # main-only (#548): at ~13 min it was the last check to finish on every PR,
+  # defining perceived PR latency while gating nothing. The trend still updates
+  # on every push to main; run it on a PR ad hoc via workflow_dispatch or
+  # locally with `cargo llvm-cov`.
+  coverage:
+    name: Coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # Collect once, then render both a human summary and the lcov artifact from
+      # the same profile data (benches/examples/fuzz harnesses excluded).
+      # nextest (#548): the plain `cargo llvm-cov` harness runs test binaries
+      # sequentially; nextest runs them in parallel like the Test (stable) job,
+      # cutting several minutes off the collect step.
+      - name: Collect coverage
+        run: cargo llvm-cov nextest --profile ci --workspace --features cli --no-report
+
+      - name: Coverage summary
+        run: |
+          cargo llvm-cov report --summary-only \
+            --ignore-filename-regex '(benches|examples|fuzz)/'
+
+      - name: Export lcov
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info \
+            --ignore-filename-regex '(benches|examples|fuzz)/'
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error

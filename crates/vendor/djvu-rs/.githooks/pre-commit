@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pre-commit checks — mirrors the CI lint/build steps.
+# Install once: git config core.hooksPath .githooks
+set -euo pipefail
+
+echo "→ cargo fmt --check"
+cargo fmt --check
+
+echo "→ cargo clippy"
+cargo clippy --quiet -- -D warnings
+
+echo "→ no_std build"
+cargo build --no-default-features --quiet
+
+echo "✓ pre-commit passed"

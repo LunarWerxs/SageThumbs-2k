@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<!-- #611 zero-copy bench: plain copying render() vs render_into_pixmap()+view().
+     Serve the repo root (fixtures needed):
+       python3 -m http.server 8080
+     then open http://localhost:8080/examples/wasm/bench_zero_copy.html -->
+<meta charset="utf-8">
+<title>djvu-rs #611 zero-copy bench</title>
+<pre id="log">loading…</pre>
+<script type="module">
+import init, { WasmDocument, WasmPixmap } from './pkg/djvu_rs.js';
+
+const log = (m) => { document.getElementById('log').textContent += m + "\n"; console.log(m); };
+const median = (v) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+async function bench(fixtureUrl, dpi, frames) {
+  const buf = await (await fetch(fixtureUrl)).arrayBuffer();
+  const doc = WasmDocument.from_bytes(new Uint8Array(buf));
+  const page = doc.page(0);
+
+  // Warm the decode caches so both series measure compositor+transfer, not
+  // the one-off cold ZP decode.
+  page.render(dpi);
+
+  // A: existing copying API (fresh Uint8ClampedArray + full copy per frame).
+  const a = [];
+  let bytes = 0;
+  for (let i = 0; i < frames; i++) {
+    const t0 = performance.now();
+    const px = page.render(dpi);
+    a.push(performance.now() - t0);
+    bytes = px.length;
+  }
+
+  // B: reused WasmPixmap + zero-copy view per frame.
+  const pm = new WasmPixmap();
+  const b = [];
+  for (let i = 0; i < frames; i++) {
+    const t0 = performance.now();
+    page.render_into_pixmap(dpi, pm);
+    const view = pm.view();          // zero-copy; consumed below
+    if (view.length !== bytes) throw new Error(`length mismatch ${view.length} vs ${bytes}`);
+    b.push(performance.now() - t0);
+  }
+
+  // C: progressive session, copying vs reused-buffer.
+  const n = page.bg44_chunk_count();
+  const t0 = performance.now();
+  for (let c = 0; c < n; c++) page.render_progressive(dpi, c);
+  const progCopy = performance.now() - t0;
+  const t1 = performance.now();
+  for (let c = 0; c < n; c++) page.render_progressive_into_pixmap(dpi, c, pm);
+  const progReuse = performance.now() - t1;
+
+  const mb = (bytes / 1048576).toFixed(1);
+  log(`${fixtureUrl} @ ${dpi}dpi  frame=${mb}MB  frames=${frames}`);
+  log(`  A render() copy        median ${median(a).toFixed(2)} ms`);
+  log(`  B into_pixmap+view     median ${median(b).toFixed(2)} ms  (delta = transfer overhead removed: ${(median(a) - median(b)).toFixed(2)} ms, ${(100 * (median(a) - median(b)) / median(a)).toFixed(1)}% of total)`);
+  log(`  C progressive x${n}: copy ${progCopy.toFixed(1)} ms, reuse ${progReuse.toFixed(1)} ms`);
+
+  // Lifetime check: a stale view after re-render must not report a silently
+  // wrong length; after wasm memory growth it must be visibly detached.
+  const view = pm.view();
+  const beforeLen = view.length;
+  // Force potential memory growth with a large fresh render.
+  page.render_into_pixmap(Math.min(dpi * 2, 600), pm);
+  const stale = view.length;      // 0 (detached) or beforeLen; must not be junk
+  log(`  lifetime: stale view length after growth-render = ${stale} (was ${beforeLen}) -> ${stale === 0 ? "detached (safe)" : stale === beforeLen ? "still mapped (same buffer)" : "UNSAFE"}`);
+  const fresh = pm.view();
+  log(`  lifetime: fresh view length = ${fresh.length} (${(fresh.length / 1048576).toFixed(1)} MB)`);
+  doc.free();
+}
+
+(async () => {
+  document.getElementById('log').textContent = "";
+  await init();
+  await bench('../../tests/fixtures/navm_fgbz.djvu', 300, 9);   // ~33 MB frames
+  await bench('../../tests/fixtures/navm_fgbz.djvu', 600, 5);   // ~50+ MB frames
+  await bench('../../tests/fixtures/boy_jb2.djvu', 300, 9);     // small bilevel
+  log("DONE");
+})().catch(e => log("ERROR: " + e));
+</script>

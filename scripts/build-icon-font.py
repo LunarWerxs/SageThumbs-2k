@@ -41,14 +41,23 @@ REPO = Path(__file__).resolve().parent.parent
 OUT_TTF = REPO / "assets" / "icons" / "SageThumbs2K-Icons.ttf"
 OUT_LICENSE = REPO / "assets" / "icons" / "LICENSE-Material-Symbols.txt"
 
+# Pinned to a specific upstream commit rather than `master` so a build is reproducible and a
+# changed (rotated, compromised, or just re-released) upstream file is caught instead of
+# silently bundled. To move the pin: resolve the new commit with
+#   git ls-remote https://github.com/google/material-design-icons.git refs/heads/master
+# then download both files at that commit and recompute their SHA-256 before updating the four
+# constants below together.
+UPSTREAM_COMMIT = "0cbb08816df07faaae3dca060d4ebb10b66c214f"
 UPSTREAM_CODEPOINTS = (
-    "https://raw.githubusercontent.com/google/material-design-icons/master/variablefont/"
-    "MaterialSymbolsOutlined%5BFILL%2CGRAD%2Copsz%2Cwght%5D.codepoints"
+    f"https://raw.githubusercontent.com/google/material-design-icons/{UPSTREAM_COMMIT}/"
+    "variablefont/MaterialSymbolsOutlined%5BFILL%2CGRAD%2Copsz%2Cwght%5D.codepoints"
 )
 UPSTREAM = (
-    "https://github.com/google/material-design-icons/raw/master/variablefont/"
+    f"https://github.com/google/material-design-icons/raw/{UPSTREAM_COMMIT}/variablefont/"
     "MaterialSymbolsOutlined%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf"
 )
+UPSTREAM_CODEPOINTS_SHA256 = "cbea7bfbd34d1d4f8dd2628c34587e447f935cf4f2219b264988da48736eca75"
+UPSTREAM_SHA256 = "9370e7137b1a952fb00c5caf770291ea24be807dc0940983f0e3fd81dab0c054"
 
 # The face is RENAMED rather than left as "Material Symbols Outlined" on purpose: the font is
 # loaded privately (AddFontResourceEx + FR_PRIVATE) and a distinct name means a user who has
@@ -87,6 +96,7 @@ GLYPHS = [
     ("upload", 0xE898),                # Upload
     ("open_in_new", 0xE8A7),           # Open
     ("open_in_browser", 0xE7AC),       # OpenWith
+    ("print", 0xE749),                 # Print, the current image or PDF page
     ("close", 0xE711),                 # Close, shared with the screenshot editor
     ("settings", 0xE713),              # Settings, jumps to Settings > Quick preview
     # The theme toggle draws ONE of these, whichever it would switch TO: a sun while the
@@ -149,12 +159,29 @@ NORM_CENTER = (480, 480)  # the 24dp grid's centre in font units - scale about t
 SCALE_GROUPS = [(0xE718, PIN_FILLED_OUT)]
 
 
+def verify_sha256(data: bytes, expected: str, label: str) -> None:
+    """Fail loudly when a downloaded upstream file doesn't match its pinned digest."""
+    import hashlib
+
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != expected:
+        print(
+            f"upstream {label} did not match the pinned digest:\n"
+            f"  expected {expected}\n"
+            f"  actual   {actual}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
 def load_codepoints(src: Path) -> dict[str, int]:
     """Upstream name -> codepoint, from the `.codepoints` file beside the font."""
     cp = src.with_suffix(".codepoints")
     if not cp.exists():
         with urllib.request.urlopen(UPSTREAM_CODEPOINTS) as r:  # nosec B310 - fixed https URL
-            cp.write_bytes(r.read())
+            data = r.read()
+        verify_sha256(data, UPSTREAM_CODEPOINTS_SHA256, "codepoints file")
+        cp.write_bytes(data)
     out = {}
     for line in cp.read_text(encoding="utf-8").splitlines():
         parts = line.split()
@@ -285,9 +312,10 @@ def main() -> int:
     src = Path(args.src) if args.src else REPO / ".icon-font-src.ttf"
     if not src.exists():
         print(f"downloading Material Symbols -> {src}")
-        urllib.request.urlopen  # noqa: B018 - documents the call used below
-        with urllib.request.urlopen(UPSTREAM) as r, open(src, "wb") as f:  # nosec B310 - fixed https URL
-            f.write(r.read())
+        with urllib.request.urlopen(UPSTREAM) as r:  # nosec B310 - fixed https URL
+            data = r.read()
+        verify_sha256(data, UPSTREAM_SHA256, "variable font")
+        src.write_bytes(data)
 
     upstream = load_codepoints(src)
     unknown = [n for n, _ in GLYPHS if n not in upstream] + (

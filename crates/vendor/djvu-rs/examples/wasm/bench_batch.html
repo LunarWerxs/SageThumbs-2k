@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!-- #610 batch-render bench: JS loop over single-page render() vs
+     render_pages_batch() on the wasm-threads build at several pool sizes.
+     Serve the repo root with COOP/COEP headers (SharedArrayBuffer needed):
+     see examples/wasm/README.md, then open
+       http://localhost:8124/examples/wasm/bench_batch.html?doc=<url>&workers=4 -->
+<meta charset="utf-8">
+<title>djvu-rs #610 batch bench</title>
+<pre id="log">loading…</pre>
+<script type="module">
+import init, { WasmDocument, initThreadPool } from './pkg-threads/djvu_rs.js';
+
+const log = (m) => { document.getElementById('log').textContent += m + "\n"; console.log(m); };
+const median = (v) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+(async () => {
+  document.getElementById('log').textContent = "";
+  const q = new URLSearchParams(location.search);
+  const url = q.get('doc') ?? '../../tests/corpus/watchmaker.djvu';
+  const workers = parseInt(q.get('workers') ?? '4', 10);
+  const dpi = parseInt(q.get('dpi') ?? '100', 10);
+  const batch = parseInt(q.get('batch') ?? '8', 10);
+  await init();
+  if (workers > 0) {
+    await initThreadPool(workers);
+    log(`thread pool: ${workers} workers`);
+  } else {
+    log("no thread pool (sequential)");
+  }
+  const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const doc = WasmDocument.from_bytes(buf);
+  const n = Math.min(batch, doc.page_count());
+  log(`${url}: ${doc.page_count()} pages, batch=${n}, dpi=${dpi}`);
+
+  // Control: JS loop over the existing single-page API.
+  const loop = [];
+  for (let t = 0; t < 3; t++) {
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) doc.page(i).render(dpi);
+    loop.push(performance.now() - t0);
+  }
+  log(`JS loop x${n}: median ${median(loop).toFixed(1)} ms`);
+
+  // Batch API.
+  const bat = [];
+  let pixmaps = null;
+  for (let t = 0; t < 3; t++) {
+    if (pixmaps) pixmaps.forEach(p => p.free());
+    const t0 = performance.now();
+    pixmaps = doc.render_pages_batch(dpi, 0, n);
+    bat.push(performance.now() - t0);
+  }
+  log(`render_pages_batch x${n}: median ${median(bat).toFixed(1)} ms  (${(median(loop) / median(bat)).toFixed(2)}x vs loop)`);
+
+  // Ordering + pixel-identity spot check vs single-page render.
+  const single = doc.page(0).render(dpi);
+  const view0 = pixmaps[0].view();
+  let same = single.length === view0.length;
+  if (same) for (let i = 0; i < single.length; i += 9973) if (single[i] !== view0[i]) { same = false; break; }
+  log(`page0 pixel spot-check vs single render: ${same ? "identical" : "MISMATCH"}`);
+  log("DONE");
+})().catch(e => log("ERROR: " + e));
+</script>

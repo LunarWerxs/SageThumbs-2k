@@ -22,3 +22,9 @@
 # reports as drift that has nothing to do with the actual vendored content.
 /crates/vendor/jxl-render/** -text
 /crates/vendor/jxl-oxide/** -text
+
+# Same reasoning again, for djvu-rs: the patch and the pristine source it targets are both
+# LF, `git apply -p2` matches context byte for byte, and vendor-djvu.ps1 -Check regenerates
+# the tree from pristine + patch and diffs the result against the committed copy.
+/crates/vendor/djvu-patches/*.patch -text
+/crates/vendor/djvu-rs/** -text

@@ -22,6 +22,18 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
 
+# MUST match `UPDATE_PUBLIC_KEY` in src\bin\app\update.rs byte-for-byte. Kept here as a plain
+# constant rather than parsed out of the built binary - a self-check that re-derives the value
+# it is checking from the same build proves nothing, and pasting the same array literal into
+# two places at key-rotation time is the same one-line diff either way. Whoever runs
+# `cargo run --release --example update-keygen` updates BOTH this line and update.rs together;
+# see docs\RELEASE-SECURITY.md for the rotation procedure.
+# Placeholder (32 zero bytes) until the integrator pastes the real key from
+# `update-keygen`'s output - matches update.rs's placeholder, so a release built before the
+# real key exists fails loudly at [4e/6] instead of quietly shipping a signature nothing can
+# ever verify.
+$UpdatePublicKeyHex = '169fce0ade4aeced2dcb36a376c127743844779184f5109bc38c00603fa8325b'
+
 # Standardised stage-outcome line (2026-09-05 audit, finding F22b): before this, a stage that
 # skipped for a good reason ("scanner absent") and one that ran clean printed in whatever prose
 # that call site happened to use, so scanning the run's own console output (its only record -
@@ -349,6 +361,52 @@ try {
         )
     }
 
+    # 4e) Sign every installer + portable zip with the ed25519 key that
+    # `update.rs::verify_signature` checks before the in-app updater ever launches a
+    # downloaded installer. This is a SEPARATE mechanism from the Authenticode signing in
+    # scripts\packaging\sign-release.ps1 (that one proves "this file is really ours" to
+    # Windows, when it is configured at all; this one is what our OWN updater trusts, and it
+    # must exist regardless of whether Authenticode is configured this run - see
+    # docs\RELEASE-SECURITY.md). FAILS THE RELEASE LOUDLY on any problem: a self-update
+    # pipeline that quietly ships an unsigned build is worse than one that never had this step.
+    Write-Host "[4e/6] sign release artifacts (update signature)" -ForegroundColor Green
+    if (-not $env:ST2K_UPDATE_SIGNING_KEY) {
+        $envFile = "$root\.env"
+        if (Test-Path $envFile) {
+            $line = Get-Content $envFile |
+                Where-Object { $_ -match '^\s*ST2K_UPDATE_SIGNING_KEY\s*=' } |
+                Select-Object -First 1
+            if ($line) { $env:ST2K_UPDATE_SIGNING_KEY = ($line -split '=', 2)[1].Trim() }
+        }
+    }
+    if (-not $env:ST2K_UPDATE_SIGNING_KEY) {
+        throw ("ST2K_UPDATE_SIGNING_KEY is not set (checked the environment and $root\.env) - " +
+            "run 'cargo run --release --example update-keygen' once and keep its .env line, " +
+            "or set the variable yourself. A release must not publish without an update " +
+            "signature.")
+    }
+    $signAssetPaths = @(
+        foreach ($artifact in $releaseArtifacts) {
+            $artifact.Setup.FullName
+            $artifact.Portable.FullName
+        }
+    )
+    & cargo run --release --example update-sign -- @signAssetPaths
+    if ($LASTEXITCODE) { throw "update-sign failed - NOT publishing an unsigned release" }
+    foreach ($assetPath in $signAssetPaths) {
+        if (-not (Test-Path "$assetPath.sig")) {
+            throw "update-sign reported success but $assetPath.sig is missing - NOT publishing"
+        }
+    }
+    # Self-check against the compiled-in public key ($UpdatePublicKeyHex, top of this script):
+    # a release can never publish a signature this same tool could not also verify.
+    & cargo run --release --example update-sign -- --verify $UpdatePublicKeyHex @signAssetPaths
+    if ($LASTEXITCODE) {
+        throw ("update-sign --verify failed on our own freshly-signed artifacts - NOT " +
+            "publishing. If UPDATE_PUBLIC_KEY was rotated, update `$UpdatePublicKeyHex at the " +
+            "top of this script to match.")
+    }
+
     # The build must not move HEAD or rewrite tracked inputs after we captured + validated $sha.
     # The optional local marketing-site refresh is ignored and is deliberately not an
     # installer/provenance input.
@@ -471,15 +529,19 @@ try {
     # Target the immutable SHA we actually checked, not the moving `main` ref: another push while
     # this script waits/builds must never make the release tag point at an unvalidated commit.
     Write-Host "[5/6] create + verify draft release $tag" -ForegroundColor Green
-    # Installers ONLY. The .release.json build manifest is still generated and still gated on
-    # (step [4/6] runs check-release-manifest.ps1 against it BEFORE anything is uploaded), but
-    # it is LOCAL provenance: nothing downstream reads the published copy - not the in-app
-    # updater (which reads GitHub's own release JSON), not winget, not CI. Publishing it only
-    # put a large, noisy file next to the two things people actually download.
+    # Installers + portable zips + their `.sig` files. The .release.json build manifest is
+    # still generated and still gated on (step [4/6] runs check-release-manifest.ps1 against it
+    # BEFORE anything is uploaded), but it is LOCAL provenance: nothing downstream reads the
+    # published copy - not the in-app updater (which reads GitHub's own release JSON), not
+    # winget, not CI. Publishing it only put a large, noisy file next to the things people
+    # actually download. The `.sig` files ARE read downstream (by the in-app updater, see
+    # [4e/6] above) so they ride the same upload + digest-verify loop as everything else here.
     $releaseAssetPaths = @(
         foreach ($artifact in $releaseArtifacts) {
             $artifact.Setup.FullName
+            "$($artifact.Setup.FullName).sig"
             $artifact.Portable.FullName
+            "$($artifact.Portable.FullName).sig"
         }
     )
     gh release create $tag @releaseAssetPaths `

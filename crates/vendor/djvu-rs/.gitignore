@@ -1,0 +1,43 @@
+/target
+/fuzz/target
+/tests/no_std_smoke/target
+Cargo.lock
+*.orig
+scripts/djvulibre_bench
+scripts/djvulibre_bench_ci
+examples/wasm/pkg/
+
+# macOS Finder metadata
+.DS_Store
+
+# djvu-py local test/dev venv + caches (make -C djvu-py py-test)
+/djvu-py/.venv
+/djvu-py/.pytest_cache
+/djvu-py/tests/__pycache__
+/djvu-py/**/__pycache__
+
+# Local profiling output (samply, perf, custom JSON dumps)
+/profile.json.gz
+/profile_*.json
+/profile_*.json.gz
+
+# Stray dev artefacts (accidental render output, ad-hoc binaries)
+/0
+/rust_out
+
+# Local debug/profiling examples kept out-of-tree (any leading-underscore prefix)
+/examples/_*.rs
+
+# Personal profiling/comparison harnesses (scratch, hardcoded paths)
+/examples/bench_render_lib.rs
+/examples/compare_render.rs
+/examples/profile_jb2.rs
+/examples/zp_call_counter.rs
+
+# Claude Code local state (user-specific, never shared)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# Serena local project state (user-specific, never shared)
+/.serena/

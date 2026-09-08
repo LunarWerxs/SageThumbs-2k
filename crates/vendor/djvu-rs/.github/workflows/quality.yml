@@ -1,0 +1,117 @@
+name: Encoder quality
+
+# Runs encode_quality_jb2 + encode_quality_iw44 on the in-tree corpus
+# (tests/corpus/*.djvu) and:
+#   - on a monthly schedule, uploads the JSONL results as artifacts and
+#     refreshes the historical CSV at target/quality/
+#   - on PRs that touch encoder code (`*_encode.rs`, encode_quality_*),
+#     posts a comparison comment showing the new vs base size + PSNR
+#     numbers
+#
+# This is the CI item from #191's DoD. The harnesses themselves live as
+# `examples/encode_quality_*.rs`; running them locally is a one-liner:
+#     cargo run --release --features cli --example encode_quality_jb2 \
+#         -- tests/corpus/*.djvu
+
+on:
+  pull_request:
+    paths:
+      - 'src/**_encode*.rs'
+      - 'src/jb2_encode/**'
+      - 'src/iw44_encode/**'
+      - 'examples/encode_quality_*.rs'
+      - '.github/workflows/quality.yml'
+  schedule:
+    - cron: '0 5 1 * *'   # 1st of each month, 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality:
+    name: Run quality harnesses
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: encode-quality
+
+      - name: Build harnesses
+        run: |
+          cargo build --release --features cli \
+            --example encode_quality_jb2 \
+            --example encode_quality_iw44
+
+      - name: JB2 quality (cjb2 baseline)
+        run: |
+          ./target/release/examples/encode_quality_jb2 \
+            tests/corpus/cable_1973_100133.djvu \
+            tests/corpus/conquete_paix.djvu \
+            tests/corpus/watchmaker.djvu \
+              > jb2_quality.jsonl 2> jb2_summary.txt || true
+          echo "── JB2 summary ──"
+          cat jb2_summary.txt
+
+      - name: IW44 quality (PSNR vs original BG44)
+        run: |
+          ./target/release/examples/encode_quality_iw44 \
+            tests/corpus/watchmaker.djvu \
+            tests/corpus/conquete_paix.djvu \
+              > iw44_quality.jsonl 2> iw44_summary.txt || true
+          echo "── IW44 summary ──"
+          cat iw44_summary.txt
+
+      - name: Build markdown report
+        id: report
+        run: |
+          {
+            echo "## Encoder quality — `${{ github.sha }}`"
+            echo
+            echo "### JB2 (size vs cjb2)"
+            echo '```'
+            cat jb2_summary.txt
+            echo '```'
+            echo
+            echo "### IW44 (size + PSNR vs original)"
+            echo '```'
+            cat iw44_summary.txt
+            echo '```'
+          } > report.md
+          # GH Actions output capture (multi-line via heredoc-style delimiter)
+          {
+            echo "report<<EOF"
+            cat report.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: encoder-quality
+          message: ${{ steps.report.outputs.report }}
+
+      - name: Upload JSONL artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: encoder-quality-${{ github.run_id }}
+          path: |
+            jb2_quality.jsonl
+            jb2_summary.txt
+            iw44_quality.jsonl
+            iw44_summary.txt
+          retention-days: 90

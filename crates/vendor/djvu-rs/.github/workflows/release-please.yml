@@ -1,0 +1,89 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # Use the built-in GITHUB_TOKEN — no dependency on an expiring PAT.
+          # A dedicated RELEASE_PLEASE_TOKEN was previously used only so the release
+          # PR would auto-trigger CI, but that PAT expired and silently broke the
+          # 0.25.0 release ('Bad credentials'). Releases are now cut by manually
+          # pushing the vX.Y.Z tag, which triggers publish.yml independently of this
+          # workflow (see RELEASING.md), so the PAT is no longer on the release path.
+          # Tradeoff: GitHub does not run workflows on events created by GITHUB_TOKEN,
+          # so the release PR shows BLOCKED on never-run checks — nudge it
+          # (close/reopen) or admin-merge to land the version bump, then push the tag.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          crates=(
+            "djvu-zp:crates/djvu-zp/Cargo.toml"
+            "djvu-iff:crates/djvu-iff/Cargo.toml"
+            "djvu-bitmap:crates/djvu-bitmap/Cargo.toml"
+            "djvu-pixmap:crates/djvu-pixmap/Cargo.toml"
+            "djvu-bzz:crates/djvu-bzz/Cargo.toml"
+            "djvu-jb2:crates/djvu-jb2/Cargo.toml"
+            "djvu-iw44:crates/djvu-iw44/Cargo.toml"
+            "djvu-rs:Cargo.toml"
+          )
+
+          for entry in "${crates[@]}"; do
+            name="${entry%%:*}"
+            manifest="${entry#*:}"
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+
+            if cargo info "$name@$version" --registry crates-io >/dev/null 2>&1; then
+              echo "$name $version already on crates.io — skipping."
+              continue
+            fi
+
+            cargo publish -p "$name" --no-verify
+            sleep 20
+
+            for i in $(seq 1 30); do
+              if cargo info "$name@$version" --registry crates-io >/dev/null 2>&1; then
+                echo "$name $version is live."
+                break
+              fi
+              if [ "$i" = 30 ]; then
+                echo "::error::$name $version did not appear on crates.io within 5 minutes"
+                exit 1
+              fi
+              echo "[$i/30] waiting for $name $version on crates.io..."
+              sleep 10
+            done
+          done

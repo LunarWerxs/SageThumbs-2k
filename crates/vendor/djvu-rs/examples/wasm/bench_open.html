@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<!-- #609 lazy-open bench: WasmDocument.from_bytes on a large bundled document.
+     Serve the repo root:  python3 -m http.server 8123
+     then open http://localhost:8123/examples/wasm/bench_open.html?doc=<url> -->
+<meta charset="utf-8">
+<title>djvu-rs #609 open bench</title>
+<pre id="log">loading…</pre>
+<script type="module">
+import init, { WasmDocument } from './pkg/djvu_rs.js';
+
+const log = (m) => { document.getElementById('log').textContent += m + "\n"; console.log(m); };
+const median = (v) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+(async () => {
+  document.getElementById('log').textContent = "";
+  const url = new URLSearchParams(location.search).get('doc')
+    ?? '../../tests/fixtures/navm_fgbz.djvu';
+  await init();
+  const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  log(`${url}: ${(buf.length / 1048576).toFixed(1)} MB`);
+
+  const memMB = () =>
+    (performance?.memory?.usedJSHeapSize / 1048576)?.toFixed(1) ?? "n/a";
+
+  // Constructor wall-clock over several trials (fresh document each time).
+  const ctor = [];
+  let doc = null;
+  for (let i = 0; i < 25; i++) {
+    if (doc) doc.free();
+    const t0 = performance.now();
+    doc = WasmDocument.from_bytes(buf);
+    ctor.push(performance.now() - t0);
+  }
+  log(`from_bytes median: ${median(ctor).toFixed(2)} ms (${ctor.map(t => t.toFixed(1)).join(", ")})`);
+  log(`pages: ${doc.page_count()}  jsHeap: ${memMB()} MB`);
+
+  // Open-to-first-render latency (fresh document).
+  doc.free();
+  const t0 = performance.now();
+  doc = WasmDocument.from_bytes(buf);
+  const page = doc.page(0);
+  page.render(100);
+  log(`open→first-render(100dpi): ${(performance.now() - t0).toFixed(2)} ms`);
+
+  // Random mid-page and sequential access still work (correctness spot-check).
+  const mid = doc.page(Math.floor(doc.page_count() / 2));
+  const px = mid.render(50);
+  log(`mid-page render(50dpi): ${px.length} bytes  OK`);
+  log("DONE");
+})().catch(e => log("ERROR: " + e));
+</script>

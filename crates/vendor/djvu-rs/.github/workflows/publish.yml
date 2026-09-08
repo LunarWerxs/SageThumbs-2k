@@ -1,0 +1,159 @@
+name: Publish to crates.io
+
+on:
+  release:
+    types: [published]
+  # Also trigger on manual tag push (for emergency releases outside release-please).
+  push:
+    tags: ['v*', 'djvu-rs-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.6.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PUBLISH_REF="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            PUBLISH_REF="${{ github.event.release.tag_name }}"
+          else
+            PUBLISH_REF="${GITHUB_REF_NAME}"
+          fi
+          echo "PUBLISH_REF=$PUBLISH_REF" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PUBLISH_REF }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify version matches tag
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          TAG="${PUBLISH_REF#djvu-rs-v}"
+          TAG="${TAG#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::Cargo.toml version ($VERSION) does not match tag (v$TAG)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - name: Run tests
+        # Mirrors the CI Test (stable) job on main — the `cli` feature gates
+        # the `djvu` binary that several integration tests need.
+        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+
+      - name: Check workspace packages
+        run: |
+          for package in \
+            djvu-zp \
+            djvu-iff \
+            djvu-bitmap \
+            djvu-pixmap
+          do
+            cargo package -p "$package" --allow-dirty --no-verify
+          done
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: validate
+    environment: crates-io
+    steps:
+      - name: Resolve ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PUBLISH_REF="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            PUBLISH_REF="${{ github.event.release.tag_name }}"
+          else
+            PUBLISH_REF="${GITHUB_REF_NAME}"
+          fi
+          echo "PUBLISH_REF=$PUBLISH_REF" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PUBLISH_REF }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
+      - name: Verify version matches tag
+        run: |
+          VERSION_FROM_MANIFEST=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          TAG="${PUBLISH_REF#djvu-rs-v}"
+          TAG="${TAG#v}"
+          if [ "$VERSION_FROM_MANIFEST" != "$TAG" ]; then
+            echo "::error::Cargo.toml version ($VERSION_FROM_MANIFEST) does not match tag (v$TAG)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION_FROM_MANIFEST" >> "$GITHUB_ENV"
+
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          crates=(
+            "djvu-zp:crates/djvu-zp/Cargo.toml"
+            "djvu-iff:crates/djvu-iff/Cargo.toml"
+            "djvu-bitmap:crates/djvu-bitmap/Cargo.toml"
+            "djvu-pixmap:crates/djvu-pixmap/Cargo.toml"
+            "djvu-bzz:crates/djvu-bzz/Cargo.toml"
+            "djvu-jb2:crates/djvu-jb2/Cargo.toml"
+            "djvu-iw44:crates/djvu-iw44/Cargo.toml"
+            "djvu-rs:Cargo.toml"
+          )
+
+          for entry in "${crates[@]}"; do
+            name="${entry%%:*}"
+            manifest="${entry#*:}"
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+
+            if cargo info "$name@$version" --registry crates-io >/dev/null 2>&1; then
+              echo "$name $version already on crates.io — skipping."
+              continue
+            fi
+
+            cargo publish -p "$name" --no-verify
+            sleep 20
+
+            for i in $(seq 1 30); do
+              if cargo info "$name@$version" --registry crates-io >/dev/null 2>&1; then
+                echo "$name $version is live."
+                break
+              fi
+              if [ "$i" = 30 ]; then
+                echo "::error::$name $version did not appear on crates.io within 5 minutes"
+                exit 1
+              fi
+              echo "[$i/30] waiting for $name $version on crates.io..."
+              sleep 10
+            done
+          done

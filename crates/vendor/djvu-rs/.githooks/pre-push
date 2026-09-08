@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Mirror of the deterministic CI gates; blocks a push that would red the CI.
+# Enable once: make hooks   (sets core.hooksPath=.githooks)
+# Bypass once: git push --no-verify
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

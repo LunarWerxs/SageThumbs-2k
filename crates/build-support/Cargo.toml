@@ -1,0 +1,10 @@
+[package]
+name = "build-support"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "Shared Windows resource-compilation helpers for this workspace's build scripts (build-dependency only, never a runtime dependency)"
+
+[lib]

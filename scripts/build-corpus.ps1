@@ -80,6 +80,29 @@ function Test-IsPng([string]$path) {
     ($n -eq 4) -and ($b[0] -eq 0x89) -and ($b[1] -eq 0x50) -and ($b[2] -eq 0x4E) -and ($b[3] -eq 0x47)
 }
 
+# Every third-party sample this script downloads gets its SHA-256 verified here, so a
+# changed or hijacked upstream file fails loudly instead of silently becoming the new
+# "known good" regression sample. $Sha256 = $null means this URL has no pin yet (see the
+# comment where it is used) - the download still proceeds, unverified, same as before this
+# existed. On a mismatch the partial/wrong file is removed so the NEXT run retries it
+# instead of treating a bad file as "already have it".
+function Get-PinnedFile {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [Parameter(Mandatory)][string]$Dest,
+        [string]$Sha256,
+        [int]$TimeoutSec = 60
+    )
+    Invoke-WebRequest $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -UserAgent 'curl/8.4.0'
+    if ($Sha256) {
+        $actual = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash
+        if ($actual -ne $Sha256) {
+            Remove-Item $Dest -Force -EA SilentlyContinue
+            throw "SHA-256 mismatch for $Dest`nexpected: $Sha256`nactual:   $actual"
+        }
+    }
+}
+
 # Heal a corpus poisoned by the old behavior FIRST: any leftover sample.<ext>
 # that is really a renamed PNG gets dropped, so the loop's "kept pre-existing"
 # report is honest and the download section (which skips existing files) isn't
@@ -345,54 +368,52 @@ public static class WmfConv {
 # --- 5) Real-world downloads for formats we can't synthesize -------------------
 if (-not $SkipDownloads) {
     $dls = @{
-        'sample.psd'      = 'https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test.psd'
-        'sample.psb'      = 'https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test7.psb'
-        'sample.afdesign' = 'https://raw.githubusercontent.com/NickBeeuwsaert/AFDesignLoad/master/testDesigns/raster_test.afdesign'
-        'sample.blend'    = 'https://raw.githubusercontent.com/mewspring/blend/master/testdata/block.blend'
-        'sample.clip'     = 'https://raw.githubusercontent.com/dobrokot/clip_to_psd/master/tests/test_export_all_features.clip'
+        'sample.psd'      = @{ url = 'https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test.psd'; sha256 = 'A28EBC85DC9A4BC134D87E3FAFCFF1C2FB1CB4D0323FB5507A2FACA61A1F0CDF' }
+        'sample.psb'      = @{ url = 'https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test7.psb'; sha256 = '3AAE71E57E7E6044C3DF63EE9292151007EEC7E63C44587E79C607D0EDA34449' }
+        'sample.afdesign' = @{ url = 'https://raw.githubusercontent.com/NickBeeuwsaert/AFDesignLoad/master/testDesigns/raster_test.afdesign'; sha256 = '35AFA31B89F2B9970EB3701EE64E2A19476383637E8B07689334D6FFE556B593' }
+        'sample.blend'    = @{ url = 'https://raw.githubusercontent.com/mewspring/blend/master/testdata/block.blend'; sha256 = '524B3E750C01A52280A417648474AB17DC11DA2A02498B717AA4E6C8DCC57310' }
+        'sample.clip'     = @{ url = 'https://raw.githubusercontent.com/dobrokot/clip_to_psd/master/tests/test_export_all_features.clip'; sha256 = '5E342DD8B397ED6C915B701BF77151CCCAFD93CC684BBE09439B91D8102C4E8E' }
         # Paint.NET. Two on purpose: the modern one is a normal multi-layer 4.21 save,
         # and the -pdn35 one was written by Paint.NET 3.510, which proves the embedded
         # preview is not a modern-only feature. Both must thumbnail.
-        'sample.pdn'      = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/Untitled2.pdn'
-        'sample-pdn35.pdn' = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/oldPDN3510.pdn'
+        'sample.pdn'      = @{ url = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/Untitled2.pdn'; sha256 = '6071E461AACA036FCAB27EEA96D83355F509780A0631BB55799CF131E4C5C10B' }
+        'sample-pdn35.pdn' = @{ url = 'https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/oldPDN3510.pdn'; sha256 = '113E70A0C2E3CE83B4F6533FF7243A5A54B80F31047720E4967087322ADF73FD' }
         # Camera RAW (decode-only — magick can't write it): real small samples.
         # (The old rawpy iss115.DNG URL was ALWAYS 404 — never noticed because a
         # renamed-PNG fake pre-empted the download until 2026-07-08.)
-        'sample.dng'      = 'https://raw.githubusercontent.com/Exiv2/exiv2/main/test/data/IMG_1361.dng'
-        'sample.kdc'      = 'https://raw.githubusercontent.com/letmaik/rawpy/main/test/RAW_KODAK_DC50_%C3%A9.KDC'
+        'sample.dng'      = @{ url = 'https://raw.githubusercontent.com/Exiv2/exiv2/main/test/data/IMG_1361.dng'; sha256 = '79D2A91E5A6584D8F56BB7FF90FEE4114548019B8FC590DA661B5A77B2DFC535' }
+        'sample.kdc'      = @{ url = 'https://raw.githubusercontent.com/letmaik/rawpy/main/test/RAW_KODAK_DC50_%C3%A9.KDC'; sha256 = '37E290DBD0053F00E508D02A6B3A2A990432DAD1EB74C40A52CA899F0F225ECC' }
         # Kindle/Mobipocket ebook with an embedded cover (container/mobi.rs).
-        'sample.mobi'     = 'https://raw.githubusercontent.com/bfabiszewski/libmobi/public/tests/samples/sample-cp1252.mobi'
+        'sample.mobi'     = @{ url = 'https://raw.githubusercontent.com/bfabiszewski/libmobi/public/tests/samples/sample-cp1252.mobi'; sha256 = 'E77AA8F99D65F12BC7B5D71F272A2A4A8F36FE6D5C00E9B95C8A926B145AD088' }
         # Comic-book RAR with images (container/rar.rs, pure-Rust `rars` — renders in
         # the default build now, no feature gate).
-        'sample.cbr'      = 'https://raw.githubusercontent.com/ssokolow/rar-test-files/master/build/testfile.rar3.cbr'
+        'sample.cbr'      = @{ url = 'https://raw.githubusercontent.com/ssokolow/rar-test-files/master/build/testfile.rar3.cbr'; sha256 = '6598D1C5F7ACCFEEFBDA2BF03F934181486A42EA06A4D322D6016410D1A89CC1' }
         # SketchUp: a real GUI-saved model (carries the embedded 256px thumbnail PNG
         # we carve in container/skp.rs). Minimal/programmatic .skp have no thumbnail.
-        'sample.skp'      = 'https://raw.githubusercontent.com/SketchUp/testup-2/main/tests/SketchUp%20Ruby%20API/TC_Sketchup_DefinitionList/import_files/circle.skp'
+        'sample.skp'      = @{ url = 'https://raw.githubusercontent.com/SketchUp/testup-2/main/tests/SketchUp%20Ruby%20API/TC_Sketchup_DefinitionList/import_files/circle.skp'; sha256 = 'B5E1BE3AD874BEE0B605B540E0002D882EB7C0F52761E890BC138CBD7DDBBDB0' }
         # AutoCAD 2000 (real save, DIB preview -> container/dwg.rs wraps it to BMP).
-        'sample.dwg'      = 'https://raw.githubusercontent.com/LibreDWG/libredwg/master/test/test-data/example_2000.dwg'
+        'sample.dwg'      = @{ url = 'https://raw.githubusercontent.com/LibreDWG/libredwg/master/test/test-data/example_2000.dwg'; sha256 = '34574244D7556D1EF7B437443D9B3D1AD8662E1C669C42D80CFF6A8A19799BE9' }
         # Rhino 7 (real save, zlib-deflated DIB preview -> container/rhino.rs).
-        'sample.3dm'      = 'https://github.com/ladybug-tools/lbt-grasshopper-samples/raw/master/samples/honeybee-energy/Rhino/shoe_box.3dm'
+        'sample.3dm'      = @{ url = 'https://github.com/ladybug-tools/lbt-grasshopper-samples/raw/master/samples/honeybee-energy/Rhino/shoe_box.3dm'; sha256 = 'C8C8B62DB8FA9B57CE32AF8574B5F684BE11B80C969348D86206A814E436EB92' }
         # Visio (real save, docProps/thumbnail.emf -> project.rs + magick EMF tier).
-        'sample.vsdx'     = 'https://github.com/Structural-Mechanics-CEG/mechanics-figures-source/raw/0acf216e7915cadc2b396bef5037533fef98790a/shear_3/Tekening1.vsdx'
+        'sample.vsdx'     = @{ url = 'https://github.com/Structural-Mechanics-CEG/mechanics-figures-source/raw/0acf216e7915cadc2b396bef5037533fef98790a/shear_3/Tekening1.vsdx'; sha256 = '0BC6F3B4C42DE3B11110D96A55DF8520511E04153E74BAD1459E49D1C393CE73' }
         # InDesign (real save, base64 JPEG in XMP -> container/indd.rs). Git-LFS: fetch via media. host.
-        'sample.indd'     = 'https://media.githubusercontent.com/media/caesuric/familiar-quest/39d89aa7a5f98ec3e86d904f9bd483d7f5068931/Art/Unit%20Frame%20Circle.indd'
+        'sample.indd'     = @{ url = 'https://media.githubusercontent.com/media/caesuric/familiar-quest/39d89aa7a5f98ec3e86d904f9bd483d7f5068931/Art/Unit%20Frame%20Circle.indd'; sha256 = '0917BF9ADA239D12C97D48BCD1C43271720DA6C9D3F2D1CDC6F3AFD7D4CB17E9' }
         # 3ds Max (real save, OLE SummaryInformation thumbnail -> container/max.rs+ole.rs). Git-LFS.
-        'sample.max'      = 'https://media.githubusercontent.com/media/wuye9036/SalviaRenderer/9eefbd4d036f2ff7bf7c03ae5b620865af964d6d/res/Logo3D.max'
+        'sample.max'      = @{ url = 'https://media.githubusercontent.com/media/wuye9036/SalviaRenderer/9eefbd4d036f2ff7bf7c03ae5b620865af964d6d/res/Logo3D.max'; sha256 = 'DC835592933258BF80AA1F16956830C798ED31CC8CAD9BD13C416EA2385F4D3D' }
         # Visio legacy binary (real save, OLE thumbnail = CF_ENHMETAFILE/EMF under the 0xFFFFFFFF sentinel). Git-LFS.
-        'sample.vsd'      = 'https://media.githubusercontent.com/media/microchip-ung/mesa/25e97aadd4a1f27190ee08a6c942042ec0673135/mesa/docs/l3/l3.vsd'
+        'sample.vsd'      = @{ url = 'https://media.githubusercontent.com/media/microchip-ung/mesa/25e97aadd4a1f27190ee08a6c942042ec0673135/mesa/docs/l3/l3.vsd'; sha256 = '441163EBEA94390A2A9BC88A5714F2212771E9C3D4688B9C158664F5D79C44C3' }
         # Publisher (real save, OLE thumbnail = CF_METAFILEPICT/WMF). An empty doc, but a valid preview.
-        'sample.pub'      = 'https://archive.org/download/NouveauMicrosoftPublisherDocument/Nouveau%20Microsoft%20Publisher%20Document.pub'
+        'sample.pub'      = @{ url = 'https://archive.org/download/NouveauMicrosoftPublisherDocument/Nouveau%20Microsoft%20Publisher%20Document.pub'; sha256 = 'E050EA777D910137FFF7C160992EC026AB4F76832B6C96701B114E379ABF4CA3' }
         # HEIC (magick can't write it here): libheif's own example image -> WIC/magick read tiers.
-        'sample.heic'     = 'https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic'
+        'sample.heic'     = @{ url = 'https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic'; sha256 = '7F8B363E4936C0666A25F64F3A92FDA10BD8E5453BE4592530B65A55DD98F3F2' }
         # libheif's pinned auxiliary-alpha fixtures. The HEIC guards our ImageMagick-first
         # route around WIC's flattened HEVC alpha item; the compact `mini` AVIF guards our
         # explicit ImageMagick coder hint.
-        # SHA-256: DAC399D3BF1019BAAF5F88EEF8B277087D0643E735DB947C42355237BB9D0221
-        'sample-heic-alpha.heic' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/with-alpha-512x512.heic'
-        # SHA-256: 6D78AF07FBAD358F4240820331074FFF215AE8559BF4756EC480C6A6BE2A68D9
-        'sample-avif-alpha.avif' = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif'
+        'sample-heic-alpha.heic' = @{ url = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/with-alpha-512x512.heic'; sha256 = 'DAC399D3BF1019BAAF5F88EEF8B277087D0643E735DB947C42355237BB9D0221' }
+        'sample-avif-alpha.avif' = @{ url = 'https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif'; sha256 = '6D78AF07FBAD358F4240820331074FFF215AE8559BF4756EC480C6A6BE2A68D9' }
         # DICOM (read-only in magick): pydicom's small CT test file -> magick read tier.
-        'sample.dcm'      = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'
+        'sample.dcm'      = @{ url = 'https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm'; sha256 = '3DD31E5CC835B3F2CDD46C9DA1982F59251E78518FEFA8163D914631C66437D6' }
         # Flash video. THREE codecs live in .flv and they take three DIFFERENT paths, so one
         # sample cannot represent the extension:
         #   * sample.flv (synthesised below) is SORENSON SPARK  -> spawned st2k child (h263-rs)
@@ -400,15 +421,13 @@ if (-not $SkipDownloads) {
         #   * sample-h264.flv                                   -> IN-PROCESS mini-MP4 remux
         #                                                          + Media Foundation
         # Without the VP6 file the VP6 half rested entirely on manual checking.
-        # SHA-256: F61D4A1696000CBB6D1E6A8BD7E4682656DA3AD017C49FD6D7C47A7F28D8AEFE
-        'sample-vp6.flv'  = 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv'
+        'sample-vp6.flv'  = @{ url = 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv'; sha256 = 'F61D4A1696000CBB6D1E6A8BD7E4682656DA3AD017C49FD6D7C47A7F28D8AEFE' }
         # H.264-in-FLV is the codec behind the ORIGINAL report — Windows cannot open an FLV at
         # all, so every one of them was blank regardless of what was inside. This note used to
         # say the path needed no file here because a unit test re-wraps sample.mp4's avcC and
         # keyframe into a synthetic FLV. That test proves the MUXER; it cannot prove we read a
         # tag layout a real Flash encoder emitted, which is the half that faces users. 36 KB.
-        # SHA-256: 395D606D171A0088BDEDA14929F8A3686ED4CD29477A13EAE1248D4889EC2FEE
-        'sample-h264.flv' = 'https://fate-suite.ffmpeg.org/flv/streamloop.flv'
+        'sample-h264.flv' = @{ url = 'https://fate-suite.ffmpeg.org/flv/streamloop.flv'; sha256 = '395D606D171A0088BDEDA14929F8A3686ED4CD29477A13EAE1248D4889EC2FEE' }
         # VP9 Profile 2 (10-bit 4:2:0) + Profile 3 (12-bit 4:4:4) WebM, from FFmpeg's own
         # FATE conformance vectors. Media Foundation cannot decode these AT ALL (verified
         # with the Store VP9 extension installed and a capable GPU present), so they
@@ -416,22 +435,21 @@ if (-not $SkipDownloads) {
         # open codec of issue #26. A plain .webm sample already exists (generated below);
         # these two are extra for the same reason .flv carries two: one extension, several
         # codepaths.
-        # SHA-256: C4B56B148D5039AA824FDE3D4877DBD2604D0DE7F77AF96F4BA1ADE537396A38
-        'sample-vp9p2.webm' = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp92-2-20-10bit-yuv420.webm'
-        # SHA-256: E758190A9A4A75E5F35C370FC6C362C56B66AAAFE9FBC981747B5CC59C68B903
-        'sample-vp9p3.webm' = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp93-2-20-12bit-yuv444.webm'
+        'sample-vp9p2.webm' = @{ url = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp92-2-20-10bit-yuv420.webm'; sha256 = 'C4B56B148D5039AA824FDE3D4877DBD2604D0DE7F77AF96F4BA1ADE537396A38' }
+        'sample-vp9p3.webm' = @{ url = 'https://fate-suite.ffmpeg.org/vp9-test-vectors/vp93-2-20-12bit-yuv444.webm'; sha256 = 'E758190A9A4A75E5F35C370FC6C362C56B66AAAFE9FBC981747B5CC59C68B903' }
         # Android package (container/apk.rs): a REAL apk, because the whole point of that
         # extractor is resolving the launcher icon the manifest names through the compiled
         # resource table, and a synthesised one only proves the parser reads what we wrote.
         # Pinned to a commit: androguard's test data is stable but `master` is not a promise.
-        'sample.apk'      = 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk'
+        'sample.apk'      = @{ url = 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk'; sha256 = '3BB32DD50129690BCE850124EA120AA334E708EAA7987CF2329FD1EA0467A0EB' }
         # GIMP XCF (read-only in magick): GIMP's own test file -> magick read tier.
-        'sample.xcf'      = 'https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf'
+        'sample.xcf'      = @{ url = 'https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf'; sha256 = 'A1557A22FD7BA5D8185447C932A708BD2369910203081590E45E3A3CABE46636' }
     }
     foreach ($n in $dls.Keys) {
         if (Test-Path "$OutDir\$n") { continue }
         # curl UA: GitLab (the GIMP xcf) 406es PowerShell's default User-Agent.
-        try { Invoke-WebRequest $dls[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 -UserAgent 'curl/8.4.0' } catch { Write-Host "  download failed: $n" }
+        try { Get-PinnedFile -Url $dls[$n].url -Dest "$OutDir\$n" -Sha256 $dls[$n].sha256 -TimeoutSec 60 }
+        catch { Write-Host "  download failed: $n - $($_.Exception.Message)" }
     }
 }
 
@@ -509,12 +527,13 @@ if (-not $SkipDownloads) {
     # the 1-LSB the D3D spec allows). The BC6H one is SIGNED and a real HDR
     # panorama, which is the case nothing else in the tree could decode at all.
     $wild = @{
-        'sample-dds-bc7-real.dds'  = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc7.dds'
-        'sample-dds-bc6hs.dds'     = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/lythwood_room_1k_bc6h_signed.dds'
+        'sample-dds-bc7-real.dds'  = @{ url = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc7.dds'; sha256 = '6442978C1AD507579AF568E0FDA5CD0F1A5E830FA89E6ABF2A2DA8067532ADC9' }
+        'sample-dds-bc6hs.dds'     = @{ url = 'https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/lythwood_room_1k_bc6h_signed.dds'; sha256 = 'C9C30C81CA5A50181B820F2F4F59AC8E0A6C5DA8C533DEB7D867C38DA8AA8F29' }
     }
     foreach ($n in $wild.Keys) {
         if (Test-Path "$OutDir\$n") { continue }
-        try { Invoke-WebRequest $wild[$n] -OutFile "$OutDir\$n" -UseBasicParsing -TimeoutSec 60 } catch { Write-Host "  download failed: $n" }
+        try { Get-PinnedFile -Url $wild[$n].url -Dest "$OutDir\$n" -Sha256 $wild[$n].sha256 -TimeoutSec 60 }
+        catch { Write-Host "  download failed: $n - $($_.Exception.Message)" }
     }
 }
 
@@ -549,7 +568,9 @@ $py = (Get-Command python -EA SilentlyContinue).Source
 if ($py -and -not $SkipDownloads) {
     try {
         $mpcSrc = "$OutDir\_mpc_base.mpc"
-        Invoke-WebRequest 'https://raw.githubusercontent.com/Serial-ATA/lofty-rs/main/lofty/tests/files/assets/minimal/mpc_sv8.mpc' -OutFile $mpcSrc -UseBasicParsing -TimeoutSec 30
+        # SHA-256 pinned inline (see Get-PinnedFile above) so a changed/hijacked donor .mpc
+        # fails loudly here instead of quietly changing what the APEv2-cover path is tested against.
+        Get-PinnedFile -Url 'https://raw.githubusercontent.com/Serial-ATA/lofty-rs/main/lofty/tests/files/assets/minimal/mpc_sv8.mpc' -Dest $mpcSrc -Sha256 'AAF9DC78DE9746665461FD36B83073DD31CA12BC288CD6B390F9D5424F6D5669' -TimeoutSec 30
         $mk = @'
 import sys
 try:
@@ -595,6 +616,21 @@ $audioSrc = [ordered]@{
     aiff = 'with-id3.aif'
     aac  = 'empty.aac'
 }
+# SHA-256 per extension (see Get-PinnedFile above), so a changed/hijacked donor fails loudly
+# instead of quietly changing what the per-container cover-tagging path is tested against.
+$audioSha256 = @{
+    mp3  = '13E44044A8D59D4D6A184A40740F280C66487F721C14701FFF4F82DC097CC055'
+    flac = '999C5BC800D7B7E073CCE8B42E194788F277BF4EB8E3C9EAA28E017D5875C62B'
+    ogg  = 'EF87F2D30E344F8C9EDBB4ABBA2793ADCCD192CE36F6997F669A6D391202CFDF'
+    opus = '2B198BB1169C6CB8BC52239DEECFA261F4FF495E0BDBF830C771B26BD7AAB9BC'
+    spx  = '4D71FA19B12845C943BAF94D105F171A0F573C09F0809C9B18118D0167263292'
+    m4a  = '70D81F379C6C8E5D73041844C9D5445AC28D6CF311B9B52E3819A1460C8379F1'
+    ape  = '81A7635F1ED19DA80832CDCFC3BC68B5D5C840EBFE193AB626290B0DE0B6C602'
+    wv   = 'E40898D80BC44DCBC3CEBC723D53965C4D1A46F0AAB02A6511B8D232A3DD6C37'
+    wav  = '0AA9B83850C24894DFF7FB594915782E3E8A5A3B8CC3C0A07DC78A265DC7DFC3'
+    aiff = 'B6EB4538732EE93C2E337FCC503A807DA5FA39E3FFAA286FA1F5753341F6D865'
+    aac  = 'F232D5ABF590789D62241EE2C33BD23A78D02706B86992256A84D4647C43E24F'
+}
 if ($py -and -not $SkipDownloads) {
     $tagPy = @'
 import sys, base64
@@ -638,7 +674,7 @@ print('ok')
     foreach ($a in $audioSrc.Keys) {
         $dst = "$OutDir\sample.$a"
         try {
-            Invoke-WebRequest "https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/$($audioSrc[$a])" -OutFile $dst -UseBasicParsing -TimeoutSec 30
+            Get-PinnedFile -Url "https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/$($audioSrc[$a])" -Dest $dst -Sha256 $audioSha256[$a] -TimeoutSec 30
             $r = (& $py $tagFile $dst $base 2>&1) -join ' '
             if ($r -match 'ok') { $audioOk += $a } else { Remove-Item $dst -Force -EA SilentlyContinue; $audioSkip += "$a($r)" }
         } catch { Remove-Item $dst -Force -EA SilentlyContinue; $audioSkip += $a }
@@ -705,9 +741,28 @@ Write-Host "[corpus] $aliasN alias/variant samples (Blender backups, image + RAW
 # default icon, but must not crash or hang - so they belong in the corpus as coverage.
 if (-not $SkipDownloads) {
     $vidBase = 'https://filesamples.com/samples/video'
+    # SHA-256 per extension (see Get-PinnedFile above): filesamples.com is a live site, so a
+    # mismatch here can also mean the upstream sample legitimately changed, not just a hijack -
+    # either way it should fail loudly and get a fresh pin rather than silently swap the file
+    # the video tier is regression-tested against.
+    $videoSha256 = @{
+        mp4  = '5E66E01296A4984841BAAF0B9542AED07A5D5EB84958135A8D612B9FF1EC9419'
+        mkv  = '534943EEE427A8095BDC7D5452054E1FC4485A566F6ED54337A90F9D37499031'
+        webm = 'B2703C5A84123F878A7B99FD67D52155AFB13C3B63DD17617C6C06066806DDFB'
+        avi  = 'E8CC4DB9312505C3A10BEDF528450DB177F9C174D2F361511C3B24A2BE45CC5A'
+        wmv  = 'CA9B6DA6028741E122AACA3EA29E7E02016C7AA4104E5C952E30520C69E70E73'
+        flv  = 'DFCE1BF9731630DA85FAB4EAE955A6444EE7B2D70BE3B5FE02BDEBAECD433828'
+        mpg  = 'EC23CD413881CF2122905F4334E5ADAF06ABA1F333EA982143ACB7E0D7748571'
+        mpeg = 'C5679F35F03F4EE55A3C1BE0B677880BCCF19467DDC1D9106AD310A26585DB1A'
+        ts   = '64804DF9D209528587E44D6EA49B72F74577FBE64334829DE4E22F1F45C5074C'
+        m2ts = 'FE92E5F3303539EC001A74D61134DB9A3BFBAC1EFE157C0ED4A8C9CF3B9B6F5D'
+        mts  = '64804DF9D209528587E44D6EA49B72F74577FBE64334829DE4E22F1F45C5074C'
+        vob  = 'C00FDDEBA7FF70A8AB284CE8BECB9FF60811D052AF3F3AE32C281E84F5E372AB'
+        ogv  = 'EEE7EB0F6A7BA02E36B82228E5F830CB341C0ABB5E34424E5F1DF031898B35F7'
+    }
     foreach ($v in 'mp4', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', 'ts', 'm2ts', 'mts', 'vob', 'ogv') {
-        try { Invoke-WebRequest "$vidBase/$v/sample_640x360.$v" -OutFile "$OutDir\sample.$v" -UseBasicParsing -TimeoutSec 90 }
-        catch { Write-Host "  video download failed: $v" }
+        try { Get-PinnedFile -Url "$vidBase/$v/sample_640x360.$v" -Dest "$OutDir\sample.$v" -Sha256 $videoSha256[$v] -TimeoutSec 90 }
+        catch { Write-Host "  video download failed: $v - $($_.Exception.Message)" }
     }
     foreach ($p in @(, @('mp4', 'm4v')) + @(, @('mp4', 'mov')) + @(, @('mp4', 'qt')) + @(, @('mp4', '3gp')) + @(, @('mp4', '3g2')) + @(, @('mp4', 'f4v')) + @(, @('avi', 'divx')) + @(, @('wmv', 'asf')) + @(, @('mpg', 'm2v'))) {
         if (Test-Path "$OutDir\sample.$($p[0])") { Copy-Item "$OutDir\sample.$($p[0])" "$OutDir\sample.$($p[1])" -Force }
@@ -728,7 +783,8 @@ if (Test-Path "$OutDir\sample.aiff") { Copy-Item "$OutDir\sample.aiff" "$OutDir\
 if ($py -and -not $SkipDownloads -and -not (Test-Path "$OutDir\sample.dsf")) {
     try {
         $dsfSrc = "$OutDir\_dsf_base.dsf"
-        Invoke-WebRequest 'https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/2822400-1ch-0s-silence.dsf' -OutFile $dsfSrc -UseBasicParsing -TimeoutSec 30
+        # SHA-256 pinned inline (see Get-PinnedFile above) for the same reason as the mpc donor.
+        Get-PinnedFile -Url 'https://raw.githubusercontent.com/quodlibet/mutagen/main/tests/data/2822400-1ch-0s-silence.dsf' -Dest $dsfSrc -Sha256 '5B7DF131B4B3504D8544412135F0407104137D94371503A05C27BB41D5018CDF' -TimeoutSec 30
         $mkd = @'
 import sys
 try:

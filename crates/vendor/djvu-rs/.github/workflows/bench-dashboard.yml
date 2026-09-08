@@ -1,0 +1,110 @@
+name: Benchmark dashboard
+
+# Publishes Criterion benchmark history to a public dashboard on the gh-pages
+# branch via benchmark-action/github-action-benchmark. Runs only on main-branch
+# pushes that touch source/benches and on release tags, so PR runs in
+# bench.yml stay fast and the public timeline only records merged commits.
+#
+# Output: https://matyushkin.github.io/djvu-rs/dev/bench/
+#
+# See #197 for design rationale.
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: write          # push to gh-pages
+  deployments: write       # github-action-benchmark stores deployment markers
+
+concurrency:
+  group: bench-dashboard
+  cancel-in-progress: false  # don't drop history points
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  publish:
+    name: Publish dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-dashboard-ubuntu
+
+      # ── Run all Criterion benchmarks in bencher format ───────────────────
+      # github-action-benchmark consumes the `bencher` (libtest) format.
+      - name: Bench codecs
+        run: cargo bench --bench codecs -- --output-format bencher 2>&1 | tee bench_output.txt
+
+      - name: Bench render
+        run: cargo bench --bench render --features pdf -- --output-format bencher 2>&1 | tee -a bench_output.txt
+
+      - name: Bench document
+        run: cargo bench --bench document -- --output-format bencher 2>&1 | tee -a bench_output.txt
+
+      # ── DjVuLibre baseline (overlay on the same dashboard) ───────────────
+      # Compiles libdjvulibre's render benchmark and emits one bencher line
+      # per DPI so github-action-benchmark plots a parallel timeline next to
+      # djvu-rs's render_page series. This satisfies the "DjVuLibre ratio
+      # overlay" item of #197's DoD. The asset (colorbook.djvu) is checked
+      # into references/djvujs/ so no fetch step is needed.
+      - name: Run DjVuLibre render benchmark
+        id: djvulibre
+        continue-on-error: true
+        run: |
+          mkdir -p target/djvulibre-bench
+          bash scripts/bench_djvulibre.sh target/djvulibre-bench
+          # Parse render_only lines from djvulibre_bench.txt → one bencher line
+          # per case.  Extract the target DPI from the preceding "size" line so
+          # each case gets a unique name (djvulibre_render_dpi_72 etc.) that
+          # aligns with the Criterion render_page/dpi/* series.
+          python3 - <<'PYEOF' >> bench_output.txt
+          import re, pathlib
+          txt = pathlib.Path("target/djvulibre-bench/djvulibre_bench.txt").read_text()
+          current_dpi = None
+          for line in txt.splitlines():
+              m_size = re.search(r"->(\d+)dpi", line)
+              if m_size:
+                  current_dpi = int(m_size.group(1))
+                  continue
+              m_render = re.match(r"render_only\s*:\s*([\d.]+)\s*ms", line)
+              if m_render and current_dpi is not None:
+                  ns = int(float(m_render.group(1)) * 1_000_000)
+                  print(f"test djvulibre_render_dpi_{current_dpi} ... bench: {ns} ns/iter (+/- 0)")
+          PYEOF
+
+      # ── Publish history + dashboard to gh-pages ─────────────────────────
+      - name: Push to gh-pages dashboard
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: djvu-rs benchmarks
+          tool: 'cargo'
+          output-file-path: bench_output.txt
+          # Persist on the gh-pages branch under dev/bench/ → published page.
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # 10 % regression alert on any benchmark; comment on the commit that
+          # introduced it (see #197 DoD).
+          alert-threshold: '110%'
+          fail-on-alert: false
+          comment-on-alert: true
+          alert-comment-cc-users: '@matyushkin'

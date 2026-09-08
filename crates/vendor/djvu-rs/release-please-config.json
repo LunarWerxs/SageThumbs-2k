@@ -1,0 +1,11 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "include-component-in-tag": false
+    }
+  }
+}
