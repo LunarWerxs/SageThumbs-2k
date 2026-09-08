@@ -308,7 +308,10 @@ if ($Samples) {
                 continue
             }
             $png = Join-Path $out ($f.BaseName + '-' + $f.Extension.TrimStart('.') + '.png')
-            & $st2k thumbnail $f.FullName $png 256 *> $null
+            # `--size N`, as regression.ps1 passes it: the CLI stopped accepting a bare
+            # trailing size (it refuses a third file argument), so this stage reported every
+            # sample as "failed to render" until 2026-09-08 - a false red nobody re-read.
+            & $st2k thumbnail $f.FullName $png --size 256 *> $null
             $rendered = ($LASTEXITCODE -eq 0) -and (Test-Path $png)
             $wantFail = $expectFail.ContainsKey($f.Name)
             $alphaOk = $true

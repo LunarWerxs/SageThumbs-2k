@@ -893,6 +893,7 @@ pub fn luma_sd(img: &DynamicImage) -> f64 {
 }
 
 mod avifmf;
+mod cicp;
 mod color;
 mod dds;
 mod jp2;
@@ -934,6 +935,9 @@ mod wic;
 // re-exported by NAME, so `decode::` means the same thing to the rest of the crate as
 // it did before the split (a `pub use child::*` would also trip the
 // "does not re-export anything public enough" lint on the `pub(super)` items).
+// By name, not a glob: a second glob exporting a `fuzzapi` module would shadow `dds::fuzzapi`
+// below into a private-import error.
+use cicp::{cicp_hdr_to_linear, png_cicp};
 use color::*;
 use dds::*;
 use mesh::*;
@@ -946,6 +950,8 @@ use wic::*;
 
 /// Direct fuzz entry points for the DDS block decoder. Re-exported by name so `crate::fuzz`
 /// can reach it without widening `dds`'s own visibility.
+#[cfg(test)]
+pub(crate) use cicp::fuzzapi as cicp_fuzzapi;
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;
 #[cfg(test)]
@@ -1892,6 +1898,13 @@ fn decode_with_image_alloc_raw(
     }
     let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
+    // An HDR PNG (a `cICP` chunk saying PQ or HLG) becomes display-linear float here, so
+    // the float arm of the caller tone-maps it exactly like EXR/Radiance. `cICP` outranks
+    // `iCCP` by specification, hence the dropped profile. SDR `cICP` values and every
+    // non-PNG input fall through unchanged (see `cicp.rs`).
+    if let Some(linear) = png_cicp(bytes).and_then(|c| cicp_hdr_to_linear(&img, &c)) {
+        return Ok((linear, None));
+    }
     Ok((img, icc))
 }
 

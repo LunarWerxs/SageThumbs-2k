@@ -29,6 +29,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **HDR PNGs render correctly.** A PNG carrying the `cICP` colour chunk with a PQ or
+  HLG transfer (what recent HDR tools write) is now converted to linear light and
+  tone-mapped the way EXR and Radiance files already are, instead of being shown as a
+  washed-out picture with the wrong curve. Ordinary PNGs are untouched.
 - **Rename with pattern.** A new entry in the Rename submenu opens a small dialog: type a
   pattern such as `{name}_{n:3}` (placeholders for the name, extension, a padded counter,
   the capture date and the pixel size), optionally find and replace text, watch the live

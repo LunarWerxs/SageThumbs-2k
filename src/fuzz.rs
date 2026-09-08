@@ -187,6 +187,7 @@ fn all_targets() -> Vec<Target> {
 /// or the SPS bit reader.
 fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
+    use crate::decode::cicp_fuzzapi as cicp;
     use crate::decode::dds_fuzzapi as dds;
     use crate::decode::jp2_fuzzapi as jp2;
     use crate::decode::mesh_fuzzapi as mesh;
@@ -222,6 +223,9 @@ fn inner_targets() -> Vec<Target> {
         ("mesh::ascii_stl", mesh::ascii_stl),
         ("mesh::obj", mesh::obj),
         ("mesh::ply", mesh::ply),
+        // The PNG `cICP` chunk walk (2026-09-08): runs ahead of EVERY PNG decode in the
+        // thumbnail host, on the raw bytes, so it is fuzzed like the other pre-decode peeks.
+        ("cicp::png_cicp", cicp::png_cicp),
         // JPEG 2000 codestream walk, reached in-process by the thumbnail host.
         ("jp2::dimensions", jp2::dimensions),
         ("jp2::decode_reduced", jp2::decode_reduced),
@@ -745,6 +749,24 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// See `header_stubs`: PNG signature, a 1x1 16-bit RGB IHDR, a cICP chunk, an empty IDAT
+/// and IEND, with dummy CRCs.
+fn png_cicp_stub() -> Vec<u8> {
+    let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+    let chunk = |typ: &[u8; 4], data: &[u8]| {
+        let mut c = (data.len() as u32).to_be_bytes().to_vec();
+        c.extend_from_slice(typ);
+        c.extend_from_slice(data);
+        c.extend_from_slice(&[0, 0, 0, 0]);
+        c
+    };
+    v.extend(chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 16, 2, 0, 0, 0]));
+    v.extend(chunk(b"cICP", &[9, 16, 0, 1]));
+    v.extend(chunk(b"IDAT", &[]));
+    v.extend(chunk(b"IEND", &[]));
+    v
+}
+
 /// Tiny format headers — enough magic to send each sniffer/extractor down its real path.
 fn header_stubs() -> Vec<Vec<u8>> {
     let mut v: Vec<Vec<u8>> = vec![
@@ -764,6 +786,9 @@ fn header_stubs() -> Vec<Vec<u8>> {
         b"BLENDER-v300".to_vec(),            // blend
         b"\x89PNG\r\n\x1a\n".to_vec(),       // png sig
     ];
+    // A PNG header with a `cICP` chunk (BT.2020 / PQ / full range) ahead of a stub IDAT,
+    // so the chunk walk is mutated past its signature check (CRCs are not checked by it).
+    v.push(png_cicp_stub());
     // MP4 audio brand (M4A) — routes the ISO-BMFF path as audio, not video.
     v.push(mp4box(b"ftyp", b"M4A \0\0\0\0M4A mp42isom"));
     v

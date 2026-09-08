@@ -674,8 +674,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   they no longer look over-saturated next to ordinary photos. AVIF/HEIC read their
   profile from the ISOBMFF `colr` box, including the CICP `nclx` Display-P3 signal
   iPhone HEIC uses, and CMYK JPEGs are converted through their embedded CMYK profile.
-  All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the transform), no C
-  colour-engine dependency.
+  HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
+  linear light and tone-mapped like EXR and Radiance files, so they render with the right
+  curve instead of washed out. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
+  transform), no C colour-engine dependency.
 - **Lossless where it matters:** metadata strip rewrites JPEG segments / PNG chunks
   without touching pixels; rotate writes a copy rather than re-compressing in place.
 - **Permissive, lean dependencies:** MIT/Apache/BSD only; no GPL/AGPL, **no
