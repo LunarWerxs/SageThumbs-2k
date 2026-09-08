@@ -143,7 +143,8 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   **18 more: AVIF · JPEG XL · PSD · DDS · JP2 · PCX · SGI · EXR · HDR · Farbfeld · PAM · PFM · DPX ·
   FITS · XPM · PICT · RAS · PALM**; a per-format **Settings…** button (JPEG quality ·
   **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
-  presets *or* a custom **W × H**, an output-folder picker, and a progress bar. Batch:
+  presets *or* a custom **W × H**, a **Watermark** option (an image of your choice in a
+  corner or the centre, with size and opacity), an output-folder picker, and a progress bar. Batch:
   applies to the whole selection. OneDrive files that are still cloud-only (not yet
   downloaded to this PC) are skipped instead of failing the batch, and the dialog tells
   you how many were skipped. On completion it offers to **open the output folder**.
@@ -170,6 +171,10 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   EXIF (`YYYY-MM-DD HH.MM.SS`, optional camera prefix), music from audio tags (via
   `lofty`: `Artist - Title`, or zero-padded `NN - Title`). Files missing the needed
   metadata are left untouched; name clashes get a `(2)`, `(3)`… suffix.
+  **Rename with pattern…** opens a small dialog for everything else: a pattern with
+  `{name}`, `{ext}`, `{n}` / `{n:3}` (a padded counter), `{date}` (capture date, else the
+  file date), `{w}` and `{h}`, plus a find-and-replace, with a live preview of the first files
+  before anything is touched. The last pattern is remembered; nothing is ever overwritten.
 - **Files to folder**: create a folder and move the selected file(s) into it
   (works on any file type). One file → a folder named after it (no prompt); several
   → a name-prompt dialog. Always makes a *fresh* folder (never merges into an
@@ -178,6 +183,9 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Sort into folders ▸**
   - **By image size**: move each selected image into a `WIDTHxHEIGHT` subfolder of
     its own folder.
+  - **By date taken**: move each selected image into a `YYYY-MM-DD` subfolder of
+    its own folder, named from its EXIF capture date. A file with no capture date
+    is left where it is.
   - **By audio tag…**: sort selected music files into folders from their tags. A
     dialog takes a destination, a folder-name **template** (`$artist - $album`,
     tokens `$artist`/`$album`/`$title`/`$track`, `\` to nest), a "missing tag" text,
@@ -222,6 +230,8 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   *(These four were a "Tools ▸" submenu; they're now individual top-level entries:
   show/hide + reorder each like any other menu item.)*
 - **Copy to clipboard**: the image as a bitmap.
+- **Copy as data URI**: base64-encodes the file and copies a `data:<mime>;base64,…`
+  URI to the clipboard as text, ready to paste into CSS/HTML/JSON.
 - **Upload (copy link)**: uploads the selected image(s) to a keyless, no-account
   host (**catbox.moe** by default; overridable via the `ScreenshotUploadUrl` registry
   value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
@@ -234,7 +244,8 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer (the same mechanism as Explorer's own
   Customize ▸ Change Icon).
-- **Set as wallpaper ▸** Stretched · Tiled · Centered.
+- **Set as wallpaper ▸** Stretched · Tiled · Centered · Filled · Fitted · Spanned.
+- **Set as lock screen** - the same decode path as wallpaper, then Windows' own lock-screen setting.
 - **Settings**: opens the Settings window (same as the Start-menu shortcut), so
   settings are reachable straight from the right-click menu.
 
@@ -435,6 +446,9 @@ plus these viewer-only extras:
 - **Save the page or frame you're looking at.** Click the toolbar's save button, or press
   **Ctrl+S**, to save what's currently on screen as a PNG: the page you're on in a multi-page
   PDF, or the frame you're paused on in an animated GIF/APNG/WebP or video.
+- **Print what you're looking at.** The toolbar's print button, or **Ctrl+P**, opens the
+  standard Windows print dialog and prints the image, PDF page or animation frame fitted to
+  the page.
 - A calm **info card** (icon, name, size, date) for unsupported files or folders, never an error.
 
 The viewer is a separate single-instance process, so a hostile-file decode can only take down a
@@ -720,8 +734,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   JPEG XL encode already SHIP via the bundled ImageMagick, with a quality slider in the Convert
   dialog; lossless/lossy WebP shipped too. A native WIC-backed HEIF/AVIF encoder is a possible
   future optimization to shrink the ImageMagick dependency for those targets.)*
-- **Quick edits:** set-as-lock-screen, contact sheet / montage, copy-as-base64 data URI.
-  *(Lossless JPEG rotate (jpegtran-style, no recompression) already shipped, see §2.)*
+- **Quick edits:** set-as-lock-screen, contact sheet / montage.
+  *(Lossless JPEG rotate (jpegtran-style, no recompression) already shipped, see §2;
+  copy-as-base64 data URI shipped too, see §2's "Copy as data URI".)*
 
 *(**DjVu** and the lossless-JPEG-rotate bullets used to live here as "planned"; both shipped
 (DjVu via the pure-Rust `djvu-rs` crate, see §1) and were moved out so this list only shows

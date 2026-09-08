@@ -29,6 +29,30 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **Rename with pattern.** A new entry in the Rename submenu opens a small dialog: type a
+  pattern such as `{name}_{n:3}` (placeholders for the name, extension, a padded counter,
+  the capture date and the pixel size), optionally find and replace text, watch the live
+  preview, and rename the selection in one go. Nothing is ever overwritten.
+- **Set as lock screen**, beside "Set as wallpaper", for any format SageThumbs can decode.
+- **`st2k upload <file>`** uploads through the same hosts the screenshot editor uses and prints
+  the URL (`--copy` also puts it on the clipboard).
+- **The Quick preview's toolbars are keyboard-reachable.** Tab moves into the caption
+  toolbar and the video controls, arrows move along them, Enter or Space presses, Escape
+  returns to the content; the focused button shows a ring.
+- **Print from the Quick preview.** A print button on the caption toolbar (or **Ctrl+P**)
+  sends the image, the PDF page or the animation frame you are looking at to the standard
+  Windows print dialog, fitted to the page.
+- **Watermark in the Convert dialog.** Tick "Watermark", choose an image, and pick a corner
+  (or the centre), a size as a percentage of the picture and an opacity; it is applied after
+  the resize and before the encode, for every output format including the ImageMagick ones.
+- **Three more wallpaper placements: Fill, Fit and Span**, alongside the existing Stretch,
+  Tile and Center, in the "Set as wallpaper" menu.
+- **Sort by date taken.** A new "Sort into folders ▸ By date taken" verb moves each selected
+  image into a `YYYY-MM-DD` folder named from its EXIF capture date; a file with no capture
+  date is left where it is.
+- **Copy as data URI.** A new "Copy as data URI" verb base64-encodes the selected image and
+  copies a `data:<mime>;base64,...` URI to the clipboard as text, ready to paste into CSS,
+  HTML or JSON.
 - **Retry only the files that failed, from the command line or from the failure report.** After
   a batch that only partly succeeded, `st2k batch --retry-from report.json` re-runs exactly the
   files a saved `--json` report lists as failed, with whatever options you give it, and reports
@@ -109,6 +133,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   and Import Settings buttons already do. Handy for rolling one configuration out to a fleet
   of installs.
 
+- **Downloaded updates are now checked for a valid signature before they run.** The one-click
+  updater already verified a downloaded installer's size and checksum; it now also confirms
+  the installer was signed by us before installing it, and refuses to run one that wasn't.
+
 ### Changed
 
 - **Importing a settings file now fully replaces your settings instead of merging with them.**
@@ -130,6 +158,28 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   previously only double-clicking could get you there.
 
 ### Fixed
+
+- **A broken image can no longer take Explorer down through Copy to clipboard, Set as
+  wallpaper, Set folder icon or Compress to size.** Those four now decode in the helper
+  process the other verbs already use, and fall back to the old path only when the helper is
+  not installed.
+- **Archive listings no longer show garbled names for Japanese or DOS-era zips, rars and
+  tars.** Entry names that are not UTF-8 now fall back to Shift-JIS and then to the DOS code
+  page, the way the archivers that wrote them meant.
+- **A short Windows-1252 text file such as one containing "Straße" no longer opens as a stray
+  Chinese reading.** The legacy-encoding scorer now prefers the system code page on short
+  buffers when the alternative is a single accidental double-byte match.
+- **Converting to AVIF, JPEG XL and the other ImageMagick-encoded formats now keeps the
+  picture's EXIF, XMP and colour profile**, the same way Resize and Rotate already did.
+- **A portable copy no longer writes its upload-hosts config into the host PC's profile;** it
+  lives beside the portable settings file like everything else.
+- **A file that fails to thumbnail is no longer re-decoded at full cost on every Explorer
+  redraw.** The thumbnail host remembers the failure for two minutes (keyed on the file's
+  name, size and modified time, so an edited file is retried at once).
+- **Debug logging costs nothing when it is off.** Log lines are only formatted when the Debug
+  switch is on, instead of being built and then dropped.
+- **Italian and Brazilian Portuguese "Set as wallpaper (stretched)" no longer used the word
+  for "spanned".**
 
 - **The diagnostics bundle is safe to hand to a stranger, and complete enough to be useful.**
   The zip that `st2k doctor --bundle` writes now carries a snapshot of your stored settings, which

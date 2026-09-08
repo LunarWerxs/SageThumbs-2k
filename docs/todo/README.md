@@ -1,9 +1,8 @@
 # todo
 
-One markdown file per piece of open work. Subfolders are fine for grouping by owner or theme, the
-way Connections does it (`michael-do-me/`, `mcp-improvements/`).
+Open work for this repo lives in ONE file here, `TODO.md` (owner decision, 2026-09-07). It is
+gitignored with everything else in this folder; this README is the folder's index, not an
+item, and is the only file here that is tracked.
 
-This README is the folder's index, not an item: Odin skips it when counting what is outstanding.
-
-**A completed to-do is assimilated, then deleted.** Whatever it taught belongs in the code, a check,
-or a document that outlives it; a finished item left here is just a thing to re-read and re-decide.
+A finished item is deleted from `TODO.md` and its story goes to `docs/ROADMAP.md`. Do not add
+per-item files, a second backlog, or a handoff markdown; add a section to `TODO.md`.

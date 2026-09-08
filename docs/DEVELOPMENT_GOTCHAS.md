@@ -927,3 +927,47 @@ invisible to every review**: a pattern there that is not anchored (`examples/` r
 `/examples/`) hides the same-named directory anywhere in the tree, including inside a vendored
 crate. Anchor such rules, or keep them in the tracked `.gitignore` where a reviewer can see
 them; the root `/examples/` rule there already did the job the local line was meant to do.
+
+## Threshold discipline: a helper you extract must clear the complexity gate on its own
+
+Learned in the 2026-08-28 complexity burndown (20 tranches, every function taken under the
+gate; the queue file that recorded it was deleted 2026-09-07 and these are the parts that
+outlive it). The gate is cognitive ~30 / cyclomatic ~20 per function, measured by Odin's
+portable scanner, and two of its habits decide whether a split counts:
+
+1. **It scores every `?` as a branch point**, unlike SonarSource-style cognitive complexity
+   that treats early return via `?` as free. A dispatcher with one `?`-propagating call per
+   match arm (a 6-9-way marker switch, each arm calling a fallible `parse_*`) racks up
+   complexity from the `?`s alone after every arm's own nesting is flat. `parse_headers`
+   (jpegtran.rs) and `parse` (jp2/codestream.rs) both needed a second pass for exactly this:
+   flattening got them from over 100 to 40-70 and they still gated, until each arm returned
+   its `Result`/`Option` via `.map()` and the whole match propagated ONE `?` after it (see
+   `HeaderMarkerOutcome` / `MarkerOutcome`). For more than ~5 fallible calls dispatched from
+   one match or if-chain, prefer that defer-the-`?` shape over one `?` per arm.
+2. **A helper spawned mid-extraction is not under the gate automatically.** Splitting a giant
+   function usually produces a coordinator (a marker-dispatch loop, a per-line `handle_line`)
+   whose own complexity lands in the 20s-40s with zero nesting. Measure it; land every new
+   helper comfortably under the line, not merely smaller than before.
+
+**Win32 wndproc dispatchers are their own project.** They are large, stateful, side-effect-
+heavy message loops; the mechanical method (one `on_<message>` helper per non-trivial arm,
+the match reduced to dispatch) is safe, but nothing in build, tests or clippy drives real
+window messages through the OS loop, so a split wndproc is proven only by a human
+click-through of the window it serves. Do it in a dedicated session, never as a casual
+extract-and-move pass, and add the click-through to the release checklist.
+
+## `git apply` run inside a vendored subdirectory silently skips a git-style patch
+
+Found 2026-09-07 while vendoring `djvu-rs` the way `exr` and the jxl crates are vendored. The
+vendor scripts `Push-Location` into `crates/vendor/<crate>` and run `git apply -p2 <patch>`.
+That works for the jxl and exr patches, whose headers are the plain unified form
+(`diff -ruN pristine/<crate>/src/x.rs patched/<crate>/src/x.rs`), and silently does nothing
+for a patch with git-style headers (`diff --git a/pristine/src/x.rs b/patched/src/x.rs`):
+git prints `Skipped patch 'src/x.rs'.` and exits 0. The reason is not an ignore rule, though it
+looks like one. Git reads the paths of a `diff --git` patch as repository-root-relative, so
+from inside `crates/vendor/djvu-rs` a path of `src/x.rs` lies outside the current directory
+and is skipped; a plain unified diff's paths are taken relative to the current directory and
+apply. So: write vendor patches in the `diff -ruN pristine/<crate>/... patched/<crate>/...`
+form, never from `git diff`, and treat `Skipped patch` in the output as a failure even when
+the exit code is 0 (`vendor-djvu.ps1` does; the older scripts trust the exit code).
+

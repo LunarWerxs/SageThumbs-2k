@@ -384,3 +384,43 @@ Include the VirusTotal permalink, the download URL, and that the project is open
 
 **Note for whoever handles SourceForge:** its listing reflects ESET's verdict. Getting the ESET
 false positive retracted is what clears it; there is no separate SourceForge appeal to file.
+
+## The update signature
+
+A separate mechanism from everything above, and not about antivirus at all: it's what stops
+the in-app updater from trusting a release it shouldn't.
+
+**The problem.** Before this existed, the self-updater's only proof that a downloaded
+installer was genuine was a sha256 digest carried in the same GitHub API response that named
+the download URL. Anyone who could influence that one response - a compromised release, a
+misdirected DNS/proxy, a malicious mirror - could hand the app a bad file with a digest that
+matches itself. The digest checked "did the bytes arrive intact," never "did they come from
+us."
+
+**What is signed.** Every installer and portable zip gets a detached ed25519 signature at
+release time (`examples/update-sign.rs`, run from `scripts/release.ps1`), uploaded as a
+sibling release asset named `<file>.sig` - 128 lowercase hex characters, no framing. The
+signature covers the exact bytes of the file it sits beside; nothing else (not the JSON, not
+the filename) is signed or checked.
+
+**Where the public key lives.** Baked into the app at compile time: `UPDATE_PUBLIC_KEY` in
+`src/bin/app/update.rs`. The matching private key never ships - it lives only in whoever's
+`.env` holds `ST2K_UPDATE_SIGNING_KEY`, generated once by `examples/update-keygen.rs` and
+never printed or logged by anything in this repo.
+
+**What the app refuses.** Before it ever launches a downloaded installer, the updater looks
+for a `<installer-name>.sig` asset beside it in the same release. If that asset is missing, or
+its content isn't 128 valid hex characters, or the signature doesn't verify against
+`UPDATE_PUBLIC_KEY`, the update stops there and nothing runs - regardless of whether the size
+and sha256 checks passed. There is no bypass for a release published without a signature; an
+unsigned release simply cannot self-install.
+
+**Key rotation.** Ship the new public key in a release that is itself signed with the OLD
+key. A machine on an earlier build still trusts the old key at the moment it fetches that
+release, verifies it, and installs the new binary - which is the one that now carries the new
+`UPDATE_PUBLIC_KEY` and starts trusting the new key from then on. Skipping a signed handoff
+release (jumping straight to signing with a brand-new key nothing yet trusts) strands every
+installed copy: their compiled-in key will never verify anything again, and the update path
+stops working silently rather than loudly. Note the private half separately somewhere durable
+before rotating - there is no recovery for a lost signing key beyond that handoff step, run
+once, by hand.
