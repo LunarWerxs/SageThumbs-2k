@@ -348,6 +348,22 @@ fn owner_hwnd(owner: Option<isize>) -> Option<windows::Win32::Foundation::HWND> 
 /// `isize`) for the error MessageBox, or `None`.
 pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option<isize>) {
     let attempted = paths.len();
+    run_action_detached_with(action, attempted, move || paths, owner);
+}
+
+/// [`run_action_detached`] with the path list produced ON THE WORKER by `resolve`, after
+/// its COM apartment is up. The modern menu's `Invoke` uses it to walk the shell's
+/// `IShellItemArray` (fetched back out of the Global Interface Table) off the shell
+/// thread, so a thousand-file selection costs explorer.exe nothing but the click.
+/// `attempted` is only the count a spawn-failure report shows.
+pub fn run_action_detached_with<F>(
+    action: VerbAction,
+    attempted: usize,
+    resolve: F,
+    owner: Option<isize>,
+) where
+    F: FnOnce() -> Vec<String> + Send + 'static,
+{
     // Pin the DLL BEFORE `spawn`, not as the worker closure's first line: `spawn` only
     // schedules the thread, it doesn't run it, so a `ModuleRef` taken inside the closure
     // leaves a window — between `spawn` returning here and that first line actually
@@ -372,6 +388,7 @@ pub fn run_action_detached(action: VerbAction, paths: Vec<String>, owner: Option
                 )
             }
             .is_ok();
+            let paths = resolve();
             let report = run_action(action, &paths);
             report.surface(parent);
             report.reveal(&paths);

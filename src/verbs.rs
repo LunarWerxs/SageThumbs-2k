@@ -67,7 +67,7 @@ pub use outcome::{BatchReport, Combined, FileOutcome, FileStatus, OmitCause, Omi
 #[allow(unused_imports)]
 pub use actions::{
     copy_rgba_to_clipboard, copy_to_clipboard, is_audio, is_image, run_action, run_action_detached,
-    ActionReport,
+    run_action_detached_with, ActionReport,
 };
 // The free-pattern rename engine's bin-crate surface: the companion app's "Rename
 // with pattern…" dialog (`src/bin/app/rename_dlg.rs`) calls these directly, the same

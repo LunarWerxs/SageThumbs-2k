@@ -7,7 +7,7 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 
-use windows::core::{Error, Ref, Result, BOOL, GUID, HRESULT, PWSTR};
+use windows::core::{Error, Interface, Ref, Result, BOOL, GUID, HRESULT, PWSTR};
 use windows::Win32::Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree, IBindCtx};
 use windows::Win32::UI::Shell::{
@@ -45,10 +45,46 @@ fn alloc_pwstr(s: &str) -> Result<PWSTR> {
 /// Extract filesystem paths from a shell selection (the IShellItemArray the
 /// shell passes to Invoke). Null/empty selection yields an empty Vec.
 unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
-    let mut out = Vec::new();
-    let Ok(arr) = items.ok() else {
-        return out;
+    match items.ok() {
+        Ok(arr) => array_to_paths(arr),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Park the selection in the Global Interface Table so the verb's worker can fetch it
+/// in its own apartment and walk it there ([`paths_from_global`]). `None` when the table
+/// refuses (the caller then walks inline, as before). The table holds its own reference,
+/// so the array outlives the shell's `Invoke` call; the worker revokes it.
+unsafe fn park_selection(items: &Ref<'_, IShellItemArray>) -> Option<u32> {
+    let arr = items.ok().ok()?;
+    let git = crate::video::global_interface_table()?;
+    git.RegisterInterfaceInGlobal(arr, &IShellItemArray::IID)
+        .ok()
+}
+
+/// The worker half of [`park_selection`]: fetch the array back out of the table, revoke
+/// the entry (whatever happens next), and walk it here. An empty Vec if the fetch fails.
+unsafe fn paths_from_global(cookie: u32) -> Vec<String> {
+    let Some(git) = crate::video::global_interface_table() else {
+        return Vec::new();
     };
+    let mut raw: *mut c_void = std::ptr::null_mut();
+    let fetched = git
+        .GetInterfaceFromGlobal(cookie, &IShellItemArray::IID, &mut raw)
+        .is_ok();
+    let _ = git.RevokeInterfaceFromGlobal(cookie);
+    if !fetched || raw.is_null() {
+        safety::log("command: selection could not be fetched from the interface table");
+        return Vec::new();
+    }
+    // SAFETY: a live, AddRef'd IShellItemArray the table just handed this apartment.
+    let arr = IShellItemArray::from_raw(raw);
+    array_to_paths(&arr)
+}
+
+/// Walk an `IShellItemArray` into filesystem paths; items without one are skipped.
+unsafe fn array_to_paths(arr: &IShellItemArray) -> Vec<String> {
+    let mut out = Vec::new();
     let Ok(count) = arr.GetCount() else {
         return out;
     };
@@ -521,17 +557,30 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
     fn Invoke(&self, items: Ref<'_, IShellItemArray>, _ctx: Ref<'_, IBindCtx>) -> Result<()> {
         safety::guard(|| {
             if let verbs::MenuItem::Verb(_, action) = self.item {
-                // `items_to_paths` still walks the whole `IShellItemArray` HERE, on the
-                // thread the shell called `Invoke` on — a large selection pays that cost
-                // before `run_action_detached`'s worker (which only offloads the batch
-                // action itself) ever starts. Moving the array walk off this thread would
-                // need either marshaling `IShellItemArray` across the apartment boundary
-                // or handing the extraction into `run_action_detached` itself; deferred.
-                let paths = unsafe { items_to_paths(items) };
+                // The selection walk (one `GetDisplayName` per item) used to run HERE, on
+                // the shell thread, before the worker started; a large selection paid it
+                // in explorer.exe. The array now goes into the Global Interface Table and
+                // the worker fetches and walks it in its own apartment, so this call
+                // costs one `GetCount` and the spawn. If the table refuses, walk inline
+                // as before rather than drop the click.
                 // Detached worker (see contextmenu.rs): return from Invoke immediately so
                 // the shell thread isn't blocked for the batch. No parent HWND handy here,
                 // so the error MessageBox (if any) is a top-level dialog.
-                verbs::run_action_detached(*action, paths, None);
+                match unsafe { park_selection(&items) } {
+                    Some(cookie) => {
+                        let hint = unsafe { items.ok().and_then(|a| a.GetCount()) }.unwrap_or(0);
+                        verbs::run_action_detached_with(
+                            *action,
+                            hint as usize,
+                            move || unsafe { paths_from_global(cookie) },
+                            None,
+                        );
+                    }
+                    None => {
+                        let paths = unsafe { items_to_paths(items) };
+                        verbs::run_action_detached(*action, paths, None);
+                    }
+                }
             }
             Ok(())
         })

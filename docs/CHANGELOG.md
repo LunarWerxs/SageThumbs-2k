@@ -159,6 +159,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The Windows 11 right-click menu no longer reads a large selection's file names on
+  Explorer's own thread.** That walk happened before the action's worker even started;
+  the worker does it now, so a thousand-file selection costs Explorer only the click.
 - **A broken image can no longer take Explorer down through Copy to clipboard, Set as
   wallpaper, Set folder icon or Compress to size.** Those four now decode in the helper
   process the other verbs already use, and fall back to the old path only when the helper is

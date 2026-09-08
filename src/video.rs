@@ -603,7 +603,9 @@ const CLSID_STD_GLOBAL_INTERFACE_TABLE: GUID =
     GUID::from_u128(0x00000323_0000_0000_c000_000000000046);
 
 /// The process-wide Global Interface Table (a COM singleton; creating it is a lookup).
-unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
+/// Shared with `command.rs`, which parks the modern menu's `IShellItemArray` in it so the
+/// selection walk happens on the verb's worker instead of the shell thread.
+pub(crate) unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
     CoCreateInstance(
         &CLSID_STD_GLOBAL_INTERFACE_TABLE,
         None,
