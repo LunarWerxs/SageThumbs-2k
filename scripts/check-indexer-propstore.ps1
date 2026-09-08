@@ -11,7 +11,9 @@
   reads the two properties back through the same SYSTEMINDEX catalog Explorer's Details pane and
   property searches use (the Search.CollatorDSO OleDb/ADODB provider).
 
-  READ-ONLY apart from one temporary copy of a corpus sample, deleted before exit.
+  READ-ONLY apart from two temporary copies (the sample and a control PNG that Windows'
+  own property handler serves, so an idle or backed-off indexer reads as NOT-MEASURED rather
+  than as our failure), both deleted before exit.
 
       pwsh scripts\check-indexer-propstore.ps1
       pwsh scripts\check-indexer-propstore.ps1 -Sample sample.xcf
@@ -57,6 +59,10 @@ function Invoke-SearchQuery {
 # First directory that SYSTEMINDEX actually returns rows for - i.e. a scope Windows Search is
 # already crawling. A query against an uncrawled folder is not an error, it is just always
 # empty, so "returns at least one row" is the only honest signal available from this provider.
+function Test-PropertyValue {
+    param($Value)
+    return ($null -ne $Value) -and ($Value -isnot [System.DBNull]) -and ("$Value" -ne '')
+}
 function Get-IndexedScopeDir {
     param($Connection, [string[]]$Candidates)
     foreach ($dir in $Candidates) {
@@ -152,48 +158,78 @@ if (-not $dir) {
 $unique = "st2k-indexer-check-$([guid]::NewGuid().ToString('N'))$ext"
 $dstFile = Join-Path $dir $unique
 Copy-Item -LiteralPath $srcFile -Destination $dstFile -Force
-
+# CONTROL: a PNG served by Windows' OWN property handler, dropped beside the sample. If the
+# indexer does not fill Dimensions for Microsoft's handler either, it is not extracting
+# image properties at all right now (backoff under load, a paused catalog, a scope set to
+# file properties only) and an empty result says nothing about OUR handler. On 2026-09-08
+# this check reported FAIL three times on a desk where the control was empty too.
+$controlSrc = Join-Path $Corpus 'sample.png'
+$controlName = $null
+$controlFile = $null
+if ((Test-Path -LiteralPath $controlSrc -PathType Leaf) -and ($ext -ne '.png')) {
+    $controlName = "st2k-indexer-control-$([guid]::NewGuid().ToString('N')).png"
+    $controlFile = Join-Path $dir $controlName
+    Copy-Item -LiteralPath $controlSrc -Destination $controlFile -Force
+}
+function Read-IndexedDims {
+    param($Connection, [string]$Dir, [string]$Name)
+    # Returns @{ Found; Dims; HSize } for one file, reading through the catalog.
+    $r = @{ Found = $false; Dims = $null; HSize = $null }
+    try {
+        $rs = Invoke-SearchQuery -Connection $Connection -Sql (
+            "SELECT System.ItemPathDisplay, System.Image.Dimensions, System.Image.HorizontalSize " +
+            "FROM SYSTEMINDEX WHERE SCOPE='file:$Dir' AND System.FileName='$Name'"
+        )
+        if (-not $rs.EOF) {
+            $r.Found = $true
+            try { $r.Dims = $rs.Fields.Item('System.Image.Dimensions').Value } catch { $r.Dims = $null }
+            try { $r.HSize = $rs.Fields.Item('System.Image.HorizontalSize').Value } catch { $r.HSize = $null }
+        }
+        $rs.Close()
+    } catch {
+    }
+    return $r
+}
 try {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    $found = $false
-    $dims = $null
-    $hsize = $null
+    $main = @{ Found = $false; Dims = $null; HSize = $null }
+    $ctl = @{ Found = $false; Dims = $null; HSize = $null }
     while ((Get-Date) -lt $deadline) {
-        try {
-            $rs = Invoke-SearchQuery -Connection $conn -Sql (
-                "SELECT System.ItemPathDisplay, System.Image.Dimensions, System.Image.HorizontalSize " +
-                "FROM SYSTEMINDEX WHERE SCOPE='file:$dir' AND System.FileName='$unique'"
-            )
-            if (-not $rs.EOF) {
-                $found = $true
-                try { $dims = $rs.Fields.Item('System.Image.Dimensions').Value } catch { $dims = $null }
-                try { $hsize = $rs.Fields.Item('System.Image.HorizontalSize').Value } catch { $hsize = $null }
-                $rs.Close()
-                break
-            }
-            $rs.Close()
-        } catch {
-            # the catalog can reject a query while mid-update - keep polling within the deadline
+        $main = Read-IndexedDims -Connection $conn -Dir $dir -Name $unique
+        # The item shows up in the catalog from the gatherer's FIRST pass (file-system
+        # properties only); the property-handler pass that fills Dimensions lands LATER,
+        # often seconds later. Breaking on the first row read the gap between the two
+        # passes as "the handler returned nothing" (a false FAIL on 2026-09-08), so keep
+        # polling until a value lands or the deadline passes.
+        if ((Test-PropertyValue $main.Dims) -or (Test-PropertyValue $main.HSize)) { break }
+        if ($controlName) {
+            $ctl = Read-IndexedDims -Connection $conn -Dir $dir -Name $controlName
         }
         Start-Sleep -Seconds $PollSec
     }
-
-    if (-not $found) {
+    if (-not $main.Found) {
         Write-Result 'NOT-MEASURED' "$unique never appeared in the index within ${TimeoutSec}s (indexer may be busy or paused) - not a proof of failure" Yellow
         exit 2
     }
-
-    $hasDims = ($null -ne $dims) -and ($dims -isnot [System.DBNull]) -and ("$dims" -ne '')
-    $hasHSize = ($null -ne $hsize) -and ($hsize -isnot [System.DBNull]) -and ("$hsize" -ne '')
-
-    if ($hasDims -or $hasHSize) {
+    $dims = $main.Dims
+    $hsize = $main.HSize
+    if ((Test-PropertyValue $dims) -or (Test-PropertyValue $hsize)) {
         Write-Result 'PASS' "indexer served System.Image.Dimensions='$dims' System.Image.HorizontalSize='$hsize' for $unique via the $ext property handler" Green
         exit 0
     }
-
-    Write-Result 'FAIL' "$unique was indexed but System.Image.Dimensions/HorizontalSize came back empty - the isolated indexer host is not getting properties from our handler" Red
+    if ($controlName) {
+        $ctlHas = (Test-PropertyValue $ctl.Dims) -or (Test-PropertyValue $ctl.HSize)
+        if (-not $ctlHas) {
+            Write-Result 'NOT-MEASURED' "$unique stayed without dimensions for ${TimeoutSec}s, but so did the control PNG served by Windows' own handler ($controlName): the indexer is not extracting image properties right now (backoff under load, paused, or a properties-only scope) - not a proof of failure" Yellow
+            exit 2
+        }
+        Write-Result 'FAIL' "$unique stayed without System.Image.Dimensions/HorizontalSize for the whole ${TimeoutSec}s window while the control PNG got '$($ctl.Dims)' from Windows' own handler - the isolated indexer host is not getting properties from our handler" Red
+        exit 1
+    }
+    Write-Result 'FAIL' "$unique was indexed but System.Image.Dimensions/HorizontalSize stayed empty for the whole ${TimeoutSec}s window (no control PNG available to rule the indexer out) - the isolated indexer host is not getting properties from our handler" Red
     exit 1
 } finally {
     Remove-Item -LiteralPath $dstFile -Force -ErrorAction SilentlyContinue
+    if ($controlFile) { Remove-Item -LiteralPath $controlFile -Force -ErrorAction SilentlyContinue }
     $conn.Close()
 }

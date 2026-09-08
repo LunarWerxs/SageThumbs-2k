@@ -1880,14 +1880,34 @@ mod tests {
             let barrier = std::sync::Arc::clone(&barrier);
             joins.push(std::thread::spawn(move || {
                 barrier.wait(); // start both "sessions" as close together as possible
-                update_history_at(&path, |h| {
-                    h.nag_count += 1;
-                    if who == 0 {
-                        h.key_prefix = "esk_SESA".to_string();
-                    } else {
-                        h.last_status = "session-b".to_string();
+                                // `update_history_at` refuses to write when the lock is not free within
+                                // its (test-shortened, ~150 ms) budget, and a slow CI runner can hold the
+                                // other session's read-modify-write open longer than that: on 2026-09-08
+                                // the GitHub windows runner did, and this test blamed the LOCK for an
+                                // increment that was never attempted. So a session that lost the lock
+                                // race tries again, as a real second session would on its next run. A lock
+                                // that let the second writer THROUGH is still caught below: that write
+                                // succeeds and clobbers, and the count comes out one short whatever the
+                                // retries did.
+                let mut tries = 0u32;
+                loop {
+                    let wrote = update_history_at(&path, |h| {
+                        h.nag_count += 1;
+                        if who == 0 {
+                            h.key_prefix = "esk_SESA".to_string();
+                        } else {
+                            h.last_status = "session-b".to_string();
+                        }
+                    });
+                    if wrote {
+                        break;
                     }
-                });
+                    tries += 1;
+                    assert!(
+                        tries < 200,
+                        "session {who} could not take the history lock in 200 tries"
+                    );
+                }
             }));
         }
         for j in joins {

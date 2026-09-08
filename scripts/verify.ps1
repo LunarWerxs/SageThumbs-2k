@@ -457,7 +457,14 @@ exit `$code
     Stage 'installed surface: EPS thumbnail + preview handler' {
         # -Sta, via Windows PowerShell (not pwsh): the script's own apartment-state check
         # throws outside it, matching the .EXAMPLE in its header.
-        & powershell.exe -NoProfile -Sta -File (Join-Path $PSScriptRoot 'verify-installed-epsi-explorer.ps1')
+        # -ExecutionPolicy Bypass: Windows PowerShell's default policy on a client is
+        # Restricted, so without it this stage is a false red on any machine that never
+        # relaxed it (it was, on 2026-09-08). test-installed-shell-surfaces.ps1 already does this.
+        # -TemporarilyShadowForeignPreviewHandler: on a machine where Illustrator (or any
+        # other app) owns the bare .eps PreviewHandler slot the Explorer half can only be
+        # proven under the script's transactional current-user overlay; without the flag the
+        # stage throws on exactly this desk. The overlay is removed before the script exits.
+        & powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-installed-epsi-explorer.ps1') -TemporarilyShadowForeignPreviewHandler
         if ($LASTEXITCODE -ne 0) { throw 'verify-installed-epsi-explorer.ps1 failed' }
     }
     Stage 'installed surface: thumbnails via dllhost' {
