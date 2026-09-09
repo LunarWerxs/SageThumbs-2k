@@ -35,9 +35,44 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The PE header's Machine field: 0xAA64 is ARM64. Read directly, because the only tool this
+# script otherwise has for looking inside a PE is the one that cannot read this kind.
+function Get-PeMachine {
+    param([Parameter(Mandatory)][string]$PePath)
+    $bytes = [IO.File]::ReadAllBytes($PePath)
+    if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return 0 }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+    if ($peOffset -le 0 -or $peOffset + 6 -gt $bytes.Length) { return 0 }
+    [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+}
+
+function Resolve-Dumpbin {
+    $found = Get-Command dumpbin.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty Source -ErrorAction SilentlyContinue
+    if ($found) { return $found }
+    $vsRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
+    $found = (Get-ChildItem $vsRoot -Filter dumpbin.exe -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
+        Sort-Object FullName -Descending | Select-Object -First 1).FullName
+    if (-not $found) {
+        throw 'an ARM64 ImageMagick bundle needs MSVC dumpbin.exe to inspect its PE imports (MinGW objdump cannot read ARM64 PEs)'
+    }
+    $found
+}
+
 function Resolve-Objdump {
+    param([Parameter(Mandatory)][string]$BundleRoot)
     if ($ObjdumpPath) {
         return (Resolve-Path -LiteralPath $ObjdumpPath).Path
+    }
+    # MinGW objdump cannot read ARM64 PEs. The caller used to have to know that and pass
+    # dumpbin explicitly; build-release.ps1 did, check-release-manifest.ps1 did not, and the
+    # first ARM64 release after that gate was added (3.0.0, 2026-09-09) died on
+    # "file format not recognized" after main was pushed and CI was green. The bundle
+    # itself says what it is, so decide here, once.
+    $magick = Join-Path $BundleRoot 'magick.exe'
+    if ((Test-Path -LiteralPath $magick -PathType Leaf) -and (Get-PeMachine -PePath $magick) -eq 0xAA64) {
+        return Resolve-Dumpbin
     }
     $command = Get-Command objdump, llvm-objdump -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -244,7 +279,7 @@ foreach ($directory in 'modules\coders', 'modules\filters') {
     }
 }
 
-$inspector = Resolve-Objdump
+$inspector = Resolve-Objdump -BundleRoot $root
 $peFiles = @(Get-ChildItem -LiteralPath $root -Recurse -File |
     Where-Object { $_.Extension -in '.exe', '.dll' })
 if ($peFiles.Count -eq 0) {
