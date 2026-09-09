@@ -58,25 +58,38 @@ if (-not $failed) {
         }
     }
 }
-# CI's build-test job additionally builds a DEBUG cdylib and runs tests against IT, not just
-# the release binary - the release-only ladder above does not exercise that profile at all,
-# despite this script's own header claiming to mirror that job. Debug and release are
-# documented elsewhere in this repo as behaviorally different for the DLL (Media Foundation
-# delay-load / video decode paths), and the COM integration tests LoadLibrary whichever cdylib
-# was built last, so a push could go green here in release and still fail CI's debug leg. Run
-# CI's own two steps, verbatim (ci.yml "Build debug test DLL" / "Unit and integration tests"),
-# in ADDITION to the release ladder above rather than instead of it - the release-profile
-# checks below stay, because release-only failures (e.g. panic=abort link errors) are real too.
+# CI's build-test job builds a DEBUG cdylib and runs the suite against IT. These two steps are
+# that job, verbatim (ci.yml "Build debug test DLL" / "Unit and integration tests"), which is
+# the whole reason they are here: this gate exists to catch what CI would catch, before the
+# round trip. The COM integration tests LoadLibrary whichever cdylib sits in the profile
+# directory they were built into, so the debug DLL built immediately above is the one they get.
+#
+# An earlier version of this comment justified the pairing by claiming debug and release differ
+# behaviourally for the DLL, on the Media Foundation delay-load / video decode paths. MEASURED
+# 2026-09-09, that is false for the test suite: `format_capability_claims` runs all 6 of its
+# tests with nothing skipped in BOTH profiles. `video::media_foundation_available()` is a
+# runtime LoadLibrary probe, identical either way, and src/build.rs applies /DELAYLOAD per-BIN,
+# not per-profile. The CLAUDE.md 6.1 note that claim came from is about verify.ps1 rendering
+# corpus samples through the debug st2k.exe, which is a different binary and a different
+# question. Don't reintroduce the claim without re-measuring it.
 if (-not $failed) { Step 'build debug test DLL (mirrors CI)' { cargo build --locked } }
 if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests } }
 
-# `--tests` DOES include the library and binary unit tests: Cargo's documented target
-# selection builds every target that has `test = true` in test mode, which is the lib, the
-# bins and the tests/ targets alike. An earlier version of this comment claimed the opposite
-# (that `--tests` selected only tests/), and that claim was wrong (verified against the Cargo
-# reference and by enumerating the targets, 2026-09-05 audit, F21). `--lib` stays alongside
-# it as an explicit, harmless second selector, not because anything depends on the disagreement.
-if (-not $failed) { Step 'unit + integration tests (lib + tests)' { cargo test --release --lib --tests } }
+# A SECOND, release-profile run of the same suite used to sit here and it cost ~8 minutes of
+# every push. It now lives in `.github/workflows/release-profile-tests.yml` and runs as a GATE
+# inside `release.ps1` at step [3b/6], dispatched and waited on.
+#
+# Moving it was not a downgrade. As a local step it ran only on the machine whose pre-push hook
+# is installed, so a pull request, a push from another machine, and `main` itself were never
+# covered - while being the only place the shipped-shape artifacts were tested at all. It now
+# gates the release itself, which is the moment that coverage actually protects somebody, and
+# it costs an ordinary push nothing. It is deliberately NOT a ci.yml job: a release-profile run
+# is a full LTO build, and `test-architecture-release-contract.ps1` keeps per-push validation
+# in the fast debug profile on purpose.
+#
+# The release BUILD steps above stay here, because a release-only link failure (panic="abort"
+# + LTO, "unresolved external symbol") is worth catching before the push and costs seconds on
+# a warm cache rather than minutes.
 if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
 # Rustfmt used to run HERE, and was missing entirely until 2026-08-05 (this gate printed
 # "safe to push" on a commit CI then failed on formatting alone). It now runs FIRST, before

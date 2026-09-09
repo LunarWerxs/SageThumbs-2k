@@ -23,7 +23,12 @@ param(
     # (step [5a/6]). Only for a release with no ARM64 artifact of its own to prove, or when
     # the windows-11-arm runner pool is down; the outcome line says OVERRIDDEN so the record
     # shows the gate was not run.
-    [switch]$SkipArm64Gate
+    [switch]$SkipArm64Gate,
+    # Publish without running the suite against the RELEASE-profile, shipped-feature binaries
+    # (step [3b/6]). CI only ever tests the debug build with default features, so this is the
+    # only proof the artifacts we are about to ship actually pass their own tests; skip it only
+    # when the runner pool is down. The outcome line says OVERRIDDEN so the record shows it.
+    [switch]$SkipReleaseProfileTests
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -242,6 +247,49 @@ try {
     $concl = (gh run view $runId --json conclusion --jq .conclusion 2>$null)
     if ($concl -ne 'success') { throw "CI on $($sha.Substring(0,7)) finished '$concl' (not success) - NOT releasing. Fix + re-run." }
     Write-Host "      CI green." -ForegroundColor Green
+
+    # 3b) The suite against the RELEASE-profile, shipped-feature binaries.
+    #
+    # CI green above means the DEBUG build passed with DEFAULT features. The binary users
+    # install is a different artifact: opt-level="z", fat LTO, stripped, and built with
+    # webp-lossy,dll-i18n-subset. `build-release.ps1` runs no tests at all, so without this
+    # step nothing has ever run the suite against the shape we ship. It also holds the only
+    # honest reading of the latency budgets (750 ms right-click, the 6 s / 2 s video ceilings),
+    # which mean nothing measured on unoptimised code.
+    #
+    # It is a separate DISPATCHED workflow rather than a CI job on purpose: a release-profile
+    # run costs a full LTO build, and charging that to every push and pull request is what
+    # `test-architecture-release-contract.ps1` ("CI keeps production payloads release and
+    # validation debug") deliberately keeps out. Same dispatch-and-wait shape as the ARM64
+    # gate at [5a/6]; no `gh run watch` (headless TTY trap, see [3/6]).
+    Write-Host "[3b/6] release-profile tests on the shipped feature sets (gate)" -ForegroundColor Green
+    if ($SkipReleaseProfileTests) {
+        Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'release-profile tests' -Reason (
+            '-SkipReleaseProfileTests flag: the suite was NOT run against the release-profile, ' +
+            'shipped-feature binaries; only the debug default-feature CI run stands behind this release')
+    } else {
+        $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
+        gh workflow run 'release-profile-tests.yml'
+        if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+        $rptRunId = $null
+        for ($i = 0; $i -lt 40 -and -not $rptRunId; $i++) {
+            Start-Sleep -Seconds 6
+            $rptRunId = (gh run list --workflow 'release-profile-tests.yml' --event workflow_dispatch --limit 10 `
+                    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$rptDispatchedAt`")][0].databaseId" 2>$null)
+        }
+        if (-not $rptRunId) { throw 'release-profile-tests.yml was dispatched but no run appeared in 4 min; nothing has been built or published' }
+        Write-Host "      run $rptRunId found - waiting for the release-profile suite..." -ForegroundColor Green
+        $rptStatus = ''
+        for ($i = 0; $i -lt 160 -and ($rptStatus -eq '' -or $rptStatus -eq 'queued' -or $rptStatus -eq 'in_progress'); $i++) {
+            Start-Sleep -Seconds 15
+            $rptStatus = (gh run view $rptRunId --json status --jq .status 2>$null)
+        }
+        $rptConcl = (gh run view $rptRunId --json conclusion --jq .conclusion 2>$null)
+        if ($rptConcl -ne 'success') {
+            throw "the release-profile suite finished '$rptConcl' (run $rptRunId) - NOT releasing. The debug CI run passing does not cover this; the shipped shape genuinely fails."
+        }
+        Write-ReleaseStageOutcome -Outcome 'PASSED' -Stage 'release-profile tests' -Reason "the suite passed against the release-profile shipped feature sets (run $rptRunId)"
+    }
 
     # 4) Build the shippable installers.  CI validates code; it does not
     # build installers.  The build driver keeps their stages separate.

@@ -354,6 +354,22 @@ plus these viewer-only extras:
   file is escaped before it is displayed, so a subject line dressed up as a link renders as the
   text it really is. A `.msg` that is not really a message, or an `.eml` that is not really mail,
   previews exactly as it did before.
+- **A hex view for files nothing can render.** An unknown binary shows a classic hex dump -
+  offsets, bytes, and the printable characters beside them - instead of a bare info card, so you
+  can at least see what a file starts with. Long files are truncated with a note saying so
+  rather than being read end to end.
+- **Folders show their total size.** Selecting a folder and tapping Space totals what is inside
+  it. When a folder is too large or too deeply nested to finish counting quickly, it says "more
+  than" that figure rather than showing a number that is simply wrong.
+- **Save the frame you are paused on.** The Save button works on a video, writing the frame at
+  the current position as an image; the right-click menu offers "Save frame as image" for a
+  video-only selection instead of the picture verbs that never applied to it.
+- **The toolbars are keyboard-reachable.** Tab moves into the caption toolbar and the video
+  controls, arrows move along them, Enter or Space presses the focused button, and Escape
+  returns to the content. The focused button draws a visible ring.
+- **A per-extension blocklist** (**Settings ▸ Quick preview**): list the extensions you never
+  want previewed at all. Empty by default, and deliberately separate from the File types page,
+  which governs Explorer thumbnails rather than the preview window.
 - **3D-print models** (`.stl`, `.obj`, `.ply`): these carry no picture inside them, so one is
   drawn. The model is rendered shaded from a consistent three-quarter angle, in Explorer
   thumbnails and at full size in the preview, on a transparent background like any other

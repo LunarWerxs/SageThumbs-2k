@@ -1,0 +1,120 @@
+# Run the test suite against the artifacts that actually SHIP.
+#
+# Why this exists, given ci.yml already runs the suite: it runs it in DEBUG, against a
+# DEFAULT-feature DLL. Nothing anywhere tested the release shape. `build-release.ps1` runs no
+# tests at all, and `build-test` drives the debug cdylib. The binary users install is
+# `opt-level = "z"`, fat LTO, stripped, and built with the shipped feature sets
+# (`webp-lossy,dll-i18n-subset` for the DLL, not the defaults). The suite also carries hard
+# latency budgets - 750 ms right-click and 500 ms popup init in `context_menu_latency.rs`, the
+# 6 s and 2 s ceilings in `com_roundtrip.rs` - and a budget measured on unoptimised code does
+# not describe what a user experiences.
+#
+# ⛔ WHY THIS IS NOT A JOB IN ci.yml, and do not "simplify" it back into one. It was one, for
+# about an hour on 2026-09-09, and `scripts/test-architecture-release-contract.ps1` failed it:
+# "CI keeps production payloads release and validation debug". That contract is deliberate and
+# still holds - every PER-PUSH validation leg stays debug and fast, on x64 and on ARM64 - and
+# this file does not weaken it. A release-profile run costs a full LTO build; charging that to
+# every push and every pull request, and to `release.ps1`'s wait on the CI run, is exactly the
+# cost the contract exists to keep out. So this follows the pattern the repo already proved
+# with `arm64-portable-verify.yml`: an expensive check that runs at RELEASE time, dispatched
+# and waited on as a gate, rather than on every commit.
+#
+# Dispatch it by hand any time with:  gh workflow run release-profile-tests.yml
+name: Release-profile tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-tests:
+    name: the shipped artifacts, tested
+    runs-on: windows-latest
+    # Matches ci.yml's build-test: keep production binaries self-contained on a clean runner
+    # rather than depending on the local-only .cargo/config.toml.
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Toolchain
+        run: rustup show
+
+      # Same rationale and lookup as ci.yml's build-test: build.rs embeds VERSIONINFO through
+      # windres and refuses to produce metadata-free release binaries without it.
+      - name: Release resource compiler
+        shell: pwsh
+        run: |
+          $windresCommand = Get-Command windres.exe -CommandType Application `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          $windres = if ($windresCommand) { $windresCommand.Source } else { $null }
+          if (-not $windres) {
+            $windres = @(
+              'C:\mingw64\bin\windres.exe'
+              'C:\msys64\mingw64\bin\windres.exe'
+              'C:\msys64\ucrt64\bin\windres.exe'
+              'C:\msys64\clang64\bin\windres.exe'
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+              Select-Object -First 1
+          }
+          if (-not $windres -and (Test-Path -LiteralPath 'C:\msys64')) {
+            $windres = Get-ChildItem -LiteralPath 'C:\msys64' -Filter windres.exe `
+              -File -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $windres) {
+            throw 'GitHub Windows runner did not provide windres; refusing metadata-free release binaries.'
+          }
+          Split-Path -Parent $windres |
+            Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
+          & $windres --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # The SHIPPED shapes, same three commands and same order as build-release.ps1. The
+      # feature lists are the entire point: a default-feature release DLL would be a binary
+      # nobody installs.
+      - name: Build production EXEs
+        run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+      - name: Build production slim DLL
+        run: cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+      - name: Build dialog hook DLL
+        run: cargo build --release --locked -p sagethumbs2k-dlghook
+
+      # Without a real magick.exe the ImageMagick tier self-skips with an eprintln! and this
+      # job would report a pass over tests that never ran. Same pinned, hash-verified install
+      # ci.yml uses; the longer note lives there.
+      - name: Stage ImageMagick for the subprocess tests
+        shell: pwsh
+        run: |
+          $pin = Get-Content -Raw 'scripts\packaging\imagemagick-source.json' | ConvertFrom-Json
+          $installer = Join-Path $env:RUNNER_TEMP $pin.provenance.upstreamAsset
+          Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $pin.provenance.upstreamSha256) {
+            throw "ImageMagick installer hash mismatch: expected $($pin.provenance.upstreamSha256), got $hash"
+          }
+          $dest = Join-Path $env:RUNNER_TEMP 'imagemagick-ci'
+          $p = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "ImageMagick silent install failed (exit $($p.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dest 'magick.exe'))) { throw "magick.exe not found under $dest after install" }
+          $dest | Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
+          & (Join-Path $dest 'magick.exe') -version
+
+      # ORDER MATTERS, for the reason ci.yml spells out for its debug leg: this rebuilds the
+      # core rlib and the test binaries, but it does NOT regenerate the `sagethumbs2k-dll`
+      # cdylib (a cdylib is not a test target), so the DLL these tests LoadLibrary is the
+      # shipped-feature one built three steps above. `tests/common/dll_path()` resolves
+      # relative to the test binary's own directory, which is what makes the profile follow.
+      #
+      # `--tests` DOES include the library and binary unit tests: Cargo's documented target
+      # selection builds every target with `test = true` in test mode. A comment in
+      # preflight.ps1 once claimed the opposite and was wrong (2026-09-05 audit, F21).
+      - name: Unit and integration tests (release profile)
+        run: cargo test --release --locked --lib --tests
