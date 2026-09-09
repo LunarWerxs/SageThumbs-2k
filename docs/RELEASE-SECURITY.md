@@ -186,7 +186,11 @@ appease a dice roll would be chasing noise.
 
 The 2026-07-18 decision below stood for six weeks. On 2026-09-01 the owner reopened it: an
 Azure Trusted Signing account is being set up, and once it is live the release pipeline signs
-the installer, the portable zip's binaries and the MSIX. Until it is live, everything below
+the installer, its embedded uninstaller and the four binaries inside it, and the portable
+zip's binaries. (The sparse MSIX for the modern menu stays SELF-signed on purpose: the
+installer trusts that one certificate into the machine store, which is what lets the package
+load; moving it to the Azure certificate is a separate installer change, filed in the private
+work queue, not part of 3.0.) Until it is live, everything below
 this heading still describes the shipping position, and nothing in the release flow assumes a
 certificate exists. What changed the calculus was the 2.5.0 x64 installer reaching 9/70 on
 VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
@@ -240,6 +244,15 @@ misread as "nothing has been set up".
   plus the leased `AZURE_*` triple the verdict is READY and a signature verifies (above). The
   `AZURE_CLIENT_SECRET` must never be written into a file in this repo or pasted into an
   agent's context: it stays in the Connections vault and is leased into the build shell.
+- **The whole installer pipeline has now run signed, end to end (2026-09-09).** A full
+  `build-release.ps1` with the lease produced `dist/SageThumbs2K-Setup-2.5.0.exe` in which the
+  four staged binaries, the sparse MSIX, the embedded uninstaller and `Setup.exe` itself all
+  read back through Windows as `CN=LUNARWERX LLC`, status Valid, timestamped. **The first
+  attempt failed at the installer step**, and that is exactly why the dry run was worth its
+  twenty minutes: Inno Setup substitutes `$f` already quoted, the Sign Tool definition wrapped
+  it in `$q` again, and the uninstaller's path was handed to the signer cut off at its first
+  space. Fixed in `build-release.ps1` and pinned both ways in `test-release-pipeline.ps1`,
+  because nothing else in the pipeline can see that shape until release day.
 
 #### Release day (written 2026-09-06 so it is not improvised; instance filled in 2026-09-09)
 
