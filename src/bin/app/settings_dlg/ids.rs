@@ -329,7 +329,7 @@ pub(super) const ID_NUDGE_LATER: i32 = 1242;
 pub(super) const ID_NUDGE_MONTH: i32 = 1243;
 /// Opens the Discord invite (through the LunarWerx site's stable redirect); not an answer to
 /// the ask, so it neither records an outcome nor hides the banner.
-pub(super) const ID_NUDGE_DISCORD: i32 = 1257;
+pub(super) const ID_NUDGE_DISCORD: i32 = 1261;
 
 // v3 nav rail (navrail.rs). Moved here (from navrail.rs) so `control_ids_are_unique`
 // below — which only parses THIS file — actually covers them; see NCAT's build-time
