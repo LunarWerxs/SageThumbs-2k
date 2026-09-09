@@ -267,9 +267,69 @@ fn check_thumbnail_policies(r: &mut Report) {
             "disabled by policy — every thumbnail is recomputed on each visit",
         );
     }
+    // The NETWORK-only switch, which is a different value from `DisableThumbnails` and hides
+    // in exactly the shape that reads as our bug: everything on C: thumbnails perfectly and
+    // everything on a mapped drive shows a plain icon, so the user concludes the extension is
+    // broken for "those files". A direct `IShellItemImageFactory` call is not affected by it
+    // either, so the per-file probe below can hand back a real thumbnail for a path that
+    // Explorer will still refuse to draw one for (issue #36). Reported wherever it is set,
+    // and again per-file when the file is actually on such a drive.
+    if network_thumbnails_disabled() {
+        any_policy = true;
+        r.line(
+            S::Warn,
+            r"...\DisableThumbnailsOnNetworkFolders",
+            "1 — policy turns thumbnails off for NETWORK folders only; local drives are \
+             unaffected, which is why this looks like a per-file fault",
+        );
+        r.line(
+            S::Info,
+            "  to turn them on",
+            "Group Policy: User Configuration > Administrative Templates > Windows Components \
+             > File Explorer > 'Turn off the display of thumbnails and only display icons on \
+             network folders' > Disabled. Or delete that value under \
+             HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer.",
+        );
+    }
     if !any_policy {
         r.line(S::Ok, "Thumbnail policies", "no disabling policy found");
     }
+}
+
+/// Windows' separate thumbnail switch for NETWORK folders. See its caller for why it is worth
+/// its own check rather than being folded into the `DisableThumbnails` loop.
+fn network_thumbnails_disabled() -> bool {
+    let pol = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    [CURRENT_USER, LOCAL_MACHINE].into_iter().any(|root| {
+        matches!(
+            root.open(pol)
+                .ok()
+                .and_then(|k| k.get_u32("DisableThumbnailsOnNetworkFolders").ok()),
+            Some(1)
+        )
+    })
+}
+
+/// Whether `path` lives somewhere Windows considers a network location: a UNC path, or a
+/// drive letter mapped to a remote share. `GetDriveTypeW` wants a root (`R:\`), not the file.
+fn is_network_path(path: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    // `DRIVE_REMOTE` lives under `System::WindowsProgramming`, not beside `GetDriveTypeW`.
+    use windows::Win32::System::WindowsProgramming::DRIVE_REMOTE;
+
+    if path.starts_with(r"\\") && !path.starts_with(r"\\?\") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' {
+        return false;
+    }
+    let root: Vec<u16> = path[..2]
+        .encode_utf16()
+        .chain(['\\' as u16, 0])
+        .collect::<Vec<u16>>();
+    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_REMOTE }
 }
 
 /// The decade-old original SageThumbs, if it is still on disk.
@@ -1378,6 +1438,29 @@ fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledS
     r.head("This file");
     let p = Path::new(path);
     r.line(S::Info, "Path", path);
+    // Said HERE and not only in the policy section, because this is the report a confused
+    // user actually reads, and the two facts only mean something together: the file is on a
+    // network drive AND this machine tells Explorer not to thumbnail those. Everything else
+    // below will pass, including the shell's own thumbnail call, which does not honour the
+    // policy (issue #36).
+    if is_network_path(path) {
+        if network_thumbnails_disabled() {
+            r.fail_with_fix(
+                "Network location",
+                "this file is on a network drive, and a policy on this machine turns thumbnails \
+                 off for network folders — that is why it shows an icon while local files do not",
+                "clear DisableThumbnailsOnNetworkFolders (see the Thumbnail policies section \
+                 above), sign out and back in, then rebuild the thumbnail cache",
+            );
+        } else {
+            r.line(
+                S::Info,
+                "Network location",
+                "this file is on a network drive — thumbnails there are allowed on this \
+                 machine, but they are fetched over the network and can be slow to appear",
+            );
+        }
+    }
     if !p.is_file() {
         r.fail_with_fix(
             "File",
