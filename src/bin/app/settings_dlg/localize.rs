@@ -113,6 +113,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_MENU_LOOK, "grp_menu_look"),
         (ID_LBL_QUICKACTION, "grp_quickaction"),
         (ID_LBL_PREVIEW_BEHAVIOR, "grp_preview_behavior"),
+        (ID_LBL_PREVIEW_BLOCKED_EXTS, "lbl_preview_blocked_exts"),
         (ID_MENU_ITEMS_EDIT, "btn_menu_items_edit"),
         (ID_LBL_FORMATS_PICK, "grp_formats_pick"),
         (ID_LBL_CONVERT_VERBS, "grp_convert_verbs"),

@@ -52,8 +52,24 @@ use crate::win::wide;
 
 /// Target files for a hotkey verb: the foreground Explorer selection, or — when that's empty
 /// — a multi-select file picker. `images_only` filters the picker to image extensions (for the
-/// verbs that only make sense on images). Returns an empty Vec if the user cancels.
-pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
+/// verbs that only make sense on images). See [`SelectionOutcome`] for what each outcome means;
+/// `Empty` covers both "nothing selected" and "the picker was cancelled".
+/// Outcome of resolving the file(s) a hotkey/verb action should act on. Collapsing "nothing was
+/// selected" and "what was selected has no filesystem path behind it" into the same empty `Vec`
+/// is the exact defect this exists to close: a Recycle Bin / This PC / other virtual-namespace
+/// selection used to be byte-for-byte indistinguishable from no selection at all, so the action
+/// silently did nothing and left the user unable to tell the feature from a bug.
+pub(crate) enum SelectionOutcome {
+    /// No item was selected (and, for [`selection_or_pick`], the file picker was cancelled too).
+    Empty,
+    /// At least one item was selected, but none of them resolve to a real filesystem path —
+    /// every item is virtual.
+    VirtualOnly,
+    /// One or more real filesystem paths.
+    Paths(Vec<String>),
+}
+
+pub(crate) unsafe fn selection_or_pick(images_only: bool) -> SelectionOutcome {
     // Apartment-threaded COM for the shell automation interfaces below. `sta()` is
     // `None` (rather than a guard that no-ops on drop) when `CoInitializeEx` itself
     // failed, so `Drop` only ever balances a real init (issue #158/C17).
@@ -61,13 +77,26 @@ pub(crate) unsafe fn selection_or_pick(images_only: bool) -> Vec<String> {
     // Everything is a real answer, not a "no selection" — without this the picker would open
     // over a window that is already pointing at the exact file the user meant.
     if let Some(p) = everything_selection() {
-        return vec![p];
+        return SelectionOutcome::Paths(vec![p]);
     }
-    let sel = settled_explorer_selection();
-    if !sel.is_empty() {
-        return sel;
+    match settled_explorer_selection() {
+        SelectionOutcome::Paths(paths) => return SelectionOutcome::Paths(paths),
+        // Virtual is a real answer too — falling through to the picker would silently swap
+        // "you selected the Recycle Bin" for "you selected nothing", which is its own way of
+        // hiding the outcome from the caller. `st2k doctor`-style diagnosis needs a trail.
+        SelectionOutcome::VirtualOnly => {
+            sagethumbs2k_core::safety::log_debug(
+                "selection_or_pick: foreground selection is virtual-only \
+                 (no filesystem path behind any selected item)",
+            );
+            return SelectionOutcome::VirtualOnly;
+        }
+        SelectionOutcome::Empty => {}
     }
-    pick_files(images_only).unwrap_or_default()
+    match pick_files(images_only) {
+        Some(paths) if !paths.is_empty() => SelectionOutcome::Paths(paths),
+        _ => SelectionOutcome::Empty,
+    }
 }
 
 /// How long to wait before the ONE retry in [`settled_explorer_selection`]. Short enough that a
@@ -84,34 +113,70 @@ const SETTLE_MS: u64 = 40;
 ///
 /// Only the EMPTY result is retried, so the overwhelmingly common case (a real selection, found
 /// first try) costs nothing at all.
-unsafe fn settled_explorer_selection() -> Vec<String> {
+unsafe fn settled_explorer_selection() -> SelectionOutcome {
     let sel = foreground_explorer_selection();
-    if !sel.is_empty() {
+    // Only an EMPTY read is worth retrying — the handover race can only produce "nothing yet",
+    // never turn a real virtual selection into a filesystem one, so retrying `VirtualOnly` would
+    // just burn `SETTLE_MS` proving the same answer twice.
+    if !matches!(sel, SelectionOutcome::Empty) {
         return sel;
     }
     std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
     foreground_explorer_selection()
 }
 
+/// What the Quick preview hotkey should do with the resolved selection — the seam
+/// [`preview_target`] hands to `preview::mod::run_preview` so a virtual-namespace selection
+/// (Recycle Bin, This PC, …) can be told apart from no selection at all. Collapsing those two
+/// into "nothing to preview" is the exact defect [`SelectionOutcome::VirtualOnly`] exists to
+/// close one layer down; this enum carries that distinction the rest of the way to the window.
+pub(crate) enum PreviewTarget {
+    /// A real filesystem path (a `.lnk` selection already resolved to its target).
+    Path(String),
+    /// Something was selected, but it has no file behind it — the viewer should open and say
+    /// so, not stay silent.
+    Virtual,
+    /// Nothing was selected at all. The only case that must still open nothing.
+    Empty,
+}
+
 /// The single file the Quick preview hotkey should show: the FIRST item selected in the
 /// foreground Explorer window — or the result focused in a foreground **Everything** window, or,
-/// when the foreground is the DESKTOP, the first item selected there — or `None` when nothing is
-/// selected. A selected `.lnk` shortcut resolves to its target so Space previews the pointed-at
-/// file, not the shortcut stub. Inits COM STA itself (called from the viewer process's own
-/// thread).
+/// when the foreground is the DESKTOP, the first item selected there — or [`PreviewTarget::Empty`]
+/// when nothing is selected. A selected `.lnk` shortcut resolves to its target so Space previews
+/// the pointed-at file, not the shortcut stub. Inits COM STA itself (called from the viewer
+/// process's own thread).
 ///
 /// Everything is asked FIRST because it is cheap and unambiguous: the shell automation below can
 /// only ever say "I have never heard of that window", and it would spend [`SETTLE_MS`] proving it.
-pub(crate) unsafe fn preview_target() -> Option<String> {
+pub(crate) unsafe fn preview_target() -> PreviewTarget {
     let _com = sagethumbs2k_core::parallel::ComGuard::sta();
-    let raw = match everything_selection().or_else(|| foreground_dialog_selection()) {
-        Some(p) => p,
-        None => settled_explorer_selection()
-            .into_iter()
-            .next()
-            .or_else(|| foreground_desktop_selection().into_iter().next())?,
-    };
-    Some(resolve_lnk(&raw))
+    if let Some(raw) = everything_selection().or_else(|| foreground_dialog_selection()) {
+        return PreviewTarget::Path(resolve_lnk(&raw));
+    }
+    first_target(settled_explorer_selection(), "preview_target/explorer")
+        .or_else(|| first_target(foreground_desktop_selection(), "preview_target/desktop"))
+        .unwrap_or(PreviewTarget::Empty)
+}
+
+/// One selection walk's outcome, turned into a [`PreviewTarget`] — logging (this file has no
+/// UI of its own to show a message through) when the selection turned out to be virtual-only, so
+/// a silently-declined preview still leaves a trail an `st2k doctor`-style diagnosis can see.
+/// `None` means "this source has no answer, try the next one" (an empty selection); `context`
+/// names the call site in the log line, since [`preview_target`] tries two sources.
+fn first_target(outcome: SelectionOutcome, context: &str) -> Option<PreviewTarget> {
+    match outcome {
+        SelectionOutcome::Paths(mut paths) if !paths.is_empty() => {
+            Some(PreviewTarget::Path(paths.remove(0)))
+        }
+        SelectionOutcome::VirtualOnly => {
+            sagethumbs2k_core::safety::log_debugf!(
+                "{context}: selection is virtual-only (no filesystem path behind any selected item)"
+            );
+            Some(PreviewTarget::Virtual)
+        }
+        SelectionOutcome::Paths(_) | SelectionOutcome::Empty => None,
+    }
 }
 
 /// Resolve an explicit `--preview <path>` argument: follows a `.lnk` to its target (so a manual
@@ -122,27 +187,27 @@ pub(crate) unsafe fn resolve_explicit(path: &str) -> String {
     resolve_lnk(path)
 }
 
-/// The file paths currently selected in the FOREGROUND Explorer window, or an empty Vec if the
-/// foreground window isn't an Explorer view (or has no selection). Best-effort: any COM failure
-/// degrades to empty, which the caller turns into a picker prompt.
+/// The file paths currently selected in the FOREGROUND Explorer window, as a [`SelectionOutcome`]
+/// — `Empty` if the foreground window isn't an Explorer view (or has no selection), `VirtualOnly`
+/// if every selected item is virtual. Best-effort: any COM failure degrades to `Empty`.
 ///
 /// Win11 tabbed Explorer: every TAB of a window is its own `IShellWindows` item, but they all
 /// report the same top-level frame HWND — so the frame match alone can land on a background
 /// tab. Disambiguate by ALSO matching each item's browser window against the frame's ACTIVE
 /// (visible) `ShellTabWindowClass` child; when that can't be resolved (older builds, single
 /// tab, QueryService quirks), fall back to the first frame-matched item (the old behaviour).
-unsafe fn foreground_explorer_selection() -> Vec<String> {
+unsafe fn foreground_explorer_selection() -> SelectionOutcome {
     let fg = GetForegroundWindow();
     if fg.0.is_null() {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     }
     let active_tab = active_shell_tab(fg);
     let shell_windows: IShellWindows = match CoCreateInstance(&ShellWindows, None, CLSCTX_ALL) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return SelectionOutcome::Empty,
     };
     let count = shell_windows.Count().unwrap_or(0);
-    let mut fallback: Option<Vec<String>> = None;
+    let mut fallback: Option<SelectionOutcome> = None;
     for i in 0..count {
         let Ok(disp) = shell_windows.Item(&VARIANT::from(i)) else {
             continue;
@@ -172,7 +237,7 @@ unsafe fn foreground_explorer_selection() -> Vec<String> {
     }
     // No item matched the active tab (e.g. GetWindow semantics differ on this build) — use the
     // first frame-matched item rather than returning nothing.
-    fallback.unwrap_or_default()
+    fallback.unwrap_or(SelectionOutcome::Empty)
 }
 
 /// The ACTIVE tab of a (possibly tabbed) Explorer frame: its visible `ShellTabWindowClass`
@@ -211,38 +276,38 @@ unsafe fn browser_window(wb: &IWebBrowser2) -> Option<HWND> {
 /// desktop (or nothing is selected). The desktop's shell view isn't in `IShellWindows`, so it's
 /// reached via `FindWindowSW(SWC_DESKTOP)` → top-level `IShellBrowser` → the active `IShellView`
 /// → its `IShellFolderViewDual` (the same selection interface the Explorer path uses).
-unsafe fn foreground_desktop_selection() -> Vec<String> {
+unsafe fn foreground_desktop_selection() -> SelectionOutcome {
     if !is_desktop_foreground() {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     }
     let shell_windows: IShellWindows = match CoCreateInstance(&ShellWindows, None, CLSCTX_ALL) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return SelectionOutcome::Empty,
     };
     let loc = VARIANT::default(); // VT_EMPTY — ignored for SWC_DESKTOP
     let mut phwnd: i32 = 0;
     let Ok(disp) =
         shell_windows.FindWindowSW(&loc, &loc, SWC_DESKTOP, &mut phwnd, SWFO_NEEDDISPATCH)
     else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     let Ok(sp) = disp.cast::<IServiceProvider>() else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     let Ok(browser) = sp.QueryService::<IShellBrowser>(&SID_STopLevelBrowser) else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     let Ok(view) = browser.QueryActiveShellView() else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     // GetItemObject(SVGIO_BACKGROUND, IID_IDispatch) yields an IDispatch we QI to the folder's
     // IShellFolderViewDual (requesting the dual's IID directly from GetItemObject returns
     // E_NOINTERFACE — the background item is only handed out as an IDispatch).
     let Ok(bg) = view.GetItemObject::<IDispatch>(SVGIO_BACKGROUND) else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     let Ok(sfvd) = bg.cast::<IShellFolderViewDual>() else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     paths_from_view(&sfvd)
 }
@@ -604,25 +669,56 @@ unsafe fn caret_active(hwnd: HWND) -> bool {
     GetGUIThreadInfo(tid, &mut gti).is_ok() && !gti.hwndCaret.0.is_null()
 }
 
-/// Extract the filesystem paths of the SELECTED items from a shell folder view. Virtual items
-/// (Recycle Bin, This PC, …) have no `Path()` and are skipped.
-unsafe fn paths_from_view(view: &IShellFolderViewDual) -> Vec<String> {
+/// Extract the filesystem paths of the SELECTED items from a shell folder view, distinguishing
+/// an empty selection from one that is entirely virtual (Recycle Bin, This PC, …) — see
+/// [`SelectionOutcome`]. `item.Path()` does NOT error for a virtual item: it hands back
+/// something that looks like an answer (an empty string, a bare display name, a `::{GUID}`
+/// shell-namespace string), so every item gets a slot in `raw` — an empty string on a failed or
+/// empty `Path()` call — and classification runs on the CONTENT, never on whether the COM call
+/// itself succeeded.
+unsafe fn paths_from_view(view: &IShellFolderViewDual) -> SelectionOutcome {
     let Ok(items) = view.SelectedItems() else {
-        return Vec::new();
+        return SelectionOutcome::Empty;
     };
     let n = items.Count().unwrap_or(0);
-    let mut out = Vec::with_capacity(n.max(0) as usize);
+    let mut raw = Vec::with_capacity(n.max(0) as usize);
     for j in 0..n {
-        if let Ok(item) = items.Item(&VARIANT::from(j)) {
-            if let Ok(bstr) = item.Path() {
-                let s = bstr.to_string();
-                if !s.is_empty() {
-                    out.push(s);
-                }
-            }
-        }
+        let s = items
+            .Item(&VARIANT::from(j))
+            .ok()
+            .and_then(|item| item.Path().ok())
+            .map(|bstr| bstr.to_string())
+            .unwrap_or_default();
+        raw.push(s);
     }
-    out
+    classify_selection(&raw, |p| std::path::Path::new(p).exists())
+}
+
+/// Classifies the raw `Path()` strings gathered for one selection (one entry per selected item;
+/// see [`paths_from_view`] for why a failed/empty `Path()` still gets an empty-string entry
+/// rather than being dropped) into [`Empty`](SelectionOutcome::Empty),
+/// [`VirtualOnly`](SelectionOutcome::VirtualOnly), or real
+/// [`Paths`](SelectionOutcome::Paths). A pure decision over a list of strings, kept separate
+/// from the COM walk so it's unit-testable without a live shell selection.
+///
+/// A candidate counts as a real path only if it's ROOTED ([`is_rooted_path`]) AND `exists`
+/// confirms something is actually there — syntax alone isn't enough, since a stale/moved path
+/// can be rooted-looking and still have nothing behind it, which is exactly the "not actually on
+/// disk" case this must also treat as virtual.
+fn classify_selection(raw: &[String], exists: impl Fn(&str) -> bool) -> SelectionOutcome {
+    if raw.is_empty() {
+        return SelectionOutcome::Empty;
+    }
+    let paths: Vec<String> = raw
+        .iter()
+        .filter(|p| is_rooted_path(p) && exists(p))
+        .cloned()
+        .collect();
+    if paths.is_empty() {
+        SelectionOutcome::VirtualOnly
+    } else {
+        SelectionOutcome::Paths(paths)
+    }
 }
 
 /// Whether the foreground window is the desktop (its class is `Progman` or a `WorkerW`). Gates
@@ -755,7 +851,8 @@ unsafe fn pick_files(images_only: bool) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_everything_class, is_everything_exe_name, is_rooted_path, join_under, resolve_result_row,
+        classify_selection, is_everything_class, is_everything_exe_name, is_rooted_path,
+        join_under, resolve_result_row, SelectionOutcome,
     };
 
     /// Build the cell vector for a row, as `lv_cell` would return it.
@@ -884,5 +981,59 @@ mod tests {
         assert!(!is_everything_exe_name("notepad.exe"));
         assert!(!is_everything_exe_name("Everything.exe.bat")); // not a .exe
         assert!(!is_everything_exe_name(""));
+    }
+
+    /// Zero selected items (an empty `raw`) must read as `Empty`, never `VirtualOnly` — this is
+    /// the case a `SelectedItems().Count()` of 0 produces, and it must stay indistinguishable
+    /// from "the automation call itself failed", not get folded into the virtual-selection path.
+    #[test]
+    fn no_candidates_is_empty_not_virtual() {
+        assert!(matches!(
+            classify_selection(&[], |_| true),
+            SelectionOutcome::Empty
+        ));
+    }
+
+    /// THE regression this rule exists for: selecting the Recycle Bin (or This PC, or any other
+    /// virtual-namespace item) must be told apart from selecting nothing at all. Every candidate
+    /// present but none of them a real path -> `VirtualOnly`, not `Empty`.
+    #[test]
+    fn every_candidate_virtual_is_virtual_only() {
+        let raw = vec![
+            String::new(),                                          // Path() returned nothing
+            "Recycle Bin".to_string(),                              // a bare display name
+            "::{645FF040-5081-101B-9F08-00AA002F954E}".to_string(), // a shell namespace path
+        ];
+        assert!(matches!(
+            classify_selection(&raw, |_| true),
+            SelectionOutcome::VirtualOnly
+        ));
+    }
+
+    /// A rooted-LOOKING path that isn't actually on disk (stale, moved, or a virtual item that
+    /// happens to hand back something path-shaped) must still count as virtual — syntax alone is
+    /// not enough, `exists` is the real gate.
+    #[test]
+    fn a_rooted_path_that_does_not_exist_is_virtual_only() {
+        let raw = vec!["C:\\gone\\file.txt".to_string()];
+        assert!(matches!(
+            classify_selection(&raw, |_| false),
+            SelectionOutcome::VirtualOnly
+        ));
+    }
+
+    /// A mix of virtual and real items keeps only the real ones — one file selected alongside
+    /// the Recycle Bin still previews/acts on that file.
+    #[test]
+    fn a_mix_of_virtual_and_real_keeps_only_the_real_paths() {
+        let raw = vec![
+            "Recycle Bin".to_string(),
+            "C:\\corpus\\sample.png".to_string(),
+        ];
+        let got = classify_selection(&raw, |p| p == "C:\\corpus\\sample.png");
+        match got {
+            SelectionOutcome::Paths(paths) => assert_eq!(paths, vec!["C:\\corpus\\sample.png"]),
+            _ => panic!("expected Paths"),
+        }
     }
 }

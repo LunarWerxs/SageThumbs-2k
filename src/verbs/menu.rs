@@ -136,6 +136,11 @@ pub enum VerbAction {
     /// Sort selected audio files into folders by their tags (opens a dialog in
     /// the companion app: destination, template, copy/move).
     TagsToFolders,
+    /// Save the video's frame as a standalone image ("(frame).png" sibling). Routed
+    /// ALWAYS through the `st2k` helper (`thumbnail --size 0`) — video decode must
+    /// never run in-process inside `explorer.exe`, so unlike every other routed verb
+    /// this one has no in-process fallback.
+    SaveVideoFrame,
 }
 
 /// One node of the context menu: a submenu (i18n-key title + children) or a leaf
@@ -211,6 +216,10 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::Verb("menu_convert_dialog", VerbAction::ConvertDialog),
     MenuItem::Verb("menu_combine_pdf", VerbAction::CombineToPdf),
     MenuItem::Verb("menu_combine_cbz", VerbAction::CombineToCbz),
+    // Video-only verb: the sole leaf video_top_level() surfaces besides the
+    // file-agnostic ones. Lives at top level (not nested) like Combine ▸ PDF/CBZ, so
+    // it's a single click on a video-only selection.
+    MenuItem::Verb("menu_save_video_frame", VerbAction::SaveVideoFrame),
     MenuItem::Separator,
     MenuItem::Group(
         "menu_resize",
@@ -646,11 +655,28 @@ pub fn audio_top_level() -> Vec<(&'static MenuItem, u32)> {
     top_level_subset(KEYS)
 }
 
-/// Shared walk behind [`condensed_top_level`] and [`audio_top_level`]: collect every
-/// top-level `MENU` item whose `title()` is in `keys`, plus the trailing
-/// separator+Settings, each carrying its ORIGINAL leaf-start index so command ids match
-/// the default [`leaves`] and dispatch is unchanged. The two callers differ only in which
-/// keys they pass — the walk itself had drifted into two byte-identical copies.
+/// The VIDEO-only top-level items shown when every selected file is a video: the
+/// frame-grab leaf plus the same file-agnostic utilities `condensed_top_level` offers
+/// (Files to folder · Pick color), then a divider + the always-last Settings. The
+/// image-only verbs (Convert/Resize/Rotate/Wallpaper/…) are dropped — none of them
+/// read a video file — same shape as [`audio_top_level`]/[`condensed_top_level`]:
+/// each item keeps its ORIGINAL leaf-start index so command ids match the default
+/// [`leaves`] and dispatch is unchanged.
+pub fn video_top_level() -> Vec<(&'static MenuItem, u32)> {
+    const KEYS: &[&str] = &[
+        "menu_save_video_frame",
+        "menu_files_to_folder",
+        "menu_pick_color",
+    ];
+    top_level_subset(KEYS)
+}
+
+/// Shared walk behind [`condensed_top_level`], [`audio_top_level`] and
+/// [`video_top_level`]: collect every top-level `MENU` item whose `title()` is in
+/// `keys`, plus the trailing separator+Settings, each carrying its ORIGINAL
+/// leaf-start index so command ids match the default [`leaves`] and dispatch is
+/// unchanged. The three callers differ only in which keys they pass — the walk
+/// itself had drifted into byte-identical copies before this shared it.
 fn top_level_subset(keys: &[&str]) -> Vec<(&'static MenuItem, u32)> {
     let mut items: Vec<(&'static MenuItem, u32)> = Vec::new();
     let mut sep: Option<(&'static MenuItem, u32)> = None;
@@ -682,6 +708,18 @@ fn top_level_subset(keys: &[&str]) -> Vec<(&'static MenuItem, u32)> {
 /// each item's `GetState` on this instead, returning `ECS_HIDDEN` for an image-only
 /// top-level verb when the selection is audio-only. Keep in sync with
 /// [`audio_top_level`].
+/// Which TOP-LEVEL titles survive a VIDEO-ONLY selection in the modern flyout — the mirror of
+/// [`top_level_audio_ok`], and the same set [`video_top_level`] builds for the classic menu.
+/// Both surfaces have to agree: a verb offered on one and hidden on the other is the exact
+/// class of bug the 2026-07-21 quick-verb incident was (CLAUDE.md §6), where the two menus
+/// disagreed about what a selection supported and a verb ended up appearing nowhere.
+pub fn top_level_video_ok(title: &str) -> bool {
+    matches!(
+        title,
+        "menu_save_video_frame" | "menu_files_to_folder" | "menu_pick_color" | "menu_settings"
+    )
+}
+
 pub fn top_level_audio_ok(title: &str) -> bool {
     matches!(
         title,
@@ -793,7 +831,8 @@ mod tests {
     fn leaf_count_snapshot() {
         assert_eq!(
             leaf_count(),
-            53,
+            // Was 53; +1 for menu_save_video_frame (G193, the video-verbs fix).
+            54,
             "MENU leaf count changed — re-check quick_items()/preview-slot math, then update this snapshot",
         );
     }
@@ -1012,6 +1051,59 @@ mod tests {
             "menu_set_folder_icon",
         ] {
             assert!(!top_level_audio_ok(k), "{k} is image-only");
+        }
+    }
+
+    /// `video_top_level` surfaces the frame-grab leaf plus the file-agnostic verbs
+    /// (Files to folder · Pick color, in MENU order), then exactly one divider + the
+    /// always-last Settings — each carrying its ORIGINAL leaf-start index so a click
+    /// dispatches to the SAME action as on the full menu. Video counterpart of the
+    /// `audio_top_level` test above.
+    #[test]
+    fn video_top_level_is_video_set_with_stable_ids() {
+        let mut canon = std::collections::HashMap::new();
+        let mut idx = 0u32;
+        for it in MENU {
+            if !it.title().is_empty() {
+                canon.insert(it.title(), idx);
+            }
+            idx += count_leaves(it);
+        }
+
+        let out = video_top_level();
+        let titles: Vec<&str> = out.iter().map(|(it, _)| it.title()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "menu_save_video_frame",
+                "menu_files_to_folder",
+                "menu_pick_color",
+                "",
+                "menu_settings"
+            ],
+            "video menu = save-frame / files-to-folder / pick-color + divider + Settings",
+        );
+        assert_eq!(
+            out.iter()
+                .filter(|(it, _)| matches!(it, MenuItem::Separator))
+                .count(),
+            1,
+            "exactly one divider, before Settings",
+        );
+        assert_eq!(
+            out.last().unwrap().0.title(),
+            "menu_settings",
+            "Settings stays last"
+        );
+        for (it, start) in &out {
+            if !it.title().is_empty() {
+                assert_eq!(
+                    *start,
+                    canon[it.title()],
+                    "id offset drifted for {}",
+                    it.title()
+                );
+            }
         }
     }
 }

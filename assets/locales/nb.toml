@@ -254,6 +254,14 @@ grp_menu_items = "Menyelementer"
 chk_preserve_date = "Behold opprinnelig dato på lagrede filer"
 chk_keep_metadata = "Behold EXIF og andre metadata ved konvertering"
 chk_pdf_margin = "Legg til marg i kombinerte PDF-er"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "mer enn"
+menu_save_video_frame = "Lagre bilderute som bilde"
+preview_toast_savevideo_fail = "Kunne ikke lagre gjeldende videobilde."
+lbl_preview_blocked_exts = "Bruk aldri Hurtigvisning på disse filendelsene:"
+ic_virtual_title = "Ingen forhåndsvisning"
+ic_virtual_detail = "Dette utvalget er ikke en fil, så det er ingenting å vise."
+hotkey_selection_virtual = "De elementene har ingen fil bak seg, så det er ingenting å jobbe med."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

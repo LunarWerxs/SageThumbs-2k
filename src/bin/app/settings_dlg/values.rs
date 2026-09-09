@@ -76,6 +76,12 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
         settings::preview_close_on_focus_loss(),
     );
     check(hwnd, ID_PREVIEW_TOPMOST, settings::preview_open_front());
+    // Round-trips exactly what the user typed (unparsed) — see `preview_blocked_exts_raw`'s
+    // doc for why parsing happens only on read, never here.
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_PREVIEW_BLOCKED_EXTS) {
+        let w = wide(&settings::preview_blocked_exts_raw());
+        let _ = SetWindowTextW(c, PCWSTR(w.as_ptr()));
+    }
     check(hwnd, ID_PREVIEW_TEXT, settings::preview_text());
     check(hwnd, ID_PREVIEW_MARKDOWN, settings::preview_markdown());
     #[cfg(feature = "html-preview")]
@@ -155,6 +161,10 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_PREVIEW_HOLD_PEEK, true);
     check(hwnd, ID_PREVIEW_CLOSE_FOCUS, false);
     check(hwnd, ID_PREVIEW_TOPMOST, true); // "Open in front" — default ON
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_PREVIEW_BLOCKED_EXTS) {
+        let empty = wide(""); // empty by default — see settings::preview_blocked_exts_raw
+        let _ = SetWindowTextW(c, PCWSTR(empty.as_ptr()));
+    }
     check(hwnd, ID_PREVIEW_TEXT, true);
     check(hwnd, ID_PREVIEW_MARKDOWN, true);
     #[cfg(feature = "html-preview")]
@@ -319,6 +329,7 @@ pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
             ID_PREVIEW_HOLD_PEEK,
             ID_PREVIEW_CLOSE_FOCUS,
             ID_PREVIEW_TOPMOST,
+            ID_PREVIEW_BLOCKED_EXTS,
             ID_PREVIEW_TEXT,
             ID_PREVIEW_MARKDOWN,
             ID_PREVIEW_HTML,
@@ -332,6 +343,7 @@ pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
             ID_PREVIEW_HOLD_PEEK,
             ID_PREVIEW_CLOSE_FOCUS,
             ID_PREVIEW_TOPMOST,
+            ID_PREVIEW_BLOCKED_EXTS,
             ID_PREVIEW_TEXT,
             ID_PREVIEW_MARKDOWN,
         ],
@@ -369,6 +381,18 @@ pub(super) unsafe fn combo_sel(hwnd: HWND, id: i32, max: i32) -> i32 {
         Err(_) => 0,
     }
     .clamp(0, max)
+}
+
+/// The Quick-preview blocklist edit box's current text, raw (untrimmed of a trailing NUL from
+/// the Win32 buffer, trimmed here) — parsing happens on READ elsewhere
+/// (`settings::preview_blocked`), so this is intentionally just the literal control text.
+unsafe fn blocked_exts_text(hwnd: HWND) -> String {
+    match GetDlgItem(Some(hwnd), ID_PREVIEW_BLOCKED_EXTS) {
+        Ok(c) => String::from_utf16_lossy(&control_text(c))
+            .trim_end_matches('\0')
+            .to_string(),
+        Err(_) => String::new(),
+    }
 }
 
 /// Select `sel` in a combo, if that combo exists on this dialog.
@@ -870,6 +894,7 @@ unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
         hwnd,
         ID_PREVIEW_TOPMOST,
     )));
+    let _ = note(settings::set_preview_blocked_exts(&blocked_exts_text(hwnd)));
     let _ = note(settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT)));
     let _ = note(settings::set_preview_markdown(checked(
         hwnd,

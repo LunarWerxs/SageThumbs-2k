@@ -131,10 +131,13 @@ pub(super) enum Btn {
     Theme,
     Pin,
     Copy,
-    /// Save the currently-shown PDF page / animation frame as a standalone PNG (Ctrl+S). Only
-    /// shown while one of those two applies (see [`btn_visible`]) — a plain image with no
-    /// navigation has nothing beyond what [`Btn::Copy`] already puts on the clipboard, and
-    /// there is no "save the whole file" fallback for this one (unlike Copy's).
+    /// Save the currently-shown PDF page / animation frame / video frame as a standalone PNG
+    /// (Ctrl+S). Only shown while one of those applies (see [`btn_visible`]) — a plain image
+    /// with no navigation has nothing beyond what [`Btn::Copy`] already puts on the clipboard,
+    /// and there is no "save the whole file" fallback for this one (unlike Copy's). The video
+    /// case grabs the frame at the CURRENT playback position (`video::save_current_frame`), not
+    /// the settings default every other Media Foundation tier grabs — saving a different frame
+    /// from the one on screen would be a bug, not a feature.
     SavePage,
     /// Read the text out of the picture you're looking at (OCR) and put it on the clipboard.
     /// Only shown for image-ish content (see [`btn_visible`]) — there is nothing to recognize
@@ -192,6 +195,26 @@ thread_local! {
     static GDIP_TOKEN: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
+/// Whether `Btn::SavePage` should show, given the state it depends on — split out as a pure
+/// function (mirrors `toolbar::cell_width`'s reason for existing) so the video case is testable
+/// without spinning up a real `ViewerState`/window, which needs a live HWND to construct.
+///
+/// Same navigated-or-not condition `clipboard::navigated_shown_image_rgba` uses for PDF/anim: a
+/// multi-page PDF actually paged, or an animation actually holding more than one frame. Video is
+/// a THIRD case with no "navigated" concept of its own: a live player is enough (there's always
+/// a current frame to grab), which is also why it's gated on the player actually existing rather
+/// than `ContentKind::Video` alone — a video that fell back to an info card (no Media Foundation,
+/// a codec it refused) has no frame behind the button.
+fn savepage_visible(
+    kind: ContentKind,
+    pdf_pages: u32,
+    frame_count: usize,
+    has_video: bool,
+) -> bool {
+    (kind == ContentKind::Image && (pdf_pages > 1 || frame_count > 1))
+        || (kind == ContentKind::Video && has_video)
+}
+
 /// Whether a toolbar button is currently shown (PDF pager only for multi-page PDFs; the outline
 /// toggle only for Markdown that has headings; the source toggle only for files that HAVE a
 /// rendered view to toggle away from).
@@ -203,12 +226,12 @@ pub(super) fn btn_visible(st: &ViewerState, b: Btn) -> bool {
         Btn::Toc => st.kind.get() == ContentKind::Markdown && st.md_has_headings.get(),
         Btn::MdImages => st.kind.get() == ContentKind::Markdown && st.md_has_remote.get(),
         Btn::Source => st.src_capable.get(),
-        // Same navigated-or-not condition `clipboard::navigated_shown_image_rgba` uses: a
-        // multi-page PDF actually paged, or an animation actually holding more than one frame.
-        Btn::SavePage => {
-            st.kind.get() == ContentKind::Image
-                && (st.pdf_pages.get() > 1 || st.frames.borrow().len() > 1)
-        }
+        Btn::SavePage => savepage_visible(
+            st.kind.get(),
+            st.pdf_pages.get(),
+            st.frames.borrow().len(),
+            st.video.borrow().is_some(),
+        ),
         // OCR needs pixels to read. A text/Markdown/HTML pane already has selectable words
         // (Ctrl+C), and an InfoCard is our own chrome, so the button would be a no-op there.
         // Print shares the same gate: it prints the decoded bitmap, and a text/Markdown/HTML
@@ -633,33 +656,6 @@ pub(super) fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
     )
 }
 
-/// The link URL (if any) under the client-space point, from the last Markdown paint. Only
-/// Markdown content records link rects.
-unsafe fn hit_link(hwnd: HWND, x: i32, y: i32) -> Option<String> {
-    let st = &*state(hwnd);
-    if st.kind.get() != ContentKind::Markdown {
-        return None;
-    }
-    st.md_links
-        .borrow()
-        .iter()
-        .find(|h| x >= h.rect.left && x < h.rect.right && y >= h.rect.top && y < h.rect.bottom)
-        .map(|h| h.url.clone())
-}
-
-/// The outline-sidebar entry index (if any) under the client-space point, from the last paint.
-unsafe fn hit_toc(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
-    let st = &*state(hwnd);
-    if st.kind.get() != ContentKind::Markdown {
-        return None;
-    }
-    st.toc_hits
-        .borrow()
-        .iter()
-        .find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
-        .map(|(_, idx)| *idx)
-}
-
 /// Open a clicked Markdown link. Allow-list: http(s) + mailto only, no control chars — a rendered
 /// `.md` must not be able to launch `file://` / an exe / a custom protocol handler from a click.
 unsafe fn open_preview_link(hwnd: HWND, url: &str) {
@@ -681,73 +677,6 @@ unsafe fn open_preview_link(hwnd: HWND, url: &str) {
         PCWSTR::null(),
         SW_SHOWNORMAL,
     );
-}
-
-/// What a bare (unmodified) navigation key means in the viewer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NavKey {
-    /// Flip to a sibling file in the folder.
-    File(i32),
-    /// Turn a page inside the current multi-page document.
-    Page(i32),
-}
-
-/// Route one navigation keypress. Pure, and split out of `WM_KEYDOWN` on purpose: the bug it
-/// exists to prevent lived inside the wndproc, where no test could reach it.
-///
-/// **←/→ ALWAYS mean "next / previous FILE", on every kind of content.** They used to mean
-/// "next / previous PAGE" while a multi-page PDF was showing, which made such a PDF a keyboard
-/// dead end. `goto_pdf_page` clamps at both ends and returns early when the page does not
-/// change, nothing fell through to `nav_sibling`, and Home/End are inert on an `Image`, so once
-/// the popup landed on a multi-page PDF the only way to reach the next file was to close it and
-/// re-open on something else. Every real-world PDF has more than one page and therefore hit
-/// this; the corpus's `sample.pdf` has exactly one, which is why it stayed invisible.
-///
-/// Paging lives on ↑/↓ and PgUp/PgDn instead, matching Quick Look. PgUp/PgDn keep flipping
-/// FILES everywhere else, which is what they did before and what the non-PDF viewer expects.
-fn nav_key_action(multipage_pdf: bool, vk: u16) -> Option<NavKey> {
-    if multipage_pdf {
-        if vk == VK_NEXT.0 || vk == VK_DOWN.0 {
-            return Some(NavKey::Page(1));
-        }
-        if vk == VK_PRIOR.0 || vk == VK_UP.0 {
-            return Some(NavKey::Page(-1));
-        }
-    }
-    if vk == VK_RIGHT.0 || vk == VK_NEXT.0 {
-        return Some(NavKey::File(1));
-    }
-    if vk == VK_LEFT.0 || vk == VK_PRIOR.0 {
-        return Some(NavKey::File(-1));
-    }
-    None
-}
-
-/// What one wheel notch means over a continuously scrolled PDF.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WheelAction {
-    /// Move the document up or down (the bare wheel).
-    Scroll,
-    /// Magnify and re-render (Ctrl).
-    Zoom,
-    /// Slide a zoomed page sideways (Shift).
-    Pan,
-}
-
-/// Route the wheel over a scrolled PDF. Pure, and split out of `WM_MOUSEWHEEL` for exactly the
-/// reason [`nav_key_action`] is: 2.3.1 shipped with the wheel doing NOTHING over a PDF because
-/// the routing lived inside the wndproc where no test could see it, the fall-through landed on
-/// `zoom_at_cursor` (which drives state the tiled paint never reads), and every test I had
-/// drove the keyboard or called the scroll function directly. A pure function makes the
-/// decision assertable; the tests below would have failed on the shipped build.
-fn pdf_wheel_action(ctrl: bool, shift: bool) -> WheelAction {
-    if ctrl {
-        WheelAction::Zoom
-    } else if shift {
-        WheelAction::Pan
-    } else {
-        WheelAction::Scroll
-    }
 }
 
 /// Window geometry/paint messages: hit-testing, sizing constraints, paint/print, and
@@ -941,63 +870,6 @@ unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     LRESULT(0)
 }
 
-/// `WM_APP_MDIMG`: a fetched remote Markdown image landed, install it (stale gen / wrong
-/// kind → drop).
-unsafe fn on_app_mdimg(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, String, Option<super::content::DecodedRgba>));
-    let (gen, src, dec) = *boxed;
-    let st = &*state(hwnd);
-    if gen == st.decode_gen.get() && st.kind.get() == ContentKind::Markdown {
-        let slot = match dec.and_then(|d| {
-            super::content::make_dib(d.w, d.h, &d.rgba, crate::dark::SURFACE().0)
-                .map(|hbmp| super::content::RenderData::opaque(hbmp, d.w, d.h))
-        }) {
-            Some(rd) => super::markdown::ImgSlot::Ready(rd),
-            None => super::markdown::ImgSlot::Failed,
-        };
-        st.md_imgs.borrow_mut().insert(src, slot);
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
-    LRESULT(0)
-}
-
-/// `WM_APP_LOAD_RESOLVED`: the async classify/read step landed (2026-09-05 audit, F10). A
-/// stale generation (the user already switched files while this was in flight) is dropped
-/// exactly like `on_render` drops a stale decode, the boxed payload is still reclaimed either
-/// way so it never leaks.
-unsafe fn on_app_load_resolved(hwnd: HWND, lparam: LPARAM) {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, Resolved));
-    let (gen, resolved) = *boxed;
-    let st = &*state(hwnd);
-    if !is_load_current(gen, st.decode_gen.get()) {
-        return; // stale: the user already switched files
-    }
-    // Clone the path BEFORE `apply_resolved`, never read `st` after it: `apply_resolved` can
-    // reach `try_load_web` -> `create_web`, which PUMPS the message loop while WebView2 creates,
-    // and a close arriving during that pump destroys `hwnd` synchronously (`request_close`),
-    // freeing the boxed `ViewerState` this `st` points at.
-    let path = st.path.borrow().clone().unwrap_or_default();
-    // A `Dispatch` result for an HTML/`.url` path can reach that same pump; timing it as an
-    // "apply" stall would log a false stall on every web load (hundreds of ms is normal
-    // WebView2 startup, not stalled work), so it is excluded rather than timed.
-    let time_apply = {
-        #[cfg(feature = "html-preview")]
-        {
-            !(matches!(resolved, Resolved::Dispatch(_)) && is_web_route_ext(&ext_of(&path)))
-        }
-        #[cfg(not(feature = "html-preview"))]
-        {
-            true
-        }
-    };
-    let stage_start = std::time::Instant::now();
-    apply_resolved(hwnd, st, resolved);
-    // `st`/`hwnd` may be dangling/destroyed now (see above), re-validate before touching either.
-    if time_apply && IsWindow(Some(hwnd)).as_bool() {
-        log_ui_stage_stall("apply", stage_start.elapsed(), gen, &path);
-    }
-}
-
 /// Log one debug line when a UI-thread pipeline stage (`apply_resolved`, the render post-back
 /// handler `on_render`) took longer than [`sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET`]:
 /// see that constant's doc comment for the whole responsiveness contract this is part of
@@ -1058,119 +930,6 @@ pub(super) fn log_abandoned_worker(context: &str) {
     );
 }
 
-/// `WM_APP_PDFDOC`: the opened PDF session for the continuous view landed.
-unsafe fn on_app_pdfdoc(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, sagethumbs2k_core::pdf::PdfSession));
-    let (gen, session) = *boxed;
-    let st = &*state(hwnd);
-    // A session for a file we have already navigated away from is dropped here,
-    // which also ends its worker thread and releases the document.
-    if gen == st.decode_gen.get() && st.kind.get() == ContentKind::Image {
-        let doc = super::pdfview::PdfDoc::new(session, gen);
-        // Open the continuous view at the page the pager is already on, so a
-        // `--pdf-page N` shot or a restored position is not silently reset to one.
-        *st.pdf_doc.borrow_mut() = Some(doc);
-        let page = st.pdf_page.get() as usize;
-        if page > 0 {
-            super::pdfview::scroll_to_page(hwnd, page);
-        }
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
-    LRESULT(0)
-}
-
-/// `WM_APP_PDFTILE`: one rasterized PDF page for the continuous view.
-unsafe fn on_app_pdftile(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TilePayload);
-    let (gen, page, width, decoded) = *boxed;
-    let st = &*state(hwnd);
-    let bg = letterbox_bg(st);
-    let mut slot = st.pdf_doc.borrow_mut();
-    // Matched against the DOCUMENT's own generation, not `decode_gen`. The two are
-    // equal today (the only other bump, in `goto_pdf_page`, is unreachable while the
-    // continuous view is live), but a tile belongs to a document, and asking the
-    // question that way means a future generation bump somewhere else cannot
-    // silently stop every page from ever arriving.
-    if let Some(doc) = slot.as_mut() {
-        if gen == doc.gen {
-            match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg)) {
-                Some(rd) => doc.put_tile(page, width, rd),
-                // The page did not rasterize. Clearing the flag is the whole point
-                // of posting on failure: without it the sheet stays blank and no
-                // later paint ever asks for it again.
-                None => doc.clear_pending(page),
-            }
-            drop(slot);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
-    }
-    LRESULT(0)
-}
-
-/// `WM_APP_PDFSTRIP`: one rendered page thumbnail for the side strip.
-unsafe fn on_app_pdfstrip(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TilePayload);
-    let (gen, page, width, decoded) = *boxed;
-    let st = &*state(hwnd);
-    let bg = letterbox_bg(st);
-    let mut slot = st.pdf_doc.borrow_mut();
-    if let Some(doc) = slot.as_mut() {
-        if gen == doc.gen {
-            match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg)) {
-                Some(rd) => doc.put_strip_tile(page, width, rd),
-                None => doc.clear_strip_pending(page),
-            }
-            drop(slot);
-            let sr = strip_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
-        }
-    }
-    LRESULT(0)
-}
-
-/// `WM_APP_PDFTEXT`: one page's recognized text for the Ctrl+F index.
-unsafe fn on_app_pdftext(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut super::pdfview::TextPayload);
-    let (gen, page, text) = *boxed;
-    let st = &*state(hwnd);
-    // Matched against the DOCUMENT's generation for the same reason WM_APP_PDFTILE is:
-    // this text belongs to a document, and a page of the previous file's text landing
-    // in this one's index would send Ctrl+F to a page that says something else.
-    let grew = {
-        let mut slot = st.pdf_doc.borrow_mut();
-        match slot.as_mut() {
-            Some(doc) if gen == doc.gen => doc.put_page_text(page, text.as_deref()),
-            _ => false,
-        }
-    };
-    if grew {
-        // Re-run an open search over the page that just arrived. Deliberately does not
-        // move the view unless the search had nothing at all before: pages land every
-        // ~130 ms, and a view that jumped on each one would be unusable to read.
-        super::find::on_pdf_index_progress(hwnd);
-    }
-    LRESULT(0)
-}
-
-/// `WM_APP_PDFINFO`: the PDF page count landed.
-unsafe fn on_app_pdfinfo(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, u32));
-    let (gen, count) = *boxed;
-    let st = &*state(hwnd);
-    if gen == st.decode_gen.get() {
-        // Cap the UNTRUSTED count (a crafted PDF can report > i32::MAX pages, which
-        // would wrap the nav math negative and panic a clamp — panic=abort).
-        st.pdf_pages.set(count.min(1_000_000));
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false); // repaint the page indicator + pager
-    }
-    LRESULT(0)
-}
-
 /// `WM_SIZE`: free the stale-sized back-buffer, re-place child windows, clamp scroll.
 unsafe fn on_size(hwnd: HWND) -> LRESULT {
     let st = &*state(hwnd);
@@ -1216,651 +975,6 @@ unsafe fn on_activate(hwnd: HWND, wparam: WPARAM) -> LRESULT {
         request_close(hwnd);
     }
     LRESULT(0)
-}
-
-/// `WM_MOUSEMOVE`: an active drag claims the move outright; otherwise it's hover tracking.
-unsafe fn on_mousemove(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let (x, y) = lparam_xy(lparam);
-    let st = &*state(hwnd);
-    if let Some(r) = mousemove_drag(hwnd, st, x, y) {
-        return r;
-    }
-    mousemove_hover(hwnd, st, x, y)
-}
-
-/// Any active drag (scrollbar thumb, a held scrollbar-track click, video seek/volume, text
-/// selection, image pan) claims the move entirely: `Some` means the caller must not fall
-/// through to hover tracking. Split out of `on_mousemove` because these five drags dominated
-/// the original arm's complexity and share nothing but `hwnd`/`x`/`y`.
-unsafe fn mousemove_drag(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> Option<LRESULT> {
-    // Active drag of the custom text/Markdown scrollbar thumb.
-    if let Some(grab_y) = st.scroll_drag.get() {
-        drag_text_scroll_thumb(hwnd, y, grab_y);
-        return Some(LRESULT(0));
-    }
-    // A track click captures until button-up so it cannot turn into a content click
-    // if the pointer moves away. Native auto-repeat is intentionally not emulated.
-    if st.scroll_page_press.get() {
-        let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
-        return Some(LRESULT(0));
-    }
-    // Active seek / volume drag on the video strip.
-    if st.scrub_drag.get() || st.vol_drag.get() {
-        let sr = scrub_rect(hwnd);
-        let p = scrub_parts(hwnd, &sr);
-        if let Some(v) = st.video.borrow().as_ref() {
-            if st.scrub_drag.get() {
-                apply_seek(v, x, &p.track);
-            } else {
-                apply_vol(v, x, &p.vol);
-            }
-        }
-        let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
-        return Some(LRESULT(0));
-    }
-    // Active text-selection drag: extend to the cursor, auto-scrolling past the
-    // pane edges so a drag can select beyond the viewport. Hit-test BEFORE
-    // scrolling — the offset must match the frame the user is looking at (and the
-    // Markdown rects are from that paint); the next move picks up the new scroll.
-    if st.sel_drag.get() {
-        if let Some(off) = selection::hit(hwnd, x, y) {
-            if let Some((a, _)) = st.sel.get() {
-                st.sel.set(Some((a, off)));
-            }
-        }
-        let c = content_rect(hwnd);
-        let overshoot = if y < c.top {
-            y - c.top
-        } else if y > c.bottom {
-            y - c.bottom
-        } else {
-            0
-        };
-        if overshoot != 0 {
-            let step_cap = crate::win::dpi_scale(hwnd, 40);
-            selection::scroll_by(hwnd, overshoot.clamp(-step_cap, step_cap));
-        }
-        let _ = InvalidateRect(Some(hwnd), Some(&c), false);
-        return Some(LRESULT(0));
-    }
-    // Active pan drag: move the image with the cursor.
-    if let Some((ax, ay, apx, apy)) = st.drag.get() {
-        st.pan.set((apx + (x - ax), apy + (y - ay)));
-        clamp_pan(hwnd);
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.top = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false);
-        return Some(LRESULT(0));
-    }
-    None
-}
-
-/// Toolbar-button hover + custom-scrollbar hover feedback, and arming `TrackMouseEvent` so
-/// `WM_MOUSELEAVE` fires when the pointer leaves either. Reached only when no drag claimed
-/// the move (see `mousemove_drag`).
-unsafe fn mousemove_hover(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> LRESULT {
-    let now = hit_button(hwnd, x, y);
-    let button_changed = now != st.hot.get();
-    if button_changed {
-        st.hot.set(now);
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false);
-    }
-    let scroll_changed = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
-    if button_changed || scroll_changed {
-        let mut tme = TRACKMOUSEEVENT {
-            cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-            dwFlags: TME_LEAVE,
-            hwndTrack: hwnd,
-            dwHoverTime: 0,
-        };
-        let _ = TrackMouseEvent(&mut tme);
-    }
-    LRESULT(0)
-}
-
-/// `WM_MOUSELEAVE`: clear the hot button + scrollbar hover state.
-unsafe fn on_mouseleave(hwnd: HWND) -> LRESULT {
-    let st = &*state(hwnd);
-    if st.hot.get().is_some() {
-        st.hot.set(None);
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false);
-    }
-    let _ = set_scroll_hot(hwnd, false);
-    LRESULT(0)
-}
-
-/// `WM_LBUTTONDOWN`: a toolbar button, a PDF strip thumbnail, or something in the content pane.
-unsafe fn on_lbuttondown(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let (x, y) = lparam_xy(lparam);
-    let st = &*state(hwnd);
-    if st.focus.get().is_some() {
-        // A mouse click always clears keyboard toolbar focus, whatever it lands on — the ring
-        // it left behind is stale the instant the mouse takes over.
-        set_focus(hwnd, st, None);
-    }
-    if let Some(i) = hit_button(hwnd, x, y) {
-        do_action(hwnd, BTNS[i]);
-    } else if super::pdfview::strip_click(hwnd, x, y) {
-        // A page thumbnail was clicked; it already scrolled there.
-    } else {
-        lbuttondown_pane(hwnd, x, y);
-    }
-    LRESULT(0)
-}
-
-/// A press that landed neither on a toolbar button nor a PDF strip thumbnail: the custom
-/// text scrollbar, the video transport strip, an image pan (when zoomed), or the start of a
-/// text/Markdown selection drag. Split out of `on_lbuttondown`, the original `else` arm was
-/// itself a five-way branch and the biggest piece of that message's complexity.
-unsafe fn lbuttondown_pane(hwnd: HWND, x: i32, y: i32) {
-    let st = &*state(hwnd);
-    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-    if let Some(hit) = hit_text_scrollbar(hwnd, x, y) {
-        let _ = set_scroll_hot(hwnd, true);
-        match hit {
-            TextScrollHit::Thumb(grab_y) => {
-                // The thumb is owner-drawn, so explicitly capture the mouse and
-                // map subsequent pointer movement back to the document range.
-                st.scroll_drag.set(Some(grab_y));
-            }
-            TextScrollHit::Page(dy) => {
-                let _ = scroll_text_by(hwnd, dy);
-                st.scroll_page_press.set(true);
-            }
-        }
-        invalidate_text_scrollbar(hwnd); // pressed feedback
-        let _ = SetCapture(hwnd);
-    } else if st.kind.get() == ContentKind::Video {
-        scrub_mouse_down(hwnd, x, y);
-    } else if y >= cap && st.kind.get() == ContentKind::Image && st.zoom.get() > 1.0 {
-        // In the content area, over a zoomed image → begin a pan drag.
-        let (px, py) = st.pan.get();
-        st.drag.set(Some((x, y, px, py)));
-        let _ = SetCapture(hwnd);
-    } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
-        // In a text/Markdown pane (not the outline sidebar) → begin a selection
-        // drag, anchored at the hit. A drag starting on a Markdown link is fine:
-        // the link only opens if the button comes up with nothing selected.
-        if let Some(off) = selection::hit(hwnd, x, y) {
-            st.sel.set(Some((off, off)));
-            st.sel_drag.set(true);
-            let _ = SetCapture(hwnd);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
-    }
-}
-
-/// `WM_LBUTTONUP`: end whichever drag was active, or treat a plain click.
-unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let st = &*state(hwnd);
-    if st.scroll_drag.get().is_some() || st.scroll_page_press.get() {
-        st.scroll_drag.set(None);
-        st.scroll_page_press.set(false);
-        let _ = ReleaseCapture();
-        let (x, y) = lparam_xy(lparam);
-        let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
-        invalidate_text_scrollbar(hwnd); // pressed → hover/idle feedback
-    } else if st.scrub_drag.get() || st.vol_drag.get() {
-        let was_vol = st.vol_drag.get();
-        st.scrub_drag.set(false);
-        st.vol_drag.set(false);
-        let _ = ReleaseCapture();
-        // Slider let go: remember the level ONCE, not on every mouse-move of the drag.
-        if was_vol {
-            if let Some(v) = st.video.borrow().as_ref() {
-                persist_volume(v);
-            }
-        }
-    } else if st.drag.get().is_some() {
-        st.drag.set(None);
-        let _ = ReleaseCapture();
-    } else if st.sel_drag.get() {
-        st.sel_drag.set(false);
-        let _ = ReleaseCapture();
-        // Nothing was dragged out (anchor == focus): that's a plain CLICK — drop any
-        // old selection and let it act like one (outline jump / link open).
-        if matches!(st.sel.get(), Some((a, b)) if a == b) {
-            st.sel.set(None);
-            let (x, y) = lparam_xy(lparam);
-            click_content(hwnd, x, y);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
-    } else {
-        let (x, y) = lparam_xy(lparam);
-        click_content(hwnd, x, y);
-    }
-    LRESULT(0)
-}
-
-/// `WM_CAPTURECHANGED`: capture stolen mid-drag (alt-tab, another SetCapture), end every
-/// drag so a buttonless mouse-move can't keep seeking/panning/selecting.
-unsafe fn on_capturechanged(hwnd: HWND) -> LRESULT {
-    let st = &*state(hwnd);
-    let scrollbar_was_pressed = st.scroll_drag.get().is_some() || st.scroll_page_press.get();
-    st.drag.set(None);
-    st.scroll_drag.set(None);
-    st.scroll_page_press.set(false);
-    st.scrub_drag.set(false);
-    st.vol_drag.set(false);
-    st.sel_drag.set(false);
-    let _ = set_scroll_hot(hwnd, false);
-    if scrollbar_was_pressed {
-        invalidate_text_scrollbar(hwnd);
-    }
-    LRESULT(0)
-}
-
-/// `WM_SETCURSOR`: hand cursor over a Markdown link, I-beam over selectable text; otherwise
-/// default handling so the resize border + caption keep their sizing/move cursors.
-unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if (lparam.0 & 0xFFFF) as i32 == HTCLIENT as i32 {
-        let st = &*state(hwnd);
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = ScreenToClient(hwnd, &mut pt);
-        // Keep the standard arrow over the scrollbar instead of presenting the
-        // text-selection I-beam, which made the painted thumb look non-interactive.
-        if st.scroll_drag.get().is_some()
-            || st.scroll_page_press.get()
-            || hit_text_scrollbar(hwnd, pt.x, pt.y).is_some()
-        {
-            if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
-                SetCursor(Some(arrow));
-            }
-            return LRESULT(1);
-        }
-        if st.kind.get() == ContentKind::Markdown
-            && (hit_link(hwnd, pt.x, pt.y).is_some() || hit_toc(hwnd, pt.x, pt.y).is_some())
-        {
-            if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
-                SetCursor(Some(hand));
-            }
-            return LRESULT(1);
-        }
-        if selection::selectable(st.kind.get())
-            && pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H)
-            && hit_toc(hwnd, pt.x, pt.y).is_none()
-        {
-            if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
-                SetCursor(Some(ibeam));
-            }
-            return LRESULT(1);
-        }
-    }
-    DefWindowProcW(hwnd, WM_SETCURSOR, wparam, lparam)
-}
-
-/// `WM_LBUTTONDBLCLK`: double-click content = toggle fit/100%; double-click text = select word.
-unsafe fn on_lbuttondblclk(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let (x, y) = lparam_xy(lparam);
-    let st = &*state(hwnd);
-    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-    if hit_text_scrollbar(hwnd, x, y).is_some() {
-        // A double-click on the scrollbar must not select the document text beneath it.
-    } else if y >= cap && st.kind.get() == ContentKind::Image && hit_button(hwnd, x, y).is_none() {
-        toggle_fit_100(hwnd); // double-click content → toggle fit / 100%
-    } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
-        // Double-click in a text/Markdown pane → select the word under the cursor.
-        // Claiming the drag (capture + flag) keeps the button-up that follows from
-        // being read as a click — which would open a double-clicked link.
-        if let Some((a, b)) =
-            selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o))
-        {
-            st.sel.set(Some((a, b)));
-            st.sel_drag.set(true);
-            let _ = SetCapture(hwnd);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
-    }
-    LRESULT(0)
-}
-
-/// `WM_MOUSEWHEEL`: scroll/zoom/pan a PDF, zoom an image, scroll text, or nudge video volume/seek.
-unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // GET_WHEEL_DELTA_WPARAM (signed high word).
-    let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
-    let st = &*state(hwnd);
-    match st.kind.get() {
-        // A continuously scrolled PDF takes the wheel for SCROLLING, which is what
-        // the wheel means in every document reader; Ctrl+wheel magnifies and
-        // Shift+wheel slides a zoomed page sideways.
-        //
-        // 2.3.1 SHIPPED WITHOUT THIS. The continuous view landed with the keyboard
-        // wired up and the wheel still falling through to `zoom_at_cursor`, which
-        // drives `st.zoom`/`st.pan` on a single `RenderData` that the tiled paint
-        // path never reads - so the wheel did precisely nothing over a PDF while
-        // the release notes said it scrolled. Arrow keys worked, which is exactly
-        // why the tests I had (key-driven navigation, and a shot that calls the
-        // scroll function directly) all passed. Test the INPUT PATH, not the thing
-        // it calls.
-        ContentKind::Image if super::pdfview::active(hwnd) => {
-            // Three lines a notch, the same step the text pane uses.
-            let step = -delta * crate::win::dpi_scale(hwnd, 54) / 120;
-            match pdf_wheel_action(
-                GetKeyState(VK_CONTROL.0 as i32) < 0,
-                GetKeyState(VK_SHIFT.0 as i32) < 0,
-            ) {
-                WheelAction::Zoom => {
-                    super::pdfview::zoom_by(hwnd, f64::from(delta) / 120.0);
-                }
-                WheelAction::Pan => {
-                    super::pdfview::pan_by(hwnd, step);
-                }
-                WheelAction::Scroll => {
-                    super::pdfview::scroll_by(hwnd, step);
-                }
-            }
-        }
-        ContentKind::Image => zoom_at_cursor(hwnd, delta, lparam),
-        ContentKind::Text | ContentKind::Markdown => scroll_text(hwnd, delta),
-        // A244: the wheel was dead over video/audio content — every other media
-        // player uses it for volume, with Ctrl+wheel for seek. Reuses the SAME
-        // relative-step helpers the transport's arrow-key controls already call
-        // (`video_key`'s VK_UP/DOWN nudge_volume, VK_LEFT/RIGHT seek_by), not the
-        // strip's `apply_vol`/`apply_seek` — those map an absolute click POSITION
-        // on the strip, which a wheel notch has none of. Shares `wheel_remainder`
-        // with text scrolling (same accumulate-to-a-full-notch reasoning) so a
-        // precision trackpad's tiny deltas don't yank the volume on every tick.
-        ContentKind::Video => {
-            if let Some(v) = st.video.borrow().as_ref() {
-                let (notches, remainder) = wheel_notches(st.wheel_remainder.get(), delta);
-                st.wheel_remainder.set(remainder);
-                if notches != 0 {
-                    if GetKeyState(VK_CONTROL.0 as i32) < 0 {
-                        v.seek_by(f64::from(notches) * 5.0);
-                    } else {
-                        v.nudge_volume(f64::from(notches) * 0.05);
-                        persist_volume(v);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-            }
-        }
-        _ => {}
-    }
-    LRESULT(0)
-}
-
-/// Whether `vk` is one of the eight navigation keys that extend a selection under Shift
-/// (plain arrows, Home/End, Page Up/Down). Split out of the Shift+nav-extend check in
-/// `keydown_copy_select` purely because a single `matches!` over eight alternatives was, by
-/// itself, most of that check's cyclomatic weight.
-fn is_selection_extend_key(vk: u16) -> bool {
-    matches!(vk, v if v == VK_LEFT.0 || v == VK_RIGHT.0 || v == VK_UP.0
-        || v == VK_DOWN.0 || v == VK_HOME.0 || v == VK_END.0
-        || v == VK_PRIOR.0 || v == VK_NEXT.0)
-}
-
-/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S: the content-editing quartet — select all, copy,
-/// toggle source view, save the shown page/frame. Split out of `keydown_copy_select`
-/// purely to keep that dispatcher's own weight under the complexity gate; the four
-/// checks are independent early returns, same as they were inline.
-unsafe fn keydown_edit_actions(
-    hwnd: HWND,
-    st: &ViewerState,
-    vk: u16,
-    ctrl: bool,
-    shift: bool,
-) -> Option<LRESULT> {
-    // Ctrl+A / Ctrl+C: select all / copy the CONTENT (the selection, the rendered
-    // text, the info-card text, or the decoded image) — the whole point of a viewer
-    // you can lift text out of. Ctrl+Shift+C copies a Markdown file's raw source.
-    if ctrl && vk == 'A' as u16 {
-        if let Some(len) = selection::doc_len(hwnd) {
-            if len > 0 {
-                st.sel.set(Some((0, len)));
-                let cr = content_rect(hwnd);
-                let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-            }
-        }
-        return Some(LRESULT(0));
-    }
-    if ctrl && vk == 'C' as u16 {
-        copy_content(hwnd, shift);
-        return Some(LRESULT(0));
-    }
-    // Ctrl+U: view source / view rendered — the browser convention, same as the
-    // toolbar's `</>` toggle. Ignored on files that only have one view.
-    if ctrl && vk == 'U' as u16 {
-        toggle_source(hwnd);
-        return Some(LRESULT(0));
-    }
-    // Ctrl+S: save the shown PDF page / animation frame as a PNG — same action as the
-    // `Btn::SavePage` toolbar button, self-guarding via `on_btn_save_page` when neither
-    // applies (a plain image has nothing to save beyond what Ctrl+C already copies).
-    if ctrl && vk == 'S' as u16 {
-        do_action(hwnd, Btn::SavePage);
-        return Some(LRESULT(0));
-    }
-    // Ctrl+P: print the shown content — same action as the `Btn::Print` toolbar button,
-    // self-guarding via `print::do_print` when the pane has no bitmap to print.
-    if ctrl && vk == 'P' as u16 {
-        do_action(hwnd, Btn::Print);
-        return Some(LRESULT(0));
-    }
-    None
-}
-
-/// Bare W and the Ctrl+=/Ctrl+-/Ctrl+0 keyboard-zoom trio: the image-view-only keys.
-/// Split out of `keydown_copy_select` purely to keep that dispatcher's own weight under
-/// the complexity gate; the checks below are unchanged from their original inline form.
-unsafe fn keydown_image_zoom_keys(
-    hwnd: HWND,
-    st: &ViewerState,
-    vk: u16,
-    ctrl: bool,
-    shift: bool,
-) -> Option<LRESULT> {
-    // Bare "W": toggle fit-width vs aspect-fit — the mode a portrait page (a
-    // scanned document, a tall screenshot) needs in a landscape-shaped preview
-    // window, where aspect-fit leaves empty margins on both sides instead of using
-    // the width that's actually there. Sits alongside the double-click
-    // aspect-fit/100% toggle above; unmodified because it only ever reaches here
-    // when no child control (e.g. the find bar's edit box) has keyboard focus.
-    if !ctrl && !shift && vk == 'W' as u16 && st.kind.get() == ContentKind::Image {
-        toggle_fit_width(hwnd);
-        return Some(LRESULT(0));
-    }
-    // Ctrl+=/Ctrl+- : keyboard zoom, one wheel notch per press, anchored on the content
-    // pane's centre (there is no cursor position to anchor on from the keyboard). Not gated
-    // on `!shift`: the `=`/`+` key is the same VK regardless of the Shift needed to type `+`
-    // on most layouts, and Ctrl+Shift+= is the same browser-zoom-in convention users already
-    // know. Ctrl+0 resets to fit/100%, same as double-click.
-    if ctrl && st.kind.get() == ContentKind::Image {
-        if vk == VK_OEM_PLUS.0 {
-            zoom_step_at_center(hwnd, 1);
-            return Some(LRESULT(0));
-        }
-        if vk == VK_OEM_MINUS.0 {
-            zoom_step_at_center(hwnd, -1);
-            return Some(LRESULT(0));
-        }
-        if vk == '0' as u16 {
-            toggle_fit_100(hwnd);
-            return Some(LRESULT(0));
-        }
-    }
-    None
-}
-
-/// Shift+nav selection-extend, Ctrl+F, and an already-open find bar: the search/selection
-/// tail of the cluster. Split out of `keydown_copy_select` purely to keep that dispatcher's
-/// own weight under the complexity gate; unchanged from the original inline checks.
-unsafe fn keydown_find_and_extend(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> Option<LRESULT> {
-    // Shift+<nav key> extends the selection (plain arrows stay file navigation).
-    if shift && is_selection_extend_key(vk) && selection::extend(hwnd, vk, ctrl) {
-        return Some(LRESULT(0));
-    }
-    // Ctrl+F opens the find bar (or steps to the next match if it is already open).
-    if ctrl && vk == 'F' as u16 {
-        super::find::toggle(hwnd);
-        return Some(LRESULT(0));
-    }
-    // While the bar is up it owns Esc / Enter / F3. F3 also works with it closed, so a
-    // search survives Esc and can be resumed without retyping it.
-    if super::find::on_key(hwnd, vk, shift) {
-        return Some(LRESULT(0));
-    }
-    None
-}
-
-/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
-/// Ctrl+F / an already-open find bar: the "editing and search" cluster of `WM_KEYDOWN`.
-/// `Some` means the key was consumed. A thin dispatcher over the three helpers above, tried
-/// in the same order this cluster always checked them in.
-unsafe fn keydown_copy_select(
-    hwnd: HWND,
-    st: &ViewerState,
-    vk: u16,
-    ctrl: bool,
-    shift: bool,
-) -> Option<LRESULT> {
-    if let Some(r) = keydown_edit_actions(hwnd, st, vk, ctrl, shift) {
-        return Some(r);
-    }
-    if let Some(r) = keydown_image_zoom_keys(hwnd, st, vk, ctrl, shift) {
-        return Some(r);
-    }
-    keydown_find_and_extend(hwnd, vk, ctrl, shift)
-}
-
-/// The playing-video transport keys, and Home/End over a text/Markdown pane. Both stay
-/// early, ahead of the PDF/file navigation cluster, for the same reason they did inside the
-/// original arm: a clip owns its own scrub keys, and Home/End must reach the document ends
-/// before the generic nav-key routing below gets a chance to misread them.
-unsafe fn keydown_video_and_home(
-    hwnd: HWND,
-    st: &ViewerState,
-    vk: u16,
-    ctrl: bool,
-    shift: bool,
-) -> Option<LRESULT> {
-    // A playing clip owns the transport keys (seek / volume / pause / mute / loop)
-    // BEFORE the generic Home/End and arrow handling below, which would otherwise
-    // scroll or flip files while you are trying to scrub.
-    if video_key(hwnd, vk, ctrl, shift) {
-        return Some(LRESULT(0));
-    }
-    // Home / End scroll a text or Markdown document to its ends.
-    if !shift && (vk == VK_HOME.0 || vk == VK_END.0) && selection::selectable(st.kind.get()) {
-        let to = if vk == VK_HOME.0 {
-            -st.text_scroll.get()
-        } else {
-            st.text_h.get()
-        };
-        selection::scroll_by(hwnd, to);
-        return Some(LRESULT(0));
-    }
-    None
-}
-
-/// PDF continuous-view vertical scrolling, then the file/page navigation `nav_key_action`
-/// dispatch. Split out on its own because between them a 6-armed match (the PDF viewport
-/// step) and the `nav_key_action` match were most of the original arm's remaining weight.
-unsafe fn keydown_page_nav(
-    hwnd: HWND,
-    st: &ViewerState,
-    vk: u16,
-    ctrl: bool,
-    shift: bool,
-) -> Option<LRESULT> {
-    // A continuously scrolled PDF owns the vertical keys: Up/Down nudge, PgUp/PgDn
-    // move a viewport, Home/End jump to the ends. Left/Right are NOT here, and
-    // must never be: they stay file navigation on every kind of content.
-    if super::pdfview::active(hwnd) && !ctrl && !shift {
-        let line = crate::win::dpi_scale(hwnd, 64);
-        let page = super::pdfview::viewport_step(hwnd);
-        let delta = match vk {
-            v if v == VK_DOWN.0 => Some(line),
-            v if v == VK_UP.0 => Some(-line),
-            v if v == VK_NEXT.0 => Some(page),
-            v if v == VK_PRIOR.0 => Some(-page),
-            v if v == VK_HOME.0 => Some(i32::MIN / 2),
-            v if v == VK_END.0 => Some(i32::MAX / 2),
-            _ => None,
-        };
-        if let Some(d) = delta {
-            super::pdfview::scroll_by(hwnd, d);
-            return Some(LRESULT(0));
-        }
-    }
-    let multipage_pdf = st.kind.get() == ContentKind::Image && st.pdf_pages.get() > 1;
-    match nav_key_action(multipage_pdf, vk) {
-        Some(NavKey::Page(delta)) => {
-            goto_pdf_page(hwnd, delta);
-            Some(LRESULT(0))
-        }
-        Some(NavKey::File(delta)) => {
-            nav_sibling(hwnd, delta);
-            Some(LRESULT(0))
-        }
-        None => None,
-    }
-}
-
-/// Esc-leaves-fullscreen, then the manual-mode Esc/Space/Enter close. Kept last, matching
-/// the original arm's order: everything above gets first refusal at a key before these
-/// window-lifecycle defaults apply.
-unsafe fn keydown_lifecycle(hwnd: HWND, st: &ViewerState, vk: u16) -> Option<LRESULT> {
-    // Esc leaves full-screen first (even when the daemon hook owns lifecycle keys).
-    if vk == VK_ESCAPE.0 && st.fullscreen.get().is_some() {
-        toggle_fullscreen(hwnd);
-        return Some(LRESULT(0));
-    }
-    // Only own the lifecycle keys when the daemon hook is NOT the authority.
-    if st.manual && (vk == VK_ESCAPE.0 || vk == VK_SPACE.0 || vk == VK_RETURN.0) {
-        request_close(hwnd);
-        return Some(LRESULT(0));
-    }
-    None
-}
-
-/// `WM_KEYDOWN`: thin dispatcher over the four key-handling clusters above, in the same
-/// priority order the original single arm checked them in.
-unsafe fn on_keydown(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let st = &*state(hwnd);
-    let vk = wparam.0 as u16;
-    // F11 toggles borderless full-screen (works in daemon + manual mode).
-    if vk == VK_F11.0 {
-        toggle_fullscreen(hwnd);
-        return LRESULT(0);
-    }
-    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
-    let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
-    // The toolbar keyboard-focus cluster goes FIRST: while a caption/transport button has
-    // focus it must own Left/Right/Up/Down/Enter/Space/Escape ahead of every other cluster
-    // below (video seek, PDF/file nav, the manual-mode Esc/Space/Enter close) — see
-    // `toolbar::keydown_toolbar_focus`'s doc comment. It is a cheap no-op bail whenever focus
-    // is not on the toolbar, so every existing key path is otherwise untouched.
-    if let Some(r) = keydown_toolbar_focus(hwnd, st, vk, shift) {
-        return r;
-    }
-    if let Some(r) = keydown_copy_select(hwnd, st, vk, ctrl, shift) {
-        return r;
-    }
-    if let Some(r) = keydown_video_and_home(hwnd, st, vk, ctrl, shift) {
-        return r;
-    }
-    if let Some(r) = keydown_page_nav(hwnd, st, vk, ctrl, shift) {
-        return r;
-    }
-    if let Some(r) = keydown_lifecycle(hwnd, st, vk) {
-        return r;
-    }
-    DefWindowProcW(hwnd, WM_KEYDOWN, wparam, lparam)
 }
 
 /// `WM_DESTROY`: tear down GDI+, the tooltip control, the back buffer, and free `ViewerState`.
@@ -1942,90 +1056,6 @@ unsafe fn on_video_event(hwnd: HWND, event: u32) {
         }
         super::video::VideoEvent::None => {}
     }
-}
-
-/// Keyboard control for a playing video or audio track, matching what every media player does.
-/// Returns whether the key was consumed.
-///
-/// `←/→` are the seek keys here rather than folder navigation: while a clip is playing that is what
-/// the key means everywhere else, and PgUp/PgDn still flip through the folder, so nothing is lost.
-/// Seek keys: `←/→` (step scaled by Ctrl/Shift), Home/End.
-unsafe fn video_key_seek(v: &super::video::VideoPlayer, vk: u16, step: f64) -> bool {
-    match vk {
-        k if k == VK_LEFT.0 => v.seek_by(-step),
-        k if k == VK_RIGHT.0 => v.seek_by(step),
-        k if k == VK_HOME.0 => v.seek(0.0),
-        k if k == VK_END.0 => {
-            let d = v.duration();
-            if d.is_finite() && d > 0.0 {
-                v.seek((d - 0.1).max(0.0));
-            }
-        }
-        _ => return false,
-    }
-    true
-}
-
-/// Volume keys: `↑/↓` nudge and persist.
-unsafe fn video_key_volume(v: &super::video::VideoPlayer, vk: u16) -> bool {
-    match vk {
-        k if k == VK_UP.0 => v.nudge_volume(0.05),
-        k if k == VK_DOWN.0 => v.nudge_volume(-0.05),
-        _ => return false,
-    }
-    persist_volume(v);
-    true
-}
-
-/// Toggle keys: play/pause, mute, loop.
-unsafe fn video_key_toggle(v: &super::video::VideoPlayer, vk: u16) -> bool {
-    match vk {
-        // K and P both pause, because muscle memory splits between YouTube and desktop players.
-        // Space is deliberately NOT bound: it belongs to the preview's own open/close lifecycle.
-        k if k == 'K' as u16 || k == 'P' as u16 => v.toggle_play(),
-        k if k == 'M' as u16 => {
-            v.set_muted(!v.muted());
-            persist_volume(v);
-        }
-        k if k == 'L' as u16 => {
-            let on = !v.looping();
-            v.set_looping(on);
-            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
-        }
-        _ => return false,
-    }
-    true
-}
-
-unsafe fn video_key(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) -> bool {
-    let st = &*state(hwnd);
-    if st.kind.get() != ContentKind::Video {
-        return false;
-    }
-    let vb = st.video.borrow();
-    let Some(v) = vb.as_ref() else { return false };
-    // Coarse with Ctrl, fine with Shift, 5 s otherwise.
-    let step = if ctrl {
-        30.0
-    } else if shift {
-        1.0
-    } else {
-        5.0
-    };
-    // With "arrows switch files" on, ←/→ are NOT ours: fall through to the folder navigation
-    // below. Everything else on this map still applies, and the strip's ⏮/⏭ buttons plus
-    // PgUp/PgDn mean neither behaviour is ever unreachable.
-    if st.arrow_nav.get() && matches!(vk, k if k == VK_LEFT.0 || k == VK_RIGHT.0) {
-        return false;
-    }
-    let consumed =
-        video_key_seek(v, vk, step) || video_key_volume(v, vk) || video_key_toggle(v, vk);
-    if !consumed {
-        return false;
-    }
-    let sr = scrub_rect(hwnd);
-    let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
-    true
 }
 
 /// Handle a decode result: install the image (or fall back to an InfoCard on failure), then
@@ -2191,17 +1221,50 @@ pub(in crate::preview) use navigate::*;
 pub(in crate::preview) use zoom::*;
 mod scroll;
 pub(super) use scroll::*;
+// G154 split (2026-09-08): mouse/hit-testing, the PDF/Markdown async message handlers, and
+// keyboard dispatch moved out here. Unlike the five children above, nothing outside this file
+// calls into any of them by name, so they stay a plain private glob import (no
+// `pub(in crate::preview)`) — `pub(super)` in each child is enough to reach this file, and
+// `window.rs`'s own `tests` module (a descendant of this module) sees the re-imported names
+// the same way it already saw them when they lived here directly.
+mod keys;
+mod mouse;
+mod pdfasync;
+use keys::*;
+use mouse::*;
+use pdfasync::*;
 
 #[cfg(test)]
 mod tests {
     use super::{
-        nav_key_action, pdf_wheel_action, scroll_from_thumb_offset, scroll_thumb_geometry,
-        sort_paths_like_explorer, text_scroll_limits, wheel_notches, NavKey, WheelAction,
+        nav_key_action, pdf_wheel_action, savepage_visible, scroll_from_thumb_offset,
+        scroll_thumb_geometry, sort_paths_like_explorer, text_scroll_limits, wheel_notches,
+        ContentKind, NavKey, WheelAction,
     };
     use std::path::PathBuf;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         VK_DOWN, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
     };
+
+    /// `Btn::SavePage` gains a THIRD way to show, on top of the pre-existing PDF/animation
+    /// cases: a live video player. Without this arm the button stayed hidden for every video,
+    /// which is the whole defect this queue item exists to fix.
+    #[test]
+    fn savepage_shows_for_a_video_with_a_live_player() {
+        assert!(savepage_visible(ContentKind::Video, 0, 0, true));
+        // No player yet (fell back to an info card) — nothing to grab a frame from.
+        assert!(!savepage_visible(ContentKind::Video, 0, 0, false));
+    }
+
+    /// The pre-existing PDF/animation gates must survive the video arm being added alongside
+    /// them — a video-only regression check would miss a change that broke these instead.
+    #[test]
+    fn savepage_keeps_its_pdf_and_animation_gates() {
+        assert!(savepage_visible(ContentKind::Image, 3, 0, false)); // multi-page PDF
+        assert!(savepage_visible(ContentKind::Image, 0, 4, false)); // animation, >1 frame
+        assert!(!savepage_visible(ContentKind::Image, 1, 1, false)); // neither paged nor animated
+        assert!(!savepage_visible(ContentKind::Text, 3, 4, false)); // wrong content kind entirely
+    }
 
     #[test]
     fn every_scroll_path_shares_the_same_limits() {

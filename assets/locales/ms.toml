@@ -252,6 +252,14 @@ grp_menu_items = "Item menu"
 chk_preserve_date = "Kekalkan tarikh asal pada fail disimpan"
 chk_keep_metadata = "Kekalkan EXIF dan metadata lain semasa menukar"
 chk_pdf_margin = "Tambah margin pada PDF gabungan"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "lebih daripada"
+menu_save_video_frame = "Simpan bingkai sebagai imej"
+preview_toast_savevideo_fail = "Tidak dapat menyimpan bingkai video semasa."
+lbl_preview_blocked_exts = "Jangan sekali-kali buka sambungan berikut dengan Pratonton pantas:"
+ic_virtual_title = "Tiada pratonton"
+ic_virtual_detail = "Pilihan ini bukan fail, jadi tiada apa-apa untuk dipaparkan."
+hotkey_selection_virtual = "Item tersebut tidak mempunyai fail di sebaliknya, jadi tiada apa-apa untuk dikerjakan."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

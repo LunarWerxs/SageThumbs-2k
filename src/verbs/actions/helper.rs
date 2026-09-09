@@ -494,6 +494,40 @@ pub(super) fn folder_icon_one(exe: Option<&Path>, p: &str) -> Result<()> {
     }
 }
 
+/// Save a video's frame as a standalone `<stem> (frame).png` sibling. Routes to
+/// `st2k thumbnail <file> <out> --size 0` — `0` asks for the full-resolution frame,
+/// not a thumbnail-sized one (see `cli::fit_for_cli`). Unlike every other verb in
+/// this file, there is **no in-process fallback**: video decode (OS Media
+/// Foundation) must never run inside `explorer.exe`/`dllhost.exe`, only in the
+/// disposable `st2k.exe` child, so a missing/unspawnable helper fails the verb
+/// outright instead of degrading.
+pub(super) fn save_video_frame_one(exe: Option<&Path>, p: &str) -> Result<PathBuf> {
+    let Some(exe) = exe else {
+        return Err(Error::new(
+            E_FAIL,
+            "the st2k helper is required to save a video frame",
+        ));
+    };
+    let src = Path::new(p);
+    let slot = reserve_unique_suffix(src, "frame", "png");
+    let Some(out_s) = slot.path().to_str() else {
+        return Err(Error::new(E_FAIL, "the output path isn't valid UTF-8"));
+    };
+    match run_st2k(exe, p, &["thumbnail", p, out_s, "--size", "0"]) {
+        RunOutcome::Ok => Ok(slot.path().to_path_buf()),
+        RunOutcome::Failed => {
+            crate::safety::log(&format!("Save video frame (st2k) failed for {p}"));
+            Err(Error::new(E_FAIL, "couldn't extract the video frame"))
+        }
+        RunOutcome::SpawnFailed => {
+            crate::safety::log(&format!(
+                "Save video frame (st2k) couldn't spawn the helper for {p}"
+            ));
+            Err(Error::new(E_FAIL, "the st2k helper couldn't be started"))
+        }
+    }
+}
+
 /// Like [`run_st2k_capture`], but returns the child's stderr text (trimmed) on a
 /// non-zero exit instead of discarding it after logging - [`compress_one`] needs the
 /// real error text to pull the "smallest reachable" byte count back out via

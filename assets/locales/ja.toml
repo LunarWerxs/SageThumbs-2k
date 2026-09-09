@@ -254,6 +254,14 @@ grp_menu_items = "メニュー項目"
 chk_preserve_date = "保存ファイルに元の日付を保持する"
 chk_keep_metadata = "変換時に EXIF などのメタデータを保持する"
 chk_pdf_margin = "結合した PDF に余白を追加する"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "少なくとも"
+menu_save_video_frame = "フレームを画像として保存"
+preview_toast_savevideo_fail = "現在のビデオフレームを保存できませんでした。"
+lbl_preview_blocked_exts = "クイックプレビューしない拡張子:"
+ic_virtual_title = "プレビューなし"
+ic_virtual_detail = "この選択項目はファイルではないため、表示できる内容がありません。"
+hotkey_selection_virtual = "それらのアイテムには実体のファイルがないため、操作できる対象がありません。"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

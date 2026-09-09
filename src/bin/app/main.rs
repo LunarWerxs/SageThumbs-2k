@@ -68,6 +68,11 @@ mod settings_io;
 mod sponsors;
 mod sync_client;
 mod tags_to_folders;
+/// Shared UI Automation scaffolding for a surface built from real child windows (the Settings
+/// nav rail today): each item overrides its own `WM_GETOBJECT` on top of its native provider
+/// rather than growing a virtual fragment tree. See the module doc for what a second surface
+/// (one with no child windows of its own, e.g. an owner-drawn toolbar) would need instead.
+mod uia;
 mod update;
 mod upload_result;
 mod win;
@@ -594,7 +599,7 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
         if wait > 0 {
             std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
         }
-        if let Some(p) = explorer_selection::preview_target() {
+        if let explorer_selection::PreviewTarget::Path(p) = explorer_selection::preview_target() {
             println!("{p}");
         }
         return true;

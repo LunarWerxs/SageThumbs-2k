@@ -254,6 +254,14 @@ grp_menu_items = "Menu-items"
 chk_preserve_date = "Oorspronkelijke datum behouden bij opgeslagen bestanden"
 chk_keep_metadata = "EXIF en andere metagegevens behouden bij converteren"
 chk_pdf_margin = "Marge toevoegen aan gecombineerde PDF's"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "meer dan"
+menu_save_video_frame = "Beeld opslaan als afbeelding"
+preview_toast_savevideo_fail = "Kon het huidige videobeeld niet opslaan."
+lbl_preview_blocked_exts = "Deze extensies nooit met Snelle weergave openen:"
+ic_virtual_title = "Geen voorbeeld"
+ic_virtual_detail = "Deze selectie is geen bestand, dus er is niets om weer te geven."
+hotkey_selection_virtual = "Die items hebben geen bestand erachter, dus er is niets om mee te werken."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

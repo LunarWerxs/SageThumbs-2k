@@ -689,9 +689,14 @@ unsafe fn grab_block_stream(inner: IStream, size: u64, seek: Seek) -> Option<Dyn
     grab_reader(&reader, seek)
 }
 
-/// Test-only: exercise the block-caching path over a real file (a file-backed `IStream` opened
-/// on the worker, so no GIT marshaling is needed). Mirrors `frame_from_block_stream`'s decode.
-#[cfg(test)]
+/// Grab one frame at `frac` (a fraction of the duration) over the block-caching path, from a
+/// PATH rather than a shell `IStream` — a file-backed `IStream` opened on the worker, so no
+/// Global-Interface-Table marshaling is needed. Mirrors `frame_from_block_stream`'s decode.
+///
+/// Was `#[cfg(test)]` until 2026-09-08, when the Quick preview's video Save-frame button became
+/// its first real caller: the viewer knows the on-screen position, and this turns that position
+/// into the exact frame the user is looking at. Everything below (the delay-load gate, the
+/// budget, the byte ceiling) already held for the test caller and holds identically here.
 pub fn frame_from_block_stream_file(path: &str, frac: f64) -> Option<DynamicImage> {
     // Media Foundation is delay-loaded; calling into it when absent would raise a
     // structured exception under `panic = "abort"`. See `media_foundation_available`, and

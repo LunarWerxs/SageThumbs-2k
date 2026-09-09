@@ -68,6 +68,13 @@ pub(super) unsafe fn run_shot(
     apply_focus(hwnd, opts.focus, opts.focus_transport);
     apply_sel(hwnd, opts.sel);
     apply_find(hwnd, opts.find.as_deref());
+    // Not on `ShotOpts` (that struct is threaded through `main.rs`'s CLI parser, owned
+    // elsewhere): read straight off argv instead. Exists so `tests/preview_wndproc_drive.rs`
+    // can drive the mouse-button and keyboard-dispatch paths a plain build cannot prove —
+    // see each helper's doc comment for exactly which real message path it posts.
+    apply_click(hwnd, env_arg("--click").and_then(|s| s.parse().ok()));
+    apply_drag(hwnd, env_arg("--drag").as_deref().and_then(parse_drag));
+    apply_press(hwnd, env_arg("--press").as_deref());
     bench_repaint_if_requested(hwnd);
     let ok = crate::win::capture_and_destroy(hwnd, out);
     if let Some(t) = &tmp {
@@ -259,6 +266,150 @@ unsafe fn apply_find(hwnd: HWND, find: Option<&str>) {
     }
     let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
     crate::win::pump_msgs(8);
+}
+
+/// Read one flag's value straight off argv, independent of `ShotOpts` (which `main.rs` owns).
+/// Used only by the driving flags below, which exist purely for
+/// `tests/preview_wndproc_drive.rs` and have no reason to widen a struct threaded through code
+/// this file doesn't own.
+fn env_arg(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|p| args.get(p + 1))
+        .cloned()
+}
+
+/// Pack a client-space point into the `LPARAM` encoding a mouse message carries it in — the
+/// same bit layout `tests/screenshot_automation.rs`'s external driver uses for the same reason.
+fn point_lparam(x: i32, y: i32) -> windows::Win32::Foundation::LPARAM {
+    let packed = u32::from(x as u16) | (u32::from(y as u16) << 16);
+    windows::Win32::Foundation::LPARAM(packed as isize)
+}
+
+/// `--click N`: press-AND-release the same toolbar button `--hot`/`--focus` index into
+/// (`BTNS[N]`), via a real `WM_LBUTTONDOWN` + `WM_LBUTTONUP` posted at its actual on-screen
+/// rect. Unlike `--toggle-source`/`--toggle-theme`, which call `do_action` directly, this
+/// proves the MOUSE HIT-TEST too (`on_lbuttondown` → `hit_button` → `button_rects`) — the
+/// path a real click actually takes, and the one a hit-test regression could break while
+/// every direct-`do_action` test stayed green.
+unsafe fn apply_click(hwnd: HWND, click: Option<usize>) {
+    use windows::Win32::Foundation::WPARAM;
+    let Some(n) = click else {
+        return;
+    };
+    let Some(&btn) = super::window::BTNS.get(n) else {
+        return;
+    };
+    let rects = super::toolbar::button_rects(hwnd);
+    let Some((_, r)) = rects.iter().find(|(b, _)| *b == btn) else {
+        return;
+    };
+    let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(1), point_lparam(cx, cy));
+    crate::win::pump_msgs(8);
+    let _ = PostMessageW(Some(hwnd), WM_LBUTTONUP, WPARAM(0), point_lparam(cx, cy));
+    crate::win::pump_msgs(8);
+}
+
+/// The fixed shape `--drag` parses: two legs of a mouse drag (`(x1,y1)` → `(x2,y2)` →
+/// `(x3,y3)`) plus whether a `WM_CAPTURECHANGED` interrupts it between the legs.
+type DragSpec = (i32, i32, i32, i32, i32, i32, bool);
+
+/// Parse `--drag X1,Y1,X2,Y2,X3,Y3[,interrupt]` for [`apply_drag`].
+fn parse_drag(spec: &str) -> Option<DragSpec> {
+    let parts: Vec<&str> = spec.split(',').collect();
+    if parts.len() != 6 && parts.len() != 7 {
+        return None;
+    }
+    let n = |i: usize| parts[i].trim().parse::<i32>().ok();
+    let (x1, y1, x2, y2, x3, y3) = (n(0)?, n(1)?, n(2)?, n(3)?, n(4)?, n(5)?);
+    let interrupt = parts
+        .get(6)
+        .map(|s| s.trim() == "interrupt")
+        .unwrap_or(false);
+    Some((x1, y1, x2, y2, x3, y3, interrupt))
+}
+
+/// `--drag X1,Y1,X2,Y2,X3,Y3[,interrupt]`: a real content-pane selection drag over TWO legs —
+/// `WM_LBUTTONDOWN` at `(X1,Y1)` starts it, `WM_MOUSEMOVE` to `(X2,Y2)` extends it — then,
+/// with `interrupt`, a `WM_CAPTURECHANGED` (capture stolen mid-drag, e.g. alt-tab) BEFORE the
+/// second `WM_MOUSEMOVE` to `(X3,Y3)`; without it, the second move runs straight through. No
+/// `WM_LBUTTONUP` is ever posted, so the only thing that can explain a difference between the
+/// two runs is `on_capturechanged`: does a SECOND move still extend the selection (the bug it
+/// exists to prevent — a buttonless move left dragging forever) or does it correctly do
+/// nothing once capture is gone.
+unsafe fn apply_drag(hwnd: HWND, drag: Option<DragSpec>) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    let Some((x1, y1, x2, y2, x3, y3, interrupt)) = drag else {
+        return;
+    };
+    let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(1), point_lparam(x1, y1));
+    crate::win::pump_msgs(8);
+    let _ = PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(1), point_lparam(x2, y2));
+    crate::win::pump_msgs(8);
+    if interrupt {
+        let _ = PostMessageW(Some(hwnd), WM_CAPTURECHANGED, WPARAM(0), LPARAM(0));
+        crate::win::pump_msgs(8);
+    }
+    let _ = PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(1), point_lparam(x3, y3));
+    crate::win::pump_msgs(8);
+}
+
+/// `--press SPEC[,SPEC...]`: post each token as a real key through the exact `WM_KEYDOWN`
+/// dispatch a live window receives. `ctrl+X` genuinely holds `VK_CONTROL` down first (the same
+/// `keybd_event` technique `--wheel --ctrl` already relies on, since `on_keydown`'s modifier
+/// reads come from `GetKeyState`, not the message itself), so a toolbar SHORTCUT is proven
+/// through the same dispatch cluster a plain arrow key is, not merely called directly.
+/// Recognised tokens: `left`/`right`/`up`/`down`/`home`/`end`/`escape`, plus `ctrl+<letter>`
+/// (`u` = view source, `f` = find, `c` = copy, `a` = select all, `s` = save, `p` = print).
+/// Unrecognised tokens are silently skipped.
+unsafe fn apply_press(hwnd: HWND, press: Option<&str>) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT,
+        VK_RIGHT, VK_UP,
+    };
+    let Some(spec) = press else {
+        return;
+    };
+    let named_vk = |name: &str| -> Option<u16> {
+        Some(match name {
+            "left" => VK_LEFT.0,
+            "right" => VK_RIGHT.0,
+            "up" => VK_UP.0,
+            "down" => VK_DOWN.0,
+            "home" => VK_HOME.0,
+            "end" => VK_END.0,
+            "escape" | "esc" => VK_ESCAPE.0,
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+                s.as_bytes()[0].to_ascii_uppercase() as u16
+            }
+            _ => return None,
+        })
+    };
+    for raw in spec.split(',') {
+        let token = raw.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            continue;
+        }
+        let (ctrl, key) = match token.split_once('+') {
+            Some(("ctrl", k)) => (true, k),
+            _ => (false, token.as_str()),
+        };
+        let Some(vk) = named_vk(key) else {
+            continue;
+        };
+        if ctrl {
+            keybd_event(VK_CONTROL.0 as u8, 0, Default::default(), 0);
+        }
+        let _ = PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(vk as usize), LPARAM(1));
+        crate::win::pump_msgs(8);
+        if ctrl {
+            keybd_event(VK_CONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        }
+        crate::win::pump_msgs(8);
+    }
 }
 
 /// `ST2K_MD_BENCH`: repaint several times so the Markdown layout cache's cold(1st)-vs-

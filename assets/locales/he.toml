@@ -255,6 +255,14 @@ grp_menu_items = "פריטי תפריט"
 chk_preserve_date = "שמור על התאריך המקורי בקבצים שנשמרו"
 chk_keep_metadata = "שמירת EXIF ומטא-נתונים אחרים בעת המרה"
 chk_pdf_margin = "הוספת שוליים לקובצי PDF מאוחדים"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "יותר מ-"
+menu_save_video_frame = "שמירת פריים כתמונה"
+preview_toast_savevideo_fail = "לא ניתן היה לשמור את פריים הווידאו הנוכחי."
+lbl_preview_blocked_exts = "סיומות שלעולם לא יוצגו בתצוגה מקדימה מהירה:"
+ic_virtual_title = "אין תצוגה מקדימה"
+ic_virtual_detail = "הבחירה הזו אינה קובץ, ולכן אין מה להציג."
+hotkey_selection_virtual = "לפריטים האלה אין קובץ מאחוריהם, ולכן אין על מה לעבוד."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

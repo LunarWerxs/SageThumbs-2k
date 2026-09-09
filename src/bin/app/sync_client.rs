@@ -188,6 +188,10 @@ const ALLOW: &[(&str, Kind)] = &[
     ("PreviewHtml", Kind::Dword),
     ("PreviewUrlLive", Kind::Dword),
     ("PreviewPdfStrip", Kind::Dword),
+    // The Quick-preview extension blocklist (2026-09-08). A free-text preference like
+    // `ShotSaveDir`, and portable in the same sense: "never Quick-preview .insv" is a
+    // statement about the user, not about this machine.
+    ("PreviewBlockedExts", Kind::Str),
     ("PreviewLoop", Kind::Dword),
     ("PreviewMuted", Kind::Dword),
     ("PreviewVolume", Kind::Dword),

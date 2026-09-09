@@ -558,3 +558,65 @@ pub fn preview_markdown() -> bool {
 pub fn set_preview_markdown(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewMarkdown", on as u32)
 }
+
+/// Quick preview's per-extension blocklist, exactly as the user typed it into the Settings
+/// box (comma/semicolon separated, e.g. `insv, .mov ; HEIC`). Stored and returned UNPARSED —
+/// parsing happens only on READ ([`preview_blocked`]) — so the edit box round-trips whatever
+/// the user last typed instead of silently rewriting it under them.
+///
+/// Deliberately a SEPARATE list from the File-types page's `format_enabled(ext)`: that switch
+/// answers "does this format get a THUMBNAIL", and reusing it here would silently tie "no
+/// thumbnails for X" to "no Quick preview for X" too, which is a different promise to the
+/// user (owner decision, 2026-09-08 QuickLook-parity review — do not re-litigate). Empty by
+/// default: unlike QuickLook's shipped `.insv` block (added after a crash report), we have no
+/// crash to justify a default entry, and the Quick preview already runs out of process, so a
+/// crashing format takes down only its own window.
+pub fn preview_blocked_exts_raw() -> String {
+    get_string_opt("PreviewBlockedExts").unwrap_or_default()
+}
+/// Persist the Quick preview extension blocklist verbatim (as typed).
+pub fn set_preview_blocked_exts(raw: &str) -> windows_registry::Result<()> {
+    set_string("PreviewBlockedExts", raw)
+}
+
+/// Parse a comma/semicolon-separated extension list: case-insensitive, tolerant of a leading
+/// dot and of surrounding spaces, empty entries dropped. Pulled out as a pure function — this
+/// is the actually-testable part of the feature, with no registry/ini involved.
+fn parse_blocked_exts(raw: &str) -> Vec<String> {
+    raw.split([',', ';'])
+        .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether the Quick preview should refuse `ext` outright, before any decoder even sees the
+/// file — the per-extension blocklist gate ([`preview_blocked_exts_raw`]). `ext` may carry a
+/// leading dot or mixed case; both are normalized before comparing.
+pub fn preview_blocked(ext: &str) -> bool {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    parse_blocked_exts(&preview_blocked_exts_raw()).contains(&ext)
+}
+
+#[cfg(test)]
+mod blocked_ext_tests {
+    use super::parse_blocked_exts;
+
+    #[test]
+    fn parses_case_insensitively_and_trims_dots_and_spaces() {
+        assert_eq!(
+            parse_blocked_exts(" .INSV, mov ;.Heic"),
+            vec!["insv", "mov", "heic"]
+        );
+    }
+
+    #[test]
+    fn drops_empty_entries_from_either_separator_and_mixed_use() {
+        assert_eq!(parse_blocked_exts(",, ; ,mp4,,"), vec!["mp4"]);
+        assert_eq!(
+            parse_blocked_exts("insv;mov,heic"),
+            vec!["insv", "mov", "heic"]
+        );
+        assert!(parse_blocked_exts("").is_empty());
+        assert!(parse_blocked_exts("   ").is_empty());
+    }
+}

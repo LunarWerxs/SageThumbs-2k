@@ -676,7 +676,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   iPhone HEIC uses, and CMYK JPEGs are converted through their embedded CMYK profile.
   HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
   linear light and tone-mapped like EXR and Radiance files, so they render with the right
-  curve instead of washed out. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
+  curve instead of washed out.
+- **Accessible Settings:** the category rail reports a name, a role and the current selection to
+  UI Automation, so Narrator and NVDA can navigate it. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
   transform), no C colour-engine dependency.
 - **Lossless where it matters:** metadata strip rewrites JPEG segments / PNG chunks
   without touching pixels; rotate writes a copy rather than re-compressing in place.

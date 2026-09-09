@@ -2,13 +2,14 @@
 
 use super::*;
 use crate::gdip;
+use crate::uia;
 use windows::Win32::Graphics::Gdi::{GetTextMetricsW, DT_END_ELLIPSIS, TEXTMETRICW};
-use windows::Win32::UI::Accessibility::NotifyWinEvent;
+use windows::Win32::UI::Accessibility::{NotifyWinEvent, UIA_ListItemControlTypeId};
 // EVENT_OBJECT_SELECTION, OBJID_CLIENT and CHILDID_SELF come from
 // `windows::Win32::UI::WindowsAndMessaging`, already glob-imported by `mod.rs` and visible
-// here through `use super::*` above.
+// here through `use super::*` above. Same for `WM_GETOBJECT`.
 use windows::Win32::UI::Controls::ODS_FOCUS;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_RETURN, VK_UP};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_DOWN, VK_RETURN, VK_UP};
 
 // ===================== v3 layout: nav rail + content pane =====================
 // Geometry (96-dpi design px). The window is nav rail (left) + a content pane that
@@ -276,6 +277,14 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // Light/dark for SageThumbs' own windows. Sits with preview BEHAVIOUR rather than
             // under "Also preview" below, which is a list of content-type opt-ins.
             Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
+            // Per-extension blocklist — behavior (what Quick preview refuses to try),
+            // not a content-type opt-in, so it sits above the "Also preview" split.
+            Pair(
+                ID_LBL_PREVIEW_BLOCKED_EXTS,
+                ID_PREVIEW_BLOCKED_EXTS,
+                156,
+                18,
+            ),
             // "Also preview": behavior above, content-type opt-ins below — the split
             // matches how the decision is actually made ("turn it on" vs "and also my
             // markdown files"), instead of eight equal-looking rows.
@@ -296,6 +305,13 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // control added to only one of them is invisible in whichever build you are not
             // looking at. That is exactly how this line came to be missing the first time.
             Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
+            // Keep in step with the `html-preview` variant above too — see its own comment.
+            Pair(
+                ID_LBL_PREVIEW_BLOCKED_EXTS,
+                ID_PREVIEW_BLOCKED_EXTS,
+                156,
+                18,
+            ),
             Head(ID_LBL_PREVIEW_KINDS),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
@@ -856,6 +872,55 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     );
 }
 
+/// The nav rail's UIA hookup (see `uia.rs`'s module doc for the technique). Rows read as UIA
+/// **list items**, not buttons: the rail is a single-select list of destinations where exactly
+/// one is always "selected" (the accent pill a sighted user sees), so `ISelectionItemProvider` —
+/// "General, list item, 1 of 11, selected" — says what a click here actually does. A plain
+/// `Button`/`Invoke` role would say "activate this" with no sense that picking one deselects the
+/// last one, which is the opposite of how the rail behaves.
+static NAV_ITEM_UIA_OPS: uia::ItemOps = uia::ItemOps {
+    describe: nav_item_uia_facts,
+    select: nav_item_uia_select,
+};
+
+/// The category index a nav-rail item's own control id encodes, bounds-checked because this
+/// runs off a UIA provider call rather than a click the rail itself generated.
+fn nav_ci_of(h: HWND) -> Option<usize> {
+    let ci = unsafe { GetDlgCtrlID(h) } - ID_NAV_BASE;
+    (0..NCAT as i32).contains(&ci).then_some(ci as usize)
+}
+
+/// The pure part of a row's UIA description: given which category `ci` is, whether the rail's
+/// stored `active` category is the same one, and whether THIS row currently holds keyboard
+/// focus, what should a screen reader be told. Split out from `nav_item_uia_facts` (which also
+/// needs a live `HWND` to resolve `ci` and to read real keyboard focus) so the mapping itself is
+/// unit-testable without a window.
+fn nav_item_facts_for(ci: usize, active: usize, focused: bool) -> uia::ItemFacts {
+    uia::ItemFacts {
+        name: nav_label(ci).to_string(),
+        automation_id: nav_key(ci).to_string(),
+        control_type: UIA_ListItemControlTypeId,
+        enabled: true,
+        focused,
+        selected: active == ci,
+    }
+}
+
+fn nav_item_uia_facts(h: HWND) -> Option<uia::ItemFacts> {
+    let ci = nav_ci_of(h)?;
+    let active = NAV.with(|n| n.borrow().active);
+    Some(nav_item_facts_for(ci, active, unsafe { GetFocus() } == h))
+}
+
+/// `ISelectionItemProvider::Select` on a row: the same effect a click has.
+fn nav_item_uia_select(h: HWND) {
+    let Some(ci) = nav_ci_of(h) else { return };
+    let Ok(parent) = (unsafe { GetParent(h) }) else {
+        return;
+    };
+    unsafe { switch_category(parent, ci) };
+}
+
 /// Keyboard access for a nav-rail item (the rail used to be mouse-only: SS_OWNERDRAW|SS_NOTIFY
 /// statics with no WS_TABSTOP and no key handling at all).
 ///
@@ -873,7 +938,18 @@ unsafe extern "system" fn nav_item_subclass(
     match msg {
         WM_NCDESTROY => {
             let _ = RemoveWindowSubclass(h, Some(nav_item_subclass), uid);
+            // Retire this row's UIA provider before the window it describes goes away — see
+            // `uia::on_destroy`'s own doc for why that is not optional.
+            unsafe { uia::on_destroy(h) };
         }
+        // A screen reader's `WM_GETOBJECT` for this row; see `uia.rs`'s module doc. Declined
+        // (falls through to `DefSubclassProc`) for anything that isn't the UIA root request.
+        WM_GETOBJECT => {
+            if let Some(r) = unsafe { uia::on_get_object(h, w, l, &NAV_ITEM_UIA_OPS) } {
+                return r;
+            }
+        }
+        uia::WM_UIA_JOB => return unsafe { uia::run_job(h, l) },
         WM_GETDLGCODE => {
             let base = DefSubclassProc(h, msg, w, l).0 as u32;
             return LRESULT((base | DLGC_WANTARROWS | DLGC_WANTALLKEYS) as isize);
@@ -944,7 +1020,10 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
     let _ = InvalidateRect(Some(hwnd), None, true);
     // Tell assistive tech the active nav item changed: the owner-draw rail never fires
     // WM_GETOBJECT/selection notifications on its own, so a screen reader has no way to
-    // know which page is now current without this.
+    // know which page is now current without this. Two events, not one: `NotifyWinEvent`
+    // is the legacy MSAA path (closed G199, the narrower report — kept, not replaced), and
+    // `raise_selection_changed` is the UIA path this module adds; a client listening on
+    // only one of the two automation stacks must still hear it.
     if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + ci as i32) {
         NotifyWinEvent(
             EVENT_OBJECT_SELECTION,
@@ -952,6 +1031,7 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
             OBJID_CLIENT.0,
             CHILDID_SELF as i32,
         );
+        uia::raise_selection_changed(nav, &NAV_ITEM_UIA_OPS);
     }
 }
 
@@ -1336,6 +1416,44 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     switch_category(hwnd, 0);
 }
 // =================== end v3 layout ===================
+
+#[cfg(test)]
+mod uia_tests {
+    use super::*;
+
+    /// Every row must map to its own name, its own automation id, the same role, and a
+    /// selected state that tracks exactly the active category — never two rows selected, and
+    /// never a row that reads as selected while some other page is showing. This is the mapping
+    /// a screen reader actually hears; a test that cannot fail (e.g. only checking row 0) is
+    /// worse than none, so it is checked for every (row, active) pair.
+    #[test]
+    fn every_row_maps_to_its_own_name_role_and_selected_state() {
+        for ci in 0..NCAT {
+            for active in 0..NCAT {
+                let f = nav_item_facts_for(ci, active, false);
+                assert_eq!(f.name, nav_label(ci));
+                assert_eq!(f.automation_id, nav_key(ci));
+                assert_eq!(f.control_type, UIA_ListItemControlTypeId);
+                assert_eq!(
+                    f.selected,
+                    ci == active,
+                    "row {ci} selected must track active {active}, not the other way round"
+                );
+            }
+        }
+    }
+
+    /// Focus and selection are independent: Tab can land keyboard focus on a row before
+    /// Enter/Space switches the page, so a focused-but-not-active row must report focused
+    /// without also reporting selected — collapsing the two would tell a screen reader the
+    /// page changed when only the highlight moved.
+    #[test]
+    fn focus_is_reported_independently_of_selection() {
+        let f = nav_item_facts_for(2, 0, true);
+        assert!(f.focused, "a focused row must say so");
+        assert!(!f.selected, "focus alone must not imply selection");
+    }
+}
 
 #[cfg(test)]
 mod nav_key_tests {

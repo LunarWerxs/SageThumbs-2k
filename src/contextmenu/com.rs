@@ -62,14 +62,20 @@ impl IShellExtInit_Impl for ContextMenu_Impl {
 /// Selection-kind flags derived from the request's paths: `any_image` (reused for the
 /// single-image preview gate — for a 1-file selection it IS `is_image(paths[0])`, so we
 /// don't probe the same path's extension twice per right-click), `condensed` ("show on all
-/// file types": no image in the selection at all), and `audio_only` (supported but every
+/// file types": no image in the selection at all), `audio_only` (supported but every
 /// file is a music file, so the image-only quick verbs get dropped — `all()` is false for
-/// an empty selection, but `condensed` already covers that case).
-fn selection_kinds(paths: &[String]) -> (bool, bool, bool) {
+/// an empty selection, but `condensed` already covers that case), and `video_only` (every
+/// file is a video — same shape as `audio_only`: the image-only quick verbs and the
+/// audio-only Rename/Sort patterns get dropped, and the top level falls to
+/// `verbs::video_top_level()` instead of collapsing into `condensed`, which is what
+/// used to happen since a video extension is `is_known` (registered for thumbnailing)
+/// but has nothing an image verb can do with it).
+fn selection_kinds(paths: &[String]) -> (bool, bool, bool, bool) {
     let any_image = paths.iter().any(|p| verbs::is_image(p));
     let condensed = !any_image;
     let audio_only = !condensed && paths.iter().all(|p| verbs::is_audio(p));
-    (any_image, condensed, audio_only)
+    let video_only = !condensed && !audio_only && paths.iter().all(|p| verbs::is_video(p));
+    (any_image, condensed, audio_only, video_only)
 }
 
 /// How many command ids this menu may hand out, and how many were available before
@@ -160,7 +166,122 @@ unsafe fn insert_quick_verb_groups(
     pos
 }
 
+/// WHERE this handler may write and within WHAT id range: the four values the shell hands
+/// `QueryContextMenu` that every insert step needs together. Carried as one value so the insert
+/// pass stays inside clippy's argument-count limit without any of them becoming a field on the
+/// coclass (they are per-call, and the coclass outlives the call).
+#[derive(Clone, Copy)]
+struct MenuSlot {
+    hmenu: HMENU,
+    indexmenu: u32,
+    idcmdfirst: u32,
+    budget: u32,
+}
+
+/// What KIND of selection this right-click is on, as `selection_kinds` decided — carried as one
+/// value because three loose `bool`s in a row at a call site are trivially transposable, and two
+/// of them (`audio_only`, `video_only`) are mutually exclusive so a swap would be silently wrong
+/// rather than a compile error.
+#[derive(Clone, Copy)]
+struct Kinds {
+    condensed: bool,
+    audio_only: bool,
+    video_only: bool,
+}
+
 impl ContextMenu_Impl {
+    /// Clear the previous right-click's preview state and, when a preview is wanted and can
+    /// fit, reserve its command id. Returns the menu-preview MODE (0 = off, 2 = on the main
+    /// menu), which the insert pass needs.
+    ///
+    /// Split out of `QueryContextMenu` on 2026-09-08: adding the video-only gate took that
+    /// function to the complexity gate's limit exactly, and the reservation is a self-contained
+    /// decision with its own invariant (the preview occupies the slot just past the last leaf,
+    /// so the `InvokeCommand` mapping stays stable even when leaves were clamped).
+    fn reset_and_reserve_preview(
+        &self,
+        any_image: bool,
+        path_count: usize,
+        idcmdfirst: u32,
+        leaves_n: usize,
+        avail: usize,
+    ) -> u32 {
+        self.preview_cmd.set(None);
+        *self.preview.borrow_mut() = None;
+        self.preview_failed.set(false);
+        let mode = settings::menu_preview();
+        // For a 1-file selection, `any_image` already == is_image(paths[0]).
+        let single = path_count == 1 && any_image;
+        // Reserve the bitmap preview slot when one is wanted and the file passed the cheap
+        // initialization-time metadata gate. Decoding has already started on a bounded worker
+        // for both placements during Initialize.
+        if mode != 0 && single && avail > leaves_n && self.preview_eligible.get() {
+            // `id_for(Preview)` encapsulates the "== leaves.len()" convention.
+            self.preview_cmd
+                .set(Some(verbs::id_for(verbs::CmdSlot::Preview, idcmdfirst)));
+        }
+        mode
+    }
+
+    /// Append every item this handler contributes, in order, and report whether a preview
+    /// item was ACTUALLY inserted.
+    ///
+    /// Our items grow downward from `indexmenu`: [preview?] [quick groups?] [the
+    /// "SageThumbs 2K" submenu] — all cohesive, in one place. (We ship ONLY this classic
+    /// handler, not the packaged modern command, so the menu cannot double-list
+    /// "SageThumbs 2K" — see AppxManifest.xml / register.rs.)
+    ///
+    /// The return value is "inserted", NOT "an id was reserved": a reserved id whose insert
+    /// then failed (an undecodable or timed-out tile) must not be counted as consumed, or the
+    /// next handler in the chain gets its id range shifted by one for nothing.
+    ///
+    /// # Safety
+    /// `hmenu` must be a live menu handle owned by the caller, as the shell guarantees for the
+    /// duration of `QueryContextMenu`.
+    unsafe fn insert_all_items(
+        &self,
+        at: MenuSlot,
+        mode: u32,
+        quick_verbs: bool,
+        kinds: Kinds,
+    ) -> bool {
+        let MenuSlot {
+            hmenu,
+            indexmenu,
+            idcmdfirst,
+            budget,
+        } = at;
+        // One snapshot of the menu-item visibility subkey for this whole build (the quick-verb
+        // loop and every `build_menu_into` node share it), so a right-click does ONE key-open
+        // instead of one per item.
+        let vis = settings::menu_visibility();
+        let mut pos = indexmenu;
+        let mut preview_inserted = false;
+
+        // 1) Preview directly on the main menu (mode 2), topmost. A bitmap item on a stock
+        //    host, owner-drawn on a menu-skinned one — see `insert_preview` and the module
+        //    header for why the host decides.
+        if let Some(cmd) = self.preview_cmd.get() {
+            if mode == 2 && self.insert_preview(hmenu, pos, cmd) {
+                pos += 1;
+                preview_inserted = true;
+            }
+        }
+
+        // 2) Quick-verb groups (see `insert_quick_verb_groups`). Image-only
+        //    (Convert/Resize/Rotate), so dropped for audio AND video, same as the condensed set.
+        if quick_verbs && !kinds.condensed && !kinds.audio_only && !kinds.video_only {
+            pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
+        }
+
+        // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
+        let (new_pos, sub_preview_inserted) =
+            self.insert_sagethumbs_submenu(hmenu, pos, idcmdfirst, budget, mode, kinds, &vis);
+        pos = new_pos;
+        let _ = pos; // last write; nothing reads it after this point
+        preview_inserted | sub_preview_inserted
+    }
+
     /// The full "SageThumbs 2K" submenu, directly below the preview + quick verbs (preview
     /// at its top in mode 1). This is the brand entry with every verb + Settings — kept
     /// cohesive with the preview above it, never "off on its own." We ship ONLY this
@@ -174,8 +295,7 @@ impl ContextMenu_Impl {
         idcmdfirst: u32,
         budget: u32,
         mode: u32,
-        condensed: bool,
-        audio_only: bool,
+        kinds: Kinds,
         vis: &settings::MenuVisibility,
     ) -> (u32, bool) {
         let mut preview_inserted = false;
@@ -195,12 +315,15 @@ impl ContextMenu_Impl {
         // Settings). Each item keeps its ORIGINAL leaf-start index, so command ids stay
         // stable — the dispatch side reads the default leaves()/slot_for, so only the
         // insertion order changes. Full custom-ordered tree for a supported image
-        // selection; the audio-only set for a music selection; the condensed
-        // file-agnostic set for an unsupported one (show-on-all-file-types).
-        let top = if condensed {
+        // selection; the audio-only set for a music selection; the video-only set for
+        // a video selection; the condensed file-agnostic set for an unsupported one
+        // (show-on-all-file-types).
+        let top = if kinds.condensed {
             verbs::condensed_top_level()
-        } else if audio_only {
+        } else if kinds.audio_only {
             verbs::audio_top_level()
+        } else if kinds.video_only {
+            verbs::video_top_level()
         } else {
             verbs::ordered_top_level()
         };
@@ -271,7 +394,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 return S_OK; // menu disabled in Settings
             }
             let paths = self.paths.borrow();
-            let (any_image, condensed, audio_only) = selection_kinds(&paths);
+            let (any_image, condensed, audio_only, video_only) = selection_kinds(&paths);
             // "Show on all file types": on an UNSUPPORTED selection, fall through to a
             // CONDENSED menu (file-agnostic utilities only) when the user opted in;
             // otherwise add nothing, as before.
@@ -286,64 +409,25 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                 return S_OK;
             }
 
-            // Menu preview: single image selection, enabled in Options, and the
-            // id range has room for one extra command (offset = leaves_n, so the
-            // InvokeCommand mapping stays stable even if leaves were clamped).
-            self.preview_cmd.set(None);
-            *self.preview.borrow_mut() = None;
-            self.preview_failed.set(false);
-            let mode = settings::menu_preview();
-            // For a 1-file selection, `any_image` already == is_image(paths[0]).
-            let single = paths.len() == 1 && any_image;
-            // Reserve the bitmap preview slot when one is wanted and the file passed
-            // the cheap initialization-time metadata gate. Decoding has already
-            // started on a bounded worker for both placements during Initialize.
-            if mode != 0 && single && avail > leaves_n && self.preview_eligible.get() {
-                // The preview occupies the slot just past the last leaf;
-                // id_for(Preview) encapsulates that "== leaves.len()" convention.
-                self.preview_cmd
-                    .set(Some(verbs::id_for(verbs::CmdSlot::Preview, idcmdfirst)));
-            }
+            let mode =
+                self.reset_and_reserve_preview(any_image, paths.len(), idcmdfirst, leaves_n, avail);
 
             unsafe {
-                // One snapshot of the menu-item visibility subkey for this whole
-                // build (the quick-verb loop + every build_menu_into node share it),
-                // so a right-click does ONE key-open instead of one per item.
-                let vis = settings::menu_visibility();
-
-                // Our items grow downward from `indexmenu`: [preview?] [quick groups?]
-                // [the "SageThumbs 2K" submenu] — all cohesive, in one place. (We ship
-                // ONLY this classic handler now, not the packaged modern command, so the
-                // menu can't double-list "SageThumbs 2K" — see AppxManifest.xml / register.rs.)
-                let mut pos = indexmenu;
-                // Whether `insert_preview` actually added a menu item, NOT merely whether a
-                // command id was reserved: a reserved id whose insert then failed (undecodable
-                // / timed-out tile) must not be counted in `consumed` below, or the next
-                // handler in the chain gets its id range shifted by one for nothing.
-                let mut preview_inserted = false;
-
-                // 1) Preview directly on the main menu (mode 2), topmost. A bitmap item
-                //    on a stock host, owner-drawn on a menu-skinned one — see
-                //    `insert_preview` and the module header for why the host decides.
-                if let Some(cmd) = self.preview_cmd.get() {
-                    if mode == 2 && self.insert_preview(hmenu, pos, cmd) {
-                        pos += 1;
-                        preview_inserted = true;
-                    }
-                }
-
-                // 2) Quick-verb groups (see `insert_quick_verb_groups`).
-                if gate.quick_verbs && !condensed && !audio_only {
-                    pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
-                }
-
-                // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
-                let (new_pos, sub_preview_inserted) = self.insert_sagethumbs_submenu(
-                    hmenu, pos, idcmdfirst, budget, mode, condensed, audio_only, &vis,
+                let preview_inserted = self.insert_all_items(
+                    MenuSlot {
+                        hmenu,
+                        indexmenu,
+                        idcmdfirst,
+                        budget,
+                    },
+                    mode,
+                    gate.quick_verbs,
+                    Kinds {
+                        condensed,
+                        audio_only,
+                        video_only,
+                    },
                 );
-                pos = new_pos;
-                preview_inserted |= sub_preview_inserted;
-                let _ = pos; // last write; nothing reads it after this point
 
                 // Command ids consumed: the preview slot (offset = leaf count) when a
                 // preview was ACTUALLY added, else the leaves the submenu used (0 when
@@ -466,5 +550,86 @@ mod consumed_ids_tests {
     #[test]
     fn a_zero_budget_with_no_preview_consumes_nothing() {
         assert_eq!(consumed_ids(0, false), 0);
+    }
+}
+
+#[cfg(test)]
+mod selection_kinds_tests {
+    use super::*;
+
+    fn paths(exts: &[&str]) -> Vec<String> {
+        exts.iter().map(|e| format!("clip.{e}")).collect()
+    }
+
+    /// The bug this guards (G193): a video-only selection used to fall through to
+    /// `verbs::ordered_top_level()` (the full image menu — Convert/Resize/Rotate,
+    /// none of which read a video) because it satisfied neither `condensed` nor
+    /// `audio_only`. It must now come back `video_only`, not `condensed`.
+    #[test]
+    fn video_only_selection_is_video_not_condensed() {
+        let (any_image, condensed, audio_only, video_only) = selection_kinds(&paths(&["mp4"]));
+        assert!(any_image, "a video extension is a registered/known format");
+        assert!(
+            !condensed,
+            "a video selection must not collapse to condensed"
+        );
+        assert!(!audio_only);
+        assert!(video_only, "an all-video selection must report video_only");
+
+        let mixed = paths(&["mp4", "mkv", "webm"]);
+        let (_, condensed, audio_only, video_only) = selection_kinds(&mixed);
+        assert!(!condensed);
+        assert!(!audio_only);
+        assert!(video_only, "every extension here is a video extension");
+    }
+
+    /// A selection mixing a video with a non-video (here an image) must NOT report
+    /// `video_only` — that set only offers verbs safe to run on every selected file.
+    #[test]
+    fn mixed_video_and_image_selection_is_not_video_only() {
+        let (any_image, condensed, audio_only, video_only) =
+            selection_kinds(&paths(&["mp4", "png"]));
+        assert!(any_image);
+        assert!(!condensed);
+        assert!(!audio_only);
+        assert!(
+            !video_only,
+            "a video+image mix must fall to the full menu, not video_only"
+        );
+    }
+
+    /// An image-only selection is unaffected by the video kind: `condensed` and
+    /// `audio_only`/`video_only` all stay false, same as before this change.
+    #[test]
+    fn image_only_selection_is_unaffected() {
+        let (any_image, condensed, audio_only, video_only) =
+            selection_kinds(&paths(&["png", "jpg"]));
+        assert!(any_image);
+        assert!(!condensed);
+        assert!(!audio_only);
+        assert!(!video_only);
+    }
+
+    /// An audio-only selection still reports `audio_only`, not `video_only` — the two
+    /// checks are mutually exclusive by construction (`video_only` requires
+    /// `!audio_only`).
+    #[test]
+    fn audio_only_selection_is_still_audio_not_video() {
+        let (_, condensed, audio_only, video_only) = selection_kinds(&paths(&["mp3", "flac"]));
+        assert!(!condensed);
+        assert!(audio_only);
+        assert!(!video_only);
+    }
+
+    /// A wholly unsupported extension still collapses to `condensed`, unaffected by
+    /// the new video kind.
+    #[test]
+    fn unsupported_selection_is_still_condensed() {
+        let (any_image, condensed, audio_only, video_only) =
+            selection_kinds(&paths(&["exe", "dll"]));
+        assert!(!any_image);
+        assert!(condensed);
+        assert!(!audio_only);
+        assert!(!video_only);
     }
 }

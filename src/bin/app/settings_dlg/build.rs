@@ -455,6 +455,15 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_PREVIEW_CLOSE_FOCUS,
     );
     lc.checkbox(t("chk_preview_topmost"), cb, 312, ID_PREVIEW_TOPMOST);
+    // Per-extension blocklist: a free-text edit (NOT `edit_style` above — that forces
+    // ES_NUMBER), same wide-single-line shape as the licence key / settings-search boxes.
+    let blocked_exts_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
+    lc.edit(
+        t("lbl_preview_blocked_exts"),
+        ID_LBL_PREVIEW_BLOCKED_EXTS,
+        blocked_exts_style,
+        ID_PREVIEW_BLOCKED_EXTS,
+    );
     lc.checkbox(t("chk_preview_text"), cb, 312, ID_PREVIEW_TEXT);
     lc.checkbox(t("chk_preview_markdown"), cb, 312, ID_PREVIEW_MARKDOWN);
     #[cfg(feature = "html-preview")]

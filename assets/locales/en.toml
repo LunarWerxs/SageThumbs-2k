@@ -362,6 +362,24 @@ chk_pdf_margin = "Add a margin to combined PDFs"
 
 # v0.7.0 — redesigned Settings UI (category nav rail + content panes).
 # Category nav-rail / tab labels
+# Shown when a custom-action hotkey fires on an Explorer selection whose items have no
+# file behind them (Recycle Bin, This PC, a virtual shell folder).
+# Prefix on the Quick preview info card's folder size when the recursive walk hit one of
+# its bounds (entries, depth, or time), so the number shown is a floor, not a total.
+ic_size_more_than = "more than"
+# Right-click leaf shown for a video-only selection: extracts the frame at the configured
+# offset through the st2k helper process (video is never decoded inside explorer.exe).
+menu_save_video_frame = "Save frame as image"
+# Quick preview toast when the Media Foundation grab behind Save-frame comes back empty.
+preview_toast_savevideo_fail = "Couldn't save the current video frame."
+# Settings > Quick preview: a user-editable list, SEPARATE from the File types page, of
+# extensions the Quick preview refuses outright. Empty by default.
+lbl_preview_blocked_exts = "Never Quick-preview these extensions:"
+# Quick preview info card shown when Space was pressed on a selection with no file behind
+# it (Recycle Bin, This PC, another virtual shell folder).
+ic_virtual_title = "Nothing to preview"
+ic_virtual_detail = "This selection isn't a file, so there is nothing to show."
+hotkey_selection_virtual = "Those items have no file behind them, so there is nothing to work on."
 nav_general = "General"
 nav_appearance = "Appearance"
 nav_filetypes = "File types"

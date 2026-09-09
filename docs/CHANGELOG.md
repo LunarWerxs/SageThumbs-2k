@@ -29,6 +29,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **Save the video frame you are looking at.** The Quick preview's Save button now works on a
+  video and writes the frame at the current position, and a right-click on a video-only selection
+  offers "Save frame as image" instead of the picture verbs that never applied to it.
+- **Screen readers can use the Settings window.** Every category in the left-hand rail now
+  reports its name and which one is selected, so Narrator and NVDA announce where you are.
+- **A hex view for files nothing can render.** An unknown binary shows a classic hex dump
+  instead of a bare info card, truncated with a note rather than trying to read the whole file.
+- **Folders show their total size** in the Quick preview, and say "more than" instead of a wrong
+  number when the folder is too large or too deep to finish counting quickly.
+- **A per-extension Quick preview blocklist** on the Quick preview settings page: list the
+  extensions you never want previewed. Empty by default, and separate from the File types page.
+- **Pressing Space on something that is not a file now says so.** Recycle Bin, This PC and other
+  virtual items used to do nothing at all.
 - **HDR PNGs render correctly.** A PNG carrying the `cICP` colour chunk with a PQ or
   HLG transfer (what recent HDR tools write) is now converted to linear light and
   tone-mapped the way EXR and Radiance files already are, instead of being shown as a
@@ -163,6 +176,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **Your screenshot and preview hotkeys repair themselves** if an antivirus or a startup cleaner
+  deletes the app's own startup entry. They used to just stop working with nothing to see.
 - **The Windows 11 right-click menu no longer reads a large selection's file names on
   Explorer's own thread.** That walk happened before the action's worker even started;
   the worker does it now, so a thousand-file selection costs Explorer only the click.

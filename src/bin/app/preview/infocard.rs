@@ -15,6 +15,10 @@ use super::content::human_size;
 use super::paint::draw_text;
 use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
+// `file_attributes()` is what lets the recursive folder-size walk below recognize a
+// reparse point (junction/symlink) from the directory listing itself, with no extra
+// syscall and no risk of following it first.
+use std::os::windows::fs::MetadataExt;
 
 /// The data shown on the card. Owns the shell `HICON` (destroyed on drop).
 pub(super) struct InfoCard {
@@ -27,6 +31,20 @@ impl InfoCard {
     /// The card's visible text (name + detail line) — what the viewer's Ctrl+C copies.
     pub(super) fn copy_text(&self) -> String {
         format!("{}\r\n{}", self.name, self.detail)
+    }
+}
+
+/// The card shown when Space was pressed on a selection with no file behind it — a Recycle Bin
+/// entry, This PC, or any other virtual shell item. Before 2026-09-08 that keypress did nothing
+/// at all: no window, no message, nothing in the log, so the feature looked broken rather than
+/// inapplicable. This is deliberately a CARD and not a browsable panel; a Recycle Bin / This PC
+/// panel was considered and rejected by the owner on 2026-08-07 (ROADMAP, "Considered and
+/// rejected"). No icon: there is no file to take one from.
+pub(super) fn virtual_item() -> InfoCard {
+    InfoCard {
+        name: crate::win::t("ic_virtual_title").to_string(),
+        detail: crate::win::t("ic_virtual_detail").to_string(),
+        icon: None,
     }
 }
 
@@ -53,9 +71,22 @@ pub(super) unsafe fn gather(path: &str) -> InfoCard {
     let detail = if p.is_dir() {
         let count = std::fs::read_dir(p).map(|it| it.count()).unwrap_or(0);
         let items = crate::i18n::t("ic_items");
+        // Recursive total, bounded (see `walk_folder_size`) — `ic_size_more_than` is a NEW
+        // locale key (English "more than"), reported to the integrator; it is not yet in
+        // en.toml, so it shows the missing-key marker until that lands.
+        let walk = walk_folder_size(p);
+        let size = if walk.truncated {
+            format!(
+                "{} {}",
+                crate::i18n::t("ic_size_more_than"),
+                human_size(walk.bytes)
+            )
+        } else {
+            human_size(walk.bytes)
+        };
         match modified_string(path) {
-            Some(w) => format!("{count} {items}  ·  {w}"),
-            None => format!("{count} {items}"),
+            Some(w) => format!("{count} {items}  ·  {size}  ·  {w}"),
+            None => format!("{count} {items}  ·  {size}"),
         }
     } else {
         let sz = human_size(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
@@ -175,6 +206,207 @@ unsafe fn modified_string(path: &str) -> Option<String> {
         "{:04}-{:02}-{:02} {:02}:{:02}",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute
     ))
+}
+
+// ── RECURSIVE FOLDER SIZE ───────────────────────────────────────────────────────────────────
+//
+// `gather` runs synchronously on the UI thread (`loader::dispatch_fallback_kind` calls it
+// directly from the `WM_APP_LOAD_RESOLVED` handler), so an unbounded walk here is an unbounded
+// UI stall. Three bounds, each catching a case the other two don't: a flat folder of a million
+// files blows the entry cap long before depth matters; a synthetic deeply-nested tree blows
+// depth with almost no entries visited; a slow/dead network share can blow the wall clock on an
+// otherwise perfectly ordinary-sized tree. Hitting any of them makes the reported total a FLOOR
+// (`FolderSize::truncated`) — the caller must say "more than N", never present a confidently
+// wrong number as if it were the whole tree.
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT` (winnt.h). Kept as a local literal rather than pulling in
+/// `windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT` for the one bit test
+/// below needs.
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// Entries visited before the walk gives up and reports a floor.
+const FOLDER_WALK_MAX_ENTRIES: usize = 20_000;
+/// Directory nesting the walk will still descend into (it keeps whatever it already summed).
+const FOLDER_WALK_MAX_DEPTH: usize = 64;
+/// Wall-clock budget for the whole walk — however many entries, however shallow the tree, a
+/// dead or saturated network share must not hang the UI thread computing a number nobody is
+/// waiting on that long for.
+const FOLDER_WALK_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The result of a (possibly bounded) folder-size walk.
+struct FolderSize {
+    bytes: u64,
+    truncated: bool,
+}
+
+/// Whether `attrs` (a directory-listing attribute bitmask) marks a reparse point — a directory
+/// junction or a symlink. Pulled out as its own pure function so "never follow a reparse point"
+/// is testable without actually creating one (that needs privileges this box may not have).
+fn is_reparse_point(attrs: u32) -> bool {
+    attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+/// Sum file sizes under `root`, recursively, bounded by entry count / depth / wall clock (see
+/// the constants above). Never descends into, or sizes, a reparse point: `DirEntry::metadata`
+/// reports the entry's OWN attributes rather than following it (`lstat`, not `stat`), so a
+/// junction or a symlink is recognizable straight from the directory listing, before anything
+/// would need to follow it to find out — that is what makes a symlink loop back to an ancestor
+/// directory unrepresentable here, rather than merely unlikely.
+fn walk_folder_size(root: &std::path::Path) -> FolderSize {
+    walk_folder_size_bounded(
+        root,
+        FOLDER_WALK_MAX_ENTRIES,
+        FOLDER_WALK_MAX_DEPTH,
+        FOLDER_WALK_BUDGET,
+    )
+}
+
+/// [`walk_folder_size`] with the bounds as parameters, so a test can prove each bound's
+/// truncation behaviour against a small temp tree instead of needing tens of thousands of real
+/// files or a genuinely deep real directory to exercise the production constants.
+fn walk_folder_size_bounded(
+    root: &std::path::Path,
+    max_entries: usize,
+    max_depth: usize,
+    budget: std::time::Duration,
+) -> FolderSize {
+    let start = std::time::Instant::now();
+    let mut bytes: u64 = 0;
+    let mut visited: usize = 0;
+    let mut truncated = false;
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    'walk: while let Some((dir, depth)) = stack.pop() {
+        if start.elapsed() > budget {
+            truncated = true;
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue; // unreadable subdirectory (permissions, or it vanished) — skip it
+        };
+        for entry in entries.flatten() {
+            if visited >= max_entries {
+                truncated = true;
+                break 'walk;
+            }
+            visited += 1;
+            let Ok(meta) = entry.metadata() else {
+                continue; // vanished between the listing and the stat — skip it
+            };
+            if is_reparse_point(meta.file_attributes()) {
+                continue; // a junction/symlink: never sized, never descended into
+            }
+            if meta.is_dir() {
+                if depth + 1 > max_depth {
+                    truncated = true;
+                    continue;
+                }
+                stack.push((entry.path(), depth + 1));
+            } else {
+                bytes += meta.len();
+            }
+        }
+        if start.elapsed() > budget {
+            truncated = true;
+            break;
+        }
+    }
+    FolderSize { bytes, truncated }
+}
+
+#[cfg(test)]
+mod folder_size_tests {
+    use super::*;
+
+    /// Every test tree lives under a `std::process::id()`-suffixed temp dir so concurrent
+    /// `cargo test` runs (this repo's standing convention) can't collide on the same paths.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("st2k_infocard_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn is_reparse_point_reads_the_one_bit_it_cares_about() {
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(is_reparse_point(
+            FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY
+        ));
+        assert!(!is_reparse_point(FILE_ATTRIBUTE_DIRECTORY));
+        assert!(!is_reparse_point(0));
+    }
+
+    #[test]
+    fn sums_file_sizes_recursively_across_subdirectories() {
+        let root = temp_dir("sum");
+        std::fs::write(root.join("r.bin"), [0u8; 3]).unwrap();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("s.bin"), [0u8; 5]).unwrap();
+
+        let got = walk_folder_size(&root);
+        assert_eq!(got.bytes, 8);
+        assert!(!got.truncated);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_entries_bound_reports_a_floor_not_a_wrong_total() {
+        let root = temp_dir("entries");
+        // Five same-sized files: with a cap below 5, the exact byte total is order-dependent,
+        // but which SUBSET got counted is not what this test is about — only that hitting the
+        // cap is reported truthfully (`truncated`) instead of silently answering "the total".
+        for i in 0..5 {
+            std::fs::write(root.join(format!("f{i}.bin")), [0u8; 10]).unwrap();
+        }
+
+        let full = walk_folder_size_bounded(&root, 100, 64, std::time::Duration::from_secs(5));
+        assert_eq!(full.bytes, 50);
+        assert!(!full.truncated);
+
+        let capped = walk_folder_size_bounded(&root, 2, 64, std::time::Duration::from_secs(5));
+        assert!(capped.truncated);
+        assert!(
+            capped.bytes < full.bytes,
+            "a floor must never claim the same total as the untruncated walk"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_depth_bound_stops_descending_but_keeps_what_it_already_summed() {
+        let root = temp_dir("depth");
+        std::fs::write(root.join("r.bin"), [0u8; 4]).unwrap(); // depth 0
+        let a = root.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("a.bin"), [0u8; 4]).unwrap(); // depth 1
+        let b = a.join("b");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("b.bin"), [0u8; 4]).unwrap(); // depth 2 — must be excluded below
+
+        // max_depth = 1 admits depth-0 and depth-1 files, but refuses to push "b" (depth 2).
+        let got = walk_folder_size_bounded(&root, 100, 1, std::time::Duration::from_secs(5));
+        assert_eq!(got.bytes, 8, "depth-2 content must not be counted");
+        assert!(got.truncated);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_wall_clock_bound_of_zero_always_truncates() {
+        let root = temp_dir("clock");
+        std::fs::write(root.join("r.bin"), [0u8; 4]).unwrap();
+
+        // Any real directory read takes far more than a single nanosecond, so this bound fires
+        // deterministically without depending on machine speed or load.
+        let got = walk_folder_size_bounded(&root, 100, 64, std::time::Duration::from_nanos(1));
+        assert!(got.truncated);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

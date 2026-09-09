@@ -533,6 +533,19 @@ jobs:
       - name: no unreviewed native (*-sys) dependency
         shell: pwsh
         run: ./scripts/check-native-deps.ps1
+      # Per-function cognitive/cyclomatic complexity, ERROR at >= 30 for either metric
+      # (docs/DEVELOPMENT_GOTCHAS.md's complexity-gate section). check-complexity.ps1 prefers
+      # Odin's probe.py (the reference implementation) when it can resolve the PRIVATE
+      # Lunarwerx/odin checkout; this runner never can, so it automatically falls back to the
+      # tracked, stdlib-only scripts/complexity-scan.py - a calibrated port of Odin's own
+      # Rust-complexity rules (see that script's header for the rule-by-rule mapping and its
+      # own --self-test proof). Before this step existed, the gate lived ONLY in the local,
+      # untracked pre-push hook, so a regression here was invisible until the next person's
+      # desk caught it - CLAUDE.md 2.2 records the backlog regrowing from 0 to 19 findings in
+      # one week with every visible gate green.
+      - name: per-function complexity gate
+        shell: pwsh
+        run: ./scripts/check-complexity.ps1
 
   # The patched dependency is excluded from the application workspace, so its
   # own tests do not run under `cargo test --workspace`. Keep the focused,

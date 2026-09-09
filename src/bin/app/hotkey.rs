@@ -112,10 +112,26 @@ pub(crate) unsafe fn run_hotkey_action(hinst: HINSTANCE) {
 /// Resolve target files (Explorer selection, else a picker) and run the verb. No-op if the
 /// user cancels the picker / there's nothing to act on.
 unsafe fn run_on_selection(action: VerbAction, images_only: bool) {
-    let paths = crate::explorer_selection::selection_or_pick(images_only);
-    if paths.is_empty() {
-        return;
-    }
+    use crate::explorer_selection::SelectionOutcome;
+    let paths = match crate::explorer_selection::selection_or_pick(images_only) {
+        SelectionOutcome::Paths(paths) if !paths.is_empty() => paths,
+        // Nothing selected and the picker was cancelled: the user already knows, stay quiet.
+        SelectionOutcome::Paths(_) | SelectionOutcome::Empty => return,
+        // Something WAS selected, but no item has a file behind it (Recycle Bin, This PC, a
+        // virtual shell folder). Silence here is the defect this branch exists to fix: the
+        // hotkey looks broken rather than inapplicable. This path already surfaces failures
+        // through `ActionReport`, so use it rather than inventing a second message channel.
+        SelectionOutcome::VirtualOnly => {
+            // `ActionReport`'s constructors are core-crate-private, so this says it directly.
+            // Owner-less on purpose: the hotkey helper is a process with no window of its own.
+            crate::win::message_box(
+                windows::Win32::Foundation::HWND(std::ptr::null_mut()),
+                crate::win::t("hotkey_selection_virtual"),
+                "SageThumbs 2K",
+            );
+            return;
+        }
+    };
     // Surface the result like the DLL's detached path does — a failed rotate/strip via the
     // global hotkey otherwise gave zero feedback. No owner HWND here, so messages are top-level.
     let report = run_action(action, &paths);

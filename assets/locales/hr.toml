@@ -253,6 +253,14 @@ grp_menu_items = "Stavke izbornika"
 chk_preserve_date = "Zadrži izvorni datum na spremljenim datotekama"
 chk_keep_metadata = "Zadrži EXIF i ostale metapodatke pri pretvorbi"
 chk_pdf_margin = "Dodaj marginu u spojene PDF-ove"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "više od"
+menu_save_video_frame = "Spremi kadar kao sliku"
+preview_toast_savevideo_fail = "Trenutačni video kadar nije bilo moguće spremiti."
+lbl_preview_blocked_exts = "Ove nastavke nikad ne prikazuj u Brzom pregledu:"
+ic_virtual_title = "Nema pretpregleda"
+ic_virtual_detail = "Ovaj odabir nije datoteka, pa nema se što prikazati."
+hotkey_selection_virtual = "Iza tih stavki ne stoji nijedna datoteka, pa nema na čemu raditi."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

@@ -37,7 +37,10 @@
 //! **ResizeImg** (→ `convert --resize`), **ShrinkForEmail** (→ `convert --resize`),
 //! **StripMetadata** (→ `strip`), **CompressToSize** (→ `compress`), **Clipboard**
 //! (→ the `clip-pixels` stdout-only child), **Wallpaper** (→ `wallpaper-prepare`),
-//! and **SetFolderIcon** (→ `folder-icon`). The first five map cleanly to a `st2k`
+//! and **SetFolderIcon** (→ `folder-icon`). **SaveVideoFrame** (→ `thumbnail --size
+//! 0`) is routed too, but is HELPER-ONLY — see its own bullet below, it does not
+//! follow the "falls back in-process when the helper is absent" rule the rest of
+//! this list does. The first five map cleanly to a `st2k`
 //! CLI verb that drives the *same* engine (`decode_full` + the same
 //! convert/transform/strip/compress code), so the produced file is byte-identical
 //! and lands at the *same* auto-named path the in-process verb would write — we
@@ -61,6 +64,13 @@
 //!   decoding anything itself.
 //! - **`folder-icon <file>`** runs the *whole* verb (the .ico + desktop.ini writes)
 //!   in the child; the parent only collects the exit status, same as `strip`.
+//! - **`thumbnail <file> <out> --size 0`** (SaveVideoFrame) grabs the video's frame
+//!   via the OS Media Foundation codecs and writes it full-resolution as a standalone
+//!   PNG. HELPER-ONLY, no in-process fallback: video decode must never run inside
+//!   `explorer.exe`/`dllhost.exe` (the same crash-isolation doctrine
+//!   `decode_menu_preview` follows for the thumbnail path — see CLAUDE.md's decode
+//!   tier notes). With no helper installed, every video in the selection is reported
+//!   as failed rather than silently decoding a hostile file in the shell host.
 //!
 //! Deliberately **not** routed (kept in-process) — and *why*, since the task scoped
 //! these as routing candidates:
@@ -141,7 +151,7 @@ mod wallpaper;
 // file reads as if nothing moved, then re-export the public names BY NAME.
 use helper::{
     clipboard_one, compress_one, convert_one, folder_icon_one, lock_screen_one, resize_one,
-    shrink_one, st2k_exe, strip_one, transform_one, wallpaper_one,
+    save_video_frame_one, shrink_one, st2k_exe, strip_one, transform_one, wallpaper_one,
 };
 use rename::rename_by_exif;
 
@@ -186,6 +196,21 @@ pub fn is_audio(path: &str) -> bool {
         .map(|e| e.to_ascii_lowercase())
     {
         Some(ext) => crate::formats::category(&ext) == crate::formats::Category::Audio,
+        None => false,
+    }
+}
+
+/// Does `path` have a video extension (one we grab a frame from via OS Media
+/// Foundation codecs)? Gates the video-only menu view (`contextmenu/com.rs`) and
+/// `VerbAction::SaveVideoFrame`'s file filter, the same way [`is_audio`] gates the
+/// audio-only surfaces.
+pub fn is_video(path: &str) -> bool {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+    {
+        Some(ext) => crate::formats::category(&ext) == crate::formats::Category::Video,
         None => false,
     }
 }
@@ -468,6 +493,7 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::SortByDimensions => handle_sort_by_dimensions(paths),
         VerbAction::SortByDateTaken => handle_sort_by_date_taken(paths),
         VerbAction::TagsToFolders => handle_tags_to_folders(paths),
+        VerbAction::SaveVideoFrame => handle_save_video_frame(paths),
     }
 }
 
@@ -776,6 +802,40 @@ fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
     let mut rep = ActionReport::applied(attempted, done);
     if done < attempted {
         rep.note = Some("couldn't shrink some images".into());
+    }
+    rep.output = first;
+    rep
+}
+
+/// `VerbAction::SaveVideoFrame` - per-video, on the batch pool. Routed ALWAYS to
+/// `st2k thumbnail <in> <out> --size 0` (see the module doc's routing list) — video
+/// decode must never run in-process inside `explorer.exe`, so unlike every other
+/// handler here there is no in-process fallback: with no helper installed, every
+/// video is counted attempted-but-failed rather than silently decoding in the shell
+/// host.
+fn handle_save_video_frame(paths: &[String]) -> ActionReport {
+    let exe = st2k_exe();
+    let exe_ref = exe.as_deref();
+    let vids: Vec<String> = paths
+        .iter()
+        .filter(|p| is_video(p.as_str()))
+        .cloned()
+        .collect();
+    let outs: Vec<PathBuf> =
+        crate::parallel::map(&vids, |_, p| save_video_frame_one(exe_ref, p).ok())
+            .into_iter()
+            .flatten()
+            .collect();
+    let attempted = vids.len();
+    let done = outs.len();
+    let first = outs.into_iter().next();
+    let mut rep = ActionReport::applied(attempted, done);
+    if done < attempted {
+        rep.note = Some(if exe_ref.is_none() {
+            "the st2k helper is required to save a video frame".into()
+        } else {
+            "couldn't extract a frame from some videos".into()
+        });
     }
     rep.output = first;
     rep

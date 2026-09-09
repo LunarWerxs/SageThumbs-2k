@@ -80,7 +80,17 @@ fn daemon_wanted() -> bool {
 /// hotkey/Quick-preview simply never comes back. Consulted by the daemon's tray tooltip so
 /// the gap is visible somewhere the user will actually see it.
 pub(crate) fn autostart_missing_while_wanted() -> bool {
-    daemon_wanted() && autostart_allowed() && !run_entry_present()
+    autostart_missing_while_wanted_from(daemon_wanted(), autostart_allowed(), !run_entry_present())
+}
+
+/// Pure core of [`autostart_missing_while_wanted`]: the mismatch that means "something
+/// deleted our autostart entry out from under us" is exactly settings-say-yes AND
+/// we're-allowed-to-manage-it AND the value isn't there — a user who turned autostart off
+/// (via `wanted=false`) or a portable copy (via `allowed=false`) has no mismatch at all, so
+/// neither one should ever heal or nag. Split out so the decision is tested without a real
+/// registry (see the `tests` module below).
+fn autostart_missing_while_wanted_from(wanted: bool, allowed: bool, missing: bool) -> bool {
+    wanted && allowed && missing
 }
 
 /// Whether we may touch logon autostart at all.
@@ -159,8 +169,49 @@ pub(crate) fn heal_if_wanted() {
     //      and left the process untouched. Nothing looked wrong until the next sign-in, when
     //      the hotkey simply never came back, and the old `!is_daemon_running()` guard meant
     //      opening Settings could not repair it either.
-    if !is_daemon_running() || (autostart_allowed() && !run_entry_present()) {
+    let missing_autostart = autostart_missing_while_wanted();
+    if missing_autostart {
+        // Log BEFORE reconcile() writes the value back — a crash between the two would
+        // rather leave a log line with no heal than a heal nobody can explain afterwards.
+        record_autostart_heal();
+    }
+    if !is_daemon_running() || missing_autostart {
         reconcile();
+    }
+}
+
+/// How many times [`heal_if_wanted`] has had to restore a missing autostart entry while
+/// the daemon was still wanted. Persisted (not just logged) so the message can tell a
+/// first-time heal from "this keeps happening" across separate launches/logons.
+const AUTOSTART_HEAL_COUNT_KEY: &str = "AutostartHealCount";
+
+/// Record + log a case-2 heal from [`heal_if_wanted`]. We still rewrite the Run entry every
+/// single time — refusing to would leave the user's hotkeys dead until they notice and open
+/// Settings, which is worse than fighting the AV once per scan — so what's bounded here is
+/// the LOG, not the heal: instead of an identical "healed" line forever (which reads, to a
+/// support reader, exactly like a fix that never took), the count turns the second-and-later
+/// occurrence into "this keeps happening", pointing at the real cause (a security product
+/// repeatedly deleting the value) rather than at our code.
+fn record_autostart_heal() {
+    let prior = sagethumbs2k_core::settings::get_dword_opt(AUTOSTART_HEAL_COUNT_KEY).unwrap_or(0);
+    let _ =
+        sagethumbs2k_core::settings::set_dword(AUTOSTART_HEAL_COUNT_KEY, prior.saturating_add(1));
+    if prior == 0 {
+        sagethumbs2k_core::safety::log(
+            "screenshot: autostart Run entry was missing while the daemon is still wanted \
+             (settings say autostart on, but the registry value is gone) — restoring it. \
+             Likely cause: antivirus/cleanup software flagging it as persistence, as \
+             Kaspersky did in issue #14. If this recurs, the user's security software is the \
+             place to look — check its quarantine/threat log and add an exclusion for our exe.",
+        );
+    } else {
+        sagethumbs2k_core::safety::log(&format!(
+            "screenshot: autostart Run entry went missing AGAIN (heal #{}) — something on \
+             this machine keeps deleting it, most likely antivirus real-time protection re-\
+             flagging the value on every scan. Restoring it again, but this is no longer a \
+             one-off: point the user at their security product's exclusions/quarantine.",
+            prior + 1
+        ));
     }
 }
 
@@ -318,5 +369,22 @@ mod tests {
         assert!(daemon_wanted_from(false, false, true, false));
         assert!(daemon_wanted_from(false, false, false, true));
         assert!(!daemon_wanted_from(false, false, false, false));
+    }
+
+    /// The Kaspersky/issue #14 signal: heal ONLY when the settings say yes, the registry says
+    /// missing, and this is not a portable copy. A user who turned autostart off has
+    /// `wanted=false` and so has no mismatch; a portable copy has `allowed=false` and must
+    /// never get a Run entry healed back, which is `settings::portable`'s whole point (see
+    /// [`autostart_allowed`]'s doc comment).
+    #[test]
+    fn autostart_missing_while_wanted_only_fires_on_the_real_mismatch() {
+        assert!(autostart_missing_while_wanted_from(true, true, true));
+        assert!(!autostart_missing_while_wanted_from(false, true, true));
+        assert!(!autostart_missing_while_wanted_from(true, false, true));
+        assert!(!autostart_missing_while_wanted_from(true, true, false));
+        assert!(!autostart_missing_while_wanted_from(false, false, true));
+        assert!(!autostart_missing_while_wanted_from(false, true, false));
+        assert!(!autostart_missing_while_wanted_from(true, false, false));
+        assert!(!autostart_missing_while_wanted_from(false, false, false));
     }
 }

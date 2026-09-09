@@ -22,6 +22,7 @@ mod dbdoc;
 mod docconv;
 mod find;
 mod font;
+mod hexview;
 mod highlight;
 mod infocard;
 mod loader;
@@ -117,26 +118,40 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     // Both resolutions run on a BUDGETED worker: the IShellWindows automation marshals into
     // explorer.exe (and a `.lnk` resolve can touch a dead network target), so a hung shell
     // would otherwise park this process forever before any window exists.
-    let path = match initial_path {
+    let target = match initial_path {
         Some(p) => {
             let raw = p.to_string();
             let for_resolve = raw.clone();
             // On timeout, fall back to the raw path (an unresolved .lnk previews as its card).
-            budgeted(move || unsafe { crate::explorer_selection::resolve_explicit(&for_resolve) })
-                .unwrap_or(raw)
+            crate::explorer_selection::PreviewTarget::Path(
+                budgeted(move || unsafe {
+                    crate::explorer_selection::resolve_explicit(&for_resolve)
+                })
+                .unwrap_or(raw),
+            )
         }
-        None => {
-            match budgeted(|| unsafe { crate::explorer_selection::preview_target() }).flatten() {
-                Some(p) => p,
-                None => return, // nothing selected (or shell hung) → nothing to preview
-            }
-        }
+        None => match budgeted(|| unsafe { crate::explorer_selection::preview_target() }) {
+            Some(t) => t,
+            None => return, // shell hung mid-resolve → nothing to preview
+        },
+    };
+
+    // A VIRTUAL selection (Recycle Bin / This PC / …) still opens the viewer — it just shows
+    // the "nothing to preview" card instead of a decoded file (2026-09-08 QuickLook-parity
+    // audit). `Empty` (nothing selected at all) is the one case that must open NOTHING.
+    let (init_path, virtual_card) = match target {
+        crate::explorer_selection::PreviewTarget::Path(p) => (Some(p), false),
+        crate::explorer_selection::PreviewTarget::Virtual => (None, true),
+        crate::explorer_selection::PreviewTarget::Empty => return,
     };
 
     let dark = crate::dark::is_dark();
-    let Some(_hwnd) = window::create_viewer(hinst, dark, Some(path), None) else {
+    let Some(hwnd) = window::create_viewer(hinst, dark, init_path, None) else {
         return;
     };
+    if virtual_card {
+        loader::show_virtual_card(hwnd);
+    }
 
     // Standard modal-less pump; `WM_DESTROY` posts `WM_QUIT` which ends this.
     let mut msg = MSG::default();

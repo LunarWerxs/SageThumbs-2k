@@ -254,6 +254,14 @@ grp_menu_items = "Itens do menu"
 chk_preserve_date = "Manter a data original nos arquivos salvos"
 chk_keep_metadata = "Manter EXIF e outros metadados ao converter"
 chk_pdf_margin = "Adicionar margem aos PDFs combinados"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "mais de"
+menu_save_video_frame = "Salvar quadro como imagem"
+preview_toast_savevideo_fail = "Não foi possível salvar o quadro de vídeo atual."
+lbl_preview_blocked_exts = "Nunca abrir estas extensões com a Visualização rápida:"
+ic_virtual_title = "Sem prévia"
+ic_virtual_detail = "Esta seleção não é um arquivo, então não há nada para mostrar."
+hotkey_selection_virtual = "Esses itens não têm um arquivo por trás deles, então não há nada para trabalhar."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

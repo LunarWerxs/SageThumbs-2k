@@ -151,6 +151,12 @@ unsafe fn on_btn_copy(path: Option<String>) {
 /// unconditionally rather than duplicating the visibility check.
 unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
     let Some(p) = path else { return };
+    // A video's "the page you are looking at" is the frame at the current playback position,
+    // and the grab is a Media Foundation decode that must not run on this thread — different
+    // enough to be its own branch rather than a third arm of the `suggested` match below.
+    if st.kind.get() == ContentKind::Video {
+        return on_btn_save_video_frame(hwnd, st, &p);
+    }
     let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
     let anim_frame = {
         let frames = st.frames.borrow();
@@ -180,6 +186,39 @@ unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
             "preview: could not save the shown page/frame from {p} to {dest}"
         ));
     }
+}
+
+/// Save the video frame at the CURRENT playback position (G193). The position, not the settings
+/// default: saving a different frame from the one on screen is the whole defect this avoids.
+///
+/// The decode happens on a detached worker inside `video::save_current_frame` (a Media Foundation
+/// grab can take seconds, and this is the UI thread), so this function only reads the position,
+/// asks for a destination, and hands off.
+unsafe fn on_btn_save_video_frame(hwnd: HWND, st: &ViewerState, p: &str) {
+    // Read and DROP the borrow before `pick_save_png` opens a modal picker: the picker pumps
+    // messages, and a live `RefCell` borrow held across a re-entrant paint is the panic this
+    // codebase has paid for elsewhere.
+    let (current, duration) = {
+        let v = st.video.borrow();
+        match v.as_ref() {
+            Some(v) => (v.current_time(), v.duration()),
+            None => return,
+        }
+    };
+    let frac = crate::preview::video::position_frac(current, duration);
+    let dir = std::path::Path::new(p)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = std::path::Path::new(p)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "frame".to_string());
+    let suggested = crate::preview::video::frame_save_filename(&stem, current);
+    let Some(dest) = crate::win::pick_save_png(hwnd, &dir, &suggested) else {
+        return; // user cancelled the picker
+    };
+    crate::preview::video::save_current_frame(p.to_string(), frac, dest);
 }
 
 /// `--ocr-keep`, NOT `--ocr`: the capture path hands the helper a throwaway PNG it is expected

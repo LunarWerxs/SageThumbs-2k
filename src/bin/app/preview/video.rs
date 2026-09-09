@@ -367,3 +367,124 @@ impl Drop for VideoPlayer {
         }
     }
 }
+
+// ---- save the frame currently on screen (`Btn::SavePage` / Ctrl+S, extended to video) ----
+
+/// The current position as a fraction of duration, for
+/// `sagethumbs2k_core::video::frame_from_block_stream_file`'s `frac` seek argument. `0.0` —
+/// the clip's first frame — when the duration isn't known yet (metadata still loading) or is
+/// degenerate, rather than dividing by zero.
+pub(super) fn position_frac(current: f64, duration: f64) -> f64 {
+    if !duration.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    (current / duration).clamp(0.0, 1.0)
+}
+
+/// Suggested filename for a saved video frame: `<stem>_frame_<position>.png`. The position is
+/// the CURRENT playback time (video has no discrete frame index the way a PDF page or an
+/// animation frame does), formatted filesystem-safely — `fmt_time` elsewhere in this module
+/// uses a `:`, which Windows refuses in a filename — so saving three frames from one clip
+/// proposes three distinct names instead of the same one three times.
+pub(super) fn frame_save_filename(stem: &str, current: f64) -> String {
+    let secs = if current.is_finite() && current >= 0.0 {
+        current
+    } else {
+        0.0
+    };
+    let whole = secs as u64;
+    let millis = ((secs - whole as f64) * 1000.0).round() as u64;
+    format!(
+        "{stem}_frame_{}m{:02}.{:03}s.png",
+        whole / 60,
+        whole % 60,
+        millis
+    )
+}
+
+/// Grab the frame CURRENTLY on screen (`frac`, computed by the caller from the live position —
+/// never the settings default `frame_from_bytes_repr` uses for a thumbnail) and save it to
+/// `dest` as a PNG, on a detached worker so the up-to-8s-bounded Media Foundation grab can never
+/// freeze the viewer. `frame_from_block_stream_file` does its own
+/// `media_foundation_available`/`mf_usable` gating and runs under its own worker + timeout
+/// (`grab_budgeted` in the core crate), so this only needs to keep that blocking call off the UI
+/// thread, not repeat the gate.
+///
+/// Reports failure with a toast rather than doing nothing — a Save that quietly no-ops on a
+/// codec Media Foundation can play but not re-open standalone is the exact defect this exists to
+/// avoid.
+pub(super) fn save_current_frame(path: String, frac: f64, dest: String) {
+    std::thread::spawn(move || {
+        let ok = sagethumbs2k_core::video::frame_from_block_stream_file(&path, frac)
+            .and_then(|img| img.save(&dest).ok())
+            .is_some();
+        if !ok {
+            sagethumbs2k_core::safety::log(&format!(
+                "preview: could not save the current video frame from {path} to {dest}"
+            ));
+            unsafe {
+                crate::win::notify_toast(
+                    "SageThumbs 2K",
+                    crate::win::t("preview_toast_savevideo_fail"),
+                    std::time::Duration::from_secs(5),
+                );
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frame_save_filename, position_frac};
+
+    #[test]
+    fn position_frac_guards_zero_and_unknown_duration() {
+        // No duration known yet (metadata still loading) — must not divide by zero.
+        assert_eq!(position_frac(3.0, 0.0), 0.0);
+        assert_eq!(position_frac(3.0, f64::NAN), 0.0);
+        assert_eq!(position_frac(3.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn position_frac_divides_and_clamps() {
+        assert_eq!(position_frac(5.0, 10.0), 0.5);
+        assert_eq!(position_frac(0.0, 10.0), 0.0);
+        // A position past the reported duration (rounding, a live-edge stream) clamps to 1.0
+        // rather than seeking past the end.
+        assert_eq!(position_frac(12.0, 10.0), 1.0);
+    }
+
+    #[test]
+    fn frame_save_filename_encodes_the_position_without_a_colon() {
+        // `m:ss` (this module's on-screen time label) is not a legal Windows filename
+        // character; the saved name must use something else so the picker doesn't choke.
+        let name = frame_save_filename("clip", 65.5);
+        assert!(!name.contains(':'));
+        assert_eq!(name, "clip_frame_1m05.500s.png");
+    }
+
+    #[test]
+    fn frame_save_filename_guards_a_nonfinite_or_negative_position() {
+        // A NaN/negative position (unknown duration, a seek that hasn't landed yet) must still
+        // produce a valid, non-colliding-with-nothing filename instead of panicking or printing
+        // "NaN" into a path.
+        assert_eq!(
+            frame_save_filename("clip", f64::NAN),
+            "clip_frame_0m00.000s.png"
+        );
+        assert_eq!(
+            frame_save_filename("clip", -5.0),
+            "clip_frame_0m00.000s.png"
+        );
+    }
+
+    #[test]
+    fn frame_save_filename_disambiguates_three_frames_from_one_clip() {
+        let a = frame_save_filename("clip", 1.0);
+        let b = frame_save_filename("clip", 2.0);
+        let c = frame_save_filename("clip", 3.0);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+}

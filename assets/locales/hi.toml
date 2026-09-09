@@ -253,6 +253,14 @@ grp_menu_items = "मेन्यू आइटम"
 chk_preserve_date = "सहेजी गई फ़ाइलों पर मूल तिथि बनाए रखें"
 chk_keep_metadata = "बदलते समय EXIF और अन्य मेटाडेटा रखें"
 chk_pdf_margin = "संयुक्त PDF में हाशिया जोड़ें"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "कम से कम"
+menu_save_video_frame = "फ़्रेम को छवि के रूप में सहेजें"
+preview_toast_savevideo_fail = "वर्तमान वीडियो फ़्रेम सहेजा नहीं जा सका।"
+lbl_preview_blocked_exts = "इन एक्सटेंशन का त्वरित पूर्वावलोकन कभी न करें:"
+ic_virtual_title = "कोई पूर्वावलोकन नहीं"
+ic_virtual_detail = "यह चयन कोई फ़ाइल नहीं है, इसलिए दिखाने के लिए कुछ नहीं है।"
+hotkey_selection_virtual = "उन आइटम के पीछे कोई फ़ाइल नहीं है, इसलिए काम करने के लिए कुछ नहीं है।"
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

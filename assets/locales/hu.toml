@@ -255,6 +255,14 @@ grp_menu_items = "Menüelemek"
 chk_preserve_date = "Eredeti dátum megtartása a mentett fájlokon"
 chk_keep_metadata = "EXIF és egyéb metaadatok megtartása átalakításkor"
 chk_pdf_margin = "Margó hozzáadása az egyesített PDF-ekhez"
+# Save-frame / blocked-extensions / virtual-selection strings (see en.toml for full context)
+ic_size_more_than = "több mint"
+menu_save_video_frame = "Képkocka mentése képként"
+preview_toast_savevideo_fail = "Nem sikerült elmenteni a jelenlegi videókockát."
+lbl_preview_blocked_exts = "Ezeket a kiterjesztéseket sose nyissa meg Gyors előnézetben:"
+ic_virtual_title = "Nincs előnézet"
+ic_virtual_detail = "Ez a kijelölés nem fájl, ezért nincs mit megjeleníteni."
+hotkey_selection_virtual = "Ezek az elemek nem fájlok, ezért nincs mivel dolgozni."
 
 # --- Added 2026-06-15: AVIF / format-search / screenshot-hotkey / convert strings ---
 menu_fmt_avif = "AVIF"

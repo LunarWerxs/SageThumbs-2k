@@ -35,9 +35,9 @@ mod outcome;
 #[allow(unused_imports)]
 pub use menu::{
     audio_top_level, condensed_top_level, count_leaves, default_menu_tokens, id_for, leaves,
-    ordered_top_level, quick_items, slot_for, top_level_audio_ok, CmdSlot, EmailSize, LeafId,
-    MenuItem, QuickItem, RenamePattern, Transform, VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN,
-    QUICK_KEYS,
+    ordered_top_level, quick_items, slot_for, top_level_audio_ok, top_level_video_ok,
+    video_top_level, CmdSlot, EmailSize, LeafId, MenuItem, QuickItem, RenamePattern, Transform,
+    VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN, QUICK_KEYS,
 };
 // The leaf COUNT alone, for the QueryContextMenu id budget: cheaper than `leaves().len()`,
 // which allocated the whole ~46-entry Vec on every right-click just to read its length.
@@ -66,8 +66,8 @@ pub use outcome::{BatchReport, Combined, FileOutcome, FileStatus, OmitCause, Omi
 // Dispatch + the non-encode actions.
 #[allow(unused_imports)]
 pub use actions::{
-    copy_rgba_to_clipboard, copy_to_clipboard, is_audio, is_image, run_action, run_action_detached,
-    run_action_detached_with, ActionReport,
+    copy_rgba_to_clipboard, copy_to_clipboard, is_audio, is_image, is_video, run_action,
+    run_action_detached, run_action_detached_with, ActionReport,
 };
 // The free-pattern rename engine's bin-crate surface: the companion app's "Rename
 // with pattern…" dialog (`src/bin/app/rename_dlg.rs`) calls these directly, the same

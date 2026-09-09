@@ -128,12 +128,20 @@ unsafe fn selection_has_image(items: &Ref<'_, IShellItemArray>) -> bool {
     false
 }
 
-/// True if the selection is non-empty AND every file is audio (music). Mirrors the
-/// classic `audio_only` gate (`contextmenu.rs`): an audio-only selection hides the
-/// image-only top-level verbs in the modern flyout. Unlike `selection_has_image` this
-/// must visit EVERY item (one non-audio file flips the answer false), freeing each
-/// display name as it goes. An empty / unreadable selection is not audio-only.
-unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
+/// True if the selection is non-empty AND every file is video. Mirrors the classic
+/// `video_only` gate (`contextmenu/com.rs::selection_kinds`) so the modern flyout narrows to
+/// the video verbs instead of offering the full image tree on a selection none of it can read.
+/// Audio wins where both could match: `selection_is_audio_only` is consulted first below, and
+/// a file cannot be both.
+unsafe fn selection_is_video_only(items: &Ref<'_, IShellItemArray>) -> bool {
+    every_item_matches(items, verbs::is_video)
+}
+
+/// The walk behind `selection_is_audio_only` and `selection_is_video_only`: true when the
+/// selection is NON-EMPTY and `pred` holds for every item. Each display name is freed as it
+/// goes, and an unreadable item answers false rather than being skipped, because "every item
+/// is X" must not become true by ignoring the ones we could not read.
+unsafe fn every_item_matches(items: &Ref<'_, IShellItemArray>, pred: fn(&str) -> bool) -> bool {
     let Ok(arr) = items.ok() else {
         return false;
     };
@@ -150,13 +158,22 @@ unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
         let Ok(pw) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
             return false;
         };
-        let audio = pw.to_string().map(|s| verbs::is_audio(&s)).unwrap_or(false);
+        let hit = pw.to_string().map(|s| pred(&s)).unwrap_or(false);
         CoTaskMemFree(Some(pw.0 as *const c_void));
-        if !audio {
+        if !hit {
             return false;
         }
     }
     true
+}
+
+/// True if the selection is non-empty AND every file is audio (music). Mirrors the
+/// classic `audio_only` gate (`contextmenu.rs`): an audio-only selection hides the
+/// image-only top-level verbs in the modern flyout. Unlike `selection_has_image` this
+/// must visit EVERY item (one non-audio file flips the answer false), freeing each
+/// display name as it goes. An empty / unreadable selection is not audio-only.
+unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
+    every_item_matches(items, verbs::is_audio)
 }
 
 /// Enabled only when the selection contains a supported image — mirrors the
@@ -422,6 +439,10 @@ pub struct MenuCommand {
     /// that isn't already audio-ok ever needs it (see [`Self::state`]) — and at most once
     /// per instance.
     audio_only: Cell<Option<bool>>,
+    /// Same shape as [`Self::audio_only`], for a video-only selection: the flyout keeps only
+    /// the verbs a video actually supports. Cached per command for the same reason — the shell
+    /// calls `GetState` once per top-level item and the walk is O(selection).
+    video_only: Cell<Option<bool>>,
 }
 
 impl MenuCommand {
@@ -442,6 +463,7 @@ impl MenuCommand {
             gate,
             has_image: Cell::new(None),
             audio_only: Cell::new(None),
+            video_only: Cell::new(None),
         }
     }
 
@@ -460,6 +482,7 @@ impl MenuCommand {
             gate: settings::menu_gate(),
             has_image: Cell::new(None),
             audio_only: Cell::new(None),
+            video_only: Cell::new(None),
         }
     }
 
@@ -495,6 +518,20 @@ impl MenuCommand {
                 }
             };
             if audio_only {
+                return Ok(ECS_HIDDEN.0 as u32);
+            }
+        }
+        if self.top_level && !verbs::top_level_video_ok(self.item.title()) {
+            let video_only = match self.video_only.get() {
+                Some(v) => v,
+                None if !slow_ok => return Err(Error::from(E_PENDING)),
+                None => {
+                    let v = selection_is_video_only(items);
+                    self.video_only.set(Some(v));
+                    v
+                }
+            };
+            if video_only {
                 return Ok(ECS_HIDDEN.0 as u32);
             }
         }

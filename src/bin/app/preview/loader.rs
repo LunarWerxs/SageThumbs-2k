@@ -6,6 +6,7 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::content::{self, RenderData};
+use super::hexview;
 use super::infocard;
 use super::transport::video_rect;
 #[cfg(feature = "html-preview")]
@@ -28,6 +29,18 @@ use super::window::{
 pub(super) unsafe fn load(hwnd: HWND, path: &str) {
     let st = &*state(hwnd);
     let gen = reset_viewer_state(hwnd, st, path);
+
+    // The per-extension Quick-preview blocklist (`settings::preview_blocked`, a SEPARATE list
+    // from the File-types page's per-format thumbnail toggle — see its doc comment) is checked
+    // before anything else: a blocked extension must never reach a decoder, not even a
+    // classify() sniff. Falls through to the ordinary "can't render this" card, exactly like an
+    // unsupported format already does, so a user-blocked format degrades the same way.
+    if is_load_blocked(path) {
+        dispatch_fallback_kind(hwnd, st, path);
+        set_title(hwnd);
+        super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
+        return;
+    }
 
     st.kind.set(ContentKind::Loading);
     // An already-shown window (an arrow-key step through a folder) must never be resized down
@@ -249,6 +262,41 @@ unsafe fn show_info_card(st: &ViewerState, path: &str) {
     st.kind.set(ContentKind::InfoCard);
 }
 
+/// Show the "nothing to preview" card for a selection that resolved to
+/// [`crate::explorer_selection::PreviewTarget::Virtual`] — Recycle Bin / This PC / any other
+/// virtual-namespace item with no filesystem path behind it. `mod::run_preview` calls this
+/// right after creating the window with NO initial path (so `load` never runs for this case;
+/// there is no file to load), which is what makes this the one entry point outside `load`/
+/// `load_static` that sets `st.card`/`st.kind` directly.
+///
+/// Reuses the SAME `ContentKind::InfoCard` state every other "can't render this" case shows,
+/// so pressing Space on the Recycle Bin degrades exactly like the product already degrades
+/// everywhere else, rather than a special-cased empty window (2026-09-08 QuickLook-parity
+/// audit) — a real Recycle Bin/This PC browsable panel was rejected by the owner on 2026-08-07
+/// and stays rejected; this is one card, not a panel.
+///
+/// OUT OF SCOPE (this file cannot construct an `InfoCard`; its fields are private to
+/// `infocard.rs`, which is owned by another agent this session): `infocard.rs` needs a
+/// `pub(super) fn virtual_item() -> InfoCard` that builds a card with no shell icon (there is
+/// no real file to ask `SHGetFileInfoW` about) and locale-driven text — see the integrator
+/// note left at this call site below.
+pub(super) unsafe fn show_virtual_card(hwnd: HWND) {
+    let st = &*state(hwnd);
+    // NOTE for the integrator: replace this call once `infocard::virtual_item()` exists (see
+    // the doc comment above). Suggested body:
+    //     InfoCard {
+    //         name: crate::i18n::t("ic_virtual_title"),
+    //         detail: crate::i18n::t("ic_virtual_detail"),
+    //         icon: None,
+    //     }
+    *st.card.borrow_mut() = Some(infocard::virtual_item());
+    st.kind.set(ContentKind::InfoCard);
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    set_title(hwnd);
+    super::find::refresh(hwnd); // no text to search, but keeps this entry point symmetric
+}
+
 /// Any content kind with no dedicated view: the fallback info card.
 unsafe fn dispatch_fallback_kind(hwnd: HWND, st: &ViewerState, path: &str) {
     show_info_card(st, path);
@@ -276,6 +324,13 @@ pub(super) enum Resolved {
     Archive(String),
     DbMarkdown(String),
     MailMarkdown(String),
+    /// A hex dump of a file `classify` could not otherwise place — see
+    /// [`resolve_hex_or_card`]. Also markdown under the hood (a fenced code block), same as
+    /// the two variants above; kept as its own variant rather than reusing `DbMarkdown`
+    /// because "why this exists" is a completely different story than "SQLite schema", and
+    /// conflating them would make a future reader of this enum guess which one a given call
+    /// site actually meant.
+    HexDump(String),
     TextOrMarkdown {
         kind: ContentKind,
         text: String,
@@ -314,7 +369,21 @@ fn resolve_source_text(path: &str, view_source_active: bool) -> Option<Resolved>
 fn resolve_by_content_kind(path: &str) -> Resolved {
     match content::classify(path) {
         kind @ (ContentKind::Text | ContentKind::Markdown) => resolve_text_or_markdown(path, kind),
+        ContentKind::InfoCard => resolve_hex_or_card(path),
         kind => Resolved::Dispatch(kind),
+    }
+}
+
+/// `classify`'s `InfoCard` verdict is not necessarily final: try a hex dump before giving up
+/// completely. This is the one case that verdict is allowed to be reconsidered from —
+/// `classify` itself stays untouched, per this repo's standing rule for the DB/mail hooks
+/// (CLAUDE.md, preview/dbdoc.rs's own header comment). `hex_markdown` returning `None` (Text
+/// toggle off, a directory, an unreadable/empty file — see `hexview::to_markdown`) is the
+/// ordinary info card, completely unchanged from before this hook existed.
+fn resolve_hex_or_card(path: &str) -> Resolved {
+    match hex_markdown(path) {
+        Some(md) => Resolved::HexDump(md),
+        None => Resolved::Dispatch(ContentKind::InfoCard),
     }
 }
 
@@ -542,7 +611,9 @@ pub(super) unsafe fn apply_resolved(hwnd: HWND, st: &ViewerState, resolved: Reso
             st.kind.set(ContentKind::Text);
         }
         Resolved::Archive(listing) => set_archive_listing_state(st, listing),
-        Resolved::DbMarkdown(md) | Resolved::MailMarkdown(md) => set_markdown_doc_state(st, md),
+        Resolved::DbMarkdown(md) | Resolved::MailMarkdown(md) | Resolved::HexDump(md) => {
+            set_markdown_doc_state(st, md)
+        }
         Resolved::TextOrMarkdown {
             kind,
             text,
@@ -784,7 +855,21 @@ unsafe fn apply_static_content_kind(st: &ViewerState, path: &str, kind: ContentK
     match kind {
         ContentKind::Image => apply_static_image(st, path),
         ContentKind::Text | ContentKind::Markdown => apply_static_text_or_markdown(st, path, kind),
+        ContentKind::InfoCard => apply_static_hex_or_card(st, path),
         _ => {
+            *st.card.borrow_mut() = Some(infocard::gather(path));
+            st.kind.set(ContentKind::InfoCard);
+        }
+    }
+}
+
+/// `load_static`'s hex-dump hook — the headless twin of [`resolve_hex_or_card`]. Same
+/// fall-through as every other hook in this file: `hex_markdown` returning `None` leaves the
+/// ordinary info card exactly as it was before this hook existed.
+unsafe fn apply_static_hex_or_card(st: &ViewerState, path: &str) {
+    match hex_markdown(path) {
+        Some(md) => set_markdown_doc_state(st, md),
+        None => {
             *st.card.borrow_mut() = Some(infocard::gather(path));
             st.kind.set(ContentKind::InfoCard);
         }
@@ -793,6 +878,13 @@ unsafe fn apply_static_content_kind(st: &ViewerState, path: &str, kind: ContentK
 
 /// Synchronous still decode for the headless shot: image → DIB, text/markdown → read, else card.
 pub(super) unsafe fn load_static(st: &ViewerState, path: &str, kind: ContentKind) {
+    // Same blocklist gate as the async `load` path, checked first for the same reason: a
+    // blocked extension must never reach a decoder, headless shot included.
+    if is_load_blocked(path) {
+        *st.card.borrow_mut() = Some(infocard::gather(path));
+        st.kind.set(ContentKind::InfoCard);
+        return;
+    }
     if try_static_source_view(st, path) {
         return;
     }
@@ -1064,6 +1156,26 @@ fn mail_markdown(path: &str) -> Option<String> {
     super::mailmsg::to_markdown(path)
 }
 
+/// The hex-dump view for `path`, or `None` if it isn't a case this module should touch — same
+/// gate discipline as [`db_markdown`]/[`mail_markdown`]: the Text toggle must be on. Unlike
+/// those two there is no extension test here: hex has no format of its own to recognize, it
+/// only ever answers for whatever [`content::classify`] already gave up on (see
+/// [`resolve_hex_or_card`] and its `load_static` twin, `apply_static_hex_or_card`).
+fn hex_markdown(path: &str) -> Option<String> {
+    if !sagethumbs2k_core::settings::preview_text() {
+        return None;
+    }
+    hexview::to_markdown(path)
+}
+
+/// Whether `path` is refused outright by the Quick-preview extension blocklist
+/// (`settings::preview_blocked`) — pulled out as its own function so `load`/`load_static`
+/// can't diverge on how the extension is extracted, mirroring `db_markdown`/`mail_markdown`'s
+/// shared-gate pattern above.
+fn is_load_blocked(path: &str) -> bool {
+    sagethumbs2k_core::settings::preview_blocked(&ext_of(path))
+}
+
 /// Lowercase extension of `path` (no dot).
 pub(super) fn ext_of(path: &str) -> String {
     std::path::Path::new(path)
@@ -1183,7 +1295,9 @@ pub(super) fn start_poll(hwnd: HWND) {
             if !IsWindow(Some(hwnd)).as_bool() {
                 break; // viewer closed — stop polling
             }
-            if let Some(path) = crate::explorer_selection::preview_target() {
+            if let crate::explorer_selection::PreviewTarget::Path(path) =
+                crate::explorer_selection::preview_target()
+            {
                 // inits its own COM STA; post only when the selection actually changed
                 if last.as_deref() != Some(path.as_str()) {
                     last = Some(path.clone());
@@ -1505,6 +1619,20 @@ mod tests {
             !worker.is_counted(),
             "the worker finishing must release what it was counted for"
         );
+    }
+
+    /// A path that doesn't exist can't be hex-dumped (nothing to read), so `classify`'s
+    /// `InfoCard` verdict must still reach the ordinary info card — exactly as it did before
+    /// `resolve_hex_or_card` existed. This is the regression its "fallback, not the final
+    /// word" design must never break: `hex_markdown` declining is not allowed to leave the
+    /// load with no dispatch at all.
+    #[test]
+    fn resolve_by_content_kind_falls_back_to_the_info_card_when_hex_declines() {
+        let resolved = super::resolve_by_content_kind("nonexistent_probe.unknownbinaryext");
+        assert!(matches!(
+            resolved,
+            super::Resolved::Dispatch(super::ContentKind::InfoCard)
+        ));
     }
 
     #[test]

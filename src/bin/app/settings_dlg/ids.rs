@@ -210,6 +210,12 @@ pub(super) const ID_LICENCE_CHECK_NOW: i32 = 1253;
 /// inside the product that says WHERE a licence comes from: the 2026-09-04 licensing audit
 /// found every other surface only ever said "enter your key under Settings > Licence".
 pub(super) const ID_LICENCE_BUY: i32 = 1256;
+/// Quick preview's per-extension blocklist — a user-editable list of extensions Quick preview
+/// refuses outright (comma/semicolon separated), SEPARATE from the File-types page's per-format
+/// thumbnail toggle (see `settings::preview_blocked_exts_raw`'s doc for why). Label + free-text
+/// edit, Quick preview page's "Behavior" section.
+pub(super) const ID_LBL_PREVIEW_BLOCKED_EXTS: i32 = 1259;
+pub(super) const ID_PREVIEW_BLOCKED_EXTS: i32 = 1260;
 
 // ===== The Business-licence reminder strip (`settings_dlg/biznag.rs`) =====
 // Mirrors the sign-in nudge banner's ids just above (1240-1243) — see that block's
