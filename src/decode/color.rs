@@ -462,9 +462,22 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// | no `nclx`, 10/12-bit | 1, correct |
 ///
 /// Note the shape of that: WIC is wrong in four of the five cases and the two correct ones do
-/// not share a rule. So this is a WHITELIST, not a blacklist. Anything unparseable or
-/// unrecognised is Untrusted too, so a WIC version that changes its behaviour cannot silently
-/// reintroduce the bug.
+/// not share a rule. So this was a WHITELIST, not a blacklist, on the reasoning that anything
+/// unparseable or unrecognised is Untrusted too, and therefore "a WIC version that changes its
+/// behaviour cannot silently reintroduce the bug".
+///
+/// # That reasoning was wrong, and this table is now HISTORY (2026-09-08)
+///
+/// A whitelist stops a codec change from breaking a shape we never trusted. It does nothing
+/// about a shape we DID trust going bad, which is exactly what happened: AV1 Video Extension
+/// **2.0.30.0** decodes the whitelisted 8-bit BT.709 case with a worst channel error of 23 —
+/// it reads the file's declared BT.709 matrix as BT.601 — and 8-bit BT.709 is most of the AVIF
+/// on the web. Five weeks after the table was measured, the fix had turned back into the bug.
+///
+/// So the verdict is no longer read out of this table. [`wicprobe`] MEASURES this machine's
+/// codec against six ~360-byte AVIFs compiled into the binary, once per process, and the
+/// numbers below are kept only as the record of what 2.0.24.0 did. Do not add a row here
+/// expecting it to change behaviour; add a probe.
 ///
 /// REVISED 2026-08-18 — the failures are not all the same KIND, and separating them took most
 /// of the AVIF slowness away. Re-measured against the same targets:
@@ -496,6 +509,7 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 struct AvifWicFound {
     matrix: Option<u16>,
     high_bitdepth: bool,
+    monochrome: bool,
     is_av1: bool,
 }
 
@@ -514,6 +528,13 @@ fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut AvifWicFound) {
             f.is_av1 = true;
             if let Some(b) = body.get(2) {
                 f.high_bitdepth |= (b >> 6) & 1 == 1;
+                // Bit 4. A monochrome AV1 stream carries no chroma planes at all, so there is
+                // no YUV matrix for a decoder to get wrong — which is why it needs its own
+                // probe rather than inheriting a colour class's verdict. Measured 2026-09-08:
+                // WIC decodes 10-bit monochrome EXACTLY, and the transfer correction the old
+                // table applied to it (on the strength of "high bit depth") took a correct
+                // decode 15/255 away from right.
+                f.monochrome |= (b >> 4) & 1 == 1;
             }
         }
         // `meta` is a FullBox: 4 bytes of version+flags precede its children.
@@ -555,39 +576,81 @@ fn walk_avif_wic(buf: &[u8], depth: u8, f: &mut AvifWicFound) {
     }
 }
 
-/// Turn the gathered signals into a verdict; see the doc comment on
-/// `avif_wic_verdict` for the measured error table each branch encodes.
+/// Which probe class this file's colour signalling puts it in, or `None` when nothing
+/// this machine has measured covers it.
+///
+/// Pure, and separated from the lookup on purpose: the mapping from a file's boxes to a class
+/// is ours and testable offline, while the verdict for a class belongs to whatever codec is
+/// installed today. Keeping them apart is what lets the tests below assert the routing without
+/// needing an AV1 decoder on the machine running them.
+fn avif_wic_class(f: &AvifWicFound) -> Option<wicprobe::WicClass> {
+    use wicprobe::WicClass;
+    Some(match (f.high_bitdepth, f.monochrome, f.matrix) {
+        // No chroma planes, so no matrix to misread. 8-bit monochrome has no probe of its own
+        // (libaom declines to encode one losslessly); it falls through to the matrix classes
+        // below, where both routes measure correct and the class only picks the cheaper.
+        (true, true, _) => WicClass::HighMono,
+        // matrix_coefficients 0 is the identity (lossless RGB) and 1 is BT.709; they have never
+        // measured differently from each other.
+        (false, _, Some(0) | Some(1)) => WicClass::EightBt709,
+        (true, _, Some(0) | Some(1)) => WicClass::HighBt709,
+        // 5 and 6 are BT.470BG and SMPTE 170M, the two spellings of BT.601 — and 6 is what
+        // `avifenc` writes unless told otherwise, so this is the commonest class of all.
+        (false, _, Some(5) | Some(6)) => WicClass::EightBt601,
+        (true, _, Some(5) | Some(6)) => WicClass::HighBt601,
+        // No `colr` box at all: the decoder is guessing, and which way it guesses has flipped
+        // between extension versions.
+        (false, _, None) => WicClass::EightNoColr,
+        // Anything else — BT.2020 (9), unspecified (2), a value from a newer spec than this
+        // build knows: unmeasured, so no class.
+        _ => return None,
+    })
+}
+
+/// Turn the gathered signals into a verdict, by asking [`wicprobe`] what this machine's WIC
+/// actually did with a file of that shape.
 fn avif_wic_verdict_from(f: &AvifWicFound) -> AvifWicVerdict {
     if !f.is_av1 {
         // HEIC and friends carry `hvcC`, and are not ours to route.
         return AvifWicVerdict::Trusted;
     }
-    // The measurably-correct case: an explicit BT.709 (or identity) matrix at 8 bits.
-    if !f.high_bitdepth && matches!(f.matrix, Some(0) | Some(1)) {
-        return AvifWicVerdict::Trusted;
+    match avif_wic_class(f) {
+        Some(class) => wicprobe::verdict_for(class),
+        // A shape with no probe. Untrusted is the conservative end: it costs a subprocess where
+        // one exists and changes nothing where one does not, whereas guessing Trusted would ship
+        // whatever the codec happens to do with a signal we have never measured.
+        None => AvifWicVerdict::Untrusted,
     }
-    // High bit depth WITH colour signalling: WIC's only error here is the transfer function,
-    // which is exactly invertible. `matrix.is_some()` is precisely "an nclx `colr` box was
-    // present" — and it has to be, because an AVIF with NO `colr` at all fails differently
-    // (a full-vs-limited RANGE error: 0 reads as 15 and 255 as 233, worst channel 22) and that
-    // one is NOT this curve. Measured, both of them; see the doc comment above.
-    if f.high_bitdepth && f.matrix.is_some() {
-        return AvifWicVerdict::NeedsHighDepthCurve;
-    }
-    AvifWicVerdict::Untrusted
 }
 
-pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
-    if bytes.get(4..8) != Some(b"ftyp") {
-        return AvifWicVerdict::Trusted;
-    }
+/// Read an ISOBMFF file's AV1 and colour signalling. A file that is not ISOBMFF leaves every
+/// field at its default, which reads as "not AV1" and so is not ours to route.
+fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
     let mut found = AvifWicFound {
         matrix: None,
         high_bitdepth: false,
+        monochrome: false,
         is_av1: false,
     };
-    walk_avif_wic(bytes, 0, &mut found);
-    avif_wic_verdict_from(&found)
+    if bytes.get(4..8) == Some(b"ftyp") {
+        walk_avif_wic(bytes, 0, &mut found);
+    }
+    found
+}
+
+/// The probe class this file's colour signalling puts it in. `None` for anything that is not
+/// an AV1 image (HEIC, a non-ISOBMFF file, a truncated one) or whose signalling has never been
+/// measured. Exposed so the routing can be tested on a machine with no AV1 codec at all — the
+/// shipped path reaches the same classification through [`avif_wic_verdict_from`], which needs
+/// the parsed signals it already has rather than a second walk of the bytes.
+#[cfg(test)]
+pub(super) fn avif_wic_class_of(bytes: &[u8]) -> Option<wicprobe::WicClass> {
+    let found = avif_wic_signals(bytes);
+    found.is_av1.then(|| avif_wic_class(&found)).flatten()
+}
+
+pub(super) fn avif_wic_verdict(bytes: &[u8]) -> AvifWicVerdict {
+    avif_wic_verdict_from(&avif_wic_signals(bytes))
 }
 
 /// What Microsoft's AV1 WIC codec can be trusted with for a given AVIF.

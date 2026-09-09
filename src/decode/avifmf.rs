@@ -1,5 +1,5 @@
-//! The 8-bit BT.601 AVIF fast path: decode through the OS's own AV1 decoder, via Media
-//! Foundation, instead of paying an ImageMagick subprocess per thumbnail.
+//! The 8-bit AVIF fast path: decode through the OS's own AV1 decoder, via Media Foundation,
+//! instead of paying an ImageMagick subprocess per thumbnail.
 //!
 //! Issue #9's remaining slow bucket. Microsoft's AV1 **WIC** codec decodes 8-bit AVIF with
 //! matrix 5/6 (BT.601 — avifenc's default output) through the wrong YUV matrix, clipping as
@@ -32,10 +32,10 @@
 //! * exactly ONE `av1C` and ONE `ispe` in `ipco` — an alpha AVIF carries a second `av1C` for
 //!   its auxiliary item, and without `ipma` association walking, "exactly one" is the only
 //!   unambiguous read. Alpha files keep the magick route, which composites alpha correctly.
-//! * an `nclx` `colr` box with matrix 5/6 (BT.601, avifenc's default) or 2 (unspecified,
-//!   plain ffmpeg's default — decoded as 601 by the ecosystem reference, see the gate), and
-//!   primaries 1/2/5/6. Wide-gamut primaries or exotic matrices stay with magick, which
-//!   honours full CICP.
+//! * an `nclx` `colr` box with matrix 5/6 (BT.601, avifenc's default), 2 (unspecified, plain
+//!   ffmpeg's default — decoded as 601 by the ecosystem reference, see the gate) or 1 (BT.709,
+//!   what Chrome and Squoosh write), and primaries 1/2/5/6. Wide-gamut primaries, the identity
+//!   matrix (GBR planes, not YUV) and exotic matrices stay with magick, which honours full CICP.
 //! * `av1C` says Main profile (0), 8-bit, not monochrome — what the measured bucket contains,
 //!   and what the MF AV1 decoder is known to handle everywhere it is installed.
 
@@ -52,15 +52,36 @@ pub(super) struct Av1Still {
     pub(super) height: u32,
     /// The nclx full_range_flag: decides limited-vs-full expansion in the YUV conversion.
     pub(super) full_range: bool,
+    /// Which YUV matrix the file declares, so this module can apply the right one.
+    pub(super) matrix: Av1Matrix,
 }
 
-/// Decode an eligible 8-bit BT.601 AVIF through Media Foundation. `None` = not eligible or
-/// anything failed; the caller falls through to ImageMagick unchanged.
-pub(super) fn decode_bt601_avif(bytes: &[u8], target_edge: Option<u32>) -> Option<DynamicImage> {
+/// The YUV matrices this path can apply itself.
+///
+/// It was BT.601 only until 2026-09-08, because BT.601 was the one 8-bit bucket WIC got wrong.
+/// When the AV1 Video Extension shipped 2.0.30.0 it started reading a declared BT.709 matrix as
+/// BT.601 as well (see `decode/wicprobe.rs`), which put the commonest AVIF on the web — plain
+/// 8-bit BT.709, what Chrome and Squoosh write — into the route-around bucket too. Without this
+/// variant that bucket would land on ImageMagick and every ordinary web AVIF thumbnail would
+/// cost a subprocess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Av1Matrix {
+    /// CICP matrix 5/6, and 2 ("unspecified"), which the ecosystem decodes as BT.601.
+    Bt601,
+    /// CICP matrix 1.
+    Bt709,
+}
+
+/// Decode an eligible 8-bit AVIF through Media Foundation. `None` = not eligible or anything
+/// failed; the caller falls through to ImageMagick unchanged.
+pub(super) fn decode_8bit_avif_via_mf(
+    bytes: &[u8],
+    target_edge: Option<u32>,
+) -> Option<DynamicImage> {
     if !crate::video::media_foundation_available() {
         return None;
     }
-    let still = eligible_bt601_still(bytes)?;
+    let still = eligible_mf_still(bytes)?;
     let payload = primary_av1_payload(bytes)?;
     let mini = build_av01_mp4(&still, payload)?;
     // RAW NV12, not RGB. Measured before this was written: letting Media Foundation's video
@@ -74,26 +95,28 @@ pub(super) fn decode_bt601_avif(bytes: &[u8], target_edge: Option<u32>) -> Optio
     if frame.width < still.width || frame.height < still.height {
         return None;
     }
-    nv12_to_srgb_bt601(
+    nv12_to_srgb(
         &frame,
         still.width,
         still.height,
         still.full_range,
+        still.matrix,
         target_edge,
     )
 }
 
-/// BT.601 NV12 → sRGB, in 16.16 fixed point (ITU-R BT.601 / H.273 matrix 5/6).
+/// NV12 → sRGB, in 16.16 fixed point, with the file's own YUV matrix.
 ///
 /// Limited range: C = Y-16 scaled by 255/219, chroma by 255/224. Full range: taken as-is.
 /// Chroma is 4:2:0, upsampled nearest — the error that matters here is the 39/255 matrix
 /// shift on flat colour, not sub-pixel chroma siting. Verified against the same six-patch
 /// target that measured the WIC bug: worst channel error ≤ 2.
-pub(super) fn nv12_to_srgb_bt601(
+pub(super) fn nv12_to_srgb(
     frame: &crate::video::Nv12Frame,
     out_w: u32,
     out_h: u32,
     full_range: bool,
+    matrix: Av1Matrix,
     target_edge: Option<u32>,
 ) -> Option<DynamicImage> {
     let stride = frame.stride as usize;
@@ -121,16 +144,22 @@ pub(super) fn nv12_to_srgb_bt601(
         ((out_h as usize).div_ceil(step)) as u32,
     );
 
-    // 16.16 fixed-point coefficients.
+    // 16.16 fixed-point coefficients, per matrix and per range. Limited range folds the
+    // luma 255/219 and chroma 255/224 expansions into the coefficients rather than doing them
+    // as a separate pass.
     const ONE: i64 = 1 << 16;
-    let (cy, cr_r, cb_g, cr_g, cb_b, y_off) = if full_range {
-        // Full range: R = Y + 1.402 Cr; G = Y - 0.344136 Cb - 0.714136 Cr; B = Y + 1.772 Cb.
-        (ONE, 91_881, -22_554, -46_802, 116_130, 0i64)
-    } else {
-        // Limited range: luma 255/219, chroma 255/224 folded into the coefficients.
-        // R = 1.164384 C + 1.596027 Cr; G = 1.164384 C - 0.391762 Cb - 0.812968 Cr;
-        // B = 1.164384 C + 2.017232 Cb.
-        (76_309, 104_597, -25_675, -53_279, 132_201, 16)
+    let (cy, cr_r, cb_g, cr_g, cb_b, y_off) = match (matrix, full_range) {
+        // BT.601 full: R = Y + 1.402 Cr; G = Y - 0.344136 Cb - 0.714136 Cr; B = Y + 1.772 Cb.
+        (Av1Matrix::Bt601, true) => (ONE, 91_881, -22_554, -46_802, 116_130, 0i64),
+        // BT.601 limited: R = 1.164384 C + 1.596027 Cr;
+        // G = 1.164384 C - 0.391762 Cb - 0.812968 Cr; B = 1.164384 C + 2.017232 Cb.
+        (Av1Matrix::Bt601, false) => (76_309, 104_597, -25_675, -53_279, 132_201, 16),
+        // BT.709 full: R = Y + 1.5748 Cr; G = Y - 0.187324 Cb - 0.468124 Cr;
+        // B = Y + 1.8556 Cb.
+        (Av1Matrix::Bt709, true) => (ONE, 103_206, -12_276, -30_679, 121_609, 0i64),
+        // BT.709 limited: R = 1.164384 C + 1.792741 Cr;
+        // G = 1.164384 C - 0.213249 Cb - 0.532909 Cr; B = 1.164384 C + 2.112402 Cb.
+        (Av1Matrix::Bt709, false) => (76_309, 117_489, -13_976, -34_925, 138_438, 16),
     };
 
     let mut out = image::RgbaImage::new(dst_w, dst_h);
@@ -158,7 +187,7 @@ pub(super) fn nv12_to_srgb_bt601(
     Some(DynamicImage::ImageRgba8(out))
 }
 
-/// The `ipco`-property boxes `eligible_bt601_still` cares about, gathered by `walk_ipco_boxes`.
+/// The `ipco`-property boxes `eligible_mf_still` cares about, gathered by `walk_ipco_boxes`.
 #[derive(Default)]
 struct FoundIpcoBoxes {
     av1c: Vec<Vec<u8>>,
@@ -168,7 +197,7 @@ struct FoundIpcoBoxes {
 }
 
 /// Recursively walk `meta`/`iprp`/`ipco` boxes, collecting the `av1C`/`colr`/`ispe`/`auxC`
-/// properties `eligible_bt601_still` needs. A nested `fn`'s body counts toward its enclosing
+/// properties `eligible_mf_still` needs. A nested `fn`'s body counts toward its enclosing
 /// function under this repo's complexity scanner, so this lives at module scope instead.
 fn walk_ipco_boxes(buf: &[u8], depth: u8, f: &mut FoundIpcoBoxes) {
     if depth > 6 {
@@ -225,7 +254,17 @@ fn validate_bt601_eligibility(av1c: &[u8], colr: &[u8], w: u32, h: u32) -> Optio
     // against the pre-encode original using 601, while WIC's 709 assumption reads 39. So
     // unspecified follows the same conversion here, which is precisely what makes this
     // bucket (the second-biggest real-world AVIF producer) eligible at all.
-    if !matches!(matrix, 2 | 5 | 6) || !matches!(primaries, 1 | 2 | 5 | 6) {
+    //
+    // Matrix 1 (BT.709) joined them on 2026-09-08: it is the commonest AVIF there is, and the
+    // AV1 Video Extension started getting it wrong at 2.0.30.0, so it now needs a route around
+    // WIC as well. Identity (0) is deliberately NOT here — those files carry GBR planes rather
+    // than YUV, so there is no matrix to apply and the NV12 path does not describe them.
+    let matrix = match matrix {
+        2 | 5 | 6 => Av1Matrix::Bt601,
+        1 => Av1Matrix::Bt709,
+        _ => return None,
+    };
+    if !matches!(primaries, 1 | 2 | 5 | 6) {
         return None;
     }
 
@@ -246,11 +285,12 @@ fn validate_bt601_eligibility(av1c: &[u8], colr: &[u8], w: u32, h: u32) -> Optio
         width: w,
         height: h,
         full_range,
+        matrix,
     })
 }
 
 /// Parse the `ipco` properties and apply the eligibility gates documented at module level.
-pub(super) fn eligible_bt601_still(bytes: &[u8]) -> Option<Av1Still> {
+pub(super) fn eligible_mf_still(bytes: &[u8]) -> Option<Av1Still> {
     if bytes.get(4..8) != Some(b"ftyp") {
         return None;
     }

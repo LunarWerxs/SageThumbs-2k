@@ -176,8 +176,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
-- **Your screenshot and preview hotkeys repair themselves** if an antivirus or a startup cleaner
-  deletes the app's own startup entry. They used to just stop working with nothing to see.
+- **AVIF thumbnails have their colours back.** A Windows codec update in early September changed
+  how it reads the colour information inside an AVIF, and ordinary AVIF files started coming out
+  with shifted colours: skies and skin visibly off, greys unaffected. SageThumbs now checks what
+  the codec on your machine actually does, using a handful of tiny reference images built into
+  the app, and works around it wherever it is wrong. The check repeats itself on every machine
+  and after every codec update, so this cannot come back quietly the next time Windows changes.
+- **Black-and-white AVIF images are no longer washed out.** A correction meant for colour files
+  was being applied to them as well.
 - **The Windows 11 right-click menu no longer reads a large selection's file names on
   Explorer's own thread.** That walk happened before the action's worker even started;
   the worker does it now, so a thousand-file selection costs Explorer only the click.

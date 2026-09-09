@@ -45,13 +45,13 @@ fn webp_wic_routing_excludes_exactly_the_risky_cases() {
     assert!(!webp_prefers_wic(b""));
 }
 
-/// The BT.601-AVIF Media Foundation path, minus Media Foundation: the eligibility gates,
+/// The 8-bit-AVIF Media Foundation path, minus Media Foundation: the eligibility gates,
 /// the YUV maths, and the mini-MP4 all verify without the codec, so CI (which has no AV1
 /// extension) still pins everything except the decode itself. The decode is pinned by the
 /// corpus fixture `sample-avif-601.avif` + `_expected-colors.txt` on machines that have it.
 #[test]
 fn avif_mf_eligibility_takes_exactly_the_measured_buckets() {
-    use crate::decode::avifmf::eligible_bt601_still;
+    use crate::decode::avifmf::{eligible_mf_still, Av1Matrix};
 
     fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let size = u32::try_from(8 + body.len()).unwrap();
@@ -102,32 +102,48 @@ fn avif_mf_eligibility_takes_exactly_the_measured_buckets() {
         aux_c: false,
     };
 
-    // The three eligible matrices: explicit BT.601 (5/6) and unspecified (2, decoded as 601
-    // by the ecosystem reference — measured, worst error 1).
-    for m in [2u16, 5, 6] {
+    // The eligible matrices, and which conversion each one selects: explicit BT.601 (5/6),
+    // unspecified (2, decoded as 601 by the ecosystem reference — measured, worst error 1),
+    // and BT.709 (1), which joined them on 2026-09-08 when the AV1 Video Extension started
+    // misreading it and it needed a route around WIC of its own.
+    for (m, want) in [
+        (2u16, Av1Matrix::Bt601),
+        (5, Av1Matrix::Bt601),
+        (6, Av1Matrix::Bt601),
+        (1, Av1Matrix::Bt709),
+    ] {
         let c = Cfg {
             matrix: Some(m),
             ..base
         };
+        let still = eligible_mf_still(&avif(&c));
         assert!(
-            eligible_bt601_still(&avif(&c)).is_some(),
-            "matrix {m} is a measured BT.601 bucket and must be eligible"
+            still.is_some(),
+            "matrix {m} is a measured bucket and must be eligible"
+        );
+        assert_eq!(
+            still.unwrap().matrix,
+            want,
+            "matrix {m} must select the {want:?} conversion"
         );
     }
+    // The identity matrix carries GBR planes rather than YUV, so there is nothing for the
+    // NV12 path to convert and it must decline rather than apply a matrix to RGB.
+    assert!(
+        eligible_mf_still(&avif(&Cfg {
+            matrix: Some(0),
+            ..base
+        }))
+        .is_none(),
+        "identity-matrix AVIF is not YUV and must stay with magick"
+    );
     // The dims come from ispe, verbatim.
-    let s = eligible_bt601_still(&avif(&base)).unwrap();
+    let s = eligible_mf_still(&avif(&base)).unwrap();
     assert_eq!((s.width, s.height), (320, 240));
     assert!(!s.full_range, "range bit clear must read as limited");
 
     // Everything below must DECLINE (fall back to ImageMagick, never decode wrongly):
     let cases: &[(&str, Cfg)] = &[
-        (
-            "BT.709 belongs to the WIC fast path, not here",
-            Cfg {
-                matrix: Some(1),
-                ..base
-            },
-        ),
         (
             "BT.2020 and friends stay with magick's full CICP handling",
             Cfg {
@@ -186,20 +202,20 @@ fn avif_mf_eligibility_takes_exactly_the_measured_buckets() {
         ),
     ];
     for (why, c) in cases {
-        assert!(eligible_bt601_still(&avif(c)).is_none(), "{why}");
+        assert!(eligible_mf_still(&avif(c)).is_none(), "{why}");
     }
     // Full-range flag reaches the conversion.
     let mut f = avif(&base);
     let i = f.windows(4).position(|w| w == b"nclx").unwrap();
     f[i + 10] = 0x80;
-    assert!(eligible_bt601_still(&f).unwrap().full_range);
+    assert!(eligible_mf_still(&f).unwrap().full_range);
 }
 
 /// The YUV maths against published BT.601 anchor vectors, both ranges. Wrong coefficients
 /// here would ship exactly the colour shift this path exists to eliminate.
 #[test]
 fn avif_mf_yuv_conversion_matches_bt601_anchors() {
-    use crate::decode::avifmf::nv12_to_srgb_bt601;
+    use crate::decode::avifmf::{nv12_to_srgb, Av1Matrix};
     use crate::video::Nv12Frame;
 
     // One 2x2 frame, all four pixels the same YUV triple.
@@ -225,7 +241,7 @@ fn avif_mf_yuv_conversion_matches_bt601_anchors() {
         (200, 128, 128, true, (200, 200, 200), 0),  // full grey passes through untouched
     ];
     for &(y, cb, cr, full, (er, eg, eb), tol) in anchors {
-        let img = nv12_to_srgb_bt601(&frame(y, cb, cr), 2, 2, full, None).unwrap();
+        let img = nv12_to_srgb(&frame(y, cb, cr), 2, 2, full, Av1Matrix::Bt601, None).unwrap();
         let px = img.to_rgba8().get_pixel(0, 0).0;
         for (got, want) in px[..3].iter().zip([er, eg, eb]) {
             assert!(
@@ -238,11 +254,77 @@ fn avif_mf_yuv_conversion_matches_bt601_anchors() {
     }
 }
 
+/// The same maths against published BT.709 anchor vectors. Every expectation here is derived
+/// from the ITU-R BT.709 equations, NOT from this implementation, so a coefficient typed wrong
+/// fails rather than being enshrined.
+///
+/// The last case is the one that matters most: the BT.601 vector for saturated red, decoded as
+/// BT.709, must NOT come back red. Without it, pasting the 601 coefficients into the 709 arm
+/// would pass every other assertion in this file, and ship exactly the shift this path exists
+/// to remove.
+#[test]
+fn avif_mf_yuv_conversion_matches_bt709_anchors() {
+    use crate::decode::avifmf::{nv12_to_srgb, Av1Matrix};
+    use crate::video::Nv12Frame;
+
+    fn frame(y: u8, cb: u8, cr: u8) -> Nv12Frame {
+        Nv12Frame {
+            data: vec![y, y, y, y, cb, cr],
+            width: 2,
+            height: 2,
+            stride: 2,
+        }
+    }
+    fn rgb_of(y: u8, cb: u8, cr: u8, full: bool) -> [u8; 4] {
+        let img = nv12_to_srgb(&frame(y, cb, cr), 2, 2, full, Av1Matrix::Bt709, None).unwrap();
+        img.to_rgba8().get_pixel(0, 0).0
+    }
+
+    // (y, cb, cr, full_range, expected rgb, tolerance). The saturated triples are limited-range
+    // because full-range BT.709 red and blue need a Cb/Cr of 256, which does not fit in a byte.
+    type Anchor = (u8, u8, u8, bool, (i32, i32, i32), i32);
+    let anchors: &[Anchor] = &[
+        (16, 128, 128, false, (0, 0, 0), 0),        // limited black
+        (235, 128, 128, false, (255, 255, 255), 0), // limited white
+        (126, 128, 128, false, (128, 128, 128), 1), // limited mid grey
+        (63, 102, 240, false, (255, 0, 0), 2),      // limited saturated red
+        (173, 42, 26, false, (0, 255, 0), 2),       // limited saturated green
+        (32, 240, 118, false, (0, 0, 255), 2),      // limited saturated blue
+        (0, 128, 128, true, (0, 0, 0), 0),          // full black
+        (255, 128, 128, true, (255, 255, 255), 0),  // full white
+        (200, 128, 128, true, (200, 200, 200), 0),  // full grey passes through untouched
+    ];
+    for &(y, cb, cr, full, (er, eg, eb), tol) in anchors {
+        let px = rgb_of(y, cb, cr, full);
+        for (got, want) in px[..3].iter().zip([er, eg, eb]) {
+            assert!(
+                (i32::from(*got) - want).abs() <= tol,
+                "yuv({y},{cb},{cr}) full={full}: got {:?}, wanted ({er},{eg},{eb}) +/-{tol}",
+                &px[..3]
+            );
+        }
+        assert_eq!(px[3], 255, "this path never carries alpha");
+    }
+
+    // A grey is a grey under either matrix — which is exactly why a matrix error hides from a
+    // greyscale test and has to be caught on saturated colour.
+    assert_eq!(rgb_of(126, 128, 128, false)[..3], [128, 128, 128]);
+
+    // BT.601's saturated-red vector, read as BT.709. If this comes back red, the two arms are
+    // the same coefficients and one of them is wrong.
+    let crossed = rgb_of(82, 90, 240, false);
+    assert!(
+        (i32::from(crossed[0]) - 255).abs() > 8 || i32::from(crossed[1]) > 8,
+        "the BT.601 red vector must NOT decode as red under BT.709, got {:?}",
+        &crossed[..3]
+    );
+}
+
 /// Target-aware subsampling: asking for a small thumbnail must convert FEWER pixels, without
 /// changing what those pixels are. This is the fix for the 12 MP AVIF running 2.95x Windows.
 #[test]
 fn avif_mf_conversion_subsamples_for_a_small_target() {
-    use crate::decode::avifmf::nv12_to_srgb_bt601;
+    use crate::decode::avifmf::{nv12_to_srgb, Av1Matrix};
     use crate::video::Nv12Frame;
 
     // A 1200x900 flat mid-grey frame: flat so subsampling cannot change the answer.
@@ -257,11 +339,19 @@ fn avif_mf_conversion_subsamples_for_a_small_target() {
     };
 
     // No target: full resolution, as the full-fidelity callers still get.
-    let full = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, None).unwrap();
+    let full = nv12_to_srgb(&frame, w as u32, h as u32, false, Av1Matrix::Bt601, None).unwrap();
     assert_eq!((full.width(), full.height()), (1200, 900));
 
     // A 100 px target wants >= 300 px of intermediate, so step = 1200/300 = 4.
-    let small = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, Some(100)).unwrap();
+    let small = nv12_to_srgb(
+        &frame,
+        w as u32,
+        h as u32,
+        false,
+        Av1Matrix::Bt601,
+        Some(100),
+    )
+    .unwrap();
     assert_eq!(
         (small.width(), small.height()),
         (300, 225),
@@ -269,7 +359,15 @@ fn avif_mf_conversion_subsamples_for_a_small_target() {
     );
 
     // Never UPSAMPLE, and never subsample when the source is already small enough.
-    let big_target = nv12_to_srgb_bt601(&frame, w as u32, h as u32, false, Some(4096)).unwrap();
+    let big_target = nv12_to_srgb(
+        &frame,
+        w as u32,
+        h as u32,
+        false,
+        Av1Matrix::Bt601,
+        Some(4096),
+    )
+    .unwrap();
     assert_eq!((big_target.width(), big_target.height()), (1200, 900));
 
     // The colour is identical either way - this is a work reduction, not a quality change.
@@ -287,7 +385,7 @@ fn avif_mf_conversion_subsamples_for_a_small_target() {
 /// a cheap structural round-trip that needs no codec.
 #[test]
 fn avif_mf_mini_mp4_roundtrips_through_the_mp4_parser() {
-    use crate::decode::avifmf::{build_av01_mp4, Av1Still};
+    use crate::decode::avifmf::{build_av01_mp4, Av1Matrix, Av1Still};
     let still = Av1Still {
         av1c: {
             let body = [0x81u8, 0x00, 0x0c, 0x00];
@@ -307,6 +405,9 @@ fn avif_mf_mini_mp4_roundtrips_through_the_mp4_parser() {
         width: 64,
         height: 48,
         full_range: false,
+        // The muxer copies the file's own `colr` box verbatim, so this field does not reach
+        // the MP4 at all; it only selects the conversion afterwards.
+        matrix: Av1Matrix::Bt601,
     };
     let mini = build_av01_mp4(&still, &[0u8; 32]).expect("muxer must accept a plain still");
     let fourcc = crate::mp4::video_codec_fourcc(&mut std::io::Cursor::new(&mini));

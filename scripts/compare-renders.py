@@ -52,9 +52,28 @@ def render(exe, src, out, size, timeout):
     return "ok" if os.path.exists(out) and os.path.getsize(out) > 0 else "none"
 
 
+def as_8bit(im):
+    """Narrow a high-bit-depth image to 8 bits BEFORE Pillow gets to convert it.
+
+    Pillow's `convert("RGBA")` on a 16-bit image CLAMPS at 255 instead of scaling, so a
+    perfectly good 16-bit grey render reads back as pure white and this gate calls it a wrong
+    picture. That is a false RED, which is worse than a missed check: it trains you to explain
+    away the one gate whose whole job is to catch a plausible-looking wrong render.
+
+    Found 2026-09-08, when a 10-bit AVIF started coming back through ImageMagick (whose bundled
+    build is Q16) instead of Windows' codec. Magick correctly detects a flat neutral image as
+    GREYSCALE and writes 16-bit grey; the pixels were exactly right (12352/65535 == 48/255) and
+    this script reported white. Any 16-bit render would have done the same, in any format.
+    """
+    if im.mode in ("I", "I;16", "I;16B", "I;16L", "I;16N", "F"):
+        # Via "I" (32-bit) because point() cannot take a function on the I;16 variants.
+        return im.convert("I").point(lambda v: v * (1 / 256), "L")
+    return im
+
+
 def normalized(path):
     with Image.open(path) as im:
-        return im.convert("RGBA").resize((COMPARE_EDGE, COMPARE_EDGE), Image.BILINEAR)
+        return as_8bit(im).convert("RGBA").resize((COMPARE_EDGE, COMPARE_EDGE), Image.BILINEAR)
 
 
 def mean_delta(a_png, b_png):
@@ -70,7 +89,7 @@ def mean_delta(a_png, b_png):
 
 def centre(png):
     with Image.open(png) as im:
-        im = im.convert("RGBA")
+        im = as_8bit(im).convert("RGBA")
         return im.getpixel((im.width // 2, im.height // 2))
 
 

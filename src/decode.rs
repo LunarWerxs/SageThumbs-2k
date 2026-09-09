@@ -767,14 +767,14 @@ fn route_isobmff_wic_quirks(
         "AVIF nclx colour"
     };
     crate::safety::log_debugf!("decode: routing around WIC ({why})");
-    // The 8-bit BT.601 bucket first tries the OS's own AV1 decoder via Media Foundation
+    // The 8-bit bucket first tries the OS's own AV1 decoder via Media Foundation
     // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
     // the ~180 ms this route used to cost. Narrowly gated and best-effort - anything it
     // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
     // as before, so this can only ever be faster, never different.
     if wic_avif_color {
-        if let Some(img) = avifmf::decode_bt601_avif(bytes, wic_thumbnail_cx) {
-            crate::safety::log_debug("decode: tier `avif-mf` decoded the BT.601 AVIF");
+        if let Some(img) = avifmf::decode_8bit_avif_via_mf(bytes, wic_thumbnail_cx) {
+            crate::safety::log_debug("decode: tier `avif-mf` decoded the 8-bit AVIF");
             return Ok(img);
         }
     }
@@ -928,6 +928,7 @@ pub(crate) mod svg;
 mod thumb;
 mod tiers;
 mod wic;
+mod wicprobe;
 
 // Parent-hub imports: each child is glob-imported PRIVATELY so this file (and, through
 // it, every sibling's `use super::*`) sees the whole pipeline as one flat namespace,

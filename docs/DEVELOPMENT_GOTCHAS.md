@@ -459,6 +459,64 @@ Finding it took a boundary, not a stare: render one source at `--size 359` and `
 against a 360 px-wide file. Below the source size it swapped, at or above it did not. When a bug
 appears "sometimes", look for the branch it correlates with before looking for a race.
 
+## Pillow CLAMPS a 16-bit image to 255, so the colour gate called a correct render white
+
+`compare-renders.py` read every render with `Image.open(p).convert("RGBA")`. On a 16-bit image
+Pillow does not SCALE to 8 bits, it clamps: every value above 255 becomes 255. A perfectly good
+16-bit grey render therefore reads back as pure white, and the gate reports a wrong picture.
+
+It surfaced on 2026-09-08 when a 10-bit AVIF started routing to ImageMagick instead of Windows'
+codec. The bundled magick is a **Q16** build and correctly identifies a flat neutral image as
+GREYSCALE, so it hands back 16-bit grey; the pixels were exactly right (12352/65535 is 48/255)
+and the gate said white. Nothing about the decoder had changed for the worse.
+
+Two things worth keeping:
+
+- **A false RED is worse than a missed check.** A gate that cries wolf teaches you to explain
+  away the one check whose entire job is catching a plausible-looking wrong render, which is the
+  failure this repo has already shipped three bugs through. Fix the reader; do not allow-list the
+  sample and do not narrow the decoder to suit the tool.
+- **Any tool in the pipeline that uses Pillow has this bug until proven otherwise.** `as_8bit()`
+  in `compare-renders.py` is the fix (via `convert("I")`, because `point()` will not take a
+  function on the `I;16` variants). The same care applies to anything else reading a render back
+  in Python.
+
+## A measurement of somebody else's binary is a snapshot, not a fix
+
+Issue #9 was fixed on 2026-08-04 by measuring Microsoft's AV1 WIC codec across six colour
+classes and writing the results into a table: trust it here, route around it there. Five weeks
+later the AV1 Video Extension updated itself from 2.0.24.0 to 2.0.30.0, **inverted BT.709 and
+BT.601 at 8 bits**, and the single class the table trusted became the single class that was
+wrong. That class is ordinary 8-bit BT.709, which is most of the AVIF on the web, so the fix for
+the bug had quietly become the bug again, for more files than the first time.
+
+Three things kept it invisible, and each one is the generalisable part:
+
+- **A whitelist protects the shapes you never trusted.** The old comment said in as many words
+  that a whitelist meant "a WIC version that changes its behaviour cannot silently reintroduce
+  the bug". True for a shape you route around; worth nothing for the shape you trust, which is
+  the only one a regression can reach.
+- **The unit test pinned the ANSWERS.** `avif_colour_routing_matches_what_wic_actually_gets_wrong`
+  asserted "8-bit BT.709 is Trusted". It went on passing while the shipped behaviour was wrong,
+  because it was describing a codec that no longer existed. A test over an external component's
+  behaviour is only a test if it asks the component.
+- **Nothing in the suite decoded a real AVIF and looked at the colour.** The corpus proved "still
+  renders", exactly as it did for the red/blue transposition above.
+
+The fix is `decode/wicprobe.rs`: six ~360-byte AVIFs compiled into the binary, one per colour
+class, decoded through the real WIC path on the first AVIF of each process and graded against
+values we know. Within tolerance is trusted, wrong-but-correctable selects the correction,
+wrong either way pays for ImageMagick. It re-measures itself on every machine and after every
+codec update, and it made two further bugs fall out for free: 8-bit files with no `colr` box had
+been paying for a subprocess they no longer needed, and high-bit-depth MONOCHROME was having a
+transfer correction applied to an already-correct decode, which took it 15/255 away from right.
+
+**The rule: where the answer depends on a component that updates without you, ship the QUESTION,
+not the answer.** A probe is a few hundred bytes and one decode; a table is a comment that ages
+into a lie. When you cannot probe, at least make the staleness loud - name the version you
+measured, and treat an unrecognised one as untrusted rather than assuming it behaves like the
+one you tested.
+
 ## The magick watchdog must charge CPU time, not wall clock
 
 Same investigation. The ImageMagick child had a 20 s **elapsed** kill-timeout, which quietly

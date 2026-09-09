@@ -189,16 +189,20 @@ fn heic_auxiliary_alpha_box_walk() {
     );
 }
 
-/// Issue #9: which AVIFs must bypass WIC because its AV1 codec misreads their colour.
+/// Issue #9: an AVIF's colour signalling must reach the PROBE that covers it.
 ///
-/// The expectations here are not a guess about the spec — each one is a case measured
-/// against libavif AND ImageMagick, worst-channel error out of 255, by
-/// `scripts/repro-avif-color.ps1`. WIC was correct in only ONE configuration, so this is a
-/// whitelist: anything not proven good is routed to ImageMagick, and anything unparseable
-/// is too, so a future WIC that behaves differently cannot silently reintroduce the shift.
+/// This test used to assert the verdicts themselves, from a table measured by hand against AV1
+/// Video Extension 2.0.24.0. That component updates itself, 2.0.30.0 changed two of the rows,
+/// and because the test pinned the old answers it went on passing while the shipped behaviour
+/// was wrong — a green suite describing a codec that no longer existed. The verdicts now come
+/// from `decode/wicprobe.rs` measuring the codec that is actually installed, and what is left
+/// to test here is ours: that each shape is classified into the right probe, that an
+/// unmeasured shape borrows nobody's answer, and that a non-AVIF is not routed by this rule
+/// at all. Every assertion below runs on a machine with no AV1 codec whatsoever.
 #[test]
 fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
-    use crate::decode::color::{avif_wic_verdict, AvifWicVerdict};
+    use crate::decode::color::{avif_wic_class_of, avif_wic_verdict, AvifWicVerdict};
+    use crate::decode::wicprobe::WicClass;
 
     fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let size = u32::try_from(8 + body.len()).unwrap();
@@ -228,48 +232,83 @@ fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
         [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat()
     }
 
-    // The ONE measured-correct case, and the only one that keeps the cheap WIC path:
-    // ordinary 8-bit BT.709, which is what Chrome and Squoosh emit. Measured error 1-3.
-    assert_eq!(
-        avif_wic_verdict(&avif(false, Some(1))),
-        AvifWicVerdict::Trusted,
-        "8-bit BT.709 is measurably correct through WIC and must stay on the fast path"
-    );
-    // Identity leaves RGB alone, so there is no conversion for WIC to get wrong.
-    assert_eq!(
-        avif_wic_verdict(&avif(false, Some(0))),
-        AvifWicVerdict::Trusted
-    );
+    /// A 10-bit MONOCHROME AVIF: av1C bit 6 (high_bitdepth) and bit 4 (monochrome), with an
+    /// nclx box present so the test proves the monochrome flag wins over the matrix rather
+    /// than merely being reached when no matrix is written.
+    fn avif_mono() -> Vec<u8> {
+        let av1c = bx(b"av1C", &[0x81, 0x00, 0x5c, 0x00]);
+        let mut nclx = b"nclx".to_vec();
+        nclx.extend_from_slice(&1u16.to_be_bytes());
+        nclx.extend_from_slice(&13u16.to_be_bytes());
+        nclx.extend_from_slice(&1u16.to_be_bytes());
+        nclx.push(0x80);
+        let props = [bx(b"ispe", &[0u8; 12]), av1c, bx(b"colr", &nclx)].concat();
+        let iprp = bx(b"iprp", &bx(b"ipco", &props));
+        let meta = bx(b"meta", &[&[0u8; 4][..], &iprp].concat());
+        [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat()
+    }
 
-    // avifenc's DEFAULT matrix. Greys hold, saturated colour shifts. Measured error 19.
-    assert_eq!(
-        avif_wic_verdict(&avif(false, Some(6))),
-        AvifWicVerdict::Untrusted,
-        "8-bit BT.601 (avifenc's default) must route to ImageMagick: WIC clips while converting          with the wrong matrix, so the error is NOT recoverable after the fact"
-    );
-    // High bit depth WITH an nclx box is wrong for every matrix in the same way — a transfer
-    // curve, not a matrix error (mid grey 128 reads as 138). That is invertible in-process, so
-    // it must NOT cost a subprocess.
-    for matrix in [0u16, 1, 6, 9] {
+    // Each shape must land in the class whose PROBE covers it. The verdict itself belongs to
+    // whatever AV1 codec is installed on the machine running this (see `decode/wicprobe.rs`)
+    // and is deliberately not asserted here — pinning it is what let a five-week-old
+    // measurement of a self-updating Store component keep deciding, long after it stopped
+    // being true.
+    for (matrix, want) in [
+        // 0 is the identity matrix (lossless RGB), 1 is BT.709.
+        (Some(0), WicClass::EightBt709),
+        (Some(1), WicClass::EightBt709),
+        // 5 and 6 are the two spellings of BT.601; 6 is what `avifenc` writes by default.
+        (Some(5), WicClass::EightBt601),
+        (Some(6), WicClass::EightBt601),
+        // No `colr` box: the decoder is guessing, and which way it guesses has changed.
+        (None, WicClass::EightNoColr),
+    ] {
         assert_eq!(
-            avif_wic_verdict(&avif(true, Some(matrix))),
-            AvifWicVerdict::NeedsHighDepthCurve,
-            "10/12-bit AVIF with colour signalling is curve-correctable, not magick-bound              (matrix {matrix})"
+            avif_wic_class_of(&avif(false, matrix)),
+            Some(want),
+            "8-bit matrix {matrix:?} must be probed as {want:?}"
         );
     }
-    // ...but high bit depth with NO colour box at all fails a DIFFERENT way (a full-vs-limited
-    // range error, 0 -> 15 and 255 -> 233) which this curve does not fix. It stays on magick.
+    for (matrix, want) in [
+        (Some(0), WicClass::HighBt709),
+        (Some(1), WicClass::HighBt709),
+        (Some(5), WicClass::HighBt601),
+        (Some(6), WicClass::HighBt601),
+    ] {
+        assert_eq!(
+            avif_wic_class_of(&avif(true, matrix)),
+            Some(want),
+            "10/12-bit matrix {matrix:?} must be probed as {want:?}"
+        );
+    }
+    // Monochrome has no chroma planes and so no matrix to misread; it gets its own probe, and
+    // must NOT inherit a colour class. Applying the colour classes' transfer correction to it
+    // took a correct decode 15/255 away from right (2026-09-08).
+    assert_eq!(
+        avif_wic_class_of(&avif_mono()),
+        Some(WicClass::HighMono),
+        "high-bit-depth monochrome AVIF has its own probe"
+    );
+    // BT.2020 (9), "unspecified" (2), or anything from a newer spec than this build knows:
+    // no probe covers it, so there is no measurement to route on.
+    for matrix in [2u16, 9, 14, 4095] {
+        assert_eq!(
+            avif_wic_class_of(&avif(true, Some(matrix))),
+            None,
+            "matrix {matrix} is unmeasured and must not borrow another class's verdict"
+        );
+        assert_eq!(
+            avif_wic_verdict(&avif(true, Some(matrix))),
+            AvifWicVerdict::Untrusted,
+            "an unmeasured shape routes to ImageMagick rather than guessing"
+        );
+    }
+    // High bit depth with no `colr` box at all is a different failure again (a full-vs-limited
+    // RANGE error), and there is no probe for it either.
+    assert_eq!(avif_wic_class_of(&avif(true, None)), None);
     assert_eq!(
         avif_wic_verdict(&avif(true, None)),
-        AvifWicVerdict::Untrusted,
-        "high-bit-depth AVIF with no nclx fails on RANGE, not transfer - the curve must not claim it"
-    );
-    // No colour signalling at all: WIC assumes BT.709 where libaom encoded BT.601.
-    // Measured error 19 at 8-bit, so an absent nclx is NOT a licence to trust WIC.
-    assert_eq!(
-        avif_wic_verdict(&avif(false, None)),
-        AvifWicVerdict::Untrusted,
-        "an 8-bit AVIF with no nclx box must route to ImageMagick"
+        AvifWicVerdict::Untrusted
     );
 
     // HEIC carries hvcC, not av1C, and is routed by the auxiliary-alpha rule instead.
