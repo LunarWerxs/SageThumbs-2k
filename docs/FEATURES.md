@@ -509,8 +509,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
 - **Appearance** (new in 1.9.0): every "what does the tile look like" switch in one place, having
   previously been split between General and File types. **What goes in the corner of a
   thumbnail** is one three-way choice, because only one thing fits there: *Windows' file-type
-  icon* (the default, and what Explorer draws unaided: the associated program's icon, or a blank
-  page once that program has been uninstalled), *a SageThumbs format mark* (the file's format
+  icon* (the default: the associated program's icon. Explorer draws it unaided on documents, but
+  never on a type it treats as a picture, which is what Photoshop, Illustrator and most editors
+  register their formats as, and it draws a blank page once a program's registration has gone
+  stale, so for those SageThumbs tells Explorer which icon to draw; a program that has switched
+  its own icon off is left alone, and `st2k doctor` names it), *a SageThumbs format mark* (the file's format
   stamped in the corner, as a colour-coded file mark with one colour per kind of file, or as
   plain text), or *nothing*. Picking either of the last two also stops Explorer painting over the
   corner, which the two separate switches this replaced could not guarantee. **The installer

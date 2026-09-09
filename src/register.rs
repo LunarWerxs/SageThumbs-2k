@@ -122,7 +122,7 @@ const DISPLACED: &str = r"SOFTWARE\SageThumbs2K\DisplacedThumbHandlers";
 /// Photos) work. The rest of the Image category (PSD, KRA, XCF, …) would get the same verbs
 /// and have them fail on a file WIC cannot encode, so those get no `PerceivedType` from us.
 /// Camera RAW keeps `image`: the in-box RAW codec opens it.
-const WIC_IMAGE_EXTS: &[&str] = &[
+pub(crate) const WIC_IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "dib", "tif", "tiff", "heic", "heif", "hif",
     "avif", "webp", "jxr", "wdp", "hdp", "ico", "dds",
 ];

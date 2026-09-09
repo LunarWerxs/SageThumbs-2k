@@ -11,10 +11,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 >   string is consumed by the installer, the MSIX manifest and the website generator, so the
 >   bump is a release-time step done once, with the gate run, not a bookkeeping change made
 >   in advance.
-> - **Nothing here is waiting on engineering.** The Unreleased section is on `main` and
->   green. The signing account itself is already live and its certificate profile is Active;
->   what remains is a single client secret that only a person can copy out of the Azure
->   portal. `docs/RELEASE-SECURITY.md` has the current state and the one remaining step.
+> - **Nothing here is waiting on engineering, and nothing is waiting on Azure either.** The
+>   Unreleased section is on `main` and green. The signing account is live, its certificate
+>   profile is Active, the client secret is in the vault, and a real signature was produced
+>   and verified from the release machine on 2026-09-09. `docs/RELEASE-SECURITY.md` has the
+>   proof and the release-day call. What remains is the owner's word to cut 3.0.
 >
 > 3.0 rather than 2.6 because this is the release that stops shipping unsigned, on top of an
 > unusually large body of change: 60-plus user-facing entries, and a 38-finding audit
@@ -176,6 +177,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The program's icon is back in the corner of Photoshop, Illustrator and other editor
+  files.** With the corner set to "Windows' file-type icon", Explorer never draws one on a type
+  it treats as a photo, which is exactly the set of editor formats SageThumbs exists for, and
+  it draws nothing at all when a program update leaves the file type pointing at last year's
+  registration. SageThumbs now tells Windows which icon to draw in both cases, so a folder of
+  PSD and JPEG covers is tellable apart again. A program that deliberately turns its own icon
+  off is left alone, and `st2k doctor` now says so by name.
 - **AVIF thumbnails have their colours back.** A Windows codec update in early September changed
   how it reads the colour information inside an AVIF, and ordinary AVIF files started coming out
   with shifted colours: skies and skin visibly off, greys unaffected. SageThumbs now checks what

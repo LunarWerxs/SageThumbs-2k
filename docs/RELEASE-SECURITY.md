@@ -199,7 +199,15 @@ decision, Michael, 2026-09-06). Do not cut a release, bump `Cargo.toml`, or tag 
 `sign-release.ps1 -Status` reports READY. The version bump is a release-time step for exactly
 that reason, so a development build never claims to be 3.0.
 
-#### The signing account IS live. One human step remains. (corrected 2026-09-06)
+#### The signing account is live and the pipeline is proven (2026-09-09)
+
+**A real signature was produced from this machine on 2026-09-09**: a scratch copy of
+`st2k.exe`, signed through `sign-release.ps1` with the credential leased from the Connections
+vault, reads back through Windows as `CN=LUNARWERX LLC, O=LUNARWERX LLC, L=Harrisonville,
+S=Missouri, C=US`, issuer `Microsoft ID Verified CS AOC CA 04`, status **Valid**, timestamped
+by the Microsoft Public RSA Time Stamping Authority. The round trip to Azure took two seconds.
+Nothing in the pipeline changed to get there; the three `ST2K_SIGN_*` names and the leased
+`AZURE_*` triple were all it ever needed.
 
 **The account exists and the certificate profile is Active**, verified in the Azure portal on
 2026-09-05 by a session signed in as the owner, reading the resources rather than an email.
@@ -210,10 +218,11 @@ resource group, validation and principal object ids) are deliberately NOT repeat
 public file; they live in the Connections memory
 `azure-artifact-signing-is-live-lunawerx-public-trust`.
 
-**What is still missing is one client secret, and it has to be a person.** Azure reveals a
-secret's Value exactly once, inside a cross-origin portal iframe that an agent's browser tools
-cannot read, so an agent attempting it only burns a secret it must then delete. Until that
-paste happens, signing works interactively as the owner and not in any pipeline.
+**The client secret is in the vault.** It was minted and pasted by a person on 2026-09-09 (Azure
+reveals a secret's Value exactly once, inside a cross-origin portal iframe that an agent's
+browser tools cannot read) and lives in the Connections Studio Microsoft connection named
+**`artifact-signing`** (account `lunawerx-artifact-signing`). The value never enters a
+conversation: the `shell` tool leases it into the build process and nothing else can read it.
 
 ⛔ **Correct a stale claim before repeating it.** An earlier entry here, and the previous
 paragraph of this document, said the tenant had zero Azure subscriptions and therefore no
@@ -225,41 +234,48 @@ empty list from that credential is evidence about the credential, never about th
 exactly what "the only missing piece is the paste" looks like from the outside, and it was
 misread as "nothing has been set up".
 
-- **This machine is one configuration away from READY.** `Microsoft.ArtifactSigning.Client`
-  1.0.128 is dropped under `tools/artifact-signing/` (gitignored, so it can never ship in the
-  public repo); `-Status` finds the dlib and the signtool, and `-SelfTest` passes. Setting the
-  three `ST2K_SIGN_*` names plus the three `AZURE_*` values flips the verdict to READY with no
-  code change. The `AZURE_CLIENT_SECRET` must never be written into a file in this repo or
-  pasted into an agent's context: it goes into the Connections vault and is injected into the
-  build shell from there.
+- **This machine signs.** `Microsoft.ArtifactSigning.Client` 1.0.128 is dropped under
+  `tools/artifact-signing/` (gitignored, so it can never ship in the public repo); `-Status`
+  finds the dlib and the signtool, `-SelfTest` passes, and with the three `ST2K_SIGN_*` names
+  plus the leased `AZURE_*` triple the verdict is READY and a signature verifies (above). The
+  `AZURE_CLIENT_SECRET` must never be written into a file in this repo or pasted into an
+  agent's context: it stays in the Connections vault and is leased into the build shell.
 
-#### Release day, once the secret is in the vault (written 2026-09-06 so it is not improvised)
+#### Release day (written 2026-09-06 so it is not improvised; instance filled in 2026-09-09)
 
 The whole release is one `shell` call through the Connections MCP, because that is the only
 door that can lease the client secret into a process without the value ever entering a
 conversation. The three `ST2K_SIGN_*` values are names, not secrets, and are safe to write
 here; the `AZURE_*` triple is leased from the Microsoft connection that holds the pasted
 secret. A Microsoft connection stores exactly the fields `tenantId`, `clientId` and
-`clientSecret`, and the lease maps each to the env var the Azure dlib reads:
+`clientSecret`, and the lease maps each to the env var the Azure dlib reads. This exact call,
+with `-File scripts\packaging\sign-release.ps1 -Path <scratch copy>` in place of the release
+script, is what produced the 2026-09-09 proof:
 
 ```
 connections_execute { local: true, tool_name: "shell", params: {
   cwd: "<this repo>",
+  shell: "powershell",
   command: "pwsh -NoProfile -File scripts\\release.ps1",
   env: {
     ST2K_SIGN_ENDPOINT: "https://eus.codesigning.azure.net",
     ST2K_SIGN_ACCOUNT:  "lunawerxsigning",
     ST2K_SIGN_PROFILE:  "lunawerx-public-trust"
   },
-  secrets: [{ service: "microsoft", instance: "<the connection holding the secret>",
+  secrets: [{ service: "microsoft", instance: "artifact-signing",
               as: { tenantId: "AZURE_TENANT_ID", clientId: "AZURE_CLIENT_ID",
                     clientSecret: "AZURE_CLIENT_SECRET" } }]
 } }
 ```
 
-`connections_accounts { service: "microsoft" }` lists the instance names; pick the one created
-for signing, never the one that fronts `vsce` publishing. The lease is loud on failure: a
-missing field returns an error naming the fields it found, rather than running unsigned.
+`connections_accounts { service: "microsoft" }` lists the instance names; `artifact-signing`
+is the one created for signing, never `default` (which fronts `vsce` publishing). The lease
+is loud on failure: a missing field returns an error naming the fields it found, rather than
+running unsigned. **Expect SmartScreen to keep warning for a while after 3.0 ships**: since
+March 2026 Microsoft issues Artifact Signing certificates from intermediates with no
+accumulated reputation (`Microsoft ID Verified CS AOC CA 04` is the one on our proof), and
+reputation is earned per publisher over downloads. The signature is what stops the
+machine-learning "unknown binary" verdicts and lets that counter go up at all.
 
 Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## 3.0.0`
 (the exporter takes exactly that heading); bump `version` in `Cargo.toml` and the

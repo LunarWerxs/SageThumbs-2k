@@ -709,6 +709,8 @@ fn check_settings(r: &mut Report) {
         );
         // Only relevant when there IS a badge for Windows' icon to sit on top of.
         type_overlay_note(r);
+    } else if crate::settings::corner_mark() == crate::settings::CornerMark::SystemIcon {
+        system_icon_note(r);
     }
     if crate::settings::thumb_checker() {
         r.line(
@@ -1163,9 +1165,65 @@ fn type_overlay_note(r: &mut Report) {
     r.line(
         S::Info,
         "  to hide it",
-        "Settings > File types > 'Hide Windows' file-type icon on thumbnails' (this is also \
-         what covers the format badge, and it often points at a program you uninstalled)",
+        "Settings > Appearance > 'In the corner of a thumbnail' (the badge suppresses \
+         Windows' icon only where its owner has not declared one; this one often points at a \
+         program you uninstalled)",
     );
+}
+
+/// The corner is Windows' to draw (`CornerMark::SystemIcon`), so say where we had to help it
+/// and where its owner told it not to. Explorer never overlays a type it treats as a
+/// picture, and draws nothing for a registration left hollow by an update, so "I chose
+/// Windows' icon and PSD has none" is a real report (2026-09-09) with two different answers;
+/// `typeoverlay.rs` writes the icon for those two and leaves an owner's own "" alone.
+fn system_icon_note(r: &mut Report) {
+    let restored = crate::typeoverlay::restored_overlays();
+    if !restored.is_empty() {
+        let sample: Vec<String> = restored
+            .iter()
+            .take(3)
+            .map(|(progid, ext, value)| {
+                if value.is_empty() {
+                    format!("{ext} -> {progid} (nothing: its icon is gone)")
+                } else {
+                    format!("{ext} -> {progid}")
+                }
+            })
+            .collect();
+        r.line(
+            S::Ok,
+            "Corner icon",
+            &format!(
+                "Windows' file-type icon; SageThumbs tells Explorer which icon to draw on {} of \
+                 your file types that it would otherwise leave bare  e.g. {}",
+                restored.len(),
+                sample.join(", ")
+            ),
+        );
+    }
+    let suppressed = crate::typeoverlay::owner_suppressed();
+    if !suppressed.is_empty() {
+        let sample: Vec<String> = suppressed
+            .iter()
+            .take(3)
+            .map(|(progid, ext)| format!("{ext} -> {progid}"))
+            .collect();
+        r.line(
+            S::Warn,
+            "No corner icon by its owner's choice",
+            &format!(
+                "{} of your file types belong to a program that tells Windows to draw no icon \
+                 on its thumbnails  e.g. {}",
+                suppressed.len(),
+                sample.join(", ")
+            ),
+        );
+        r.line(
+            S::Info,
+            "  to mark them anyway",
+            "Settings > Appearance > 'In the corner of a thumbnail' > 'A SageThumbs format mark'",
+        );
+    }
 }
 
 /// For a video file: name the codec inside it and say whether THIS Windows can decode it.
