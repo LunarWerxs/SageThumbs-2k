@@ -22,7 +22,12 @@ $scratch = Join-Path (
 # certificate mid-test. Minting a dedicated certificate per run avoided that race but made
 # every run need a temporary machine-wide trust entry, which only an elevated shell can
 # add, so the gate failed for every unelevated developer. Reusing one persistent
-# certificate, trusted once (the installer adds it to TrustedPeople), needs neither.
+# certificate, trusted once, needs neither. Since 2026-09-09 the release installer is
+# chain-signed and no longer trusts this certificate, so an unelevated developer trusts it
+# once by hand (Import-Certificate into Cert:\LocalMachine\TrustedPeople from an elevated
+# shell; the verification names the exact command when it is missing). CI runs elevated and
+# adds the entry temporarily. A CurrentUser\TrustedPeople entry does NOT work: signtool's
+# package policy ignores it.
 $script:passed = 0
 . (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
@@ -93,6 +98,15 @@ try {
         Assert-ReleaseMsixPackage `
             -Path $msix `
             -CertificatePath $certificate `
+            -Version $version
+    }
+    # The release package is chain-signed and ships no .cer (2026-09-09), so the contract has
+    # a second mode with no bundled certificate. That mode must REFUSE a self-signed package:
+    # otherwise a build that forgot its .cer would pass the gate and ship a package nothing
+    # can trust.
+    Assert-Fails 'a self-signed package is refused by the trusted-chain contract' 'self-signed' {
+        Assert-ReleaseMsixPackage `
+            -Path $msix `
             -Version $version
     }
 

@@ -145,7 +145,10 @@ $requiredUpgradeCleanup = @(
     'Type: files; Name: "{app}\type-ghostscript.xml"',
     'Type: files; Name: "{app}\type.xml"',
     'Type: files; Name: "{app}\License.txt"',
-    'Type: files; Name: "{app}\NOTICE.txt"'
+    'Type: files; Name: "{app}\NOTICE.txt"',
+    # The pre-3.0 self-signed modern-menu certificate: removed before [Files] so a
+    # chain-signed upgrade (which ships no .cer) cannot find and re-trust last release's.
+    'Type: files; Name: "{app}\SageThumbs2K.cer"'
 )
 
 $installDeleteHeaders = @(

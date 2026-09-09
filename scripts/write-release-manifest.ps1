@@ -104,17 +104,38 @@ $magickDirectory = Join-Path $stage.FullName 'magick'
 
 $msixPath = Join-Path $stage.FullName 'SageThumbs2K.msix'
 $cerPath = Join-Path $stage.FullName 'SageThumbs2K.cer'
-$modernPresent = (Test-Path -LiteralPath $msixPath -PathType Leaf) -and
-    (Test-Path -LiteralPath $cerPath -PathType Leaf)
+# "Present" is the package alone: whether a .cer belongs beside it depends on how it was
+# signed, decided below. (Read by the publishable-reasons tally further down.)
+$modernPresent = Test-Path -LiteralPath $msixPath -PathType Leaf
 if ($ModernMenuBundled -and -not $modernPresent) {
-    throw 'modern menu was declared bundled but SageThumbs2K.msix or SageThumbs2K.cer is missing'
+    throw 'modern menu was declared bundled but SageThumbs2K.msix is missing'
 }
 if ($ModernMenuBundled) {
-    Assert-ReleaseMsixPackage `
-        -Path $msixPath `
-        -CertificatePath $cerPath `
-        -Version $Version `
-        -ExpectedProcessorArchitecture $(if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' })
+    # Same rule as check-release-manifest.ps1, read off the package rather than assumed: a
+    # self-signed package ships the .cer the installer trusts; a chain-signed one (Azure
+    # Artifact Signing, since 2026-09-09) must ship without, or the installer would import a
+    # certificate nothing uses.
+    $msixSigner = (Get-AuthenticodeSignature -LiteralPath $msixPath).SignerCertificate
+    if ($null -eq $msixSigner) { throw "modern-menu package is unsigned: $msixPath" }
+    $msixArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' }
+    if ([string]$msixSigner.Subject -ceq 'CN=SageThumbs2K') {
+        if (-not (Test-Path -LiteralPath $cerPath -PathType Leaf)) {
+            throw 'self-signed modern-menu package was bundled without its SageThumbs2K.cer'
+        }
+        Assert-ReleaseMsixPackage `
+            -Path $msixPath `
+            -CertificatePath $cerPath `
+            -Version $Version `
+            -ExpectedProcessorArchitecture $msixArchitecture
+    } else {
+        if (Test-Path -LiteralPath $cerPath) {
+            throw "stage carries SageThumbs2K.cer beside a chain-signed package ($($msixSigner.Subject)); make-msix.ps1 -AzureSign must not emit one"
+        }
+        Assert-ReleaseMsixPackage `
+            -Path $msixPath `
+            -Version $Version `
+            -ExpectedProcessorArchitecture $msixArchitecture
+    }
 }
 
 $gitHead = (& git -C $root rev-parse HEAD)

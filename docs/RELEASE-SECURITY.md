@@ -186,11 +186,10 @@ appease a dice roll would be chasing noise.
 
 The 2026-07-18 decision below stood for six weeks. On 2026-09-01 the owner reopened it: an
 Azure Trusted Signing account is being set up, and once it is live the release pipeline signs
-the installer, its embedded uninstaller and the four binaries inside it, and the portable
-zip's binaries. (The sparse MSIX for the modern menu stays SELF-signed on purpose: the
-installer trusts that one certificate into the machine store, which is what lets the package
-load; moving it to the Azure certificate is a separate installer change, filed in the private
-work queue, not part of 3.0.) Until it is live, everything below
+the installer, its embedded uninstaller, the four binaries inside it, the portable zip's
+binaries, and (since 2026-09-09) the sparse MSIX for the modern menu as well, so the installer
+no longer trusts anything into a machine certificate store; an upgrade from a self-signed
+install removes the certificate that install added. Until it is live, everything below
 this heading still describes the shipping position, and nothing in the release flow assumes a
 certificate exists. What changed the calculus was the 2.5.0 x64 installer reaching 9/70 on
 VirusTotal, including Microsoft's own ML engine (`Trojan:Win32/Wacatac.B!ml`, issue #30), which
@@ -253,6 +252,23 @@ misread as "nothing has been set up".
   it in `$q` again, and the uninstaller's path was handed to the signer cut off at its first
   space. Fixed in `build-release.ps1` and pinned both ways in `test-release-pipeline.ps1`,
   because nothing else in the pipeline can see that shape until release day.
+- **The modern-menu package is chain-signed too, and the installer has stopped touching the
+  certificate store (2026-09-09).** `make-msix.ps1 -AzureSign` patches the package's Publisher
+  to the certificate subject (an MSIX is only valid when the two are equal, and signtool
+  refuses it otherwise), signs through `sign-release.ps1`, and emits no `.cer`. The publisher
+  change changes the package family, so `installer.iss` removes a registration from any other
+  publisher before registering (two families would register the COM classes twice), deletes
+  last release's `.cer` from `{app}` before `[Files]`, and takes the self-signed certificate out
+  of `LocalMachine\TrustedPeople` on upgrade: by recorded thumbprint where one exists, by the
+  exact subject `CN=SageThumbs2K` on an upgrade from a pre-marker install, since no shipped
+  package uses that subject any more. `check-release-manifest.ps1` and
+  `write-release-manifest.ps1` read the mode off the package: self-signed must ship its `.cer`,
+  chain-signed must not. **Proven on this machine with the published 2.5.0 installed first
+  and the new build installed over it**: one package family under LUNARWERX LLC, zero
+  `CN=SageThumbs2K` certificates left in the store, the marker cleared, the `.cer` gone, and
+  the packaged COM class activating. The self-signed path stays for development machines and
+  for CI's `test-msix-integrity.ps1`, whose new fail-closed case proves the chain-signed
+  contract refuses a self-signed package.
 
 #### Release day (written 2026-09-06 so it is not improvised; instance filled in 2026-09-09)
 

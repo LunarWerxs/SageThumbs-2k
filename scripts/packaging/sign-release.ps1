@@ -178,11 +178,15 @@ if ($SelfTest) {
 }
 
 if (-not $Path -or $Path.Count -eq 0) { throw 'Pass -Path <files>, or one of -Status / -Configured / -SelfTest.' }
-$files = foreach ($p in $Path) {
+# `@(...)`: a ONE-file call (make-msix.ps1 signing the sparse package) otherwise unrolls to a
+# scalar string, and under the Set-StrictMode the dot-sourced release-manifest-lib turns on,
+# `$files.Count` on a scalar is an error rather than 1. That was the first chain-signed
+# package build's failure (2026-09-09), after every multi-file call had worked for days.
+$files = @(foreach ($p in $Path) {
     $item = Get-Item -LiteralPath $p -ErrorAction Stop
     if ($item.PSIsContainer) { throw "not a file: $p" }
     $item.FullName
-}
+})
 
 if (-not (Test-SignConfigured)) {
     if ($AllowUnsigned) {

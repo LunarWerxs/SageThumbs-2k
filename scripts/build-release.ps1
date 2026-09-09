@@ -274,6 +274,18 @@ Copy-Item "$targetRel\st2k_dlghook.dll" $stage
 # release flow may assume a certificate. Once ST2K_SIGN_* is set, a failure here is fatal,
 # because a half-signed release is worse than an unsigned one.
 $signScript = "$root\scripts\packaging\sign-release.ps1"
+# Decided ONCE, here: everything below that signs (the staged PEs, the sparse package, the
+# installer through Inno) keys off this, so a build cannot half-sign.
+& $signScript -Configured
+$signConfigured = ($LASTEXITCODE -eq 0)
+# The subject of the Azure Artifact Signing certificate (profile lunawerx-public-trust). An
+# MSIX is only valid when its manifest Publisher EQUALS its signer's subject, character for
+# character: make-msix.ps1 patches this into the package and signtool refuses the package if
+# it is wrong. installer.iss gets the same string, to recognise a registration from a
+# DIFFERENT publisher (the self-signed one every pre-3.0 install carries) and replace it,
+# since two package families would both register the modern-menu COM classes.
+$AzurePublisher = 'CN=LUNARWERX LLC, O=LUNARWERX LLC, L=Harrisonville, S=Missouri, C=US'
+$msixPublisher = if ($signConfigured) { $AzurePublisher } else { 'CN=SageThumbs2K' }
 $signable = @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe', 'st2k_dlghook.dll') |
     ForEach-Object { Join-Path $stage $_ }
 & $signScript -Path $signable -AllowUnsigned
@@ -711,8 +723,8 @@ if ($Portable) {
     if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
     New-Item -ItemType Directory $portableStage -Force | Out-Null
 
-    # The .msix/.cer pair stays install-only: it only means anything to an installer that
-    # trusts the cert into a machine store and calls Add-AppxPackage, which is admin work.
+    # The .msix (and, on a self-signed build, its .cer) stays install-only: it only means
+    # anything to an installer that calls Add-AppxPackage, which is admin work.
     #
     # The DLL, however, DOES travel now (changed 2026-08-06). It used to be excluded on the
     # reasoning that a DLL nothing registered is dead weight - true, but the premise was
@@ -844,12 +856,20 @@ if ($Portable) {
 }
 
 # 3b) Signed sparse package for the Win11 modern context menu ----------------
-# Builds + signs (self-signed, free) SageThumbs2K.msix + SageThumbs2K.cer into the
-# stage dir; the installer trusts the cert and sideloads the package (no Developer
-# Mode needed). Without it the install still works — only the classic menu ships.
+# Builds + signs SageThumbs2K.msix into the stage dir and the installer sideloads it (no
+# Developer Mode needed). With signing configured it carries the real publisher certificate
+# and nothing has to be trusted; otherwise it is self-signed (free) and ships the .cer the
+# installer trusts. Without it the install still works — only the classic menu ships.
 if (-not $NoModernMenu) {
     Write-Host "[2b/4] building signed sparse package (modern menu)" -ForegroundColor Green
-    & "$root\scripts\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture
+    if ($signConfigured) {
+        # The real publisher certificate, so the installer has no certificate to trust into a
+        # machine store. Self-signed remains the path for a machine without the account.
+        & "$root\scripts\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture -AzureSign -Subject $AzurePublisher
+    } else {
+        & "$root\scripts\packaging\make-msix.ps1" -OutDir $stage -Architecture $Architecture
+    }
+    if ($LASTEXITCODE) { throw "make-msix.ps1 failed ($LASTEXITCODE)" }
 } else {
     Write-Host "[2b/4] -NoModernMenu: skipping the signed package (classic menu only)" -ForegroundColor Yellow
 }
@@ -928,8 +948,10 @@ if ($fmtCount) { $isccArgs += "/DFmtCount=$fmtCount" }
 # script that signed the staged binaries: installer.iss turns on `SignTool=st2k` only when
 # SignToolName is defined, and Inno substitutes $f with each file it signs. Not configured
 # means an unsigned installer, announced, never assumed.
-& $signScript -Configured
-if ($LASTEXITCODE -eq 0) {
+# The publisher the bundled package carries (see $msixPublisher above), so the installer can
+# replace a registration from any OTHER publisher instead of registering a second family.
+$isccArgs += "/DMsixPublisher=$msixPublisher"
+if ($signConfigured) {
     $pwshExe = (Get-Process -Id $PID).Path
     $q = '$q'
     $isccArgs += '/DSignToolName=st2k'

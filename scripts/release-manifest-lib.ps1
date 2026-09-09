@@ -539,12 +539,35 @@ function Assert-ReleaseMsixIdentity {
     }
 }
 
+# Two signing modes, decided by whether a bundled certificate is given:
+#
+# * -CertificatePath (the self-signed development/test package): the signer must BE that
+#   exact certificate, and it is verified against a temporary LocalMachine\TrustedPeople
+#   entry, the same non-root store the self-signed installer populates (needs elevation
+#   unless the certificate is already trusted there). The package's Publisher must equal
+#   that certificate's subject.
+function Test-ReleaseElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+        )
+    } finally {
+        $identity.Dispose()
+    }
+}
+
+# * No -CertificatePath (the release package, signed through Azure Artifact Signing since
+#   2026-09-09): the signature must validate through the machine's ORDINARY trust with nothing
+#   added, the signer must not be the self-signed subject (a self-signed package without its
+#   .cer is a broken build, not a chain-signed one), and -ExpectedPublisher, when given, pins
+#   who signed it. This is the mode that let the installer stop writing a certificate into
+#   LocalMachine\TrustedPeople at all.
 function Assert-ReleaseMsixPackage {
     param(
         [Parameter(Mandatory)]
         [string]$Path,
 
-        [Parameter(Mandatory)]
         [string]$CertificatePath,
 
         [Parameter(Mandatory)]
@@ -554,23 +577,60 @@ function Assert-ReleaseMsixPackage {
         [ValidateSet('neutral', 'arm64')]
         [string]$ExpectedProcessorArchitecture = 'neutral',
 
-        [string]$SignToolPath
+        [string]$SignToolPath,
+
+        # Chain mode only: the exact subject the signer must carry.
+        [string]$ExpectedPublisher
     )
 
     Assert-ReleaseZipFile -Path $Path
-    Assert-ReleaseCertificate -Path $CertificatePath
 
     $tool = if ($SignToolPath) {
         (Resolve-Path -LiteralPath $SignToolPath -ErrorAction Stop).Path
     } else {
         Resolve-ReleaseSignTool
     }
+
+    if (-not $CertificatePath) {
+        $untrustedSignature = Get-AuthenticodeSignature -LiteralPath $Path
+        if ($null -eq $untrustedSignature -or
+            $null -eq $untrustedSignature.SignerCertificate) {
+            throw 'MSIX has no readable Authenticode signer certificate'
+        }
+        $signerSubject = [string]$untrustedSignature.SignerCertificate.Subject
+        if ($signerSubject -ceq 'CN=SageThumbs2K') {
+            throw 'MSIX is self-signed (CN=SageThumbs2K) but no bundled certificate was given: ' +
+                'a self-signed package needs its .cer beside it, and a chain-signed package must not be self-signed'
+        }
+        if ($ExpectedPublisher -and $signerSubject -cne $ExpectedPublisher) {
+            throw "MSIX signer is '$signerSubject' (expected '$ExpectedPublisher')"
+        }
+        $verifyOutput = @(& $tool verify /pa /all /v $Path 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "MSIX signature verification failed using signtool:`n$($verifyOutput -join "`n")"
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $Path
+        if ($null -eq $signature -or [string]$signature.Status -cne 'Valid' -or
+            $null -eq $signature.SignerCertificate) {
+            $status = if ($null -eq $signature) { '<no result>' } else { [string]$signature.Status }
+            throw "MSIX Authenticode signature is not valid through the machine's ordinary trust: $status"
+        }
+        Assert-ReleaseMsixIdentity `
+            -Path $Path `
+            -Version $Version `
+            -ExpectedPublisher $signerSubject `
+            -ExpectedProcessorArchitecture $ExpectedProcessorArchitecture
+        return
+    }
+
+    Assert-ReleaseCertificate -Path $CertificatePath
     $expectedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
         (Resolve-Path -LiteralPath $CertificatePath -ErrorAction Stop).Path
     )
+    $trustLocation = [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
     $trustedPeople = [Security.Cryptography.X509Certificates.X509Store]::new(
         'TrustedPeople',
-        [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+        $trustLocation
     )
     $addedTemporaryTrust = $false
     try {
@@ -593,10 +653,15 @@ function Assert-ReleaseMsixPackage {
                 "bundled $($expectedCertificate.Thumbprint))"
         }
 
-        # The shipped package deliberately uses a self-signed app-package
-        # certificate. Verify it against that exact bundled public certificate
+        # The self-signed package is verified against that exact bundled public certificate
         # without requiring a release runner to have installed SageThumbs first.
-        # TrustedPeople is the same non-root store used by the installer.
+        # LocalMachine\TrustedPeople is the only store that counts: signtool's package
+        # policy ignores a CurrentUser\TrustedPeople entry (measured 2026-09-09: "terminated
+        # in a root certificate which is not trusted"), and writing the machine store needs
+        # an elevated process. CI runs elevated. A developer shell usually does not, and
+        # since the chain-signed installer stopped trusting this certificate nothing
+        # pre-trusts it either, so that case is named here rather than surfacing as a bare
+        # "Access is denied" from the store.
         $trustedPeople.Open(
             [Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly
         )
@@ -605,15 +670,22 @@ function Assert-ReleaseMsixPackage {
             $expectedCertificate.Thumbprint,
             $false
         )
+        $trustedPeople.Close()
         if ($trusted.Count -eq 0) {
-            $trustedPeople.Close()
+            if (-not (Test-ReleaseElevated)) {
+                throw ("the self-signed certificate {0} is not in LocalMachine\TrustedPeople and " +
+                    "this shell is not elevated, so it cannot be trusted temporarily. Trust it " +
+                    "once from an elevated PowerShell: Import-Certificate -FilePath '{1}' " +
+                    "-CertStoreLocation Cert:\LocalMachine\TrustedPeople") -f
+                    $expectedCertificate.Thumbprint, $CertificatePath
+            }
             $trustedPeople.Open(
                 [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
             )
             $trustedPeople.Add($expectedCertificate)
             $addedTemporaryTrust = $true
+            $trustedPeople.Close()
         }
-        $trustedPeople.Close()
 
         $verifyOutput = @(& $tool verify /pa /all /v $Path 2>&1)
         if ($LASTEXITCODE -ne 0) {
@@ -637,7 +709,7 @@ function Assert-ReleaseMsixPackage {
         if ($addedTemporaryTrust) {
             $cleanupStore = [Security.Cryptography.X509Certificates.X509Store]::new(
                 'TrustedPeople',
-                [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+                $trustLocation
             )
             try {
                 $cleanupStore.Open(

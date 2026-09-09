@@ -343,18 +343,39 @@ if ($Architecture -eq 'x64') {
     & (Join-Path $PSScriptRoot 'test-staged-regression.ps1') -StagePath $stage.FullName
 }
 
-foreach ($required in 'SageThumbs2K.msix', 'SageThumbs2K.cer') {
-    $path = Join-Path $stage.FullName $required
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
-        (Get-Item -LiteralPath $path).Length -eq 0) {
-        throw "full modern-menu payload is missing: $path"
-    }
+$msixPath = Join-Path $stage.FullName 'SageThumbs2K.msix'
+if (-not (Test-Path -LiteralPath $msixPath -PathType Leaf) -or
+    (Get-Item -LiteralPath $msixPath).Length -eq 0) {
+    throw "full modern-menu payload is missing: $msixPath"
 }
-Assert-ReleaseMsixPackage `
-    -Path (Join-Path $stage.FullName 'SageThumbs2K.msix') `
-    -CertificatePath (Join-Path $stage.FullName 'SageThumbs2K.cer') `
-    -Version $ExpectedVersion `
-    -ExpectedProcessorArchitecture $(if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' })
+# Which signing mode the stage is in is READ OFF THE PACKAGE, not assumed from configuration:
+# a self-signed package ships with the .cer the installer trusts, a chain-signed one (Azure
+# Artifact Signing, since 2026-09-09) must ship WITHOUT one, because the installer imports any
+# .cer it finds and that would trust a certificate nothing uses. Either mismatch is a broken
+# stage and fails here rather than on a user's machine.
+$cerPath = Join-Path $stage.FullName 'SageThumbs2K.cer'
+$msixSigner = (Get-AuthenticodeSignature -LiteralPath $msixPath).SignerCertificate
+if ($null -eq $msixSigner) { throw "modern-menu package is unsigned: $msixPath" }
+$msixArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'neutral' }
+if ([string]$msixSigner.Subject -ceq 'CN=SageThumbs2K') {
+    if (-not (Test-Path -LiteralPath $cerPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $cerPath).Length -eq 0) {
+        throw "self-signed modern-menu package needs its certificate beside it: $cerPath"
+    }
+    Assert-ReleaseMsixPackage `
+        -Path $msixPath `
+        -CertificatePath $cerPath `
+        -Version $ExpectedVersion `
+        -ExpectedProcessorArchitecture $msixArchitecture
+} else {
+    if (Test-Path -LiteralPath $cerPath) {
+        throw "stage carries SageThumbs2K.cer beside a chain-signed package ($($msixSigner.Subject)); make-msix.ps1 -AzureSign must not emit one"
+    }
+    Assert-ReleaseMsixPackage `
+        -Path $msixPath `
+        -Version $ExpectedVersion `
+        -ExpectedProcessorArchitecture $msixArchitecture
+}
 
 $sizeCheck = Join-Path $PSScriptRoot 'check-release-size.ps1'
 & $sizeCheck -InstallerPath $installer.FullName -StagePath $stage.FullName -Architecture $Architecture

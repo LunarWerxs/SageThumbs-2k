@@ -103,6 +103,16 @@ AppCopyright=(C) 2026 {#Publisher}
 SignTool={#SignToolName}
 SignedUninstaller=yes
 #endif
+; The Publisher inside the bundled sparse package. build-release.ps1 passes the Azure
+; certificate's subject when signing is configured; a self-signed build (or a bare ISCC
+; compile of this file, as the lint does) falls back to the development subject. The [Run]
+; registration step uses it to recognise and remove a package from a DIFFERENT publisher
+; before registering this one: a publisher change (3.0 moved from the self-signed
+; CN=SageThumbs2K to the real certificate) changes the package family, and two families
+; would both register the modern-menu COM classes.
+#ifndef MsixPublisher
+#define MsixPublisher "CN=SageThumbs2K"
+#endif
 ArchitecturesAllowed={#ArchitectureMatcher}
 ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 ; Shell-extension registration writes HKLM + Program Files -> needs elevation.
@@ -148,6 +158,12 @@ Type: files; Name: "{app}\type-ghostscript.xml"
 Type: files; Name: "{app}\type.xml"
 Type: files; Name: "{app}\License.txt"
 Type: files; Name: "{app}\NOTICE.txt"
+; The self-signed modern-menu certificate every pre-3.0 install shipped. A chain-signed
+; build ships no .cer, and the cert-trust [Run] step decides which mode it is in by whether
+; {app}\SageThumbs2K.cer exists - so the OLD one has to go before [Files] runs, or an upgrade
+; would find last release's certificate and keep trusting it for a package that no longer
+; needs it. A self-signed build simply writes its own copy back one section later.
+Type: files; Name: "{app}\SageThumbs2K.cer"
 
 [Files]
 ; Keep the DLL and CLI adjacent in the solid stream. Both are mostly the shared
@@ -165,8 +181,11 @@ Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; loads it on demand, into the dialog's own process, for one question. Absent = the app simply
 ; has no dialog support, which is why this row is skipifsourcedoesntexist.
 Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-; Signed sparse package + its public cert -> the Windows 11 modern context menu.
-; Built by scripts\packaging\make-msix.ps1 (self-signed; skipped with -NoModernMenu).
+; Signed sparse package -> the Windows 11 modern context menu. Built by
+; scripts\packaging\make-msix.ps1 (skipped with -NoModernMenu). A release build signs it with
+; the real publisher certificate and ships NO .cer; a self-signed development build ships the
+; public .cer beside it, which the [Run] step below trusts. Both rows are
+; skipifsourcedoesntexist for exactly that reason.
 Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.
@@ -319,11 +338,28 @@ Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
 ; brace; a closing `}` needs no escape. This is not theoretical: an earlier version of the
 ; combined registration line shipped with bare braces and broke the release build outright,
 ; which nothing but a full installer compile catches - hence
-; `installer_iss::powershell_braces_are_escaped_for_inno` and check-installer.ps1's own
-; per-line brace scan, which now catch it in a second.
+; check-installer.ps1's per-line brace scan, which now catches it in a second (a Rust test of
+; the same name used to be cited here; it no longer exists).
+;
+; CHAIN-SIGNED PACKAGE (3.0, 2026-09-09): when no SageThumbs2K.cer was bundled, the package
+; is signed by the real publisher certificate and there is nothing to trust: the whole
+; certificate branch is skipped. The install-dir marker is written FIRST and unconditionally
+; (the registration step below reads it). Then the self-signed certificate earlier releases
+; trusted is taken back out, because no SageThumbs package uses it any more and leaving it
+; would keep it trusted on every upgraded machine for no reason:
+;   - a recorded marker (an install from 2.5.1+) names the exact thumbprint: remove that one;
+;   - no marker but this IS an upgrade: every 2.5.0-and-earlier install trusted the
+;     certificate before the marker existed, so remove every TrustedPeople certificate whose
+;     subject is EXACTLY CN=SageThumbs2K. That is a subject match, which F09 forbids for the
+;     self-signed era because another copy of the same subject could be a different install's
+;     live certificate - but once the shipped package is chain-signed there is no live
+;     self-signed one anywhere, and this is the only chance to clean the pre-marker machines.
+;     Gated on ST2K_ISUPGRADE, so a fresh install never touches a certificate it did not put
+;     there. (F09's lint checks for wildcard matching; an exact -ceq is not one.)
+;   - neither: a fresh install, nothing to do.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $c=$d+'\SageThumbs2K.cer'; $t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($c)).Thumbprint; New-Item -Path 'HKLM:\Software\SageThumbs2K' -Force|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -Value $d; $m=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue).ModernMenuCertThumbprint; if(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t)){{if((-not $m) -and ($env:ST2K_ISUPGRADE -eq '1')){{Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}}else{{if($m -and ($m -ne $t)){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+$m) -Force -ErrorAction SilentlyContinue}; Import-Certificate -FilePath $c -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}"""; \
-  StatusMsg: "Trusting the modern context menu certificate..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
+  Parameters: "-NoProfile -Command ""$d=$env:ST2K_APPDIR; $c=$d+'\SageThumbs2K.cer'; New-Item -Path 'HKLM:\Software\SageThumbs2K' -Force|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -Value $d; $m=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue).ModernMenuCertThumbprint; if(Test-Path $c){{$t=(New-Object Security.Cryptography.X509Certificates.X509Certificate2 ($c)).Thumbprint; if(Test-Path ('Cert:\LocalMachine\TrustedPeople\'+$t)){{if((-not $m) -and ($env:ST2K_ISUPGRADE -eq '1')){{Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}}else{{if($m -and ($m -ne $t)){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+$m) -Force -ErrorAction SilentlyContinue}; Import-Certificate -FilePath $c -CertStoreLocation Cert:\LocalMachine\TrustedPeople|Out-Null; Set-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -Value $t}}else{{if($m){{Remove-Item -Path ('Cert:\LocalMachine\TrustedPeople\'+$m) -Force -ErrorAction SilentlyContinue}elseif($env:ST2K_ISUPGRADE -eq '1'){{Get-ChildItem Cert:\LocalMachine\TrustedPeople|Where-Object{{$_.Subject -ceq 'CN=SageThumbs2K'}|Remove-Item -Force -ErrorAction SilentlyContinue}; Remove-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuCertThumbprint -ErrorAction SilentlyContinue}"""; \
+  StatusMsg: "Preparing the modern context menu..."; Flags: runhidden waituntilterminated; Check: ModernMenuUsable
 ; Per-user package registration (F08): Add-AppxPackage registers the sparse package into the
 ; CALLING user's own profile, so - unlike the cert trust above - this step must run as the
 ; person actually using the PC, via `runasoriginaluser`. See the entry above for the
@@ -345,8 +381,17 @@ Filename: "powershell.exe"; \
 ; If ModernMenuInstallDir is somehow missing (Check: ModernMenuUsable gates both this and the
 ; cert-trust step on the identical condition, so this should not happen), $d is empty and the
 ; whole block is skipped rather than handing Add-AppxPackage a malformed path.
+;
+; A registration from a DIFFERENT PUBLISHER is removed first (3.0, 2026-09-09). The package
+; family name is derived from the publisher, so the 3.0 package signed by the real certificate
+; is a different family from the self-signed CN=SageThumbs2K one every earlier install
+; registered; -ForceUpdateFromAnyVersion cannot update across families, and leaving the old
+; one would register the modern-menu COM classes twice. Compared by the exact Publisher
+; string build-release.ps1 passes in ({#MsixPublisher}), so a same-publisher upgrade keeps
+; the add-first ordering above. The current user's registration only, which is the one this
+; runasoriginaluser step can see; uninstall removes every user's.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){{try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}}"""; \
+  Parameters: "-NoProfile -Command ""$d=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){{Get-AppxPackage -Name SageThumbs2K|Where-Object{{$_.Publisher -cne '{#MsixPublisher}'}|Remove-AppxPackage -ErrorAction SilentlyContinue; try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}}"""; \
   StatusMsg: "Registering the modern context menu (this can take a moment)..."; \
   Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
