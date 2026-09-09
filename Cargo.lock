@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "build-support"
-version = "2.5.0"
+version = "3.0.0"
 
 [[package]]
 name = "bumpalo"
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "2.5.0"
+version = "3.0.0"
 dependencies = [
  "base64",
  "bcdec_rs",
@@ -1467,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dlghook"
-version = "2.5.0"
+version = "3.0.0"
 dependencies = [
  "build-support",
  "windows",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "2.5.0"
+version = "3.0.0"
 dependencies = [
  "build-support",
  "sagethumbs2k",

@@ -1546,6 +1546,22 @@ fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledS
                     "check this file's FOLDER view: Details, List and Small icons never show \
                      thumbnails. Set Medium icons or larger (View menu, or Ctrl+Shift+2..4).",
                 );
+                // The live request above is not read-only from Explorer's point of view: a
+                // fresh answer replaces whatever the thumbnail cache remembered for this path
+                // at that size, including a miss cached when the file was still being copied
+                // in (issue #36: the same PSD drew a thumbnail on the Desktop and an icon in
+                // an Explorer window, one size per view). Say so, or the user reads "it works
+                // now" as proof nothing was wrong, and the other sizes and files still hold
+                // their stale entries.
+                r.line(
+                    S::Info,
+                    "  note",
+                    "this check also refreshed Explorer's cached thumbnail for this file at \
+                     that one size. Other sizes and other files can still hold a stale \
+                     'no thumbnail' entry (the sign: a thumbnail on the Desktop but an icon \
+                     in an Explorer window of the same folder). Settings > Advanced > \
+                     'Rebuild thumbnail cache' clears them all.",
+                );
             }
             Err(_) if is_video => {
                 // Video never touches ImageMagick — the frame comes from the OS Media

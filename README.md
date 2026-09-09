@@ -290,14 +290,21 @@ Nothing about how you browse files changes.
 
 ### Why did Windows or my antivirus flag the installer?
 
-Because it is unsigned and every release is a brand-new file the world has never seen. That is
-a *reputation* verdict, not a finding about the code, and the detection names say so
-themselves: Microsoft's `Wacatac.B!ml` ends in `!ml`, its own marker for "a machine-learning
-model guessed"; Fortinet reports `PossibleThreat`; Rising reports `Undefined`; Skyhigh reports
-`BehavesLike`. None of them claims to have recognised anything specific.
+**3.0 and later are code-signed by LUNARWERX LLC** through Azure Artifact Signing, every
+installer, the shell extension, the app and the command-line tool. Right-click the file,
+Properties, Digital Signatures, and the signer is there to check. The signature is what removes
+the machine-learning "unknown binary" verdicts that releases up to 2.5 collected.
 
-Two measurements, taken on 2026-08-31, if you would rather not take our word for it. They
-are dated on purpose: these numbers move, which is the entire point being made.
+Releases before 3.0 were unsigned, and every release is a brand-new file the world has never
+seen. That is a *reputation* verdict, not a finding about the code, and the detection names
+say so themselves: Microsoft's `Wacatac.B!ml` ends in `!ml`, its own marker for "a
+machine-learning model guessed"; Fortinet reports `PossibleThreat`; Rising reports
+`Undefined`; Skyhigh reports `BehavesLike`. None of them claims to have recognised anything
+specific.
+
+Two measurements, taken on 2026-08-31 on the unsigned builds, if you would rather not take our
+word for it. They are dated on purpose: these numbers move, which is the entire point being
+made.
 
 - **The count moves on its own, with no change to the software.** A freshly built installer,
   the same product, scanned the same day: **2 of 71** engines. The published build of that
@@ -314,12 +321,13 @@ engine names for the file you downloaded rather than one popup's opinion. You ca
 the SHA-256 on the release page matches what you got.
 
 If your antivirus quarantines it, reporting it as a false positive to *your* vendor genuinely
-helps, those reports are what clear it for everyone else using that product. Code signing is
-the durable fix and is planned.
+helps, those reports are what clear it for everyone else using that product, and since 3.0
+there is a signed publisher for them to attach it to.
 
-SmartScreen's "Windows protected your PC" screen is a separate thing: it is the same
-no-history-yet reputation prompt rather than a malware verdict. Click **More info**, then
-**Run anyway**.
+SmartScreen's "Windows protected your PC" screen is a separate thing: it is a no-history-yet
+reputation prompt rather than a malware verdict, and a signature does not silence it on day
+one. Reputation is earned per publisher over downloads, so it can still appear for a while
+after 3.0. Click **More info**, then **Run anyway**.
 
 ### How is it different from the original SageThumbs, or a tool like MysticThumbs?
 
