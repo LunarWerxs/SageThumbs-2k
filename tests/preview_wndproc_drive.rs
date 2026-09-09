@@ -400,6 +400,25 @@ fn navigation_keys_and_escape_drive_the_live_window_through_the_real_os_message_
         .create(&settings_root)
         .expect("create scratch HKCU key");
 
+    // Mark the welcome window already seen IN THE SCRATCH KEY before the viewer launches.
+    // A fresh settings root is, by definition, a first run, so `main`'s
+    // `first_run::show_if_first_run()` puts the welcome window up FIRST and the viewer's title
+    // never becomes the file name inside the wait below. It passed on this desk (whose real
+    // HKCU has been past first run for months) and failed on both CI runners on 2026-09-08 -
+    // the difference was the environment, not the code. `--first-run-seen` is the app's own
+    // flag for exactly this, and it exits immediately after marking.
+    let seen = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"))
+        .env("ST2K_SETTINGS_ROOT", &settings_root)
+        .arg("--first-run-seen")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    assert!(
+        seen.is_ok_and(|st| st.success()),
+        "could not mark the welcome window as seen in the scratch settings key"
+    );
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_SageThumbs2K"))
         .env("ST2K_SETTINGS_ROOT", &settings_root)
         .arg("--preview")
