@@ -343,8 +343,12 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(found.as_deref(), Some("Images/real-cover.jpg"));
+        // Linear takes milliseconds on an idle box; the quadratic scan this guards took tens
+        // of seconds in a debug build. The margin is wide because the full gate runs this
+        // beside the fuzz suites under a fair-share CPU job, where a 500 ms bound read red
+        // for a pass that took 90 ms alone (2026-09-09).
         assert!(
-            elapsed < std::time::Duration::from_millis(500),
+            elapsed < std::time::Duration::from_secs(5),
             "first_html_image took {elapsed:?} for a 40k-tag page — looks quadratic again"
         );
     }

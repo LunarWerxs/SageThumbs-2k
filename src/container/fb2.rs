@@ -211,8 +211,12 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(result, None);
+        // Rejecting before the scan takes milliseconds; the unbounded needle search this
+        // guards is seconds over 4 MB. The margin is wide because the full gate runs this
+        // beside the fuzz suites under a fair-share CPU job, where a 500 ms bound read red
+        // for a pass that took 90 ms alone (2026-09-09).
         assert!(
-            elapsed < std::time::Duration::from_millis(500),
+            elapsed < std::time::Duration::from_secs(5),
             "extract took {elapsed:?} for an overlong id — looks like it wasn't rejected before the scan"
         );
     }
