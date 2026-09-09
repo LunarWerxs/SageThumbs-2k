@@ -447,6 +447,13 @@ pub(crate) fn child_frame_png(
     // st2k fan-outs and in-process decodes share the one cap).
     let _permit = crate::decode::magick_gate::acquire();
     let mut child = cmd.spawn().ok()?;
+    // The one line `verify-installed-thumbnails-explorer.ps1` counts. It used to count
+    // helpers by polling the process list every 15 ms from a PowerShell runspace, and a
+    // helper that lived and died between two polls on a loaded box read as "expected 1,
+    // saw 0 - the decode tier ordering changed" (2026-09-09, a false red that cost an hour).
+    // A line written by the process that did the spawning cannot be missed by a scheduler.
+    // Debug-gated, so the production path costs one cached registry flag read.
+    crate::safety::log_debugf!("spawned helper pid {} for {verb}", child.id());
 
     // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
     let mut stdin = child.stdin.take()?;

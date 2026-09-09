@@ -57,6 +57,47 @@ $CorpusPath = (Resolve-Path -LiteralPath $CorpusPath).Path
 $installedDll = Join-Path $env:ProgramFiles 'SageThumbs2K\sagethumbs2k.dll'
 $installedExe = Join-Path $env:ProgramFiles 'SageThumbs2K\st2k.exe'
 
+# Helper spawns are COUNTED FROM THE DLL'S OWN LOG, not observed from outside. The first
+# version polled the process list every 15 ms from a PowerShell runspace and counted
+# `st2k.exe` births; a helper that lived and died between two polls on a loaded box
+# (a cargo build, an agent fan-out) read as "expected 1, saw 0 - the decode tier ordering
+# changed", the most alarming sentence this script can print, for a starved poll loop
+# (2026-09-09). The decode tiers now write `spawned helper pid N for <verb>` when
+# HKCU\Software\SageThumbs2K\Debug = 1, from the process that did the spawning, which no
+# scheduler can make it miss. The poll below stays for what only a poll can answer: which
+# host the helper was parented to, and whether it ever owned a window.
+$st2kSettings = 'HKCU:\Software\SageThumbs2K'
+$st2kLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K.log'
+$debugWas = $null
+if (Test-Path -LiteralPath $st2kSettings) {
+    $debugWas = (Get-ItemProperty -LiteralPath $st2kSettings -Name Debug -ErrorAction SilentlyContinue).Debug
+}
+New-Item -Path $st2kSettings -Force -ErrorAction SilentlyContinue | Out-Null
+Set-ItemProperty -LiteralPath $st2kSettings -Name Debug -Value 1 -Type DWord
+# The DLL re-reads that switch at most once a second (safety::debug_logging_on), so a host
+# that is already running gets a chance to notice before the first sample.
+Start-Sleep -Milliseconds 1200
+function Get-St2kLogLength {
+    if (Test-Path -LiteralPath $st2kLog) { (Get-Item -LiteralPath $st2kLog).Length } else { [long]0 }
+}
+function Get-HelperSpawnCountSince([long]$Offset) {
+    if (-not (Test-Path -LiteralPath $st2kLog)) { return 0 }
+    # The DLL opens the log with every share flag, so reading while a host appends is fine.
+    $fs = [IO.File]::Open($st2kLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        if ($fs.Length -lt $Offset) { $Offset = 0 }   # rotated mid-run: the new file is all new
+        $fs.Position = $Offset
+        $reader = New-Object IO.StreamReader($fs)
+        $n = 0
+        while ($null -ne ($line = $reader.ReadLine())) {
+            if ($line -match 'spawned helper pid \d+ for ') { $n++ }
+        }
+        return $n
+    } finally {
+        $fs.Dispose()
+    }
+}
+
 # The samples that matter, why each is here, and how many helper processes ONE thumbnail of
 # it must cost.
 #
@@ -382,12 +423,13 @@ try {
     # so a pass here is broader than "Explorer draws it".
     foreach ($s in $staged) {
         Check "shell thumbnail: $($s.Case.Name)  [$($s.Case.Why)]" {
-            $sync.Window.Clear()
+            $logBefore = Get-St2kLogLength
             $bmp = Join-Path $tempDir ([IO.Path]::GetFileNameWithoutExtension($s.Path) + '-thumb.bmp')
             $r = [St2kExplorerProbe]::Thumbnail($s.Path, $bmp, 256)
-            # A helper can outlive the call that spawned it; count after it has settled.
+            # The spawn line is written before the helper's output can exist, so it is on
+            # disk by the time the thumbnail is; the settle is for the parentage poll below.
             Start-Sleep -Milliseconds 400
-            $spawned = $sync.Window.Count
+            $spawned = Get-HelperSpawnCountSince $logBefore
             Write-Host "        $($r[0])x$($r[1]), $($r[2]) distinct colours, $spawned helper process(es)" -ForegroundColor DarkGray
             # A blank tile still returns a perfectly valid HBITMAP, so "did we get a bitmap"
             # is a different question from "did we get a picture". Demand real variety.
@@ -492,6 +534,12 @@ try {
         [void][St2kExplorerProbe]::PostMessageW($explorerHwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
     }
     if ($shell) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+    # Put the debug switch back exactly as found: absent stays absent, a value stays that value.
+    if ($null -eq $debugWas) {
+        Remove-ItemProperty -LiteralPath $st2kSettings -Name Debug -ErrorAction SilentlyContinue
+    } else {
+        Set-ItemProperty -LiteralPath $st2kSettings -Name Debug -Value $debugWas -Type DWord
+    }
     if (-not $Keep -and (Test-Path -LiteralPath $tempDir)) {
         Start-Sleep -Milliseconds 800   # let Explorer release the directory
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

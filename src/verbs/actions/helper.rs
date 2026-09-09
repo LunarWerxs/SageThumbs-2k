@@ -43,6 +43,13 @@ enum RunOutcome {
 /// routing-level problem, not a per-file one) and surfaced as
 /// [`RunOutcome::SpawnFailed`] so the caller can fall back to in-process.
 fn run_st2k(exe: &Path, path: &str, args: &[&str]) -> RunOutcome {
+    // Worded differently from the thumbnail tiers' "spawned helper pid" on purpose: the
+    // Explorer verify counts THAT phrase per thumbnail, and a verb the user happens to run
+    // during it must not land in the count.
+    crate::safety::log_debugf!(
+        "running verb helper {} for {path}",
+        args.first().copied().unwrap_or("?")
+    );
     match Command::new(exe)
         .args(args)
         .stdin(Stdio::null())

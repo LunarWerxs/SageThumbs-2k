@@ -156,9 +156,24 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
 # the failures ONE AT A TIME (no CPU contention) clears such load flakes; a
 # genuinely-unrenderable file (legacy-OLE doc/…) just fails again in a few ms. This makes
 # the gate deterministic without touching the production timeout.
-$retry = @($results | Where-Object { -not $_.Ok })
+#
+# Only a file whose EXTENSION is in the baseline is retried. The known no-thumbnail set
+# (lnk, m2v, mpeg, mpg, vob and their kin: no embedded preview, no decoder) fails on the first
+# pass every run for the same reason it failed last release, and retrying those printed
+# "first pass: 7 failure(s); retrying" on a gate that had nothing wrong with it, which two
+# sessions read as a load flake before anyone checked which files they were (2026-09-09).
+# No baseline yet (a fresh clone about to -UpdateBaseline) retries everything, as before.
+$firstPassMisses = @($results | Where-Object { -not $_.Ok })
+$baselineExts = @()
+if (Test-Path $baselineFile) {
+    $baselineExts = @(Get-Content $baselineFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+$retry = @($firstPassMisses | Where-Object { ($baselineExts.Count -eq 0) -or ($baselineExts -contains $_.Ext) })
+if ($firstPassMisses.Count) {
+    $expected = $firstPassMisses.Count - $retry.Count
+    Write-Host ("[regression] first pass: {0} miss(es), {1} expected (no thumbnail in the baseline); retrying {2} sequentially to rule out parallel-load flakes..." -f $firstPassMisses.Count, $expected, $retry.Count) -ForegroundColor DarkGray
+}
 if ($retry.Count) {
-    Write-Host ("[regression] first pass: {0} failure(s); retrying sequentially to rule out parallel-load flakes..." -f $retry.Count) -ForegroundColor DarkGray
     foreach ($r in $retry) {
         & $st2k thumbnail $r.In $r.Out --size $Size 2>$null | Out-Null
         $r.Ok = (Test-Path $r.Out) -and (Get-Item $r.Out).Length -gt 0
