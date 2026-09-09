@@ -34,7 +34,9 @@ try {
         $x64Dir = Join-Path $scratch ((Split-Path $relative -Leaf) + '.x64')
         $armDir = Join-Path $scratch ((Split-Path $relative -Leaf) + '.arm64')
         New-Item -ItemType Directory -Path $x64Dir, $armDir -Force | Out-Null
-        foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
+        # install.ps1 architecture-checks all FOUR shipped PEs (the dialog hook included since
+        # 2026-09-08); register-dev.ps1 checks three and ignores the extra fixture.
+        foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe', 'st2k_dlghook.dll')) {
             New-PeFixture (Join-Path $x64Dir $artifact) 0x8664
             New-PeFixture (Join-Path $armDir $artifact) 0xaa64
         }

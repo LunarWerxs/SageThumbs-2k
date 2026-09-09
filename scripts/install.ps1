@@ -137,8 +137,18 @@ if (-not $BuildDir) {
 $prog = Join-Path $env:ProgramFiles $spec.InstallDirectoryName
 $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'SageThumbs 2K.lnk'
 
+# The four PE artifacts this script puts in Program Files, in one place so the -ValidateOnly
+# architecture check and the copy loop below can never disagree about the list. It matches the
+# Rust payload the release guards enforce (check-release-rust-payload.ps1 /
+# check-release-size.ps1); `st2k_dlghook.dll` was missing here until 2026-09-08, so a dev
+# install kept whatever hook DLL the last Inno setup had left behind - the same class of bug as
+# the `st2k.exe` omission fixed on 2026-06-11, and worse in kind: the hook is injected into
+# OTHER applications (Word, Photoshop, a browser's upload dialog), so a stale one is stale code
+# running inside somebody else's process.
+$InstalledArtifacts = @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe', 'st2k_dlghook.dll')
+
 if ($ValidateOnly) {
-    foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
+    foreach ($artifact in $InstalledArtifacts) {
         Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
     }
     [pscustomobject]@{ Architecture = $spec.Name; RustTarget = $spec.RustTarget; BuildDir = $BuildDir }
@@ -174,7 +184,7 @@ if ($Uninstall) {
 }
 
 New-Item -ItemType Directory -Path $prog -Force | Out-Null
-foreach ($artifact in @('sagethumbs2k.dll', 'SageThumbs2K.exe', 'st2k.exe')) {
+foreach ($artifact in $InstalledArtifacts) {
     Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
 }
 Remove-StrandedCopies $prog
@@ -184,6 +194,10 @@ Copy-Artifact "$BuildDir\SageThumbs2K.exe" $prog
 # The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
 # install used to omit it, leaving a live CLI check running stale code.
 Copy-Artifact "$BuildDir\st2k.exe" $prog
+# The Open/Save-dialog hook, loaded into OTHER processes by SetWindowsHookExW (see
+# crates/dlghook/Cargo.toml). The app looks for it beside its own EXE, so leaving the previous
+# installer's copy in place is how a dev box ends up injecting stale code into Word.
+Copy-Artifact "$BuildDir\st2k_dlghook.dll" $prog
 Copy-Item "$root\scripts\packaging\AppxManifest.xml" $prog -Force
 Copy-Item "$root\scripts\packaging\Assets" $prog -Recurse -Force
 # The legacy x64 loose package stays neutral for update compatibility. ARM64
