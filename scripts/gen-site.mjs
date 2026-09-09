@@ -81,7 +81,9 @@ function findSt2k(argExe) {
     'st2k',
   ].filter(Boolean);
   for (const c of cands) {
-    try { execFileSync(c, ['formats', '--json'], { stdio: 'ignore' }); return c; } catch {}
+    // A candidate that fails to run is simply not the st2k we are looking for: the error
+    // carries no information beyond "try the next one", and the throw below names them all.
+    try { execFileSync(c, ['formats', '--json'], { stdio: 'ignore' }); return c; } catch { /* next candidate */ }
   }
   throw new Error('st2k.exe not found. Build it (cargo build --release) or pass its path as arg 1.');
 }
@@ -285,9 +287,10 @@ function applyAll(html, { block, VERSION, presentCategories }) {
   const before = html;
 
   const startIdx = html.indexOf('    <div class="bar reveal"');
-  const endIdx = html.indexOf('\r\n  </div>\r\n</section>', startIdx) >= 0
-    ? html.indexOf('\r\n  </div>\r\n</section>', startIdx)
-    : html.indexOf('\n  </div>\n</section>', startIdx);
+  // The deployed page may carry either line ending; the CRLF form is tried first because it
+  // is the one the checked-out template has. A single search each, kept as positions.
+  const crlfEnd = html.indexOf('\r\n  </div>\r\n</section>', startIdx);
+  const endIdx = crlfEnd >= 0 ? crlfEnd : html.indexOf('\n  </div>\n</section>', startIdx);
   if (startIdx < 0 || endIdx < 0) throw new Error('gen-site: could not locate the format-wall region in index.html');
   const region = html.slice(startIdx, endIdx);
   if (!region.includes('fmtwall')) throw new Error('gen-site: safety - located region does not look like the format wall');
