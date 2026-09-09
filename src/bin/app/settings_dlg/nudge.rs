@@ -92,6 +92,14 @@ const BTN_H: i32 = 26;
 const BTN_W_ACTION: i32 = 92;
 const BTN_W_LATER: i32 = 80;
 const BTN_W_MONTH: i32 = 116;
+const BTN_W_DISCORD: i32 = 104;
+
+/// The Discord invite, behind a URL of OURS. A `discord.gg` invite can be revoked or rotated,
+/// and a link baked into a released executable cannot; `lunarwerx.com/discord` is a static
+/// redirect in the site repo (`site/public/_redirects`), so rotating the invite there updates
+/// every installed copy (owner directive, Michael, 2026-09-09). Change the invite THERE, never
+/// here.
+pub(super) const DISCORD_URL: &str = "https://lunarwerx.com/discord";
 /// Breathing room either side of a measured label.
 const BTN_PAD: i32 = 22;
 /// Gap between two buttons in the row.
@@ -104,6 +112,10 @@ pub(super) fn later_label() -> &'static str {
 
 pub(super) fn month_label() -> &'static str {
     t("nudge_month")
+}
+
+pub(super) fn discord_label() -> &'static str {
+    t("nudge_discord")
 }
 
 /// Whether THIS ask offers the month-long dismissal - the engine's answer, never a count done
@@ -239,6 +251,12 @@ unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
     if showing_month() {
         row.push((ID_NUDGE_MONTH, btn_w(hwnd, month_label(), BTN_W_MONTH)));
     }
+    // Leftmost, so the ask's own answers keep the corner the eye lands on. It opens a page and
+    // is not an answer, which is why it is absent from `on_command`'s outcome map.
+    row.push((
+        ID_NUDGE_DISCORD,
+        btn_w(hwnd, discord_label(), BTN_W_DISCORD),
+    ));
     let gaps = (row.len().saturating_sub(1)) as i32 * BTN_GAP;
     let avail = pane_w - 2 * PAD - gaps;
     let total: i32 = row.iter().map(|(_, w)| *w).sum();
@@ -307,6 +325,7 @@ unsafe fn hide(hwnd: HWND) {
         ID_NUDGE_ACTION,
         ID_NUDGE_LATER,
         ID_NUDGE_MONTH,
+        ID_NUDGE_DISCORD,
     ] {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             let _ = ShowWindow(c, SW_HIDE);
@@ -399,6 +418,22 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
 /// Handle a click on one of the banner's buttons. Returns whether the id belonged to the banner.
 pub(super) unsafe fn on_command(hwnd: HWND, id: i32) -> bool {
+    if id == ID_NUDGE_DISCORD {
+        // A page, not an answer: the ask stays on screen with its answers intact, and the
+        // engine learns nothing from it. The URL is a compile-time constant, so the
+        // `is_web_url` gate that guards manifest-supplied links has nothing to add here.
+        let url = wide(DISCORD_URL);
+        let verb = wide("open");
+        ShellExecuteW(
+            Some(hwnd),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        return true;
+    }
     let outcome = match id {
         ID_NUDGE_ACTION => Outcome::Accepted,
         ID_NUDGE_LATER => Outcome::Snoozed,

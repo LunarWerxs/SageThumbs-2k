@@ -602,12 +602,13 @@ oauth_failed_body = "Κάτι πήγε στραβά. Δοκιμάστε ξανά
 oauth_signed_in_title = "Συνδεθήκατε"
 
 nudge_head = "Κρατήστε αυτές τις ρυθμίσεις παντού"
-nudge_body = "Συνδεθείτε με Connections και οι ρυθμίσεις σας στο {app} θα σας ακολουθούν σε κάθε υπολογιστή που χρησιμοποιείτε."
+nudge_body = "Συνδεθείτε με Connections και οι ρυθμίσεις σας στο {app} θα σας ακολουθούν σε κάθε υπολογιστή που χρησιμοποιείτε. Ερωτήσεις, ιδέες, ή απλώς θέλετε να μας χαιρετήσετε; Το LunarWerx Discord είναι εκεί που συναντιόμαστε."
 nudge_head_generic = "Συνδεθείτε με Connections"
-nudge_body_generic = "Κρατήστε τις ρυθμίσεις σας στο {app} σε κάθε υπολογιστή που χρησιμοποιείτε."
+nudge_body_generic = "Κρατήστε τις ρυθμίσεις σας στο {app} σε κάθε υπολογιστή που χρησιμοποιείτε. Ερωτήσεις, ιδέες, ή απλώς θέλετε να μας χαιρετήσετε; Το LunarWerx Discord είναι εκεί που συναντιόμαστε."
 nudge_action = "Σύνδεση"
 nudge_later = "Όχι τώρα"
 nudge_month = "Υπενθύμιση σε έναν μήνα"
+nudge_discord = "Συνδεθείτε στο Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Ορισμένες ρυθμίσεις δεν ήταν δυνατό να αποθηκευτούν: {path}."

@@ -602,12 +602,13 @@ oauth_failed_body = "مشکلی پیش آمد. دوباره از SageThumbs 2K �
 oauth_signed_in_title = "وارد شدید"
 
 nudge_head = "این تنظیمات را همه‌جا داشته باشید"
-nudge_body = "با Connections وارد شوید تا تنظیمات {app} شما به هر رایانه‌ای که استفاده می‌کنید بیاید."
+nudge_body = "با Connections وارد شوید تا تنظیمات {app} شما به هر رایانه‌ای که استفاده می‌کنید بیاید. سؤال یا ایده‌ای دارید یا فقط می‌خواهید سلام کنید؟ Discord LunarWerx جایی است که ما آنجا وقت می‌گذرانیم."
 nudge_head_generic = "ورود با Connections"
-nudge_body_generic = "تنظیمات {app} خود را روی هر رایانه‌ای که استفاده می‌کنید داشته باشید."
+nudge_body_generic = "تنظیمات {app} خود را روی هر رایانه‌ای که استفاده می‌کنید داشته باشید. سؤال یا ایده‌ای دارید یا فقط می‌خواهید سلام کنید؟ Discord LunarWerx جایی است که ما آنجا وقت می‌گذرانیم."
 nudge_action = "ورود"
 nudge_later = "الان نه"
 nudge_month = "یک ماه دیگر یادآوری کن"
+nudge_discord = "پیوستن به Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "برخی تنظیمات در {path} ذخیره نشدند."

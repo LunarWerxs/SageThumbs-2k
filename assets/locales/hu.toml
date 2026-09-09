@@ -613,12 +613,13 @@ oauth_failed_body = "Valami hiba történt. Próbálja újra a SageThumbs 2K-ban
 oauth_signed_in_title = "Bejelentkezve"
 
 nudge_head = "Őrizze meg ezeket a beállításokat mindenhol"
-nudge_body = "Jelentkezzen be a Connections fiókjával, és a {app} beállításai minden használt gépére elkísérik."
+nudge_body = "Jelentkezzen be a Connections fiókjával, és a {app} beállításai minden használt gépére elkísérik. Kérdése, ötlete van, vagy csak köszönni szeretne? A LunarWerx Discord az a hely, ahol mi is ott vagyunk."
 nudge_head_generic = "Bejelentkezés Connections fiókkal"
-nudge_body_generic = "Őrizze meg a {app} beállításait minden használt gépén."
+nudge_body_generic = "Őrizze meg a {app} beállításait minden használt gépén. Kérdése, ötlete van, vagy csak köszönni szeretne? A LunarWerx Discord az a hely, ahol mi is ott vagyunk."
 nudge_action = "Bejelentkezés"
 nudge_later = "Most nem"
 nudge_month = "Emlékeztessen egy hónap múlva"
+nudge_discord = "Csatlakozz a Discordhoz"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Néhány beállítást nem sikerült menteni: {path}."

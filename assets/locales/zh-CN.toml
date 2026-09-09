@@ -609,12 +609,13 @@ oauth_failed_body = "出了点问题。请在 SageThumbs 2K 中重试。"
 oauth_signed_in_title = "已登录"
 
 nudge_head = "在所有电脑上保留这些设置"
-nudge_body = "使用 Connections 登录，你的 {app} 设置就会跟着你到每一台电脑。"
+nudge_body = "使用 Connections 登录，你的 {app} 设置就会跟着你到每一台电脑。有问题、想法，还是只是想打个招呼？LunarWerx Discord 是我们聚集的地方。"
 nudge_head_generic = "使用 Connections 登录"
-nudge_body_generic = "在你使用的每一台电脑上保留 {app} 设置。"
+nudge_body_generic = "在你使用的每一台电脑上保留 {app} 设置。有问题、想法，还是只是想打个招呼？LunarWerx Discord 是我们聚集的地方。"
 nudge_action = "登录"
 nudge_later = "以后再说"
 nudge_month = "一个月后提醒我"
+nudge_discord = "加入我们的 Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "部分设置未能保存到{path}。"

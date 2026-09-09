@@ -1688,7 +1688,7 @@ unsafe fn on_command_sync_nav(hwnd: HWND, id: i32, notify: u32) {
         // a selection change rather than a click — see `DEPENDENT_ON_COMBO`.
         ID_CORNER_MARK if notify == CBN_SELCHANGE => sync_dependent_switches(hwnd),
         ID_SYNC_BTN => on_sync_click(hwnd),
-        ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH => {
+        ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH | ID_NUDGE_DISCORD => {
             nudge::on_command(hwnd, id);
         }
         ID_BIZNAG_ACTION => {

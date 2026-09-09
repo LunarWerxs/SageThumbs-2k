@@ -611,12 +611,13 @@ oauth_failed_body = "कुछ गड़बड़ हो गई। SageThumbs 2K
 oauth_signed_in_title = "साइन इन हो गए"
 
 nudge_head = "ये सेटिंग्स हर जगह रखें"
-nudge_body = "Connections से साइन इन करें और आपकी {app} सेटिंग्स आपके हर कंप्यूटर पर आपके साथ चलेंगी।"
+nudge_body = "Connections से साइन इन करें और आपकी {app} सेटिंग्स आपके हर कंप्यूटर पर आपके साथ चलेंगी। सवाल हैं, कोई विचार है, या बस नमस्ते कहना चाहते हैं? LunarWerx Discord वही जगह है जहाँ हम मिलते हैं।"
 nudge_head_generic = "Connections से साइन इन करें"
-nudge_body_generic = "अपनी {app} सेटिंग्स अपने हर कंप्यूटर पर रखें।"
+nudge_body_generic = "अपनी {app} सेटिंग्स अपने हर कंप्यूटर पर रखें। सवाल हैं, कोई विचार है, या बस नमस्ते कहना चाहते हैं? LunarWerx Discord वही जगह है जहाँ हम मिलते हैं।"
 nudge_action = "साइन इन"
 nudge_later = "अभी नहीं"
 nudge_month = "एक महीने बाद याद दिलाएँ"
+nudge_discord = "हमारे Discord से जुड़ें"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "कुछ सेटिंग्स {path} में सेव नहीं हो सकीं।"

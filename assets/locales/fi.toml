@@ -602,12 +602,13 @@ oauth_failed_body = "Jokin meni pieleen. Yritä uudelleen SageThumbs 2K:ssa."
 oauth_signed_in_title = "Kirjautunut"
 
 nudge_head = "Pidä nämä asetukset kaikkialla"
-nudge_body = "Kirjaudu sisään Connections-tilillä, niin {app}-asetuksesi seuraavat sinua jokaiselle käyttämällesi tietokoneelle."
+nudge_body = "Kirjaudu sisään Connections-tilillä, niin {app}-asetuksesi seuraavat sinua jokaiselle käyttämällesi tietokoneelle. Kysymyksiä, ideoita tai haluatko vain sanoa hei? LunarWerxin Discord on paikka, jossa vietämme aikaa."
 nudge_head_generic = "Kirjaudu sisään Connections-tilillä"
-nudge_body_generic = "Pidä {app}-asetuksesi jokaisella käyttämälläsi tietokoneella."
+nudge_body_generic = "Pidä {app}-asetuksesi jokaisella käyttämälläsi tietokoneella. Kysymyksiä, ideoita tai haluatko vain sanoa hei? LunarWerxin Discord on paikka, jossa vietämme aikaa."
 nudge_action = "Kirjaudu sisään"
 nudge_later = "Ei nyt"
 nudge_month = "Muistuta kuukauden kuluttua"
+nudge_discord = "Liity Discordiin"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Joitakin asetuksia ei voitu tallentaa: {path}."

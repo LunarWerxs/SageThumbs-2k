@@ -604,12 +604,13 @@ oauth_failed_body = "Нещо се обърка. Опитайте отново �
 oauth_signed_in_title = "Влязохте"
 
 nudge_head = "Запазете тези настройки навсякъде"
-nudge_body = "Влезте с Connections и настройките ви за {app} ще ви следват на всеки компютър, който ползвате."
+nudge_body = "Влезте с Connections и настройките ви за {app} ще ви следват на всеки компютър, който ползвате. Имате въпроси, идеи или просто искате да ни поздравите? LunarWerx Discord е мястото, където се събираме."
 nudge_head_generic = "Влезте с Connections"
-nudge_body_generic = "Запазете настройките си за {app} на всеки компютър, който ползвате."
+nudge_body_generic = "Запазете настройките си за {app} на всеки компютър, който ползвате. Имате въпроси, идеи или просто искате да ни поздравите? LunarWerx Discord е мястото, където се събираме."
 nudge_action = "Вход"
 nudge_later = "Не сега"
 nudge_month = "Напомни ми след месец"
+nudge_discord = "Присъединете се към Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Някои настройки не можаха да бъдат запазени в {path}."

@@ -606,12 +606,13 @@ oauth_failed_body = "حدث خطأ ما. أعد المحاولة من SageThumbs
 oauth_signed_in_title = "تم تسجيل الدخول"
 
 nudge_head = "احتفظ بهذه الإعدادات في كل مكان"
-nudge_body = "سجّل الدخول عبر Connections لتنتقل إعدادات {app} معك إلى كل جهاز تستخدمه."
+nudge_body = "سجّل الدخول عبر Connections لتنتقل إعدادات {app} معك إلى كل جهاز تستخدمه. هل لديك أسئلة أو أفكار، أو تريد فقط إلقاء التحية؟ خادم LunarWerx على Discord هو المكان الذي نجتمع فيه."
 nudge_head_generic = "سجّل الدخول عبر Connections"
-nudge_body_generic = "احتفظ بإعدادات {app} على كل جهاز تستخدمه."
+nudge_body_generic = "احتفظ بإعدادات {app} على كل جهاز تستخدمه. هل لديك أسئلة أو أفكار، أو تريد فقط إلقاء التحية؟ خادم LunarWerx على Discord هو المكان الذي نجتمع فيه."
 nudge_action = "تسجيل الدخول"
 nudge_later = "ليس الآن"
 nudge_month = "ذكّرني بعد شهر"
+nudge_discord = "انضم إلى Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "تعذّر حفظ بعض الإعدادات في {path}."

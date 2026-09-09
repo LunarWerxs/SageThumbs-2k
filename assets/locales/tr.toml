@@ -611,12 +611,13 @@ oauth_failed_body = "Bir şeyler ters gitti. SageThumbs 2K içinden yeniden dene
 oauth_signed_in_title = "Oturum açıldı"
 
 nudge_head = "Bu ayarları her yerde koruyun"
-nudge_body = "Connections ile oturum açın, {app} ayarlarınız kullandığınız her bilgisayara sizinle gelsin."
+nudge_body = "Connections ile oturum açın, {app} ayarlarınız kullandığınız her bilgisayara sizinle gelsin. Sorularınız, fikirleriniz mi var, yoksa sadece merhaba mı demek istiyorsunuz? LunarWerx Discord'u bizim takıldığımız yer."
 nudge_head_generic = "Connections ile oturum açın"
-nudge_body_generic = "{app} ayarlarınızı kullandığınız her bilgisayarda koruyun."
+nudge_body_generic = "{app} ayarlarınızı kullandığınız her bilgisayarda koruyun. Sorularınız, fikirleriniz mi var, yoksa sadece merhaba mı demek istiyorsunuz? LunarWerx Discord'u bizim takıldığımız yer."
 nudge_action = "Oturum aç"
 nudge_later = "Şimdi değil"
 nudge_month = "Bir ay sonra hatırlat"
+nudge_discord = "Discord'umuza katıl"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Bazı ayarlar kaydedilemedi: {path}."

@@ -30,6 +30,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Added
 
+- **A "Join our Discord" button on the sign-in banner.** Questions, ideas, or a hello: the
+  LunarWerx Discord is where we are. The button opens a LunarWerx page that forwards to the
+  current invite, so the link in the app never goes stale.
 - **Save the video frame you are looking at.** The Quick preview's Save button now works on a
   video and writes the frame at the current position, and a right-click on a video-only selection
   offers "Save frame as image" instead of the picture verbs that never applied to it.
@@ -177,6 +180,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The installer no longer adds a certificate to your PC.** The Windows 11 context-menu
+  package is now signed with the same publisher certificate as everything else, so nothing has
+  to be trusted into the machine's certificate store any more, and upgrading from 2.5 removes
+  the self-signed certificate the old installer put there.
+- **`st2k doctor` now names Windows' own "no thumbnails on network folders" policy**, and says
+  when the file you point it at is on a network drive. That policy leaves every local file
+  working and every file on a mapped drive as a plain icon, with nothing else reporting a
+  problem, which read as a bug in the extension.
 - **The program's icon is back in the corner of Photoshop, Illustrator and other editor
   files.** With the corner set to "Windows' file-type icon", Explorer never draws one on a type
   it treats as a photo, which is exactly the set of editor formats SageThumbs exists for, and

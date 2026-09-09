@@ -699,12 +699,13 @@ oauth_signed_in_title = "Signed in"
 # trigger the shared engine grows later, so a new trigger degrades to translated copy
 # rather than to English. {app} is the brand and is never translated.
 nudge_head = "Keep these settings everywhere"
-nudge_body = "Sign in with Connections and your {app} settings follow you to every machine you use."
+nudge_body = "Sign in with Connections and your {app} settings follow you to every machine you use. Questions, ideas, or just want to say hi? The LunarWerx Discord is where we hang out."
 nudge_head_generic = "Sign in with Connections"
-nudge_body_generic = "Keep your {app} settings across every machine you use."
+nudge_body_generic = "Keep your {app} settings across every machine you use. Questions, ideas, or just want to say hi? The LunarWerx Discord is where we hang out."
 nudge_action = "Sign in"
 nudge_later = "Not now"
 nudge_month = "Remind me in a month"
+nudge_discord = "Join our Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Some settings could not be saved to {path}."

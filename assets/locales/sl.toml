@@ -606,12 +606,13 @@ oauth_failed_body = "Nekaj je šlo narobe. Poskusite znova v SageThumbs 2K."
 oauth_signed_in_title = "Prijavljeni"
 
 nudge_head = "Te nastavitve imejte povsod"
-nudge_body = "Prijavite se s Connections in vaše nastavitve {app} vas bodo spremljale na vsakem računalniku, ki ga uporabljate."
+nudge_body = "Prijavite se s Connections in vaše nastavitve {app} vas bodo spremljale na vsakem računalniku, ki ga uporabljate. Imate vprašanja, ideje, ali bi radi samo pozdravili? LunarWerx Discord je mesto, kjer se družimo."
 nudge_head_generic = "Prijavite se s Connections"
-nudge_body_generic = "Nastavitve {app} imejte na vsakem računalniku, ki ga uporabljate."
+nudge_body_generic = "Nastavitve {app} imejte na vsakem računalniku, ki ga uporabljate. Imate vprašanja, ideje, ali bi radi samo pozdravili? LunarWerx Discord je mesto, kjer se družimo."
 nudge_action = "Prijava"
 nudge_later = "Ne zdaj"
 nudge_month = "Opomni me čez mesec dni"
+nudge_discord = "Pridruži se našemu Discordu"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Nekaterih nastavitev ni bilo mogoče shraniti: {path}."

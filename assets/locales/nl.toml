@@ -612,12 +612,13 @@ oauth_failed_body = "Er is iets misgegaan. Probeer het opnieuw in SageThumbs 2K.
 oauth_signed_in_title = "Aangemeld"
 
 nudge_head = "Behoud deze instellingen overal"
-nudge_body = "Meld je aan met Connections en je {app}-instellingen gaan mee naar elke pc die je gebruikt."
+nudge_body = "Meld je aan met Connections en je {app}-instellingen gaan mee naar elke pc die je gebruikt. Vragen, ideeën, of gewoon even gedag zeggen? De LunarWerx Discord is waar we rondhangen."
 nudge_head_generic = "Aanmelden met Connections"
-nudge_body_generic = "Behoud je {app}-instellingen op elke pc die je gebruikt."
+nudge_body_generic = "Behoud je {app}-instellingen op elke pc die je gebruikt. Vragen, ideeën, of gewoon even gedag zeggen? De LunarWerx Discord is waar we rondhangen."
 nudge_action = "Aanmelden"
 nudge_later = "Niet nu"
 nudge_month = "Herinner me over een maand"
+nudge_discord = "Word lid van Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Sommige instellingen konden niet worden opgeslagen in {path}."

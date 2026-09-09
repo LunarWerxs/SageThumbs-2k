@@ -609,12 +609,13 @@ oauth_failed_body = "Đã xảy ra lỗi. Hãy thử lại trong SageThumbs 2K."
 oauth_signed_in_title = "Đã đăng nhập"
 
 nudge_head = "Giữ các cài đặt này ở mọi nơi"
-nudge_body = "Đăng nhập bằng Connections và cài đặt {app} của bạn sẽ theo bạn đến mọi máy tính bạn dùng."
+nudge_body = "Đăng nhập bằng Connections và cài đặt {app} của bạn sẽ theo bạn đến mọi máy tính bạn dùng. Có câu hỏi, ý tưởng, hay chỉ muốn ghé qua chào? LunarWerx Discord là nơi chúng tôi tụ họp."
 nudge_head_generic = "Đăng nhập bằng Connections"
-nudge_body_generic = "Giữ cài đặt {app} của bạn trên mọi máy tính bạn dùng."
+nudge_body_generic = "Giữ cài đặt {app} của bạn trên mọi máy tính bạn dùng. Có câu hỏi, ý tưởng, hay chỉ muốn ghé qua chào? LunarWerx Discord là nơi chúng tôi tụ họp."
 nudge_action = "Đăng nhập"
 nudge_later = "Để sau"
 nudge_month = "Nhắc tôi sau một tháng"
+nudge_discord = "Tham gia Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Không thể lưu một số cài đặt vào {path}."

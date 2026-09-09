@@ -606,12 +606,13 @@ oauth_failed_body = "มีบางอย่างผิดพลาด ลอ�
 oauth_signed_in_title = "ลงชื่อเข้าใช้แล้ว"
 
 nudge_head = "เก็บการตั้งค่าเหล่านี้ไว้ทุกที่"
-nudge_body = "ลงชื่อเข้าใช้ด้วย Connections แล้วการตั้งค่า {app} ของคุณจะติดตามไปยังทุกเครื่องที่คุณใช้"
+nudge_body = "ลงชื่อเข้าใช้ด้วย Connections แล้วการตั้งค่า {app} ของคุณจะติดตามไปยังทุกเครื่องที่คุณใช้ มีคำถาม ไอเดีย หรือแค่อยากมาทักทาย? LunarWerx Discord คือที่ที่เราอยู่กัน"
 nudge_head_generic = "ลงชื่อเข้าใช้ด้วย Connections"
-nudge_body_generic = "เก็บการตั้งค่า {app} ของคุณไว้ในทุกเครื่องที่คุณใช้"
+nudge_body_generic = "เก็บการตั้งค่า {app} ของคุณไว้ในทุกเครื่องที่คุณใช้ มีคำถาม ไอเดีย หรือแค่อยากมาทักทาย? LunarWerx Discord คือที่ที่เราอยู่กัน"
 nudge_action = "ลงชื่อเข้าใช้"
 nudge_later = "ไว้ทีหลัง"
 nudge_month = "เตือนอีกครั้งในอีกหนึ่งเดือน"
+nudge_discord = "เข้าร่วม Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "บันทึกการตั้งค่าบางส่วนไปยัง {path} ไม่ได้"

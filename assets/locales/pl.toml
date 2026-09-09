@@ -612,12 +612,13 @@ oauth_failed_body = "Coś poszło nie tak. Spróbuj ponownie w SageThumbs 2K."
 oauth_signed_in_title = "Zalogowano"
 
 nudge_head = "Zachowaj te opcje wszędzie"
-nudge_body = "Zaloguj się przez Connections, a Twoje opcje {app} będą Ci towarzyszyć na każdym komputerze, którego używasz."
+nudge_body = "Zaloguj się przez Connections, a Twoje opcje {app} będą Ci towarzyszyć na każdym komputerze, którego używasz. Masz pytania, pomysły, a może po prostu chcesz się przywitać? Discord LunarWerx to miejsce, gdzie się spotykamy."
 nudge_head_generic = "Zaloguj się przez Connections"
-nudge_body_generic = "Zachowaj swoje opcje {app} na każdym komputerze, którego używasz."
+nudge_body_generic = "Zachowaj swoje opcje {app} na każdym komputerze, którego używasz. Masz pytania, pomysły, a może po prostu chcesz się przywitać? Discord LunarWerx to miejsce, gdzie się spotykamy."
 nudge_action = "Zaloguj się"
 nudge_later = "Nie teraz"
 nudge_month = "Przypomnij za miesiąc"
+nudge_discord = "Dołącz do Discorda"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Niektórych ustawień nie udało się zapisać: {path}."

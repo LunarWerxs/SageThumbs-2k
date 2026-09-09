@@ -602,12 +602,13 @@ oauth_failed_body = "May nangyaring mali. Subukan ulit sa SageThumbs 2K."
 oauth_signed_in_title = "Naka-sign in"
 
 nudge_head = "Panatilihin ang mga setting na ito kahit saan"
-nudge_body = "Mag-sign in gamit ang Connections at susunod sa iyo ang iyong mga setting ng {app} sa bawat PC na ginagamit mo."
+nudge_body = "Mag-sign in gamit ang Connections at susunod sa iyo ang iyong mga setting ng {app} sa bawat PC na ginagamit mo. May mga tanong ka, ideya, o gusto mo lang bumati? Ang LunarWerx Discord ang pinagkikitaan namin."
 nudge_head_generic = "Mag-sign in gamit ang Connections"
-nudge_body_generic = "Panatilihin ang iyong mga setting ng {app} sa bawat PC na ginagamit mo."
+nudge_body_generic = "Panatilihin ang iyong mga setting ng {app} sa bawat PC na ginagamit mo. May mga tanong ka, ideya, o gusto mo lang bumati? Ang LunarWerx Discord ang pinagkikitaan namin."
 nudge_action = "Mag-sign in"
 nudge_later = "Hindi ngayon"
 nudge_month = "Ipaalala sa isang buwan"
+nudge_discord = "Sumali sa aming Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Hindi ma-save ang ilang setting sa {path}."

@@ -612,12 +612,13 @@ oauth_failed_body = "Noe gikk galt. Prøv igjen i SageThumbs 2K."
 oauth_signed_in_title = "Logget inn"
 
 nudge_head = "Behold disse innstillingene overalt"
-nudge_body = "Logg inn med Connections, så følger {app}-innstillingene dine med til hver PC du bruker."
+nudge_body = "Logg inn med Connections, så følger {app}-innstillingene dine med til hver PC du bruker. Spørsmål, ideer, eller bare lyst til å si hei? LunarWerx Discord er der vi henger."
 nudge_head_generic = "Logg inn med Connections"
-nudge_body_generic = "Behold {app}-innstillingene dine på hver PC du bruker."
+nudge_body_generic = "Behold {app}-innstillingene dine på hver PC du bruker. Spørsmål, ideer, eller bare lyst til å si hei? LunarWerx Discord er der vi henger."
 nudge_action = "Logg inn"
 nudge_later = "Ikke nå"
 nudge_month = "Minn meg på om en måned"
+nudge_discord = "Bli med på Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Noen innstillinger kunne ikke lagres til {path}."

@@ -602,12 +602,13 @@ oauth_failed_body = "Algo ha ido mal. Inténtalo de nuevo desde SageThumbs 2K."
 oauth_signed_in_title = "Sesión iniciada"
 
 nudge_head = "Conserva estas opciones en todas partes"
-nudge_body = "Inicia sesión con Connections y tus opciones de {app} te acompañarán en todos los PC que uses."
+nudge_body = "Inicia sesión con Connections y tus opciones de {app} te acompañarán en todos los PC que uses. ¿Tienes preguntas, ideas o solo quieres saludar? El Discord de LunarWerx es donde nos reunimos."
 nudge_head_generic = "Inicia sesión con Connections"
-nudge_body_generic = "Conserva tus opciones de {app} en todos los PC que uses."
+nudge_body_generic = "Conserva tus opciones de {app} en todos los PC que uses. ¿Tienes preguntas, ideas o solo quieres saludar? El Discord de LunarWerx es donde nos reunimos."
 nudge_action = "Iniciar sesión"
 nudge_later = "Ahora no"
 nudge_month = "Recordármelo en un mes"
+nudge_discord = "Únete a nuestro Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "No se pudieron guardar algunas opciones en {path}."

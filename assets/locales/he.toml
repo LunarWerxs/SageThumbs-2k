@@ -611,12 +611,13 @@ oauth_failed_body = "משהו השתבש. נסו שוב ב־SageThumbs 2K."
 oauth_signed_in_title = "מחובר"
 
 nudge_head = "שמרו על ההגדרות האלה בכל מקום"
-nudge_body = "היכנסו עם Connections וההגדרות שלכם ב-{app} ילוו אתכם לכל מחשב שאתם משתמשים בו."
+nudge_body = "היכנסו עם Connections וההגדרות שלכם ב-{app} ילוו אתכם לכל מחשב שאתם משתמשים בו. יש לכם שאלות, רעיונות, או סתם רוצים להגיד שלום? ה-Discord של LunarWerx הוא המקום שבו אנחנו נמצאים."
 nudge_head_generic = "כניסה עם Connections"
-nudge_body_generic = "שמרו על ההגדרות שלכם ב-{app} בכל מחשב שאתם משתמשים בו."
+nudge_body_generic = "שמרו על ההגדרות שלכם ב-{app} בכל מחשב שאתם משתמשים בו. יש לכם שאלות, רעיונות, או סתם רוצים להגיד שלום? ה-Discord של LunarWerx הוא המקום שבו אנחנו נמצאים."
 nudge_action = "כניסה"
 nudge_later = "לא עכשיו"
 nudge_month = "להזכיר לי בעוד חודש"
+nudge_discord = "הצטרפו ל-Discord"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "חלק מההגדרות לא נשמרו ב-{path}."

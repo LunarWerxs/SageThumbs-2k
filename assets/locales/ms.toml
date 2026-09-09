@@ -610,12 +610,13 @@ oauth_failed_body = "Ada sesuatu yang tidak kena. Cuba lagi dalam SageThumbs 2K.
 oauth_signed_in_title = "Telah log masuk"
 
 nudge_head = "Simpan tetapan ini di mana-mana"
-nudge_body = "Log masuk dengan Connections dan tetapan {app} anda akan mengikut anda ke setiap PC yang anda guna."
+nudge_body = "Log masuk dengan Connections dan tetapan {app} anda akan mengikut anda ke setiap PC yang anda guna. Ada soalan, idea, atau cuma nak bertegur sapa? Discord LunarWerx ialah tempat kami berkumpul."
 nudge_head_generic = "Log masuk dengan Connections"
-nudge_body_generic = "Simpan tetapan {app} anda pada setiap PC yang anda guna."
+nudge_body_generic = "Simpan tetapan {app} anda pada setiap PC yang anda guna. Ada soalan, idea, atau cuma nak bertegur sapa? Discord LunarWerx ialah tempat kami berkumpul."
 nudge_action = "Log masuk"
 nudge_later = "Bukan sekarang"
 nudge_month = "Ingatkan saya sebulan lagi"
+nudge_discord = "Sertai Discord kami"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Sesetengah tetapan tidak dapat disimpan ke {path}."

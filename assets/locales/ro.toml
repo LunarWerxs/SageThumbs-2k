@@ -607,12 +607,13 @@ oauth_failed_body = "Ceva nu a mers. Încearcă din nou în SageThumbs 2K."
 oauth_signed_in_title = "Conectat"
 
 nudge_head = "Păstrează aceste setări peste tot"
-nudge_body = "Conectează-te cu Connections și setările tale {app} te însoțesc pe fiecare PC pe care îl folosești."
+nudge_body = "Conectează-te cu Connections și setările tale {app} te însoțesc pe fiecare PC pe care îl folosești. Ai întrebări, idei, sau vrei doar să spui salut? LunarWerx Discord este locul unde ne întâlnim."
 nudge_head_generic = "Conectează-te cu Connections"
-nudge_body_generic = "Păstrează setările tale {app} pe fiecare PC pe care îl folosești."
+nudge_body_generic = "Păstrează setările tale {app} pe fiecare PC pe care îl folosești. Ai întrebări, idei, sau vrei doar să spui salut? LunarWerx Discord este locul unde ne întâlnim."
 nudge_action = "Conectare"
 nudge_later = "Nu acum"
 nudge_month = "Amintește-mi peste o lună"
+nudge_discord = "Alătură-te Discordului nostru"
 
 # Settings: the save-failure notice and the sync-disconnect / portable sign-in notices
 msg_save_failed = "Unele setări nu au putut fi salvate în {path}."

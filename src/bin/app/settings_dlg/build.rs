@@ -738,6 +738,8 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         if nudge::showing_month() {
             buttons.push((ID_NUDGE_MONTH, nudge::month_label().to_string()));
         }
+        // Always present: it opens the Discord invite and is not one of the ask's answers.
+        buttons.push((ID_NUDGE_DISCORD, nudge::discord_label().to_string()));
         for (id, label) in buttons {
             ctl(hwnd, BUTTON, &label, WS_TABSTOP, 0, 0, 10, 10, id, hinst);
         }
