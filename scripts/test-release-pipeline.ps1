@@ -208,6 +208,29 @@ Some more filler so the section clears the minimum length check that runs before
         }
     }
 
+    # 2026-09-09, the first signed dry run: Inno Setup substitutes `$f` ALREADY QUOTED, so a
+    # Sign Tool definition that wraps it in `$q` hands the signer `-Path ""D:\...\SageThumbs
+    # 2K\...""`, the doubled quotes cancel, and the path splits at the space. The staged binaries
+    # and the MSIX had signed fine; the build died at [3/4] on the uninstaller. Nothing else in
+    # this pipeline can see that shape - it is only ever exercised on release day with the real
+    # certificate - so pin it here, both ways.
+    function Assert-InnoSignToolFilenameUnwrapped([string]$Text) {
+        $def = [regex]::Match($Text, "(?m)^\s*\`$isccArgs\s*\+=\s*\('/Sst2k=(?<cmd>[^']*)'")
+        if (-not $def.Success) { throw 'build-release.ps1 no longer defines the /Sst2k Sign Tool command' }
+        $cmd = $def.Groups['cmd'].Value
+        if ($cmd -match '\{0\}\$f|\$f\{0\}|\$q\$f|\$f\$q') {
+            throw 'build-release.ps1 wraps Inno''s $f in $q - Inno quotes it itself, so the path splits at the first space'
+        }
+        if ($cmd -notmatch '-Path \$f(\s|$)') { throw 'build-release.ps1 Sign Tool command no longer passes -Path $f' }
+        if ($cmd -notmatch '-File \{0\}\{2\}\{0\}') { throw 'build-release.ps1 Sign Tool command no longer quotes the sign script path with $q' }
+    }
+    Assert-Passes 'the Inno Sign Tool command does not double-quote $f' {
+        Assert-InnoSignToolFilenameUnwrapped (Get-Content -LiteralPath (Join-Path $root 'scripts\build-release.ps1') -Raw)
+    }
+    Assert-Fails 'a Sign Tool command that wraps $f in $q is refused' {
+        Assert-InnoSignToolFilenameUnwrapped ("`$isccArgs += ('/Sst2k={0}{1}{0} -NoProfile -File {0}{2}{0} -Path {0}`$f{0}' -f `$q, `$pwshExe, `$signScript)")
+    }
+
     # 2026-09-05 audit, finding F22b: an optional stage that skips (no scanner, no artifact for
     # this architecture, ...) must print an outcome that is not distinguishable from silence, and
     # not distinguishable from a stage that ran. Pin the vocabulary AND the one line the audit

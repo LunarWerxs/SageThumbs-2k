@@ -933,7 +933,12 @@ if ($LASTEXITCODE -eq 0) {
     $pwshExe = (Get-Process -Id $PID).Path
     $q = '$q'
     $isccArgs += '/DSignToolName=st2k'
-    $isccArgs += ('/Sst2k={0}{1}{0} -NoProfile -ExecutionPolicy Bypass -File {0}{2}{0} -Path {0}$f{0}' -f $q, $pwshExe, $signScript)
+    # `$f` MUST NOT be wrapped in `$q`: Inno substitutes it ALREADY QUOTED. Wrapped, the
+    # uninstaller's temp path arrived as `-Path ""D:\...\SageThumbs 2K\...""`, the doubled
+    # quotes cancelled, and sign-release.ps1 was handed `D:\PublicProjects\SageThumbs` - the
+    # first signed dry run (2026-09-09) died at [3/4] on exactly that, after the staged
+    # binaries and the MSIX had signed fine. The paths WE supply do need `$q`.
+    $isccArgs += ('/Sst2k={0}{1}{0} -NoProfile -ExecutionPolicy Bypass -File {0}{2}{0} -Path $f' -f $q, $pwshExe, $signScript)
     Write-Host "      installer + uninstaller: signed through Azure Artifact Signing" -ForegroundColor DarkGray
 } else {
     Write-Host "      installer: UNSIGNED (ST2K_SIGN_* not configured; docs/RELEASE-SECURITY.md)" -ForegroundColor Yellow
