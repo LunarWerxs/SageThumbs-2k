@@ -23,13 +23,25 @@ function Step([string]$name, [scriptblock]$block) {
     }
 }
 
+# ORDER THE CHEAP CHECKS FIRST. Rustfmt costs ~2 SECONDS and is the check a fresh edit is
+# most likely to trip, yet it used to run near the END, behind three LTO release builds and
+# two full test passes. On 2026-09-08 that cost a ~30-minute gate run to report one wrapped
+# function signature, and then a second ~30-minute run to re-prove everything that had already
+# passed. A gate that finds the cheapest failure last converts a two-second fix into an hour.
+#
+# The rule this encodes, and it generalises to any gate you add here: sort steps by
+# (cost to run) ASCENDING, not by the order of the CI job being mirrored. CI runs its jobs in
+# PARALLEL across runners, so its ordering carries no signal about what should block first on
+# one machine. Anything that needs no build artifacts belongs above this line.
+Step 'rustfmt (--check)' { cargo fmt --all --check }
+
 # Mirror .github/workflows/ci.yml -> build-test job, in order. A bare default-feature
 # `cargo build --release` (no -p split) used to stand in for this and NEVER built the
 # dll/dlghook packages or the webp-lossy/html-preview/hdr-capture/dll-i18n-subset feature
 # combinations CI gates on — a compile error reachable only under one of those passed here
 # and only surfaced after a CI round-trip. `--locked` (matching CI) also means a stale
 # Cargo.lock now fails the build directly here, same as it would in CI.
-Step 'build production EXEs'        { cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture }
+if (-not $failed) { Step 'build production EXEs' { cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture } }
 if (-not $failed) { Step 'build production slim DLL' { cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset } }
 if (-not $failed) { Step 'build dialog hook DLL'      { cargo build --release --locked -p sagethumbs2k-dlghook } }
 # Guard: a build that DID succeed can still have regenerated Cargo.lock in a way `--locked`
@@ -66,9 +78,9 @@ if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' 
 # it as an explicit, harmless second selector, not because anything depends on the disagreement.
 if (-not $failed) { Step 'unit + integration tests (lib + tests)' { cargo test --release --lib --tests } }
 if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
-# Rustfmt was MISSING here until 2026-08-05, so this gate printed "safe to push" on a commit
-# CI then failed on formatting alone. Cheap, and the last step of the job we claim to mirror.
-if (-not $failed) { Step 'rustfmt (--check)'     { cargo fmt --all --check } }
+# Rustfmt used to run HERE, and was missing entirely until 2026-08-05 (this gate printed
+# "safe to push" on a commit CI then failed on formatting alone). It now runs FIRST, before
+# any build — see the ordering note at the top for why, and what it cost to learn.
 
 # Mirror the `deny` job — only if cargo-deny is installed locally (deny.toml at repo root).
 # A missing tool used to fall straight through to "PREFLIGHT PASSED" with no printed line at
