@@ -182,8 +182,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   it treats as a photo, which is exactly the set of editor formats SageThumbs exists for, and
   it draws nothing at all when a program update leaves the file type pointing at last year's
   registration. SageThumbs now tells Windows which icon to draw in both cases, so a folder of
-  PSD and JPEG covers is tellable apart again. A program that deliberately turns its own icon
-  off is left alone, and `st2k doctor` now says so by name.
+  PSD and JPEG covers is tellable apart again. It also restores the corner icon on camera RAW
+  files, which installing SageThumbs used to remove as a side effect of registering them. The
+  rule is deliberately narrow: it never adds an icon Windows would not have drawn before
+  SageThumbs was installed, it leaves a program that turns its own icon off alone, and
+  `st2k doctor` names both cases plus any icon that has since moved.
 - **AVIF thumbnails have their colours back.** A Windows codec update in early September changed
   how it reads the colour information inside an AVIF, and ordinary AVIF files started coming out
   with shifted colours: skies and skin visibly off, greys unaffected. SageThumbs now checks what

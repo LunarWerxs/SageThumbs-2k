@@ -55,6 +55,25 @@
 //! `doc_auto_file` Explorer derived an icon from the open command. Only a `DefaultIcon`
 //! naming a file that is gone draws the blank page. Hence [`OwnIcon`]'s four arms.
 //!
+//! # The invariant, and two rules that follow from it
+//!
+//! > **Never put an icon in a corner Explorer would have left bare before SageThumbs was
+//! > installed. Always put back one it drew before we changed something.**
+//!
+//! [`treated_as_picture`] is where that is decided, and
+//! [`crate::register::perceived_type_is_ours`] is what makes it decidable — without it the
+//! only available rule was "is this a format Windows decodes", which silently took the corner
+//! icon off every camera RAW and could never give it back.
+//!
+//! **Every value is re-derived from scratch on every [`sync`].** An association moves when the
+//! user picks a new default program, and an icon PATH rots when its application is upgraded
+//! into a new versioned directory, so a value written once and never revisited is a value that
+//! goes wrong on its own. The clearing pass therefore ENUMERATES the user's classes hive
+//! ([`clear_every_mark`]) instead of re-deriving today's associations: that is the only way a
+//! value we wrote under a ProgID nothing points at any more is still reachable — at the next
+//! sync, at a switch to the badge, and at uninstall. `st2k doctor` reports the ones whose icon
+//! has gone missing since, rather than calling the whole set healthy without looking.
+//!
 //! # Why HKCU
 //!
 //! The ProgID usually belongs to somebody else, and `HKCR\<ProgID>` is normally backed by
@@ -166,14 +185,34 @@ fn write_marked(classes: &windows_registry::Key, progid: &str, value: &str) {
     }
 }
 
-/// Remove the suppression for `.ext`, but only where our marker proves the value is ours.
-fn remove_ext(classes: &windows_registry::Key, ext: &str) {
-    for progid in progids_for(ext) {
-        remove_progid(classes, &progid);
+/// Take back every value we have EVER written, found by ENUMERATING the user's classes hive.
+///
+/// It would be shorter to walk `FORMATS` and re-derive each extension's ProgIDs, and that is
+/// what this did first. It is wrong, because the association is exactly the thing that
+/// changes underneath us: set Affinity Photo as the default for `.psd` and `progids_for`
+/// stops naming `Photoshop.Image.26`, so the value we put there is unreachable — by the next
+/// sync, by a switch to the badge, and by uninstall. That is not a stale-cache annoyance, it
+/// is a foreign value left in another vendor's key on a machine where our product is no
+/// longer installed, with no path that could ever remove it. Enumerating is a few hundred key
+/// opens once per sync and has no such hole.
+///
+/// It also makes [`sync`] order-independent. Extensions share ProgIDs (`.jpg`, `.jpeg` and
+/// `.jpe` are one registration), so a per-extension remove interleaved with per-extension
+/// writes let a later disabled format delete the value an earlier enabled one had just
+/// written. Clearing everything first and then writing cannot express that bug.
+fn clear_every_mark(classes: &windows_registry::Key) {
+    let Ok(names) = classes.keys() else {
+        return;
+    };
+    // Collect before mutating: the iterator is reading the same key we are about to write to.
+    let names: Vec<String> = names.collect();
+    for name in names {
+        remove_progid(classes, &name);
     }
 }
 
-/// The single-ProgID half of [`remove_ext`]. See [`apply_progid`].
+/// Remove our `TypeOverlay` from one ProgID, but only where our marker proves it is ours.
+/// See [`apply_progid`].
 fn remove_progid(classes: &windows_registry::Key, progid: &str) {
     // `open` hands back a READ-ONLY key, and `remove_value` on one fails — silently, since
     // there is nothing useful to do with the error here. That made an earlier version of this
@@ -365,14 +404,33 @@ fn explorer_skips_overlay(ext: &str) -> bool {
         .is_some_and(|p| p.trim().eq_ignore_ascii_case("image"))
 }
 
-/// [`explorer_skips_overlay`], narrowed to the formats Windows cannot decode itself. The
-/// formats Windows DOES decode (JPEG, PNG, camera RAW, …) keep their bare corner — nobody
-/// wants the photo viewer's icon stamped on every JPEG, and that is not what "Windows'
-/// file-type icon" ever showed.
+/// [`explorer_skips_overlay`], narrowed to the types where an icon in that corner is a
+/// CORRECTION rather than an addition. The invariant, and the whole reason this is not just
+/// `explorer_skips_overlay`:
+///
+/// > **Never put an icon in a corner Explorer would have left bare before SageThumbs was
+/// > installed. Always put back one it drew before we changed anything.**
+///
+/// Two ways a type comes to be perceived as an image, and they get opposite answers:
+///
+/// * **Its vendor said so** (Adobe on `.psd`/`.ai`/`.eps`) — Explorer has always skipped it,
+///   but the format is one Windows cannot decode, so the tile only exists because of us and
+///   the user asked for the owning program's mark on it. Restore.
+/// * **Windows says so**, on a format it decodes itself (`WIC_IMAGE_EXTS`, camera RAW) —
+///   there has never been an icon on a JPEG and adding one is a change nobody asked for.
+///   Leave it bare.
+///
+/// …unless **WE** were the one who wrote that `PerceivedType`
+/// ([`crate::register::perceived_type_is_ours`], which only ever fills an empty slot). Then
+/// our own registration is the reason Explorer stopped drawing the icon the user had, and
+/// restoring it undoes our side effect rather than inventing something. That case is real and
+/// common: `register::perceived_type_for` maps every camera RAW to `image`, so installing the
+/// product used to silently take the corner icon off `.cr2` and `.nef` with no way back.
 fn treated_as_picture(ext: &str) -> bool {
     explorer_skips_overlay(ext)
-        && !crate::register::WIC_IMAGE_EXTS.contains(&ext)
-        && formats::category(ext) != Category::Raw
+        && (crate::register::perceived_type_is_ours(ext)
+            || !(crate::register::WIC_IMAGE_EXTS.contains(&ext)
+                || formats::category(ext) == Category::Raw))
 }
 
 /// What, if anything, to write for `.ext` in `SystemIcon` mode so the corner shows what the
@@ -400,14 +458,20 @@ fn restore_plan(ext: &str, progid: &str) -> Option<String> {
                 None
             }
         }
-        // The program is gone (issue #18): borrow the icon from another registration of
-        // the same type; failing that, ask for nothing rather than the blank page Explorer
-        // draws for a document whose icon file is missing.
-        OwnIcon::Gone => match fallback_icon(ext) {
-            Some(icon) => Some(icon),
-            None if explorer_skips_overlay(ext) => None,
-            None => Some(String::new()),
-        },
+        // The program is gone (issue #18).
+        OwnIcon::Gone if explorer_skips_overlay(ext) => {
+            // There is no blank page to fix here: Explorer draws nothing on a type it
+            // perceives as an image, whatever the dead `DefaultIcon` says. So this is the
+            // same question as every other arm, and it MUST ask it — borrowing a sibling's
+            // icon unconditionally is how a JPEG or a camera RAW ends up wearing whichever
+            // viewer sorts first in `OpenWithProgids`, which is the exact regression
+            // `treated_as_picture` exists to prevent.
+            pictured.then(|| fallback_icon(ext)).flatten()
+        }
+        // A document whose icon file is missing: THIS is the blank page. Borrow the icon from
+        // another registration of the same type; failing that, ask for nothing, which is
+        // still better than the blank page.
+        OwnIcon::Gone => Some(fallback_icon(ext).unwrap_or_default()),
     }
 }
 
@@ -428,21 +492,29 @@ fn restore_ext(classes: &windows_registry::Key, ext: &str) {
 /// disagree. Formats the user has turned off are cleaned up either way — a format we no
 /// longer thumbnail has no badge to protect. With `on` false the corner is Windows' to
 /// draw, and for the two cases the module doc measures we tell it what to draw.
+/// Two passes, and the order is the point: **clear everything we wrote, then write what the
+/// current state calls for.** Every value is therefore re-derived from scratch on every sync,
+/// which is what keeps a written icon path from rotting quietly when the owning application
+/// is upgraded into a new versioned directory or uninstalled — the next registration or
+/// Settings apply re-reads it and either updates it or drops it. See [`clear_every_mark`] for
+/// why the clearing pass enumerates instead of re-deriving.
 pub fn sync(on: bool) {
     let Ok(classes) = user_classes() else {
         return;
     };
+    clear_every_mark(&classes);
     // One settings snapshot for the whole sweep; the per-extension lookup below is then an
     // in-memory hit instead of a full ini parse per format in portable mode.
     let fmt = crate::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
-        if on && fmt.enabled(ext) {
+        // A format we no longer thumbnail has no corner of ours to own, either way.
+        if !fmt.enabled(ext) {
+            continue;
+        }
+        if on {
             apply_ext(&classes, ext);
         } else {
-            remove_ext(&classes, ext);
-            if fmt.enabled(ext) {
-                restore_ext(&classes, ext);
-            }
+            restore_ext(&classes, ext);
         }
     }
 }
@@ -452,9 +524,7 @@ pub fn remove_all() {
     let Ok(classes) = user_classes() else {
         return;
     };
-    for (ext, _) in formats::FORMATS {
-        remove_ext(&classes, ext);
-    }
+    clear_every_mark(&classes);
 }
 
 /// The ProgIDs of hooked formats that currently declare a `TypeOverlay` we did NOT write —
@@ -489,10 +559,24 @@ pub fn foreign_overlays() -> Vec<(String, String)> {
     out
 }
 
-/// The overlays [`sync`]`(false)` wrote for the user — `(progid, ".ext", value)`, where an
-/// empty value means "nothing, instead of a blank page". For `st2k doctor`.
-pub fn restored_overlays() -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = Vec::new();
+/// One corner [`sync`]`(false)` took responsibility for. For `st2k doctor`.
+pub struct Restored {
+    /// The ProgID we wrote under.
+    pub progid: String,
+    /// One extension it serves, with the leading dot.
+    pub ext: String,
+    /// Empty means "draw nothing", which we write instead of leaving a blank page.
+    pub value: String,
+    /// The icon we named is no longer on disk. An overlay pointing at a file that has gone
+    /// draws nothing, so this is cosmetic rather than harmful — but it means the owning
+    /// application moved or was removed since the last sync, and reporting it as a plain
+    /// success would tell a user with a visibly bare corner that everything is fine.
+    pub stale: bool,
+}
+
+/// The overlays [`sync`]`(false)` wrote for the user, each checked against the disk.
+pub fn restored_overlays() -> Vec<Restored> {
+    let mut out: Vec<Restored> = Vec::new();
     let fmt = crate::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
         if !fmt.enabled(ext) {
@@ -507,12 +591,19 @@ pub fn restored_overlays() -> Vec<(String, String, String)> {
         if k.get_string(MARK).is_err() {
             continue;
         }
-        let Ok(v) = k.get_string(VALUE) else {
+        let Ok(value) = k.get_string(VALUE) else {
             continue;
         };
-        if !out.iter().any(|(p, _, _)| p == &progid) {
-            out.push((progid, format!(".{ext}"), v));
+        if out.iter().any(|r| r.progid == progid) {
+            continue;
         }
+        let stale = !value.trim().is_empty() && classify_icon(&value) == OwnIcon::Gone;
+        out.push(Restored {
+            progid,
+            ext: format!(".{ext}"),
+            value,
+            stale,
+        });
     }
     out
 }
@@ -617,6 +708,35 @@ mod tests {
         // … and removal clears the lot.
         remove_progid(&classes, "St2kTest.Hollow");
         assert!(classes.open("St2kTest.Hollow").is_err());
+    }
+
+    /// The orphan, and the reason clearing ENUMERATES instead of re-deriving today's
+    /// associations. A user who changes their default program for a type moves the ProgID
+    /// Explorer consults; the value we wrote under the old one is then unreachable to any
+    /// code that asks "which ProgID serves this extension" — so it would survive a switch to
+    /// the badge, and survive uninstall, in another vendor's key, forever.
+    #[test]
+    fn clearing_finds_a_mark_under_a_progid_nothing_points_at_any_more() {
+        let (_guard, classes) = Scratch::new("orphan");
+        write_marked(&classes, "St2kTest.Abandoned", r"C:\Gone\app.exe,1");
+        let other = classes.create("St2kTest.Unrelated").expect("create");
+        other
+            .set_string(VALUE, "someoneelse.dll,-1")
+            .expect("set theirs");
+        drop(other);
+
+        clear_every_mark(&classes);
+
+        assert!(
+            classes.open("St2kTest.Abandoned").is_err(),
+            "a value of ours must be reachable without knowing which extension led to it"
+        );
+        let k = classes.open("St2kTest.Unrelated").expect("theirs survives");
+        assert_eq!(
+            k.get_string(VALUE).as_deref(),
+            Ok("someoneelse.dll,-1"),
+            "a sweep over the whole hive must still only take what is ours"
+        );
     }
 
     /// The rule that keeps this feature polite: an overlay somebody else chose is theirs.

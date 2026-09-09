@@ -945,7 +945,15 @@ unsafe fn apply_format_flags(hwnd: HWND) {
     }
     // Only Ok counts - any other outcome means the HKCR hooks do NOT match the flags
     // we just wrote, so roll the flags back rather than leave the UI lying.
-    if !matches!(reregister_elevated(), Reg::Ok) {
+    if matches!(reregister_elevated(), Reg::Ok) {
+        // The elevated re-register rewrote the MACHINE-WIDE hooks; it cannot write this
+        // user's HKCU (it runs as the admin account). The per-user shell pieces are keyed
+        // per format - the folder verb, and the corner-icon overlay that
+        // `typeoverlay::sync` derives from the format list - so a format switched on or off
+        // here leaves them stale until something else happens to run. We ARE the original
+        // user, so do it in-process, the same call the installer makes.
+        let _ = sagethumbs2k_core::register::sync_user_shell();
+    } else {
         for &(ext, _, old) in &changes {
             let _ = settings::set_format_enabled(ext, old);
         }
@@ -1052,6 +1060,9 @@ pub(super) unsafe fn import_settings_from_file(hwnd: HWND) {
                     message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
                     return;
                 }
+                // Same reason as `apply_format_flags`: the elevated pass cannot write this
+                // user's per-format shell pieces, so bring them in line here.
+                let _ = sagethumbs2k_core::register::sync_user_shell();
             }
             msg(
                 hwnd,

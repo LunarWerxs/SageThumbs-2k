@@ -447,6 +447,22 @@ fn set_perceived_type(classes: &Key, ext: &str) {
     }
 }
 
+/// Whether the `PerceivedType` on `.<ext>` is one WE wrote (see [`set_perceived_type`], which
+/// only ever fills an empty slot and marks what it filled).
+///
+/// [`crate::typeoverlay`] needs this: Explorer draws no corner icon on a type it perceives as
+/// an image, so where WE are the reason it perceives one, we are the reason the icon the user
+/// used to see went away — and putting it back is a correction, not an addition. Where WINDOWS
+/// perceives it (every format it decodes itself), there was never an icon and adding one would
+/// be a change nobody asked for.
+pub(crate) fn perceived_type_is_ours(ext: &str) -> bool {
+    windows_registry::CLASSES_ROOT
+        .open(format!(".{ext}"))
+        .ok()
+        .and_then(|k| k.get_string(PERCEIVED_TYPE_MARK).ok())
+        .is_some()
+}
+
 /// Remove the `PerceivedType` we set — but ONLY where our [`PERCEIVED_TYPE_MARK`] marker proves it
 /// was ours, so a value Windows or another app owns is never clobbered.
 fn unhook_perceived_type(classes: &Key, ext: &str) {

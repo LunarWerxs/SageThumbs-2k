@@ -1182,11 +1182,11 @@ fn system_icon_note(r: &mut Report) {
         let sample: Vec<String> = restored
             .iter()
             .take(3)
-            .map(|(progid, ext, value)| {
-                if value.is_empty() {
-                    format!("{ext} -> {progid} (nothing: its icon is gone)")
+            .map(|x| {
+                if x.value.is_empty() {
+                    format!("{} -> {} (nothing: its icon is gone)", x.ext, x.progid)
                 } else {
-                    format!("{ext} -> {progid}")
+                    format!("{} -> {}", x.ext, x.progid)
                 }
             })
             .collect();
@@ -1200,6 +1200,31 @@ fn system_icon_note(r: &mut Report) {
                 sample.join(", ")
             ),
         );
+        // Never report the whole set as healthy without looking. The value is an absolute
+        // path, and the program that owns it can be upgraded into a new versioned directory
+        // or removed at any time without telling us — at which point the corner silently goes
+        // bare again and an unconditional "ok" line above would be the one thing standing
+        // between the user and an explanation.
+        let stale: Vec<&crate::typeoverlay::Restored> =
+            restored.iter().filter(|x| x.stale).collect();
+        if !stale.is_empty() {
+            r.fail_with_fix(
+                "  one of those icons has moved",
+                &format!(
+                    "{} of them name a file that is no longer there, so those corners are bare \
+                     again  e.g. {}",
+                    stale.len(),
+                    stale
+                        .iter()
+                        .take(3)
+                        .map(|x| format!("{} -> {}", x.ext, x.value))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                "the owning program was updated or uninstalled since SageThumbs last looked; \
+                 open Settings and press Apply, or reinstall, and the corner is re-derived",
+            );
+        }
     }
     let suppressed = crate::typeoverlay::owner_suppressed();
     if !suppressed.is_empty() {
