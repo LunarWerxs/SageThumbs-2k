@@ -394,9 +394,20 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<std::process::E
 /// `keydown_lifecycle`'s Escape -> `request_close` -> `DestroyWindow` -> `WM_QUIT`.
 ///
 /// Needs a real window station: `--preview` shows an actual window (`ensure_shown`), and
-/// `FindWindowW`/`PostMessageW` need it to exist. Same requirement as the `--shot` tests above,
-/// same lack of a skip check — see this file's header.
+/// `PostMessageW` needs it to exist. Same requirement as the `--shot` tests above, same lack of
+/// a skip check — see this file's header.
+///
+/// `#[ignore]`d, on purpose and with the same reasoning as
+/// `tests/screenshot_automation.rs`'s end-to-end test: this is the ONE case here that drives a
+/// SEPARATE, VISIBLE process on the shared desktop, so it competes with whatever else has
+/// focus. Under `cargo test`'s parallel binaries it went red on arrow navigation while passing
+/// alone every time — a flaky gate is worth less than an honest opt-in one. The other five
+/// tests in this file drive the real wndproc IN-PROCESS and run everywhere, including CI; they
+/// are what proves the mouse, keyboard, capture and resize paths. Run this one deliberately:
+///
+///     cargo test --test preview_wndproc_drive -- --ignored --test-threads=1
 #[test]
+#[ignore = "drives a visible process on the shared desktop; run it explicitly, see the doc comment"]
 fn navigation_keys_and_escape_drive_the_live_window_through_the_real_os_message_loop() {
     let case = "nav_escape";
     let dir = scratch(case);
