@@ -53,11 +53,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_LEFT, VK_RIGHT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetWindowTextW, IsWindowVisible, PostMessageW, WM_KEYDOWN,
+    EnumWindows, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    PostMessageW, WM_KEYDOWN,
 };
 use windows_registry::CURRENT_USER;
 
@@ -297,21 +297,41 @@ fn resize_reflows_the_document_through_a_real_wm_size() {
 /// Quick preview viewer's window class (`preview/mod.rs::VIEWER_CLASS`).
 const VIEWER_CLASS: &str = "SageThumbs2KViewer";
 
-fn find_viewer() -> Option<HWND> {
-    let wide: Vec<u16> = VIEWER_CLASS
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe { FindWindowW(PCWSTR(wide.as_ptr()), PCWSTR::null()).ok() }
+/// Every top-level window of the viewer class, newest first. `FindWindowW` returns only ONE and
+/// gives no way to say which — and `cargo test` runs test BINARIES in parallel, so
+/// `tests/preview_async_load.rs` can have a viewer of its own up at the same moment. Matching
+/// the class alone therefore drove the wrong process's window: green when this file ran alone,
+/// red under the full suite (and under the pre-push preflight, which is how it was caught).
+unsafe extern "system" fn collect_viewers(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+    let mut cls = [0u16; 128];
+    let n = GetClassNameW(hwnd, &mut cls);
+    let name = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+    if name == VIEWER_CLASS {
+        let out = &mut *(lparam.0 as *mut Vec<HWND>);
+        out.push(hwnd);
+    }
+    true.into()
 }
 
-/// Poll for the viewer window, up to `timeout`. `FindWindowW` alone matches a hidden window too
-/// (the class exists from `CreateWindowExW` on) — same reasoning as
+/// The viewer window owned by process `pid`, or `None`. Ownership is the whole point: see
+/// [`collect_viewers`].
+fn find_viewer_of(pid: u32) -> Option<HWND> {
+    let mut found: Vec<HWND> = Vec::new();
+    let _ = unsafe { EnumWindows(Some(collect_viewers), LPARAM(&mut found as *mut _ as isize)) };
+    found.into_iter().find(|h| {
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(*h, Some(&mut owner)) };
+        owner == pid
+    })
+}
+
+/// Poll for OUR child's viewer window, up to `timeout`. A window of the class exists from
+/// `CreateWindowExW` on, before it is shown, so visibility is checked too — same reasoning as
 /// `tests/preview_async_load.rs::wait_for_viewer`.
-fn wait_for_viewer(timeout: Duration) -> Option<HWND> {
+fn wait_for_viewer(pid: u32, timeout: Duration) -> Option<HWND> {
     let start = Instant::now();
     loop {
-        if let Some(h) = find_viewer() {
+        if let Some(h) = find_viewer_of(pid) {
             if unsafe { IsWindowVisible(h) }.as_bool() {
                 return Some(h);
             }
@@ -429,7 +449,7 @@ fn navigation_keys_and_escape_drive_the_live_window_through_the_real_os_message_
         .spawn()
         .expect("spawn SageThumbs2K --preview");
 
-    let hwnd = match wait_for_viewer(Duration::from_secs(10)) {
+    let hwnd = match wait_for_viewer(child.id(), Duration::from_secs(10)) {
         Some(h) => h,
         None => {
             let _ = child.kill();
