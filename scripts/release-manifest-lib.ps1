@@ -557,12 +557,18 @@ function Find-ReleaseProvingRun {
     $raw = & gh @args 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
     $runs = @($raw | ConvertFrom-Json | Sort-Object createdAt -Descending)
-    foreach ($run in $runs) {
-        $live = $run.status -ne 'completed'
-        $green = $run.status -eq 'completed' -and $run.conclusion -eq 'success'
-        if (-not ($live -or $green)) { continue }
-        if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha)) { continue }
-        return @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion }
+    # A GREEN qualifying run beats a live one, even when the live one is on this very commit:
+    # the push that carries a script-only fix starts its own CI run, and waiting on that run
+    # is exactly the 30 minutes the ancestor rule exists to save (3.0.1's relaunch waited on it).
+    foreach ($wantGreen in $true, $false) {
+        foreach ($run in $runs) {
+            $green = $run.status -eq 'completed' -and $run.conclusion -eq 'success'
+            $live = $run.status -ne 'completed'
+            if ($wantGreen -and -not $green) { continue }
+            if (-not $wantGreen -and -not $live) { continue }
+            if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha)) { continue }
+            return @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion }
+        }
     }
     return $null
 }
