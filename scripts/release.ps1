@@ -566,10 +566,13 @@ try {
         'download history draws reputation-based warnings. Scan results for these exact bytes:'
     )
     foreach ($artifact in $releaseArtifacts) {
-        $sha = Get-ReleaseSha256 -Path $artifact.Setup.FullName
+        # NOT `$sha`: that is the validated COMMIT, and `--target $sha` at [5/6] reads it. Reusing
+        # the name here (1568e12) made the first release after it (3.0.0) hand GitHub a file
+        # hash as the target commit: "Release.target_commitish is invalid", after every gate.
+        $installerSha256 = Get-ReleaseSha256 -Path $artifact.Setup.FullName
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
             ('- ' + $artifact.Architecture + ' installer on VirusTotal: ' +
-                'https://www.virustotal.com/gui/file/' + $sha.ToLower())
+                'https://www.virustotal.com/gui/file/' + $installerSha256.ToLower())
         )
     }
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
