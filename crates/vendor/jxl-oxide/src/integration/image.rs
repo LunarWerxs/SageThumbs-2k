@@ -103,6 +103,15 @@ impl<R: Read> JxlDecoder<R> {
         Ok(())
     }
 
+    /// The H.273 code points (primaries, transfer, matrix, full-range flag) of the encoding
+    /// rendered images come back in: the file's own unless a conversion was requested. This
+    /// is how a caller tells a 16-bit PQ or HLG file - whose integer samples still carry the
+    /// HDR curve - apart from an SDR one, before deciding to colour-manage the result
+    /// (SageThumbs 2K issue #38: treating those samples as an ICC-described picture rendered
+    /// them at a fiftieth of their brightness). `None` for an ICC-profile encoding.
+    pub fn rendered_cicp(&self) -> Option<[u8; 4]> {
+        self.image.rendered_cicp()
+    }
     /// Initializes a decoder which reads from given image stream, with custom thread pool.
     pub fn with_thread_pool(reader: R, pool: crate::JxlThreadPool) -> ImageResult<Self> {
         let builder = JxlImage::builder()

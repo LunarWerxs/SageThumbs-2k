@@ -110,6 +110,13 @@ fn mini_jpeg_sof(sof: u8, entropy: usize) -> Vec<u8> {
 /// the assertion below can't be a gamut-mapping coin flip. Regenerate with:
 ///   cjxl g_adobe.png adobergb_modular.jxl -d 1.0 -m 1 -e 9 -p --faster_decoding 2 --brotli_effort 11
 const JXL_ADOBERGB: &[u8] = include_bytes!("../../tests/fixtures/jxl/adobergb_modular.jxl");
+/// Twin JPEG XLs of ONE scene (a grey ramp over six colour patches, diffuse white at 203 nits),
+/// 320x200, lossless: one tagged PQ / BT.2020 (PNG `cICP` 9,16), one sRGB / BT.709. cjxl keeps
+/// the `cICP` as the JXL colour encoding, so the first is exactly the "HDR base" JPEG XL of
+/// issue #38 and the second is its SDR control. Regenerate both with
+/// `python scripts/make-jxl-hdr-fixtures.py <dir>` then `cjxl <png> <jxl> -d 0 -e 5`.
+const JXL_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-pq2020.jxl");
+const JXL_SDR709: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-sdr709.jxl");
 
 /// Wrap a JPEG's bytes with an EXIF APP1 declaring `orientation` (1..=8).
 ///

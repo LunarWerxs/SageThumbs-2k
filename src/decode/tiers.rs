@@ -88,8 +88,33 @@ pub(super) fn decode_jxl(bytes: &[u8], target: Option<u32>) -> Result<DynamicIma
     // workflows — was handed to Explorer as if its numbers WERE sRGB, so the thumbnail came
     // out visibly shifted while every other viewer showed it correctly (issue #9). Must be
     // read BEFORE `from_decoder`, which consumes the decoder.
+    // HDR FIRST (issue #38). A PQ or HLG jxl with integer samples - the common 16-bit case;
+    // only float or >16-bit files take the float path below - decodes to samples that still
+    // carry the HDR curve, and the profile jxl-oxide hands back describes exactly that.
+    // Colour-managing those treats 10000 nits as white, so a picture whose diffuse white is
+    // 203 nits came out at a fiftieth of its brightness: near-black thumbnails for every
+    // HDR-base JPEG XL while the SDR twin of the same picture was fine. The file's H.273 code
+    // points say which it is; an HDR one goes through the same PQ/HLG-to-display-linear
+    // conversion PNG `cICP` uses (`cicp.rs`, reference white at 1.0) and then the float tone
+    // map, exactly like an EXR. Measured on the twin fixtures in tests/fixtures/jxl: grey ramp
+    // peak 39 -> 187 of 255, which is where this product puts every HDR source's reference
+    // white (Reinhard at 1.0), the SDR twin sitting at 255. jxl-oxide's own sRGB request was
+    // tried first and gave 189 by a different route; this one shares the PNG path instead.
+    let hdr = decoder.rendered_cicp().and_then(|c| {
+        let cicp = super::cicp::PngCicp {
+            primaries: c[0],
+            transfer: c[1],
+            full_range: c[3] != 0,
+        };
+        cicp.is_hdr().then_some(cicp)
+    });
     let icc = decoder.icc_profile().ok().flatten();
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
+    if let Some(cicp) = hdr {
+        if let Some(linear) = super::cicp::cicp_hdr_to_linear(&img, &cicp) {
+            return Ok(tone_map_float(&linear));
+        }
+    }
     if matches!(
         img,
         DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)

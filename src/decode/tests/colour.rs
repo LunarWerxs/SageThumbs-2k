@@ -548,3 +548,46 @@ fn jxl_applies_its_embedded_color_profile() {
         );
     }
 }
+
+/// Issue #38: a JPEG XL whose base image is HDR (PQ transfer, BT.2020 primaries) thumbnailed
+/// almost black - grey ramp peak 39 of 255 on 3.0.0 - while its SDR twin was fine. The 16-bit
+/// integer samples still carried the PQ curve and were colour-managed as if 10000 nits were
+/// white. The tier now routes an HDR file through the PNG `cICP` conversion and the shared
+/// float tone map, so it lands where an EXR or an HDR PNG does: reference white at Reinhard's
+/// 1.0, which is 187 of 255 in sRGB, not 255. That is the house convention for every HDR
+/// source, and the SDR twin is the untouched control at 255.
+#[test]
+fn hdr_pq_jxl_renders_as_bright_as_its_sdr_twin() {
+    fn ramp(bytes: &[u8]) -> (u8, u8, f64) {
+        let img = crate::decode::tiers::decode_jxl(bytes, None).expect("decode the jxl twin");
+        let rgb = img.to_rgb8();
+        let (w, h) = rgb.dimensions();
+        let y = h / 8;
+        let left = rgb.get_pixel(1, y).0[1];
+        let right = rgb.get_pixel(w - 2, y).0[1];
+        let mean = (0..w)
+            .map(|x| f64::from(rgb.get_pixel(x, y).0[1]))
+            .sum::<f64>()
+            / f64::from(w);
+        (left, right, mean)
+    }
+    let (pq_left, pq_right, pq_mean) = ramp(JXL_PQ2020);
+    let (sdr_left, sdr_right, sdr_mean) = ramp(JXL_SDR709);
+    assert!(
+        sdr_right >= 250,
+        "the SDR control's ramp should end near white, got {sdr_right}"
+    );
+    // 187 = sRGB(Reinhard(1.0)); the bug rendered this at 39.
+    assert!(
+        (180..=200).contains(&pq_right),
+        "PQ ramp ends at {pq_right} (SDR twin {sdr_right}): expected reference white at ~187"
+    );
+    assert!(
+        pq_mean >= 0.7 * sdr_mean,
+        "PQ ramp mean {pq_mean:.1} vs SDR {sdr_mean:.1}: the HDR jxl is still rendered dark"
+    );
+    assert!(
+        pq_left <= 24 && sdr_left <= 24,
+        "both ramps start near black ({pq_left}, {sdr_left})"
+    );
+}

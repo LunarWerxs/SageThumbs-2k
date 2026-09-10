@@ -22,9 +22,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > burn-down behind them.
 >
 > This note sits ABOVE the section heading on purpose. `Get-ReleaseChangelogSection` (used by
-> `release.ps1` and `export-release-notes.ps1`) takes everything under the exact `## 3.0.0`
+> `release.ps1` and `export-release-notes.ps1`) takes everything under the exact `## <version>`
 > heading as the published release notes, so on release day the only edit here is renaming
-> the heading below to `## 3.0.0`; this note is not part of what ships.
+> `## Unreleased` below to that version; this note is not part of what ships.
+
+## Unreleased
+
+### Fixed
+
+- **HDR JPEG XL files thumbnailed almost black**
+  ([#38](https://github.com/LunarWerxs/SageThumbs-2k/issues/38)). A `.jxl` whose base image is
+  HDR (PQ transfer, BT.2020 primaries, the shape Google's Ultra HDR samples and Adobe's gain-map
+  exports use) decoded to samples that still carried the PQ curve, and colour management then
+  treated 10,000 nits as white, so a picture whose real white sits at 203 nits came out at a
+  fiftieth of its brightness. An HDR `.jxl` now goes through the same conversion and tone map
+  an HDR PNG or an EXR does. The SDR twin of the same picture was always fine and is unchanged.
 
 ## 3.0.0
 

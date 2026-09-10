@@ -27,7 +27,10 @@ $scratch = Join-Path (
 # once by hand (Import-Certificate into Cert:\LocalMachine\TrustedPeople from an elevated
 # shell; the verification names the exact command when it is missing). CI runs elevated and
 # adds the entry temporarily. A CurrentUser\TrustedPeople entry does NOT work: signtool's
-# package policy ignores it.
+# package policy ignores it. And the trust does not survive a chain-signed INSTALL on this
+# box: the installer's upgrade branch removes every CN=SageThumbs2K certificate from
+# TrustedPeople by design (it is the pre-3.0 cleanup), and release.ps1's self-update smoke
+# installs the real build here every release. Re-trust after each one; the message says how.
 $script:passed = 0
 . (Join-Path $PSScriptRoot 'test-assert-lib.ps1')
 
