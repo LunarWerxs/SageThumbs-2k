@@ -126,18 +126,18 @@ impl Claims {
 
 /// What a good certificate says, split into the two questions it answers.
 ///
-/// ⛔ TWO FIELDS, NEVER ONE. `licensed` gates whether the software runs; `updates_allowed`
-/// gates whether it may take a NEW BUILD. They have different lifetimes - a perpetual
-/// licence stays licensed forever while its update window closes after twelve months -
-/// and collapsing them into one boolean is how software somebody bought outright gets
-/// switched off.
+/// ⛔ TWO FACTS, NEVER ONE. `licensed` gates whether the software runs; `maint_unix` is when
+/// the machine's update window ends, and `update::update_offer` compares a RELEASE's own
+/// publication date against it to decide whether that build is offered. They have different
+/// lifetimes - a perpetual licence stays licensed forever while its update window closes
+/// after twelve months - and collapsing them into one boolean is how software somebody
+/// bought outright gets switched off. (A `build_date <= maint` boolean used to sit here,
+/// computed against a build date nothing ever stamped in; it was removed 2026-09-10 rather
+/// than left looking live.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Verified {
     /// This machine holds a licence. Gate the LAUNCH on this.
     pub licensed: bool,
-    /// This build is inside the maintenance window. Gate the UPDATER on this, and
-    /// nothing else.
-    pub updates_allowed: bool,
     /// The certificate's own `exp` claim, in Unix seconds (E05 audit). Exposed so the
     /// Licence page can warn before a machine that relies on this certificate as its
     /// FLOOR (no relay answer, see `license::entitlement_and_cert_expiry`) goes dark -
@@ -145,14 +145,12 @@ pub(crate) struct Verified {
     pub exp_unix: i64,
     /// The certificate's own `maint` claim, in Unix seconds: when this machine's 12 months
     /// of updates end. `None` when the certificate carries none, which means "updates never
-    /// lapse" and is exactly why [`updates_allowed`] defaults to true in that case.
+    /// lapse".
     ///
     /// Exposed (2026-09-10) as the OFFLINE FALLBACK for the same fact the relay answers with
     /// `maintenanceEndsAt`: `license::LicenceSnapshot` prefers the relay breadcrumb and reads
     /// this only when the breadcrumb has no window on record. Never a licence gate - a closed
     /// window stops new builds being offered and nothing else.
-    ///
-    /// [`updates_allowed`]: Verified::updates_allowed
     pub maint_unix: Option<i64>,
 }
 
@@ -178,17 +176,12 @@ pub(crate) enum CertError {
 
 /// Verify a certificate and say what it grants.
 ///
-/// `now_unix` and `build_date_unix` are parameters rather than reads so the whole thing
-/// stays a pure function of its inputs - the same reason the rest of this module's
-/// neighbours take a clock. `build_date_unix` is THIS build's own release date, stamped in
-/// at compile time; the maintenance rule is `build_date <= maint`, compared by DATE rather
-/// than by parsing version strings, which is exactly how Pay decides it server-side.
-pub(crate) fn verify(
-    cert: &str,
-    expected_sub: &str,
-    now_unix: i64,
-    build_date_unix: i64,
-) -> Result<Verified, CertError> {
+/// `now_unix` is a parameter rather than a read so the whole thing stays a pure function of
+/// its inputs - the same reason the rest of this module's neighbours take a clock. The
+/// window itself comes back as `maint_unix`; the updater compares a release's publication
+/// date against it (`update::update_offer`), by DATE rather than by parsing version strings,
+/// which is exactly how Pay decides it server-side.
+pub(crate) fn verify(cert: &str, expected_sub: &str, now_unix: i64) -> Result<Verified, CertError> {
     let (payload_b64, sig_b64) = cert.split_once('.').ok_or(CertError::Malformed)?;
     if payload_b64.is_empty() || sig_b64.is_empty() || sig_b64.contains('.') {
         return Err(CertError::Malformed);
@@ -228,9 +221,8 @@ pub(crate) fn verify(
 
     Ok(Verified {
         licensed: true,
-        // No `maint` means updates never lapse. Reading it as 0 would refuse everything.
-        updates_allowed: claims.maint.is_none_or(|m| build_date_unix <= m),
         exp_unix: claims.exp,
+        // No `maint` means updates never lapse; the updater treats `None` as "always offer".
         maint_unix: claims.maint,
     })
 }
@@ -271,31 +263,27 @@ pub(crate) mod tests {
 
     #[test]
     fn a_real_certificate_verifies_and_licenses_this_machine() {
-        let v = verify(REAL_CERT, REAL_SUB, INSIDE, INSIDE).expect("should verify");
+        let v = verify(REAL_CERT, REAL_SUB, INSIDE).expect("should verify");
         assert!(v.licensed);
-        assert!(v.updates_allowed, "build inside the maintenance window");
     }
 
+    /// The window is handed back as a date and nothing else: a perpetual licence stays
+    /// licensed whatever the clock says, and the updater (`update::update_offer`) is the one
+    /// place that compares a release against `maint_unix`.
     #[test]
-    fn a_build_past_the_maintenance_window_keeps_running_but_stops_updating() {
-        let v = verify(REAL_CERT, REAL_SUB, INSIDE, MAINT + 1).expect("should verify");
-        assert!(
-            v.licensed,
-            "perpetual: the licence survives the update window closing"
-        );
-        assert!(!v.updates_allowed, "past `maint`, no new builds");
-    }
-
-    #[test]
-    fn a_build_exactly_on_the_maintenance_boundary_is_allowed() {
-        let v = verify(REAL_CERT, REAL_SUB, INSIDE, MAINT).expect("should verify");
-        assert!(v.updates_allowed, "`build_date <= maint`, inclusive");
+    fn the_certificate_hands_back_its_maintenance_end_for_the_updater_to_judge() {
+        // The fixture's `maint` (2027-09-03) lies past its `exp` (2026-10-04), so "licensed
+        // after the window closes" cannot be exercised on this certificate; what is pinned is
+        // that the window comes back as a date and `licensed` is not derived from it.
+        let v = verify(REAL_CERT, REAL_SUB, INSIDE).expect("should verify");
+        assert!(v.licensed);
+        assert_eq!(v.maint_unix, Some(MAINT));
     }
 
     #[test]
     fn another_machines_certificate_is_not_this_machines_licence() {
         assert_eq!(
-            verify(REAL_CERT, "deadbeef", INSIDE, INSIDE),
+            verify(REAL_CERT, "deadbeef", INSIDE),
             Err(CertError::NotThisMachine)
         );
     }
@@ -303,7 +291,7 @@ pub(crate) mod tests {
     #[test]
     fn an_expired_certificate_is_refused_and_asks_to_be_re_minted() {
         assert_eq!(
-            verify(REAL_CERT, REAL_SUB, 1_791_130_975, INSIDE),
+            verify(REAL_CERT, REAL_SUB, 1_791_130_975),
             Err(CertError::Expired)
         );
     }
@@ -315,7 +303,7 @@ pub(crate) mod tests {
         let mut bad = p.to_string();
         bad.replace_range(0..1, if p.starts_with('e') { "f" } else { "e" });
         assert_eq!(
-            verify(&format!("{bad}.{s}"), REAL_SUB, INSIDE, INSIDE),
+            verify(&format!("{bad}.{s}"), REAL_SUB, INSIDE),
             Err(CertError::BadSignature)
         );
     }
@@ -326,7 +314,7 @@ pub(crate) mod tests {
         let mut bad = s.to_string();
         bad.replace_range(0..1, if s.starts_with('N') { "M" } else { "N" });
         assert_eq!(
-            verify(&format!("{p}.{bad}"), REAL_SUB, INSIDE, INSIDE),
+            verify(&format!("{p}.{bad}"), REAL_SUB, INSIDE),
             Err(CertError::BadSignature)
         );
     }
@@ -342,7 +330,7 @@ pub(crate) mod tests {
             "eyJhIjoxfQ.short",
             "!!!.!!!",
         ] {
-            let got = verify(junk, REAL_SUB, INSIDE, INSIDE);
+            let got = verify(junk, REAL_SUB, INSIDE);
             assert!(got.is_err(), "{junk:?} should not verify");
         }
     }
@@ -351,6 +339,6 @@ pub(crate) mod tests {
     fn a_padded_or_standard_base64_certificate_is_refused_rather_than_guessed() {
         // Pay emits UNPADDED base64url. Anything else is not a certificate we issued.
         let (p, s) = REAL_CERT.split_once('.').unwrap();
-        assert!(verify(&format!("{p}=.{s}"), REAL_SUB, INSIDE, INSIDE).is_err());
+        assert!(verify(&format!("{p}=.{s}"), REAL_SUB, INSIDE).is_err());
     }
 }

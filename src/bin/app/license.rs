@@ -388,9 +388,9 @@ pub(crate) fn entitlement_from_cache(now_unix: u64, last_positive_unix: u64) -> 
 /// another machine, an expired one - answers `false`, which only ever means "the
 /// certificate has nothing to add", never "unlicensed".
 ///
-/// Only `licensed` is consumed today. The certificate also carries `updates_allowed`, but
-/// answering that honestly needs THIS BUILD's own release date stamped in at compile time,
-/// and until that exists asking the question would compare against the wrong thing.
+/// `licensed` is what this reads; the certificate's `maint_unix` is read separately by
+/// `LicenceSnapshot` as the offline fallback for the updates window (the relay's
+/// `maintenanceEndsAt` wins when the breadcrumb has one).
 /// Does a stored offline certificate license THIS machine right now, and if so, when does
 /// it expire? (E05 audit: folded the old boolean `certificate_licenses_this_machine` into
 /// this - the only caller needed the expiry too, and re-verifying the certificate a second
@@ -424,7 +424,7 @@ fn certificate_maint_unix(now_unix: u64) -> Option<u64> {
 /// [`certificate_expiry_from`] is: so a test can drive it with the real fixture certificate.
 fn certificate_maint_from(cert: &str, fingerprint: &str, now_unix: u64) -> Option<u64> {
     let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
-    let verified = crate::licence_cert::verify(cert, fingerprint, now, now).ok()?;
+    let verified = crate::licence_cert::verify(cert, fingerprint, now).ok()?;
     u64::try_from(verified.maint_unix?).ok()
 }
 
@@ -438,7 +438,7 @@ fn certificate_maint_from(cert: &str, fingerprint: &str, now_unix: u64) -> Optio
 /// at all.
 fn certificate_expiry_from(cert: &str, fingerprint: &str, now_unix: u64) -> Option<i64> {
     let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
-    let verified = crate::licence_cert::verify(cert, fingerprint, now, now).ok()?;
+    let verified = crate::licence_cert::verify(cert, fingerprint, now).ok()?;
     verified.licensed.then_some(verified.exp_unix)
 }
 
@@ -645,9 +645,10 @@ pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
 
 /// Where another 12 months of updates is bought (US$29), for a licence that is already
 /// held. Unlike [`BUY_URL`] this is the checkout's own address rather than a relay
-/// redirect, because the page is per-product and takes the key as a parameter; the product
-/// id in it is the same [`crate::licence_cert::PRODUCT_ID`] every certificate is signed for.
-const RENEW_URL_BASE: &str = "https://checkout.connections.icu/licence";
+/// redirect on the relay (`/renew`, the twin of `/buy`), which forwards the query string, so a
+/// repricing or a new checkout page moves the link without a release. The relay's default
+/// target is the checkout page for [`crate::licence_cert::PRODUCT_ID`].
+const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";
 
 /// The renewal link for this machine: the checkout page for our product, with the stored
 /// licence key pre-filled when we have one.
@@ -658,16 +659,12 @@ const RENEW_URL_BASE: &str = "https://checkout.connections.icu/licence";
 /// for it, which is a worse experience and a perfectly correct one; a prefix is never
 /// substituted, because `?key=esk_A1B2` would look like a key and redeem nothing.
 pub(crate) fn renew_url() -> String {
-    let product = crate::licence_cert::PRODUCT_ID;
     match crate::cred_store::load_licence_key()
         .as_deref()
         .and_then(normalize_key)
     {
-        Some(key) => format!(
-            "{RENEW_URL_BASE}/{product}/renew?key={}",
-            crate::http::form_enc(&key)
-        ),
-        None => format!("{RENEW_URL_BASE}/{product}/renew"),
+        Some(key) => format!("{RENEW_URL}?key={}", crate::http::form_enc(&key)),
+        None => RENEW_URL.to_string(),
     }
 }
 

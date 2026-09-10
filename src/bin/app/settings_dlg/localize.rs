@@ -92,6 +92,14 @@ unsafe fn rebuild_combo<'a>(hwnd: HWND, id: i32, labels: impl IntoIterator<Item 
 pub(super) unsafe fn apply_labels(hwnd: HWND) {
     set_window_title(hwnd);
     let pairs: &[(i32, &str)] = &[
+        // Licence page (added 2026-09-10: until then a live language switch left every
+        // button on this page in the old language until the window was reopened).
+        (ID_LBL_LICENCE, "grp_licence"),
+        (ID_LBL_LICENCE_KEY, "grp_licence_key"),
+        (ID_LICENCE_REDEEM_BTN, "btn_licence_redeem"),
+        (ID_LICENCE_CHECK_NOW, "btn_licence_check_now"),
+        (ID_LICENCE_RENEW, "btn_licence_renew"),
+        (ID_LICENCE_BUY, "btn_licence_buy"),
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
