@@ -556,7 +556,7 @@ try {
         (Get-AuthenticodeSignature -LiteralPath $_.Setup.FullName).Status -eq 'Valid'
     }) -notcontains $false
     $signingLine = if ($allSigned) {
-        '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file can still'
+        '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file with no'
     } else {
         '**Antivirus / SmartScreen:** these builds are unsigned, so a brand-new file with no'
     }

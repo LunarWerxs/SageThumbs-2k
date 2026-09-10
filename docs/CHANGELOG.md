@@ -28,7 +28,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.0.0
 
-### Added
+### New
 
 - **A "Join our Discord" button on the sign-in banner.** Questions, ideas, or a hello: the
   LunarWerx Discord is where we are. The button opens a LunarWerx page that forwards to the
