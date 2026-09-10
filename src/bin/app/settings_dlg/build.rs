@@ -142,6 +142,29 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     dark_theme_combo(corner);
     restyle::dark_combo_subclass(corner, ID_CORNER_MARK);
 
+    // How big that mark is drawn. Same shape as the combo above and laid out right under it:
+    // option order IS the stored value (`BadgeSize::as_dword`). Narrower than the corner combo
+    // because its options are one word each.
+    let badge_size = lc.combo(t("lbl_badge_size"), ID_LBL_BADGE_SIZE, 156, ID_BADGE_SIZE);
+    for key in ["badge_size_small", "badge_size_medium", "badge_size_large"] {
+        let w = wide(t(key));
+        SendMessageW(
+            badge_size,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    SendMessageW(
+        badge_size,
+        CB_SETCURSEL,
+        Some(WPARAM(settings::badge_size().as_dword() as usize)),
+        None,
+    );
+    SendMessageW(badge_size, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(badge_size);
+    restyle::dark_combo_subclass(badge_size, ID_BADGE_SIZE);
+
     let theme = lc.combo(t("lbl_app_theme"), ID_LBL_APP_THEME, 160, ID_APP_THEME);
     for key in ["theme_system", "theme_light", "theme_dark"] {
         let w = wide(t(key));

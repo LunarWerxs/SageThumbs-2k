@@ -370,18 +370,18 @@ pub use app_prefs::{
 };
 
 pub use thumbs::{
-    archive_collage, container_prefer_cover, container_skip_scanlation, container_sort,
+    archive_collage, badge_size, container_prefer_cover, container_skip_scanlation, container_sort,
     corner_mark, folder_prebuild_verb, format_badge, format_badge_icon, format_enabled,
     format_enabled_snapshot, hide_type_overlay, jpeg_quality, max_file_size_bytes, max_thumb_size,
     menu_all_file_types, menu_enabled, menu_gate, menu_item_shown, menu_order, menu_preview,
     menu_quick_verbs, menu_visibility, png_level, prefer_cover_art, preview_checker,
-    set_corner_mark, set_folder_prebuild_verb, set_format_badge_icon, set_format_enabled,
-    set_menu_item_shown, set_menu_order, set_prefer_cover_art, set_thumb_checker,
-    set_video_offset_pct, thumb_checker, thumb_settings, thumbnails_enabled, use_embedded,
-    video_offset_frac, video_offset_pct, CornerMark, FormatEnabledSnapshot, MenuGate,
-    MenuVisibility, ThumbSettings, DEFAULT_JPEG, DEFAULT_MAX_FILE_MB, DEFAULT_MENU_PREVIEW,
-    DEFAULT_PNG, DEFAULT_THUMB_SIZE, DEFAULT_VIDEO_OFFSET_PCT, EMBEDDED_MAX_REQUEST, THUMB_MAX,
-    THUMB_MIN, VIDEO_OFFSET_PCT_MAX,
+    set_badge_size, set_corner_mark, set_folder_prebuild_verb, set_format_badge_icon,
+    set_format_enabled, set_menu_item_shown, set_menu_order, set_prefer_cover_art,
+    set_thumb_checker, set_video_offset_pct, thumb_checker, thumb_settings, thumbnails_enabled,
+    use_embedded, video_offset_frac, video_offset_pct, BadgeSize, CornerMark,
+    FormatEnabledSnapshot, MenuGate, MenuVisibility, ThumbSettings, DEFAULT_JPEG,
+    DEFAULT_MAX_FILE_MB, DEFAULT_MENU_PREVIEW, DEFAULT_PNG, DEFAULT_THUMB_SIZE,
+    DEFAULT_VIDEO_OFFSET_PCT, EMBEDDED_MAX_REQUEST, THUMB_MAX, THUMB_MIN, VIDEO_OFFSET_PCT_MAX,
 };
 
 #[cfg(test)]

@@ -28,6 +28,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.0.1
 
+### New
+
+- New: a size for the format mark in a thumbnail's corner (Settings > Appearance): Small,
+  Medium or Large.
+
 ### Fixed
 
 - **The per-file doctor report names the drive.** `st2k doctor <file>` now prints a "Volume"

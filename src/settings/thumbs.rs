@@ -158,6 +158,8 @@ pub struct ThumbSettings {
     /// `FormatBadgeStyle` — how that badge is drawn once it IS on. Only read when
     /// `format_badge` is true.
     pub badge_style: crate::badge::BadgeStyle,
+    /// `BadgeSize` - how big that badge is drawn. Only read when `format_badge` is true.
+    pub badge_size: crate::settings::BadgeSize,
     /// `ThumbChecker` — burn a transparency checkerboard into the thumbnail behind
     /// see-through pixels. OFF by default; correct alpha is the better default, this is for
     /// people who want the original SageThumbs' look back.
@@ -231,6 +233,7 @@ pub fn thumb_settings() -> ThumbSettings {
             "FormatBadgeStyle",
             DEFAULT_BADGE_STYLE,
         )),
+        badge_size: crate::settings::BadgeSize::from_dword(g("BadgeSize", DEFAULT_BADGE_SIZE)),
         thumb_checker: g("ThumbChecker", 0) != 0,
         prefer_cover_art: g("VideoCoverArt", 0) != 0,
         video_offset_frac: f64::from(clamp_video_offset_pct(g(
@@ -248,6 +251,77 @@ pub fn thumb_settings() -> ThumbSettings {
 /// anyone who turns it on has asked to be able to tell formats apart at a glance — and a
 /// colour does that faster than three letters. `0` selects the older plain text chip.
 const DEFAULT_BADGE_STYLE: u32 = 1;
+
+/// `BadgeSize` default: [`BadgeSize::Small`], which is byte-for-byte the badge every build
+/// before this setting drew. Growing the mark for everyone would change a picture people
+/// already chose to have stamped, so the bigger steps are opt-in.
+const DEFAULT_BADGE_SIZE: u32 = 0;
+
+/// How big the format mark is drawn, as a share of the tile.
+///
+/// The badge scales off the tile's SHORT EDGE divided by a constant, so a step here is a
+/// constant fraction of the picture at every thumbnail size rather than a pixel count that
+/// would be invisible on a 512 px tile and cover a 96 px one. Reported 2026-09-10: at the
+/// original ~18% the three letters are too small to read at a glance on a normal-DPI
+/// Explorer window, and there was no way to ask for a bigger one.
+///
+/// Which mark you get is [`CornerMark`]; this is only its size, and it is read only when
+/// that says [`CornerMark::Badge`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BadgeSize {
+    /// The original mark: about 18% of the tile's width for a 3-character label.
+    #[default]
+    Small,
+    /// Roughly a third larger.
+    Medium,
+    /// Roughly twice the original, for reading the format across a room or at a glance.
+    Large,
+}
+
+impl BadgeSize {
+    /// `BadgeSize`: 0 = small, 1 = medium, 2 = large. An unknown value falls to the default
+    /// rather than to the largest - a value we cannot read is not a request for a bigger mark.
+    pub const fn from_dword(v: u32) -> Self {
+        match v {
+            1 => Self::Medium,
+            2 => Self::Large,
+            _ => Self::Small,
+        }
+    }
+
+    /// `const` so a table can name a variant's stored value directly - see the settings
+    /// dialog's combo, where the enum IS the option order (same contract as
+    /// [`CornerMark::as_dword`]).
+    pub const fn as_dword(self) -> u32 {
+        match self {
+            Self::Small => 0,
+            Self::Medium => 1,
+            Self::Large => 2,
+        }
+    }
+
+    /// The divisor `crate::badge` scales the glyph cells by: `short_edge / divisor`, clamped.
+    /// SMALLER divides less often, so a smaller number is a BIGGER badge. 110 is the shipped
+    /// value and must not move - see `badge::badge_geometry` for why 48 was wrong.
+    pub const fn divisor(self) -> u32 {
+        match self {
+            Self::Small => 110,
+            Self::Medium => 80,
+            Self::Large => 55,
+        }
+    }
+}
+
+/// `BadgeSize` - see [`BadgeSize`]. Only meaningful while [`corner_mark`] is
+/// [`CornerMark::Badge`]; stored regardless, so switching the corner back to our mark
+/// restores the size the user picked.
+pub fn badge_size() -> BadgeSize {
+    BadgeSize::from_dword(get_dword("BadgeSize", DEFAULT_BADGE_SIZE))
+}
+
+pub fn set_badge_size(s: BadgeSize) -> windows_registry::Result<()> {
+    set_dword("BadgeSize", s.as_dword())
+}
 
 /// What ends up in the BOTTOM-RIGHT CORNER of a thumbnail we produced — the one place where
 /// two different things want to draw, and only one of them can win.
@@ -291,7 +365,7 @@ impl CornerMark {
         }
     }
 
-    /// `const` so a table can name a variant's stored value directly — see the settings
+    /// `const` so a table can name a variant's stored value directly - see the settings
     /// dialog's `DEPENDENT_ON_COMBO`, where the enum IS the combo's option order.
     pub const fn as_dword(self) -> u32 {
         match self {
@@ -800,5 +874,28 @@ mod tests {
         );
         // Absent / non-numeric stored values stay shown (the documented default).
         assert!(mv.shown("menu_never_configured"));
+    }
+
+    /// The stored DWORD round-trips, the default is the shipped look, and an unreadable
+    /// value falls back to it rather than to the largest mark. The combo's option ORDER is
+    /// this mapping (`build.rs` seeds it in `as_dword` order), so a change here silently
+    /// re-points every stored value - which is exactly what this locks.
+    #[test]
+    fn badge_size_round_trips_through_its_dword() {
+        for s in [BadgeSize::Small, BadgeSize::Medium, BadgeSize::Large] {
+            assert_eq!(BadgeSize::from_dword(s.as_dword()), s);
+        }
+        assert_eq!(BadgeSize::Small.as_dword(), 0);
+        assert_eq!(BadgeSize::default(), BadgeSize::Small);
+        assert_eq!(BadgeSize::from_dword(DEFAULT_BADGE_SIZE), BadgeSize::Small);
+        assert_eq!(BadgeSize::from_dword(99), BadgeSize::Small);
+        // Bigger step, smaller divisor - the ordering the badge geometry depends on.
+        assert!(BadgeSize::Medium.divisor() < BadgeSize::Small.divisor());
+        assert!(BadgeSize::Large.divisor() < BadgeSize::Medium.divisor());
+        assert_eq!(
+            BadgeSize::Small.divisor(),
+            110,
+            "the shipped look must not move"
+        );
     }
 }

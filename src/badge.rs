@@ -16,6 +16,11 @@
 //! and cannot fail. We only ever draw `A-Z`, `0-9` and `+`, which is every character a format
 //! label can contain.
 
+/// The user's size step for the mark. Lives with the other settings (it is a stored DWORD,
+/// `BadgeSize`); this module only ever reads its [`BadgeSize::divisor`], so the drawing code
+/// stays a pure function of (image, label, style, size).
+pub use crate::settings::BadgeSize;
+
 /// Longest label we will draw. Keeps the badge from eating the tile on a silly extension.
 const MAX_LABEL: usize = 5;
 
@@ -179,9 +184,13 @@ pub fn label_for(file_name: &str) -> Option<String> {
 /// silhouette; the geometry below is shared so the two styles can never drift apart in size
 /// or position.
 ///
+/// `size` is the user's [`BadgeSize`] choice: it only moves the divisor the glyph scale is
+/// keyed to, so every other proportion (padding, the fold, the corner inset) follows from it
+/// and the three steps cannot drift into different-looking chips.
+///
 /// No-ops on images too small to badge legibly, or when the label does not fit.
-pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle) {
-    let Some(g) = badge_geometry(w, h, label, style) else {
+pub fn stamp(rgba: &mut [u8], w: u32, h: u32, label: &str, style: BadgeStyle, size: BadgeSize) {
+    let Some(g) = badge_geometry(w, h, label, style, size) else {
         return; // too small to badge legibly, or the chip would not fit
     };
     // The label's own category decides the tint. `label` is the uppercased extension, and
@@ -208,7 +217,13 @@ struct BadgeGeom {
 
 /// Compute the chip's geometry, or `None` when the image is too small to badge legibly or
 /// the chip would not fit.
-fn badge_geometry(w: u32, h: u32, label: &str, style: BadgeStyle) -> Option<BadgeGeom> {
+fn badge_geometry(
+    w: u32,
+    h: u32,
+    label: &str,
+    style: BadgeStyle,
+    size: BadgeSize,
+) -> Option<BadgeGeom> {
     let edge = w.min(h);
     if edge < MIN_BADGED_EDGE || label.is_empty() {
         return None;
@@ -218,7 +233,12 @@ fn badge_geometry(w: u32, h: u32, label: &str, style: BadgeStyle) -> Option<Badg
     // edge/110 lands it near ~18% of the width at every size; the first attempt used edge/48
     // and produced a badge that looked fine at 96px and swallowed a third of a 512px tile.
     // Capped at 8 so an unusually large request cannot run away.
-    let scale = (edge / 110).clamp(1, 8);
+    //
+    // The divisor is the ONE thing the user's size choice moves (`BadgeSize::divisor`): 110
+    // is that shipped Small, and Medium/Large only divide less. The clamp and the
+    // would-dominate return below still apply at every step, so a bigger request can be
+    // refused on a small tile rather than drawn over the picture.
+    let scale = (edge / size.divisor()).clamp(1, 8);
     let (gw, gh) = (5 * scale, 7 * scale);
     let gap = scale;
     let pad = 2 * scale;
@@ -387,7 +407,7 @@ mod tests {
     fn stamps_only_the_bottom_right_corner() {
         let (w, h) = (256u32, 256u32);
         let mut px = vec![0u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "PSD", BadgeStyle::Text);
+        stamp(&mut px, w, h, "PSD", BadgeStyle::Text, BadgeSize::Small);
         let at = |x: u32, y: u32| px[((y * w + x) * 4) as usize..][..4].to_vec();
         assert_eq!(at(4, 4), vec![0, 0, 0, 0], "top-left must be untouched");
         assert_eq!(at(4, h - 4), vec![0, 0, 0, 0], "bottom-left untouched");
@@ -401,10 +421,18 @@ mod tests {
     fn tiny_thumbnails_are_left_alone() {
         let (w, h) = (48u32, 48u32);
         let mut px = vec![7u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "PSD", BadgeStyle::Icon);
+        stamp(&mut px, w, h, "PSD", BadgeStyle::Icon, BadgeSize::Small);
         assert!(
             px.iter().all(|&v| v == 7),
             "a 48px tile is too small to badge legibly and must be untouched"
+        );
+        // The size choice does not buy a way past that floor: asking for Large on a tile
+        // below MIN_BADGED_EDGE still draws nothing.
+        let mut px = vec![7u8; (w * h * 4) as usize];
+        stamp(&mut px, w, h, "PSD", BadgeStyle::Icon, BadgeSize::Large);
+        assert!(
+            px.iter().all(|&v| v == 7),
+            "Large must not bypass the floor"
         );
     }
 
@@ -413,7 +441,7 @@ mod tests {
     fn refuses_when_the_chip_would_dominate() {
         let (w, h) = (64u32, 64u32);
         let mut px = vec![7u8; (w * h * 4) as usize];
-        stamp(&mut px, w, h, "WEBP2", BadgeStyle::Icon);
+        stamp(&mut px, w, h, "WEBP2", BadgeStyle::Icon, BadgeSize::Small);
         let drawn = px.iter().any(|&v| v != 7);
         // Either it fits comfortably or it drew nothing — never a chip wider than the tile.
         if drawn {
@@ -425,7 +453,69 @@ mod tests {
     #[test]
     fn does_not_panic_on_a_truncated_buffer() {
         let mut px = vec![0u8; 10];
-        stamp(&mut px, 256, 256, "PSD", BadgeStyle::Icon); // buffer far too small for the claimed size
+        // buffer far too small for the claimed size
+        stamp(&mut px, 256, 256, "PSD", BadgeStyle::Icon, BadgeSize::Large);
+    }
+
+    /// The whole point of the setting: a bigger step must produce a visibly bigger chip at
+    /// the size Explorer's large-icons view uses. Measured off the geometry rather than the
+    /// pixels, so the assertion says what it means.
+    #[test]
+    fn bigger_steps_produce_a_wider_chip_at_256px() {
+        let geom = |size| {
+            badge_geometry(256, 256, "PSD", BadgeStyle::Icon, size).expect("256px tile must badge")
+        };
+        let (s, m, l) = (
+            geom(BadgeSize::Small),
+            geom(BadgeSize::Medium),
+            geom(BadgeSize::Large),
+        );
+        assert!(
+            m.chip_w > s.chip_w,
+            "Medium ({}) must be wider than Small ({})",
+            m.chip_w,
+            s.chip_w
+        );
+        assert!(
+            l.chip_w > m.chip_w,
+            "Large ({}) must be wider than Medium ({})",
+            l.chip_w,
+            m.chip_w
+        );
+        // Still an annotation, not a takeover: even Large stays well under half the tile.
+        assert!(
+            l.chip_w * 2 < 256,
+            "Large chip {} dominates the tile",
+            l.chip_w
+        );
+    }
+
+    /// Explorer's smallest badged tile, at the largest step: the guard has to hold. Either
+    /// the chip fits (and stays inside the tile) or `stamp` draws nothing - never a chip
+    /// clipped by the edge.
+    #[test]
+    fn large_on_a_96px_tile_either_fits_or_draws_nothing() {
+        let (w, h) = (96u32, 96u32);
+        match badge_geometry(w, h, "PSD", BadgeStyle::Icon, BadgeSize::Large) {
+            Some(g) => {
+                assert!(
+                    g.x0 + g.chip_w <= w && g.y0 + g.chip_h <= h,
+                    "chip {}x{} at ({}, {}) runs off a {w}x{h} tile",
+                    g.chip_w,
+                    g.chip_h,
+                    g.x0,
+                    g.y0
+                );
+            }
+            None => {
+                let mut px = vec![7u8; (w * h * 4) as usize];
+                stamp(&mut px, w, h, "PSD", BadgeStyle::Icon, BadgeSize::Large);
+                assert!(
+                    px.iter().all(|&v| v == 7),
+                    "the dominate-guard refused the geometry but stamp still drew"
+                );
+            }
+        }
     }
 }
 
@@ -441,18 +531,30 @@ mod visual {
             eprintln!("skipping: no ../test-corpus/sample.png");
             return;
         };
-        let mut sheet = image::RgbaImage::new(96 + 8 + 256 + 8 + 512, 512 + 8 + 160);
+        // One ROW per size step (Small / Medium / Large), each row the sizes Explorer
+        // actually uses - so "is Medium actually readable at 96px" is a thing eyes can
+        // answer instead of a number in a test.
+        let steps = [
+            super::BadgeSize::Small,
+            super::BadgeSize::Medium,
+            super::BadgeSize::Large,
+        ];
+        let row_h = 512 + 8;
+        let mut sheet =
+            image::RgbaImage::new(96 + 8 + 256 + 8 + 512, row_h * steps.len() as u32 + 8 + 160);
         for p in sheet.pixels_mut() {
             *p = image::Rgba([32, 32, 40, 255]);
         }
-        let mut x = 0u32;
-        for (cx, label) in [(96u32, "PSD"), (256, "AVIF"), (512, "JXL")] {
-            let t = img.resize_to_fill(cx, cx, image::imageops::FilterType::Lanczos3);
-            let mut rgba = t.to_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            super::stamp(&mut rgba, w, h, label, super::BadgeStyle::Text);
-            image::imageops::overlay(&mut sheet, &rgba, x as i64, 0);
-            x += cx + 8;
+        for (row, size) in steps.iter().enumerate() {
+            let mut x = 0u32;
+            for (cx, label) in [(96u32, "PSD"), (256, "AVIF"), (512, "JXL")] {
+                let t = img.resize_to_fill(cx, cx, image::imageops::FilterType::Lanczos3);
+                let mut rgba = t.to_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                super::stamp(&mut rgba, w, h, label, super::BadgeStyle::Text, *size);
+                image::imageops::overlay(&mut sheet, &rgba, x as i64, (row as u32 * row_h) as i64);
+                x += cx + 8;
+            }
         }
         // Second row: the icon style, one label per category, so the seven tints can be
         // compared side by side at the size Explorer's medium view actually uses.
@@ -461,8 +563,20 @@ mod visual {
             let t = img.resize_to_fill(160, 160, image::imageops::FilterType::Lanczos3);
             let mut rgba = t.to_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
-            super::stamp(&mut rgba, w, h, label, super::BadgeStyle::Icon);
-            image::imageops::overlay(&mut sheet, &rgba, x as i64, 520);
+            super::stamp(
+                &mut rgba,
+                w,
+                h,
+                label,
+                super::BadgeStyle::Icon,
+                super::BadgeSize::Medium,
+            );
+            image::imageops::overlay(
+                &mut sheet,
+                &rgba,
+                x as i64,
+                (row_h * steps.len() as u32 + 8) as i64,
+            );
             x += 168;
         }
         let out = std::env::temp_dir().join("st2k_badge_sheet.png");

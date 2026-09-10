@@ -517,7 +517,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   stamped in the corner, as a colour-coded file mark with one colour per kind of file, or as
   plain text), or *nothing*. Picking either of the last two also stops Explorer painting over the
   corner, which the two separate switches this replaced could not guarantee. **The installer
-  asks this once on a first install**, and it is changeable here at any time. Alongside it:
+  asks this once on a first install**, and it is changeable here at any time. When the corner
+  holds a SageThumbs format mark, **Format mark size** picks how big it is drawn (Small, the
+  original, or Medium or Large for reading the format at a glance); it scales with the tile,
+  so the choice looks the same in every Explorer view. Alongside it:
   **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
   shows the folder background through them) and **use a video's cover art instead of a frame**.
 - **File types:** purely the per-format list, with search, bulk select and **Defaults**.

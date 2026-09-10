@@ -308,6 +308,7 @@ impl ThumbnailProvider_Impl {
                     img.height,
                     &label,
                     cfg.badge_style,
+                    cfg.badge_size,
                 );
             }
         }

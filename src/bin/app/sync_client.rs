@@ -151,6 +151,10 @@ const ALLOW: &[(&str, Kind)] = &[
     ("AppTheme", Kind::Dword),
     ("FormatBadge", Kind::Dword),
     ("FormatBadgeStyle", Kind::Dword),
+    // How big that badge is drawn. Unlike `CornerMark` below, this touches nothing outside
+    // our own bitmap - no per-ProgID registry, nothing machine-shaped - so a pulled value is
+    // honoured exactly as it was set on the other machine.
+    ("BadgeSize", Kind::Dword),
     ("ThumbChecker", Kind::Dword),
     // NOT synced: HideTypeOverlay. It is not just a value - flipping it rewrites
     // per-ProgID registry keys on THIS machine, and the ProgIDs differ per machine, so a

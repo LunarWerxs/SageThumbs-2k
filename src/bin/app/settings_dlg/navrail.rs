@@ -183,6 +183,9 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             // 156 the closed box clipped the SageThumbs option mid-word. There is ~220px of
             // clear gap between this label and the field, so the extra 60 costs nothing.
             Pair(ID_LBL_CORNER_MARK, ID_CORNER_MARK, 216, 200),
+            // How big our mark is drawn - directly under the question it answers, and greyed
+            // with the style switch below it whenever the corner is not our mark.
+            Pair(ID_LBL_BADGE_SIZE, ID_BADGE_SIZE, 156, 200),
             Switch(ID_BADGE_ICON),
             Switch(ID_THUMB_CHECKER),
             Switch(ID_VIDEO_COVER_ART),

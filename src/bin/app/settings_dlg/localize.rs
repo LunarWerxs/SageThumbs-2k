@@ -96,6 +96,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
         (ID_LBL_CORNER_MARK, "lbl_corner_mark"),
+        (ID_LBL_BADGE_SIZE, "lbl_badge_size"),
         (ID_BADGE_ICON, "chk_badge_icon"),
         (ID_THUMB_CHECKER, "chk_thumb_checker"),
         (ID_VIDEO_COVER_ART, "chk_video_cover_art"),
@@ -255,6 +256,13 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
             "corner_mark_none",
         ]
         .map(t),
+    );
+    // The badge-size combo rides the same rule (its items are translated and its index is the
+    // stored value, in `BadgeSize::as_dword` order).
+    rebuild_combo(
+        hwnd,
+        ID_BADGE_SIZE,
+        ["badge_size_small", "badge_size_medium", "badge_size_large"].map(t),
     );
     rebuild_combo(
         hwnd,

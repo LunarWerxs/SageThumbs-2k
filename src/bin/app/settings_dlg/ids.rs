@@ -216,6 +216,13 @@ pub(super) const ID_LICENCE_BUY: i32 = 1256;
 /// edit, Quick preview page's "Behavior" section.
 pub(super) const ID_LBL_PREVIEW_BLOCKED_EXTS: i32 = 1259;
 pub(super) const ID_PREVIEW_BLOCKED_EXTS: i32 = 1260;
+/// "Format mark size:" - how big the SageThumbs format mark is drawn (`settings::BadgeSize`).
+/// Sits directly under `ID_CORNER_MARK` on Appearance and is meaningless unless that combo
+/// says "A SageThumbs format mark", so it rides `DEPENDENT_ON_COMBO` like `ID_BADGE_ICON`.
+/// 1262/1263 because everything below is taken - see `control_ids_are_unique`, which is what
+/// actually catches a collision (1257 was one).
+pub(super) const ID_LBL_BADGE_SIZE: i32 = 1262;
+pub(super) const ID_BADGE_SIZE: i32 = 1263;
 
 // ===== The Business-licence reminder strip (`settings_dlg/biznag.rs`) =====
 // Mirrors the sign-in nudge banner's ids just above (1240-1243) — see that block's

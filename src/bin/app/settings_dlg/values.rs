@@ -10,6 +10,11 @@ pub(super) unsafe fn load_values(hwnd: HWND) {
         ID_CORNER_MARK,
         settings::corner_mark().as_dword() as usize,
     );
+    set_combo(
+        hwnd,
+        ID_BADGE_SIZE,
+        settings::badge_size().as_dword() as usize,
+    );
     check(hwnd, ID_BADGE_ICON, settings::format_badge_icon());
     check(hwnd, ID_THUMB_CHECKER, settings::thumb_checker());
     check(hwnd, ID_VIDEO_COVER_ART, settings::prefer_cover_art());
@@ -122,6 +127,13 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
         hwnd,
         ID_CORNER_MARK,
         settings::CornerMark::default().as_dword() as usize,
+    );
+    // The size the badge has always been drawn at: a bigger mark covers more of the picture,
+    // so the steps above it are asked for, never defaulted into.
+    set_combo(
+        hwnd,
+        ID_BADGE_SIZE,
+        settings::BadgeSize::default().as_dword() as usize,
     );
     check(hwnd, ID_BADGE_ICON, true); // ...but when it IS on, colour beats three letters
     check(hwnd, ID_THUMB_CHECKER, false); // real alpha is the better default
@@ -360,7 +372,9 @@ pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
 pub(super) const DEPENDENT_ON_COMBO: &[(i32, u32, &[i32])] = &[(
     ID_CORNER_MARK,
     sagethumbs2k_core::settings::CornerMark::Badge.as_dword(),
-    &[ID_BADGE_ICON],
+    // The size row joins it for the same reason, label included so the whole row greys
+    // together rather than leaving a live-looking caption beside a dead combo.
+    &[ID_BADGE_ICON, ID_LBL_BADGE_SIZE, ID_BADGE_SIZE],
 )];
 
 /// Is `id` a dependent (child) switch? The layout indents these.
@@ -560,6 +574,9 @@ unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     // nothing happened". Only on an actual change — never make Apply nuke the cache.
     let mark_now = settings::CornerMark::from_dword(combo_sel(hwnd, ID_CORNER_MARK, 2) as u32);
     let icon_now = checked(hwnd, ID_BADGE_ICON);
+    // Same rule as the style switch: the SIZE is baked into the cached bitmap too, so a change
+    // that skipped the purge would look like it did nothing.
+    let size_now = settings::BadgeSize::from_dword(combo_sel(hwnd, ID_BADGE_SIZE, 2) as u32);
     let checker_now = checked(hwnd, ID_THUMB_CHECKER);
     // Cover-art-versus-frame decides WHICH PICTURE the tile is, so it belongs to this set
     // too: without the purge, ticking it looks like it did nothing until the cache happens
@@ -572,10 +589,12 @@ unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     let overlay_was = settings::hide_type_overlay();
     let badge_changed = mark_now != mark_was
         || icon_now != settings::format_badge_icon()
+        || size_now != settings::badge_size()
         || checker_now != settings::thumb_checker()
         || cover_now != settings::prefer_cover_art();
     let _ = note(settings::set_corner_mark(mark_now));
     let _ = note(settings::set_format_badge_icon(icon_now));
+    let _ = note(settings::set_badge_size(size_now));
     let _ = note(settings::set_thumb_checker(checker_now));
     let _ = note(settings::set_prefer_cover_art(cover_now));
     // The corner mark's OTHER half. Explorer draws its own overlay on top of what it cached,

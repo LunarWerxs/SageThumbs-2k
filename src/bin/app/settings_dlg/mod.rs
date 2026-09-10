@@ -550,6 +550,8 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
     (ID_LBL_CORNER_MARK, "tip_corner_mark"),
     (ID_CORNER_MARK, "tip_corner_mark"),
+    (ID_LBL_BADGE_SIZE, "tip_badge_size"),
+    (ID_BADGE_SIZE, "tip_badge_size"),
     (ID_BADGE_ICON, "tip_badge_icon"),
     (ID_THUMB_CHECKER, "tip_thumb_checker"),
     (ID_VIDEO_COVER_ART, "tip_video_cover_art"),
