@@ -3,6 +3,9 @@ contact_links:
   - name: Question, or just not sure what's going on
     url: https://github.com/LunarWerxs/SageThumbs-2k/discussions
     about: Not sure it's a bug? Ask in Discussions — no form, no pressure, and we answer there too.
+  - name: 💬 Ask on Discord
+    url: https://discord.gg/PsWpeNUzhk
+    about: Questions, ideas and help from the LunarWerx community, with the people who build these tools in the room.
   - name: Read the FAQ first (it might be a two-minute fix)
     url: https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/FAQ.md
     about: Missing thumbnails, online-only files, antivirus warnings and the portable zip's limits are all covered here.
