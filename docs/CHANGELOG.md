@@ -7,6 +7,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- Licensed installations now see when their updates window ends, and can renew for another
+  12 months from Settings > Licence.
+
 ## 3.0.1
 
 The first update after 3.0. Three things, all from user reports in the days after the release,

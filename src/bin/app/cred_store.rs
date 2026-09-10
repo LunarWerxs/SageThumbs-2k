@@ -29,6 +29,15 @@ const V_REFRESH: &str = "RefreshToken";
 /// the same DPAPI + portable-ini rules, for the same reason: it is per-user, per-machine,
 /// and must not be left behind on a PC a portable copy only borrowed.
 const V_LICENCE_CERT: &str = "LicenceCert";
+/// The redeemed licence key itself, so the Renew button can hand it to the checkout without
+/// asking the customer to find their purchase email again (2026-09-10).
+///
+/// ⛔ IT LIVES HERE AND NOWHERE ELSE. The `license::History` breadcrumb keeps only the
+/// display PREFIX, deliberately, because that file sits in `%ProgramData%` with user-modify
+/// permissions - any account on the machine can read it. A redeemable serial belongs in a
+/// per-user, DPAPI-encrypted store, which is exactly what this module already is. Do not
+/// "simplify" this into the breadcrumb.
+const V_LICENCE_KEY: &str = "LicenceKey";
 const V_SUB: &str = "Sub";
 const V_EMAIL: &str = "Email";
 const V_NAME: &str = "Name";
@@ -205,6 +214,44 @@ pub(crate) fn load_licence_cert() -> Option<String> {
         CURRENT_USER
             .open(oauth_key())
             .and_then(|k| k.get_string(V_LICENCE_CERT))
+            .ok()?
+    };
+    let enc = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    let plain = unsafe { dpapi(&enc, false) }?;
+    String::from_utf8(plain).ok()
+}
+
+/// DPAPI-encrypt and persist the redeemed licence key. Best-effort → returns whether it
+/// stuck; a machine that cannot store it is exactly as licensed as before, it just sends
+/// the customer to the checkout's own "enter your key" field on a renewal.
+///
+/// See [`V_LICENCE_KEY`] for why this is the ONLY place a full key is ever written.
+pub(crate) fn save_licence_key(key: &str) -> bool {
+    let Some(enc) = (unsafe { dpapi(key.as_bytes(), true) }) else {
+        return false;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(enc);
+    if settings::portable() {
+        return settings::set_string(&portable_key(V_LICENCE_KEY), &b64).is_ok();
+    }
+    CURRENT_USER
+        .create(oauth_key())
+        .and_then(|k| k.set_string(V_LICENCE_KEY, &b64))
+        .is_ok()
+}
+
+/// Load + DPAPI-decrypt the redeemed licence key, or `None` if absent or undecryptable
+/// (another machine, another user). `None` only ever means "we cannot pre-fill the renewal
+/// link", never anything about whether this machine is licensed.
+pub(crate) fn load_licence_key() -> Option<String> {
+    let b64 = if settings::portable() {
+        settings::get_string_opt(&portable_key(V_LICENCE_KEY))?
+    } else {
+        CURRENT_USER
+            .open(oauth_key())
+            .and_then(|k| k.get_string(V_LICENCE_KEY))
             .ok()?
     };
     let enc = base64::engine::general_purpose::STANDARD

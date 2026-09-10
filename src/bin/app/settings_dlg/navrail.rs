@@ -337,11 +337,16 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Head(ID_LBL_LICENCE),
             Status(ID_LICENCE_MODE_STATUS),
             Status(ID_LICENCE_STATE_STATUS),
+            Status(ID_LICENCE_UPDATES_STATUS),
             Head(ID_LBL_LICENCE_KEY),
             Wide(ID_LICENCE_KEY_EDIT),
             BtnStatus(ID_LICENCE_REDEEM_BTN, 160, ID_LICENCE_REDEEM_STATUS),
             Btn(ID_LICENCE_CHECK_NOW, 184),
             Btn(ID_LICENCE_BUY, 184),
+            // LAST on purpose. It is the one row on this page that hides itself (only a
+            // machine near or past its updates window sees it), and a hidden row anywhere
+            // but the end leaves a 32px hole in the middle of the page.
+            Btn(ID_LICENCE_RENEW, 184),
         ],
     }
 }
@@ -1007,6 +1012,10 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
             }
         }
     });
+    // The blanket show above does not know that some controls hide themselves. Anything
+    // conditionally visible has to re-decide right here, or navigating away and back is all
+    // it takes to reveal a row the page had deliberately hidden.
+    licence_ui::apply_conditional_visibility(hwnd);
     for i in 0..NCAT as i32 {
         if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
             let _ = InvalidateRect(Some(nav), None, true);

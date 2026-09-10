@@ -143,6 +143,17 @@ pub(crate) struct Verified {
     /// FLOOR (no relay answer, see `license::entitlement_and_cert_expiry`) goes dark -
     /// never used to gate anything here, `verify` already refuses an expired one above.
     pub exp_unix: i64,
+    /// The certificate's own `maint` claim, in Unix seconds: when this machine's 12 months
+    /// of updates end. `None` when the certificate carries none, which means "updates never
+    /// lapse" and is exactly why [`updates_allowed`] defaults to true in that case.
+    ///
+    /// Exposed (2026-09-10) as the OFFLINE FALLBACK for the same fact the relay answers with
+    /// `maintenanceEndsAt`: `license::LicenceSnapshot` prefers the relay breadcrumb and reads
+    /// this only when the breadcrumb has no window on record. Never a licence gate - a closed
+    /// window stops new builds being offered and nothing else.
+    ///
+    /// [`updates_allowed`]: Verified::updates_allowed
+    pub maint_unix: Option<i64>,
 }
 
 /// Why a certificate did not verify. Every variant means "no certificate" to the caller,
@@ -220,6 +231,7 @@ pub(crate) fn verify(
         // No `maint` means updates never lapse. Reading it as 0 would refuse everything.
         updates_allowed: claims.maint.is_none_or(|m| build_date_unix <= m),
         exp_unix: claims.exp,
+        maint_unix: claims.maint,
     })
 }
 

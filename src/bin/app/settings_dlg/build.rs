@@ -950,6 +950,22 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LICENCE_STATE_STATUS,
         hinst,
     );
+    // The updates window, under the licence state. Its own line rather than a suffix on the
+    // state line, because the two facts have different lifetimes (perpetual licence, twelve
+    // months of updates) and running them together is exactly how "my licence expired" gets
+    // read into a licence that did not.
+    ctl(
+        hwnd,
+        STATIC,
+        "",
+        WINDOW_STYLE(0),
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_UPDATES_STATUS,
+        hinst,
+    );
     ctl(
         hwnd,
         STATIC,
@@ -1012,6 +1028,20 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         184,
         26,
         ID_LICENCE_CHECK_NOW,
+        hinst,
+    );
+    // Another twelve months of updates for a licence already held. Created always, SHOWN
+    // only near or past the window's end - `licence_ui::refresh_licence_status` decides.
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_licence_renew"),
+        WS_TABSTOP,
+        0,
+        0,
+        184,
+        26,
+        ID_LICENCE_RENEW,
         hinst,
     );
     // Where a licence comes from. Every other line on this page assumes the user already

@@ -83,6 +83,35 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
         let _ = InvalidateRect(Some(h), None, true);
     }
+    // The updates window: its own line, and the renewal button that goes with it. Both are
+    // driven from the SAME snapshot as everything above, so the page can never show a
+    // window end that disagrees with the licence state printed one line up.
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_UPDATES_STATUS) {
+        let text = licence_updates_line(&snap).unwrap_or_default();
+        let w = wide(&text);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+        let _ = InvalidateRect(Some(h), None, true);
+    }
+    apply_conditional_visibility(hwnd);
+}
+
+/// Hide the Renew button unless this machine is near or past its updates window.
+///
+/// ⛔ Must run AFTER anything that shows a whole page's controls. `navrail::switch_category`
+/// blanket-`SW_SHOW`s every control of the page being opened, so a decision made once at
+/// load is undone the moment the user navigates away and back - which is why that function
+/// calls this too, and why this is separate from [`refresh_licence_status`] rather than
+/// inlined in it.
+pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
+    let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_RENEW) else {
+        return;
+    };
+    let show = if renew_button_visible(&crate::license::snapshot()) {
+        SW_SHOW
+    } else {
+        SW_HIDE
+    };
+    let _ = ShowWindow(h, show);
 }
 
 /// Set the redeem-result line and its tone; repaints so the tri-state colour re-reads

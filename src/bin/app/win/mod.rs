@@ -1342,6 +1342,84 @@ fn copy_wide_capped(dst: &mut [u16], s: &str) {
     dst[n] = 0;
 }
 
+/// A modal two-choice prompt whose BUTTONS CARRY THE VERBS ("Renew" / "Not now"), rather
+/// than a `MessageBox`'s fixed Yes/No. Returns true when the first (affirmative) button was
+/// chosen; anything else - the second button, Escape, the close box, or the API failing
+/// outright - is false, which every caller must treat as "do nothing".
+///
+/// `TaskDialogIndirect` rather than `MessageBoxW` because a Yes/No pair makes the reader
+/// reconstruct which verb "Yes" meant from the sentence above it, and a dialog offering to
+/// spend money is the worst place to make anyone guess. The app already links comctl32 v6
+/// (its manifest and every owner-drawn control depend on it), so this costs no new
+/// dependency; on the impossible failure path it falls back to a plain `MB_YESNO` so the
+/// choice is still offered.
+pub(crate) unsafe fn confirm_verbs(
+    parent: HWND,
+    title: &str,
+    body: &str,
+    yes_label: &str,
+    no_label: &str,
+) -> bool {
+    use windows::Win32::UI::Controls::{
+        TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS,
+        TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW,
+    };
+
+    // Arbitrary ids; only their identity matters, and neither collides with IDOK/IDCANCEL.
+    const ID_YES: i32 = 1001;
+    const ID_NO: i32 = 1002;
+
+    let w_title = wide(title);
+    let w_body = wide(body);
+    let w_yes = wide(yes_label);
+    let w_no = wide(no_label);
+    let buttons = [
+        TASKDIALOG_BUTTON {
+            nButtonID: ID_YES,
+            pszButtonText: PCWSTR(w_yes.as_ptr()),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: ID_NO,
+            pszButtonText: PCWSTR(w_no.as_ptr()),
+        },
+    ];
+
+    let mut cfg = TASKDIALOGCONFIG {
+        cbSize: core::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: parent,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        // No stock buttons at all: the two custom ones below carry the whole choice.
+        dwCommonButtons: TASKDIALOG_COMMON_BUTTON_FLAGS(0),
+        pszWindowTitle: PCWSTR(w_title.as_ptr()),
+        pszContent: PCWSTR(w_body.as_ptr()),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: ID_NO,
+        ..Default::default()
+    };
+    // `pszMainIcon` is a union; the information icon is the same intent `MB_ICONINFORMATION`
+    // carried on the MessageBox this replaced.
+    cfg.Anonymous1.pszMainIcon = PCWSTR(-3isize as *const u16); // TD_INFORMATION_ICON
+
+    let mut pressed = 0i32;
+    // SAFETY: every pointer in `cfg` borrows a local that outlives this call, and the call
+    // is synchronous - the dialog is gone before any of them drop.
+    if TaskDialogIndirect(&cfg, Some(&mut pressed), None, None).is_ok() {
+        return pressed == ID_YES;
+    }
+
+    // comctl32 refused (no v6 activation context in some embedding we do not control):
+    // still ask, just with the generic buttons.
+    let w_fallback_title = wide(title);
+    let w_fallback_body = wide(body);
+    MessageBoxW(
+        Some(parent),
+        PCWSTR(w_fallback_body.as_ptr()),
+        PCWSTR(w_fallback_title.as_ptr()),
+        MB_YESNO | MB_ICONINFORMATION,
+    ) == IDYES
+}
+
 /// One-shot tray balloon from a WINDOWLESS helper process: a throwaway hidden window
 /// hosts a temporary notify icon, pops a `NIF_INFO` balloon, pumps briefly so it paints
 /// and lingers, then removes the icon and returns. This is the feedback channel for

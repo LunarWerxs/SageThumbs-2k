@@ -13,6 +13,34 @@ Every release is now scanned **before** it is published (see *The gate* below). 
 and including v1.2.0 were not, which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on
 SourceForge's listing instead of in our own pipeline.
 
+## Marking a security release: put `[security-release]` in the notes
+
+**If a release fixes a security issue, its GitHub release notes MUST contain the literal
+text `[security-release]`.** Anywhere in the body, in any formatting, in any case. That
+marker is not decoration: it is the switch that gets the build to customers whose updates
+window has closed.
+
+A commercial licence is perpetual and carries 12 months of updates. Past that window the app
+stops OFFERING new builds and points at the renewal instead. **A release carrying this marker
+is exempt from that rule and is offered to every licensed installation regardless.** Ship a
+security fix without the marker and the machines most likely to be running old, vulnerable
+code are exactly the ones that never hear about it.
+
+How it travels:
+
+- `scripts/packaging/analytics/worker.js` reads GitHub's `releases/latest` at the edge and
+  publishes `latestSecurity: true` in the manifest when the body contains the marker (its
+  `SECURITY_RELEASE_MARKER` constant), alongside `latestPublishedAt`.
+- `src/bin/app/update.rs` reads both, and its `is_security_body` applies the identical rule on
+  the direct-GitHub fallback path. `update_offer` is the one decision function; its
+  `a_security_release_overrides_a_closed_window` test is the rule written down as code.
+- The marker is matched as PLAIN TEXT, never a regex, so `**[security-release]**` and
+  `> [Security-Release]` both work. `security-release` without the brackets does not, on
+  purpose: a release note is free to use the phrase in prose without becoming one.
+
+The rest of this document is about ANTIVIRUS false positives, which are a different subject
+that happens to share the word "security".
+
 ## What has actually been detected
 
 Full history, every installer still in `dist/`, looked up on VirusTotal by hash:

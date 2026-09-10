@@ -105,7 +105,12 @@ enum Status {
     Idle,
     Checking,
     UpToDate,
-    Available(String),
+    /// A newer release exists. Carries the WHOLE release, not just its tag: the pill only
+    /// draws the tag, but the click handler needs the publication date and the
+    /// security-release flag to decide whether this machine's updates window covers it
+    /// (`update::update_offer`), and re-fetching them on the click would be a second network
+    /// round trip for facts the check already had in hand.
+    Available(update::LatestRelease),
     Failed,
 }
 
@@ -523,7 +528,9 @@ unsafe fn start_check(hwnd: HWND) {
     std::thread::spawn(move || {
         let (code, lp) = match update::check() {
             update::UpdateCheck::UpToDate => (0usize, 0isize),
-            update::UpdateCheck::Available(tag) => (1usize, Box::into_raw(Box::new(tag)) as isize),
+            update::UpdateCheck::Available(latest) => {
+                (1usize, Box::into_raw(Box::new(latest)) as isize)
+            }
             update::UpdateCheck::Failed => (2usize, 0isize),
         };
         let posted = PostMessageW(
@@ -533,7 +540,7 @@ unsafe fn start_check(hwnd: HWND) {
             LPARAM(lp),
         );
         if post_failed_leaks_tag(posted.is_ok(), lp) {
-            drop(Box::from_raw(lp as *mut String));
+            drop(Box::from_raw(lp as *mut update::LatestRelease));
         }
     });
 }
@@ -589,6 +596,13 @@ unsafe fn offer_update(hwnd: HWND) {
     if st.is_null() || (*st).installing {
         return;
     }
+    // A licensed machine whose 12 months of updates have ended is offered the RENEWAL
+    // instead of the install (2026-09-10). Never an auto-install past the window, and never
+    // a refusal of the app itself - the copy already here keeps working exactly as it is.
+    if let Some(ends_unix) = outside_window_end(hwnd) {
+        offer_renewal(hwnd, ends_unix);
+        return;
+    }
     let cap = wide(crate::win::t("upd_confirm_title"));
     let prompt = wide(crate::win::t("upd_confirm"));
     if MessageBoxW(
@@ -602,6 +616,56 @@ unsafe fn offer_update(hwnd: HWND) {
     }
     (*st).installing = true;
     start_install(hwnd);
+}
+
+/// Is the release this card is currently offering published AFTER this machine's updates
+/// window closed? `Some(ends_unix)` when it is; `None` in every other case, including a card
+/// that has no release on offer at all.
+///
+/// The whole decision lives in `update::update_offer`; this only feeds it the two things the
+/// window owns - the release the pill is showing, and the licence snapshot as of now.
+unsafe fn outside_window_end(hwnd: HWND) -> Option<u64> {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return None;
+    }
+    let Status::Available(latest) = &(*st).status else {
+        return None;
+    };
+    match update::offer_for(&crate::license::snapshot(), Some(latest)) {
+        update::Offer::OutsideWindow { ends_unix } => Some(ends_unix),
+        _ => None,
+    }
+}
+
+/// The renewal dialog shown in place of the install offer: what is available, when this
+/// machine's updates ended, what renewing costs, and - said plainly, because it is the thing
+/// people actually worry about - that the version they have keeps working.
+///
+/// Yes opens the checkout with the stored key; No does nothing at all. There is deliberately
+/// no third "install anyway" button: past the window the build is not ours to hand over.
+unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
+    let st = about_state(hwnd);
+    let ver = if st.is_null() {
+        String::new()
+    } else {
+        match &(*st).status {
+            Status::Available(latest) => latest.tag.clone(),
+            _ => String::new(),
+        }
+    };
+    let body = crate::win::t("upd_outside_window")
+        .replace("{ver}", &ver)
+        .replace("{date}", &crate::settings_dlg::format_unix_date(ends_unix));
+    if crate::win::confirm_verbs(
+        hwnd,
+        crate::win::t("upd_renew_title"),
+        &body,
+        crate::win::t("btn_renew"),
+        crate::win::t("btn_not_now"),
+    ) {
+        open_url(&crate::license::renew_url());
+    }
 }
 
 /// Kick off `update::download_and_install` on a worker thread; it posts the outcome back
@@ -781,7 +845,17 @@ unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
         Status::Idle => (rgb(150, 150, 150), t("about_check_now").to_string()),
         Status::Checking => (rgb(150, 150, 150), t("about_checking").to_string()),
         Status::UpToDate => (rgb(63, 185, 80), t("about_uptodate").to_string()),
-        Status::Available(tag) => (rgb(210, 153, 34), format!("{} {}", t("about_update"), tag)),
+        Status::Available(latest) => (
+            rgb(210, 153, 34),
+            // Outside this machine's updates window the pill says so in place of the plain
+            // "Update to X", so the state is visible before anything is clicked.
+            match update::offer_for(&crate::license::snapshot(), Some(latest)) {
+                update::Offer::OutsideWindow { .. } => {
+                    format!("{} {}", t("about_update_outside"), latest.tag)
+                }
+                _ => format!("{} {}", t("about_update"), latest.tag),
+            },
+        ),
         Status::Failed => (rgb(190, 110, 110), t("about_check_failed").to_string()),
     }
 }
@@ -927,19 +1001,19 @@ unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESUL
     let st = about_state(hwnd);
     if st.is_null() {
         if lparam.0 != 0 {
-            // Window torn down between post and dispatch — reclaim the tag.
-            drop(Box::from_raw(lparam.0 as *mut String));
+            // Window torn down between post and dispatch — reclaim the release.
+            drop(Box::from_raw(lparam.0 as *mut update::LatestRelease));
         }
         return LRESULT(0);
     }
     let result = match wparam.0 {
         1 => {
-            let tag = if lparam.0 != 0 {
-                *Box::from_raw(lparam.0 as *mut String)
+            let latest = if lparam.0 != 0 {
+                *Box::from_raw(lparam.0 as *mut update::LatestRelease)
             } else {
-                String::new()
+                update::LatestRelease::unknown()
             };
-            Status::Available(tag)
+            Status::Available(latest)
         }
         2 => Status::Failed,
         _ => Status::UpToDate,

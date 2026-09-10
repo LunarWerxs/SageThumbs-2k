@@ -153,6 +153,51 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
 }
 
+/// How long before the updates window ends the Licence page starts offering the renewal:
+/// 60 days. Long enough that a business can put it through a purchase process before it
+/// lapses, short enough that the button is not simply part of the furniture - which is what
+/// it would become if it were always visible, and a button nobody needs yet is a nag.
+pub(crate) const RENEW_NOTICE_SECS: u64 = 60 * 24 * 60 * 60;
+
+/// Does this snapshot describe a machine whose UPDATES WINDOW is a real, current fact worth
+/// showing? A window end on record, a key that redeemed it, and no revocation - a revoked
+/// seat needs a licence, not another twelve months of updates on one it no longer holds.
+fn has_updates_window(snap: &crate::license::LicenceSnapshot) -> Option<u64> {
+    if snap.key_prefix.is_empty() || snap.last_status == "revoked" {
+        return None;
+    }
+    snap.maint_unix
+}
+
+/// The updates-window line under the licence state: "Updates until <date>" while the window
+/// is open, "Updates ended <date>" once it has closed, `None` when there is no window on
+/// record (a personal copy, or a licence whose updates never lapse) and the line stays blank.
+///
+/// ⛔ Deliberately NOT folded into [`licence_state_line`]. The licence is perpetual and the
+/// updates window is not; one sentence carrying both is how a customer reads "ended" as "my
+/// licence expired", which is the single wrong idea this whole feature exists to prevent.
+pub(crate) fn licence_updates_line(snap: &crate::license::LicenceSnapshot) -> Option<String> {
+    let ends = has_updates_window(snap)?;
+    let key = if ends >= snap.now_unix {
+        "licence_updates_until"
+    } else {
+        "licence_updates_ended"
+    };
+    Some(t(key).replace("{date}", &format_unix_date(ends)))
+}
+
+/// Should the "Renew updates (US$29)" button be visible? Only for a machine that actually
+/// holds a window, and only once that window is within [`RENEW_NOTICE_SECS`] of closing or
+/// has already closed. Pure over the snapshot so both boundaries are pinned by tests.
+pub(crate) fn renew_button_visible(snap: &crate::license::LicenceSnapshot) -> bool {
+    let Some(ends) = has_updates_window(snap) else {
+        return false;
+    };
+    // Past the end: `saturating_sub` is 0, which is inside the window by definition. Before
+    // it: how long is left.
+    ends.saturating_sub(snap.now_unix) <= RENEW_NOTICE_SECS
+}
+
 /// The human sentence for the relay's `reason` behind a revocation (`seat_revoked`: the
 /// licence holder ejected this machine; `contract_ended`: the licence itself was cancelled),
 /// or `None` for anything else, including the older breadcrumbs that never recorded one.
@@ -189,7 +234,7 @@ fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
 /// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
 /// line has no use for a time-of-day). No chrono/time dependency for one call site.
-fn format_unix_date(unix_secs: u64) -> String {
+pub(crate) fn format_unix_date(unix_secs: u64) -> String {
     use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
     use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     if unix_secs == 0 {
@@ -615,6 +660,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_LICENCE_KEY_EDIT, "tip_licence_key"),
     (ID_LICENCE_REDEEM_BTN, "tip_licence_redeem"),
     (ID_LICENCE_CHECK_NOW, "tip_licence_check_now"),
+    (ID_LICENCE_RENEW, "tip_licence_renew"),
     (ID_LICENCE_BUY, "tip_licence_buy"),
     (ID_SELECT_ALL, "tip_select_all"),
     (ID_CLEAR_ALL, "tip_clear_all"),
@@ -1746,6 +1792,7 @@ unsafe fn on_command_licence(hwnd: HWND, id: i32) {
         ID_LICENCE_REDEEM_BTN => licence_ui::on_redeem_click(hwnd),
         ID_LICENCE_CHECK_NOW => licence_ui::on_check_now_click(hwnd),
         ID_LICENCE_BUY => crate::win::open_url(crate::license::BUY_URL),
+        ID_LICENCE_RENEW => crate::win::open_url(&crate::license::renew_url()),
         _ => {}
     }
 }
@@ -2113,6 +2160,7 @@ mod tests {
             last_status: last_status.to_string(),
             last_reason: String::new(),
             cert_expires_unix,
+            maint_unix: None,
             now_unix,
         }
     }
@@ -2121,6 +2169,128 @@ mod tests {
     /// tell apart — the same four the Settings status line and the About box's line both
     /// show. Pure over its argument (no registry, no file, no network), so every boundary
     /// pins without touching the real breadcrumb.
+    /// A licensed snapshot with an updates window `ends` and the clock at `now`, for the
+    /// updates-line and renew-button tests below.
+    fn snap_window(ends: Option<u64>, now: u64) -> crate::license::LicenceSnapshot {
+        let mut s = snap_at(
+            crate::license::Mode::Business,
+            "esk_A1B2",
+            "active",
+            now.saturating_sub(3600),
+            None,
+            now,
+        );
+        s.maint_unix = ends;
+        s
+    }
+
+    /// The updates line: "until" while open (INCLUSIVE at the boundary - the last day is
+    /// still a day you have), "ended" once past, and blank when there is no window at all.
+    ///
+    /// The strings are asserted to be PRESENT and DISTINCT rather than hard-coded here: a
+    /// test that pins English text just re-types `en.toml` and fails on every wording change,
+    /// while a missing key would make both branches render identically, which is the failure
+    /// that actually matters.
+    #[test]
+    fn licence_updates_line_says_until_or_ended_and_nothing_without_a_window() {
+        let now = 1_800_000_000u64;
+        let day = 24 * 60 * 60;
+
+        assert!(!t("licence_updates_until").is_empty(), "string is missing");
+        assert!(!t("licence_updates_ended").is_empty(), "string is missing");
+        assert_ne!(t("licence_updates_until"), t("licence_updates_ended"));
+        assert!(t("licence_updates_until").contains("{date}"));
+        assert!(t("licence_updates_ended").contains("{date}"));
+
+        let open = licence_updates_line(&snap_window(Some(now + 30 * day), now)).expect("open");
+        assert_eq!(
+            open,
+            t("licence_updates_until").replace("{date}", &format_unix_date(now + 30 * day))
+        );
+        // The boundary belongs to the customer.
+        assert!(licence_updates_line(&snap_window(Some(now), now))
+            .expect("boundary")
+            .starts_with(t("licence_updates_until").split("{date}").next().unwrap()));
+
+        let past = licence_updates_line(&snap_window(Some(now - day), now)).expect("closed");
+        assert_eq!(
+            past,
+            t("licence_updates_ended").replace("{date}", &format_unix_date(now - day))
+        );
+
+        assert_eq!(licence_updates_line(&snap_window(None, now)), None);
+        // A revoked seat's window is not a fact worth showing: it needs a licence, not
+        // another twelve months of updates on one it no longer holds.
+        let mut revoked = snap_window(Some(now + 30 * day), now);
+        revoked.last_status = "revoked".into();
+        assert_eq!(licence_updates_line(&revoked), None);
+        // Neither is a copy that never redeemed anything.
+        let mut nokey = snap_window(Some(now + 30 * day), now);
+        nokey.key_prefix = String::new();
+        assert_eq!(licence_updates_line(&nokey), None);
+    }
+
+    /// The Renew button appears inside the last 60 days and stays visible after the window
+    /// closes; before that it is hidden, because a button offering to buy something nobody
+    /// needs yet is just a nag.
+    #[test]
+    fn renew_button_appears_only_near_or_past_the_window_end() {
+        let now = 1_800_000_000u64;
+        let day = 24 * 60 * 60;
+
+        assert!(!renew_button_visible(&snap_window(
+            Some(now + 61 * day),
+            now
+        )));
+        assert!(renew_button_visible(&snap_window(
+            Some(now + RENEW_NOTICE_SECS),
+            now
+        )));
+        assert!(renew_button_visible(&snap_window(Some(now + day), now)));
+        assert!(renew_button_visible(&snap_window(Some(now), now)));
+        assert!(renew_button_visible(&snap_window(
+            Some(now - 365 * day),
+            now
+        )));
+
+        assert!(
+            !renew_button_visible(&snap_window(None, now)),
+            "no window, no button"
+        );
+        let mut revoked = snap_window(Some(now), now);
+        revoked.last_status = "revoked".into();
+        assert!(!renew_button_visible(&revoked));
+    }
+
+    /// Every string the renewal path renders exists in the shipped English table, and each
+    /// one still carries the placeholder its call site substitutes. A missing key renders as
+    /// an empty control or a key name on screen, which no other test here would notice.
+    #[test]
+    fn every_renewal_string_exists_and_keeps_its_placeholders() {
+        for key in [
+            "btn_licence_renew",
+            "tip_licence_renew",
+            "upd_renew_title",
+            "btn_renew",
+            "btn_not_now",
+            "upd_toast_title",
+            "about_update_outside",
+        ] {
+            assert!(!t(key).is_empty(), "{key} is missing from the locale table");
+        }
+        for (key, placeholders) in [
+            ("upd_outside_window", &["{ver}", "{date}"][..]),
+            ("upd_outside_toast", &["{ver}", "{date}"][..]),
+            ("upd_toast_body", &["{ver}"][..]),
+        ] {
+            let s = t(key);
+            assert!(!s.is_empty(), "{key} is missing from the locale table");
+            for p in placeholders {
+                assert!(s.contains(p), "{key} lost its {p} placeholder");
+            }
+        }
+    }
+
     #[test]
     fn licence_state_line_covers_all_four_states() {
         // A revocation WITH the relay's reason says why; an unknown token adds nothing.

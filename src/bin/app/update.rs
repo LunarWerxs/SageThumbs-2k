@@ -41,8 +41,10 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) enum UpdateCheck {
     /// Running the newest published release (or newer, e.g. a dev build).
     UpToDate,
-    /// A newer release exists; carries its display tag (e.g. "0.4.6").
-    Available(String),
+    /// A newer release exists; carries everything known about it (tag, publication date,
+    /// whether it is a security release) so the caller can decide whether this machine's
+    /// updates window covers it - see [`update_offer`].
+    Available(LatestRelease),
     /// Couldn't reach / parse the update server — tell the user to check manually.
     Failed,
 }
@@ -75,10 +77,139 @@ pub(crate) fn check() -> UpdateCheck {
     };
     match (parse_ver(tag), parse_ver(env!("CARGO_PKG_VERSION"))) {
         (Some(latest), Some(current)) if latest > current => {
-            UpdateCheck::Available(tag.trim_start_matches(['v', 'V']).to_string())
+            // The same two extra facts the Worker manifest carries, read straight off
+            // GitHub's own release object on this fallback path, so a machine that reaches
+            // GitHub but not the Worker still gets an honest window decision instead of a
+            // date-less "offer it to everyone".
+            UpdateCheck::Available(LatestRelease {
+                tag: tag.trim_start_matches(['v', 'V']).to_string(),
+                published_unix: json
+                    .get("published_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(crate::license::parse_iso_unix),
+                security: json
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_security_body),
+            })
         }
         (Some(_), Some(_)) => UpdateCheck::UpToDate,
         _ => UpdateCheck::Failed, // unparseable tag — don't guess
+    }
+}
+
+/// The literal marker a security release puts in its notes, matched case-insensitively as
+/// PLAIN TEXT (never a regex), so the notes are free to wrap it in any formatting. Kept in
+/// step with the Worker's own `SECURITY_RELEASE_MARKER`; documented for release authors in
+/// `docs/RELEASE-SECURITY.md`.
+const SECURITY_RELEASE_MARKER: &str = "[security-release]";
+
+/// Do these release notes mark a security release?
+fn is_security_body(body: &str) -> bool {
+    body.to_ascii_lowercase().contains(SECURITY_RELEASE_MARKER)
+}
+
+/// The three facts the manifest carries about the newest published release. Bundled so the
+/// throttle cache, the worker fetch and the offer decision all move one value instead of
+/// three loose parameters that could be paired up wrongly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LatestRelease {
+    /// The display tag, e.g. "3.0.1".
+    pub tag: String,
+    /// When GitHub published it, in Unix seconds. `None` when the manifest did not say -
+    /// an older Worker, or a GitHub hiccup - which reads as "no publication date on record"
+    /// and leaves the build offered to everyone (see [`update_offer`]).
+    pub published_unix: Option<u64>,
+    /// The release notes carried the `[security-release]` marker. A security release is
+    /// offered to every licensed installation regardless of its updates window; see
+    /// `docs/RELEASE-SECURITY.md`.
+    pub security: bool,
+}
+
+impl LatestRelease {
+    /// A tag with nothing else known - what the direct-GitHub fallback [`check`] and every
+    /// pre-2026-09-10 cache file can say. Deliberately the "offer it to everyone" shape.
+    fn bare(tag: String) -> Self {
+        Self {
+            tag,
+            published_unix: None,
+            security: false,
+        }
+    }
+
+    /// A release we know nothing about at all, not even its tag - the About card's
+    /// "the post carried no payload" fallback. Same "offer it" shape as [`bare`].
+    pub(crate) fn unknown() -> Self {
+        Self::bare(String::new())
+    }
+}
+
+/// What to do about a release that is newer than the running build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Offer {
+    /// Offer the install, exactly as this app always has.
+    Install,
+    /// The build was published after this machine's 12 months of updates ended: say so,
+    /// offer the renewal, and do NOT install it. `ends_unix` is when the window closed, for
+    /// the message to name.
+    OutsideWindow { ends_unix: u64 },
+    /// Nothing to offer - no newer release is known.
+    None,
+}
+
+/// THE decision: given what this machine's licence says and what the newest release is,
+/// should the app offer to install it?
+///
+/// Pure, and every branch is pinned by a test below. The rules, in the order they are
+/// applied and with the reason each one exists:
+///
+/// 1. **No updates window on record → Install.** This is a personal-use copy, an unredeemed
+///    one, or a licence whose updates never lapse. It is also every machine that has not
+///    yet heard from the relay, which is why "unknown" must never read as "closed".
+/// 2. **A security release → Install.** Bought within the window or not, a licensed
+///    installation gets security fixes. This outranks the window on purpose and is the one
+///    rule that must survive any future edit here.
+/// 3. **No publication date on record → Install.** We cannot honestly say a build is
+///    outside a window we cannot place it against, so we do not.
+/// 4. **Published after the window closed → `OutsideWindow`.** Offer the renewal instead.
+///    Note the comparison is `>`, so a build published exactly at the boundary is inside -
+///    the same inclusive rule `licence_cert::verify` uses for `build_date <= maint`.
+/// 5. Otherwise → **Install**.
+///
+/// ⛔ NOTHING HERE EVER STOPS THE APP. The worst outcome this function can produce is that a
+/// new build is not offered; the installed version keeps working, with every feature, for as
+/// long as the customer likes. That is what "perpetual licence" means and it is the whole
+/// reason this decision lives apart from `license::Entitlement`.
+pub(crate) fn update_offer(
+    snap: &crate::license::LicenceSnapshot,
+    latest_published_unix: Option<u64>,
+    latest_security: bool,
+) -> Offer {
+    let Some(ends_unix) = snap.maint_unix else {
+        return Offer::Install;
+    };
+    if latest_security {
+        return Offer::Install;
+    }
+    let Some(published) = latest_published_unix else {
+        return Offer::Install;
+    };
+    if published > ends_unix {
+        Offer::OutsideWindow { ends_unix }
+    } else {
+        Offer::Install
+    }
+}
+
+/// [`update_offer`] over an optional release: `None` in, [`Offer::None`] out. The shape every
+/// caller actually has, since the throttled check answers `Option<LatestRelease>`.
+pub(crate) fn offer_for(
+    snap: &crate::license::LicenceSnapshot,
+    latest: Option<&LatestRelease>,
+) -> Offer {
+    match latest {
+        Some(l) => update_offer(snap, l.published_unix, l.security),
+        None => Offer::None,
     }
 }
 
@@ -100,17 +231,51 @@ fn cache_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("SageThumbs2K-update.txt"))
 }
 
-fn read_cache() -> Option<(u64, String)> {
-    let text = std::fs::read_to_string(cache_path()?).ok()?;
+/// Read the throttle/cache file. Lines 3 and 4 (publication date, security flag) were added
+/// 2026-09-10 and are OPTIONAL: a cache written by an older build is two lines and parses
+/// into a [`LatestRelease::bare`], which is the "offer it to everyone" shape - so upgrading
+/// never makes the app briefly refuse a build over a date it simply has not fetched yet.
+fn read_cache() -> Option<(u64, LatestRelease)> {
+    parse_cache(&std::fs::read_to_string(cache_path()?).ok()?)
+}
+
+/// The pure half of [`read_cache`], so every shape of cache file - including the two-line one
+/// every pre-2026-09-10 build wrote - can be pinned by a test without touching the disk.
+fn parse_cache(text: &str) -> Option<(u64, LatestRelease)> {
     let mut lines = text.lines();
     let secs = lines.next()?.trim().parse::<u64>().ok()?;
     let tag = lines.next()?.trim().to_string();
-    (!tag.is_empty()).then_some((secs, tag))
+    if tag.is_empty() {
+        return None;
+    }
+    // `0` is the on-disk spelling of "not known", the same convention the licence
+    // breadcrumb's own `maint_unix` uses.
+    let published_unix = lines
+        .next()
+        .and_then(|l| l.trim().parse::<u64>().ok())
+        .filter(|&p| p != 0);
+    let security = lines.next().is_some_and(|l| l.trim() == "1");
+    Some((
+        secs,
+        LatestRelease {
+            tag,
+            published_unix,
+            security,
+        },
+    ))
 }
 
-fn write_cache(secs: u64, tag: &str) {
+fn write_cache(secs: u64, latest: &LatestRelease) {
     if let Some(p) = cache_path() {
-        let _ = std::fs::write(p, format!("{secs}\n{tag}\n"));
+        let _ = std::fs::write(
+            p,
+            format!(
+                "{secs}\n{}\n{}\n{}\n",
+                latest.tag,
+                latest.published_unix.unwrap_or(0),
+                u8::from(latest.security)
+            ),
+        );
     }
 }
 
@@ -132,10 +297,10 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
         let now = now_secs();
         // Within the interval: answer from the cache (no network), but still nudge about a
         // previously-found update so the user isn't left unaware between checks.
-        if let Some((last, tag)) = read_cache() {
+        if let Some((last, latest)) = read_cache() {
             if now.saturating_sub(last) < CHECK_INTERVAL.as_secs() {
-                if is_newer(&tag) {
-                    on_newer(tag);
+                if is_newer(&latest.tag) {
+                    on_newer(latest.tag);
                 }
                 return;
             }
@@ -144,21 +309,28 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
         // newer tag) so we don't re-hit for a day; on a transient failure leave the cache
         // untouched so the NEXT Settings open retries instead of waiting out the interval.
         match check() {
-            UpdateCheck::Available(tag) => {
-                write_cache(now, &tag);
-                on_newer(tag);
+            UpdateCheck::Available(latest) => {
+                write_cache(now, &latest);
+                on_newer(latest.tag);
             }
-            UpdateCheck::UpToDate => write_cache(now, env!("CARGO_PKG_VERSION")),
+            UpdateCheck::UpToDate => write_cache(
+                now,
+                &LatestRelease::bare(env!("CARGO_PKG_VERSION").to_string()),
+            ),
             UpdateCheck::Failed => {}
         }
     });
 }
 
-/// Ask the sponsor Worker for the latest version. The Worker already serves a `latest`
-/// field in its manifest (sourced from GitHub server-side + edge-cached), so the client
-/// never touches GitHub directly and can't be rate-limited. Reuses the startup manifest
-/// request with new=0. Returns the latest tag (e.g. "0.4.9") or None on any failure.
-fn latest_from_worker() -> Option<String> {
+/// Ask the sponsor Worker for the latest release. The Worker already serves `latest`,
+/// `latestPublishedAt` and `latestSecurity` in its manifest (sourced from GitHub
+/// server-side + edge-cached), so the client never touches GitHub directly and can't be
+/// rate-limited. Reuses the startup manifest request with new=0. `None` on any failure.
+///
+/// Only `latest` is required. A Worker that has not been redeployed with the 2026-09-10
+/// fields answers the other two as absent, which [`update_offer`] reads as "offer it" -
+/// the pre-existing behaviour, never a refusal.
+fn latest_from_worker() -> Option<LatestRelease> {
     // Tag the request with &dev=1 on a developer test box (see `is_dev_machine`).
     let dev = if sagethumbs2k_core::settings::is_dev_machine() {
         "&dev=1"
@@ -173,7 +345,20 @@ fn latest_from_worker() -> Option<String> {
     let bytes = http_fetch(&url, true)?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let tag = json.get("latest")?.as_str()?.trim();
-    (!tag.is_empty()).then(|| tag.to_string())
+    if tag.is_empty() {
+        return None;
+    }
+    Some(LatestRelease {
+        tag: tag.to_string(),
+        published_unix: json
+            .get("latestPublishedAt")
+            .and_then(|v| v.as_str())
+            .and_then(crate::license::parse_iso_unix),
+        security: json
+            .get("latestSecurity")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
 }
 
 /// Has the network-check throttle expired? A cheap disk read, no network — the guard the
@@ -191,24 +376,27 @@ fn check_due() -> bool {
 /// [`lazy_check`] — does NOT re-nudge from the cache in between, so a newer version is
 /// reported at most once per interval instead of on every tick. Falls back to the direct
 /// GitHub [`check`] if the Worker didn't supply a version. `Some(tag)` = newer release.
-fn check_throttled() -> Option<String> {
+fn check_throttled() -> Option<LatestRelease> {
     let now = now_secs();
     if !check_due() {
         return None; // checked recently — don't re-report within the interval
     }
     // Worker first; GitHub as a fallback.
     match latest_from_worker() {
-        Some(tag) => {
-            write_cache(now, &tag); // cache whatever the latest is (newer or not)
-            is_newer(&tag).then_some(tag)
+        Some(latest) => {
+            write_cache(now, &latest); // cache whatever the latest is (newer or not)
+            is_newer(&latest.tag).then_some(latest)
         }
         None => match check() {
-            UpdateCheck::Available(tag) => {
-                write_cache(now, &tag);
-                Some(tag)
+            UpdateCheck::Available(latest) => {
+                write_cache(now, &latest);
+                Some(latest)
             }
             UpdateCheck::UpToDate => {
-                write_cache(now, env!("CARGO_PKG_VERSION"));
+                write_cache(
+                    now,
+                    &LatestRelease::bare(env!("CARGO_PKG_VERSION").to_string()),
+                );
                 None
             }
             UpdateCheck::Failed => None,
@@ -219,7 +407,7 @@ fn check_throttled() -> Option<String> {
 /// [`check_throttled`] on a background thread — the resident screenshot helper's timer path.
 pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
     std::thread::spawn(move || {
-        let tag = check_throttled();
+        let latest = check_throttled();
         // The licence entitlement re-check rides this same worker thread and cadence rather
         // than getting a timer, task, or setting of its own: this is the one place the daily
         // update check actually does its network work off the UI thread on a long-lived
@@ -233,8 +421,8 @@ pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F)
         // unparsable) without ever surfacing anything to the user, so the result is
         // discarded here exactly like a skipped (not-due) check — nothing to log or react to.
         let _ = crate::license::refresh_entitlement();
-        if let Some(tag) = tag {
-            on_newer(tag);
+        if let Some(latest) = latest {
+            on_newer(latest.tag);
         }
     });
 }
@@ -322,14 +510,29 @@ pub(crate) fn run_one_shot_check() {
     if !sagethumbs2k_core::settings::update_auto_check() {
         return;
     }
-    if let Some(tag) = check_throttled() {
-        unsafe {
-            crate::win::notify_toast(
-                "SageThumbs 2K update available",
-                &format!("Version {tag} is ready. Open SageThumbs 2K to install it."),
-                Duration::from_secs(8),
-            );
+    let Some(latest) = check_throttled() else {
+        return;
+    };
+    // The window decision is made HERE as well as in the About card, because this one-shot
+    // is the only thing many installs ever run - the tray balloon must not promise an
+    // install this machine's licence will then decline to perform.
+    let snap = crate::license::snapshot();
+    let body = match offer_for(&snap, Some(&latest)) {
+        Offer::OutsideWindow { ends_unix } => crate::win::t("upd_outside_toast")
+            .replace("{ver}", &latest.tag)
+            .replace("{date}", &crate::settings_dlg::format_unix_date(ends_unix)),
+        // `None` is unreachable with a `Some(..)` release, and treating it like Install is
+        // the same "say nothing surprising" direction the rest of this module takes.
+        Offer::Install | Offer::None => {
+            crate::win::t("upd_toast_body").replace("{ver}", &latest.tag)
         }
+    };
+    unsafe {
+        crate::win::notify_toast(
+            crate::win::t("upd_toast_title"),
+            &body,
+            Duration::from_secs(8),
+        );
     }
 }
 
@@ -1079,7 +1282,10 @@ fn updated_toast_text(installed: &str, running: &str) -> (&'static str, String) 
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_installer_payload, parse_ver};
+    use super::{
+        cleanup_installer_payload, is_security_body, offer_for, parse_cache, parse_ver,
+        update_offer, LatestRelease, Offer,
+    };
     use ed25519_dalek::{Signer, SigningKey};
     use std::os::windows::process::CommandExt;
     use std::path::Path;
@@ -1530,5 +1736,157 @@ mod tests {
         // which is also what makes this safe to run un-elevated in any environment.
         assert!(!super::run_selftest(&path));
         std::fs::remove_file(path).unwrap();
+    }
+    // ---- The updates-window offer decision -------------------------------------------
+
+    /// A `LicenceSnapshot` with nothing in it but the two fields `update_offer` reads. Built
+    /// by hand rather than through `license::at`, which would go to the registry, the
+    /// breadcrumb file and the credential store for facts this decision does not use.
+    fn snap_with_window(maint_unix: Option<u64>) -> crate::license::LicenceSnapshot {
+        crate::license::LicenceSnapshot {
+            mode: crate::license::Mode::Business,
+            posture: crate::license::Posture::Silent,
+            key_prefix: "esk_A1B2".into(),
+            last_positive_unix: WINDOW_END - 1000,
+            last_status: "active".into(),
+            last_reason: String::new(),
+            cert_expires_unix: None,
+            maint_unix,
+            now_unix: WINDOW_END + 1000,
+        }
+    }
+
+    const WINDOW_END: u64 = 1_800_000_000;
+    const DAY: u64 = 24 * 60 * 60;
+
+    /// A personal-use / never-redeemed copy has no window at all, and must be offered every
+    /// build exactly as it always has been. This is also the state of every licensed machine
+    /// that has not yet heard a window from the relay, which is why "unknown" can never be
+    /// allowed to read as "closed".
+    #[test]
+    fn no_window_on_record_always_installs() {
+        let snap = snap_with_window(None);
+        assert_eq!(
+            update_offer(&snap, Some(WINDOW_END + 10 * DAY), false),
+            Offer::Install
+        );
+        assert_eq!(update_offer(&snap, None, false), Offer::Install);
+        assert_eq!(
+            update_offer(&snap, Some(WINDOW_END + 10 * DAY), true),
+            Offer::Install
+        );
+    }
+
+    /// Inside the window: an ordinary install, and the boundary is INCLUSIVE - a build
+    /// published at the very instant the window ends is one the customer paid for. Same
+    /// `<=` rule `licence_cert::verify` applies to `build_date <= maint`.
+    #[test]
+    fn a_build_inside_the_window_installs_and_the_boundary_is_inclusive() {
+        let snap = snap_with_window(Some(WINDOW_END));
+        assert_eq!(
+            update_offer(&snap, Some(WINDOW_END - DAY), false),
+            Offer::Install
+        );
+        assert_eq!(update_offer(&snap, Some(WINDOW_END), false), Offer::Install);
+    }
+
+    /// One second past the end is outside, and the decision names the date so the message
+    /// can say WHEN rather than just "no".
+    #[test]
+    fn a_build_published_after_the_window_offers_the_renewal() {
+        let snap = snap_with_window(Some(WINDOW_END));
+        assert_eq!(
+            update_offer(&snap, Some(WINDOW_END + 1), false),
+            Offer::OutsideWindow {
+                ends_unix: WINDOW_END
+            }
+        );
+    }
+
+    /// ⛔ THE RULE THAT MUST SURVIVE EVERY FUTURE EDIT HERE: a security release is offered to
+    /// a licensed installation whatever its window says. A customer who has stopped paying
+    /// for new features has not stopped being someone we shipped software to.
+    #[test]
+    fn a_security_release_overrides_a_closed_window() {
+        let snap = snap_with_window(Some(WINDOW_END));
+        assert_eq!(
+            update_offer(&snap, Some(WINDOW_END + 365 * DAY), true),
+            Offer::Install
+        );
+    }
+
+    /// No publication date (an un-redeployed Worker, a GitHub hiccup, a cache file written by
+    /// an older build): we cannot place the build against the window, so we do not pretend to.
+    #[test]
+    fn an_unknown_publication_date_installs() {
+        let snap = snap_with_window(Some(WINDOW_END));
+        assert_eq!(update_offer(&snap, None, false), Offer::Install);
+    }
+
+    /// `offer_for` is the only thing that can answer `Offer::None`, and it does so for exactly
+    /// one input: no release known.
+    #[test]
+    fn offer_for_answers_none_only_when_there_is_no_release() {
+        let snap = snap_with_window(Some(WINDOW_END));
+        assert_eq!(offer_for(&snap, None), Offer::None);
+        let late = LatestRelease {
+            tag: "9.9.9".into(),
+            published_unix: Some(WINDOW_END + DAY),
+            security: false,
+        };
+        assert_eq!(
+            offer_for(&snap, Some(&late)),
+            Offer::OutsideWindow {
+                ends_unix: WINDOW_END
+            }
+        );
+    }
+
+    /// The security marker is matched as plain text, case-insensitively, anywhere in the
+    /// notes - so release notes may format it however they like - and nothing else trips it.
+    #[test]
+    fn the_security_marker_is_recognised_only_as_itself() {
+        assert!(is_security_body(
+            "## Fixes\n\n[security-release] CVE-2026-1 in the SVG path."
+        ));
+        assert!(is_security_body("**[SECURITY-RELEASE]**"));
+        assert!(!is_security_body("A security fix, but nobody marked it."));
+        assert!(
+            !is_security_body("security-release"),
+            "the brackets are the marker"
+        );
+        assert!(!is_security_body(""));
+    }
+
+    /// The cache file gained two lines on 2026-09-10. A two-line file written by an older
+    /// build must still parse, into the "offer it to everyone" shape - upgrading must never
+    /// briefly refuse a build over a date the new code simply has not fetched yet.
+    #[test]
+    fn an_old_two_line_cache_still_parses_as_a_dateless_release() {
+        let (secs, latest) = parse_cache("1700000000\n3.0.1\n").expect("two-line cache");
+        assert_eq!(secs, 1_700_000_000);
+        assert_eq!(latest, LatestRelease::bare("3.0.1".into()));
+
+        let (_, latest) = parse_cache("1700000000\n3.0.2\n1800000000\n1\n").expect("four-line");
+        assert_eq!(
+            latest,
+            LatestRelease {
+                tag: "3.0.2".into(),
+                published_unix: Some(1_800_000_000),
+                security: true,
+            }
+        );
+
+        // `0` on line 3 is the on-disk spelling of "not known", never 1970.
+        let (_, latest) = parse_cache("1700000000\n3.0.3\n0\n0\n").expect("zeroed");
+        assert_eq!(latest.published_unix, None);
+        assert!(!latest.security);
+
+        assert!(parse_cache("").is_none());
+        assert!(
+            parse_cache("1700000000\n\n").is_none(),
+            "an empty tag is no answer"
+        );
+        assert!(parse_cache("not-a-number\n3.0.1\n").is_none());
     }
 }

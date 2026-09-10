@@ -198,8 +198,17 @@ pub(super) const ID_LICENCE_STATE_STATUS: i32 = 1248;
 /// "Licence key" section header, above the redeem row.
 pub(super) const ID_LBL_LICENCE_KEY: i32 = 1249;
 /// The (wide, single-line) key entry field. Never populated from a stored value — see
-/// `licence_ui`'s module doc: the key is never written anywhere but the redeem request.
+/// `licence_ui`'s module doc.
 pub(super) const ID_LICENCE_KEY_EDIT: i32 = 1250;
+/// "Updates until <date>" / "Updates ended <date>" — this machine's 12-month updates
+/// window, under the licence-state line. Blank (and the row collapses to nothing visible)
+/// when no window is on record. Added 2026-09-10 with the renewal SKU.
+pub(super) const ID_LICENCE_UPDATES_STATUS: i32 = 1264;
+/// "Renew updates (US$29)" — opens the checkout with the stored key. Shown only when this
+/// machine is licensed AND its window ends within `licence_ui::RENEW_NOTICE_SECS`, or has
+/// already ended; hidden otherwise, because a button offering to buy something nobody needs
+/// yet is just a nag.
+pub(super) const ID_LICENCE_RENEW: i32 = 1265;
 pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
 /// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
 pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;

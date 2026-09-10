@@ -116,6 +116,15 @@ pub(crate) struct History {
     /// Unix seconds the nag was last shown. Paired with `nag_count` for the 24-hour
     /// spacing; see [`nag_due`].
     pub nag_last_unix: u64,
+    /// Unix seconds this machine's UPDATES WINDOW ends - the relay's `maintenanceEndsAt`,
+    /// recorded on every successful entitlement check (2026-09-10). `0` means "no window on
+    /// record", which is NOT "the window closed": it is the state every machine was in
+    /// before this field existed, and it keeps every build offered.
+    ///
+    /// ⛔ This is an UPDATES fact, never a LICENCE fact. A lapsed window stops new builds
+    /// being OFFERED and does nothing else - the licence is perpetual, the installed version
+    /// keeps working, and no code path may read this to decide `Entitlement`.
+    pub maint_unix: u64,
 }
 
 // Serialization is hand-rolled over `serde_json::Value` rather than serde-derive:
@@ -134,6 +143,7 @@ impl History {
             "last_check_unix": self.last_check_unix,
             "nag_count": self.nag_count,
             "nag_last_unix": self.nag_last_unix,
+            "maint_unix": self.maint_unix,
         })
     }
 
@@ -178,6 +188,7 @@ impl History {
             last_check_unix: field(obj, "last_check_unix", |v| v.as_u64(), 0)?,
             nag_count: field(obj, "nag_count", |v| v.as_u64(), 0)?,
             nag_last_unix: field(obj, "nag_last_unix", |v| v.as_u64(), 0)?,
+            maint_unix: field(obj, "maint_unix", |v| v.as_u64(), 0)?,
         })
     }
 }
@@ -395,6 +406,28 @@ fn certificate_expiry_if_licensed(now_unix: u64) -> Option<i64> {
     certificate_expiry_from(&cert, &fingerprint, now_unix)
 }
 
+/// The stored certificate's `maint` claim - this machine's updates-window end according to
+/// a signed statement rather than the relay (2026-09-10).
+///
+/// The OFFLINE FALLBACK, consulted only when the breadcrumb has no window on record (see
+/// [`at`]): the relay answers sooner and can be re-read, so its number wins whenever there
+/// is one. `None` for every failure the certificate path already answers `None` to - no
+/// certificate, another machine, expired - plus a certificate that simply carries no
+/// `maint`, which means "updates never lapse".
+fn certificate_maint_unix(now_unix: u64) -> Option<u64> {
+    let cert = crate::cred_store::load_licence_cert()?;
+    let fingerprint = machine_fingerprint()?;
+    certificate_maint_from(&cert, &fingerprint, now_unix)
+}
+
+/// The I/O-free core of [`certificate_maint_unix`], split out for the same reason
+/// [`certificate_expiry_from`] is: so a test can drive it with the real fixture certificate.
+fn certificate_maint_from(cert: &str, fingerprint: &str, now_unix: u64) -> Option<u64> {
+    let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
+    let verified = crate::licence_cert::verify(cert, fingerprint, now, now).ok()?;
+    u64::try_from(verified.maint_unix?).ok()
+}
+
 /// The I/O-free core of [`certificate_expiry_if_licensed`]: verify `cert` against
 /// `fingerprint` at `now_unix` and report its expiry when it licenses this machine. Split
 /// out (E05 follow-up audit, review item 4d) so a test can drive
@@ -610,6 +643,34 @@ pub(crate) const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 /// not. Opened by the Licence page's Buy button and named in the business-nag notices.
 pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
 
+/// Where another 12 months of updates is bought (US$29), for a licence that is already
+/// held. Unlike [`BUY_URL`] this is the checkout's own address rather than a relay
+/// redirect, because the page is per-product and takes the key as a parameter; the product
+/// id in it is the same [`crate::licence_cert::PRODUCT_ID`] every certificate is signed for.
+const RENEW_URL_BASE: &str = "https://checkout.connections.icu/licence";
+
+/// The renewal link for this machine: the checkout page for our product, with the stored
+/// licence key pre-filled when we have one.
+///
+/// The key comes from [`crate::cred_store`] (per-user, DPAPI-encrypted), NEVER from the
+/// breadcrumb, which by contract holds only a display prefix - see that store's
+/// `V_LICENCE_KEY` note. With no stored key the bare page is opened and the checkout asks
+/// for it, which is a worse experience and a perfectly correct one; a prefix is never
+/// substituted, because `?key=esk_A1B2` would look like a key and redeem nothing.
+pub(crate) fn renew_url() -> String {
+    let product = crate::licence_cert::PRODUCT_ID;
+    match crate::cred_store::load_licence_key()
+        .as_deref()
+        .and_then(normalize_key)
+    {
+        Some(key) => format!(
+            "{RENEW_URL_BASE}/{product}/renew?key={}",
+            crate::http::form_enc(&key)
+        ),
+        None => format!("{RENEW_URL_BASE}/{product}/renew"),
+    }
+}
+
 /// Per-request timeout. The relay is a small Cloudflare Worker; 15 seconds is
 /// generous for it and short enough that a dead network doesn't hang the Settings
 /// window for a user who is just trying to close it.
@@ -757,6 +818,11 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         if let Some(cert) = &certificate {
             let _ = crate::cred_store::save_licence_cert(cert);
         }
+        // Keep the key too, in the SAME per-user DPAPI store, so the Renew button can hand
+        // it to the checkout instead of making the customer dig out their purchase email.
+        // This is the one place a full key is written and `cred_store::V_LICENCE_KEY` says
+        // why it is there and not in the breadcrumb.
+        let _ = crate::cred_store::save_licence_key(&canonical);
         let now = now_unix();
         update_history(|h| {
             h.was_business = true;
@@ -859,8 +925,8 @@ fn refresh_due(now_unix: u64, last_check_unix: u64) -> bool {
     last_check_unix == 0 || now_unix.saturating_sub(last_check_unix) >= REFRESH_THROTTLE_SECS
 }
 
-/// The two fields `GET /license/check` actually answers with, decoupled from the
-/// breadcrumb so [`parse_check_response`] stays a pure function of the response.
+/// What `GET /license/check` actually answers with, decoupled from the breadcrumb so
+/// [`parse_check_response`] stays a pure function of the response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CheckResult {
     entitled: bool,
@@ -868,6 +934,75 @@ struct CheckResult {
     /// The relay's optional `reason` token (a short `[a-z0-9_]` word such as
     /// `seat_revoked` / `contract_ended`), kept only when it has that shape.
     reason: Option<String>,
+    /// The relay's `maintenanceActive` flag: is this seat still inside its 12 months of
+    /// updates. `None` when the relay sent none (an older deployment, or a Pay that does
+    /// not answer it) - which is "unknown", never "no".
+    ///
+    /// Carried for completeness and for the debug log; `maint_unix` is what every decision
+    /// actually reads, because a DATE can be compared against a release's publication date
+    /// and a boolean cannot.
+    maintenance_active: Option<bool>,
+    /// `maintenanceEndsAt` parsed to Unix seconds. `None` for absent, null, or anything
+    /// that does not parse - all of which mean "no window on record" and leave every build
+    /// offered.
+    maint_unix: Option<u64>,
+}
+
+/// Parse the ISO-8601 instant the relay sends for `maintenanceEndsAt` into Unix seconds.
+///
+/// Deliberately narrow, and pure so the boundaries can be pinned in tests: `YYYY-MM-DD`
+/// optionally followed by `T`/space, `HH:MM[:SS]`, an optional fractional part, and an
+/// optional `Z`. An offset other than `Z` is REFUSED rather than silently read as UTC -
+/// this value decides whether a customer is offered a build, so guessing hours is worse
+/// than answering "no window on record", which is the safe direction (every build stays
+/// offered). Adding a full offset parser is a change to make when Pay actually sends one.
+///
+/// No chrono/time dependency for one call site, same trade `settings_dlg::format_unix_date`
+/// already made in the other direction; the civil-days arithmetic below is Howard Hinnant's
+/// `days_from_civil`, valid for any Gregorian date this app will ever see.
+pub(crate) fn parse_iso_unix(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (date, rest) = s.split_at(s.char_indices().nth(10).map_or(s.len(), |(i, _)| i));
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let (hour, minute, second) = match rest.is_empty() {
+        true => (0, 0, 0),
+        false => {
+            let time = rest
+                .strip_prefix('T')
+                .or_else(|| rest.strip_prefix('t'))
+                .or_else(|| rest.strip_prefix(' '))?;
+            // Drop a trailing `Z` and any fractional seconds; refuse a numeric offset.
+            let time = time.trim_end_matches(['Z', 'z']);
+            let time = time.split('.').next().unwrap_or(time);
+            if time.contains('+') || time.rfind('-').is_some() {
+                return None;
+            }
+            let mut hms = time.split(':');
+            let h: i64 = hms.next()?.parse().ok()?;
+            let mi: i64 = hms.next()?.parse().ok()?;
+            let se: i64 = hms.next().map_or(Ok(0), str::parse).ok()?;
+            if hms.next().is_some() || h > 23 || mi > 59 || se > 60 {
+                return None;
+            }
+            (h, mi, se)
+        }
+    };
+
+    // days_from_civil: shift the year to start in March so the leap day lands last.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).ok()
 }
 
 /// Is `s` a reason token the way the relay defines one: 1-40 chars of `[a-z0-9_]`? Anything
@@ -902,10 +1037,17 @@ fn parse_check_response(status: u16, body: &[u8]) -> Option<CheckResult> {
         .and_then(Value::as_str)
         .filter(|r| is_reason_token(r))
         .map(String::from);
+    let maintenance_active = v.get("maintenanceActive").and_then(Value::as_bool);
+    let maint_unix = v
+        .get("maintenanceEndsAt")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_unix);
     Some(CheckResult {
         entitled,
         status,
         reason,
+        maintenance_active,
+        maint_unix,
     })
 }
 
@@ -973,6 +1115,23 @@ fn apply_check_response(
     body: &[u8],
 ) -> Option<Entitlement> {
     let result = parse_check_response(status, body)?;
+    sagethumbs2k_core::safety::log_debugf!(
+        "license: check entitled={} status={} maintenance_active={:?} maint_unix={:?}",
+        result.entitled,
+        result.status,
+        result.maintenance_active,
+        result.maint_unix
+    );
+
+    // The updates window is recorded on EVERY understood answer, entitled or not, and
+    // separately from the entitlement branches below - it is a different fact with a
+    // different lifetime (a perpetual licence outlives its update window by design), so a
+    // seat that has gone quiet must not also lose the date the Licence page shows. A
+    // response that carries no window leaves whatever is on record alone rather than
+    // clearing it: "the relay didn't say" is not "the window is gone".
+    if let Some(maint) = result.maint_unix {
+        update_history_at(path, |h| h.maint_unix = maint);
+    }
 
     if result.entitled {
         update_history_at(path, |h| {
@@ -1051,6 +1210,14 @@ pub(crate) struct LicenceSnapshot {
     /// [`entitlement_and_cert_expiry`]). `None` whenever a relay verification already
     /// grants the licence, or there is simply no matching certificate.
     pub cert_expires_unix: Option<i64>,
+    /// When this machine's 12 months of updates end, in Unix seconds, or `None` for "no
+    /// window on record" (2026-09-10). The relay breadcrumb's `maint_unix` first; the
+    /// offline certificate's `maint` claim only when the breadcrumb has none.
+    ///
+    /// ⛔ Read this ONLY to decide whether to OFFER a new build and what the Licence page
+    /// says about it. It is not, and must never become, an input to `licensed`: the licence
+    /// is perpetual and a closed window changes nothing about the copy already installed.
+    pub maint_unix: Option<u64>,
     /// The instant this snapshot was built - the same `now_unix` [`at`] was given.
     /// Carried alongside `cert_expires_unix` so a renderer compares the two against each
     /// other rather than reading the wall clock a second time (the whole point of
@@ -1066,6 +1233,14 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
     let history = history_path().and_then(|p| read_history(&p));
     let (entitlement, cert_expires_unix) = entitlement_and_cert_expiry(now_unix, history.as_ref());
     let posture = posture(mode, entitlement, history.as_ref());
+    // The relay's recorded window wins; the certificate is the floor beneath it, exactly the
+    // ordering `entitlement_and_cert_expiry` uses for the entitlement itself. `0` in the
+    // breadcrumb is "never recorded", not "ended in 1970" - the one reading that would
+    // silently stop offering updates to every machine that has not checked in yet.
+    let maint_unix = match history.as_ref().map_or(0, |h| h.maint_unix) {
+        0 => certificate_maint_unix(now_unix),
+        recorded => Some(recorded),
+    };
     LicenceSnapshot {
         mode,
         posture,
@@ -1078,6 +1253,7 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
             .map_or_else(String::new, |h| h.last_status.clone()),
         last_reason: history.map_or_else(String::new, |h| h.last_reason),
         cert_expires_unix,
+        maint_unix,
         now_unix,
     }
 }
@@ -1371,6 +1547,7 @@ mod tests {
             last_check_unix: 1_760_003_600,
             nag_count: 7,
             nag_last_unix: 1_759_900_000,
+            maint_unix: 1_791_500_000,
         };
         assert!(write_history(&p, &h), "write must stick");
         assert_eq!(
@@ -1574,6 +1751,8 @@ mod tests {
                 entitled: true,
                 status: "active".to_string(),
                 reason: None,
+                maintenance_active: None,
+                maint_unix: None,
             })
         );
     }
@@ -1586,6 +1765,8 @@ mod tests {
                 entitled: false,
                 status: "revoked".to_string(),
                 reason: None,
+                maintenance_active: None,
+                maint_unix: None,
             })
         );
     }
@@ -1618,6 +1799,143 @@ mod tests {
             None,
             "wrong type"
         );
+    }
+
+    /// The 2026-09-10 maintenance fields, present and absent. ABSENT IS THE LOAD-BEARING
+    /// CASE: every relay deployment older than that date, and every Pay that does not answer
+    /// them, sends neither - and both must read as "no window on record" (`None`), which
+    /// leaves every build offered, rather than as a closed window, which would stop offering
+    /// updates to the entire installed base at once.
+    #[test]
+    fn check_response_reads_the_maintenance_window_and_tolerates_its_absence() {
+        let with = |body: &[u8]| parse_check_response(200, body).expect("a 200 answer");
+
+        let full = with(
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceActive":true,"maintenanceEndsAt":"2027-09-03T00:00:00Z"}"#,
+        );
+        assert_eq!(full.maintenance_active, Some(true));
+        assert_eq!(full.maint_unix, Some(1_819_929_600));
+
+        let bare = with(br#"{"ok":true,"entitled":true,"status":"active"}"#);
+        assert_eq!(bare.maintenance_active, None);
+        assert_eq!(bare.maint_unix, None, "absent is unknown, never expired");
+
+        // An explicit null, and a date we cannot parse, both mean the same thing.
+        let nulled = with(
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceActive":null,"maintenanceEndsAt":null}"#,
+        );
+        assert_eq!(nulled.maint_unix, None);
+        let junk = with(
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceEndsAt":"whenever"}"#,
+        );
+        assert_eq!(junk.maint_unix, None);
+
+        // A window that has closed is still a perfectly good answer, and says nothing about
+        // whether the machine is entitled.
+        let closed = with(
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceActive":false,"maintenanceEndsAt":"2025-01-01"}"#,
+        );
+        assert!(closed.entitled, "a lapsed window never unlicenses");
+        assert_eq!(closed.maintenance_active, Some(false));
+        assert_eq!(closed.maint_unix, Some(1_735_689_600));
+    }
+
+    /// [`parse_iso_unix`] at the shapes the relay actually sends, and refusing the ones it
+    /// must not guess at. The reference values are the well-known Unix epochs for those
+    /// instants; a wrong civil-days implementation misses them by whole days.
+    #[test]
+    fn iso_instants_parse_and_ambiguous_ones_are_refused() {
+        assert_eq!(parse_iso_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_iso_unix("2000-03-01"),
+            Some(951_868_800),
+            "leap-year rule"
+        );
+        assert_eq!(parse_iso_unix("2026-09-10T12:34:56Z"), Some(1_789_043_696));
+        assert_eq!(
+            parse_iso_unix("2026-09-10T12:34:56.789Z"),
+            Some(1_789_043_696)
+        );
+        assert_eq!(parse_iso_unix(" 2026-09-10 12:34 "), Some(1_789_043_640));
+        assert_eq!(parse_iso_unix("2026-09-10T12:34"), Some(1_789_043_640));
+
+        // An offset other than Z is REFUSED rather than silently read as UTC: this value
+        // decides whether a customer is offered a build, and guessing hours is worse than
+        // answering "no window on record".
+        assert_eq!(parse_iso_unix("2026-09-10T12:34:56+02:00"), None);
+        assert_eq!(parse_iso_unix("2026-09-10T12:34:56-05:00"), None);
+
+        assert_eq!(parse_iso_unix(""), None);
+        assert_eq!(parse_iso_unix("whenever"), None);
+        assert_eq!(parse_iso_unix("2026-13-01"), None, "month out of range");
+        assert_eq!(
+            parse_iso_unix("2026-09-10T25:00:00Z"),
+            None,
+            "hour out of range"
+        );
+        assert_eq!(
+            parse_iso_unix("1969-12-31"),
+            None,
+            "before the epoch has no u64"
+        );
+    }
+
+    /// The window is recorded on EVERY understood answer and is a separate fact from the
+    /// entitlement: a relay that stops saying `entitled` must not also wipe the date the
+    /// Licence page shows, and an answer carrying no window must leave what is on record
+    /// alone rather than clearing it.
+    #[test]
+    fn a_check_persists_the_maintenance_window_without_touching_the_licence() {
+        let dir = temp_dir("maint");
+        let path = dir.join("history.json");
+        let _ = std::fs::remove_file(&path);
+        let now = 1_760_000_000u64;
+
+        apply_check_response(
+            &path,
+            now,
+            200,
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceEndsAt":"2027-09-03T00:00:00Z"}"#,
+        )
+        .expect("an entitled answer");
+        let after = read_history(&path).expect("history");
+        assert_eq!(after.maint_unix, 1_819_929_600);
+        assert_eq!(after.last_positive_unix, now);
+
+        // A later answer with no window at all leaves the recorded one standing.
+        apply_check_response(
+            &path,
+            now + 60,
+            200,
+            br#"{"ok":true,"entitled":true,"status":"active"}"#,
+        )
+        .expect("a second answer");
+        assert_eq!(
+            read_history(&path).expect("history").maint_unix,
+            1_819_929_600,
+            "silence about the window is not news about the window"
+        );
+
+        // And a CLOSED window still leaves the machine licensed - the one property this
+        // whole feature must never break.
+        let ent = apply_check_response(
+            &path,
+            now + 120,
+            200,
+            br#"{"ok":true,"entitled":true,"status":"active","maintenanceActive":false,"maintenanceEndsAt":"2025-01-01"}"#,
+        )
+        .expect("a third answer");
+        assert_eq!(
+            ent,
+            Entitlement::Licensed,
+            "a lapsed window never unlicenses"
+        );
+        assert_eq!(
+            read_history(&path).expect("history").maint_unix,
+            1_735_689_600
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

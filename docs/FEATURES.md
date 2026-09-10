@@ -666,6 +666,14 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   use, or - on a machine currently relying on its offline certificate rather than a live
   check - an early warning once that certificate is nearing its own expiry. A failed check
   never moves the "last verified" date forward.
+- **Updates window and renewal:** a commercial licence is US$49 per installation, one-time,
+  and is perpetual with 12 months of updates. The Licence page shows when that window ends
+  ("Updates until \<date\>", or "Updates ended \<date\>" once it has passed), and a **Renew
+  updates (US$29)** button appears in the last 60 days and stays available afterwards. Once
+  the window has ended the app stops OFFERING builds published after it, and says so with the
+  renewal link instead of installing; nothing else changes. The version already installed
+  keeps working, with every feature, indefinitely, and security releases are still offered to
+  every licensed installation regardless of the window.
 
 ---
 
