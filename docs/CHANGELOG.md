@@ -23,6 +23,12 @@ these notes is the reason to update.
 
 ### Fixed
 
+- **The doctor says whether Explorer draws program icons on thumbnails at all.** A new
+  "ShowTypeOverlay" line under Windows thumbnail settings reads Explorer's "Display file icon
+  on thumbnails" switch and warns when it is off, because with it off no thumbnail gets a
+  corner icon, ours or Windows' own, and the corner setting "Windows' file-type icon" reads as
+  broken while every other line is green.
+
 - **The per-file doctor report names the drive.** `st2k doctor <file>` now prints a "Volume"
   line: whether the drive is fixed, removable, network, optical or a RAM disk, its file system,
   and the device behind the letter, so a substituted (`subst`) or per-session drive, which

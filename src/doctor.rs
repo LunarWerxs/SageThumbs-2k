@@ -175,6 +175,36 @@ fn check_windows_switches(r: &mut Report) {
         None => r.line(S::Ok, "IconsOnly", "unset — thumbnails allowed"),
     }
 
+    // Explorer's "Display file icon on thumbnails" (View > Options > View tab). Off, Windows
+    // draws NO program icon on any thumbnail, ours or its own, and the corner-mark setting
+    // "Windows' file-type icon" reads as broken while every registry line above is green. A
+    // South Korean reporter (2026-09-10) toggled it by hand and could not say what Explorer
+    // held afterwards; this line is so the report says.
+    let overlay = CURRENT_USER
+        .open(advanced)
+        .ok()
+        .and_then(|k| k.get_u32("ShowTypeOverlay").ok());
+    match overlay {
+        Some(0) => r.line(
+            S::Warn,
+            "ShowTypeOverlay",
+            "0 — 'Display file icon on thumbnails' is OFF, so Windows draws no program icon on \
+             any thumbnail (ours or its own). Tick it in File Explorer -> ... -> Options -> \
+             View tab, Apply, then restart Explorer; until then the corner setting \"Windows' \
+             file-type icon\" cannot show anything",
+        ),
+        Some(v) => r.line(
+            S::Ok,
+            "ShowTypeOverlay",
+            &format!("{v} — 'Display file icon on thumbnails' is on"),
+        ),
+        None => r.line(
+            S::Ok,
+            "ShowTypeOverlay",
+            "unset — 'Display file icon on thumbnails' is on (the default)",
+        ),
+    }
+
     // Performance Options -> "Adjust for best performance" switches OFF the "Show thumbnails
     // instead of icons" visual effect, which IS IconsOnly. Worth its own check because of how
     // it presents: the profile re-applies its own value, so IconsOnly can READ 0 while Explorer
