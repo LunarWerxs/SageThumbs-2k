@@ -290,6 +290,16 @@ foreach ($expectedRecord in $inputs) {
     $relative = [string](Get-ReleaseRequiredProperty -Object $expectedRecord -Name 'path')
     $path = Get-ReleasePathUnderRoot -Root $root -RelativePath $relative
     $actualRecord = Get-ReleaseFileRecord -Path $path -RelativeTo $root
+    # The recorded inputs include the verification scripts themselves. On an ancestor resume
+    # (see the commit check above) an allow-listed script may legitimately differ from what
+    # the build recorded: that difference IS the gate fix being resumed past, and it cannot
+    # have reached the artifact. Said out loud rather than silently skipped.
+    $resumedPast = $manifestCommit -cne $expectedCommit -and
+        ($verificationOnlyPaths | Where-Object { $relative -match $_ })
+    if ($resumedPast -and [string]$expectedRecord.sha256 -cne [string]$actualRecord.sha256) {
+        Write-Host "[manifest] source input '$relative' differs from the built commit's copy: verification-only, allowed on resume" -ForegroundColor Yellow
+        continue
+    }
     Assert-ReleaseRecordMatches -Expected $expectedRecord -Actual $actualRecord -Context "source input '$relative'"
 }
 
