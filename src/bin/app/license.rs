@@ -963,6 +963,19 @@ struct CheckResult {
 pub(crate) fn parse_iso_unix(s: &str) -> Option<u64> {
     let s = s.trim();
     let (date, rest) = s.split_at(s.char_indices().nth(10).map_or(s.len(), |(i, _)| i));
+    let (year, month, day) = parse_iso_date(date)?;
+    let (hour, minute, second) = if rest.is_empty() {
+        (0, 0, 0)
+    } else {
+        parse_iso_time(rest)?
+    };
+    let days = days_from_civil(year, month, day);
+    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).ok()
+}
+
+/// `YYYY-MM-DD` with a plausible month and day (the civil-days arithmetic tolerates a 31st of
+/// a short month; the relay never sends one, and refusing it here would only move the guess).
+fn parse_iso_date(date: &str) -> Option<(i64, i64, i64)> {
     let mut parts = date.split('-');
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;
@@ -970,39 +983,40 @@ pub(crate) fn parse_iso_unix(s: &str) -> Option<u64> {
     if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
+    Some((year, month, day))
+}
 
-    let (hour, minute, second) = match rest.is_empty() {
-        true => (0, 0, 0),
-        false => {
-            let time = rest
-                .strip_prefix('T')
-                .or_else(|| rest.strip_prefix('t'))
-                .or_else(|| rest.strip_prefix(' '))?;
-            // Drop a trailing `Z` and any fractional seconds; refuse a numeric offset.
-            let time = time.trim_end_matches(['Z', 'z']);
-            let time = time.split('.').next().unwrap_or(time);
-            if time.contains('+') || time.rfind('-').is_some() {
-                return None;
-            }
-            let mut hms = time.split(':');
-            let h: i64 = hms.next()?.parse().ok()?;
-            let mi: i64 = hms.next()?.parse().ok()?;
-            let se: i64 = hms.next().map_or(Ok(0), str::parse).ok()?;
-            if hms.next().is_some() || h > 23 || mi > 59 || se > 60 {
-                return None;
-            }
-            (h, mi, se)
-        }
-    };
+/// The part after the date: a `T`/`t`/space separator, `HH:MM[:SS]`, optional fraction,
+/// optional `Z`. A numeric offset is refused (see [`parse_iso_unix`]).
+fn parse_iso_time(rest: &str) -> Option<(i64, i64, i64)> {
+    let time = rest
+        .strip_prefix('T')
+        .or_else(|| rest.strip_prefix('t'))
+        .or_else(|| rest.strip_prefix(' '))?;
+    let time = time.trim_end_matches(['Z', 'z']);
+    let time = time.split('.').next().unwrap_or(time);
+    if time.contains('+') || time.contains('-') {
+        return None;
+    }
+    let mut hms = time.split(':');
+    let h: i64 = hms.next()?.parse().ok()?;
+    let mi: i64 = hms.next()?.parse().ok()?;
+    let se: i64 = hms.next().map_or(Ok(0), str::parse).ok()?;
+    if hms.next().is_some() || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    Some((h, mi, se))
+}
 
-    // days_from_civil: shift the year to start in March so the leap day lands last.
+/// Howard Hinnant's `days_from_civil`: days since 1970-01-01 for a proleptic Gregorian date.
+/// The year is shifted to start in March so the leap day lands last.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
     let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).ok()
+    era * 146_097 + doe - 719_468
 }
 
 /// Is `s` a reason token the way the relay defines one: 1-40 chars of `[a-z0-9_]`? Anything
