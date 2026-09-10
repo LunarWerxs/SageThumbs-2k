@@ -480,6 +480,93 @@ function Get-ReleaseUnsignedPes {
 }
 
 # The same question for a portable zip: extract to a scratch directory, scan, clean up.
+# Paths a commit may touch WITHOUT changing the artifact: verification scripts, docs, GitHub
+# metadata, this lib and the release driver itself. Shared by the manifest check (an artifact
+# built from an ancestor is accepted when the commits since stay inside this list) and by
+# release.ps1's CI and release-profile gates (a green run on such an ancestor proves the same
+# binaries). ONE list, or the two rules drift and a resume that the manifest accepts is one
+# the gates re-wait 30 minutes for, which is what 3.0.1 cost on 2026-09-10.
+function Get-ReleaseVerificationOnlyPaths {
+    return @(
+        '^docs/', '^README\.md$', '^\.github/', '^LICENSE', '^SECURITY\.md$',
+        '^scripts/check-[^/]+\.ps1$', '^scripts/test-[^/]+\.ps1$', '^scripts/release\.ps1$',
+        '^scripts/release-manifest-lib\.ps1$', '^scripts/verify\.ps1$', '^scripts/preflight\.ps1$'
+    )
+}
+
+# $true when $From is an ancestor of $To (or the same commit) and every path changed between
+# them is verification-only. Returns $false for anything else, including a git failure: a
+# range this cannot read is a range that does not qualify.
+function Test-ReleaseVerificationOnlyRange {
+    param(
+        [Parameter(Mandatory)] [string]$Root,
+        [Parameter(Mandatory)] [string]$From,
+        [Parameter(Mandatory)] [string]$To
+    )
+    if ($From -ceq $To) { return $true }
+    $null = & git -C $Root merge-base --is-ancestor $From $To 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $changed = @(& git -C $Root diff --name-only "$From..$To" 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $allowed = Get-ReleaseVerificationOnlyPaths
+    foreach ($path in $changed) {
+        if (-not ($allowed | Where-Object { $path -match $_ })) { return $false }
+    }
+    return $true
+}
+
+# Poll a GitHub Actions run until it is COMPLETED, then return its conclusion. Every status a
+# run can report before that ('queued', 'in_progress', 'waiting', 'pending', 'requested', and an
+# empty string when gh itself hiccups) keeps polling; the old loops stopped on anything that
+# was not queued/in_progress, so a run that GitHub reported as 'waiting' ended the release
+# with "finished ''" while the suite was still running (3.0.1, 2026-09-10). Returns the
+# conclusion string, or "still <status>" when the budget runs out.
+function Wait-ReleaseRunConclusion {
+    param(
+        [Parameter(Mandatory)] [string]$RunId,
+        [int]$MaxMinutes = 45,
+        [int]$IntervalSeconds = 15
+    )
+    $deadline = (Get-Date).AddMinutes($MaxMinutes)
+    $status = ''
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds $IntervalSeconds
+        $status = [string](gh run view $RunId --json status --jq .status 2>$null)
+        if ($status -eq 'completed') {
+            return [string](gh run view $RunId --json conclusion --jq .conclusion 2>$null)
+        }
+    }
+    return "still $(if ($status) { $status } else { 'unknown' }) after $MaxMinutes min"
+}
+
+# The newest run of $Workflow that proves $Sha: one on $Sha itself, or one on an ANCESTOR whose
+# commits since are verification-only (the same rule the manifest check applies to artifacts).
+# Returns @{ Id; HeadSha; Status; Conclusion } or $null. A completed run counts only when it
+# succeeded; a queued/in-progress run counts (the caller waits on it), so a gate never dispatches
+# a second copy of a suite that is already running for the same binaries.
+function Find-ReleaseProvingRun {
+    param(
+        [Parameter(Mandatory)] [string]$Root,
+        [Parameter(Mandatory)] [string]$Sha,
+        [Parameter(Mandatory)] [string]$Workflow,
+        [string]$Event = ''
+    )
+    $args = @('run', 'list', '--branch', 'main', '--workflow', $Workflow, '--limit', '30',
+              '--json', 'databaseId,headSha,status,conclusion,createdAt')
+    if ($Event) { $args += @('--event', $Event) }
+    $raw = & gh @args 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
+    $runs = @($raw | ConvertFrom-Json | Sort-Object createdAt -Descending)
+    foreach ($run in $runs) {
+        $live = $run.status -ne 'completed'
+        $green = $run.status -eq 'completed' -and $run.conclusion -eq 'success'
+        if (-not ($live -or $green)) { continue }
+        if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha)) { continue }
+        return @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion }
+    }
+    return $null
+}
+
 function Get-ReleasePortableUnsignedPes {
     param(
         [Parameter(Mandatory)] [string]$ZipPath

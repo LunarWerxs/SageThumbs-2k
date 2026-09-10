@@ -107,11 +107,8 @@ $expectedCommit = $ExpectedCommitSha.ToLowerInvariant()
 # from the same sources, which is what 3.0.0 cost on 2026-09-09 (four launches for one
 # one-line script fix). Anything under src/, crates/, Cargo.*, assets/, the packaging inputs
 # or build-release.ps1 still demands a rebuild.
-$verificationOnlyPaths = @(
-    '^docs/', '^README\.md$', '^\.github/', '^LICENSE', '^SECURITY\.md$',
-    '^scripts/check-[^/]+\.ps1$', '^scripts/test-[^/]+\.ps1$', '^scripts/release\.ps1$',
-    '^scripts/release-manifest-lib\.ps1$', '^scripts/verify\.ps1$', '^scripts/preflight\.ps1$'
-)
+# ONE list, shared with release.ps1's CI and release-profile gates through the lib.
+$verificationOnlyPaths = Get-ReleaseVerificationOnlyPaths
 if ($manifestCommit -cne $expectedCommit) {
     $null = & git -C $root merge-base --is-ancestor $manifestCommit $expectedCommit 2>$null
     if ($LASTEXITCODE -ne 0) {

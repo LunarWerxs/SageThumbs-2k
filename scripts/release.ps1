@@ -217,7 +217,16 @@ try {
     # — which `2>$null` swallows, so every iteration returns empty and this throws a bogus
     # "no CI run found". That silently broke the 1.1.1 release (commit WAS pushed + CI green,
     # just never detected); the release had to be finished by hand.
+    # A green CI run on an ANCESTOR whose commits since are verification-only proves these same
+    # binaries (the rule the manifest check already applies to artifacts, now shared through
+    # the lib): a script-only fix pushed mid-release must not cost another 30-minute wait.
     $runId = $null
+    $proving = Find-ReleaseProvingRun -Root $root -Sha $sha -Workflow CI
+    if ($proving -and $proving.HeadSha -cne $sha) {
+        Write-Host ("      CI run {0} on ancestor {1} proves this commit ({2}); the commits since touch only verification scripts and docs" -f `
+            $proving.Id, $proving.HeadSha.Substring(0, 7), $proving.Status) -ForegroundColor Yellow
+        $runId = $proving.Id
+    }
     for ($i = 0; $i -lt 120 -and -not $runId; $i++) {
         Start-Sleep -Seconds 6
         $runId = (gh run list --branch main --workflow CI --limit 30 --json headSha,databaseId `
@@ -249,12 +258,7 @@ try {
     # background / non-interactive shell), which aborts the release even though CI is fine
     # (this is exactly what broke the 0.7.1 release run).
     Write-Host "      run $runId found - waiting for it to finish..." -ForegroundColor Green
-    $status = ''
-    for ($i = 0; $i -lt 160 -and ($status -eq '' -or $status -eq 'queued' -or $status -eq 'in_progress'); $i++) {
-        Start-Sleep -Seconds 15
-        $status = (gh run view $runId --json status --jq .status 2>$null)
-    }
-    $concl = (gh run view $runId --json conclusion --jq .conclusion 2>$null)
+    $concl = Wait-ReleaseRunConclusion -RunId $runId -MaxMinutes 45
     if ($concl -ne 'success') { throw "CI on $($sha.Substring(0,7)) finished '$concl' (not success) - NOT releasing. Fix + re-run." }
     Write-Host "      CI green." -ForegroundColor Green
 
@@ -278,23 +282,29 @@ try {
             '-SkipReleaseProfileTests flag: the suite was NOT run against the release-profile, ' +
             'shipped-feature binaries; only the debug default-feature CI run stands behind this release')
     } else {
-        $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
-        gh workflow run 'release-profile-tests.yml'
-        if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+        # A suite already running (or green) on this commit, or on an ancestor whose commits
+        # since are verification-only, proves the same shipped binaries: reuse it rather than
+        # dispatching a second full LTO build. The relaunch after a script-only fix is exactly
+        # this case, and it used to cost the whole suite again.
         $rptRunId = $null
-        for ($i = 0; $i -lt 40 -and -not $rptRunId; $i++) {
-            Start-Sleep -Seconds 6
-            $rptRunId = (gh run list --workflow 'release-profile-tests.yml' --event workflow_dispatch --limit 10 `
-                    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$rptDispatchedAt`")][0].databaseId" 2>$null)
+        $rptProving = Find-ReleaseProvingRun -Root $root -Sha $sha -Workflow 'release-profile-tests.yml' -Event workflow_dispatch
+        if ($rptProving) {
+            Write-Host ("      release-profile run {0} on {1} ({2}) proves this commit; reusing it" -f `
+                $rptProving.Id, $rptProving.HeadSha.Substring(0, 7), $rptProving.Status) -ForegroundColor Yellow
+            $rptRunId = $rptProving.Id
+        } else {
+            $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
+            gh workflow run 'release-profile-tests.yml'
+            if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+            for ($i = 0; $i -lt 40 -and -not $rptRunId; $i++) {
+                Start-Sleep -Seconds 6
+                $rptRunId = (gh run list --workflow 'release-profile-tests.yml' --event workflow_dispatch --limit 10 `
+                        --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$rptDispatchedAt`")][0].databaseId" 2>$null)
+            }
+            if (-not $rptRunId) { throw 'release-profile-tests.yml was dispatched but no run appeared in 4 min; nothing has been built or published' }
         }
-        if (-not $rptRunId) { throw 'release-profile-tests.yml was dispatched but no run appeared in 4 min; nothing has been built or published' }
         Write-Host "      run $rptRunId found - waiting for the release-profile suite..." -ForegroundColor Green
-        $rptStatus = ''
-        for ($i = 0; $i -lt 160 -and ($rptStatus -eq '' -or $rptStatus -eq 'queued' -or $rptStatus -eq 'in_progress'); $i++) {
-            Start-Sleep -Seconds 15
-            $rptStatus = (gh run view $rptRunId --json status --jq .status 2>$null)
-        }
-        $rptConcl = (gh run view $rptRunId --json conclusion --jq .conclusion 2>$null)
+        $rptConcl = Wait-ReleaseRunConclusion -RunId $rptRunId -MaxMinutes 60
         if ($rptConcl -ne 'success') {
             throw "the release-profile suite finished '$rptConcl' (run $rptRunId) - NOT releasing. The debug CI run passing does not cover this; the shipped shape genuinely fails."
         }
@@ -670,12 +680,7 @@ try {
         }
         if (-not $armRunId) { throw "arm64-portable-verify.yml was dispatched for $tag but no run appeared in 4 min; $tag remains a draft" }
         Write-Host "      run $armRunId found - waiting for the ARM64 runner..." -ForegroundColor Green
-        $armStatus = ''
-        for ($i = 0; $i -lt 160 -and ($armStatus -eq '' -or $armStatus -eq 'queued' -or $armStatus -eq 'in_progress'); $i++) {
-            Start-Sleep -Seconds 15
-            $armStatus = (gh run view $armRunId --json status --jq .status 2>$null)
-        }
-        $armConcl = (gh run view $armRunId --json conclusion --jq .conclusion 2>$null)
+        $armConcl = Wait-ReleaseRunConclusion -RunId $armRunId -MaxMinutes 45
         if ($armConcl -ne 'success') {
             throw "the ARM64 portable zip failed on real ARM64 silicon (run $armRunId finished '$armConcl'); $tag remains a draft - pull the artifact apart before anyone downloads it"
         }
