@@ -26,7 +26,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > heading as the published release notes, so on release day the only edit here is renaming
 > `## Unreleased` below to that version; this note is not part of what ships.
 
-## Unreleased
+## 3.0.1
 
 ### Fixed
 
