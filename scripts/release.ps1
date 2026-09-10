@@ -157,6 +157,16 @@ try {
     # 0) Curated notes + consistency. The release body is derived from this exact
     # tracked changelog section; there is deliberately no generated-notes fallback.
     Write-Host "[1/6] curated notes + consistency check" -ForegroundColor Green
+    # Signing is a PRECONDITION of a release, not a feature of one (owner directive, Michael,
+    # 2026-09-10: "all builds moving forward should be signed... can't be sending out any
+    # unsigned executables"). build-release.ps1 tolerates an unconfigured signer because CI and
+    # dev builds have none; this script does not. Refuse here, before a single minute of the
+    # pipeline is spent, rather than at [4/6] where the manifest gate would catch the same
+    # thing with the build already done.
+    pwsh "$root\scripts\packaging\sign-release.ps1" -Configured
+    if ($LASTEXITCODE) {
+        throw "code signing is not configured on this machine (ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure lease; docs/RELEASE-SECURITY.md) - a release is never cut unsigned"
+    }
     $changelog = Join-Path $root 'docs\CHANGELOG.md'
     $null = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
     pwsh "$root\scripts\check-consistency.ps1"; if ($LASTEXITCODE) { throw "consistency check failed - fix before releasing" }
@@ -552,14 +562,22 @@ try {
     # Read the truth off the artifacts rather than asserting it: once Azure Artifact Signing
     # is live (scripts/packaging/sign-release.ps1) the installers carry a valid signature and
     # the old sentence would be a lie in every release note that followed.
-    $allSigned = @($releaseArtifacts | ForEach-Object {
-        (Get-AuthenticodeSignature -LiteralPath $_.Setup.FullName).Status -eq 'Valid'
-    }) -notcontains $false
-    $signingLine = if ($allSigned) {
-        '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file with no'
-    } else {
-        '**Antivirus / SmartScreen:** these builds are unsigned, so a brand-new file with no'
+    # A HARD GATE since 3.0.1 (owner directive, Michael, 2026-09-10): every installer this run
+    # is about to publish must carry a valid Authenticode signature, or nothing is published.
+    # [1/6] already refused an unconfigured signer; this is the proof on the artifact itself.
+    foreach ($artifact in $releaseArtifacts) {
+        $setupSignature = Get-AuthenticodeSignature -LiteralPath $artifact.Setup.FullName
+        if ($setupSignature.Status -ne 'Valid') {
+            throw "REFUSING to publish: $($artifact.Setup.Name) is not validly signed ($($setupSignature.Status)) - no unsigned executable leaves this pipeline"
+        }
+        if ($artifact.Portable -and (Test-Path -LiteralPath $artifact.Portable.FullName)) {
+            $portableUnsigned = @(Get-ReleasePortableUnsignedPes -ZipPath $artifact.Portable.FullName)
+            if ($portableUnsigned.Count) {
+                throw "REFUSING to publish: $($artifact.Portable.Name) carries unsigned or invalidly signed binaries: $($portableUnsigned -join ', ')"
+            }
+        }
     }
+    $signingLine = '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file with no'
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
         ''
         $signingLine

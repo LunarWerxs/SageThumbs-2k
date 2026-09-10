@@ -2,36 +2,24 @@
 
 All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
-> **The next release is 3.0, and it does not ship until the installer is code-signed**
-> (owner decision, Michael, 2026-09-06). Two things follow from that, and both are
-> deliberate:
->
-> - **The version number is still 2.5.0 in `Cargo.toml` and stays there until release.**
->   Bumping it early would make every development build claim to be 3.0, and the version
->   string is consumed by the installer, the MSIX manifest and the website generator, so the
->   bump is a release-time step done once, with the gate run, not a bookkeeping change made
->   in advance.
-> - **Nothing here is waiting on engineering, and nothing is waiting on Azure either.** The
->   Unreleased section is on `main` and green. The signing account is live, its certificate
->   profile is Active, the client secret is in the vault, and a real signature was produced
->   and verified from the release machine on 2026-09-09. `docs/RELEASE-SECURITY.md` has the
->   proof and the release-day call. What remains is the owner's word to cut 3.0.
->
-> 3.0 rather than 2.6 because this is the release that stops shipping unsigned, on top of an
-> unusually large body of change: 60-plus user-facing entries, and a 38-finding audit
-> burn-down behind them.
->
-> This note sits ABOVE the section heading on purpose. `Get-ReleaseChangelogSection` (used by
-> `release.ps1` and `export-release-notes.ps1`) takes everything under the exact `## <version>`
-> heading as the published release notes, so on release day the only edit here is renaming
-> `## Unreleased` below to that version; this note is not part of what ships.
+> Every release since 3.0.0 is code-signed by LUNARWERX LLC, and the release pipeline refuses
+> to publish anything that is not. `Get-ReleaseChangelogSection` (used by `release.ps1` and
+> `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
+> published release notes; this note is not part of what ships.
 
 ## 3.0.1
 
+The first update after 3.0. Three things, all from user reports in the days after the release,
+plus a tighter signing gate. If you are still on 2.x, the "What 3.0 brought" list at the end of
+these notes is the reason to update.
+
 ### New
 
-- New: a size for the format mark in a thumbnail's corner (Settings > Appearance): Small,
-  Medium or Large.
+- **A size for the format mark in a thumbnail's corner.** Settings > Appearance > "Format mark
+  size": Small (the original), Medium or Large. A designer with folders of near-identical
+  previews asked for it, because the mark is how you tell a PSD from its JPG at a glance and
+  the original was too small to read. The mark scales with the tile, so Large stays readable
+  in every Explorer view.
 
 ### Fixed
 
@@ -48,6 +36,40 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   treated 10,000 nits as white, so a picture whose real white sits at 203 nits came out at a
   fiftieth of its brightness. An HDR `.jxl` now goes through the same conversion and tone map
   an HDR PNG or an EXR does. The SDR twin of the same picture was always fine and is unchanged.
+
+### Changed
+
+- **Nothing ships unsigned, and the pipeline now proves it.** Every executable and library we
+  build, including the three ImageMagick shim libraries the bundle carries, is signed by
+  LUNARWERX LLC before the installer, the portable zip and the Windows 11 menu package pick them
+  up, and the release run refuses to publish if any shipped binary or installer fails
+  signature verification.
+
+### What 3.0 brought
+
+For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that section below):
+
+- **Code-signed installers and packages** from LUNARWERX LLC, so SmartScreen and antivirus
+  warnings on a fresh download fade with the file's age instead of never.
+- **Rename with pattern**, **Set as lock screen**, **Copy as data URI**, **Sort into folders by
+  date taken**, and Fill / Fit / Span wallpaper placements in the right-click menu.
+- **Watermarks in the Convert dialog**, and conversions to AVIF, JPEG XL and the other
+  ImageMagick-encoded formats keep their metadata.
+- **Quick preview gains**: a hex view for files nothing else can render, folder sizes, printing
+  (Ctrl+P), a Save button for the current PDF page, animation frame or video frame, a
+  per-extension blocklist, keyboard-reachable toolbars, and script-file highlighting.
+- **HDR PNGs render correctly**, AVIF colours are back after September's Windows codec change,
+  and Canon CRW thumbnails are fast again.
+- **The program's icon is back in the corner of Photoshop, Illustrator and other editor
+  files** when the corner is set to Windows' file-type icon.
+- **A per-file doctor** (`st2k doctor <file>`) that names the program, policy or sync client
+  standing between a file and its thumbnail, and a diagnostics bundle safe to hand to anyone.
+- **A Licence page** for business seat keys, an installer question about personal or business
+  use, settings export and import from the command line, and signature-checked self-updates.
+- **Portable copies keep their state in their own folder**, and the `st2k` command line and
+  MCP tools gained `cbz`, folder recursion and richer batch reporting.
+- **Dozens of robustness fixes** in the shell extension: hostile or malformed files can no
+  longer hang, crash or pile up work inside Explorer.
 
 ## 3.0.0
 

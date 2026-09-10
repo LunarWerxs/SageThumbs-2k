@@ -457,6 +457,43 @@ function Resolve-ReleaseSignTool {
     throw 'signtool.exe is required to verify the MSIX signature'
 }
 
+# Every PE (exe/dll) under a directory whose Authenticode signature is not Valid, as paths
+# relative to that directory. Empty means "everything is signed". The release gates (owner
+# directive, Michael, 2026-09-10: no unsigned executable ships) call this on the stage and on
+# the extracted portable zip; ImageMagick's own PEs count too, because a user runs them.
+function Get-ReleaseUnsignedPes {
+    param(
+        [Parameter(Mandatory)] [string]$Root
+    )
+    $rootItem = Get-Item -LiteralPath $Root -ErrorAction Stop
+    $rootPath = $rootItem.FullName.TrimEnd('\') + '\'
+    $unsigned = [System.Collections.Generic.List[string]]::new()
+    Get-ChildItem -LiteralPath $rootItem.FullName -Recurse -File |
+        Where-Object { $_.Extension -in '.exe', '.dll' } |
+        ForEach-Object {
+            $signature = Get-AuthenticodeSignature -LiteralPath $_.FullName
+            if ($signature.Status -ne 'Valid') {
+                $unsigned.Add(($_.FullName.Substring($rootPath.Length)) + " ($($signature.Status))")
+            }
+        }
+    return @($unsigned)
+}
+
+# The same question for a portable zip: extract to a scratch directory, scan, clean up.
+function Get-ReleasePortableUnsignedPes {
+    param(
+        [Parameter(Mandatory)] [string]$ZipPath
+    )
+    $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ("st2k-portable-sigcheck-" + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+    try {
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $scratch -Force
+        return @(Get-ReleaseUnsignedPes -Root $scratch)
+    } finally {
+        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-ReleaseMsixIdentity {
     param(
         [Parameter(Mandatory)]

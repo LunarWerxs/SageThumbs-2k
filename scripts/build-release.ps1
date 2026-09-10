@@ -622,6 +622,16 @@ if ($bundleMagick) {
                 if ([string]::Join("`n", $actualSorted) -cne [string]::Join("`n", $expectedExports)) {
                     throw "Generated stub export inventory does not exactly match upstream $dll"
                 }
+                # The stubs are the only PEs WE build that the first signing pass (above, on the
+                # four main binaries) cannot see, because they do not exist yet at that point.
+                # They ship inside the installer, the portable zip and the ImageMagick folder a
+                # user can run things from, so they are signed here, the moment each one is
+                # verified. Same -AllowUnsigned contract as the main pass: an unconfigured
+                # signer prints one line for CI and dev builds; a configured one that fails is
+                # fatal. check-release-manifest.ps1 then refuses a chain-signed stage carrying
+                # any unsigned PE, which is what makes "nothing ships unsigned" a proof.
+                & $signScript -Path $stubPath -AllowUnsigned
+                if ($LASTEXITCODE) { throw "signing the stub $dll failed (see above)" }
             } finally { Pop-Location }
         }
     } finally {

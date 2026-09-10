@@ -415,6 +415,30 @@ if ([string]$msixSigner.Subject -ceq 'CN=SageThumbs2K') {
         -Path $msixPath `
         -Version $ExpectedVersion `
         -ExpectedProcessorArchitecture $msixArchitecture
+    # A chain-signed stage is a RELEASE stage, and a release ships nothing unsigned (owner
+    # directive, Michael, 2026-09-10). Every exe and dll under the stage, ours and
+    # ImageMagick's, must carry a Valid Authenticode signature, and every PE we build (the
+    # four main binaries plus the ImageMagick shim DLLs, all stamped CompanyName
+    # "SageThumbs 2K"/"LunarWerx") must be signed by the same subject as the package. The
+    # self-signed branch above is CI and dev, where no signer exists, so the gate is not
+    # applied there.
+    $unsignedPes = @(Get-ReleaseUnsignedPes -Root $stage.FullName)
+    if ($unsignedPes.Count) {
+        throw "chain-signed stage carries unsigned or invalidly signed binaries - REFUSING: $($unsignedPes -join ', ')"
+    }
+    $ourSubject = [string]$msixSigner.Subject
+    Get-ChildItem -LiteralPath $stage.FullName -Recurse -File |
+        Where-Object { $_.Extension -in '.exe', '.dll' } |
+        ForEach-Object {
+            $company = [string]$_.VersionInfo.CompanyName
+            if ($company -match 'SageThumbs 2K|LunarWerx|LUNARWERX') {
+                $signer = (Get-AuthenticodeSignature -LiteralPath $_.FullName).SignerCertificate
+                if ([string]$signer.Subject -cne $ourSubject) {
+                    throw "$($_.Name) is ours (CompanyName '$company') but is signed by '$($signer.Subject)', not by the package's '$ourSubject'"
+                }
+            }
+        }
+    Write-Host "      every shipped PE is validly signed; ours by $ourSubject" -ForegroundColor DarkGray
 }
 
 $sizeCheck = Join-Path $PSScriptRoot 'check-release-size.ps1'
