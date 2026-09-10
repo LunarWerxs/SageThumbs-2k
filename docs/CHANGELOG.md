@@ -30,6 +30,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ### Fixed
 
+- **The per-file doctor report names the drive.** `st2k doctor <file>` now prints a "Volume"
+  line: whether the drive is fixed, removable, network, optical or a RAM disk, its file system,
+  and the device behind the letter, so a substituted (`subst`) or per-session drive, which
+  Explorer's thumbnail helper may not see at all, is called out instead of leaving a green
+  report next to a folder full of icons.
+
 - **HDR JPEG XL files thumbnailed almost black**
   ([#38](https://github.com/LunarWerxs/SageThumbs-2k/issues/38)). A `.jxl` whose base image is
   HDR (PQ transfer, BT.2020 primaries, the shape Google's Ultra HDR samples and Adobe's gain-map

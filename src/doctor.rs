@@ -1434,6 +1434,98 @@ fn video_codec_note(r: &mut Report, path: &str) {
     }
 }
 
+/// What the file's DRIVE is: fixed, removable, remote, optical or RAM disk; its file system;
+/// and, for a drive letter, the device behind it — which is how a `subst` drive, a mapped
+/// virtual disk or a per-session mount shows itself. Explorer extracts thumbnails in its own
+/// helper process while this report's own probe loads the decoder in-process, so a drive that
+/// exists in one context and not the other (a substituted letter is per logon session) is
+/// the one case where "the doctor works, Explorer does not" is about the drive and not the
+/// file (issue #37: every failing path was on one drive, every passing one on another).
+fn volume_note(r: &mut Report, path: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        GetDriveTypeW, GetVolumeInformationW, QueryDosDeviceW,
+    };
+    use windows::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+        DRIVE_UNKNOWN,
+    };
+    let bytes = path.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return; // UNC and relative paths: nothing per-drive to say
+    }
+    let letter = (bytes[0] as char).to_ascii_uppercase();
+    let root: Vec<u16> = format!("{letter}:\\")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let kind = match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
+        DRIVE_FIXED => "fixed",
+        DRIVE_REMOVABLE => "removable",
+        DRIVE_REMOTE => "network",
+        DRIVE_CDROM => "optical",
+        DRIVE_RAMDISK => "RAM disk",
+        DRIVE_NO_ROOT_DIR => "no such drive",
+        DRIVE_UNKNOWN => "unknown type",
+        _ => "unknown type",
+    };
+    let mut fs_name = [0u16; 64];
+    let fs = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut fs_name),
+        )
+    }
+    .ok()
+    .map(|_| {
+        let end = fs_name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(fs_name.len());
+        String::from_utf16_lossy(&fs_name[..end])
+    })
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| "file system unreadable".to_string());
+    // The device behind the letter. A subst/virtual mapping answers `\??\<path>`; a real
+    // volume answers `\Device\HarddiskVolumeN`; a mapped share `\Device\LanmanRedirector...`.
+    let dev: Vec<u16> = format!("{letter}:").encode_utf16().chain(Some(0)).collect();
+    let mut target = [0u16; 512];
+    let n = unsafe { QueryDosDeviceW(PCWSTR(dev.as_ptr()), Some(&mut target)) } as usize;
+    let device = if n > 0 {
+        let end = target[..n].iter().position(|&c| c == 0).unwrap_or(n);
+        String::from_utf16_lossy(&target[..end])
+    } else {
+        String::new()
+    };
+    let (status, detail) = if let Some(mapped) = device.strip_prefix("\\??\\") {
+        (
+            S::Warn,
+            format!(
+                "{letter}: is a substituted drive ({kind}, {fs}) mapped to {mapped} — a \
+                 subst letter exists only in the logon session that made it, so Explorer's \
+                 thumbnail helper may not see this path at all; use the real path instead"
+            ),
+        )
+    } else {
+        (
+            S::Info,
+            format!(
+                "{letter}: is a {kind} drive, {fs}{}",
+                if device.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({device})")
+                }
+            ),
+        )
+    };
+    r.line(status, "Volume", &detail);
+}
+
 fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledSnapshot) {
     r.head("This file");
     let p = Path::new(path);
@@ -1461,6 +1553,7 @@ fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledS
             );
         }
     }
+    volume_note(r, path);
     if !p.is_file() {
         r.fail_with_fix(
             "File",

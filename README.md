@@ -259,7 +259,8 @@ cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.ex
 
 ## FAQ
 
-### Is SageThumbs 2K free?
+<details>
+<summary><b>Is SageThumbs 2K free?</b></summary>
 
 Yes, for personal use, under the [PolyForm Noncommercial License 1.0.0](#-license). Commercial
 use needs a commercial license: **US$49 per Windows installation**, perpetual, with 12 months of
@@ -276,20 +277,29 @@ just reminds you to add one, and the license check itself runs quietly in the ba
 tolerates being offline for about a week. There's no ads, no paywall, and no subscription tier,
 just a single free download built and maintained by one person.
 
-### What are the system requirements?
+</details>
+
+<details>
+<summary><b>What are the system requirements?</b></summary>
 
 Windows 11, 64-bit. It ships as a native x64 installer, plus a separately built native ARM64
 installer for Windows on Arm with the same format coverage. There's also a portable zip for
 per-user use with no admin rights. No other software is required: the installer bundles
 everything it needs, including the ImageMagick engine used for the more obscure formats.
 
-### Does it replace File Explorer, or install its own file browser?
+</details>
+
+<details>
+<summary><b>Does it replace File Explorer, or install its own file browser?</b></summary>
 
 Neither. It's a shell extension that plugs into the existing File Explorer: same windows, same
 navigation, just real thumbnails, a right-click toolkit, and a Space-bar preview added on top.
 Nothing about how you browse files changes.
 
-### Why did Windows or my antivirus flag the installer?
+</details>
+
+<details>
+<summary><b>Why did Windows or my antivirus flag the installer?</b></summary>
 
 **3.0 and later are code-signed by LUNARWERX LLC** through Azure Artifact Signing, every
 installer, the shell extension, the app and the command-line tool. Right-click the file,
@@ -330,21 +340,30 @@ reputation prompt rather than a malware verdict, and a signature does not silenc
 one. Reputation is earned per publisher over downloads, so it can still appear for a while
 after 3.0. Click **More info**, then **Run anyway**.
 
-### How is it different from the original SageThumbs, or a tool like MysticThumbs?
+</details>
+
+<details>
+<summary><b>How is it different from the original SageThumbs, or a tool like MysticThumbs?</b></summary>
 
 It's a clean-room rebuild of the classic, decade-abandoned SageThumbs (2004-2017, GPLv2, no
 GFL reused), written from scratch in memory-safe Rust. Compared to a codec-pack style
 thumbnailer like MysticThumbs, its thumbnail provider runs out-of-process and panic-guarded, so
 a corrupt or hostile file can't take down Explorer the way an in-process crash can.
 
-### Does the Space-bar preview work with the Everything search tool?
+</details>
+
+<details>
+<summary><b>Does the Space-bar preview work with the Everything search tool?</b></summary>
 
 Yes, both Everything 1.4 and 1.5, installed or portable. Click a result first, since Space typed
 into the search box just types a space. If Everything itself runs as administrator, Windows
 blocks the keypress from reaching any normal program; binding a hotkey with Ctrl, Alt, or Shift
 in Settings works around that, because Windows delivers hotkeys differently than typed keys.
 
-### How many formats does it support, and can more be added?
+</details>
+
+<details>
+<summary><b>How many formats does it support, and can more be added?</b></summary>
 
 334 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
 `st2k formats` for the live, per-category count. New formats are considered when they can be
@@ -353,6 +372,7 @@ cheap to extract. Request one through Send Feedback in the app or a GitHub issue
 
 ---
 
+</details>
 ## 📜 License
 
 **[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**: **US$49 per Windows installation**, perpetual, with 12 months of updates, bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy has every feature with no key entered, it just reminds you until you add one, and the background license check tolerates about a week offline. © 2026 Lunarwerx.

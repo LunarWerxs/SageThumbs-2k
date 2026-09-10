@@ -17,7 +17,8 @@ it finds, which is faster than guessing.
 
 ## Thumbnails
 
-### Thumbnails are not showing up at all
+<details>
+<summary><b>Thumbnails are not showing up at all</b></summary>
 
 Run this in a terminal and read what it says:
 
@@ -41,7 +42,10 @@ The three most common causes it finds:
 3. **Your antivirus quarantined the DLL during setup.** See
    [Antivirus and SmartScreen](#antivirus-and-smartscreen).
 
-### Some thumbnails appear, others stay as blank icons
+</details>
+
+<details>
+<summary><b>Some thumbnails appear, others stay as blank icons</b></summary>
 
 Windows caches thumbnails aggressively, and a file it failed on once stays failed. Settings,
 Advanced, **Rebuild thumbnail cache** clears Windows' cache and restarts Explorer.
@@ -58,7 +62,10 @@ skipped on purpose and instantly, because the Windows 10 decoder hangs on such f
 than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
 yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
 
-### A video I rotated plays upright everywhere but shows sideways in the thumbnail
+</details>
+
+<details>
+<summary><b>A video I rotated plays upright everywhere but shows sideways in the thumbnail</b></summary>
 
 That's fixed. Some editors write a rotation flag instead of re-encoding the pixels (for example
 `ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4`), which is instant and keeps full
@@ -68,7 +75,10 @@ the flag and turns the picture to match, for both the MP4 family (`.mp4`, `.mov`
 `.3gp`) and Matroska (`.mkv`, `.webm`). If you still see a sideways thumbnail, run `st2k doctor`
 to check your version.
 
-### Photoshop thumbnails look soft or undersized in the large preview pane
+</details>
+
+<details>
+<summary><b>Photoshop thumbnails look soft or undersized in the large preview pane</b></summary>
 
 A `.psd` or `.psb` carries a small built-in thumbnail, usually about 160 pixels regardless of the
 artwork's real size. Explorer's large preview pane and Quick preview ask for something closer to
@@ -79,13 +89,19 @@ unchanged and just as fast, since the built-in thumbnail really is big enough th
 Quick preview is fixed the same way, including for PSD/PSB files over about 256 MB, which
 previously stayed stuck on the small thumbnail with nothing in the log to explain why.
 
-### Thumbnails work in a folder, but the file is blank in OneDrive
+</details>
+
+<details>
+<summary><b>Thumbnails work in a folder, but the file is blank in OneDrive</b></summary>
 
 If the file is online-only, there are no bytes on the disk to read. Windows will not download a
 file just to draw a thumbnail, and neither will we. Mark the folder **Always keep on this
 device** and the thumbnails appear.
 
-### A file shows a thumbnail in Explorer but a plain caption in the right-click menu
+</details>
+
+<details>
+<summary><b>A file shows a thumbnail in Explorer but a plain caption in the right-click menu</b></summary>
 
 That is deliberate, not a bug. The little preview tile inside the right-click menu is drawn
 **inside `explorer.exe` itself**, so it only runs the cheap, safe decoders. Video frames, PDF
@@ -95,14 +111,20 @@ pane, which run in their own isolated process where a slow or hostile file canno
 
 ---
 
+</details>
+
 ## Press Space to preview
 
-### Nothing happens when I press Space
+<details>
+<summary><b>Nothing happens when I press Space</b></summary>
 
 It is **off by default**. Turn it on in Settings, Quick preview. It runs a small background
 helper, the same one the hotkeys use.
 
-### It works in Explorer but not in Everything
+</details>
+
+<details>
+<summary><b>It works in Explorer but not in Everything</b></summary>
 
 **Click a result first.** While your cursor is still in Everything's search box, Space types a
 space, which is what it should do. The preview is only ever offered to the result list.
@@ -111,7 +133,10 @@ Both **Everything 1.4 and 1.5** work, installed or portable, under any instance 
 still does nothing after you have clicked a result, check the next question. An Everything
 running as administrator is by far the most common cause, and it looks exactly like this.
 
-### It does not work when Everything runs as administrator
+</details>
+
+<details>
+<summary><b>It does not work when Everything runs as administrator</b></summary>
 
 **Space cannot work there, but a hotkey can.** Windows deliberately stops a normal program from
 seeing keys typed into a program running as administrator. Our background helper is a normal
@@ -156,7 +181,10 @@ standard user**, which voidtools also recommends:
 The same limitation applies anywhere else: if the window in front is running as administrator,
 Space will not preview.
 
-### It does not work in an app's Open/Save dialog
+</details>
+
+<details>
+<summary><b>It does not work in an app's Open/Save dialog</b></summary>
 
 Two things to check:
 
@@ -165,7 +193,10 @@ Two things to check:
 2. **The app has to be 64-bit.** Old 32-bit programs are not supported, and there is no plan to
    add them.
 
-### Space also toggles the file's selection
+</details>
+
+<details>
+<summary><b>Space also toggles the file's selection</b></summary>
 
 Yes. We never swallow the key, so Explorer still receives it, which is what stops keys getting
 stuck and keeps antivirus software happy. Every previewer that works this way has the same
@@ -173,29 +204,41 @@ overlap.
 
 ---
 
+</details>
+
 ## Right-click menu
 
-### The menu is missing, or only the small Windows 11 menu appears
+<details>
+<summary><b>The menu is missing, or only the small Windows 11 menu appears</b></summary>
 
 Windows 11 shows a short menu first, with **Show more options** at the bottom for the classic
 one. SageThumbs appears in both, but the preview tile only exists on the classic menu, because
 the Windows 11 menu cannot draw custom images at all.
 
-### I want fewer entries, or a different order
+</details>
+
+<details>
+<summary><b>I want fewer entries, or a different order</b></summary>
 
 Settings, Right-click menu, **Edit menu items**. You can untick anything and drag entries and
 their dividers into whatever order you want. The menu mirrors your list exactly.
 
 ---
 
+</details>
+
 ## Antivirus and SmartScreen
 
-### Windows says "Windows protected your PC"
+<details>
+<summary><b>Windows says "Windows protected your PC"</b></summary>
 
 That is SmartScreen reacting to a new installer that has not built up a download reputation. If
 you got the file from our GitHub releases page, click **More info**, then **Run anyway**.
 
-### My antivirus flagged it
+</details>
+
+<details>
+<summary><b>My antivirus flagged it</b></summary>
 
 It happens, and it is a false positive. Two honest reasons it is more likely for this program
 than for most:
@@ -212,55 +255,79 @@ scanners flagging a release are welcome; we submit them.
 
 ---
 
+</details>
+
 ## Portable version
 
-### What does the portable zip actually do?
+<details>
+<summary><b>What does the portable zip actually do?</b></summary>
 
 Thumbnails and the classic right-click menu work, with no installer and no administrator rights.
 Everything that is a normal program works too: Settings, Convert and Resize, Quick preview,
 screenshots, OCR, the eyedropper, the folder tools and the command-line tool.
 
-### What does it not do?
+</details>
+
+<details>
+<summary><b>What does it not do?</b></summary>
 
 Three things need registrations only an installer can make: the Explorer **preview pane**, the
 **Details pane** columns, and the **Windows 11 modern menu**.
 
-### I moved the folder and thumbnails stopped
+</details>
+
+<details>
+<summary><b>I moved the folder and thumbnails stopped</b></summary>
 
 The registration records the exact path of the DLL, so moving the folder breaks it. Unregister
 before you move it, then register again in the new location (Settings, Advanced).
 
 ---
 
+</details>
+
 ## Settings, updates, uninstalling
 
-### Where are my settings stored?
+<details>
+<summary><b>Where are my settings stored?</b></summary>
 
 Normally in the registry, under `HKCU\Software\SageThumbs2K`. The portable copy instead keeps
 everything in a `SageThumbs2K.ini` next to the program, so unzipping it somewhere else leaves no
 trace behind.
 
-### How do I uninstall?
+</details>
+
+<details>
+<summary><b>How do I uninstall?</b></summary>
 
 Normal Windows uninstall (Settings, Apps). It removes the registrations too. For the portable
 copy, unregister first (Settings, Advanced), then delete the folder.
 
 ---
 
+</details>
+
 ## Formats
 
-### Which formats are supported?
+<details>
+<summary><b>Which formats are supported?</b></summary>
 
 Run `st2k formats` for the live list and the per-category breakdown. It is 300+ across images,
 camera RAW, ebooks and comics, documents, audio and video.
 
-### Can you add format X?
+</details>
+
+<details>
+<summary><b>Can you add format X?</b></summary>
 
 Ask. Use **Send feedback** in the About box, or open a GitHub issue. What decides it is whether
 the format can be read without a huge dependency: many "project" formats have a preview image
 baked inside that we can pull out cheaply, and those are easy wins.
 
-### Why did some large Photoshop files not convert?
+</details>
+
+<details>
+<summary><b>Why did some large Photoshop files not convert?</b></summary>
 
 Older versions quietly skipped any PSD or PSB over about 270 MB when converting, with no error
 and no mention in the summary beyond a smaller "converted N of M" count. That was a leftover
@@ -269,7 +336,10 @@ and asked to convert. It's fixed: a file you choose to convert now gets a limit 
 job, well past the 2 GB ceiling the .psd format has. The "Max file size (MB)" setting was never
 related to this, so changing it would not have helped.
 
-### Why is the download this size?
+</details>
+
+<details>
+<summary><b>Why is the download this size?</b></summary>
 
 Most of it is a trimmed copy of ImageMagick, which covers the long tail of unusual formats. The
 Compact installer leaves it out and is much smaller; everything with a native decoder still
@@ -277,9 +347,12 @@ works.
 
 ---
 
+</details>
+
 ## Licensing
 
-### Can I use this at work?
+<details>
+<summary><b>Can I use this at work?</b></summary>
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
 needs a commercial licence: US$49 per Windows installation, perpetual, with 12 months of
@@ -289,7 +362,10 @@ updates. Buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
 
-### How does a business licence work?
+</details>
+
+<details>
+<summary><b>How does a business licence work?</b></summary>
 
 It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. The installer asks
 up front whether a copy is for personal or business use, and that answer only changes by
@@ -299,3 +375,5 @@ feature the moment it's installed, key or not, it just reminds you to add one: a
 you launch it, and a strip across the Settings window, on every page, that stays until you do.
 Once a key is redeemed, the licence check runs quietly in the background and tolerates about a
 week offline before the reminders start again.
+
+</details>
