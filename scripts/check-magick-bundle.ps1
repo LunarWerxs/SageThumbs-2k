@@ -357,6 +357,19 @@ if ($missing.Count -gt 0) {
 }
 Write-Host "[magick-bundle] dependency closure PASS ($($peFiles.Count) PE files, $edgeCount import edges)" -ForegroundColor Green
 
+# An ARM64 bundle cannot execute on an x64 host at all ("not a valid application for this OS
+# platform"), so its smoke test is deferred to the native windows-11-arm CI job, the same way
+# check-magick-source.ps1 defers the runtime identity. Decided here from the bundle's own PE
+# header, so no caller has to know; the second ARM64 gate death of 3.0.0 was a caller that
+# did not.
+$magickForHost = Join-Path $root 'magick.exe'
+$hostIsArm64 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64
+if (-not $SkipSmoke -and -not $hostIsArm64 -and
+    (Test-Path -LiteralPath $magickForHost -PathType Leaf) -and (Get-PeMachine -PePath $magickForHost) -eq 0xAA64) {
+    Write-Host '[magick-bundle] smoke test DEFERRED: ARM64 bundle on an x64 host; the arm64 CI job runs it natively' -ForegroundColor Yellow
+    $SkipSmoke = $true
+}
+
 if (-not $SkipSmoke) {
     # Keep the packaging contract locked to the actual Convert dialog. Any newly
     # advertised exotic output must add an explicit coder + identify/signature probe

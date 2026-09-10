@@ -100,8 +100,36 @@ if ($manifestArchitecture -cne $Architecture) {
 
 $manifestCommit = ([string](Get-ReleaseRequiredProperty -Object $manifest -Name 'commitSha')).ToLowerInvariant()
 $expectedCommit = $ExpectedCommitSha.ToLowerInvariant()
+# The artifact may have been built from an EARLIER commit than the one being validated, but
+# only when every commit in between touched nothing that reaches the artifact: verification
+# scripts, docs, GitHub metadata. That is the resume case (`release.ps1 -SkipBuild`) after a
+# gate fix. The alternative was a full hour-long rerun to re-prove artifacts already built
+# from the same sources, which is what 3.0.0 cost on 2026-09-09 (four launches for one
+# one-line script fix). Anything under src/, crates/, Cargo.*, assets/, the packaging inputs
+# or build-release.ps1 still demands a rebuild.
+$verificationOnlyPaths = @(
+    '^docs/', '^README\.md$', '^\.github/', '^LICENSE', '^SECURITY\.md$',
+    '^scripts/check-[^/]+\.ps1$', '^scripts/test-[^/]+\.ps1$', '^scripts/release\.ps1$',
+    '^scripts/release-manifest-lib\.ps1$', '^scripts/verify\.ps1$', '^scripts/preflight\.ps1$'
+)
 if ($manifestCommit -cne $expectedCommit) {
-    throw "release manifest was built from $manifestCommit, not validated commit $expectedCommit"
+    $null = & git -C $root merge-base --is-ancestor $manifestCommit $expectedCommit 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "release manifest was built from $manifestCommit, which is not an ancestor of validated commit $expectedCommit"
+    }
+    $changed = @(& git -C $root diff --name-only "$manifestCommit..$expectedCommit")
+    if ($LASTEXITCODE -ne 0) { throw 'could not diff the built commit against the validated commit' }
+    $rebuildRequired = @($changed | Where-Object {
+        $path = $_
+        -not ($verificationOnlyPaths | Where-Object { $path -match $_ })
+    })
+    if ($rebuildRequired.Count -ne 0) {
+        throw ("release manifest was built from $manifestCommit, not validated commit $expectedCommit, and the " +
+            "difference reaches the artifact (rebuild): " + ($rebuildRequired -join ', '))
+    }
+    $since = (@(& git -C $root rev-list --count "$manifestCommit..$expectedCommit") -join '')
+    Write-Host ("[manifest] built from ancestor {0}; the {1} commit(s) since touch only verification scripts and docs: {2}" -f `
+        $manifestCommit.Substring(0, 7), $since, ($changed -join ', ')) -ForegroundColor Yellow
 }
 
 $createdUtcValue = Get-ReleaseRequiredProperty -Object $manifest -Name 'createdUtc'
@@ -229,6 +257,8 @@ if ($LASTEXITCODE -ne 0 -or -not $head) {
     throw 'could not resolve current source commit'
 }
 $head = $head.Trim().ToLowerInvariant()
+# HEAD must be the VALIDATED commit (the one CI proved and the tag will land on); the built
+# commit may be an allow-listed ancestor of it, checked above.
 if ($head -cne $expectedCommit) {
     throw "current HEAD $head is not validated commit $expectedCommit"
 }
