@@ -170,7 +170,19 @@ fn embed_manifest_and_icon() -> bool {
                         .status();
                     matches!(status, Ok(s) if s.success())
                 });
-            (obj, built)
+            if built {
+                (obj, true)
+            } else {
+                // windres is a MinGW tool, absent from a plain MSVC box (rustup + VS Build Tools),
+                // so an x64 developer build silently produced an exe with NO icon and NO VERSIONINFO
+                // - Explorer showed a blank version where the released build shows 3.0.1, and only
+                // the manifest-only fallback ran. The SDK `rc.exe` this repo ALREADY uses for the
+                // aarch64 leg compiles the identical .rc, so fall back to it rather than degrade
+                // (measured 2026-09-11 on a box with the SDK but no MinGW).
+                let res = format!("{out}/{}.res", obj_name.trim_end_matches(".o"));
+                let built = build_support::compile_with_windows_sdk_rc(&rc_path, &res);
+                (res, built)
+            }
         };
         if !built {
             return false;
