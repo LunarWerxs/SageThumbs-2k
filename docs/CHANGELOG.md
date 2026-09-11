@@ -9,20 +9,6 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.0.2
 
-- **The Licence page says which licence you have.** With a business key active it now reads
-  "Business licence" at the top, names the key, and says the licence is active; on a Personal
-  install without one it reads "Personal licence". Previously a Personal install that redeemed a
-  business key still said "installed for personal use" beside a green "licence is active".
-  Redeeming a key now answers with a pop-up, "Your business licence is active", or a clear
-  warning when the key is refused or the licence service cannot be reached.
-
-- **A revoked licence shows as revoked straight away.** When the licence holder takes a
-  computer's seat back, Check now says so and the page shows the revocation, instead of reading
-  "active" for up to a week or, on a Personal install, hiding it behind "no licence needed".
-
-- Licensed installations now see when their updates window ends, and can renew for another
-  12 months from Settings > Licence.
-
 - **HDR AVIF thumbnails no longer come out blown out**
   ([#39](https://github.com/LunarWerxs/SageThumbs-2k/issues/39)). An AVIF whose base image is
   HDR (PQ transfer, BT.2020 primaries, the same shape as the JPEG XL fixed in 3.0.1) rendered
@@ -32,6 +18,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   signal was shown as if it were sRGB, so the same picture came out dark and flat. Both now go
   through the conversion and tone map an HDR PNG, JPEG XL or EXR does, HDR HEIC included. The
   SDR twin of the same picture is unchanged.
+
+- For the few installations on a business licence: the Licence page now says which licence you
+  hold, a revoked seat shows as revoked straight away, and it shows when your updates window
+  ends. Personal use is unaffected.
 
 ## 3.0.1
 

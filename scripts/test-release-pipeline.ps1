@@ -66,6 +66,34 @@ try {
         Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
     }
 
+    # Licensing never leads a release note (owner directive 2026-09-11): a section that OPENS
+    # with a licence item is refused, while the same item further down passes, so the gate
+    # cannot cry wolf on the one short licence line a release is allowed to end with.
+    @'
+# Changelog
+
+## 9.8.7
+
+- **The Licence page says which licence you have.** Business installs see their key here.
+- **HDR AVIF thumbnails no longer come out blown out.** Every user gets this one.
+'@ | Set-Content -LiteralPath $changelog -Encoding utf8
+    Assert-Fails 'changelog section that opens with a licensing item' {
+        Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+    }
+    @'
+# Changelog
+
+## 9.8.7
+
+- **HDR AVIF thumbnails no longer come out blown out.** Every user gets this one.
+- For the few installations on a business licence: the Licence page now says which licence
+  you hold. Personal use is unaffected.
+'@ | Set-Content -LiteralPath $changelog -Encoding utf8
+    Assert-Passes 'a licensing line that is not first is allowed' {
+        $section = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+        if ($section -notmatch 'business licence') { throw 'the trailing licence line was lost' }
+    }
+
     # Every shape a real unfilled template takes must still fail closed.
     foreach ($marker in @(
             '- TBD before we ship this.',

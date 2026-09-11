@@ -955,5 +955,14 @@ function Get-ReleaseChangelogSection {
         $section -match '(?i)[<\[{]{1,2}\s*placeholder\s*[>\]}]{1,2}') {
         throw "changelog section $Version still contains placeholder text"
     }
+    # Licensing never LEADS a release note (owner directive, Michael, 2026-09-11, minutes after
+    # 3.0.2 published with three licence bullets on top: "it's a free software for 99% of our
+    # users, this affects literally one user"). The first bullet is what every user reads when
+    # the updater prompts them, so a section that opens with a licence or renewal item is
+    # refused here, before the exporter can publish it; licence items go last, as one short line.
+    $firstBullet = [regex]::Match($section, '(?m)^-[ ]+(.+)$').Groups[1].Value
+    if ($firstBullet -match '(?i)\blicen[cs]|\brenew') {
+        throw "changelog section $Version opens with a licensing item; lead with what every user gets and keep licensing to one short line at the end"
+    }
     return $section
 }
