@@ -1234,13 +1234,23 @@ pub(crate) struct LicenceSnapshot {
     /// other rather than reading the wall clock a second time (the whole point of
     /// threading a clock through instead of calling [`now_unix`] wherever one is needed).
     pub now_unix: u64,
-    /// This machine holds a LIVE business licence right now - the same [`Entitlement::Licensed`]
-    /// answer [`posture`] acts on. Carried so the Settings status line can tell a key redeemed on
+    /// This machine holds a LIVE business licence right now - the [`Entitlement::Licensed`] answer
+    /// [`posture`] acts on, minus a revocation the relay has since reported (see
+    /// [`is_live_licence`]). Carried so the Settings status line can tell a key redeemed on
     /// THIS copy (licensed, whatever the installer was told) apart from a stale breadcrumb left by
     /// a former Business install (not licensed; the downgrade notice owns that story). Without it
     /// a Personal install that redeemed a key showed "licence is active" beside "Personal use, no
     /// licence needed" (2026-09-11).
     pub entitled: bool,
+}
+
+/// Is this a LIVE business licence for the Settings page to name? [`Entitlement::Licensed`], and
+/// not a machine the relay has since told us was revoked. The grace window keeps a cached positive
+/// for seven days so an OFFLINE machine is not punished; it was never meant to go on describing a
+/// licence the relay has explicitly taken back, and the page reading "active" beside "revoked" was
+/// the result (owner test, 2026-09-11). Display only: [`posture`] still acts on the entitlement.
+fn is_live_licence(entitlement: Entitlement, last_status: &str) -> bool {
+    entitlement == Entitlement::Licensed && last_status != "revoked"
 }
 
 /// Build a [`LicenceSnapshot`] as of `now_unix`. The one place this module's wall clock is
@@ -1250,7 +1260,10 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
     let (entitlement, cert_expires_unix) = entitlement_and_cert_expiry(now_unix, history.as_ref());
-    let entitled = entitlement == Entitlement::Licensed;
+    let entitled = is_live_licence(
+        entitlement,
+        history.as_ref().map_or("", |h| h.last_status.as_str()),
+    );
     let posture = posture(mode, entitlement, history.as_ref());
     // The relay's recorded window wins; the certificate is the floor beneath it, exactly the
     // ordering `entitlement_and_cert_expiry` uses for the entitlement itself. `0` in the
@@ -1482,6 +1495,17 @@ mod tests {
         // Clock went backwards past the recorded answer: still licensed, never
         // punished for a BIOS battery. Saturating, so also never a panic.
         assert_eq!(entitlement_from_cache(t - 500, t), Entitlement::Licensed);
+    }
+
+    /// A relay-reported revocation ends what the Settings page calls a live licence at once, even
+    /// while the cached positive is still inside its grace window (owner test, 2026-09-11: the page
+    /// read "Business licence active" beside "Business licence revoked").
+    #[test]
+    fn a_revocation_the_relay_reported_is_not_a_live_licence() {
+        assert!(is_live_licence(Entitlement::Licensed, "active"));
+        assert!(!is_live_licence(Entitlement::Licensed, "revoked"));
+        assert!(!is_live_licence(Entitlement::Lapsed, "active"));
+        assert!(!is_live_licence(Entitlement::Unlicensed, ""));
     }
 
     /// The whole matrix. Every (mode, entitlement, history) cell the design names,

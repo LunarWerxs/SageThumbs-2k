@@ -201,6 +201,20 @@ pub(super) fn post_licence(target: isize, event: LicenceEvent) {
     }
 }
 
+/// A Redeem outcome is the one licence event worth a dialog: the customer has just typed in a key
+/// they paid for and needs an unmistakable answer, not a line of coloured text they may not notice
+/// (owner, 2026-09-11). Check now stays inline - it is a status read, not a purchase moment.
+unsafe fn licence_popup(hwnd: HWND, body: &str, caption: &str, icon: MESSAGEBOX_STYLE) {
+    let body = wide(body);
+    let caption = wide(caption);
+    MessageBoxW(
+        Some(hwnd),
+        PCWSTR(body.as_ptr()),
+        PCWSTR(caption.as_ptr()),
+        MB_OK | icon,
+    );
+}
+
 /// Apply a finished licence op to the UI (runs on the message thread). Re-enables the
 /// busy-disabled controls first, unconditionally — every branch below ends with them
 /// usable again, so this reads as one fact instead of six repeats of it.
@@ -221,12 +235,20 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
                     let _ = SetWindowTextW(e, PCWSTR(empty.as_ptr()));
                 }
                 refresh_licence_status(hwnd);
+                licence_popup(
+                    hwnd,
+                    &t("licence_popup_activated").replace("{key}", &key_prefix),
+                    t("licence_popup_title"),
+                    MB_ICONINFORMATION,
+                );
             }
             crate::license::RedeemOutcome::Rejected { message } => {
                 set_redeem_status(hwnd, &message, Tone::Bad);
+                licence_popup(hwnd, &message, t("licence_popup_rejected_title"), MB_ICONWARNING);
             }
             crate::license::RedeemOutcome::Offline => {
                 set_redeem_status(hwnd, t("licence_offline"), Tone::Bad);
+                licence_popup(hwnd, t("licence_offline"), t("licence_popup_title"), MB_ICONWARNING);
             }
         },
         LicenceEvent::Checked(result) => {
@@ -235,13 +257,14 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
                 let _ = SetWindowTextW(b, PCWSTR(w.as_ptr()));
             }
             let (text, tone) = match result {
-                Some(crate::license::Entitlement::Licensed) => {
-                    (t("licence_check_active"), Tone::Good)
-                }
-                // The check has just recorded WHY this copy is not licensed; a revocation is worth
-                // saying out loud rather than folding into "no licence".
+                // The check has just recorded the relay's own verdict. A revocation is said out loud,
+                // and it outranks a cached positive still inside its grace window: the relay saying
+                // "revoked" is newer than anything the cache remembers.
                 Some(_) if crate::license::snapshot().last_status == "revoked" => {
                     (t("licence_check_revoked"), Tone::Bad)
+                }
+                Some(crate::license::Entitlement::Licensed) => {
+                    (t("licence_check_active"), Tone::Good)
                 }
                 Some(_) => (t("licence_check_none"), Tone::Neutral),
                 None => (t("licence_offline"), Tone::Bad),
