@@ -1753,6 +1753,7 @@ mod tests {
             cert_expires_unix: None,
             maint_unix,
             now_unix: WINDOW_END + 1000,
+            entitled: true,
         }
     }
 
