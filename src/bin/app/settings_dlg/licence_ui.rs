@@ -253,11 +253,21 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
             }
             crate::license::RedeemOutcome::Rejected { message } => {
                 set_redeem_status(hwnd, &message, Tone::Bad);
-                licence_popup(hwnd, &message, t("licence_popup_rejected_title"), MB_ICONWARNING);
+                licence_popup(
+                    hwnd,
+                    &message,
+                    t("licence_popup_rejected_title"),
+                    MB_ICONWARNING,
+                );
             }
             crate::license::RedeemOutcome::Offline => {
                 set_redeem_status(hwnd, t("licence_offline"), Tone::Bad);
-                licence_popup(hwnd, t("licence_offline"), t("licence_popup_title"), MB_ICONWARNING);
+                licence_popup(
+                    hwnd,
+                    t("licence_offline"),
+                    t("licence_popup_title"),
+                    MB_ICONWARNING,
+                );
             }
         },
         LicenceEvent::Checked(result) => {
