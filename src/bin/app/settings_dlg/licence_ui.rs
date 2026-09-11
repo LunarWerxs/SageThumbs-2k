@@ -92,6 +92,15 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
         let _ = InvalidateRect(Some(h), None, true);
     }
+    // The page's big title names the licence ("Business licence" / "Personal licence"), so a
+    // Redeem or Check that changes it must repaint the header - and the search box that floats
+    // over it, or that box flashes as a hole (the same pairing the page switch uses).
+    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
+        let _ = InvalidateRect(Some(ph), None, true);
+    }
+    if let Ok(sb) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
+        let _ = InvalidateRect(Some(sb), None, true);
+    }
     apply_conditional_visibility(hwnd);
 }
 

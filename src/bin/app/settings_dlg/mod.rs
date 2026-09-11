@@ -247,6 +247,21 @@ fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
     }
 }
 
+/// The big title over the Licence page: the licence this copy actually holds, not the page's
+/// name. "Business licence" once a business key is live (whatever the installer was told),
+/// "Personal licence" on a Personal copy without one - a revoked key included - and the plain
+/// page name on a Business install with no key yet (owner, 2026-09-11). Only the header uses
+/// this; the nav rail and search keep the page name so the page is still found by it.
+pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'static str {
+    if snap.entitled && !snap.key_prefix.is_empty() {
+        return t("licence_title_business");
+    }
+    if snap.mode == crate::license::Mode::Personal {
+        return t("licence_title_personal");
+    }
+    t("nav_licence")
+}
+
 /// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
 /// line has no use for a time-of-day). No chrono/time dependency for one call site.
@@ -2424,6 +2439,33 @@ mod tests {
                 1_700_000_000
             )),
             t("licence_mode_personal")
+        );
+    }
+
+    /// The Licence page's big title names the licence: Business once a key is live, Personal on a
+    /// Personal copy without one (a revoked key included), the plain page name otherwise.
+    #[test]
+    fn licence_page_title_names_the_licence_this_copy_holds() {
+        let mut live = snap(
+            crate::license::Mode::Personal,
+            "esk_A1B2",
+            "active",
+            1_700_000_000,
+        );
+        live.entitled = true;
+        assert_eq!(licence_page_title(&live), t("licence_title_business"));
+        assert_eq!(
+            licence_page_title(&snap(
+                crate::license::Mode::Personal,
+                "esk_A1B2",
+                "revoked",
+                1_700_000_000
+            )),
+            t("licence_title_personal")
+        );
+        assert_eq!(
+            licence_page_title(&snap(crate::license::Mode::Business, "", "", 0)),
+            t("nav_licence")
         );
     }
 

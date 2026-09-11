@@ -65,6 +65,16 @@ pub(super) fn nav_label(ci: usize) -> &'static str {
     t(nav_key(ci))
 }
 
+/// The big title painted over category `ci`'s content pane: its nav label, except on the Licence
+/// page, which names the licence this copy holds (see `licence_page_title`). Kept apart from
+/// [`nav_label`] on purpose - the rail and search must keep finding the page by its plain name.
+pub(super) fn pane_title(ci: usize) -> &'static str {
+    if nav_key(ci) == "nav_licence" {
+        return super::licence_page_title(&crate::license::snapshot());
+    }
+    nav_label(ci)
+}
+
 /// The category index whose label key is `key`, or `None` if no page carries it.
 pub(super) fn category_index(key: &str) -> Option<usize> {
     (0..NCAT).find(|&ci| nav_key(ci) == key)
@@ -823,7 +833,7 @@ pub(super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     SelectObject(hdc, HGDIOBJ(crate::win::gui_font_title(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, DARK_TEXT());
-    let mut title = wide(nav_label(ci));
+    let mut title = wide(pane_title(ci));
     let tn = title.len().saturating_sub(1);
     // Reserve the right edge for the settings-wide search box that floats over this
     // header — otherwise a long title/blurb runs underneath it. 192 = the box (176) + its
