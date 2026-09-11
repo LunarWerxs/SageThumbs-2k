@@ -66,14 +66,14 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
         let w = wide(&licence_mode_line(&snap));
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
     }
-    let tone = if snap.mode == crate::license::Mode::Business {
-        if snap.last_status == "revoked" {
-            Tone::Bad
-        } else if !snap.key_prefix.is_empty() {
-            Tone::Good
-        } else {
-            Tone::Neutral
-        }
+    // The colour follows the LICENCE, not the installer's answer: a Personal copy carrying a live
+    // business key is green and one whose key was revoked is red, exactly as a Business copy is.
+    let tone = if !snap.key_prefix.is_empty() && snap.last_status == "revoked" {
+        Tone::Bad
+    } else if snap.entitled
+        || (snap.mode == crate::license::Mode::Business && !snap.key_prefix.is_empty())
+    {
+        Tone::Good
     } else {
         Tone::Neutral
     };
@@ -237,6 +237,11 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
             let (text, tone) = match result {
                 Some(crate::license::Entitlement::Licensed) => {
                     (t("licence_check_active"), Tone::Good)
+                }
+                // The check has just recorded WHY this copy is not licensed; a revocation is worth
+                // saying out loud rather than folding into "no licence".
+                Some(_) if crate::license::snapshot().last_status == "revoked" => {
+                    (t("licence_check_revoked"), Tone::Bad)
                 }
                 Some(_) => (t("licence_check_none"), Tone::Neutral),
                 None => (t("licence_offline"), Tone::Bad),

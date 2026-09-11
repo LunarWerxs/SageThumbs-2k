@@ -124,6 +124,17 @@ pub(crate) fn business_nag_height() -> i32 {
 /// `about.rs`) so the two surfaces cannot silently drift into disagreeing over what the exact
 /// same [`crate::license::snapshot`] means.
 pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> String {
+    // A REVOKED key outranks the installer's answer for the same reason a live one does: a
+    // Personal copy whose business key was taken back must say so. Checked before the Personal
+    // line below, which a revoked copy (no longer entitled) would otherwise fall into and read
+    // "Personal use, no licence needed" - the revocation silently vanishing (owner test, 2026-09-11).
+    if !snap.key_prefix.is_empty() && snap.last_status == "revoked" {
+        let line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+        return match licence_reason_line(&snap.last_reason) {
+            Some(why) => format!("{line} {why}"),
+            None => line,
+        };
+    }
     // Personal means "no licence needed" ONLY while this machine is not actually licensed. A key
     // redeemed on this copy outranks the installer's answer - `license::posture` already treats it
     // as a live business licence - so the status line must say so too, or the page contradicts
@@ -134,13 +145,6 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     }
     if snap.key_prefix.is_empty() {
         return t("licence_state_none").to_string();
-    }
-    if snap.last_status == "revoked" {
-        let line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
-        return match licence_reason_line(&snap.last_reason) {
-            Some(why) => format!("{line} {why}"),
-            None => line,
-        };
     }
     // E05 audit: a certificate nearing its own `exp` gets its own line rather than the
     // ordinary "Licensed" one, but ONLY when the certificate is actually what licenses this
@@ -225,8 +229,15 @@ pub(crate) fn licence_reason_line(reason: &str) -> Option<&'static str> {
 /// redeemed key), and "Reinstall to change" would be nonsense advice for a copy that was
 /// never installed.
 ///
+/// A LIVE key outranks all three: once a business key is active on this copy, the installer's
+/// answer no longer describes it, so the line names the licence and its key instead. A Personal
+/// install that redeems a business key is a business install from then on (owner, 2026-09-11).
+///
 /// [`Mode`]: crate::license::Mode
 fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
+    if snap.entitled && !snap.key_prefix.is_empty() {
+        return t("licence_mode_licensed").replace("{key}", &snap.key_prefix);
+    }
     if sagethumbs2k_core::settings::portable() {
         return t("licence_mode_portable").to_string();
     }
@@ -2346,6 +2357,17 @@ mod tests {
             licence_state_line(&redeemed_here),
             t("licence_state_licensed").replace("{date}", &format_unix_date(1_700_000_000))
         );
+        // ⛔ AND A KEY REVOKED ON THIS PERSONAL COPY SAYS SO. It is no longer entitled, so before
+        // 2026-09-11 it fell into the Personal branch and the revocation vanished from the page.
+        assert_eq!(
+            licence_state_line(&snap(
+                crate::license::Mode::Personal,
+                "esk_A1B2",
+                "revoked",
+                1_700_000_000
+            )),
+            t("licence_state_revoked").replace("{key}", "esk_A1B2")
+        );
         // Business, never redeemed anything.
         assert_eq!(
             licence_state_line(&snap(crate::license::Mode::Business, "", "", 0)),
@@ -2371,6 +2393,37 @@ mod tests {
         assert_eq!(
             licensed,
             t("licence_state_licensed").replace("{date}", &format_unix_date(1_700_000_000))
+        );
+    }
+
+    /// The mode line names the business licence once a key is live on this copy, whatever the
+    /// installer was told, and falls back to the installer's own answer the moment it is not.
+    #[test]
+    fn licence_mode_line_names_the_business_licence_once_a_key_is_live() {
+        let mut live = snap(
+            crate::license::Mode::Personal,
+            "esk_A1B2",
+            "active",
+            1_700_000_000,
+        );
+        live.entitled = true;
+        assert_eq!(
+            licence_mode_line(&live),
+            t("licence_mode_licensed").replace("{key}", "esk_A1B2")
+        );
+        // A portable test runner has no installer answer to fall back to; the live-key half above
+        // is the part that matters and it has already run.
+        if sagethumbs2k_core::settings::portable() {
+            return;
+        }
+        assert_eq!(
+            licence_mode_line(&snap(
+                crate::license::Mode::Personal,
+                "esk_A1B2",
+                "revoked",
+                1_700_000_000
+            )),
+            t("licence_mode_personal")
         );
     }
 
