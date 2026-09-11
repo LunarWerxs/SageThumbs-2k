@@ -9,6 +9,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **The Licence page says which licence you have.** With a business key active it now reads
+  "Business licence" at the top, names the key, and says the licence is active; on a Personal
+  install without one it reads "Personal licence". Previously a Personal install that redeemed a
+  business key still said "installed for personal use" beside a green "licence is active".
+  Redeeming a key now answers with a pop-up, "Your business licence is active", or a clear
+  warning when the key is refused or the licence service cannot be reached.
+
+- **A revoked licence shows as revoked straight away.** When the licence holder takes a
+  computer's seat back, Check now says so and the page shows the revocation, instead of reading
+  "active" for up to a week or, on a Personal install, hiding it behind "no licence needed".
+
 - Licensed installations now see when their updates window ends, and can renew for another
   12 months from Settings > Licence.
 
