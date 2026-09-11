@@ -520,6 +520,14 @@ try {
             ('- **ARM64 SHA-256:** `' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '`')
         )
     }
+    # The x64 installer's second name (uploaded at step 5), explained where people will see it.
+    # Parenthesised for the reason the ARM64 block above spells out.
+    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+        ''
+        ('- **x64 installer, second copy:** `SageThumbs2K-Setup-' + $ver + '-amd64.exe` is the same file as' +
+            ' the verified x64 installer above, published under a name that lists first so that copies' +
+            ' older than 1.3.6 can update themselves. Download the plain one.')
+    )
 
     # State the portable scope in the notes rather than letting the filename imply more than
     # it delivers. Everyone who downloads it will otherwise ask the same question, which is
@@ -630,6 +638,19 @@ try {
             "$($artifact.Portable.FullName).sig"
         }
     )
+    # A SECOND COPY of the x64 installer, named so it lists FIRST. Builds 0.6.3 through 1.3.5
+    # self-update by taking the first `.exe` asset with "setup" in its name (GitHub lists
+    # assets by name), and since 1.6.0 that has been the ARM64 installer, which an x64 PC
+    # silently refuses to run - so every one of those copies has sat on "update available"
+    # with nothing ever installing. "amd64" sorts ahead of "arm64" under any case rule
+    # ('m' < 'r'), so they take this copy and land on the current build; every build from
+    # 1.3.6 on matches the exact names above and never looks at it. Byte-identical to the x64
+    # installer, so its `.sig` is the same signature, and the digest loop below verifies it
+    # like any other asset. Retire this once builds older than 1.3.6 are no longer in use.
+    $x64Alias = Join-Path $root "dist\SageThumbs2K-Setup-$ver-amd64.exe"
+    Copy-Item -LiteralPath $x64Artifact[0].Setup.FullName -Destination $x64Alias -Force
+    Copy-Item -LiteralPath "$($x64Artifact[0].Setup.FullName).sig" -Destination "$x64Alias.sig" -Force
+    $releaseAssetPaths += @($x64Alias, "$x64Alias.sig")
     gh release create $tag @releaseAssetPaths `
         --draft `
         --title "SageThumbs 2K $ver" `

@@ -191,6 +191,19 @@ Some more filler so the section clears the minimum length check that runs before
         }
     }
 
+    # The x64 installer's second, first-listed name is what lets builds 0.6.3 through 1.3.5
+    # update themselves (their updater takes the first "setup" .exe by name, and from 1.6.0
+    # that was the ARM64 one). Nothing downstream reads it, so nothing else would notice it
+    # vanishing either.
+    Assert-Passes 'release.ps1 uploads the x64 installer under its second, first-listed name' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in 'SageThumbs2K-Setup-$ver-amd64.exe', '$releaseAssetPaths += @($x64Alias, "$x64Alias.sig")') {
+            if ($releaseText -notmatch [regex]::Escape($expected)) {
+                throw "release.ps1 no longer publishes the x64 installer's second name: $expected"
+            }
+        }
+    }
+
     Assert-Passes 'portable builds stage outside the installer stage' {
         # Staging wipes and rebuilds its directory, and the portable pass deliberately omits the
         # DLL. If the two ever share a directory again, a portable build inside a release gets to

@@ -37,6 +37,7 @@ Assert-Passes 'release publishes explicit x64 and ARM64 artifact pairs' {
     foreach ($required in @(
             'SageThumbs2K-Setup-$ver.exe',
             'SageThumbs2K-Setup-$ver-arm64.exe',
+            'SageThumbs2K-Setup-$ver-amd64.exe',
             'SageThumbs2K-Setup-$ver.release.json',
             'SageThumbs2K-Setup-$ver-arm64.release.json',
             "'scripts\packaging\stage\x64'",
