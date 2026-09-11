@@ -508,6 +508,13 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// AV1/colour signals gathered while walking an AVIF's box tree.
 struct AvifWicFound {
     matrix: Option<u16>,
+    /// H.273 colour primaries, transfer characteristics and the full-range flag of the FIRST
+    /// `nclx` box met. First, not last: a gain-map or alpha AVIF carries a second item with a
+    /// `colr` of its own, and every encoder this code has met writes the primary item's
+    /// properties ahead of the auxiliary ones.
+    primaries: Option<u16>,
+    transfer: Option<u16>,
+    full_range: bool,
     high_bitdepth: bool,
     monochrome: bool,
     is_av1: bool,
@@ -520,6 +527,16 @@ fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut AvifWicFound) {
         b"colr" if body.get(..4) == Some(b"nclx") => {
             if let Some(raw) = body.get(8..10).and_then(|b| b.try_into().ok()) {
                 f.matrix = Some(u16::from_be_bytes(raw));
+            }
+            if f.transfer.is_none() {
+                let be16 = |at: usize| {
+                    body.get(at..at + 2)
+                        .and_then(|b| b.try_into().ok())
+                        .map(u16::from_be_bytes)
+                };
+                f.primaries = be16(4);
+                f.transfer = be16(6);
+                f.full_range = body.get(10).is_some_and(|b| b >> 7 == 1);
             }
         }
         // AV1CodecConfigurationBox: byte 2 is
@@ -585,6 +602,13 @@ fn walk_avif_wic(buf: &[u8], depth: u8, f: &mut AvifWicFound) {
 /// needing an AV1 decoder on the machine running them.
 fn avif_wic_class(f: &AvifWicFound) -> Option<wicprobe::WicClass> {
     use wicprobe::WicClass;
+    // An HDR transfer decides ahead of depth and matrix (issue #39): the codec hands a PQ or
+    // HLG picture back as linear floats rather than 8-bit sRGB, so what is measured for it is
+    // that float hand-off and the tone map behind it, not a YUV matrix. HLG borrows the PQ
+    // probe's verdict: same float contract, and no HLG AVIF has measured differently.
+    if f.transfer.is_some_and(super::cicp::is_hdr_transfer) {
+        return Some(WicClass::HighHdr);
+    }
     Some(match (f.high_bitdepth, f.monochrome, f.matrix) {
         // No chroma planes, so no matrix to misread. 8-bit monochrome has no probe of its own
         // (libaom declines to encode one losslessly); it falls through to the matrix classes
@@ -628,6 +652,9 @@ fn avif_wic_verdict_from(f: &AvifWicFound) -> AvifWicVerdict {
 fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
     let mut found = AvifWicFound {
         matrix: None,
+        primaries: None,
+        transfer: None,
+        full_range: false,
         high_bitdepth: false,
         monochrome: false,
         is_av1: false,
@@ -636,6 +663,27 @@ fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
         walk_avif_wic(bytes, 0, &mut found);
     }
     found
+}
+
+/// The HDR colour signal of an ISOBMFF picture (AVIF or HEIC): its first `nclx` box, when
+/// that names a PQ or HLG transfer, in the shape the PNG `cICP` conversion takes. `None` for
+/// an SDR file, a file with no `nclx`, or anything that is not ISOBMFF at all.
+///
+/// Two consumers, both for issue #39. The routing gives an HDR AVIF its own probe class, and
+/// the ImageMagick tiers convert what magick hands back: magick decodes an HDR AVIF/HEIC to
+/// its raw PQ or HLG signal, and shown as sRGB that is a dark, flat picture. Windows' own
+/// codec needs neither - it returns linear floats, which `wic.rs` recognises by pixel format
+/// and tone-maps directly.
+pub(super) fn isobmff_hdr_cicp(bytes: &[u8]) -> Option<super::cicp::PngCicp> {
+    let f = avif_wic_signals(bytes);
+    let transfer = f.transfer.filter(|t| super::cicp::is_hdr_transfer(*t))?;
+    Some(super::cicp::PngCicp {
+        // H.273 code points are one byte on the wire; a container value past 255 names no
+        // primaries this module knows, and 2 ("unspecified") is what maps through unchanged.
+        primaries: f.primaries.and_then(|p| u8::try_from(p).ok()).unwrap_or(2),
+        transfer: u8::try_from(transfer).ok()?,
+        full_range: f.full_range,
+    })
 }
 
 /// The probe class this file's colour signalling puts it in. `None` for anything that is not

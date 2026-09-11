@@ -117,6 +117,12 @@ const JXL_ADOBERGB: &[u8] = include_bytes!("../../tests/fixtures/jxl/adobergb_mo
 /// `python scripts/make-jxl-hdr-fixtures.py <dir>` then `cjxl <png> <jxl> -d 0 -e 5`.
 const JXL_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-pq2020.jxl");
 const JXL_SDR709: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-sdr709.jxl");
+/// The same twin scene as AVIF, 10-bit 4:4:4 lossless: one tagged PQ / BT.2020 (`nclx` 9, 16,
+/// 9, full range), one sRGB / BT.709. The first is the "HDR base" AVIF of issue #39 and the
+/// second its SDR control. Regenerate both with
+/// `python scripts/make-avif-hdr-fixtures.py tests/fixtures/avif`.
+const AVIF_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/avif/scene-pq2020.avif");
+const AVIF_SDR709: &[u8] = include_bytes!("../../tests/fixtures/avif/scene-sdr709.avif");
 
 /// Wrap a JPEG's bytes with an EXIF APP1 declaring `orientation` (1..=8).
 ///

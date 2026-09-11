@@ -49,6 +49,13 @@ impl PngCicp {
     }
 }
 
+/// Whether an H.273 transfer code, as a container writes it (a `u16` in an ISOBMFF `nclx`
+/// box), is one of the two HDR transfers this module converts. The same question as
+/// [`PngCicp::is_hdr`], asked before a `PngCicp` exists.
+pub(super) fn is_hdr_transfer(code: u16) -> bool {
+    u8::try_from(code).is_ok_and(|t| matches!(t, TRANSFER_PQ | TRANSFER_HLG))
+}
+
 /// Find the `cICP` chunk ahead of the first `IDAT`, or `None` (not a PNG, no chunk, or a
 /// chunk list too broken to walk). Every length is checked before use; a chunk that runs
 /// past the buffer ends the walk.
@@ -139,7 +146,12 @@ fn expand_limited_range(v: f32) -> f32 {
 }
 
 /// SDR reference white for HDR-to-SDR mapping, in nits (ITU-R BT.2408).
-const REFERENCE_WHITE_NITS: f32 = 203.0;
+pub(super) const REFERENCE_WHITE_NITS: f32 = 203.0;
+
+/// scRGB's nominal white, in nits: what Windows' own codecs put at 1.0 when they hand an HDR
+/// picture back as linear floats (`wic.rs`). Dividing by [`REFERENCE_WHITE_NITS`] moves that
+/// 1.0 to where every other HDR source in this module puts diffuse white.
+pub(super) const SCRGB_WHITE_NITS: f32 = 80.0;
 
 /// PQ EOTF (SMPTE ST 2084): non-linear signal in `[0, 1]` to display light, scaled so
 /// that 203 nits is 1.0 (PQ's own 1.0 is 10 000 nits).

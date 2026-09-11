@@ -324,6 +324,28 @@ pub(super) fn wic_source_within_limits(w: u32, h: u32, thumbnail_cx: Option<u32>
     w <= MAX_DIM && h <= MAX_DIM && pixels <= MAX_PIXELS
 }
 
+/// The frame scaled by the codec to `thumbnail_cx` on its longer edge when it is larger than
+/// that, or the frame itself. Split out of [`wic_decode_frame`] for the complexity gate only;
+/// the reasoning for scaling FIRST is at the call site.
+unsafe fn scaled_frame_source(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+    (w, h): (u32, u32),
+    thumbnail_cx: Option<u32>,
+) -> Result<IWICBitmapSource> {
+    match thumbnail_cx {
+        Some(cx) if w.max(h) > cx => {
+            let long = w.max(h);
+            let target_w = ((w as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+            let target_h = ((h as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+            let scaler = factory.CreateBitmapScaler()?;
+            scaler.Initialize(frame, target_w, target_h, WICBitmapInterpolationModeFant)?;
+            scaler.cast()
+        }
+        _ => frame.cast(),
+    }
+}
+
 pub(super) unsafe fn wic_decode_frame(
     factory: &IWICImagingFactory,
     frame: &IWICBitmapFrameDecode,
@@ -349,17 +371,19 @@ pub(super) unsafe fn wic_decode_frame(
     //
     // Scaling first also shrinks the format conversion and the ICC pass, which now run over
     // the small image instead of the large one.
-    let scaled: IWICBitmapSource = match thumbnail_cx {
-        Some(cx) if w.max(h) > cx => {
-            let long = w.max(h);
-            let target_w = ((w as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
-            let target_h = ((h as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
-            let scaler = factory.CreateBitmapScaler()?;
-            scaler.Initialize(frame, target_w, target_h, WICBitmapInterpolationModeFant)?;
-            scaler.cast()?
-        }
-        _ => frame.cast()?,
-    };
+    let scaled = scaled_frame_source(factory, frame, (w, h), thumbnail_cx)?;
+
+    // HDR (issue #39). Windows' AV1 and HEVC codecs hand a PQ or HLG picture back as LINEAR
+    // scRGB floats - 64bppRGBAHalf, 80 nits at 1.0, BT.709 primaries, the EOTF and the gamut
+    // conversion already done - and the 32bppRGBA conversion below clips everything above
+    // 80 nits to white, which is how an HDR AVIF thumbnailed as a bleached picture with the
+    // snow burned out. Decided by the FRAME's own pixel format rather than by any colour box:
+    // that is what the codec itself made of the file, so it cannot disagree with the pixels,
+    // and it covers HEIC as readily as AVIF. The floats stay floats and go through the same
+    // tone map an EXR does.
+    if is_wic_float_format(&frame.GetPixelFormat()?) {
+        return wic_scrgb_to_srgb(factory, &scaled);
+    }
 
     // Convert to straight 32bpp RGBA (dib.rs handles the premultiply). This has to come after
     // the scaler precisely because the scaler does NOT promise to preserve its source's pixel
@@ -440,6 +464,72 @@ unsafe fn ensure_rgba32(
         WICBitmapPaletteTypeCustom,
     )?;
     converter.cast()
+}
+
+/// Is this a WIC pixel format that carries linear floats or halfs - i.e. the codec has handed
+/// back an HDR picture? See the HDR branch of [`wic_decode_frame`].
+fn is_wic_float_format(format: &windows::core::GUID) -> bool {
+    [
+        GUID_WICPixelFormat64bppRGBAHalf,
+        GUID_WICPixelFormat64bppPRGBAHalf,
+        GUID_WICPixelFormat48bppRGBHalf,
+        GUID_WICPixelFormat128bppRGBAFloat,
+        GUID_WICPixelFormat128bppPRGBAFloat,
+        GUID_WICPixelFormat96bppRGBFloat,
+    ]
+    .contains(format)
+}
+
+/// Linear scRGB floats out of WIC to 8-bit sRGB, through the shared HDR tone map.
+///
+/// Converts whatever the scaler produced (Fant hands back PREMULTIPLIED float) to straight
+/// 128bppRGBAFloat, rescales 1.0 from scRGB's 80 nits to the 203-nit reference white every
+/// other HDR source in this module uses, and tone-maps exactly as an EXR or an HDR PNG is.
+/// Measured on the PQ twin fixture (`tests/fixtures/avif`): the grey ramp's 203-nit white
+/// came back from the codec as 2.53 and lands at 187 of 255, where the JPEG XL and PNG twins
+/// of the same scene already land; the 32bppRGBA conversion it replaces read 255 from the
+/// ramp's midpoint upward. No ICC is applied: scRGB is already BT.709-relative linear light,
+/// and a PQ profile on top of it would be the JPEG XL bug of issue #38 over again.
+unsafe fn wic_scrgb_to_srgb(
+    factory: &IWICImagingFactory,
+    source: &IWICBitmapSource,
+) -> Result<DynamicImage> {
+    let converter = factory.CreateFormatConverter()?;
+    converter.Initialize(
+        source,
+        &GUID_WICPixelFormat128bppRGBAFloat,
+        WICBitmapDitherTypeNone,
+        None,
+        0.0,
+        WICBitmapPaletteTypeCustom,
+    )?;
+    let floats_src: IWICBitmapSource = converter.cast()?;
+    let (mut w, mut h) = (0u32, 0u32);
+    floats_src.GetSize(&mut w, &mut h)?;
+    // 16 bytes a pixel: the same ceiling the 8-bit path gets from `limits`, at four times the
+    // weight. A full-fidelity decode past it is refused rather than clipped; the tiers above
+    // fall through to ImageMagick, which decodes it under its own size cap. A thumbnail never
+    // gets here - the scaler has already brought it down to the requested edge.
+    let bytes = u64::from(w) * u64::from(h) * 16;
+    if w == 0 || h == 0 || bytes > MAX_ALLOC {
+        return Err(Error::from(E_FAIL));
+    }
+    let stride = w * 16;
+    let mut floats = vec![0f32; (w as usize) * (h as usize) * 4];
+    // Copy straight into the float buffer's bytes: `f32` is 4-byte aligned, and the layout WIC
+    // writes (R, G, B, A as little-endian IEEE floats) is the layout `image` reads back.
+    let raw = std::slice::from_raw_parts_mut(floats.as_mut_ptr().cast::<u8>(), floats.len() * 4);
+    floats_src.CopyPixels(std::ptr::null(), stride, raw)?;
+    let mut img = image::Rgba32FImage::from_raw(w, h, floats).ok_or_else(|| Error::from(E_FAIL))?;
+    let scale = super::cicp::SCRGB_WHITE_NITS / super::cicp::REFERENCE_WHITE_NITS;
+    for px in img.pixels_mut() {
+        // Colour only: alpha is coverage, not light.
+        px.0[0] *= scale;
+        px.0[1] *= scale;
+        px.0[2] *= scale;
+    }
+    crate::safety::log_debug("decode: WIC handed back linear scRGB floats (HDR); tone-mapping");
+    Ok(tone_map_float(&DynamicImage::ImageRgba32F(img)))
 }
 
 /// The embedded ICC profile from a WIC frame's first PROFILE-type color context (where

@@ -28,7 +28,7 @@
 //!
 //! # What this does instead
 //!
-//! Six AVIF files, ~360 bytes each, are compiled into the binary. Each is four flat patches
+//! Seven AVIF files, ~360 bytes each, are compiled into the binary. Each is four flat patches
 //! whose correct sRGB values we know, encoded LOSSLESS in 4:4:4 so the only error a probe can
 //! possibly measure is the decoder's. On the first AVIF of the process each one is decoded
 //! through the very WIC path the tier would use, and the answer is compared with what it
@@ -64,6 +64,7 @@ const P8_NOCOLR: &[u8] = include_bytes!("../../assets/wicprobe/avif-8bit-nocolr.
 const P10_BT709: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt709.avif");
 const P10_BT601: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt601.avif");
 const P10_MONO: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-mono.avif");
+const P10_PQ2020: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-pq2020.avif");
 
 /// What the four patches of a colour probe must come back as, in sRGB.
 ///
@@ -75,6 +76,14 @@ const EXPECT_COLOUR: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [128, 128, 128], 
 
 /// The monochrome probe's four greys.
 const EXPECT_MONO: [[u8; 3]; 4] = [[32, 32, 32], [96, 96, 96], [160, 160, 160], [224, 224, 224]];
+
+/// The PQ probe's four patches AFTER the HDR path: red, green, a grey at half of diffuse
+/// white and the skin tone, each as 203-nit-relative linear light through Reinhard and the
+/// sRGB curve (`color::tone_map_float`). Full white is 188, not 255, because that is where
+/// this product puts every HDR source's reference white; the clipped path this replaced read
+/// 255 for everything past mid grey (issue #39). Derived, not typed: `make-wic-probes.py
+/// --verify` prints them from the same arithmetic.
+const EXPECT_PQ: [[u8; 3]; 4] = [[188, 0, 0], [0, 188, 0], [156, 156, 156], [174, 151, 129]];
 
 /// The colour-signalling classes Windows has ever treated differently from one another.
 ///
@@ -94,6 +103,10 @@ pub(super) enum WicClass {
     HighBt601,
     /// 10/12-bit monochrome (`av1C`'s monochrome flag), where there is no matrix to get wrong.
     HighMono,
+    /// A PQ or HLG transfer, whatever the depth or matrix: an HDR picture, which the codec
+    /// hands back as linear scRGB floats rather than 8-bit sRGB (issue #39). What this class
+    /// measures is that float hand-off plus `wic.rs`'s tone map; the probe is 10-bit PQ/BT.2020.
+    HighHdr,
 }
 
 impl WicClass {
@@ -105,6 +118,7 @@ impl WicClass {
             Self::HighBt709 => (P10_BT709, &EXPECT_COLOUR),
             Self::HighBt601 => (P10_BT601, &EXPECT_COLOUR),
             Self::HighMono => (P10_MONO, &EXPECT_MONO),
+            Self::HighHdr => (P10_PQ2020, &EXPECT_PQ),
         }
     }
 
@@ -116,17 +130,19 @@ impl WicClass {
             Self::HighBt709 => 3,
             Self::HighBt601 => 4,
             Self::HighMono => 5,
+            Self::HighHdr => 6,
         }
     }
 
     /// Every class, so the measurement pass and its test can iterate without a hand-kept list.
-    pub(super) const ALL: [WicClass; 6] = [
+    pub(super) const ALL: [WicClass; 7] = [
         Self::EightBt709,
         Self::EightBt601,
         Self::EightNoColr,
         Self::HighBt709,
         Self::HighBt601,
         Self::HighMono,
+        Self::HighHdr,
     ];
 }
 
@@ -142,22 +158,23 @@ impl WicClass {
 /// does, above it), and `undo_wic_high_depth_curve` is a pure lookup table. Re-entering
 /// `get_or_init` deadlocks, so if a future tier starts routing inside `wic_fallback`, this has
 /// to stop being a `OnceLock`.
-fn trust() -> &'static [AvifWicVerdict; 6] {
-    static TRUST: std::sync::OnceLock<[AvifWicVerdict; 6]> = std::sync::OnceLock::new();
+fn trust() -> &'static [AvifWicVerdict; 7] {
+    static TRUST: std::sync::OnceLock<[AvifWicVerdict; 7]> = std::sync::OnceLock::new();
     TRUST.get_or_init(|| {
-        let mut out = [AvifWicVerdict::Untrusted; 6];
+        let mut out = [AvifWicVerdict::Untrusted; 7];
         for class in WicClass::ALL {
             out[class.index()] = measure(class);
         }
         crate::safety::log_debugf!(
             "decode: WIC AVIF colour probe: 8/709={:?} 8/601={:?} 8/none={:?} \
-             hi/709={:?} hi/601={:?} hi/mono={:?}",
+             hi/709={:?} hi/601={:?} hi/mono={:?} hi/pq={:?}",
             out[0],
             out[1],
             out[2],
             out[3],
             out[4],
-            out[5]
+            out[5],
+            out[6]
         );
         out
     })
@@ -258,7 +275,7 @@ mod tests {
     /// Exactly one probe per class, and no two classes sharing a slot.
     #[test]
     fn class_indices_are_distinct() {
-        let mut seen = [false; 6];
+        let mut seen = [false; WicClass::ALL.len()];
         for class in WicClass::ALL {
             assert!(!seen[class.index()], "{class:?} reuses a slot");
             seen[class.index()] = true;

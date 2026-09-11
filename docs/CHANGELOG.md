@@ -23,6 +23,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - Licensed installations now see when their updates window ends, and can renew for another
   12 months from Settings > Licence.
 
+- **HDR AVIF thumbnails no longer come out blown out**
+  ([#39](https://github.com/LunarWerxs/SageThumbs-2k/issues/39)). An AVIF whose base image is
+  HDR (PQ transfer, BT.2020 primaries, the same shape as the JPEG XL fixed in 3.0.1) rendered
+  as a bleached picture with every bright area clipped to white: Windows' own AV1 decoder hands
+  an HDR picture back as linear light, and everything brighter than 80 nits was being cut off
+  on the way to 8 bits. Where the bundled ImageMagick decoded the file instead, the raw PQ
+  signal was shown as if it were sRGB, so the same picture came out dark and flat. Both now go
+  through the conversion and tone map an HDR PNG, JPEG XL or EXR does, HDR HEIC included. The
+  SDR twin of the same picture is unchanged.
+
 ## 3.0.1
 
 The first update after 3.0. Three things, all from user reports in the days after the release,

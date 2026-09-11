@@ -29,10 +29,13 @@ use image::DynamicImage;
 use windows::core::{Error, Interface, Result};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode, IWICBitmapSource,
-    IWICBitmapSourceTransform, IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone,
-    WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom, WICColorContextProfile,
-    WICDecodeMetadataCacheOnDemand,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat128bppPRGBAFloat,
+    GUID_WICPixelFormat128bppRGBAFloat, GUID_WICPixelFormat32bppRGBA,
+    GUID_WICPixelFormat48bppRGBHalf, GUID_WICPixelFormat64bppPRGBAHalf,
+    GUID_WICPixelFormat64bppRGBAHalf, GUID_WICPixelFormat96bppRGBFloat, IWICBitmapFrameDecode,
+    IWICBitmapSource, IWICBitmapSourceTransform, IWICColorContext, IWICImagingFactory,
+    WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
+    WICColorContextProfile, WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -376,7 +379,7 @@ fn last_resort_tiers(
             // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
             // for a file that decodes perfectly well.
             match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
-                Ok(img) => return Ok(img),
+                Ok(img) => return Ok(finish_magick_output(img, bytes, false)),
                 Err(e) => {
                     crate::safety::log_debugf!("decode tier `magick` failed: {e}");
                     last_err = e;
@@ -794,7 +797,7 @@ fn route_isobmff_wic_quirks(
         // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
         // numbers - the same "decoded right, then threw the profile away" fault that
         // was fixed for JPEG XL in 1.7.1.
-        Ok(img) => Ok(apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))),
+        Ok(img) => Ok(finish_magick_output(img, bytes, true)),
         Err(e) => {
             crate::safety::log_debugf!("decode tier `magick ({why})` failed: {e}");
             Err(WicQuirkRoute {
@@ -803,6 +806,27 @@ fn route_isobmff_wic_quirks(
                 magick_error: Some(e),
             })
         }
+    }
+}
+
+/// What ImageMagick hands back, made displayable. An HDR AVIF/HEIC (PQ or HLG `nclx`, issue
+/// #39) comes back as its raw transfer-encoded signal - magick applies no EOTF - and shown as
+/// sRGB that is a dark, flat picture (the grey ramp's 203-nit white reads 148 of 255). It
+/// goes through the PNG `cICP` conversion and the float tone map, exactly as an HDR JPEG XL
+/// does since #38, and lands at 187 like every other HDR source. Everything else is untouched
+/// here except for `icc`: the routed ISOBMFF tier has always applied the container's own
+/// profile afterwards (see its call site), the generic last-resort tier never has, and this
+/// keeps both exactly as they were for every SDR file.
+fn finish_magick_output(img: DynamicImage, bytes: &[u8], icc: bool) -> DynamicImage {
+    if let Some(cicp) = color::isobmff_hdr_cicp(bytes) {
+        if let Some(linear) = cicp_hdr_to_linear(&img, &cicp) {
+            return tone_map_float(&linear);
+        }
+    }
+    if icc {
+        apply_icc_to_srgb(img, color::isobmff_color_icc(bytes))
+    } else {
+        img
     }
 }
 

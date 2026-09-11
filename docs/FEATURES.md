@@ -706,7 +706,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   iPhone HEIC uses, and CMYK JPEGs are converted through their embedded CMYK profile.
   HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
   linear light and tone-mapped like EXR and Radiance files, so they render with the right
-  curve instead of washed out.
+  curve instead of washed out; HDR AVIF and HEIC (a PQ or HLG `nclx` signal) take the same
+  tone map, whether Windows' own codec or the bundled ImageMagick decoded them.
 - **Accessible Settings:** the category rail reports a name, a role and the current selection to
   UI Automation, so Narrator and NVDA can navigate it. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
   transform), no C colour-engine dependency.

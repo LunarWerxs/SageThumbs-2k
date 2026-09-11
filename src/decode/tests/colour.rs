@@ -591,3 +591,116 @@ fn hdr_pq_jxl_renders_as_bright_as_its_sdr_twin() {
         "both ramps start near black ({pq_left}, {sdr_left})"
     );
 }
+
+/// Issue #39, the routing half, which needs no AV1 codec: an AVIF whose `nclx` names a PQ
+/// transfer is an HDR picture whatever its depth or matrix says, gets the HDR probe class
+/// rather than "unmeasured, ask ImageMagick", and hands the magick tiers the cICP they need to
+/// convert magick's raw signal. Its SDR twin - the same scene, sRGB / BT.709 - is none of those.
+#[test]
+fn hdr_pq_avif_is_routed_as_hdr_and_its_sdr_twin_is_not() {
+    use crate::decode::color::{avif_wic_class_of, isobmff_hdr_cicp};
+    use crate::decode::wicprobe::WicClass;
+    let pq = isobmff_hdr_cicp(AVIF_PQ2020).expect("the PQ twin signals an HDR transfer");
+    assert_eq!((pq.primaries, pq.transfer, pq.full_range), (9, 16, true));
+    assert_eq!(avif_wic_class_of(AVIF_PQ2020), Some(WicClass::HighHdr));
+    assert_eq!(isobmff_hdr_cicp(AVIF_SDR709), None);
+    assert_eq!(avif_wic_class_of(AVIF_SDR709), Some(WicClass::HighBt709));
+    assert_eq!(
+        isobmff_hdr_cicp(JXL_PQ2020),
+        None,
+        "not ISOBMFF, so not this rule's"
+    );
+}
+
+/// Left edge, right edge and mean of the grey ramp along the top half of a twin-scene render,
+/// whatever size it was rendered at.
+fn scene_ramp(img: &image::DynamicImage) -> (u8, u8, f64) {
+    let rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let y = h / 8;
+    let left = rgb.get_pixel(1, y).0[1];
+    let right = rgb.get_pixel(w - 2, y).0[1];
+    let mean = (0..w)
+        .map(|x| f64::from(rgb.get_pixel(x, y).0[1]))
+        .sum::<f64>()
+        / f64::from(w);
+    (left, right, mean)
+}
+
+/// The assertion the JPEG XL twins already pin (#38), for one decode path of the AVIF twins:
+/// reference white at Reinhard's 1.0 - 187 of 255 - with the SDR control untouched at 255.
+fn assert_hdr_twin_lands_at_reference_white(
+    label: &str,
+    pq: &image::DynamicImage,
+    sdr: &image::DynamicImage,
+) {
+    let (pq_left, pq_right, pq_mean) = scene_ramp(pq);
+    let (sdr_left, sdr_right, sdr_mean) = scene_ramp(sdr);
+    assert!(
+        sdr_right >= 250,
+        "{label}: the SDR control's ramp should end near white, got {sdr_right}"
+    );
+    // The clipped WIC path read 255 here; the raw-signal magick path read 148.
+    assert!(
+        (180..=200).contains(&pq_right),
+        "{label}: PQ ramp ends at {pq_right} (SDR twin {sdr_right}): expected reference white at ~187"
+    );
+    assert!(
+        pq_mean >= 0.7 * sdr_mean && pq_mean <= sdr_mean,
+        "{label}: PQ ramp mean {pq_mean:.1} vs SDR {sdr_mean:.1}: still dark, or still clipped"
+    );
+    assert!(
+        pq_left <= 24 && sdr_left <= 24,
+        "{label}: both ramps start near black ({pq_left}, {sdr_left})"
+    );
+}
+
+/// Issue #39, the pixels. A PQ / BT.2020 AVIF thumbnailed as a bleached picture: Windows'
+/// codec hands an HDR frame back as linear scRGB floats and the 8-bit conversion clipped
+/// everything over 80 nits to white, so the grey ramp read 255 from its midpoint up. Where
+/// ImageMagick decoded it instead it came out dark and flat (the raw PQ signal shown as sRGB,
+/// 148 at white). Both paths now land where every HDR source does. Skips, saying so, on a
+/// machine with no AVIF decoder at all (CI has neither the AV1 extension nor a magick with
+/// libheif); the routing half above runs everywhere.
+#[test]
+fn hdr_pq_avif_renders_as_bright_as_its_sdr_twin() {
+    use crate::decode::{decode_full, decode_preview_capped};
+    let Ok(sdr) = decode_full(AVIF_SDR709) else {
+        eprintln!("no AVIF decoder on this machine - skipping the render half of #39");
+        return;
+    };
+    let pq = decode_full(AVIF_PQ2020).expect("the SDR twin decoded, so the PQ twin must too");
+    assert_hdr_twin_lands_at_reference_white("full decode", &pq, &sdr);
+    // The thumbnail path scales inside the codec (Fant hands back PREMULTIPLIED float), and it
+    // is the path this bug actually shipped on.
+    let sdr = decode_preview_capped(AVIF_SDR709, 160).expect("scaled SDR twin");
+    let pq = decode_preview_capped(AVIF_PQ2020, 160).expect("scaled PQ twin");
+    assert_hdr_twin_lands_at_reference_white("thumbnail decode", &pq, &sdr);
+}
+
+/// The ImageMagick half of #39 on its own: magick decodes a PQ AVIF to its raw signal (white at
+/// 58% of full scale), and the tiers' finishing step must convert it. Runs wherever a magick
+/// with AVIF support is reachable, and says so where one is not.
+#[test]
+fn hdr_pq_avif_through_magick_lands_at_reference_white() {
+    use crate::decode::magick::{decode_via_magick_capped, magick_available};
+    if !magick_available() {
+        eprintln!("no ImageMagick here - skipping the magick half of #39");
+        return;
+    }
+    let (Ok(pq_raw), Ok(sdr_raw)) = (
+        decode_via_magick_capped(AVIF_PQ2020, None),
+        decode_via_magick_capped(AVIF_SDR709, None),
+    ) else {
+        eprintln!("this ImageMagick cannot decode AVIF - skipping the magick half of #39");
+        return;
+    };
+    let (_, raw_right, _) = scene_ramp(&pq_raw);
+    assert!(
+        (140..=156).contains(&raw_right),
+        "magick's raw PQ ramp ends at {raw_right}; expected the unconverted signal, ~148"
+    );
+    let pq = crate::decode::finish_magick_output(pq_raw, AVIF_PQ2020, true);
+    let sdr = crate::decode::finish_magick_output(sdr_raw, AVIF_SDR709, true);
+    assert_hdr_twin_lands_at_reference_white("magick decode", &pq, &sdr);
+}
