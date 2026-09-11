@@ -1234,6 +1234,13 @@ pub(crate) struct LicenceSnapshot {
     /// other rather than reading the wall clock a second time (the whole point of
     /// threading a clock through instead of calling [`now_unix`] wherever one is needed).
     pub now_unix: u64,
+    /// This machine holds a LIVE business licence right now - the same [`Entitlement::Licensed`]
+    /// answer [`posture`] acts on. Carried so the Settings status line can tell a key redeemed on
+    /// THIS copy (licensed, whatever the installer was told) apart from a stale breadcrumb left by
+    /// a former Business install (not licensed; the downgrade notice owns that story). Without it
+    /// a Personal install that redeemed a key showed "licence is active" beside "Personal use, no
+    /// licence needed" (2026-09-11).
+    pub entitled: bool,
 }
 
 /// Build a [`LicenceSnapshot`] as of `now_unix`. The one place this module's wall clock is
@@ -1243,6 +1250,7 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
     let (entitlement, cert_expires_unix) = entitlement_and_cert_expiry(now_unix, history.as_ref());
+    let entitled = entitlement == Entitlement::Licensed;
     let posture = posture(mode, entitlement, history.as_ref());
     // The relay's recorded window wins; the certificate is the floor beneath it, exactly the
     // ordering `entitlement_and_cert_expiry` uses for the entitlement itself. `0` in the
@@ -1253,6 +1261,7 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
         recorded => Some(recorded),
     };
     LicenceSnapshot {
+        entitled,
         mode,
         posture,
         key_prefix: history

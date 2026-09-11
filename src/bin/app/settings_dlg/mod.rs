@@ -124,7 +124,12 @@ pub(crate) fn business_nag_height() -> i32 {
 /// `about.rs`) so the two surfaces cannot silently drift into disagreeing over what the exact
 /// same [`crate::license::snapshot`] means.
 pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> String {
-    if snap.mode == crate::license::Mode::Personal {
+    // Personal means "no licence needed" ONLY while this machine is not actually licensed. A key
+    // redeemed on this copy outranks the installer's answer - `license::posture` already treats it
+    // as a live business licence - so the status line must say so too, or the page contradicts
+    // itself ("licence is active" beside "Personal use, no licence needed"). A stale breadcrumb from
+    // a former Business install is NOT entitled, so it still reads Personal here.
+    if snap.mode == crate::license::Mode::Personal && !snap.entitled {
         return t("licence_state_personal").to_string();
     }
     if snap.key_prefix.is_empty() {
@@ -2162,6 +2167,8 @@ mod tests {
             cert_expires_unix,
             maint_unix: None,
             now_unix,
+            // Not licensed unless a test says otherwise - the pre-fix meaning of every snapshot.
+            entitled: false,
         }
     }
 
@@ -2315,8 +2322,8 @@ mod tests {
             t("licence_state_revoked").replace("{key}", "esk_A1B2")
         );
 
-        // Personal wins over everything else — even a stale key/status from a former
-        // Business install (the downgrade notice, not this line, owns that story).
+        // Personal wins over a stale key/status from a former Business install - it is not
+        // entitled any more (the downgrade notice, not this line, owns that story).
         assert_eq!(
             licence_state_line(&snap(
                 crate::license::Mode::Personal,
@@ -2325,6 +2332,19 @@ mod tests {
                 1
             )),
             t("licence_state_personal")
+        );
+        // ⛔ BUT A KEY REDEEMED ON THIS PERSONAL COPY, AND LIVE, IS A LICENCE. The page used to
+        // show "Personal use, no licence needed" beside a green "licence is active" (2026-09-11).
+        let mut redeemed_here = snap(
+            crate::license::Mode::Personal,
+            "esk_A1B2",
+            "active",
+            1_700_000_000,
+        );
+        redeemed_here.entitled = true;
+        assert_eq!(
+            licence_state_line(&redeemed_here),
+            t("licence_state_licensed").replace("{date}", &format_unix_date(1_700_000_000))
         );
         // Business, never redeemed anything.
         assert_eq!(
