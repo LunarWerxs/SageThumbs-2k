@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.0.2
 
 - **The Licence page says which licence you have.** With a business key active it now reads
   "Business licence" at the top, names the key, and says the licence is active; on a Personal
