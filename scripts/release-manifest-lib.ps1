@@ -803,18 +803,33 @@ function Assert-ReleaseMsixPackage {
         $trustedPeople.Close()
         if ($trusted.Count -eq 0) {
             if (-not (Test-ReleaseElevated)) {
-                throw ("the self-signed certificate {0} is not in LocalMachine\TrustedPeople and " +
-                    "this shell is not elevated, so it cannot be trusted temporarily. Trust it " +
-                    "once from an elevated PowerShell: Import-Certificate -FilePath '{1}' " +
-                    "-CertStoreLocation Cert:\LocalMachine\TrustedPeople") -f
-                    $expectedCertificate.Thumbprint, $CertificatePath
+                # Every chain-signed installer upgrade removes the dev certificate from the
+                # machine store by design (2026-09-09), so this gate loses its anchor on the
+                # release box after every release it cuts. Re-trust it through ONE elevated
+                # child rather than telling a person to; where elevation is refused or a
+                # prompt is declined, the original instruction stands.
+                $import = "Import-Certificate -FilePath '$CertificatePath' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null"
+                try {
+                    $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+                        -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $import)
+                    if ($elevated.ExitCode -ne 0) { throw "elevated import exited $($elevated.ExitCode)" }
+                    Write-Host "[msix] re-trusted the dev certificate $($expectedCertificate.Thumbprint) in LocalMachine\TrustedPeople (elevated child)" -ForegroundColor Yellow
+                } catch {
+                    throw ("the self-signed certificate {0} is not in LocalMachine\TrustedPeople and " +
+                        "this shell is not elevated, so it cannot be trusted temporarily (an elevated " +
+                        "import was attempted and failed: {2}). Trust it once from an elevated " +
+                        "PowerShell: Import-Certificate -FilePath '{1}' " +
+                        "-CertStoreLocation Cert:\LocalMachine\TrustedPeople") -f
+                        $expectedCertificate.Thumbprint, $CertificatePath, $_.Exception.Message
+                }
+            } else {
+                $trustedPeople.Open(
+                    [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
+                )
+                $trustedPeople.Add($expectedCertificate)
+                $addedTemporaryTrust = $true
+                $trustedPeople.Close()
             }
-            $trustedPeople.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            $trustedPeople.Add($expectedCertificate)
-            $addedTemporaryTrust = $true
-            $trustedPeople.Close()
         }
 
         $verifyOutput = @(& $tool verify /pa /all /v $Path 2>&1)
@@ -965,4 +980,97 @@ function Get-ReleaseChangelogSection {
         throw "changelog section $Version opens with a licensing item; lead with what every user gets and keep licensing to one short line at the end"
     }
     return $section
+}
+
+# The public release body's layout, derived from the flat changelog section (which stays the
+# one source): the logo, a centred intro when the section opens with a paragraph, emoji on the
+# `### New` / `### Changed` / `### Fixed` headings with a rule between them, and the section's
+# lines otherwise verbatim - the 3.0.0 notes were laid out this way BY HAND after publishing.
+# Nothing is dropped: every non-blank line of the section must survive into the output (the
+# three headings in their emoji form), or this throws. release.ps1 appends the installer,
+# portable and scan blocks after it and the Discord line last.
+function Format-ReleaseNotesBody {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Section,
+
+        [Parameter(Mandatory)]
+        [string]$Version
+    )
+    $emoji = @{ 'New' = '🆕 New'; 'Changed' = '🔁 Changed'; 'Fixed' = '🩹 Fixed' }
+    $lines = @($Section -split "\r?\n")
+    $intro = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(###|- )') {
+        if ($lines[$i].Trim()) { $intro.Add($lines[$i].Trim()) }
+        $i++
+    }
+    $body = New-Object System.Collections.Generic.List[string]
+    $sawHeading = $false
+    for (; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^###[ ]+(New|Changed|Fixed)\s*$') {
+            if ($sawHeading) { $body.Add(''); $body.Add('---'); $body.Add('') }
+            $body.Add("### $($emoji[$Matches[1]])")
+            $sawHeading = $true
+        } else {
+            $body.Add($line)
+        }
+    }
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('<div align="center">')
+    $out.Add(('<img src="https://raw.githubusercontent.com/LunarWerxs/SageThumbs-2k/v' + $Version +
+        '/assets/logo-master.png" width="96" alt="SageThumbs 2K logo">'))
+    $out.Add('</div>')
+    $out.Add('')
+    if ($intro.Count) {
+        $out.Add('<p align="center">' + ($intro -join ' ') + '</p>')
+        $out.Add('')
+        $out.Add('---')
+        $out.Add('')
+    }
+    $out.Add("## What's changed")
+    $out.Add('')
+    foreach ($l in $body) { $out.Add($l) }
+    $text = ($out -join "`n").TrimEnd()
+    foreach ($line in $lines) {
+        $t = $line.Trim()
+        if (-not $t) { continue }
+        $want = if ($t -match '^###[ ]+(New|Changed|Fixed)\s*$') { "### $($emoji[$Matches[1]])" } else { $t }
+        if (-not $text.Contains($want)) {
+            throw "release notes layout dropped a changelog line: $t"
+        }
+    }
+    return $text
+}
+
+# The open items of the repo's one work queue (docs/todo/TODO.md): every `### ` heading under
+# its "Needs a person" and "Technical debt" parts, i.e. everything before the "Conditional
+# watches" part. Watches and standing decisions are not work. release.ps1 refuses to cut a
+# release while this returns anything (owner directive, Michael, 2026-09-11: nothing is
+# deferred past a release).
+function Get-ReleaseOpenTodoItems {
+    param(
+        [Parameter(Mandatory)]
+        [string]$TodoPath
+    )
+    if (-not (Test-Path -LiteralPath $TodoPath -PathType Leaf)) {
+        throw "work queue not found: $TodoPath"
+    }
+    $open = New-Object System.Collections.Generic.List[string]
+    $inWork = $false
+    foreach ($line in (Get-Content -LiteralPath $TodoPath)) {
+        if ($line -match '^##[ ]+(\d+)\.[ ]+(.+?)\s*$') {
+            $title = $Matches[2]
+            $inWork = ($title -match '^(Needs a person|Technical debt)\b')
+            continue
+        }
+        if ($inWork -and $line -match '^###[ ]+(.+?)\s*$') {
+            $open.Add($Matches[1])
+        }
+    }
+    # No unary comma: `return ,$array` hands the caller a ONE-element array holding the array,
+    # which `@(...)` then counts as a single item. A plain array unrolls, and `@()` at the call
+    # site re-wraps zero or one item correctly.
+    return $open.ToArray()
 }

@@ -123,6 +123,18 @@ const JXL_SDR709: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-sdr709.
 /// `python scripts/make-avif-hdr-fixtures.py tests/fixtures/avif`.
 const AVIF_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/avif/scene-pq2020.avif");
 const AVIF_SDR709: &[u8] = include_bytes!("../../tests/fixtures/avif/scene-sdr709.avif");
+/// The same twin scene as HEIC (10-bit 4:4:4 lossless x265, `nclx` 9,16,9 and 1,13,1), as
+/// JPEG XR (the HDR twin is linear scRGB float, the shape Windows writes for an HDR
+/// screenshot; the SDR twin 8-bit sRGB), and as 16-bit TIFF (the HDR twin carries a real
+/// BT.2020 PQ ICC profile with a `cicp` tag, since TIFF has no cICP of its own; the SDR twin
+/// no profile). Regenerate with `scripts/make-heic-hdr-fixtures.py`,
+/// `scripts/make-jxr-hdr-fixtures.ps1` and `scripts/make-tiff-hdr-fixtures.py`.
+const HEIC_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/heic/scene-pq2020.heic");
+const HEIC_SDR709: &[u8] = include_bytes!("../../tests/fixtures/heic/scene-sdr709.heic");
+const JXR_SCRGB: &[u8] = include_bytes!("../../tests/fixtures/jxr/scene-scrgb.jxr");
+const JXR_SDR709: &[u8] = include_bytes!("../../tests/fixtures/jxr/scene-sdr709.jxr");
+const TIFF_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/tiff/scene-pq2020.tif");
+const TIFF_SDR709: &[u8] = include_bytes!("../../tests/fixtures/tiff/scene-sdr709.tif");
 
 /// Wrap a JPEG's bytes with an EXIF APP1 declaring `orientation` (1..=8).
 ///

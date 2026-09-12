@@ -34,6 +34,25 @@ function Step([string]$name, [scriptblock]$block) {
 # PARALLEL across runners, so its ordering carries no signal about what should block first on
 # one machine. Anything that needs no build artifacts belongs above this line.
 Step 'rustfmt (--check)' { cargo fmt --all --check }
+# CI's `consistency` job, run HERE and first (they are seconds, the builds are minutes): every
+# gate before the push, none discovered by a red CI after `release.ps1` has already pushed
+# (2026-08-02) or by a launch that died at [4/6] on a gate script fault (2026-09-09, twice).
+# Invoked the way CI's `shell: pwsh` does - a script that leaves a non-zero $LASTEXITCODE
+# behind fails the step even when every assertion passed - so a local green means a CI green.
+if (-not $failed) {
+    Step 'consistency scripts (mirrors CI)' {
+        foreach ($s in 'check-consistency','test-release-size','test-release-pipeline','test-installer-lint','test-msix-integrity','test-architecture-release-contract','test-dev-architecture','test-magick-dependency-freshness','check-vendored-exr','check-email-rule') {
+            $null = pwsh -NoProfile -Command "./scripts/$s.ps1 *> `$null; if (Test-Path variable:\LASTEXITCODE) { exit `$LASTEXITCODE }"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  FAILED: scripts/$s.ps1 (exit $LASTEXITCODE) - run it by hand for the detail" -ForegroundColor Red
+                $global:LASTEXITCODE = 1
+                return
+            }
+            Write-Host ("  ok  {0}" -f $s)
+        }
+        $global:LASTEXITCODE = 0
+    }
+}
 
 # Mirror .github/workflows/ci.yml -> build-test job, in order. A bare default-feature
 # `cargo build --release` (no -p split) used to stand in for this and NEVER built the

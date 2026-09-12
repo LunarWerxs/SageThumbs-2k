@@ -147,7 +147,11 @@ impl ThumbnailProvider_Impl {
     /// One `ERROR` line for a thumbnail that could not be produced: the HRESULT plus the
     /// stream's extension and size, so the log names what failed without `Debug=1`.
     /// `try_borrow`: a log line must never become a `RefCell` panic under `panic = "abort"`.
-    fn log_failure(&self, e: &Error) {
+    /// The stream's extension and byte length as the log prints them (`?` when the shell gave
+    /// us neither). `st2k doctor` keys its per-file "did Explorer ever ask us" verdict on this
+    /// exact `ext=… size=…` pair, in the failure line AND the verbose call line, so the two
+    /// must stay identical.
+    fn stream_identity(&self) -> (String, String) {
         let (ext, size) = self
             .stream
             .try_borrow()
@@ -157,12 +161,18 @@ impl ThumbnailProvider_Impl {
                     .map(|s| unsafe { (streamsrc::stream_extension(s), stream_len(s)) })
             })
             .unwrap_or((None, None));
-        safety::log_error(&format!(
-            "GetThumbnail: failed hr={:#010x} ext={} size={}",
-            e.code().0,
-            ext.as_deref().unwrap_or("?"),
+        (
+            ext.unwrap_or_else(|| "?".to_string()),
             size.map(|n| n.to_string())
                 .unwrap_or_else(|| "?".to_string()),
+        )
+    }
+
+    fn log_failure(&self, e: &Error) {
+        let (ext, size) = self.stream_identity();
+        safety::log_error(&format!(
+            "GetThumbnail: failed hr={:#010x} ext={ext} size={size}",
+            e.code().0,
         ));
     }
 
@@ -221,7 +231,13 @@ impl ThumbnailProvider_Impl {
         match source {
             StreamSource::Frame(frame) => Ok(decode::thumbnail_from_image(frame, cx)),
             StreamSource::Bytes(bytes) => {
-                safety::log_debugf!("GetThumbnail: cx={cx} bytes={}", bytes.len());
+                // Same `ext=… size=…` key as the failure line, so the doctor can match a
+                // successful call to a file as readily as a failed one (#37).
+                let (ext, size) = self.stream_identity();
+                safety::log_debugf!(
+                    "GetThumbnail: cx={cx} ext={ext} size={size} bytes={}",
+                    bytes.len()
+                );
                 match decode::decode_thumbnail_opts(&bytes, cx, cfg.use_embedded) {
                     Ok(img) => Ok(img),
                     Err(e) => self.retry_decode_by_extension(&bytes, cx, e),

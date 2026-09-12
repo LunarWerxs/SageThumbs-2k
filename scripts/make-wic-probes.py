@@ -61,6 +61,7 @@ CASES = [
     ("avif-10bit-bt601",  "yuv444p10le", "smpte170m",        False),
     ("avif-10bit-mono",   "gray10le",    "bt709",            False),
     ("avif-10bit-pq2020", "yuv444p10le", "bt2020nc",         False),
+    ("avif-10bit-nocolr", "yuv444p10le", "bt709",            True),
 ]
 
 # BT.709 linear -> BT.2020 linear, the inverse of `primaries_to_bt709` in src/decode/cicp.rs.

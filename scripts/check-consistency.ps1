@@ -449,3 +449,7 @@ if ($fail.Count) {
 }
 $fitNote = if ($fitSkipped) { 'text fit NOT measured' } else { 'every nav label and blurb measures inside its box' }
 Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity, $($built.Count) Settings controls relabel live, $fitNote." -ForegroundColor Green
+
+# A stale $LASTEXITCODE from a probe above must not read as this script failing: the OK line
+# above IS the verdict. CI runs `shell: pwsh` steps that fail on whatever code is left behind.
+exit 0

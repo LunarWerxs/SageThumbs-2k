@@ -230,6 +230,7 @@ fn check_windows_switches(r: &mut Report) {
     }
 
     check_thumbnail_policies(r);
+    this_pc_namespace_section(r);
 }
 
 /// The verdict on the performance profile, split out so it can be tested against every
@@ -1227,6 +1228,182 @@ fn cloud_sync_root_note(r: &mut Report, p: &Path) {
     }
 }
 
+/// The custom "This PC" entries on this machine: `(display name, target folder)` for every
+/// shell namespace entry under `Explorer\MyComputer\NameSpace` (both hives) that carries an
+/// `Instance\InitPropertyBag\TargetFolderPath`, which is what a folder added to This PC by a
+/// tweaker (Winaero's ThisPCTweaker, issue #37) looks like. Windows' own entries there are
+/// known-folder CLSIDs with no such property bag, so they never match. Registry read only.
+fn this_pc_namespace_entries() -> Vec<(String, String)> {
+    const NAMESPACE: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace";
+    let mut out = Vec::new();
+    for root in [CURRENT_USER, LOCAL_MACHINE] {
+        let Ok(namespace) = root.open(NAMESPACE) else {
+            continue;
+        };
+        let Ok(clsids) = namespace.keys() else {
+            continue;
+        };
+        for clsid in clsids {
+            let Ok(entry) = namespace.open(&clsid) else {
+                continue;
+            };
+            let Ok(bag) = entry.open(r"Instance\InitPropertyBag") else {
+                continue;
+            };
+            let Ok(target) = bag.get_string("TargetFolderPath") else {
+                continue;
+            };
+            let target = expand_env_strings(target.trim());
+            if target.is_empty() {
+                continue;
+            }
+            let name = entry
+                .get_string("")
+                .ok()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| clsid.clone());
+            out.push((name, target));
+        }
+    }
+    out
+}
+
+/// `%VAR%` expansion for a REG_EXPAND_SZ read back raw; an unknown variable is left as is.
+fn expand_env_strings(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let name = &after[..end];
+                match std::env::var(name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Issue #37's real cause, per file. A folder added to This PC by a tweaker is a shell
+/// namespace entry, and items browsed through it carry that namespace identity: Explorer keys
+/// its thumbnail cache and view on the entry, our provider is asked and answers, and the
+/// picture never lands on the tile - while the same file by its real path thumbnails at once.
+fn this_pc_namespace_note(r: &mut Report, p: &Path) {
+    let Ok(file) = p.canonicalize() else {
+        return;
+    };
+    let file = file
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_lowercase();
+    for (name, target) in this_pc_namespace_entries() {
+        let prefix = target.trim_end_matches('\\').to_lowercase();
+        if prefix.is_empty() || !file.starts_with(&prefix) {
+            continue;
+        }
+        r.line(
+            S::Warn,
+            "Custom This PC entry",
+            &format!(
+                "this file is under '{name}' ({target}), a folder added to This PC by a \
+                 tweaker. Browsed through that entry, Explorer keys the tile on the entry \
+                 rather than the file and the picture may never appear; open the real folder \
+                 path instead, or pin it to Home or Quick access"
+            ),
+        );
+        return;
+    }
+}
+
+/// The machine-wide half of the same finding, for the Windows section: every custom This PC
+/// entry, named, whether or not the probed file sits under one.
+fn this_pc_namespace_section(r: &mut Report) {
+    for (name, target) in this_pc_namespace_entries() {
+        r.line(
+            S::Warn,
+            "Custom This PC entry",
+            &format!(
+                "'{name}' -> {target}: files browsed through it may not show thumbnails; \
+                 pin the real folder to Home or Quick access instead"
+            ),
+        );
+    }
+}
+
+/// Whether Explorer ever reached our provider for THIS file, read off the diagnostics log.
+/// The always-on failure line and the verbose per-call line both carry `ext=` and `size=`
+/// (`thumbprovider::stream_identity`), and the extension plus the exact byte count is as
+/// good a key as a path. Issue #37's third round was decided by reading that tail by hand;
+/// a user cannot, so the report does it.
+fn explorer_asked_us_note(r: &mut Report, p: &Path, ext: &str) {
+    const LABEL: &str = "Explorer asked us?";
+    let Ok(meta) = p.metadata() else {
+        return;
+    };
+    let key = format!("ext={ext} size={}", meta.len());
+    let Some(log) = crate::safety::log_file().filter(|l| l.exists()) else {
+        r.line(S::Info, LABEL, "no diagnostics log on this machine yet");
+        return;
+    };
+    let lines = tail_matching_lines(&log, LOG_TAIL_SCAN_BYTES, &[&key], 200);
+    let failed: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("GetThumbnail: failed"))
+        .collect();
+    let asked = lines
+        .iter()
+        .filter(|l| l.contains("GetThumbnail: cx="))
+        .count();
+    if let Some(last) = failed.last() {
+        let hr = last
+            .split("hr=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or("?");
+        r.line(
+            S::Warn,
+            LABEL,
+            &format!(
+                "yes — our provider failed {} time(s) for a file of this size (last hr={hr}); \
+                 the log tail below has the lines",
+                failed.len()
+            ),
+        );
+    } else if asked > 0 {
+        r.line(
+            S::Ok,
+            LABEL,
+            &format!(
+                "yes — {asked} call(s) for a file of this size in the verbose log, none failed"
+            ),
+        );
+    } else {
+        r.line(
+            S::Info,
+            LABEL,
+            "no record for a file of this size in the recent log: either Explorer never asked \
+             us (a namespace entry, a sync root or another handler answered first), or we \
+             succeeded with Verbose logging off. Turn on Verbose logging (Settings > Advanced), \
+             browse the folder, and run the doctor again to tell which",
+        );
+    }
+}
+
 /// Hooked formats whose ProgID declares a `TypeOverlay` icon — the thing Explorer stamps
 /// over the bottom-right of a thumbnail, on top of our format badge (issue #18).
 ///
@@ -1619,6 +1796,8 @@ fn probe_file(r: &mut Report, path: &str, snap: &crate::settings::FormatEnabledS
     r.line(S::Ok, &format!(".{ext}"), "a supported format");
     cloud_placeholder_note(r, p, &ext);
     cloud_sync_root_note(r, p);
+    this_pc_namespace_note(r, p);
+    explorer_asked_us_note(r, p, &ext);
     if !snap.enabled(&ext) {
         r.fail_with_fix(
             "Enabled in settings",

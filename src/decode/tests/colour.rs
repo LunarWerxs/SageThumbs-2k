@@ -303,12 +303,13 @@ fn avif_colour_routing_matches_what_wic_actually_gets_wrong() {
             "an unmeasured shape routes to ImageMagick rather than guessing"
         );
     }
-    // High bit depth with no `colr` box at all is a different failure again (a full-vs-limited
-    // RANGE error), and there is no probe for it either.
-    assert_eq!(avif_wic_class_of(&avif(true, None)), None);
+    // High bit depth with no `colr` box at all used to be "no probe, ask ImageMagick" on the
+    // strength of one measurement (a full-vs-limited RANGE error). It has its own probe now,
+    // so it is classed and MEASURED like the rest; the verdict is the codec's to give.
     assert_eq!(
-        avif_wic_verdict(&avif(true, None)),
-        AvifWicVerdict::Untrusted
+        avif_wic_class_of(&avif(true, None)),
+        Some(WicClass::HighNoColr),
+        "high-bit-depth AVIF with no colour box has its own probe"
     );
 
     // HEIC carries hvcC, not av1C, and is routed by the auxiliary-alpha rule instead.
@@ -665,6 +666,7 @@ fn assert_hdr_twin_lands_at_reference_white(
 #[test]
 fn hdr_pq_avif_renders_as_bright_as_its_sdr_twin() {
     use crate::decode::{decode_full, decode_preview_capped};
+    com_init();
     let Ok(sdr) = decode_full(AVIF_SDR709) else {
         eprintln!("no AVIF decoder on this machine - skipping the render half of #39");
         return;
@@ -703,4 +705,242 @@ fn hdr_pq_avif_through_magick_lands_at_reference_white() {
     let pq = crate::decode::finish_magick_output(pq_raw, AVIF_PQ2020, true);
     let sdr = crate::decode::finish_magick_output(sdr_raw, AVIF_SDR709, true);
     assert_hdr_twin_lands_at_reference_white("magick decode", &pq, &sdr);
+}
+
+/// The transfer-function axis, as a gate: every container that can carry an HDR picture with
+/// integer samples has a PQ (or scRGB) twin and an SDR twin of ONE scene under test, and one
+/// assertion shape covers them all. This is the test class 3.0 was missing (Michael,
+/// 2026-09-10): every other gate enumerated FORMATS, none enumerated the transfer, so a PQ
+/// JPEG XL was never rendered by anything before a user did it (#38), and then a PQ AVIF
+/// (#39). A format that cannot be decoded on this machine is skipped BY NAME, never silently.
+#[test]
+fn every_hdr_capable_format_has_a_twin_pair_under_test() {
+    use crate::decode::decode_full;
+    com_init();
+    let pairs: [(&str, &[u8], &[u8]); 5] = [
+        ("jxl", JXL_PQ2020, JXL_SDR709),
+        ("avif", AVIF_PQ2020, AVIF_SDR709),
+        ("heic", HEIC_PQ2020, HEIC_SDR709),
+        ("jxr", JXR_SCRGB, JXR_SDR709),
+        ("tif", TIFF_PQ2020, TIFF_SDR709),
+    ];
+    for (format, hdr, sdr) in pairs {
+        assert!(
+            hdr.len() > 100 && sdr.len() > 100,
+            "{format}: a twin fixture is missing or empty"
+        );
+        let Ok(sdr) = decode_full(sdr) else {
+            eprintln!("{format}: no decoder for it on this machine - twin pair skipped");
+            continue;
+        };
+        let hdr = decode_full(hdr).unwrap_or_else(|e| {
+            panic!("{format}: the SDR twin decoded but the HDR twin did not: {e}")
+        });
+        assert_hdr_twin_lands_at_reference_white(format, &hdr, &sdr);
+    }
+}
+
+/// A 16-bit TIFF wearing a BT.2020 PQ ICC profile is the same picture as the PQ JPEG XL: integer
+/// samples still on the PQ curve, described by a profile. Colour-managing it through the
+/// profile treats 10 000 nits as white (near black); `icc_hdr_cicp` reads the profile's own
+/// `cicp` tag and routes it through the cICP conversion instead. Pure Rust, so it runs on CI.
+#[test]
+fn hdr_pq_tiff_with_an_icc_profile_is_tone_mapped_not_colour_managed() {
+    use crate::decode::decode_full;
+    // The profile itself is recognised as PQ / BT.2020 both by its tag and by its curve.
+    let icc = include_bytes!("../../../tests/fixtures/tiff/bt2020-pq.icc");
+    let profile = moxcms::ColorProfile::new_from_slice(icc).expect("a real ICC profile");
+    let cicp = icc_hdr_cicp(&profile).expect("the PQ profile is recognised as HDR");
+    assert_eq!((cicp.primaries, cicp.transfer), (9, 16));
+    let mut untagged = profile.clone();
+    untagged.cicp = None;
+    let by_curve = icc_hdr_cicp(&untagged).expect("the PQ curve is recognised without the tag");
+    assert_eq!((by_curve.primaries, by_curve.transfer), (9, 16));
+    assert!(
+        icc_hdr_cicp(&moxcms::ColorProfile::new_srgb()).is_none(),
+        "sRGB is not HDR"
+    );
+    assert!(
+        icc_hdr_cicp(&moxcms::ColorProfile::new_display_p3()).is_none(),
+        "Display P3 is not HDR"
+    );
+    // The container read finds the profile the `image` crate's TIFF decoder does not.
+    assert_eq!(
+        crate::decode::color::tiff_icc(TIFF_PQ2020).as_deref(),
+        Some(&icc[..]),
+        "tiff_icc must return IFD0's tag 34675 byte for byte"
+    );
+    assert_eq!(
+        crate::decode::color::tiff_icc(TIFF_SDR709),
+        None,
+        "the SDR twin carries none"
+    );
+    assert_eq!(
+        crate::decode::color::tiff_icc(JXL_PQ2020),
+        None,
+        "not a TIFF"
+    );
+    // The image tier must hand the profile up with the pixels: without it, the PQ samples
+    // reach the tone map as if they were sRGB and the ramp reads 148 at white.
+    let (raw, embedded) =
+        crate::decode::decode_with_image_alloc_raw(TIFF_PQ2020, crate::decode::MAX_ALLOC)
+            .expect("the image tier decodes the PQ TIFF");
+    assert!(
+        embedded.as_ref().is_some_and(|p| p.len() == icc.len()),
+        "the image tier dropped the TIFF's ICC profile (got {:?} bytes, decoded as {:?})",
+        embedded.as_ref().map(Vec::len),
+        raw.color()
+    );
+    // And the picture: the SDR twin unchanged, the PQ twin at reference white.
+    let sdr = decode_full(TIFF_SDR709).expect("the SDR TIFF twin decodes anywhere");
+    let pq = decode_full(TIFF_PQ2020).expect("the PQ TIFF twin decodes anywhere");
+    assert_hdr_twin_lands_at_reference_white("tiff + PQ icc", &pq, &sdr);
+}
+
+/// The WIC tiers need COM on the calling thread; the shell host has it, a test thread does
+/// not. Idempotent, and a failure (already initialised on another model) is fine to ignore.
+fn com_init() {
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+    }
+}
+
+/// A multi-item AVIF (a gain map, an alpha plane) carries a `colr` box per item. The signals
+/// must be the PRIMARY item's, resolved through `pitm` -> `ipma` -> `ipco` index, not
+/// whichever box the encoder wrote first or last: here the SDR `colr` comes first and the PQ
+/// one second, and the primary item alone decides.
+#[test]
+fn avif_colour_signals_follow_the_primary_item_not_box_order() {
+    use crate::decode::color::{avif_wic_class_of, isobmff_hdr_cicp};
+    use crate::decode::wicprobe::WicClass;
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+    fn nclx(primaries: u16, transfer: u16, matrix: u16) -> Vec<u8> {
+        let mut b = b"nclx".to_vec();
+        b.extend_from_slice(&primaries.to_be_bytes());
+        b.extend_from_slice(&transfer.to_be_bytes());
+        b.extend_from_slice(&matrix.to_be_bytes());
+        b.push(0x80);
+        bx(b"colr", &b)
+    }
+    // ipco: 1 = ispe, 2 = av1C (10-bit), 3 = SDR colr (BT.709/sRGB), 4 = PQ colr (BT.2020).
+    let two_items = |primary: u16| -> Vec<u8> {
+        let ipco = bx(
+            b"ipco",
+            &[
+                bx(b"ispe", &[0u8; 12]),
+                bx(b"av1C", &[0x81, 0x00, 0x4c, 0x00]),
+                nclx(1, 13, 1),
+                nclx(9, 16, 9),
+            ]
+            .concat(),
+        );
+        // ipma v0, flags 0: item 1 -> {1, 2, 3}; item 2 -> {1, 2, 4}.
+        let ipma = bx(
+            b"ipma",
+            &[
+                &[0u8; 4][..],
+                &2u32.to_be_bytes(),
+                &1u16.to_be_bytes(),
+                &[3, 1, 2, 3],
+                &2u16.to_be_bytes(),
+                &[3, 1, 2, 4],
+            ]
+            .concat(),
+        );
+        let pitm = bx(b"pitm", &[&[0u8; 4][..], &primary.to_be_bytes()].concat());
+        let meta = bx(
+            b"meta",
+            &[&[0u8; 4][..], &pitm, &bx(b"iprp", &[ipco, ipma].concat())].concat(),
+        );
+        [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat()
+    };
+    let sdr_primary = two_items(1);
+    assert_eq!(avif_wic_class_of(&sdr_primary), Some(WicClass::HighBt709));
+    assert_eq!(isobmff_hdr_cicp(&sdr_primary), None);
+    let pq_primary = two_items(2);
+    assert_eq!(avif_wic_class_of(&pq_primary), Some(WicClass::HighHdr));
+    let cicp = isobmff_hdr_cicp(&pq_primary).expect("the primary item is the PQ one");
+    assert_eq!((cicp.primaries, cicp.transfer), (9, 16));
+}
+
+/// An AVIF with no `colr` box still carries a colour description in its sequence header,
+/// which is what every decoder falls back to; the HDR read takes it too. Two shapes: libavif
+/// puts the header in `av1C`'s configOBUs (built by hand here, with PQ / BT.2020 declared),
+/// and ffmpeg's muxer leaves a bare `av1C` and the header at the start of the item's data
+/// (the real no-colr probes, whose libaom headers declare only the matrix - "unspecified"
+/// transfer - so they must stay SDR). The routing class stays the no-colr one either way.
+#[test]
+fn a_colr_less_avif_takes_its_hdr_signal_from_the_sequence_header() {
+    use crate::decode::avifmf::primary_av1_payload;
+    use crate::decode::color::{av1_obus_color_config, avif_wic_class_of, isobmff_hdr_cicp};
+    use crate::decode::wicprobe::WicClass;
+    const P10_NOCOLR: &[u8] = include_bytes!("../../../assets/wicprobe/avif-10bit-nocolr.avif");
+    const P8_NOCOLR: &[u8] = include_bytes!("../../../assets/wicprobe/avif-8bit-nocolr.avif");
+
+    // A reduced still-picture sequence header, profile 1 (4:4:4), 32x32, 10-bit, with
+    // color_description_present = 1 naming BT.2020 / PQ / BT.2020nc, full range.
+    let bits = concat!(
+        "001", "1", "1", "00000", // seq_profile, still_picture, reduced, seq_level_idx
+        "0100", "0100", "11111", "11111", // width/height bits-1 = 4 -> 5-bit sizes of 31 (+1)
+        "0", "0", "0", // 128x128 superblock, filter intra, intra edge filter
+        "0", "0", "0", // superres, cdef, restoration
+        "1", // high_bitdepth
+        "1", // color_description_present_flag
+        "00001001", "00010000", "00001001", // cp 9, tc 16, mc 9
+        "1",        // color_range
+        "0",        // separate_uv_delta_q
+        "0"         // film_grain_params_present
+    );
+    let mut payload = Vec::new();
+    for chunk in bits.as_bytes().chunks(8) {
+        let s = std::str::from_utf8(chunk).unwrap();
+        let padded = format!("{s:0<8}");
+        payload.push(u8::from_str_radix(&padded, 2).unwrap());
+    }
+    let mut obu = vec![0x0A, payload.len() as u8]; // OBU_SEQUENCE_HEADER, has_size
+    obu.extend_from_slice(&payload);
+    let config = av1_obus_color_config(&obu).expect("the hand-built header parses");
+    assert_eq!(
+        (
+            config.primaries,
+            config.transfer,
+            config.matrix,
+            config.full_range
+        ),
+        (9, 16, 9, true)
+    );
+
+    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + body.len()).unwrap();
+        [&size.to_be_bytes()[..], &typ[..], body].concat()
+    }
+    let av1c = bx(b"av1C", &[&[0x81, 0x20, 0x4c, 0x00][..], &obu].concat());
+    let ipco = bx(b"ipco", &[bx(b"ispe", &[0u8; 12]), av1c].concat());
+    let meta = bx(b"meta", &[&[0u8; 4][..], &bx(b"iprp", &ipco)].concat());
+    let colr_less = [bx(b"ftyp", b"avif\0\0\0\0mif1"), meta].concat();
+    let cicp = isobmff_hdr_cicp(&colr_less).expect("PQ read from the sequence header in av1C");
+    assert_eq!(
+        (cicp.primaries, cicp.transfer, cicp.full_range),
+        (9, 16, true)
+    );
+    assert_eq!(avif_wic_class_of(&colr_less), Some(WicClass::HighHdr));
+
+    // The ffmpeg shape: the header is in the item data, and libaom declared no transfer.
+    let from_payload = primary_av1_payload(P10_NOCOLR)
+        .and_then(av1_obus_color_config)
+        .expect("the header at the start of the item data parses");
+    assert_eq!((from_payload.transfer, from_payload.matrix), (2, 1));
+    assert_eq!(
+        isobmff_hdr_cicp(P10_NOCOLR),
+        None,
+        "an unspecified transfer is not HDR"
+    );
+    assert_eq!(avif_wic_class_of(P10_NOCOLR), Some(WicClass::HighNoColr));
+    assert_eq!(avif_wic_class_of(P8_NOCOLR), Some(WicClass::EightNoColr));
 }

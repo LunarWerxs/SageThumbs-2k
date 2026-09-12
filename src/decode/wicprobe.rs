@@ -28,7 +28,7 @@
 //!
 //! # What this does instead
 //!
-//! Seven AVIF files, ~360 bytes each, are compiled into the binary. Each is four flat patches
+//! Eight AVIF files, ~360 bytes each, are compiled into the binary. Each is four flat patches
 //! whose correct sRGB values we know, encoded LOSSLESS in 4:4:4 so the only error a probe can
 //! possibly measure is the decoder's. On the first AVIF of the process each one is decoded
 //! through the very WIC path the tier would use, and the answer is compared with what it
@@ -65,6 +65,7 @@ const P10_BT709: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt709.
 const P10_BT601: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt601.avif");
 const P10_MONO: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-mono.avif");
 const P10_PQ2020: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-pq2020.avif");
+const P10_NOCOLR: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-nocolr.avif");
 
 /// What the four patches of a colour probe must come back as, in sRGB.
 ///
@@ -107,6 +108,11 @@ pub(super) enum WicClass {
     /// hands back as linear scRGB floats rather than 8-bit sRGB (issue #39). What this class
     /// measures is that float hand-off plus `wic.rs`'s tone map; the probe is 10-bit PQ/BT.2020.
     HighHdr,
+    /// 10/12-bit with no `colr` box at all. The old table put this on ImageMagick for good
+    /// ("a full-vs-limited RANGE error, 22/255"), which was one measurement of one codec
+    /// build; it is measured like every other class now, so a codec that starts reading the
+    /// sequence header's own colour signal correctly takes the cheap path the day it does.
+    HighNoColr,
 }
 
 impl WicClass {
@@ -119,6 +125,7 @@ impl WicClass {
             Self::HighBt601 => (P10_BT601, &EXPECT_COLOUR),
             Self::HighMono => (P10_MONO, &EXPECT_MONO),
             Self::HighHdr => (P10_PQ2020, &EXPECT_PQ),
+            Self::HighNoColr => (P10_NOCOLR, &EXPECT_COLOUR),
         }
     }
 
@@ -131,11 +138,12 @@ impl WicClass {
             Self::HighBt601 => 4,
             Self::HighMono => 5,
             Self::HighHdr => 6,
+            Self::HighNoColr => 7,
         }
     }
 
     /// Every class, so the measurement pass and its test can iterate without a hand-kept list.
-    pub(super) const ALL: [WicClass; 7] = [
+    pub(super) const ALL: [WicClass; 8] = [
         Self::EightBt709,
         Self::EightBt601,
         Self::EightNoColr,
@@ -143,6 +151,7 @@ impl WicClass {
         Self::HighBt601,
         Self::HighMono,
         Self::HighHdr,
+        Self::HighNoColr,
     ];
 }
 
@@ -158,23 +167,24 @@ impl WicClass {
 /// does, above it), and `undo_wic_high_depth_curve` is a pure lookup table. Re-entering
 /// `get_or_init` deadlocks, so if a future tier starts routing inside `wic_fallback`, this has
 /// to stop being a `OnceLock`.
-fn trust() -> &'static [AvifWicVerdict; 7] {
-    static TRUST: std::sync::OnceLock<[AvifWicVerdict; 7]> = std::sync::OnceLock::new();
+fn trust() -> &'static [AvifWicVerdict; 8] {
+    static TRUST: std::sync::OnceLock<[AvifWicVerdict; 8]> = std::sync::OnceLock::new();
     TRUST.get_or_init(|| {
-        let mut out = [AvifWicVerdict::Untrusted; 7];
+        let mut out = [AvifWicVerdict::Untrusted; 8];
         for class in WicClass::ALL {
             out[class.index()] = measure(class);
         }
         crate::safety::log_debugf!(
             "decode: WIC AVIF colour probe: 8/709={:?} 8/601={:?} 8/none={:?} \
-             hi/709={:?} hi/601={:?} hi/mono={:?} hi/pq={:?}",
+             hi/709={:?} hi/601={:?} hi/mono={:?} hi/pq={:?} hi/none={:?}",
             out[0],
             out[1],
             out[2],
             out[3],
             out[4],
             out[5],
-            out[6]
+            out[6],
+            out[7]
         );
         out
     })

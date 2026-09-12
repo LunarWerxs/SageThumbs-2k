@@ -283,8 +283,35 @@ function buildFormatWall(formats, CR) {
  *  marker is asserted present (with an expected minimum count) before being rewritten,
  *  and an absent marker is a thrown error, never a silent no-op - a template edit that
  *  moves or renames a marker must fail the run, not ship stale content next to it. */
+/** The `fmtgroup` blocks in a format-wall region whose `data-cat` this generator does not
+ *  own (not in ORDER), each as its complete `<div class="fmtgroup ...">...</div>` element,
+ *  in page order. Balanced-tag scan, not a regex: a group nests `<div class="fgdesc">`. */
+function foreignFormatGroups(region) {
+  const owned = new Set(ORDER.map(([dc]) => dc));
+  const open = /<div class="fmtgroup[^"]*"[^>]*data-cat="([a-z0-9-]+)"[^>]*>/g;
+  const out = [];
+  let m;
+  while ((m = open.exec(region))) {
+    if (owned.has(m[1])) continue;
+    let depth = 0, i = m.index;
+    const tag = /<\/?div\b[^>]*>/g;
+    tag.lastIndex = m.index;
+    let end = -1, t;
+    while ((t = tag.exec(region))) {
+      depth += t[0].startsWith('</') ? -1 : 1;
+      if (depth === 0) { end = t.index + t[0].length; break; }
+    }
+    if (end < 0) throw new Error(`gen-site: unbalanced fmtgroup "${m[1]}" in the existing wall`);
+    out.push(region.slice(m.index, end).replace(/^\s+/, '      '));
+    open.lastIndex = end;
+    i = end;
+  }
+  return out;
+}
+
 function applyAll(html, { block, VERSION, presentCategories }) {
   const before = html;
+  const CR = html.includes('\r\n') ? '\r\n' : '\n';
 
   const startIdx = html.indexOf('    <div class="bar reveal"');
   // The deployed page may carry either line ending; the CRLF form is tried first because it
@@ -294,7 +321,20 @@ function applyAll(html, { block, VERSION, presentCategories }) {
   if (startIdx < 0 || endIdx < 0) throw new Error('gen-site: could not locate the format-wall region in index.html');
   const region = html.slice(startIdx, endIdx);
   if (!region.includes('fmtwall')) throw new Error('gen-site: safety - located region does not look like the format wall');
-  html = html.slice(0, startIdx) + block + html.slice(endIdx);
+  // Hand-authored groups survive a regeneration. The wall can carry groups this generator
+  // does not own - the "Preview only" group (`data-cat="preview"`, Space-bar-only kinds) was
+  // added by hand on 2026-09-10 and the 3.0.1 version bump silently deleted it, because the
+  // whole region was replaced from `st2k formats --json`. Every `fmtgroup` whose `data-cat`
+  // is not one of ORDER's is carried over verbatim, after the generated ones, and counted in
+  // the eyebrow, which is what `sync-version.mjs` in the site repo checks the wall against.
+  const foreign = foreignFormatGroups(region);
+  const wallEnd = block.lastIndexOf(`${CR}    </div>`);
+  if (wallEnd < 0) throw new Error('gen-site: the generated wall has no closing tag to append to');
+  const merged = foreign.length
+    ? block.slice(0, wallEnd) + CR + foreign.join(CR) + block.slice(wallEnd)
+    : block;
+  html = html.slice(0, startIdx) + merged + html.slice(endIdx);
+  presentCategories += foreign.length;
 
   // version pills + schema softwareVersion (the only scalars kept current; format count and
   // exact installer bytes are intentionally not hard-coded so they cannot drift).
@@ -379,6 +419,20 @@ function runSelfTest() {
     const html = fixtureHtml({ schema: 0 });
     const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
     assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /softwareVersion/);
+  });
+
+  check('a hand-authored fmtgroup the generator does not own survives regeneration and is counted', () => {
+    const one = [{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }];
+    const { block, presentCategories } = buildFormatWall(one, '\r\n');
+    const preview = '      <div class="fmtgroup reveal" data-cat="preview">\r\n        <h3 class="fgh">Preview only</h3>\r\n        <div class="fgdesc" hidden><ul><li>.eml</li></ul></div>\r\n      </div>';
+    const html = fixtureHtml().replace('      OLD\r\n', preview + '\r\n');
+    const { html: out } = applyAll(html, { block, VERSION: '1.0.0', presentCategories });
+    assert.ok(out.includes('data-cat="preview"'), 'the foreign group was dropped');
+    assert.ok(out.includes('<li>.eml</li>'), 'the foreign group lost its nested content');
+    assert.ok(out.indexOf('data-cat="img"') < out.indexOf('data-cat="preview"'), 'foreign groups follow the generated ones');
+    assert.match(out, /hundreds of formats, 2 categories/, 'the eyebrow counts the preserved group');
+    const { html: again } = applyAll(out, { block, VERSION: '1.0.0', presentCategories });
+    assert.equal((again.match(/data-cat="preview"/g) || []).length, 1, 'a second run must not duplicate it');
   });
 
   check('missing marker (no format-wall region) fails', () => {

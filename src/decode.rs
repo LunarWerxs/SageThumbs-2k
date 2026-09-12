@@ -440,7 +440,16 @@ fn decode_any_with_wic_target(
     if let Some(img) = try_dds_tier(bytes, wic_thumbnail_cx) {
         return Ok(img);
     }
-    if let Some(img) = try_wic_thumbnail_fastpath(bytes, wic_thumbnail_cx) {
+    // The WIC tiers get a target edge only from the ISOLATED hosts (`external`). A target
+    // edge is what unlocks `MAX_SCALED_SOURCE_PIXELS`, the widened ceiling a thumbnail may
+    // stream through because a hostile file costs a throwaway dllhost there; the in-process
+    // path (the classic menu tile, on explorer.exe's own UI thread under panic=abort) keeps
+    // the strict guard. This used to be a property of the call graph (`decode_cheap` passed
+    // `None`) and a refactor quietly stopped it; the test that pins it only reached WIC once
+    // COM was initialised in the test binary (2026-09-11). Decided HERE, once, for every WIC
+    // call below.
+    let wic_cx = if external { wic_thumbnail_cx } else { None };
+    if let Some(img) = try_wic_thumbnail_fastpath(bytes, wic_cx) {
         return Ok(img);
     }
     // A TIFF whose IFD0 says `NewSubfileType = reduced-resolution` is a container whose
@@ -470,16 +479,9 @@ fn decode_any_with_wic_target(
     // detect from the container CHEAPLY and route around when the Full install's external
     // tier is available. In both cases WIC stays the fallback: on the Compact install (no
     // ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
-    match route_isobmff_wic_quirks(bytes, external, wic_thumbnail_cx) {
+    match route_isobmff_wic_quirks(bytes, external, wic_cx) {
         Ok(img) => Ok(img),
-        Err(route) => last_resort_tiers(
-            bytes,
-            wic_thumbnail_cx,
-            raw_preview,
-            external,
-            route,
-            reduced_ifd0,
-        ),
+        Err(route) => last_resort_tiers(bytes, wic_cx, raw_preview, external, route, reduced_ifd0),
     }
 }
 
@@ -1921,7 +1923,13 @@ fn decode_with_image_alloc_raw(
     if exceeds_alloc_budget(w, h, bpp, max_alloc) {
         return Err(Error::from(E_FAIL));
     }
-    let icc = decoder.icc_profile().ok().flatten();
+    // The TIFF decoder answers `None` for a profile the file plainly carries (see
+    // `color::tiff_icc`), so the container is read directly when the decoder has nothing.
+    let icc = decoder
+        .icc_profile()
+        .ok()
+        .flatten()
+        .or_else(|| color::tiff_icc(bytes));
     let img = DynamicImage::from_decoder(decoder).map_err(|_| Error::from(E_FAIL))?;
     // An HDR PNG (a `cICP` chunk saying PQ or HLG) becomes display-linear float here, so
     // the float arm of the caller tone-maps it exactly like EXR/Radiance. `cICP` outranks

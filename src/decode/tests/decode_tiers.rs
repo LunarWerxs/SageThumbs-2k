@@ -370,9 +370,12 @@ fn the_wic_guard_bounds_the_output_when_scaling_and_the_source_when_not() {
 /// context menu's preview tile is the one decode that runs in-process on Explorer's own UI
 /// thread under `panic = "abort"`, so it must keep the strict guard.
 ///
-/// It does, but only because `decode_menu_preview` -> `decode_cheap` -> `decode_any` passes
-/// `None` for the target edge. That is a property of the call graph, and call graphs get
-/// refactored, so this pins the BEHAVIOUR instead.
+/// It does because `decode_any_with_wic_target` hands the WIC tiers a target edge only when
+/// `external` is set, whatever its callers pass. That USED to be a property of the call graph
+/// (`decode_cheap` passed `None`), a refactor started forwarding the menu's edge, and this test
+/// went on passing for a year because the test binary never had COM up, so WIC failed before
+/// the guard was ever consulted (found 2026-09-11 the moment another test initialised the
+/// MTA). It pins the BEHAVIOUR, and now reaches the codec to do it.
 ///
 /// **The fixture is 20000x20, and the shape is the whole point.** It is past `MAX_DIM` on one
 /// edge (so the strict guard refuses it) while being 0.4 MP in total (so the widened guard
@@ -385,6 +388,16 @@ fn the_wic_guard_bounds_the_output_when_scaling_and_the_source_when_not() {
 #[test]
 fn the_in_process_menu_path_never_gets_the_widened_ceiling() {
     use crate::decode::limits::{MAX_DIM, MAX_SCALED_SOURCE_PIXELS};
+    // COM up on this thread, so the decode below genuinely reaches WIC. Without it the WIC
+    // tier fails on `CoInitialize has not been called` and `is_err()` passes for nothing:
+    // that is how this test stayed green after `decode_cheap` started forwarding a target
+    // edge, until another test initialised the MTA process-wide and the real answer showed.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+    }
 
     const W: u32 = 20_000;
     const H: u32 = 20;

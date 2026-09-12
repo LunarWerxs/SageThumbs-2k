@@ -297,6 +297,71 @@ fn icc_profile_is_srgb(src: &moxcms::ColorProfile) -> bool {
     curve_is_srgb(&src.red_trc) && curve_is_srgb(&src.green_trc) && curve_is_srgb(&src.blue_trc)
 }
 
+/// The HDR signal of an ICC profile, in the shape the PNG `cICP` conversion takes, or `None`
+/// for an SDR profile. Two sources, in order: the profile's own `cicp` tag (what a
+/// moxcms-built or an ICC.1:2022 HDR profile carries), and, for the older profiles that have
+/// no such tag, the transfer curve itself: PQ maps 0.5 to 0.92% and 0.75 to 9.9% of peak,
+/// which no display gamma comes near (sRGB puts 0.5 at 21%). The primaries are then read off
+/// the colorants against the BT.2020 and Display P3 references. HLG is only recognised from
+/// the tag: its curve is too close to a gamma to name from three samples.
+pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::PngCicp> {
+    use moxcms::{CicpColorPrimaries, ColorProfile, TransferCharacteristics, Xyzd};
+    let primaries_from_colorants = || -> u8 {
+        const EPS: f64 = 0.002;
+        let close = |a: Xyzd, b: Xyzd| {
+            (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
+        };
+        let matches = |reference: &ColorProfile| {
+            close(src.red_colorant, reference.red_colorant)
+                && close(src.green_colorant, reference.green_colorant)
+                && close(src.blue_colorant, reference.blue_colorant)
+        };
+        if matches(&ColorProfile::new_bt2020()) {
+            9
+        } else if matches(&ColorProfile::new_display_p3()) {
+            12
+        } else {
+            1
+        }
+    };
+    if let Some(tag) = src.cicp {
+        let transfer = match tag.transfer_characteristics {
+            TransferCharacteristics::Smpte2084 => 16,
+            TransferCharacteristics::Hlg => 18,
+            _ => return None,
+        };
+        let primaries = match tag.color_primaries {
+            CicpColorPrimaries::Bt2020 => 9,
+            CicpColorPrimaries::Smpte432 => 12,
+            CicpColorPrimaries::Bt709 => 1,
+            _ => primaries_from_colorants(),
+        };
+        return Some(super::cicp::PngCicp {
+            primaries,
+            transfer,
+            full_range: tag.full_range,
+        });
+    }
+    let curve_is_pq = |trc: &Option<moxcms::ToneReprCurve>| {
+        let Some(trc) = trc else { return false };
+        let Ok(eval) = trc.make_linear_evaluator() else {
+            return false;
+        };
+        // PQ EOTF at 0.5 and 0.75, as a fraction of the 10 000-nit peak.
+        (eval.evaluate_value(0.5) - 0.0092).abs() < 0.004
+            && (eval.evaluate_value(0.75) - 0.0985).abs() < 0.02
+            && (eval.evaluate_value(1.0) - 1.0).abs() < 0.02
+    };
+    if curve_is_pq(&src.red_trc) && curve_is_pq(&src.green_trc) && curve_is_pq(&src.blue_trc) {
+        return Some(super::cicp::PngCicp {
+            primaries: primaries_from_colorants(),
+            transfer: 16,
+            full_range: true,
+        });
+    }
+    None
+}
+
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
 /// …) thumbnails match a color-managed viewer instead of rendering over-saturated — and
 /// then having Explorer cache the wrong colors. Uses the pure-Rust `moxcms` we ALREADY
@@ -329,6 +394,16 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
     // Only matrix/RGB display profiles here — never mangle CMYK/Lab/etc.
     if src.color_space != DataColorSpace::Rgb {
         return img;
+    }
+    // An HDR profile - a `cicp` tag naming PQ or HLG (ICC.1:2022), or a transfer curve that
+    // measures as PQ - describes integer samples still wearing the HDR curve. Colour-managing
+    // those treats 10 000 nits as white and renders the picture near black: the shape of
+    // issue #38, in a 16-bit TIFF or a JPEG instead of a JPEG XL. They take the conversion and
+    // tone map an HDR PNG does, with the profile's own primaries.
+    if let Some(cicp) = icc_hdr_cicp(&src) {
+        if let Some(linear) = super::cicp::cicp_hdr_to_linear(&img, &cicp) {
+            return tone_map_float(&linear);
+        }
     }
     // Most PNG/TIFF/WebP exports carry an sRGB profile, so building a moxcms transform
     // and running it over every pixel is usually paying full CMS cost for the identity
@@ -506,6 +581,7 @@ pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// external tier is available, and fall back to WIC when it is not, so the Compact install
 /// keeps the thumbnail it has today rather than losing it.
 /// AV1/colour signals gathered while walking an AVIF's box tree.
+#[derive(Default)]
 struct AvifWicFound {
     matrix: Option<u16>,
     /// H.273 colour primaries, transfer characteristics and the full-range flag of the FIRST
@@ -518,6 +594,194 @@ struct AvifWicFound {
     high_bitdepth: bool,
     monochrome: bool,
     is_av1: bool,
+    /// The AV1 sequence header's own `color_config`, read from `av1C`'s configOBUs. Consulted
+    /// only when the file has no `colr` box: it then supplies the transfer, primaries and range
+    /// (what the HDR read needs), never the routing class, which stays keyed on the `colr`
+    /// box's absence because that is the shape the WIC probes measure.
+    obu: Option<Av1ColorConfig>,
+}
+
+/// The `color_config` of an AV1 sequence header (H.273 code points and the range flag).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Av1ColorConfig {
+    pub(super) primaries: u16,
+    pub(super) transfer: u16,
+    pub(super) matrix: u16,
+    pub(super) full_range: bool,
+}
+
+/// MSB-first bit reader over a byte slice; every read is bounds-checked.
+struct BitReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl BitReader<'_> {
+    fn bits(&mut self, n: u32) -> Option<u32> {
+        let mut out = 0u32;
+        for _ in 0..n {
+            let byte = *self.buf.get(self.pos / 8)?;
+            let bit = (byte >> (7 - (self.pos % 8))) & 1;
+            out = (out << 1) | u32::from(bit);
+            self.pos += 1;
+        }
+        Some(out)
+    }
+}
+
+/// Read `color_config` out of an `av1C` box body's configOBUs: the sequence header OBU that
+/// libavif puts there. ffmpeg's muxer writes a bare four-byte `av1C` and leaves the header at
+/// the start of the item's own data, which [`av1_obus_color_config`] reads from just the same.
+fn av1c_color_config(av1c: &[u8]) -> Option<Av1ColorConfig> {
+    av1_obus_color_config(av1c.get(4..)?)
+}
+
+/// Read `color_config` out of a run of AV1 OBUs (a temporal delimiter, then the sequence
+/// header, is how an AVIF item's data starts). Follows the still-picture and the plain (no
+/// timing info) header shapes, which is every AVIF encoder met so far; a header with timing
+/// or decoder-model fields is declined rather than guessed at. Bounded by the slice and by a
+/// small OBU count; `None` on any short read.
+pub(super) fn av1_obus_color_config(obus: &[u8]) -> Option<Av1ColorConfig> {
+    let mut p = 0usize;
+    for _ in 0..8 {
+        let (obu_type, payload_at, size) = av1_obu_header(obus, p)?;
+        if obu_type == 1 {
+            let payload = match size {
+                Some(n) => obus.get(payload_at..payload_at.checked_add(n)?)?,
+                None => obus.get(payload_at..)?,
+            };
+            return av1_sequence_header_color_config(payload);
+        }
+        // Anything else (a temporal delimiter, metadata) is skipped; without a size there is
+        // no way past it.
+        p = payload_at.checked_add(size?)?;
+    }
+    None
+}
+
+/// One OBU header at `p`: `(obu_type, payload offset, payload size when the header carries one)`.
+fn av1_obu_header(obus: &[u8], mut p: usize) -> Option<(u8, usize, Option<usize>)> {
+    let header = *obus.get(p)?;
+    p += 1;
+    let obu_type = (header >> 3) & 0xF;
+    if header & 0x04 != 0 {
+        p += 1; // extension byte
+    }
+    if header & 0x02 == 0 {
+        return Some((obu_type, p, None));
+    }
+    let mut value = 0usize;
+    for shift in (0..).step_by(7).take(8) {
+        let b = *obus.get(p)?;
+        p += 1;
+        value |= usize::from(b & 0x7F) << shift;
+        if b & 0x80 == 0 {
+            return Some((obu_type, p, Some(value)));
+        }
+    }
+    None
+}
+
+/// The `color_config` of one sequence header OBU payload.
+fn av1_sequence_header_color_config(payload: &[u8]) -> Option<Av1ColorConfig> {
+    let mut r = BitReader {
+        buf: payload,
+        pos: 0,
+    };
+    let seq_profile = r.bits(3)?;
+    let _still_picture = r.bits(1)?;
+    let reduced = r.bits(1)? == 1;
+    av1_skip_operating_points(&mut r, reduced)?;
+    av1_skip_frame_size(&mut r, reduced)?;
+    if !reduced {
+        av1_skip_coding_tools(&mut r)?;
+    }
+    r.bits(3)?; // enable_superres, enable_cdef, enable_restoration
+    av1_read_color_config(&mut r, seq_profile)
+}
+
+/// `seq_level_idx` alone for a reduced header; the operating-point table otherwise. A header
+/// with timing info (decoder-model fields) is declined.
+fn av1_skip_operating_points(r: &mut BitReader<'_>, reduced: bool) -> Option<()> {
+    if reduced {
+        r.bits(5)?;
+        return Some(());
+    }
+    if r.bits(1)? == 1 {
+        return None; // timing_info_present_flag
+    }
+    let initial_display_delay_present = r.bits(1)? == 1;
+    let operating_points = r.bits(5)? + 1;
+    for _ in 0..operating_points {
+        r.bits(12)?; // operating_point_idc
+        if r.bits(5)? > 7 {
+            r.bits(1)?; // seq_tier
+        }
+        if initial_display_delay_present && r.bits(1)? == 1 {
+            r.bits(4)?;
+        }
+    }
+    Some(())
+}
+
+/// Frame size, the frame-id fields of a full header, and the three always-present tool bits.
+fn av1_skip_frame_size(r: &mut BitReader<'_>, reduced: bool) -> Option<()> {
+    let width_bits = r.bits(4)? + 1;
+    let height_bits = r.bits(4)? + 1;
+    r.bits(width_bits)?;
+    r.bits(height_bits)?;
+    if !reduced && r.bits(1)? == 1 {
+        r.bits(7)?; // frame id lengths
+    }
+    r.bits(3)?; // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+    Some(())
+}
+
+/// The inter-coding tool flags a full (non-reduced) header carries before `color_config`.
+fn av1_skip_coding_tools(r: &mut BitReader<'_>) -> Option<()> {
+    r.bits(4)?; // interintra, masked compound, warped motion, dual filter
+    let enable_order_hint = r.bits(1)? == 1;
+    if enable_order_hint {
+        r.bits(2)?; // enable_jnt_comp, enable_ref_frame_mvs
+    }
+    let force_screen_content_tools = if r.bits(1)? == 1 { 2 } else { r.bits(1)? };
+    if force_screen_content_tools > 0 && r.bits(1)? == 0 {
+        r.bits(1)?; // seq_force_integer_mv
+    }
+    if enable_order_hint {
+        r.bits(3)?; // order_hint_bits_minus_1
+    }
+    Some(())
+}
+
+/// `color_config` itself, up to and including the range flag.
+fn av1_read_color_config(r: &mut BitReader<'_>, seq_profile: u32) -> Option<Av1ColorConfig> {
+    let high_bitdepth = r.bits(1)? == 1;
+    if seq_profile == 2 && high_bitdepth {
+        r.bits(1)?; // twelve_bit
+    }
+    let mono = if seq_profile == 1 {
+        false
+    } else {
+        r.bits(1)? == 1
+    };
+    let (primaries, transfer, matrix) = if r.bits(1)? == 1 {
+        (r.bits(8)? as u16, r.bits(8)? as u16, r.bits(8)? as u16)
+    } else {
+        (2, 2, 2)
+    };
+    let srgb = primaries == 1 && transfer == 13 && matrix == 0;
+    let full_range = if mono || !srgb {
+        r.bits(1)? == 1
+    } else {
+        true // sRGB signalling implies full range, no bit is coded
+    };
+    Some(Av1ColorConfig {
+        primaries,
+        transfer,
+        matrix,
+        full_range,
+    })
 }
 
 /// Update `f` from one box's own contents; recurse into container boxes.
@@ -543,6 +807,9 @@ fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut AvifWicFound) {
         // seq_tier(1) high_bitdepth(1) twelve_bit(1) monochrome(1) subx(1) suby(1) pos(2).
         b"av1C" => {
             f.is_av1 = true;
+            if f.obu.is_none() {
+                f.obu = av1c_color_config(body);
+            }
             if let Some(b) = body.get(2) {
                 f.high_bitdepth |= (b >> 6) & 1 == 1;
                 // Bit 4. A monochrome AV1 stream carries no chroma planes at all, so there is
@@ -623,8 +890,10 @@ fn avif_wic_class(f: &AvifWicFound) -> Option<wicprobe::WicClass> {
         (false, _, Some(5) | Some(6)) => WicClass::EightBt601,
         (true, _, Some(5) | Some(6)) => WicClass::HighBt601,
         // No `colr` box at all: the decoder is guessing, and which way it guesses has flipped
-        // between extension versions.
+        // between extension versions. High bit depth without one used to be "unmeasured, ask
+        // ImageMagick"; it has its own probe now.
         (false, _, None) => WicClass::EightNoColr,
+        (true, _, None) => WicClass::HighNoColr,
         // Anything else — BT.2020 (9), unspecified (2), a value from a newer spec than this
         // build knows: unmeasured, so no class.
         _ => return None,
@@ -649,20 +918,107 @@ fn avif_wic_verdict_from(f: &AvifWicFound) -> AvifWicVerdict {
 
 /// Read an ISOBMFF file's AV1 and colour signalling. A file that is not ISOBMFF leaves every
 /// field at its default, which reads as "not AV1" and so is not ours to route.
+///
+/// The PRIMARY item's properties when the file has an association table (`pitm` -> `ipma`
+/// -> `ipco` index), so a gain-map or alpha AVIF - two items, two `colr` boxes - answers for
+/// the picture Explorer shows and not for whichever box the encoder wrote first or last.
+/// A file with no such table, or one whose box tree does not parse cleanly, gets the
+/// positional walk it always had.
 fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
-    let mut found = AvifWicFound {
-        matrix: None,
-        primaries: None,
-        transfer: None,
-        full_range: false,
-        high_bitdepth: false,
-        monochrome: false,
-        is_av1: false,
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return AvifWicFound::default();
+    }
+    let mut found = match avif_primary_item_signals(bytes) {
+        Some(found) => found,
+        None => {
+            let mut found = AvifWicFound::default();
+            walk_avif_wic(bytes, 0, &mut found);
+            found
+        }
     };
-    if bytes.get(4..8) == Some(b"ftyp") {
-        walk_avif_wic(bytes, 0, &mut found);
+    // No `colr` box: the sequence header's own colour description is what every decoder
+    // falls back to, so the HDR read takes it too. libavif carries that header in `av1C`;
+    // ffmpeg's muxer leaves it at the start of the item's data, so that is read when the box
+    // had none. The matrix stays unset on purpose - the routing class is keyed on the box's
+    // absence, the shape the probes measure.
+    if found.transfer.is_none() && found.is_av1 {
+        let header = found
+            .obu
+            .or_else(|| super::avifmf::primary_av1_payload(bytes).and_then(av1_obus_color_config));
+        if let Some(obu) = header.filter(|o| o.transfer != 2) {
+            found.primaries = Some(obu.primaries);
+            found.transfer = Some(obu.transfer);
+            found.full_range = obu.full_range;
+        }
     }
     found
+}
+
+/// The signals of the primary item alone, resolved through the association table. `None`
+/// when the file carries no `pitm`/`ipma`, names a property index past `ipco`, or does not
+/// parse as a bounded box tree - every one of which hands the caller back to the walk.
+fn avif_primary_item_signals(bytes: &[u8]) -> Option<AvifWicFound> {
+    const MAX_BOXES: usize = 512;
+    if !isobmff_ftyp_is_sane(bytes) {
+        return None;
+    }
+    let mut boxes_left = MAX_BOXES;
+    let top = isobmff_boxes(bytes, &mut boxes_left)?;
+    let meta = isobmff_find_box(&top, b"meta")?;
+    let children = isobmff_boxes(meta.get(4..)?, &mut boxes_left)?;
+    let primary = isobmff_find_box(&children, b"pitm").and_then(isobmff_primary_item_id)?;
+    let iprp = isobmff_find_box(&children, b"iprp")?;
+    let properties = isobmff_boxes(iprp, &mut boxes_left)?;
+    let ipco = isobmff_find_box(&properties, b"ipco")?;
+    let ipco_properties = isobmff_boxes(ipco, &mut boxes_left)?;
+    let ipma = isobmff_find_box(&properties, b"ipma")?;
+    let indices = isobmff_item_property_indices(ipma, ipco_properties.len(), primary)?;
+    let mut found = AvifWicFound::default();
+    for index in indices {
+        let (typ, body) = ipco_properties.get(index.checked_sub(1)?)?;
+        avif_wic_note_box(typ, body, 0, &mut found);
+    }
+    Some(found)
+}
+
+/// The 1-based `ipco` indices associated with `item` in an `ipma` box body, in the order the
+/// table lists them; `None` for a malformed table, an index past `property_count`, or an
+/// item the table does not mention.
+fn isobmff_item_property_indices(
+    body: &[u8],
+    property_count: usize,
+    item: u32,
+) -> Option<Vec<usize>> {
+    let version = *body.first()?;
+    if version > 1 {
+        return None;
+    }
+    let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
+    let large_indices = flags & 1 != 0;
+    let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
+    let min_entry_len = if version == 0 { 3 } else { 5 };
+    if count > body.len().saturating_sub(8) / min_entry_len {
+        return None;
+    }
+    let mut p = 8usize;
+    let mut wanted = None;
+    for _ in 0..count {
+        let id = isobmff_item_id(body, version, &mut p)?;
+        let associations = *body.get(p)? as usize;
+        p += 1;
+        let mut indices = Vec::with_capacity(associations);
+        for _ in 0..associations {
+            let raw = isobmff_association_index(body, large_indices, &mut p)?;
+            if raw == 0 || raw > property_count {
+                return None;
+            }
+            indices.push(raw);
+        }
+        if id == item {
+            wanted = Some(indices);
+        }
+    }
+    (p == body.len()).then_some(wanted).flatten()
 }
 
 /// The HDR colour signal of an ISOBMFF picture (AVIF or HEIC): its first `nclx` box, when
@@ -1019,6 +1375,66 @@ fn isobmff_hevc_aux_alpha(bytes: &[u8]) -> Option<bool> {
 
 pub(super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
     isobmff_hevc_aux_alpha(bytes).unwrap_or(false)
+}
+
+/// The ICC profile a classic TIFF carries in IFD0's tag 34675, read off the bytes directly.
+/// The `image` crate's TIFF decoder answers `None` for the profile a 16-bit TIFF written by
+/// ImageMagick carries (measured 2026-09-11 on `tests/fixtures/tiff/scene-pq2020.tif`, tag
+/// present, type UNDEFINED, 25116 bytes), which sent an HDR TIFF's PQ samples to the tone map
+/// as if they were sRGB. Bounded: one IFD, entries checked against the buffer, no BigTIFF
+/// (magic 43 is declined rather than guessed at), profiles past 4 MiB ignored.
+pub(super) fn tiff_icc(bytes: &[u8]) -> Option<Vec<u8>> {
+    const ICC_PROFILE: u16 = 34675;
+    let little = match bytes.get(0..4)? {
+        b"II\x2a\x00" => true,
+        b"MM\x00\x2a" => false,
+        _ => return None,
+    };
+    let ifd = tiff_u32(bytes, little, 4)? as usize;
+    let entries = usize::from(tiff_u16(bytes, little, ifd)?);
+    for i in 0..entries.min(512) {
+        let at = ifd.checked_add(2 + i * 12)?;
+        if tiff_u16(bytes, little, at)? == ICC_PROFILE {
+            return tiff_entry_bytes(bytes, little, at);
+        }
+    }
+    None
+}
+
+/// The value of one BYTE/UNDEFINED IFD entry at `at`: inline when it fits the four value
+/// bytes, at the entry's offset otherwise. Any other type is declined.
+fn tiff_entry_bytes(bytes: &[u8], little: bool, at: usize) -> Option<Vec<u8>> {
+    if !matches!(tiff_u16(bytes, little, at + 2)?, 1 | 7) {
+        return None;
+    }
+    let count = tiff_u32(bytes, little, at + 4)? as usize;
+    if count == 0 || count > 4 * 1024 * 1024 {
+        return None;
+    }
+    let start = if count <= 4 {
+        at + 8
+    } else {
+        tiff_u32(bytes, little, at + 8)? as usize
+    };
+    Some(bytes.get(start..start.checked_add(count)?)?.to_vec())
+}
+
+fn tiff_u16(bytes: &[u8], little: bool, at: usize) -> Option<u16> {
+    let b: [u8; 2] = bytes.get(at..at + 2)?.try_into().ok()?;
+    Some(if little {
+        u16::from_le_bytes(b)
+    } else {
+        u16::from_be_bytes(b)
+    })
+}
+
+fn tiff_u32(bytes: &[u8], little: bool, at: usize) -> Option<u32> {
+    let b: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+    Some(if little {
+        u32::from_le_bytes(b)
+    } else {
+        u32::from_be_bytes(b)
+    })
 }
 
 /// One `colr` box body → ICC bytes: a direct embedded profile, or a CICP `nclx` signal

@@ -94,6 +94,105 @@ try {
         if ($section -notmatch 'business licence') { throw 'the trailing licence line was lost' }
     }
 
+    # Nothing is deferred past a release (owner directive 2026-09-11): the work queue's open
+    # items are the headings under its first two parts, watches and decisions are not work, and
+    # an empty queue returns nothing so release.ps1 proceeds.
+    $todo = Join-Path $scratch 'TODO.md'
+    @'
+# work queue
+
+## 1. Needs a person
+
+### Submit the vendor form
+
+## 2. Technical debt
+
+### Fix the thing
+
+### Fix the other thing
+
+## 3. Conditional watches (nothing to build)
+
+### not an item, a watch
+
+## 4. Decided, do not reopen
+
+### not an item, a decision
+'@ | Set-Content -LiteralPath $todo -Encoding utf8
+    Assert-Passes 'the work-queue gate counts only the items under the first two parts' {
+        $open = @(Get-ReleaseOpenTodoItems -TodoPath $todo)
+        if ($open.Count -ne 3 -or $open[0] -ne 'Submit the vendor form' -or $open[2] -ne 'Fix the other thing') {
+            throw "expected the three work items, got: $($open -join ' | ')"
+        }
+    }
+    @'
+# work queue
+
+## 1. Needs a person
+
+## 2. Technical debt
+
+## 3. Conditional watches
+
+### a watch is not work
+'@ | Set-Content -LiteralPath $todo -Encoding utf8
+    Assert-Passes 'an empty work queue does not block a release' {
+        if (@(Get-ReleaseOpenTodoItems -TodoPath $todo).Count -ne 0) { throw 'an empty queue reported items' }
+    }
+    Assert-Fails 'a missing work queue file is an error for the lib, not a silent pass' {
+        Get-ReleaseOpenTodoItems -TodoPath (Join-Path $scratch 'no-such-TODO.md')
+    }
+
+    # The release-notes layout (pipeline item 4): the logo, the intro, emoji headings with rules
+    # between them, and every changelog line surviving verbatim - a layout that drops a line is
+    # refused, because the 3.0.0 notes were re-laid-out by hand and nothing proved they were whole.
+    $laidOut = @'
+An intro sentence that opens the section.
+It continues on a second line.
+
+### New
+
+- **A thing every user gets.** Detail.
+
+### Fixed
+
+- **A fix** ([#1](https://example.invalid/1)). Detail.
+
+- For the few installations on a business licence: one short line. Personal use is unaffected.
+'@
+    Assert-Passes 'the release-notes layout keeps every line and decorates the headings' {
+        $body = Format-ReleaseNotesBody -Section $laidOut -Version '9.8.7'
+        foreach ($must in @(
+                'assets/logo-master.png" width="96"',
+                '<p align="center">An intro sentence that opens the section. It continues on a second line.</p>',
+                '### 🆕 New',
+                '### 🩹 Fixed',
+                '- **A thing every user gets.** Detail.',
+                '- For the few installations on a business licence: one short line. Personal use is unaffected.')) {
+            if (-not $body.Contains($must)) { throw "layout lost: $must" }
+        }
+        if ($body.IndexOf('### 🆕 New') -gt $body.IndexOf('### 🩹 Fixed')) { throw 'section order changed' }
+        if (($body -split "`n" | Where-Object { $_ -eq '---' }).Count -lt 2) { throw 'no rules between the sections' }
+        if ($body -match '### New\s*$' -or $body -match '(?m)^### Fixed\s*$') { throw 'a plain heading survived undecorated' }
+    }
+    Assert-Passes 'a section with no intro paragraph gets no intro block' {
+        $body = Format-ReleaseNotesBody -Section "### Fixed`n`n- **Only a fix.** Detail." -Version '9.8.7'
+        if ($body.Contains('<p align="center">')) { throw 'an empty intro was rendered' }
+        if (-not $body.Contains('- **Only a fix.** Detail.')) { throw 'the bullet was lost' }
+    }
+
+    # Main is frozen while a release runs (pipeline item 3): the marker the local pre-commit
+    # hook reads must be written at the clean-tree guard and removed in `finally`.
+    Assert-Passes 'release.ps1 freezes main with a marker and always removes it' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in 'Set-Content -LiteralPath $freeze', "'.git\RELEASE-IN-PROGRESS'") {
+            if (-not $releaseText.Contains($expected)) { throw "release.ps1 lost the freeze marker step: $expected" }
+        }
+        if ($releaseText -notmatch 'finally\s*\{\s*\r?\n\s*Remove-Item -LiteralPath \$freeze') {
+            throw 'release.ps1 no longer removes the freeze marker in its finally block'
+        }
+    }
+
     # Every shape a real unfilled template takes must still fail closed.
     foreach ($marker in @(
             '- TBD before we ship this.',

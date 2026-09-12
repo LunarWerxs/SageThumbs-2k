@@ -7,6 +7,27 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **HDR HEIC, JPEG XR and TIFF thumbnails render at the right brightness.** The 3.0.2 fix for
+  HDR AVIF now has a proven twin for every container that can carry an HDR picture: an HDR
+  HEIC (PQ or HLG) takes the same path as AVIF, a linear-float JPEG XR (what Windows writes
+  for an HDR screenshot) is tone-mapped instead of clipped to white, and a 16-bit TIFF tagged
+  with a PQ profile is converted through the profile's own HDR signal rather than
+  colour-managed into near-black. The TIFF fix also reads a profile the decoder used to drop.
+- **AVIF files with no colour box take the fast path when the codec measures right**, instead
+  of always going through the bundled ImageMagick, and an AVIF with a gain map or an alpha
+  plane is read by its main picture rather than by whichever colour box came first.
+- **The right-click menu's preview tile keeps the strict size guard.** The tile that is
+  drawn inside Explorer itself had, since a refactor, been allowed the wider ceiling meant
+  for the isolated thumbnail host; it is back on the strict one, and the test that guards it
+  now actually reaches the codec.
+- **The doctor names two more causes of a missing thumbnail.** A folder added to This PC by a
+  tweaker is reported, machine-wide and for the probed file (files browsed through such an
+  entry may never show a picture; open the real folder instead), and the per-file section now
+  says whether Explorer ever asked SageThumbs for that file at all, read off the diagnostics
+  log, so "it never reached us" no longer needs a developer to read the log by hand.
+
 ## 3.0.2
 
 - **HDR AVIF thumbnails no longer come out blown out**

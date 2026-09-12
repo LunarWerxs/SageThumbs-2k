@@ -37,10 +37,9 @@ $installer = Get-Item -LiteralPath $InstallerPath -ErrorAction Stop
 Assert-ReleasePeMetadata -Path $installer.FullName -Version $Version -Description 'SageThumbs 2K Setup'
 $sha256 = Get-ReleaseSha256 -Path $installer.FullName
 
+$body = Format-ReleaseNotesBody -Section $section -Version $Version
 $notes = @"
-## What's changed
-
-$section
+$body
 
 ## Verified installer
 

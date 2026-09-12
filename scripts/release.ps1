@@ -33,6 +33,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+# The main-freeze marker (see [2/6]); named here so `finally` can always remove it.
+$freeze = Join-Path $root '.git\RELEASE-IN-PROGRESS'
 
 # MUST match `UPDATE_PUBLIC_KEY` in src\bin\app\update.rs byte-for-byte. Kept here as a plain
 # constant rather than parsed out of the built binary - a self-check that re-derives the value
@@ -167,6 +169,19 @@ try {
     if ($LASTEXITCODE) {
         throw "code signing is not configured on this machine (ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure lease; docs/RELEASE-SECURITY.md) - a release is never cut unsigned"
     }
+    # NOTHING IS DEFERRED PAST A RELEASE (owner directive, Michael, 2026-09-11: "We always do
+    # everything now... If something is pending a to-do, it should be to-done before we do the
+    # upcoming release"). docs/todo/TODO.md is the one work queue; any item still standing under
+    # its "Needs a person" or "Technical debt" parts stops the release here, before a minute of
+    # the pipeline is spent. Do the item, or the owner deletes it himself. The file is private
+    # to the release machine, so a clone without it (CI) skips this; releases are cut here.
+    $todo = Join-Path $root 'docs\todo\TODO.md'
+    if (Test-Path -LiteralPath $todo -PathType Leaf) {
+        $openTodo = @(Get-ReleaseOpenTodoItems -TodoPath $todo)
+        if ($openTodo.Count) {
+            throw ("{0} open item(s) in docs/todo/TODO.md - nothing is deferred past a release (owner directive 2026-09-11); do them or have the owner delete them:`n  - {1}" -f $openTodo.Count, ($openTodo -join "`n  - "))
+        }
+    }
     $changelog = Join-Path $root 'docs\CHANGELOG.md'
     $null = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
     pwsh "$root\scripts\check-consistency.ps1"; if ($LASTEXITCODE) { throw "consistency check failed - fix before releasing" }
@@ -200,6 +215,12 @@ try {
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'main') { throw "not on main (on '$branch') - release from main" }
     if (git status --porcelain) { throw "working tree is dirty - commit or stash before releasing" }
+    # FREEZE main while this release runs. The tree is shared by several sessions, and a
+    # commit landing mid-build is what the provenance gate at [4/6] then refuses (3.0.0 took a
+    # launch to exactly that). The marker is read by the local pre-commit hook, which refuses
+    # any commit while it is younger than three hours; it is removed in `finally`, so a killed
+    # run leaves at most a stale marker the hook ignores. Local to this machine, like the hook.
+    "$tag pid=$PID started=$(Get-Date -Format o)" | Set-Content -LiteralPath $freeze -Encoding utf8
 
     # 2) refuse to clobber an existing tag (bump the version instead).
     if (git ls-remote --tags origin "refs/tags/$tag") { throw "$tag already exists on origin - bump the version in Cargo.toml" }
@@ -617,6 +638,13 @@ try {
         'for what those detection names actually mean and two measurements showing the count'
         'moves without the software changing.'
     )
+    # The Discord line LAST, after every appended block (the 3.0.0 hand layout's closing line).
+    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+        ''
+        '---'
+        ''
+        '💬 Questions, ideas, or a hello: the [LunarWerx Discord](https://lunarwerx.com/discord).'
+    )
 
     # 5) Create a DRAFT first. Verify GitHub received the exact local bytes before
     # publishing, so an upload anomaly never briefly exposes a corrupt public build.
@@ -760,4 +788,7 @@ try {
         )
     }
 }
-finally { Pop-Location }
+finally {
+    Remove-Item -LiteralPath $freeze -Force -ErrorAction SilentlyContinue
+    Pop-Location
+}
