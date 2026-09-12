@@ -758,6 +758,20 @@ try {
         )
     }
 
+    # The website's version pill and structured data are rewritten by the site repo's own
+    # `sync-version` workflow, which has always declared a `repository_dispatch` trigger of
+    # type `release-published` that nothing sent (until 3.0.3, 2026-09-11): the site lagged
+    # every release until its daily schedule caught up, and 3.0.1 and 3.0.2 were both synced
+    # by hand. NON-FATAL like the SourceForge step, for the same reason - the release is
+    # already public - and the schedule remains the backstop if this call fails.
+    Write-Host "[6/6] Site version sync" -ForegroundColor Green
+    & gh api 'repos/SageThumbs2k/sagethumbs2k.github.io/dispatches' -f event_type=release-published
+    if ($LASTEXITCODE) {
+        Write-ReleaseStageOutcome -Outcome 'FAILED (non-fatal)' -Stage 'Site version sync' -Reason (
+            'the site was not told about the release; its daily schedule will catch it, or dispatch it now: gh workflow run sync-version.yml --repo SageThumbs2k/sagethumbs2k.github.io'
+        )
+    }
+
     Write-Host "[6/6] DONE - $tag released." -ForegroundColor Cyan
 
     # 7) Submit to winget, FROM HERE, with the local `gh`. No secret, no CI run, no PAT.

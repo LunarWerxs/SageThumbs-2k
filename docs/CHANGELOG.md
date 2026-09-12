@@ -7,7 +7,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.0.3
+
+The HDR fix from 3.0.2 now covers every format that can carry an HDR picture, the doctor
+explains two more reasons a thumbnail can go missing, and the right-click preview tile is back
+on its strict size guard.
 
 - **HDR HEIC, JPEG XR and TIFF thumbnails render at the right brightness.** The 3.0.2 fix for
   HDR AVIF now has a proven twin for every container that can carry an HDR picture: an HDR
