@@ -650,6 +650,22 @@ pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
 /// target is the checkout page for [`crate::licence_cert::PRODUCT_ID`].
 const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";
 
+/// The buyer's own self-serve door into the seat portal: paste the licence key, land in the
+/// same roster a merchant-minted "Manage seats" link would open. This is Connections'
+/// `SeatPortalClaimView.vue`, shared between enterprise.connections.icu and
+/// licensing.connections.icu - closes the gap the 2026-09-11 finding named ("a buyer cannot
+/// move their own licence to a new computer"): re-redeeming a 1-installation key on a new
+/// machine is correctly refused (`redemption_count < max_redemptions`), and until now nothing
+/// in this app ever pointed the buyer at the self-service door that already existed for it
+/// (`POST /api/public/enterprise/seats/rebind`).
+///
+/// ⛔ NEVER append `?key=...`. Unlike a portal TOKEN, a licence key is the long-lived,
+/// powerful credential, and the claim page's own contract is that it is typed into a form
+/// field and POSTed, never carried in a URL/query string (same posture this module already
+/// takes with the licence key elsewhere - see `renew_url`'s doc for why a *prefix* is never
+/// substituted into a URL either). Opened bare; the buyer pastes their key on the page itself.
+pub(crate) const PORTAL_CLAIM_URL: &str = "https://licensing.connections.icu/seats/claim";
+
 /// The renewal link for this machine: the checkout page for our product, with the stored
 /// licence key pre-filled when we have one.
 ///
@@ -2378,5 +2394,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// [`PORTAL_CLAIM_URL`]'s own doc comment says why: unlike a portal TOKEN, a licence key
+    /// is the long-lived credential and the Connections claim page's contract is that it is
+    /// typed into a form field and POSTed, never carried in a URL - so this constant must
+    /// stay a bare page with no `?key=...` (or any other query string) appended, ever. This
+    /// pins that shape so a future edit that reaches for `renew_url()`'s "pre-fill the key"
+    /// pattern here (wrong for this URL) fails a test instead of silently leaking a key into
+    /// browser history / a proxy log.
+    #[test]
+    fn portal_claim_url_never_carries_a_query_string() {
+        assert_eq!(
+            PORTAL_CLAIM_URL,
+            "https://licensing.connections.icu/seats/claim"
+        );
+        assert!(
+            !PORTAL_CLAIM_URL.contains('?'),
+            "the licence key must never ride in a URL - see PORTAL_CLAIM_URL's doc comment"
+        );
     }
 }

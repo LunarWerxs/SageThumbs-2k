@@ -209,6 +209,12 @@ pub(super) const ID_LICENCE_UPDATES_STATUS: i32 = 1264;
 /// already ended; hidden otherwise, because a button offering to buy something nobody needs
 /// yet is just a nag.
 pub(super) const ID_LICENCE_RENEW: i32 = 1265;
+/// "Move my licence to this computer" - opens the Connections seat portal claim page
+/// (`license::PORTAL_CLAIM_URL`) in the system browser, where the buyer pastes their key and
+/// rebinds it themselves. Always shown: unlike Renew, there is no "not needed yet" state -
+/// any licensed-or-was-licensed machine may want to hand its seat to a new computer. See
+/// `PORTAL_CLAIM_URL`'s doc for the gap this closes.
+pub(super) const ID_LICENCE_MOVE: i32 = 1266;
 pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
 /// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
 pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;

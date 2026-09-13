@@ -693,6 +693,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_LICENCE_CHECK_NOW, "tip_licence_check_now"),
     (ID_LICENCE_RENEW, "tip_licence_renew"),
     (ID_LICENCE_BUY, "tip_licence_buy"),
+    (ID_LICENCE_MOVE, "tip_licence_move"),
     (ID_SELECT_ALL, "tip_select_all"),
     (ID_CLEAR_ALL, "tip_clear_all"),
     (ID_DEFAULTS, "tip_defaults"),
@@ -1824,6 +1825,7 @@ unsafe fn on_command_licence(hwnd: HWND, id: i32) {
         ID_LICENCE_CHECK_NOW => licence_ui::on_check_now_click(hwnd),
         ID_LICENCE_BUY => crate::win::open_url(crate::license::BUY_URL),
         ID_LICENCE_RENEW => crate::win::open_url(&crate::license::renew_url()),
+        ID_LICENCE_MOVE => crate::win::open_url(crate::license::PORTAL_CLAIM_URL),
         _ => {}
     }
 }

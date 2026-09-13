@@ -1058,6 +1058,20 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LICENCE_BUY,
         hinst,
     );
+    // Opens the Connections seat portal so a buyer can move their own licence to this
+    // computer - see `ID_LICENCE_MOVE`'s doc.
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_licence_move"),
+        WS_TABSTOP,
+        0,
+        0,
+        184,
+        26,
+        ID_LICENCE_MOVE,
+        hinst,
+    );
 
     set_window_title(hwnd);
     load_values(hwnd);

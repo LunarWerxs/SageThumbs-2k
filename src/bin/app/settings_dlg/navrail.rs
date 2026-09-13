@@ -353,6 +353,8 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             BtnStatus(ID_LICENCE_REDEEM_BTN, 160, ID_LICENCE_REDEEM_STATUS),
             Btn(ID_LICENCE_CHECK_NOW, 184),
             Btn(ID_LICENCE_BUY, 184),
+            // The self-serve rebind door: always visible (see ID_LICENCE_MOVE's doc).
+            Btn(ID_LICENCE_MOVE, 184),
             // LAST on purpose. It is the one row on this page that hides itself (only a
             // machine near or past its updates window sees it), and a hidden row anywhere
             // but the end leaves a 32px hole in the middle of the page.
