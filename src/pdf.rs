@@ -698,7 +698,14 @@ mod tests {
     #[test]
     fn a_page_index_past_the_end_clamps_to_the_last_page() {
         let pdf = solid_colour_pdf(&PAGES);
-        let (png, count) = render_page_counted(&pdf, 9_999, 256).expect("clamped render");
+        // Retried once, and only because `render_page_counted` folds a BUDGET expiry into the
+        // same `None` a malformed document gets: on a loaded CI runner the whole suite shares
+        // four cores and a scheduling spike past `PDF_TIMEOUT` read as a clamping failure
+        // (2026-09-14, green on the rerun). A real clamping break returns a wrong page rather
+        // than nothing, so the assertion below still fails deterministically.
+        let (png, count) = render_page_counted(&pdf, 9_999, 256)
+            .or_else(|| render_page_counted(&pdf, 9_999, 256))
+            .expect("clamped render");
         assert_eq!(count as usize, PAGES.len());
         assert!(
             close(mean_rgb(&png), PAGES[PAGES.len() - 1]),

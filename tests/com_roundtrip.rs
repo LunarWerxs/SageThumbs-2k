@@ -819,15 +819,16 @@ fn video_avi_thumbnails_via_the_block_stream_worker_from_an_sta_bound_stream() {
         eprintln!("no MPEG-4 Part 2 decoder on this Windows - skipped");
         return;
     }
-    let started = Instant::now();
     let stream: IStream = ApartmentStream::new(fixture_video("mpeg4-160x120.avi")).into();
+    // THE RESULT IS THE PROOF, and the clock never was. Every one of the worker's reads is a
+    // marshaled call on this thread, so an unserved wait cannot decode a single block: it
+    // spends the whole `VIDEO_TIMEOUT` budget, the grab returns None, the AVI has no other
+    // tier, and this `expect` fails. The 6 s wall-clock assertion that used to sit below
+    // therefore tested the CI runner's load, not the code — it went red twice on hosted
+    // runners (2026-09-09, and 2026-09-14 at 8.15 s) while the thumbnail itself came back
+    // correct both times, which is the shape of a flaky gate rather than a defect.
     let t = unsafe { get_thumbnail_from_stream(&stream, 96) }
         .expect("the AVI must thumbnail through the shell handshake from an STA-bound stream");
-    assert!(
-        started.elapsed() < Duration::from_secs(6),
-        "took {:?}: the worker's marshaled reads were not being served",
-        started.elapsed()
-    );
     assert_testsrc_frame(&t);
 }
 
