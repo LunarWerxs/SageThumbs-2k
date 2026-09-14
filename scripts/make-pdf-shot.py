@@ -457,8 +457,12 @@ def find_exe(argv: list[str]) -> Path:
             ).stdout
         )
         candidates.append(Path(meta["target_directory"]) / "release" / "SageThumbs2K.exe")
-    except Exception:
-        pass
+    except Exception as e:
+        # Best effort: `cargo metadata` is how the CUSTOM target dir is discovered (this repo
+        # pins an absolute one), but the two fallbacks below still find a built or installed
+        # exe without it. Say so rather than swallowing it silently - a run that quietly fell
+        # back to the INSTALLED exe shoots the old build and looks like the change did nothing.
+        print(f"[make-pdf-shot] cargo metadata unavailable ({e}); trying the default paths")
     candidates.append(ROOT / "target" / "release" / "SageThumbs2K.exe")
     candidates.append(Path(r"C:\Program Files\SageThumbs2K\SageThumbs2K.exe"))
     for c in candidates:
