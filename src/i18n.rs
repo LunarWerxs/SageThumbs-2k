@@ -385,6 +385,53 @@ mod tests {
         }
     }
 
+    /// Every shipped locale carries EXACTLY en's key set, with the same `{placeholders}`
+    /// in every value that has any. The build script already refuses to compile a gap
+    /// (`enforce_locale_parity` in build.rs), so this cannot fail on a binary that exists;
+    /// it is here so the invariant is also stated where `cargo test` reads it, and so a
+    /// future "make the build lenient again" change trips a test rather than nothing
+    /// (owner directive, Michael, 2026-09-13: no language may ever miss a string).
+    #[test]
+    fn every_locale_carries_exactly_the_english_key_set_with_the_same_placeholders() {
+        fn slots(v: &str) -> std::collections::BTreeSet<&str> {
+            let mut out = std::collections::BTreeSet::new();
+            let mut rest = v;
+            while let Some(start) = rest.find('{') {
+                let after = &rest[start + 1..];
+                match after.find('}') {
+                    Some(end)
+                        if end > 0
+                            && after[..end]
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b == b'_') =>
+                    {
+                        out.insert(&after[..end]);
+                        rest = &after[end + 1..];
+                    }
+                    _ => rest = after,
+                }
+            }
+            out
+        }
+        let en = LOCALES[0].1;
+        assert_eq!(LOCALES[0].0, "en");
+        for (code, pairs) in LOCALES.iter().skip(1) {
+            let en_keys: Vec<&str> = en.iter().map(|(k, _)| *k).collect();
+            let keys: Vec<&str> = pairs.iter().map(|(k, _)| *k).collect();
+            assert_eq!(
+                keys, en_keys,
+                "locale {code}: key set differs from en (a missing key shows English inside a {code} UI; an extra one is a dead string)"
+            );
+            for ((k, en_v), (_, v)) in en.iter().zip(pairs.iter()) {
+                assert_eq!(
+                    slots(v),
+                    slots(en_v),
+                    "locale {code}, key {k}: placeholders differ from en - the runtime substitution would leave a hole"
+                );
+            }
+        }
+    }
+
     /// Every English key resolves to itself's value via the binary search (not the
     /// MISSING sentinel) — a smoke test that the search finds real keys.
     #[test]

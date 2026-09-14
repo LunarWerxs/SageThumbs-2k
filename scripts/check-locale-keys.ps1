@@ -24,9 +24,13 @@
   Exit 1 (with the offending locales + keys) on any mismatch; exit 0 with a clean summary
   when every locale matches en.toml's key set exactly.
 #>
+# -LocaleDir: check a different folder of locale files - the local pre-commit hook exports the
+# STAGED copies (git checkout-index) and points here, so an en-only commit is refused even when
+# the working tree beside it already holds the translations.
+param([string]$LocaleDir)
 $ErrorActionPreference = 'Stop'
 $root      = Split-Path $PSScriptRoot -Parent
-$localeDir = Join-Path $root 'assets/locales'
+$localeDir = if ($LocaleDir) { $LocaleDir } else { Join-Path $root 'assets/locales' }
 
 function Read-LocaleKeys([string]$path) {
     # Only flat `key = "value"` lines count; `#`-comments and blanks are skipped, which

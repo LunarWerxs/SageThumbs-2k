@@ -8,6 +8,14 @@
 //! (the shell-extension DLL) is unaffected — it has no UI and inherits the
 //! host's manifest.
 //!
+//! # Locale files: a MISSING or EXTRA key, or a dropped `{placeholder}`, FAILS the build
+//!
+//! `enforce_locale_parity()` compares every other locale against `en.toml` and panics
+//! on the first difference, naming the locale and the keys (owner directive, Michael,
+//! 2026-09-13: "we absolutely cannot have any languages missing strings"). Adding a
+//! string means adding it to all 36 files in the same change; `scripts/check-locale-keys.ps1`
+//! prints the full list and the local pre-commit hook runs it on staged locale files.
+//!
 //! # Locale TOML gotcha: duplicate keys PANIC the build
 //!
 //! `generate_locales()` below parses every `locales/<code>.toml` with
@@ -221,16 +229,20 @@ fn generate_locales() {
     let mut out = String::new();
     write_locales_table(&mut out, &order, &langs, dll_subset);
 
-    // --- en.toml is the canonical key set; validate every other locale against
-    // it. Gaps are REPORTED (NOT a hard error): some keys are intentionally
-    // en-only and fall back through `t()`, and a translator mid-edit shouldn't
-    // break the build.
+    // --- en.toml is the canonical key set; every other locale MUST match it exactly
+    // (same keys, same `{placeholders}`), or the build fails right here. This used to be
+    // a report only ("a translator mid-edit shouldn't break the build"), and on
+    // 2026-09-13 a commit carrying two en-only keys sat on main with all 35 other
+    // locales silently falling back to English. Michael, the same day: "we absolutely
+    // cannot have any languages missing strings." So the build is the wall now: no
+    // binary can exist with a gap, and `cargo check` names the locale and the keys.
     match build_coverage_report(&langs, &order) {
         Some(coverage) => write_coverage_file(&coverage),
         None => {
             println!("cargo:warning=locales/en.toml not found — cannot validate locale key sets")
         }
     }
+    enforce_locale_parity(&langs, &order);
 
     // --- keys module: an UPPER_SNAKE `&str` const per en.toml key, so future
     // call sites can use `keys::BTN_OK` (a typo'd key becomes a compile error
@@ -400,6 +412,109 @@ fn build_coverage_report(
         .unwrap();
     }
     Some(coverage)
+}
+
+/// The `{name}` substitution slots in a locale value, in order of first appearance.
+/// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`).
+fn placeholders(value: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        match after.find('}') {
+            Some(end)
+                if end > 0
+                    && after[..end]
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b == b'_') =>
+            {
+                out.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            _ => rest = after,
+        }
+    }
+    out
+}
+
+/// FAIL THE BUILD unless every non-English locale carries exactly en.toml's key set with
+/// the same placeholders. A missing key is a sentence shown in English inside another
+/// language's UI; an extra key is a dead string; a dropped `{n}` is a sentence with a hole
+/// in it at runtime. None of the three is allowed to compile (owner directive, Michael,
+/// 2026-09-13). The message names the first few offenders per locale; the full list is one
+/// `pwsh scripts/check-locale-keys.ps1` away, and `scripts/check-consistency.ps1` carries
+/// the same rule for CI's consistency job.
+fn enforce_locale_parity(langs: &BTreeMap<String, BTreeMap<String, String>>, order: &[String]) {
+    let Some(en) = langs.get("en") else {
+        return; // already warned above; nothing to compare against
+    };
+    let mut problems: Vec<String> = Vec::new();
+    for code in order {
+        if code == "en" {
+            continue;
+        }
+        let loc = &langs[code];
+        let missing: Vec<&str> = en
+            .keys()
+            .filter(|k| !loc.contains_key(*k))
+            .map(String::as_str)
+            .collect();
+        let extra: Vec<&str> = loc
+            .keys()
+            .filter(|k| !en.contains_key(*k))
+            .map(String::as_str)
+            .collect();
+        let slots: Vec<String> = en
+            .iter()
+            .filter_map(|(k, v)| {
+                let theirs = loc.get(k)?;
+                let want = placeholders(v);
+                (!want.is_empty() && want != placeholders(theirs))
+                    .then(|| format!("{k} (en has {want:?})"))
+            })
+            .collect();
+        let first = |items: &[&str]| -> String {
+            let shown: Vec<&str> = items.iter().take(5).copied().collect();
+            let more = items.len().saturating_sub(shown.len());
+            if more > 0 {
+                format!("{} (+{more} more)", shown.join(", "))
+            } else {
+                shown.join(", ")
+            }
+        };
+        if !missing.is_empty() {
+            problems.push(format!(
+                "locales/{code}.toml is MISSING {} key(s) that en.toml has: {}",
+                missing.len(),
+                first(&missing)
+            ));
+        }
+        if !extra.is_empty() {
+            problems.push(format!(
+                "locales/{code}.toml has {} key(s) that en.toml does not: {}",
+                extra.len(),
+                first(&extra)
+            ));
+        }
+        if !slots.is_empty() {
+            let shown: Vec<&str> = slots.iter().map(String::as_str).collect();
+            problems.push(format!(
+                "locales/{code}.toml drops or invents a {{placeholder}} in {} key(s): {}",
+                slots.len(),
+                first(&shown)
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        panic!(
+            "\n\nLOCALE PARITY FAILED - every en.toml key must exist in ALL locales with the same \
+             {{placeholders}} (Michael, 2026-09-13: \"we absolutely cannot have any languages \
+             missing strings\"). Add the missing translations to every file (a Sonnet fan-out \
+             producing JSON, applied with one CRLF-safe script, is the shape) - never leave a key \
+             en-only.\n  {}\n\nFull report: pwsh scripts/check-locale-keys.ps1\n",
+            problems.join("\n  ")
+        );
+    }
 }
 
 /// Write the coverage report to `$OUT_DIR/i18n_coverage.txt`, if `OUT_DIR` is set.
