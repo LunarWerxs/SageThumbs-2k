@@ -93,7 +93,7 @@ fn ppm_to_pixmap(data: &[u8]) -> Option<Pixmap> {
     let (w, h) = (nums[0], nums[1]);
     let rgb = data.get(pos..pos + w * h * 3)?;
     let mut pm = Pixmap::new(w as u32, h as u32, 0, 0, 0, 255);
-    for (i, px) in rgb.chunks_exact(3).enumerate() {
+    for (i, px) in rgb.as_chunks::<3>().0.iter().enumerate() {
         pm.data[i * 4] = px[0];
         pm.data[i * 4 + 1] = px[1];
         pm.data[i * 4 + 2] = px[2];

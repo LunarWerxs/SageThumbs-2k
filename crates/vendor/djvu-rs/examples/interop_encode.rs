@@ -273,9 +273,13 @@ fn main() -> ExitCode {
                 );
             }
             Err(e) => {
-                eprintln!("{}: skip ({e})", f.display());
+                failures += 1;
+                eprintln!("{}: FAIL ({e})", f.display());
             }
         }
+    }
+    if checked + failures < files.len() {
+        failures += files.len() - checked - failures;
     }
     eprintln!("\n{checked} checked, {failures} failed the interop gate");
     if failures == 0 {

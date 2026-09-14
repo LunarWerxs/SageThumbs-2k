@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(dst.width, 10);
         assert_eq!(dst.height, 10);
         // All output pixels should be close to red (200, 0, 0).
-        for chunk in dst.data.chunks_exact(4) {
+        for chunk in dst.data.as_chunks::<4>().0 {
             let (r, g, b) = (chunk[0], chunk[1], chunk[2]);
             assert!(
                 (r as i32 - 200).abs() <= 5 && g <= 5 && b <= 5,

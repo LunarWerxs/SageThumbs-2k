@@ -99,7 +99,7 @@ fn crop(pm: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> Pixmap {
 fn distinct_colors(pm: &Pixmap) -> usize {
     use std::collections::HashSet;
     let mut set = HashSet::new();
-    for px in pm.data.chunks_exact(4) {
+    for px in pm.data.as_chunks::<4>().0 {
         set.insert((px[0], px[1], px[2]));
     }
     set.len()

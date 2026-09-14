@@ -17,6 +17,7 @@ use alloc::borrow::Cow;
 
 /// Top-level error type for all DjVu decoding operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DjVuError {
     /// An error in the IFF container format.
     #[error("IFF error: {0}")]

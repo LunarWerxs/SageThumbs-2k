@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Reject commits that credit an AI agent as a co-author.
+# Agents (Claude, Cursor, etc.) must NOT be listed as project contributors —
+# no `Co-authored-by:` trailers pointing at agent identities, and no
+# "Generated with" / robot-emoji attribution lines.
+# Enable once: make hooks   (sets core.hooksPath=.githooks)
+# Bypass once (not recommended): git commit --no-verify
+set -euo pipefail
+
+msg_file="$1"
+
+# Trailers / lines that attribute authorship to an AI agent.
+pattern='(co-authored-by:.*(noreply@anthropic\.com|cursoragent@cursor\.com|claude|cursor))|(generated with .*(claude|cursor))|🤖'
+
+if grep -iqE "$pattern" "$msg_file"; then
+  echo "✗ commit-msg: AI agents must not be credited as contributors." >&2
+  echo "  Offending line(s):" >&2
+  grep -inE "$pattern" "$msg_file" | sed 's/^/    /' >&2
+  echo "  Remove the Co-authored-by / attribution line and commit again." >&2
+  exit 1
+fi
+
+exit 0

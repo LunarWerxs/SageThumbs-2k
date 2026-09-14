@@ -41,6 +41,7 @@ use crate::sexp::SExpr;
 
 /// Errors from metadata parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MetadataError {
     /// The chunk is not valid UTF-8.
     ///

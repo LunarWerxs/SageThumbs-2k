@@ -496,6 +496,55 @@ pub fn segment_page(rgba: &Pixmap, opts: &SegmentOptions) -> SegmentedPage {
         clear_photo_blocks(&mut mask, rgba);
     }
 
+    derive_background(rgba, mask, opts)
+}
+
+/// Segment a page around a caller-supplied mask instead of re-binarizing.
+///
+/// The re-encode path for existing DjVu pages (#601): pass the page's decoded
+/// `Sjbz` mask (e.g. from
+/// [`extract_mask`](crate::djvu_document::DjVuPage::extract_mask)) so
+/// repeated decode → re-encode cycles keep the mask bit-identical instead of
+/// drifting through binarization instability. Only the background half of
+/// segmentation runs (content-adaptive subsample, mask-excluded block means,
+/// optional diffusion) — given the same mask it produces a byte-identical
+/// background to [`segment_page`]. The mask-producing knobs (`binarization`,
+/// `threshold`, `block_classify`, `deskew`) are ignored.
+///
+/// `mask` must have exactly the page's dimensions (`true` = ink); the
+/// dimensions are debug-asserted here and validated with a proper error by
+/// [`PageEncoder::with_mask`](crate::djvu_encode::PageEncoder::with_mask).
+/// Empty input returns empty outputs.
+pub fn segment_page_with_mask(
+    rgba: &Pixmap,
+    mask: &Bitmap,
+    opts: &SegmentOptions,
+) -> SegmentedPage {
+    debug_assert!(
+        mask.width == rgba.width && mask.height == rgba.height,
+        "mask dimensions must match the page"
+    );
+    if rgba.width == 0 || rgba.height == 0 {
+        return SegmentedPage {
+            mask: mask.clone(),
+            bg: Pixmap::default(),
+        };
+    }
+    derive_background(rgba, mask.clone(), opts)
+}
+
+/// Derive the sub-sampled background around `mask` — the shared tail of
+/// [`segment_page`] and [`segment_page_with_mask`]: content-adaptive
+/// subsample choice, mask-excluded block means, optional diffusion.
+///
+/// `#[inline]` restores the pre-split codegen: before #779 this body was
+/// the tail of `segment_page` itself, and outlining it cost a measured
+/// ~2% on `segment_page_color` / `encode_color_page_quality*` (see
+/// PERF_EXPERIMENTS.md, bench triage of PR #779).
+#[inline]
+fn derive_background(rgba: &Pixmap, mask: Bitmap, opts: &SegmentOptions) -> SegmentedPage {
+    let w = rgba.width;
+    let h = rgba.height;
     // #569: content-adaptive background subsample — measured detail of the
     // non-mask pixels picks the effective factor, with `opts.bg_subsample`
     // as the ceiling. Runs after the mask so under-ink pixels don't count
@@ -726,7 +775,7 @@ fn luminance_plane(rgba: &Pixmap) -> Vec<u8> {
 
 fn fill_fixed_mask(mask: &mut Bitmap, rgba: &Pixmap, threshold: u8) {
     let threshold = u32::from(threshold);
-    // Row-slice the packed RGBA rows (`chunks_exact(4)`) instead of a per-pixel
+    // Row-slice the packed RGBA rows (`as_chunks::<4>().0`) instead of a per-pixel
     // `rgba.get_rgb` (bounds check + `(y*width+x)*4` multiply) and set mask bits
     // directly in the row byte (`|= 0x80 >> (x&7)`) instead of `mask.set` (which
     // recomputes `y*stride + x/8` per call). `mask` starts cleared, so OR-ing in
@@ -736,7 +785,7 @@ fn fill_fixed_mask(mask: &mut Bitmap, rgba: &Pixmap, threshold: u8) {
     for y in 0..mask.height as usize {
         let src = &rgba.data[y * w * 4..(y + 1) * w * 4];
         let mrow = &mut mask.data[y * mstride..(y + 1) * mstride];
-        for (x, px) in src.chunks_exact(4).enumerate() {
+        for (x, px) in src.as_chunks::<4>().0.iter().enumerate() {
             if u32::from(luminance(px[0], px[1], px[2])) < threshold {
                 mrow[x >> 3] |= 0x80 >> (x & 7);
             }
@@ -870,7 +919,7 @@ fn block_mean(
         let row = &rgba.data[(ry * w + x0 as usize) * 4..(ry * w + x1 as usize) * 4];
         if unmasked_only {
             let mrow = &mask.data[ry * mstride..(ry + 1) * mstride];
-            for (i, px) in row.chunks_exact(4).enumerate() {
+            for (i, px) in row.as_chunks::<4>().0.iter().enumerate() {
                 let x = x0 as usize + i;
                 if (mrow[x >> 3] >> (7 - (x & 7))) & 1 != 0 {
                     continue;
@@ -878,7 +927,7 @@ fn block_mean(
                 acc.add(px[0], px[1], px[2]);
             }
         } else {
-            for px in row.chunks_exact(4) {
+            for px in row.as_chunks::<4>().0 {
                 acc.add(px[0], px[1], px[2]);
             }
         }
@@ -1097,7 +1146,7 @@ mod tests {
         }
         assert_eq!(seg.bg.width, 2);
         assert_eq!(seg.bg.height, 2);
-        for chunk in seg.bg.data.chunks_exact(4) {
+        for chunk in seg.bg.data.as_chunks::<4>().0 {
             assert_eq!(&chunk[..3], &[255, 255, 255]);
         }
     }

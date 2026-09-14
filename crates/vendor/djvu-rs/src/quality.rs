@@ -82,7 +82,9 @@ fn luma(r: u8, g: u8, b: u8) -> f64 {
 /// Extract the luma plane (`f64`, one sample per pixel) from an RGBA byte buffer.
 #[cfg(feature = "std")]
 fn luma_plane(rgba: &[u8]) -> Vec<f64> {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| luma(p[0], p[1], p[2]))
         .collect()
 }
@@ -110,7 +112,9 @@ fn chroma_cr(r: u8, g: u8, b: u8) -> f64 {
 /// Extract the `Cb` plane (`f64`, one sample per pixel) from an RGBA byte buffer.
 #[cfg(feature = "std")]
 fn cb_plane(rgba: &[u8]) -> Vec<f64> {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| chroma_cb(p[0], p[1], p[2]))
         .collect()
 }
@@ -118,7 +122,9 @@ fn cb_plane(rgba: &[u8]) -> Vec<f64> {
 /// Extract the `Cr` plane (`f64`, one sample per pixel) from an RGBA byte buffer.
 #[cfg(feature = "std")]
 fn cr_plane(rgba: &[u8]) -> Vec<f64> {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| chroma_cr(p[0], p[1], p[2]))
         .collect()
 }
@@ -402,7 +408,13 @@ pub fn compare_color(a: &Pixmap, b: &Pixmap) -> ColorQualityReport {
     let mut delta_e_sum = 0.0f64;
     let mut delta_e_max = 0.0f64;
     let mut count = 0usize;
-    for (pa, pb) in a.data.chunks_exact(4).zip(b.data.chunks_exact(4)) {
+    for (pa, pb) in a
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data.as_chunks::<4>().0)
+    {
         let lab_a = rgb_to_lab(pa[0], pa[1], pa[2]);
         let lab_b = rgb_to_lab(pb[0], pb[1], pb[2]);
         let de = delta_e76(lab_a, lab_b);

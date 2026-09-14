@@ -305,6 +305,40 @@ mod tiff_tests {
 
         assert_eq!(page_count(&output), 2);
     }
+
+    /// A single multipage TIFF file maps to a multi-page bundle (#694),
+    /// one DjVu page per TIFF page in stored order.
+    #[test]
+    fn encode_multipage_tiff_produces_multipage_bundle() {
+        use tiff::encoder::{TiffEncoder, colortype};
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("book.tif");
+        {
+            let file = std::fs::File::create(&input).unwrap();
+            let mut tiff = TiffEncoder::new(file).unwrap();
+            for _ in 0..3 {
+                let rgb: Vec<u8> = (0..32 * 24 * 3).map(|i| (i % 251) as u8).collect();
+                tiff.write_image::<colortype::RGB8>(32, 24, &rgb).unwrap();
+            }
+        }
+        let output = dir.path().join("book.djvu");
+
+        Command::cargo_bin("djvu")
+            .unwrap()
+            .args([
+                "encode",
+                input.to_str().unwrap(),
+                "-o",
+                output.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+
+        assert_eq!(page_count(&output), 3);
+        let (w, h, _) = page_info(&output);
+        assert_eq!((w, h), (32, 24));
+    }
 }
 
 // ── Feature-off guard ─────────────────────────────────────────────────────────

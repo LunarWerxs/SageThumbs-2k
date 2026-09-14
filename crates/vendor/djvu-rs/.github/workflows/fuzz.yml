@@ -29,6 +29,8 @@ jobs:
           - fuzz_bzz_encode
           - fuzz_g4
           - fuzz_metadata
+          - fuzz_graph
+          - fuzz_validate
 
     steps:
       - uses: actions/checkout@v6

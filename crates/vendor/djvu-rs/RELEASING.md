@@ -87,3 +87,15 @@ While version is `0.x`, minor bumps may include breaking changes per SemVer §4.
 |--------|---------|-------|
 | `CARGO_REGISTRY_TOKEN` | `publish.yml` (`cargo publish`) | **Required** — crates.io cannot publish without it. Issue it with **no expiry** at <https://crates.io/settings/tokens> so it never becomes a release blocker. |
 | `RELEASE_PLEASE_TOKEN` | `release-please.yml` | Only prepares the changelog/version PR and (if you let it) the tag. **Not** on the critical path for the tag-push release flow above. If it expires, releases still go out via the manual tag. |
+
+## Python wheels and npm packages
+
+Tag pushes also trigger [`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml),
+which builds version-matched Python wheels/sdists and the dual wasm npm
+package, runs install-time smoke tests, writes `SHA256SUMS`, and attests
+artifacts. Publishing to PyPI/npm is gated on repository variables
+`PUBLISH_PYPI` / `PUBLISH_NPM` (set to `true`) plus the `pypi` / `npm`
+environments — if a wheel, sdist, npm tarball, or smoke test fails, the
+package gate fails and nothing is published. Full contract:
+[`docs/packaging.md`](docs/packaging.md).
+

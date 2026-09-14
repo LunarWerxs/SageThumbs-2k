@@ -500,6 +500,64 @@ fn permissive_render_returns_ok_on_truncated_bg44() {
     );
 }
 
+/// #696: the permissive render report must name the recovered layer.
+#[test]
+fn permissive_report_records_truncated_bg44_recovery() {
+    use djvu_rs::djvu_render::{RecoveredLayer, render_pixmap_with_report};
+
+    let corrupted = make_truncated_bg44_djvu();
+    let doc = DjVuDocument::parse(&corrupted).unwrap();
+    let page = doc.page(0).unwrap();
+    let opts = RenderOptions {
+        width: page.width() as u32,
+        height: page.height() as u32,
+        permissive: true,
+        ..RenderOptions::default()
+    };
+    let (pm, report) =
+        render_pixmap_with_report(page, &opts).expect("permissive render returns Ok");
+    assert!(!pm.data.is_empty());
+    assert!(
+        report
+            .recoveries
+            .iter()
+            .any(|recovery| recovery.layer == RecoveredLayer::Background),
+        "report must record the recovered background: {:?}",
+        report.recoveries
+    );
+    assert!(
+        report
+            .recoveries
+            .iter()
+            .all(|recovery| !recovery.detail.is_empty()),
+        "every recovery carries a human-readable detail"
+    );
+}
+
+/// A clean page reports no recoveries in either mode.
+#[test]
+fn permissive_report_is_clean_for_intact_page() {
+    use djvu_rs::djvu_render::render_pixmap_with_report;
+
+    let data = std::fs::read("tests/fixtures/boy.djvu").expect("fixture");
+    let doc = DjVuDocument::parse(&data).unwrap();
+    let page = doc.page(0).unwrap();
+    for permissive in [false, true] {
+        let opts = RenderOptions {
+            width: page.width() as u32,
+            height: page.height() as u32,
+            permissive,
+            ..RenderOptions::default()
+        };
+        let (_pm, report) = render_pixmap_with_report(page, &opts).expect("intact page renders");
+        assert!(
+            report.is_clean(),
+            "intact page must need no recovery (permissive={permissive}): {:?}",
+            report.recoveries
+        );
+    }
+}
+
 fn assert_strict_native_render_rejects(data: &[u8], page_idx: usize) {
     let doc = DjVuDocument::parse(data).expect("mutant should remain structurally parseable");
     let page = doc.page(page_idx).expect("mutant target page should exist");
@@ -774,4 +832,105 @@ fn iff_find_first_existing_chunk() {
     // Use the new-API Chunk::find_first if available, or iterate chunks
     let info = form.chunks.iter().find(|c| &c.id == b"INFO");
     assert!(info.is_some(), "INFO chunk must exist in a DJVU form");
+}
+
+// ── Legacy FORM:BM44 / FORM:PM44 (#683) ─────────────────────────────────────
+
+#[test]
+fn legacy_bm44_renders_full_resolution() {
+    let data = std::fs::read("tests/fixtures/legacy_bm44.djvu").unwrap();
+    let doc = DjVuDocument::parse(&data).expect("BM44 parse");
+    let page = doc.page(0).unwrap();
+    let opts = RenderOptions {
+        width: page.width() as u32,
+        height: page.height() as u32,
+        ..RenderOptions::default()
+    };
+    let pixmap = render_pixmap(page, &opts).expect("BM44 render");
+    assert_eq!(pixmap.width, 32);
+    assert_eq!(pixmap.height, 32);
+    assert!(!pixmap.data.is_empty());
+}
+
+#[test]
+fn legacy_pm44_renders_and_progressive() {
+    let data = std::fs::read("tests/fixtures/legacy_pm44.djvu").unwrap();
+    let doc = DjVuDocument::parse(&data).expect("PM44 parse");
+    let page = doc.page(0).unwrap();
+    let opts = RenderOptions {
+        width: page.width() as u32,
+        height: page.height() as u32,
+        ..RenderOptions::default()
+    };
+    let full = render_pixmap(page, &opts).expect("PM44 full render");
+    assert_eq!(full.width, 181);
+    assert_eq!(full.height, 240);
+
+    let coarse = render_coarse(page, &opts)
+        .expect("PM44 coarse")
+        .expect("PM44 has IW44 chunks");
+    assert!(coarse.width > 0 && coarse.height > 0);
+
+    let progressive = render_progressive(page, &opts, 0).expect("PM44 progressive");
+    assert_eq!(progressive.width, 181);
+    assert_eq!(progressive.height, 240);
+}
+
+#[test]
+fn legacy_bm44_matches_ddjvu_within_tolerance() {
+    if std::process::Command::new("ddjvu")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: ddjvu not on PATH");
+        return;
+    }
+    let path = "tests/fixtures/legacy_bm44.djvu";
+    let data = std::fs::read(path).unwrap();
+    let doc = DjVuDocument::parse(&data).unwrap();
+    let page = doc.page(0).unwrap();
+    let opts = RenderOptions {
+        width: page.width() as u32,
+        height: page.height() as u32,
+        ..RenderOptions::default()
+    };
+    let ours = render_pixmap(page, &opts).unwrap();
+
+    let tmp = std::env::temp_dir().join(format!("djvu-rs-bm44-{}.ppm", std::process::id()));
+    let status = std::process::Command::new("ddjvu")
+        .args(["-format=ppm", "-quality=uncompressed", path])
+        .arg(&tmp)
+        .status()
+        .expect("ddjvu");
+    assert!(status.success());
+    let ppm = std::fs::read(&tmp).unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    // PPM raw: find RGB payload after "255\n"
+    let rgb_start = ppm
+        .windows(4)
+        .position(|w| w == b"255\n")
+        .map(|i| i + 4)
+        .expect("ppm header");
+    let theirs = &ppm[rgb_start..];
+    assert_eq!(theirs.len(), (ours.width * ours.height * 3) as usize);
+    assert_eq!(ours.data.len(), (ours.width * ours.height * 4) as usize);
+    let mut mismatched = 0usize;
+    for (a, b) in ours.data.chunks(4).zip(theirs.chunks(3)) {
+        let max = a[..3]
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0);
+        if max > 4 {
+            mismatched += 1;
+        }
+    }
+    let total = ours.width as usize * ours.height as usize;
+    let pct = mismatched as f64 * 100.0 / total as f64;
+    assert!(
+        pct <= 0.8,
+        "BM44 vs ddjvu mismatch {pct:.4}% ({mismatched}/{total})"
+    );
 }

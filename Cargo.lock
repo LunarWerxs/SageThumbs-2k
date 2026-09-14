@@ -316,15 +316,15 @@ dependencies = [
 
 [[package]]
 name = "djvu-bitmap"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfa5d19fad172121c82480807566d3fec0f57e8d38d3e589c31ea8e1af753773"
+checksum = "9b0cd81b04cde1d5c1db8583eea1b9b4d4837f115f2549fb1895028ebab28bf9"
 
 [[package]]
 name = "djvu-bzz"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78f5b18e913e68c66ee4cad0011b1d8eb73a28e7e9ed7b2e221d07e03c70f9dc"
+checksum = "a6c319539d9c12fad18c3ef915d0c22d31de3756eb27f86d9f969124aaf1609c"
 dependencies = [
  "djvu-zp",
  "thiserror",
@@ -332,18 +332,18 @@ dependencies = [
 
 [[package]]
 name = "djvu-iff"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c853d63bf88ceb420ce03537531f21e71beb0e74d7b75cc90181ca6723a50a"
+checksum = "8dfe02fa486617f5feaa13b137a576ef1d25ad0c9f28061a8fe5faab2ee47612"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "djvu-iw44"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84d3e54205f6b6700ccef42326b831653648b7cda8d8d390c5844424d18941f1"
+checksum = "584dce215c665431624219a5cdf52d19fcd373db5f2a994934687aadadc0f6ff"
 dependencies = [
  "djvu-pixmap",
  "djvu-zp",
@@ -353,9 +353,9 @@ dependencies = [
 
 [[package]]
 name = "djvu-jb2"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2201bfa4bd572abb6676ee69d001205ad15bf7c127b19e2a8fe94242b2eb0b1f"
+checksum = "7ec8706c86757b4c46397489dbbf0d4714902c641fb97191a32f5a463c39e685"
 dependencies = [
  "djvu-bitmap",
  "djvu-zp",
@@ -364,13 +364,13 @@ dependencies = [
 
 [[package]]
 name = "djvu-pixmap"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ccda29cda6e77bb0ff165dd6f6d8ced7b7cf055fbe3b4d4570dfec915900ec"
+checksum = "7c0ea1757bae50ed6940b8c975c42b58480e9ae3f0b8bc1828e9d87cc4dbeaf2"
 
 [[package]]
 name = "djvu-rs"
-version = "0.27.0"
+version = "0.32.1"
 dependencies = [
  "djvu-bitmap",
  "djvu-bzz",
@@ -387,9 +387,9 @@ dependencies = [
 
 [[package]]
 name = "djvu-zp"
-version = "0.27.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b909dedf10ce25934a104cf0072ddb46d8e6d50bf2fcc96a158661387949af2"
+checksum = "2cccb8eea882e5fd5763b5fd20fc08ffe517e8b3f0e5236fe023c5bcf292cf12"
 dependencies = [
  "thiserror",
 ]

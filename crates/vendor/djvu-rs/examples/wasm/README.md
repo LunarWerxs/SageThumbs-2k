@@ -65,18 +65,26 @@ For a hand-rolled reader instead of the binding, `range_lazy.md` shows the
 ## npm package
 
 ```sh
-# Publish to npm (requires npm login):
+npm install djvu-rs
+```
+
+Release tags build and smoke-test the dual wasm package via
+`.github/workflows/publish-packages.yml` (see [`docs/packaging.md`](../../docs/packaging.md)).
+To rebuild locally:
+
+```sh
 make wasm
 cd examples/wasm/pkg
-npm publish
+npm pack    # or: npm publish  (requires npm login + PUBLISH_NPM)
 ```
 
 `make wasm` emits a dual package: `pkg/djvu_rs.js` is the only entry point,
 `pkg/scalar/djvu_rs_bg.wasm` is the fallback artifact, and
 `pkg/simd128/djvu_rs_bg.wasm` is selected at runtime when
-`WebAssembly.validate()` accepts the SIMD probe. Use `OUT=...` to write the
-generated package elsewhere and `FEATURES=wasm-lazy` when publishing the lazy
-Range-loading bindings.
+`WebAssembly.validate()` accepts the SIMD probe. TypeScript declarations are
+included (`djvu_rs.d.ts`). Use `OUT=...` to write the generated package
+elsewhere and `FEATURES=wasm-lazy` when publishing the lazy Range-loading
+bindings.
 
 ## Threaded rendering (`wasm-threads`, opt-in, experimental)
 

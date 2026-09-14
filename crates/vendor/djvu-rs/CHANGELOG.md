@@ -5,6 +5,180 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.1](https://github.com/matyushkin/djvu-rs/compare/v0.32.0...v0.32.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **render:** count IW44 chroma planes in the render-cache budget ([#799](https://github.com/matyushkin/djvu-rs/issues/799)) ([0d4748d](https://github.com/matyushkin/djvu-rs/commit/0d4748db092b71718d4453e48d939a2e6a581a88))
+* **render:** keep the 1:1 bilevel fast path inside the mask ([#805](https://github.com/matyushkin/djvu-rs/issues/805)) ([2bba3c8](https://github.com/matyushkin/djvu-rs/commit/2bba3c88501d8ef8054c84cb05b03c51ee5f40c2))
+
+
+### Performance Improvements
+
+* **decode:** keep only the non-zero buckets of an IW44 block ([#803](https://github.com/matyushkin/djvu-rs/issues/803)) ([558e2fe](https://github.com/matyushkin/djvu-rs/commit/558e2fe39ca8fa6d0a904c13468f44aeeb90e2f7))
+* **encode:** narrow and sparsify PlaneEncoder::recon ([#804](https://github.com/matyushkin/djvu-rs/issues/804)) ([f622725](https://github.com/matyushkin/djvu-rs/commit/f6227251fa2bae8463ff45983267b2d9bf11a945))
+* **render:** stop thumbnails from retaining a full-size page decode ([#802](https://github.com/matyushkin/djvu-rs/issues/802)) ([92dc1c4](https://github.com/matyushkin/djvu-rs/commit/92dc1c40eb99ca245744fc4584a82e483fcb3d11))
+
+## [0.32.0](https://github.com/matyushkin/djvu-rs/compare/v0.31.0...v0.32.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** every public error enum is now #[non_exhaustive]. Downstream code that matches on one exhaustively must add a `_` arm. Variant names, their payloads, and every Display/Error impl are unchanged.
+
+### Features
+
+* **api:** mark every public error enum #[non_exhaustive] ([#796](https://github.com/matyushkin/djvu-rs/issues/796)) ([a9edf57](https://github.com/matyushkin/djvu-rs/commit/a9edf571594364419d912fffbd2c7b1f5a995953))
+
+## [0.31.0](https://github.com/matyushkin/djvu-rs/compare/v0.30.2...v0.31.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **encode:** EncodeError is now #[non_exhaustive]; downstream matches need a _ arm. It also gained the PageSource variant.
+
+### Features
+
+* **encode:** per-page mask reuse on the multi-page bundle path ([#779](https://github.com/matyushkin/djvu-rs/issues/779) follow-up) ([#784](https://github.com/matyushkin/djvu-rs/issues/784)) ([50f71cd](https://github.com/matyushkin/djvu-rs/commit/50f71cdfcf377cfd9d8bbeabf70c11f61f09bdad))
+* **encode:** reuse an existing Sjbz mask on re-encode ([#601](https://github.com/matyushkin/djvu-rs/issues/601) follow-up) ([#779](https://github.com/matyushkin/djvu-rs/issues/779)) ([8696f72](https://github.com/matyushkin/djvu-rs/commit/8696f72a4cf1d4984f11a17bec6efcd3e827b6da))
+
+
+### Performance Improvements
+
+* **encode:** bounded-window streaming entry point (encoder peak-memory step 4) ([#793](https://github.com/matyushkin/djvu-rs/issues/793)) ([910641f](https://github.com/matyushkin/djvu-rs/commit/910641f8e3b2adee674a55003c9fc5c10c59b2d2))
+* **encode:** commit the peak-RSS scaling harness (encoder peak-memory step 1) ([#786](https://github.com/matyushkin/djvu-rs/issues/786)) ([e5ad127](https://github.com/matyushkin/djvu-rs/commit/e5ad127d6d1e2d020fad686bddf392ca541e010f))
+* **encode:** precompute the per-CC colour table in phase 1 (encoder peak-memory step 3) ([#792](https://github.com/matyushkin/djvu-rs/issues/792)) ([c100fc8](https://github.com/matyushkin/djvu-rs/commit/c100fc802b067f444a82c5face4449cf2c3f85dc))
+* **encode:** stream pages in the CLI encoder (encoder peak-memory step 5) ([#794](https://github.com/matyushkin/djvu-rs/issues/794)) ([9b1c782](https://github.com/matyushkin/djvu-rs/commit/9b1c782e36c1bc551ab2fa01d6228ce532082810))
+* **segment:** inline derive_background to restore pre-split codegen ([#782](https://github.com/matyushkin/djvu-rs/issues/782)) ([bf39d5b](https://github.com/matyushkin/djvu-rs/commit/bf39d5ba7a9b1a27bde6d84fccee26a703d81a24))
+* **thumbnail:** skip full-res extract_mask on the thumbnail path (round 89 follow-up) ([#785](https://github.com/matyushkin/djvu-rs/issues/785)) ([117c3e5](https://github.com/matyushkin/djvu-rs/commit/117c3e577e7e5d659625671dfb6074d6a0df530c))
+
+## [0.30.2](https://github.com/matyushkin/djvu-rs/compare/v0.30.1...v0.30.2) (2026-08-31)
+
+
+### Performance Improvements
+
+* **render:** separable bilinear bg resampling with per-column table ([#775](https://github.com/matyushkin/djvu-rs/issues/775)) ([15f3270](https://github.com/matyushkin/djvu-rs/commit/15f327081b68c46c516fc5189449a787b92c9ebd))
+
+## [0.30.1](https://github.com/matyushkin/djvu-rs/compare/v0.30.0...v0.30.1) (2026-08-22)
+
+
+### Performance Improvements
+
+* migrate constant-size chunks_exact(N) to as_chunks ([#768](https://github.com/matyushkin/djvu-rs/issues/768)) ([#770](https://github.com/matyushkin/djvu-rs/issues/770)) ([41f3b1a](https://github.com/matyushkin/djvu-rs/commit/41f3b1a83c610b8e655c8d78f266ab20c2b1d4a9))
+
+## [0.30.0](https://github.com/matyushkin/djvu-rs/compare/v0.29.0...v0.30.0) (2026-08-18)
+
+
+### Features
+
+* **ingest:** apply JPEG EXIF orientation exactly once at ingest ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#763](https://github.com/matyushkin/djvu-rs/issues/763)) ([70908a4](https://github.com/matyushkin/djvu-rs/commit/70908a499184de90537b8151cf9d7e602c70ebeb))
+* **ingest:** apply TIFF Orientation tag exactly once at ingest ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#760](https://github.com/matyushkin/djvu-rs/issues/760)) ([bf20e3b](https://github.com/matyushkin/djvu-rs/commit/bf20e3b5e28f861a2f772cebc47ce558812cfdf0))
+* **ingest:** configurable alpha compositing via encode --background ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#764](https://github.com/matyushkin/djvu-rs/issues/764)) ([0abae18](https://github.com/matyushkin/djvu-rs/commit/0abae18d5b0ea32f3e3855369ab07b6db2694159))
+* **ingest:** explicit ICC profile policy via encode --icc ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#765](https://github.com/matyushkin/djvu-rs/issues/765)) ([0e56250](https://github.com/matyushkin/djvu-rs/commit/0e5625060b6ef4a9348870ae414dadc49cfe1e5e))
+
+## [0.29.0](https://github.com/matyushkin/djvu-rs/compare/v0.28.0...v0.29.0) (2026-08-18)
+
+
+### Features
+
+* **ingest:** decode CCITT G4 and PackBits TIFF strips ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#756](https://github.com/matyushkin/djvu-rs/issues/756)) ([fdd6064](https://github.com/matyushkin/djvu-rs/commit/fdd606445944a7b33d97d0e799f4f654ef250d98))
+* **ingest:** map TIFF X/YResolution tags to default DPI ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#758](https://github.com/matyushkin/djvu-rs/issues/758)) ([5ec6a12](https://github.com/matyushkin/djvu-rs/commit/5ec6a12db4251e567f948a6c9767a5c7704ab8cc))
+
+
+### Performance Improvements
+
+* **ingest:** bilevel TIFF fast path straight to JB2 masks ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#759](https://github.com/matyushkin/djvu-rs/issues/759)) ([afa2c67](https://github.com/matyushkin/djvu-rs/commit/afa2c67b43155b803ec4fce5bea606622a924054))
+
+## [0.28.0](https://github.com/matyushkin/djvu-rs/compare/v0.27.0...v0.28.0) (2026-08-11)
+
+
+### Features
+
+* **api-stability:** compatibility policy, feature matrix, and CI gates ([#695](https://github.com/matyushkin/djvu-rs/issues/695)) ([adff9cd](https://github.com/matyushkin/djvu-rs/commit/adff9cd9e1b49fe2b0575bb88d36b0af1ee2c6bc))
+* **api:** wire configurable ResourceLimits into parse and render ([#695](https://github.com/matyushkin/djvu-rs/issues/695)) ([cdb8222](https://github.com/matyushkin/djvu-rs/commit/cdb82223e765ba55e9b5d132bad467d99a518147))
+* **cli:** add `djvu diff` semantic document comparison ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([616f2fe](https://github.com/matyushkin/djvu-rs/commit/616f2fe00ef3aef74cb7c81702cdd3faacea49c0))
+* **cli:** add `djvu diff` semantic document comparison ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([cbed5fc](https://github.com/matyushkin/djvu-rs/commit/cbed5fca4320ac6e993fde9600d41ca1ecf479da))
+* **cli:** add `djvu inspect` with offset-aware structural JSON ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([779865c](https://github.com/matyushkin/djvu-rs/commit/779865c7b098de48ffc798a620256a90e61b22b6))
+* **cli:** add `djvu inspect` with offset-aware structural JSON ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([31e5296](https://github.com/matyushkin/djvu-rs/commit/31e5296cb7456690236eebc5893730defdcffcb7))
+* **cli:** layered `djvu validate` with structural/dependency/codec findings ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([583f66a](https://github.com/matyushkin/djvu-rs/commit/583f66ab0fe4edce7068f7b42d566e51f73c4629))
+* **cli:** layered `djvu validate` with structural/dependency/codec findings ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([97f4c92](https://github.com/matyushkin/djvu-rs/commit/97f4c92a54f55f6c7dab8dd9200ea4a7ca4ea4dd))
+* **djvm:** add bundled -&gt; indirect conversion preserving graph and names ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([d69d680](https://github.com/matyushkin/djvu-rs/commit/d69d6800b4126e11b1e80662f62b2e1c4130ede1))
+* **djvm:** add bundled -&gt; indirect conversion preserving graph and names ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([7ab03d2](https://github.com/matyushkin/djvu-rs/commit/7ab03d2863ab8ac9d7ce8fde677ae32e20b57cff))
+* **djvm:** bundle single-page extraction with its INCL closure ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([e28795c](https://github.com/matyushkin/djvu-rs/commit/e28795cba705b4418edd82a98f34bbc2ad80754b))
+* **djvm:** bundle single-page extraction with its INCL closure ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([777b6cf](https://github.com/matyushkin/djvu-rs/commit/777b6cff2212e4c5ca07d7ec637dc3df40c8c569))
+* **djvm:** extract-with-includes uses the component graph closure ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([33d24ad](https://github.com/matyushkin/djvu-rs/commit/33d24ad7362cf73fc0e9c652d06bd29b2ebb2b7d))
+* **djvm:** extract-with-includes uses the component graph closure ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([9685512](https://github.com/matyushkin/djvu-rs/commit/96855125a68c5321390342da08fa57804e29d957))
+* **djvm:** page deletion with unreachable-component GC policy ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([fee8e06](https://github.com/matyushkin/djvu-rs/commit/fee8e0689a30fbace1b847cc55677191c7e65ba4))
+* **djvm:** page deletion with unreachable-component GC policy ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([de8d001](https://github.com/matyushkin/djvu-rs/commit/de8d00133090a3867884a2743742df4961a35277))
+* **djvm:** safe byte-exact shared-component deduplication ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([0d0fc92](https://github.com/matyushkin/djvu-rs/commit/0d0fc92ac4ec35068155195be445e3d9af1b9e79))
+* **djvm:** safe byte-exact shared-component deduplication ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([a6a99c2](https://github.com/matyushkin/djvu-rs/commit/a6a99c294499e2d9d6eeb2581d1ae67d1e862105))
+* **djvm:** spooled streaming bundle writer with bounded memory ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([51a099b](https://github.com/matyushkin/djvu-rs/commit/51a099ba2ac6c4ef7bfbe31a729998a570cef577))
+* **djvm:** spooled streaming bundle writer with bounded memory ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([11b6a1e](https://github.com/matyushkin/djvu-rs/commit/11b6a1eeb3dc316853327b8cceb66940db84df7d))
+* **document:** add typed indirect component resolver ([a5c2dd1](https://github.com/matyushkin/djvu-rs/commit/a5c2dd11e74e0323778e3400abb1b58eab504b80))
+* **document:** add typed indirect component resolver ([#687](https://github.com/matyushkin/djvu-rs/issues/687)) ([781e459](https://github.com/matyushkin/djvu-rs/commit/781e459cffd0ba6572bfc73ebfcd5aa2e4fdb845))
+* **document:** add validated component dependency graph ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([4fe8d25](https://github.com/matyushkin/djvu-rs/commit/4fe8d25545c47c6a2cf7dacd912107a044bbc4c2))
+* **document:** add validated component dependency graph ([#689](https://github.com/matyushkin/djvu-rs/issues/689)) ([e806d46](https://github.com/matyushkin/djvu-rs/commit/e806d4645d89864e9a974c99fff119560d99da1a))
+* **document:** decode legacy FORM:BM44 and FORM:PM44 ([#683](https://github.com/matyushkin/djvu-rs/issues/683)) ([5104fa3](https://github.com/matyushkin/djvu-rs/commit/5104fa35880a73d47a6b479811098695ab4a6f3c))
+* **document:** decode legacy FORM:BM44 and FORM:PM44 ([#683](https://github.com/matyushkin/djvu-rs/issues/683)) ([e84ba8e](https://github.com/matyushkin/djvu-rs/commit/e84ba8e7d0bf6213f60d516ca8a8f78f644381b0))
+* **editor:** add validated typed edit operations ([1939cca](https://github.com/matyushkin/djvu-rs/commit/1939ccac377ad3a4a4811c632133f3751d4f78f7))
+* **editor:** add validated typed edit operations ([#688](https://github.com/matyushkin/djvu-rs/issues/688)) ([9f127c9](https://github.com/matyushkin/djvu-rs/commit/9f127c9e6b86732a563bc6e8357a6d71ddd23651))
+* **export:** async writer adapters, injected-failure tests, memory smoke ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([1206492](https://github.com/matyushkin/djvu-rs/commit/120649205511268555697aba475e24714d24012c))
+* **export:** async writer adapters, injected-failure tests, memory smoke ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([b064f2b](https://github.com/matyushkin/djvu-rs/commit/b064f2b76de10f8c543fb860324296901952a49a))
+* **export:** bound CBZ/EPUB writer memory to active page state ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([e6e7250](https://github.com/matyushkin/djvu-rs/commit/e6e7250f51157b19b0d9af4f5e7d872610a47188))
+* **export:** bound CBZ/EPUB writer memory to active page state ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([87d21cc](https://github.com/matyushkin/djvu-rs/commit/87d21cc7e6ffbc9f2822a55110179927faa76cce))
+* **export:** uniform progress/cancellation observer and atomic CLI output ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([1c6835c](https://github.com/matyushkin/djvu-rs/commit/1c6835c42c2f59757838bbc6b0d00e99c7644393))
+* **export:** uniform progress/cancellation observer and atomic CLI output ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([749a904](https://github.com/matyushkin/djvu-rs/commit/749a9046776a98668358aa0acedcf03b2366492d))
+* **ingest:** expand PNG encoder ingestion slice 1 ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([b8e4c0e](https://github.com/matyushkin/djvu-rs/commit/b8e4c0e6f308231d8467a7e86eefae5b3bd23360))
+* **ingest:** expand TIFF encoder ingestion slice 2 ([#694](https://github.com/matyushkin/djvu-rs/issues/694)) ([#742](https://github.com/matyushkin/djvu-rs/issues/742)) ([73e1197](https://github.com/matyushkin/djvu-rs/commit/73e1197530209afcf14f989f8624cf32609bc8e8))
+* **limits:** configurable ResourceLimits for parse/render ([#695](https://github.com/matyushkin/djvu-rs/issues/695)) ([fc61627](https://github.com/matyushkin/djvu-rs/commit/fc6162738ad7a19aa43b1452e4da3c1daf270765))
+* **ocr:** CTC line recognition and TextLayer assembly for the neural pipeline ([#750](https://github.com/matyushkin/djvu-rs/issues/750)) ([beade4c](https://github.com/matyushkin/djvu-rs/commit/beade4c26ce80e53933b1b8d1340fcee2c6ab0f5))
+* **ocr:** model manifest with SHA-256 verification + DBNet detection ([#693](https://github.com/matyushkin/djvu-rs/issues/693)) ([#749](https://github.com/matyushkin/djvu-rs/issues/749)) ([2b13106](https://github.com/matyushkin/djvu-rs/commit/2b131064e544cf3a7b5a59c07482a38a525457ef))
+* **ocr:** NeuralOcrBackend pipeline wired to CLI as --backend onnx ([#751](https://github.com/matyushkin/djvu-rs/issues/751)) ([bd6e1e6](https://github.com/matyushkin/djvu-rs/commit/bd6e1e644ef58cba05d2b8b2ce1c3f1ac6b7024c))
+* **ocr:** synthetic metrics corpus with CER/WER/IoU baseline ([#752](https://github.com/matyushkin/djvu-rs/issues/752)) ([667003e](https://github.com/matyushkin/djvu-rs/commit/667003e2c53e7eab07392bbfc412d77ed26975dc))
+* **optimizer:** add lossless cleanup planning ([#686](https://github.com/matyushkin/djvu-rs/issues/686)) ([a332864](https://github.com/matyushkin/djvu-rs/commit/a332864c6c4a8d629c05a9859d930791d4ef7ae8))
+* **optimizer:** add lossless cleanup planning ([#686](https://github.com/matyushkin/djvu-rs/issues/686)) ([17b53eb](https://github.com/matyushkin/djvu-rs/commit/17b53ebfde01f8018184c59999844518c530eb70))
+* **packaging:** publish Python wheels and npm packages ([#692](https://github.com/matyushkin/djvu-rs/issues/692)) ([adf6cb7](https://github.com/matyushkin/djvu-rs/commit/adf6cb7d98f1568f53a72ba806064afb7fbcf2ff))
+* **packaging:** publish Python wheels and npm packages ([#692](https://github.com/matyushkin/djvu-rs/issues/692)) ([cd0adbc](https://github.com/matyushkin/djvu-rs/commit/cd0adbca9f73173a84b58ad70149024197813178))
+* publish DjVu conformance dashboard ([ca76318](https://github.com/matyushkin/djvu-rs/commit/ca76318f579f3be34a1a3f7ab54a894c699f2ebd))
+* publish DjVu conformance dashboard ([#682](https://github.com/matyushkin/djvu-rs/issues/682)) ([d0666fd](https://github.com/matyushkin/djvu-rs/commit/d0666fdea2e6cc9cc99950c12412495996d8d5b2))
+* **render:** structured recovery report from permissive renders ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([ee6dc02](https://github.com/matyushkin/djvu-rs/commit/ee6dc02f3f0839a9178a1ce2c88ee1a3b9d10341))
+* **render:** structured recovery report from permissive renders ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([3381f58](https://github.com/matyushkin/djvu-rs/commit/3381f587107dbef712f3ffb208dab1d80cd68727))
+* **render:** tile cache budget, invalidation, prefetch ([#691](https://github.com/matyushkin/djvu-rs/issues/691) slice 2) ([#746](https://github.com/matyushkin/djvu-rs/issues/746)) ([fe7914f](https://github.com/matyushkin/djvu-rs/commit/fe7914f466ab08e9420a50e29fe1fc3e94e86d26))
+* **render:** tile-first rendering API slice 1 ([#691](https://github.com/matyushkin/djvu-rs/issues/691)) ([#744](https://github.com/matyushkin/djvu-rs/issues/744)) ([2cb629f](https://github.com/matyushkin/djvu-rs/commit/2cb629f9fdc6eb7dcdd3637bfe425c9499cff2ea))
+* **tiff:** two-pass bilevel G4 export bounds memory to one page ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([2db57c6](https://github.com/matyushkin/djvu-rs/commit/2db57c6373fda92218aefaf7e3d755d07ec42abb))
+* **tiff:** two-pass bilevel G4 export bounds memory to one page ([#690](https://github.com/matyushkin/djvu-rs/issues/690)) ([962c3e3](https://github.com/matyushkin/djvu-rs/commit/962c3e31ac697a80a54e083053388d0738ab1da1))
+* **tile:** progressive quality steps and cooperative cancellation ([#691](https://github.com/matyushkin/djvu-rs/issues/691) slice 3a) ([#747](https://github.com/matyushkin/djvu-rs/issues/747)) ([1534ba7](https://github.com/matyushkin/djvu-rs/commit/1534ba766391ded66d999595f4949be307cd54e3))
+* **tile:** progressive tile quality, cancellation, async+wasm surfaces ([#748](https://github.com/matyushkin/djvu-rs/issues/748)) ([2f934f1](https://github.com/matyushkin/djvu-rs/commit/2f934f11cd8494e728df256968e0c54f92e51600))
+* **validate:** resource estimates and --limits before expensive work ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([8cfdff1](https://github.com/matyushkin/djvu-rs/commit/8cfdff145f3139b09f208843aea3b8f4a4c89de9))
+* **validate:** resource-limit layer with pre-decode budget gate ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([1796936](https://github.com/matyushkin/djvu-rs/commit/1796936c1b40c7f34af6bbb6bec99f42fbe37681))
+* **validate:** writer pre-commit validation and validator fuzzing ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([01d2852](https://github.com/matyushkin/djvu-rs/commit/01d2852b22508e76bf68817994ec3c75a88d2efd))
+* **validate:** writer pre-commit validation and validator fuzzing ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([81f983c](https://github.com/matyushkin/djvu-rs/commit/81f983ca2f57ec2a9c4c1a4176eedaa5a7545f09))
+* **writer:** add Smmr and fresh metadata paths ([#685](https://github.com/matyushkin/djvu-rs/issues/685)) ([fb8469d](https://github.com/matyushkin/djvu-rs/commit/fb8469d36eb6bdfc79977a8ada8c9e8c84aa348e))
+* **writer:** add Smmr and fresh metadata paths ([#685](https://github.com/matyushkin/djvu-rs/issues/685)) ([0ec3699](https://github.com/matyushkin/djvu-rs/commit/0ec3699973790ae58f5a8cf95605ae657d664afe))
+
+
+### Bug Fixes
+
+* align conformance gate with pinned baseline ([6fed285](https://github.com/matyushkin/djvu-rs/commit/6fed285649b509d75b1e050dd417f55039f3c87c))
+* **conformance:** close [#682](https://github.com/matyushkin/djvu-rs/issues/682) acceptance gaps ([2a204b4](https://github.com/matyushkin/djvu-rs/commit/2a204b48485a5e39b58f2a57831fc191a6474689))
+* **deps:** require tract-onnx &gt;=0.22.2 (RUSTSEC-2026-0217) ([#743](https://github.com/matyushkin/djvu-rs/issues/743)) ([e9c4d37](https://github.com/matyushkin/djvu-rs/commit/e9c4d377c96ce8ecd68302d3b52d0a2898d63e63))
+* **iw44:** use `|V| >= s` significance gate to close dense-page plateau ([#684](https://github.com/matyushkin/djvu-rs/issues/684)) ([43a443e](https://github.com/matyushkin/djvu-rs/commit/43a443e067f4e0012a6181f0c66f786b30f94063))
+* **iw44:** use `|V| >= s` significance gate to close dense-page plateau ([#684](https://github.com/matyushkin/djvu-rs/issues/684)) ([e34d5f2](https://github.com/matyushkin/djvu-rs/commit/e34d5f2082039ca60bbe1fe4cf8796c0d5fb74ba))
+* **iw44:** use DjVuLibre Pigeon RGB-&gt;YCbCr in colour encode ([#684](https://github.com/matyushkin/djvu-rs/issues/684)) ([dd7c436](https://github.com/matyushkin/djvu-rs/commit/dd7c4361797af51aaa2e33b1c0d917a21d96a7ac))
+* **iw44:** use DjVuLibre Pigeon RGB-&gt;YCbCr in colour encode ([#684](https://github.com/matyushkin/djvu-rs/issues/684)) ([813b1b2](https://github.com/matyushkin/djvu-rs/commit/813b1b20156100bb2175140b2574b3fb9344faf7))
+* **optimizer:** warn that max_ssim_loss is not an active gate yet ([5614ee7](https://github.com/matyushkin/djvu-rs/commit/5614ee748c870f569879758c4e8785d81478c934))
+* **test:** make sub4 JB2 decode counters work under parallel ([d19a09b](https://github.com/matyushkin/djvu-rs/commit/d19a09b2010665f65b5a647d86b858f023800f88))
+* two 32-bit overflow bugs found by the new sanitizer CI ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([4995268](https://github.com/matyushkin/djvu-rs/commit/49952687d9942e0023fab319c6ca2329adf8357d))
+* two 32-bit overflow bugs found by the new sanitizer CI ([#696](https://github.com/matyushkin/djvu-rs/issues/696)) ([bfe2c00](https://github.com/matyushkin/djvu-rs/commit/bfe2c00a2437cfa0b4da9587af2c2450072a9dfd))
+* **validate:** include parse error in indirect-DJVM warning message ([b8b25f8](https://github.com/matyushkin/djvu-rs/commit/b8b25f80bf17cb0e546e50519f21b1ad3021af49))
+
+
+### Performance Improvements
+
+* **#684:** add encoder parity scorecard ([723c18f](https://github.com/matyushkin/djvu-rs/commit/723c18fd46230735251df1d65264cd34df716c05))
+* **#684:** add encoder parity scorecard ([50b4d20](https://github.com/matyushkin/djvu-rs/commit/50b4d20508dee9d1992af3a7d764149a4e8f43f3))
+
 ## [0.27.0](https://github.com/matyushkin/djvu-rs/compare/v0.26.2...v0.27.0) (2026-07-12)
 
 

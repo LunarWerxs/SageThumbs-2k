@@ -36,7 +36,7 @@
 //! progressively higher-quality images.
 
 #[cfg(not(feature = "std"))]
-use alloc::{borrow::Cow, vec, vec::Vec};
+use alloc::{borrow::Cow, string::String, vec, vec::Vec};
 #[cfg(feature = "std")]
 use std::borrow::Cow;
 
@@ -84,6 +84,7 @@ fn count_jb2_mask_decode() {
 
 /// Errors that can occur during DjVuPage rendering.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RenderError {
     /// IW44 wavelet decode error.
     #[error("IW44 decode error: {0}")]
@@ -117,6 +118,10 @@ pub enum RenderError {
     /// Document-level error (e.g. page index out of range).
     #[error("document error: {0}")]
     Doc(#[from] crate::djvu_document::DocError),
+
+    /// A configured resource limit was exceeded during rendering.
+    #[error("{0}")]
+    ResourceLimit(#[from] crate::resource_limits::ResourceLimitExceeded),
 
     /// A render option is incompatible with the chosen entry point.
     ///
@@ -251,6 +256,132 @@ impl Default for RenderOptions {
             permissive: false,
             resampling: Resampling::Bilinear,
             mask_aa: false,
+        }
+    }
+}
+
+fn effective_max_render_pixels(
+    page: &crate::djvu_document::DjVuPage,
+    limits: Option<crate::resource_limits::ResourceLimits>,
+) -> u64 {
+    limits
+        .and_then(|limits| limits.max_render_pixels)
+        .or(page
+            .resource_limits()
+            .and_then(|limits| limits.max_render_pixels))
+        .unwrap_or(crate::resource_limits::DEFAULT_MAX_RENDER_PIXELS)
+}
+
+fn check_output_pixels(
+    operation: &'static str,
+    page: &crate::djvu_document::DjVuPage,
+    limits: Option<crate::resource_limits::ResourceLimits>,
+    width: u32,
+    height: u32,
+) -> Result<(), RenderError> {
+    if width == 0 || height == 0 {
+        return Err(RenderError::InvalidDimensions { width, height });
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    let limit = effective_max_render_pixels(page, limits);
+    if pixels > limit {
+        return Err(RenderError::ResourceLimit(
+            crate::resource_limits::ResourceLimitExceeded {
+                operation,
+                axis: crate::resource_limits::ResourceLimitAxis::RenderOutputPixels,
+                found: pixels,
+                limit,
+                page_number: Some(page.index() + 1),
+                width: Some(width),
+                height: Some(height),
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// A document layer a permissive render skipped or fell back on (#696).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveredLayer {
+    /// The IW44 background (`BG44`), possibly truncated at a corrupt chunk.
+    Background,
+    /// The IW44 foreground detail plane (`FG44`).
+    Foreground,
+    /// The JB2 stencil mask (`Sjbz`).
+    Mask,
+    /// The `FGbz` foreground colour palette.
+    ForegroundPalette,
+}
+
+/// One recovery action a permissive render took to keep going (#696).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderRecovery {
+    /// Which layer was affected.
+    pub layer: RecoveredLayer,
+    /// Human-readable explanation of what was skipped or substituted.
+    pub detail: String,
+}
+
+/// Structured record of what a permissive render skipped or recovered (#696).
+///
+/// Returned alongside the pixmap by [`render_pixmap_with_report`]. An empty
+/// report (`is_clean`) means the page decoded fully with no fallbacks.
+#[derive(Debug, Clone, Default)]
+pub struct RenderReport {
+    /// Recovery actions in the order the renderer took them.
+    pub recoveries: Vec<RenderRecovery>,
+}
+
+impl RenderReport {
+    /// Whether the render needed no recovery (every layer decoded cleanly).
+    pub fn is_clean(&self) -> bool {
+        self.recoveries.is_empty()
+    }
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+    /// Active recovery sink. `Some` only while [`render_pixmap_with_report`] is
+    /// on the stack; otherwise `record_recovery` is a no-op, so the ordinary
+    /// [`render_pixmap`] hot path is untouched.
+    static RECOVERY_SINK: core::cell::RefCell<Option<Vec<RenderRecovery>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Record a permissive recovery when a report is being collected.
+#[cfg(feature = "std")]
+fn record_recovery(layer: RecoveredLayer, detail: impl Into<String>) {
+    RECOVERY_SINK.with(|sink| {
+        if let Some(list) = sink.borrow_mut().as_mut() {
+            list.push(RenderRecovery {
+                layer,
+                detail: detail.into(),
+            });
+        }
+    });
+}
+
+/// No-op in `no_std`: the report API requires `std` thread-locals.
+#[cfg(not(feature = "std"))]
+fn record_recovery(_layer: RecoveredLayer, _detail: &str) {}
+
+/// Unwrap a permissive layer decode, recording a recovery on failure.
+fn permissive_layer<T>(result: Result<Option<T>, RenderError>, layer: RecoveredLayer) -> Option<T> {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            record_recovery(layer, {
+                #[cfg(feature = "std")]
+                {
+                    error.to_string()
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = error;
+                    ""
+                }
+            });
+            None
         }
     }
 }
@@ -726,7 +857,7 @@ fn sample_area_avg_bounds(pm: &Pixmap, x0: u32, x1: u32, y0: u32, y1: u32) -> (u
     for sy in y0..y1 {
         let row_off = sy as usize * pw * 4 + x0 as usize * 4;
         if let Some(row) = pm.data.get(row_off..row_off + cols * 4) {
-            for chunk in row.chunks_exact(4) {
+            for chunk in row.as_chunks::<4>().0 {
                 r_sum += chunk[0] as u32;
                 g_sum += chunk[1] as u32;
                 b_sum += chunk[2] as u32;
@@ -930,7 +1061,10 @@ fn user_rotation_to_steps(r: UserRotation) -> u8 {
 
 /// Combine INFO chunk rotation with user rotation and return the combined
 /// `info::Rotation` value.
-fn combine_rotations(info: crate::info::Rotation, user: UserRotation) -> crate::info::Rotation {
+pub(crate) fn combine_rotations(
+    info: crate::info::Rotation,
+    user: UserRotation,
+) -> crate::info::Rotation {
     use crate::info::Rotation;
     let steps = (rotation_to_steps(info) + user_rotation_to_steps(user)) % 4;
     match steps {
@@ -1072,14 +1206,15 @@ fn best_iw44_subsample(scale: f32) -> u32 {
 #[cfg(feature = "std")]
 const TILE_SIZE: u32 = 256;
 
-/// Per-page byte budget for the composited-tile cache — about 32 full tiles
-/// (256×256×4 B = 256 KiB each). Independent of, but counted towards,
-/// [`PageLayers::cached_bytes`] / `DjVuDocument::enforce_cache_budget`: a
-/// document-wide budget sweep evicts whole pages (tiles included), while this
-/// bound keeps one page's own pan history from growing unboundedly between
-/// sweeps.
+/// Default per-page byte budget for the composited-tile cache — about 32
+/// full tiles (256×256×4 B = 256 KiB each). Independent of, but counted
+/// towards, [`PageLayers::cached_bytes`] / `DjVuDocument::enforce_cache_budget`:
+/// a document-wide budget sweep evicts whole pages (tiles included), while
+/// this bound keeps one page's own pan history from growing unboundedly
+/// between sweeps. Overridable per page via
+/// [`crate::djvu_tile::set_tile_cache_budget`] (#691 slice 2).
 #[cfg(feature = "std")]
-const TILE_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const TILE_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Composited-output tile cache key: `(full_w, full_h, tile_x, tile_y, bold,
 /// mask_aa)` — the tuple of [`RenderOptions`] fields (plus the tile's
@@ -1108,6 +1243,10 @@ struct TileCacheState {
     map: std::collections::HashMap<TileKey, std::sync::Arc<TileEntry>>,
     order: std::collections::VecDeque<TileKey>,
     bytes: usize,
+    /// Per-page budget override (#691 slice 2); `None` means
+    /// [`TILE_CACHE_MAX_BYTES`]. Kept as an `Option` so `derive(Default)`
+    /// stays valid and "still on the default" remains observable.
+    budget: Option<usize>,
     /// Hit/miss/eviction telemetry (#576). Test-only so the release lock
     /// section stays exactly as cheap as before.
     #[cfg(test)]
@@ -1116,6 +1255,32 @@ struct TileCacheState {
     misses: usize,
     #[cfg(test)]
     evictions: usize,
+}
+
+#[cfg(feature = "std")]
+impl TileCacheState {
+    /// The budget this cache currently enforces (override or default).
+    fn effective_budget(&self) -> usize {
+        self.budget.unwrap_or(TILE_CACHE_MAX_BYTES)
+    }
+
+    /// Evict oldest-first until `bytes` is back under the effective budget.
+    fn evict_to_budget(&mut self) {
+        while self.bytes > self.effective_budget() {
+            match self.order.pop_front() {
+                Some(old_key) => {
+                    if let Some(old) = self.map.remove(&old_key) {
+                        self.bytes = self.bytes.saturating_sub(old.data.len());
+                        #[cfg(test)]
+                        {
+                            self.evictions += 1;
+                        }
+                    }
+                }
+                None => break,
+            }
+        }
+    }
 }
 
 /// Render-tier cache of a page's decoded layers.
@@ -1169,6 +1334,14 @@ pub(crate) struct PageLayers {
     // plain `mask` cache does not cover the indexed variant, so without this
     // every warm render of a palette page re-runs the full JB2 ZP decode and
     // re-allocates the page-sized blit map. Only populated for palette pages.
+    // THUMB_PARTIAL_MEMO: the converted RGB for the first subsample > 4 this
+    // page was rendered at, stored as `(subsample, pixmap)`. Thumbnail grids
+    // and zoomed-out pans land here, and they land on the *same* subsample for
+    // a given page, so one slot serves them. Tiny — ~90 KB for a 128 px
+    // thumbnail of a colorbook.djvu page — and it lets the sub > 4 path stop
+    // memoising the full-size `bg44_partial` coefficient image (5.75 MB) it
+    // derives from. A render at a different sub > 4 misses and reconverts.
+    bg_rgb_subhi: std::sync::OnceLock<Option<(u32, Pixmap)>>,
     mask_indexed: std::sync::OnceLock<Option<(crate::bitmap::Bitmap, Vec<i32>)>>,
     // Decoded page metadata (#605): the TXTz/ANTz payloads are BZZ-compressed
     // and rebuilt into full zone/annotation trees on every access, yet viewers
@@ -1198,6 +1371,36 @@ pub(crate) struct PageLayers {
 #[cfg(feature = "std")]
 static ACCESS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Decode the first BG44 chunk of `page` into a fresh `Iw44Image`.
+///
+/// The body of [`PageLayers::bg44_partial`]'s initialiser, factored out so the
+/// subsample > 4 path can produce the same image without memoising it (see
+/// [`PageLayers::bg44_partial_cached`]).
+#[cfg(feature = "std")]
+fn decode_bg44_partial(page: &DjVuPage) -> Option<Iw44Image> {
+    let chunks = page.bg44_chunks();
+    if chunks.is_empty() {
+        return None;
+    }
+    let mut img = Iw44Image::new();
+    if img.decode_chunk(chunks[0]).is_err() {
+        return None;
+    }
+    if img.width == 0 {
+        return None;
+    }
+    // Same dimension cross-check as `PageLayers::bg44`.
+    if !iw44_reduction_is_legal(
+        page.width() as u32,
+        page.height() as u32,
+        img.width,
+        img.height,
+    ) {
+        return None;
+    }
+    Some(img)
+}
+
 #[cfg(feature = "std")]
 impl PageLayers {
     /// An empty cache. Layers are decoded on first access.
@@ -1216,12 +1419,20 @@ impl PageLayers {
         self.access.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Approximate resident bytes held by this page's decoded caches.
+    /// Resident bytes held by this page's decoded caches.
     ///
-    /// Exact for the RGB/mask pixmaps and blit map (which dominate); the BG44
-    /// coefficient images are estimated from their dimensions (`w·h·2` per
-    /// image). Used only to compare pages for budget eviction, so an estimate is
-    /// sufficient. Reads caches without initialising them.
+    /// Every pixel cache is measured from the `Vec` it owns, not estimated:
+    /// [`DjVuDocument::enforce_cache_budget`](crate::djvu_document::DjVuDocument::enforce_cache_budget)
+    /// turns this number into a memory ceiling, so an estimate here becomes a
+    /// wrong ceiling for the caller. The BG44 coefficient images used to be
+    /// sized as `w·h·2`, which counts the luma plane and drops the two chroma
+    /// planes a colour page also keeps — the whole cache reported at ~38 % of
+    /// the truth, and a 16 MiB budget held ~52 MB (PERF_EXPERIMENTS.md
+    /// DECODE_CACHE_ACCOUNTING; guarded by `tests/decode_cache_accounting.rs`).
+    /// The text/annotation trees stay approximate — they are node counts, not
+    /// buffers, and are small next to the pixel caches.
+    ///
+    /// Reads caches without initialising them.
     pub(crate) fn cached_bytes(&self) -> usize {
         let px = |o: &std::sync::OnceLock<Option<Pixmap>>| {
             o.get().and_then(|x| x.as_ref()).map_or(0, |p| p.data.len())
@@ -1232,7 +1443,7 @@ impl PageLayers {
         let iw = |o: &std::sync::OnceLock<Option<Iw44Image>>| {
             o.get()
                 .and_then(|x| x.as_ref())
-                .map_or(0, |i| (i.width as usize) * (i.height as usize) * 2)
+                .map_or(0, |i| i.heap_bytes())
         };
         let mi = self
             .mask_indexed
@@ -1256,6 +1467,11 @@ impl PageLayers {
             + px(&self.bg_rgb_s1)
             + px(&self.bg_rgb_s2)
             + px(&self.bg_rgb_s4)
+            + self
+                .bg_rgb_subhi
+                .get()
+                .and_then(|x| x.as_ref())
+                .map_or(0, |(_, p)| p.data.len())
             + bm(&self.mask)
             + bm(&self.mask_sub4)
             + iw(&self.bg44)
@@ -1293,8 +1509,20 @@ impl PageLayers {
         self.fg44 = std::sync::OnceLock::new();
         self.mask_indexed = std::sync::OnceLock::new();
         self.bg_rgb_s1 = std::sync::OnceLock::new();
-        self.tile_cache = std::sync::Mutex::new(TileCacheState::default());
-        // bg_rgb_s2 / bg_rgb_s4 / access tick intentionally preserved.
+        // Tiles are dropped, but a per-page budget override (#691 slice 2)
+        // survives the downgrade — it is configuration, not cached data.
+        let budget = self
+            .tile_cache
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .budget;
+        self.tile_cache = std::sync::Mutex::new(TileCacheState {
+            budget,
+            ..TileCacheState::default()
+        });
+        // bg_rgb_s2 / bg_rgb_s4 / bg_rgb_subhi / access tick intentionally
+        // preserved — all three are the cheap downscaled tiers a later
+        // zoomed-out render reuses.
     }
 
     /// Bytes currently held by the composited-tile cache (see `tile_cache`).
@@ -1336,7 +1564,7 @@ impl PageLayers {
     }
 
     /// Insert a freshly composited tile, evicting the oldest tiles (FIFO)
-    /// until back under `TILE_CACHE_MAX_BYTES`.
+    /// until back under the page's effective tile-cache budget.
     fn insert_tile(&self, key: TileKey, entry: std::sync::Arc<TileEntry>) {
         let mut state = self
             .tile_cache
@@ -1348,20 +1576,100 @@ impl PageLayers {
         state.bytes += entry.data.len();
         state.map.insert(key, entry);
         state.order.push_back(key);
-        while state.bytes > TILE_CACHE_MAX_BYTES {
-            match state.order.pop_front() {
-                Some(old_key) => {
-                    if let Some(old) = state.map.remove(&old_key) {
-                        state.bytes = state.bytes.saturating_sub(old.data.len());
-                        #[cfg(test)]
-                        {
-                            state.evictions += 1;
-                        }
-                    }
-                }
-                None => break,
+        state.evict_to_budget();
+    }
+
+    /// The tile-cache budget this page currently enforces (#691 slice 2).
+    pub(crate) fn tile_cache_budget(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .effective_budget()
+    }
+
+    /// Number of composited tiles currently cached (#691 slice 2).
+    pub(crate) fn tile_cache_len(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .map
+            .len()
+    }
+
+    /// Override this page's tile-cache byte budget, evicting oldest-first
+    /// down to the new bound immediately (#691 slice 2). A budget of `0`
+    /// effectively disables composited-tile caching for the page.
+    pub(crate) fn set_tile_cache_budget(&self, max_bytes: usize) {
+        let mut state = self
+            .tile_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.budget = Some(max_bytes);
+        state.evict_to_budget();
+    }
+
+    /// Drop every cached composited tile, returning the bytes freed
+    /// (#691 slice 2). The budget override, if any, is kept.
+    pub(crate) fn clear_tile_cache(&self) -> usize {
+        let mut state = self
+            .tile_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let freed = state.bytes;
+        state.map.clear();
+        state.order.clear();
+        state.bytes = 0;
+        freed
+    }
+
+    /// Drop every cached composited tile that intersects `rect`, where `rect`
+    /// is given in the pre-rotation pixel space of a `canvas_w × canvas_h`
+    /// full render (#691 slice 2). Cached tiles belonging to *other* render
+    /// sizes are matched by scaling the rect proportionally (outward, so a
+    /// boundary-straddling tile is always dropped rather than kept). Returns
+    /// the bytes freed.
+    pub(crate) fn remove_tiles_intersecting(
+        &self,
+        rect: RenderRect,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> usize {
+        if canvas_w == 0 || canvas_h == 0 || rect.width == 0 || rect.height == 0 {
+            return 0;
+        }
+        let mut state = self
+            .tile_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut freed = 0usize;
+        let doomed: Vec<TileKey> = state
+            .map
+            .iter()
+            .filter(|((fw, fh, tx, ty, _, _), entry)| {
+                // Scale the rect into this entry's (fw × fh) render space,
+                // rounding outward (floor start, ceil end).
+                let x0 = u64::from(rect.x) * u64::from(*fw) / u64::from(canvas_w);
+                let x1 = ((u64::from(rect.x) + u64::from(rect.width)) * u64::from(*fw))
+                    .div_ceil(u64::from(canvas_w));
+                let y0 = u64::from(rect.y) * u64::from(*fh) / u64::from(canvas_h);
+                let y1 = ((u64::from(rect.y) + u64::from(rect.height)) * u64::from(*fh))
+                    .div_ceil(u64::from(canvas_h));
+                let (tx0, ty0) = (u64::from(*tx), u64::from(*ty));
+                let (tx1, ty1) = (tx0 + u64::from(entry.w), ty0 + u64::from(entry.h));
+                tx0 < x1 && tx1 > x0 && ty0 < y1 && ty1 > y0
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in doomed {
+            if let Some(old) = state.map.remove(&key) {
+                freed += old.data.len();
+            }
+            if let Some(pos) = state.order.iter().position(|k| *k == key) {
+                state.order.remove(pos);
             }
         }
+        state.bytes = state.bytes.saturating_sub(freed);
+        freed
     }
 
     /// Tile-cache telemetry snapshot `(hits, misses, evictions)` (#576).
@@ -1435,30 +1743,39 @@ impl PageLayers {
     /// high-frequency refinement chunks are imperceptible.
     pub(crate) fn bg44_partial(&self, page: &DjVuPage) -> Option<&Iw44Image> {
         self.bg44_partial
-            .get_or_init(|| {
-                let chunks = page.bg44_chunks();
-                if chunks.is_empty() {
-                    return None;
-                }
-                let mut img = Iw44Image::new();
-                if img.decode_chunk(chunks[0]).is_err() {
-                    return None;
-                }
-                if img.width == 0 {
-                    return None;
-                }
-                // Same dimension cross-check as `bg44` above.
-                if !iw44_reduction_is_legal(
-                    page.width() as u32,
-                    page.height() as u32,
-                    img.width,
-                    img.height,
-                ) {
-                    return None;
-                }
-                Some(img)
-            })
+            .get_or_init(|| decode_bg44_partial(page))
             .as_ref()
+    }
+
+    /// The first-chunk BG44 image **only if it is already cached** — never
+    /// decodes, never populates the slot.
+    ///
+    /// THUMB_PARTIAL_MEMO: the subsample > 4 render path uses this instead of
+    /// [`bg44_partial`](Self::bg44_partial). A "partial" `Iw44Image` decodes ~4x
+    /// faster than a full one but is exactly as large: `PlaneDecoder` allocates
+    /// every 32x32 coefficient block up front, whichever chunks are decoded
+    /// into them. Memoising it costs a full-size image per page (5.75 MB on
+    /// `colorbook.djvu`) and buys nothing at sub > 4, where the derived RGB is
+    /// not cached either — so a thumbnail sweep retained the whole book's
+    /// backgrounds and re-ran the conversion anyway. See PERF_EXPERIMENTS.md
+    /// THUMB_PARTIAL_MEMO.
+    pub(crate) fn bg44_partial_cached(&self) -> Option<&Iw44Image> {
+        self.bg44_partial.get().and_then(|x| x.as_ref())
+    }
+
+    /// The cached RGB conversion for `subsample`, when this page's single
+    /// `sub > 4` slot holds exactly that subsample. Never decodes.
+    pub(crate) fn bg_rgb_subhi(&self, subsample: u32) -> Option<&Pixmap> {
+        match self.bg_rgb_subhi.get()?.as_ref()? {
+            (s, px) if *s == subsample => Some(px),
+            _ => None,
+        }
+    }
+
+    /// Fill the `sub > 4` slot if it is still empty. No-op once set, so the
+    /// first subsample a page is rendered at wins.
+    pub(crate) fn store_bg_rgb_subhi(&self, subsample: u32, px: &Pixmap) {
+        let _ = self.bg_rgb_subhi.set(Some((subsample, px.clone())));
     }
 
     /// The decoded JB2 / G4 foreground mask, decoding on first call. `None`
@@ -1473,16 +1790,27 @@ impl PageLayers {
             .as_ref()
     }
 
-    /// A 1/4-resolution max-pool downsample of the mask, decoding the mask
-    /// first if needed. Each bit is 1 if any bit in the corresponding 4×4
-    /// block is set, letting the compositor do one lookup per output pixel at
-    /// subsample ≥ 4 instead of 4–9. Purely a compositor optimisation, which
-    /// is why it lives in the render tier rather than on the page.
+    /// A 1/4-resolution max-pool downsample of the mask. Each bit is 1 if any
+    /// bit in the corresponding 4×4 block is set, letting the compositor do
+    /// one lookup per output pixel at subsample ≥ 4 instead of 4–9. Purely a
+    /// compositor optimisation, which is why it lives in the render tier
+    /// rather than on the page.
+    ///
+    /// If the full-resolution mask is already cached (e.g. a prior
+    /// native-resolution render of this page), downsamples that instead of
+    /// decoding again. Otherwise decodes straight to 1/4 resolution via
+    /// [`DjVuPage::extract_mask_sub4`] — the thumbnail / heavy-downscale
+    /// path's common case — skipping the full-resolution JB2 canvas
+    /// allocation and the full-canvas downsample scan (round 89 follow-up:
+    /// `extract_mask` was 12.6 MB of the 47 MB thumbnail-sweep allocation
+    /// total, decoded only to be immediately downsampled and discarded).
     pub(crate) fn mask_sub4(&self, page: &DjVuPage) -> Option<&crate::bitmap::Bitmap> {
         self.mask_sub4
             .get_or_init(|| {
-                let src = self.mask(page)?;
-                Some(downsample_mask_4x(src))
+                if let Some(full) = self.mask.get().and_then(|o| o.as_ref()) {
+                    return Some(downsample_mask_4x(full));
+                }
+                page.extract_mask_sub4().ok().flatten()
             })
             .as_ref()
     }
@@ -1490,6 +1818,12 @@ impl PageLayers {
     /// Peek at an already-built 1/4-resolution mask without triggering any
     /// decode. `Some` only when a previous sub>=4 render populated the slot
     /// (possibly retained across [`downgrade`](Self::downgrade), #607).
+    ///
+    /// Test-only: `decode_layers` used to gate its #607 fast path on this
+    /// (only firing when already warm); it now calls `mask_sub4` directly so
+    /// a *cold* sub>=4 render benefits too (round 89 follow-up). Kept as a
+    /// non-triggering cache-warmth probe for the structural regression tests.
+    #[cfg(test)]
     pub(crate) fn mask_sub4_cached(&self) -> Option<&crate::bitmap::Bitmap> {
         self.mask_sub4.get().and_then(|o| o.as_ref())
     }
@@ -1624,7 +1958,7 @@ fn count_zones(zones: &[crate::text::TextZone]) -> usize {
 /// is set. Used by [`PageLayers::mask_sub4`] to build the 1/4-resolution mask
 /// the compositor uses for sub=4 renders instead of `mask_box_any`.
 #[cfg(feature = "std")]
-fn downsample_mask_4x(src: &crate::bitmap::Bitmap) -> crate::bitmap::Bitmap {
+pub(crate) fn downsample_mask_4x(src: &crate::bitmap::Bitmap) -> crate::bitmap::Bitmap {
     let out_w = src.width.div_ceil(4);
     let out_h = src.height.div_ceil(4);
     let mut out = crate::bitmap::Bitmap::new(out_w, out_h);
@@ -1742,13 +2076,44 @@ fn decode_background_chunks<'a>(
                     .ok_or(RenderError::Iw44(crate::Iw44Error::Invalid))?;
                 return Ok(page.decoded_bg_rgb_s4().map(Cow::Borrowed));
             }
+            // subsample > 4 (subsample == 4 returned above). THUMB_PARTIAL_MEMO:
+            // reuse an already-cached partial image, but do not *populate* the
+            // cache from here. A partial `Iw44Image` is exactly as large as a
+            // full one (see `PageLayers::bg44_partial_cached`) and this branch
+            // caches nothing it derives, so memoising it made a thumbnail sweep
+            // retain the whole book's backgrounds for no repeat saving.
+            #[cfg(feature = "std")]
+            if let Some(cached) = page.cached_bg_rgb_subhi(subsample) {
+                return Ok(Some(Cow::Borrowed(cached)));
+            }
+            // Decoded here and dropped with this call when the page has no
+            // cached partial image. `no_std` has no layer cache at all, so it
+            // keeps the plain accessor (which is a stub returning `None`).
+            #[cfg(feature = "std")]
+            let owned = if subsample >= 4 && page.cached_bg44_partial().is_none() {
+                decode_bg44_partial(page)
+            } else {
+                None
+            };
             let img = if subsample >= 4 {
-                page.decoded_bg44_partial()
+                #[cfg(feature = "std")]
+                {
+                    page.cached_bg44_partial().or(owned.as_ref())
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    page.decoded_bg44_partial()
+                }
             } else {
                 page.decoded_bg44()
             };
             let img = img.ok_or(RenderError::Iw44(crate::Iw44Error::Invalid))?;
-            return Ok(Some(Cow::Owned(img.to_rgb_subsample(subsample)?)));
+            let rgb = img.to_rgb_subsample(subsample)?;
+            #[cfg(feature = "std")]
+            if subsample > 4 {
+                page.store_bg_rgb_subhi(subsample, &rgb);
+            }
+            return Ok(Some(Cow::Owned(rgb)));
         }
         // No BG44 chunks — fall through to the JPEG fallback below.
     } else {
@@ -1795,9 +2160,28 @@ fn decode_background_chunks_permissive<'a>(
     let bg44_chunks = page.bg44_chunks();
     if !bg44_chunks.is_empty() {
         let mut img = Iw44Image::new();
-        for chunk_data in bg44_chunks.iter().take(max_chunks) {
+        let wanted = bg44_chunks.len().min(max_chunks);
+        // `decoded` is the number of chunks decoded before the first error,
+        // which is exactly the failing chunk's `enumerate` index.
+        for (decoded, chunk_data) in bg44_chunks.iter().take(max_chunks).enumerate() {
             if img.decode_chunk(chunk_data).is_err() {
-                break; // stop on first error, use what we have
+                // stop on first error, use what we have
+                record_recovery(RecoveredLayer::Background, {
+                    #[cfg(feature = "std")]
+                    {
+                        format!(
+                            "BG44 truncated at chunk {} of {wanted}; \
+                                 kept {decoded} decoded chunk(s)",
+                            decoded + 1
+                        )
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        let _ = (decoded, wanted);
+                        ""
+                    }
+                });
+                break;
             }
         }
         return img.to_rgb_subsample(subsample).ok().map(Cow::Owned);
@@ -1934,21 +2318,38 @@ fn decode_layers<'a>(
     bg_subsample: u32,
     bg_chunk_limit: usize,
 ) -> Result<DecodedLayers<'a>, RenderError> {
-    // #607: an eligible sub>=4 render with a warm retained 1/4-res mask skips
-    // the full JB2 decode entirely. Eligibility mirrors `resolve_sub4_mask`
-    // (no bold dilation, no FGbz palette — those need full-resolution mask
-    // semantics); the compositor then reads only the sub4 plane, so output is
-    // pixel-identical to the full-decode path by construction.
+    // #607 (round 89 follow-up): an eligible sub>=4 render skips the full JB2
+    // decode entirely, whether `mask_sub4` is already warm or still cold.
+    // Eligibility mirrors `resolve_sub4_mask` (no bold dilation, no FGbz
+    // palette — those need full-resolution mask semantics); the compositor
+    // then reads only the sub4 plane, so output is pixel-identical to the
+    // full-decode path by construction.
+    //
+    // `mask_sub4(page)` (rather than the passive `mask_sub4_cached()`) is what
+    // makes this fire on a *cold* first render too: when nothing is cached yet
+    // it decodes straight to 1/4 resolution via `extract_mask_sub4` instead of
+    // decoding the full-resolution canvas and downsampling it afterward — the
+    // 12.6 MB `extract_mask` allocation round 89 flagged in the thumbnail
+    // sweep. A warm full-resolution mask (from a prior sub=1 render of this
+    // page) is still reused by downsampling it in place, never re-decoded.
+    //
+    // Restricted to full-background decodes (`bg_chunk_limit == usize::MAX`):
+    // the progressive path composites with the mask returned *here* (it never
+    // consults `resolve_sub4_mask`), so handing it a maskless layer set made
+    // `render_progressive` frames silently drop the text layer whenever this
+    // cache happened to be warm — output depended on cache warmth (#691
+    // slice 3 regression test `render_progressive_ignores_mask_sub4_warmth`).
     #[cfg(feature = "std")]
-    if bg_subsample >= 4
+    if bg_chunk_limit == usize::MAX
+        && bg_subsample >= 4
         && opts.bold == 0
         && page.find_chunk(b"FGbz").is_none()
-        && page.render_layers().mask_sub4_cached().is_some()
+        && page.render_layers().mask_sub4(page).is_some()
     {
         let (bg, fg44) = if opts.permissive {
             (
                 decode_background_chunks_permissive(page, bg_chunk_limit, bg_subsample),
-                decode_fg44(page).ok().flatten(),
+                permissive_layer(decode_fg44(page), RecoveredLayer::Foreground),
             )
         } else {
             (
@@ -1973,9 +2374,12 @@ fn decode_layers<'a>(
 
     if opts.permissive {
         bg = decode_background_chunks_permissive(page, bg_chunk_limit, bg_subsample);
-        fg_palette = decode_fg_palette_full(page).ok().flatten();
+        fg_palette = permissive_layer(
+            decode_fg_palette_full(page),
+            RecoveredLayer::ForegroundPalette,
+        );
         let indexed = if fg_palette.is_some() {
-            decode_mask_indexed(page).ok().flatten()
+            permissive_layer(decode_mask_indexed(page), RecoveredLayer::Mask)
         } else {
             None
         };
@@ -1983,10 +2387,10 @@ fn decode_layers<'a>(
             mask = Some(bm);
             blit_map = Some(bm_map);
         } else {
-            mask = decode_mask(page).ok().flatten();
+            mask = permissive_layer(decode_mask(page), RecoveredLayer::Mask);
             blit_map = None;
         }
-        fg44 = decode_fg44(page).ok().flatten();
+        fg44 = permissive_layer(decode_fg44(page), RecoveredLayer::Foreground);
     } else {
         // #440: background (BG44 ZP + IDWT) and foreground (JB2 mask + FG44) decode
         // touch disjoint OnceLock fields, so on a cold render they can run on two
@@ -2231,6 +2635,39 @@ fn precompute_area_avg_x(
     xs
 }
 
+/// Per-output-column bg sampling data for the bilinear (upscale / 1:1) path:
+/// clamped source columns `x0`/`x1` and the horizontal fractional weight `tx`.
+/// Column mapping never depends on the row, so this is computed once per
+/// render instead of once per pixel — the AreaAvgX analog for upscaling.
+#[derive(Clone, Copy)]
+struct BilinearX {
+    x0: u32,
+    x1: u32,
+    tx: u32,
+}
+
+/// Build the per-column table for [`composite_rows_bilinear_one`]. Walks the
+/// exact Q48 fixed-point accumulator of the in-loop fallback (`bg_fx_q`), so
+/// table lookups and the fallback produce byte-identical coordinates.
+fn precompute_bilinear_x(ctx: &CompositeContext<'_>, fx_step: u32) -> Option<Vec<BilinearX>> {
+    let bg = ctx.bg?;
+    let clamp_w = bg.width.saturating_sub(1);
+    let bg_fx_step_q: u64 = fx_step as u64 * ctx.bg_x_q24;
+    let mut bg_fx_q: u64 = (ctx.offset_x as u64 * fx_step as u64 + FRAC as u64 / 2) * ctx.bg_x_q24;
+    let mut xs = Vec::with_capacity(ctx.out_w as usize);
+    for _ in 0..ctx.out_w {
+        let bg_fx = ((bg_fx_q >> 24) as u32).saturating_sub(FRAC / 2);
+        let x0 = (bg_fx >> FRACBITS).min(clamp_w);
+        xs.push(BilinearX {
+            x0,
+            x1: (x0 + 1).min(clamp_w),
+            tx: bg_fx & FRAC_MASK,
+        });
+        bg_fx_q = bg_fx_q.wrapping_add(bg_fx_step_q);
+    }
+    Some(xs)
+}
+
 impl<'a> CompositeContext<'a> {
     /// Build a composite context from already-decoded layers.
     ///
@@ -2413,6 +2850,9 @@ fn composite_into(ctx: &CompositeContext<'_>, buf: &mut [u8]) -> Result<(), Rend
     let bg_fx_step = ((fx_step as u64 * ctx.bg_x_q24) >> 24) as u32;
     let bg_fy_step = ((fy_step as u64 * ctx.bg_y_q24) >> 24) as u32;
     let area_avg_x = downscale.then(|| precompute_area_avg_x(ctx, fx_step, bg_fx_step));
+    let bilinear_x = (!downscale)
+        .then(|| precompute_bilinear_x(ctx, fx_step))
+        .flatten();
 
     #[cfg(feature = "parallel")]
     {
@@ -2421,7 +2861,7 @@ fn composite_into(ctx: &CompositeContext<'_>, buf: &mut [u8]) -> Result<(), Rend
         buf[..n]
             .par_chunks_exact_mut(row_stride)
             .enumerate()
-            .for_each(|(oy, row)| {
+            .for_each_init(Vec::new, |vblend, (oy, row)| {
                 if downscale {
                     composite_rows_area_avg_one(
                         ctx,
@@ -2434,28 +2874,47 @@ fn composite_into(ctx: &CompositeContext<'_>, buf: &mut [u8]) -> Result<(), Rend
                         area_avg_x.as_deref(),
                     );
                 } else {
-                    composite_rows_bilinear_one(ctx, oy as u32, fx_step, fy_step, row);
+                    composite_rows_bilinear_one(
+                        ctx,
+                        oy as u32,
+                        fx_step,
+                        fy_step,
+                        row,
+                        bilinear_x.as_deref(),
+                        vblend,
+                    );
                 }
             });
     }
     #[cfg(not(feature = "parallel"))]
-    for (oy, row) in buf[..ctx.out_h as usize * row_stride]
-        .chunks_exact_mut(row_stride)
-        .enumerate()
     {
-        if downscale {
-            composite_rows_area_avg_one(
-                ctx,
-                oy as u32,
-                fx_step,
-                fy_step,
-                bg_fx_step,
-                bg_fy_step,
-                row,
-                area_avg_x.as_deref(),
-            );
-        } else {
-            composite_rows_bilinear_one(ctx, oy as u32, fx_step, fy_step, row);
+        let mut vblend = Vec::new();
+        for (oy, row) in buf[..ctx.out_h as usize * row_stride]
+            .chunks_exact_mut(row_stride)
+            .enumerate()
+        {
+            if downscale {
+                composite_rows_area_avg_one(
+                    ctx,
+                    oy as u32,
+                    fx_step,
+                    fy_step,
+                    bg_fx_step,
+                    bg_fy_step,
+                    row,
+                    area_avg_x.as_deref(),
+                );
+            } else {
+                composite_rows_bilinear_one(
+                    ctx,
+                    oy as u32,
+                    fx_step,
+                    fy_step,
+                    row,
+                    bilinear_x.as_deref(),
+                    &mut vblend,
+                );
+            }
         }
     }
 
@@ -2505,6 +2964,10 @@ where
     let bg_fx_step = ((fx_step as u64 * ctx.bg_x_q24) >> 24) as u32;
     let bg_fy_step = ((fy_step as u64 * ctx.bg_y_q24) >> 24) as u32;
     let area_avg_x = downscale.then(|| precompute_area_avg_x(ctx, fx_step, bg_fx_step));
+    let bilinear_x = (!downscale)
+        .then(|| precompute_bilinear_x(ctx, fx_step))
+        .flatten();
+    let mut vblend = Vec::new();
 
     for oy in 0..ctx.out_h {
         if downscale {
@@ -2519,7 +2982,15 @@ where
                 area_avg_x.as_deref(),
             );
         } else {
-            composite_rows_bilinear_one(ctx, oy, fx_step, fy_step, &mut row_buf);
+            composite_rows_bilinear_one(
+                ctx,
+                oy,
+                fx_step,
+                fy_step,
+                &mut row_buf,
+                bilinear_x.as_deref(),
+                &mut vblend,
+            );
         }
         sink(oy as usize, &row_buf);
     }
@@ -2539,7 +3010,7 @@ fn composite_rows_bilevel_one(
     let mask = match ctx.mask {
         Some(m) => m,
         None => {
-            for chunk in row_buf.chunks_exact_mut(4) {
+            for chunk in row_buf.as_chunks_mut::<4>().0 {
                 chunk[0] = 255;
                 chunk[1] = 255;
                 chunk[2] = 255;
@@ -2552,8 +3023,30 @@ fn composite_rows_bilevel_one(
     // 1:1 scale fast path.
     if fx_step == FRAC && fy_step == FRAC {
         let stride = mask.row_stride();
-        let py = (oy + ctx.offset_y).min(ctx.page_h.saturating_sub(1)) as usize;
-        let mask_row = &mask.data[py * stride..(py + 1) * stride];
+        // Same shape as the column clamp below: `mask.data` holds `mask.height`
+        // rows, not `page_h` rows. An INFO chunk that declares a page taller
+        // than the bilevel mask it ships walked `py` past the end of the data
+        // and panicked on the range. Clamp to the mask's own height too, and
+        // take the row through `get`, so a short or empty mask renders white
+        // instead of unwinding.
+        //
+        // Both bounds checks for this row are here, once, rather than per
+        // pixel: `mask_row` is exactly `stride` bytes and `stride` is
+        // `ceil(mask.width / 8)`, so once a column is clamped to
+        // `mask.width - 1` its byte index cannot leave the row. That is what
+        // lets the fallback loop below keep indexing directly. A zero-width
+        // mask has no byte to read at all, so it leaves with the empty row.
+        let py = (oy + ctx.offset_y)
+            .min(ctx.page_h.saturating_sub(1))
+            .min(mask.height.saturating_sub(1)) as usize;
+        let Some(mask_row) = mask.data.get(py * stride..(py + 1) * stride) else {
+            row_buf.fill(255);
+            return;
+        };
+        if mask_row.is_empty() {
+            row_buf.fill(255);
+            return;
+        }
 
         // I3: whole-row white fast path. If the mask row has no foreground bits (page
         // margins, blank inter-line gaps — typically 25-35% of rows in text scans),
@@ -2594,16 +3087,23 @@ fn composite_rows_bilevel_one(
 
         // Fallback: branchless per-pixel expansion with .min() clamp for partial/offset views.
         //
-        // SageThumbs 2K patch: `px` used to clamp only to `page_w - 1`, but `mask_row` is
-        // `mask.width` pixels wide (row_stride() bytes), not `page_w` wide. A mutated INFO
-        // chunk that declares a page width larger than the bilevel mask it ships used to walk
-        // `px` straight past the end of `mask_row` here (the fast path above already guards
-        // this with `ox0 + out_w <= mask.width`; this loop did not). Clamp to the mask's own
-        // width too, so `px >> 3` can never reach past `mask_row`'s end.
-        for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
-            let px = (ox as u32 + ctx.offset_x)
-                .min(ctx.page_w.saturating_sub(1))
-                .min(mask.width.saturating_sub(1)) as usize;
+        // `mask_row` is `mask.width` pixels wide, not `page_w` wide: an INFO chunk that
+        // declares a page wider than the bilevel mask it ships (a fuzzed or malformed file)
+        // used to walk `px` past the end of `mask_row` here and panic on the index. The
+        // fast path above already guards this (`ox0 + out_w <= mask.width`); clamp to the
+        // mask's own width too.
+        //
+        // The clamp is the bounds check, and it is the only one this loop needs:
+        // `last_col <= mask.width - 1` and `mask_row` is `ceil(mask.width / 8)`
+        // bytes, so `px >> 3` is always a byte of this row. Reading it through
+        // `get(..).map_or(..)` instead cost 5.7 % on `render_region_bilevel` —
+        // the per-pixel branch is what the word "branchless" above is about.
+        let last_col = ctx
+            .page_w
+            .saturating_sub(1)
+            .min(mask.width.saturating_sub(1));
+        for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let px = (ox as u32 + ctx.offset_x).min(last_col) as usize;
             let is_fg = ((mask_row[px >> 3] >> (7 - (px & 7))) & 1) as u32;
             let ch = (is_fg.wrapping_sub(1) & 0xFF) as u8; // 0 when fg, 255 when bg
             pixel[0] = ch;
@@ -2636,7 +3136,7 @@ fn composite_rows_bilevel_one(
         }
     }
 
-    for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+    for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let fx = (ox as u32 + ctx.offset_x) * fx_step;
         let px = (fx >> FRACBITS).min(ctx.page_w.saturating_sub(1));
 
@@ -2678,6 +3178,11 @@ fn composite_rows_bilevel_one(
 }
 
 /// Write one bilinear row into `row_buf` (upscale / 1:1).
+///
+/// `bx` is the optional per-column table from [`precompute_bilinear_x`]
+/// (`None` falls back to the in-loop fixed-point walk — byte-identical).
+/// `vblend` is caller-owned scratch for the vertically pre-blended bg row;
+/// reusing it across rows avoids a per-row allocation.
 #[inline]
 fn composite_rows_bilinear_one(
     ctx: &CompositeContext<'_>,
@@ -2685,6 +3190,8 @@ fn composite_rows_bilinear_one(
     fx_step: u32,
     fy_step: u32,
     row_buf: &mut [u8],
+    bx: Option<&[BilinearX]>,
+    vblend: &mut Vec<u16>,
 ) {
     let (page_w, page_h) = (ctx.page_w, ctx.page_h);
     let fy = (oy + ctx.offset_y) * fy_step;
@@ -2770,7 +3277,7 @@ fn composite_rows_bilinear_one(
                     if bg.width as usize >= out_w {
                         row_buf[..out_w * 4].copy_from_slice(&bg_row[..out_w * 4]);
                     } else {
-                        for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+                        for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                             let px = ox.min((bg.width as usize).saturating_sub(1));
                             let off = px * 4;
                             if let Some(q) = bg_row.get(off..off + 4) {
@@ -2786,7 +3293,7 @@ fn composite_rows_bilinear_one(
                         }
                     }
                 } else {
-                    for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+                    for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         let px = ox.min((bg.width as usize).saturating_sub(1));
                         let off = px * 4;
                         if let Some(q) = bg_row.get(off..off + 4) {
@@ -2871,7 +3378,12 @@ fn composite_rows_bilinear_one(
                 if let Some((bg_row, bg_w)) = bg_row_1x1 {
                     if offset_x + out_w <= bg_w as usize {
                         let src = &bg_row[offset_x * 4..(offset_x + out_w) * 4];
-                        for (chunk, s) in row_buf.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                        for (chunk, s) in row_buf
+                            .as_chunks_mut::<4>()
+                            .0
+                            .iter_mut()
+                            .zip(src.as_chunks::<4>().0)
+                        {
                             chunk[0] = lut[s[0] as usize];
                             chunk[1] = lut[s[1] as usize];
                             chunk[2] = lut[s[2] as usize];
@@ -2882,7 +3394,7 @@ fn composite_rows_bilinear_one(
                     // Edge case (out_w clamped beyond bg_w): fall through.
                 } else {
                     let white = lut[255];
-                    for chunk in row_buf.chunks_exact_mut(4) {
+                    for chunk in row_buf.as_chunks_mut::<4>().0 {
                         chunk[0] = white;
                         chunk[1] = white;
                         chunk[2] = white;
@@ -2917,7 +3429,7 @@ fn composite_rows_bilinear_one(
             &g1_buf[..0] // no mask: all pixels are background
         };
 
-        for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+        for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let fx = (ox as u32 + ctx.offset_x) * fx_step;
             let px = (fx >> FRACBITS).min(page_w.saturating_sub(1));
 
@@ -2999,18 +3511,82 @@ fn composite_rows_bilinear_one(
         }
     };
 
-    // B2: precompute bg row slices (y0/y1 are row-invariant) to avoid repeated
-    // y-coordinate arithmetic inside sample_bilinear.
-    let bg_rows = ctx.bg.map(|bg| {
-        let bg_fy = bg_fy_hoist.unwrap_or(0);
-        let y0 = (bg_fy >> FRACBITS).min(bg.height.saturating_sub(1)) as usize;
-        let y1 = (y0 + 1).min(bg.height.saturating_sub(1) as usize);
-        let ty = bg_fy & FRAC_MASK;
-        let stride = bg.width as usize * 4;
-        let row0 = bg.data.get(y0 * stride..).unwrap_or(&[]);
-        let row1 = bg.data.get(y1 * stride..).unwrap_or(&[]);
-        (row0, row1, bg.width, ty)
-    });
+    // B2/B3: precompute bg row slices (y0/y1 are row-invariant), then run the
+    // vertical half of the separable bilinear blend once per bg column: with
+    // oy fixed, ty and both source rows never change across the row, so
+    // v = p0*ity + p1*ty (<= 255*FRAC, exact in u16) is shared by every output
+    // pixel sampling that column. The horizontal half later computes
+    // (v0*itx + v1*tx + 128) >> 8, which expands to the original 4-term dot
+    // product of `bilinear_from_rows` — byte-identical by algebra.
+    //
+    // The pre-blend only covers the bg columns this row actually samples
+    // ([col_start, col_end], from the monotonic accumulator's endpoints) —
+    // a region render must not pay for the full bg width (#region bench).
+    let vb: Option<(&[[u16; 4]], u32, u32)> = match ctx.bg {
+        None => None,
+        Some(bg) => {
+            let bg_fy = bg_fy_hoist.unwrap_or(0);
+            let clamp_h = bg.height.saturating_sub(1) as usize;
+            let y0 = ((bg_fy >> FRACBITS) as usize).min(clamp_h);
+            let y1 = (y0 + 1).min(clamp_h);
+            let ty = bg_fy & FRAC_MASK;
+            let ity = FRAC - ty;
+            let stride = bg.width as usize * 4;
+            let row0 = bg.data.get(y0 * stride..).unwrap_or(&[]);
+            let row1 = bg.data.get(y1 * stride..).unwrap_or(&[]);
+            let clamp_w = bg.width.saturating_sub(1);
+            let fx_at = |q: u64| ((q >> 24) as u32).saturating_sub(FRAC / 2);
+            let col_start = (fx_at(bg_fx_q) >> FRACBITS).min(clamp_w);
+            let last_q =
+                bg_fx_q.wrapping_add(bg_fx_step_q.wrapping_mul(ctx.out_w.saturating_sub(1) as u64));
+            let col_end = ((fx_at(last_q) >> FRACBITS).min(clamp_w) + 1).min(clamp_w);
+            let ncols = (col_end - col_start + 1) as usize;
+            vblend.clear();
+            vblend.resize(ncols * 4, 0);
+            for (i, v) in vblend.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                // Truncated rows (partial/streaming decode) contribute zeros,
+                // exactly like bilinear_from_rows' out-of-range corners.
+                let off = (col_start as usize + i) * 4;
+                let p0 = row0.get(off..off + 4);
+                let p1 = row1.get(off..off + 4);
+                for ch in 0..4 {
+                    let a = p0.map_or(0, |q| q[ch] as u32);
+                    let b = p1.map_or(0, |q| q[ch] as u32);
+                    v[ch] = (a * ity + b * ty) as u16;
+                }
+            }
+            Some((vblend.as_chunks::<4>().0, bg.width, col_start))
+        }
+    };
+
+    // Horizontal half of the separable blend. The column entry comes from the
+    // precomputed table when available, else from the Q48 accumulator — the
+    // same walk `precompute_bilinear_x` replicates. `col_start` shifts full-bg
+    // column indices into the windowed `vb_row`.
+    let hblend =
+        |vb_row: &[[u16; 4]], bg_w: u32, col_start: u32, e: Option<BilinearX>, bg_fx_q: u64| {
+            let e = e.unwrap_or_else(|| {
+                let bg_fx = ((bg_fx_q >> 24) as u32).saturating_sub(FRAC / 2);
+                let clamp_w = bg_w.saturating_sub(1);
+                let x0 = (bg_fx >> FRACBITS).min(clamp_w);
+                BilinearX {
+                    x0,
+                    x1: (x0 + 1).min(clamp_w),
+                    tx: bg_fx & FRAC_MASK,
+                }
+            });
+            let v0 = vb_row
+                .get(e.x0.saturating_sub(col_start) as usize)
+                .copied()
+                .unwrap_or([0; 4]);
+            let v1 = vb_row
+                .get(e.x1.saturating_sub(col_start) as usize)
+                .copied()
+                .unwrap_or([0; 4]);
+            let itx = FRAC - e.tx;
+            let f = |i: usize| ((v0[i] as u32 * itx + v1[i] as u32 * e.tx + 128) >> 8) as u8;
+            (f(0), f(1), f(2))
+        };
 
     // D_AA_ZOOM (opt-in): this function is only invoked when `!downscale`
     // (composite_into/composite_rows dispatch downscale to the area-average
@@ -3023,7 +3599,7 @@ fn composite_rows_bilinear_one(
     let mask_upscale =
         ctx.opts.mask_aa && ctx.mask_shift == 0 && (fx_step < FRAC || fy_step < FRAC);
 
-    for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+    for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let fx = (ox as u32 + ctx.offset_x) * fx_step;
         let px = (fx >> FRACBITS).min(page_w.saturating_sub(1));
 
@@ -3053,9 +3629,14 @@ fn composite_rows_bilinear_one(
         };
 
         let (r, g, b) = if coverage == 0 {
-            if let Some((row0, row1, bg_w, ty)) = bg_rows {
-                let bg_fx = ((bg_fx_q >> 24) as u32).saturating_sub(FRAC / 2);
-                bilinear_from_rows(row0, row1, bg_w, bg_fx, ty)
+            if let Some((vb_row, bg_w, col_start)) = vb {
+                hblend(
+                    vb_row,
+                    bg_w,
+                    col_start,
+                    bx.and_then(|t| t.get(ox).copied()),
+                    bg_fx_q,
+                )
             } else {
                 (255, 255, 255)
             }
@@ -3075,9 +3656,14 @@ fn composite_rows_bilinear_one(
             } else {
                 // Partial coverage (mask_aa only): blend fg/bg proportionally
                 // to the interpolated mask coverage for a smoothed glyph edge.
-                let (br, bg_g, bb) = if let Some((row0, row1, bg_w, ty)) = bg_rows {
-                    let bg_fx = ((bg_fx_q >> 24) as u32).saturating_sub(FRAC / 2);
-                    bilinear_from_rows(row0, row1, bg_w, bg_fx, ty)
+                let (br, bg_g, bb) = if let Some((vb_row, bg_w, col_start)) = vb {
+                    hblend(
+                        vb_row,
+                        bg_w,
+                        col_start,
+                        bx.and_then(|t| t.get(ox).copied()),
+                        bg_fx_q,
+                    )
                 } else {
                     (255, 255, 255)
                 };
@@ -3135,7 +3721,7 @@ fn composite_rows_area_avg_one(
             y1 <= y0 || !m.data[y0 * stride..y1 * stride].iter().any(|&b| b != 0)
         });
 
-    for (ox, pixel) in row_buf.chunks_exact_mut(4).enumerate() {
+    for (ox, pixel) in row_buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let fallback;
         let ax = if let Some(ax) = area_avg_x.and_then(|xs| xs.get(ox)) {
             *ax
@@ -3247,6 +3833,7 @@ fn composite_rows_area_avg_one(
 pub(crate) fn render_rows<F>(
     page: &DjVuPage,
     opts: &RenderOptions,
+    limits: Option<crate::resource_limits::ResourceLimits>,
     sink: F,
 ) -> Result<(), RenderError>
 where
@@ -3255,12 +3842,7 @@ where
     let w = opts.width;
     let h = opts.height;
 
-    if w == 0 || h == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
+    check_output_pixels("render_rows", page, limits, w, h)?;
 
     let gamma_lut = build_gamma_lut(page.gamma());
 
@@ -3315,15 +3897,20 @@ pub fn render_into(
     opts: &RenderOptions,
     buf: &mut [u8],
 ) -> Result<(), RenderError> {
+    render_into_with_limits(page, opts, None, buf)
+}
+
+/// Like [`render_into`], with an optional caller-supplied resource limit override.
+pub fn render_into_with_limits(
+    page: &DjVuPage,
+    opts: &RenderOptions,
+    limits: Option<crate::resource_limits::ResourceLimits>,
+    buf: &mut [u8],
+) -> Result<(), RenderError> {
     let w = opts.width;
     let h = opts.height;
 
-    if w == 0 || h == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
+    check_output_pixels("render_into", page, limits, w, h)?;
 
     let need = (w as usize)
         .checked_mul(h as usize)
@@ -3442,28 +4029,57 @@ where
 /// Strict renders composite directly into the full pixmap. Permissive renders
 /// reuse the row path so decode-error recovery remains shared with
 /// [`render_streaming`].
+/// Render a page and return the pixmap together with a [`RenderReport`] of any
+/// layers a permissive render skipped or recovered (#696).
+///
+/// The pixmap is byte-identical to [`render_pixmap`]. In strict mode the report
+/// is always clean (decode errors propagate instead of being recovered); in
+/// permissive mode it lists each background truncation, dropped mask, or
+/// skipped foreground/palette in the order the renderer took them.
+#[cfg(feature = "std")]
+pub fn render_pixmap_with_report(
+    page: &DjVuPage,
+    opts: &RenderOptions,
+) -> Result<(Pixmap, RenderReport), RenderError> {
+    // Install a per-thread recovery sink; the guard clears it on every exit
+    // path (including panics) so a normal `render_pixmap` never records.
+    struct SinkGuard;
+    impl Drop for SinkGuard {
+        fn drop(&mut self) {
+            RECOVERY_SINK.with(|sink| *sink.borrow_mut() = None);
+        }
+    }
+    RECOVERY_SINK.with(|sink| *sink.borrow_mut() = Some(Vec::new()));
+    let _guard = SinkGuard;
+
+    let pixmap = render_pixmap(page, opts)?;
+    let recoveries = RECOVERY_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default());
+    Ok((pixmap, RenderReport { recoveries }))
+}
+
 pub fn render_pixmap(page: &DjVuPage, opts: &RenderOptions) -> Result<Pixmap, RenderError> {
+    render_pixmap_with_limits(page, opts, None)
+}
+
+/// Render a page to an owned RGBA pixmap with an optional resource limit override.
+///
+/// When `limits` is `None`, limits inherited from the parent document at parse
+/// time apply (see [`ParseOptions::limits`](crate::resource_limits::ParseOptions::limits)).
+/// Per-render overrides use [`render_pixmap_with_limits`] /
+/// [`render_into_with_limits`].
+pub fn render_pixmap_with_limits(
+    page: &DjVuPage,
+    opts: &RenderOptions,
+    limits: Option<crate::resource_limits::ResourceLimits>,
+) -> Result<Pixmap, RenderError> {
     let w = opts.width;
     let h = opts.height;
-
-    if w == 0 || h == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
 
     // Bound the output allocation. `w`/`h` flow from the (untrusted) INFO chunk on
     // a default render; w*h*4 of 65535² is ~17 GB, which either OOMs (64-bit) or
     // wraps `Pixmap::new` to an empty buffer that the permissive copy below then
     // indexes out of bounds. Reject up front.
-    const MAX_RENDER_PIXELS: usize = 512 * 1024 * 1024;
-    if (w as usize).saturating_mul(h as usize) > MAX_RENDER_PIXELS {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
+    check_output_pixels("render_pixmap", page, limits, w, h)?;
 
     let mut pm = Pixmap::white(w, h);
 
@@ -3471,14 +4087,14 @@ pub fn render_pixmap(page: &DjVuPage, opts: &RenderOptions) -> Result<Pixmap, Re
         let row_stride = w as usize * 4;
         // Permissive rendering has its own decode-error recovery path in
         // render_rows; keep that behaviour and copy each recovered row.
-        render_rows(page, opts, |y, row| {
+        render_rows(page, opts, limits, |y, row| {
             let start = y * row_stride;
             pm.data[start..start + row_stride].copy_from_slice(row);
         })?;
     } else {
         // Strict renders can composite directly into the output Pixmap,
         // avoiding the scratch row + row copy used by the streaming adapter.
-        render_into(page, opts, &mut pm.data)?;
+        render_into_with_limits(page, opts, limits, &mut pm.data)?;
     }
 
     if opts.aa {
@@ -3488,7 +4104,7 @@ pub fn render_pixmap(page: &DjVuPage, opts: &RenderOptions) -> Result<Pixmap, Re
     // Apply the shared Lanczos-3 post-pass (re-render at native size, then
     // downscale) when requested and scaling actually happened.
     let pm = apply_lanczos_postpass(pm, page, opts, (w, h), (w, h), |native_opts| {
-        render_pixmap(page, native_opts)
+        render_pixmap_with_limits(page, native_opts, limits)
     });
 
     Ok(rotate_pixmap(
@@ -3570,7 +4186,7 @@ where
             "rotation requires a full pixmap; use render_pixmap",
         ));
     }
-    render_rows(page, opts, sink)
+    render_rows(page, opts, None, sink)
 }
 
 /// Render a sub-rectangle of a page into a new [`Pixmap`].
@@ -3593,12 +4209,7 @@ pub fn render_region(
     region: RenderRect,
     opts: &RenderOptions,
 ) -> Result<Pixmap, RenderError> {
-    if region.width == 0 || region.height == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: region.width,
-            height: region.height,
-        });
-    }
+    check_output_pixels("render_region", page, None, region.width, region.height)?;
 
     let full_w = opts.width.max(1);
     let full_h = opts.height.max(1);
@@ -3622,12 +4233,22 @@ pub fn render_region(
         height: full_h,
         ..*opts
     };
+    // Same 1/4-res mask fast-path decision as `render_into`/`render_rows`, so
+    // a region render stays byte-identical to the matching crop of the full
+    // render at every subsample tier (#691).
+    let (ctx_mask, mask_shift) = resolve_sub4_mask(
+        page,
+        bg_subsample,
+        opts,
+        mask.as_deref(),
+        fg_palette.as_ref(),
+    );
     let ctx = CompositeContext::from_layers(
         page,
         &region_opts,
         bg.as_deref(),
-        mask.as_deref(),
-        0,
+        ctx_mask,
+        mask_shift,
         fg_palette.as_ref(),
         blit_map.as_deref(),
         fg44.as_deref(),
@@ -3652,6 +4273,115 @@ pub fn render_region(
         pm,
         combine_rotations(page.rotation(), opts.rotation),
     ))
+}
+
+/// `true` when a cooperative cancel flag is present and set.
+///
+/// `Relaxed` is enough: the flag carries no data, it only asks in-flight work
+/// to stop at its next checkpoint.
+#[inline]
+pub(crate) fn is_cancelled(cancel: Option<&core::sync::atomic::AtomicBool>) -> bool {
+    cancel.is_some_and(|flag| flag.load(core::sync::atomic::Ordering::Relaxed))
+}
+
+/// Region variant of [`render_progressive`] (#691 slice 3): composite the
+/// `region` sub-rectangle of progressive frame `chunk_n` (BG44 chunks
+/// `0..=chunk_n`, full foreground).
+///
+/// **Byte-identical** to the matching crop of
+/// `render_progressive(page, opts, chunk_n)` for every input: the layer
+/// decode is the same `decode_layers(.., chunk_n + 1)` call, the composite
+/// uses the same full-resolution mask (shift 0 — `render_progressive` never
+/// takes the 1/4-res mask fast path), and `composite_into` computes each
+/// pixel from its absolute position in the full render, so a sub-rectangle
+/// reproduces the frame's bytes exactly (see
+/// `progressive_tiles_match_progressive_frames` in `djvu_tile`).
+///
+/// `cancel` is a cooperative stop flag checked on entry and between the
+/// layer decode and the composite; `Ok(None)` means the render was abandoned
+/// at a checkpoint. Partial-quality frames are decoded from scratch on every
+/// call (the `PageLayers` caches only memoize the full-chunk decode), and
+/// their pixels are never inserted into the composited-tile cache.
+///
+/// # Errors
+///
+/// Same as [`render_progressive`], plus [`RenderError::UnsupportedOption`]
+/// for Lanczos-3 resampling (its whole-pixmap re-render recursion is
+/// incompatible with region output; the tile API rejects it earlier anyway).
+pub(crate) fn render_region_progressive(
+    page: &DjVuPage,
+    region: RenderRect,
+    opts: &RenderOptions,
+    chunk_n: usize,
+    cancel: Option<&core::sync::atomic::AtomicBool>,
+) -> Result<Option<Pixmap>, RenderError> {
+    check_output_pixels(
+        "render_region_progressive",
+        page,
+        None,
+        region.width,
+        region.height,
+    )?;
+    if opts.resampling == Resampling::Lanczos3 {
+        return Err(RenderError::UnsupportedOption(
+            "Lanczos-3 resampling is not supported for progressive region renders",
+        ));
+    }
+    let n_bg44 = page.bg44_chunks().len();
+    let max_chunk = n_bg44.saturating_sub(1);
+    if n_bg44 > 0 && chunk_n > max_chunk {
+        return Err(RenderError::ChunkOutOfRange {
+            chunk_n,
+            max: max_chunk,
+        });
+    }
+    if is_cancelled(cancel) {
+        return Ok(None);
+    }
+
+    let full_w = opts.width.max(1);
+    let full_h = opts.height.max(1);
+    let gamma_lut = build_gamma_lut(page.gamma());
+    let bg_subsample = best_iw44_subsample(opts.decode_scale(page));
+    let DecodedLayers {
+        bg,
+        fg_palette,
+        mask,
+        blit_map,
+        fg44,
+    } = decode_layers(page, opts, bg_subsample, chunk_n + 1)?;
+
+    if is_cancelled(cancel) {
+        return Ok(None);
+    }
+
+    let out_w = region.width;
+    let out_h = region.height;
+    let mut pm = Pixmap::white(out_w, out_h);
+    let region_opts = RenderOptions {
+        width: full_w,
+        height: full_h,
+        ..*opts
+    };
+    let ctx = CompositeContext::from_layers(
+        page,
+        &region_opts,
+        bg.as_deref(),
+        mask.as_deref(),
+        0,
+        fg_palette.as_ref(),
+        blit_map.as_deref(),
+        fg44.as_deref(),
+        &gamma_lut,
+        (region.x, region.y),
+        (out_w, out_h),
+    );
+    composite_into(&ctx, &mut pm.data)?;
+
+    Ok(Some(rotate_pixmap(
+        pm,
+        combine_rotations(page.rotation(), opts.rotation),
+    )))
 }
 
 /// Render a sub-rectangle of a page, assembling the output from a per-page
@@ -3708,12 +4438,32 @@ pub fn render_region_tiled(
     region: RenderRect,
     opts: &RenderOptions,
 ) -> Result<Pixmap, RenderError> {
-    if region.width == 0 || region.height == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: region.width,
-            height: region.height,
-        });
-    }
+    let pm = render_region_tiled_cancellable(page, region, opts, None)?;
+    // Without a cancel flag the render can never be abandoned.
+    Ok(pm.expect("uncancellable render completed"))
+}
+
+/// [`render_region_tiled`] with a cooperative cancel flag (#691 slice 3).
+///
+/// The flag is checked on entry and again before each internal
+/// [`TILE_SIZE`]-tile is fetched or composited; `Ok(None)` means the render
+/// was abandoned at a checkpoint. Cancellation never corrupts the tile
+/// cache: a tile is inserted only after its composite completed, so an
+/// abandoned call leaves either fully-composited tiles or nothing.
+#[cfg(feature = "std")]
+pub(crate) fn render_region_tiled_cancellable(
+    page: &DjVuPage,
+    region: RenderRect,
+    opts: &RenderOptions,
+    cancel: Option<&core::sync::atomic::AtomicBool>,
+) -> Result<Option<Pixmap>, RenderError> {
+    check_output_pixels(
+        "render_region_tiled",
+        page,
+        None,
+        region.width,
+        region.height,
+    )?;
 
     let full_w = opts.width.max(1);
     let full_h = opts.height.max(1);
@@ -3722,8 +4472,11 @@ pub fn render_region_tiled(
         && !opts.permissive
         && combine_rotations(page.rotation(), opts.rotation) == crate::info::Rotation::None;
 
+    if is_cancelled(cancel) {
+        return Ok(None);
+    }
     if !eligible {
-        return render_region(page, region, opts);
+        return render_region(page, region, opts).map(Some);
     }
 
     let gamma_lut = build_gamma_lut(page.gamma());
@@ -3741,14 +4494,24 @@ pub fn render_region_tiled(
         height: full_h,
         ..*opts
     };
+    // Same 1/4-res mask fast-path decision as `render_into`/`render_rows`
+    // (see render_region); the choice is a pure function of the tile-key
+    // fields plus per-page constants, so cached tiles stay coherent.
+    let (ctx_mask, mask_shift) = resolve_sub4_mask(
+        page,
+        bg_subsample,
+        opts,
+        mask.as_deref(),
+        fg_palette.as_ref(),
+    );
     // Template context for the whole full_w×full_h render; each tile below
     // copies it (cheap: `Copy`) and only overwrites offset/out fields.
     let ctx_template = CompositeContext::from_layers(
         page,
         &region_opts,
         bg.as_deref(),
-        mask.as_deref(),
-        0,
+        ctx_mask,
+        mask_shift,
         fg_palette.as_ref(),
         blit_map.as_deref(),
         fg44.as_deref(),
@@ -3768,7 +4531,7 @@ pub fn render_region_tiled(
         // Region lies entirely outside the full render — nothing to copy;
         // return the white-filled pixmap (matches render_region's behaviour,
         // whose compositor loop would likewise touch no valid pixels).
-        return Ok(pm);
+        return Ok(Some(pm));
     }
     let tx0 = region.x / TILE_SIZE;
     let ty0 = region.y / TILE_SIZE;
@@ -3780,6 +4543,9 @@ pub fn render_region_tiled(
         let tile_y0 = ty * TILE_SIZE;
         let tile_h = TILE_SIZE.min(full_h - tile_y0);
         for tx in tx0..=tx1 {
+            if is_cancelled(cancel) {
+                return Ok(None);
+            }
             let tile_x0 = tx * TILE_SIZE;
             let tile_w = TILE_SIZE.min(full_w - tile_x0);
             let key: TileKey = (full_w, full_h, tile_x0, tile_y0, opts.bold, opts.mask_aa);
@@ -3827,7 +4593,7 @@ pub fn render_region_tiled(
         }
     }
 
-    Ok(pm)
+    Ok(Some(pm))
 }
 
 /// Render a `DjVuPage` to an 8-bit grayscale image.
@@ -3881,12 +4647,7 @@ pub fn render_coarse(page: &DjVuPage, opts: &RenderOptions) -> Result<Option<Pix
     let w = opts.width;
     let h = opts.height;
 
-    if w == 0 || h == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
+    check_output_pixels("render_coarse", page, None, w, h)?;
 
     let bg_subsample = best_iw44_subsample(opts.decode_scale(page));
     let bg = decode_background_chunks(page, 1, bg_subsample)?;
@@ -3939,12 +4700,7 @@ pub fn render_progressive(
     let w = opts.width;
     let h = opts.height;
 
-    if w == 0 || h == 0 {
-        return Err(RenderError::InvalidDimensions {
-            width: w,
-            height: h,
-        });
-    }
+    check_output_pixels("render_progressive", page, None, w, h)?;
 
     let n_bg44 = page.bg44_chunks().len();
     let max_chunk = n_bg44.saturating_sub(1);
@@ -4070,12 +4826,13 @@ impl<'a> ProgressiveDecoder<'a> {
     /// `opts.permissive` is set (see the type docs); or a decode error from the
     /// foreground.
     pub fn new(page: &'a DjVuPage, opts: &RenderOptions) -> Result<Self, RenderError> {
-        if opts.width == 0 || opts.height == 0 {
-            return Err(RenderError::InvalidDimensions {
-                width: opts.width,
-                height: opts.height,
-            });
-        }
+        check_output_pixels(
+            "render_progressive_decoder",
+            page,
+            None,
+            opts.width,
+            opts.height,
+        )?;
         if opts.resampling != Resampling::Bilinear || opts.permissive {
             return Err(RenderError::UnsupportedOption(
                 "ProgressiveDecoder supports only strict Bilinear rendering; \
@@ -4320,7 +5077,7 @@ mod tests {
         let ctx = synth_ctx(&opts, 4, 2, Some(&bg), Some(&mask), &lut, 4, 2);
 
         let mut row = vec![0u8; 4 * 4];
-        composite_rows_bilinear_one(&ctx, 0, FRAC, FRAC, &mut row);
+        composite_rows_bilinear_one(&ctx, 0, FRAC, FRAC, &mut row, None, &mut Vec::new());
 
         for x in 0..4usize {
             let p = &row[x * 4..x * 4 + 4];
@@ -4349,7 +5106,7 @@ mod tests {
         );
 
         let mut row = vec![0u8; 8 * 4];
-        composite_rows_bilinear_one(&ctx, 0, FRAC, FRAC, &mut row);
+        composite_rows_bilinear_one(&ctx, 0, FRAC, FRAC, &mut row, None, &mut Vec::new());
 
         for x in 0..8usize {
             let p = &row[x * 4..x * 4 + 4];
@@ -4683,7 +5440,7 @@ mod tests {
         let fx_step = FRAC / 2; // 2× upscale
         let fy_step = FRAC / 2;
         let mut row = vec![0u8; 4 * 4];
-        composite_rows_bilinear_one(&ctx, 0, fx_step, fy_step, &mut row);
+        composite_rows_bilinear_one(&ctx, 0, fx_step, fy_step, &mut row, None, &mut Vec::new());
 
         // Nearest px indices for ox=0..4 are [0,0,1,1]; only px 0 is foreground,
         // rendered black (no FG44 layer ⇒ (0,0,0)); px 1 is background colour.
@@ -4711,7 +5468,7 @@ mod tests {
         let fx_step = FRAC / 2;
         let fy_step = FRAC / 2;
         let mut row = vec![0u8; 4 * 4];
-        composite_rows_bilinear_one(&ctx, 0, fx_step, fy_step, &mut row);
+        composite_rows_bilinear_one(&ctx, 0, fx_step, fy_step, &mut row, None, &mut Vec::new());
 
         // ox=0 lands exactly on the set bit → still pure (black) foreground.
         assert_eq!(
@@ -4750,7 +5507,7 @@ mod tests {
             "test must exercise subsampled bg"
         );
         let mut row_off = vec![0u8; 8 * 4];
-        composite_rows_bilinear_one(&ctx_off, 0, FRAC, FRAC, &mut row_off);
+        composite_rows_bilinear_one(&ctx_off, 0, FRAC, FRAC, &mut row_off, None, &mut Vec::new());
 
         let opts_on = RenderOptions {
             mask_aa: true,
@@ -4758,12 +5515,63 @@ mod tests {
         };
         let ctx_on = synth_ctx(&opts_on, 8, 1, Some(&bg), Some(&mask), &lut, 8, 1);
         let mut row_on = vec![0u8; 8 * 4];
-        composite_rows_bilinear_one(&ctx_on, 0, FRAC, FRAC, &mut row_on);
+        composite_rows_bilinear_one(&ctx_on, 0, FRAC, FRAC, &mut row_on, None, &mut Vec::new());
 
         assert_eq!(
             row_off, row_on,
             "mask_aa must not affect native 1:1 scale even with a subsampled bg plane"
         );
+    }
+
+    /// The precomputed `BilinearX` column table must be byte-identical to the
+    /// in-loop Q48 fallback on every row — 2× upscale, non-zero `offset_x`,
+    /// subsampled non-uniform bg so any x0/x1/tx mismatch shows up in bytes.
+    #[test]
+    fn composite_bilinear_one_column_table_matches_fallback() {
+        let opts = RenderOptions::default();
+        let mut bg = Pixmap::new(3, 2, 0, 0, 0, 255); // subsampled: page_w=8, bg_w=3
+        for (i, px) in bg.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            px[0] = (i * 40) as u8;
+            px[1] = (i * 25 + 7) as u8;
+            px[2] = (255 - i * 30) as u8;
+        }
+        let mut mask = crate::bitmap::Bitmap::new(8, 2);
+        mask.set(2, 0, true); // one fg bit so the partial/fg branches run too
+        let lut = identity_lut();
+
+        let mut ctx = synth_ctx(&opts, 8, 2, Some(&bg), Some(&mask), &lut, 16, 4);
+        ctx.offset_x = 3;
+
+        let fx_step = FRAC / 2; // 2× upscale
+        let fy_step = FRAC / 2;
+        let table = precompute_bilinear_x(&ctx, fx_step).expect("bg present");
+
+        for oy in 0..4 {
+            let mut row_table = vec![0u8; 16 * 4];
+            let mut row_fallback = vec![0u8; 16 * 4];
+            composite_rows_bilinear_one(
+                &ctx,
+                oy,
+                fx_step,
+                fy_step,
+                &mut row_table,
+                Some(&table),
+                &mut Vec::new(),
+            );
+            composite_rows_bilinear_one(
+                &ctx,
+                oy,
+                fx_step,
+                fy_step,
+                &mut row_fallback,
+                None,
+                &mut Vec::new(),
+            );
+            assert_eq!(
+                row_table, row_fallback,
+                "table and fallback sampling must agree at oy={oy}"
+            );
+        }
     }
 
     /// Integration-level: `render_pixmap` at native scale on a real bilevel
@@ -4855,7 +5663,9 @@ mod tests {
             );
             let has_intermediate_gray = pm_on
                 .data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|px| px[0] == px[1] && px[1] == px[2] && px[0] != 0 && px[0] != 255);
             assert!(
                 has_intermediate_gray,
@@ -5404,97 +6214,202 @@ mod tests {
         );
     }
 
+    /// Round 89 follow-up: a *cold* thumbnail-style render (bg_subsample >= 4,
+    /// no bold, no FGbz, first render of the page — nothing warm yet) must
+    /// not run the full-resolution JB2 mask decode at all, and must still
+    /// produce output pixel-identical to the same render done the old way
+    /// (mask_sub4 built by downsampling an already-decoded full-resolution
+    /// mask). Before this change, `decode_layers`'s #607 fast path required
+    /// `mask_sub4` to already be warm, so the very first (cold) sub>=4
+    /// render — exactly `Document::thumbnails()`'s access pattern — always
+    /// paid for a full-resolution `extract_mask` canvas just to immediately
+    /// downsample and discard it.
+    #[cfg(feature = "std")]
+    #[test]
+    fn cold_thumbnail_sweep_skips_full_mask_decode() {
+        let body = || {
+            let (w, h) = {
+                let doc = load_doc("colorbook.djvu");
+                let page = doc.page(0).unwrap();
+                (page.width() as u32, page.height() as u32)
+            };
+            let opts_s4 = RenderOptions {
+                width: w / 4,
+                height: h / 4,
+                ..Default::default()
+            };
+            let opts_s1 = RenderOptions {
+                width: w,
+                height: h,
+                ..Default::default()
+            };
+
+            // Reference: force the full-resolution mask to decode and cache
+            // first (a plain sub=1 render), then take the sub4 render — this
+            // exercises `mask_sub4`'s "downsample an already-cached full mask"
+            // branch, matching pre-fix behaviour exactly.
+            let doc_warm = load_doc("colorbook.djvu");
+            let page_warm = doc_warm.page(0).unwrap();
+            let _ = render_pixmap(page_warm, &opts_s1).unwrap();
+            let reference = render_pixmap(page_warm, &opts_s4).unwrap();
+
+            // Cold: a fresh document, straight to a sub4 render — nothing
+            // warm, must decode straight to 1/4 resolution via
+            // `extract_mask_sub4` and must not touch the full-res decoder.
+            let doc_cold = load_doc("colorbook.djvu");
+            let page_cold = doc_cold.page(0).unwrap();
+            JB2_MASK_DECODES.with(|c| c.set(0));
+            let cold_s4 = render_pixmap(page_cold, &opts_s4).unwrap();
+            assert_eq!(
+                JB2_MASK_DECODES.with(|c| c.get()),
+                0,
+                "cold sub>=4 render must not run the full-resolution JB2 decode"
+            );
+
+            assert_eq!(
+                cold_s4.data, reference.data,
+                "cold sub4 thumbnail-style render must match the warm-mask-sub4 render"
+            );
+        };
+
+        #[cfg(feature = "parallel")]
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("build single-threaded pool for deterministic thread-local counting");
+            pool.install(body);
+        }
+        #[cfg(not(feature = "parallel"))]
+        body();
+    }
+
     /// #607: `downgrade` retains the 1/4-res mask, and an eligible sub>=4
     /// re-render consumes it without re-running the JB2 decode — while
     /// producing pixel-identical output. A full-resolution re-render stays
     /// cold and also reproduces the original bytes.
+    ///
+    /// Under `parallel`, `decode_layers` runs the cold full-res path through
+    /// `rayon::join` (#440). The same thread-local counting hazard as
+    /// [`progressive_decoder_chunk_decodes_are_on_not_on_squared`] applies:
+    /// increments land on a global-pool worker, so the test thread reads 0.
+    /// Route the measurement through a dedicated single-worker pool (#721).
     #[test]
     fn downgrade_retains_sub4_mask_and_skips_jb2_decode() {
-        let mut doc = load_doc("colorbook.djvu");
-        let (w, h) = {
-            let p = doc.page(0).unwrap();
-            (p.width() as u32, p.height() as u32)
-        };
-        let opts_s4 = RenderOptions {
-            width: w / 4,
-            height: h / 4,
-            ..Default::default()
-        };
-        let opts_s1 = RenderOptions {
-            width: w,
-            height: h,
-            ..Default::default()
+        let body = || {
+            let mut doc = load_doc("colorbook.djvu");
+            let (w, h) = {
+                let p = doc.page(0).unwrap();
+                (p.width() as u32, p.height() as u32)
+            };
+            let opts_s4 = RenderOptions {
+                width: w / 4,
+                height: h / 4,
+                ..Default::default()
+            };
+            let opts_s1 = RenderOptions {
+                width: w,
+                height: h,
+                ..Default::default()
+            };
+
+            // Warm the sub4 tier (this decodes the full mask once and builds
+            // mask_sub4), then downgrade.
+            let first_s4 = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
+            let first_s1 = render_pixmap(doc.page(0).unwrap(), &opts_s1).unwrap();
+            doc.downgrade_render_caches();
+            assert!(
+                doc.page(0)
+                    .unwrap()
+                    .render_layers()
+                    .mask_sub4_cached()
+                    .is_some(),
+                "downgrade must retain mask_sub4"
+            );
+
+            // Structural proof: the warm sub4 re-render must not invoke the JB2
+            // decoder at all.
+            JB2_MASK_DECODES.with(|c| c.set(0));
+            let second_s4 = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
+            assert_eq!(
+                JB2_MASK_DECODES.with(|c| c.get()),
+                0,
+                "warm sub4 re-render after downgrade must not re-run the JB2 decode"
+            );
+            assert_eq!(first_s4.data, second_s4.data, "sub=4 output changed");
+
+            // Full-resolution re-render: cold (decodes the mask again), output
+            // unchanged.
+            JB2_MASK_DECODES.with(|c| c.set(0));
+            let second_s1 = render_pixmap(doc.page(0).unwrap(), &opts_s1).unwrap();
+            assert!(
+                JB2_MASK_DECODES.with(|c| c.get()) > 0,
+                "full-res re-render after downgrade must cold-decode the mask"
+            );
+            assert_eq!(first_s1.data, second_s1.data, "sub=1 output changed");
         };
 
-        // Warm the sub4 tier (this decodes the full mask once and builds
-        // mask_sub4), then downgrade.
-        let first_s4 = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
-        let first_s1 = render_pixmap(doc.page(0).unwrap(), &opts_s1).unwrap();
-        doc.downgrade_render_caches();
-        assert!(
-            doc.page(0)
-                .unwrap()
-                .render_layers()
-                .mask_sub4_cached()
-                .is_some(),
-            "downgrade must retain mask_sub4"
-        );
-
-        // Structural proof: the warm sub4 re-render must not invoke the JB2
-        // decoder at all.
-        JB2_MASK_DECODES.with(|c| c.set(0));
-        let second_s4 = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
-        assert_eq!(
-            JB2_MASK_DECODES.with(|c| c.get()),
-            0,
-            "warm sub4 re-render after downgrade must not re-run the JB2 decode"
-        );
-        assert_eq!(first_s4.data, second_s4.data, "sub=4 output changed");
-
-        // Full-resolution re-render: cold (decodes the mask again), output
-        // unchanged.
-        JB2_MASK_DECODES.with(|c| c.set(0));
-        let second_s1 = render_pixmap(doc.page(0).unwrap(), &opts_s1).unwrap();
-        assert!(
-            JB2_MASK_DECODES.with(|c| c.get()) > 0,
-            "full-res re-render after downgrade must cold-decode the mask"
-        );
-        assert_eq!(first_s1.data, second_s1.data, "sub=1 output changed");
+        #[cfg(feature = "parallel")]
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("build single-threaded pool for deterministic thread-local counting");
+            pool.install(body);
+        }
+        #[cfg(not(feature = "parallel"))]
+        body();
     }
 
     /// #607 eligibility guard: bold dilation needs the full-resolution mask,
     /// so a bold sub>=4 render after downgrade must decode it (and match the
     /// pre-downgrade bold render exactly).
+    ///
+    /// Same `parallel` + thread-local counting wrap as
+    /// [`downgrade_retains_sub4_mask_and_skips_jb2_decode`] (#721).
     #[test]
     fn downgraded_sub4_with_bold_still_full_decodes() {
-        let mut doc = load_doc("colorbook.djvu");
-        let (w, h) = {
-            let p = doc.page(0).unwrap();
-            (p.width() as u32, p.height() as u32)
-        };
-        let opts_bold = RenderOptions {
-            width: w / 4,
-            height: h / 4,
-            bold: 1,
-            ..Default::default()
-        };
-        let first = render_pixmap(doc.page(0).unwrap(), &opts_bold).unwrap();
-        // Also warm the plain sub4 tier so mask_sub4 survives the downgrade.
-        let opts_s4 = RenderOptions {
-            width: w / 4,
-            height: h / 4,
-            ..Default::default()
-        };
-        let _ = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
-        doc.downgrade_render_caches();
+        let body = || {
+            let mut doc = load_doc("colorbook.djvu");
+            let (w, h) = {
+                let p = doc.page(0).unwrap();
+                (p.width() as u32, p.height() as u32)
+            };
+            let opts_bold = RenderOptions {
+                width: w / 4,
+                height: h / 4,
+                bold: 1,
+                ..Default::default()
+            };
+            let first = render_pixmap(doc.page(0).unwrap(), &opts_bold).unwrap();
+            // Also warm the plain sub4 tier so mask_sub4 survives the downgrade.
+            let opts_s4 = RenderOptions {
+                width: w / 4,
+                height: h / 4,
+                ..Default::default()
+            };
+            let _ = render_pixmap(doc.page(0).unwrap(), &opts_s4).unwrap();
+            doc.downgrade_render_caches();
 
-        JB2_MASK_DECODES.with(|c| c.set(0));
-        let second = render_pixmap(doc.page(0).unwrap(), &opts_bold).unwrap();
-        assert!(
-            JB2_MASK_DECODES.with(|c| c.get()) > 0,
-            "bold render must not take the retained-sub4 shortcut"
-        );
-        assert_eq!(first.data, second.data, "bold sub=4 output changed");
+            JB2_MASK_DECODES.with(|c| c.set(0));
+            let second = render_pixmap(doc.page(0).unwrap(), &opts_bold).unwrap();
+            assert!(
+                JB2_MASK_DECODES.with(|c| c.get()) > 0,
+                "bold render must not take the retained-sub4 shortcut"
+            );
+            assert_eq!(first.data, second.data, "bold sub=4 output changed");
+        };
+
+        #[cfg(feature = "parallel")]
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("build single-threaded pool for deterministic thread-local counting");
+            pool.install(body);
+        }
+        #[cfg(not(feature = "parallel"))]
+        body();
     }
 
     /// `enforce_cache_budget_with(downgrade_before_drop: true)` honours the same
@@ -5898,6 +6813,43 @@ mod tests {
         assert_eq!(first.data, frames[0].data);
     }
 
+    /// #691 slice 3 regression: a progressive frame must not depend on
+    /// whether the retained 1/4-res mask cache (#607) is warm. The fast
+    /// path in `decode_layers` used to hand the progressive path a maskless
+    /// layer set, so a prior full render at the same downscale silently
+    /// dropped the text layer from every later progressive frame.
+    #[cfg(feature = "std")]
+    #[test]
+    fn render_progressive_ignores_mask_sub4_warmth() {
+        // colorbook.djvu: multi-chunk BG44, JB2 mask, no FGbz palette — at a
+        // strong downscale it is exactly the page shape the #607 fast path
+        // triggers on.
+        let opts = RenderOptions {
+            width: 61,
+            height: 83,
+            ..Default::default()
+        };
+        let cold = {
+            let doc = load_doc("colorbook.djvu");
+            let page = doc.page(0).unwrap();
+            render_progressive_step(page, &opts, 1).unwrap()
+        };
+        let doc = load_doc("colorbook.djvu");
+        let page = doc.page(0).unwrap();
+        // Warm the sub4 mask cache the way any interactive session would:
+        // with a plain full render at the same output size.
+        let _ = render_pixmap(page, &opts).unwrap();
+        assert!(
+            page.render_layers().mask_sub4_cached().is_some(),
+            "precondition: the full render must have retained the sub4 mask"
+        );
+        let warm = render_progressive_step(page, &opts, 1).unwrap();
+        assert_eq!(
+            cold.data, warm.data,
+            "progressive frame changed with cache warmth"
+        );
+    }
+
     /// render_progressive with chunk_n out of range returns ChunkOutOfRange.
     #[test]
     fn render_progressive_chunk_out_of_range() {
@@ -5989,7 +6941,9 @@ mod tests {
         // A bilevel page should have some black pixels
         assert!(
             pm.data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|px| px[0] == 0 && px[1] == 0 && px[2] == 0),
             "bilevel page should contain black pixels"
         );
@@ -6354,7 +7308,7 @@ mod tests {
         let page = doc.page(0).unwrap();
         let data = page.find_chunk(b"BGjp").unwrap();
         let pm = decode_jpeg_to_pixmap(data).expect("decode must succeed");
-        for chunk in pm.data.chunks_exact(4) {
+        for chunk in pm.data.as_chunks::<4>().0 {
             assert_eq!(chunk[3], 255, "alpha must be 255 for every pixel");
         }
     }
@@ -7083,6 +8037,38 @@ mod tests {
         );
     }
 
+    /// #691: `render_region` matches the same crop of `render_pixmap` even
+    /// when the downscale activates the 1/4-resolution mask fast path
+    /// (`bg_subsample >= 4`, no bold, no FGbz) — the region path must take
+    /// the same `resolve_sub4_mask` decision as the full-page path.
+    #[test]
+    fn render_region_matches_full_render_crop_at_sub4() {
+        let doc = load_doc("boy_jb2.djvu");
+        let page = doc.page(0).unwrap();
+        let opts = RenderOptions {
+            width: 40,
+            height: 52,
+            ..Default::default()
+        };
+        let full = render_pixmap(page, &opts).unwrap();
+        let region = RenderRect {
+            x: 8,
+            y: 8,
+            width: 24,
+            height: 24,
+        };
+        let reg = render_region(page, region, &opts).unwrap();
+        let mut crop = Vec::new();
+        for y in 0..24usize {
+            let s = ((8 + y) * 40 + 8) * 4;
+            crop.extend_from_slice(&full.data[s..s + 24 * 4]);
+        }
+        assert_eq!(
+            reg.data, crop,
+            "render_region must be byte-identical to the matching crop of render_pixmap"
+        );
+    }
+
     // ── Issue #225: render_rows byte-identical to render_into (direct-write path) ──
 
     // ── Issue #225 Phase 2: public render_streaming API ──────────────────────
@@ -7258,7 +8244,45 @@ mod tests {
         };
         assert!(matches!(
             render_pixmap(page, &opts),
-            Err(RenderError::InvalidDimensions { .. })
+            Err(RenderError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn render_into_rejects_oversized_output_with_typed_limit_error() {
+        let doc = load_doc("czech.djvu");
+        let page = doc.page(0).unwrap();
+        let opts = RenderOptions {
+            width: 60_000,
+            height: 60_000,
+            permissive: true,
+            ..Default::default()
+        };
+        let mut buf = vec![0u8; 16];
+        assert!(matches!(
+            render_into(page, &opts, &mut buf),
+            Err(RenderError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn configurable_render_limit_overrides_inherited_ceiling() {
+        let doc = load_doc("czech.djvu");
+        let page = doc.page(0).unwrap();
+        let opts = RenderOptions {
+            width: 500,
+            height: 500,
+            permissive: true,
+            ..Default::default()
+        };
+        let limits = crate::resource_limits::ResourceLimits {
+            max_render_pixels: Some(100_000),
+            ..Default::default()
+        };
+        assert!(matches!(
+            render_pixmap_with_limits(page, &opts, Some(limits)),
+            Err(RenderError::ResourceLimit(exceeded)) if exceeded.operation == "render_pixmap"
+                && exceeded.axis == crate::resource_limits::ResourceLimitAxis::RenderOutputPixels
         ));
     }
 

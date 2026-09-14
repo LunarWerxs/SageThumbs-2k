@@ -4,7 +4,7 @@ exclude = ["fuzz", "tests/no_std_smoke"]
 
 [package]
 name = "djvu-rs"
-version = "0.27.0"
+version = "0.32.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -23,6 +23,7 @@ exclude = [
     "references/*",
     "benches/*",
     "fuzz/*",
+    "models/*",
     "scripts/*",
     "BENCHMARKS_RESULTS.md",
     "BENCHMARKS.md",
@@ -35,13 +36,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 thiserror = "2"
 wide = "0.7"
-djvu-zp = { version = "0.27.0", path = "crates/djvu-zp", default-features = false }
-djvu-bzz = { version = "0.27.0", path = "crates/djvu-bzz", default-features = false }
-djvu-iff = { version = "0.27.0", path = "crates/djvu-iff", default-features = false }
-djvu-bitmap = { version = "0.27.0", path = "crates/djvu-bitmap", default-features = false }
-djvu-jb2 = { version = "0.27.0", path = "crates/djvu-jb2", default-features = false }
-djvu-pixmap = { version = "0.27.0", path = "crates/djvu-pixmap", default-features = false }
-djvu-iw44 = { version = "0.27.0", path = "crates/djvu-iw44", default-features = false }
+djvu-zp = { version = "0.32.1", path = "crates/djvu-zp", default-features = false }
+djvu-bzz = { version = "0.32.1", path = "crates/djvu-bzz", default-features = false }
+djvu-iff = { version = "0.32.1", path = "crates/djvu-iff", default-features = false }
+djvu-bitmap = { version = "0.32.1", path = "crates/djvu-bitmap", default-features = false }
+djvu-jb2 = { version = "0.32.1", path = "crates/djvu-jb2", default-features = false }
+djvu-pixmap = { version = "0.32.1", path = "crates/djvu-pixmap", default-features = false }
+djvu-iw44 = { version = "0.32.1", path = "crates/djvu-iw44", default-features = false }
 # Used only by the djvu CLI binary.
 clap = { version = "4", features = ["derive"], optional = true }
 png = { version = "0.17", optional = true }
@@ -57,12 +58,13 @@ miniz_oxide = { version = "0.8", optional = true }
 zune-jpeg = { version = "0.5", optional = true }
 tiff = { version = "0.9", optional = true }
 jpeg-encoder = { version = "0.6", optional = true }
-tokio = { version = "1", features = ["rt", "macros", "io-util", "sync"], optional = true }
+tokio = { version = "1", features = ["rt", "macros", "io-util", "sync", "time"], optional = true }
 async-stream = { version = "0.3", optional = true }
 futures-core = { version = "0.3", optional = true }
 rayon = { version = "1", optional = true }
 memmap2 = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
@@ -74,7 +76,13 @@ wasm-bindgen-rayon = { version = "1.3", optional = true }
 tesseract = { version = "0.15", optional = true }
 # Dev-only allocation profiling (#600): global allocator for examples/alloc_profile.rs.
 dhat = { version = "0.3", optional = true }
-tract-onnx = { version = "0.21", optional = true }
+# Floor 0.22.2: RUSTSEC-2026-0217 fix (tract-nnef tensor-parser OOB read); the
+# patched 0.21.x line pins `time <0.3.42`, which is itself vulnerable
+# (RUSTSEC-2026-0009). 0.23.x needs Rust 1.91 > our MSRV 1.88.
+tract-onnx = { version = "0.22.2", optional = true }
+# SHA-256 verification of OCR model weights against docs/ocr-model-manifest.toml
+# (#693): unverified weights are never loaded.
+sha2 = { version = "0.10", optional = true }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -90,7 +98,7 @@ std = ["dep:png", "dep:zune-jpeg", "djvu-zp/std", "djvu-bzz/std", "djvu-iff/std"
 pdf = ["std", "dep:miniz_oxide", "dep:jpeg-encoder"]
 # The CLI also writes CBZ archives, so it owns zip (+ flate2, see the `zip`
 # dependency comment) alongside the PDF writer it exposes.
-cli = ["pdf", "cbz", "dep:clap", "dep:zip", "dep:flate2"]
+cli = ["pdf", "cbz", "dep:clap", "dep:zip", "dep:flate2", "dep:serde_json"]
 jpeg = ["dep:zune-jpeg"]
 tiff = ["dep:tiff", "std"]
 async = ["dep:tokio", "dep:async-stream", "dep:futures-core", "std"]
@@ -121,7 +129,7 @@ wasm-threads = ["wasm", "parallel", "dep:wasm-bindgen-rayon"]
 epub = ["std", "dep:zip", "dep:flate2", "dep:jpeg-encoder"]
 cbz = ["std", "dep:zip", "dep:flate2"]
 ocr-tesseract = ["dep:tesseract", "std"]
-ocr-onnx = ["dep:tract-onnx", "std"]
+ocr-onnx = ["dep:tract-onnx", "dep:sha2", "std"]
 # ocr-neural: experimental placeholder only. It exposes the CandleBackend type
 # but no supported model contract or CLI backend; load() returns a clear error.
 ocr-neural = ["std"]
@@ -161,6 +169,9 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 proptest = "1"
 # cold_open_bench only: F_NOCACHE fcntl for the cold-copy strategy (macOS).
 libc = "0.2"
+# OCR metrics corpus (#693): rasterizes the pinned PT Sans font into
+# synthetic ground-truth pages (`ocr_onnx::corpus`, test-only).
+ab_glyph = "0.2"
 
 [[bin]]
 name = "djvu"

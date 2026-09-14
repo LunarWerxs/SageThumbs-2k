@@ -1,0 +1,9 @@
+# PERF_EXPERIMENTS.md is an append-only log: every branch adds a new `###`
+# section at the end, so concurrent PRs collide on the same last line even
+# though there is no real disagreement. `merge=union` keeps both sides
+# instead of raising a conflict.
+#
+# Caveat: union merge concatenates blindly. If two branches edit the *same
+# existing* section, git silently keeps both versions instead of flagging a
+# conflict. Editing old entries is rare here; appending is the norm.
+PERF_EXPERIMENTS.md merge=union

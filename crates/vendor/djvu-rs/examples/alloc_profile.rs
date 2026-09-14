@@ -11,6 +11,7 @@
 //! cargo run --release --features alloc-profile --example alloc_profile -- warm-render
 //! cargo run --release --features alloc-profile --example alloc_profile -- thumbnails
 //! cargo run --release --features alloc-profile --example alloc_profile -- encode
+//! cargo run --release --features alloc-profile --example alloc_profile -- encode-streaming
 //! cargo run --release --features alloc-profile --example alloc_profile -- pdf-export
 //! ```
 //!
@@ -87,6 +88,36 @@ fn main() {
                 300,
                 None,
                 2,
+            )
+            .unwrap();
+        }
+        // Same scenario as "encode", but through the bounded-window
+        // streaming entry point (encoder peak-memory step 4): each page's
+        // pixmap is rendered lazily by the closure and dropped after phase 1
+        // instead of all 12 being resident in a `Vec<Pixmap>` up front. This
+        // is the number that must clear the step-4 keep bar — see
+        // `PERF_EXPERIMENTS.md`'s `ENCODE_STREAMING_WINDOW` entry.
+        "encode-streaming" => {
+            let doc = DjVuDocument::parse(&data).unwrap();
+            let n = doc.page_count().min(12);
+            let _ = djvu_rs::djvu_encode::encode_djvm_layered_shared_streaming(
+                n,
+                |i| -> Result<_, djvu_rs::djvu_render::RenderError> {
+                    let page = doc.page(i).unwrap();
+                    let opts = RenderOptions {
+                        width: page.width() as u32,
+                        height: page.height() as u32,
+                        ..Default::default()
+                    };
+                    render_pixmap(page, &opts)
+                },
+                djvu_rs::djvu_encode::EncodeQuality::Quality,
+                300,
+                None,
+                2,
+                false,
+                None,
+                None,
             )
             .unwrap();
         }

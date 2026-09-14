@@ -74,6 +74,17 @@ backend exists is speculative API churn (YAGNI). Finishing Candle is a feature
 decision. Deleting Candle would discard a deliberately-placed, typed "not yet"
 signal that the CLI and README already lean on.
 
+## Update (2026-08-11, #693)
+
+The second CLI-live backend arrived: `--backend onnx` now dispatches to
+`ocr_onnx::pipeline::NeuralOcrBackend` (DBNet detection + Cyrillic CTC
+recognition from the pinned manifest). The seam absorbed it as designed — a
+local change in `build_ocr_backend`, no trait surface churn. The deferred
+`OcrOptions` recast stays deferred: the neural backend needs *no*
+configuration through the trait (models are pinned, language is fixed by the
+dictionary, detection scales with page extent), so both fields remain
+advisory hints that Tesseract alone honours.
+
 ## Consequences
 
 - Future architecture-review passes should treat the `OcrBackend` seam as

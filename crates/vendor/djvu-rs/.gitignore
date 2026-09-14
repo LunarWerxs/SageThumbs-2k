@@ -15,6 +15,7 @@ examples/wasm/pkg/
 /djvu-py/.pytest_cache
 /djvu-py/tests/__pycache__
 /djvu-py/**/__pycache__
+/scripts/__pycache__
 
 # Local profiling output (samply, perf, custom JSON dumps)
 /profile.json.gz
@@ -41,3 +42,28 @@ examples/wasm/pkg/
 
 # Serena local project state (user-specific, never shared)
 /.serena/
+
+# Local conformance harness outputs (#682)
+/conformance_site/
+/conformance_commands.sh
+/conformance_semantic_commands.sh
+/diff_results.jsonl
+/semantic_results.jsonl
+/writer_results.txt
+/writer_status.txt
+/previous_history.json
+
+# Local packaging smoke outputs (#692)
+/npm-pkg/
+/npm-dist/
+/target/wheels/
+/node_modules/
+
+# OCR model weights (never committed; fetch via scripts/fetch_ocr_models.sh, #693)
+/models/
+
+# Locally grown fuzz corpus + crash artifacts. The curated seed corpus is
+# already tracked (gitignore never hides tracked files); CI grows its own
+# corpus in the actions cache (fuzz.yml). Add new seeds with `git add -f`.
+/fuzz/corpus/
+/fuzz/artifacts/

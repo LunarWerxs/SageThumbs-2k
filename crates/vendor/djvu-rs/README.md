@@ -1,25 +1,31 @@
 # djvu-rs
 
 [![Crates.io](https://badgen.net/crates/v/djvu-rs)](https://crates.io/crates/djvu-rs)
+[![PyPI](https://img.shields.io/pypi/v/djvu-rs)](https://pypi.org/project/djvu-rs/)
+[![npm](https://img.shields.io/npm/v/djvu-rs)](https://www.npmjs.com/package/djvu-rs)
 [![docs.rs](https://docs.rs/djvu-rs/badge.svg)](https://docs.rs/djvu-rs)
 [![CI](https://github.com/matyushkin/djvu-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/matyushkin/djvu-rs/actions/workflows/ci.yml)
 [![Benchmarks](https://img.shields.io/badge/benchmarks-dashboard-blue)](https://matyushkin.github.io/djvu-rs/dev/bench/)
+[![Conformance](https://img.shields.io/badge/conformance-dashboard-blue)](https://matyushkin.github.io/djvu-rs/dev/conformance/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Read, render, convert, and create DjVu files. Pure-Rust library with a CLI,
-WebAssembly, and Python bindings — MIT licensed, no GPL dependencies, written
-from the public DjVu v3 specification.
+WebAssembly, and Python bindings — on [crates.io](https://crates.io/crates/djvu-rs),
+[PyPI](https://pypi.org/project/djvu-rs/), and [npm](https://www.npmjs.com/package/djvu-rs)
+as `djvu-rs`. MIT licensed, no GPL dependencies, written from the public DjVu v3
+specification.
 
 | Your task | How |
 |-----------|-----|
 | Convert DjVu → PDF, EPUB, TIFF, PNG, CBZ | [`djvu render`](#cli) or [`djvu_to_pdf`](#pdf-export) / [`djvu_to_epub`](#epub-export) / [`djvu_to_tiff`](#tiff-export) |
 | Extract text (plain, hOCR, ALTO XML) | [`djvu text`](#cli) or [`page.text()`](#text-extraction), [`to_hocr` / `to_alto`](#hocr-and-alto-xml-export) |
 | Render pages to RGBA pixels | [`render_pixmap`](#quick-start) — sync, [async](#async-render), or [parallel](#feature-flags) |
+| Build a zoomable viewer (tiles) | [`djvu_tile`](#tile-rendering) — cached, prefetchable, cancellable tile rendering |
 | Show DjVu in the browser | [WebAssembly bindings](#webassembly), incl. lazy HTTP-Range loading |
-| Read DjVu from Python | [PyO3 bindings, built from source](#python) |
+| Read DjVu from Python | `pip install djvu-rs` — [PyO3 bindings](#python) |
 | Create DjVu from images (PNG/JPEG/TIFF) | [`djvu encode`](#cli) or [`PageEncoder`](#encoding--low-level-api) |
 | Add an OCR text layer to a scan | [`djvu ocr`](#ocr-recognition-backends) (Tesseract) |
-| Merge, split, edit documents | [`djvu merge` / `djvu split`](#cli), `DjVuDocumentMut` |
+| Merge, split, edit documents | [`djvu merge` / `djvu split`](#cli), `DocumentEditor`, `DjVuDocumentMut` |
 | Stream huge books page-by-page | [Lazy async loading](#lazy-async-loading) — first pixel after ~29 KB of a 100 MB file |
 
 Every Rust example below is a complete program, compiled as a doctest on every
@@ -98,6 +104,18 @@ cargo install djvu-rs --features cli
 # Document info (--json for machine-readable output, --count for page count only)
 djvu info file.djvu
 
+# Inspect IFF chunk identities, offsets, sizes, and bundled component relationships
+djvu inspect book.djvu --json
+
+# Layered validation: structural, dependency, codec, and resource findings with
+# stable codes (--strict makes warnings fail the exit code; --decode-pages adds
+# full codec decodes; --limits gates size/page/pixel/memory budgets before decode)
+djvu validate book.djvu --strict --decode-pages --limits server.json --json
+
+# Semantic comparison of two documents: pages, text, annotations, metadata,
+# bookmarks, and the component graph (--plane filters the compared planes)
+djvu diff a.djvu b.djvu --plane text --json
+
 # Render page 1 to PNG at 200 DPI
 djvu render file.djvu --dpi 200 --output page1.png
 
@@ -117,8 +135,20 @@ djvu text file.djvu --all --format hocr --output out.hocr
 djvu merge a.djvu b.djvu --output merged.djvu
 djvu split book.djvu --pages 10-25 --output chapter.djvu
 
+# Preview safe cleanup as machine-readable JSON, or write an optimized copy
+djvu optimize book.djvu --output optimized.djvu --preset lossless-cleanup --dry-run
+djvu optimize book.djvu --output optimized.djvu --preset lossless-cleanup
+djvu optimize book.djvu --output optimized.djvu --preset archival --target-size 26214400
+# (--max-ssim-loss is reserved for the planned archival re-encode; the current
+#  lossless cleanup is pixel-exact by construction and reports this)
+djvu optimize book.djvu --output optimized.djvu --max-ssim-loss 0.001
+
 # Encode an image (PNG, JPEG, or TIFF) into a single-page DjVu (bilevel JB2, lossless)
+# TIFF input requires building/installing with --features tiff (cli alone does not enable it).
 djvu encode scan.png --output scan.djvu --dpi 300
+
+# Opt into a DjVuLibre-compatible G4/MMR mask for fax/scanner workflows
+djvu encode scan.png --quality lossless --bilevel-codec smmr --output scan.djvu
 
 # Encode into a layered lossy DjVu (JB2 mask + IW44 background + FGbz foreground color)
 djvu encode scan.jpg --quality quality --output scan.djvu --dpi 300
@@ -132,6 +162,12 @@ djvu encode scan.png --quality quality --binarization sauvola --bg-inpaint --out
 # Cap the IW44 background at a bits-per-pixel budget (smaller file, lower quality)
 djvu encode scan.jpg --quality quality --bg-bpp 0.8 --output scan.djvu
 
+# Composite transparent PNG/TIFF pixels onto a solid colour (hex or white/black)
+djvu encode logo.png --background white --output logo.djvu
+
+# Refuse ICC-profiled input instead of silently dropping the profile
+djvu encode scan.png --icc reject --output scan.djvu
+
 # Encode a directory of images into a bundled DJVM with shared Djbz
 djvu encode pages/ --output book.djvu --shared-dict-pages 2
 
@@ -144,7 +180,11 @@ djvu bzz-decode notes.bzz --output notes.txt
 ```
 
 For single image input (PNG, JPEG, or TIFF), `--quality lossless`
-luminance-thresholds the image into a JB2 mask and writes `INFO + Sjbz`;
+luminance-thresholds the image into a JB2 mask and writes `INFO + Sjbz`.
+`--bilevel-codec smmr` is an explicit single-image opt-in that writes a
+DjVuLibre-compatible `Smmr` G4/MMR mask instead; it preserves the default JB2
+path and is not available for directory bundles. The Smmr path is intended for
+fax/scanner interoperability and is usually larger than JB2.
 `--quality quality` uses the layered encoder (`INFO + Sjbz + BG44...` plus
 `FGbz` when colored foreground is detected) for color input. `--quality
 archival` uses the same layered shape with a denser background sample grid.
@@ -159,18 +199,23 @@ Layered `quality` / `archival` encodes default to fixed BT.601 thresholding.
 `--binarization sauvola` opts into adaptive local thresholding for mixed or
 uneven lighting; tune it with `--sauvola-window` and `--sauvola-k`.
 `--bg-inpaint` fills fully masked background blocks from neighbouring unmasked
-pixels, which can reduce dark boxes under heavy text strokes. These knobs are
-opt-in, only affect layered profiles, and do not change lossless JB2 defaults.
+pixels, which can reduce dark boxes under heavy text strokes.
+`--block-classify` routes photo and halftone blocks wholly to the background
+layer instead of shredding them into mask speckle (mixed text+photo layouts);
+pair it with `--adaptive-bg-subsample`, which densifies the background grid
+where unmasked detail warrants it, so routed photos keep their detail. These
+knobs are opt-in, only affect layered profiles, and do not change lossless
+JB2 defaults.
 Library callers can use the same controls with `PageEncoder::with_segment_options`.
+For newly encoded pages, `PageEncoder::with_metadata` emits a `METz` chunk;
+for existing documents, `DjVuDocumentMut::page_mut(...).set_metadata(...)`
+performs a mutation while preserving untouched chunks. These are deliberately
+separate fresh-encode and mutation APIs.
 
 ## Python
 
-PyO3 bindings live in [`djvu-py/`](djvu-py/). They are **not published to PyPI
-yet** — build them from the repository (requires a Rust toolchain):
-
 ```sh
-pip install ./djvu-py
-# or, for development: pip install maturin && cd djvu-py && maturin develop --release
+pip install djvu-rs
 ```
 
 ```python
@@ -186,28 +231,22 @@ img.save('page.png')
 text = page.text()
 ```
 
-The bindings cover the reading surface: open documents, render pages
-(including region and progressive rendering, with zero-copy numpy/PIL paths),
-and extract the text layer. See [`djvu-py/README.md`](djvu-py/README.md).
+PyO3 bindings live in [`djvu-py/`](djvu-py/). Wheels track the crate version
+(CPython 3.9–3.13 on manylinux/musllinux, macOS, and Windows). The bindings
+cover the reading surface: open documents, render pages (including region and
+progressive rendering, with zero-copy numpy/PIL paths), and extract the text
+layer. Encode, mutation, and PDF/EPUB/TIFF export stay on the Rust crate / CLI
+for now. See [`djvu-py/README.md`](djvu-py/README.md) and
+[`docs/packaging.md`](docs/packaging.md).
 
 ## WebAssembly
 
-Build the browser package with [wasm-pack](https://rustwasm.github.io/wasm-pack/)
-through the checked-in wrapper:
-
 ```sh
-make wasm
+npm install djvu-rs
 ```
 
-This produces `examples/wasm/pkg/` with one JavaScript entry point, a scalar
-fallback `.wasm`, and a `simd128` `.wasm`. At runtime the loader validates a
-tiny WebAssembly SIMD probe and selects the faster `simd128` artifact when the
-browser supports it, otherwise it loads the scalar artifact.
-
-Then use in JavaScript/TypeScript:
-
 ```js
-import init, { WasmDocument, selectedWasmVariant } from './pkg/djvu_rs.js';
+import init, { WasmDocument, selectedWasmVariant } from 'djvu-rs';
 
 await init();
 console.log(`djvu-rs wasm variant: ${selectedWasmVariant()}`);
@@ -221,15 +260,21 @@ const img = new ImageData(pixels, page.width_at(150), page.height_at(150));
 ctx.putImageData(img, 0, 0);
 ```
 
+The npm package ships TypeScript declarations plus scalar and `simd128` wasm
+artifacts; at runtime a tiny `WebAssembly.validate()` probe selects SIMD when
+supported. Package versions match the Rust crate — see
+[`docs/packaging.md`](docs/packaging.md).
+
+To rebuild the package from this repository:
+
+```sh
+make wasm   # → examples/wasm/pkg (dual scalar + simd128 loader)
+```
+
 See [`examples/wasm/`](examples/wasm/) for a complete drag-and-drop demo, and
 [`examples/wasm/range_lazy.md`](examples/wasm/range_lazy.md) for lazy loading
 over HTTP `Range` requests (`wasm-lazy` feature) — the browser fetches only
 the index plus the pages actually opened.
-
-The generated npm package follows the Rust crate version; there is no separate
-WASM release train. The local `pkg/` directory is ignored wasm-pack output, so
-regenerate it with `make wasm` from the checked-in `Cargo.toml` before
-publishing instead of editing generated `pkg/package.json` by hand.
 
 ## Advanced usage
 
@@ -395,6 +440,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Tile rendering
+
+For viewer engines: [`djvu_tile`](https://docs.rs/djvu-rs/latest/djvu_rs/djvu_tile/)
+renders a page as a display-space tile grid over the region renderer. Tile
+pixels are byte-identical to the same rectangle of a full-page render, in any
+request order.
+
+```rust,no_run
+use djvu_rs::{DjVuDocument, djvu_render::RenderOptions};
+use djvu_rs::djvu_tile::{TileLayout, render_tile_cached};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let data = std::fs::read("book.djvu")?;
+    let doc = DjVuDocument::parse(&data)?;
+    let page = doc.page(0)?;
+
+    let opts = RenderOptions { width: 2400, height: 3200, ..Default::default() };
+    let layout = TileLayout::new(page, &opts, 256)?;
+
+    for row in 0..layout.rows() {
+        for col in 0..layout.cols() {
+            let tile = render_tile_cached(page, &opts, 256, col, row)?;
+            // tile.data — RGBA bytes of exactly this tile rectangle
+            let _ = tile;
+        }
+    }
+    Ok(())
+}
+```
+
+`render_tile_cached` memoizes composited tiles per page; the cache is
+tile-granular and controllable (`tile_cache_usage`, `set_tile_cache_budget`,
+`clear_tile_cache`, `invalidate_tile_region`). `render_tile_with` +
+`TileRenderControls` / `TileCancelToken` add progressive quality steps and
+cooperative cancellation, and with the `parallel` feature `prefetch_tiles` /
+`prefetch_tiles_cancellable` warm the cache in the background with a bounded
+worker pool. The full contract lives in
+[`docs/tile-rendering.md`](docs/tile-rendering.md).
+
 ## Encoding & low-level API
 
 ### JB2 bilevel image encoder
@@ -496,6 +580,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Applications that need the full DIRM component identity can use
+`DjVuDocument::parse_with_component_resolver`. Its
+`ComponentResolver` receives a `ComponentId` containing both the external name
+and its `ComponentKind` (`Page`, `Shared`, or `Thumbnail`), and is called for
+every directory entry. Page/shared/thumbnail FORM mismatches and resolver
+failures surface as typed errors; shared `Djbz` dictionaries referenced by
+`INCL` are connected to the parsed pages. See
+[`docs/indirect-djvm-resolver.md`](docs/indirect-djvm-resolver.md).
+
 Two mutation paths cover indirect documents:
 `DjVuDocumentMut::from_indirect_resolved` resolves the component files and
 rebundles them into a mutable bundled document, and `IndirectRewritePlan`
@@ -504,6 +597,52 @@ indirect (each file is renamed atomically, but the multi-file commit as a
 whole is not transactional). Opening an indirect index directly with
 `DjVuDocumentMut::from_bytes` and calling `page_mut` remains unsupported; see
 [`docs/indirect-djvm-mutation.md`](docs/indirect-djvm-mutation.md).
+
+The reverse direction is covered too: `djvm::to_indirect` splits a bundled
+`FORM:DJVM` into an indirect index plus standalone component files, keeping
+component ids, names, titles, and the document `NAVM` stable. Related
+bundled-document operations in the same module: `djvm::remove_pages` deletes
+pages with an explicit `UnreachablePolicy` (preserve or garbage-collect shared
+components that lose their last including page),
+`djvm::dedup_shared_components` merges byte-identical shared components, and
+`djvm::DjvmStreamWriter` writes a bundle to any `io::Write` sink with memory
+bounded to the spooled component being appended.
+
+### Typed document editing
+
+`DocumentEditor` provides a versioned, typed operation list with a semantic
+dry-run plan and validation of every operation before bytes are emitted. The
+current schema covers page text, page annotations, page/document METa/METz
+metadata, and bundled-document NAVM bookmarks:
+
+```rust,no_run
+use djvu_rs::{DocumentEditor, EditOperation, EditRequest};
+use djvu_rs::metadata::DjVuMetadata;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input = std::fs::read("book.djvu")?;
+    let request = EditRequest::new(vec![EditOperation::SetDocumentMetadata {
+        metadata: DjVuMetadata {
+            title: Some("Updated title".into()),
+            ..Default::default()
+        },
+    }]);
+
+    let plan = DocumentEditor::plan(&input, &request)?;
+    println!("{} operation(s), {} page(s)", plan.operations.len(), plan.page_count);
+    let edited = DocumentEditor::apply(&input, &request)?;
+    std::fs::write("edited.djvu", edited)?;
+    Ok(())
+}
+```
+
+`DocumentEditor::apply_to_path` stages output beside the destination and
+renames it only after validation, serialization, and sync succeed. The first
+slice intentionally does not yet cover the declarative CLI, XMP, thumbnails,
+page insertion/deletion/reordering/extraction, semantic diff, or multi-file
+indirect-DJVM commits; those require separate operation and commit contracts.
+With the `serde` feature, requests and plans are JSON-serializable using the
+versioned schema.
 
 ### Low-level IFF access
 
@@ -537,10 +676,18 @@ Library callers can attach recognized text at encode time instead, via
 `PageEncoder::with_ocr_text_layer` (or `with_text_layer` for an existing
 `TextLayer`).
 
-`ocr-onnx` is an experimental library-level CTC helper; the CLI accepts
-`--backend onnx --model <path>` but does not treat it as a stable backend
-because no specific model family, preprocessing contract, or
-fixture is guaranteed yet. `ocr-neural` is a placeholder only: `CandleBackend` now
+`ocr-onnx` is experimental but now CLI-live (#693): `--backend onnx` runs the
+full PP-OCR neural pipeline — DBNet text detection plus Cyrillic PP-OCRv5 CTC
+line recognition (its pinned dictionary also covers Latin, digits, and
+punctuation) assembled into a `page → line → word` text layer with heuristic
+word rectangles. Models come only from the pinned manifest with mandatory
+SHA-256 verification (`docs/ocr-model-manifest.toml`, fetched explicitly via
+`scripts/fetch_ocr_models.sh` — weights are never committed and never
+downloaded implicitly; directory override: `DJVU_OCR_MODELS_DIR`). The
+`--model` flag is not used by this backend, and `OcrOptions`
+(`languages`/`dpi`) are advisory and ignored. Recognition quality of the
+pinned models is gated by a deterministic synthetic corpus with a recorded
+CER/WER/IoU baseline (`docs/ocr-model-metrics.md`). `ocr-neural` is a placeholder only: `CandleBackend` now
 returns a clear unsupported-backend error instead of constructing a backend that
 always fails at recognition time. The compatibility feature name
 `ocr-neural-candle` is a no-op and no longer pulls Candle/tokenizers into
@@ -551,12 +698,15 @@ always fails at recognition time. The compatibility feature name
 Chunk-level coverage of the DjVu v3 format, for readers who need to know
 exactly what decodes and what encodes:
 
+The fresh-encode versus existing-document mutation contract is expanded in
+[`docs/writer-coverage.md`](docs/writer-coverage.md).
+
 | Format element | Decode | Encode |
 |----------------|--------|--------|
 | IFF container (`FORM:DJVU`, `FORM:DJVM`) | ✓ zero-copy parser | ✓ |
 | JB2 bilevel images (`Sjbz`), shared dictionaries (`Djbz` via `INCL`) | ✓ ZP arithmetic coding + symbol dictionary | ✓ incl. multi-page shared Djbz |
 | IW44 wavelet images (`BG44` / `FG44`) | ✓ planar YCbCr, multiple refinement chunks | ✓ color and grayscale |
-| G4/MMR fax images (`Smmr`, ITU-T T.6) | ✓ | — |
+| G4/MMR fax images (`Smmr`, ITU-T T.6) | ✓ | ✓ (explicit `BilevelCodec::Smmr` / `--bilevel-codec smmr`) |
 | JPEG background/foreground (`BGjp` / `FGjp`) | ✓ | — (encoder emits IW44) |
 | Foreground palette (`FGbz`) | ✓ | ✓ (layered encoder) |
 | BZZ compression (BWT + MTF + ZP) | ✓ | ✓ |
@@ -565,8 +715,8 @@ exactly what decodes and what encodes:
 | Bookmarks (`NAVM`) | ✓ | ✓ |
 | Multi-page directory (`DIRM`), bundled and indirect | ✓ | ✓ (DjVuLibre-clean directory v1) |
 | Thumbnails (`TH44`) | ✓ | ✓ (`--thumbnails`) |
-| Metadata (`METa` / `METz`) | ✓ | — |
-| Legacy standalone `FORM:BM44` / `FORM:PM44` files | — (clean `NotDjVu` error) | — |
+| Metadata (`METa` / `METz`) | ✓ | ✓ (`PageEncoder::with_metadata`; `PageMut::set_metadata`) |
+| Legacy standalone `FORM:BM44` / `FORM:PM44` files | ✓ | — |
 | Unknown chunk IDs | preserved byte-exact for round-trip | n/a |
 
 The codec internals are also published as standalone workspace crates for
@@ -583,8 +733,9 @@ Honest boundaries, so you can decide fast:
 
 - **Library + CLI, not a viewer.** There is no GUI; the WASM demo is the
   closest thing to one.
-- **Python bindings are source-only for now.** The `djvu-py` package is not
-  published to PyPI yet — install it from the repository checkout.
+- **Python bindings cover the reading surface only.** Open, render, and text
+  extraction ship in the PyPI wheels; encode, mutation, and PDF/EPUB/TIFF
+  export stay on the Rust crate / CLI for now.
 - **Indirect DJVM mutation is indirect-only via two paths.**
   `DjVuDocumentMut::from_bytes` + `page_mut` on an indirect index errors;
   use `from_indirect_resolved` (rebundles) or `IndirectRewritePlan` (rewrites
@@ -593,16 +744,31 @@ Honest boundaries, so you can decide fast:
   and single-page `FORM:DJVU` only; indirect returns a clean `Unsupported`
   error.
 - **`create_indirect` does not emit shared `DJVI` dictionary components** —
-  build a bundled document with `djvu merge` when pages share a dictionary.
-- **Legacy standalone `FORM:BM44` / `FORM:PM44` files (pre-v3 DjVu) do not
-  parse** — they fail with a clean `NotDjVu` error rather than decoding.
-- **Encoded files run larger than DjVuLibre's encoders** — measured ~14% on
-  IW44 color output vs `c44`, and the JB2 encoder lacks same-size record-6
-  refinement vs `cjb2`. A size gap, not a fidelity gap; tracked in
-  [`docs/jb2-size-gap-plan.md`](docs/jb2-size-gap-plan.md).
-- **OCR: Tesseract is the only supported recognition backend.** `OcrOptions`
-  (languages, dpi) are honored by Tesseract only; `ocr-onnx` is experimental
-  and `ocr-neural` is a placeholder that returns an error.
+  build a bundled document with `djvu merge` when pages share a dictionary, or
+  convert an existing bundled document with `djvm::to_indirect`, which
+  preserves shared components.
+- **Encoder size parity is corpus- and profile-dependent.** Run the
+  reproducible [`encoder parity scorecard`](docs/encoder-parity.md) to compare
+  the same raster through DjVuLibre 3.5.29's `c44`/`cjb2` and the archival-safe
+  `PageEncoder` profiles. The 2026-07-16 snapshot ranges from 1.025–1.040×
+  `c44` for IW44 photo pages — at matched-or-better fidelity (decoded PSNR/SSIM
+  meet or exceed `c44` on the measured pages) — and 0.952–2.100× `cjb2` for the
+  public direct JB2 lossless profile; every measured output passed its
+  interop/fidelity gate. The earlier IW44 gap (up to 1.345×, and lower fidelity)
+  came from two encoder bugs since fixed: an activation threshold that stranded
+  dense-page coefficients (`IW44_LUMA_PLATEAU`) and a colour transform that did
+  not match the decoder's Pigeon `YCbCr` basis (`IW44_PIGEON_COLOR`); see
+  `PERF_EXPERIMENTS.md`. Same-size record-6 and lossy rec-7 remain experimental
+  and are tracked in [`docs/jb2-size-gap-plan.md`](docs/jb2-size-gap-plan.md).
+- **Document optimization is conservative in the first slice.** `djvu optimize`
+  currently removes only semantically inert `FREE` padding and reports unmet
+  size targets; archival codec search, progress callbacks, and cancellation
+  remain planned. See [`docs/optimizer.md`](docs/optimizer.md); it always writes
+  a separate output file.
+- **OCR: Tesseract is the supported recognition backend.** `OcrOptions`
+  (languages, dpi) are honored by Tesseract only; the `ocr-onnx` neural
+  pipeline is CLI-live but experimental (fixed pinned models, options
+  ignored) and `ocr-neural` is a placeholder that returns an error.
 
 ## Feature flags
 
@@ -612,7 +778,7 @@ Honest boundaries, so you can decide fast:
 | `pdf` | disabled | PDF export via `djvu_to_pdf` (owns `miniz_oxide` + `jpeg-encoder`) |
 | `cli` | disabled | Build the `djvu` command-line binary (implies `pdf` and `cbz`) |
 | `cbz` | disabled | CBZ (comic-book ZIP) export — backs `render --format cbz` (owns `zip`) |
-| `tiff` | disabled | TIFF export via the `tiff` crate |
+| `tiff` | disabled | TIFF export (`djvu_to_tiff`) **and** TIFF encode input for `djvu encode` / `decode_image_to_pixmap` |
 | `async` | disabled | Async render API and lazy `AsyncRead + AsyncSeek` document loading |
 | `parallel` | disabled | Parallel multi-page render via `rayon` (`render_pages_parallel`) |
 | `jpeg` | disabled | Standalone JPEG decode without full `std` (JPEG is included in `std` by default) |
@@ -624,7 +790,7 @@ Honest boundaries, so you can decide fast:
 | `wasm-lazy` | disabled | Lazy Range-based document loading in the browser: a JS `(offset, len)` reader fetches only the pages you open |
 | `wasm-threads` | disabled | wasm32 thread pool (rayon via Web Workers); requires a nightly toolchain, not part of the stable CI gate |
 | `ocr-tesseract` | disabled | OCR recognition via a system Tesseract installation (the supported OCR backend) |
-| `ocr-onnx` | disabled | Experimental ONNX CTC recognition helper via `tract-onnx`; no stable model contract |
+| `ocr-onnx` | disabled | Experimental neural OCR via `tract-onnx` (#693): pinned manifest + SHA-256-verified weights, DBNet detection, Cyrillic CTC recognition, CLI `--backend onnx` |
 | `ocr-neural` | disabled | Placeholder backend only — `CandleBackend::load` returns a clear unsupported error |
 | `ocr-neural-candle` | disabled | Deprecated no-op alias for `ocr-neural` |
 | `experimental` | disabled | Experimental JB2 encoder paths used by internal example binaries |
@@ -633,6 +799,38 @@ Honest boundaries, so you can decide fast:
 
 Without `std`, the crate provides IFF parsing, BZZ decompression, JB2/IW44 decoding,
 text/annotation parsing — all codec primitives that work on byte slices.
+
+## API stability & compatibility
+
+The full contract lives in [`docs/api-compatibility.md`](docs/api-compatibility.md)
+(policy) and [`docs/feature-matrix.md`](docs/feature-matrix.md) (supported
+combinations and targets), and is enforced in CI. In short:
+
+- **Stable surface** — the document model (`Document`/`Page`, `DjVuDocument`/
+  `DjVuPage`), the render entry points, the codec entry points, the parsers, and
+  the writer `djvu_to_*` functions. Follows SemVer; breakage is caught by
+  `cargo-semver-checks`.
+- **Experimental / placeholder** — `experimental`, `iw44-probe`, `alloc-profile`,
+  `ocr-onnx`, `wasm-threads`, and the `ocr-neural` placeholder. These may change
+  in any release and are the ones marked *Experimental*/*Placeholder* in the
+  feature table above.
+- **Deprecated (kept for ≥ 2 minor releases / 90 days)** — the `bzz_new` and
+  `iw44_new` module aliases and the `ocr-neural-candle` feature alias.
+- **MSRV** — Rust 1.88, a required CI gate.
+- **Thread-safety** — `Document`, `DjVuDocument`, `DjVuPage`, pixel buffers, and
+  the parsed content/error types are `Send + Sync`; the mutable editor is
+  `Send`; `LazyDocument<R>` inherits its thread-safety from `R`. Asserted in
+  [`tests/send_sync_contract.rs`](tests/send_sync_contract.rs).
+- **Untrusted input** — no public parse/decode/render entry point panics on any
+  input; malformed bytes surface as typed errors. Covered by
+  [`tests/panic_free_corpus.rs`](tests/panic_free_corpus.rs), proptests, and
+  libFuzzer/OSS-Fuzz targets.
+- **Resource limits** — decode/render inherit documented, bounded memory/work
+  ceilings; exceeding one returns a typed error naming the codec and axis. The
+  ceilings are caller-configurable: pass `ResourceLimits` via `ParseOptions` to
+  `DjVuDocument::parse_with_options` (pages inherit them at render time), or
+  use `render_pixmap_with_limits` / `render_into_with_limits` directly. See
+  [`SECURITY.md`](SECURITY.md#decode-time-resource-ceilings).
 
 ## Performance
 
@@ -672,7 +870,9 @@ MIT. See [LICENSE](LICENSE).
 
 Written from the public DjVu v3 specification:
 - https://www.sndjvu.org/spec.html
-- https://djvu.sourceforge.net/spec/DjVu3Spec.djvu (the spec is itself a DjVu file)
+- https://web.archive.org/web/20251005122807/http://www.djvu.org/docs/DjVu3Spec.djvu
+  (the spec is itself a DjVu file; archived copy — djvu.org and
+  djvu.sourceforge.net no longer serve the original)
 
 No code derived from GPL-licensed DjVuLibre or any other GPL source.
 All algorithms are independent implementations from the spec.

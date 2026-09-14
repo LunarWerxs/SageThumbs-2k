@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "djvu-rs"
-version = "0.27.0"
+version = "0.32.1"
 build = false
 exclude = [
     ".cargo/config.toml",
@@ -23,6 +23,7 @@ exclude = [
     "references/*",
     "benches/*",
     "fuzz/*",
+    "models/*",
     "scripts/*",
     "BENCHMARKS_RESULTS.md",
     "BENCHMARKS.md",
@@ -80,6 +81,7 @@ cli = [
     "dep:clap",
     "dep:zip",
     "dep:flate2",
+    "dep:serde_json",
 ]
 default = ["std"]
 epub = [
@@ -109,6 +111,7 @@ ocr-neural = ["std"]
 ocr-neural-candle = ["ocr-neural"]
 ocr-onnx = [
     "dep:tract-onnx",
+    "dep:sha2",
     "std",
 ]
 ocr-tesseract = [
@@ -194,6 +197,10 @@ path = "examples/async_lazy_first_page.rs"
 required-features = ["async"]
 
 [[example]]
+name = "block_classify_corpus"
+path = "examples/block_classify_corpus.rs"
+
+[[example]]
 name = "block_classify_probe"
 path = "examples/block_classify_probe.rs"
 
@@ -216,6 +223,10 @@ required-features = [
     "mmap",
     "parallel",
 ]
+
+[[example]]
+name = "conformance_semantic"
+path = "examples/conformance_semantic.rs"
 
 [[example]]
 name = "corpus_tier2_baseline"
@@ -249,6 +260,10 @@ path = "examples/encode_quality_iw44.rs"
 [[example]]
 name = "encode_quality_jb2"
 path = "examples/encode_quality_jb2.rs"
+
+[[example]]
+name = "encoder_parity_scorecard"
+path = "examples/encoder_parity_scorecard.rs"
 
 [[example]]
 name = "extract_text"
@@ -406,6 +421,10 @@ path = "examples/probe_tiff_streaming_memory.rs"
 required-features = ["tiff"]
 
 [[example]]
+name = "profile_high_dpi"
+path = "examples/profile_high_dpi.rs"
+
+[[example]]
 name = "profile_iw44"
 path = "examples/profile_iw44.rs"
 
@@ -435,6 +454,10 @@ path = "examples/txtz_ocr_demo.rs"
 required-features = ["pdf"]
 
 [[test]]
+name = "cli_diff"
+path = "tests/cli_diff.rs"
+
+[[test]]
 name = "cli_encode"
 path = "tests/cli_encode.rs"
 
@@ -445,6 +468,10 @@ path = "tests/cli_encode_image_formats.rs"
 [[test]]
 name = "cli_info"
 path = "tests/cli_info.rs"
+
+[[test]]
+name = "cli_inspect"
+path = "tests/cli_inspect.rs"
 
 [[test]]
 name = "cli_merge_split_bzz"
@@ -471,6 +498,10 @@ name = "cli_text"
 path = "tests/cli_text.rs"
 
 [[test]]
+name = "cli_validate"
+path = "tests/cli_validate.rs"
+
+[[test]]
 name = "codec_bzz"
 path = "tests/codec_bzz.rs"
 
@@ -479,12 +510,36 @@ name = "codec_jb2_iw44"
 path = "tests/codec_jb2_iw44.rs"
 
 [[test]]
+name = "decode_cache_accounting"
+path = "tests/decode_cache_accounting.rs"
+
+[[test]]
+name = "decode_peak_memory"
+path = "tests/decode_peak_memory.rs"
+
+[[test]]
 name = "document_and_render"
 path = "tests/document_and_render.rs"
 
 [[test]]
+name = "editor"
+path = "tests/editor.rs"
+
+[[test]]
+name = "encode_peak_memory"
+path = "tests/encode_peak_memory.rs"
+
+[[test]]
+name = "encode_recon_peak_memory"
+path = "tests/encode_recon_peak_memory.rs"
+
+[[test]]
 name = "encode_size_regression"
 path = "tests/encode_size_regression.rs"
+
+[[test]]
+name = "encoder_ingestion"
+path = "tests/encoder_ingestion.rs"
 
 [[test]]
 name = "epub_conversion"
@@ -503,6 +558,10 @@ name = "image_decoder"
 path = "tests/image_decoder.rs"
 
 [[test]]
+name = "indirect_resolver"
+path = "tests/indirect_resolver.rs"
+
+[[test]]
 name = "iw44_rate_target"
 path = "tests/iw44_rate_target.rs"
 
@@ -513,6 +572,10 @@ path = "tests/metadata_roundtrip.rs"
 [[test]]
 name = "ocr_tesseract"
 path = "tests/ocr_tesseract.rs"
+
+[[test]]
+name = "optimizer"
+path = "tests/optimizer.rs"
 
 [[test]]
 name = "panic_free_corpus"
@@ -539,12 +602,20 @@ name = "readme_sync"
 path = "tests/readme_sync.rs"
 
 [[test]]
+name = "send_sync_contract"
+path = "tests/send_sync_contract.rs"
+
+[[test]]
 name = "serde_roundtrip"
 path = "tests/serde_roundtrip.rs"
 
 [[test]]
 name = "text_serialize"
 path = "tests/text_serialize.rs"
+
+[[test]]
+name = "thumbnail_peak_memory"
+path = "tests/thumbnail_peak_memory.rs"
 
 [dependencies.async-stream]
 version = "0.3"
@@ -560,31 +631,31 @@ version = "0.3"
 optional = true
 
 [dependencies.djvu-bitmap]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-bzz]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-iff]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-iw44]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-jb2]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-pixmap]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.djvu-zp]
-version = "0.27.0"
+version = "0.32.1"
 default-features = false
 
 [dependencies.flate2]
@@ -631,6 +702,14 @@ version = "1"
 features = ["derive"]
 optional = true
 
+[dependencies.serde_json]
+version = "1"
+optional = true
+
+[dependencies.sha2]
+version = "0.10"
+optional = true
+
 [dependencies.tesseract]
 version = "0.15"
 optional = true
@@ -649,11 +728,12 @@ features = [
     "macros",
     "io-util",
     "sync",
+    "time",
 ]
 optional = true
 
 [dependencies.tract-onnx]
-version = "0.21"
+version = "0.22.2"
 optional = true
 
 [dependencies.wasm-bindgen]
@@ -683,6 +763,9 @@ default-features = false
 [dependencies.zune-jpeg]
 version = "0.5"
 optional = true
+
+[dev-dependencies.ab_glyph]
+version = "0.2"
 
 [dev-dependencies.assert_cmd]
 version = "2"

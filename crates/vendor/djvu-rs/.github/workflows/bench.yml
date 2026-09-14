@@ -92,6 +92,12 @@ jobs:
         with:
           key: bench-ubuntu
 
+      # Fast sanity check on the comparison/drift-detection logic itself,
+      # before spending ~20 min on the actual benchmark run below. Covers the
+      # cross-runner drift heuristic (see scripts/bench_compare.py docstring).
+      - name: Unit-test bench_compare.py
+        run: python3 -m unittest scripts/test_bench_compare.py -v
+
       # ── Download baseline from last successful main-branch run (PR only) ────
       - name: Download baseline
         if: github.event_name == 'pull_request'
@@ -159,6 +165,13 @@ jobs:
       # +11%/+34% on bzz_decode/bzz_encode across PRs that do not touch BZZ).
       # Re-measure ONLY the flagged benches from the merge base on THIS runner
       # and let that comparison be the verdict.
+      #
+      # Only runs when compare_exit == 1 (regressions, NOT already flagged as
+      # drift-suspect by bench_compare.py's own median-delta check). compare_exit
+      # == 3 means bench_compare.py already saw a runner-wide drift signature
+      # (see the "Cross-runner drift detection" note at the top of that script)
+      # strong enough to explain the flagged benches on its own — spending
+      # another full rebuild+rerun on the same conclusion isn't worth the CI time.
       - name: Re-check suspects against merge base (same runner)
         if: github.event_name == 'pull_request' && steps.compare.outputs.compare_exit == '1'
         id: recheck
@@ -212,9 +225,15 @@ jobs:
         continue-on-error: true  # comment failure must not hide regression result
 
       # Preserve the comment even when compare detects a regression, then make
-      # every non-zero compare result fail the job (1 = regression, 2 = bad or
-      # missing current Criterion output).  This must not be `bash -e`'s direct
-      # exit: that would skip writing the step output and fail open.
+      # every failing compare result fail the job (1 = regression not explained
+      # by drift, 2 = bad or missing current Criterion output). compare_exit ==
+      # 3 (regressions found, but bench_compare.py's own median-delta drift
+      # check flagged the whole run as a probable cross-runner speed change —
+      # see PERF_EXPERIMENTS.md's PR #779/#787 entries for the false-positive
+      # history this is meant to stop repeating) is deliberately fail-soft: the
+      # comment still posts and still lists the flagged benches, but the job
+      # passes so a human isn't paged for noise. This must not be `bash -e`'s
+      # direct exit: that would skip writing the step output and fail open.
       - name: Fail on benchmark comparison
         if: github.event_name == 'pull_request' && needs.detect.outputs.code == 'true' && steps.compare.outputs.compare_exit != '0'
         run: |
@@ -224,6 +243,9 @@ jobs:
               exit 0
             fi
             echo "Benchmark regressions detected and confirmed on a same-runner merge-base re-check — see PR comment."
+          elif [ "${{ steps.compare.outputs.compare_exit }}" = "3" ]; then
+            echo "Benchmark regressions flagged, but the run's own median delta across all benchmarks looks like cross-runner drift (see PR comment) — not failing."
+            exit 0
           else
             echo "Benchmark comparison failed: current Criterion results are missing or invalid."
           fi

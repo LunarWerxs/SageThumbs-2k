@@ -1,7 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use djvu_rs::Document;
+use djvu_rs::{
+    ComponentGraph, ComponentNodeKind, Document,
+    iff::ChunkRecord,
+    validate::{Layer as ValidationLayer, ResourceLimits, ValidateOptions, ValidationReport},
+};
+use serde_json::{Map, Value, json};
 
 #[derive(Parser)]
 #[command(name = "djvu", about = "DjVu file utility", version)]
@@ -22,6 +30,72 @@ enum Cmd {
         /// Output info as JSON.
         #[arg(short, long)]
         json: bool,
+    },
+    /// Inspect the IFF chunk tree without decoding page content.
+    ///
+    /// With `--json`, emits a stable JSON object with `file`, `container`, and
+    /// `chunks` keys. Every chunk object has `id`, `offset`, `length`, `depth`,
+    /// and `path`; FORM objects additionally have `form_type`; embedded bundled
+    /// component FORM objects additionally have `component_id` and `kind`.
+    /// The shape is `{ "file": "book.djvu", "container": "DJVM", "chunks":
+    /// [{ "id": "FORM", "form_type": "DJVM", "offset": 4, "length": 0,
+    /// "depth": 0, "path": [] }], "components": [] }`.
+    /// `path` is an array of zero-based child indexes from the root. When the
+    /// bundled component graph parses, the object also has `components`, whose
+    /// entries contain `id`, `kind`, `dirm_index`, `includes`, and `included_by`.
+    /// The `components` key is omitted when graph parsing fails so inspection
+    /// remains useful for diagnostically malformed documents.
+    Inspect {
+        /// Path to the DjVu file.
+        file: PathBuf,
+        /// Output stable machine-readable JSON.
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// Validate document structure, dependencies, codec streams, and resource
+    /// limits without rendering.
+    ///
+    /// Exits 0 when no errors are found; with --strict, warnings also exit 1.
+    /// Exits 1 for validation findings and 2 when the input file (or a
+    /// --limits file) cannot be read or parsed.
+    ///
+    /// A --limits JSON file may set any of `max_file_bytes`, `max_pages`,
+    /// `max_components`, `max_page_pixels`, `max_total_pixels`, and
+    /// `max_decoded_bytes` (all optional, unsigned integers). Exceeded limits
+    /// are reported as resource-layer errors before any page decode, and a
+    /// decode-cost limit additionally suppresses --decode-pages work.
+    Validate {
+        /// Path to the DjVu file.
+        file: PathBuf,
+        /// Treat warnings as a failing result for the process exit code.
+        #[arg(long)]
+        strict: bool,
+        /// Output stable machine-readable JSON.
+        #[arg(short, long)]
+        json: bool,
+        /// Decode IW44 coefficients and JB2 symbols, without RGB rendering.
+        #[arg(long)]
+        decode_pages: bool,
+        /// Path to a JSON file of configured resource limits.
+        #[arg(long)]
+        limits: Option<PathBuf>,
+    },
+    /// Compare two documents semantically: page properties, text, annotations,
+    /// metadata, bookmarks, and the component graph.
+    ///
+    /// Exits 0 when every compared plane matches, 1 when any plane diverges,
+    /// and 2 when either input cannot be read or parsed.
+    Diff {
+        /// First DjVu file.
+        a: PathBuf,
+        /// Second DjVu file.
+        b: PathBuf,
+        /// Output stable machine-readable JSON.
+        #[arg(short, long)]
+        json: bool,
+        /// Compare only the named planes (repeatable). Default: all planes.
+        #[arg(long = "plane")]
+        planes: Vec<String>,
     },
     /// Render pages to PNG, PDF, CBZ, or EPUB.
     Render {
@@ -71,6 +145,28 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Plan or apply safe document-level optimization.
+    Optimize {
+        /// Path to the input DjVu file.
+        file: PathBuf,
+        /// Output file path. Required even for --dry-run so scripts can use
+        /// one stable invocation shape; dry-run never creates it.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Optimization policy.
+        #[arg(short, long, default_value = "lossless-cleanup", value_enum)]
+        preset: OptimizePresetArg,
+        /// Maximum output size in bytes. Safe cleanup reports when it cannot
+        /// meet the target without lossy re-encoding.
+        #[arg(long)]
+        target_size: Option<u64>,
+        /// Maximum permitted SSIM loss.
+        #[arg(long)]
+        max_ssim_loss: Option<f32>,
+        /// Print the machine-readable plan without writing the output.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run OCR on pages and write the text layer back into the file.
     #[cfg(any(
         feature = "ocr-tesseract",
@@ -86,7 +182,9 @@ enum Cmd {
         /// Languages for recognition (e.g. "eng", "rus+eng").
         #[arg(short, long, default_value = "eng")]
         lang: String,
-        /// Path to ONNX model file (required for --backend onnx).
+        /// Unused: --backend onnx loads its models from the pinned manifest
+        /// (fetch with scripts/fetch_ocr_models.sh; directory override via
+        /// DJVU_OCR_MODELS_DIR). Kept for CLI-shape stability.
         #[arg(long)]
         model: Option<PathBuf>,
         /// Output DjVu file with embedded OCR text layer.
@@ -124,12 +222,28 @@ enum Cmd {
         /// Output DjVu file path.
         #[arg(short, long)]
         output: PathBuf,
-        /// Page DPI stored in the INFO chunk. Default: 300.
-        #[arg(short, long, default_value = "300")]
-        dpi: u16,
+        /// Page DPI stored in the INFO chunk. Default: the input's TIFF
+        /// X/YResolution tags when present, else 300.
+        #[arg(short, long)]
+        dpi: Option<u16>,
         /// Encoding profile.
         #[arg(short, long, default_value = "lossless", value_enum)]
         quality: EncodeQualityArg,
+        /// Bilevel mask codec for single-image lossless encodes. Default: jb2.
+        #[arg(long, default_value = "jb2", value_enum)]
+        bilevel_codec: BilevelCodecArg,
+        /// Composite transparent pixels onto this background colour at
+        /// decode time (PNG/TIFF alpha; JPEG never has alpha). Accepts
+        /// RRGGBB hex with optional '#', or 'white'/'black'. Default:
+        /// preserve the alpha channel unchanged.
+        #[arg(long, value_parser = parse_background_color)]
+        background: Option<(u8, u8, u8)>,
+        /// Embedded ICC colour profile handling. DjVu cannot store a
+        /// profile and no colour management is applied, so 'ignore'
+        /// (default) decodes pixel bytes as-is and drops the profile;
+        /// 'reject' fails with an explicit error on profiled input.
+        #[arg(long, default_value = "ignore", value_enum)]
+        icc: IccArg,
         /// Mask binarization for layered quality/archival encodes.
         #[arg(long, default_value = "fixed", value_enum)]
         binarization: BinarizationArg,
@@ -142,6 +256,14 @@ enum Cmd {
         /// Inpaint fully masked background blocks for layered encodes.
         #[arg(long)]
         bg_inpaint: bool,
+        /// Classify 32x32 blocks as text vs photo/halftone and route photo
+        /// blocks wholly to the background layer (quality/archival only).
+        #[arg(long)]
+        block_classify: bool,
+        /// Content-adaptive background subsample: densify the BG grid when
+        /// unmasked detail warrants it (pairs well with --block-classify).
+        #[arg(long)]
+        adaptive_bg_subsample: bool,
         /// IW44 background bits-per-pixel budget (quality/archival only).
         /// Encode BG44 slices until the cumulative payload reaches this many
         /// bits per pixel; overrides the default 100-slice schedule. A lower
@@ -198,6 +320,14 @@ enum TextFormat {
     Alto,
 }
 
+#[derive(Clone, ValueEnum)]
+enum OptimizePresetArg {
+    /// Remove semantically inert IFF FREE padding.
+    LosslessCleanup,
+    /// Prefer archival fidelity; this slice remains pixel-exact.
+    Archival,
+}
+
 #[cfg(any(
     feature = "ocr-tesseract",
     feature = "ocr-onnx",
@@ -207,7 +337,9 @@ enum TextFormat {
 enum OcrBackendChoice {
     /// Supported backend: system Tesseract via tesseract-rs.
     Tesseract,
-    /// Experimental library-only ONNX scaffold; no stable CLI contract yet.
+    /// Neural PP-OCR pipeline (DBNet detection + Cyrillic CTC recognition)
+    /// using the pinned model manifest; fetch models first with
+    /// scripts/fetch_ocr_models.sh.
     Onnx,
     /// Experimental neural placeholder; no supported model implementation yet.
     Candle,
@@ -227,7 +359,7 @@ enum RotateArg {
 
 #[derive(Clone, Debug, ValueEnum)]
 enum EncodeQualityArg {
-    /// Pixel-exact bilevel JB2 (`INFO + Sjbz`).
+    /// Pixel-exact bilevel JB2 (`INFO + Sjbz`), unless `--bilevel-codec smmr`.
     Lossless,
     /// Layered FG/BG with lossy IW44 BG.
     Quality,
@@ -239,6 +371,22 @@ enum EncodeQualityArg {
     /// Detect the content type per input (bilevel text / layered document /
     /// photo) and pick the profile automatically (#570).
     Auto,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+enum BilevelCodecArg {
+    /// JB2 arithmetic-coded mask (`Sjbz`), the compatibility default.
+    Jb2,
+    /// G4/MMR mask (`Smmr`) for explicit single-page bilevel encoding.
+    Smmr,
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum IccArg {
+    /// Decode without colour management; the embedded profile is dropped.
+    Ignore,
+    /// Fail with an explicit error when the input embeds an ICC profile.
+    Reject,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -264,6 +412,12 @@ enum Layer {
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
+        if let Some(exit) = e.downcast_ref::<ValidateExit>() {
+            if !exit.silent {
+                eprintln!("error: {exit}");
+            }
+            std::process::exit(exit.code);
+        }
         eprintln!("error: {e}");
         std::process::exit(1);
     }
@@ -272,6 +426,15 @@ fn main() {
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Cmd::Info { file, count, json } => cmd_info(&file, count, json),
+        Cmd::Inspect { file, json } => cmd_inspect(&file, json),
+        Cmd::Validate {
+            file,
+            strict,
+            json,
+            decode_pages,
+            limits,
+        } => cmd_validate(&file, strict, json, decode_pages, limits.as_deref()),
+        Cmd::Diff { a, b, json, planes } => cmd_diff(&a, &b, json, &planes),
         Cmd::Render {
             file,
             page,
@@ -303,6 +466,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pages,
             output,
         } => cmd_split(&file, page, pages.as_deref(), &output),
+        Cmd::Optimize {
+            file,
+            output,
+            preset,
+            target_size,
+            max_ssim_loss,
+            dry_run,
+        } => cmd_optimize(&file, &output, preset, target_size, max_ssim_loss, dry_run),
         Cmd::Text {
             file,
             page,
@@ -315,10 +486,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             dpi,
             quality,
+            bilevel_codec,
+            background,
+            icc,
             binarization,
             sauvola_window,
             sauvola_k,
             bg_inpaint,
+            block_classify,
+            adaptive_bg_subsample,
             bg_bpp,
             shared_dict_pages,
             thumbnails,
@@ -326,12 +502,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             &input,
             &output,
             dpi,
-            quality,
+            EncodeProfileArgs {
+                quality,
+                bilevel_codec,
+                background,
+                icc,
+            },
             EncodeSegmentArgs {
                 binarization,
                 sauvola_window,
                 sauvola_k,
                 bg_inpaint,
+                block_classify,
+                adaptive_bg_subsample,
             },
             bg_bpp,
             EncodeBundleArgs {
@@ -340,6 +523,117 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             },
         ),
     }
+}
+
+#[derive(Debug)]
+struct ValidateExit {
+    code: i32,
+    silent: bool,
+    message: String,
+}
+
+impl std::fmt::Display for ValidateExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ValidateExit {}
+
+// ── optimize ─────────────────────────────────────────────────────────────────
+
+fn cmd_optimize(
+    input: &Path,
+    output: &Path,
+    preset: OptimizePresetArg,
+    target_size: Option<u64>,
+    max_ssim_loss: Option<f32>,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let input_bytes = std::fs::read(input)?;
+    if equivalent_paths(input, output)? {
+        return Err(
+            "optimizer refuses to replace the input file; choose a different --output".into(),
+        );
+    }
+
+    let preset = match preset {
+        OptimizePresetArg::LosslessCleanup => {
+            djvu_rs::optimizer::OptimizationPreset::LosslessCleanup
+        }
+        OptimizePresetArg::Archival => djvu_rs::optimizer::OptimizationPreset::Archival,
+    };
+    let mut request = djvu_rs::optimizer::OptimizationRequest::new(preset);
+    if let Some(target) = target_size {
+        request = request.with_target_size(target);
+    }
+    if let Some(loss) = max_ssim_loss {
+        request = request.with_max_ssim_loss(loss);
+    }
+
+    let optimizer = djvu_rs::optimizer::Optimizer::new(request);
+    if dry_run {
+        println!("{}", optimizer.plan(&input_bytes)?.to_json());
+        return Ok(());
+    }
+
+    let result = optimizer.optimize(&input_bytes)?;
+    write_atomic(output, &result.bytes)?;
+    println!("{}", result.report.to_json());
+    Ok(())
+}
+
+fn equivalent_paths(input: &Path, output: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let input = std::fs::canonicalize(input)?;
+    let output = if output.exists() {
+        std::fs::canonicalize(output)?
+    } else {
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::canonicalize(parent)?.join(output.file_name().ok_or("--output must name a file")?)
+    };
+    Ok(input == output)
+}
+
+fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    write_atomic_with(output, |mut file| {
+        use std::io::Write;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })
+}
+
+/// Write an output through a sibling temporary path, committing it only after
+/// `write` succeeds. The temporary path is always removed when `write` or the
+/// final rename fails, so an existing destination is left untouched on error.
+fn write_atomic_with<F>(output: &Path, write: F) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnOnce(std::fs::File) -> Result<(), Box<dyn std::error::Error>>,
+{
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let name = output
+        .file_name()
+        .ok_or("--output must name a file")?
+        .to_string_lossy();
+    let temp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)?;
+    if let Err(error) = write(file) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&temp, output) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 // ── merge ─────────────────────────────────────────────────────────────────────
@@ -426,25 +720,20 @@ fn cmd_info(path: &Path, count_only: bool, json: bool) -> Result<(), Box<dyn std
     }
 
     if json {
-        // All fields are numeric — no JSON string escaping needed.
-        // If string fields (e.g. title, filename) are added in the future,
-        // use a proper JSON library (e.g. serde_json) to avoid injection.
-        let mut out = String::from("{\"pages\":[");
+        let mut pages = Vec::with_capacity(count);
         for i in 0..count {
             let page = doc.page(i)?;
-            if i > 0 {
-                out.push(',');
-            }
-            out.push_str(&format!(
-                "{{\"page\":{},\"width\":{},\"height\":{},\"dpi\":{}}}",
-                i + 1,
-                page.width(),
-                page.height(),
-                page.dpi(),
-            ));
+            pages.push(json!({
+                "page": i + 1,
+                "width": page.width(),
+                "height": page.height(),
+                "dpi": page.dpi(),
+            }));
         }
-        out.push_str(&format!("],\"count\":{count}}}"));
-        println!("{out}");
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "pages": pages, "count": count }))?
+        );
         return Ok(());
     }
 
@@ -460,6 +749,421 @@ fn cmd_info(path: &Path, count_only: bool, json: bool) -> Result<(), Box<dyn std
         );
     }
     Ok(())
+}
+
+// ── inspect ──────────────────────────────────────────────────────────────────
+
+struct InspectComponents {
+    by_form_offset: BTreeMap<usize, (String, String)>,
+    json: Vec<Value>,
+}
+
+fn cmd_inspect(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let data = std::fs::read(path)?;
+    let chunks = djvu_rs::iff::walk_chunks(&data)?;
+    let container = chunks
+        .first()
+        .and_then(|chunk| chunk.form_type)
+        .map(chunk_id_text)
+        .ok_or("IFF walker did not return a root FORM")?;
+    let components = inspect_components(&data, &chunks);
+
+    if json {
+        let mut output = Map::new();
+        output.insert("file".into(), Value::String(path.display().to_string()));
+        output.insert("container".into(), Value::String(container));
+        output.insert(
+            "chunks".into(),
+            Value::Array(
+                chunks
+                    .iter()
+                    .map(|chunk| inspect_chunk_json(chunk, components.as_ref()))
+                    .collect(),
+            ),
+        );
+        if let Some(components) = &components {
+            output.insert("components".into(), Value::Array(components.json.clone()));
+        }
+        println!("{}", serde_json::to_string(&Value::Object(output))?);
+    } else {
+        print_inspect_human(&chunks, components.as_ref());
+    }
+
+    Ok(())
+}
+
+// ── validate ────────────────────────────────────────────────────────────────
+
+fn cmd_validate(
+    path: &Path,
+    strict: bool,
+    json: bool,
+    decode_pages: bool,
+    limits_path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = std::fs::read(path).map_err(|error| ValidateExit {
+        code: 2,
+        silent: false,
+        message: format!("cannot read {}: {error}", path.display()),
+    })?;
+    let limits = match limits_path {
+        Some(limits_path) => Some(load_limits(limits_path)?),
+        None => None,
+    };
+    let options = ValidateOptions {
+        strict,
+        decode_pages,
+        limits,
+    };
+    let report = djvu_rs::validate::validate(&data, &options);
+    let summary = report.summary();
+
+    if json {
+        println!("{}", serde_json::to_string(&validate_json(path, &report))?);
+    } else {
+        print_validate_human(&report);
+    }
+
+    if !report.is_valid() || (strict && summary.warnings > 0) {
+        return Err(Box::new(ValidateExit {
+            code: 1,
+            silent: true,
+            message: String::new(),
+        }));
+    }
+    Ok(())
+}
+
+/// Load configured resource limits from a JSON file. Unknown keys and
+/// non-integer values are rejected so a mistyped limit fails loudly rather than
+/// silently disabling a guard. Every failure maps to the read/parse exit code 2.
+fn load_limits(path: &Path) -> Result<ResourceLimits, Box<dyn std::error::Error>> {
+    let fail = |message: String| ValidateExit {
+        code: 2,
+        silent: false,
+        message,
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| fail(format!("cannot read limits {}: {error}", path.display())))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| fail(format!("cannot parse limits {}: {error}", path.display())))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| fail(format!("limits {} must be a JSON object", path.display())))?;
+
+    const KNOWN: [&str; 7] = [
+        "max_file_bytes",
+        "max_pages",
+        "max_components",
+        "max_page_pixels",
+        "max_total_pixels",
+        "max_decoded_bytes",
+        "max_render_pixels",
+    ];
+    for key in object.keys() {
+        if !KNOWN.contains(&key.as_str()) {
+            return Err(Box::new(fail(format!(
+                "limits {}: unknown key '{key}'",
+                path.display()
+            ))));
+        }
+    }
+
+    let read = |key: &str| -> Result<Option<u64>, Box<dyn std::error::Error>> {
+        match object.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Number(number)) if number.is_u64() => Ok(number.as_u64()),
+            Some(_) => Err(Box::new(fail(format!(
+                "limits {}: '{key}' must be a non-negative integer",
+                path.display()
+            ))) as Box<dyn std::error::Error>),
+        }
+    };
+
+    Ok(ResourceLimits {
+        max_file_bytes: read("max_file_bytes")?,
+        max_pages: read("max_pages")?,
+        max_components: read("max_components")?,
+        max_page_pixels: read("max_page_pixels")?,
+        max_total_pixels: read("max_total_pixels")?,
+        max_decoded_bytes: read("max_decoded_bytes")?,
+        max_render_pixels: read("max_render_pixels")?,
+    })
+}
+
+// ── diff ─────────────────────────────────────────────────────────────────────
+
+fn cmd_diff(
+    a: &Path,
+    b: &Path,
+    json: bool,
+    planes: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let read = |path: &Path| {
+        std::fs::read(path).map_err(|error| ValidateExit {
+            code: 2,
+            silent: false,
+            message: format!("cannot read {}: {error}", path.display()),
+        })
+    };
+    let bytes_a = read(a)?;
+    let bytes_b = read(b)?;
+    let filter = (!planes.is_empty()).then_some(planes);
+    let diff =
+        djvu_rs::semantic_diff::semantic_diff(&bytes_a, &bytes_b, filter).map_err(|error| {
+            ValidateExit {
+                code: 2,
+                silent: false,
+                message: format!("cannot parse inputs: {error}"),
+            }
+        })?;
+
+    if json {
+        let planes_json: Vec<serde_json::Value> = diff
+            .planes
+            .iter()
+            .map(|plane| {
+                serde_json::json!({
+                    "plane": plane.plane,
+                    "status": match plane.status {
+                        djvu_rs::semantic_diff::PlaneStatus::Match => "match",
+                        djvu_rs::semantic_diff::PlaneStatus::Diverge => "diverge",
+                    },
+                    "details": plane.details,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "a": a.display().to_string(),
+                "b": b.display().to_string(),
+                "identical": diff.is_identical(),
+                "planes": planes_json,
+            })
+        );
+    } else {
+        for plane in &diff.planes {
+            match plane.status {
+                djvu_rs::semantic_diff::PlaneStatus::Match => {
+                    println!("{}: match", plane.plane);
+                }
+                djvu_rs::semantic_diff::PlaneStatus::Diverge => {
+                    println!("{}: diverge", plane.plane);
+                    for detail in &plane.details {
+                        println!("  {detail}");
+                    }
+                }
+            }
+        }
+    }
+
+    if !diff.is_identical() {
+        return Err(Box::new(ValidateExit {
+            code: 1,
+            silent: true,
+            message: String::new(),
+        }));
+    }
+    Ok(())
+}
+
+fn print_validate_human(report: &ValidationReport) {
+    for layer in [
+        ValidationLayer::Structural,
+        ValidationLayer::Dependency,
+        ValidationLayer::Codec,
+        ValidationLayer::Semantic,
+        ValidationLayer::Resource,
+    ] {
+        let findings = report
+            .findings
+            .iter()
+            .filter(|finding| finding.layer == layer)
+            .collect::<Vec<_>>();
+        if findings.is_empty() {
+            continue;
+        }
+        println!("{}:", layer.as_str());
+        for finding in findings {
+            let location = match (&finding.component, &finding.chunk, finding.offset) {
+                (Some(component), Some(chunk), Some(offset)) => {
+                    format!(" [{component} {chunk} @ {offset}]")
+                }
+                (Some(component), Some(chunk), None) => format!(" [{component} {chunk}]"),
+                (Some(component), None, Some(offset)) => format!(" [{component} @ {offset}]"),
+                (None, Some(chunk), Some(offset)) => format!(" [{chunk} @ {offset}]"),
+                (Some(component), None, None) => format!(" [{component}]"),
+                (None, Some(chunk), None) => format!(" [{chunk}]"),
+                (None, None, Some(offset)) => format!(" [@ {offset}]"),
+                (None, None, None) => String::new(),
+            };
+            println!(
+                "  {} {}{}: {}",
+                finding.severity.as_str().to_uppercase(),
+                finding.code,
+                location,
+                finding.message
+            );
+        }
+    }
+    let resources = &report.resources;
+    println!(
+        "resources: {} pages, {} components, {} bytes, {} peak page pixels, {} est. peak decoded bytes",
+        resources.pages,
+        resources.components,
+        resources.file_bytes,
+        resources.max_page_pixels,
+        resources.peak_decoded_bytes,
+    );
+    let summary = report.summary();
+    println!(
+        "{} errors, {} warnings, {} tolerated, {} recovery",
+        summary.errors, summary.warnings, summary.tolerated, summary.recovery
+    );
+}
+
+fn validate_json(path: &Path, report: &ValidationReport) -> Value {
+    let summary = report.summary();
+    let resources = &report.resources;
+    json!({
+        "file": path.display().to_string(),
+        "valid": report.is_valid(),
+        "summary": {
+            "errors": summary.errors,
+            "warnings": summary.warnings,
+            "tolerated": summary.tolerated,
+            "recovery": summary.recovery,
+        },
+        "resources": {
+            "file_bytes": resources.file_bytes,
+            "pages": resources.pages,
+            "components": resources.components,
+            "max_page_pixels": resources.max_page_pixels,
+            "total_pixels": resources.total_pixels,
+            "peak_decoded_bytes": resources.peak_decoded_bytes,
+        },
+        "findings": report.findings.iter().map(|finding| json!({
+            "severity": finding.severity.as_str(),
+            "layer": finding.layer.as_str(),
+            "code": finding.code,
+            "component": &finding.component,
+            "chunk": &finding.chunk,
+            "offset": finding.offset,
+            "message": &finding.message,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn inspect_components(data: &[u8], chunks: &[ChunkRecord]) -> Option<InspectComponents> {
+    let graph = ComponentGraph::parse(data).ok()?;
+    let component_forms: Vec<_> = chunks
+        .iter()
+        .filter(|chunk| chunk.depth == 1 && chunk.id == *b"FORM")
+        .collect();
+    let mut by_form_offset = BTreeMap::new();
+
+    for node in graph.nodes() {
+        let form = component_forms.get(node.dirm_index)?;
+        by_form_offset.insert(
+            form.offset,
+            (node.id.clone(), component_kind_text(node.kind).to_owned()),
+        );
+    }
+
+    let json = graph
+        .nodes()
+        .iter()
+        .map(|node| {
+            let includes: Vec<_> = node
+                .includes
+                .iter()
+                .filter_map(|&index| graph.nodes().get(index))
+                .map(|target| target.id.clone())
+                .collect();
+            let included_by: Vec<_> = node
+                .included_by
+                .iter()
+                .filter_map(|&index| graph.nodes().get(index))
+                .map(|source| source.id.clone())
+                .collect();
+            json!({
+                "id": node.id,
+                "kind": component_kind_text(node.kind),
+                "dirm_index": node.dirm_index,
+                "includes": includes,
+                "included_by": included_by,
+            })
+        })
+        .collect();
+
+    Some(InspectComponents {
+        by_form_offset,
+        json,
+    })
+}
+
+fn inspect_chunk_json(chunk: &ChunkRecord, components: Option<&InspectComponents>) -> Value {
+    let mut json = Map::new();
+    json.insert("id".into(), Value::String(chunk_id_text(chunk.id)));
+    if let Some(form_type) = chunk.form_type {
+        json.insert("form_type".into(), Value::String(chunk_id_text(form_type)));
+    }
+    json.insert("offset".into(), Value::from(chunk.offset as u64));
+    json.insert("length".into(), Value::from(chunk.length as u64));
+    json.insert("depth".into(), Value::from(chunk.depth as u64));
+    json.insert(
+        "path".into(),
+        Value::Array(
+            chunk
+                .path
+                .iter()
+                .map(|index| Value::from(*index as u64))
+                .collect(),
+        ),
+    );
+    if let Some((id, kind)) =
+        components.and_then(|components| components.by_form_offset.get(&chunk.offset))
+    {
+        json.insert("component_id".into(), Value::String(id.clone()));
+        json.insert("kind".into(), Value::String(kind.clone()));
+    }
+    Value::Object(json)
+}
+
+fn print_inspect_human(chunks: &[ChunkRecord], components: Option<&InspectComponents>) {
+    for chunk in chunks {
+        let name = match chunk.form_type {
+            Some(form_type) => format!("FORM:{}", chunk_id_text(form_type)),
+            None => chunk_id_text(chunk.id),
+        };
+        let component = components
+            .and_then(|components| components.by_form_offset.get(&chunk.offset))
+            .map(|(id, _)| format!(" {{{id}}}"))
+            .unwrap_or_default();
+        println!(
+            "{}{} [{}] @ 0x{:08x}{}",
+            "  ".repeat(chunk.depth),
+            name,
+            chunk.length,
+            chunk.offset,
+            component
+        );
+    }
+}
+
+fn chunk_id_text(id: [u8; 4]) -> String {
+    String::from_utf8_lossy(&id).into_owned()
+}
+
+fn component_kind_text(kind: ComponentNodeKind) -> &'static str {
+    match kind {
+        ComponentNodeKind::Page => "page",
+        ComponentNodeKind::Dictionary => "dictionary",
+        ComponentNodeKind::Annotation => "annotation",
+        ComponentNodeKind::SharedOther => "shared_other",
+        ComponentNodeKind::Thumbnail => "thumbnail",
+    }
 }
 
 // ── render ────────────────────────────────────────────────────────────────────
@@ -655,36 +1359,48 @@ fn render_png(
 }
 
 fn render_pdf_structured(path: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let data = std::fs::read(path)?;
     let doc = djvu_rs::djvu_document::DjVuDocument::parse(&data)?;
-    // Stream straight to the file (#606) — the whole PDF is never buffered.
-    let file = std::fs::File::create(output)?;
-    let mut writer = std::io::BufWriter::new(file);
-    djvu_rs::pdf::djvu_to_pdf_to_writer(&doc, &djvu_rs::pdf::PdfOptions::default(), &mut writer)?;
-    use std::io::Write;
-    writer.flush()?;
-    Ok(())
+    // Stream straight to a sibling temp file (#606), then atomically commit
+    // only a complete PDF — the whole document is never buffered.
+    write_atomic_with(output, |file| {
+        let mut writer = std::io::BufWriter::new(file);
+        djvu_rs::pdf::djvu_to_pdf_to_writer(
+            &doc,
+            &djvu_rs::pdf::PdfOptions::default(),
+            &mut writer,
+        )?;
+        use std::io::Write;
+        writer.flush()?;
+        writer
+            .into_inner()
+            .map_err(|error| error.into_error())?
+            .sync_all()?;
+        Ok(())
+    })
 }
 
 #[cfg(feature = "epub")]
 fn render_epub_structured(path: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let data = std::fs::read(path)?;
     let doc = djvu_rs::djvu_document::DjVuDocument::parse(&data)?;
-    let epub = djvu_rs::epub::djvu_to_epub(&doc, &djvu_rs::epub::EpubOptions::default())?;
-    std::fs::write(output, epub)?;
-    Ok(())
+    // Stream straight to a sibling temp file, then atomically commit only a
+    // complete EPUB — the whole document is never buffered.
+    write_atomic_with(output, |file| {
+        let mut writer = std::io::BufWriter::new(file);
+        djvu_rs::epub::djvu_to_epub_writer(
+            &doc,
+            &djvu_rs::epub::EpubOptions::default(),
+            &mut writer,
+        )?;
+        use std::io::Write;
+        writer.flush()?;
+        writer
+            .into_inner()
+            .map_err(|error| error.into_error())?
+            .sync_all()?;
+        Ok(())
+    })
 }
 
 fn render_cbz(
@@ -702,12 +1418,6 @@ fn render_cbz(
         Some(vec![page_idx(page, count)?])
     };
 
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let data = std::fs::read(path)?;
     let doc = djvu_rs::djvu_document::DjVuDocument::parse(&data)?;
     let opts = djvu_rs::cbz::CbzOptions {
@@ -716,11 +1426,12 @@ fn render_cbz(
         pages,
     };
 
-    let file = std::fs::File::create(output)?;
-    let mut zip = zip::ZipWriter::new(file);
-    djvu_rs::cbz::write_pages(&mut zip, &doc, &opts)?;
-    zip.finish()?;
-    Ok(())
+    write_atomic_with(output, |file| {
+        let mut zip = zip::ZipWriter::new(file);
+        djvu_rs::cbz::write_pages(&mut zip, &doc, &opts)?;
+        zip.finish()?.sync_all()?;
+        Ok(())
+    })
 }
 
 /// Parallel PNG rendering: renders all pages concurrently using rayon, then
@@ -810,7 +1521,9 @@ fn cmd_ocr(
     // independent and OCR dominates wall-clock, so with the `parallel`
     // feature the render+recognize fan out over rayon (#573) — one backend
     // instance per task (`recognize` builds a fresh Tesseract per call, so
-    // instances never cross threads); text layers are injected sequentially
+    // instances never cross threads; the onnx backend re-optimizes its tract
+    // plans per page here — cross-page plan reuse is a known follow-up); text
+    // layers are injected sequentially
     // in page order afterwards, keeping the output bytes identical to the
     // sequential path.
     let count = doc.page_count();
@@ -905,12 +1618,28 @@ fn build_ocr_backend(
             }
         }
         OcrBackendChoice::Onnx => {
-            let _ = model_path;
-            Err(
-                "ONNX OCR backend is experimental library-only and has no stable CLI model \
-                 contract yet; use --backend tesseract with --features ocr-tesseract"
-                    .into(),
-            )
+            #[cfg(feature = "ocr-onnx")]
+            {
+                // Models come only from the pinned manifest (SHA-256 verified);
+                // an ad-hoc --model path would bypass that verification.
+                if model_path.is_some() {
+                    return Err(
+                        "--backend onnx does not take --model: models are pinned by \
+                         docs/ocr-model-manifest.toml; fetch them with \
+                         scripts/fetch_ocr_models.sh (directory override: \
+                         DJVU_OCR_MODELS_DIR)"
+                            .into(),
+                    );
+                }
+                Ok(Box::new(
+                    djvu_rs::ocr_onnx::pipeline::NeuralOcrBackend::load_default()?,
+                ))
+            }
+            #[cfg(not(feature = "ocr-onnx"))]
+            {
+                let _ = model_path;
+                Err("ONNX OCR backend is not enabled; rebuild with --features ocr-onnx".into())
+            }
         }
         OcrBackendChoice::Candle => {
             let _ = model_path;
@@ -1062,20 +1791,100 @@ fn cmd_bzz_decode(file: &Path, output: &Path) -> Result<(), Box<dyn std::error::
 
 // ── encode ───────────────────────────────────────────────────────────────────
 
+/// Wraps a page-ingestion error's rendered message so it satisfies
+/// `std::error::Error + Send + Sync + 'static`, the bound
+/// `encode_djvm_layered_shared_streaming`'s page-source closure requires.
+///
+/// Carries only the original error's `Display` text, not the error value
+/// itself: `png_io`'s decode errors (from the `png`/`zune-jpeg`/`tiff`
+/// crates, boxed as `Box<dyn std::error::Error>`) aren't guaranteed
+/// `Send + Sync`, but that rendered message is all the CLI ever showed the
+/// user for a failed page anyway (see `describe_layered_encode_error`,
+/// below, for how it's unwrapped back out on the way to the user).
+#[derive(Debug)]
+struct PageDecodeError(String);
+
+impl std::fmt::Display for PageDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PageDecodeError {}
+
+/// Format an [`djvu_rs::djvu_encode::EncodeError`] from the streaming entry
+/// point the way the eager per-path decode loop it replaces reported page
+/// failures: [`EncodeError::PageSource`](djvu_rs::djvu_encode::EncodeError::PageSource)
+/// (a page that failed to decode) surfaces the original ingestion message
+/// verbatim, with no extra prefix — that decode error used to propagate
+/// straight out of the eager loop via `?`, before any encode call existed to
+/// prefix it. Any other `EncodeError` keeps the "layered encode: " prefix
+/// the eager entry points' own error already used.
+fn describe_layered_encode_error(e: djvu_rs::djvu_encode::EncodeError) -> String {
+    match e {
+        djvu_rs::djvu_encode::EncodeError::PageSource(inner) => inner.to_string(),
+        other => format!("layered encode: {other}"),
+    }
+}
+
 fn cmd_encode(
     input: &Path,
     output: &Path,
-    dpi: u16,
-    quality: EncodeQualityArg,
+    dpi: Option<u16>,
+    profile_args: EncodeProfileArgs,
     segment_args: EncodeSegmentArgs,
     bg_bpp: Option<f32>,
     bundle_args: EncodeBundleArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // #694: without an explicit --dpi, a TIFF input's X/YResolution tags set
+    // the INFO dpi; everything else keeps the historical 300 default.
+    #[cfg(feature = "tiff")]
+    let dpi = match dpi {
+        Some(d) => d,
+        None => {
+            let tag_dpi = if input.is_file() && input_is_tiff(input) {
+                djvu_rs::png_io::tiff_file_dpi(input)?
+            } else {
+                None
+            };
+            match tag_dpi {
+                Some(d) => {
+                    eprintln!("dpi {d} (from TIFF resolution tags)");
+                    d
+                }
+                None => 300,
+            }
+        }
+    };
+    #[cfg(not(feature = "tiff"))]
+    let dpi = dpi.unwrap_or(300);
+    let EncodeProfileArgs {
+        quality,
+        bilevel_codec,
+        background,
+        icc,
+    } = profile_args;
+    // #694: --background composites transparent PNG/TIFF pixels onto a solid
+    // colour at decode time (the default preserves the alpha channel);
+    // --icc reject refuses ICC-profiled input instead of dropping the profile.
+    let policy = djvu_rs::ingest::IngestPolicy {
+        alpha: match background {
+            Some((red, green, blue)) => {
+                djvu_rs::ingest::AlphaCompositing::CompositeOnBackground { red, green, blue }
+            }
+            None => djvu_rs::ingest::AlphaCompositing::Preserve,
+        },
+        icc: match icc {
+            IccArg::Ignore => djvu_rs::ingest::IccHandling::Ignore,
+            IccArg::Reject => djvu_rs::ingest::IccHandling::Reject,
+        },
+        ..Default::default()
+    };
     let EncodeBundleArgs {
         shared_dict_pages,
         thumbnails,
     } = bundle_args;
-    use djvu_rs::djvu_encode::{EncodeQuality, PageEncoder};
+    use djvu_rs::djvu_encode::{BilevelCodec, EncodeQuality, PageEncoder};
     use djvu_rs::iw44_encode::{Iw44EncodeOptions, Iw44Target};
     use djvu_rs::jb2_encode::encode_djvm_bundle_jb2;
     use djvu_rs::segment::{SegmentOptions, segment_page};
@@ -1088,6 +1897,10 @@ fn cmd_encode(
     };
     let segment_options = segment_args.to_options(q)?;
 
+    if input.is_dir() && bilevel_codec != BilevelCodecArg::Jb2 {
+        return Err("--bilevel-codec smmr is supported only for single-image input".into());
+    }
+
     if input.is_dir() {
         let entries = directory_image_entries(input)?;
 
@@ -1099,7 +1912,7 @@ fn cmd_encode(
         let quality = if matches!(quality, EncodeQualityArg::Auto) {
             let mut all_bilevel = true;
             for path in &entries {
-                let pm = djvu_rs::png_io::decode_image_to_pixmap(path)?;
+                let pm = djvu_rs::png_io::decode_image_to_pixmap_with_policy(path, policy)?;
                 if djvu_rs::djvu_encode::classify_content(&pm)
                     != djvu_rs::djvu_encode::EncodeQuality::Lossless
                 {
@@ -1124,7 +1937,7 @@ fn cmd_encode(
             }
             let mut masks = Vec::with_capacity(entries.len());
             for path in &entries {
-                let pixmap = djvu_rs::png_io::decode_image_to_pixmap(path)?;
+                let pixmap = djvu_rs::png_io::decode_image_to_pixmap_with_policy(path, policy)?;
                 let seg = segment_page(&pixmap, &SegmentOptions::default());
                 masks.push(seg.mask);
             }
@@ -1142,19 +1955,26 @@ fn cmd_encode(
 
         // #452: layered multi-page now shares a Djbz dictionary across pages,
         // honoring --shared-dict-pages (was: per-page independent masks).
-        let mut pixmaps = Vec::with_capacity(entries.len());
-        for path in &entries {
-            pixmaps.push(djvu_rs::png_io::decode_image_to_pixmap(path)?);
-        }
-        let bytes = djvu_rs::djvu_encode::encode_djvm_layered_shared_with_thumbnails(
-            &pixmaps,
+        //
+        // Step 5 (encoder peak-memory plan): pages decode lazily, one window
+        // at a time, through the streaming entry point instead of building
+        // the whole `Vec<Pixmap>` up front — a directory of scanned pages is
+        // exactly the case that plan's RSS-scaling numbers targeted.
+        let bytes = djvu_rs::djvu_encode::encode_djvm_layered_shared_streaming(
+            entries.len(),
+            |idx| {
+                djvu_rs::png_io::decode_image_to_pixmap_with_policy(&entries[idx], policy)
+                    .map_err(|e| PageDecodeError(e.to_string()))
+            },
             q,
             dpi,
             segment_options,
             shared_dict_pages,
             thumbnails,
+            None,
+            None,
         )
-        .map_err(|e| format!("layered encode: {e}"))?;
+        .map_err(describe_layered_encode_error)?;
         std::fs::write(output, &bytes)?;
         eprintln!(
             "{} pages → {} ({} bytes, layered {:?}, shared-dict threshold = {}, thumbnails = {})",
@@ -1168,10 +1988,119 @@ fn cmd_encode(
         return Ok(());
     }
 
+    // #694: bilevel TIFF fast path — 1-bit pages decode straight to packed
+    // Bitmap masks, skipping RGBA expansion and segmentation. A 1-bit TIFF is
+    // bilevel by construction, so --quality auto resolves to Lossless without
+    // pixel statistics.
+    #[cfg(feature = "tiff")]
+    if input_is_tiff(input)
+        && matches!(quality, EncodeQualityArg::Auto | EncodeQualityArg::Lossless)
+        && let Some(bitmaps) = djvu_rs::png_io::decode_tiff_file_to_bitmaps(input, policy)?
+    {
+        if matches!(quality, EncodeQualityArg::Auto) {
+            eprintln!("auto profile: Lossless (1-bit TIFF)");
+        }
+        if bitmaps.len() > 1 {
+            if bilevel_codec != BilevelCodecArg::Jb2 {
+                return Err("--bilevel-codec smmr is supported only for single-image input".into());
+            }
+            if thumbnails {
+                eprintln!("--thumbnails is ignored for lossless (JB2-only) bundles");
+            }
+            let bytes = encode_djvm_bundle_jb2(&bitmaps, shared_dict_pages, dpi);
+            std::fs::write(output, &bytes)?;
+            eprintln!(
+                "{} ({} TIFF pages) → {} ({} bytes, shared-dict threshold = {})",
+                input.display(),
+                bitmaps.len(),
+                output.display(),
+                bytes.len(),
+                shared_dict_pages,
+            );
+            return Ok(());
+        }
+        if thumbnails {
+            eprintln!("--thumbnails applies to multi-page bundles only — ignored");
+        }
+        let codec = match bilevel_codec {
+            BilevelCodecArg::Jb2 => BilevelCodec::Jb2,
+            BilevelCodecArg::Smmr => BilevelCodec::Smmr,
+        };
+        let bm = &bitmaps[0];
+        let bytes = PageEncoder::from_bitmap(bm)
+            .with_dpi(dpi)
+            .with_quality(EncodeQuality::Lossless)
+            .with_bilevel_codec(codec)
+            .encode()
+            .map_err(|e| format!("encode: {e}"))?;
+        std::fs::write(output, &bytes)?;
+        eprintln!(
+            "{} → {} ({}×{} px, {} bytes)",
+            input.display(),
+            output.display(),
+            bm.width,
+            bm.height,
+            bytes.len(),
+        );
+        return Ok(());
+    }
+
+    // #694 slice 2: a multipage TIFF file maps to a multi-page bundle — one
+    // DjVu page per TIFF page (IFD), in stored order, same bundle rules as a
+    // directory input.
+    //
+    // Step 5 (encoder peak-memory plan): learn the page count from a cheap
+    // IFD-only pass (no pixel decode) instead of eagerly decoding every page
+    // just to check `len() > 1` — the actual pixel decoding happens lazily,
+    // one page at a time, in `encode_tiff_page_bundle` / below.
+    //
+    // The file's bytes are read into `tiff_bytes` exactly once here (not
+    // once per `LazyTiffPages` pass): `count_pages` and every
+    // `LazyTiffPages` reader `encode_tiff_page_bundle` opens borrow the same
+    // `Vec<u8>`, which this function keeps alive on the stack for the whole
+    // encode and frees on return — no leak, unlike an earlier version of
+    // this change.
+    #[cfg(feature = "tiff")]
+    let tiff_bytes: Option<Vec<u8>> = if input_is_tiff(input) {
+        Some(std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?)
+    } else {
+        None
+    };
+    #[cfg(feature = "tiff")]
+    let tiff_page_count: Option<usize> = match &tiff_bytes {
+        Some(bytes) => Some(djvu_rs::png_io::tiff_file_page_count(bytes, input)?),
+        None => None,
+    };
+    #[cfg(feature = "tiff")]
+    if tiff_page_count.is_some_and(|n| n > 1) {
+        if bilevel_codec != BilevelCodecArg::Jb2 {
+            return Err("--bilevel-codec smmr is supported only for single-image input".into());
+        }
+        return encode_tiff_page_bundle(
+            tiff_bytes.as_deref().unwrap(),
+            input,
+            output,
+            dpi,
+            quality,
+            q,
+            segment_options,
+            shared_dict_pages,
+            thumbnails,
+            policy,
+            tiff_page_count.unwrap(),
+        );
+    }
+
     if thumbnails {
         eprintln!("--thumbnails applies to multi-page bundles only — ignored");
     }
-    let pixmap = djvu_rs::png_io::decode_image_to_pixmap(input)?;
+    #[cfg(feature = "tiff")]
+    let pixmap = match tiff_page_count {
+        Some(_) => djvu_rs::png_io::decode_tiff_file_to_pixmap_with_policy(input, policy)?,
+        None => djvu_rs::png_io::decode_image_to_pixmap_with_policy(input, policy)?,
+    };
+    #[cfg(not(feature = "tiff"))]
+    let pixmap = djvu_rs::png_io::decode_image_to_pixmap_with_policy(input, policy)?;
 
     // --quality auto (#570): pick the profile from cheap pixel statistics.
     let q = if matches!(quality, EncodeQualityArg::Auto) {
@@ -1185,9 +2114,14 @@ fn cmd_encode(
     let bytes = match q {
         EncodeQuality::Lossless => {
             let seg = segment_page(&pixmap, &SegmentOptions::default());
+            let codec = match bilevel_codec {
+                BilevelCodecArg::Jb2 => BilevelCodec::Jb2,
+                BilevelCodecArg::Smmr => BilevelCodec::Smmr,
+            };
             PageEncoder::from_bitmap(&seg.mask)
                 .with_dpi(dpi)
                 .with_quality(EncodeQuality::Lossless)
+                .with_bilevel_codec(codec)
                 .encode()
         }
         EncodeQuality::Quality | EncodeQuality::Archival | EncodeQuality::Photo => {
@@ -1221,11 +2155,180 @@ fn cmd_encode(
     Ok(())
 }
 
+/// True when `path` looks like a TIFF input: `.tif`/`.tiff` extension, or a
+/// TIFF magic header for extension-less paths (mirrors `decode_image_to_pixmap`).
+#[cfg(feature = "tiff")]
+fn input_is_tiff(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("tif") | Some("tiff") => return true,
+        Some("png") | Some("jpg") | Some("jpeg") => return false,
+        _ => {}
+    }
+    let mut header = [0u8; 4];
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    use std::io::Read;
+    if f.read_exact(&mut header).is_err() {
+        return false;
+    }
+    header.starts_with(b"II\x2A\x00") || header.starts_with(b"MM\x00\x2A")
+}
+
+/// Encode a multipage TIFF file's pages as a multi-page bundle, mirroring
+/// the directory-input rules of `cmd_encode` (auto classification, lossless
+/// JB2 bundle, or layered bundle with a shared dictionary).
+///
+/// Step 5 (encoder peak-memory plan): pages decode lazily via
+/// [`djvu_rs::png_io::LazyTiffPages`] instead of the caller holding every
+/// page's `Pixmap` in one `Vec` — `page_count` is already known (a cheap
+/// IFD-only pass; see the call site) so this never needs to buffer more than
+/// the current page.
+///
+/// `--quality auto` reads every page once to classify, then (for a lossless
+/// or layered bundle) a second `LazyTiffPages` pass re-reads the file for the
+/// actual encode — `LazyTiffPages` is strictly forward-only and cannot
+/// rewind, so a fresh reader is opened per pass rather than trying to buffer
+/// pages across two consumers. Unlike the directory-input path (which reused
+/// its one already-decoded `Pixmap` per page for both classification and
+/// encoding before this step, and still does), **this is a genuine second
+/// full pixel decode of every page for TIFF input specifically** — the
+/// eager `Vec<Pixmap>` this step replaced decoded each TIFF page once and
+/// reused it for both passes. Measured worst case (an all-bilevel multipage
+/// TIFF, where the classify loop cannot break early and both passes run to
+/// completion): 8 pages 649.8ms → 651.0ms (+0.18%), 24 pages 1.948s → 1.948s
+/// (~0%) — within measurement noise both times, because JB2 mask encoding
+/// dominates total time far more than TIFF decode does. Accepted as a
+/// deliberate trade, not fixed: TIFF `-q auto`'s doubled decode is real but
+/// currently unmeasurable in wall clock, against a 94%-plus memory win: see
+/// `PERF_EXPERIMENTS.md`'s "Stream pages in the CLI encoder" entry.
+///
+/// All readers borrow the same `file_bytes` (read once by the caller), so
+/// re-opening a reader for a second pass costs nothing beyond re-parsing the
+/// TIFF header (the IFD directory), not another disk
+/// read.
+#[cfg(feature = "tiff")]
+#[allow(clippy::too_many_arguments)]
+fn encode_tiff_page_bundle(
+    file_bytes: &[u8],
+    input: &Path,
+    output: &Path,
+    dpi: u16,
+    quality: EncodeQualityArg,
+    q: djvu_rs::djvu_encode::EncodeQuality,
+    segment_options: Option<djvu_rs::segment::SegmentOptions>,
+    shared_dict_pages: usize,
+    thumbnails: bool,
+    policy: djvu_rs::ingest::IngestPolicy,
+    page_count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use djvu_rs::jb2_encode::encode_djvm_bundle_jb2;
+    use djvu_rs::png_io::LazyTiffPages;
+    use djvu_rs::segment::{SegmentOptions, segment_page};
+
+    let quality = if matches!(quality, EncodeQualityArg::Auto) {
+        let mut reader = LazyTiffPages::new(file_bytes, input, policy)?;
+        let mut all_bilevel = true;
+        for _ in 0..page_count {
+            let pm = reader.next_page()?;
+            if djvu_rs::djvu_encode::classify_content(&pm)
+                != djvu_rs::djvu_encode::EncodeQuality::Lossless
+            {
+                all_bilevel = false;
+                break;
+            }
+        }
+        let picked = if all_bilevel {
+            EncodeQualityArg::Lossless
+        } else {
+            EncodeQualityArg::Quality
+        };
+        eprintln!("auto profile (bundle): {picked:?}");
+        picked
+    } else {
+        quality
+    };
+
+    let bytes = if matches!(quality, EncodeQualityArg::Lossless) {
+        if thumbnails {
+            eprintln!("--thumbnails is ignored for lossless (JB2-only) bundles");
+        }
+        let mut reader = LazyTiffPages::new(file_bytes, input, policy)?;
+        let mut masks = Vec::with_capacity(page_count);
+        for _ in 0..page_count {
+            let pm = reader.next_page()?;
+            masks.push(segment_page(&pm, &SegmentOptions::default()).mask);
+        }
+        encode_djvm_bundle_jb2(&masks, shared_dict_pages, dpi)
+    } else {
+        let mut reader = LazyTiffPages::new(file_bytes, input, policy)?;
+        djvu_rs::djvu_encode::encode_djvm_layered_shared_streaming(
+            page_count,
+            |_idx| {
+                reader
+                    .next_page()
+                    .map_err(|e| PageDecodeError(e.to_string()))
+            },
+            q,
+            dpi,
+            segment_options,
+            shared_dict_pages,
+            thumbnails,
+            None,
+            None,
+        )
+        .map_err(describe_layered_encode_error)?
+    };
+    std::fs::write(output, &bytes)?;
+    eprintln!(
+        "{} ({page_count} TIFF pages) → {} ({} bytes, shared-dict threshold = {})",
+        input.display(),
+        output.display(),
+        bytes.len(),
+        shared_dict_pages,
+    );
+    Ok(())
+}
+
 /// Multi-page-bundle options of `djvu encode` (single-page paths ignore them).
 #[derive(Clone, Copy)]
 struct EncodeBundleArgs {
     shared_dict_pages: usize,
     thumbnails: bool,
+}
+
+#[derive(Clone)]
+struct EncodeProfileArgs {
+    quality: EncodeQualityArg,
+    bilevel_codec: BilevelCodecArg,
+    background: Option<(u8, u8, u8)>,
+    icc: IccArg,
+}
+
+/// Parse `--background`: `RRGGBB` hex with optional `#`, or `white`/`black`.
+fn parse_background_color(s: &str) -> Result<(u8, u8, u8), String> {
+    match s.to_ascii_lowercase().as_str() {
+        "white" => return Ok((255, 255, 255)),
+        "black" => return Ok((0, 0, 0)),
+        _ => {}
+    }
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() == 6
+        && let Ok(v) = u32::from_str_radix(hex, 16)
+    {
+        return Ok((
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+        ));
+    }
+    Err(format!(
+        "invalid colour '{s}' (expected RRGGBB hex, 'white', or 'black')"
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -1234,6 +2337,8 @@ struct EncodeSegmentArgs {
     sauvola_window: u32,
     sauvola_k: f32,
     bg_inpaint: bool,
+    block_classify: bool,
+    adaptive_bg_subsample: bool,
 }
 
 impl EncodeSegmentArgs {
@@ -1244,15 +2349,17 @@ impl EncodeSegmentArgs {
         use djvu_rs::djvu_encode::EncodeQuality;
         use djvu_rs::segment::Binarization;
 
-        let has_segment_flags = self.binarization != BinarizationArg::Fixed || self.bg_inpaint;
+        let has_segment_flags = self.binarization != BinarizationArg::Fixed
+            || self.bg_inpaint
+            || self.block_classify
+            || self.adaptive_bg_subsample;
         if !has_segment_flags {
             return Ok(None);
         }
         if matches!(quality, EncodeQuality::Lossless) {
-            return Err(
-                "--binarization and --bg-inpaint require --quality quality or --quality archival"
-                    .into(),
-            );
+            return Err("--binarization, --bg-inpaint, --block-classify and \
+                 --adaptive-bg-subsample require --quality quality or --quality archival"
+                .into());
         }
 
         let mut opts = quality.default_segment_options();
@@ -1264,6 +2371,8 @@ impl EncodeSegmentArgs {
             },
         };
         opts.bg_inpaint = self.bg_inpaint;
+        opts.block_classify = self.block_classify;
+        opts.adaptive_bg_subsample = self.adaptive_bg_subsample;
         if self.bg_inpaint {
             // `--bg-inpaint` explicitly selects the ring-average fill, so turn
             // off the colour profile's default harmonic diffusion (which would
@@ -1297,4 +2406,29 @@ fn directory_image_entries(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::erro
         .into());
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_stream_failure_preserves_destination_and_cleans_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("export.pdf");
+        std::fs::write(&output, b"original destination").unwrap();
+        let temp = dir
+            .path()
+            .join(format!(".export.pdf.{}.tmp", std::process::id()));
+
+        let result = write_atomic_with(&output, |mut staged| {
+            use std::io::Write;
+            staged.write_all(b"partial export")?;
+            Err(std::io::Error::other("cancelled export").into())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"original destination");
+        assert!(!temp.exists(), "failed export must not leave a temp file");
+    }
 }

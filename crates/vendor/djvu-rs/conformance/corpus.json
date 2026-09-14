@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "render": {
+    "width": 99999,
+    "channel_tolerance": 4,
+    "max_mismatch_pct": 0.8,
+    "max_mean_abs_diff": 0.2
+  },
+  "documents": [
+    { "path": "tests/fixtures/boy.djvu", "pages": 1 },
+    { "path": "tests/fixtures/boy_jb2.djvu", "pages": 1 },
+    { "path": "tests/fixtures/chicken.djvu", "pages": 1 },
+    { "path": "tests/fixtures/ccitt_2.djvu", "pages": 1 },
+    { "path": "tests/fixtures/links.djvu", "pages": 1 },
+    { "path": "tests/fixtures/problem_page.djvu", "pages": 1 },
+    { "path": "tests/fixtures/big-scanned-page.djvu", "pages": 1 },
+    { "path": "tests/fixtures/navm_fgbz.djvu", "pages": 6 },
+    { "path": "tests/fixtures/colorbook.djvu", "pages": 1, "max_pages": 1 }
+  ]
+}

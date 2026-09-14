@@ -37,6 +37,7 @@ use crate::sexp::SExpr;
 
 /// Errors from annotation parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AnnotationError {
     /// A hex color string is malformed.
     #[error("invalid color value: {0}")]

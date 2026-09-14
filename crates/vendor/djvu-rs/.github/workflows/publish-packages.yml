@@ -1,0 +1,476 @@
+# Build, smoke-test, attest, and (optionally) publish Python wheels + npm package.
+# Triggered on the same version tags as crates.io publish.yml. A failed matrix
+# leg or smoke test fails the gate so an incomplete set is never published.
+name: Publish packages (PyPI + npm)
+
+on:
+  push:
+    tags: ['v*', 'djvu-rs-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag or ref to package (e.g. v0.27.0 or main)'
+        required: true
+        default: 'main'
+  pull_request:
+    paths:
+      - 'djvu-py/**'
+      - 'scripts/build_wasm_dual.sh'
+      - 'scripts/check_package_versions.sh'
+      - 'scripts/smoke_python_wheel.py'
+      - 'scripts/smoke_npm_package.mjs'
+      - 'scripts/smoke_npm_browser.mjs'
+      - 'scripts/package_checksums.sh'
+      - 'docs/packaging.md'
+      - '.github/workflows/publish-packages.yml'
+      - 'Cargo.toml'
+      - 'Makefile'
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: publish-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      ref: ${{ steps.ref.outputs.ref }}
+      is_release: ${{ steps.ref.outputs.is_release }}
+      full_matrix: ${{ steps.ref.outputs.full_matrix }}
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            REF="${{ github.sha }}"
+          else
+            REF="${GITHUB_REF_NAME}"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+          IS_RELEASE=false
+          FULL_MATRIX=false
+          if [ "${{ github.event_name }}" = "push" ]; then
+            IS_RELEASE=true
+            FULL_MATRIX=true
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FULL_MATRIX=true
+            case "$REF" in
+              v*|djvu-rs-v*) IS_RELEASE=true ;;
+            esac
+          fi
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "full_matrix=$FULL_MATRIX" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Check package versions
+        run: bash scripts/check_package_versions.sh
+
+      - name: Read crate version
+        id: ver
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Packaging version $VERSION (ref ${{ steps.ref.outputs.ref }})"
+
+  python-sdist:
+    name: Python sdist
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: py-sdist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --manifest-path djvu-py/Cargo.toml --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  python-wheels:
+    name: Python wheels (${{ matrix.label }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: linux-x64-manylinux-pr
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: auto
+            when: pr
+          - label: linux-x64-manylinux
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: auto
+            when: release
+          - label: linux-x64-musllinux
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: musllinux_1_2
+            when: release
+          - label: linux-arm64-manylinux
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: auto
+            when: release
+          - label: linux-arm64-musllinux
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: musllinux_1_2
+            when: release
+          - label: macos-x64
+            # macos-13 was retired by GitHub (Dec 2025); macos-15-intel is the
+            # supported Intel image (through Aug 2027). Jobs on retired labels
+            # queue forever, silently blocking the publish chain.
+            os: macos-15-intel
+            target: x86_64
+            manylinux: ''
+            when: release
+          - label: macos-arm64
+            os: macos-14
+            target: aarch64
+            manylinux: ''
+            when: release
+          - label: windows-x64
+            os: windows-latest
+            target: x64
+            manylinux: ''
+            when: release
+    steps:
+      - name: Decide whether to run
+        id: gate
+        shell: bash
+        run: |
+          full="${{ needs.resolve.outputs.full_matrix }}"
+          when="${{ matrix.when }}"
+          if [ "$full" = "true" ] && [ "$when" = "release" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$full" != "true" ] && [ "$when" = "pr" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Install Rust stable
+        if: steps.gate.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true' && runner.os != 'Linux'
+        with:
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
+        with:
+          python-version: '3.12'
+
+      - name: Build wheels
+        if: steps.gate.outputs.run == 'true'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --manifest-path djvu-py/Cargo.toml --out dist --find-interpreter
+          sccache: 'true'
+
+      - name: Upload wheels
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-${{ matrix.label }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+      - name: Skip marker
+        if: steps.gate.outputs.run != 'true'
+        run: echo "Skipping ${{ matrix.label }} on this event"
+
+  python-smoke:
+    name: Python wheel smoke
+    needs: [resolve, python-wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-wheels-*
+          path: wheelhouse
+          merge-multiple: true
+
+      - name: Install wheel in clean prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/djvu-wheel-venv
+          /tmp/djvu-wheel-venv/bin/pip install --upgrade pip
+          # Let pip pick the wheel compatible with this runner and interpreter:
+          # the wheelhouse also holds arm64/macOS/Windows and other-CPython
+          # wheels, so "first .whl by name" is not installable here.
+          ls wheelhouse
+          /tmp/djvu-wheel-venv/bin/pip install --no-index --find-links wheelhouse \
+            "djvu-rs==${{ needs.resolve.outputs.version }}"
+          cd /tmp
+          /tmp/djvu-wheel-venv/bin/python "$GITHUB_WORKSPACE/scripts/smoke_python_wheel.py" \
+            --fixture "$GITHUB_WORKSPACE/tests/fixtures/boy.djvu" \
+            --expect-version "${{ needs.resolve.outputs.version }}" \
+            --repo-root "$GITHUB_WORKSPACE"
+
+  npm-package:
+    name: npm package (wasm dual)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: npm-wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.13.1
+
+      - name: Build dual wasm package
+        run: OUT="$PWD/npm-pkg" make wasm
+
+      - name: Verify npm package version
+        env:
+          CHECK_NPM_PACKAGE: '1'
+          NPM_PACKAGE_JSON: npm-pkg/package.json
+        run: bash scripts/check_package_versions.sh
+
+      - name: Pack tarball
+        run: |
+          set -euo pipefail
+          mkdir -p npm-dist
+          (cd npm-pkg && npm pack --pack-destination ../npm-dist)
+          ls -la npm-dist
+
+      - name: Upload npm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: |
+            npm-pkg/**
+            npm-dist/*.tgz
+          if-no-files-found: error
+
+  npm-smoke:
+    name: npm smoke (node + bundler + browser)
+    needs: [resolve, npm-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: .
+
+      - name: Node + bundler smoke from tarball
+        run: |
+          set -euo pipefail
+          TGZ=$(ls npm-dist/*.tgz | head -1)
+          node scripts/smoke_npm_package.mjs \
+            --package "$TGZ" \
+            --fixture tests/fixtures/boy.djvu \
+            --expect-version "${{ needs.resolve.outputs.version }}" \
+            --bundler
+
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright@1.53.0
+          npx playwright install --with-deps chromium
+
+      - name: Browser smoke
+        run: |
+          node scripts/smoke_npm_browser.mjs \
+            --package npm-pkg \
+            --fixture tests/fixtures/boy.djvu
+
+  checksums-and-attest:
+    name: Checksums + attestations
+    needs: [resolve, python-sdist, python-wheels, python-smoke, npm-package, npm-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          path: artifacts
+          merge-multiple: false
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          find artifacts -type f \( -name '*.whl' -o -name 'djvu_rs-*.tar.gz' -o -name 'djvu-rs-*.tgz' \) \
+            -print -exec cp {} release-files/ \;
+          if [ -f artifacts/npm-package/package.json ]; then
+            cp artifacts/npm-package/package.json release-files/npm-package.json
+            cp artifacts/npm-package/djvu_rs.d.ts release-files/djvu_rs.d.ts
+          fi
+          ls -la release-files
+          test "$(find release-files -type f | wc -l)" -ge 3
+
+      - name: Write SHA256SUMS
+        run: bash scripts/package_checksums.sh release-files release-files/SHA256SUMS
+
+      - name: Upload checksums bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-checksums
+          path: release-files/
+          if-no-files-found: error
+
+      - name: Attest release files
+        if: needs.resolve.outputs.is_release == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'release-files/*'
+
+  package-gate:
+    name: Package gate
+    needs: [resolve, python-sdist, python-wheels, python-smoke, npm-package, npm-smoke, checksums-and-attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require complete package set
+        run: |
+          set -euo pipefail
+          echo "version=${{ needs.resolve.outputs.version }}"
+          echo "All packaging jobs succeeded — set is complete."
+
+  publish-pypi:
+    name: Publish PyPI
+    needs: [resolve, package-gate]
+    if: needs.resolve.outputs.is_release == 'true' && vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download wheels + sdist
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  publish-npm:
+    name: Publish npm
+    needs: [resolve, package-gate]
+    if: needs.resolve.outputs.is_release == 'true' && vars.PUBLISH_NPM == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download npm package
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: .
+
+      - name: Publish
+        working-directory: npm-pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

@@ -35,6 +35,9 @@
 //!
 //! - [`LazyDocument`] — seek-based lazy indexing with a concurrent per-page cache
 //! - [`render_progressive_stream`] — streaming progressive render yielding one frame per BG44 chunk
+//! - [`render_tile_async`] / [`render_tile_progressive_stream`] — tile-first
+//!   rendering (#691) off the runtime thread, with quality steps and
+//!   cancellation
 //! - [`load_document_async_streaming`] — head-first async loader exposing per-page byte ranges
 
 use std::{collections::BTreeMap, ops::Range, sync::Arc};
@@ -48,6 +51,7 @@ use crate::{
     dirm::{DirmComponentKind, DirmPayload},
     djvu_document::{DjVuDocument, DjVuPage, DocError, SharedDict},
     djvu_render::{self, RenderError, RenderOptions},
+    djvu_tile::{TileCancelToken, TileError, TileRenderControls},
     error::IffError,
     iff::{MAGIC, parse_form},
     pixmap::Pixmap,
@@ -57,6 +61,7 @@ use crate::{
 
 /// Errors from async rendering.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AsyncRenderError {
     /// The underlying render failed.
     #[error("render error: {0}")]
@@ -67,10 +72,25 @@ pub enum AsyncRenderError {
     Join(String),
 }
 
+/// Errors from async tile rendering (#691).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AsyncTileError {
+    /// The underlying tile render failed — including
+    /// [`TileError::Cancelled`] when the token fired.
+    #[error("tile error: {0}")]
+    Tile(#[from] TileError),
+
+    /// The blocking task was cancelled or panicked.
+    #[error("spawn_blocking join error: {0}")]
+    Join(String),
+}
+
 /// Errors from async document loading (both the streaming loader and the true
 /// lazy loader). One enum spans the whole async "couldn't get the document /
 /// page" seam (#369).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AsyncLazyError {
     /// I/O error from the underlying async reader.
     #[error("I/O error: {0}")]
@@ -494,6 +514,87 @@ pub fn render_progressive_stream(
     }
 }
 
+/// Render one tile off the async runtime thread (#691).
+///
+/// The async counterpart of
+/// [`djvu_tile::render_tile_with`](crate::djvu_tile::render_tile_with): the
+/// render runs inside [`tokio::task::spawn_blocking`] and carries every byte
+/// guarantee of the sync entry point unchanged — default controls match
+/// [`djvu_tile::render_tile`](crate::djvu_tile::render_tile) exactly,
+/// `use_cache` matches the cached path, `quality_step: Some(k)` matches the
+/// tile's crop of progressive frame `k`.
+///
+/// Cancel from any thread or task by cancelling a clone of the token in
+/// `controls.cancel`; the render stops at its next checkpoint with
+/// [`TileError::Cancelled`] (wrapped in [`AsyncTileError::Tile`]).
+pub async fn render_tile_async(
+    page: &DjVuPage,
+    opts: RenderOptions,
+    tile_size: u32,
+    col: u32,
+    row: u32,
+    controls: TileRenderControls,
+) -> Result<Pixmap, AsyncTileError> {
+    let page = page.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::djvu_tile::render_tile_with(&page, &opts, tile_size, col, row, &controls)
+            .map_err(AsyncTileError::Tile)
+    })
+    .await
+    .map_err(|e| AsyncTileError::Join(e.to_string()))?
+}
+
+/// Progressive quality ladder for one tile, as a lazy stream (#691).
+///
+/// The tile-granular counterpart of [`render_progressive_stream`]: yields one
+/// frame per quality step `0..progressive_steps(page)`, coarsest first. Each
+/// frame is byte-identical to the matching crop of the full-page frame from
+/// [`render_progressive_step`](djvu_render::render_progressive_step) — so
+/// per-tile refinement and full-page refinement can be mixed freely in one
+/// viewer. Bilevel pages (no BG44 data) yield exactly one full-quality frame.
+///
+/// Each frame is produced via [`tokio::task::spawn_blocking`] just before it
+/// is yielded. If `cancel` fires, the stream yields one
+/// `Err(AsyncTileError::Tile(TileError::Cancelled))` and ends — the token is
+/// sticky, so no later step could succeed.
+pub fn render_tile_progressive_stream(
+    page: &DjVuPage,
+    opts: RenderOptions,
+    tile_size: u32,
+    col: u32,
+    row: u32,
+    cancel: Option<TileCancelToken>,
+) -> impl futures_core::Stream<Item = Result<Pixmap, AsyncTileError>> {
+    // Single clone wrapped in Arc — all spawn_blocking closures share
+    // this one allocation instead of cloning the full page each time.
+    let page = Arc::new(page.clone());
+    let steps = djvu_render::progressive_steps(&page);
+
+    async_stream::stream! {
+        for step in 0..steps {
+            let page = Arc::clone(&page);
+            let opts = opts.clone();
+            let controls = TileRenderControls {
+                quality_step: Some(step),
+                cancel: cancel.clone(),
+                use_cache: false,
+            };
+            let result = tokio::task::spawn_blocking(move || {
+                crate::djvu_tile::render_tile_with(&page, &opts, tile_size, col, row, &controls)
+                    .map_err(AsyncTileError::Tile)
+            })
+            .await
+            .map_err(|e| AsyncTileError::Join(e.to_string()))
+            .and_then(|r| r);
+            let cancelled = matches!(result, Err(AsyncTileError::Tile(TileError::Cancelled)));
+            yield result;
+            if cancelled {
+                return;
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -620,6 +721,116 @@ mod tests {
             count, expected_count,
             "frame count must equal BG44 chunk count"
         );
+    }
+
+    // ── render_tile_async / render_tile_progressive_stream tests ─────────────
+
+    /// `render_tile_async` with default controls matches the sync tile
+    /// renderer byte-for-byte.
+    #[tokio::test]
+    async fn tile_async_matches_sync_tile() {
+        let doc = load_doc("chicken.djvu");
+        let page = doc.page(0).unwrap();
+        let opts = RenderOptions {
+            width: 100,
+            height: 80,
+            ..Default::default()
+        };
+
+        let sync_pm =
+            crate::djvu_tile::render_tile(page, &opts, 32, 1, 1).expect("sync tile must render");
+        let async_pm = render_tile_async(page, opts, 32, 1, 1, TileRenderControls::default())
+            .await
+            .expect("async tile must render");
+        assert_eq!(
+            sync_pm.data, async_pm.data,
+            "async tile must match sync tile"
+        );
+    }
+
+    /// The tile stream yields one frame per progressive step, each
+    /// byte-identical to the sync quality-step render, ending at full quality.
+    #[tokio::test]
+    async fn tile_progressive_stream_frames_match_quality_steps() {
+        use futures::StreamExt;
+        let doc = load_doc("chicken.djvu");
+        let page = doc.page(0).unwrap();
+        let steps = djvu_render::progressive_steps(page);
+        let opts = RenderOptions {
+            width: 100,
+            height: 80,
+            ..Default::default()
+        };
+
+        let stream = render_tile_progressive_stream(page, opts.clone(), 32, 1, 1, None);
+        futures::pin_mut!(stream);
+
+        let mut frames: Vec<Pixmap> = Vec::new();
+        while let Some(result) = stream.next().await {
+            frames.push(result.expect("frame should succeed"));
+        }
+        assert_eq!(frames.len(), steps, "one frame per progressive step");
+
+        for (step, frame) in frames.iter().enumerate() {
+            let controls = TileRenderControls {
+                quality_step: Some(step),
+                ..Default::default()
+            };
+            let expected = crate::djvu_tile::render_tile_with(page, &opts, 32, 1, 1, &controls)
+                .expect("sync quality step must render");
+            assert_eq!(
+                frame.data, expected.data,
+                "stream frame {step} must match sync quality step"
+            );
+        }
+
+        let full = crate::djvu_tile::render_tile(page, &opts, 32, 1, 1).expect("full tile");
+        assert_eq!(
+            frames.last().unwrap().data,
+            full.data,
+            "last stream frame must be full quality"
+        );
+    }
+
+    /// A cancelled token makes `render_tile_async` fail with
+    /// `TileError::Cancelled` and ends the tile stream after one error.
+    #[tokio::test]
+    async fn tile_cancellation_surfaces_and_ends_stream() {
+        use futures::StreamExt;
+        let doc = load_doc("chicken.djvu");
+        let page = doc.page(0).unwrap();
+        let opts = RenderOptions {
+            width: 100,
+            height: 80,
+            ..Default::default()
+        };
+
+        let token = TileCancelToken::new();
+        token.cancel();
+
+        let controls = TileRenderControls {
+            cancel: Some(token.clone()),
+            ..Default::default()
+        };
+        let err = render_tile_async(page, opts.clone(), 32, 1, 1, controls)
+            .await
+            .expect_err("pre-cancelled render must fail");
+        assert!(
+            matches!(err, AsyncTileError::Tile(TileError::Cancelled)),
+            "expected Cancelled, got: {err}"
+        );
+
+        let stream = render_tile_progressive_stream(page, opts, 32, 1, 1, Some(token));
+        futures::pin_mut!(stream);
+        let mut items = 0usize;
+        while let Some(result) = stream.next().await {
+            items += 1;
+            assert!(
+                matches!(result, Err(AsyncTileError::Tile(TileError::Cancelled))),
+                "cancelled stream must only yield Cancelled"
+            );
+        }
+        assert_eq!(items, 1, "stream must end after the first Cancelled error");
     }
 
     // ── load_document_async_streaming tests ──────────────────────────────────

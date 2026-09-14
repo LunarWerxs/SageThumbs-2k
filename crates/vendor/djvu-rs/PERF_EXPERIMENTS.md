@@ -5,6 +5,266 @@ numbers, decision, reason. Referenced from issue templates ("Record result
 in `PERF_EXPERIMENTS.md` (Kept or Reverted + reason)") and from
 `.github/workflows/bench.yml`.
 
+### JB2_REC6_DECISION (#684) — same-size record-6 refinement: guarded experimental, not default — **Reverted as default / Kept as guarded experimental lever** (2026-07-16)
+
+**Issue.** #684 requires that same-size JB2 record-6 refinement is "either
+productionized with guards or rejected with measured evidence." This entry
+records the final decision on the real-byte, round-trip evidence.
+
+**Approach.** Re-ran the Phase-A2 real-byte harness
+(`examples/jb2_same_size_a2.rs`, `--features experimental`) that emits actual
+`Sjbz` bytes with same-size lossless record-6 refinement and requires a
+pixel-exact round-trip. Two corpora: `watchmaker` (12-page text, Sjbz-heavy) and
+`pathogenic_bacteria_1896` (517-page scan). Compared against cross-size rec-6
+(#322, separately rejected) and the shipped lossy `lossy_text()` opt-in
+(Branch B).
+
+**Numbers (real emitted `Sjbz`, refinement fraction = flipped-pixel budget).**
+
+| Corpus | baseline Sjbz | frac 2% | frac 5% | frac 8% | round-trip |
+|--------|--------------:|--------:|--------:|--------:|-----------|
+| watchmaker (text) | 130,036 B | **−11.67%** | −11.20% | −10.65% | 12/12 exact |
+| pathogenic_bacteria (517 pp) | 34,254,905 B | +0.00% | +0.02% | +0.53% | 517/517 exact |
+
+**Decision.** **Rejected as a default and as a shipped stable opt-in; kept as a
+guarded, density-auto experimental lever.** The mechanism is lossless and
+interop-safe (every round-trip pixel-exact, unlike cross-size rec-6 which #322
+rejected at +4.37%). But the win is **corpus-dependent**: −11.67% on dense
+same-size-twin text, but ~0% to +0.53% on a large archival scan, because rec-6
+is blit-only and *poisons* the future rec-7 exact-copy hits of any glyph it
+refines. It therefore stays behind the `experimental` cargo feature with the
+`Jb2EncodeOptions::same_size_rec6_auto` density-probe guard (fires only when the
+near-twin density clears `SAME_SIZE_REC6_AUTO_DENSITY_THRESHOLD`; tested by
+`same_size_rec6_auto_{fires_on_dense_near_twins,stays_off_on_sparse_input}` and
+`same_size_rec6_off_is_byte_identical`). Archival-safe defaults stay
+byte-identical; users wanting larger text savings use the already-shipped lossy
+`lossy_text()` opt-in (−22% at SSIM ≥ 0.999). This closes the #684 "same-size
+JB2 refinement" acceptance criterion with measured evidence; the residual
+small-page `Sjbz` overhead (e.g. `cable` 2.1×) is fixed per-page header cost, a
+separate lever tracked in `docs/jb2-size-gap-plan.md`.
+
+### IW44_LUMA_PLATEAU (#684) — activation threshold stranded dense-page coefficients — **Kept** (2026-07-16)
+
+**Issue.** The scorecard flagged `goody two-shoes` as `1.345×` size at only
+`26.39 dB` luma PSNR against `c44`'s `40.83 dB`. A profile that is both larger
+*and* much lower fidelity is a Pareto loss, not a size/quality trade — worth
+attributing before any coding change.
+
+**Approach.** Reproduced the scorecard's Photo path byte-for-byte through the
+`djvu encode --quality photo` CLI (identical `440,864 B` output), decoded with
+`ddjvu`, and measured per-component PSNR against the source raster. Then
+isolated the cause by elimination: (a) re-ran the same page as **pure
+grayscale** (`encode_iw44_gray`, no Cb/Cr at all); (b) leaned on the already
+recorded coefficient-identical forward-DWT result (IW44 transform hypothesis is
+rejected, see the scorecard entry and the DWT parity note); (c) swept five
+colour corpus pages to separate content classes.
+
+**Numbers.** Photo profile vs `c44` default, luma PSNR against source:
+
+| Page | Content | ours / c44 bytes | ours / c44 luma PSNR |
+|------|---------|-----------------:|---------------------:|
+| watchmaker | light gray scan | 692,182 / 665,625 | 38.73 / 45.28 dB ✅ |
+| conquete_paix | near-gray | 585,422 / 544,993 | 42.35 / — dB ✅ |
+| goody two-shoes | colour, 500 dpi | 440,864 / 327,798 | 26.39 / 40.83 dB ❌ |
+| war_1812 | colour | 761,436 / 498,210 | 25.90 / — dB ❌ |
+| map_atlas | colour | 1,696,114 / 1,445,273 | 26.85 / — dB ❌ |
+
+Grayscale-only control (`goody`, no chroma): ours `390,102 B / 27.62 dB` vs
+`c44` `302,863 B / 41.00 dB` — the failure reproduces with luma alone, so it is
+**not** a Cb/Cr desync. Spatial error is roughly uniform; luma stays pinned near
+`~27 dB` even at the full 100-slice budget (10 chunks × 10 slices, no rate
+control) where near-lossless is expected.
+
+**Further isolation (2026-07-16, same session).** With temporary probes (all
+reverted; no source change landed):
+
+- **Transform ruled out.** Forward (`i16`) → inverse (decoder) round-trip on the
+  raw plane is **bit-exact** for both goody and watchmaker (`plane-RMSE = 0.00`,
+  maxdiff 0). The DWT is a perfect reconstruction pair, so the earlier
+  "coefficient-identical DWT" claim also holds on high-energy content.
+- **Decoder ruled out.** Our decoder and `ddjvu` decode our output
+  **byte-identically** (MSE 0.0, both 27.62 dB) — no interop / stream divergence.
+- **Not a budget.** Raising the slice budget to 250 gives `27.91 dB` at
+  `7.4 MB` — quality **plateaus** while size explodes ~19×. Extra slices emit
+  bytes that do not converge the reconstruction.
+- **Not simple i16 overflow.** Post-transform coefficient range is
+  goody `[-12311, 17764]`, watchmaker `[-27652, 32213]` — both inside `i16`, and
+  the *working* page has the *larger* coefficients.
+- **Coefficient importance, not magnitude.** goody's coefficients are denser
+  across all bands; its error concentrates where inverse-transform gain is
+  highest (low-frequency bands). Per-band `recon`-vs-true-`blocks` RMSE at 100
+  slices leaves band 0 (`b0≈313` goody) well above its quant floor, i.e. even
+  the DC band is under-refined.
+- **Lead (needs an i32-safe re-probe).** Inverse-transforming the encoder's own
+  `recon` mirror scored `~27 dB` for *both* pages while the real decode is
+  `27.6` / `38.7 dB`. That hints the encoder's `recon` model may diverge from the
+  decoder's running reconstruction — but the probe cast `recon` (`i32`) to `i16`,
+  which can corrupt watchmaker's near-`i16`-limit values, so treat this as a
+  hypothesis to confirm with an overflow-safe probe, not a settled fact.
+
+**Root cause.** The three IW44 significance gates in
+`crates/djvu-iw44/src/encode.rs` — the `any_unk_activates` predictor
+(`~1427`), the `is_new` bucket predictor (`~1475`), and the real activation
+decision in `newly_active_encoding_pass` (`~1517`) — used `|V| > (11s/16).max(1)`
+instead of the IW44 encoder significance threshold `|V| >= s`. The `11s/16` value
+is the *decoder's* midpoint decision boundary, not the *encoder's* significance
+test. Activating at `11s/16` starts a coefficient one bit-plane too early: the
+decoder then reconstructs it at `11s/8`, which overshoots any true value in
+`(11s/16, s)`, and later refinement (bounded by the geometric `s/2 + s/4 + …`
+tail) cannot pull it back down on dense pages. The `.max(1)` floor also stranded
+genuine `±1` coefficients at `s=1` (where `11·1/16` truncates to 0). Sparse pages
+(mostly-white scans) hid the defect because they have few significant
+high-frequency coefficients; dense illustrations exposed it as a hard `~27 dB`
+plateau. This supersedes the earlier `#iw44-1` change, which had switched these
+gates to `11s/16` believing it matched the activation pass — it did match the
+*wrong* threshold. DjVuLibre's `IW44EncodeCodec.cpp` uses `>= s`.
+
+**Fix.** All three gates now use `|V| >= s`. Two unit regression tests
+(`encode.rs` ~2288, ~2314) assert the encoder `recon` and the decoder `blocks`
+agree that a `±1` coefficient survives to `s=1` and that a mid-magnitude
+coefficient waits for its significance step. Diff is `encode.rs`-only.
+
+**Numbers (Kept).** Grayscale (pure luma) and colour, decoded PSNR vs source:
+
+| Page | Before bytes / dB | After bytes / dB | c44 ref |
+|------|------------------:|-----------------:|--------:|
+| goody gray | 390,102 / 27.62 | **315,966 / 41.33** | 302,863 / 41.00 |
+| watchmaker gray | 692,182 / 38.73 | **682,598 / 45.96** | — |
+| goody colour | 440,864 / 25.97 | **355,238 / 32.79** | — |
+
+Scorecard size ratio (ours ÷ c44) after the fix: `goody-twoshoes-color`
+**1.345× → 1.084×**, `watchmaker-color` `1.040× → 1.025×`; all fidelity gates
+pass. The bilevel/JB2 cases are unchanged (IW44-only fix). goody grayscale is now
+at parity with `c44` (marginally larger, higher PSNR).
+
+**Decision.** **Kept.** Fixes a Pareto loss (was larger *and* lower fidelity),
+byte-interop with DjVuLibre preserved (our decoder and `ddjvu` produce
+byte-identical output after the fix), `cargo test -p djvu-iw44` green with no
+golden updates, no size or quality regression on any measured page.
+
+### IW44_PIGEON_COLOR (#684) — encoder colour transform did not match the decoder — **Kept** (2026-07-16)
+
+**Issue.** After `IW44_LUMA_PLATEAU`, goody colour still encoded at `355,238 B`
+with `Y/Cb/Cr/RGB = 34.18/29.15/29.21/25.09 dB`, versus c44's
+`40.70/46.60/47.07/39.37 dB` at `327,798 B`. The colour path also trailed the
+same grayscale input's `41.33 dB` luma result.
+
+**Approach.** Replaced `encode.rs:rgb_to_ycbcr`'s unrelated
+`(R+2G+B)/4-128`, `B-G`, `R-G` components with DjVuLibre's fixed-point Pigeon
+forward matrix (including its `+32768 >> 16` rounding and signed-chroma clamp).
+This is the coordinate system consumed by the existing Pigeon
+`YCbCr_to_RGB` decoder; the chunk schedule and `crcbdelay=10` were already
+matched and need no change.
+
+**Numbers.** Native-resolution Photo CLI input, decoded by `ddjvu`; component
+PSNR is in Pigeon's Y/Cb/Cr space:
+
+| Page | Before bytes / Y Cb Cr RGB dB | After bytes / Y Cb Cr RGB dB | c44 bytes / Y Cb Cr RGB dB |
+|------|-------------------------------:|------------------------------:|----------------------------:|
+| goody colour | 355,238 / 34.18 29.15 29.21 25.09 | **340,872 / 41.00 46.61 47.04 39.57** | 327,798 / 40.70 46.60 47.07 39.37 |
+| watchmaker Photo | 682,598 / 45.96 inf inf 45.96 | **682,598 / 45.96 inf inf 45.96** | 665,625 / 45.28 inf inf 45.28 |
+
+`watchmaker`'s source raster is achromatic, so the Photo path correctly emits
+grayscale and Cb/Cr PSNR is infinite. The grayscale controls remain goody
+`41.33 dB / 315,966 B` and watchmaker `45.96 dB / 682,598 B`.
+
+**Decision.** **Kept.** The c44 forward transform is the root cause of both
+the chroma loss and colour-only luma drop: goody chroma reaches c44 parity,
+RGB exceeds c44 by `0.20 dB`, and the output is only `1.04×` c44. `ddjvu`
+successfully decodes both outputs; `cargo test -p djvu-iw44` passes with no
+encoder size-golden update.
+
+### ENCODER_PARITY_SCORECARD (#684) — reproducible c44/cjb2 baseline — **Kept (diagnostic)** (2026-07-13)
+
+**Issue.** The encoder-size issue needs a versioned comparison of bytes, time,
+memory, quality, and text readability before any new IW44 or JB2 mechanism is
+promoted. Existing one-off probes answer individual questions but do not leave
+one rerunnable scorecard.
+
+**Approach.** Added `examples/encoder_parity_scorecard.rs`. For each selected
+corpus page it renders the same input raster through `ddjvu`, measures
+DjVuLibre's `c44`/`cjb2` and the matching `PageEncoder::Photo`/
+`PageEncoder::Lossless` profile, then decodes both outputs with `ddjvu`. The
+harness records repository SHA, tool versions, encoded bytes, median wall time,
+child peak RSS, dimensions, PSNR/SSIM or pixel-exact JB2 Hamming, and an
+optional Tesseract character/word count. The baseline and djvu-rs encoders run
+in separate child processes; the latter reports its own `getrusage` peak and a
+small external runner reports the former's child peak. No lossy or
+`experimental` option is enabled.
+
+**Platform / command.** macOS Darwin 25.5 arm64 / Apple Silicon, Rust 1.92.0,
+DjVuLibre 3.5.29, djvu-rs SHA `94636e5`:
+
+```text
+cargo run --release --example encoder_parity_scorecard -- \
+  --case watchmaker-color --case goody-twoshoes-color \
+  --case cable-bilevel --case map-atlas-bilevel \
+  --case chinese-cookbook-bilevel --no-ocr --repeats 3 \
+  --output target/encoder-parity-2026-07-13.json
+```
+
+**Numbers.** Size ratios are djvu-rs over the corresponding DjVuLibre tool;
+times are median milliseconds, RSS is KiB. IW44 quality is PSNR dB / combined
+SSIM against the source PPM; JB2 is pixel-exact against the source PBM.
+
+| Case | Mode | Baseline B | ours B | ratio | baseline/ours ms | baseline/ours RSS | fidelity |
+|------|------|-----------:|-------:|------:|-----------------:|------------------:|----------|
+| watchmaker | IW44 / `c44` | 665,625 | 692,182 | 1.040× | 481.4 / 269.3 | 145,712 / 161,600 | 45.28 / 38.73 dB; 0.9950 / 0.9899 SSIM |
+| goody two-shoes | IW44 / `c44` | 327,798 | 440,864 | 1.345× | 367.3 / 375.0 | 135,648 / 265,408 | 40.83 / 26.39 dB; 0.9808 / 0.9142 SSIM |
+| cable | JB2 / `cjb2` | 2,248 | 4,720 | 2.100× | 27.2 / 16.6 | 17,088 / 7,824 | exact / exact |
+| map atlas | JB2 / `cjb2` | 145,592 | 138,672 | 0.952× | 348.6 / 29.6 | 33,792 / 6,736 | exact / exact |
+| Chinese cookbook | JB2 / `cjb2` | 67 | 140 | 2.090× | 23.1 / 14.1 | 15,104 / 6,320 | exact / exact |
+
+The default `big_scanned_page` case is 62,023,440 pixels and is recorded as
+skipped by the 20M-pixel safety bound. With Tesseract 5.5.2, source/baseline/
+ours counts stayed equal on cable (245 chars / 42 words), map atlas
+(1,399 / 681), and the selected Chinese page (0 / 0).
+
+**Decision.** **Kept (diagnostic infrastructure); no codec change.** The
+snapshot makes the current gap reproducible and shows it is content/profile
+dependent: IW44 is 1.040–1.345× and the public direct JB2 lossless path is
+0.952–2.100× on this slice. Every measured output passed DjVuLibre's decode
+gate and the mode-specific fidelity check. Same-size rec-6 and lossy rec-7
+remain experimental with their own real-byte/OCR evidence; the IW44 forward
+transform hypothesis is separately rejected. The scorecard therefore closes
+the measurement/attribution part of #684 without pretending that a safe
+default compression win has been found.
+### WRITER_SMMR_METADATA (#685) — explicit Smmr writer and fresh METz metadata — **Kept (opt-in)** (2026-07-13)
+
+**Issue.** The writer had a tested Smmr codec primitive and metadata serializer,
+but the high-level page/CLI paths did not expose either representation. The
+default JB2 writer and the existing-document mutation API must remain stable.
+
+**Approach.** Added `BilevelCodec::{Jb2,Smmr}` to `PageEncoder`, with JB2 as
+the default and an explicit `--bilevel-codec smmr` single-image CLI option.
+Corrected the Smmr payload to use DjVuLibre's regular `MMR` header and added
+`PageEncoder::with_metadata` for fresh `METz` emission. `PageMut::set_metadata`
+remains the separate mutation path. The Smmr encoder stays horizontal-mode
+only; it is a compatibility/interoperability profile, not a default size
+optimisation.
+
+**Platform / command.** macOS Darwin 25.5.0 arm64, Rust 1.92.0, DjVuLibre
+3.5.29. Five warm `hyperfine` runs of the release CLI on the `ccitt_2.djvu`
+raster rendered to 1728×2376 pixels:
+
+| Profile | Output | Mean encode time |
+|---|---:|---:|
+| Default JB2 | 8,530 B | 38.0 ms |
+| Explicit Smmr | 39,530 B (**4.63×**, +363.42%) | 34.6 ms |
+
+Both outputs passed `djvudump` and `ddjvu`; their PBM renders were byte-
+identical. A separate Smmr + METz probe also passed both tools, and the
+metadata chunk was reported by `djvudump`.
+
+**Decision. Kept (opt-in).**
+
+**Reason.** The new writer surface closes the concrete format-coverage gap and
+is pixel-exact/interoperable, while the 4.63× size penalty is far above any
+default-policy threshold. JB2 remains the compatibility default; Smmr is
+documented for fax/scanner workflows. Fresh metadata is opt-in and is kept
+separate from byte-preserving mutation semantics. JPEG `BGjp`/`FGjp` emission
+remains out of scope for this slice and stays decode-only.
+
 ### WASM_DJVUJS_COMPARE (#596) — browser wasm decode/render vs djvu.js — **Kept (diagnostic)** (2026-07-12)
 
 **Issue.** The wasm decode/render work had scalar and simd128 self-comparisons,
@@ -12777,7 +13037,6 @@ Y/Cb/Cr planes and band 0. There is no transform-side coefficient delta to feed
 into `PlaneEncoder`, so no port/adoption follow-up is justified. This closes the
 IW44 band-0/DC size-gap thread as entropy-coding-complete for the zero-PSNR
 levers already examined by IW44_ENTROPY_PROBE.
->>>>>>> a1d1d8f (quality(iw44): reject forward-transform size-gap hypothesis (#578))
 
 ## Perf round 107 (2026-07-13) — QUALITY_METRIC_GATE: MS-SSIM as lossy quality gate (#585) — **Rejected**
 
@@ -13118,3 +13377,2045 @@ the scalar fallback. The primary fresh-render path clears the >=5% bar in the
 direct run and in the repeated-run median; progressive also trends positive
 across repeats. Cached-page timings are neutral/noisy rather than a reliable
 win, so this is not claimed as an across-the-board speedup.
+
+## Perf round 112 (2026-08-18) — BILEVEL_TIFF_FASTPATH: 1-bit TIFF straight to JB2 masks (#694) — **Kept**
+
+**Issue.** #694 follow-up: bilevel TIFF ingestion expanded every 1-bit page
+to 8-bit RGBA (32× the packed size) only for the fixed-threshold
+segmentation to immediately re-binarize it into a JB2 mask.
+
+**Approach.** `png_io::decode_tiff_file_to_bitmaps` decodes 1-bit
+single-sample pages directly into packed `Bitmap` masks — TIFF rows and
+`Bitmap` share the MSB-first byte-padded layout, so WhiteIsZero strips copy
+through and BlackIsZero strips invert with padding cleared. The CLI takes
+this path for `--quality lossless|auto`; non-1-bit pages fall back to the
+RGBA route.
+
+**Numbers.** Synthetic A4 text page (2480×3508, 1-bit, uncompressed strips),
+release CLI, `encode --quality lossless`, hyperfine warmup 2:
+main 107.1 ± 3.1 ms → fast path 29.6 ± 0.4 ms (**3.62× ± 0.11 faster**).
+Peak memory footprint (`/usr/bin/time -l`): 40.3 MB → 6.1 MB (**6.6× less**).
+Output `.djvu` bytes are identical (`cmp` clean).
+
+**Decision.** Kept.
+
+**Reason.** Large end-to-end win on the archival-scan hot path with
+byte-identical output; the only behaviour change is deliberate and
+documented (`--quality auto` now treats any 1-bit TIFF — including blank
+pages — as bilevel by construction instead of sampling pixels).
+
+## Perf round 113 (2026-08-22) — AS_CHUNKS_MIGRATION: constant-size `chunks_exact(N)` → `as_chunks::<N>()` (#768) — **Kept**
+
+**Issue.** #768: clippy 1.98 added `chunks_exact_to_as_chunks`, flagging every
+constant-size `chunks_exact(N)` / `chunks_exact_mut(N)` (~82 sites across 28
+tracked files, incl. hot decode/encode loops). CI was temporarily green via
+`-A clippy::chunks_exact_to_as_chunks -A unknown_lints`; the lint is also a
+perf candidate — `as_chunks::<N>()` gives LLVM the chunk length statically,
+so per-chunk bounds checks vanish.
+
+**Approach.** Mechanical migration: `chunks_exact(N)` → `as_chunks::<N>().0`,
+`chunks_exact_mut(N)` → `as_chunks_mut::<N>().0`. `&[[T; N]]` is
+`IntoIterator` for `for`-loops and `.zip()` arguments, but iterator-adapter
+heads (`.map/.enumerate/.all/.any/.zip`) need an explicit `.iter()` /
+`.iter_mut()`. The two JB2 bit-unpack sites moved from
+`chunks_exact_mut(8)` + `into_remainder()` to the `(chunks, tail)` tuple.
+Variable-size `chunks_exact(stride)` and rayon `par_chunks_exact_mut` stay
+(lint targets constants only). Dropped both `-A` flags from
+`scripts/check.sh` and `.github/workflows/ci.yml`.
+
+**Numbers.** Criterion vs. pre-change baseline (same machine, same session).
+Render: `render_page/dpi/72` **-26.6%**, `render_corpus_bilevel_dpi`
+72/150/300 **-18.2% / -35.0% / -10.1%**, `render_colorbook` **-16.3%**
+(`full_render` stage -17.5%), `render_colorbook_cold` **-6.9%**,
+`bg_to_rgb_warm` -15.9%; high-dpi renders neutral (±1-3%). Codecs:
+`iw44_gray_decode_large/gray_direct` **-24.2%**, `jb2_encode_dict`
+**-7.6%**, `bzz_decode` -4.5%, `iw44_decode_first_chunk` -1.9%. Apparent
+encode regressions (`iw44_encode_large_1024x1024` +14.0%, `iw44_encode_color`
++4.3%, `bzz_encode` +3.9%, `segment_page_color_sauvola` +6.3%) are in code
+paths this change does not touch (bzz crate untouched; IW44 forward
+transform untouched — only YCbCr→RGBA output conversion changed); an
+immediate re-run flipped them (-7.5%, -3.8%, +2.1%, -4.1..-7.8%), i.e.
+within run-to-run machine noise.
+
+**Decision.** Kept.
+
+**Reason.** Reproducible double-digit wins on the low/mid-dpi render hot
+path and gray direct decode, no reproducible regression, and the clippy 1.98
+allow-flags are gone — CI lints the real code again.
+
+## Perf round 114 (2026-08-26) — HIGH_DPI_RENDER_PROFILE: where high-dpi render time goes after #768 — **Reverted (diagnosis kept)**
+
+**Issue.** Round 113 (#768) left high-dpi renders neutral
+(`render_page/dpi/600` ±1-3%, `render_corpus_color` ~0%) while low/mid dpi
+gained 10-35%. Question: is there a follow-up win on the full-resolution
+path?
+
+**Approach.** Profiled with `samply` (PC sampling, symbols cross-checked via
+`atos`) on three scenarios: `boy.djvu` upscaled to 600 dpi, plus
+`watchmaker.djvu` (color) and `cable_1973_100133.djvu` (bilevel) at native
+size. Finding: >=98% of time in `composite_rows_bilinear_one`
+(`src/djvu_render.rs`). Round 113's win was on the 1:1 superdense path —
+none of these scenarios hit it, because corpus BG44 backgrounds are stored
+subsampled (~page/3), so even native-size renders take the general bilinear
+resampling path, dominated by `bilinear_from_rows` (4 neighbor loads per
+background pixel, bounds-checked).
+
+**Tried.** (a) Collapsing the 4 per-pixel bounds checks to 2 — rejected
+without implementing: it would weaken the truncated-buffer guarantee that
+partial/streaming decode (`decoded_bg44_partial`) relies on. (b) Hoisting
+the loop-invariant `gamma_is_identity` branch out of the general resampling
+loop (same "D1" trick the 1:1 path already uses), byte-identical by
+construction. Measured vs. a stashed baseline, repeated runs, no rebuild
+between runs: `render_page/dpi/600` ~10.0-10.1 ms → ~10.0-10.2 ms,
+`render_corpus_color` ~51.5-52.4 → ~51.0-52.0 ms, `render_corpus_bilevel`
+~48.8-49.2 → ~48.3-48.7 ms — criterion reports "within noise threshold"
+throughout. The branch predictor already eats a loop-invariant branch.
+
+**Numbers.** No benchmark moved beyond the noise threshold; full test suite
+green (1423 passed, 6 skipped).
+
+**Decision.** Reverted (code change dropped; `examples/profile_high_dpi.rs`
+kept as a profiling harness alongside `profile_iw44.rs`).
+
+**Reason.** Profiling-motivated and safe, but zero measurable gain. Further
+high-dpi wins would need unsafe code (banned by `#![deny(unsafe_code)]`) or
+an algorithmic rework of the resampler (separable horizontal/vertical
+passes) — a deliberate larger project, not a low-risk tweak.
+
+## Perf round 115 (2026-08-26) — SEPARABLE_BILINEAR: split the general bg resampler into vertical + horizontal passes — **Kept**
+
+**Issue.** Round 114's diagnosis: >=98% of high-dpi / native-with-subsampled-bg
+render time sits in `composite_rows_bilinear_one`'s general path, dominated by
+`bilinear_from_rows` (4 bounds-checked neighbor loads + 4 multiplies per
+background sample). The named follow-up was an algorithmic rework: separable
+horizontal/vertical passes.
+
+**Approach.** Exploit two invariances in the bilinear sample
+`(a*itx*ity + b*tx*ity + c*itx*ty + d*tx*ty + 128) >> 8`:
+(1) the vertical pair `(ty, rows y0/y1)` is row-invariant, so pre-blend
+`v = p0*ity + p1*ty` (fits u16, exact) once per bg column per row into a
+caller-owned scratch (`for_each_init` per rayon worker; windowed to the
+`[col_start, col_end]` columns the row actually samples, so region renders
+don't pay for the full bg width); (2) the horizontal mapping `(x0, x1, tx)`
+is render-invariant, so precompute a per-column `BilinearX` table once per
+render by replicating the exact Q48 accumulator (`precompute_bilinear_x`,
+the upscale analog of `precompute_area_avg_x`). Per pixel this leaves two
+u16 loads and two multiplies. Byte-identical by algebra (the factored form
+expands to the identical 4-term dot product with identical rounding);
+truncated-buffer zero semantics preserved via windowed `.get()` fallbacks.
+Equivalence test `composite_bilinear_one_column_table_matches_fallback`
+pins table-vs-fallback byte identity; golden render tests unchanged.
+
+**Numbers.** Criterion vs. pre-change baseline `pre115` (quiet machine,
+suspicious results re-run): `render_page/dpi` 144/300/600 **-18.4% /
+-34.1% / -39.5%**, `render_corpus_color` **-26.5..-27.8%**,
+`render_corpus_bilevel` **-32.7%** (native renders with subsampled BG44 all
+take this path), `render_compositor_only` color/bilevel/palette native
+**-28.4% / -35.7% / -39.2%**, `render_scaled_large_colorbook/lanczos3`
+**-10.6%**, `render_region_bilevel` **-31.2%** (after the column-window fix;
+the first cut pre-blended the full bg width and regressed regions +6%).
+Downscale, thumbnail, mask-decode benches: within noise, as expected — the
+change only touches the upscale/1:1 bilinear path. Full suite green
+(1424 passed), rayon-parallel render tests green (191), clippy clean.
+
+**Decision.** Kept.
+
+**Reason.** Reproducible 18-40% wins across every benchmark that exercises
+the general bilinear path — exactly the population round 114 predicted —
+with zero measurable regression, no unsafe code, and byte-identical output
+enforced by algebra plus an equivalence test.
+
+### IW44 near-cap slow-unit triage: sanitizer overhead, not a codec gap — **No change** (2026-08-31)
+
+**Issue.** The 2026-08 fuzz campaign (5 targets × 15 min, zero crashes)
+left one artifact: `fuzz_iw44` flagged a 13-byte input as a slow unit,
+`slow-unit-ce750939e8c7ef0ebaea735c4d757a8b4711b57f` — 11.5 s in
+`Iw44Image::decode_chunk` at 99% CPU. Question: does the 64 MP
+`ImageTooLarge` cap have a gap that needs a codec-level guard?
+
+**Approach.** Parsed the header against `decode_chunk`: serial=0,
+slices=241, majver=0x2D (color, 3 planes), w=1023, h=65535 →
+67,042,305 px = 99.9% of the 64 MiP cap (67,108,864). The fuzzer simply
+maximised the input *under* the existing cap; the cap itself held.
+Profiled the 11.5 s run (`sample`): top-of-stack is dominated by
+`__sanitizer_cov_trace_const_cmp1` + friends (SanCov comparison
+tracing), with `PlaneDecoder::decode_slice` itself a distant second.
+Re-measured with an uninstrumented release build calling the same
+`decode_chunk` on the same bytes.
+
+**Numbers.**
+
+| build | wall time |
+|-------|-----------|
+| fuzz binary (ASan + SanCov, `-runs=1`) | 11.5 s |
+| native release, no instrumentation | **0.79 s** |
+
+Peak memory is bounded by the cap: 3 planes × 65,536 blocks × 2 KiB
+≈ 400 MB of coefficient storage for a worst-case color declaration.
+
+**Decision.** No change. No codec-level guard added.
+
+**Reason.** The slowdown is ~14× sanitizer/coverage instrumentation
+overhead on the coefficient-flag hot loops, present only in fuzz builds.
+Real worst-case cost under the cap is <1 s and ~400 MB — the documented
+trade-off of the 64 MP cap (real 600 dpi scans reach 62 MP). Slice count
+cannot extend this: a u8 caps slices at 255/chunk, and `finish_slice`
+halves every quantisation step per band cycle, so late slices go null.
+An early-exit on `zp.is_exhausted()` remains off the table (see the
+2026-06-09 reverted entry: it truncates legitimate refinement).
+Follow-up: none; opt-in `ResourceLimits` stays the tighter document-level
+control. Updated the stale "~3 s" comment at the cap check in
+`crates/djvu-iw44/src/lib.rs`.
+
+### Mask reuse on re-encode (`PageEncoder::with_mask`, #601 follow-up) — **Kept** (2026-09-01)
+
+**Issue.** The #601 generation-loss study measured picture-page drift of
+ΔE ≈ 8 per decode → re-encode generation, compounding without bound: the
+layered profiles re-binarize a rendered composite, and Sauvola never
+reproduces the previous mask. The filed stabilizer: let re-encode reuse
+the source document's existing mask.
+
+**Approach.** Landed in PR #779. `PageEncoder::with_mask(&Bitmap)` takes
+the page's decoded `Sjbz` (`DjVuPage::extract_mask`) and skips
+binarization; `segment_page` was split so its background half (adaptive
+subsample, mask-excluded block means, diffusion) runs unchanged around
+the supplied mask (`segment_page_with_mask`). Invalid combinations
+(bitmap source, `Photo`, mismatched dimensions) fail with
+`EncodeError::Unsupported`.
+
+**Numbers.** Given the same mask, the reuse path reproduces
+`segment_page`'s background byte-identically (test-enforced). A
+2-generation decode → render → re-encode cycle keeps the mask
+bit-identical for both `Quality` and `Archival` — the mask layer is now
+a fixed point, eliminating the re-segmentation feedback loop that drove
+the unbounded picture-page drift. Remaining per-generation loss comes
+only from IW44/FGbz re-quantisation of the colour layers.
+
+**Decision.** Kept (feature; new API, off unless called).
+
+**Reason.** Cheap and exact when the input is already a DjVu — the mask
+is decoded, not re-estimated. Follow-up: a per-page mask variant for the
+multi-page `encode_djvm_layered_shared` bundle path.
+
+### PR #779 bench-failure triage: CI noise + a real ~2% outlining cost — **Kept** (`#[inline]` fix) (2026-09-01)
+
+**Issue.** The Benchmarks run on PR #779's merge commit reported 58
+regressions, confirmed by the workflow's same-runner merge-base
+re-check: `segment_page_color` +25.3%, `encode_color_page_quality`
++9.5%, `..._bgheavy` +11.3%, `encode_djvm_layered_shared` +5.9% — plus
+5–10% hits across subsystems the PR never touched (IW44 decode, render
+compositor, JB2).
+
+**Approach.** Local A/B on the same machine, criterion baselines:
+`8696f72` (the PR) vs its parent `1d610c9`, benches
+`segment_page_color` + `encode_color_page_quality*`.
+
+**Numbers.** Local delta was +1.9% / +1.6% / +2.3% / +1.1% — an order of
+magnitude below CI's claim, so the 25% is runner noise (untouched
+subsystems moving 5–10% confirms the machine, not the code). The
+consistent ~2% is real: #779 outlined `segment_page`'s tail into
+`derive_background`, changing codegen. With `#[inline]` on
+`derive_background`, `segment_page_color` and `encode_color_page_quality`
+return to no-significant-change vs the pre-#779 baseline and `bgheavy`
+halves to +1.3%.
+
+**Decision.** Kept (`#[inline]` on `derive_background`).
+
+**Reason.** One attribute recovers the pre-split codegen for both
+callers; the residual ≤1.3% is within this machine's noise band. Lesson
+for the bench workflow: a same-runner re-check does not immunise against
+a degraded runner — cross-check the "regressions" list for benches the
+diff cannot have touched before trusting it.
+
+### Block classifier on the real tier-2 corpus + CLI exposure (#562 follow-up) — **Kept** (2026-09-02)
+
+**Issue.** Round 97 kept `SegmentOptions::block_classify` opt-in with
+synthetic-only evidence ("real mixed-scan fixtures remain #558"), and the
+adaptive-BG pairing follow-up was never measured. #558's tier-2 fixtures
+have been in the corpus since round 103; the flag was also unreachable —
+no CLI flag, no profile sets it (library callers only, via
+`with_segment_options`).
+
+**Approach.** New probe `examples/block_classify_corpus.rs`: render each
+real page's composite at native size (the re-encode scenario), segment
+with the Quality profile defaults vs `+block_classify` vs
+`+block_classify+adaptive_bg_subsample`, and record Sjbz bytes, total
+encoded bytes, mask ink, ΔE/ssim of the encode round-trip vs the rendered
+source, and mask identity. Pages: war_1812 p0 (photo) / p2 (newspaper
+text+halftone photos), goody_twoshoes p0 (illustration) / p1 (text),
+map_atlas p0 (line-art adversarial), chinese_cookbook p3 (mixed) / p1
+(text), pathogenic p146 (bilevel halftone plate), cable (typewriter text).
+
+**Numbers.** Classifier alone is the size lever: war p0 total 83.5→7.6 KB
+(**−91%**), goody p0 −55% with ΔE 14.3→6.9, chinese p3 −34%, war p2 Sjbz
+−20.5% / total −15% (small ssim dip 0.851→0.834). Pure text bit-identical
+(goody p1, cable). The **pairing** is the quality lever round 97 couldn't
+see: with photo pixels out of the mask, #569's adaptive subsample finally
+engages — war p2 (the motivating mixed-newspaper case) beats baseline on
+*every* axis (total −4.6%, ΔE 3.80→3.51, ssim 0.851→0.852); goody p0 ΔE
+14.3→**2.0** / ssim 0.613→**0.933**; war p0 ssim 0.452→**0.928**; even the
+line-art "misclassification" turns net-positive (map ΔE 4.90→2.80, ssim
+0.907→0.956). Cost: photo-heavy pages spend bytes on the denser BG (war p0
+7.6→214 KB vs 83 KB baseline; goody p0 99 vs 35 KB) — the price of the
+photo actually surviving. Bilevel-source halftone (pathogenic p146) stays
+the classifier's bad case vs a dotted source: −75% bytes but ΔE 16.5
+(descreen; such input belongs in Lossless anyway).
+
+**Decision.** Kept: probe + CLI exposure (`--block-classify`,
+`--adaptive-bg-subsample`, quality/archival only, with tests). Defaults NOT
+flipped: the #562 rule demands size *and* fidelity improvement together,
+and each variant alone trades one axis on some page class (cls-only dips
+ssim on mixed pages; +adaptive grows photo-page bytes).
+
+**Reason.** Real-corpus evidence now exists on both sides: the combination
+is strictly better on the issue's motivating class (mixed newspaper) and
+provably inert on text, so it belongs one flag away; but photo-page byte
+growth makes default-on a product decision, not a measurement call.
+
+### Per-page mask reuse on the multi-page bundle path (#779 follow-up) — **Kept** (2026-09-02)
+
+**Issue.** #779 gave the single-page `PageEncoder::with_mask` a stabilizer
+for the decode → re-encode generation-loss loop, and filed the multi-page
+gap as its own follow-up: `encode_djvm_layered_shared` (the shared-Djbz
+bundle path) always calls `segment_page`, so re-encoding an existing
+multi-page DjVu still re-binarizes every page and the mask can drift even
+though the single-page path is now a fixed point.
+
+**Approach.** `encode_djvm_layered_shared_impl` gained an
+`masks: Option<&[Option<&Bitmap>]>` parameter threaded through two new
+public entry points, `encode_djvm_layered_shared_with_masks` and
+`encode_djvm_layered_shared_with_thumbnails_and_masks` (the existing
+`encode_djvm_layered_shared` / `_with_thumbnails` signatures are
+untouched — both now just pass `None`). The pass-1 `prepare` closure
+matches on `masks[i]`: `Some(mask)` calls `segment_page_with_mask` (the
+same background-derivation code the single-page path reuses — no
+segmentation logic duplicated), `None` keeps the original `segment_page`
+call, so a bundle can mix reused and freshly segmented pages. Validation
+mirrors `PageEncoder::with_mask`: a `masks` slice of the wrong length or a
+mask whose dimensions don't match its page's pixmap returns
+`EncodeError::Unsupported`, checked before pass 1 runs.
+
+**Numbers.** Test-enforced: given every page's own mask,
+`encode_djvm_layered_shared_with_masks` reproduces each page's mask
+byte-identically in the decoded bundle, including a mixed `Some`/`None`
+slice; a 2-generation decode → render → re-encode cycle over a 2-page
+bundle keeps every page's mask bit-identical for both `Quality` and
+`Archival`; `encode_djvm_layered_shared_with_thumbnails_and_masks`
+combines TH44 thumbnails with reused masks; length/dimension/profile
+mismatches fail with `EncodeError::Unsupported`. Criterion, local machine,
+baseline = this commit's parent (`334fbf9`, the `#[inline]` fix in
+`bf39d5b` already applied), 100/10-sample runs:
+
+| bench | before → after | Δ |
+|---|---|---|
+| `segment_page_color` | 1.667 ms → 1.676 ms | −0.6% (no significant change) |
+| `encode_color_page_quality` | 4.225 ms → 4.024 ms | −4.8% (improved; noise) |
+| `encode_color_page_quality_bgheavy` | 31.35 ms → 30.81 ms | −1.7% (within noise) |
+| `encode_djvm_layered_shared` | 10.94 ms → 10.60 ms | −1.9% (within noise) |
+
+No bench regresses; the ≤2% band matches the noise floor bf39d5b's triage
+established for this machine. Expected: the change touches only
+`encode_djvm_layered_shared_impl`'s pass-1 closure (an added match arm and
+an `enumerate()`), and doesn't touch `segment_page`, `derive_background`,
+or `PageEncoder::encode` at all — `segment_page_color` (unrelated to this
+path) is the negative control confirming the machine, not the code, and it
+also shows no change.
+
+**Decision.** Kept (feature; new API, off unless a `masks` slice with a
+`Some` entry is passed).
+
+**Reason.** Closes the multi-page gap #779 filed: the mask layer is now a
+fixed point for both the single-page and multi-page-bundle re-encode
+paths, with the same cheap-and-exact property (the mask is decoded, not
+re-estimated) and the same zero-cost-when-unused shape as `with_mask`. No
+CLI flag exists for the single-page reuse either (#779 never exposed one),
+so none was added here — a follow-up if/when CLI mask reuse is wanted for
+either path.
+
+### Thumbnail path without full-res `extract_mask` (round 89 follow-up) — **Kept** (2026-09-02)
+
+**Issue.** Round 89's `dhat` allocation map for the `thumbnails` scenario
+(`examples/alloc_profile.rs`, `watchmaker.djvu`, 12 pages) attributed
+12.6 MB of the 47 MB total to `extract_mask`'s `Bitmap::new` — a
+full-resolution JB2 canvas decoded only to be immediately max-pool
+downsampled to 1/4 resolution and discarded, plus the JB2 blit cost of
+writing that full-resolution canvas. `decode_layers`'s existing #607
+optimization (a cached 1/4-res mask lets a *warm* sub>=4 re-render skip
+the full decode) never fired on the first render of a page, which is
+`Document::thumbnails()`'s entire access pattern (one render per page,
+never warm).
+
+**Approach.** Two layers:
+1. `djvu-jb2`: new `decode_downsampled(data, dict, shift)`, sharing the
+   existing arithmetic (ZP) decode of the symbol dictionary and page
+   instructions (that cost is fixed regardless of output resolution) but
+   allocating a `1/2^shift`-resolution canvas and OR-reducing
+   (max-pooling) each symbol bit into it during blit
+   (`blit_to_bitmap_downsampled`), instead of allocating full-resolution
+   and downsampling afterward. `shift=0` is byte-identical to the
+   existing `decode` (same fast byte-aligned blit path, unchanged).
+   Bit-exact equivalence vs. decode-then-downsample proven for dict-free
+   and shared-dict-referencing streams, at shift 2 and 3.
+2. `djvu-rs`: `DjVuPage::extract_mask_sub4()` calls `decode_downsampled`
+   at shift 2 (Smmr masks fall back to full decode + existing
+   `downsample_mask_4x`, no reduced-scale G4/MMR decoder exists).
+   `PageLayers::mask_sub4()` uses it on a cold cache miss, downsampling an
+   already-decoded full mask instead when one happens to be cached. In
+   `decode_layers`, the #607 fast-path gate now calls `mask_sub4(page)`
+   (which decodes cold via `extract_mask_sub4` if needed) instead of only
+   peeking at an already-warm cache with `mask_sub4_cached()` — so the
+   *first* eligible sub>=4 render (bg_subsample >= 4, no bold, no FGbz)
+   also skips the full-resolution decode, not just re-renders.
+
+**Numbers.** `cargo bench --bench document -- thumbnails_render_only
+--baseline before` (`ThumbnailStrategy::RenderOnly`, forces the render
+path under test): bilevel grid (20 pages, `pathogenic_bacteria_1896.djvu`)
+225.81 ms → 173.34 ms, **−23.2%** (reproduced on a second run: −23.4%,
+both p < 0.05). Color grid (6 pages, `colorbook.djvu`) 24.06 ms →
+23.66 ms, −1.7% to −4.3% across two runs — within noise, no regression
+(that fixture's masks are small relative to its multi-chunk BG44, so the
+saving is proportionally smaller there).
+
+`dhat` `thumbnails` scenario (`watchmaker.djvu`, 12 pages, `alloc-profile`
+feature): Total 46,984,366 → 34,348,138 bytes (**−26.9%**, exactly the
+flagged 12,636,228 bytes), t-gmax (peak) 40,951,453 → 28,381,305 bytes
+(**−30.7%**). Re-parsing the after-fix `dhat-thumbnails.json`'s
+allocation-point table confirms `extract_mask` now attributes **0 bytes**
+in this scenario; the remaining largest allocator is the unrelated IW44
+`PlaneDecoder::new` (23.2 MB, round 89's other flagged site, out of
+scope here).
+
+Correctness: `crates/djvu-jb2/src/lib.rs` gained
+`decode_downsampled_shift0_matches_decode`,
+`decode_downsampled_matches_full_then_downsample_boy_jb2` (dict-free),
+`_shared_dict` (INCL/Djbz), and `_shift3` (generalizes beyond the
+hard-coded shift=2 the render tier calls). `src/djvu_document.rs` gained
+`mask_sub4_matches_extract_mask_then_downsample` (+ `_shared_dict`),
+proving `extract_mask_sub4()` is bit-for-bit identical to
+`downsample_mask_4x(extract_mask()?)` on real fixtures. `src/djvu_render.rs`
+gained `cold_thumbnail_sweep_skips_full_mask_decode`, proving a *cold*
+sub>=4 render (i) never touches the `JB2_MASK_DECODES` full-decode counter
+and (ii) produces pixel-identical output to the same render forced through
+the old warm-mask-sub4 path. The pre-existing #607 structural regression
+tests (`downgrade_retains_sub4_mask_and_skips_jb2_decode`,
+`downgraded_sub4_with_bold_still_full_decodes`,
+`render_progressive_ignores_mask_sub4_warmth`) still pass unmodified.
+
+**Decision.** Kept.
+
+**Reason.** Both bars clear on the case this was aimed at (bilevel-mask
+thumbnail sweep): ≥3% wall-clock (−23%) and a clear memory reduction
+(−27% total / −31% peak) with no time regression anywhere (the one
+fixture without a large win is flat, not worse). The implementation adds
+zero cost to the unmodified hot path (`shift=0` takes the exact original
+`blit_to_bitmap` branch), and correctness is pinned by bit-exact
+equivalence tests at both the codec-crate and document-API layers.
+
+### Encoder peak-memory measurement harness (`scripts/encode_rss_scaling.sh`) — **Kept** (infra) (2026-09-03)
+
+**Issue.** Step 1 of the encoder peak-memory reduction plan (follow-up to
+round 89's `alloc-profile` harness): the plan's "independent confirmation"
+section measured `djvu encode`'s max RSS scaling with page count
+(6/12/24-page directories assembled from `watchmaker.djvu`, `/usr/bin/time
+-l`) by hand. Every later step in that plan (no-op refactor, per-CC colour
+table, streaming entry point, CLI switch-over) needs the same measurement
+re-run and compared against a baseline — ad hoc shell one-liners don't
+give that reproducibly. Decision rule, mirroring round 89: the harness
+lands as infra regardless of what any individual downstream step measures;
+each later step stands or falls on its own numbers against this baseline.
+
+**Approach.** New `scripts/encode_rss_scaling.sh` + `make
+encode-rss-scaling`. Renders a fixture's pages to PNG once via the `djvu`
+CLI (`djvu render --all`, cached under a scratch dir keyed by DPI so
+repeat runs skip re-rendering), assembles N-page input directories for a
+configurable page-count list (default `6 12 24`, cycling through the
+rendered pages when N exceeds the source page count — same "pure
+page-count scaling" trick the plan used for its 24-page case), and runs
+`djvu encode` on each under the platform's peak-RSS tool: macOS
+`/usr/bin/time -l` ("peak memory footprint", bytes) or Linux
+`/usr/bin/time -v` ("Maximum resident set size", KB), falling back to
+`-f %M` if `-v` is unsupported — detected via `uname`, not assumed.
+Reports a table of N → peak RSS (MB, normalized from whichever unit) and
+wall-clock, the successive-difference marginal MB/page, and an
+independent least-squares linear-fit slope as a cross-check. Everything
+lives under a `mktemp -d` scratch dir by default (or a caller-supplied
+`--out-dir`, kept across runs with `--keep` to reuse the cached PNGs) —
+nothing is written into the repo tree. All parameters (fixture, page
+counts, quality profile, render DPI, djvu binary path, output dir)
+override via env var or flag; `--help` documents them. Not wired into any
+CI gate (matches the plan's "CI-runnable on demand", not "CI-required").
+Uses only POSIX/bash-3.2-portable constructs (no `mapfile`, since macOS's
+system `/bin/bash` is 3.2) and is shellcheck-clean.
+
+**Numbers.** Ran `scripts/encode_rss_scaling.sh` end-to-end on this
+machine (macOS, `/usr/bin/time -l`), default fixture/page-counts/quality
+(`watchmaker.djvu`, 6/12/24 pages, `--quality quality`, render at the
+fixture's native 300 dpi):
+
+```
+== Peak RSS scaling: watchmaker.djvu, quality=quality, dpi=300 ==
+Pages    Peak RSS     Marginal MB/pg   Wall (s)
+6        247.6 MB     —              0.61
+12       448.6 MB     33.5             1.16
+24       853.4 MB     33.7             2.28
+
+Linear fit: peak RSS (MB) ~= 33.67 * pages + 45.2  (slope 33.67 MB/page)
+```
+
+Reproduces the plan's hand-measured baseline (259.2 / 470.9 / 895.4 MB,
+slope ≈35.3–35.4 MB/page) to within ~4–5% — same linear shape, same
+order-of-magnitude slope, consistent with the plan's own attribution (one
+page's raw RGBA pixmap ≈33.7 MB, `2550×3301×4` bytes, plus small
+segmentation transients). The gap (33.7 vs. ≈35.3 MB/page measured here
+vs. in the original investigation) is within normal run-to-run `/usr/bin/
+time` peak-footprint noise on this machine (background load, allocator
+page-reclaim timing) — not a sign the harness measures something
+different; both runs used the same CLI path (`djvu encode <dir>`, no
+`djvu-render` re-decode noise) and the same fixture/profile.
+
+**Decision.** Kept (infra), same rule as round 89's `alloc-profile`
+harness: this step is measurement-only, no behavior change to the
+encoder. No individual memory-reduction fix is claimed or landed here —
+each later step in the plan (no-op refactor, per-CC colour table,
+streaming entry point, CLI switch-over) is measured against this script's
+baseline and stands or falls on its own ≥50%-t-gmax-and-slope /
+byte-identical-output / ≤3%-wall-clock bars from the plan.
+
+**Reason.** The script reproduces the plan's hand-measured numbers within
+noise, is re-runnable and cache-friendly (PNG render is the expensive
+step and is skipped on repeat runs against the same `--out-dir`), writes
+nothing into the repo tree, and gives every later step in the sequence a
+one-command way to get comparable numbers instead of re-deriving the
+same shell incantation by hand each time.
+
+### Encoder phase split, no-op (encoder peak-memory step 2) — **Kept** (2026-09-03)
+
+**Issue.** Follow-up to the encoder peak-memory investigation (round 89,
+`#600`'s `alloc-profile` harness): 78.6% of `encode_djvm_layered_shared`'s
+`dhat` peak is every page's full RGBA `Pixmap` held resident at once
+(forced by the `pixmaps: &[Pixmap]` API shape), and `build_page` needs the
+*original* pixmap a second time, after clustering, only for `FGbz`'s
+per-blit colour sampling. Fixing that — a streaming page source that drops
+each pixmap after phase 1, using a per-CC colour table precomputed while it
+is still resident — is a larger, riskier change (plan step 3/4). This step
+is pure preparation: restructure `encode_djvm_layered_shared_impl`'s
+existing two passes (`prepare` / `build_page`, both till now closures
+capturing shared local state) into three explicit, named, top-level
+functions with doc comments stating exactly what each needs and produces,
+so steps 3–4 become small, reviewable diffs instead of one large one. No
+behavior, signature, or output change.
+
+**Approach.** `src/djvu_encode.rs`: moved the locally-defined `PreparedPage`
+struct out to module scope with a doc comment describing it as the
+phase-1→phase-2/3 boundary artifact (~1 MB/page packed masks + BG44/TH44
+bodies, ~32× smaller than the RGBA pixmap it was derived from). Split the
+two closures into three named functions taking explicit parameters instead
+of captures:
+- `prepare_page` (phase 1: mask + background/thumbnail extraction, needs
+  `&Pixmap` + reused mask + options),
+- `cluster_shared_dictionary` (phase 2: dictionary clustering, needs only
+  `&[PreparedPage]`'s masks — no pixmap at all),
+- `build_page` (phase 3: per-page finalize, needs `prep: &PreparedPage` +
+  `shared` + — the one real cross-phase pixmap dependency — the original
+  `&Pixmap` again, for `foreground_fgbz_from_blits`'s `FGbz` colour
+  sampling; its own doc comment now points at this as exactly the
+  dependency step 3 of the plan removes).
+`encode_djvm_layered_shared_impl` itself becomes three `// ── Phase N ──`
+labeled blocks that call these functions from the same `parallel`/
+non-`parallel` `par_iter`/`iter` shapes as before — same collect order,
+same chunk emission order. Given PR #779's precedent (outlining
+`segment_page`'s tail into `derive_background` cost ~2% until `#[inline]`
+was added), marked both `prepare_page` and `build_page` `#[inline]` up
+front rather than discover a regression after the fact.
+
+**Numbers.** No memory number is expected to move at this step — peak
+residency is still driven entirely by the caller's `&[Pixmap]` slice
+outside this function; that only changes in step 4 (the streaming/
+bounded-window entry point). This step is groundwork, verified two ways:
+
+1. *Byte-identity.* Built the release CLI (`--features cli`) at the parent
+   commit (`117c3e5`) and after this refactor. Rendered every multi-page
+   corpus fixture with a manageable page count to PNG directories and
+   re-encoded each with `djvu encode <dir> -o out.djvu --quality
+   {quality,archival}`: `cable_1973_100133` (2p), `map_atlas_sample` (2p),
+   `chinese_cookbook_sample` (5p), `war_1812` (8p, +archival),
+   `cyrillic_simonovich_co2` (12p), `watchmaker` (12p, +archival,
+   +`--thumbnails`), `goody_twoshoes` (16p), `conquete_paix` (22p) — 11
+   output files across 8 fixtures and both `Quality`/`Archival` profiles
+   plus a thumbnails run. `cmp` reported **zero diffs** on all 11.
+   (`pathogenic_bacteria_1896.djvu`, 520 pages, was skipped for run time;
+   its per-page shape doesn't differ from the other scanned-text fixtures
+   already covered.)
+2. *Benches* (`cargo bench --bench codecs`, `--baseline before` from the
+   parent commit): `encode_djvm_layered_shared` −0.3%,
+   `segment_page_color` −0.8%, `encode_color_page_quality` −0.1% — all
+   within noise once the machine's load (other concurrent agent workloads
+   pushed load average over 30 mid-run, producing spurious +20–40%
+   readings on a first pass, exactly PR #779's bench-triage lesson) was
+   allowed to settle before measuring; re-run at load ≈8 confirmed no
+   regression. `make check` (fmt, clippy `-D warnings`, no_std, wasm32 ×3,
+   full test suite incl. the `encode_djvm_layered_shared_with_masks`/
+   `_with_thumbnails_and_masks` unit tests) passed clean.
+
+**Decision.** Kept.
+
+**Reason.** Exactly the outcome the plan calls for at this step: zero
+behavior/output change (byte-identical across 8 fixtures, both profiles,
+thumbnails), zero measurable performance change once noise is controlled
+for, and the real deliverable — the phase-1/phase-2/phase-3 data
+dependency (masks only vs. masks + one more pixmap read) is now stated in
+code, not just in this file, ready for step 3 (precomputed per-CC colour
+table) and step 4 (bounded-window streaming entry point) to change one
+function each instead of the whole 170-line body.
+
+### Fuzz throughput: `fuzz_bzz` / `fuzz_iw44` at 6-8 exec/s — **Kept** (2026-09-03)
+
+**Issue.** An overnight local fuzz campaign ran all 11 libFuzzer targets for
+1200 s each (`cargo +nightly fuzz run <target> -- -max_total_time=1200
+-timeout=10 -rss_limit_mb=4096`). No crashes, timeouts, OOMs, or new crash
+artifacts — but two targets explored almost nothing per unit time:
+
+```
+fuzz_iff         cov: 90    corp: 20    exec/s: 118584
+fuzz_metadata    cov: 2562  corp: 982   exec/s: 2662
+fuzz_g4          cov: 647   corp: 307   exec/s: 764
+fuzz_bzz_encode  cov: 828   corp: 415   exec/s: 689
+fuzz_graph       cov: 919   corp: 482   exec/s: 504
+fuzz_jb2         cov: 1072  corp: 538   exec/s: 267
+fuzz_encode      cov: 4411  corp: 1020  exec/s: 133
+fuzz_validate    cov: 1062  corp: 258   exec/s: 74
+fuzz_full        cov: 1599  corp: 468   exec/s: 18
+fuzz_iw44        cov: 479   corp: 233   exec/s: 8
+fuzz_bzz         cov: 573   corp: 337   exec/s: 6
+```
+
+At 6 exec/s, a 1200 s `fuzz_bzz` run is ~7,000 executions — close to
+useless as a fuzzing campaign. Timing every file in the locally-grown
+`fuzz_bzz` corpus (467 files, all ≤256 bytes) found the cause: a
+`fuzz_bzz` decompression bomb, not an input-size problem. `bzz_decode`
+already bounds a single block to `MAX_BLOCK_SIZE` (4 MB) and the whole
+stream to `MAX_OUTPUT_SIZE` (256 MB), but nothing stopped the ZP
+arithmetic decoder from manufacturing those bytes for free: once real
+input is exhausted, `ZpDecoder::read_byte` pads with synthetic `0xff`
+bytes forever (by design — `djvu-jb2` relies on the same padding for its
+own valid trailing symbols), and `bzz_decode`'s block loop never checked
+for it. A **7-byte** corpus file decoded to 3,089,151 bytes in 192 ms; a
+**14-byte** file decoded to 3,746,299 bytes in 258 ms — a ~270,000:1
+amplification with no crash, OOM, or timeout to flag it, only wall-clock
+cost. This is a genuine DoS-shaped finding (bounded by the existing 256 MB
+cap, so not an unbounded OOM, but a real one-request-hangs-the-service
+amplification for a decoder any DjVu consumer runs on untrusted DIRM/NAVM/
+ANTz/TXTz/FGbz chunks) — not merely a fuzzing-harness artifact.
+
+`fuzz_iw44` is a different shape: `Iw44Image::decode_chunk` already caps
+declared image size at 64 MP (`Iw44Error::ImageTooLarge`), a *deliberate*
+tradeoff (see the #182 history in this file and the in-code comment on why
+`zp.is_exhausted()`/`synthetic_bytes()` must **not** early-exit the slice
+loop — doing so previously truncated real images' high-frequency detail).
+Timing the local corpus found 13-41 byte inputs that legitimately decode a
+near-64 MP image in up to 854 ms — expected, bounded, already-tuned worst
+case, not a bug. `fuzz_full`'s low exec/s is likewise explained without a
+bug: its committed seed (`seed_color`, a real 183 KB DjVu file) sets
+libFuzzer's auto `-max_len` to 183,352, so mutated inputs legitimately grow
+to full-document size and pay full parse+render cost per execution.
+`fuzz_validate` at 74 exec/s was unremarkable.
+
+**Approach.** Library fix only for `fuzz_bzz`: `crates/djvu-bzz/src/decode.rs`
+adds a periodic spin guard inside `decode_mtf_phase`'s per-symbol hot loop,
+mirroring the `ZP_EOF_SLACK_BYTES` pattern `djvu-jb2` already uses
+(`check_symbol_decode_budget`). Every `SPIN_CHECK_INTERVAL` (4096) decoded
+symbols, if `zp.pos - data.len()` (synthetic padding already read) exceeds
+`ZP_EOF_SLACK_BYTES` (16, matching jb2's look-ahead-drain margin), decode
+bails with a new `BzzError::Truncated` instead of continuing to manufacture
+a full block from padding. This bounds decode cost by *real* input size
+(with the same small multiplicative margin jb2 already accepts) instead of
+only by the absolute 4 MB/256 MB ceilings, while adding a single cheap
+`sym_idx % 4096 == 0` branch to the hot loop rather than a per-symbol check.
+
+No library change for `fuzz_iw44`, `fuzz_full`, or `fuzz_validate`: their
+cost is legitimate, already-bounded, already-documented work (or, for
+`fuzz_validate`, not a problem at all), and #182's history shows the one
+plausible-looking fix (early-exit on ZP exhaustion in the IW44 slice loop)
+was already tried and reverted for correctness. `cargo +nightly fuzz cmin
+fuzz_iw44` was tried as a harness-only lever (419 → 218 corpus files, no
+coverage lost) but a follow-up 120 s run showed no measurable exec/s
+improvement — the cost is intrinsic to the declared image size in each
+newly-generated mutation, not to corpus replay, so minimizing the corpus
+doesn't touch it.
+
+**Numbers.** 120 s `cargo +nightly fuzz run <target> --release -- -max_total_time=120
+-timeout=10 -rss_limit_mb=4096`, same 467-file locally-grown `fuzz_bzz`
+corpus copied for both runs (before/after built from the same corpus
+snapshot, only the binary differs):
+
+| target | build | execs | wall | exec/s | cov (DONE) |
+|---|---|---|---|---|---|
+| `fuzz_bzz` | before (no spin guard) | 933 | 169 s | ~5.5 | 560 |
+| `fuzz_bzz` | after (spin guard) | 6862 | 121 s | ~56.7 | 566 |
+| `fuzz_iw44` | unchanged (420-file corpus) | 839 | 183 s | ~4.6 | 454 |
+| `fuzz_iw44` | unchanged, cmin'd corpus (218 files) | 818 | 123 s | ~6.6 | 454 |
+
+`fuzz_bzz`: **~10x** exec/s, coverage *up* slightly (560 → 566), not down —
+consistent with the overnight campaign's 6 exec/s and matching the 13x
+drop in total corpus-scan decode time measured directly
+(`bzz_decode` over the full 467-file corpus: 23.9 s → 1.79 s; worst single
+file 423 ms → 89 ms). `crates/djvu-bzz`'s 19 unit/roundtrip tests
+(including a 100 KB random roundtrip and a block-boundary case) all still
+pass, so the guard doesn't reject legitimate multi-block streams.
+
+`fuzz_iw44`: no meaningful change either way (~4.6 vs ~6.6 exec/s, within
+run-to-run noise for a 120 s sample) — confirms this is bounded, expected
+cost rather than something a harness-only fix can move.
+
+**Decision.** Kept (the `fuzz_bzz` spin guard); no change to `fuzz_iw44`,
+`fuzz_full`, `fuzz_validate`, or `.github/workflows/fuzz.yml`.
+
+**Reason.** The `fuzz_bzz` fix closes a real, previously-unguarded
+amplification (a decoder any DjVu consumer runs on untrusted chunks could
+be made to spend hundreds of milliseconds on single-digit-byte input) using
+a pattern the codebase already trusts (`djvu-jb2`'s `ZP_EOF_SLACK_BYTES`),
+with no coverage loss and all existing roundtrip tests green. `fuzz_iw44`'s
+slowness is a different, already-litigated tradeoff (#182): its only
+plausible code fix was already tried and reverted for correctness, so
+leaving it alone is the right call rather than re-opening that regression.
+`fuzz_full` and `fuzz_validate` were investigated ("look at… while you are
+there") and found to be paying legitimate, bounded costs (real-document
+parse+render, and unremarkable validator cost respectively) — not bugs, so
+no change. The CI workflow's 60 s per-target budget is left as-is: it was
+not asked to expand, and `fuzz_bzz`'s ~10x local win should already lift
+its CI executions from ~360/run to ~3,000+/run for free once merged;
+`fuzz_iw44`'s CI budget (60 s × ~5-8 exec/s ≈ 300-500 executions/run) is a
+judgment call for a maintainer to make deliberately (e.g. raising it) since
+it is not something this fix changes.
+
+### PR #787 bench-failure triage: all six "regressions" phantom — **No fix needed** (2026-09-03)
+
+**Issue.** The Benchmarks run on PR #787 (post-EOF spin guard for BZZ
+decode, `crates/djvu-bzz/src/decode.rs`/`lib.rs` only) reported 6
+regressions, confirmed by the same-runner merge-base re-check, sitting on
+top of a table dominated by a roughly uniform **−8%** across almost every
+unrelated benchmark (render, IW44, PDF export, encode paths — nothing this
+diff can touch), which by the #779 lesson means the CI runner itself was
+faster on the "current" side that run. Against that floor, six stood out
+as going the *wrong* way: `bzz_decode` 97 ns → 105 ns (+8.2%), `bzz_encode`
+130.5 → 171.0 µs (+31.0%), `jb2_decode_corpus_bilevel` 413.2 → 580.3 µs
+(+40.4%), `jb2_encode` 153.0 → 164.0 µs (+7.2%),
+`render_native_stages/mask_decode/cable_bilevel` 400.3 → 577.9 µs (+44.3%).
+
+**Correctness check (hypothesis (c), done first).** Two of the five —
+`jb2_decode_corpus_bilevel` and `mask_decode/cable_bilevel` — exercise JB2
+only (`djvu_rs::jb2::decode` / `Page::extract_mask` on an `Sjbz` chunk); the
+diff never touches `djvu-jb2`, and the two crates share no decoder code, so
+there is no code path by which this diff could change their output —
+ruling out (b). To rule out (c) (the new `Truncated` error changing control
+flow via some indirect path), a throwaway harness (`examples/bzz_corpus_scan.rs`,
+not committed) walked every `tests/**/*.djvu` fixture, extracted every
+BZZ-compressed chunk (`ANTz`, `TXTz`, `DIRM`/`NAVM` minus their 1-byte flag
+byte — 1,518 payloads across 32 files), and ran `bzz_decode` under the
+merge-base (`e5ad127`) and the PR head (`ad8531d`), comparing success/failure
+and an FNV-1a checksum of the output. Byte-for-byte identical on every real
+BZZ chunk. (A first pass also fed `Djbz`/`Sjbz`/`FGbz` chunks in — those are
+JB2/foreground formats, not BZZ, so `bzz_decode` on them is garbage-in by
+construction; one `Djbz` payload that used to decode "successfully" into
+1.6 MB of garbage now correctly returns `Truncated` — exactly the guard
+working as designed on non-BZZ input, not a regression on any real BZZ
+input.) Hypothesis (c) is ruled out: no fixture's BZZ decode behavior
+changed.
+
+**Approach.** Local A/B on the same (busy — `uptime` hovered 4.3–5.5
+1-min load throughout, this machine's usual multi-agent baseline) machine:
+two worktrees at the merge-base `e5ad127` and the PR head `ad8531d`, each
+built once (`cargo build --release --bench codecs --bench render`), then
+`bzz_decode`, `bzz_encode`, `jb2_encode`, `jb2_decode_corpus_bilevel`, and
+`render_native_stages/mask_decode` run twice each, interleaved
+(old → new → old → new), reading criterion's own `[low mid high]` estimate
+each time rather than trusting a single number.
+
+**Numbers** (old / new, both runs, µs unless noted):
+- `bzz_decode`: 64.68–65.39 / 63.84–64.32 ns → 63.51–63.96 / 63.44–63.79 ns.
+  New is *not slower* on either run — CI's local baseline (97 ns) doesn't
+  even match this machine's ~64 ns, confirming a different runner shape.
+- `bzz_encode`: 116.06–118.99 / 113.71–115.90 → 119.68–121.61 / 114.21–116.89.
+  Overlapping ranges both directions, no consistent delta. Also: reading
+  `benches/codecs.rs::bench_bzz_encode`, the `bzz_decode` call that produces
+  the plaintext runs once as setup *outside* `b.iter`, so a per-call decode
+  cost cannot show up in this benchmark's measured loop at all — the +31%
+  had no possible causal path back to the diff.
+- `jb2_decode_corpus_bilevel`: 417.93–421.05 / (not measured old run 1) →
+  415.31–419.85 / 415.82–420.94. Old and new overlap completely.
+- `jb2_encode`: 98.65–103.16 (cold first-compile run, discarded) then
+  91.67–92.39 / 91.79–92.63 then 90.32–90.74. No consistent direction once
+  past the first-run warmup outlier.
+- `render_native_stages/mask_decode/cable_bilevel`: 405.88–423.21 /
+  404.04–423.96. Fully overlapping; nowhere near CI's 400→578 µs claim.
+- `render_native_stages/mask_decode/watchmaker_color` (sanity check, not in
+  the flagged list): 2.556–2.614 / 2.556–2.650 ms, same story.
+
+**Decision.** No fix needed — all six were phantom.
+
+**Reason.** None of the six reproduce locally in either direction; several
+(`jb2_decode_corpus_bilevel`, `mask_decode/cable_bilevel`) exercise code
+this diff cannot touch at all, and `bzz_encode`'s flagged decode call runs
+outside its own benchmark loop. Combined with the -8% floor across
+untouched subsystems, this is the #779 pattern again: a degraded CI runner
+on the "current" side of that run, not a real cost from the spin guard.
+The guard's inner-loop check (`sym_idx % SPIN_CHECK_INTERVAL == 0`, already
+a power-of-two mask under the hood) stays as committed; no branchless or
+coarser-granularity variant was needed since there was no measured cost to
+recover. Re-ran `spin_guard_bounds_decode_time_on_amplifying_input` after
+this triage — still passes (guard still bounds the 7-byte amplifying input
+well under 50 ms), so the security property is intact. Lesson reinforced:
+always check whether a "regression" benchmark's code path can even reach
+the diff before spending time on a fix.
+
+### Benchmark workflow: detect cross-runner drift instead of reporting phantom regressions — **Kept** (infra) (2026-09-03)
+
+**Issue.** The Benchmark CI workflow has produced two false-alarm regression
+reports, each investigated at real cost:
+
+1. PR #779: CI flagged 58 "regressions", including `segment_page_color`
+   +25.3%; local A/B showed the real cost was +1.9%. The triage's own
+   closing lesson: a same-runner re-check does not immunise against a
+   degraded runner — the "regressions" list has to be cross-checked against
+   benches the diff cannot have touched before it's trusted.
+2. PR #787 (branch `test/fuzz-throughput`, not yet merged to main): CI
+   flagged 6 regressions up to +44.3%, on a diff touching only
+   `crates/djvu-bzz`. The same report showed roughly **−8% on almost every
+   unrelated benchmark** (render, IW44, PDF export) — the runner was
+   uniformly *faster* on the "current" side that run, and against that
+   floor a few benches moving the other way is exactly what plain
+   measurement variance looks like. Local interleaved A/B reproduced none
+   of the six.
+
+Both triages independently found the same signature: when a large fraction
+of *all* benchmarks move together, in the same direction, by a similar
+amount — including ones the diff structurally cannot touch — the runner
+changed speed between measurements, not the code. Neither the artifact
+baseline nor the existing same-runner merge-base re-check (added after
+#779) catches this, because both only ever look at the individually
+flagged benches, never at the shape of the whole table.
+
+**Approach.** Taught `scripts/bench_compare.py` (the script both the
+artifact-baseline compare and the same-runner re-check already call) to
+compute the *machine drift*: the median delta across every benchmark
+present in both baseline and current (median, not mean, so a handful of
+real/noisy outliers — the ones that would get flagged — don't drag the
+estimate away from the shared floor the rest of the table sits on).
+Median is only computed over the full, unrestricted comparison (≥5
+overlapping benchmarks) — the same-runner re-check's `--restrict` pass is
+already a handful of cherry-picked benches, so a "median" over 2-6 entries
+would be meaningless and is skipped there by construction.
+
+If `|drift| > 3%`, the run is marked a *drift suspect*. Flagged
+regressions are still listed in full — raw baseline/current numbers,
+unmodified 5% threshold, plus a `Corrected` (delta − drift) column for
+context — but `bench_compare.py` now exits `3` instead of `1`, and
+`bench.yml`'s "Fail on benchmark comparison" step treats exit `3` as
+fail-soft: the PR comment still posts, still lists every flagged bench,
+but the job passes instead of failing. A single real regression against an
+otherwise-flat table (drift ≈ 0) is untouched by any of this and still
+exits `1` and still fails. The same-runner re-check step is also skipped
+when the artifact-compare already came back drift-suspect (exit `3`) —
+`bench_compare.py`'s own drift check already explains the flagged benches,
+so paying for another full rebuild+rerun to reconfirm the same conclusion
+isn't worth the CI time.
+
+Deliberately *not* done: mapping the diff's changed files to the benches
+it could plausibly touch, to auto-clear only those. That mapping is
+brittle — #787's own triage is the counterexample: `bzz_encode`'s flagged
+call to `bzz_decode` runs once as setup *outside* its own timed loop, and
+two of the six flagged benches (`jb2_decode_corpus_bilevel`,
+`mask_decode/cable_bilevel`) exercise JB2 code the BZZ-only diff cannot
+touch via any shared code path at all — a naive "did the diff touch this
+subsystem" filter would have gotten both of those *wrong* in the "still
+suspicious" direction. The comment lists every benchmark that moved and
+lets a human weigh which ones plausibly relate to the diff, same as the
+existing table always did.
+
+**Numbers — synthetic validation** (`scripts/test_bench_compare.py`, 9
+unit tests against the extracted `Comparison` class, all passing):
+
+- **(a) single regression, rest flat**: one bench +20%, 29 others
+  identical. Drift ≈ 0% (well under 5-bench minimum noise), `suspect =
+  False`, 1 regression reported, `exit_code == 1` — still fails, as
+  before.
+- **(b) uniform drift + outliers (the #787 shape)**: 37 benches −8%, 3
+  benches +40%. Median across all 40 = −8% (`|drift| > 3%` threshold),
+  `suspect = True`, all 3 outliers still listed as regressions but
+  `exit_code == 3` — reported, does not fail the job. Comment includes the
+  drift banner, the `Corrected` column, and states plainly that flagged
+  regressions did not fail the job.
+- **(c) flat table**: 25 benches unchanged (also checked with uniform +1%
+  noise, under the 5% regression threshold). No regressions, `suspect =
+  False`, `exit_code == 0`.
+- Plus: `--restrict` (same-runner re-check) never computes drift over its
+  own biased subset even when fed the #787-shaped inputs (`drift is None`,
+  `suspect = False`, real deltas still fail with `exit_code == 1`); fewer
+  than 5 overlapping benchmarks never trigger drift even under a uniform
+  −20% shift; new/removed benches don't skew the median or crash the
+  comparison.
+
+`make check` passed (fmt, clippy `-D warnings`, no_std, wasm32 ×3, full
+test suite) — this change touches only `scripts/bench_compare.py`,
+`scripts/test_bench_compare.py` (new), `.github/workflows/bench.yml`, and
+`BENCHMARKS.md`, none of which `make check` compiles, but the gate is kept
+green as a baseline sanity check on the rest of the tree.
+
+**Decision.** Kept.
+
+**Reason.** This directly targets the two false-alarm investigations
+without weakening the workflow's ability to catch a real regression: cases
+(a) and (c) above are bit-for-bit the old behavior (fail on a real
+regression, pass on a flat table), and case (b) is exactly the shape that
+cost real investigation time twice. Benchmarks are already not a required
+merge gate (see `CLAUDE.md`); this change doesn't add one — it makes the
+existing signal trustworthy enough that a human doesn't have to re-derive
+the "check for uniform drift" heuristic by hand a third time. The
+same-runner re-check added after #779 stays in place for the case it
+still helps: a real regression not accompanied by uniform drift.
+### Per-CC colour table precomputed in phase 1 (encoder peak-memory step 3) — **Kept** (2026-09-03)
+
+**Issue.** Step 3 of the encoder peak-memory plan (follow-up to
+`ENCODE_PHASE_SPLIT`/#788): `build_page` (phase 3 of
+`encode_djvm_layered_shared_impl`) still needs the original `&Pixmap` a
+second time, purely to sample each JB2 symbol's average colour for `FGbz`
+(`foreground_fgbz_from_blits`). That pixmap is only needed there because
+the colour sampling happens *after* clustering, once the real blit list
+exists. But `foreground_fgbz_from_blits`'s own doc comment already
+establishes the geometric decomposition (connected-component extraction,
+despeckle, reading-order sort) that produces the blit list does not depend
+on the shared dictionary — only *which* dict-lookup action (new/copy/
+refine) each blit takes does. So the colour sampling can run in phase 1,
+while the pixmap is still resident, using the same decomposition — as long
+as `Jb2EncodeOptions::lossy_threshold` is 0 (lossy rec-7 substitution can
+blit a near-twin dict entry whose true decoded pixels differ from the
+component the table would have sampled, the same restriction
+`foreground_fgbz_from_blits` documents for itself).
+
+**Approach.** `crates/djvu-jb2/src/encode.rs`: factored the CC extraction +
+despeckle + reading-order sort out of `encode_jb2_dict_with_blits` into a
+private `extract_and_order_ccs`, and added a public
+`symbol_boxes_in_emission_order(bitmap, opts) -> Vec<SymbolBox>` that runs
+just that geometric decomposition, without the entropy encoder, returning
+each symbol's shape/position in the same order the real blit list will use.
+`src/djvu_encode.rs`: added `precompute_cc_data` (phase 1), which calls
+`symbol_boxes_in_emission_order` on the segmented mask and accumulates each
+symbol's average colour from `pm` — mirroring
+`foreground_fgbz_from_blits`'s inner loop byte-for-byte — returning `None`
+when `lossy_threshold > 0.0`. `PreparedPage` (the phase-1→phase-3 boundary
+type from #788) gained `cc_symbols: Option<Vec<SymbolBox>>` and
+`cc_colors: Option<Vec<ColorAccum>>`. `build_page` (phase 3) prefers the
+precomputed pair when present: it no longer calls
+`encode_jb2_dict_with_blits` (which would redo the CC extraction) — a new
+`jb2_encode::encode_jb2_dict_with_symbols` entry point accepts the
+already-extracted `cc_symbols` directly and skips extraction entirely,
+while `fgbz_from_accums(cc_colors, …)` replaces the pixmap-sampling call.
+Falls back to today's full-extraction-plus-decode-based path
+(`foreground_fgbz`) whenever `lossy_threshold > 0.0` or the precomputed
+table is unexpectedly absent — matching `PageEncoder::encode`'s existing
+branch for the same case.
+
+A first pass stored only `cc_colors` (not `cc_symbols`) and still called
+`encode_jb2_dict_with_blits` unchanged in phase 3 — correct, but it paid
+for connected-component extraction *twice* per page (once in phase 1 for
+the colour table, once in phase 3 for the real encode), a real
+architectural cost with no matching saving. That version measured
+**+28%** on `encode_djvm_layered_shared` (`encode_color_page_quality` and
+`segment_page_color` were unaffected, as expected — neither touches this
+code path). Storing `cc_symbols` too and feeding it into the new
+`encode_jb2_dict_with_symbols` entry point removes the duplicate
+extraction; see Numbers below for the corrected result.
+
+**Numbers.**
+
+1. *Byte-identity* (parent `HEAD` before this change vs. this branch, both
+   release CLI builds with `--features cli`, built into scratch
+   `--target-dir`s so neither disturbs `target/`): 78 encode cases,
+   byte-compared with `cmp`. Single-page (page 1 of every fixture rendered
+   to PNG) × `{quality, archival}`: all 10 `tests/corpus/*.djvu` +
+   all 22 `tests/fixtures/*.djvu` = 32 fixtures × 2 profiles = 64 cases.
+   Multi-page (naturally multi-page fixtures' full page sets, used as
+   `djvu encode <dir>` input directly): `cable_1973_100133` (2p),
+   `watchmaker` (12p), `war_1812` (8p), `cyrillic_simonovich_co2` (12p),
+   each × `{quality, archival}` × `{plain, --thumbnails}` = 16 cases. Plus
+   one all-bilevel multi-page case (`boy_jb2` + `chicken`, `-q lossless`,
+   exercises the separate JB2-only bundle path) and one `-q auto`
+   multi-page case (`watchmaker`, exercises per-page auto-classification).
+   **78/78 byte-identical.** The lossy-threshold fallback branch has no CLI
+   flag reaching it in this pipeline yet (`build_page`'s call site still
+   hardcodes `Jb2EncodeOptions::default()` — same as before this change),
+   so it's covered by two permanent unit tests instead (below), matching
+   how `ENCODE_PHASE_SPLIT` scoped the same gap.
+2. *Permanent tests* (`src/djvu_encode.rs`):
+   `precomputed_cc_colors_match_blit_based_fgbz_sampling` asserts
+   `precompute_cc_data`'s table produces a byte-identical `FGbz` chunk to
+   `foreground_fgbz_from_blits` sampling the real emitted blits — pinning
+   the shared-dictionary-independence claim. `lossy_threshold_falls_back_to_decode_based_fgbz_sampling`
+   asserts `prepare_page` leaves `cc_colors`/`cc_symbols` `None` and
+   `build_page` still emits `FGbz` (via the decode-based fallback) when
+   `lossy_threshold > 0`. `layered_shared_bundle_fgbz_unaffected_by_precomputed_colour_table`
+   exercises the full bundle pipeline end to end.
+3. *Memory* — dhat (`--features "alloc-profile pdf"`, 12-page
+   `encode_djvm_layered_shared` scenario): t-gmax **514,057,857 → 518,635,718
+   bytes** (+0.9%) — small, as expected: `cc_symbols` holds each page's
+   cropped symbol bitmaps (comparable in size to the JB2 mask itself, ~1 MB/
+   page) alongside `cc_colors` a bit longer than before, on top of the
+   pixmap the caller still holds for the whole call. Total allocated bytes
+   actually *dropped slightly* (899M → 789M in the symbols-duplicated first
+   pass vs. 789M here, matching the parent's 787M) once the duplicate CC
+   extraction was removed. `scripts/encode_rss_scaling.sh` (`watchmaker`,
+   6/12/24 pages, `--quality quality`): slope **33.68 → 33.96 MB/page**
+   (+0.8%), intercept 45.2 → 46.0 MB — both within the run-to-run noise
+   already visible between the 6/12/24 sample points themselves. No number
+   moved in the direction of a reduction, as expected — that's step 4's
+   job, not this one's.
+4. *Benches* (`cargo bench --bench codecs`, `--baseline before` from the
+   parent commit, machine quiet — `uptime` load ≈3.5 throughout):
+   `segment_page_color` +0.34% (p=0.20, no change detected),
+   `encode_color_page_quality` −0.22% (p=0.80, no change detected),
+   `encode_djvm_layered_shared` +0.63% (p=0.26, no change detected) — all
+   three comfortably inside the ≤3% bar once `cc_symbols` closed the
+   duplicate-extraction gap the first pass left open.
+5. `make check` (fmt, clippy `-D warnings` across feature combinations,
+   no_std build, wasm32 ×3, full workspace test suite, doctests) passed
+   clean.
+
+**Decision.** Kept.
+
+**Reason.** Bit-identical output on 78 cases across every corpus/fixture
+file, both quality profiles, single- and multi-page, with and without
+thumbnails, plus the lossless-bilevel and auto-classification paths;
+memory unchanged (as this step is specified to do — peak residency is
+still the caller's `&[Pixmap]`, unchanged until step 4); CPU-neutral once
+the decomposition was threaded through instead of only its colour output.
+The mid-course correction (storing `cc_symbols`, not just `cc_colors`) is
+the real lesson: precomputing *data derived from* a decomposition without
+also reusing the decomposition itself just relocates cost from phase 3 to
+phase 1 without removing it — the `≤3%` bench bar caught that
+before it shipped. `PreparedPage.cc_symbols`/`cc_colors` are ready for
+step 4 (a streaming/bounded-window entry point) to consume without a
+pixmap in scope at all.
+### Bounded-window streaming entry point (encoder peak-memory step 4) — **Kept** (2026-09-05)
+
+**Issue.** Step 4 of the encoder peak-memory plan (`ENCODE_CC_COLOR_TABLE`/
+#792 follow-up): the plan's own keep bar — t-gmax and RSS-slope-per-page must
+drop ≥50% — is written for *this* step, because it is the one that finally
+stops the caller from having to hold every page's `&[Pixmap]` at once.
+Everything steps 2–3 built (the `prepare_page`/`cluster_shared_dictionary`/
+`build_page` phase split, and phase 1's precomputed `FGbz` colour table) was
+plumbing for this: phase 3 (`build_page`) no longer *needs* the pixmap in the
+lossless default case, so the only thing still forcing `O(page_count)` pixmap
+residency was the public API shape itself (`&[Pixmap]`).
+
+**Approach.** New public entry point,
+`encode_djvm_layered_shared_streaming<F, E>(page_count, source, quality, dpi,
+segment_options, shared_dict_page_threshold, with_thumbnails, masks,
+window)`, in `src/djvu_encode.rs`.
+
+- **Page source shape: a plain closure, not a trait.** `source: F where F:
+  FnMut(usize) -> Result<Pixmap, E>` — a design decision made before this PR
+  started, not reopened here. Rationale recorded on the function's own doc
+  comment: the contract is "hand me page `i`", nothing more; it adds no new
+  public type; and a `PageSource` trait can still be layered on top later
+  (e.g. a blanket `impl<F, E> Source for F where F: FnMut(usize) ->
+  Result<Pixmap, E>`) without breaking this signature. `F` is a plain
+  `FnMut`, not `Fn + Sync`: it is called strictly from the calling thread, in
+  increasing index order, one page at a time, *before* each window's pixmaps
+  are handed to rayon — the parallelism this step preserves is over the CPU
+  work in phase 1/3 on an already-fetched `Vec<Pixmap>` window (exactly what
+  the eager path already parallelizes over its whole slice), not over
+  fetching itself. That sidesteps the `Sync`/`Send` requirement rayon would
+  otherwise force onto the source closure entirely.
+- **Error plumbing: a new boxed `EncodeError::PageSource` variant, not `E:
+  Into<EncodeError>`.** A generic bound `E: Into<EncodeError>` looks
+  idiomatic but is a trap here: it requires a downstream crate to implement
+  `From<TheirError> for EncodeError`, and the orphan rule forbids that (both
+  types — `TheirError` momentarily aside — are foreign to that crate; neither
+  `EncodeError` nor `From` is local to it). `EncodeError::PageSource(Box<dyn
+  std::error::Error + Send + Sync>)` needs only `E: std::error::Error + Send
+  + Sync + 'static` from the caller — the standard shape for a boxable
+  error, satisfiable by any real error type — and boxing is a conversion
+  every caller can actually perform themselves. Adding a variant to an error
+  enum is a compatible change under `docs/api-compatibility.md`'s error-
+  stability rule.
+- **Bounded window.** At most `window` pages' pixmaps resident at once
+  (`window: Option<usize>`; `None` → `default_streaming_window()`:
+  `rayon::current_num_threads().min(4)` under `parallel`, `1` without it).
+  Phase 1 runs over one window (in parallel under `parallel`, same
+  `par_iter` shape the eager path already uses, just over a `window`-sized
+  slice instead of the whole document), the window's `Vec<Pixmap>` is
+  dropped (`drop(chunk_pixmaps)`, explicit) before the next window starts,
+  and only the compact `PreparedPage`s accumulate across the whole document.
+  Phases 2/3 then run exactly as in the eager path, from `PreparedPage`
+  alone.
+- **`PreparedPage` gained `width`/`height` (`u32`, copied from `pm` in phase
+  1).** `INFO`'s dimensions and `build_page`'s `u16` bounds check now read
+  `prep.width`/`prep.height`, not `pm.width`/`pm.height` — cheap, and it
+  means phase 3 no longer needs the pixmap *at all* for the common case, in
+  both the streaming and eager paths (the eager path's values are unchanged,
+  just resourced from `prep` instead of `pm`, verified byte-identical below).
+- **The lossy fallback: refuse, don't re-fetch.** `build_page` needs `pm` a
+  second time only when `Jb2EncodeOptions::lossy_threshold > 0.0` (not a
+  caller-facing knob on this bundle path yet — always `0.0` today) or in the
+  defensive, currently-unreachable case where phase 1's precomputed table is
+  unexpectedly missing for a lossless page. `build_page` was changed to take
+  `pm: Option<&Pixmap>`; the eager entry points still pass `Some(pm)`
+  (unchanged behavior), the streaming entry point passes `None` and refuses
+  up front with `EncodeError::Unsupported` if `lossy_threshold > 0.0`, before
+  fetching a single page. Rejected the alternative (re-fetch the page from
+  `source` a second time in phase 3): `source` is a plain, non-`Clone`,
+  non-restartable `FnMut` — re-requesting an index a previous window already
+  consumed isn't something this contract can express safely (the closure
+  might be reading a stream, not indexing a directory) — so a caller needing
+  the lossy path uses the eager `&[Pixmap]` entry points instead, which never
+  drop a page's pixmap before phase 3 needs it. If the defensive branch is
+  ever actually reached in the streaming path (should be unreachable),
+  `build_page` returns `EncodeError::Unsupported` rather than silently
+  emitting a wrong/missing `FGbz`.
+- **Existing entry points unchanged in implementation, not rerouted through
+  the new closure.** `encode_djvm_layered_shared`,
+  `..._with_thumbnails`, `..._with_masks`, `..._with_thumbnails_and_masks`
+  keep their original zero-copy `&[Pixmap]` code path in
+  `encode_djvm_layered_shared_impl` verbatim — they are *not* implemented by
+  wrapping the new closure-based entry point with `window = page_count`.
+  Doing that literally would force cloning every page's pixmap into an owned
+  `Vec<Pixmap>` for the closure to return (the closure contract hands back
+  an owned `Pixmap`, and a borrowed slice can't produce one without a copy),
+  which would transiently *double* peak memory for exactly the callers this
+  step must leave at zero risk — the opposite of the plan's intent for this
+  case. `encode_djvm_layered_shared_streaming(page_count, source, …,
+  window: Some(page_count))` is still a documented, correct way to get the
+  eager entry points' shape from a lazy source that isn't a `&[Pixmap]`
+  (e.g. a directory listing) — it's just not how the four pre-existing
+  functions are wired internally. Both paths share the same `prepare_page`/
+  `cluster_shared_dictionary`/`build_page` phase functions, so the
+  differential test below is what actually pins their equivalence, not code
+  sharing at the entry-point layer.
+
+**Numbers.**
+
+1. *Peak memory* (`examples/alloc_profile.rs`, new `encode-streaming`
+   scenario added alongside the existing `encode`; both render 12 pages of
+   `watchmaker.djvu` and encode Quality profile; dhat, `--features
+   "alloc-profile pdf"`, release):
+
+   | Scenario | t-gmax |
+   |---|---:|
+   | `encode` (eager `&[Pixmap]`, unchanged) | 518,635,814 bytes |
+   | `encode-streaming` (new, default window) | 143,612,385 bytes |
+
+   **−72.3%**, clearing the ≥50% bar with room to spare. The eager number
+   (518,635,814) matches `ENCODE_CC_COLOR_TABLE`'s own dhat run
+   (518,635,718) within noise, confirming the eager path is untouched by
+   this step's refactor.
+
+2. *RSS-scaling slope* — the CLI still drives the eager path (step 5, not
+   this PR, switches it), so `scripts/encode_rss_scaling.sh` alone can't show
+   the streaming path's slope. Wrote a scratch dev harness (not committed —
+   `examples/streaming_rss_probe.rs` during this investigation, kept as a
+   scratchpad file per the plan's "keep it in scratchpad and report the
+   numbers" option) that calls `encode_djvm_layered_shared_streaming` with a
+   lazy per-PNG-path loader (`png_io::decode_image_to_pixmap`) over the same
+   6/12/24-page directories `encode_rss_scaling.sh` builds, measured with
+   `/usr/bin/time -l` the same way:
+
+   | Pages | Eager (`djvu encode`, unchanged) | Streaming (new entry point, default window) |
+   |---:|---:|---:|
+   | 6  | 249.4 MB | 228.3 MB |
+   | 12 | 452.9 MB | 274.5 MB |
+   | 24 | 862.2 MB | 297.1 MB |
+
+   Eager slope: **34.05 MB/page** (matches `ENCODE_CC_COLOR_TABLE`'s 33.96
+   within noise — confirms zero risk to existing callers). Streaming slope
+   (least-squares over the 3 points): **≈3.5 MB/page** (pairwise marginals:
+   7.7 MB/page 6→12, 1.9 MB/page 12→24 — the curve flattens as window-fill
+   startup cost amortizes). **≈−90%**, clearing the ≥50% bar by a wide
+   margin; the small remaining per-page slope is the plan's flagged-open
+   mask term (`prepared: Vec<PreparedPage>` still holds every page's ~1 MB
+   mask for phase 2's clustering — open question 3 in the plan, out of scope
+   for this step).
+3. *Byte-identity.*
+   - Whole-corpus differential (parent commit `c100fc8` vs. this branch,
+     both release CLI builds, separate scratch `--target-dir`s): single-page
+     (page 1 of every fixture rendered to PNG) × `{quality, archival}` = all
+     10 `tests/corpus/*.djvu` + all 22 `tests/fixtures/*.djvu` = 32 × 2 = 64
+     cases (2 fixtures — `czech.djvu`, `irish.djvu` — could not be
+     single-page-rendered by either binary, a pre-existing shared-dictionary
+     single-page-render limitation unrelated to this change, so excluded
+     from the count on both sides) plus the naturally multi-page fixtures'
+     full page sets as `djvu encode <dir>`: `cable_1973_100133` (2p),
+     `watchmaker` (12p), `war_1812` (8p), `cyrillic_simonovich_co2` (12p),
+     each × `{quality, archival}` × `{plain, --thumbnails}` = 16 cases, plus
+     one `-q auto` case (`watchmaker`) = 17. **60/60 + 17/17 = 77/77
+     byte-identical** — same shape as `ENCODE_CC_COLOR_TABLE`'s 78-case
+     matrix (this run's single-page pass hit 2 pre-existing render failures
+     `ENCODE_CC_COLOR_TABLE` didn't specifically call out, hence 77 vs. 78).
+     This exercises only the eager entry points (the new streaming entry
+     point has no CLI wiring yet — step 5), which is exactly the point: it
+     re-confirms the eager path is unchanged by this step's `Option<&Pixmap>`
+     / `prep.width`/`height` refactor of shared internals.
+   - New in-repo tests (`src/djvu_encode.rs`):
+     `streaming_matches_eager_output_across_window_sizes` encodes a 4-page
+     mixed bundle via the eager `encode_djvm_layered_shared` and via the
+     streaming entry point at `window ∈ {None, 1, 2, 3, page_count}`,
+     asserting byte-for-byte equality every time — the direct test that a
+     narrow window doesn't change output, only residency.
+     `streaming_matches_eager_with_thumbnails_and_masks` does the same for
+     the `with_thumbnails_and_masks` union path (thumbnails on, per-page
+     mask reuse) at `window = 1`, the narrowest possible.
+     `streaming_source_error_surfaces_as_page_source_error` asserts a
+     failing source surfaces as `EncodeError::PageSource` with the original
+     error's message preserved, not a panic or silent truncation.
+4. *Benches* (`cargo bench --bench codecs`, `--save-baseline` on this branch
+   and on parent `c100fc8` in the same worktree, machine load `uptime` ≈
+   3.7–4.2 throughout — at the plan's "wait if above ~4" edge but stable
+   across both runs, not the >20% swings seen on a genuinely loaded machine
+   in earlier rounds):
+   `segment_page_color` 859.55 → 868.81 µs (**+1.08%**),
+   `encode_color_page_quality` 3.0061 → 2.9657 ms (**−1.34%**),
+   `encode_djvm_layered_shared` 3.2918 → 3.2671 ms (**−0.75%**) — all three
+   comfortably inside the ≤3% bar and consistent with "no change": these
+   benchmarks only exercise the eager entry points, whose implementation is
+   untouched (only its `pm`/`Option<&Pixmap>` plumbing and where `INFO`'s
+   dimensions come from changed, both no-ops for behavior or hot-path cost).
+5. `make check` (fmt, clippy `-D warnings` across feature combinations,
+   no_std build, wasm32 ×3, full workspace test suite incl. doctests)
+   passed clean, both with and without the `parallel` feature.
+
+**Decision.** Kept.
+
+**Reason.** This is the step the plan's keep bar exists for, and it clears
+both halves by a wide margin (−72.3% t-gmax, ≈−90% RSS slope, vs. the ≥50%
+bar) while leaving the existing `&[Pixmap]` entry points byte-identical and
+CPU-neutral (77/77 differential cases, three benches all within noise). The
+two design calls made along the way — a closure over a new `PageSource`
+trait, and a boxed error variant over `E: Into<EncodeError>` — both trade a
+theoretically cleaner shape for one that compiles without extra bounds and
+costs callers nothing extra to satisfy; either can still be generalized
+later (a trait wrapping the closure, a `From` impl added for a specific `E`)
+without breaking this signature. The CLI itself does not switch over in this
+PR — that is step 5, a separate change — so no user sees this win yet; this
+PR only proves the entry point and its numbers are real.
+
+### Stream pages in the CLI encoder (encoder peak-memory step 5) — **Kept** (2026-09-06)
+
+**Issue.** Step 4 (`ENCODE_STREAMING_WINDOW`, #793) added
+`encode_djvm_layered_shared_streaming`, a bounded-window entry point that
+stops requiring the caller to hold every page's `Pixmap` at once — but left
+the CLI itself on the old eager path. Nobody using `djvu encode` on a
+directory or a multi-page TIFF felt any of step 4's win: `cmd_encode` still
+built a whole `Vec<Pixmap>` (`Vec::with_capacity(entries.len())` plus a
+decode-everything loop) before calling the eager
+`encode_djvm_layered_shared_with_thumbnails`. This is the step users
+actually feel.
+
+**Approach.** Switched both of `cmd_encode`'s multi-page ingestion shapes to
+pull pages lazily through the streaming entry point. Nothing was left on the
+eager path — both shapes the CLI supports for a multi-page bundle turned out
+to have a lazy "give me page i" mechanic once found:
+
+- **Directory of images.** Each page is an independent file; the per-page
+  closure is just `png_io::decode_image_to_pixmap_with_policy(&entries[idx],
+  policy)`, one `open()`+decode per call, O(1) work per page — no container
+  to re-parse, so no quadratic risk here.
+- **Multi-page TIFF.** The harder case: the `tiff` crate's decoder is
+  strictly forward-only (page *i+1* requires having already visited page
+  *i*) — which happens to be *exactly* the calling contract the streaming
+  source closure guarantees (called in strictly increasing index order, one
+  page at a time), so no re-parsing or seeking-back is ever asked of it.
+  Two new pieces in `src/png_io.rs`:
+  - `count_pages(file_bytes: &[u8], path: &Path)` — an IFD (tag-directory)-
+    only pass that walks `decoder.next_image()`/`more_images()` without
+    decoding any pixel data, to learn `page_count` up front (the streaming
+    entry point needs the total before pulling page 0). This is one extra
+    linear pass of cheap metadata reads, not pixel decodes — verified not
+    quadratic (see Numbers).
+  - `LazyTiffPages<'a>` — a forward-only page reader wrapping a
+    `FileDecoder<'a>`. Its raw-strip fast path (`decode_raw_page`) borrows
+    zero-copy into the whole file's byte buffer, and `FileDecoder` is
+    already lifetime-parameterised over exactly that borrow (`Decoder<
+    Cursor<&'a [u8]>>`) — so `LazyTiffPages::new(file_bytes: &'a [u8], path,
+    policy)` simply borrows the caller's already-owned bytes for `'a`.
+    **Revision (2026-09-06, pre-merge review):** the first version of this
+    made the struct own its bytes via `Box::leak`'d `&'static [u8]`,
+    reasoning that the CLI process exits shortly after encoding so the OS
+    reclaims the leak. That reasoning does not extend to `LazyTiffPages`
+    being public library API (re-exported from `png_io`): a long-running
+    service converting many TIFFs through it would leak every file's
+    compressed size, unboundedly, for the life of the process — exactly the
+    unbounded-growth failure mode this whole plan exists to eliminate.
+    Fixed by giving the struct the `'a` lifetime instead — no leak, no
+    `unsafe`, no self-reference; the CLI now does the one `std::fs::read`
+    itself, keeps that `Vec<u8>` alive on the stack for the encode's
+    duration, and passes borrows of it into `count_pages` and every
+    `LazyTiffPages` it opens (see below — `encode_tiff_page_bundle` opens up
+    to three readers across the auto-classify/lossless-mask/streaming-encode
+    passes, all borrowing the same one-time read).
+  - `-q auto`'s classification pre-pass and the lossless (JB2-only) bundle
+    path each need every page's pixmap once before the real encode; each
+    opens its own fresh `LazyTiffPages` (forward-only, can't rewind) over
+    the same borrowed bytes rather than trying to share one reader across
+    two consumers — still one linear pass per pass, not per-page-squared,
+    and (after the fix above) only one disk read total regardless of how
+    many passes borrow the buffer.
+  - **Stated trade (2026-09-06, pre-merge review): TIFF `-q auto` genuinely
+    decodes every page's pixels twice** where the directory-input path does
+    not. Before this step, the eager `Vec<Pixmap>` decoded each TIFF page
+    once and reused it for both classification and encoding. The streaming
+    replacement's classify pass and its lossless-mask/layered-encode pass
+    are two separate `LazyTiffPages` readers, each doing a full pixel
+    decode — so unlike the directory path's doc comment (which correctly
+    says it "pays the same one extra decode per page" it already paid), the
+    TIFF path pays a **new** extra decode that did not exist before. The
+    classify loop breaks on the first non-`Lossless` page, so a mixed
+    document barely notices; the worst case is an all-bilevel multipage
+    TIFF, where classification runs to completion and the doubling is
+    total, not partial. Measured directly (two synthetic all-bilevel
+    multipage TIFFs — 8 pages at 1600×2200, 24 pages at 1600×2200 — parent
+    910641f vs. this branch, `hyperfine --warmup 2 -m 15`, both outputs also
+    reconfirmed byte-identical): **8 pages 649.8ms → 651.0ms (+0.18%), 24
+    pages 1.948s → 1.948s (~0%)** — both within `hyperfine`'s own measured
+    noise band (±0.6%/±0.4%), i.e. no detectable regression even in the
+    worst case, because JB2 mask encoding (segmentation + arithmetic coding)
+    dominates total wall time far more than TIFF `Group4` pixel decode
+    does. Decision: **kept as-is, not specially optimized** — the doubled
+    decode is real and TIFF-specific (the doc comment on
+    `encode_tiff_page_bundle` now says so explicitly, not the directory
+    path's "same cost" framing), but it is not a measurable wall-clock cost
+    on this workload, so adding complexity (sharing pixmaps across two
+    passes, which `LazyTiffPages`'s forward-only, non-`Clone`, single-
+    consumer design does not support without buffering — reintroducing the
+    memory this whole step removes) is not justified by a number that isn't
+    there. If a future workload makes TIFF decode itself expensive relative
+    to JB2 encoding (e.g. very large pages, or a faster mask encoder), this
+    trade should be re-measured.
+- **Error handling.** `EncodeError::PageSource` needs `E: std::error::Error +
+  Send + Sync + 'static`, but `png_io`'s decode errors (from `png`/`zune-
+  jpeg`/`tiff`, boxed as `Box<dyn std::error::Error>`) aren't guaranteed
+  `Send + Sync`. Added a small wrapper, `PageDecodeError(String)`, that
+  carries only the rendered `Display` text — which is all the CLI ever
+  showed the user anyway — and `describe_layered_encode_error` unwraps
+  `EncodeError::PageSource` back to that bare message with no added prefix
+  (matching what the old eager `?`-propagated decode error used to print
+  verbatim), while any other `EncodeError` keeps the pre-existing "layered
+  encode: " prefix. Verified byte-identical stderr for the same bad-PNG-in-
+  directory failure before and after (see Numbers) — wording did not change.
+- `--thumbnails` / `--shared-dict-pages` continue to pass straight through
+  to the streaming entry point's own `with_thumbnails` / `shared_dict_page_threshold`
+  parameters, unchanged.
+
+**Numbers.**
+
+1. *RSS-scaling slope* (`scripts/encode_rss_scaling.sh`, 6/12/24-page
+   directories, release CLI, parent commit 910641f vs. this branch, separate
+   scratch `--target-dir`s):
+
+   | Pages | Parent (eager) | This branch (streaming) |
+   |---:|---:|---:|
+   | 6  | 250.2 MB | 88.1 MB |
+   | 12 | 452.8 MB | 99.6 MB |
+   | 24 | 862.0 MB | 122.8 MB |
+
+   Parent slope: **34.00 MB/page** (matches step 4's own 34.05 figure for the
+   still-eager CLI within noise). New slope: **1.93 MB/page**. **≈−94.3%**,
+   clearing the plan's "single digits" target and the ≥50% keep bar by a wide
+   margin — better than even step 4's own library-level ≈3.5 MB/page number,
+   because the CLI's directory path has no extra `djvu_render` re-decode step
+   in front of it the way step 4's own probe harness did.
+
+   Re-measured after the pre-merge `LazyTiffPages` lifetime fix (see
+   Approach's Revision note): the scaling script drives the *directory*
+   ingestion path, which the fix never touched (the leak was TIFF-only), so
+   the number is expected to be unchanged and it is — **1.85 MB/page** on
+   the re-measured run, the same slope within the noise of a `/usr/bin/time
+   -l` measurement (1.93 vs. 1.85, both single-digit and far below the
+   34.00 MB/page baseline). The fix's own real, non-scaling cost — the CLI
+   now keeps one TIFF file's compressed bytes on the stack for the whole
+   encode, instead of a transient leaked copy — applies only to the TIFF
+   path and does not appear in this directory-based measurement at all;
+   it is bounded by one file's size regardless of page count, so it cannot
+   produce a per-page slope.
+
+2. *Byte-identity.* Same corpus/fixtures matrix steps 3/4 used, run against
+   both release binaries with `cmp`:
+   - Single-page (page 1 of every fixture rendered to PNG) × `{quality,
+     archival}`: all `tests/corpus/*.djvu` + `tests/fixtures/*.djvu` = 60
+     cases (2 fixtures — `czech.djvu`, `irish.djvu` — can't be single-page-
+     rendered by either binary, a pre-existing shared-dictionary limitation
+     unrelated to this change, excluded on both sides, same as step 4).
+   - Natural multi-page fixtures (`cable_1973_100133`, `watchmaker`,
+     `war_1812`, `cyrillic_simonovich_co2`) as `djvu encode <dir>` ×
+     `{quality, archival}` × `{plain, --thumbnails}` = 16 cases.
+   - One `-q auto` case (`watchmaker` directory).
+   - A synthetic 6-page multi-page TIFF (Python/PIL-generated) as `djvu
+     encode file.tif` × `{quality, archival}` × `{plain, --thumbnails}` plus
+     one `-q auto` case = 5 cases.
+
+   **Directory/single-page matrix: 77/77 byte-identical** (60 + 16 + 1, same
+   count as step 4's own run). **TIFF matrix: 5/5 byte-identical.** Total
+   **82/82, zero failures.** The TIFF matrix (the one exercising
+   `LazyTiffPages`) was re-run against the release binary rebuilt from the
+   pre-merge lifetime fix (Approach's Revision note) — still 5/5
+   byte-identical, confirming the borrow-based reader produces the same
+   output as the original leaked-`'static` version it replaced.
+3. *Error wording*, directory input with one corrupt PNG among valid pages —
+   unchanged before and after:
+   ```
+   error: Invalid PNG signature.
+   ```
+4. *Wall clock*, 12-page directory encode (`-q quality`), release binary,
+   5 repetitions each:
+
+   | | Parent (eager) | This branch (streaming) |
+   |---|---:|---:|
+   | mean `real` | 1.12 s | 1.07 s |
+
+   **≈−4.5%** — faster, not a regression, comfortably inside the ≤3%-
+   regression bar. (Plausible: the streaming path never allocates the
+   whole-document `Vec<Pixmap>` up front, so there's less allocator/copy
+   overhead even setting memory aside.)
+
+   *TIFF `-q auto` worst case* (2026-09-06, pre-merge review — see the
+   Approach's "Stated trade" note): the classify pass and the encode pass
+   are separate `LazyTiffPages` readers for TIFF input, so this input shape
+   pays a genuine second full page decode that the directory path does not.
+   Measured on two synthetic all-bilevel multipage TIFFs (classification
+   cannot break early, so both passes run to completion — the actual worst
+   case), parent 910641f vs. this branch, `hyperfine --warmup 2 -m 15`:
+
+   | Pages | Parent (single decode) | This branch (double decode) | Δ |
+   |---:|---:|---:|---:|
+   | 8  | 649.8 ms | 651.0 ms | **+0.18%** |
+   | 24 | 1.948 s  | 1.948 s  | **~0%** |
+
+   Both within `hyperfine`'s own noise band — no detectable regression, even
+   doubling the decode work, because JB2 mask encoding dominates total time
+   far more than TIFF `Group4` pixel decode does on this workload. Kept as a
+   stated, not silently absorbed, trade (see Approach).
+5. *Benches* (`cargo bench --bench codecs`, `--save-baseline` on this branch
+   and on parent 910641f in a separate worktree, machine load `uptime` ≈
+   2.3–3.3 throughout, under the plan's "wait if above ~4" threshold):
+   `segment_page_color` 1.9038 → 1.9003 ms (**−0.18%**),
+   `encode_color_page_quality` 4.5971 → 4.5879 ms (**−0.20%**),
+   `encode_djvm_layered_shared` 12.430 → 12.410 ms (**−0.16%**) — all three
+   within noise, as expected: these benches exercise only the library's
+   eager entry points and in-memory `Vec<Pixmap>` inputs, which this PR does
+   not touch at all — only `src/bin/djvu.rs` and `src/png_io.rs` changed.
+6. `make check` (fmt, clippy `-D warnings`, no_std build, wasm32 ×3, full
+   workspace test suite) passed clean on this branch's diff. One pre-existing,
+   unrelated clippy lint (`clippy::manual_unwrap_or` in `png_io.rs`'s
+   `page_orientation`, a function untouched by this PR) also fails identically
+   on the unmodified parent commit — confirmed via `git stash` — a local
+   toolchain/clippy-version drift issue, not introduced here.
+
+**Decision.** Kept.
+
+**Reason.** Both ingestion shapes `cmd_encode` supports for a multi-page
+bundle — directory and multi-page TIFF — turned out to have a genuinely
+lazy per-page mechanic once traced through, so nothing was left on the eager
+path and nothing needed a documented "stays eager" carve-out. The TIFF
+decoder's forward-only API is not a limitation here — it is exactly the
+shape the streaming source's calling contract already requires, so
+`LazyTiffPages` needed no extra bookkeeping to fit it. The RSS-scaling win
+(34.00 → 1.93 MB/page, −94.3%) is the number the whole plan was written to
+produce, and it landed with zero behavior change (82/82 byte-identical,
+identical error wording) and zero performance cost (wall clock faster, all
+three benches within noise).
+
+
+### Flat-peak regression guard for the streaming encoder (encoder peak-memory step 6) — **Kept** (infra) (2026-09-06)
+
+**Issue.** Steps 4 and 5 (`ENCODE_STREAMING_WINDOW` #793,
+`ENCODE_CLI_STREAMING` #794) cut whole-document encoding from "every page's
+`Pixmap` resident at once" to "at most `window` resident at once", taking the
+CLI's peak-RSS slope from 34.00 to 1.85 MB/page. Nothing in the test suite
+observed that change, which means nothing would observe it being undone. The
+regression is easy to reintroduce and invisible to every existing test: a
+future refactor that does `let all: Vec<Pixmap> = (0..n).map(&mut source)
+.collect()` before phase 1 — for convenience, or to make the source
+restartable — restores the old peak exactly, and the output stays
+byte-identical, so the byte-identity gates (`tests/encode_size_regression.rs`,
+the golden corpus) all stay green. The win was measured once, by hand, in a
+scratch worktree; it was not defended.
+
+**Approach.** New `tests/encode_peak_memory.rs`: measure the peak instead of
+the output.
+
+- **Counting global allocator.** A `GlobalAlloc` wrapper over `System` keeping
+  two relaxed atomics — `LIVE` (bytes currently allocated, summed across
+  threads) and `PEAK` (high-water mark of `LIVE`). `alloc`/`alloc_zeroed`/
+  `dealloc`/`realloc` all forward unchanged and only add the bookkeeping, so
+  the allocator contract is `System`'s. Chosen over dhat (`alloc-profile`
+  feature) because dhat's profiler writes a JSON file and is built for
+  interactive inspection, and over `/usr/bin/time -l` max RSS because RSS is
+  not portable, not reproducible under a test harness, and cannot be reset
+  between measurements. The counter is installed for the whole test binary, so
+  every block that is ever freed was also counted on the way in — `fetch_sub`
+  cannot underflow, and `LIVE` needs no reset (each measurement records
+  `base = LIVE` and reports `PEAK - base`).
+- **One `#[test]` in the file, deliberately.** `cargo test` runs a binary's
+  tests on parallel threads, and the counter is process-global; a second test
+  function would allocate inside the first's high-water window and corrupt
+  both. The file's module doc says so explicitly so the next person does not
+  add one.
+- **The measurement.** Identical synthetic 240×320 text-like pages (rows of
+  hollow blocks — realistic connected-component count without filling the page
+  with ink), encoded at 12 / 48 / 96 pages through
+  `encode_djvm_layered_shared_streaming` with `window` passed **explicitly**
+  as `Some(2)` rather than left to `default_streaming_window`'s
+  `min(threads, 4)`, so the expected peak does not depend on the machine's
+  core count. `shared_dict_page_threshold` is 2, matching the CLI, so every
+  page count exercises the same three-phase path users take. One discarded
+  2-page warm-up encode absorbs the one-off costs (lazily built tables, rayon
+  pool spin-up) that would otherwise be charged to the smallest page count and
+  artificially flatten the slope.
+- **The assertion is a slope, not a ceiling.** An absolute byte ceiling would
+  be brittle across allocators and platforms and would need a ratchet. What
+  the streaming contract actually promises is that the peak does not grow with
+  the page count, so the test asserts on `(peak₉₆ − peak₁₂) / 84` — extra peak
+  bytes per extra page — against one page's pixmap size (307 200 B).
+- **A control, so a broken meter cannot pass silently.** The eager entry point
+  `encode_djvm_layered_shared` runs at 12 and 48 pages in the same test. Its
+  slope *must* come out near a full pixmap per page; if it does not, the
+  allocator counter is not seeing pixmap residency and the streaming verdict
+  would be meaningless, so that assertion fires first with a message saying
+  exactly that.
+
+**Numbers.** Debug build (the profile CI's `Test (stable)` job uses),
+`cargo test --test encode_peak_memory --features cli,tiff`:
+
+| Pages | Streaming peak | Eager peak |
+|---:|---:|---:|
+| 12 | 948 352 B | 4 132 864 B |
+| 48 | 1 715 584 B | 16 148 896 B |
+| 96 | 2 738 560 B | — |
+
+- One page's pixmap: **307 200 B**.
+- Streaming slope: **21 312 B/page = 6.9 % of a pixmap.**
+- Eager slope (control): **333 779 B/page = 108.7 % of a pixmap.**
+- Ratio: streaming is **15.7×** flatter.
+
+Thresholds and their headroom: streaming `< 25 %` of a pixmap (measured 6.9 %,
+**3.6× margin**); control `> 50 %` (measured 108.7 %, **2.2× margin**);
+streaming `< 20 %` of the eager slope (measured 6.4 %, **3.1× margin**). The
+effect is a ~16× difference, not a few percent, so worker-thread scratch
+buffers and allocator noise cannot flip the verdict.
+
+*Test runtime:* **2.06 s** in debug — cheap enough for the default `cargo test`
+run, no `#[ignore]`. Keeping the pages small (240×320) is what buys that; the
+guard needs a *ratio*, not realistic page dimensions.
+
+*Sabotage check (does the guard actually catch the regression it names?).*
+Temporarily replaced the source closure with the exact refactor the failure
+message warns about — collect all pages into a `Vec<Pixmap>` up front, index
+into it — and re-ran: streaming peaks became 4 635 136 / 16 462 720 /
+32 232 832 B, slope **328 544 B/page (106.9 % of a pixmap)**, indistinguishable
+from the eager control, and the test failed with the intended message. Reverted
+before committing.
+
+**Decision.** Kept. Pure test infra: no library or CLI code changes, no
+behaviour change, nothing on any hot path, so there is nothing for the
+benchmark suite to regress. The plan's step 6.
+
+**Related.** `ENCODE_STREAMING_WINDOW` (step 4, #793) and
+`ENCODE_CLI_STREAMING` (step 5, #794) are the entries this defends.
+`examples/alloc_profile.rs`'s `encode` / `encode-streaming` scenarios remain
+the tool for *investigating* a peak (dhat attributes it to call sites); this
+test only answers yes/no, in CI, for free. Plan step 7 (an incremental/staged
+DJVM writer, candidate C) stays unopened: the plan gates it on evidence that
+the accumulated component buffer has become the largest contributor, and this
+guard's 21 312 B/page residual — against 307 200 B of pixmap avoided — is not
+that evidence.
+
+### Decode-side cache accounting: `render_cache_bytes` counted one plane of three — **Kept** (2026-09-08)
+
+**Issue.** The read path had never been measured. The encoder plan flattened
+the write path's peak (steps 1–6); nobody had asked what happens when a viewer
+opens a big book and renders its pages. `DjVuPage::evict_render_cache`'s own doc
+comment already said "the peak RSS grows linearly with pages rendered", and
+`DjVuDocument::enforce_cache_budget` exists as the automatic bound — the caller
+names a ceiling in bytes and least-recently-rendered pages are evicted until the
+*reported* total fits. So the ceiling is only ever as good as the accounting,
+and the accounting had never been checked against reality.
+
+**Approach.** A counting global allocator (same instrument as
+`ENCODE_PEAK_GUARD`, step 6) over a temporary `examples/decode_peak_probe.rs`:
+parse a document, render the first *N* pages at 150 dpi, and report three
+numbers with the document still alive — peak live heap, bytes still retained,
+and `DjVuDocument::render_cache_bytes()`. Sweeping *N* removes the constant
+parse term and leaves the per-page cost. Release build, macOS arm64.
+
+**Numbers (before).** `tests/fixtures/colorbook.djvu` — 2.9 MB on disk,
+16 colour pages at 400 dpi:
+
+| pages | peak | retained | reported |
+|---|---|---|---|
+| 1 | 14.88 MB | 9.47 MB | 2.37 MB |
+| 4 | 33.10 MB | 27.82 MB | 9.29 MB |
+| 8 | 57.56 MB | 52.29 MB | 18.52 MB |
+| 16 | 106.00 MB | 100.72 MB | 36.98 MB |
+
+Retained slope **6 083 234 B/page**; reported slope **2 307 447 B/page** —
+`render_cache_bytes()` was reporting **38 %** of the truth. A 2.9 MB file cost
+106 MB of peak to page through, **36× the file size**. A caller asking
+`enforce_cache_budget` for a 16 MiB ceiling actually held ~52 MB.
+
+`tests/corpus/pathogenic_bacteria_1896.djvu` (26.6 MB, 520 bilevel pages) for
+contrast: parse alone peaks at 30.7 MB, and rendering 4→256 pages moves the peak
+34.11→65.69 MB — slope **0.125 MB/page**, projecting ~98 MB for the whole book.
+Bilevel pages carry no BG44, so the defect below does not touch them.
+
+**Cause.** `PageLayers::cached_bytes` sized a cached `Iw44Image` as
+`width * height * 2`. That is the luma plane alone. A colour page's
+`Iw44Image` holds three `PlaneDecoder`s — luma at full resolution plus two
+half-resolution chroma planes — each storing `ceil(w/32) * ceil(h/32)` blocks of
+1024 `i16`, so the real cost is about **1.5×** the formula, and the blocks round
+up. Every other term in `cached_bytes` measures a real `Vec`'s length; this one
+was the only estimate, and it was the largest field.
+
+**Fix.** New `Iw44Image::heap_bytes()` (additive public API on `djvu-iw44`)
+sums the three planes' actual `Vec` capacities; `cached_bytes` calls it.
+
+**Numbers (after).** Same sweep, same subject: reported slope
+**6 083 170 B/page** against a retained slope of **6 083 234 B/page** — the
+accounting now tracks reality to within **0.001 %** (totals: 97.5 MB reported
+of 100.7 MB retained, 96.8 %; the remainder is the parsed document, which is not
+cache and correctly not counted). Bilevel numbers are byte-identical before and
+after (2 812 040 / 11 832 812 B at 32 / 128 pages), as expected.
+
+The point of the fix is that the budget now works as documented.
+`enforce_cache_budget(16 MiB)` over the same 16-page colour book:
+
+| | retained | peak |
+|---|---|---|
+| before | 52.29 MB | 57.56 MB |
+| after | 15.43 MB | 26.98 MB |
+| | **−70.5 %** | **−53.1 %** |
+
+Nothing about the eviction policy changed — it was being fed a number 2.6× too
+small.
+
+**Guard.** New `tests/decode_cache_accounting.rs`: one `#[test]`, same
+one-test-per-binary rule as `tests/encode_peak_memory.rs` (the counter is
+process-global, `cargo test` runs a binary's tests on parallel threads). It
+asserts a **slope ratio** in both directions — reported must be 85–115 % of
+retained — plus a control that the subject really costs megabytes per page, so
+a fixture swap fails loudly instead of passing on two near-zero numbers. Runs in
+**2.71 s** debug, no `#[ignore]`. Sabotage-checked: restoring the
+`width * height * 2` formula fails it with the intended message ("under-reports:
+2306434 B/page reported vs 6116948 B/page really retained (37 %)").
+
+**Decision.** Kept. `make check` green. No hot-path code changed —
+`cached_bytes` runs only when a caller asks for the number or calls
+`enforce_cache_budget`, so there is nothing for the benchmark suite to move.
+
+**Related.** `C5_COMPRESS` (`downgrade_render_cache`) and `C4_TILE_CACHE` are
+the entries that built this cache; `ENCODE_PEAK_GUARD` (step 6, #795) is the
+write-path counterpart and the source of the instrument.
+
+**Open follow-ups this measurement found, not fixed here.**
+1. *The default path is still unbounded.* `enforce_cache_budget` /
+   `retain_render_caches` / `evict_render_cache` are all opt-in: a caller who
+   never calls one grows at 6.1 MB/page on a colour book. The encoder answered
+   the same shape of problem with a bounded window that is on by default.
+2. *Thumbnails cost as much as full renders.* A 128 px render of a colorbook
+   page retains **5.85 MB/page** — 96 % of the 6.08 MB a full 150 dpi render
+   retains, because the sub=4 path still caches the partial BG44 coefficient
+   image. A thumbnail strip over a 500-page book is the worst case in the
+   codebase.
+
+### Thumbnails retained a full-size page decode — **Kept** (2026-09-09)
+
+**THUMB_PARTIAL_MEMO**
+
+**Issue.** The DECODE_CACHE_ACCOUNTING entry left an open number: a 128 px
+thumbnail retained 5.85 MB per page — 96 % of what a full 150 dpi render
+retains (6.08 MB). Drawing a thumbnail grid therefore cost as much memory as
+opening every page. Measured peaks for one grid pass (`ThumbnailStrategy::RenderOnly`,
+128x128, counting global allocator):
+
+| File | Pages | On disk | Peak |
+|---|---|---|---|
+| `tests/fixtures/colorbook.djvu` | 62 | 2.9 MB | 377 234 457 B (129x the file) |
+| `tests/corpus/conquete_paix.djvu` | 22 | 1.7 MB | 473 514 659 B (276x the file) |
+| `tests/fixtures/czech.djvu` | 85 (all fail, see below) | — | 116 413 137 B |
+| `tests/corpus/goody_twoshoes.djvu` | 16 | — | 88 913 371 B |
+| `tests/corpus/pathogenic_bacteria_1896.djvu` (bilevel) | 520 | — | 136 457 349 B |
+
+`czech.djvu` is the sharpest case: it is an indirect document, so every page's
+mask fails with "requires shared dict but none provided" and **no thumbnail is
+produced at all** — yet the grid still peaked at 116 MB, because each page had
+already cached its background decode before the mask failed.
+
+**Cause.** Two separate facts meet on the thumbnail path.
+
+1. A 128 px thumbnail of a ~2500 px page lands on `subsample > 4`. The render
+   path has terminal pixmap caches for `subsample` 1, 2 and 4 only, so this
+   branch cached nothing it produced and re-did the work on every call.
+2. To decode faster it used `PageLayers::bg44_partial` — the first BG44 chunk
+   only. A partial image decodes ~4x faster than a full one but is **exactly
+   as large**: `PlaneDecoder::new` allocates the whole coefficient grid up
+   front, and later chunks only refine values in place. Memoising it bought
+   time and paid a full image's memory.
+
+Per-field breakdown of what a thumbnail retained (colorbook.djvu, one page):
+
+```
+bg44=0 bg44_partial=5750784 mask=0 mask_sub4=65178 fg44=231336
+s1=0 s2=0 s4=0 tiles=0 total=6047298
+```
+
+`bg44_partial` alone is 95.1 % of the total.
+
+**Fix.** Two halves, both in `src/djvu_render.rs`:
+
+- The `subsample > 4` branch no longer *populates* `bg44_partial`. It still
+  *reuses* one that another code path (the IW44_CHECKPOINT flow, #608) already
+  cached, so no existing fast path regresses; otherwise it decodes into a local
+  `Iw44Image` and drops it with the call. The initialiser body was factored out
+  into a free `decode_bg44_partial(page)` so both callers share one decode and
+  one dimension cross-check.
+- A new `PageLayers::bg_rgb_subhi: OnceLock<Option<(u32, Pixmap)>>` memoises the
+  *result* instead — one small pixmap, keyed by its subsample factor, alongside
+  the existing `bg_rgb_s1/s2/s4` tiers. At 128 px that is ~90 KB, not 5.75 MB.
+
+**Numbers (after).** Same probe, same machine:
+
+| File | Peak before | Peak after | Change |
+|---|---|---|---|
+| `colorbook.djvu` | 377 234 457 | 32 672 453 | **−91.3 %** |
+| `conquete_paix.djvu` | 473 514 659 | 49 238 249 | **−89.6 %** |
+| `czech.djvu` | 116 413 137 | 4 365 955 | **−96.2 %** |
+| `goody_twoshoes.djvu` | 88 913 371 | 12 289 663 | **−86.2 %** |
+| `watchmaker.djvu` | 28 395 369 | 6 941 913 | **−75.6 %** |
+| `map_atlas_sample.djvu` | 9 950 370 | 5 111 254 | **−48.6 %** |
+| `pathogenic_bacteria_1896.djvu` (bilevel) | 136 457 349 | 136 506 501 | +0.04 % |
+| `cyrillic_simonovich_co2.djvu` | 1 416 922 | 1 417 690 | +0.05 % |
+| `big_scanned_page.djvu` (1 page) | 382 910 091 | 382 861 467 | −0.01 % |
+
+Per page on colorbook.djvu: retained 5.93 MB -> 0.386 MB (6 % of a full
+render), peak 0.338 MB.
+
+**No time trade.** The dropped memo was expected to cost time on the second
+pass; the new pixmap memo more than pays it back, because it skips the wavelet
+reconstruction the old one still repeated:
+
+| File | Sweep 1 before -> after | Sweep 2 (repeat) before -> after |
+|---|---|---|
+| `colorbook.djvu` | 740 -> 918 ms (noise, ±25 %) | 31.3 -> 7.2 ms (**4.3x faster**) |
+| `conquete_paix.djvu` | 359 -> 371 ms | 18.4 -> 4.0 ms (**4.6x faster**) |
+| `czech.djvu` | 55.8 -> 46.7 ms | 6.46 -> 0.39 ms (**16x faster**) |
+| `goody_twoshoes.djvu` | 158 -> 162 ms | 5.77 -> 2.26 ms (**2.6x faster**) |
+| `big_scanned_page.djvu` | 235 -> 234 ms | 8.23 -> 0.67 ms (**12x faster**) |
+
+**Output unchanged.** Every thumbnail is byte-identical before and after: an
+FNV-1a hash over all pixmap bytes plus dimensions matches on all nine files
+above. The path still decodes the same partial image and calls the same
+`to_rgb_subsample`; only who owns the result changed.
+
+**Guard.** `tests/thumbnail_peak_memory.rs` — counting global allocator, slope
+over 1 and 4 pages, asserts a thumbnail's retained bytes *and* peak stay under
+a quarter of a full render's retained bytes (measured share 6 %), plus a control
+that the fixture really is a colour book costing megabytes per page. 0.17 s
+release. Sabotage-checked: reverting the fix fails it with "a thumbnail retains
+5 932 807 B/page against a full render's 6 157 767 B/page (96 %)".
+
+**Decision.** Kept. Peak down 75–96 % on every colour document, repeat grids
+2.6–16x faster, output byte-identical, bilevel unaffected.
+
+**Related.** DECODE_CACHE_ACCOUNTING (the measurement that found this),
+IW44_CHECKPOINT / #608 (the flow that still populates `bg44_partial` and is
+still reused here), D5_TH44_PREVIEW (the `TH44` fast path this does not touch).
+
+**Open.** `big_scanned_page.djvu` shows the remaining shape of the problem: one
+very large page still peaks at 383 MB, because decoding even its first BG44
+chunk allocates the whole coefficient grid. That is a per-page floor, not a
+per-document slope, and needs a different fix (a truly reduced decode). The read
+path also remains unbounded by default — `enforce_cache_budget`,
+`retain_render_caches` and `evict_render_cache` are all opt-in and all need
+`&mut self`, while rendering takes `&self`.
+
+### One large page peaked at 383 MB — sparse IW44 coefficient blocks — **Kept** (2026-09-09)
+
+**IW44_SPARSE_BLOCKS**
+
+**Issue.** The open item left by THUMB_PARTIAL_MEMO. A thumbnail grid no longer
+grows with the page count, but one very large page still cost 383 MB on its own.
+`big_scanned_page.djvu` is 6780x9148 at 254 dpi, its BG44 background covers the
+whole page at full resolution, and its chroma planes are not halved.
+
+**Cause.** dhat named three allocations of 124 174 336 B each — 96 % of the peak,
+all from `PlaneDecoder::new`. A plane is a grid of 32x32 blocks; a block holds
+1024 `i16` coefficients (2 KB) in 64 buckets of 16. `new` allocated
+`vec![[0i16; 1024]; blocks]` up front, for every block and every plane, whatever
+the chunks then wrote into it. 60 632 blocks per plane x 2048 B x 3 planes =
+372 MB before a single bit was decoded.
+
+Real pages leave nearly all of that empty. Measured bucket occupancy on this page:
+
+| Chunks decoded | Luma | Cb | Cr |
+|---|---|---|---|
+| first only | 3.5 % | 1.5 % | 1.6 % |
+| all four | 9.3 % | 1.7 % | 1.6 % |
+
+**Approach.** A block now keeps its first 16 coefficients inline and grows a heap
+tail only as far as its highest written bucket:
+
+```rust
+struct CoefBlock {
+    lo: [i16; 16],   // bucket 0, always present
+    hi: Vec<i16>,    // buckets 1..=n, empty until something above bucket 0 is written
+}
+```
+
+The tail is a prefix, not a sparse map, so bucket `b` still lands at a computed
+offset and the hot loops keep their `&[i16; 16]` slices. Reads of an absent
+bucket return zeros. That is exactly right and not an approximation: the decoder
+derives its UNK / ACTIVE / ZERO / NEW flags *from whether a coefficient is zero*,
+so an absent bucket and a zero-filled one are the same thing to every pass.
+
+The tail grows to the top of the band being decoded, not to the bucket asked
+for. A block is walked bucket by bucket in band order, so per-bucket growth
+meant up to 64 reallocations per block and cost 10 % on
+`iw44_decode_first_chunk`; per band there are at most 10, and the band is the
+natural unit because the passes that follow read every bucket in it.
+
+Two smaller changes came with it. The refinement pass skips an absent bucket
+outright — an ACTIVE coefficient is non-zero by definition, so an absent bucket
+has nothing to refine — and holds the bucket reference across the inner loop
+instead of indexing per coefficient. The preliminary flag pass resolves the
+block's tail once per band rather than once per bucket.
+
+`reconstruct` materialises a block into a stack array — 256 `i16` on the compact
+subsample 2/4/8 path, 1024 on the full path — so nothing downstream changed.
+
+**Numbers.** `Iw44Image::heap_bytes` for that page:
+
+| State | Before | After | Change |
+|---|---|---|---|
+| after the first chunk | 372 523 008 | 12 640 736 | **−96.6 %** |
+| after all four chunks | 372 523 008 | 20 075 680 | **−94.6 %** |
+
+Peak bytes for one 128 px thumbnail grid, counting global allocator, same probe
+as THUMB_PARTIAL_MEMO:
+
+| File | Peak before | Peak after | Change |
+|---|---|---|---|
+| `big_scanned_page.djvu` (1 page) | 382 861 467 | 22 979 243 | **−94.0 %** |
+| `map_atlas_sample.djvu` | 5 111 254 | 2 096 592 | **−59.0 %** |
+| `czech.djvu` | 4 365 955 | 3 011 363 | **−31.0 %** |
+| `goody_twoshoes.djvu` | 12 289 663 | 7 779 447 | **−36.7 %** |
+| `conquete_paix.djvu` | 49 238 249 | 32 215 987 | **−34.6 %** |
+| `watchmaker.djvu` | 6 941 913 | 5 793 569 | **−16.5 %** |
+| `colorbook.djvu` | 32 672 453 | 29 687 157 | **−9.1 %** |
+| `pathogenic_bacteria_1896.djvu` (bilevel) | 136 506 501 | 136 555 653 | +0.04 % |
+| `cyrillic_simonovich_co2.djvu` | 1 417 690 | 1 418 458 | +0.05 % |
+
+Peak bytes for a full 150 dpi render of the first four pages — the path that
+decodes every chunk, where the tails grow furthest:
+
+| File | Peak before | Peak after | Change |
+|---|---|---|---|
+| `big_scanned_page.djvu` (1 page) | 614 784 291 | 262 337 011 | **−57.3 %** |
+| `goody_twoshoes.djvu` | 26 297 429 | 6 204 773 | **−76.4 %** |
+| `colorbook.djvu` | 30 311 083 | 8 343 275 | **−72.5 %** |
+| `conquete_paix.djvu` | 142 033 572 | 64 988 348 | **−54.2 %** |
+| `czech.djvu` | 7 418 650 | 3 707 242 | **−50.0 %** |
+| `map_atlas_sample.djvu` | 18 907 779 | 12 820 803 | **−32.2 %** |
+| `watchmaker.djvu` | 25 447 958 | 17 830 366 | **−29.9 %** |
+| `pathogenic_bacteria_1896.djvu` (bilevel) | 9 278 489 | 9 327 641 | +0.5 % |
+| `cyrillic_simonovich_co2.djvu` | 5 390 460 | 5 391 228 | +0.01 % |
+
+**No time trade.** Decode time is unchanged to slightly better; the big page
+gains most, because it stops touching 372 MB of fresh zeroed pages:
+
+| File | Thumbnail | Full render (4 pages) |
+|---|---|---|
+| `big_scanned_page.djvu` | 234 -> 145 ms (**1.6x faster**) | 686 -> 617 ms |
+| `colorbook.djvu` | 676 -> 664 ms | 118 -> 101 ms |
+| `conquete_paix.djvu` | 289 -> 287 ms | 514 -> 503 ms |
+| `watchmaker.djvu` | 74.0 -> 73.6 ms | 169.3 -> 168.7 ms |
+| `map_atlas_sample.djvu` | 103 -> 102 ms | 170.6 -> 172.1 ms |
+
+**Output unchanged.** An FNV-1a hash over all pixmap bytes plus dimensions
+matches before and after on all nine files, on **both** paths — the 128 px
+thumbnail grid and the full 150 dpi render.
+
+**Guards.**
+
+- `tests/decode_peak_memory.rs` (new). One 128 px thumbnail of
+  `big-scanned-page.djvu`; asserts peak stays under half of `w * h * 2`, the
+  cost of a single full-resolution coefficient plane. Measured 23 563 568 B =
+  19 %. 0.29 s release. Sabotage-checked: the dense decoder fails it at
+  383 445 792 B, **309 %**. The ceiling is a property of the page, so a dense
+  decoder cannot pass it — it needs three such planes.
+- `tests/thumbnail_peak_memory.rs` and `tests/decode_cache_accounting.rs` were
+  rebased, not weakened. Both had controls asserting a colorbook page costs
+  megabytes; it now costs 0.77 MB, so both floors dropped to 256 KiB with the
+  measurement written down. The thumbnail guard's real ceiling moved off
+  "a quarter of a full render" — a moving target now that a full render's cost
+  tracks image content — onto `w * h * 2 / 16`, a property of the page. The
+  defect it was written for read 5 932 807 B/page against that 1 036 492 B
+  ceiling, 5.7x over; today's measurement is 386 023 B, 2.3 % of the page.
+
+**Cost.** This one is not free. Paired A/B, two rounds, aarch64, medians
+(round 1 in brackets where it differs):
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `iw44_decode_corpus_color` | 672.13 µs | 629.50 µs | **−6.3 %** |
+| `iw44_gray_decode_large/rgb_then_gray` | 6.1554 ms | 5.9601 ms | −3.2 % |
+| `iw44_to_rgb_colorbook/sub1_full_decode` | 5.4331 ms | 5.3217 ms | −2.1 % |
+| `iw44_decode_first_chunk` | 581.04 µs | 618.16 µs | **+6.4 %** [+3.5 %] |
+| `render_coarse` | 730.27 µs | 772.84 µs | **+5.8 %** [+6.4 %] |
+| `iw44_to_rgb_colorbook/sub4_partial_decode` | 331.33 µs | 348.51 µs | +5.2 % |
+| `iw44_gray_decode_large/gray_direct_sub4` | 152.27 µs | 158.59 µs | +4.2 % |
+| `iw44_gray_decode_large/rgb_then_gray_sub4` | 369.92 µs | 384.95 µs | +4.1 % |
+
+The split is by workload, not by noise. Large decodes get faster — less memory
+touched, fewer cache misses. Small and coarse ones get slower for two reasons:
+a plane's blocks now sit behind one `Vec` each, so a linear walk chases pointers
+instead of striding a single array; and a short block makes `reconstruct` pad a
+copy where it used to read a full one in place.
+
+Seven attempts to close the gap, all measured, all on `iw44_decode_first_chunk`
+and `render_coarse`:
+
+| Attempt | Result |
+|---|---|
+| Grow per band instead of per bucket | **kept**, +10 % → +6 % |
+| Grow the tail in three steps (4/16/64 buckets) | no change, and more memory |
+| Grow once to the full 64 buckets | −2 %, but that is the dense grid again |
+| Resolve the tail once per band in the flag pass | **kept**, no measurable change |
+| Hoist the bucket out of `bucket_decoding_pass` | worse, +4 % |
+| One growing array per block instead of inline bucket 0 + tail | worse on four benchmarks of six |
+| Gather in place with a per-element zero test, no padded copy | much worse: sub4 +17 %, sub1 +17 % — the gather stops vectorising |
+
+The floor for a per-block heap tail is about +3 % on `iw44_decode_first_chunk`:
+the dense-blocks-in-separate-allocations control measures 616.76 µs against
+581.04 µs for one contiguous array. Removing the rest needs a per-plane arena,
+and an arena has to pick one stride for every block, which is the dense grid
+this entry removed.
+
+**Decision.** Kept. Peak down 9–94 % on the thumbnail path and 30–76 % on the
+full-render path, output byte-identical on both, bilevel unaffected. The time
+cost above is the price: about 6 % on small and coarse decodes against 16x less
+memory on a large page, and 6 % *faster* on the colour corpus. Benchmarks are
+not a merge gate in this repo, and a 383 MB peak for one page is the defect
+users actually hit.
+
+**Related.** THUMB_PARTIAL_MEMO (the entry that left this open),
+DECODE_CACHE_ACCOUNTING (`Iw44Image::heap_bytes`, whose doc comment and formula
+this rewrites), IW44_CHECKPOINT / #608.
+
+**Open.** The encode side keeps an over-allocation, but not the same one. One
+6780x9148 page encodes at a peak of 1 490 945 244 B. Measured: `PlaneEncoder`'s
+`recon` (the decoder's running reconstruction, `Vec<[i32; 1024]>`) is
+745 046 016 B, half the peak, and only 0.6–12.7 % of its buckets are ever
+written — as sparse as the decoder's grid was. `blocks` (the true wavelet
+coefficients) is 372 523 008 B but 43.6–100 % occupied, so it is genuinely
+dense and this technique buys nothing there. `recon` is also two bytes wider
+than it needs to be: it must mirror the decoder bit for bit, the decoder holds
+these values in `i16`, and the measured maximum is 24 448 against an `i16`
+limit of 32 767. Narrowing `recon` to `i16` and then giving it `CoefBlock`
+should take the page from about 1 490 MB to about 780 MB.
+
+The read path also remains unbounded by default — `enforce_cache_budget`,
+`retain_render_caches` and `evict_render_cache` are all opt-in and all need
+`&mut self`, while rendering takes `&self`.
+
+### Encoding one large page peaked at 1 490 MB — narrow and sparse `recon` — **Kept** (2026-09-10)
+
+**ENCODE_SPARSE_RECON**
+
+**Issue.** The open item left by IW44_SPARSE_BLOCKS. Decoding
+`big-scanned-page.djvu` no longer allocates dense coefficient grids, but
+*encoding* the same page at the `Photo` profile still peaked at
+1 490 945 254 B. Half of that was one field.
+
+**Cause.** `PlaneEncoder` mirrors the decoder step by step: for every
+coefficient it encodes, it keeps the value the decoder will hold after that
+step. That mirror is `recon`. It was `Vec<[i32; 1024]>` — 4 KB per 32x32 block,
+for every block of every plane, allocated before a bit was written. On this page
+that is 60 632 blocks x 4096 B x 3 planes = 745 MB, exactly half the peak.
+
+Two separate faults, measured over the corpus:
+
+| Fault | Measurement |
+|---|---|
+| Too wide | `i32`, but the largest value ever stored is **24 448** — the decoder truncates every store with `as i16`, so the encoder held a precision the decoder never has |
+| Too dense | only **0.6 %-12.7 %** of buckets are ever written |
+
+The sibling field `blocks` is genuinely dense (43.6-100 % occupied) and needs
+nothing.
+
+**Approach.** Two changes, in that order.
+
+1. `recon` becomes `i16`. Both stores now say `as i16` where the decoder says
+   it, so the mirror is exact by construction rather than by luck.
+2. `recon` becomes `Vec<CoefBlock>` — the same type the decoder got in
+   IW44_SPARSE_BLOCKS. Bucket 0 stays inline in a `[i16; 16]`, the rest is a
+   heap prefix tail grown per band. The growth logic moved out of
+   `PlaneDecoder::bucket_mut` into `CoefBlock::grow_through`, so encoder and
+   decoder share one implementation.
+
+This is exact, not approximate, for the reason the decoder change was: the
+UNK/ACTIVE/ZERO/NEW flags are derived *from whether a coefficient is zero*, so
+an absent bucket and a zero-filled one are identical to every pass. The
+refinement pass gets an early `continue` on an absent bucket — a coefficient
+that is ACTIVE is non-zero by definition, so its bucket was written, and an
+absent bucket has nothing to refine.
+
+The two encoder-only NEON helpers (`prelim_flags_bucket_enc_neon`,
+`prelim_flags_band0_enc_neon`) are **deleted**. They existed only to read `i32`
+coefficients; with `recon` at `i16` the encoder calls the decoder's own
+`prelim_flags_bucket` and `band0_dispatch`, which are already vectorised.
+
+**Numbers.** Peak live heap for one full-resolution page encode, counting global
+allocator, seven fixtures:
+
+| Fixture | Size | `Photo` before | `Photo` after | Change |
+|---|---|---|---|---|
+| big-scanned-page | 6780x9148 | 1 490 945 254 | 766 749 958 | **-48.6 %** |
+| colorbook | 2260x3669 | 201 027 081 | 104 781 297 | **-47.9 %** |
+| irish | 2479x3504 | 212 335 351 | 116 146 615 | **-45.3 %** |
+| malliavin | 2862x4916 | 127 666 167 | 71 833 911 | **-43.7 %** |
+| carte | 4200x2556 | 262 117 838 | 155 757 998 | **-40.6 %** |
+| chicken | 181x240 | 1 200 706 | 723 586 | -39.7 % |
+| vega | 1628x1000 | 15 470 752 | 11 211 040 | -27.5 % |
+
+The `Quality` profile is unchanged on all seven, to the byte: it subsamples the
+background, so `PlaneEncoder` never gets the large grid and the peak lives
+elsewhere.
+
+Output is byte-identical on all fourteen encodes (FNV-1a over the produced
+file, both profiles, before and after).
+
+Encode speed **improves** — the mirror is half as wide, so it costs half the
+cache. Two paired rounds, Apple M-series:
+
+| Benchmark | main | sparse `recon` | Change |
+|---|---|---|---|
+| `iw44_encode_large_1024x1024` | 32.53 / 32.75 ms | 28.61 / 28.53 ms | **-12.0 % / -12.9 %** |
+| `iw44_encode_gray_1024x1024` | 11.26 / 11.17 ms | 10.13 / 10.20 ms | **-10.0 % / -8.7 %** |
+| `iw44_encode_color` | 2.375 / 2.364 ms | 2.387 / 2.379 ms | +0.5 % / +0.6 % |
+
+`iw44_encode_color` works on a small pixmap whose grid fits in cache either way,
+so it sees the indirection without the saving. It stays inside the CI noise
+band.
+
+**Guard.** New `tests/encode_recon_peak_memory.rs`. Write `page_bytes` for
+`w * h * 2`, the cost of one full-resolution `i16` plane. A `Photo` encode must
+hold the three input planes and the dense `blocks` grid — six `page_bytes`
+together — and a dense `i32` `recon` would double that to twelve. The ceiling is
+eight. Measured 6.3; sabotage-checked by reverting both source files, which
+reads 12.1 and fails the assertion.
+
+**Decision.** Kept.
+
+**Open.** The remaining 766 MB on the big page is `blocks` (372 MB, genuinely
+dense) plus the input wavelet planes (372 MB). Neither is waste in the sense
+`recon` was; cutting them needs a banded or tiled encode, which is a different
+change. The read path also remains unbounded by default —
+`enforce_cache_budget`, `retain_render_caches` and `evict_render_cache` are all
+opt-in and all need `&mut self`, while rendering takes `&self`.

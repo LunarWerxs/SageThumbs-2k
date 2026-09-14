@@ -7,7 +7,7 @@
 
       pwsh scripts\vendor-djvu.ps1                 # regenerate at the pinned version
       pwsh scripts\vendor-djvu.ps1 -Check          # verify the tree matches; changes nothing
-      pwsh scripts\vendor-djvu.ps1 -Version 0.28.0 # try a new upstream release
+      pwsh scripts\vendor-djvu.ps1 -Version 0.33.0 # try a new upstream release
 
   Sourced from cargo's own extracted registry cache (like vendor-jxl.ps1), not downloaded fresh
   (unlike vendor-exr.ps1): djvu-rs is, until this patch lands, an ordinary crates.io dependency,
@@ -15,15 +15,17 @@
   `~/.cargo/registry/src/<index>/djvu-rs-<version>`. That is exactly what cargo compiled, so
   there is no chance of patching a different tarball than the one Cargo.lock resolved.
 
-  DELETE ALL OF IT (this file, scripts/fetch-pristine-djvu.ps1, crates/vendor/djvu-patches,
-  crates/vendor/djvu-rs, the `[patch.crates-io]` line and its `[workspace] exclude` entry) once
-  an upstream djvu-rs release fixes `composite_rows_bilevel_one`'s fallback loop to bound the
-  source column by the mask's own width - see crates/vendor/djvu-patches/README.md for exactly
-  what the patch does and why.
+  The original reason for vendoring - a fuzzer-found panic in `composite_rows_bilevel_one`'s
+  fallback loop - shipped upstream in 0.32.1 (2026-09-10); the remaining patch is only the
+  `crate-type = ["rlib"]` trim (see crates/vendor/djvu-patches/README.md). DELETE ALL OF IT
+  (this file, scripts/fetch-pristine-djvu.ps1, crates/vendor/djvu-patches, crates/vendor/djvu-rs,
+  the `[patch.crates-io]` line and its `[workspace] exclude` entry) once upstream drops the
+  `cdylib` crate-type declaration (or once cargo#6313 itself is fixed) so a plain registry
+  dependency builds clean again.
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.27.0',
+    [string]$Version = '0.32.1',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
     [switch]$Check,
     # Refuse to skip. Without this, a `-Check` run that cannot find the pristine source prints
@@ -92,7 +94,7 @@ try {
             Write-Host "              'diff --git a/ b/' headers, which git reads as repo-root paths. Rewrite the" -ForegroundColor Yellow
             Write-Host "              headers as 'diff -ruN pristine/djvu-rs/... patched/djvu-rs/...' (see jxl-patches)." -ForegroundColor Yellow
         } else {
-            Write-Host "              The upstream source moved under the patch, or -Version is not 0.27.0." -ForegroundColor Yellow
+            Write-Host "              The upstream source moved under the patch, or -Version is not 0.32.1." -ForegroundColor Yellow
             Write-Host "              Re-check the hunks: git apply -p2 --reject $patchPath" -ForegroundColor Yellow
             Write-Host "              ...then regenerate the patch from the fixed tree. Do NOT hand-edit the vendored copy." -ForegroundColor Yellow
         }

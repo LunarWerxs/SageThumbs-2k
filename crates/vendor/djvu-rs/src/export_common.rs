@@ -87,7 +87,7 @@ pub(crate) fn size_at_dpi(page: &DjVuPage, target_dpi: f32) -> (u32, u32) {
 /// `#[allow(dead_code)]`: only the `pdf`/`tiff`-gated exporters call it.
 #[allow(dead_code)]
 pub(crate) fn rgba_row_to_rgb(dst: &mut Vec<u8>, rgba_row: &[u8]) {
-    for rgba in rgba_row.chunks_exact(4) {
+    for rgba in rgba_row.as_chunks::<4>().0 {
         dst.extend_from_slice(&rgba[..3]);
     }
 }

@@ -26,6 +26,7 @@ use crate::{
     annotation::Shape,
     djvu_document::{DjVuBookmark, DjVuDocument, DjVuPage, DocError},
     djvu_render::{self, RenderOptions},
+    export_control::{ExportObserver, NoOpObserver},
     text::Rect,
 };
 
@@ -33,6 +34,7 @@ use crate::{
 
 /// Errors from PDF conversion.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PdfError {
     /// Document model error.
     #[error("document error: {0}")]
@@ -43,6 +45,9 @@ pub enum PdfError {
     /// I/O error writing to the output sink (`djvu_to_pdf_to_writer`).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Export was cancelled by its observer.
+    #[error("export cancelled")]
+    Cancelled,
 }
 
 // ---- Low-level PDF object writer --------------------------------------------
@@ -284,7 +289,7 @@ fn render_page_data(page: &DjVuPage, opts: &PdfOptions) -> Result<RenderedPage, 
         // glyph edges in the raster) and cleaner (no JPEG ringing halos).
         let (rw, rh) = (bg.width, bg.height);
         let mut rgb = Vec::with_capacity(rw as usize * rh as usize * 3);
-        for px in bg.data.chunks_exact(4) {
+        for px in bg.data.as_chunks::<4>().0 {
             rgb.extend_from_slice(&px[..3]);
         }
         (Some(encode_img0_body(&rgb, rw, rh, opts)), layers)
@@ -1189,13 +1194,34 @@ pub fn djvu_to_pdf_with_options(
 /// # Errors
 ///
 /// Returns `PdfError` if page rendering, text layer parsing, or writing to
-/// `sink` fails. On error the sink is left with a partial PDF.
+/// `sink` fails. On error the sink may contain a partial PDF; the library does
+/// not clean it up or provide atomic replacement (that policy belongs to the
+/// CLI/application layer).
 pub fn djvu_to_pdf_to_writer<W: std::io::Write>(
     doc: &DjVuDocument,
     opts: &PdfOptions,
     sink: W,
 ) -> Result<(), PdfError> {
-    djvu_to_pdf_impl(doc, opts, sink)
+    let mut observer = NoOpObserver;
+    djvu_to_pdf_to_writer_with_observer(doc, opts, sink, &mut observer)
+}
+
+/// Convert a DjVu document to PDF while reporting progress through `observer`.
+///
+/// With the `parallel` feature, cancellation is polled before each bounded
+/// render batch. Work already scheduled in the current batch may complete
+/// before the cancellation is observed.
+///
+/// On error, `sink` may contain a partial PDF; the library does not clean it
+/// up or provide atomic replacement (that policy belongs to the CLI/application
+/// layer).
+pub fn djvu_to_pdf_to_writer_with_observer<W: std::io::Write>(
+    doc: &DjVuDocument,
+    opts: &PdfOptions,
+    sink: W,
+    observer: &mut dyn ExportObserver,
+) -> Result<(), PdfError> {
+    djvu_to_pdf_impl(doc, opts, sink, observer)
 }
 
 /// This produces a PDF 1.4 file with:
@@ -1219,6 +1245,7 @@ fn djvu_to_pdf_impl<W: std::io::Write>(
     doc: &DjVuDocument,
     opts: &PdfOptions,
     sink: W,
+    observer: &mut dyn ExportObserver,
 ) -> Result<(), PdfError> {
     let mut w = PdfWriter::new(sink)?;
 
@@ -1275,6 +1302,9 @@ fn djvu_to_pdf_impl<W: std::io::Write>(
         let chunk = rayon::current_num_threads().max(1) * 8;
         let mut start = 0;
         while start < page_count {
+            if observer.cancelled() {
+                return Err(PdfError::Cancelled);
+            }
             let end = (start + chunk).min(page_count);
             let rendered_pages: Vec<Option<RenderedPage>> = (start..end)
                 .into_par_iter()
@@ -1288,7 +1318,11 @@ fn djvu_to_pdf_impl<W: std::io::Write>(
                 })
                 .collect();
             for (off, rendered) in rendered_pages.into_iter().enumerate() {
+                if observer.cancelled() {
+                    return Err(PdfError::Cancelled);
+                }
                 page_obj_ids.push(emit_one(&mut w, start + off, rendered)?);
+                observer.on_progress(start + off + 1, page_count);
             }
             start = end;
         }
@@ -1299,12 +1333,16 @@ fn djvu_to_pdf_impl<W: std::io::Write>(
     // bodies first (peak RSS O(pages × body) → O(1 page); mirrors TIFF_STREAM).
     #[cfg(not(feature = "parallel"))]
     for i in 0..page_count {
+        if observer.cancelled() {
+            return Err(PdfError::Cancelled);
+        }
         // #629: render on a cold clone — see the parallel path above.
         let rendered = doc
             .page(i)
             .ok()
             .and_then(|p| render_page_data(&p.clone(), opts).ok());
         page_obj_ids.push(emit_one(&mut w, i, rendered)?);
+        observer.on_progress(i + 1, page_count);
     }
 
     // Build outline from bookmarks
@@ -1563,6 +1601,143 @@ mod tests {
             std::fs::read(assets_path().join(name)).unwrap_or_else(|_| panic!("{name} must exist"));
         crate::djvu_document::DjVuDocument::parse(&data)
             .unwrap_or_else(|e| panic!("parse failed: {e}"))
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        progress: Vec<(usize, usize)>,
+        cancel_after: Option<usize>,
+    }
+
+    impl ExportObserver for RecordingObserver {
+        fn on_progress(&mut self, done: usize, total: usize) {
+            self.progress.push((done, total));
+        }
+
+        fn cancelled(&self) -> bool {
+            self.cancel_after
+                .is_some_and(|after| self.progress.len() >= after)
+        }
+    }
+
+    fn load_fixture_doc(name: &str) -> crate::djvu_document::DjVuDocument {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+        .unwrap();
+        crate::djvu_document::DjVuDocument::parse(&data).unwrap()
+    }
+
+    #[test]
+    fn pdf_writer_observer_reports_each_page_in_order() {
+        let doc = load_fixture_doc("vega.djvu");
+        let total = doc.page_count();
+        let mut observer = RecordingObserver::default();
+
+        djvu_to_pdf_to_writer_with_observer(
+            &doc,
+            &PdfOptions::default(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect("observer export must succeed");
+
+        assert_eq!(
+            observer.progress,
+            (1..=total).map(|done| (done, total)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pdf_writer_cancellation_stops_after_completed_page() {
+        let doc = load_fixture_doc("vega.djvu");
+        assert!(doc.page_count() > 1, "fixture must contain multiple pages");
+        let mut observer = RecordingObserver {
+            cancel_after: Some(1),
+            ..RecordingObserver::default()
+        };
+
+        let error = djvu_to_pdf_to_writer_with_observer(
+            &doc,
+            &PdfOptions::default(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect_err("observer must cancel the export");
+
+        assert!(matches!(error, PdfError::Cancelled));
+        assert_eq!(observer.progress.len(), 1);
+    }
+
+    #[test]
+    fn pdf_default_writer_delegates_to_noop_observer() {
+        let doc = load_fixture_doc("vega.djvu");
+        let opts = PdfOptions::default();
+
+        let mut default_cursor = std::io::Cursor::new(Vec::new());
+        djvu_to_pdf_to_writer(&doc, &opts, &mut default_cursor).unwrap();
+
+        let mut observed_cursor = std::io::Cursor::new(Vec::new());
+        let mut observer = NoOpObserver;
+        djvu_to_pdf_to_writer_with_observer(&doc, &opts, &mut observed_cursor, &mut observer)
+            .unwrap();
+
+        assert_eq!(observed_cursor.into_inner(), default_cursor.into_inner());
+    }
+
+    #[test]
+    fn pdf_writer_failing_sink_returns_io_error() {
+        let doc = load_fixture_doc("chicken.djvu");
+        let error = djvu_to_pdf_to_writer(
+            &doc,
+            &PdfOptions::default(),
+            crate::export_test_support::FailingWriter::after(2),
+        )
+        .expect_err("injected sink failure must be returned");
+
+        assert!(matches!(error, PdfError::Io(error) if error.kind() == std::io::ErrorKind::Other));
+    }
+
+    #[test]
+    #[ignore = "renders 100 synthetic pages to exercise the streaming sink path"]
+    fn large_synthetic_export_streams_through_counting_sink() {
+        const PAGE_COUNT: usize = 100;
+
+        let component = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/chicken.djvu"),
+        )
+        .expect("read source page");
+        let mut bundle =
+            crate::djvm::DjvmStreamWriter::new(Vec::new(), crate::djvm::DjvmSpool::Memory)
+                .expect("create synthetic bundle writer");
+        for page in 0..PAGE_COUNT {
+            bundle
+                .add_component(&format!("page_{page:04}.djvu"), 1, &component)
+                .expect("add synthetic page");
+        }
+        let bundled = bundle.finish().expect("finish synthetic bundle");
+        let doc =
+            crate::djvu_document::DjVuDocument::parse(&bundled).expect("parse synthetic bundle");
+        let mut observer = RecordingObserver::default();
+        let mut sink = crate::export_test_support::CountingWriter::default();
+
+        djvu_to_pdf_to_writer_with_observer(&doc, &PdfOptions::default(), &mut sink, &mut observer)
+            .expect("stream synthetic export into counting sink");
+
+        assert!(
+            sink.bytes_written() > 0,
+            "counting sink must receive output"
+        );
+        assert_eq!(
+            observer.progress,
+            (1..=PAGE_COUNT)
+                .map(|done| (done, PAGE_COUNT))
+                .collect::<Vec<_>>(),
+            "every synthetic page must complete before the export returns"
+        );
     }
 
     /// `PdfOptions::default()` uses jpeg_quality = Some(80).

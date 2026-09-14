@@ -6,7 +6,7 @@
 #[cfg(feature = "epub")]
 mod epub_tests {
     use djvu_rs::djvu_document::DjVuDocument;
-    use djvu_rs::epub::{EpubOptions, djvu_to_epub};
+    use djvu_rs::epub::{EpubOptions, djvu_to_epub, djvu_to_epub_writer};
     use std::collections::HashMap;
     use std::io::Read;
     use std::path::PathBuf;
@@ -56,6 +56,40 @@ mod epub_tests {
         assert!(!epub.is_empty());
         // Must be a ZIP (PK signature)
         assert_eq!(&epub[..2], b"PK");
+    }
+
+    #[test]
+    fn epub_vec_and_writer_exports_are_byte_identical() {
+        let doc = load_doc("boy.djvu");
+        let opts = EpubOptions {
+            modified: Some("2026-07-19T00:00:00Z".to_owned()),
+            ..EpubOptions::default()
+        };
+        let expected = djvu_to_epub(&doc, &opts).unwrap();
+
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        djvu_to_epub_writer(&doc, &opts, &mut cursor).unwrap();
+
+        assert_eq!(cursor.into_inner(), expected);
+    }
+
+    #[test]
+    fn epub_entries_are_written_in_page_order() {
+        let doc = load_doc("vega.djvu");
+        let epub = djvu_to_epub(&doc, &EpubOptions::default()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(epub)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_owned())
+            .collect();
+
+        let mut expected = vec!["mimetype".to_owned(), "META-INF/container.xml".to_owned()];
+        for page_number in 1..=doc.page_count() {
+            expected.push(format!("OEBPS/images/page_{page_number:04}.png"));
+            expected.push(format!("OEBPS/pages/page_{page_number:04}.xhtml"));
+        }
+        expected.extend(["OEBPS/nav.xhtml", "OEBPS/content.opf"].map(str::to_owned));
+
+        assert_eq!(names, expected);
     }
 
     #[test]
