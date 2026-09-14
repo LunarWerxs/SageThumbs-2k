@@ -221,7 +221,7 @@ lofty = "0.25"
 # only rars API that touches rayon); a guard test in rar.rs keeps it that way. The
 # exposure is binary size plus a future call-site regression, not a live pool inside
 # Explorer. Revisit (pin/patch) if upstream ships a release with `rayon` optional again.
-rars = "0.6"
+rars = "0.9.4"
 # DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
 # fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
 # lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support.
