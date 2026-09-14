@@ -192,10 +192,15 @@ base64 = "0.23"
 # build 20348 / Server 2022, and the installer's floor is `MinVersion=10.0`, so the OS
 # crypto API this project already uses for SHA-256 and RNG cannot do it on a machine we
 # support. Hence a crate rather than one more `BCrypt*` call. Pure-Rust, no C, verify-only
-# for us. `default-features = false` drops the SIGNING half's `rand_core`/`zeroize` — we
-# never mint a certificate, we only check one. LTO dead-strips it from the shell-extension
-# DLL, which never touches the licence module.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# for us. `default-features = false` drops the SIGNING half's `rand_core`/`zeroize` (plus
+# the perf-only `fast` precomputed-tables feature) — we never mint a certificate, we only
+# check one. 3.0.0 (2026-07-06) dropped the `std` feature entirely now that its error type
+# lives in `core` (no behavioural change to verification — confirmed against the 3.0.0
+# changelog and a source diff of `verify`/`verify_strict`: the only change is an internal
+# multipart-message plumbing refactor for the new `MultipartVerifier` impl), so there is no
+# feature left to name; the crate is no_std-by-default without one. LTO dead-strips it from
+# the shell-extension DLL, which never touches the licence module.
+ed25519-dalek = { version = "3", default-features = false }
 percent-encoding = "2"
 # 7-Zip (cb7 + generic .7z) — pure-Rust. `default-features = false` is LOAD-BEARING:
 # 0.21's default set pulls `bzip2` (C) and the LZMA *encoder*; with it off we get
