@@ -103,6 +103,12 @@ impl IInitializeWithFile_Impl for PropertyStore_Impl {
             if pszfilepath.is_null() {
                 return Err(Error::from(E_POINTER));
             }
+            // The business-licence lock (see `licence_state`): a locked copy declines to
+            // initialise, so the Details pane and the columns simply show nothing for the
+            // formats we own - the same thing the shell does when no handler is registered.
+            if crate::licence_state::shell_locked() {
+                return Err(Error::from(E_FAIL));
+            }
             let path = unsafe { pszfilepath.to_string() }.map_err(|_| Error::from(E_FAIL))?;
             // A host is free to re-Initialize one PropertyStore instance across several files
             // (a documented, real shell pattern) — without clearing the cache here,

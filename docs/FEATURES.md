@@ -660,12 +660,22 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   clipboard so nothing is lost.
 - **Licence:** shows whether the copy is running as personal or business, a field to enter
   and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
-  business copy with no key redeemed yet, this is also where the reminder lives, alongside the
-  launch notice and the strip across every Settings page. The line shows one of: no key
-  entered, licensed (with the last verified date), revoked (with why, when known), personal
-  use, or - on a machine currently relying on its offline certificate rather than a live
-  check - an early warning once that certificate is nearing its own expiry. A failed check
-  never moves the "last verified" date forward.
+  business copy with no key redeemed yet, this is also where the evaluation lives, alongside
+  the launch notice and the strip across every Settings page (days left, an **Open licence**
+  button and a **Buy a licence…** button). The line shows one of: the evaluation and its days
+  left, the evaluation ended and the date thumbnails stop, stopped (a key is required), no key
+  entered, licensed (with the last verified date), revoked (with why, when known, and when the
+  copy stops), personal use, or - on a machine currently relying on its offline certificate
+  rather than a live check - an early warning once that certificate is nearing its own expiry.
+  A failed check never moves the "last verified" date forward.
+- **The business evaluation:** a copy installed for business use works in full for 7 days,
+  then asks for a key for 3 more days, then stops drawing thumbnails, previews and the Details
+  pane and hides its right-click menu on that computer until a key is redeemed; the Quick
+  preview and the folder pre-build say why instead of opening. A tray balloon (with the
+  resident helper) or a notification (from the daily background check) says how long is left
+  and opens the Licence page when clicked. Redeeming a key restores everything with the next
+  thumbnail. A copy that once held a key is never stopped by a network outage, only by a
+  revocation, and then with the same 3 days of notice. `st2k doctor` reports the state.
 - **Updates window and renewal:** a commercial licence is US$49 per installation, one-time,
   and is perpetual with 12 months of updates. The Licence page shows when that window ends
   ("Updates until \<date\>", or "Updates ended \<date\>" once it has passed), and a **Renew
@@ -737,10 +747,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   invokes ImageMagick's text, caption or font-rendering surfaces.
 - **Personal-or-business question on every interactive install.** The installer asks how
   you'll use SageThumbs 2K: personal (free, every feature, non-commercial) or business
-  (needs a commercial licence under the PolyForm Noncommercial license). Your answer is
-  written machine-wide and stays in effect across silent self-updates; changing it means
-  running the installer interactively again. See section 4's Licence settings for
-  redeeming a business seat key.
+  (needs a commercial licence under the PolyForm Noncommercial license; a 7-day evaluation
+  starts on install). Your answer is written machine-wide and stays in effect across silent
+  self-updates; changing it means running the installer interactively again, and choosing
+  Personal on a computer that was set up for business use asks once whether you are sure.
+  See section 4's Licence settings for redeeming a business seat key.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - **Portable zip**, both architectures, no installer and no administrator rights. Unpack it

@@ -91,6 +91,15 @@ static LAST_BALLOON: AtomicU32 = AtomicU32::new(BALLOON_NONE);
 const BALLOON_NONE: u32 = 0;
 const BALLOON_UPDATE: u32 = 1;
 const BALLOON_ELEVATED: u32 = 2;
+/// The business-licence reminder (evaluation countdown, notice, or stopped); a click opens
+/// Settings on the Licence page.
+const BALLOON_LICENCE: u32 = 3;
+/// A licence reminder is due: posted from `kick_licence_tick`'s worker. Carries nothing;
+/// the daemon thread re-reads the breadcrumb, same forgery reasoning as `WM_UPDATE_FOUND`.
+const WM_LICENCE_DUE: u32 = WM_APP + 4;
+/// The licence tick's own 6-hour timer, separate from the update timer because that one is
+/// only armed when update checks are on and a licence is not an update.
+const LICENCE_TIMER_ID: usize = 13;
 
 pub(super) const CLASS: PCWSTR = w!("SageThumbs2KShotDaemon");
 
@@ -251,6 +260,11 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
         let _ = SetTimer(Some(hwnd), UPDATE_TIMER_ID, UPDATE_TIMER_MS, None);
         kick_update_check(hwnd);
     }
+    // The business-licence tick: starts the evaluation clock on first sight of a Business
+    // copy, refreshes the entitlement, and raises the reminder balloon when one is due.
+    // Unconditional (a Personal copy pays one HKLM read per tick) and on its own timer.
+    let _ = SetTimer(Some(hwnd), LICENCE_TIMER_ID, UPDATE_TIMER_MS, None);
+    kick_licence_tick(hwnd);
 
     // Keep the hotkeys alive across events that silently drop `RegisterHotKey` bindings while
     // this process stays up. Session notifications (lock/unlock, connect/disconnect, RDP
@@ -479,6 +493,16 @@ unsafe fn kick_update_check(hwnd: HWND) {
     });
 }
 
+/// Copy a balloon string into one of `NOTIFYICONDATAW`'s fixed buffers, always leaving
+/// the terminating NUL in place: a string longer than the buffer (a translated licence
+/// notice can be) is cut, never left unterminated for the shell to read past.
+fn set_balloon_text(dst: &mut [u16], text: &str) {
+    let src = wide(text);
+    let n = src.len().min(dst.len() - 1);
+    dst[..n].copy_from_slice(&src[..n]);
+    dst[n] = 0;
+}
+
 /// Pop a tray "update available" balloon (clickable → the releases page). A no-op if the
 /// tray icon is hidden, in which case the next Settings open still surfaces the update.
 unsafe fn show_update_toast(hwnd: HWND, tag: &str) {
@@ -486,15 +510,68 @@ unsafe fn show_update_toast(hwnd: HWND, tag: &str) {
     let mut nid = tray_data(hwnd, false);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
-    let title = wide("SageThumbs 2K update available");
-    let info = wide(&format!("Version {tag} is ready — click to download."));
-    for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
-        *d = *s;
-    }
-    for (d, s) in nid.szInfo.iter_mut().zip(info.iter()) {
-        *d = *s;
-    }
+    set_balloon_text(&mut nid.szInfoTitle, "SageThumbs 2K update available");
+    set_balloon_text(
+        &mut nid.szInfo,
+        &format!("Version {tag} is ready — click to download."),
+    );
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+/// Run the licence tick (`license::background_tick`: start the evaluation if due, refresh
+/// the entitlement, decide whether a reminder is due) off the hook thread, and post
+/// `WM_LICENCE_DUE` back when one is. Same ferry-the-raw-handle shape as
+/// `kick_update_check`.
+unsafe fn kick_licence_tick(hwnd: HWND) {
+    let hwnd_raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        if crate::license::background_tick().is_some() {
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(hwnd_raw as *mut core::ffi::c_void)),
+                    WM_LICENCE_DUE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+    });
+}
+
+/// `WM_LICENCE_DUE`: re-read the breadcrumb on this thread and pop the reminder balloon
+/// (a click opens Settings on the Licence page). Records the nag so the Settings window
+/// and the daily one-shot, which share the cadence, do not repeat it the same day. A
+/// no-op if the tray icon is hidden, in which case the next Settings open still says it.
+unsafe fn on_licence_due(hwnd: HWND) {
+    let snap = crate::license::snapshot();
+    if !snap.posture.wants_reminder() {
+        return;
+    }
+    LAST_BALLOON.store(BALLOON_LICENCE, Ordering::Relaxed);
+    let mut nid = tray_data(hwnd, false);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = if snap.posture.is_urgent() {
+        NIIF_WARNING
+    } else {
+        NIIF_INFO
+    };
+    set_balloon_text(&mut nid.szInfoTitle, crate::win::t("licence_popup_title"));
+    set_balloon_text(
+        &mut nid.szInfo,
+        &format!(
+            "{} {}",
+            crate::settings_dlg::licence_reminder_body(&snap),
+            crate::win::t("licence_toast_enter_key")
+        ),
+    );
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    crate::license::note_nag_shown(snap.now_unix);
+}
+
+/// Open Settings on the Licence page (the licence balloon's click target).
+fn open_licence_settings() {
+    let tab = crate::settings_dlg::licence_page().to_string();
+    let _ = super::spawn_self(&["--tab", &tab]);
 }
 
 /// Pop a tray balloon explaining that Space cannot work over the window now in front.
@@ -514,14 +591,11 @@ unsafe fn show_elevated_warning(hwnd: HWND, kind: &str) {
     let mut nid = tray_data(hwnd, false);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_WARNING;
-    let title = wide(&format!("{kind}: {}", crate::win::t("admin_warn_title")));
-    let info = wide(crate::win::t("admin_warn_body"));
-    for (d, s) in nid.szInfoTitle.iter_mut().zip(title.iter()) {
-        *d = *s;
-    }
-    for (d, s) in nid.szInfo.iter_mut().zip(info.iter()) {
-        *d = *s;
-    }
+    set_balloon_text(
+        &mut nid.szInfoTitle,
+        &format!("{kind}: {}", crate::win::t("admin_warn_title")),
+    );
+    set_balloon_text(&mut nid.szInfo, crate::win::t("admin_warn_body"));
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
@@ -606,6 +680,10 @@ extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 on_update_found(hwnd, lparam);
                 LRESULT(0)
             }
+            WM_LICENCE_DUE => {
+                on_licence_due(hwnd);
+                LRESULT(0)
+            }
             WM_COMMAND => {
                 on_command(hwnd, wparam);
                 LRESULT(0)
@@ -661,7 +739,8 @@ unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
         // One message for every balloon, so route on which one we last raised.
         match LAST_BALLOON.swap(BALLOON_NONE, Ordering::Relaxed) {
             BALLOON_ELEVATED => spawn(None), // open Settings to bind a hotkey
-            _ => open_releases(),            // the "update available" toast
+            BALLOON_LICENCE => open_licence_settings(),
+            _ => open_releases(), // the "update available" toast
         }
     }
 }
@@ -671,6 +750,7 @@ unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
 unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
     match wparam.0 {
         UPDATE_TIMER_ID => kick_update_check(hwnd),
+        LICENCE_TIMER_ID => kick_licence_tick(hwnd),
         // Catch-all backstop: re-assert the hotkey registrations in case some
         // unforeseen event silently dropped them while we kept running.
         REARM_TIMER_ID => rearm_hotkeys(hwnd),

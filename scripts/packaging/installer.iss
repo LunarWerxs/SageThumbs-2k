@@ -691,9 +691,44 @@ begin
   LicensePage.Add('Personal use (free)' + #13#10
     + 'Home, hobby, and other non-commercial use. Every feature included.');
   LicensePage.Add('Business or commercial use' + #13#10
-    + 'For work. Buy a licence at st2k.lunarwerx.com/buy (US$49 per installation, yours'
-    + ' permanently) and enter the key afterwards under Settings > Licence.');
+    + 'For work. Try it for 7 days, then enter a licence key under Settings > Licence'
+    + ' (US$49 per installation, yours permanently, from st2k.lunarwerx.com/buy).');
   LicensePage.SelectedValueIndex := LicenseModeInitial;
+end;
+
+// Does the licence breadcrumb say this machine ran under Business mode and has not yet
+// acknowledged a downgrade? No JSON parser here: the app writes the file with serde_json's
+// pretty printer, which emits exactly `"was_business": true` - a literal the app's own test
+// (`licence_state::tests::the_pretty_printed_breadcrumb_carries_the_literals_the_installer_greps_for`)
+// pins, so a serializer change cannot silently blind this check.
+function BreadcrumbSaysWasBusiness: Boolean;
+var
+  S: AnsiString;
+  P: String;
+begin
+  Result := False;
+  P := ExpandConstant('{commonappdata}\SageThumbs2K\license-history.json');
+  if FileExists(P) and LoadStringFromFile(P, S) then
+    Result := (Pos('"was_business": true', String(S)) > 0)
+      and (Pos('"downgrade_acknowledged": true', String(S)) = 0);
+end;
+
+// "Are you certain?" - asked ONCE, at the moment someone picks Personal on a machine that
+// was set up for business use (the HKLM answer says so, or the breadcrumb remembers it and
+// the app has not yet shown its own one-time downgrade notice). Not a wall: No goes back to
+// the page, Yes proceeds and the app's notice fires once more on the next Settings open,
+// after which neither asks again. A silent run never reaches this (no wizard pages).
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = LicensePage.ID) and (LicensePage.SelectedValueIndex = 0)
+     and ((LicenseModeInitial = 1) or BreadcrumbSaysWasBusiness) then
+    Result := MsgBox('This computer was set up for business use of SageThumbs 2K.'
+      + #13#10#13#10
+      + 'Personal use is free only for personal, non-commercial use. If this is a work'
+      + ' computer, go back and keep Business.'
+      + #13#10#13#10
+      + 'Continue with Personal use?', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 // Do not re-ask somebody who has already answered - an upgrade should be quiet. A first

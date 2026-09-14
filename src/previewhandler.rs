@@ -224,6 +224,13 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
 
     fn DoPreview(&self) -> Result<()> {
         safety::guard(|| {
+            // The business-licence lock (see `licence_state` and the thumbnail provider's
+            // twin check): a locked copy leaves the pane empty, the same terminal state as
+            // an undecodable file, before any window is created for it.
+            if crate::licence_state::shell_locked() {
+                safety::log_debug("DoPreview: refused, business licence lock");
+                return Err(Error::from(E_FAIL));
+            }
             if !self.ensure_window() {
                 return Err(Error::from(E_FAIL));
             }

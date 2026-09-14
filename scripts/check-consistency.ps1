@@ -416,10 +416,24 @@ foreach ($bad in ($iss -split "?
 ") | Where-Object { $_ -match 'license-history' -and $_ -match '(?i)uninstalldelete|Type:\s*files|Type:\s*filesandordirs' }) {
   $fail.Add("installer.iss: an uninstall directive names license-history - the breadcrumb MUST survive uninstall: $($bad.Trim())")
 }
-# And the Rust side must agree with the installer on where history lives.
-$lic = Get-Content -Raw "$root/src/bin/app/license.rs"
-if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("license.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
-if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("license.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
+# And the Rust side must agree with the installer on where history lives. Since 2026-09-13 the
+# breadcrumb reader lives in the CORE crate (src/licence_state.rs) so the shell handlers can
+# read the business-licence lock from inside explorer.exe; the app's license.rs re-exports it.
+$lic = Get-Content -Raw "$root/src/licence_state.rs"
+if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("licence_state.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
+if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("licence_state.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
+# The installer's "was this a business machine?" confirmation greps the pretty-printed
+# breadcrumb for two literals; both sides must keep writing / reading exactly those.
+foreach ($literal in '"was_business": true', '"downgrade_acknowledged": true') {
+  if ($iss -notmatch [regex]::Escape($literal)) { $fail.Add("installer.iss: the Personal-on-a-business-machine confirmation no longer greps for $literal") }
+}
+if ($lic -notmatch [regex]::Escape('"was_business": self.was_business')) { $fail.Add("licence_state.rs: the breadcrumb no longer serializes was_business under that name - the installer greps for it") }
+if ($lic -notmatch [regex]::Escape('"downgrade_acknowledged": self.downgrade_acknowledged')) { $fail.Add("licence_state.rs: the breadcrumb no longer serializes downgrade_acknowledged under that name - the installer greps for it") }
+# The shell honours the lock: every in-process surface consults it, and nothing may quietly
+# drop one (a surface that keeps serving a stopped copy is the lock's only failure mode).
+foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'src/settings/thumbs.rs') {
+  if ((Get-Content -Raw "$root/$surface") -notmatch [regex]::Escape('licence_state::shell_locked()')) { $fail.Add("$surface no longer consults licence_state::shell_locked() - a stopped business copy would keep serving through it") }
+}
 
 # --- 7) no script hardcodes this dev machine's target-dir redirect ------------
 # One machine's own .cargo/config.toml target-dir redirect (a dot-prefixed scratch directory

@@ -596,7 +596,10 @@ pub fn menu_quick_verbs() -> bool {
 /// separately today, once per top-level menu item per right-click (item 132).
 #[derive(Clone, Copy, Debug)]
 pub struct MenuGate {
-    /// `EnableMenu` — master on/off for the right-click menu.
+    /// `EnableMenu` — master on/off for the right-click menu — AND the business-licence
+    /// lock (`licence_state::shell_locked`): a locked copy reads as menu-off on both the
+    /// classic and the modern menu, so neither shows a verb the app would then refuse. The
+    /// Settings checkbox itself reads [`menu_enabled`], which stays the user's own switch.
     pub enabled: bool,
     /// `MenuAllFileTypes` — show a condensed menu on unsupported selections too.
     pub all_file_types: bool,
@@ -623,7 +626,7 @@ pub fn menu_gate() -> MenuGate {
     };
     let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
     MenuGate {
-        enabled: g("EnableMenu", 1) != 0,
+        enabled: g("EnableMenu", 1) != 0 && !crate::licence_state::shell_locked(),
         all_file_types: g("MenuAllFileTypes", 0) != 0,
         quick_verbs: g("MenuQuickVerbs", 0) != 0,
     }

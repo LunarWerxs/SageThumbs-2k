@@ -798,6 +798,18 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
             ID_BIZNAG_ACTION,
             hinst,
         );
+        ctl(
+            hwnd,
+            BUTTON,
+            t("btn_licence_buy"),
+            WS_TABSTOP,
+            0,
+            0,
+            10,
+            10,
+            ID_BIZNAG_BUY,
+            hinst,
+        );
     }
 
     // ===== Bottom row: About + credit (left), inline with Save / Cancel (right) =====

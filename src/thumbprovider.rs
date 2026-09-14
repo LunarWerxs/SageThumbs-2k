@@ -85,6 +85,17 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
                 safety::log_debug("GetThumbnail: disabled via EnableThumbs=0");
                 return Err(Error::from(E_FAIL));
             }
+            // The business-licence lock (`licence_state`): a Business copy whose 7-day
+            // evaluation and 3-day notice have both run out with no key redeemed, or whose
+            // seat was revoked, refuses exactly like the master switch does - Explorer
+            // falls back to the file's icon. Same placement as the switch, for the same
+            // reason: a locked provider fails every call by design and must not write an
+            // `ERROR` line per file. One HKLM read for the Personal copies that are 99% of
+            // installs; `st2k doctor` names this state so "no thumbnails" has an answer.
+            if crate::licence_state::shell_locked() {
+                safety::log_debug("GetThumbnail: refused, business licence lock");
+                return Err(Error::from(E_FAIL));
+            }
 
             // Circuit breaker: a file already known to fail is refused here, before any
             // decode work, instead of paying full cost again on every Explorer redraw.

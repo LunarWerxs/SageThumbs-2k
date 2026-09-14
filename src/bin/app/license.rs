@@ -1,258 +1,55 @@
-//! Licence MODE, the survives-uninstall history breadcrumb, and the pure posture
-//! decisions (grace window, downgrade detection).
+//! Licence MODE, the survives-uninstall history breadcrumb, the evaluation clock, and the
+//! pure posture decisions (grace window, evaluation, lock, downgrade detection).
 //!
-//! The product design is Michael's, decided 2026-08-31, and three of its choices are
-//! deliberate enough to restate here so nobody "fixes" them:
+//! The product design is Michael's, decided 2026-08-31 and extended 2026-09-13, and four of
+//! its choices are deliberate enough to restate here so nobody "fixes" them:
 //!
 //! * **The installer asks Personal-or-Business, and the mode changes ONLY by
 //!   reinstalling.** There is no Settings toggle on purpose ("not just a setting lazy
 //!   users will just go flip the switch on"). The mode lives in HKLM, written by the
 //!   elevated installer, and this process only ever READS it.
-//! * **The installer question is self-declaration, not enforcement.** It exists to
-//!   remove the "nobody told us" excuse a business otherwise has. Anyone who wants
-//!   free clicks Personal, and that is accepted.
+//! * **The installer question is self-declaration, not enforcement of honesty.** It
+//!   exists to remove the "nobody told us" excuse a business otherwise has. Anyone who
+//!   wants free clicks Personal, and that is accepted ("they can lie, I don't care").
+//! * **A Business copy with no key is an EVALUATION, and an evaluation ends.** Seven days
+//!   with everything working, then three days of loud notice that a key is required, then
+//!   the shell stops serving (thumbnails, previews, Details pane, right-click menu) until
+//!   a key is redeemed. The arithmetic and the shell's read of it live in
+//!   [`sagethumbs2k_core::licence_state`], because the thumbnail provider runs inside
+//!   `explorer.exe` and must decide with no app process alive. This module STARTS the
+//!   clock ([`start_trial_if_due`]), speaks the phases ([`Posture`]) and never locks a
+//!   copy that once held a licence and merely went quiet.
 //! * **Everything here fails toward Personal/free.** A missing value, a corrupt
 //!   breadcrumb, an unreadable key: all read as the quiet mode. The one thing this
-//!   module must never do is nag someone the design says should be left alone.
+//!   module must never do is nag or lock someone the design says should be left alone.
 //!
-//! The BREADCRUMB records that this machine once ran under a business licence, so a
-//! later reinstall-as-Personal can be met with a single factual notice (the
-//! "downgrade detection"). It lives in ProgramData rather than the registry because
-//! the licence check runs UNELEVATED at runtime and must be able to update it, and it
-//! must SURVIVE UNINSTALL or the whole feature is void: reinstall is the mode-change
-//! path, and a breadcrumb the uninstaller deletes would let a corporate machine
-//! launder itself into a fresh home install. `installer.iss` creates the directory
-//! with `uninsneveruninstall` and user-modify permissions; `check-consistency.ps1`
-//! pins both so neither can be tidied away silently.
+//! The BREADCRUMB records that this machine ran under Business mode, so a later
+//! reinstall-as-Personal can be met with a single factual notice (the "downgrade
+//! detection"), and it carries the evaluation clock. It lives in ProgramData rather than
+//! the registry because the licence check runs UNELEVATED at runtime and must be able to
+//! update it, and it must SURVIVE UNINSTALL or the whole feature is void: reinstall is the
+//! mode-change path, and a breadcrumb the uninstaller deletes would let a corporate
+//! machine launder itself into a fresh home install. `installer.iss` creates the
+//! directory with `uninsneveruninstall` and user-modify permissions; `check-consistency.ps1`
+//! pins both so neither can be tidied away silently. The struct and its (de)serialization
+//! are [`sagethumbs2k_core::licence_state::History`]; this module owns every WRITE.
 //!
-//! TRUST BOUNDARY, stated plainly: the breadcrumb is a users-writable file and the
-//! mode is a world-readable value. Both are ADVISORY. A user who edits them defeats
-//! only the reminders, exactly as a user who clicks "Personal" does. Licence
-//! ENFORCEMENT is the seat rail's job (Pay's entitlement read, via our relay), never
-//! this file's, so nothing here treats either store as trustworthy input: the JSON
-//! parse is bounds-checked and any malformation reads as "no history".
+//! TRUST BOUNDARY, stated plainly: the breadcrumb is a users-writable file and the mode is
+//! a world-readable value. Both are ADVISORY. A user who edits them defeats the reminders
+//! and the lock, exactly as a user who clicks "Personal" does. The lock is a path for the
+//! businesses that mean to pay, never a wall against the ones that will not; the seat
+//! rail (Pay's entitlement read, via our relay) is what says who is actually licensed.
 
 use serde_json::{json, Value};
 
-/// The install-time declaration. Read-only at runtime; see the module docs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mode {
-    Personal,
-    Business,
-}
+pub(crate) use sagethumbs2k_core::licence_state::{
+    days_until, entitlement_from_cache, history_path, now_unix, phase, read_history, read_mode,
+    shell_locked, write_history, Entitlement, History, Mode, Phase, LOCK_GRACE_SECS,
+};
 
-/// Where the elevated installer records the wizard answer. The app's own settings
-/// live in HKCU; this is deliberately HKLM so an unelevated process cannot flip it.
-const MODE_KEY: &str = "Software\\SageThumbs2K";
-const MODE_VALUE: &str = "LicenseMode";
-
-/// The current mode. Installed builds only ever read the HKLM value the elevated
-/// installer wrote (see the module docs). Portable builds have no installer and
-/// therefore no wizard declaration, so they default to Personal too - UNLESS this
-/// copy has itself redeemed a business key, in which case [`redeem`] wrote the same
-/// marker string ("business") into the portable settings store, and that is the ONE
-/// thing a portable copy consults instead. Both branches funnel through the same
-/// [`parse_mode`], so "business" means the same thing whichever store it came from.
-pub(crate) fn read_mode() -> Mode {
-    if sagethumbs2k_core::settings::portable() {
-        return parse_mode(sagethumbs2k_core::settings::get_string_opt(MODE_VALUE).as_deref());
-    }
-    parse_mode(
-        windows_registry::LOCAL_MACHINE
-            .open(MODE_KEY)
-            .and_then(|k| k.get_string(MODE_VALUE))
-            .ok()
-            .as_deref(),
-    )
-}
-
-/// `None`, garbage, casing: everything but an exact business marker is Personal.
-/// Failing toward the quiet mode is the module's standing rule (see the top docs).
-fn parse_mode(raw: Option<&str>) -> Mode {
-    match raw.map(str::trim) {
-        Some(s) if s.eq_ignore_ascii_case("business") => Mode::Business,
-        _ => Mode::Personal,
-    }
-}
-
-// ---------------------------------------------------------------------------------
-// The breadcrumb.
-// ---------------------------------------------------------------------------------
-
-/// What this machine's licence history was, written by the licence check as it runs
-/// and read back across uninstall/reinstall cycles. NOTHING PERSONAL goes in here -
-/// no name, no email, no serial (only its display prefix, which cannot redeem
-/// anything). That is a contract with the seat rail's own schema, which draws the
-/// same line for the same reason.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct History {
-    /// Ever held an active business licence on this machine.
-    pub was_business: bool,
-    /// The last state the entitlement check reported: "active" | "revoked".
-    pub last_status: String,
-    /// WHY, when `last_status` is "revoked": the relay's `reason` token (`seat_revoked`,
-    /// `contract_ended`, ...), empty when it sent none or the status is not a revocation.
-    /// Display only, through `settings_dlg::licence_reason_line`; never a decision input.
-    pub last_reason: String,
-    /// Unix seconds of the last POSITIVE entitlement answer. The grace window
-    /// (`entitlement_from_cache`) is measured from this.
-    pub last_positive_unix: u64,
-    /// Display prefix of the redeemed key ("esk_A1B2..."), for the deauthorised
-    /// notice to name. Never sufficient to redeem.
-    pub key_prefix: String,
-    /// The one-time downgrade notice was shown and acknowledged. Keeps "once" true
-    /// across launches.
-    pub downgrade_acknowledged: bool,
-    /// Unix seconds of the last time [`refresh_entitlement`] made (or attempted) a
-    /// network check, success or failure alike. Drives the 6-hour throttle -
-    /// recorded even on failure so a machine with a dead network doesn't retry the
-    /// relay every launch, which is exactly the "leave the breadcrumb alone except
-    /// last_check_unix" fail-open the field exists for.
-    pub last_check_unix: u64,
-    /// How many times the startup deauthorised/business-nag notice has been shown.
-    /// Drives the nag escalation in [`nag_due`]: less-than-30 waits a day between
-    /// nags, 30-and-over nags on every launch.
-    pub nag_count: u64,
-    /// Unix seconds the nag was last shown. Paired with `nag_count` for the 24-hour
-    /// spacing; see [`nag_due`].
-    pub nag_last_unix: u64,
-    /// Unix seconds this machine's UPDATES WINDOW ends - the relay's `maintenanceEndsAt`,
-    /// recorded on every successful entitlement check (2026-09-10). `0` means "no window on
-    /// record", which is NOT "the window closed": it is the state every machine was in
-    /// before this field existed, and it keeps every build offered.
-    ///
-    /// ⛔ This is an UPDATES fact, never a LICENCE fact. A lapsed window stops new builds
-    /// being OFFERED and does nothing else - the licence is perpetual, the installed version
-    /// keeps working, and no code path may read this to decide `Entitlement`.
-    pub maint_unix: u64,
-}
-
-// Serialization is hand-rolled over `serde_json::Value` rather than serde-derive:
-// this workspace deliberately carries serde_json WITHOUT the serde derive macros
-// (see `nudge_engine`'s header note - the same trade was made there), and five
-// fields do not justify adding a proc-macro dependency to every build.
-impl History {
-    fn to_json(&self) -> Value {
-        json!({
-            "was_business": self.was_business,
-            "last_status": self.last_status,
-            "last_reason": self.last_reason,
-            "last_positive_unix": self.last_positive_unix,
-            "key_prefix": self.key_prefix,
-            "downgrade_acknowledged": self.downgrade_acknowledged,
-            "last_check_unix": self.last_check_unix,
-            "nag_count": self.nag_count,
-            "nag_last_unix": self.nag_last_unix,
-            "maint_unix": self.maint_unix,
-        })
-    }
-
-    /// Missing fields take their defaults (an older file keeps working after a
-    /// field is added); a PRESENT field of the WRONG TYPE fails the whole parse,
-    /// because a file that half-parses is more misleading than one that does not.
-    fn from_json(v: &Value) -> Option<Self> {
-        let obj = v.as_object()?;
-        fn field<T>(
-            obj: &serde_json::Map<String, Value>,
-            name: &str,
-            take: impl Fn(&Value) -> Option<T>,
-            default: T,
-        ) -> Option<T> {
-            match obj.get(name) {
-                None => Some(default),
-                Some(v) => take(v),
-            }
-        }
-        Some(History {
-            was_business: field(obj, "was_business", |v| v.as_bool(), false)?,
-            last_status: field(
-                obj,
-                "last_status",
-                |v| v.as_str().map(String::from),
-                String::new(),
-            )?,
-            last_reason: field(
-                obj,
-                "last_reason",
-                |v| v.as_str().map(String::from),
-                String::new(),
-            )?,
-            last_positive_unix: field(obj, "last_positive_unix", |v| v.as_u64(), 0)?,
-            key_prefix: field(
-                obj,
-                "key_prefix",
-                |v| v.as_str().map(String::from),
-                String::new(),
-            )?,
-            downgrade_acknowledged: field(obj, "downgrade_acknowledged", |v| v.as_bool(), false)?,
-            last_check_unix: field(obj, "last_check_unix", |v| v.as_u64(), 0)?,
-            nag_count: field(obj, "nag_count", |v| v.as_u64(), 0)?,
-            nag_last_unix: field(obj, "nag_last_unix", |v| v.as_u64(), 0)?,
-            maint_unix: field(obj, "maint_unix", |v| v.as_u64(), 0)?,
-        })
-    }
-}
-
-/// Largest breadcrumb we will parse. The file is users-writable (see the trust
-/// boundary note), so a multi-gigabyte prank must cost a bounded read, not a hang.
-const HISTORY_MAX_BYTES: u64 = 64 * 1024;
-
-/// `%ProgramData%\SageThumbs2K\license-history.json`. The installer pre-creates the
-/// directory with user-modify ACLs; if it is missing anyway (portable, hand-deleted)
-/// the write path creates it and inherits default ACLs, which merely narrows who can
-/// update the breadcrumb, never breaks reading.
-pub(crate) fn history_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("ProgramData")?;
-    Some(
-        std::path::Path::new(&base)
-            .join("SageThumbs2K")
-            .join("license-history.json"),
-    )
-}
-
-/// Read the breadcrumb, tolerating absence and hostility alike: no file, oversized
-/// file, malformed JSON, wrong types - all `None`, never an error the caller must
-/// route. "No history" is a legitimate answer and the common one.
-///
-/// Bounded through the SAME open handle the read uses (issue #227/P63), rather than a
-/// `metadata()` size check followed by a separate `fs::read()`: the file lives in
-/// `%ProgramData%\SageThumbs2K`, which the installer creates with user-modify permissions so
-/// any account on the machine can rewrite it between those two calls, and `fs::read` reads to
-/// EOF regardless of the size `metadata` reported.
-pub(crate) fn read_history(path: &std::path::Path) -> Option<History> {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(HISTORY_MAX_BYTES + 1)
-        .read_to_end(&mut buf)
-        .ok()?;
-    if buf.len() as u64 > HISTORY_MAX_BYTES {
-        return None;
-    }
-    let v: Value = serde_json::from_slice(&buf).ok()?;
-    History::from_json(&v)
-}
-
-/// Best-effort write; returns whether it stuck. A failed write degrades the
-/// downgrade-detection feature, not the app, so callers log and move on.
-///
-/// Atomic via [`sagethumbs2k_core::fsutil::write_atomically`] (temp file beside `path`,
-/// then a retrying rename over it): a reader never sees a half-written breadcrumb, and a
-/// crash mid-write leaves the old one intact. Atomicity alone does NOT stop two writers
-/// from each replacing the file with their own view of it and losing the other's update
-/// (2026-09-05 audit, F18) - that is what [`HistoryLock`] is for. This function assumes
-/// the lock is already held; the only caller in this module (`update_history_at`) takes
-/// it first.
-pub(crate) fn write_history(path: &std::path::Path, h: &History) -> bool {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let Ok(bytes) = serde_json::to_vec_pretty(&h.to_json()) else {
-        return false;
-    };
-    sagethumbs2k_core::fsutil::write_atomically(path, &bytes).is_ok()
-}
+/// The portable settings marker a redeemed key writes - the same string the installer
+/// writes to HKLM, so [`read_mode`] reads either store through one parser.
+const MODE_VALUE: &str = sagethumbs2k_core::licence_state::MODE_VALUE;
 
 /// How many times [`HistoryLock::acquire`] retries before giving up, and how long it waits
 /// between tries. `LockFile` fails immediately rather than blocking when the region is
@@ -343,54 +140,6 @@ impl Drop for HistoryLock {
 // tests can pin every boundary without a registry, a file, or a network in sight.
 // ---------------------------------------------------------------------------------
 
-/// How long a cached POSITIVE entitlement answer keeps a business install fully
-/// licensed with no successful re-check: 7 days.
-///
-/// The number is a deliberate product trade (delegated to this module 2026-09-01,
-/// after the design review): the check is a network call and network calls fail, so
-/// the licence must FAIL OPEN on a cached yes - bricking a paying customer because
-/// their wifi dropped is strictly worse than a revoked seat running out the window.
-/// The accepted cost, stated rather than hidden: a deauthorised machine keeps
-/// working for up to a week.
-pub(crate) const GRACE_SECS: u64 = 7 * 24 * 60 * 60;
-
-/// What the cached entitlement state means RIGHT NOW.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Entitlement {
-    /// A positive answer within the grace window: fully licensed, total silence.
-    Licensed,
-    /// The last positive answer has gone stale past [`GRACE_SECS`]: degrade to the
-    /// free feature set and start asking for attention.
-    Lapsed,
-    /// No positive answer on record at all.
-    Unlicensed,
-}
-
-/// Grace-window arithmetic. `last_positive_unix == 0` (the serde default) means "no
-/// positive answer ever". A clock that has gone BACKWARDS past the recorded answer
-/// reads as still-licensed rather than lapsed: saturating math, because punishing a
-/// user for a BIOS battery is the fail-closed direction this module refuses.
-pub(crate) fn entitlement_from_cache(now_unix: u64, last_positive_unix: u64) -> Entitlement {
-    if last_positive_unix == 0 {
-        return Entitlement::Unlicensed;
-    }
-    if now_unix.saturating_sub(last_positive_unix) <= GRACE_SECS {
-        Entitlement::Licensed
-    } else {
-        Entitlement::Lapsed
-    }
-}
-
-/// Does a stored offline certificate license THIS machine right now?
-///
-/// Reads the breadcrumb's neighbour rather than the network: see [`crate::licence_cert`]
-/// for the whole model. Every failure - no certificate, no fingerprint, a blob from
-/// another machine, an expired one - answers `false`, which only ever means "the
-/// certificate has nothing to add", never "unlicensed".
-///
-/// `licensed` is what this reads; the certificate's `maint_unix` is read separately by
-/// `LicenceSnapshot` as the offline fallback for the updates window (the relay's
-/// `maintenanceEndsAt` wins when the breadcrumb has one).
 /// Does a stored offline certificate license THIS machine right now, and if so, when does
 /// it expire? (E05 audit: folded the old boolean `certificate_licenses_this_machine` into
 /// this - the only caller needed the expiry too, and re-verifying the certificate a second
@@ -515,42 +264,106 @@ pub(crate) enum Posture {
     /// Say nothing. Personal mode, and licensed business mode, both live here:
     /// free is first-class, and nobody who paid ever sees another licensing word.
     Silent,
-    /// Business mode with no valid licence: the persistent, escalating reminder.
-    /// Never dismissible-forever - that is the whole point of the mode.
+    /// Business mode with no live licence and no evaluation clock to speak of: a copy that
+    /// once held a key and has gone quiet (offline past the grace window, certificate
+    /// lapsed), or one whose evaluation the app has not started yet. The persistent
+    /// reminder, and nothing more - this posture never leads to the lock.
     BusinessNag,
-    /// This machine used to run under a business licence and was reinstalled as
-    /// Personal: one factual notice, one acknowledgement, then silence.
+    /// Business mode, never licensed, inside the 7-day evaluation that ends at
+    /// `ends_unix`: everything works, a small countdown and a way to enter or buy a key.
+    Trial { ends_unix: u64 },
+    /// The evaluation is over and the 3-day notice is running: everything still works
+    /// until `locks_unix`, and the app says so on every open.
+    TrialExpired { locks_unix: u64 },
+    /// This machine used to run under Business mode and was reinstalled as Personal: one
+    /// factual notice, one acknowledgement, then silence.
     DowngradeNoticeOnce,
-    /// The seat was revoked out from under a business install: loud and specific
-    /// (name the key prefix, say how to re-license), degrade to free features,
-    /// never hard-fail, never touch the user's data.
-    DeauthorizedLoud,
+    /// The seat was revoked out from under a business install: loud and specific (name
+    /// the key prefix, say how to re-license). `locks_unix` is when the shell stops, once
+    /// the app has recorded when it learned of the revocation; `None` for a breadcrumb
+    /// written before that field existed (the next evaluation stamps it).
+    DeauthorizedLoud { locks_unix: Option<u64> },
+    /// Past the lock date: the shell refuses everything until a key is redeemed. `revoked`
+    /// tells the two stories apart ("your evaluation ended" / "your licence was revoked").
+    Locked { revoked: bool },
+}
+
+impl Posture {
+    /// Is this a posture the startup notices and the tray should speak about? Everything
+    /// but the two silent-or-once cases.
+    pub(crate) fn wants_reminder(self) -> bool {
+        !matches!(self, Posture::Silent | Posture::DowngradeNoticeOnce)
+    }
+
+    /// Is this a posture where waiting a day between reminders would be wrong? Once the
+    /// evaluation is over, or the shell has stopped, every open says so.
+    pub(crate) fn is_urgent(self) -> bool {
+        matches!(
+            self,
+            Posture::TrialExpired { .. }
+                | Posture::Locked { .. }
+                | Posture::DeauthorizedLoud {
+                    locks_unix: Some(_)
+                }
+        )
+    }
 }
 
 /// Compose the real inputs into today's posture, and log the decision so a support
 /// thread can see which branch a machine took. This is the app's ONE entry point to
-/// the module; the UI surfaces (the Business nag, the downgrade notice, the
+/// the module; the UI surfaces (the Business strip, the downgrade notice, the
 /// deauthorised alert) hang off the returned value as they are built.
+///
+/// Starts the evaluation clock first ([`start_trial_if_due`]): the Settings window
+/// opening is one of the moments a business copy is first seen, and the posture must
+/// describe the clock it just started, not the "not started" state from a second ago.
 pub(crate) fn current_posture() -> Posture {
+    start_trial_if_due();
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
     let now = now_unix();
     let ent = entitlement_now(now, history.as_ref());
-    let p = posture(mode, ent, history.as_ref());
+    let p = posture(now, mode, ent, history.as_ref());
     sagethumbs2k_core::safety::log_debugf!(
         "license: mode={mode:?} entitlement={ent:?} -> posture={p:?}"
     );
     p
 }
 
-/// Now, in Unix seconds. `SystemTime::now()` failing (a clock before 1970) reads as
-/// 0, which every caller in this module already treats as "no time has passed / no
-/// answer on record" - the safe direction, never the panicking one.
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// Start the 7-day evaluation on a Business copy that has never redeemed a key and has no
+/// clock yet, and repair a revocation recorded before `revoked_unix` existed. Idempotent
+/// and cheap when there is nothing to do (a read, no write), so every entry point that
+/// might be the first to see a business copy calls it: the installer's post-install
+/// `--sync-user-shell`, the Settings window opening, the resident helper starting, the
+/// daily one-shot check, and the background entitlement refresh. The shell never calls
+/// this - it only reads - so a copy nobody has launched the app on stays `Clear`.
+///
+/// Also marks the machine `was_business`: an evaluation that was started and then
+/// reinstalled as Personal is exactly the case the one-time downgrade notice exists for.
+pub(crate) fn start_trial_if_due() {
+    if read_mode() != Mode::Business {
+        return;
+    }
+    let Some(path) = history_path() else {
+        return;
+    };
+    let h = read_history(&path).unwrap_or_default();
+    let needs_clock = h.last_positive_unix == 0 && h.trial_started_unix == 0;
+    let needs_revoked_stamp = h.last_status == "revoked" && h.revoked_unix == 0;
+    if !needs_clock && !needs_revoked_stamp {
+        return;
+    }
+    let now = now_unix();
+    update_history_at(&path, |h| {
+        if h.last_positive_unix == 0 && h.trial_started_unix == 0 {
+            h.trial_started_unix = now;
+            h.was_business = true;
+            sagethumbs2k_core::safety::log("license: business evaluation started");
+        }
+        if h.last_status == "revoked" && h.revoked_unix == 0 {
+            h.revoked_unix = now;
+        }
+    });
 }
 
 /// Read-modify-write the breadcrumb through one closure, so every network/decision
@@ -595,22 +408,38 @@ fn lock_path(path: &std::path::Path) -> std::path::PathBuf {
 
 /// The whole behaviour matrix in one place. Exhaustive over [`Mode`] so a future
 /// variant is a compile error here rather than a silent fall-through.
-pub(crate) fn posture(mode: Mode, ent: Entitlement, history: Option<&History>) -> Posture {
+///
+/// The evaluation-and-lock phases come from the SAME function the shell reads
+/// ([`phase`]), so what the Settings strip says and what `GetThumbnail` does can never
+/// disagree about the date. A live entitlement outranks every phase: a copy inside its
+/// grace window is `Silent` even if a stale evaluation clock sits in the file beside it.
+pub(crate) fn posture(
+    now_unix: u64,
+    mode: Mode,
+    ent: Entitlement,
+    history: Option<&History>,
+) -> Posture {
     match mode {
-        Mode::Business => match ent {
-            Entitlement::Licensed => Posture::Silent,
-            // Lapsed-because-revoked and never-licensed look identical to the cache;
-            // the breadcrumb's last recorded status is what tells a deauthorised
-            // machine ("your licence was revoked, here is how to fix it") apart from
-            // one that simply never entered a serial ("this mode needs a licence").
-            Entitlement::Lapsed | Entitlement::Unlicensed => {
-                if history.is_some_and(|h| h.last_status == "revoked") {
-                    Posture::DeauthorizedLoud
-                } else {
-                    Posture::BusinessNag
-                }
+        Mode::Business => {
+            if ent == Entitlement::Licensed {
+                return Posture::Silent;
             }
-        },
+            // Lapsed-because-revoked and never-licensed look identical to the cache; the
+            // breadcrumb's last recorded status is what tells a deauthorised machine
+            // ("your licence was revoked, here is how to fix it") apart from one that
+            // simply never entered a key ("this mode needs a licence").
+            let revoked = history.is_some_and(|h| h.last_status == "revoked");
+            match phase(now_unix, mode, history) {
+                Phase::Locked => Posture::Locked { revoked },
+                Phase::Expiring { locks_unix } if revoked => Posture::DeauthorizedLoud {
+                    locks_unix: Some(locks_unix),
+                },
+                Phase::Expiring { locks_unix } => Posture::TrialExpired { locks_unix },
+                Phase::Trial { ends_unix } => Posture::Trial { ends_unix },
+                Phase::Clear if revoked => Posture::DeauthorizedLoud { locks_unix: None },
+                Phase::Clear => Posture::BusinessNag,
+            }
+        }
         Mode::Personal => {
             // A key redeemed on this copy outranks the installer's answer while it is
             // within its grace window: the machine holds a live business licence and
@@ -840,8 +669,12 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         update_history(|h| {
             h.was_business = true;
             h.last_status = "active".to_string();
+            h.last_reason.clear();
             h.last_positive_unix = now;
             h.key_prefix = key_prefix.clone();
+            // A fresh key ends any revocation clock; the evaluation clock is left as it
+            // was, because `last_positive_unix > 0` retires it for good.
+            h.revoked_unix = 0;
         });
         // A portable copy has no HKLM the installer could have written, so this is
         // the ONE store `read_mode` consults for it - see that function's docs.
@@ -1095,11 +928,17 @@ pub(crate) fn refresh_entitlement_now() -> Option<Entitlement> {
 }
 
 fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
+    start_trial_if_due();
     let mode = read_mode();
     let path = history_path()?;
     let history = read_history(&path);
-    let was_business = history.as_ref().is_some_and(|h| h.was_business);
-    if mode != Mode::Business && !was_business {
+    // A Personal copy is asked about only if a key was ever redeemed on it (so a licence
+    // moved back to it is noticed); an evaluation that ran and was reinstalled as Personal
+    // has nothing the relay could say about it.
+    let has_redeemed = history
+        .as_ref()
+        .is_some_and(|h| h.last_positive_unix > 0 || !h.key_prefix.is_empty());
+    if mode != Mode::Business && !has_redeemed {
         return None;
     }
     let now = now_unix();
@@ -1166,11 +1005,18 @@ fn apply_check_response(
             h.last_status = "active".to_string();
             h.last_reason.clear();
             h.was_business = true;
+            h.revoked_unix = 0;
         });
     } else if result.status == "revoked" {
         update_history_at(path, |h| {
             h.last_status = "revoked".to_string();
             h.last_reason = result.reason.clone().unwrap_or_default();
+            // The lock clock for a revoked seat runs from the FIRST time this machine
+            // learned of it (see `licence_state::phase`), so a repeat answer must not
+            // push the date out.
+            if h.revoked_unix == 0 {
+                h.revoked_unix = now;
+            }
         });
     }
     // else: a definite, understood "not entitled, not revoked either" (e.g. a
@@ -1204,11 +1050,29 @@ fn nag_due_decision(now_unix: u64, nag_count: u64, nag_last_unix: u64) -> bool {
 }
 
 /// Whether the startup licensing notice should show right now. Reads the breadcrumb;
-/// pair with [`note_nag_shown`] once the caller has actually shown it.
-pub(crate) fn nag_due(now_unix: u64) -> bool {
+/// pair with [`note_nag_shown`] once the caller has actually shown it. An urgent posture
+/// (the evaluation over, the shell stopped, a revocation with a lock date) is due on every
+/// open: the day-apart spacing is for the evaluation itself, when everything still works.
+pub(crate) fn nag_due(now_unix: u64, posture: Posture) -> bool {
+    if posture.is_urgent() {
+        return true;
+    }
     let history = history_path().and_then(|p| read_history(&p));
     let (count, last) = history.map_or((0, 0), |h| (h.nag_count, h.nag_last_unix));
     nag_due_decision(now_unix, count, last)
+}
+
+/// The background tick every long-lived or scheduled entry point runs: start the
+/// evaluation if this is the first sight of a business copy, refresh the entitlement
+/// (throttled, fail-open), and say whether a reminder is due right now. Returns the
+/// snapshot to speak from when one is; the caller shows it its own way (a tray balloon,
+/// a toast) and then calls [`note_nag_shown`]. BLOCKING on the network for a business
+/// copy - run it off any UI thread.
+pub(crate) fn background_tick() -> Option<LicenceSnapshot> {
+    start_trial_if_due();
+    let _ = refresh_entitlement();
+    let snap = snapshot();
+    (snap.posture.wants_reminder() && nag_due(snap.now_unix, snap.posture)).then_some(snap)
 }
 
 /// Record that the startup notice was just shown, advancing both the count (toward
@@ -1280,7 +1144,7 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
         entitlement,
         history.as_ref().map_or("", |h| h.last_status.as_str()),
     );
-    let posture = posture(mode, entitlement, history.as_ref());
+    let posture = posture(now_unix, mode, entitlement, history.as_ref());
     // The relay's recorded window wins; the certificate is the floor beneath it, exactly the
     // ordering `entitlement_and_cert_expiry` uses for the entitlement itself. `0` in the
     // breadcrumb is "never recorded", not "ended in 1970" - the one reading that would
@@ -1317,6 +1181,7 @@ pub(crate) fn snapshot() -> LicenceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sagethumbs2k_core::licence_state::{parse_mode, GRACE_SECS, TRIAL_SECS};
 
     /// [`redeem_outcome_from_response`] with a fixed canonical key, so the mapping tests
     /// read as status + body only.
@@ -1467,56 +1332,6 @@ mod tests {
     }
 
     #[test]
-    fn everything_that_is_not_exactly_business_reads_personal() {
-        assert_eq!(parse_mode(None), Mode::Personal);
-        assert_eq!(parse_mode(Some("")), Mode::Personal);
-        assert_eq!(parse_mode(Some("personal")), Mode::Personal);
-        assert_eq!(
-            parse_mode(Some("corporate")),
-            Mode::Personal,
-            "unknown words fail quiet"
-        );
-        assert_eq!(parse_mode(Some("business")), Mode::Business);
-        assert_eq!(
-            parse_mode(Some("  Business  ")),
-            Mode::Business,
-            "trim + case"
-        );
-    }
-
-    /// The 7-day boundary, pinned on both sides, plus the two degenerate clocks.
-    #[test]
-    fn the_grace_window_is_seven_days_exactly() {
-        let t = 1_760_000_000u64;
-        assert_eq!(
-            entitlement_from_cache(t, 0),
-            Entitlement::Unlicensed,
-            "no answer ever"
-        );
-        assert_eq!(
-            entitlement_from_cache(t, t),
-            Entitlement::Licensed,
-            "just checked"
-        );
-        assert_eq!(
-            entitlement_from_cache(t + GRACE_SECS, t),
-            Entitlement::Licensed,
-            "day 7"
-        );
-        assert_eq!(
-            entitlement_from_cache(t + GRACE_SECS + 1, t),
-            Entitlement::Lapsed,
-            "one second past the window is lapsed - the fail-open has an edge and this is it"
-        );
-        // Clock went backwards past the recorded answer: still licensed, never
-        // punished for a BIOS battery. Saturating, so also never a panic.
-        assert_eq!(entitlement_from_cache(t - 500, t), Entitlement::Licensed);
-    }
-
-    /// A relay-reported revocation ends what the Settings page calls a live licence at once, even
-    /// while the cached positive is still inside its grace window (owner test, 2026-09-11: the page
-    /// read "Business licence active" beside "Business licence revoked").
-    #[test]
     fn a_revocation_the_relay_reported_is_not_a_live_licence() {
         assert!(is_live_licence(Entitlement::Licensed, "active"));
         assert!(!is_live_licence(Entitlement::Licensed, "revoked"));
@@ -1524,13 +1339,23 @@ mod tests {
         assert!(!is_live_licence(Entitlement::Unlicensed, ""));
     }
 
-    /// The whole matrix. Every (mode, entitlement, history) cell the design names,
-    /// so a regression in any one of them fails by name.
+    /// The whole matrix, by name: the four original postures plus the evaluation path and
+    /// the two lock stories, every one pinned at its boundary.
     #[test]
     fn the_posture_matrix_matches_the_design() {
+        const DAY: u64 = 24 * 60 * 60;
+        let t = 1_760_000_000u64;
+        let revoked_no_date = History {
+            last_status: "revoked".into(),
+            was_business: true,
+            ..Default::default()
+        };
         let revoked = History {
             last_status: "revoked".into(),
             was_business: true,
+            last_positive_unix: t - 10 * DAY,
+            revoked_unix: t - 9 * DAY,
+            key_prefix: "esk_A1B2".into(),
             ..Default::default()
         };
         let was_biz = History {
@@ -1542,144 +1367,161 @@ mod tests {
             downgrade_acknowledged: true,
             ..Default::default()
         };
+        let trial = History {
+            was_business: true,
+            trial_started_unix: t,
+            ..Default::default()
+        };
+        let once = History {
+            was_business: true,
+            last_status: "active".into(),
+            last_positive_unix: t - 30 * DAY,
+            key_prefix: "esk_A1B2".into(),
+            trial_started_unix: t - 60 * DAY,
+            ..Default::default()
+        };
 
-        // Business, licensed: total silence. Never nag somebody who paid.
+        // A licensed business copy is silent, whatever the file says.
         assert_eq!(
-            posture(Mode::Business, Entitlement::Licensed, None),
+            posture(t, Mode::Business, Entitlement::Licensed, None),
             Posture::Silent
         );
         assert_eq!(
-            posture(Mode::Business, Entitlement::Licensed, Some(&revoked)),
+            posture(t, Mode::Business, Entitlement::Licensed, Some(&revoked)),
             Posture::Silent,
             "a live licence outranks stale history"
         );
-        // Business, no licence: the nag - unless the history says the seat was
-        // revoked, which upgrades it to the loud, specific version.
+        // Business with no key and no clock: the plain reminder, and NEVER the lock.
         assert_eq!(
-            posture(Mode::Business, Entitlement::Unlicensed, None),
+            posture(t, Mode::Business, Entitlement::Unlicensed, None),
             Posture::BusinessNag
         );
         assert_eq!(
-            posture(Mode::Business, Entitlement::Lapsed, None),
-            Posture::BusinessNag
+            posture(t, Mode::Business, Entitlement::Lapsed, Some(&once)),
+            Posture::BusinessNag,
+            "once licensed and gone quiet: reminders only"
         );
         assert_eq!(
-            posture(Mode::Business, Entitlement::Lapsed, Some(&revoked)),
-            Posture::DeauthorizedLoud
+            posture(
+                t + 400 * DAY,
+                Mode::Business,
+                Entitlement::Lapsed,
+                Some(&once)
+            ),
+            Posture::BusinessNag,
+            "however long the silence, and whatever the old evaluation clock says"
+        );
+        // The evaluation: 7 days, 3 days of notice, then the lock.
+        let ends = t + TRIAL_SECS;
+        let locks = ends + LOCK_GRACE_SECS;
+        assert_eq!(
+            posture(
+                t + DAY,
+                Mode::Business,
+                Entitlement::Unlicensed,
+                Some(&trial)
+            ),
+            Posture::Trial { ends_unix: ends }
         );
         assert_eq!(
-            posture(Mode::Business, Entitlement::Unlicensed, Some(&revoked)),
-            Posture::DeauthorizedLoud
+            posture(ends, Mode::Business, Entitlement::Unlicensed, Some(&trial)),
+            Posture::TrialExpired { locks_unix: locks }
         );
-        // Personal: silent - except the one-time downgrade notice, which the ack
-        // permanently retires.
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Unlicensed, None),
+            posture(locks, Mode::Business, Entitlement::Unlicensed, Some(&trial)),
+            Posture::Locked { revoked: false }
+        );
+        // Revoked: loud with no date until the app has stamped when it learned; loud with
+        // the lock date once it has; locked past it.
+        assert_eq!(
+            posture(
+                t,
+                Mode::Business,
+                Entitlement::Lapsed,
+                Some(&revoked_no_date)
+            ),
+            Posture::DeauthorizedLoud { locks_unix: None }
+        );
+        assert_eq!(
+            posture(
+                t,
+                Mode::Business,
+                Entitlement::Unlicensed,
+                Some(&revoked_no_date)
+            ),
+            Posture::DeauthorizedLoud { locks_unix: None }
+        );
+        let rlocks = revoked.revoked_unix + GRACE_SECS + LOCK_GRACE_SECS;
+        assert_eq!(
+            posture(t, Mode::Business, Entitlement::Lapsed, Some(&revoked)),
+            Posture::DeauthorizedLoud {
+                locks_unix: Some(rlocks)
+            }
+        );
+        assert_eq!(
+            posture(rlocks, Mode::Business, Entitlement::Lapsed, Some(&revoked)),
+            Posture::Locked { revoked: true }
+        );
+        // Personal: silent, or the one-time downgrade notice; never the lock.
+        assert_eq!(
+            posture(t, Mode::Personal, Entitlement::Unlicensed, None),
             Posture::Silent
         );
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Unlicensed, Some(&was_biz)),
+            posture(t, Mode::Personal, Entitlement::Unlicensed, Some(&was_biz)),
             Posture::DowngradeNoticeOnce
         );
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Unlicensed, Some(&acked)),
+            posture(t, Mode::Personal, Entitlement::Unlicensed, Some(&acked)),
             Posture::Silent,
             "acknowledged means never again"
         );
-        // Personal ignores entitlement entirely: free needs no licence.
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Licensed, None),
+            posture(t, Mode::Personal, Entitlement::Licensed, None),
             Posture::Silent
         );
-    }
-
-    #[test]
-    fn the_breadcrumb_round_trips_and_tolerates_hostility() {
-        let dir = temp_dir("roundtrip");
-        let p = dir.join("license-history.json");
-        let h = History {
+        let expired_personal = History {
             was_business: true,
-            last_status: "active".into(),
-            last_reason: "contract_ended".into(),
-            last_positive_unix: 1_760_000_000,
-            key_prefix: "esk_A1B2".into(),
-            downgrade_acknowledged: false,
-            last_check_unix: 1_760_003_600,
-            nag_count: 7,
-            nag_last_unix: 1_759_900_000,
-            maint_unix: 1_791_500_000,
+            downgrade_acknowledged: true,
+            trial_started_unix: t - 100 * DAY,
+            ..Default::default()
         };
-        assert!(write_history(&p, &h), "write must stick");
         assert_eq!(
-            read_history(&p).as_ref(),
-            Some(&h),
-            "read back what was written"
+            posture(
+                t,
+                Mode::Personal,
+                Entitlement::Unlicensed,
+                Some(&expired_personal)
+            ),
+            Posture::Silent,
+            "a Personal copy with a long-expired evaluation clock is just a Personal copy"
         );
-
-        // The file is users-writable, so every malformation is a quiet None.
-        std::fs::write(&p, b"not json at all").unwrap();
-        assert_eq!(read_history(&p), None, "garbage reads as no history");
-        std::fs::write(&p, b"{}").unwrap();
-        assert_eq!(
-            read_history(&p),
-            Some(History::default()),
-            "empty object = all defaults"
-        );
-        std::fs::write(&p, br#"{"was_business": "yes"}"#).unwrap();
-        assert_eq!(read_history(&p), None, "wrong types read as no history");
-        assert_eq!(
-            read_history(&dir.join("absent.json")),
-            None,
-            "absent reads as no history"
-        );
-
-        // Oversized: the bounded `File::take` read never grows past HISTORY_MAX_BYTES + 1
-        // regardless of the file's real size, so an oversized prank costs one small read.
-        std::fs::write(&p, vec![b' '; (HISTORY_MAX_BYTES + 1) as usize]).unwrap();
-        assert_eq!(read_history(&p), None, "an oversized prank is refused");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Issue #227/P63: the old `metadata()`-then-`fs::read()` shape checked the size before
-    /// the read, which is TOCTOU on a users-writable file. Pin the boundary the `File::take`
-    /// fix must land on exactly: a file of exactly `HISTORY_MAX_BYTES` is still read (trailing
-    /// whitespace after a JSON value parses fine), one byte over is refused (already pinned by
-    /// `read_write_round_trip_and_every_bad_shape`'s oversized case above).
     #[test]
-    fn read_history_accepts_a_file_exactly_at_the_byte_cap() {
-        let dir = temp_dir("bounded_read");
-        let p = dir.join("license-history.json");
+    fn reminders_and_urgency_follow_the_posture() {
+        assert!(!Posture::Silent.wants_reminder());
+        assert!(!Posture::DowngradeNoticeOnce.wants_reminder());
+        assert!(Posture::BusinessNag.wants_reminder());
+        assert!(Posture::Trial { ends_unix: 1 }.wants_reminder());
+        assert!(Posture::Locked { revoked: true }.wants_reminder());
 
-        let mut at_cap = serde_json::to_vec(&History::default().to_json()).unwrap();
+        assert!(!Posture::BusinessNag.is_urgent());
         assert!(
-            (at_cap.len() as u64) <= HISTORY_MAX_BYTES,
-            "fixture must fit under the cap before padding"
+            !Posture::Trial { ends_unix: 1 }.is_urgent(),
+            "the evaluation is spaced a day apart while everything works"
         );
-        at_cap.resize(HISTORY_MAX_BYTES as usize, b' '); // trailing whitespace, still valid JSON
-        assert_eq!(at_cap.len() as u64, HISTORY_MAX_BYTES);
-        std::fs::write(&p, &at_cap).unwrap();
-        assert_eq!(
-            read_history(&p),
-            Some(History::default()),
-            "a file exactly at HISTORY_MAX_BYTES must still be read"
+        assert!(Posture::TrialExpired { locks_unix: 1 }.is_urgent());
+        assert!(Posture::Locked { revoked: false }.is_urgent());
+        assert!(Posture::DeauthorizedLoud {
+            locks_unix: Some(1)
+        }
+        .is_urgent());
+        assert!(
+            !Posture::DeauthorizedLoud { locks_unix: None }.is_urgent(),
+            "no lock date yet: the ordinary loud notice"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
-
-    /// Writing into a directory that does not exist yet must create it - the
-    /// portable / hand-deleted-ProgramData case.
-    #[test]
-    fn write_creates_the_directory_when_missing() {
-        let dir = temp_dir("mkdir");
-        let p = dir.join("deeper").join("license-history.json");
-        assert!(write_history(&p, &History::default()));
-        assert!(read_history(&p).is_some());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ---- normalize_key / key_prefix -----------------------------------------
 
     #[test]
     fn normalize_key_accepts_the_canonical_shape_case_and_dash_insensitively() {
@@ -2059,12 +1901,22 @@ mod tests {
             ..History::default()
         };
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Licensed, Some(&was_biz)),
+            posture(
+                1_760_000_000,
+                Mode::Personal,
+                Entitlement::Licensed,
+                Some(&was_biz)
+            ),
             Posture::Silent,
             "a redeemed key within grace outranks the installer's Personal answer"
         );
         assert_eq!(
-            posture(Mode::Personal, Entitlement::Lapsed, Some(&was_biz)),
+            posture(
+                1_760_000_000,
+                Mode::Personal,
+                Entitlement::Lapsed,
+                Some(&was_biz)
+            ),
             Posture::DowngradeNoticeOnce,
             "once the key lapses the one-time notice applies again"
         );
@@ -2224,11 +2076,12 @@ mod tests {
         };
         assert_eq!(
             posture(
+                1_760_000_000,
                 Mode::Business,
                 combine_entitlement(Entitlement::Unlicensed, true, true),
                 Some(&revoked)
             ),
-            Posture::DeauthorizedLoud
+            Posture::DeauthorizedLoud { locks_unix: None }
         );
     }
 

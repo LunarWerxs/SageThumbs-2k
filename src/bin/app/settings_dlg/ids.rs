@@ -244,6 +244,10 @@ pub(super) const ID_BADGE_SIZE: i32 = 1263;
 // comment for why this whole family sits below 1700 instead of packed against it.
 pub(super) const ID_BIZNAG_CARD: i32 = 1254;
 pub(super) const ID_BIZNAG_ACTION: i32 = 1255;
+/// The strip's second button, "Buy a licence…" (opens `license::BUY_URL`) - 1267 because
+/// 1256-1266 were all taken by the time it was added (2026-09-13); `control_ids_are_unique`
+/// is what catches the next collision.
+pub(super) const ID_BIZNAG_BUY: i32 = 1267;
 /// Show a video's embedded poster instead of a frame from the film. Cover art is used as a
 /// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
 /// this makes it the PREFERENCE, which is what a ripped-film library wants.

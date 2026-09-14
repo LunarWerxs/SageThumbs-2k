@@ -187,6 +187,23 @@ fn lock_settings() -> std::sync::MutexGuard<'static, ()> {
     SETTINGS_GATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Point the DLL's business-licence reads at a scratch home and force Business mode, so the
+/// lock (`licence_state::shell_locked`) can be exercised with no HKLM write and no touch of
+/// the real `%ProgramData%` breadcrumb. Both variables are read ONCE per process by the DLL
+/// (exactly like `ST2K_SETTINGS_ROOT`), so EVERY test in this file sets them before its first
+/// `get_thumbnail`, whichever test happens to load the DLL first. An empty scratch home reads
+/// as "not locked", so the tests that never write a breadcrumb see the same provider they
+/// always did.
+fn redirect_licence_to_scratch() -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!("st2k_gate_licence_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    unsafe {
+        common::set_test_env("ST2K_LICENCE_HOME", &home);
+        common::set_test_env("ST2K_LICENCE_MODE", "business");
+    }
+    home
+}
+
 #[test]
 fn settings_gate_the_provider() {
     let _serial = lock_settings();
@@ -195,6 +212,7 @@ fn settings_gate_the_provider() {
     // once. Only the ROOT PATH is cached; the provider still re-reads the VALUES per
     // GetThumbnail (see settings::thumb_settings), so flipping them between calls takes effect.
     unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
     reset_scratch(); // clean slate — no stale values from a prior aborted run
 
     let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
@@ -247,6 +265,7 @@ fn settings_gate_the_provider() {
 #[ignore = "needs ST2K_TIME_FILE; a measurement tool, not a gate"]
 fn time_one_file() {
     let _serial = lock_settings();
+    redirect_licence_to_scratch();
     let Ok(path) = std::env::var("ST2K_TIME_FILE") else {
         panic!("set ST2K_TIME_FILE to the file to time");
     };
@@ -296,6 +315,7 @@ fn time_one_file() {
 fn oversized_file_backed_stream_is_rescued() {
     let _serial = lock_settings();
     unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
     reset_scratch();
 
     // Uncompressed BMP: comfortably over the 1 MB cap set below, and a format the OS
@@ -342,5 +362,73 @@ fn oversized_file_backed_stream_is_rescued() {
     assert!(
         junk_from_file.is_err(),
         "an over-cap file the OS codecs cannot decode must still be refused"
+    );
+}
+
+/// The business-licence lock through the real COM handshake (`licence_state::shell_locked`
+/// inside `GetThumbnail`): a Business copy whose 7-day evaluation and 3-day notice have both
+/// run out declines like the master switch does; the same copy one day short of the lock is
+/// still served; and a redeemed key on record is served again on the very next call, with no
+/// restart of the host. The breadcrumb is the one the DLL reads (its path is redirected by
+/// `redirect_licence_to_scratch`), written through the same `write_history` the app uses.
+#[test]
+fn the_business_licence_lock_gates_the_provider() {
+    use sagethumbs2k_core::licence_state::{write_history, History, LOCK_GRACE_SECS, TRIAL_SECS};
+    let _serial = lock_settings();
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    let home = redirect_licence_to_scratch();
+    reset_scratch();
+    let crumb = home.join("license-history.json");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
+    let never_licensed = |trial_started_unix: u64| History {
+        was_business: true,
+        trial_started_unix,
+        ..Default::default()
+    };
+
+    // An evaluation whose notice period ran out a minute ago.
+    assert!(write_history(
+        &crumb,
+        &never_licensed(now - TRIAL_SECS - LOCK_GRACE_SECS - 60)
+    ));
+    let locked = unsafe { get_thumbnail(&small, 64) };
+    // The same clock a day before the lock lands: on notice, still served.
+    assert!(write_history(
+        &crumb,
+        &never_licensed(now - TRIAL_SECS - LOCK_GRACE_SECS + 24 * 60 * 60)
+    ));
+    let on_notice = unsafe { get_thumbnail(&small, 64) };
+    // A redeemed key on record, with a long-expired evaluation clock beside it.
+    assert!(write_history(
+        &crumb,
+        &History {
+            was_business: true,
+            last_status: "active".into(),
+            last_positive_unix: now,
+            key_prefix: "esk_TEST".into(),
+            trial_started_unix: now - 400 * 24 * 60 * 60,
+            ..Default::default()
+        }
+    ));
+    let licensed = unsafe { get_thumbnail(&small, 64) };
+
+    let _ = std::fs::remove_file(&crumb);
+    reset_scratch();
+
+    assert!(
+        locked.is_err(),
+        "a locked business copy must decline (E_FAIL)"
+    );
+    assert!(
+        on_notice.is_ok(),
+        "the notice period still serves every thumbnail"
+    );
+    assert!(
+        licensed.is_ok(),
+        "a redeemed key unlocks the very next thumbnail"
     );
 }

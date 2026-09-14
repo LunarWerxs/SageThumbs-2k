@@ -68,7 +68,9 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
     }
     // The colour follows the LICENCE, not the installer's answer: a Personal copy carrying a live
     // business key is green and one whose key was revoked is red, exactly as a Business copy is.
-    let tone = if !snap.key_prefix.is_empty() && snap.last_status == "revoked" {
+    let tone = if (!snap.key_prefix.is_empty() && snap.last_status == "revoked")
+        || snap.posture.is_urgent()
+    {
         Tone::Bad
     } else if snap.entitled
         || (snap.mode == crate::license::Mode::Business && !snap.key_prefix.is_empty())

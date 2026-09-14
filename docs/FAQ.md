@@ -232,8 +232,11 @@ their dividers into whatever order you want. The menu mirrors your list exactly.
 <details>
 <summary><b>Windows says "Windows protected your PC"</b></summary>
 
-That is SmartScreen reacting to a new installer that has not built up a download reputation. If
-you got the file from our GitHub releases page, click **More info**, then **Run anyway**.
+That is SmartScreen reacting to a new installer that has not built up a download reputation.
+Every release since 3.0.0 is code-signed by LUNARWERX LLC (right-click the file, Properties,
+Digital Signatures), which is what makes the screen rarer and shorter-lived; a brand-new release
+can still meet it for its first days. If you got the file from our GitHub releases page, click
+**More info**, then **Run anyway**.
 
 </details>
 
@@ -370,10 +373,14 @@ Redeem it yourself, see below. For volume or site licences, purchase orders or b
 It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. The installer asks
 up front whether a copy is for personal or business use, and that answer only changes by
 reinstalling, there's no toggle for it in Settings. A portable copy has no installer to ask,
-and counts as business use as soon as a key is redeemed on it. A business copy has every
-feature the moment it's installed, key or not, it just reminds you to add one: a notice when
-you launch it, and a strip across the Settings window, on every page, that stays until you do.
-Once a key is redeemed, the licence check runs quietly in the background and tolerates about a
-week offline before the reminders start again.
+and counts as business use as soon as a key is redeemed on it. A business copy starts a
+**7-day evaluation** with every feature working; a strip across the Settings window shows the
+days left, with buttons to enter a key or buy one. When the 7 days are up it asks for a key for
+**3 more days**, and after that thumbnails, previews, the Details pane and the right-click menu
+stop on that computer until a key is entered (`st2k doctor` says so in plain words). Entering a
+key at any point puts everything back at once. Once a key is redeemed, the licence check runs
+quietly in the background and tolerates about a week offline before the reminders start again;
+a copy that once held a key is never stopped by a network outage. Choosing Personal on a
+computer that was set up for business use asks once whether you are sure.
 
 </details>

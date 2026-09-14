@@ -14,6 +14,11 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
     // long-time user's history to shoot the banner. Sizing has to happen AFTER asking, because
     // the banner adds a strip between the pane and the footer.
     nudge::decide();
+    // The Business-licence strip, decided the same way and for the same reason (it adds its
+    // own strip). Absent on a Personal machine; to shoot it, force Business with
+    // `ST2K_LICENCE_MODE=business` and point `ST2K_LICENCE_HOME` at a scratch breadcrumb
+    // (`scratchpad/shot-trial.ps1` in the 2026-09-13 session is the shape).
+    biznag::decide();
     let hwnd = crate::win::create_shot_window(
         hinst,
         dark,
@@ -21,7 +26,7 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
         Some(wndproc),
         "SageThumbs 2K — Settings",
         772,
-        588 + nudge::extra_height(),
+        588 + nudge::extra_height() + biznag::extra_height(),
     )?;
     // Let the controls — the ListView especially — realize + paint before we drive panes.
     crate::win::pump_msgs(20);

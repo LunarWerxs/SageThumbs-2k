@@ -61,6 +61,7 @@ pub mod fsutil;
 mod fuzz;
 mod guids;
 mod jpegtran;
+pub mod licence_state;
 pub mod mcp;
 mod mkv;
 mod mp4;

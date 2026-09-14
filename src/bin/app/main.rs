@@ -613,6 +613,16 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
     // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
     // folder and fills Explorer's thumbnail cache, showing progress.
     if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
+        // The folder verb is a registry entry, not a menu the DLL gates, so the lock is
+        // applied here: a stopped copy would only fill the cache with icons anyway.
+        if license::shell_locked() {
+            crate::win::notify_toast(
+                "SageThumbs 2K",
+                t("licence_locked_notice"),
+                std::time::Duration::from_secs(5),
+            );
+            return true;
+        }
         if let Some(dir) = args.get(pos + 1) {
             // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
             // why the shell's own quoting does that and why it cannot be fixed in the
@@ -656,6 +666,16 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
     // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
     // viewer. A second launch forwards its path to the running viewer and exits.
     if let Some(pos) = args.iter().position(|a| a == "--preview") {
+        // The business-licence lock reaches the Quick preview too (`licence_state`): say
+        // why and where the key goes, and do not open the viewer.
+        if license::shell_locked() {
+            crate::win::notify_toast(
+                "SageThumbs 2K",
+                t("licence_preview_locked"),
+                std::time::Duration::from_secs(5),
+            );
+            return true;
+        }
         let path = args
             .get(pos + 1)
             .filter(|p| !p.starts_with("--"))
@@ -858,6 +878,10 @@ unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
         if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
             sagethumbs2k_core::safety::log(&format!("--sync-user-shell failed: {e}"));
         }
+        // The installer runs this as the original user right after the wizard, which is
+        // the first moment a copy declared Business can be seen: the evaluation clock
+        // starts here, whether or not the user ever opens Settings.
+        license::start_trial_if_due();
         return true;
     }
     if args.iter().any(|a| a == "--remove-user-shell") {
@@ -1088,54 +1112,51 @@ unsafe fn create_and_show_settings_window(
     // rule.
     match license_snap.posture {
         license::Posture::Silent => {}
-        license::Posture::BusinessNag => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            if license::nag_due(now) {
-                // The toast pumps its own message loop for as long as it lingers; on its
-                // own thread it cannot hold up the Settings window being built here.
-                // Say WHERE a licence comes from, not only that one is needed: the 2026-09-04
-                // audit found no surface inside the product ever named the shop.
-                let body = format!(
-                    "{} {}",
-                    t("licence_nag_toast_body"),
-                    t("licence_buy_pointer")
-                );
-                std::thread::spawn(move || {
-                    crate::win::notify_toast(
-                        "SageThumbs 2K",
-                        &body,
-                        std::time::Duration::from_secs(6),
-                    );
-                });
-                license::note_nag_shown(now);
-            }
-        }
         license::Posture::DowngradeNoticeOnce => {
+            // A machine that once redeemed a key names it; one that only ran the evaluation
+            // has no key to name and gets the sentence written for that.
+            let key = if license_snap.key_prefix.is_empty() {
+                "licence_downgrade_notice_nokey"
+            } else {
+                "licence_downgrade_notice"
+            };
             crate::win::message_box(
                 hwnd,
-                &t("licence_downgrade_notice").replace("{key}", &license_snap.key_prefix),
+                &t(key).replace("{key}", &license_snap.key_prefix),
                 "SageThumbs 2K",
             );
             license::acknowledge_downgrade();
         }
-        license::Posture::DeauthorizedLoud => {
-            // Every Settings open until re-licensed — this one has no acknowledgement to
-            // record, unlike the downgrade notice above. Leads with WHY when the relay said
-            // (a seat the holder ejected reads very differently from a licence that ended),
-            // and ends with where a new one comes from.
-            let notice =
-                t("licence_deauthorized_notice").replace("{key}", &license_snap.key_prefix);
-            let why = settings_dlg::licence_reason_line(&license_snap.last_reason)
-                .map(|w| format!("{w} "))
-                .unwrap_or_default();
-            crate::win::message_box(
-                hwnd,
-                &format!("{why}{notice} {}", t("licence_buy_pointer")),
-                "SageThumbs 2K",
-            );
+        posture => {
+            // Every other posture wants a reminder, spaced by `nag_due`: a day apart while
+            // the evaluation runs (or for a copy that once held a key), and on EVERY open once
+            // it is urgent - the evaluation over, the shell stopped, a revocation with a lock
+            // date. The sentence is the shared `licence_reminder_body`, so the tray balloon
+            // and the daily one-shot say the same thing, and it ends with where a licence
+            // comes from (the 2026-09-04 audit found no surface inside the product ever
+            // named the shop).
+            let now = license_snap.now_unix;
+            if license::nag_due(now, posture) {
+                let body = format!(
+                    "{} {}",
+                    settings_dlg::licence_reminder_body(&license_snap),
+                    t("licence_buy_pointer")
+                );
+                if posture.is_urgent() {
+                    crate::win::message_box(hwnd, &body, "SageThumbs 2K");
+                } else {
+                    // The toast pumps its own message loop for as long as it lingers; on
+                    // its own thread it cannot hold up the Settings window being built here.
+                    std::thread::spawn(move || {
+                        crate::win::notify_toast(
+                            "SageThumbs 2K",
+                            &body,
+                            std::time::Duration::from_secs(6),
+                        );
+                    });
+                }
+                license::note_nag_shown(now);
+            }
         }
     }
 

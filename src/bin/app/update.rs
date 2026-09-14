@@ -411,8 +411,9 @@ pub(crate) fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F)
         // The licence entitlement re-check rides this same worker thread and cadence rather
         // than getting a timer, task, or setting of its own: this is the one place the daily
         // update check actually does its network work off the UI thread on a long-lived
-        // process (the piggyback launcher's `--update-check` one-shot runs synchronously and
-        // exits immediately, so it stays excluded — see `spawn_due_check` / `main.rs`).
+        // process. (The `--update-check` one-shot runs its own licence tick through
+        // `license::background_tick` - see `run_one_shot_check` - so a machine with no
+        // resident helper is covered too.)
         // `refresh_entitlement` throttles its own network hit internally (~6 h) and is a
         // no-op for a machine with no reason to care about a business seat, so calling it
         // every time this worker fires — daemon startup, its periodic re-arm, or whichever
@@ -507,6 +508,34 @@ pub(crate) fn sync_update_task() {
 /// the user's auto-check setting, does one throttled check, and pops a non-blocking tray
 /// balloon if a newer release exists. Silent when up to date, offline, or throttled.
 pub(crate) fn run_one_shot_check() {
+    // The licence tick rides this same daily one-shot: for most installs it is the only
+    // thing that ever runs in the background, so it is where a business copy's evaluation
+    // clock starts and where the reminder reaches a machine with no resident helper. It
+    // runs BEFORE the update-check opt-out below - a licence is not an update - and it is
+    // throttled and fail-open inside `background_tick` (a Personal copy pays one HKLM read).
+    if let Some(snap) = crate::license::background_tick() {
+        let body = format!(
+            "{} {}",
+            crate::settings_dlg::licence_reminder_body(&snap),
+            crate::win::t("licence_toast_enter_key")
+        );
+        let tab = crate::settings_dlg::licence_page().to_string();
+        unsafe {
+            crate::win::notify_toast_action(
+                crate::win::t("licence_popup_title"),
+                &body,
+                Duration::from_secs(10),
+                move || {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe)
+                            .args(["--tab", &tab])
+                            .spawn();
+                    }
+                },
+            );
+        }
+        crate::license::note_nag_shown(snap.now_unix);
+    }
     if !sagethumbs2k_core::settings::update_auto_check() {
         return;
     }

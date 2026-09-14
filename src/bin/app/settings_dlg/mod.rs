@@ -129,11 +129,50 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     // line below, which a revoked copy (no longer entitled) would otherwise fall into and read
     // "Personal use, no licence needed" - the revocation silently vanishing (owner test, 2026-09-11).
     if !snap.key_prefix.is_empty() && snap.last_status == "revoked" {
-        let line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
-        return match licence_reason_line(&snap.last_reason) {
-            Some(why) => format!("{line} {why}"),
-            None => line,
-        };
+        let mut line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+        if let Some(why) = licence_reason_line(&snap.last_reason) {
+            line.push(' ');
+            line.push_str(why);
+        }
+        // The lock, from the same phase the shell reads: the date it lands, or that it has.
+        match snap.posture {
+            crate::license::Posture::DeauthorizedLoud {
+                locks_unix: Some(locks),
+            } => {
+                line.push(' ');
+                line.push_str(
+                    &t("licence_deauthorized_locks").replace("{date}", &format_unix_date(locks)),
+                );
+            }
+            crate::license::Posture::Locked { revoked: true } => {
+                line.push(' ');
+                line.push_str(t("licence_state_locked"));
+            }
+            _ => {}
+        }
+        return line;
+    }
+    // The evaluation and its lock, before the plain "no key" line: a Business copy with no
+    // key is on a clock, and the line says where on it this machine stands.
+    match snap.posture {
+        crate::license::Posture::Trial { ends_unix } => {
+            return t("licence_state_trial")
+                .replace(
+                    "{n}",
+                    &crate::license::days_until(snap.now_unix, ends_unix).to_string(),
+                )
+                .replace(
+                    "{date}",
+                    &format_unix_date(ends_unix.saturating_add(crate::license::LOCK_GRACE_SECS)),
+                );
+        }
+        crate::license::Posture::TrialExpired { locks_unix } => {
+            return t("licence_state_expired").replace("{date}", &format_unix_date(locks_unix));
+        }
+        crate::license::Posture::Locked { revoked: false } => {
+            return t("licence_state_locked").to_string();
+        }
+        _ => {}
     }
     // Personal means "no licence needed" ONLY while this machine is not actually licensed. A key
     // redeemed on this copy outranks the installer's answer - `license::posture` already treats it
@@ -205,6 +244,52 @@ pub(crate) fn renew_button_visible(snap: &crate::license::LicenceSnapshot) -> bo
     // Past the end: `saturating_sub` is 0, which is inside the window by definition. Before
     // it: how long is left.
     ends.saturating_sub(snap.now_unix) <= RENEW_NOTICE_SECS
+}
+
+/// The one sentence every reminder surface speaks for a posture that wants one - the
+/// startup toast or message box, the resident helper's tray balloon, and the daily
+/// one-shot's toast - shared so three surfaces cannot drift into three descriptions of one
+/// clock. Empty for the two postures that want no reminder. Pure over the snapshot.
+pub(crate) fn licence_reminder_body(snap: &crate::license::LicenceSnapshot) -> String {
+    use crate::license::{days_until, Posture};
+    let now = snap.now_unix;
+    match snap.posture {
+        Posture::Silent | Posture::DowngradeNoticeOnce => String::new(),
+        Posture::BusinessNag => t("licence_nag_toast_body").to_string(),
+        Posture::Trial { ends_unix } => {
+            t("licence_nag_toast_trial").replace("{n}", &days_until(now, ends_unix).to_string())
+        }
+        Posture::TrialExpired { locks_unix } => {
+            t("licence_expired_notice").replace("{n}", &days_until(now, locks_unix).to_string())
+        }
+        Posture::Locked { revoked: false } => t("licence_locked_notice").to_string(),
+        Posture::Locked { revoked: true } => {
+            t("biznag_body_locked_revoked").replace("{key}", &snap.key_prefix)
+        }
+        Posture::DeauthorizedLoud { locks_unix } => {
+            // Leads with WHY when the relay said (a seat the holder ejected reads very
+            // differently from a licence that ended), then the date the shell stops.
+            let why = licence_reason_line(&snap.last_reason)
+                .map(|w| format!("{w} "))
+                .unwrap_or_default();
+            let notice = t("licence_deauthorized_notice").replace("{key}", &snap.key_prefix);
+            let locks = locks_unix
+                .map(|d| {
+                    format!(
+                        " {}",
+                        t("licence_deauthorized_locks").replace("{date}", &format_unix_date(d))
+                    )
+                })
+                .unwrap_or_default();
+            format!("{why}{notice}{locks}")
+        }
+    }
+}
+
+/// The Licence page's index for `--tab`, resolved BY NAME like [`quick_preview_page`]:
+/// a literal here has silently re-pointed at the wrong page before.
+pub(crate) fn licence_page() -> usize {
+    navrail::category_index("nav_licence").unwrap_or(NAV_CATEGORY_COUNT - 1)
 }
 
 /// The human sentence for the relay's `reason` behind a revocation (`seat_revoked`: the
@@ -1771,7 +1856,7 @@ unsafe fn on_command_sync_nav(hwnd: HWND, id: i32, notify: u32) {
         ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH | ID_NUDGE_DISCORD => {
             nudge::on_command(hwnd, id);
         }
-        ID_BIZNAG_ACTION => {
+        ID_BIZNAG_ACTION | ID_BIZNAG_BUY => {
             biznag::on_command(hwnd, id);
         }
         ID_LANG if notify == CBN_SELCHANGE => on_lang_change(hwnd),
@@ -2184,9 +2269,9 @@ mod tests {
     ) -> crate::license::LicenceSnapshot {
         crate::license::LicenceSnapshot {
             mode,
-            // `posture` isn't read by `licence_state_line` at all (it derives the same
-            // fact from `mode`/`key_prefix`/`last_status` directly), any value proves
-            // that independence.
+            // `Silent` here: the four original states derive from `mode`/`key_prefix`/
+            // `last_status` alone; the evaluation-and-lock states are the posture arms
+            // `the_state_line_speaks_the_evaluation_and_the_lock` sets explicitly.
             posture: crate::license::Posture::Silent,
             key_prefix: key_prefix.to_string(),
             last_positive_unix,
@@ -2198,6 +2283,67 @@ mod tests {
             // Not licensed unless a test says otherwise - the pre-fix meaning of every snapshot.
             entitled: false,
         }
+    }
+
+    /// The evaluation-and-lock states on the Licence page's state line and in the shared
+    /// reminder sentence: each posture gets its own words, the countdown is the rounded-up
+    /// day count, and a revoked copy's line carries the lock date once the app knows it.
+    #[test]
+    fn the_state_line_and_the_reminder_speak_the_evaluation_and_the_lock() {
+        use crate::license::{Mode, Posture};
+        const DAY: u64 = 24 * 60 * 60;
+        let now = 1_760_000_000u64;
+        let mut s = snap_at(Mode::Business, "", "", 0, None, now);
+
+        s.posture = Posture::Trial {
+            ends_unix: now + 2 * DAY + 1,
+        };
+        let trial = licence_state_line(&s);
+        assert!(trial.contains('3'), "{trial}");
+        assert!(licence_reminder_body(&s).contains('3'));
+
+        s.posture = Posture::TrialExpired {
+            locks_unix: now + DAY,
+        };
+        let expired = licence_state_line(&s);
+        assert_ne!(expired, trial);
+        assert!(licence_reminder_body(&s).contains('1'));
+
+        s.posture = Posture::Locked { revoked: false };
+        let locked = licence_state_line(&s);
+        assert_ne!(locked, expired);
+        assert!(!licence_reminder_body(&s).is_empty());
+
+        // Revoked: the plain line, then the same line with the lock date, then stopped.
+        let mut r = snap_at(
+            Mode::Business,
+            "esk_A1B2",
+            "revoked",
+            now - 30 * DAY,
+            None,
+            now,
+        );
+        r.posture = Posture::DeauthorizedLoud { locks_unix: None };
+        let plain = licence_state_line(&r);
+        r.posture = Posture::DeauthorizedLoud {
+            locks_unix: Some(now + DAY),
+        };
+        let dated = licence_state_line(&r);
+        assert!(
+            dated.starts_with(&plain) && dated.len() > plain.len(),
+            "{dated}"
+        );
+        assert!(licence_reminder_body(&r).len() > plain.len());
+        r.posture = Posture::Locked { revoked: true };
+        let stopped = licence_state_line(&r);
+        assert!(stopped.starts_with(&plain) && stopped != dated, "{stopped}");
+        assert!(licence_reminder_body(&r).contains("esk_A1B2"));
+
+        // The two silent postures have no reminder sentence at all.
+        s.posture = Posture::Silent;
+        assert!(licence_reminder_body(&s).is_empty());
+        s.posture = Posture::DowngradeNoticeOnce;
+        assert!(licence_reminder_body(&s).is_empty());
     }
 
     /// `licence_state_line` given a hand-built snapshot for each of the four states it must

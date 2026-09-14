@@ -812,6 +812,56 @@ fn check_settings(r: &mut Report) {
     }
 }
 
+/// The business-licence lock, in the doctor's own words. A Business copy past its 7-day
+/// evaluation and 3-day notice with no key refuses every thumbnail, preview and menu
+/// (`licence_state::shell_locked`), which to the person looking at Explorer is
+/// indistinguishable from any other "no thumbnails" - so this is a `Fail` with the fix,
+/// the same shape as the master switch above it. The evaluation and the notice are said
+/// too, as information and as a warning, so a support thread can see the clock. A
+/// Personal copy prints one line and nothing else: free is free.
+fn check_licence(r: &mut Report) {
+    use crate::licence_state::{current_phase, days_until, now_unix, read_mode, Mode, Phase};
+    r.head("Licence");
+    if read_mode() == Mode::Personal {
+        r.line(
+            S::Info,
+            "Licence",
+            "personal use (free); nothing here can block thumbnails",
+        );
+        return;
+    }
+    let now = now_unix();
+    match current_phase() {
+        Phase::Clear => r.line(
+            S::Info,
+            "Licence",
+            "business use; not blocking thumbnails (licensed, or reminders only)",
+        ),
+        Phase::Trial { ends_unix } => r.line(
+            S::Info,
+            "Business evaluation",
+            &format!(
+                "running, {} day(s) left; without a licence key, thumbnails stop {} day(s) after that",
+                days_until(now, ends_unix),
+                crate::licence_state::LOCK_GRACE_SECS / (24 * 60 * 60)
+            ),
+        ),
+        Phase::Expiring { locks_unix } => r.line(
+            S::Warn,
+            "Business evaluation",
+            &format!(
+                "ENDED; thumbnails, previews and the menu stop in {} day(s) unless a licence key is entered under Settings -> Licence",
+                days_until(now, locks_unix)
+            ),
+        ),
+        Phase::Locked => r.fail_with_fix(
+            "Licence",
+            "STOPPED: this copy is installed for business use, its evaluation has ended (or its licence was revoked), and no licence key is entered - every thumbnail and preview is refused",
+            "Settings -> Licence -> Redeem key. No key yet? Buy one at st2k.lunarwerx.com/buy, or reinstall and choose Personal if this is not a work computer.",
+        ),
+    }
+}
+
 /// Prove the decoder itself works, end to end, without touching the disk or the shell.
 /// Separating this from the COM checks is the whole diagnostic value: "engine fine,
 /// shell never asked" and "engine broken" look identical to a user and need opposite fixes.
@@ -2315,6 +2365,7 @@ pub fn report(file: Option<&str>) -> String {
     check_progid_handlers(&mut r, &snap);
     check_displaced(&mut r);
     check_settings(&mut r);
+    check_licence(&mut r);
     check_space_preview(&mut r);
     check_engine(&mut r);
     check_format_capability(&mut r);

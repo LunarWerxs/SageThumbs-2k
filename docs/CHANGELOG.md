@@ -7,6 +7,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- For the few installations set up for business use: a copy with no licence key now runs a
+  7-day evaluation with every feature, shows the days left across the Settings window with a
+  button to enter a key and one to buy, reminds for 3 more days, and then stops drawing
+  thumbnails and previews on that computer until a key is entered; `st2k doctor` reports the
+  state, and choosing Personal on a computer that was set up for business use asks once
+  whether you are sure. Personal use is unaffected.
+
 ## 3.0.3
 
 The HDR fix from 3.0.2 now covers every format that can carry an HDR picture, the doctor
