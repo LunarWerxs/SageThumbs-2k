@@ -685,14 +685,14 @@ fn hdr_pq_avif_renders_as_bright_as_its_sdr_twin() {
 /// with AVIF support is reachable, and says so where one is not.
 #[test]
 fn hdr_pq_avif_through_magick_lands_at_reference_white() {
-    use crate::decode::magick::{decode_via_magick_capped, magick_available};
+    use crate::decode::magick::{decode_via_magick_capped, magick_available, Fidelity};
     if !magick_available() {
         eprintln!("no ImageMagick here - skipping the magick half of #39");
         return;
     }
     let (Ok(pq_raw), Ok(sdr_raw)) = (
-        decode_via_magick_capped(AVIF_PQ2020, None),
-        decode_via_magick_capped(AVIF_SDR709, None),
+        decode_via_magick_capped(AVIF_PQ2020, None, Fidelity::Tile),
+        decode_via_magick_capped(AVIF_SDR709, None, Fidelity::Tile),
     ) else {
         eprintln!("this ImageMagick cannot decode AVIF - skipping the magick half of #39");
         return;

@@ -84,20 +84,48 @@ fn mini_jpeg(app_payload: &[u8], entropy: usize) -> Vec<u8> {
     v
 }
 
+/// A SINGLE-COMPONENT (greyscale) JPEG — the shape of an Apple/Adobe/ISO HDR gain map, the
+/// auxiliary picture a ProRAW DNG carries right behind its colour preview (issue #42). Noisy
+/// on purpose: it has to clear `MIN_RAW_PREVIEW` and out-weigh the colour preview beside it,
+/// which is exactly the case that used to thumbnail grey.
+fn noisy_grey_jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+    let mut img = image::GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            img.put_pixel(x, y, image::Luma([((x * 29 + y * 71) & 0xFF) as u8]));
+        }
+    }
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageLuma8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+    bytes
+}
+
 /// [`mini_jpeg`] carrying an explicit SOFn frame header, so a test can build the difference
 /// between a picture and a pile of sensor readings. `sof` is the marker's low byte: 0xC0 is
 /// baseline, 0xC3 is LOSSLESS — the encoding Canon CR2 uses for raw sensor data.
 fn mini_jpeg_sof(sof: u8, entropy: usize) -> Vec<u8> {
+    mini_jpeg_sof_components(sof, 1, entropy)
+}
+
+/// [`mini_jpeg_sof`] with an explicit component count: 3 is the shape of a colour preview,
+/// 1 the shape of an HDR gain map (issue #42). The SOFn segment's declared length counts its
+/// own two bytes, then precision, height, width and the component count (6 bytes), then one
+/// 3-byte spec per component. Get that arithmetic wrong and `jpeg_span` walks off into the
+/// next marker and rejects the whole frame — a fixture bug that reads exactly like a code bug.
+fn mini_jpeg_sof_components(sof: u8, components: u8, entropy: usize) -> Vec<u8> {
     let mut v = vec![0xFF, 0xD8]; // SOI
-                                  // SOFn. The declared length (0x0B = 11) counts its own two bytes, so exactly 9 must
-                                  // follow: precision, height, width, component count, then one 3-byte component spec. Get
-                                  // that wrong and `jpeg_span` walks off into the next marker and rejects the whole frame —
-                                  // a fixture bug that reads exactly like a code bug.
-    v.extend_from_slice(&[
-        0xFF, sof, 0x00, 0x0B, // marker + segment length
-        0x08, 0x00, 0x10, 0x00, 0x10, 0x01, // 8-bit, 16x16, one component
-        0x00, 0x11, 0x00, // component 0: id, sampling 1x1, quant table 0
-    ]);
+    let seg_len = 2 + 6 + 3 * usize::from(components);
+    v.extend_from_slice(&[0xFF, sof]);
+    v.extend_from_slice(&(seg_len as u16).to_be_bytes());
+    v.extend_from_slice(&[0x08, 0x00, 0x10, 0x00, 0x10, components]); // 8-bit, 16x16
+    for c in 0..components {
+        v.extend_from_slice(&[c, 0x11, 0x00]); // component: id, sampling 1x1, quant table 0
+    }
     v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]); // SOS, header length = 2 (none)
     v.extend(std::iter::repeat_n(0x55, entropy)); // entropy data (contains no 0xFF)
     v.extend_from_slice(&[0xFF, 0xD9]); // EOI

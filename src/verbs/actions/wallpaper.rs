@@ -25,7 +25,7 @@ pub fn prepare_wallpaper_in(dir: &Path, path: &str) -> Result<PathBuf> {
     let bytes = read_full_fidelity_capped(path)?;
     // A wallpaper never needs more than screen resolution; downscale large
     // sources so we don't re-encode (and block the shell thread on) a giant PNG.
-    let img = cap_to_screen(decode::decode_full(&bytes)?);
+    let img = cap_to_screen(decode::decode_full_for_output(&bytes)?);
     let out = dir.join("wallpaper.png");
     // Atomic write (temp + rename) so a failed/interrupted encode can never
     // leave the live, OS-referenced wallpaper file half-written (the desktop

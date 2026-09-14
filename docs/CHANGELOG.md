@@ -9,12 +9,22 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
-- For the few installations set up for business use: a copy with no licence key now runs a
-  7-day evaluation with every feature, shows the days left across the Settings window with a
-  button to enter a key and one to buy, reminds for 3 more days, and then stops drawing
-  thumbnails and previews on that computer until a key is entered; `st2k doctor` reports the
-  state, and choosing Personal on a computer that was set up for business use asks once
-  whether you are sure. Personal use is unaffected.
+- **iPhone ProRAW photos thumbnail in colour again instead of a grey wash**
+  ([#42](https://github.com/LunarWerxs/SageThumbs-2k/issues/42)). A ProRAW `.DNG` stores two
+  pictures one after the other: the colour preview, and Apple's HDR gain map, which is a
+  black-and-white helper image. Whichever of the two was larger used to win, so most of a
+  folder of photographs could come out as bright grey pictures while the rest looked fine.
+  The colour picture is now always preferred, and a camera that really does shoot in black
+  and white still thumbnails from its own preview.
+- **Converting a very large picture no longer writes a tiny one**
+  ([#41](https://github.com/LunarWerxs/SageThumbs-2k/issues/41)). Above a size that depended
+  on how fast the computer was, Convert and Resize gave up on the picture after 20 seconds and
+  quietly used the small preview stored inside the file instead, so a 45-megapixel photo asked
+  to fit 1920x1080 was written out at 107x160 and reported as done. A conversion you asked for
+  now gets the time a file that size needs, and if only a small stand-in preview can be read,
+  the file is listed as failed with both sizes named rather than written out.
+- For the few installations set up for business use: a copy with no licence key now evaluates
+  for 7 days and then asks for one. Personal use is unaffected.
 
 ## 3.0.3
 

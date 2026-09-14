@@ -11,10 +11,17 @@ fn magick_time_limits_agree() {
     // magick self-abort a merely-starved decode and reintroduce issue #9 from inside the
     // child. Bump one, this test catches the others (the silent "watchdog waits 120s but
     // magick still kills at 20s" trap).
-    assert_eq!(
-        limits::MAGICK_TIME_LIMIT.parse::<u64>().unwrap(),
-        limits::MAGICK_WALL_SECS,
-        "MAGICK_TIME_LIMIT string must equal MAGICK_WALL_SECS",
+    //
+    // policy.xml is a CEILING rather than a setting: a command-line `-limit` above it is
+    // clamped to it, silently. So it has to sit at or above the LONGEST wall backstop any
+    // caller runs under, or the full-fidelity decode that issue #41 needed would be cut
+    // back to the tile tier's 120 s by the policy file alone.
+    let ceiling = limits::MAGICK_POLICY_TIME_LIMIT.parse::<u64>().unwrap();
+    // The LONGEST backstop is the full-fidelity one (a compile-time assert beside the constants
+    // in decode.rs pins that ordering), so clearing it clears every caller.
+    assert!(
+        ceiling >= limits::MAGICK_FULL_FIDELITY_WALL_SECS,
+        "policy.xml's time ceiling ({ceiling}) is below a wall backstop we actually use",
     );
     assert_eq!(
         MAGICK_TIMEOUT,
@@ -41,7 +48,7 @@ fn magick_limits_match_policy_xml() {
     for (name, value) in [
         ("memory", limits::MAGICK_MEMORY_LIMIT),
         ("map", limits::MAGICK_MAP_LIMIT),
-        ("time", limits::MAGICK_TIME_LIMIT),
+        ("time", limits::MAGICK_POLICY_TIME_LIMIT),
     ] {
         let needle = format!("name=\"{name}\" value=\"{value}\"");
         assert!(

@@ -457,7 +457,7 @@ pub fn compress(input: &str, target_bytes: u64) -> Result<String, String> {
 /// listed, since it's a documented part of the Clipboard routing contract.
 pub fn clip_pixels(input: &str) -> Result<Vec<u8>, String> {
     let bytes = verbs::read_full_fidelity_capped(input).map_err(|e| e.to_string())?;
-    let img = decode::decode_full(&bytes)
+    let img = decode::decode_full_for_output(&bytes)
         .map_err(|e| format!("decode {input}: {e}"))?
         .to_rgba8();
     let (w, h) = (img.width(), img.height());

@@ -80,7 +80,7 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
     // two reasons in `psd_composite_wanted`.
     let cx = cx.max(1);
     if bytes.starts_with(b"8BPS") && psd_composite_wanted(bytes, cx) {
-        match decode_psd_composite(bytes) {
+        match decode_psd_composite(bytes, Fidelity::Tile) {
             Ok(img) => match composite_beats_baked_preview(img, bytes) {
                 CompositeVerdict::UseComposite(img) => return Ok(img),
                 // Reuse the decode `composite_beats_baked_preview` already did to answer

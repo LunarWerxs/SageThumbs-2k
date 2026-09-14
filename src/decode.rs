@@ -40,7 +40,7 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
-use crate::container::{jpeg_sof_is_decodable, jpeg_span};
+use crate::container::{jpeg_sof_is_decodable, jpeg_span_frame};
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
 use crate::CREATE_NO_WINDOW;
 /// Hard WALL-CLOCK backstop on a single ImageMagick child (belt-and-suspenders with its
@@ -56,6 +56,10 @@ const MAGICK_CPU_BUDGET: Duration = Duration::from_secs(limits::MAGICK_CPU_SECS)
 // silently restore the pure wall-clock watchdog this pair replaced, so pin the ordering at
 // compile time rather than in a test.
 const _: () = assert!(limits::MAGICK_CPU_SECS < limits::MAGICK_WALL_SECS);
+// The same ordering for the full-fidelity pair, and one more: its wall backstop may never
+// exceed what policy.xml lets a child run for, or magick would abort from the inside while
+// our watchdog was still waiting.
+const _: () = assert!(limits::MAGICK_WALL_SECS <= limits::MAGICK_FULL_FIDELITY_WALL_SECS);
 /// Cap ImageMagick's output so an obscure 200 MP file can't blow up memory; the
 /// thumbnail is downscaled from here anyway. `>` = shrink-only, never upscale.
 const MAGICK_MAX_EDGE: &str = "4096x4096>";
@@ -208,14 +212,19 @@ pub mod limits {
     /// Deliberately generous: nothing legitimate approaches it, and every path that reaches
     /// it is isolated in a throwaway host with its own caller-side budget on top.
     pub const MAGICK_WALL_SECS: u64 = 120;
-    /// String form of [`MAGICK_WALL_SECS`] for the `-limit time` arg / policy.xml.
+    /// The same backstop for a user-chosen FULL-FIDELITY decode, which is a different job
+    /// with a different person waiting on it — see `magick::Fidelity` for the measurements.
+    pub const MAGICK_FULL_FIDELITY_WALL_SECS: u64 = 600;
+    /// `policy.xml`'s `time` ceiling, as a string.
     ///
-    /// It tracks the WALL backstop rather than the CPU budget, which is the safe choice under
-    /// either reading of ImageMagick's limit: documented as elapsed seconds, pinning it lower
-    /// would let magick self-abort a merely-starved decode and reintroduce the bug from inside
-    /// the child; read as CPU, our own 20 s CPU budget bites first anyway, so nothing is
-    /// loosened. Asserted equal to `MAGICK_WALL_SECS` by `magick_time_limits_agree`.
-    pub const MAGICK_TIME_LIMIT: &str = "120";
+    /// ImageMagick's `-limit time` is ELAPSED seconds, and policy.xml is a CEILING the
+    /// command line cannot exceed — so this tracks the LONGEST wall backstop any caller
+    /// runs under ([`MAGICK_FULL_FIDELITY_WALL_SECS`]), while each child still passes its
+    /// own, tighter `-limit time` derived from that caller's budget (`add_magick_limits`).
+    /// Pinning the ceiling to the tile tier's 120 s instead would silently clamp every
+    /// full-fidelity decode back to it, which is the trap `magick_time_limits_agree`
+    /// now guards.
+    pub const MAGICK_POLICY_TIME_LIMIT: &str = "600";
     pub const MAGICK_MEMORY_LIMIT: &str = "512MiB";
     pub const MAGICK_MAP_LIMIT: &str = "1GiB";
 }
@@ -252,15 +261,24 @@ pub(crate) mod magick_gate {
     /// Max concurrent magick children. 4 × ~512 MiB ≈ 2 GiB worst case — safe on any
     /// modern machine, still ~4× faster than serial on the exotic long tail.
     const MAX: i32 = 4;
-    /// Bounded acquire deadline (ms). A LEAKED permit — a host process hard-killed
-    /// mid-decode never runs `Permit::drop`, and Windows does NOT restore a semaphore
-    /// count when a holder dies (semaphores have no abandoned-state, unlike a mutex) —
-    /// would otherwise wedge the gate to 0 for the whole logon session, so every later
-    /// magick decode blocks forever (a must-kill/reboot hang in prevhost/dllhost). With
-    /// a finite wait we fall back to UNCAPPED instead of blocking the calling (often a
-    /// shell/host) thread indefinitely. 5s is ample for a real slot to free (a magick
-    /// decode is ≤20s but usually <3s) yet self-heals a leaked/wedged gate fast.
+    /// Bounded acquire deadline (ms) for a THUMBNAIL caller. A LEAKED permit — a host
+    /// process hard-killed mid-decode never runs `Permit::drop`, and Windows does NOT
+    /// restore a semaphore count when a holder dies (semaphores have no abandoned-state,
+    /// unlike a mutex) — would otherwise wedge the gate to 0 for the whole logon session,
+    /// so every later magick decode blocks forever (a must-kill/reboot hang in
+    /// prevhost/dllhost). With a finite wait we fall back to UNCAPPED instead of blocking
+    /// the calling (often a shell/host) thread indefinitely. 5s is ample for a slot to free
+    /// on that tier (its decode is ≤20s of CPU but usually <3s) yet self-heals fast.
     const GATE_WAIT_MS: u32 = 5_000;
+    /// The same deadline for a FULL-FIDELITY caller, which is a different trade in both
+    /// directions: its decode can legitimately hold a slot for a minute or more (see
+    /// `magick::Fidelity`), so a 5 s wait would send every sibling in a Convert batch
+    /// straight past the cap and run them all UNCAPPED — the memory bound this gate exists
+    /// for, gone exactly when the documents are largest. And it is never a shell thread:
+    /// it is a Convert/Resize worker in our own EXE, behind a progress dialog with a Cancel
+    /// button, so waiting is cheap where blocking Explorer would not be. Still finite, so a
+    /// leaked permit self-heals here too.
+    const FULL_FIDELITY_GATE_WAIT_MS: u32 = 90_000;
     const WAIT_OBJECT_0: u32 = 0;
 
     /// The shared semaphore handle (created once, kept for the process lifetime —
@@ -286,16 +304,21 @@ pub(crate) mod magick_gate {
         }
     }
 
-    /// Acquire a magick slot, waiting at most [`GATE_WAIT_MS`]. Returns `None` if the
+    /// Acquire a magick slot, waiting at most this caller's deadline ([`GATE_WAIT_MS`] for a
+    /// tile, [`FULL_FIDELITY_GATE_WAIT_MS`] for a user-chosen decode). Returns `None` if the
     /// semaphore couldn't be created, the wait timed out, or it otherwise failed — in
     /// every such case the caller proceeds UNCAPPED (best-effort: a missing or wedged
     /// cap must never block decoding, only bound its memory). A genuine permit is always
     /// released on drop; a timed-out wait acquired nothing, so there is nothing to
     /// release. This finite wait is what prevents a leaked permit (see [`GATE_WAIT_MS`])
     /// from turning into an indefinite host-process hang.
-    pub(crate) fn acquire() -> Option<Permit> {
+    pub(crate) fn acquire_for(fidelity: super::Fidelity) -> Option<Permit> {
+        let ms = match fidelity {
+            super::Fidelity::Tile => GATE_WAIT_MS,
+            super::Fidelity::Full => FULL_FIDELITY_GATE_WAIT_MS,
+        };
         let h = handle()?;
-        (unsafe { WaitForSingleObject(h, GATE_WAIT_MS) } == WAIT_OBJECT_0).then(|| Permit(h))
+        (unsafe { WaitForSingleObject(h, ms) } == WAIT_OBJECT_0).then(|| Permit(h))
     }
 }
 
@@ -307,6 +330,18 @@ enum RawPreviewOrder {
     /// Full-fidelity path: try the real decoders first, then fall back to a baked
     /// JPEG only if no full decoder can read the file.
     AfterExternal,
+}
+
+impl RawPreviewOrder {
+    /// Which side of the same distinction the ImageMagick budget is on. Preferring the real
+    /// decoders over a baked preview, and being willing to WAIT for them, are the same
+    /// statement about the caller: the user picked this file and is watching it convert.
+    fn fidelity(self) -> magick::Fidelity {
+        match self {
+            Self::BeforeExternal => magick::Fidelity::Tile,
+            Self::AfterExternal => magick::Fidelity::Full,
+        }
+    }
 }
 
 /// Apply the WIC decode's AVIF high-bit-depth curve fix when [`route_isobmff_wic_quirks`] says
@@ -378,7 +413,7 @@ fn last_resort_tiers(
             // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
             // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
             // for a file that decodes perfectly well.
-            match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
+            match decode_via_magick_capped(bytes, wic_thumbnail_cx, raw_preview.fidelity()) {
                 Ok(img) => return Ok(finish_magick_output(img, bytes, false)),
                 Err(e) => {
                     crate::safety::log_debugf!("decode tier `magick` failed: {e}");
@@ -409,6 +444,83 @@ fn last_resort_tiers(
         return Ok(img);
     }
     Err(last_err)
+}
+
+/// The picture's size as its own header declares it, for the formats the `image` crate can
+/// read a header of (JPEG, PNG, TIFF, WebP, GIF, BMP, ...) plus PSD/PSB. A header-only read,
+/// no pixels. `None` when no header is readable, which leaves [`decode_full_for_output`]'s
+/// stand-in check switched off rather than guessing. For a TIFF (and the TIFF-based camera
+/// RAWs) this is IFD0, which describes a small preview as often as the sensor, so a RAW whose
+/// embedded preview is larger than its IFD0 is never refused on its account.
+fn declared_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if let Some(dims) = psd_declared_dimensions(bytes) {
+        return Some(dims);
+    }
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+/// Height and width straight off a PSD/PSB file header (big-endian, at bytes 14 and 18).
+fn psd_declared_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !bytes.starts_with(b"8BPS") || bytes.len() < 22 {
+        return None;
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Some((be(18), be(14)))
+}
+
+/// Longest edge at or below which a decode is a THUMBNAIL rather than a picture, for
+/// [`refuse_a_preview_standing_in_for_the_picture`].
+///
+/// Measured off this repo's own RAW corpus, which is where the honest previews live:
+/// `.kdc` 96x64, `.erf` 160x120, `.nef` 320x218, `.dcr` 380x252 — all baked thumbnails —
+/// against `.fff` 1217x913 and the camera "review" JPEGs at 1024–2048 px that a Convert can
+/// legitimately be satisfied by. 512 sits in the empty band between those two populations, so
+/// a real preview is never called a stand-in and a postage stamp never passes for one.
+const STAND_IN_MAX_EDGE: u32 = 512;
+
+/// Issue #41's rule, applied by [`decode_full_for_output`] alone: is `img` the picture, or a
+/// postage stamp standing in for it?
+///
+/// ALL THREE conditions have to hold before anything is refused, and the last two are what
+/// keep this from firing on honest work:
+///
+/// 1. The result is under a QUARTER of what the file's own header declares, on the longer
+///    edge. A RAW whose IFD0 describes only its thumbnail therefore never trips it (the
+///    preview is bigger than the declaration, not smaller).
+/// 2. The result is at or below [`STAND_IN_MAX_EDGE`] — thumbnail-sized in absolute terms,
+///    not merely smaller than a very large original. A 1217x913 camera preview of a 40 MP
+///    sensor is a picture; it converts as it always has.
+/// 3. The result is under our own [`MAGICK_MAX_EDGE_PX`] ceiling, which condition 2 already
+///    implies and which is restated here because it is the load-bearing one if that floor is
+///    ever raised: a 20000 px JPEG 2000 that ImageMagick capped at 4096, or a gigapixel scan
+///    capped at [`limits::MAX_DIM`], is a real decode that hit a guard WE set.
+///
+/// What is left is the shape the issue reported: a 107x160 preview carved out of a 45 MP
+/// photograph after every decoder refused the photograph itself.
+fn refuse_a_preview_standing_in_for_the_picture(
+    img: DynamicImage,
+    declared: Option<(u32, u32)>,
+) -> Result<DynamicImage> {
+    let Some((dw, dh)) = declared else {
+        return Ok(img);
+    };
+    let (pw, ph) = (img.width(), img.height());
+    let got = pw.max(ph);
+    if got.saturating_mul(4) > dw.max(dh) || got > STAND_IN_MAX_EDGE || got >= MAGICK_MAX_EDGE_PX {
+        return Ok(img);
+    }
+    Err(Error::new(
+        E_FAIL,
+        format!(
+            "only a {pw}x{ph} preview embedded in this {dw}x{dh} picture could be decoded, \
+             and it is too small to stand in for it"
+        ),
+    ))
 }
 
 /// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
@@ -479,7 +591,7 @@ fn decode_any_with_wic_target(
     // detect from the container CHEAPLY and route around when the Full install's external
     // tier is available. In both cases WIC stays the fallback: on the Compact install (no
     // ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
-    match route_isobmff_wic_quirks(bytes, external, wic_cx) {
+    match route_isobmff_wic_quirks(bytes, external, wic_cx, raw_preview.fidelity()) {
         Ok(img) => Ok(img),
         Err(route) => last_resort_tiers(bytes, wic_cx, raw_preview, external, route, reduced_ifd0),
     }
@@ -744,6 +856,7 @@ fn route_isobmff_wic_quirks(
     bytes: &[u8],
     external: bool,
     wic_thumbnail_cx: Option<u32>,
+    fidelity: Fidelity,
 ) -> std::result::Result<DynamicImage, WicQuirkRoute> {
     let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
     // Three outcomes, not two. Most high-bit-depth AVIF used to land in the ImageMagick bucket
@@ -792,7 +905,7 @@ fn route_isobmff_wic_quirks(
     // the ICC below is applied from the ORIGINAL container, not magick's output, and
     // full-fidelity callers reach here with `wic_thumbnail_cx == None` (uncapped) as
     // before.
-    match decode_via_magick_capped(bytes, wic_thumbnail_cx) {
+    match decode_via_magick_capped(bytes, wic_thumbnail_cx, fidelity) {
         // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
         // have carried into its PNG output is gone by the time we read it back. Apply
         // it here from the ORIGINAL container instead, exactly as the WIC path does,
@@ -936,6 +1049,9 @@ pub fn jp2_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 mod exrscale;
 mod magick;
 pub(crate) use magick::looks_like_metafile;
+/// Which budget a magick child runs under - see [`magick::Fidelity`]. Re-exported because
+/// `flv.rs` runs its own magick child for the Flash tier and has to say which kind it is.
+pub(crate) use magick::Fidelity;
 // The subprocess watchdog (CPU budget + wall backstop), shared with the OTHER decode child
 // this crate spawns: `flv::flash_child_png`'s `st2k flv-frame` run. One implementation so
 // the two harnesses can't drift on the "child already exited / child merely starved" cases.
@@ -1029,7 +1145,7 @@ pub fn os_codec_available(codec: crate::formats::OsCodec) -> bool {
 /// install); fall back to the preview path when magick is missing or fails.
 pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.starts_with(b"8BPS") {
-        match decode_psd_composite(bytes) {
+        match decode_psd_composite(bytes, Fidelity::Full) {
             Ok(img) => return Ok(img),
             // Fall back to the preview path (the 160px baked-in thumbnail) — note
             // it so a surprising "my big PSD converted tiny" is diagnosable.
@@ -1039,6 +1155,23 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::AfterExternal, None)
+}
+
+/// [`decode_full`] for a caller that WRITES the result to a file the user keeps — Convert,
+/// Resize, Rotate, Compress, the PDF/CBZ combiners, Set as wallpaper, Set as folder icon,
+/// Copy to clipboard, the watermark's mark image.
+///
+/// Same decode; one extra question afterwards. Every tier can fail on a big document (a
+/// composite over its budget, a codec absent from this install), and when they all do, the
+/// last resort hands back whatever small preview the file happens to embed. On SCREEN that is
+/// the right answer: a blurry picture beats a blank tile, and the viewer says no more than it
+/// shows. Written to a file it is a lie the user only discovers later — issue #41, where a
+/// folder of 5464x8192 photographs "converted, resized to fit 1920x1080" into 107x160 files
+/// and the batch reported success. So a stand-in is refused HERE, with both sizes named,
+/// while [`decode_full`] stays exactly as lenient for the preview pane, the viewer and the
+/// dimension probes.
+pub fn decode_full_for_output(bytes: &[u8]) -> Result<DynamicImage> {
+    refuse_a_preview_standing_in_for_the_picture(decode_full(bytes)?, declared_dimensions(bytes))
 }
 
 /// Is this a plain uncompressed BMP that the OS codec should decode ahead of the `image` tier?
@@ -1240,7 +1373,7 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     // composite attempt before falling back here, so this lives on the preview entry
     // only — never double-running magick.)
     if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
-        match decode_psd_composite(bytes) {
+        match decode_psd_composite(bytes, Fidelity::Tile) {
             Ok(img) => return Ok(img),
             Err(e) => crate::safety::log_debugf!(
                 "transparent PSD composite failed ({e}); using baked preview"
@@ -1275,7 +1408,7 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
 ///     (measured against the bundled binary, 6.0 s for the `.mef` and 3.2 s for the `.iiq`)
 ///     where the tile path is tens of milliseconds and already correct.
 pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
-    let small = decode_full(bytes)?;
+    let small = decode_full_for_output(bytes)?;
     let Some(ext) = std::path::Path::new(path)
         .extension()
         .and_then(|x| x.to_str())
@@ -1966,6 +2099,102 @@ fn decode_with_image_alloc(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage>
 #[cfg(test)]
 mod hub_tests {
     use super::*;
+
+    /// Issue #41's arithmetic: a preview under a quarter of the declared picture on its
+    /// longer edge is refused for a full-fidelity caller; at or above it (the 4096-edge
+    /// ImageMagick cap on a 16000 px file), or with no header to compare against, it is
+    /// returned as before.
+    #[test]
+    fn a_preview_a_fraction_of_the_declared_picture_is_refused_with_both_sizes_named() {
+        let preview = |w, h| DynamicImage::new_rgb8(w, h);
+        let judge = refuse_a_preview_standing_in_for_the_picture;
+        let err = judge(preview(107, 160), Some((5464, 8192)))
+            .expect_err("the reporter's shape: a 107x160 stand-in for a 5464x8192 photograph");
+        let msg = err.message();
+        assert!(
+            msg.contains("107x160") && msg.contains("5464x8192"),
+            "{msg}"
+        );
+        // A RAW whose IFD0 declares only its thumbnail: the preview is BIGGER than declared.
+        assert!(judge(preview(1632, 1080), Some((160, 120))).is_ok());
+        // The ImageMagick 4096 cap on a 16000 px picture is a real decode that hit a guard we
+        // set, not a stand-in - even though it is far under a quarter.
+        assert!(judge(preview(4096, 3072), Some((16000, 12000))).is_ok());
+        // A Hasselblad .fff's 1217x913 preview of a 40 MP sensor: under a quarter, and still a
+        // picture. This is the case the absolute floor exists for.
+        assert!(judge(preview(1217, 913), Some((8176, 6132))).is_ok());
+        // Exactly a quarter AND thumbnail-sized is a stand-in; one pixel over the quarter is not.
+        assert!(judge(preview(500, 375), Some((2000, 1500))).is_err());
+        assert!(judge(preview(501, 375), Some((2000, 1500))).is_ok());
+        // Over the floor, whatever the ratio says.
+        assert!(judge(preview(513, 384), Some((20000, 15000))).is_ok());
+        // No readable header: nothing to compare against, so nothing is refused.
+        assert!(judge(preview(160, 120), None).is_ok());
+    }
+
+    /// Issue #41 through the real header reader and the real last-resort carve: a PNG whose
+    /// header declares 5000x5000 and whose pixel data is garbage, with a real 160x107 JPEG
+    /// appended after IEND. The carve finds the stamp, and the rule every file-writing caller
+    /// applies refuses exactly that result, naming both sizes.
+    ///
+    /// Deliberately NOT driven through `decode_full_for_output` end to end. Which tiers can
+    /// read this file depends on the test PROCESS: once any other test has initialised COM,
+    /// WIC "decodes" the corrupt IDAT as a black 5000x5000 canvas, so the full-fidelity decode
+    /// never reaches the stand-in (green alone, red in the full suite - measured). That black
+    /// canvas is a full-size decode and outside this rule by design.
+    #[test]
+    fn a_full_fidelity_decode_refuses_the_postage_stamp_a_thumbnail_may_show() {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+            out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(body);
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in kind.iter().chain(body) {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xEDB8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            out.extend_from_slice(&(!crc).to_be_bytes());
+        }
+        let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&5000u32.to_be_bytes());
+        ihdr.extend_from_slice(&5000u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB, deflate, no interlace
+        chunk(&mut file, b"IHDR", &ihdr);
+        chunk(&mut file, b"IDAT", &[0x55; 64]); // not a zlib stream: every decoder refuses it
+        chunk(&mut file, b"IEND", &[]);
+        let mut jpeg = Vec::new();
+        let stamp = image::RgbImage::from_fn(160, 107, |x, y| image::Rgb([x as u8, y as u8, 90]));
+        image::codecs::jpeg::JpegEncoder::new_with_quality(
+            &mut std::io::Cursor::new(&mut jpeg),
+            80,
+        )
+        .encode_image(&stamp)
+        .expect("encode the stamp");
+        assert!(
+            jpeg.len() >= tiers::LENIENT_RAW_PREVIEW,
+            "the stamp must clear the lenient floor"
+        );
+        file.extend_from_slice(&jpeg);
+
+        let declared = declared_dimensions(&file);
+        assert_eq!(declared, Some((5000, 5000)));
+        let stand_in = try_embedded_jpeg_last_resort(&file).expect("the appended stamp is found");
+        assert_eq!((stand_in.width(), stand_in.height()), (160, 107));
+        let err = refuse_a_preview_standing_in_for_the_picture(stand_in, declared)
+            .expect_err("a decode headed for a FILE refuses it");
+        let msg = err.message();
+        assert!(
+            msg.contains("160x107") && msg.contains("5000x5000"),
+            "{msg}"
+        );
+    }
 
     #[test]
     fn exceeds_alloc_budget_flags_a_max_dim_legal_hdr_frame_that_blows_the_alloc_cap() {

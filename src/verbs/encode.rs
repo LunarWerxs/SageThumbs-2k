@@ -673,7 +673,7 @@ pub struct ConvertOpts {
 /// any other convert error - never a silent skip.
 fn apply_watermark(img: &mut DynamicImage, wm: &Watermark) -> Result<()> {
     let bytes = read_full_fidelity_capped(&wm.path)?;
-    let mark = decode::decode_full(&bytes)?;
+    let mark = decode::decode_full_for_output(&bytes)?;
     watermark::apply(img, &mark, wm.corner, wm.scale_pct, wm.opacity_pct);
     Ok(())
 }

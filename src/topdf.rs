@@ -206,7 +206,7 @@ fn natural_sort_paths(paths: &[String]) -> Vec<String> {
 fn decode_page(p: &str, quality: u8) -> std::result::Result<Page, Omitted> {
     let bytes =
         read_full_fidelity_capped(p).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))?;
-    let img = decode::decode_full(&bytes).map_err(|e| {
+    let img = decode::decode_full_for_output(&bytes).map_err(|e| {
         crate::safety::log(&format!("pdf: cannot decode {p}: {e}"));
         Omitted::new(p, OmitCause::Undecodable, e)
     })?;
@@ -404,7 +404,7 @@ mod tests {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            decode::decode_full(&bytes).is_ok()
+            decode::decode_full_for_output(&bytes).is_ok()
         });
         assert!(
             rendered,

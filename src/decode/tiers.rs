@@ -184,11 +184,18 @@ pub(super) fn decode_raw_preview(bytes: &[u8], thumbnail_cx: Option<u32>) -> Res
 /// ([`jpeg_span_len`]), so a stray `FF D9` inside an APPn/EXIF metadata segment can't
 /// truncate the pick. Bounded: the 0xFF scan is linear, and at most 64 SOI candidates
 /// are examined so a hostile file can't make this loop.
+///
+/// A greyscale (single-component) JPEG ranks below EVERY colour one, whatever the sizes
+/// (issue #42). An Apple ProRAW DNG carries two JPEGs back to back in its IFD0 strip: the
+/// colour preview and, right behind it, the HDR gain map, a 1-component JPEG that is 40 KB
+/// to 1.5 MB against a 0.4 to 10 MB preview. Ranked by size alone, the gain map won whenever
+/// the colour preview was over the soft cap, or whenever both were under it and the gain map
+/// happened to be the larger (the reporter's IMG_1752: 547 KB against 992 KB), and 39 of 55
+/// photographs in one folder thumbnailed as a washed-out grey picture. A camera's preview of
+/// a colour photograph is never greyscale, so a grey candidate is only ever taken when the
+/// file holds no colour one at all (a monochrome camera, which is exactly when it is right).
 pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8]> {
-    // `capped` = largest preview within [MIN, SOFT_MAX] (what we prefer); `overall` =
-    // largest ≥ MIN (the fallback when every real preview is oversized).
-    let mut capped: Option<(usize, usize)> = None;
-    let mut overall: Option<(usize, usize)> = None;
+    let mut found = Candidates::default();
     let mut i = 0usize;
     let mut seen = 0usize;
     while i + 2 < data.len() {
@@ -200,7 +207,7 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
         }
         if data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             // SOI (FF D8 FF…). Measure it; a valid JPEG is skipped whole.
-            i += span_at_soi(data, i, min_size, &mut capped, &mut overall);
+            i += span_at_soi(data, i, min_size, &mut found);
             if bump_seen(&mut seen) {
                 break;
             }
@@ -208,44 +215,71 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
             i += 1;
         }
     }
-    let (start, len) = capped.or(overall)?;
+    let (start, len) = found.pick()?;
     data.get(start..start.checked_add(len)?)
 }
 
-/// One SOI candidate at `i`: measure its span, fold it into `capped`/`overall` when it's
-/// a real decodable preview, and return how far `i` should advance. A structurally
-/// perfect JPEG we cannot decode is worse than no candidate at all: picking it costs the
-/// whole tier. Canon CR2 is the case — its raw sensor data is a ~20 MB LOSSLESS JPEG
-/// (SOF3) with a valid marker chain, so it wins "largest embedded JPEG" over the real
-/// 3 MB display preview, and both the `image` crate and WIC then reject it ("the image
-/// header is unrecognized"). Skipping the frame still advances by its measured span, so
-/// this costs nothing.
-fn span_at_soi(
-    data: &[u8],
-    i: usize,
-    min_size: usize,
-    capped: &mut Option<(usize, usize)>,
-    overall: &mut Option<(usize, usize)>,
-) -> usize {
-    match jpeg_span(data, i) {
-        Some((len, Some(sof))) if !jpeg_sof_is_decodable(sof) => len,
-        Some((len, _)) => {
-            consider_candidate(capped, overall, i, len, min_size);
+/// The best-so-far candidates of [`largest_embedded_jpeg`]'s scan, one [`Rank`] per kind
+/// of frame. Colour outranks grey outright; within a rank, the size rule applies.
+#[derive(Default)]
+struct Candidates {
+    /// Frames with more than one component, and frames whose component count could not
+    /// be read (an odd header is not evidence of a gain map).
+    colour: Rank,
+    /// Single-component frames: gain maps, depth and alpha planes, or the preview of a
+    /// monochrome camera, which is the only case in which this rank is spent.
+    grey: Rank,
+}
+
+impl Candidates {
+    /// `(start, len)` of the pick: the colour rank's capped-then-overall order, and only
+    /// when the file holds no colour candidate at all the same order over the grey rank.
+    fn pick(&self) -> Option<(usize, usize)> {
+        self.colour.pick().or_else(|| self.grey.pick())
+    }
+}
+
+/// `overall` = largest candidate at or above the scan's `min_size`; `capped` = largest
+/// that's ALSO at or below [`PREVIEW_SOFT_MAX`] (what we prefer: a fast, ample
+/// screen-size preview rather than a full-resolution one).
+#[derive(Default)]
+struct Rank {
+    capped: Option<(usize, usize)>,
+    overall: Option<(usize, usize)>,
+}
+
+impl Rank {
+    fn pick(&self) -> Option<(usize, usize)> {
+        self.capped.or(self.overall)
+    }
+}
+
+/// One SOI candidate at `i`: measure its span, fold it into `found` when it's a real
+/// decodable preview, and return how far `i` should advance. A structurally perfect JPEG
+/// we cannot decode is worse than no candidate at all: picking it costs the whole tier.
+/// Canon CR2 is the case — its raw sensor data is a ~20 MB LOSSLESS JPEG (SOF3) with a
+/// valid marker chain, so it wins "largest embedded JPEG" over the real 3 MB display
+/// preview, and both the `image` crate and WIC then reject it ("the image header is
+/// unrecognized"). Skipping the frame still advances by its measured span, so this costs
+/// nothing.
+fn span_at_soi(data: &[u8], i: usize, min_size: usize, found: &mut Candidates) -> usize {
+    match jpeg_span_frame(data, i) {
+        Some((len, Some(frame))) if !jpeg_sof_is_decodable(frame.sof) => len,
+        Some((len, frame)) => {
+            let rank = match frame {
+                Some(f) if f.is_greyscale() => &mut found.grey,
+                _ => &mut found.colour,
+            };
+            consider_candidate(rank, i, len, min_size);
             len
         }
         None => 1,
     }
 }
 
-/// Track the best-so-far embedded JPEG candidates: `overall` = largest at or above
-/// `min_size`; `capped` = largest that's ALSO at or below [`PREVIEW_SOFT_MAX`].
-fn consider_candidate(
-    capped: &mut Option<(usize, usize)>,
-    overall: &mut Option<(usize, usize)>,
-    start: usize,
-    len: usize,
-    min_size: usize,
-) {
+/// Fold one candidate into a [`Rank`]: it becomes `overall` when it is the largest seen at
+/// or above `min_size`, and `capped` when it is ALSO at or below [`PREVIEW_SOFT_MAX`].
+fn consider_candidate(rank: &mut Rank, start: usize, len: usize, min_size: usize) {
     if len < min_size {
         return;
     }
@@ -253,11 +287,11 @@ fn consider_candidate(
         None => true,
         Some((_, bl)) => len > *bl,
     };
-    if better_than(overall) {
-        *overall = Some((start, len));
+    if better_than(&rank.overall) {
+        rank.overall = Some((start, len));
     }
-    if len <= PREVIEW_SOFT_MAX && better_than(capped) {
-        *capped = Some((start, len));
+    if len <= PREVIEW_SOFT_MAX && better_than(&rank.capped) {
+        rank.capped = Some((start, len));
     }
 }
 

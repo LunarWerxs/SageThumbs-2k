@@ -53,7 +53,7 @@ fn largest_embedded_jpeg_skips_lossless_frames_like_a_cr2_sensor_stream() {
     // OVER it rather than re-entering its entropy data looking for more SOI markers.
     let lossless = mini_jpeg_sof(0xC3, 1024);
     assert_eq!(
-        crate::container::jpeg_span(&lossless, 0),
+        crate::container::jpeg_span_frame(&lossless, 0).map(|(len, f)| (len, f.map(|f| f.sof))),
         Some((lossless.len(), Some(0xC3)))
     );
     assert!(!crate::container::jpeg_sof_is_decodable(0xC3));
@@ -101,6 +101,107 @@ fn largest_embedded_jpeg_prefers_the_real_preview() {
     raw.extend_from_slice(&[0xCD; 16]); // trailing junk
     let pick = largest_embedded_jpeg(&raw, MIN_RAW_PREVIEW).expect("should find the preview");
     assert_eq!(pick, &raw[off..off + preview.len()]);
+}
+
+/// Issue #42: an Apple ProRAW DNG's IFD0 strip holds the colour preview and, right behind
+/// it, the HDR gain map, a single-component JPEG. The reporter's three files, in bytes:
+/// IMG_1713 colour 3,233,029 (over the cap) / gain map 244,713; IMG_1752 colour 547,131 /
+/// gain map 991,637 (both under the cap, the gain map the larger); IMG_1751 colour 903,840 /
+/// gain map 398,092 (the control). The size-only rule picked the gain map for the first two,
+/// and 39 of 55 photographs in one folder thumbnailed as a washed-out grey picture. The same
+/// three shapes, in smaller bytes: the colour preview must win every one of them.
+#[test]
+fn largest_embedded_jpeg_never_takes_a_gain_map_over_a_colour_preview() {
+    let over_cap = PREVIEW_SOFT_MAX + 64 * 1024;
+    for (colour_len, grey_len, name) in [
+        (
+            over_cap,
+            240 * 1024,
+            "IMG_1713: colour over the cap, gain map under it",
+        ),
+        (
+            540 * 1024,
+            990 * 1024,
+            "IMG_1752: both under the cap, gain map the larger",
+        ),
+        (
+            900 * 1024,
+            400 * 1024,
+            "IMG_1751: both under the cap, colour the larger",
+        ),
+    ] {
+        let colour = mini_jpeg_sof_components(0xC0, 3, colour_len);
+        let grey = mini_jpeg_sof_components(0xC0, 1, grey_len);
+        let frame = |jpeg: &[u8]| {
+            crate::container::jpeg_span_frame(jpeg, 0)
+                .unwrap()
+                .1
+                .unwrap()
+        };
+        assert_eq!(
+            frame(&colour).components,
+            3,
+            "{name}: the fixture's colour frame"
+        );
+        assert!(
+            frame(&grey).is_greyscale(),
+            "{name}: the fixture's gain map"
+        );
+        let mut dng = vec![0u8; 64];
+        let coff = dng.len();
+        dng.extend_from_slice(&colour);
+        dng.extend_from_slice(&grey); // back to back, as in the IFD0 strip
+        let pick = largest_embedded_jpeg(&dng, MIN_RAW_PREVIEW).expect(name);
+        assert_eq!(pick, &dng[coff..coff + colour.len()], "{name}");
+    }
+}
+
+/// Issue #42 end to end, through the tier chain a thumbnail really takes: a ProRAW-shaped
+/// DNG whose IFD0 strip holds the colour preview and, right behind it, a LARGER greyscale
+/// gain map. The tile must be the photograph.
+#[test]
+fn a_proraw_shaped_dng_thumbnails_from_its_colour_preview_not_its_gain_map() {
+    let colour = noisy_jpeg_bytes(320, 214);
+    let gain_map = noisy_grey_jpeg_bytes(640, 428);
+    assert!(
+        gain_map.len() > colour.len() && gain_map.len() < PREVIEW_SOFT_MAX,
+        "the reporter's IMG_1752 shape: both under the cap, the gain map the larger \
+         (colour {} B, gain map {} B)",
+        colour.len(),
+        gain_map.len()
+    );
+    let mut dng = vec![0x49, 0x49, 0x2A, 0x00]; // little-endian TIFF magic: a DNG to the sniffer
+    dng.extend_from_slice(&[0u8; 60]); // a directory offset no real decoder can follow
+    dng.extend_from_slice(&colour);
+    dng.extend_from_slice(&gain_map); // concatenated, exactly as the strip holds them
+
+    let img = decode_any_with_wic_target(&dng, RawPreviewOrder::BeforeExternal, true, None)
+        .expect("the DNG must thumbnail from its embedded preview");
+    assert_eq!(
+        (img.width(), img.height()),
+        (320, 214),
+        "the gain map's size won"
+    );
+    // A greyscale JPEG decodes to r == g == b everywhere, so any pixel with a real channel
+    // spread proves the colour preview was the one decoded.
+    let rgb = img.to_rgb8();
+    assert!(
+        rgb.pixels()
+            .any(|p| p[0].abs_diff(p[1]) > 24 || p[1].abs_diff(p[2]) > 24),
+        "the thumbnail came out greyscale - the gain map won again"
+    );
+}
+
+/// A monochrome camera's preview is legitimately greyscale, and it is the only candidate
+/// in the file: grey is demoted behind colour, never refused.
+#[test]
+fn largest_embedded_jpeg_still_takes_a_lone_greyscale_preview() {
+    let grey = mini_jpeg_sof_components(0xC0, 1, 300 * 1024);
+    let mut raw = vec![0u8; 32];
+    let goff = raw.len();
+    raw.extend_from_slice(&grey);
+    let pick = largest_embedded_jpeg(&raw, MIN_RAW_PREVIEW).expect("the greyscale preview");
+    assert_eq!(pick, &raw[goff..goff + grey.len()]);
 }
 
 #[test]

@@ -193,20 +193,46 @@ enum SpanStep {
     Done,
 }
 
-/// Dispatch one JPEG marker inside [`jpeg_span`]'s walk. `sof` records the frame header's marker
-/// byte, once, the first time a real SOFn is seen (0xC4/0xC8/0xCC share the numeric range but
+/// What a JPEG's frame header says about the picture: which SOFn it is (see
+/// [`jpeg_sof_is_decodable`]) and how many colour components it carries. `components` is 0
+/// when the header was too short to read it, which callers treat as "unknown", never as grey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct JpegFrame {
+    pub sof: u8,
+    pub components: u8,
+}
+
+impl JpegFrame {
+    /// A single-component frame. A camera never writes its preview of a colour photograph
+    /// this way; what IS written this way is an auxiliary image riding in the same file: the
+    /// HDR gain map Apple ProRAW appends behind the colour preview (issue #42), Adobe's and
+    /// ISO 21496-1's gain maps, a depth or alpha plane. `false` for a frame whose component
+    /// count could not be read, so an odd header is not mistaken for a gain map.
+    pub fn is_greyscale(self) -> bool {
+        self.components == 1
+    }
+}
+
+/// Dispatch one JPEG marker inside [`jpeg_span`]'s walk. `sof` records the frame header,
+/// once, the first time a real SOFn is seen (0xC4/0xC8/0xCC share the numeric range but
 /// are not frame headers, so the guard below excludes them; a later thumbnail SOF must not
 /// overwrite the frame this span describes).
 fn advance_span_marker(
     data: &[u8],
     marker: u8,
     p: usize,
-    sof: &mut Option<u8>,
+    sof: &mut Option<JpegFrame>,
 ) -> Option<SpanStep> {
     match marker {
         0xD9 => Some(SpanStep::Done), // EOI — done
         0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
-            sof.get_or_insert(marker);
+            // The segment after the marker: length(2) precision(1) height(2) width(2) then
+            // the component count, the same layout `sof0_dims` reads its height/width from.
+            let components = data.get(p + 7).copied().unwrap_or(0);
+            sof.get_or_insert(JpegFrame {
+                sof: marker,
+                components,
+            });
             Some(SpanStep::Continue(skip_length_prefixed_segment(data, p)?))
         }
         0xDA => {
@@ -220,10 +246,18 @@ fn advance_span_marker(
 }
 
 pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> {
+    jpeg_span_frame(data, off).map(|(len, frame)| (len, frame.map(|f| f.sof)))
+}
+
+/// [`jpeg_span`] with the whole frame header ([`JpegFrame`]) rather than its marker alone,
+/// for the one caller that has to tell a colour preview from a greyscale gain map
+/// ([`crate::decode::tiers::largest_embedded_jpeg`]). Same walk, same bounds, same
+/// acceptance; only the shape of what it reports differs.
+pub(crate) fn jpeg_span_frame(data: &[u8], off: usize) -> Option<(usize, Option<JpegFrame>)> {
     if data.get(off..off.checked_add(2)?)? != [0xFF, 0xD8] {
         return None;
     }
-    let mut sof: Option<u8> = None;
+    let mut sof: Option<JpegFrame> = None;
     let mut p = off + 2;
     // A well-formed JPEG has far fewer segments than this; the cap just stops a
     // crafted run of pseudo-markers from spinning.

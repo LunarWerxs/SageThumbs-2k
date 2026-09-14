@@ -100,7 +100,15 @@ fn apply_magick_environment(cmd: &mut Command, exe: &std::path::Path) {
 /// Apply our shared ImageMagick resource caps (memory / map / time) to `cmd`. One
 /// place so the decode and encode subprocess paths can't drift, and so the values
 /// stay tied to [`limits`] (and, via the tests, to `policy.xml`).
-pub(super) fn add_magick_limits(cmd: &mut Command) {
+///
+/// `wall` is the caller's own wall-clock backstop, and `-limit time` is DERIVED from it
+/// rather than pinned beside it. ImageMagick's limit is documented as elapsed seconds, so a
+/// fixed string lower than the caller's backstop would let the child self-abort a decode the
+/// caller was still happy to wait for - which is precisely the drift that shipped when the
+/// full-fidelity paths raised their memory and hand-back caps and left everything else at
+/// the tile tier's values.
+pub(super) fn add_magick_limits(cmd: &mut Command, wall: Duration) {
+    let time_limit = wall.as_secs().to_string();
     cmd.args([
         "-limit",
         "memory",
@@ -110,7 +118,7 @@ pub(super) fn add_magick_limits(cmd: &mut Command) {
         limits::MAGICK_MAP_LIMIT,
         "-limit",
         "time",
-        limits::MAGICK_TIME_LIMIT,
+        &time_limit,
     ]);
 }
 
@@ -152,6 +160,62 @@ const METAFILE_BUDGET: MagickBudget = MagickBudget {
     cpu: METAFILE_MAGICK_CPU_BUDGET,
     wall: METAFILE_MAGICK_TIMEOUT,
 };
+
+/// Who is waiting for this magick child. The work is identical; the BUDGET is not, because
+/// the two callers are not in the same situation.
+///
+/// [`Fidelity::Tile`] is Explorer browsing past a file nobody asked about, in a host that
+/// must stay responsive - 20 s of CPU is already generous there.
+///
+/// [`Fidelity::Full`] is the user having picked this exact file for Convert, Resize or Image
+/// info and watching a progress bar with a Cancel button on it. Issue #41 is what the tile
+/// budget did to that case: a folder of 5464x8192 photographs "converted, resized to fit
+/// 1920x1080" into 107x160 files, because the composite was killed at 20 s of CPU and the
+/// last-resort tier then carved out the file's own embedded ~160 px preview. Measured here
+/// on flat PSDs, one thread-summed CPU figure per document (the whole reason the cliff moves
+/// from machine to machine: the same work costs more CPU-seconds on a slower core, and more
+/// threads mean more of them per second):
+///
+/// ```text
+///   4433x5906    26 MP   10.5 s   <- converts
+///   5147x6737    35 MP   13.5 s   <- converts here; the reporter's machine fails HERE
+///   5464x8192    45 MP   21.6 s   <- over the 20 s tile budget
+///   9000x9000    81 MP   38.8 s
+///   12000x12000 144 MP   64.5 s
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Fidelity {
+    Tile,
+    Full,
+}
+
+/// CPU budget for a user-chosen full-fidelity decode. ~0.45 s of CPU per megapixel above,
+/// so [`limits::MAX_DIM`] squared (268 MP, the largest picture this product will materialize
+/// at all) lands near 120 s on this machine; 180 s leaves the same headroom for a core half
+/// as fast. A hostile file is still bounded - by this, by the memory and hand-back caps, and
+/// by the caller's own progress dialog.
+const FULL_FIDELITY_MAGICK_CPU_BUDGET: Duration = Duration::from_secs(180);
+/// Wall backstop for the same child, for one that hangs without burning CPU. It has to sit
+/// above the wall time that budget can legitimately take (144 MP measured at 67.8 s of wall
+/// here, and a slow disk reading a 750 MB document adds to it), or the backstop would kill
+/// exactly the decode the CPU budget was raised to allow.
+const FULL_FIDELITY_MAGICK_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The full-fidelity pairing (see [`Fidelity`]).
+const FULL_FIDELITY_BUDGET: MagickBudget = MagickBudget {
+    cpu: FULL_FIDELITY_MAGICK_CPU_BUDGET,
+    wall: FULL_FIDELITY_MAGICK_TIMEOUT,
+};
+
+/// The budget one child runs under: the metafile clamp first (an untrusted vector program is
+/// tight whoever asked for it), then the caller's fidelity.
+fn budget_for(fidelity: Fidelity, is_meta: bool) -> MagickBudget {
+    match (is_meta, fidelity) {
+        (true, _) => METAFILE_BUDGET,
+        (false, Fidelity::Tile) => RASTER_BUDGET,
+        (false, Fidelity::Full) => FULL_FIDELITY_BUDGET,
+    }
+}
 
 fn add_metafile_magick_limits(cmd: &mut Command) {
     cmd.args([
@@ -219,16 +283,12 @@ fn resize_spec(max_edge: Option<u32>) -> String {
 pub(super) fn decode_via_magick_capped(
     bytes: &[u8],
     max_edge: Option<u32>,
+    fidelity: Fidelity,
 ) -> Result<DynamicImage> {
-    // Metafiles get a much tighter, format-specific child budget. A slow vector
-    // WMF would otherwise grind for seconds to a near-blank frame; everything
-    // else keeps the full 20 s budget for heavy raster decodes.
+    // Metafiles get a much tighter, format-specific child budget whoever is asking. A slow
+    // vector WMF would otherwise grind for seconds to a near-blank frame; a raster decode
+    // keeps the budget its caller's [`Fidelity`] earns.
     let is_meta = looks_like_metafile(bytes);
-    let budget = if is_meta {
-        METAFILE_BUDGET
-    } else {
-        RASTER_BUDGET
-    };
     // DICOM files carry a TIFF-compatible 128-byte preamble that tricks magick's
     // content-sniffer into treating them as TIFF (which then fails).  Pass an
     // explicit `dcm:-` format specifier so magick invokes its DICOM coder instead.
@@ -255,7 +315,7 @@ pub(super) fn decode_via_magick_capped(
         None => Vec::new(),
     };
     let edge = resize_spec(max_edge);
-    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, &edge, budget, is_meta)
+    decode_via_magick_spec(bytes, &pre_input, input, pre_ops, &edge, fidelity, is_meta)
 }
 
 /// Extensions whose ImageMagick coder is chosen by FILE NAME and never by
@@ -406,7 +466,7 @@ pub(super) fn decode_named_extension(
     max_edge: Option<u32>,
 ) -> Result<DynamicImage> {
     let edge = resize_spec(max_edge);
-    decode_named_extension_spec(bytes, ext, &edge, TILE_CAPS)
+    decode_named_extension_spec(bytes, ext, &edge, TILE_CAPS, Fidelity::Tile)
 }
 
 /// As [`decode_named_extension`], at NATIVE resolution: the resize cap is the MAX_DIM bomb
@@ -419,7 +479,13 @@ pub(super) fn decode_named_extension(
 /// failure: past roughly 65-90 MP the 16-bit PNG magick hands back can exceed
 /// [`FULL_FIDELITY_PNG_CAP`], and a medium-format back at 4096 beats one at nothing.
 pub(super) fn decode_named_extension_native(bytes: &[u8], ext: &str) -> Result<DynamicImage> {
-    decode_named_extension_spec(bytes, ext, limits::FULL_FIDELITY_EDGE, FULL_FIDELITY_CAPS)
+    decode_named_extension_spec(
+        bytes,
+        ext,
+        limits::FULL_FIDELITY_EDGE,
+        FULL_FIDELITY_CAPS,
+        Fidelity::Full,
+    )
 }
 
 fn decode_named_extension_spec(
@@ -427,6 +493,7 @@ fn decode_named_extension_spec(
     ext: &str,
     edge: &str,
     caps: DecodeCaps,
+    fidelity: Fidelity,
 ) -> Result<DynamicImage> {
     let Some(ext) = safe_ext(ext).filter(|e| has_name_selected_coder(e)) else {
         return Err(Error::from(E_FAIL));
@@ -450,14 +517,9 @@ fn decode_named_extension_spec(
     // the metafile check, or a metafile routed here would silently run under the
     // wider general-purpose budget instead of its tighter one.
     let is_meta = looks_like_metafile(bytes);
-    let budget = if is_meta {
-        METAFILE_BUDGET
-    } else {
-        RASTER_BUDGET
-    };
     // Empty stdin on purpose: the child reads the file, so shovelling the bytes down a
     // pipe nobody drains would only duplicate the write (and, for a big RAW, the wait).
-    let out = decode_via_magick_spec_alloc(&[], &[], spec, &[], edge, caps, budget, is_meta);
+    let out = decode_via_magick_spec_alloc(&[], &[], spec, &[], edge, caps, fidelity, is_meta);
     drop(temp);
     out
 }
@@ -613,7 +675,7 @@ fn ftyp_describes_mini_avif(body: &[u8]) -> bool {
 /// the `image` tier — making a >~134 MP PSD fall back to its 160px baked-in
 /// thumbnail. This PNG is OUR OWN re-encode (its dimensions are already bounded
 /// by the resize spec), so the wider allocation is safe here.
-pub(super) fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
+pub(super) fn decode_psd_composite(bytes: &[u8], fidelity: Fidelity) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
         bytes,
         &[],
@@ -621,7 +683,7 @@ pub(super) fn decode_psd_composite(bytes: &[u8]) -> Result<DynamicImage> {
         &[],
         limits::FULL_FIDELITY_EDGE,
         FULL_FIDELITY_CAPS,
-        RASTER_BUDGET,
+        fidelity,
         false, // PSD is never a metafile
     )
 }
@@ -637,11 +699,11 @@ fn decode_via_magick_spec(
     input: &str,
     pre_ops: &[&str],
     max_edge: &str,
-    budget: MagickBudget,
+    fidelity: Fidelity,
     is_meta: bool,
 ) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
-        bytes, pre_input, input, pre_ops, max_edge, TILE_CAPS, budget, is_meta,
+        bytes, pre_input, input, pre_ops, max_edge, TILE_CAPS, fidelity, is_meta,
     )
 }
 
@@ -705,16 +767,19 @@ fn decode_via_magick_spec_alloc(
     pre_ops: &[&str],
     max_edge: &str,
     caps: DecodeCaps,
-    budget: MagickBudget,
+    fidelity: Fidelity,
     is_meta: bool,
 ) -> Result<DynamicImage> {
+    // Derived here, from the two facts that decide it, so a caller cannot hand in a budget
+    // that disagrees with the fidelity its gate wait and its `-limit time` are taken from.
+    let budget = budget_for(fidelity, is_meta);
     let DecodeCaps { max_alloc, png_cap } = caps;
     let Some(exe) = magick_exe() else {
         crate::safety::log_debug("magick decode: ImageMagick not available");
         return Err(Error::from(E_FAIL));
     };
     let mut cmd = Command::new(exe);
-    add_magick_limits(&mut cmd);
+    add_magick_limits(&mut cmd, budget.wall);
     if is_meta {
         // Must follow the shared caps: ImageMagick applies the last resource
         // setting, leaving every non-metafile invocation on the normal budget.
@@ -743,7 +808,7 @@ fn decode_via_magick_spec_alloc(
     apply_magick_environment(&mut cmd, exe);
     // Bound concurrent magick children (memory) across in-process + st2k fan-out.
     // Held until this function returns (after the child is reaped).
-    let _permit = magick_gate::acquire();
+    let _permit = magick_gate::acquire_for(fidelity);
     // Every failure below is LOGGED, not just returned. This tier is the one we route AVIF
     // to precisely because the fallback (WIC) gets those files wrong, so a silent Err here
     // reappears as a wrong-coloured thumbnail with nothing in the log to explain it — which
@@ -1106,14 +1171,18 @@ fn spawn_magick_child(
     args: &[String],
 ) -> Result<(std::process::Child, Option<magick_gate::Permit>)> {
     let mut cmd = Command::new(exe);
-    add_magick_limits(&mut cmd);
+    // The ENCODE path's own watchdog is `MAGICK_TIMEOUT` (see `await_encode_exit`), so the
+    // child's self-limit is derived from the same figure.
+    add_magick_limits(&mut cmd, MAGICK_TIMEOUT);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
     apply_magick_environment(&mut cmd, exe);
-    let permit = magick_gate::acquire();
+    // The ENCODE path writes what the user asked for, so it queues like any other
+    // full-fidelity worker rather than slipping past the cap after five seconds.
+    let permit = magick_gate::acquire_for(Fidelity::Full);
     let child = cmd.spawn().map_err(|_| Error::from(E_FAIL))?;
     Ok((child, permit))
 }
@@ -1457,7 +1526,7 @@ mod tests {
     #[test]
     fn metafile_limits_override_the_shared_magick_budget() {
         let mut command = Command::new("magick.exe");
-        add_magick_limits(&mut command);
+        add_magick_limits(&mut command, crate::decode::MAGICK_TIMEOUT);
         add_metafile_magick_limits(&mut command);
         let args: Vec<_> = command
             .get_args()

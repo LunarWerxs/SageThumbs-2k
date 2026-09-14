@@ -445,7 +445,7 @@ pub(crate) fn child_frame_png(
         .creation_flags(crate::CREATE_NO_WINDOW);
     // Bound concurrent decode children (the ImageMagick gate is cross-process and named, so
     // st2k fan-outs and in-process decodes share the one cap).
-    let _permit = crate::decode::magick_gate::acquire();
+    let _permit = crate::decode::magick_gate::acquire_for(crate::decode::Fidelity::Tile);
     let mut child = cmd.spawn().ok()?;
     // The one line `verify-installed-thumbnails-explorer.ps1` counts. It used to count
     // helpers by polling the process list every 15 ms from a PowerShell runspace, and a

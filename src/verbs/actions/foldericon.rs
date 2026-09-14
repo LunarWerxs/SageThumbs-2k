@@ -14,7 +14,7 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
         .ok_or_else(|| Error::new(E_FAIL, "image has no parent folder"))?;
 
     let bytes = read_full_fidelity_capped(image_path)?;
-    let icon = make_icon_square(&decode::decode_full(&bytes)?, 256);
+    let icon = make_icon_square(&decode::decode_full_for_output(&bytes)?, 256);
 
     // Encode the ICO into memory, then write it atomically (a half-written icon
     // would make the folder show a broken glyph).

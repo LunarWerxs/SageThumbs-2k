@@ -58,7 +58,7 @@ pub fn copy_data_uri_to_clipboard(path: &str) -> Result<()> {
 /// BGRA — the conventional packed-DIB layout other apps expect).
 pub fn copy_to_clipboard(path: &str) -> Result<()> {
     let bytes = read_full_fidelity_capped(path)?;
-    let img = decode::decode_full(&bytes)?.to_rgba8();
+    let img = decode::decode_full_for_output(&bytes)?.to_rgba8();
     let (w, h) = (img.width() as i32, img.height() as i32);
     copy_rgba_to_clipboard(w, h, &img.into_raw())
 }
