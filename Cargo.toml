@@ -120,7 +120,7 @@ exr = { version = "=1.74.2", default-features = false }
 # wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
-moxcms = "0.8"
+moxcms = "0.9"
 # CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
 # → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
