@@ -203,7 +203,7 @@ percent-encoding = "2"
 # dep), keeping the build C-free (no bzip2/zstd/brotli/lz4). 0.21 (from 0.13) is the
 # version that BOUNDS the header's declared entry count (`bounded_count`), so a crafted
 # `.7z` can no longer abort us with a capacity-overflow allocation during header parse.
-sevenz-rust2 = { version = "0.21", default-features = false }
+sevenz-rust2 = { version = "0.22", default-features = false }
 # Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
 # Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
 lofty = "0.25"
@@ -358,7 +358,7 @@ dll-i18n-subset = []
 # Test-only 7z writer: build non-solid/duplicate-name archives in memory so the
 # exact-index, aggregate-budget extraction path has end-to-end coverage. The
 # shipped dependency above remains decode-only (`compress` is not in release).
-sevenz-rust2 = { version = "0.21", default-features = false, features = ["compress"] }
+sevenz-rust2 = { version = "0.22", default-features = false, features = ["compress"] }
 
 [build-dependencies]
 # The SDK-rc lookup + VERSIONINFO .rc template shared with crates/dll and crates/dlghook's
