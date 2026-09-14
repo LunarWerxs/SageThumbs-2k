@@ -7,7 +7,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.0.4
+
+Two fixes for bugs people reported: iPhone ProRAW photos thumbnail in colour again, and
+Convert no longer quietly writes a tiny file when it is given a very large picture.
 
 - **iPhone ProRAW photos thumbnail in colour again instead of a grey wash**
   ([#42](https://github.com/LunarWerxs/SageThumbs-2k/issues/42)). A ProRAW `.DNG` stores two
