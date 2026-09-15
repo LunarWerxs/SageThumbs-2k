@@ -41,11 +41,11 @@ $body = Format-ReleaseNotesBody -Section $section -Version $Version
 $notes = @"
 $body
 
-## Verified installer
+## Downloads
 
-- **File:** ``$($installer.Name)``
-- **Size:** $($installer.Length) bytes
-- **SHA-256:** ``$sha256``
+Every file below is code-signed by LUNARWERX LLC; the SHA-256 lets you check a download is the one published here.
+
+- **x64 installer:** ``$($installer.Name)`` · SHA-256 ``$sha256``
 "@
 
 $outputDirectory = Split-Path $OutputPath -Parent

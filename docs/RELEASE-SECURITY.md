@@ -9,9 +9,12 @@ every one of those is a heuristic/ML verdict rather than a signature match.
 The detections are an artifact of wrapping unsigned binaries in a compressed self-extractor.
 They are not a property of the software, and no code change is warranted.
 
-Every release is now scanned **before** it is published (see *The gate* below). Releases up to
-and including v1.2.0 were not, which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on
-SourceForge's listing instead of in our own pipeline.
+Releases from 1.2.1 to 3.0.4 were scanned **before** publication (see *The gate* below, kept as
+history). Since 3.0.5 every binary is code-signed by LUNARWERX LLC and the pre-publication
+scan is retired; the pipeline's remaining antivirus-shaped step is the Authenticode check that
+refuses to publish anything unsigned. Releases up to and including v1.2.0 were never scanned,
+which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on SourceForge's listing instead of
+in our own pipeline.
 
 ## Marking a security release: put `[security-release]` in the notes
 

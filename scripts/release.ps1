@@ -196,19 +196,10 @@ try {
     # for the same reason check-issues is: a stale failing PR for a superseded version must
     # never block the release that supersedes it.
     pwsh "$root\scripts\check-winget.ps1"
-    # The third "what happened after we last shipped" question, and the one a user had to ask
-    # for us: antivirus engines keep re-scoring a hash long after step 4b's gate cleared it, so
-    # a release can pass on the day and drift afterwards. v2.5.0 passed the gate at 2 or 3
-    # detections and read 9 four days later; the way we learned that was a comment on issue
-    # #30. Informational for the same reason as the two above - a verdict on a superseded
-    # release must never block the release that supersedes it, which is why check-av.ps1 scopes
-    # its own -Gate to the CURRENT release only.
-    # -Releases 3 rather than the default: the question here is "did what we last shipped
-    # drift", and each artifact costs a paced VirusTotal call (their public API allows four a
-    # minute), so the full history would add minutes to every release for context nobody reads
-    # at this moment. `pwsh scripts\check-av.ps1 -Releases 12` is there when the history IS the
-    # question.
-    pwsh "$root\scripts\check-av.ps1" -Releases 3
+    # The VirusTotal look-back over the last three releases that used to run here was retired
+    # on 2026-09-15 (Michael: every build has been signed since 3.0.0, so the antivirus step
+    # goes). `pwsh scripts\check-av.ps1 -Releases 12` is still there for the day a user reports
+    # a flag and the history IS the question.
 
     # 1) must be on main with a clean tree (so we release exactly what's committed).
     Write-Host "[2/6] clean-tree + branch guard" -ForegroundColor Green
@@ -384,59 +375,12 @@ try {
         $artifact.Portable = Get-Item -LiteralPath $artifact.PortablePath -ErrorAction Stop
     }
 
-    # 4b) VirusTotal the EXACT artifact we are about to publish, BEFORE publishing it.
-    # Added 2026-07-18: nothing scanned releases up to and including v1.2.0, so ESET's
-    # generic-ML "Generik.*" verdicts on 1.1.0/1.1.1 were first seen on SourceForge's
-    # listing rather than here. Non-fatal if the scanner is unavailable (missing .env /
-    # no network): a release must not be blocked by tooling absence, only by a real
-    # verdict. push_to_vt.py --gate decides what counts as real - see its TIER1/MAX_TOTAL.
-    # NOTE: push_to_vt.py and .env are BOTH gitignored (the key lives beside the script), so
-    # after a fresh clone neither exists — hence the existence checks rather than assuming.
-    Write-Host "[4b/6] VirusTotal scan (gate)" -ForegroundColor Green
-    $vt = Join-Path $root 'push_to_vt.py'
-    if ((Test-Path $vt) -and (Test-Path "$root\.env") -and (Get-Command python -EA SilentlyContinue)) {
-        foreach ($artifact in $releaseArtifacts) {
-            python $vt $artifact.Setup.FullName --gate
-            # 75 = EX_TEMPFAIL: the scan was still queued when the poll window ran out.
-            # That is the scanner being busy, not a verdict about the file, and treating
-            # it as a failure aborted a clean 1.6.0 release after both installers had
-            # already built. Same rule as a missing scanner above: tooling absence must
-            # not block a release, only a real detection. A real detection still exits 1.
-            if ($LASTEXITCODE -eq 75) {
-                Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'VirusTotal' -Reason (
-                    "analysis for $($artifact.Setup.Name) did not finish in time - not blocking; " +
-                    "re-check the permalink above before announcing (python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate)"
-                )
-            } elseif ($LASTEXITCODE) {
-                throw "VirusTotal gate FAILED for $($artifact.Setup.Name) - NOT publishing. Review the permalink above."
-            }
-        }
-    } else {
-        # SKIPPED, never silent: this is exactly the line finding F22 called out as not
-        # distinguishable from a stage that ran. push_to_vt.py and .env are both gitignored, so
-        # a fresh clone never has them until recreated.
-        Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'VirusTotal' -Reason (
-            'push_to_vt.py, .env, or python missing (both are gitignored; recreate them after a fresh clone)'
-        )
-        foreach ($artifact in $releaseArtifacts) {
-            Write-Host "        scan manually: python push_to_vt.py `"$($artifact.Setup.FullName)`" --gate" -ForegroundColor Yellow
-        }
-    }
-
-    # Local Defender scan (informational, never blocks). VirusTotal's Microsoft engine runs
-    # WITHOUT the cloud/reputation context a real Defender install has, so it reports an ML
-    # generic on every unsigned low-prevalence Inno installer we ship. docs/AV-SUBMISSION.md's
-    # rule is that a false-positive submission is only meaningful once REAL Defender names a
-    # threat - and the portal requires that name. This answers that question automatically, so
-    # a release no longer ends with a manual "go check Defender" whose answer is always clean.
-    Write-Host "[4c/6] local Defender scan (informational)" -ForegroundColor Green
-    & (Join-Path $PSScriptRoot 'av-defender-check.ps1') -Path ($releaseArtifacts | ForEach-Object { $_.Setup.FullName })
-    if ($LASTEXITCODE) {
-        Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'Defender scan' -Reason (
-            'real Defender named a threat (the submission above IS warranted) - not blocking; the VirusTotal gate above is the blocking one'
-        )
-    }
-    $global:LASTEXITCODE = 0
+    # Stages 4b (VirusTotal gate on the exact artifacts) and 4c (local Defender scan) lived here
+    # from 2026-07-18 until 2026-09-15 and were retired by Michael once every build was signed:
+    # "now that we cover antivirus, we no longer need the whole antivirus / VirusTotal check
+    # step". The Authenticode hard gate below is what stands in their place, and
+    # push_to_vt.py / av-defender-check.ps1 stay on disk for a by-hand look when a user reports
+    # a flag (docs/AV-SUBMISSION.md).
 
     # The updater must NEVER ship broken again (owner directive, 2026-08-10, after
     # 1.3.3..=1.10.0 shipped a self-lock that failed every one-click update). Prove it on
@@ -527,83 +471,11 @@ try {
     if ($LASTEXITCODE) { throw "curated release-note export failed - NOT publishing" }
     $arm64Artifact = @($releaseArtifacts | Where-Object Architecture -ceq 'arm64')
     if ($arm64Artifact.Count -gt 1) { throw 'release artifact table has more than one ARM64 installer' }
-    if ($arm64Artifact.Count -eq 1) {
-        # PARENTHESES ARE LOAD-BEARING. In PowerShell the comma binds TIGHTER than `+`, so
-        # `@( '', 'a' + $x + 'b' )` parses as `('', 'a') + $x + 'b'` and yields FOUR elements,
-        # not two. Add-Content then writes each on its own line, which is why every ARM64
-        # release note from at least 2.4.0 to 2.4.1 published as a code span split across three
-        # lines: the label, then the filename, then the closing backticks. Cosmetic, public,
-        # and invisible until someone read the rendered page rather than the script.
-        # Single backticks to match the x64 lines that export-release-notes.ps1 writes above.
-        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-            ''
-            ('- **ARM64 installer:** `' + $arm64Artifact[0].Setup.Name + '`')
-            ('- **ARM64 SHA-256:** `' + (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '`')
-        )
-    }
-    # The x64 installer's second name (uploaded at step 5), explained where people will see it.
-    # Parenthesised for the reason the ARM64 block above spells out.
-    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-        ''
-        ('- **x64 installer, second copy:** `SageThumbs2K-Setup-' + $ver + '-amd64.exe` is the same file as' +
-            ' the verified x64 installer above, published under a name that lists first so that copies' +
-            ' older than 1.3.6 can update themselves. Download the plain one.')
-    )
-
-    # State the portable scope in the notes rather than letting the filename imply more than
-    # it delivers. Everyone who downloads it will otherwise ask the same question, which is
-    # the one issue #13 already asked. No sizes or counts here - the notes stay evergreen.
-    #
-    # CORRECTED 2026-08-14. This block used to say the portable build could NOT do Explorer
-    # thumbnails or the right-click menu. That was true of 1.8.0 and was FIXED IN 1.8.1, which
-    # ships the handler in the zip and registers it per user - and nobody updated the notes, so
-    # every release from 1.8.1 to 1.12.0 shipped release notes denying one of its own headline
-    # features. Keep this in step with CLAUDE.md's portable section if the scope changes again.
-    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-        '',
-        '### Portable (no installer)',
-        '',
-        'Extract and run. Nothing is installed, nothing goes in the registry, no admin needed.',
-        'Settings live in `SageThumbs2K.ini` next to the exe.',
-        '',
-        'You get the app and the command line tool: settings, convert and resize, quick',
-        'preview, screenshots, OCR, the colour picker and the folder tools.',
-        '',
-        '**Explorer thumbnails and the classic right-click menu work too.** Turn them on with',
-        '`st2k register`, or the button in Settings under Advanced. That registers the handler',
-        'for your user account only: no installer, no administrator rights, nothing written',
-        'machine-wide. `st2k register --off` undoes it, and you should run that *before* moving',
-        'or deleting the folder, otherwise Windows is left pointing at a file that has gone.',
-        '',
-        'Three things still need the installer, because Windows only accepts them registered',
-        'for the whole machine: the Explorer **preview pane**, the **Details pane** columns,',
-        'and the **Windows 11 right-click menu** (the compact one).'
-    )
-    foreach ($artifact in $releaseArtifacts) {
-        # Parenthesised for the same reason as the ARM64 block above: the comma binds tighter
-        # than `+`, so without these each line published as FIVE separate lines, splitting a
-        # code span across the architecture name and the filename.
-        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-            ''
-            ('- **' + $artifact.Architecture + ' portable:** `' + $artifact.Portable.Name + '`')
-            ('- **' + $artifact.Architecture + ' portable SHA-256:** `' +
-                (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '`')
-        )
-    }
-
-    # The VirusTotal permalink for each installer, which step [4b/6] has just scanned anyway.
-    # Reputation verdicts on an unsigned installer are this project's most persistent support
-    # question (issue #30, and #12 before it), and the single most useful answer is the actual
-    # ratio next to the actual file rather than one popup's opinion. The link is derived from
-    # the artifact's own SHA-256, so it always points at exactly the bytes attached below and
-    # cannot drift onto some other build. README.md's antivirus FAQ promises this link exists;
-    # this is what makes that true.
-    # Read the truth off the artifacts rather than asserting it: once Azure Artifact Signing
-    # is live (scripts/packaging/sign-release.ps1) the installers carry a valid signature and
-    # the old sentence would be a lie in every release note that followed.
     # A HARD GATE since 3.0.1 (owner directive, Michael, 2026-09-10): every installer this run
     # is about to publish must carry a valid Authenticode signature, or nothing is published.
-    # [1/6] already refused an unconfigured signer; this is the proof on the artifact itself.
+    # [1/6] already refused an unconfigured signer; this is the proof on the artifact itself,
+    # and since 2026-09-15 it is the only antivirus-shaped step left (the VirusTotal gate, the
+    # Defender scan and the VirusTotal links in these notes were retired by Michael).
     foreach ($artifact in $releaseArtifacts) {
         $setupSignature = Get-AuthenticodeSignature -LiteralPath $artifact.Setup.FullName
         if ($setupSignature.Status -ne 'Valid') {
@@ -616,27 +488,40 @@ try {
             }
         }
     }
-    $signingLine = '**Antivirus / SmartScreen:** these builds are code-signed. A brand-new signed file with no'
-    Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-        ''
-        $signingLine
-        'download history draws reputation-based warnings. Scan results for these exact bytes:'
-    )
-    foreach ($artifact in $releaseArtifacts) {
-        # NOT `$sha`: that is the validated COMMIT, and `--target $sha` at [5/6] reads it. Reusing
-        # the name here (1568e12) made the first release after it (3.0.0) hand GitHub a file
-        # hash as the target commit: "Release.target_commitish is invalid", after every gate.
-        $installerSha256 = Get-ReleaseSha256 -Path $artifact.Setup.FullName
+
+    # The rest of the Downloads list, one line per file, in the shape export-release-notes.ps1
+    # used for the x64 installer above. Everything below "Downloads" used to run to a screen
+    # and a half (a Verified-installer block, a five-paragraph portable explainer, an antivirus
+    # paragraph with VirusTotal links); Michael, 2026-09-15: "everything from Verified installer
+    # down seems excessively long". A name and a hash per file, one line for the portable zip
+    # and one for the amd64 alias, nothing else.
+    #
+    # PARENTHESES ARE LOAD-BEARING. In PowerShell the comma binds TIGHTER than `+`, so
+    # `@( '', 'a' + $x + 'b' )` parses as `('', 'a') + $x + 'b'` and yields FOUR elements,
+    # not two, and Add-Content then writes each on its own line - which is how every ARM64
+    # release note from 2.4.0 to 2.4.1 published a code span split across three lines.
+    if ($arm64Artifact.Count -eq 1) {
         Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
-            ('- ' + $artifact.Architecture + ' installer on VirusTotal: ' +
-                'https://www.virustotal.com/gui/file/' + $installerSha256.ToLower())
+            ('- **ARM64 installer:** `' + $arm64Artifact[0].Setup.Name + '` · SHA-256 `' +
+                (Get-ReleaseSha256 -Path $arm64Artifact[0].Setup.FullName) + '`')
         )
     }
+    foreach ($artifact in $releaseArtifacts) {
+        Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
+            ('- **' + $artifact.Architecture + ' portable:** `' + $artifact.Portable.Name + '` · SHA-256 `' +
+                (Get-ReleaseSha256 -Path $artifact.Portable.FullName) + '`')
+        )
+    }
+    # The portable scope in one line (issue #13 is the question every zip downloader asks; the
+    # 1.8.1 handler-in-the-zip fix means thumbnails DO work), and the x64 installer's second
+    # name (uploaded at step 5) explained where people will see it.
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(
         ''
-        'See the [antivirus FAQ](https://github.com/LunarWerxs/SageThumbs-2k#why-did-windows-or-my-antivirus-flag-the-installer)'
-        'for what those detection names actually mean and two measurements showing the count'
-        'moves without the software changing.'
+        ('Portable: unzip and run, nothing is installed. `st2k register` (or Settings, Advanced) turns on' +
+            ' Explorer thumbnails and the classic right-click menu for your account; only the preview pane,' +
+            ' the Details pane and the Windows 11 compact menu still need the installer.' +
+            ' `SageThumbs2K-Setup-' + $ver + '-amd64.exe` is the x64 installer again, under the name copies' +
+            ' older than 1.3.6 look for; download the plain one.')
     )
     # The Discord line LAST, after every appended block (the 3.0.0 hand layout's closing line).
     Add-Content -LiteralPath $notes -Encoding utf8 -Value @(

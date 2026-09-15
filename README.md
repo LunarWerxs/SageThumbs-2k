@@ -206,7 +206,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **Crash-proof by design**: a malformed file can't take down Explorer.
 - **Zero runtime dependencies**, pure memory-safe Rust core, installs clean every time.
 - **Zero-warning linting, supply-chain audits, fuzzing, Miri, and a full test + render-regression suite** gate every release.
-- **Hardened against hostile input** and scanned through VirusTotal each release.
+- **Hardened against hostile input** and code-signed by LUNARWERX LLC on every release.
 - **Color-managed** (ICC/wide-gamut → sRGB) and **obsessively tuned** for speed, size, and a native feel.
 
 ---
@@ -330,9 +330,9 @@ made.
   each other: 2 of 71 with it, 3 of 70 without. The size and contents are not what is being
   scored.
 
-Every release links its own VirusTotal report, so you can see the current ratio and the exact
-engine names for the file you downloaded rather than one popup's opinion. You can also verify
-the SHA-256 on the release page matches what you got.
+Every release is code-signed by LUNARWERX LLC and lists each file's SHA-256, so you can check
+that the file you downloaded is the one published. For the current engine ratio and the exact
+detection names, look that SHA-256 up on VirusTotal rather than trusting one popup's opinion.
 
 If your antivirus quarantines it, reporting it as a false positive to *your* vendor genuinely
 helps, those reports are what clear it for everyone else using that product, and since 3.0

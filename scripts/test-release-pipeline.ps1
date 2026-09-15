@@ -386,17 +386,13 @@ Some more filler so the section clears the minimum length check that runs before
                 throw "stage-outcome helper's ValidateSet no longer offers the outcome $word"
             }
         }
-        # The exact stage the audit evidence named: the VirusTotal gate skips (optional) when the
-        # gitignored scanner/config/runtime inputs are absent, and used to print that as freeform
-        # "SKIPPED - ..." prose indistinguishable, at a glance, from a stage that never skips.
-        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'VirusTotal'") {
-            throw "release.ps1 no longer labels the VirusTotal skip as 'SKIPPED (optional)' - a skipped optional stage must be distinguishable from one that ran"
-        }
-        # The VT-inconclusive (queued/timeout) and self-update-smoke skip are the other two
-        # branches the audit's line range covered; keep them labelled too rather than relying on
-        # freeform Yellow prose that reads the same as any other warning.
-        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'OVERRIDDEN'\s+-Stage\s+'VirusTotal'") {
-            throw "release.ps1 no longer labels the VirusTotal timeout/queued case as an explicit OVERRIDDEN outcome"
+        # The VirusTotal gate this block used to pin (its SKIPPED (optional) and OVERRIDDEN
+        # labels) was retired on 2026-09-15 with the whole antivirus step; the self-update-smoke
+        # skip is the remaining labelled branch from the audit's line range. The retired stage
+        # must not creep back unlabelled either: if a VirusTotal gate ever returns, it returns
+        # with these outcome labels, so the assertion is inverted rather than deleted.
+        if ($releaseText -match "\[4b/6\] VirusTotal scan") {
+            throw "release.ps1 has grown a VirusTotal gate again; it was retired on 2026-09-15 (signed builds), and if it is wanted back it needs its SKIPPED (optional)/OVERRIDDEN labels and this test updated"
         }
         if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'self-update smoke'") {
             throw "release.ps1 no longer labels the self-update-smoke skip as 'SKIPPED (optional)'"
