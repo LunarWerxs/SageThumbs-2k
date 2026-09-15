@@ -7,6 +7,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Uninstalling now clears Windows' thumbnail cache at the next restart.** Windows keeps every
+  thumbnail SageThumbs drew for as long as the file is unchanged, so after an uninstall the
+  desktop and every folder kept showing them. They are removed at the next sign-in and Windows
+  draws its own again.
+
 ## 3.0.4
 
 Two fixes for bugs people reported: iPhone ProRAW photos thumbnail in colour again, and

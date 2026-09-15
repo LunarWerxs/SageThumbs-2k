@@ -65,6 +65,25 @@ yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
 </details>
 
 <details>
+<summary><b>My PNG, GIF or BMP thumbnails look different since I installed it, on the desktop too</b></summary>
+
+That is SageThumbs 2K drawing them. It registers for the picture formats Windows can already
+show (PNG, GIF, BMP, TIFF, WebP and more), not only the ones Windows cannot, and the desktop is
+just another Explorer view, so its thumbnails follow the same rules as every folder. JPEG is
+usually still drawn by Windows, which keeps its own JPEG thumbnailer pinned to that file type.
+
+The difference most people notice: a picture smaller than its tile is enlarged to fill it
+(pixel art with crisp edges, anything else smoothly), where Windows shows it at its real size in
+the middle of the tile. Colours can also shift a little on a file that carries a colour
+profile, because SageThumbs honours the profile.
+
+To hand a format back to Windows: Settings, File types, untick it, then Settings, Advanced,
+**Rebuild thumbnail cache**. Windows draws that format again from the next browse, on the
+desktop included.
+
+</details>
+
+<details>
 <summary><b>A video I rotated plays upright everywhere but shows sideways in the thumbnail</b></summary>
 
 That's fixed. Some editors write a rotation flag instead of re-encoding the pixels (for example
@@ -303,8 +322,10 @@ trace behind.
 <details>
 <summary><b>How do I uninstall?</b></summary>
 
-Normal Windows uninstall (Settings, Apps). It removes the registrations too. For the portable
-copy, unregister first (Settings, Advanced), then delete the folder.
+Normal Windows uninstall (Settings, Apps). It removes the registrations too. Windows keeps the
+thumbnails it cached while SageThumbs was installed, so the uninstaller clears that cache at the
+next restart and Windows draws its own again. For the portable copy, unregister first (Settings,
+Advanced), then delete the folder.
 
 ---
 

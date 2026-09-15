@@ -500,6 +500,13 @@ Type: files; Name: "{app}\{#AppDll}.old*"
 // and CurStepChanged uses one to hand the install path to the modern-menu [Run] entry.
 function SetEnvironmentVariableW(lpName, lpValue: String): BOOL;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+// Kernel32 import: delete-on-reboot for a file Explorer holds open (ScheduleThumbnailCacheReset).
+// A delete passes NULL as lpNewFileName, which the script engine cannot spell as a String, so
+// that parameter is a Cardinal and the call passes 0.
+function MoveFileExW(lpExistingFileName: String; lpNewFileName: Cardinal; dwFlags: DWORD): BOOL;
+  external 'MoveFileExW@kernel32.dll stdcall';
+const
+  MOVEFILE_DELAY_UNTIL_REBOOT = 4;
 // Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
 var
   WasUpgrade: Boolean;
@@ -1355,6 +1362,44 @@ begin
       '; the modern-menu package may still be registered for one or more users.');
 end;
 
+// Windows keeps every thumbnail it cached while SageThumbs 2K was installed - each tile we
+// drew, for every file the user browsed - and serves it for as long as the file is unchanged.
+// After an uninstall the desktop and every folder therefore went on showing OUR pictures (a
+// small image enlarged to fill its tile, our colour handling) with nothing left on the machine
+// to explain why; an uninstall survey note of 2026-09-15 ("desktop thumbnails got modified as
+// well") is what that residue looks like from the outside. Setup wipes the cache on install
+// for the mirror-image reason (the --rebuild-thumbnail-cache [Run] entry); this is the same
+// wipe at the moment the shell can no longer reach us.
+//
+// Explorer holds thumbcache_*.db open, so each file is handed to MoveFileEx with
+// MOVEFILE_DELAY_UNTIL_REBOOT: Windows removes it before the shell starts at the next boot and
+// rebuilds the cache from its own handlers. Deliberately NOT an Explorer restart: killing the
+// shell without asking is the one thing setup's own step refuses to do silently, and a
+// reboot-time delete closes nothing, so this runs on silent uninstalls too. Every file goes the
+// same way rather than deleting the unlocked ones now: the index and the size buckets are one
+// structure, and Windows should find either all of it or none of it.
+//
+// {localappdata} is the ELEVATED user's profile, the same caveat [UninstallDelete] accepts for
+// SageThumbs2K.log: where a standard user typed a different admin's credentials this clears
+// that admin's cache (harmless) and the standard user's own lingers until Windows evicts it.
+procedure ScheduleThumbnailCacheReset;
+var
+  Dir: String;
+  F: TFindRec;
+begin
+  Dir := ExpandConstant('{localappdata}\Microsoft\Windows\Explorer');
+  if not FindFirst(Dir + '\thumbcache_*.db', F) then
+    Exit;
+  try
+    repeat
+      if (F.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        MoveFileExW(Dir + '\' + F.Name, 0, MOVEFILE_DELAY_UNTIL_REBOOT);
+    until not FindNext(F);
+  finally
+    FindClose(F);
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
@@ -1395,4 +1440,8 @@ begin
     // with no per-user answer to get wrong, so it does not need RunAsOriginalUser's indirection.
     RemoveRunKeyForAllUsers;
   end;
+  // After the files are gone and [UninstallRun]'s regsvr32 /u has unhooked every format, so a
+  // cache rebuilt at the next boot can only come from Windows' own handlers.
+  if CurUninstallStep = usPostUninstall then
+    ScheduleThumbnailCacheReset;
 end;
