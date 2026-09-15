@@ -628,6 +628,14 @@ unsafe fn special_ctlcolor(
         }
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
+    // The "using it at work?" line on the Licence page: a caption, so the muted grey every
+    // other explanatory line on this dialog uses (`dark_ctlcolor_dim`), never the full
+    // foreground - it is context under the buttons, not a status.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LICENCE_WORK_HINT).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+    }
     // The licence-state line: green when actively licensed, red when revoked, the plain
     // theme colour otherwise (Personal / no key entered yet — a normal state, not a
     // problem one). Same green/red pair the hotkey-service and sync badges above use.

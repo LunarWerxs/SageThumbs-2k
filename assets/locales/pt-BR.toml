@@ -669,7 +669,7 @@ shot_tray_no_autostart = "— não iniciará no login"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Licença"
-blurb_licence = "A licença desta cópia — como foi instalada e sua chave atual."
+blurb_licence = "A sua licença e onde inserir a chave."
 grp_licence = "Licença"
 grp_licence_key = "Chave de licença"
 licence_mode_business = "Instalado para uso empresarial. Reinstale para alterar isso."
@@ -708,6 +708,7 @@ tip_licence_buy = "Abre a loja de licenças no navegador: US$ 49 por instalaçã
 btn_licence_renew = "Renovar atualizações (US$ 29)"
 tip_licence_renew = "Compre mais 12 meses de atualizações para esta instalação: US$ 29, pagos com sua chave atual. A versão que você tem continua funcionando de qualquer forma."
 licence_buy_pointer = "Compre uma licença em st2k.lunarwerx.com/buy (US$ 49 por instalação)."
+licence_work_hint = "Usando o SageThumbs no trabalho? Uma licença comercial custa US$49 por computador."
 licence_reason_seat_revoked = "O titular da licença revogou o assento desta máquina."
 licence_reason_contract_ended = "A licença à qual ele pertencia foi encerrada."
 btn_licence_move = "Mover minha licença…"

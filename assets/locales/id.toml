@@ -669,7 +669,7 @@ shot_tray_no_autostart = "— tidak akan mulai saat masuk"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Lisensi"
-blurb_licence = "Lisensi salinan ini — cara instalasinya dan kuncinya saat ini."
+blurb_licence = "Lisensi Anda dan lokasi kuncinya."
 grp_licence = "Lisensi"
 grp_licence_key = "Kunci lisensi"
 licence_mode_business = "Diinstal untuk penggunaan bisnis. Instal ulang untuk mengubahnya."
@@ -708,6 +708,7 @@ tip_licence_buy = "Membuka toko lisensi di browser: US$49 per instalasi, milik A
 btn_licence_renew = "Perpanjang pembaruan (US$29)"
 tip_licence_renew = "Beli 12 bulan pembaruan tambahan untuk instalasi ini: US$29, dibayar dengan kunci Anda yang sudah ada. Versi yang Anda miliki tetap berfungsi apa pun pilihannya."
 licence_buy_pointer = "Beli lisensi di st2k.lunarwerx.com/buy (US$49 per instalasi)."
+licence_work_hint = "Menggunakan SageThumbs di tempat kerja? Lisensi bisnis US$49 per komputer."
 licence_reason_seat_revoked = "Pemegang lisensi mencabut kursi mesin ini."
 licence_reason_contract_ended = "Lisensi tempatnya bernaung telah berakhir."
 btn_licence_move = "Pindahkan lisensi saya…"

@@ -40,6 +40,17 @@ pub(super) enum Tone {
 thread_local! {
     static STATE_TONE: std::cell::Cell<Tone> = const { std::cell::Cell::new(Tone::Neutral) };
     static REDEEM_TONE: std::cell::Cell<Tone> = const { std::cell::Cell::new(Tone::Neutral) };
+    /// Does "Buy a licence…" draw as the page's accent button? True while this copy holds no
+    /// business licence, where buying is the one action that leads somewhere; on a licensed
+    /// machine it steps back to an outlined button so the page is not selling to a customer.
+    /// Decided here, off the same snapshot as the status lines, and read by `restyle`'s
+    /// push-button draw, which has no business opening the licence store per paint.
+    static BUY_PRIMARY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// See [`BUY_PRIMARY`].
+pub(super) fn buy_is_primary() -> bool {
+    BUY_PRIMARY.with(|c| c.get())
 }
 
 pub(super) fn state_tone() -> Tone {
@@ -76,10 +87,18 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
         || (snap.mode == crate::license::Mode::Business && !snap.key_prefix.is_empty())
     {
         Tone::Good
+    } else if snap.mode == crate::license::Mode::Personal && snap.key_prefix.is_empty() {
+        // "Personal use, no licence needed" is a good state, not a missing one: the copy is
+        // exactly as licensed as it needs to be. Grey read as "something is unset".
+        Tone::Good
     } else {
         Tone::Neutral
     };
     STATE_TONE.with(|c| c.set(tone));
+    BUY_PRIMARY.with(|c| c.set(!snap.entitled));
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_BUY) {
+        let _ = InvalidateRect(Some(h), None, true);
+    }
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS) {
         let w = wide(&licence_state_line(&snap));
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
@@ -114,15 +133,32 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
 /// calls this too, and why this is separate from [`refresh_licence_status`] rather than
 /// inlined in it.
 pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
-    let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_RENEW) else {
-        return;
-    };
-    let show = if renew_button_visible(&crate::license::snapshot()) {
-        SW_SHOW
-    } else {
-        SW_HIDE
-    };
-    let _ = ShowWindow(h, show);
+    let snap = crate::license::snapshot();
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_RENEW) {
+        let show = if renew_button_visible(&snap) {
+            SW_SHOW
+        } else {
+            SW_HIDE
+        };
+        let _ = ShowWindow(h, show);
+    }
+    // The "using it at work?" line shares the Renew row and speaks to the opposite case: a
+    // Personal copy with no business key. A Business copy without a key already has the
+    // reminder strip across every page (`biznag`), and a licensed machine is not a prospect.
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_WORK_HINT) {
+        let show = if work_hint_visible(&snap) {
+            SW_SHOW
+        } else {
+            SW_HIDE
+        };
+        let _ = ShowWindow(h, show);
+    }
+}
+
+/// Whether the "using it at work?" line applies: a Personal copy that holds no business
+/// licence and never had a key. See [`apply_conditional_visibility`].
+pub(super) fn work_hint_visible(snap: &crate::license::LicenceSnapshot) -> bool {
+    snap.mode == crate::license::Mode::Personal && !snap.entitled && snap.key_prefix.is_empty()
 }
 
 /// Set the redeem-result line and its tone; repaints so the tri-state colour re-reads

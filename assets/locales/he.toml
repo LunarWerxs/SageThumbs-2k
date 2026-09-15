@@ -668,7 +668,7 @@ shot_tray_no_autostart = "— לא תופעל בעת הכניסה למערכת"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "רישיון"
-blurb_licence = "הרישיון של העותק הזה — איך הוא הותקן ומהו המפתח הנוכחי שלו."
+blurb_licence = "הרישיון שלך, ואיפה המפתח."
 grp_licence = "רישיון"
 grp_licence_key = "מפתח רישיון"
 licence_mode_business = "מותקן לשימוש עסקי. התקינו מחדש כדי לשנות זאת."
@@ -707,6 +707,7 @@ tip_licence_buy = "פותח את חנות הרישיונות בדפדפן: 49 ד
 btn_licence_renew = "חידוש עדכונים (29 דולר)"
 tip_licence_renew = "קנו 12 חודשים נוספים של עדכונים להתקנה הזו: 29 דולר, בתשלום עם המפתח הקיים שלכם. הגרסה שיש לכם ממשיכה לעבוד בכל מקרה."
 licence_buy_pointer = "אפשר לקנות רישיון בכתובת st2k.lunarwerx.com/buy (49 דולר להתקנה)."
+licence_work_hint = "משתמשים ב-SageThumbs בעבודה? רישיון עסקי הוא US$49 למחשב."
 licence_reason_seat_revoked = "בעל הרישיון ביטל את המקום של המחשב הזה."
 licence_reason_contract_ended = "הרישיון שאליו השתייך הסתיים."
 btn_licence_move = "העברת הרישיון שלי…"

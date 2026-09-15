@@ -669,7 +669,7 @@ shot_tray_no_autostart = "— 로그온 시 시작되지 않습니다"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "라이선스"
-blurb_licence = "이 사본의 라이선스 — 설치 방식과 현재 키."
+blurb_licence = "라이선스와 키 입력 위치."
 grp_licence = "라이선스"
 grp_licence_key = "라이선스 키"
 licence_mode_business = "비즈니스용으로 설치되었습니다. 변경하려면 재설치하세요."
@@ -708,6 +708,7 @@ tip_licence_buy = "브라우저에서 라이선스 상점을 엽니다: 설치 1
 btn_licence_renew = "업데이트 갱신 (US$29)"
 tip_licence_renew = "이 설치에 대해 업데이트를 12개월 더 구매하세요: US$29, 기존 키로 결제됩니다. 어느 쪽이든 사용 중인 버전은 계속 작동합니다."
 licence_buy_pointer = "st2k.lunarwerx.com/buy 에서 라이선스를 구매하세요(설치 1건당 US$49)."
+licence_work_hint = "직장에서 SageThumbs를 사용하시나요? 비즈니스 라이선스는 컴퓨터당 US$49입니다."
 licence_reason_seat_revoked = "라이선스 보유자가 이 컴퓨터의 시트를 취소했습니다."
 licence_reason_contract_ended = "소속되어 있던 라이선스가 종료되었습니다."
 btn_licence_move = "내 라이선스 이동…"

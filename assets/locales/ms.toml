@@ -667,7 +667,7 @@ shot_tray_no_autostart = "— tidak akan bermula semasa log masuk"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Lesen"
-blurb_licence = "Lesen salinan ini — cara ia dipasang dan kunci semasanya."
+blurb_licence = "Lesen anda dan kedudukan kunci."
 grp_licence = "Lesen"
 grp_licence_key = "Kunci lesen"
 licence_mode_business = "Dipasang untuk kegunaan perniagaan. Pasang semula untuk menukarnya."
@@ -706,6 +706,7 @@ tip_licence_buy = "Membuka kedai lesen dalam pelayar: US$49 setiap pemasangan, m
 btn_licence_renew = "Perbaharui kemas kini (US$29)"
 tip_licence_renew = "Beli 12 bulan kemas kini lagi untuk pemasangan ini: US$29, dibayar dengan kunci sedia ada anda. Versi yang anda ada terus berfungsi walau apa pun."
 licence_buy_pointer = "Beli lesen di st2k.lunarwerx.com/buy (US$49 setiap pemasangan)."
+licence_work_hint = "Menggunakan SageThumbs di tempat kerja? Lesen perniagaan ialah US$49 setiap komputer."
 licence_reason_seat_revoked = "Pemegang lesen telah membatalkan tempat mesin ini."
 licence_reason_contract_ended = "Lesen yang dimilikinya telah tamat."
 btn_licence_move = "Pindahkan lesen saya…"

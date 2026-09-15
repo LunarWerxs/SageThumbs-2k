@@ -663,7 +663,7 @@ shot_tray_no_autostart = "— لن يبدأ التشغيل عند تسجيل ا�
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "ترخيص"
-blurb_licence = "ترخيص هذه النسخة — كيفية تثبيتها ومفتاحها الحالي."
+blurb_licence = "ترخيصك، ومكان المفتاح."
 grp_licence = "الترخيص"
 grp_licence_key = "مفتاح الترخيص"
 licence_mode_business = "مثبَّت للاستخدام التجاري. أعد التثبيت لتغيير ذلك."
@@ -702,6 +702,7 @@ tip_licence_buy = "يفتح متجر التراخيص في المتصفح: 49 د
 btn_licence_renew = "تجديد التحديثات (29 دولارًا أمريكيًا)"
 tip_licence_renew = "اشترِ 12 شهرًا إضافيًا من التحديثات لهذا التثبيت: 29 دولارًا أمريكيًا، تُدفع بمفتاحك الحالي. النسخة التي لديك تستمر في العمل في كل الأحوال."
 licence_buy_pointer = "اشترِ ترخيصًا من st2k.lunarwerx.com/buy (49 دولارًا أمريكيًا لكل تثبيت)."
+licence_work_hint = "هل تستخدم SageThumbs في العمل؟ الترخيص التجاري هو US$49 لكل حاسوب."
 licence_reason_seat_revoked = "ألغى صاحب الترخيص مقعد هذا الجهاز."
 licence_reason_contract_ended = "انتهى الترخيص الذي كان ينتمي إليه."
 btn_licence_move = "نقل ترخيصي…"

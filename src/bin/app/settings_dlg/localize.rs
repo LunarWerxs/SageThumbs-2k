@@ -101,6 +101,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LICENCE_RENEW, "btn_licence_renew"),
         (ID_LICENCE_BUY, "btn_licence_buy"),
         (ID_LICENCE_MOVE, "btn_licence_move"),
+        (ID_LICENCE_WORK_HINT, "licence_work_hint"),
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),

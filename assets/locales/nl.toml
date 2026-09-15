@@ -669,7 +669,7 @@ shot_tray_no_autostart = "— start niet bij aanmelding"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Licentie"
-blurb_licence = "De licentie van deze kopie — hoe die is geïnstalleerd en de huidige sleutel."
+blurb_licence = "Je licentie en je sleutel."
 grp_licence = "Licentie"
 grp_licence_key = "Licentiesleutel"
 licence_mode_business = "Geïnstalleerd voor zakelijk gebruik. Installeer opnieuw om dit te wijzigen."
@@ -708,6 +708,7 @@ tip_licence_buy = "Opent de licentiewinkel in uw browser: 49 USD per installatie
 btn_licence_renew = "Updates verlengen (29 USD)"
 tip_licence_renew = "Koop nog 12 maanden updates voor deze installatie: 29 USD, betaald met uw bestaande sleutel. De versie die u heeft, blijft hoe dan ook werken."
 licence_buy_pointer = "Koop een licentie op st2k.lunarwerx.com/buy (49 USD per installatie)."
+licence_work_hint = "Gebruik je SageThumbs op je werk? Een zakelijke licentie kost US$49 per computer."
 licence_reason_seat_revoked = "De licentiehouder heeft de plaats van deze computer ingetrokken."
 licence_reason_contract_ended = "De licentie waartoe deze behoorde, is beëindigd."
 btn_licence_move = "Mijn licentie verplaatsen…"

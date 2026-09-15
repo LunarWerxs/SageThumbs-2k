@@ -659,7 +659,7 @@ shot_tray_no_autostart = "— ei käynnisty kirjautumisen yhteydessä"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Lisenssi"
-blurb_licence = "Tämän kopion lisenssi — miten se asennettiin ja sen nykyinen avain."
+blurb_licence = "Lisenssisi ja avaimen paikka."
 grp_licence = "Lisenssi"
 grp_licence_key = "Lisenssiavain"
 licence_mode_business = "Asennettu yrityskäyttöön. Vaihda tämä asentamalla uudelleen."
@@ -698,6 +698,7 @@ tip_licence_buy = "Avaa lisenssikaupan selaimessa: 49 USD asennusta kohden, omas
 btn_licence_renew = "Uusi päivitykset (29 USD)"
 tip_licence_renew = "Osta tälle asennukselle vielä 12 kuukautta päivityksiä: 29 USD, maksettuna nykyisellä avaimellasi. Versio, joka sinulla on, toimii joka tapauksessa edelleen."
 licence_buy_pointer = "Osta lisenssi osoitteesta st2k.lunarwerx.com/buy (49 USD asennusta kohden)."
+licence_work_hint = "Käytätkö SageThumbsia työssä? Yrityslisenssi on US$49 tietokonetta kohden."
 licence_reason_seat_revoked = "Lisenssin haltija peruutti tämän koneen paikan."
 licence_reason_contract_ended = "Lisenssi, johon se kuului, on päättynyt."
 btn_licence_move = "Siirrä lisenssini…"

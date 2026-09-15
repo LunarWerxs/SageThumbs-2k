@@ -408,7 +408,7 @@ blurb_quickaction = "Run a tool from a global keyboard shortcut."
 blurb_advanced = "Diagnostics, updates, and the hotkey service."
 blurb_quickpreview = "Press Space in Explorer to preview the selected file."
 blurb_databackup = "Move, back up, and sync settings across devices."
-blurb_licence = "This copy's licence — how it was installed and its current key."
+blurb_licence = "Your licence, and where the key goes."
 # Group sub-headers
 grp_lang_files = "Language & files"
 grp_diagnostics = "Diagnostics"
@@ -540,6 +540,7 @@ tip_licence_move = "Opens your licence portal in the browser. Paste your key the
 btn_licence_renew = "Renew updates (US$29)"
 tip_licence_renew = "Buy another 12 months of updates for this installation: US$29, paid with your existing key. The version you have keeps working either way."
 licence_buy_pointer = "Buy a licence at st2k.lunarwerx.com/buy (US$49 per installation)."
+licence_work_hint = "Using SageThumbs at work? A business licence is US$49 per computer."
 licence_reason_seat_revoked = "The licence holder revoked this machine's seat."
 licence_reason_contract_ended = "The licence it belonged to has ended."
 # The business evaluation (7 days), its 3-day notice, and the lock (license.rs / licence_state.rs)

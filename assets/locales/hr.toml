@@ -668,7 +668,7 @@ shot_tray_no_autostart = "— neće se pokrenuti pri prijavi"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Licenca"
-blurb_licence = "Licenca ove kopije — kako je instalirana i njezin trenutačni ključ."
+blurb_licence = "Vaša licenca i gdje ide ključ."
 grp_licence = "Licenca"
 grp_licence_key = "Licencni ključ"
 licence_mode_business = "Instalirano za poslovnu upotrebu. Ponovno instalirajte da to promijenite."
@@ -707,6 +707,7 @@ tip_licence_buy = "Otvara trgovinu licencama u pregledniku: 49 USD po instalacij
 btn_licence_renew = "Obnovi ažuriranja (29 USD)"
 tip_licence_renew = "Kupite dodatnih 12 mjeseci ažuriranja za ovu instalaciju: 29 USD, plaćeno vašim postojećim ključem. Verzija koju imate radi dalje u svakom slučaju."
 licence_buy_pointer = "Licencu kupite na st2k.lunarwerx.com/buy (49 USD po instalaciji)."
+licence_work_hint = "Koristite SageThumbs na poslu? Poslovna licencija iznosi US$49 po računalu."
 licence_reason_seat_revoked = "Vlasnik licence opozvao je mjesto ovog računala."
 licence_reason_contract_ended = "Licenca kojoj je pripadalo je prekinuta."
 btn_licence_move = "Premjesti moju licencu…"

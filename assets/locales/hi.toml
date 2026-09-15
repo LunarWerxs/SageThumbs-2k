@@ -668,7 +668,7 @@ shot_tray_no_autostart = "— लॉगऑन पर शुरू नहीं �
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "लाइसेंस"
-blurb_licence = "इस कॉपी का लाइसेंस — यह कैसे इंस्टॉल हुई और इसकी मौजूदा कुंजी।"
+blurb_licence = "आपका लाइसेंस और उसकी कुंजी।"
 grp_licence = "लाइसेंस"
 grp_licence_key = "लाइसेंस कुंजी"
 licence_mode_business = "व्यावसायिक उपयोग के लिए इंस्टॉल किया गया है। बदलने के लिए फिर से इंस्टॉल करें।"
@@ -707,6 +707,7 @@ tip_licence_buy = "ब्राउज़र में लाइसेंस स�
 btn_licence_renew = "अपडेट नवीनीकृत करें (29 US$)"
 tip_licence_renew = "इस इंस्टॉलेशन के लिए अपडेट के अतिरिक्त 12 महीने खरीदें: 29 US$, आपकी मौजूदा कुंजी से भुगतान। आपके पास जो संस्करण है वह हर हाल में काम करता रहेगा।"
 licence_buy_pointer = "st2k.lunarwerx.com/buy पर लाइसेंस खरीदें (प्रति इंस्टॉलेशन 49 US$)।"
+licence_work_hint = "काम पर SageThumbs का उपयोग कर रहे हैं? व्यावसायिक लाइसेंस US$49 प्रति कंप्यूटर है।"
 licence_reason_seat_revoked = "लाइसेंस धारक ने इस मशीन की सीट रद्द कर दी।"
 licence_reason_contract_ended = "जिस लाइसेंस से यह जुड़ी थी, वह समाप्त हो गया है।"
 btn_licence_move = "मेरा लाइसेंस स्थानांतरित करें…"

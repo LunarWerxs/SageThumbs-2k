@@ -215,6 +215,13 @@ pub(super) const ID_LICENCE_RENEW: i32 = 1265;
 /// any licensed-or-was-licensed machine may want to hand its seat to a new computer. See
 /// `PORTAL_CLAIM_URL`'s doc for the gap this closes.
 pub(super) const ID_LICENCE_MOVE: i32 = 1266;
+/// "Using SageThumbs at work? A business licence is US$49 per computer." - the muted
+/// full-width line under the action row, shown only on a Personal copy without a business
+/// key, where it is the answer to "why would I press Buy" (Michael, 2026-09-15: the page read
+/// as "boring, bland"). It and the Renew button below it are never wanted at once. Built with
+/// its translated text like every other label, so the relabel table carries it;
+/// `licence_ui::apply_conditional_visibility` decides whether it shows.
+pub(super) const ID_LICENCE_WORK_HINT: i32 = 1268;
 pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
 /// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
 pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;

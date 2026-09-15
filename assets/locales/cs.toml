@@ -663,7 +663,7 @@ shot_tray_no_autostart = "— nespustí se při přihlášení"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Licence"
-blurb_licence = "Licence této kopie — jak byla nainstalována a její aktuální klíč."
+blurb_licence = "Vaše licence a kam patří klíč."
 grp_licence = "Licence"
 grp_licence_key = "Licenční klíč"
 licence_mode_business = "Nainstalováno pro firemní použití. Změníte to přeinstalováním."
@@ -702,6 +702,7 @@ tip_licence_buy = "Otevře obchod s licencemi v prohlížeči: 49 USD za instala
 btn_licence_renew = "Obnovit aktualizace (29 USD)"
 tip_licence_renew = "Kupte si dalších 12 měsíců aktualizací pro tuto instalaci: 29 USD, zaplaceno vaším stávajícím klíčem. Verze, kterou máte, funguje dál v obou případech."
 licence_buy_pointer = "Licenci koupíte na st2k.lunarwerx.com/buy (49 USD za instalaci)."
+licence_work_hint = "Používáte SageThumbs v práci? Firemní licence stojí US$49 za počítač."
 licence_reason_seat_revoked = "Držitel licence odebral tomuto počítači jeho místo."
 licence_reason_contract_ended = "Licence, ke které patřilo, byla ukončena."
 btn_licence_move = "Přesunout mou licenci…"

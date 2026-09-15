@@ -447,6 +447,9 @@ unsafe fn ensure_index(hwnd: HWND) {
                     Switch(id) | Btn(id, _) | Head(id) => (id, id),
                     Pair(lbl, field, _, _) => (lbl, field),
                     BtnStatus(bid, _, _) | StatusBtn(_, bid, _) => (bid, bid),
+                    // The licence key row: found by its Redeem button's label, focus lands
+                    // in the edit where the key is typed.
+                    WideBtn(eid, bid, _) => (bid, eid),
                     // Btn3 rows are Select all/Clear all/Defaults — reachable, useful.
                     Btn3(a, b, c) => {
                         for id in [a, b, c] {

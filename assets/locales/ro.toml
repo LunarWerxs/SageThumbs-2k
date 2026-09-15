@@ -664,7 +664,7 @@ shot_tray_no_autostart = "— nu va porni la conectare"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Licență"
-blurb_licence = "Licența acestei copii — cum a fost instalată și cheia ei actuală."
+blurb_licence = "Licența ta și cheia."
 grp_licence = "Licență"
 grp_licence_key = "Cheie de licență"
 licence_mode_business = "Instalat pentru uz business. Reinstalează pentru a schimba asta."
@@ -703,6 +703,7 @@ tip_licence_buy = "Deschide magazinul de licențe în browser: 49 USD per instal
 btn_licence_renew = "Reînnoiește actualizările (29 USD)"
 tip_licence_renew = "Cumpără încă 12 luni de actualizări pentru această instalare: 29 USD, plătite cu cheia ta existentă. Versiunea pe care o ai continuă să funcționeze oricum."
 licence_buy_pointer = "Cumpără o licență de la st2k.lunarwerx.com/buy (49 USD per instalare)."
+licence_work_hint = "Folosești SageThumbs la serviciu? O licență comercială costă US$49 per computer."
 licence_reason_seat_revoked = "Titularul licenței a revocat locul acestui computer."
 licence_reason_contract_ended = "Licența de care aparținea s-a încheiat."
 btn_licence_move = "Mută licența mea…"

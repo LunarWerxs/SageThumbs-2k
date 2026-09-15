@@ -319,7 +319,12 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     let pressed = (cd.uItemState.0 & CDIS_SELECTED.0) != 0;
     let focus = (cd.uItemState.0 & CDIS_FOCUS.0) != 0;
     let disabled = (cd.uItemState.0 & windows::Win32::UI::Controls::CDIS_DISABLED.0) != 0;
-    let accent = id == ID_SELECT_ALL || id == IDOK || id == ID_NUDGE_ACTION;
+    // Buy a licence… is the accent button only while the copy has no licence to sell against
+    // (`licence_ui::buy_is_primary`, decided with the page's status lines, never per paint).
+    let accent = id == ID_SELECT_ALL
+        || id == IDOK
+        || id == ID_NUDGE_ACTION
+        || (id == ID_LICENCE_BUY && licence_ui::buy_is_primary());
 
     fill(hdc, &rc, DARK_BG());
 

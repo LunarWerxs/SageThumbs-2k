@@ -666,7 +666,7 @@ shot_tray_no_autostart = "— sẽ không khởi động khi đăng nhập"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Giấy phép"
-blurb_licence = "Giấy phép của bản sao này — cách nó được cài đặt và khoá hiện tại."
+blurb_licence = "Giấy phép của bạn và nơi nhập key."
 grp_licence = "Giấy phép"
 grp_licence_key = "Khoá giấy phép"
 licence_mode_business = "Đã cài đặt để dùng cho doanh nghiệp. Cài lại để thay đổi điều này."
@@ -705,6 +705,7 @@ tip_licence_buy = "Mở cửa hàng giấy phép trong trình duyệt: 49 USD ch
 btn_licence_renew = "Gia hạn cập nhật (29 USD)"
 tip_licence_renew = "Mua thêm 12 tháng cập nhật cho lần cài đặt này: 29 USD, thanh toán bằng khóa hiện có của bạn. Phiên bản bạn đang dùng vẫn hoạt động bình thường dù thế nào."
 licence_buy_pointer = "Mua giấy phép tại st2k.lunarwerx.com/buy (49 USD cho mỗi lần cài đặt)."
+licence_work_hint = "Dùng SageThumbs tại nơi làm việc? Giấy phép doanh nghiệp là US$49 mỗi máy tính."
 licence_reason_seat_revoked = "Chủ sở hữu giấy phép đã thu hồi chỗ của máy này."
 licence_reason_contract_ended = "Giấy phép mà chỗ này thuộc về đã kết thúc."
 btn_licence_move = "Chuyển giấy phép của tôi…"

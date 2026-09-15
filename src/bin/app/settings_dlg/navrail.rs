@@ -93,6 +93,7 @@ pub(super) enum Row {
     Status(i32),              // dynamic status line
     Btn3(i32, i32, i32),      // three equal buttons on one row
     Wide(i32),                // a full-width control (search edit)
+    WideBtn(i32, i32, i32),   // a wide edit (left, fills) + right-aligned button, one row: edit_id, btn_id, btn_w
     ListFill(i32),            // a list that fills down to the footer
 }
 
@@ -342,22 +343,28 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
         ],
         _ => &[
             // Licence — the business-seat key: what this copy currently believes about
-            // itself (mode + licence state), and the redeem/check-now actions. See
-            // `settings_dlg/licence_ui.rs`.
+            // itself (mode + licence state), the key and its Redeem button on one row, the
+            // three doors (check, move, buy) on one row, and a last row shared by the two
+            // lines that are never wanted at once. See `settings_dlg/licence_ui.rs`, which
+            // decides the tones and what shows. Re-shaped 2026-09-15 from a stack of four
+            // left-aligned buttons under a bare edit (Michael: "boring, bland").
             Head(ID_LBL_LICENCE),
             Status(ID_LICENCE_MODE_STATUS),
             Status(ID_LICENCE_STATE_STATUS),
             Status(ID_LICENCE_UPDATES_STATUS),
             Head(ID_LBL_LICENCE_KEY),
-            Wide(ID_LICENCE_KEY_EDIT),
-            BtnStatus(ID_LICENCE_REDEEM_BTN, 160, ID_LICENCE_REDEEM_STATUS),
-            Btn(ID_LICENCE_CHECK_NOW, 184),
-            Btn(ID_LICENCE_BUY, 184),
-            // The self-serve rebind door: always visible (see ID_LICENCE_MOVE's doc).
-            Btn(ID_LICENCE_MOVE, 184),
-            // LAST on purpose. It is the one row on this page that hides itself (only a
-            // machine near or past its updates window sees it), and a hidden row anywhere
-            // but the end leaves a 32px hole in the middle of the page.
+            WideBtn(ID_LICENCE_KEY_EDIT, ID_LICENCE_REDEEM_BTN, 160),
+            Status(ID_LICENCE_REDEEM_STATUS),
+            // Check, Move (the self-serve rebind door, always visible - see ID_LICENCE_MOVE's
+            // doc), Buy: Buy draws as the accent button while this copy has no licence.
+            Btn3(ID_LICENCE_CHECK_NOW, ID_LICENCE_MOVE, ID_LICENCE_BUY),
+            // The last two rows are mutually exclusive: the "using it at work?" line shows on a
+            // Personal copy without a key, the Renew button on a licensed machine near or past
+            // its updates window; never both. The hint needs the full pane width (it ran to
+            // "US$49 per" when it shared a row with the button), so it is its own row, and the
+            // one hole this can leave - 22px above Renew on a licensed machine, where the hint
+            // is hidden - is breathing room, not a gap in the middle of the page.
+            Status(ID_LICENCE_WORK_HINT),
             Btn(ID_LICENCE_RENEW, 184),
         ],
     }
@@ -377,6 +384,9 @@ fn fixed_row_next_y(row: Row, y: i32, first: bool) -> Option<i32> {
         // 8 above the edit + the 5/3 frame around an 18px box = 29, then the same ~11px
         // gap under it the 24px box used to leave. (Was 44, for the taller box.)
         Row::Wide(_) => Some(y + 40),
+        // Same rhythm as `Wide`: the edit sits where a wide edit sits, the button beside it
+        // is centred on the same line, and the row costs what a wide row costs.
+        Row::WideBtn(..) => Some(y + 40),
         Row::ListFill(_) => None,
     }
 }
@@ -1232,6 +1242,28 @@ fn place_wide_row(
     placed
 }
 
+/// `Row::WideBtn`: a wide edit that fills the row up to a right-aligned button (the licence
+/// key and its Redeem button). The edit keeps `Row::Wide`'s 18px box at `y + 8`, so its 5/3
+/// frame makes a 26px box whose centre is `y + 17`; the 26px button is placed at `y + 4` so
+/// its centre lands on the same line, and the 12px gap between them is the one every other
+/// side-by-side row on this dialog uses.
+fn place_wide_btn_row(
+    place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
+    eid: i32,
+    bid: i32,
+    bw: i32,
+    y: i32,
+) -> Vec<HWND> {
+    let mut placed = Vec::new();
+    if let Some(c) = place(eid, PANE_X, y + 8, PANE_W - bw - 12, 18) {
+        placed.push(c);
+    }
+    if let Some(c) = place(bid, PANE_X + PANE_W - bw, y + 4, bw, 26) {
+        placed.push(c);
+    }
+    placed
+}
+
 /// `Row::ListFill`: grows to fill down to `content_bottom`, returning the `y` it advances
 /// past itself to (the fixed-row table in `fixed_row_next_y` cannot know that height ahead
 /// of placing it, so it deliberately leaves this row's case out).
@@ -1277,6 +1309,7 @@ unsafe fn place_row(
         Row::Status(id) => (place_status_row(place, id, y), y),
         Row::Btn3(a, b, c3) => (place_btn3_row(place, a, b, c3, y), y),
         Row::Wide(id) => (place_wide_row(place, id, y), y),
+        Row::WideBtn(eid, bid, bw) => (place_wide_btn_row(place, eid, bid, bw, y), y),
         Row::ListFill(id) => place_list_fill_row(hwnd, place, id, y, content_bottom),
     }
 }

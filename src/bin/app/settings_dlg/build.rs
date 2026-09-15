@@ -1084,6 +1084,21 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LICENCE_MOVE,
         hinst,
     );
+    // The "using it at work?" line under the action row - see `ID_LICENCE_WORK_HINT`. Built
+    // with its text like every label (so a language switch relabels it through the table);
+    // `licence_ui::apply_conditional_visibility` shows it only where it applies.
+    ctl(
+        hwnd,
+        STATIC,
+        t("licence_work_hint"),
+        WINDOW_STYLE(0),
+        0,
+        0,
+        300,
+        18,
+        ID_LICENCE_WORK_HINT,
+        hinst,
+    );
 
     set_window_title(hwnd);
     load_values(hwnd);

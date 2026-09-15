@@ -668,7 +668,7 @@ shot_tray_no_autostart = "— oturum açılışında başlamaz"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Lisans"
-blurb_licence = "Bu kopyanın lisansı — nasıl kurulduğu ve mevcut anahtarı."
+blurb_licence = "Lisansınız ve anahtarınız nerede."
 grp_licence = "Lisans"
 grp_licence_key = "Lisans anahtarı"
 licence_mode_business = "İşletme kullanımı için kurulmuş. Değiştirmek için yeniden kurun."
@@ -707,6 +707,7 @@ tip_licence_buy = "Lisans mağazasını tarayıcıda açar: kurulum başına 49 
 btn_licence_renew = "Güncellemeleri yenile (29 USD)"
 tip_licence_renew = "Bu kurulum için 12 ay daha güncelleme satın alın: mevcut anahtarınızla ödenen 29 USD. Elinizdeki sürüm her durumda çalışmaya devam eder."
 licence_buy_pointer = "Lisansı st2k.lunarwerx.com/buy adresinden satın alın (kurulum başına 49 USD)."
+licence_work_hint = "SageThumbs'ı iş yerinde mi kullanıyorsunuz? İşletme lisansı bilgisayar başına US$49."
 licence_reason_seat_revoked = "Lisans sahibi bu makinenin koltuğunu iptal etti."
 licence_reason_contract_ended = "Ait olduğu lisans sona erdi."
 btn_licence_move = "Lisansımı taşı…"

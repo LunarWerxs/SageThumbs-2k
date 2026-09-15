@@ -669,7 +669,7 @@ shot_tray_no_autostart = "— starter ikke ved pålogging"
 
 # --- Added 2026-09-02: Licence keys (26 keys) ---
 nav_licence = "Lisens"
-blurb_licence = "Lisensen til denne kopien — hvordan den ble installert, og gjeldende nøkkel."
+blurb_licence = "Lisensen din, og hvor nøkkelen hører."
 grp_licence = "Lisens"
 grp_licence_key = "Lisensnøkkel"
 licence_mode_business = "Installert for forretningsbruk. Installer på nytt for å endre dette."
@@ -708,6 +708,7 @@ tip_licence_buy = "Åpner lisensbutikken i nettleseren: 49 USD per installasjon,
 btn_licence_renew = "Forny oppdateringer (29 USD)"
 tip_licence_renew = "Kjøp 12 nye måneder med oppdateringer for denne installasjonen: 29 USD, betalt med nøkkelen du allerede har. Versjonen du har fortsetter å fungere uansett."
 licence_buy_pointer = "Kjøp en lisens på st2k.lunarwerx.com/buy (49 USD per installasjon)."
+licence_work_hint = "Bruker du SageThumbs på jobben? En bedriftslisens koster US$49 per datamaskin."
 licence_reason_seat_revoked = "Lisensinnehaveren har trukket tilbake denne maskinens plass."
 licence_reason_contract_ended = "Lisensen den tilhørte, er avsluttet."
 btn_licence_move = "Flytt lisensen min…"

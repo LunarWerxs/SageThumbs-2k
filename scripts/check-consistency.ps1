@@ -345,8 +345,17 @@ if ($fitSkipped) {
   $RAIL_MAX  = 126
   $SYNC_BTN_MAX    = 140
   $SYNC_STATUS_MAX = 348
+  # All ELEVEN pages. The Licence page was missing from this list from the day it was added,
+  # which is how its blurb shipped ellipsised in English ("...and its curr…") with the gate
+  # green (found 2026-09-15 on a capture; fixed by shortening the blurb and listing the page).
   $navKeys = @('nav_general','nav_appearance','nav_filetypes','nav_ebook','nav_menu',
-               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup')
+               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup',
+               'nav_licence')
+  # The Licence page's three doors share one `Row::Btn3`: (PANE_W 528 - 2 * 8) / 3 = 170 per
+  # button. The owner-drawn button centres its label and clips only past the rect, so the
+  # budget is the rect less 4px of breathing room a side; Russian's "Move my licence…" sits at
+  # 156, which is why this is not the 16px of padding the sync button assumes.
+  $BTN3_MAX = 162
   $blurbKeys = $navKeys | ForEach-Object { $_ -replace '^nav_', 'blurb_' }
   $overflow = 0
   foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
@@ -386,6 +395,24 @@ if ($fitSkipped) {
       if ($w -gt $SYNC_STATUS_MAX) {
         $overflow++
         $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${SYNC_STATUS_MAX}px sync-status budget - it will run under the button")
+      }
+    }
+    foreach ($k in @('btn_licence_check_now','btn_licence_move','btn_licence_buy')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $BTN3_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${BTN3_MAX}px three-button-row budget on the Licence page - the label will be cut off")
+      }
+    }
+    # The Licence page's "using it at work?" line is a full-width `Row::Status` (PANE_W 528);
+    # a single-line STATIC clips silently past that, which is how its first cut shipped a
+    # capture reading "US$49 per".
+    if ($loc.Map.ContainsKey('licence_work_hint')) {
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map['licence_work_hint'], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt 520) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) licence_work_hint is ${w}px, over the 520px full-row budget on the Licence page - it will be cut off")
       }
     }
   }
