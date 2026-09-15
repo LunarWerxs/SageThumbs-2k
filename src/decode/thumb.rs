@@ -1,8 +1,9 @@
 //! Turning a decoded image into the tile the caller asked for.
 //!
-//! Fit-to-box, EXIF orientation, the pixel-art upscale rule, the fully-transparent
-//! watchdog, the archive contact sheet, and the embedded-EXIF-thumbnail shortcut that
-//! lets a small request skip a full multi-megapixel decode.
+//! Fit-to-box, EXIF orientation, the pixel-art upscale rule and the own-picture cap that
+//! keeps it to stand-ins, the fully-transparent watchdog, the archive contact sheet, and the
+//! embedded-EXIF-thumbnail shortcut that lets a small request skip a full multi-megapixel
+//! decode.
 
 use super::*;
 
@@ -24,7 +25,22 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
         decode_preview_thumbnail(bytes, cx)?
     };
 
-    let mut decoded = fit_to_box(img, cx);
+    // A tile is never larger than the picture it shows. `fit_to_box` fills the box from an
+    // undersized source because that source normally STANDS IN for something larger (a
+    // Photoshop file's baked preview, a book's cover, a decode scaled toward the request;
+    // issue #25), and a stand-in drawn at its own size misstates the file. The file's own
+    // picture is no stand-in: Windows draws a 32 px PNG at 32 px in the middle of the cell,
+    // and so does this, since a desktop of small pictures blown up to their tiles is what an
+    // uninstall note of 2026-09-15 called "modified". Icons stay scalable, see
+    // [`is_the_files_own_picture`]. The probe only runs when the decode is smaller than the
+    // request, so a picture that has to shrink pays nothing.
+    let long = img.width().max(img.height());
+    let box_edge = if long < cx && is_the_files_own_picture(bytes, &img) {
+        long
+    } else {
+        cx
+    };
+    let mut decoded = fit_to_box(img, box_edge);
     // Watchdog: a fully-transparent thumbnail is invisible. When the RGB planes are
     // ALSO empty it's a decode that "succeeded" into nothing — fail it so Explorer
     // shows the file's icon instead of caching a blank tile the user can't clear
@@ -176,9 +192,34 @@ pub(super) fn is_fully_transparent(rgba: &[u8]) -> bool {
     !rgba.is_empty() && rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0)
 }
 
+/// Are `img`'s pixels the file's own picture, rather than a stand-in for a larger one?
+///
+/// Decided by size: the decode is the picture when its edges are exactly what the file's
+/// header declares (`declared_dimensions`, the same header-only probe `decode_full_for_output`
+/// uses to refuse a preview standing in for the picture), compared as long and short edge so
+/// an EXIF rotation applied on the way does not read as a mismatch. Everything a tier hands
+/// back INSTEAD of the picture (a baked preview, a container's cover, a WIC decode scaled toward
+/// the request, an EXIF thumbnail) has some other size, and a header no reader can parse
+/// answers `None`, so an unknown format keeps filling the tile as it always did rather than
+/// being guessed at.
+///
+/// An icon file is never "the picture": an `.ico` carries several sizes and is drawn at
+/// whatever size the view asks for, which is how Windows draws one too, so it keeps the
+/// pixel-art enlargement.
+fn is_the_files_own_picture(bytes: &[u8], img: &DynamicImage) -> bool {
+    if image::guess_format(bytes).is_ok_and(|f| f == image::ImageFormat::Ico) {
+        return false;
+    }
+    let edges = |w: u32, h: u32| (w.max(h), w.min(h));
+    super::declared_dimensions(bytes).map(|(w, h)| edges(w, h))
+        == Some(edges(img.width(), img.height()))
+}
+
 /// Sources at or below this size (longest edge) are treated as pixel-art / icons and
 /// integer-upscaled with Nearest so they stay crisp. Kept small on purpose: nearest-
-/// upscaling a *small photo* would look blocky, so anything bigger is left native.
+/// upscaling a *small photo* would look blocky, so anything bigger is left native. Reached
+/// only by a stand-in or an icon: a file's own small picture is capped at its size before
+/// [`fit_to_box`] is asked (see [`decode_thumbnail_opts`]).
 pub(super) const NEAREST_UPSCALE_MAX: u32 = 64;
 
 /// Most a mid-size source is allowed to be enlarged by to fill the requested box.
@@ -442,6 +483,16 @@ fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f
 /// It is also the same failure the file-size cap was raised to avoid (see
 /// `settings::DEFAULT_MAX_FILE_MB`): an undersized bitmap is one the shell can neither draw
 /// crisply nor durably cache, so it re-extracts on every refresh.
+///
+/// # Why the file's own picture is still left native (2026-09-15)
+///
+/// The #25 reasoning is about STAND-INS: a baked preview, a cover, a scaled decode, all of
+/// which are smaller than the thing they represent. A picture that simply IS small is not
+/// misstated by a small tile; Windows draws it at its real size in the middle of the cell,
+/// and enlarging it turned a desktop of small PNGs into blocky or soft tiles (an uninstall
+/// note called them "modified"). [`decode_thumbnail_opts`] tells the two apart by size
+/// ([`is_the_files_own_picture`]) and caps `cx` at the picture's own edge for the file's own
+/// picture, so this function's enlargement only ever runs for a stand-in or an icon.
 /// Shrink to fit inside `nw` x `nh`, preserving aspect ratio, and NEVER enlarge.
 ///
 /// **This is the one reduction in the product.** It used to be two: the shell extension came

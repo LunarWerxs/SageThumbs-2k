@@ -1,6 +1,6 @@
 //! Policy ceilings and how a picture is fitted to the box.
-//! The ImageMagick limits have to agree with policy.xml, and the scaler has
-//! to enlarge small art without going nearest-neighbour on it.
+//! The ImageMagick limits have to agree with policy.xml, the scaler has to leave a file's
+//! own small picture at its size, and it has to keep enlarging a stand-in for a larger one.
 
 use super::*;
 
@@ -69,14 +69,32 @@ fn fits_box_and_preserves_aspect() {
 }
 
 #[test]
-fn midsize_images_are_enlarged_smoothly_not_nearest() {
-    // 100×50 in a 256 box is above the pixel-art threshold (>64px), so it is enlarged to fill
-    // the box (issue #25 — Explorer centres an undersized tile rather than scaling it up), and
-    // with Lanczos3 rather than the Nearest reserved for sprites: a small PHOTO nearest-scaled
-    // is visibly blocky, which is the reason the two paths are separate.
-    let d = decode_thumbnail_opts(&png_bytes(100, 50, [0, 255, 0, 255]), 256, false).unwrap();
-    assert_eq!((d.width, d.height), (256, 128));
-    assert_eq!(d.rgba.len(), (d.width * d.height * 4) as usize);
+fn a_files_own_picture_is_never_drawn_larger_than_it_is() {
+    // The file's pixels ARE the picture, so a tile never exceeds them: Windows draws a 32 px
+    // PNG at 32 px in the middle of the cell, and a desktop of small pictures blown up to their
+    // tiles is what an uninstall note of 2026-09-15 called "modified". This covers the sprite
+    // size that used to nearest-upscale, the mid size that used to fill the box, the aspect
+    // that used to survive the enlargement, and the far-too-small case that always stayed
+    // native; all of them now come back exactly as they are.
+    for (w, h, cx) in [
+        (16u32, 16u32, 256u32),
+        (100, 50, 256),
+        (200, 200, 256),
+        (200, 100, 256),
+        (100, 100, 1024),
+    ] {
+        let d = decode_thumbnail_opts(&png_bytes(w, h, [10, 20, 30, 255]), cx, false).unwrap();
+        assert_eq!(
+            (d.width, d.height),
+            (w, h),
+            "{w}x{h} into a {cx} box must stay {w}x{h}: the file's own picture is never enlarged"
+        );
+        assert_eq!(d.rgba.len(), (w * h * 4) as usize);
+    }
+    // A large image still shrinks to fit.
+    let big = png_bytes(800, 600, [10, 20, 30, 255]);
+    let d = decode_thumbnail_opts(&big, 256, false).unwrap();
+    assert!(d.width <= 256 && d.height <= 256 && d.width.max(d.height) == 256);
 }
 
 #[test]
@@ -85,50 +103,35 @@ fn garbage_bytes_fail_cleanly() {
 }
 
 #[test]
-fn tiny_sprite_nearest_upscales_and_midsize_fills_the_box() {
-    // 16×16 sprite in a 256 box → integer Nearest upscale to 16× = 256 (crisp).
-    let sprite = png_bytes(16, 16, [10, 20, 30, 255]);
-    let d = decode_thumbnail_opts(&sprite, 256, false).unwrap();
+fn a_stand_in_for_a_larger_picture_still_fills_the_tile() {
+    // Issue #25 stays fixed: Photoshop bakes a ~160 px preview into a document of any size,
+    // and a preview drawn at its own size misstates the file and draws as a smaller tile than
+    // its neighbours. The fixture's header declares a 100x100 canvas and its baked preview is
+    // 160 px, so the decode is visibly NOT the picture, and it is enlarged to the box as before
+    // (Lanczos3, aspect kept; the fixture is square).
+    let (psd, _) = crate::container::psd_testutil::synthetic_psd(3, true, 0);
+    let d = decode_thumbnail_opts(&psd, 256, false).unwrap();
     assert_eq!(
         (d.width, d.height),
         (256, 256),
-        "16px sprite should nearest-upscale to 256"
+        "a baked preview standing in for the document must still fill the tile"
     );
-    // 200×200 in a 256 box now FILLS the box (issue #25). This assertion used to read "must
-    // stay native", on the belief that Explorer would scale the tile up for us. It does not —
-    // it centres what we hand it — so a source under the requested size drew as a visibly
-    // smaller tile than its neighbours. Photoshop files showed it worst, because the size of
-    // the preview Photoshop bakes into a PSD varies by writing app and version, so two PSDs
-    // side by side got different tile sizes for no reason the user could see.
-    let mid = png_bytes(200, 200, [10, 20, 30, 255]);
-    let d2 = decode_thumbnail_opts(&mid, 256, false).unwrap();
+    // An icon is drawn at whatever size the view wants, as Windows draws one, so a 32 px .ico
+    // keeps the crisp integer enlargement instead of sitting as a dot in a 256 px cell.
+    let mut ico = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        32,
+        32,
+        image::Rgba([10, 20, 30, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut ico), image::ImageFormat::Ico)
+    .unwrap();
+    let d = decode_thumbnail_opts(&ico, 256, false).unwrap();
     assert_eq!(
-        (d2.width, d2.height),
+        (d.width, d.height),
         (256, 256),
-        "a mid-size source must be enlarged to fill the requested box"
+        "an icon file still scales to the tile"
     );
-    // Aspect ratio survives the enlargement — the long edge lands on cx, the short one scales.
-    let wide = png_bytes(200, 100, [10, 20, 30, 255]);
-    let d4 = decode_thumbnail_opts(&wide, 256, false).unwrap();
-    assert_eq!(
-        (d4.width, d4.height),
-        (256, 128),
-        "enlarging must preserve aspect ratio, not stretch to a square"
-    );
-    // But there IS a ceiling: past MAX_UPSCALE_FACTOR the source has no detail to give, so a
-    // soft full-size rectangle would be worse than an honestly small tile. 100px into a 1024
-    // box is 10×, well over the limit, so it stays native.
-    let small_for_huge = png_bytes(100, 100, [10, 20, 30, 255]);
-    let d5 = decode_thumbnail_opts(&small_for_huge, 1024, false).unwrap();
-    assert_eq!(
-        (d5.width, d5.height),
-        (100, 100),
-        "beyond MAX_UPSCALE_FACTOR the source is left native rather than blown up"
-    );
-    // A large image still shrinks to fit.
-    let big = png_bytes(800, 600, [10, 20, 30, 255]);
-    let d3 = decode_thumbnail_opts(&big, 256, false).unwrap();
-    assert!(d3.width <= 256 && d3.height <= 256 && d3.width.max(d3.height) == 256);
 }
 
 #[test]

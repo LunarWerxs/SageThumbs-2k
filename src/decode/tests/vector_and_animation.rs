@@ -54,8 +54,9 @@ fn animated_gif_decodes_first_frame() {
         enc.encode_frame(Frame::new(blue)).unwrap();
     }
     let d = decode_thumbnail_opts(&bytes, 96, false).unwrap();
-    // 20px sprite Nearest-upscales by an integer factor (96/20 -> 4x = 80px).
-    assert_eq!((d.width, d.height), (80, 80));
+    // A 20 px GIF is the file's own picture, so it is never drawn larger than it is (it used
+    // to nearest-upscale 4x to 80 px; the own-picture cap of 2026-09-15 ended that).
+    assert_eq!((d.width, d.height), (20, 20));
     assert!(
         d.rgba[0] > 180 && d.rgba[2] < 90,
         "expected first (red) frame, got {:?}",

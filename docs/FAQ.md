@@ -72,10 +72,10 @@ show (PNG, GIF, BMP, TIFF, WebP and more), not only the ones Windows cannot, and
 just another Explorer view, so its thumbnails follow the same rules as every folder. JPEG is
 usually still drawn by Windows, which keeps its own JPEG thumbnailer pinned to that file type.
 
-The difference most people notice: a picture smaller than its tile is enlarged to fill it
-(pixel art with crisp edges, anything else smoothly), where Windows shows it at its real size in
-the middle of the tile. Colours can also shift a little on a file that carries a colour
-profile, because SageThumbs honours the profile.
+A small picture sits at its real size in the middle of the tile, exactly as Windows shows it.
+Versions before 3.0.5 enlarged it to fill the tile, which is the difference most people
+noticed. Colours can shift a little on a file that carries a colour profile, because SageThumbs
+honours the profile.
 
 To hand a format back to Windows: Settings, File types, untick it, then Settings, Advanced,
 **Rebuild thumbnail cache**. Windows draws that format again from the next browse, on the

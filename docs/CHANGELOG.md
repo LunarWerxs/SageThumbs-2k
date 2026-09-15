@@ -7,8 +7,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.0.5
 
+Two fixes for what people saw on their own desktop: small pictures are no longer blown up to
+fill their tile, and uninstalling no longer leaves SageThumbs' thumbnails behind.
+
+- **Small pictures are shown at their real size, as Windows shows them.** A picture smaller
+  than its thumbnail tile used to be enlarged to fill the tile, so a folder or a desktop of
+  small PNGs, GIFs and BMPs looked blocky or soft next to the way Windows had drawn them. It
+  now sits at its own size in the middle of the tile, exactly like Windows' own thumbnails.
+  A file that only carries a small preview of a much larger picture (a Photoshop document, a
+  book's cover) still fills the tile, and icon files still scale to it.
 - **Uninstalling now clears Windows' thumbnail cache at the next restart.** Windows keeps every
   thumbnail SageThumbs drew for as long as the file is unchanged, so after an uninstall the
   desktop and every folder kept showing them. They are removed at the next sign-in and Windows
