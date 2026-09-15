@@ -560,7 +560,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
   button restores the default. Applies to both the classic and the modern Win11 menus.
 - **Ebook & comic covers:** sort archive pages naturally, prefer a "cover" image,
-  skip scanlation filler (credits/logos). **Contact-sheet thumbnails for ZIP/RAR/7z**:
+  skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
   on by default, showing a collage of up to four images pulled from a plain archive;
   switch it off for a single first-image thumbnail, classic CBXShell-style.
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn

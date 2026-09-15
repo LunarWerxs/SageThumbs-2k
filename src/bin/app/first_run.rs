@@ -56,8 +56,8 @@ const ID_THUMBS_SUB: i32 = 107;
 const ID_P2_HEAD: i32 = 110;
 const ID_P_COVERS: i32 = 111;
 const ID_P_COVERS_SUB: i32 = 112;
-const ID_P_SCANLATION: i32 = 113;
-const ID_P_SCANLATION_SUB: i32 = 114;
+// 113/114 were the "skip credit pages" row, retired from this window on 2026-09-15 when the
+// setting went default-on (it lives in Settings, Ebook/comic, only).
 const ID_P2_SUB: i32 = 115;
 const ID_P_BADGE: i32 = 116;
 const ID_P_BADGE_SUB: i32 = 117;
@@ -73,17 +73,10 @@ const DLG_H: i32 = 340;
 /// Extra height the portable-only thumbnails row needs (checkbox + its two-line caption).
 const THUMBS_ROW_H: i32 = 68;
 
-/// One page-2 opt-in: the checkbox plus its two-line caption. Page 2 carries three of these,
-/// which is one more than [`DLG_H`] was sized for, so [`flip_to_page2`] grows the window by
-/// exactly this much. An INSTALLED copy is the case that needs it — a portable one is already
-/// this tall for the thumbnails row and stays put.
-const PAGE2_ROW_H: i32 = 68;
-
-/// Window height page 2 needs. Page 1 keeps [`dlg_h`], so an installed copy's first screen
-/// stays compact instead of opening with a row of empty space under it.
-fn page2_h() -> i32 {
-    DLG_H + PAGE2_ROW_H
-}
+// Page 2 carries two opt-ins, the same count page 1 shows an installed copy, so it needs no
+// height of its own beyond [`dlg_h`]: [`flip_to_page2`] measures its rows and grows the
+// window only if a translation genuinely needs more (it did carry a third row, and a
+// reserved row's height, until 2026-09-15).
 
 /// Does this copy get the thumbnails row? Only a portable one: an installed build registered
 /// the handler machine-wide at setup, so offering it again would be a switch that does nothing.
@@ -104,8 +97,8 @@ fn offers_thumbnails() -> bool {
 // shipped locales it needs 45 in 26 of them, and the headless capture agrees: the German
 // portable welcome stops at "und in den Einstellungen" and never draws "schalten Sie es
 // wieder aus." `fr_shot_sub` is the same defect at 18px (needs 30 in 28 locales), page 2's
-// `fr2_badge_sub` at 32 (needs 45 in four), and `fr2_scanlation`'s own checkbox label runs
-// past the 400px row in Bulgarian and Greek.
+// `fr2_badge_sub` at 32 (needs 45 in four), and the since-retired `fr2_scanlation` checkbox
+// label ran past the 400px row in Bulgarian and Greek.
 //
 // So no row here carries a fixed height any more. Each is measured for the language actually
 // loaded, floored at the height English was laid out in (so an English build is unchanged),
@@ -210,7 +203,7 @@ struct SwitchRow {
 /// Place one [`SwitchRow`] at `y` and answer with the `y` the next row starts at.
 ///
 /// The checkbox is BS_MULTILINE: at one line that renders identically to the plain style it
-/// replaces, and it is what lets a label like Bulgarian's `fr2_scanlation` (418px against a
+/// replaces, and it is what let a label like Bulgarian's since-retired `fr2_scanlation` (418px against a
 /// 400px row) wrap onto a second line instead of losing its tail.
 unsafe fn place_switch_row(hwnd: HWND, hinst: HINSTANCE, y: i32, row: &SwitchRow) -> i32 {
     let w = content_w(hwnd);
@@ -257,17 +250,6 @@ unsafe fn button_rect(hwnd: HWND) -> (i32, i32) {
     let cw = (rc.right - rc.left) * 100 / unit;
     let ch = (rc.bottom - rc.top) * 100 / unit;
     (cw - MARGIN - BTN_W, ch - BTN_H - 16)
-}
-
-/// Design-px height of the window frame: the difference between the WINDOW height
-/// [`DLG_H`]/[`page2_h`] speak in and the CLIENT height the rows are laid out in.
-unsafe fn nonclient_h(hwnd: HWND) -> i32 {
-    let mut wr = RECT::default();
-    let mut rc = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut wr);
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    ((wr.bottom - wr.top) - (rc.bottom - rc.top)) * 100 / unit
 }
 
 /// Grow the window until `client_h` design px fit inside its client area. Never shrinks: a
@@ -344,22 +326,16 @@ unsafe fn sync_prtscn(hwnd: HWND) {
     }
 }
 
-/// Page 2's three opt-ins, in order. Same shape as page 1's rows, so the same placement
-/// code measures and lays them out.
-const PAGE2_ROWS: [SwitchRow; 3] = [
+/// Page 2's two opt-ins, in order. Same shape as page 1's rows, so the same placement
+/// code measures and lays them out. Both are matters of taste (a poster over a frame, a mark
+/// on the picture); the credit-page skip that used to sit between them is on by default since
+/// 2026-09-15 and offered only in Settings.
+const PAGE2_ROWS: [SwitchRow; 2] = [
     SwitchRow {
         id: ID_P_COVERS,
         key: "fr2_covers",
         sub_id: ID_P_COVERS_SUB,
         sub_key: "fr2_covers_sub",
-        sub_min_h: SUB_H_MIN,
-        gap: 14,
-    },
-    SwitchRow {
-        id: ID_P_SCANLATION,
-        key: "fr2_scanlation",
-        sub_id: ID_P_SCANLATION_SUB,
-        sub_key: "fr2_scanlation_sub",
         sub_min_h: SUB_H_MIN,
         gap: 14,
     },
@@ -373,7 +349,7 @@ const PAGE2_ROWS: [SwitchRow; 3] = [
     },
 ];
 
-/// Build page 2: three more opt-ins, page-1 style. Created lazily when Next is clicked.
+/// Build page 2: two more opt-ins, page-1 style. Created lazily when Next is clicked.
 /// Answers with the client height its rows need, which [`flip_to_page2`] then fits the
 /// window to.
 unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) -> i32 {
@@ -452,11 +428,10 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
-    // Grow to the height page 2 is expected to need FIRST, so the rows below are measured
-    // and placed against the client area they will actually live in, then again to whatever
-    // those rows really came to. The second pass is what carries a translation that needs an
-    // extra wrapped line (audit F36).
-    fit_window(hwnd, page2_h() - nonclient_h(hwnd));
+    // Page 2 has as many rows as page 1 shows an installed copy, so the window it inherits
+    // already fits it; measure the rows against that client area and grow only for a
+    // translation that needs an extra wrapped line (audit F36). `fit_window` never shrinks,
+    // so a portable copy, whose page 1 is a row taller, keeps its height with a little air.
     let needed = build_page2(hwnd, hinst);
     fit_window(hwnd, needed);
     reanchor_button(hwnd);
@@ -472,9 +447,6 @@ unsafe fn apply_persona(hwnd: HWND) {
     use sagethumbs2k_core::settings as s;
     if checked(hwnd, ID_P_COVERS) {
         let _ = s::set_prefer_cover_art(true);
-    }
-    if checked(hwnd, ID_P_SCANLATION) {
-        let _ = s::set_dword("ContainerSkipScanlation", 1);
     }
     // Offered here rather than defaulted on, because it MODIFIES the picture the user asked to
     // see. Two separate reports (#17, #22) asked for a way to tell file types apart in a folder
@@ -665,7 +637,6 @@ fn is_dim_caption(id: i32) -> bool {
         || id == ID_SHOT_SUB
         || id == ID_THUMBS_SUB
         || id == ID_P_COVERS_SUB
-        || id == ID_P_SCANLATION_SUB
         || id == ID_P_BADGE_SUB
         || id == ID_P2_SUB
 }
@@ -888,18 +859,14 @@ mod tests {
         let mut grew_past_the_old_box: Vec<String> = Vec::new();
 
         // Page 1 in its PORTABLE shape, the taller of the two and the one the finding cites,
-        // then page 2 with its three opt-ins. Each entry is (heading key, rows, closing key).
+        // then page 2 with its two opt-ins. Each entry is (heading key, rows, closing key).
         let pages: [(&str, &[&SwitchRow], &str); 2] = [
             (
                 "fr_intro_portable",
                 &[&PAGE1_THUMBS_ROW, &PAGE1_PREVIEW_ROW, &PAGE1_SHOT_ROW],
                 "fr_prtscn",
             ),
-            (
-                "fr2_head",
-                &[&PAGE2_ROWS[0], &PAGE2_ROWS[1], &PAGE2_ROWS[2]],
-                "fr2_sub",
-            ),
+            ("fr2_head", &[&PAGE2_ROWS[0], &PAGE2_ROWS[1]], "fr2_sub"),
         ];
 
         for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
@@ -950,13 +917,12 @@ mod tests {
     /// and no size-based capture could see it; this is the guard.
     #[test]
     fn every_switch_row_caption_is_a_dim_caption() {
-        let rows: [&SwitchRow; 6] = [
+        let rows: [&SwitchRow; 5] = [
             &PAGE1_THUMBS_ROW,
             &PAGE1_PREVIEW_ROW,
             &PAGE1_SHOT_ROW,
             &PAGE2_ROWS[0],
             &PAGE2_ROWS[1],
-            &PAGE2_ROWS[2],
         ];
         for row in rows {
             assert!(

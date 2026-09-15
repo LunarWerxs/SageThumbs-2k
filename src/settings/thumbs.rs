@@ -66,7 +66,9 @@ pub const DEFAULT_MENU_PREVIEW: u32 = 1;
 
 // ---- Ebook/comic archive cover-selection (CBZ/CB7/CBR) -------------------
 // Ports DarkThumbs' CBXManager toggles. Defaults: natural-sort ON, prefer a
-// "cover"-named image ON, skip scanlation filler (credits/logos) OFF.
+// "cover"-named image ON, skip scanlation filler (credits/logos) ON since 2026-09-15
+// (Michael: it is what anyone with such an archive wants, and it touches nothing else;
+// it left the welcome window's page 2 the same day and lives only in Settings).
 
 /// Pick archive pages in natural sort order (else first in archive order).
 pub fn container_sort() -> bool {
@@ -78,7 +80,7 @@ pub fn container_prefer_cover() -> bool {
 }
 /// Skip scanlation filler pages (credits/logo/recruit/invite).
 pub fn container_skip_scanlation() -> bool {
-    get_dword("ContainerSkipScanlation", 0) != 0
+    get_dword("ContainerSkipScanlation", 1) != 0
 }
 
 /// Contact-sheet thumbnails for GENERIC archives (.zip/.rar/.7z): compose up to 4
@@ -243,7 +245,7 @@ pub fn thumb_settings() -> ThumbSettings {
         archive_collage: g("ArchiveCollage", 1),
         container_prefer_cover: g("ContainerPreferCover", 1) != 0,
         container_sort: g("ContainerSort", 1) != 0,
-        container_skip_scanlation: g("ContainerSkipScanlation", 0) != 0,
+        container_skip_scanlation: g("ContainerSkipScanlation", 1) != 0,
     }
 }
 

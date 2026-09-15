@@ -9,8 +9,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.0.5
 
-Two fixes for what people saw on their own desktop: small pictures are no longer blown up to
-fill their tile, and uninstalling no longer leaves SageThumbs' thumbnails behind.
+Two fixes for what people saw on their own desktop, and one better default: small pictures
+are no longer blown up to fill their tile, uninstalling no longer leaves SageThumbs'
+thumbnails behind, and comic covers skip scanlation credit pages without being asked.
 
 - **Small pictures are shown at their real size, as Windows shows them.** A picture smaller
   than its thumbnail tile used to be enlarged to fill the tile, so a folder or a desktop of
@@ -22,6 +23,12 @@ fill their tile, and uninstalling no longer leaves SageThumbs' thumbnails behind
   thumbnail SageThumbs drew for as long as the file is unchanged, so after an uninstall the
   desktop and every folder kept showing them. They are removed at the next sign-in and Windows
   draws its own again.
+- **Comic covers skip scanlation credit pages by default.** A comic archive whose first page
+  is a scanlation group's credits or logo now shows its real cover without anyone having to
+  find the switch first. It was one of the offers on the welcome window's second page; that
+  page is down to the two that genuinely are a matter of taste (film cover art, the file-type
+  badge), and the switch itself stays in Settings, Ebook/comic, for anyone who wants the
+  first page as stored.
 
 ## 3.0.4
 

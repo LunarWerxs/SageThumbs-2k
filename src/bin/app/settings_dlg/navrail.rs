@@ -607,7 +607,7 @@ fn ebook_page_has_non_defaults() -> bool {
     use sagethumbs2k_core::settings as s;
     !s::container_sort()
         || !s::container_prefer_cover()
-        || s::container_skip_scanlation()
+        || !s::container_skip_scanlation()
         || !s::archive_collage()
         || s::pdf_page() != sagethumbs2k_core::PdfPage::Tight
 }
