@@ -93,8 +93,8 @@ pub(super) enum Row {
     Status(i32),              // dynamic status line
     Btn3(i32, i32, i32),      // three equal buttons on one row
     Wide(i32),                // a full-width control (search edit)
-    WideBtn(i32, i32, i32),   // a wide edit (left, fills) + right-aligned button, one row: edit_id, btn_id, btn_w
-    ListFill(i32),            // a list that fills down to the footer
+    WideBtn(i32, i32, i32), // a wide edit (left, fills) + right-aligned button, one row: edit_id, btn_id, btn_w
+    ListFill(i32),          // a list that fills down to the footer
 }
 
 // Category order: General (Thumbnails+General merged) · File types · Ebook/comic ·
