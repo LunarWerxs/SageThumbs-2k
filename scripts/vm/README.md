@@ -4,7 +4,7 @@ Two ways to test SageThumbs 2K on a machine that has never seen it. Use these to
 reproduce "not working on a fresh install" reports and to sanity-check installer
 behavior (SmartScreen, Defender) without touching your dev box.
 
-## 1. Windows Sandbox — instant, throwaway (`test-sandbox.ps1`)
+## 1. Windows Sandbox - instant, throwaway (`test-sandbox.ps1`)
 
 ```powershell
 pwsh scripts\vm\test-sandbox.ps1
@@ -23,7 +23,7 @@ installer rather than picking the newest item in `dist\`. Close it and everythin
 this Win11 machine it is a Win11 guest. The modern-menu-on-Win10 and N/KN-edition bugs
 would NOT show up here.
 
-## 2. Hyper-V Windows 10 VM — the real Win10 target
+## 2. Hyper-V Windows 10 VM - the real Win10 target
 
 The Sandbox is Win11 (it mirrors the host), so it CANNOT reproduce Windows 10. issue #5's
 reporter is on Win10 Home 22H2, so this builds exactly that and runs the same clean-room
@@ -37,7 +37,7 @@ $u = powershell -ExecutionPolicy Bypass -File D:\isos\Fido.ps1 -Win 10 -Rel 22H2
 Start-BitsTransfer -Source $u -Destination D:\isos\Win10_22H2_x64.iso
 ```
 
-**`run-win10-test.ps1`** — fully automated, elevated x64-release test. It requires the
+**`run-win10-test.ps1`** - fully automated, elevated x64-release test. It requires the
 exact x64 installer and cannot qualify the ARM64 shell extension in an x64 Explorer:
 ```powershell
 # elevated PowerShell:
@@ -69,7 +69,7 @@ ARM64 hardware with the architecture-selecting Sandbox/clean-room path; the x64 
 not an ARM substitute.
 
 Note the twist worth remembering: issue #5's actual bug (modern GIMP `.xcf`) was **not**
-OS-specific at all. It failed identically on Windows 11 — the bundled ImageMagick cannot read
+OS-specific at all. It failed identically on Windows 11 - the bundled ImageMagick cannot read
 XCF written by GIMP 2.10/3, and `magick.exe` returns
 `not enough pixel data @ error/xcf.c/ReadXCFImage/1495` on either OS. The reporter's VM was
 Win10 by coincidence, and the genuinely Win10-specific bugs earlier in the same thread (the
@@ -78,14 +78,14 @@ The clean-room run stays in the checklist anyway, because what actually went wro
 discounting a clean-VM reproduction against "hundreds of installs, no complaints." A 90-second
 automated run removes the temptation to make that argument.
 
-(`new-win10-vm.ps1` is the older interactive variant — creates the VM + boots the ISO for a
+(`new-win10-vm.ps1` is the older interactive variant - creates the VM + boots the ISO for a
 hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.)
 
-### Three traps that cost hours here — all fixed in the script, don't re-discover them
+### Three traps that cost hours here - all fixed in the script, don't re-discover them
 
 1. **Never use the HOST's `bcdboot` for a Windows 10 image.** On a Win11 24H2+ host with Secure
    Boot on and the 2023 PCA in the Secure Boot DB, `bfsvc` decides it must service the "Ex"
-   (2023-signed) boot binaries and looks for `<win>\Boot\EFI_EX\bootmgfw_EX.efi` — a file
+   (2023-signed) boot binaries and looks for `<win>\Boot\EFI_EX\bootmgfw_EX.efi` - a file
    Windows 10 never shipped. It fails with `Failed to validate boot manager checksum … 0xc1`
    and **exit 193**, leaving a VM that boots to *"The boot loader did not load an operating
    system."* `BFSVC_USE_EX_BINS` is **not** an environment variable (it still logs `:y` when you
@@ -93,7 +93,7 @@ hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.
    applied image and run **the image's own** bcdboot. Works first try.
 2. **`diskpart assign letter=` cannot letter the ESP.** It is a *hidden* system partition, and
    diskpart refuses every letter with the very misleading `The specified drive letter is not
-   free to be assigned` — which reads like a host-wide drive-letter outage and sends you off
+   free to be assigned` - which reads like a host-wide drive-letter outage and sends you off
    restarting VDS and enabling automount for nothing. `Add-PartitionAccessPath -AssignDriveLetter`
    assigns it without complaint.
 3. **Verify a drive letter via the partition's `AccessPaths`, never `Test-Path`.** A letter that

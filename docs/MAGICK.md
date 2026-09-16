@@ -207,8 +207,8 @@ build. The last two become orphaned only because the retained RAQM DLL is itself
 ## Deterministic text-stack stubs
 
 MagickCore hard-imports GLib, FreeType, and RAQM even though SageThumbs never asks
-ImageMagick to render text. The production build replaces those DLLs—and initially
-generates the related HarfBuzz/Fribidi stubs for export verification—with tiny no-op
+ImageMagick to render text. The production build replaces those DLLs - and initially
+generates the related HarfBuzz/Fribidi stubs for export verification - with tiny no-op
 DLLs. Each generated DLL:
 
 1. derives its export list from the pinned upstream DLL with `gendef`;
