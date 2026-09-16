@@ -25,6 +25,7 @@
 // whatever built binary happened to exist, while the version stamped into the page came
 // from Cargo.toml (the source, not the binary) - so a binary older than the source could
 // silently ship a format table that does not match the version the page claims. `--site`
+// arkitect-allow: no-bandaids - build-release.ps1's [site] step runs `node gen-site.mjs <st2k.exe>` with no --site, so the no-flag write target must be site\index.html.
 // makes the write target explicit (defaults to the old staging copy for back-compat) and
 // the executable's OWN reported version is now asserted equal to Cargo.toml's before
 // anything is written. `--check` runs the full pipeline (including that assertion) without
