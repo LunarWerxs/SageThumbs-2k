@@ -70,7 +70,15 @@ $st2kSettings = 'HKCU:\Software\SageThumbs2K'
 $st2kLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K.log'
 $debugWas = $null
 if (Test-Path -LiteralPath $st2kSettings) {
-    $debugWas = (Get-ItemProperty -LiteralPath $st2kSettings -Name Debug -ErrorAction SilentlyContinue).Debug
+    # Under Set-StrictMode -Version Latest, `(...).Debug` THROWS when the value does not exist:
+    # Get-ItemProperty returns $null (the KEY is there, the VALUE is not) and a property access
+    # on $null is a strict-mode error, not a $null. That is the ordinary state on any machine
+    # the app has run on without this script, and it is the state the restore at the end of
+    # this file leaves behind - so the script failed for everybody on its SECOND run with
+    # "The property 'Debug' cannot be found on this object", ten lines before anything was
+    # measured (found 2026-09-17, verifying the installed 3.1.0).
+    $existingDebug = Get-ItemProperty -LiteralPath $st2kSettings -Name Debug -ErrorAction SilentlyContinue
+    if ($null -ne $existingDebug) { $debugWas = $existingDebug.Debug }
 }
 New-Item -Path $st2kSettings -Force -ErrorAction SilentlyContinue | Out-Null
 Set-ItemProperty -LiteralPath $st2kSettings -Name Debug -Value 1 -Type DWord
@@ -313,12 +321,32 @@ Write-Host "[explorer] installed: $installedDll" -ForegroundColor Cyan
 # ---- 1. installed == built ------------------------------------------------------------------
 Check 'the installed DLL is the one just built' {
     if (-not (Test-Path -LiteralPath $installedDll)) { throw "not installed: $installedDll" }
-    $built = Join-Path $BuiltDir 'sagethumbs2k.dll'
-    if (-not (Test-Path -LiteralPath $built)) { throw "no built DLL at $built" }
     $a = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedDll).Hash
-    $b = (Get-FileHash -Algorithm SHA256 -LiteralPath $built).Hash
-    if ($a -ne $b) { throw "installed $a != built $b — reinstall before trusting anything below" }
-    Write-Host "        sha256 $a" -ForegroundColor DarkGray
+    # The installer places the SIGNED copy out of scripts\packaging\stage\<arch>, which differs
+    # from the raw cargo output by exactly the Authenticode signature. Signing every artifact
+    # has been mandatory since 2026-09-10, so comparing against the build directory ALONE made
+    # this assertion unpassable for every release since - found 2026-09-17 verifying the
+    # installed 3.1.0, where all thirteen real shell renders passed behind this single red.
+    # Either copy is a legitimate answer to "is the installed DLL the one we just made"; say
+    # which one matched, because "staged" and "built" mean different things if they diverge.
+    $arch = if ([Environment]::Is64BitOperatingSystem -and $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $candidates = [ordered]@{
+        staged = Join-Path $PSScriptRoot "packaging\stage\$arch\sagethumbs2k.dll"
+        built  = Join-Path $BuiltDir 'sagethumbs2k.dll'
+    }
+    $seen = @()
+    foreach ($kind in $candidates.Keys) {
+        $path = $candidates[$kind]
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+        if ($h -eq $a) {
+            Write-Host "        sha256 $a (matches the $kind copy)" -ForegroundColor DarkGray
+            return
+        }
+        $seen += "$kind $h"
+    }
+    if (-not $seen.Count) { throw "no staged or built DLL to compare against (looked in $($candidates.Values -join ' and '))" }
+    throw ("installed $a matches neither copy ({0}) — reinstall before trusting anything below" -f ($seen -join ', '))
 }
 Check 'the decoder helper is installed beside the DLL' {
     # `sibling_of_dll` resolves st2k.exe from the DLL's own directory. If the installer ever
