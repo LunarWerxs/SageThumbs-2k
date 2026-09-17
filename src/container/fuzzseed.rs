@@ -1233,6 +1233,34 @@ fn synthetic_pxo() -> Vec<u8> {
     ])
 }
 
+/// Minecraft Bedrock (2026-09-17). TWO shapes in one seed family, because the branch matches
+/// by NAME SUFFIX rather than by an exact path: a world (`.mcworld`/`.mctemplate`) keyed on a
+/// root `world_icon.jpeg`, and an add-on (`.mcaddon`) whose `pack_icon.png` sits one folder
+/// down, which is the case the suffix walk exists for. Stored zips, so a mutation lands on the
+/// entry NAMES and the image bytes rather than on a DEFLATE checksum that would reject the
+/// archive before the branch is ever reached. A `manifest.json` rides along as the real
+/// packages carry one.
+fn synthetic_mcworld() -> Vec<u8> {
+    stored_zip(&[
+        (
+            "manifest.json",
+            br#"{"format_version":2,"header":{"name":"seed"}}"#,
+        ),
+        ("world_icon.jpeg", &jpeg(24, 16)),
+        ("level.dat", b"\x0a\x00\x00"),
+    ])
+}
+
+fn synthetic_mcaddon() -> Vec<u8> {
+    stored_zip(&[
+        (
+            "manifest.json",
+            br#"{"format_version":2,"header":{"name":"seed"}}"#,
+        ),
+        ("behavior_pack/pack_icon.png", &png(16, 16)),
+    ])
+}
+
 /// An Aseprite sprite built by the module's OWN builder, so the bytes the fuzzer mutates and
 /// the bytes its tests prove the parser on cannot drift apart: an RGBA layer under a
 /// half-opacity zlib-compressed one, offset so the composite blends.
@@ -1494,6 +1522,8 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("project", synthetic_project()),
         ("pxo", synthetic_pxo()),
         ("spla", synthetic_spla()),
+        ("mcworld", synthetic_mcworld()),
+        ("mcaddon", synthetic_mcaddon()),
         ("aseprite", synthetic_aseprite()),
         ("bgcode", synthetic_bgcode()),
         ("sfw", synthetic_sfw()),
@@ -1648,6 +1678,14 @@ mod tests {
             let mut zip =
                 zip::ZipArchive::new(std::io::Cursor::new(by("spla"))).expect("valid zip seed");
             assert!(spla::extract(&mut zip).is_some(), "spla frame-0 render");
+        }
+        for (label, why) in [
+            ("mcworld", "minecraft world_icon.jpeg at the root"),
+            ("mcaddon", "minecraft pack_icon.png one folder down"),
+        ] {
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(by(label))).expect("valid zip seed");
+            assert!(project::extract(&mut zip).is_some(), "{why}");
         }
         assert!(
             aseprite::looks_like_aseprite(&by("aseprite")),

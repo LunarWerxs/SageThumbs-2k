@@ -9,6 +9,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+The JPEG XL crash behind issue #43 is fixed, thirteen more file types get thumbnails, and three
+formats that were listed but never worked on a real file now do.
+
 - **JPEG XL files made from JPEGs get their thumbnails back, and a right-click on one no
   longer takes Explorer down.** A `.jxl` that `cjxl` made from a JPEG keeps the JPEG's colour
   layout, and the fast thumbnail path mishandled that layout: no thumbnail in the folder, and
@@ -16,32 +19,31 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   has that layout, so this was most `.jxl` files people actually have. Reported in issue #43.
 - **Twelve more file types get thumbnails**, including the two asked for through the feedback
   form. Pixel art and sprites: **Aseprite** (`.aseprite`, `.ase`) is drawn by SageThumbs itself
-  from the layers inside it, exactly as the editor shows it on open, and **Pixelorama** (`.pxo`)
+  from the layers inside it, the way the editor shows it on open (layer blending is drawn
+  plainly and tile-based layers are left out), and **Pixelorama** (`.pxo`)
   shows the preview the app saves inside the file. **SpriteLoop** animation packages (`.spla`)
   are drawn too, since the package holds only the separate body parts: you get the first frame
   of its first animation, every piece in its place. 3D printing: **PrusaSlicer's new binary
   G-code** (`.bgcode`) shows the same sliced preview the ordinary `.gcode` files already did.
   CAD: **SolidWorks** parts, assemblies and drawings (`.sldprt`, `.sldasm`, `.slddrw`) show the
-  preview stored in the file. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
+  preview stored in the file, for the older save format that keeps one; files written by
+  SolidWorks 2015 and newer store no preview any other program can read, so those keep their
+  usual icon. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
   `.mctemplate`, `.mcpack`, `.mcaddon`) show the world photo or pack icon inside them.
 - **Three formats that were listed but never worked on a real file now do.** Seattle FilmWorks
   photos (`.sfw`, the 1990s "Pictures on Disk" floppies) and Alias/Wavefront `.pix` images are
   decoded by SageThumbs itself now, and Scitex `.sct` files reach the right reader. Found by
   feeding the test corpus real files from other programs for every format it lists.
-- **VideoCD-era and raw MPEG video files thumbnail now, without any Store extension.** Windows
-  has no decoder path for MPEG-1 system streams (the `.mpg` a 1990s camera or a VideoCD wrote)
-  or for bare MPEG video streams (`.m1v`, `.m2v`), and needs the Store's MPEG-2 Video Extension
-  before it will open DVD-style `.vob` files. SageThumbs 2K now decodes all of them itself, in
-  pure Rust and in the same separate short-lived process its FLV and VP9 decoders use, whenever
-  Windows declines. `.m1v` is a new file type.
-- **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
-  on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
-  highlighted button until a copy holds a licence), a personal copy's "no licence needed"
-  shows in green, and a copy that has no licence gets a one-line answer to why it would ever
-  buy one. The page subtitle no longer runs off the end.
-- For the few installations that need a business licence: there is now a monthly plan,
-  US$2.99 per computer, alongside the one-time US$49. Personal use is unaffected and stays
-  free.
+- **Old MPEG videos get thumbnails, with nothing to install.** The `.mpg` and `.mpeg` files a
+  VideoCD or a late-1990s camera wrote, raw MPEG video files (`.m1v`, `.m2v`) and DVD `.vob`
+  files are all drawn by SageThumbs itself now, in a separate short-lived process like its
+  Flash and HDR video decoders. Windows cannot open the first three at all, and asks for a
+  Store add-on before it will open a `.vob`; neither is needed any more. `.m1v` is a new file
+  type. Recordings that hold MPEG-2 video inside a transport stream or a Matroska file still
+  use Windows' own decoder, so that add-on still matters there.
+- For the few installations that need a business licence: the Licence page has been tidied
+  up, and there is now a monthly plan, US$2.99 per computer, alongside the one-time US$49.
+  Personal use is unaffected and stays free.
 
 ## 3.0.5
 

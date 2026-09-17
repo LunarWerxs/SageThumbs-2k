@@ -226,7 +226,7 @@ if (-not $SkipBuild) {
     try {
         $dllTree = @(& cargo tree -p sagethumbs2k-dll --locked 2>&1)
         if ($LASTEXITCODE) { throw "cargo tree -p sagethumbs2k-dll failed (exit $LASTEXITCODE)" }
-        foreach ($forbidden in 'vp9dec', 'nihav', 'h263') {
+        foreach ($forbidden in 'vp9dec', 'nihav', 'h263', 'oxideav') {
             if ($dllTree -match $forbidden) {
                 throw "Containment violation: '$forbidden' is linked into sagethumbs2k-dll (run ``cargo tree -p sagethumbs2k-dll`` to see the path)"
             }
@@ -707,9 +707,13 @@ if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
     # The staged regression RUNS the staged st2k.exe over the corpus, so it can only
     # execute when the staged binaries match the host. Cross-building ARM64 on an x64
     # host would report every format "broken" purely because the process cannot
-    # start. Skipping it here does not drop the gate: the arm64 CI job runs on native
-    # ARM hardware and exercises the same binaries there. Never let this skip apply to
-    # a same-architecture build, which is the case that catches real staging breakage.
+    # start. Never let this skip apply to a same-architecture build, which is the case
+    # that catches real staging breakage.
+    # ⚠ This used to claim "the arm64 CI job runs on native ARM hardware and exercises the same
+    # binaries there", which is NOT true and was corrected 2026-09-17: the arm64-native job
+    # builds and tests, but the corpus is a gitignored sibling directory it never checks out,
+    # so every corpus-gated test skips there. What DOES cover the decoders on ARM64 is the
+    # committed fixtures (tests/fixtures/video, tests/fixtures/jxl), which is why they exist.
     if ($Architecture -cne $hostArchNow) {
         Write-Host "      staged corpus regression DEFERRED: $Architecture payload on an $hostArchNow host (runs natively in the arm64 CI job)" -ForegroundColor Yellow
     } else {

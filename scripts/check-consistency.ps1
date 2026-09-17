@@ -163,8 +163,12 @@ if ($featSection.Success) {
 }
 if (-not $declared.Count) { $recipeFail += 'could not parse Cargo.toml [features]' }
 
-# EXE-only by construction: each links a stack the shell DLL must never load.
-$exeOnly = @('html-preview', 'hdr-capture', 'flash-video')
+# EXE-only by construction: each links a stack the shell DLL must never load - webview2,
+# the D3D11/DXGI capture stack, and the three pure-Rust video decoders that either panic on
+# malformed input or are 0.x crates (nihav/h263, vp9dec, oxideav-mpeg12video). They reach the
+# shipped EXE through Cargo's `default` set; the DLL package opts out with
+# `default-features = false`, and naming them here keeps the recipe from ever adding one back.
+$exeOnly = @('html-preview', 'hdr-capture', 'flash-video', 'vp9-video', 'mpeg-video')
 
 foreach ($pkg in @('sagethumbs2k', 'sagethumbs2k-dll')) {
   $recipe = @((Get-ReleaseFeatureList -Package $pkg) -split ',' | Where-Object { $_ })
@@ -430,7 +434,8 @@ if ($fitSkipped) {
 # exactly like a fresh home install, and the insistent notice would silently never fire.
 # These pins are that test: each one names the invariant that rots the feature if broken.
 $iss = Get-Content -Raw "$root/scripts/packaging/installer.iss"
-$dirLine = ($iss -split "?
+$dirLine = ($iss -split "
+?
 ") | Where-Object { $_ -match 'commonappdata..SageThumbs2K' -and $_ -notmatch '^\s*;' } | Select-Object -First 1
 if (-not $dirLine) {
   $fail.Add("installer.iss: the {commonappdata}\SageThumbs2K [Dirs] entry is gone - the licence breadcrumb has no home")
@@ -443,7 +448,8 @@ if ($iss -notmatch [regex]::Escape("RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Sof
 }
 # The uninstaller must never be taught to delete the breadcrumb. Scan the whole file for
 # any uninstall directive that names it, so the pin holds wherever such a line is added.
-foreach ($bad in ($iss -split "?
+foreach ($bad in ($iss -split "
+?
 ") | Where-Object { $_ -match 'license-history' -and $_ -match '(?i)uninstalldelete|Type:\s*files|Type:\s*filesandordirs' }) {
   $fail.Add("installer.iss: an uninstall directive names license-history - the breadcrumb MUST survive uninstall: $($bad.Trim())")
 }

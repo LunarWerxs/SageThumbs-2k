@@ -9,7 +9,7 @@ use sagethumbs2k_core::cli;
 // `vp9-frame`: VP9 Profile 2/3 via vp9dec; `mpeg-frame`: MPEG-1/2 via oxideav-mpeg12video). Behind EXE-only features so the panicky /
 // unsafe-heavy decoder crates exist ONLY in this console binary — see src/bin/vdec/mod.rs
 // for the whole containment argument.
-#[cfg(any(feature = "flash-video", feature = "vp9-video"))]
+#[cfg(any(feature = "flash-video", feature = "vp9-video", feature = "mpeg-video"))]
 mod vdec;
 
 const USAGE: &str = "\

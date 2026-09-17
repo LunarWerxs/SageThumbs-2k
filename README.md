@@ -222,7 +222,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), **dds** (game textures: every block format BC1 to BC7, HDR BC6H included, decoded natively), ico, tga, qoi, svg
 - **Vector & metafile**: svg/svgz, wmf, emf/emz
 - **Ebook & comics**: epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz/cb7/cbr/cbt
-- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, **pxo** (Pixelorama), **aseprite/ase** (Aseprite, rendered), **spla** (SpriteLoop, rendered), **sldprt/sldasm/slddrw** (SolidWorks), **mcworld/mcpack/mcaddon** (Minecraft Bedrock), blend, 3mf, fcstd, gcode, **bgcode** (PrusaSlicer binary), **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
+- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, **pxo** (Pixelorama), **aseprite/ase** (Aseprite, rendered), **spla** (SpriteLoop, rendered), **sldprt/sldasm/slddrw** (SolidWorks), **mcworld/mctemplate/mcpack/mcaddon** (Minecraft Bedrock), blend, 3mf, fcstd, gcode, **bgcode** (PrusaSlicer binary), **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
 - **Icons**: ico, cur, **icns** (Apple)
 - **Docs & audio**: pdf, **doc/docx/docm, xls/xlsx/xlsm/xlsb, ppt/pptx/pptm/ppsx** (MS Office), odt/ods/odp, **key/pages/numbers** (Apple iWork), **indd/indt** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), djvu + mp3/flac/ogg/opus/m4a/wma/**dsf** (DSD)/ape/…
 - **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg/m1v/m2v, vob, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (30% in by default, adjustable in Settings) via the OS **Media Foundation** codecs, plus **FLV** (VP6 / Sorenson Spark), **HDR VP9** (Profile 2/3, 10- and 12-bit) and **MPEG-1/2** (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`) decoded by SageThumbs itself in a short-lived helper process
@@ -371,7 +371,7 @@ in Settings works around that, because Windows delivers hotkeys differently than
 <details>
 <summary><b>How many formats does it support, and can more be added?</b></summary>
 
-346 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
+347 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
 `st2k formats` for the live, per-category count. New formats are considered when they can be
 read without a heavy dependency, many "project" file formats bake in a preview image that's
 cheap to extract. Request one through Send Feedback in the app or a GitHub issue.

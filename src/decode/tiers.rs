@@ -26,9 +26,13 @@ pub(super) fn decode_jxl(bytes: &[u8], target: Option<u32>) -> Result<DynamicIma
     let mut decoder = open_jxl(bytes)?;
     let reduced = target.is_some_and(|t| request_reduced(&mut decoder, t));
     match render_jxl(decoder) {
-        // THE SHORTCUT NEVER COSTS A THUMBNAIL (issue #43). The 1:8 render is an
-        // approximation patched into a vendored decoder, with geometry rules of its own, and
-        // a file it cannot render is not a file that cannot be rendered: a JPEG-transcoded
+        // THE SHORTCUT NEVER COSTS A THUMBNAIL. This is a fallback for an Err, NOT crash
+        // protection: a panic inside the decoder aborts the process (panic = "abort"), so it
+        // never reaches this match, and issue #43 was fixed where it happened - the chroma
+        // upsample in the vendored renderer - not here. What this buys is the milder failure.
+        // The 1:8 render is an approximation patched into a vendored decoder, with geometry
+        // rules of its own, and a file it cannot render is not a file that cannot be
+        // rendered: a JPEG-transcoded
         // 4:2:0 jxl reached the YCbCr conversion with its chroma planes still at their
         // subsampled size and failed there, where the 1:1 path had always worked. So a
         // failure on the reduced path buys one full decode before the file is given up on; a
@@ -375,4 +379,29 @@ pub(super) fn looks_like_tga(b: &[u8]) -> bool {
         && matches!(b[16], 8 | 15 | 16 | 24 | 32) // bits per pixel
         && w > 0
         && h > 0
+}
+
+/// Direct fuzz entry points into the JPEG XL tier. Re-exported by name (`decode::jxl_fuzzapi`)
+/// so `crate::fuzz` can reach it without widening this module's visibility. Test-only.
+///
+/// This tier had NO always-on fuzz coverage until 2026-09-17, which is how issue #43 shipped:
+/// the 1:8 reduced render is an approximation patched into a vendored decoder, a
+/// JPEG-transcoded 4:2:0 file reached the YCbCr conversion with half-size chroma planes, and
+/// the panic that followed ran INSIDE explorer.exe under `panic = "abort"` — it took the
+/// user's shell down, not just the thumbnail. Both arms are listed because they are different
+/// code paths through a vendored patch: [`reduced`] turns the 1:8 mode on and exercises the
+/// fallback to a full decode when it fails, [`full`] is the 1:1 path the fallback lands on.
+#[cfg(test)]
+pub(crate) mod fuzzapi {
+    use super::*;
+
+    /// The thumbnail path: request the 1:8 image, fall back to a full decode on failure.
+    pub(crate) fn reduced(b: &[u8]) {
+        let _ = decode_jxl(b, Some(256));
+    }
+
+    /// The 1:1 path, which the reduced one falls back to and every non-thumbnail caller takes.
+    pub(crate) fn full(b: &[u8]) {
+        let _ = decode_jxl(b, None);
+    }
 }

@@ -1113,6 +1113,8 @@ pub use thumb::{
     decode_thumbnail_opts, embedded_preview_serves, reduce_to_fit, thumbnail_from_covers,
     thumbnail_from_image,
 };
+#[cfg(test)]
+pub(crate) use tiers::fuzzapi as jxl_fuzzapi;
 pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
 
 /// Is the OS codec `codec` present on THIS machine? Audit E03: `st2k doctor`'s "Format

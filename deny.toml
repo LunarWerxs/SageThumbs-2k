@@ -35,7 +35,7 @@ all-features = false
 # `html-preview` and `webp-lossy` are NOT default — they're enabled only by the release
 # EXE build — so without listing them here `webview2-com` and `libwebp-sys` were never
 # in cargo-deny's scanned graph at all despite shipping in every release. (A036)
-features = ["flash-video", "vp9-video", "html-preview", "webp-lossy"]
+features = ["flash-video", "vp9-video", "mpeg-video", "html-preview", "webp-lossy"]
 
 # ----------------------------------------------------------------------------
 [advisories]

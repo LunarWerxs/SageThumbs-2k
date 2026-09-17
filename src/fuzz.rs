@@ -200,6 +200,7 @@ fn inner_targets() -> Vec<Target> {
     use crate::decode::cicp_fuzzapi as cicp;
     use crate::decode::dds_fuzzapi as dds;
     use crate::decode::jp2_fuzzapi as jp2;
+    use crate::decode::jxl_fuzzapi as jxl;
     use crate::decode::mesh_fuzzapi as mesh;
     use crate::flv::fuzzapi as flv;
     vec![
@@ -236,6 +237,12 @@ fn inner_targets() -> Vec<Target> {
         // The PNG `cICP` chunk walk (2026-09-08): runs ahead of EVERY PNG decode in the
         // thumbnail host, on the raw bytes, so it is fuzzed like the other pre-decode peeks.
         ("cicp::png_cicp", cicp::png_cicp),
+        // The JPEG XL tier (2026-09-17). Issue #43: the 1:8 reduced render panicked inside
+        // the vendored decoder on a JPEG-transcoded 4:2:0 file and took Explorer down with it,
+        // and nothing in the always-on gate had ever fed this tier a byte. Both arms, because
+        // the reduced path and the 1:1 path it falls back to are different code.
+        ("jxl::reduced", jxl::reduced),
+        ("jxl::full", jxl::full),
         // JPEG 2000 codestream walk, reached in-process by the thumbnail host.
         ("jp2::dimensions", jp2::dimensions),
         ("jp2::decode_reduced", jp2::decode_reduced),
@@ -1206,6 +1213,27 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("ply-tetra", mesh_seed_ply()),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
+        // The JPEG XL shapes, from the committed regression fixtures rather than a synthetic
+        // stub: a JPEG-transcoded 4:2:0 file (the exact shape that crashed Explorer in issue
+        // #43, which is 4:2:0 chroma through the 1:8 render), its 4:2:2 twin, a modular file
+        // with an embedded colour profile, and an HDR PQ/BT.2020 one. Four codepaths through
+        // one tier, all tiny, all real.
+        (
+            "jxl-jpeg420",
+            include_bytes!("../tests/fixtures/jxl/jpeg420_transcode.jxl").to_vec(),
+        ),
+        (
+            "jxl-jpeg422",
+            include_bytes!("../tests/fixtures/jxl/jpeg422_transcode.jxl").to_vec(),
+        ),
+        (
+            "jxl-modular-icc",
+            include_bytes!("../tests/fixtures/jxl/adobergb_modular.jxl").to_vec(),
+        ),
+        (
+            "jxl-hdr-pq",
+            include_bytes!("../tests/fixtures/jxl/scene-pq2020.jxl").to_vec(),
+        ),
         // The MPEG-1/2 shapes `mpeg12` walks: a bare MPEG-2 and MPEG-1 elementary stream (two
         // GOPs, an I and a P picture, extensions), the MPEG-1 SYSTEM wrapping (MPEG-1 pack +
         // PES headers, an audio and a padding packet) and the MPEG-2 PROGRAM wrapping
@@ -1317,6 +1345,28 @@ fn every_new_surface_seed_reaches_its_parser() {
         Some((64, 48)),
         "h264-avcc seed no longer parses to its known 64x48 geometry"
     );
+    // The JPEG XL seeds: each fixture must actually DECODE through the tier being fuzzed,
+    // or the mutator spends every iteration dying at the container header. The 4:2:0 one is
+    // issue #43's file, so this doubles as the always-on regression for that crash.
+    for (label, name) in [
+        ("jxl-jpeg420", "jpeg420_transcode.jxl"),
+        ("jxl-jpeg422", "jpeg422_transcode.jxl"),
+        ("jxl-modular-icc", "adobergb_modular.jxl"),
+        ("jxl-hdr-pq", "scene-pq2020.jxl"),
+    ] {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("jxl")
+                .join(name),
+        )
+        .unwrap_or_else(|e| panic!("{label}: read {name}: {e}"));
+        assert!(
+            crate::decode::decode_preview(&bytes).is_ok(),
+            "{label} seed no longer decodes through the JPEG XL tier"
+        );
+    }
     // The MPEG-1/2 seeds: every wrapping demuxes to its elementary stream and slices to a
     // unit that starts with the sequence header, through the same reader entry point the
     // cascades call.
@@ -1466,6 +1516,16 @@ fn deep_session_over_the_new_parsers() {
         "sample-vp9p2.webm",
         "sample-vp9p3.webm",
         "sample.webm",
+        // The MPEG shapes, beside their FLV/VP9 siblings: an MPEG-1 system stream and an
+        // MPEG-2 program stream (both demuxed here, in the shell, out of file-supplied PES
+        // lengths) and the two bare elementary streams. The real files matter more than the
+        // synthetic seeds for this tier — `mpeg1_system`/`mpeg2_program` are scaffolds this
+        // module wrote for itself, so they only ever hold packet layouts it already thought of.
+        "sample.mpeg",
+        "sample.vob",
+        "real-vcd.mpg",
+        "real.m1v",
+        "real-es.m2v",
     ] {
         if let Ok(mut bytes) = std::fs::read(corpus.join(name)) {
             bytes.truncate(512 * 1024);

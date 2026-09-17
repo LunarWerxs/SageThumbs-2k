@@ -121,6 +121,16 @@ $cases = @(
     @{ Name = 'sample-vp9p2.webm'; Helpers = 1; Why = 'VP9 Profile 2 via vp9dec in a spawned st2k child' }
     @{ Name = 'sample-vp9p3.webm'; Helpers = 1; Why = 'VP9 Profile 3 via vp9dec in a spawned st2k child' }
     @{ Name = 'sample.webm';       Helpers = 0; Why = 'VP9 Profile 0: must stay on the in-process Media Foundation path' }
+    # The MPEG-1/2 tier (2026-09-17), the third out-of-process decoder. All three shapes below
+    # are ones Media Foundation has NO source for on any Windows, so the expected helper count
+    # does not depend on whether this machine has the Store MPEG-2 Video Extension - which is
+    # why `.vob` and `.ts`-shaped files are deliberately NOT in this table: with the extension
+    # installed they cost zero helpers, without it one, and a table row cannot be right both
+    # ways. Their in-process behaviour is pinned by the corpus regression and by
+    # `settings_gate::the_mpeg_tier_answers_through_the_shell_stream_cascade` instead.
+    @{ Name = 'sample.mpeg';       Helpers = 1; Why = 'MPEG-1 system stream: no MF source exists, decoded in a spawned st2k child' }
+    @{ Name = 'real.m1v';          Helpers = 1; Why = 'bare MPEG-1 elementary stream: no MF source exists, spawned st2k child' }
+    @{ Name = 'real-es.m2v';       Helpers = 1; Why = 'bare MPEG-2 4:2:2 elementary stream: no MF source exists, spawned st2k child' }
     @{ Name = 'sample.mp4';        Helpers = 0; Why = 'H.264: the commonest video of all, must never leave the process' }
     # A STILL that must never be mistaken for a video. libheif writes `mif3` as this file's
     # major ftyp brand; that brand was missing from `video::is_video_magic`'s still list, so

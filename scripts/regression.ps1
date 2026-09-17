@@ -157,11 +157,13 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
 # genuinely-unrenderable file (legacy-OLE doc/…) just fails again in a few ms. This makes
 # the gate deterministic without touching the production timeout.
 #
-# Only a file whose EXTENSION is in the baseline is retried. The known no-thumbnail set
-# (lnk, m2v, mpeg, mpg, vob and their kin: no embedded preview, no decoder) fails on the first
-# pass every run for the same reason it failed last release, and retrying those printed
-# "first pass: 7 failure(s); retrying" on a gate that had nothing wrong with it, which two
-# sessions read as a load flake before anyone checked which files they were (2026-09-09).
+# Only a file whose EXTENSION is in the baseline is retried. The known no-thumbnail set (`lnk`
+# and its kin: no embedded preview, no decoder) fails on the first pass every run for the same
+# reason it failed last release, and retrying those printed "first pass: 7 failure(s); retrying"
+# on a gate that had nothing wrong with it, which two sessions read as a load flake before
+# anyone checked which files they were (2026-09-09). ⚠ That list USED to name m2v/mpeg/mpg/vob;
+# since 2026-09-17 those decode through our own MPEG-1/2 tier and are IN the baseline, so a miss
+# on one of them is a real regression and must not be explained away by this comment.
 # No baseline yet (a fresh clone about to -UpdateBaseline) retries everything, as before.
 $firstPassMisses = @($results | Where-Object { -not $_.Ok })
 $baselineExts = @()

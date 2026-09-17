@@ -432,3 +432,61 @@ fn the_business_licence_lock_gates_the_provider() {
         "a redeemed key unlocks the very next thumbnail"
     );
 }
+
+/// The MPEG-1/2 tier through the REAL COM handshake, which is the only way to reach
+/// `streamsrc`'s stream cascade (tier 7, `mpeg12::mpeg_frame`).
+///
+/// Why this test exists rather than another corpus row: the corpus regression renders BY PATH
+/// (`st2k thumbnail <file>`), so it exercises `decode.rs`'s by-bytes cascade and never touches
+/// the shell-IStream one. The two cascades are maintained in parallel by hand and have drifted
+/// before, which is the whole reason `streamsrc` carries a "the by-bytes twin of this gate"
+/// comment on every tier. The FLV and VP9 tiers have the same shape and are covered here only
+/// by the installed-Explorer script, which needs a registered DLL; this runs in CI.
+///
+/// The three files are the shapes Media Foundation cannot open on ANY Windows, so the answer
+/// does not depend on whether the machine has the Store MPEG-2 extension: an MPEG-1 system
+/// stream, a bare MPEG-1 elementary stream, and a bare MPEG-2 one. Corpus-gated like every
+/// other sample-backed test; the helper `st2k.exe` sits beside the cdylib in the same profile,
+/// so a build that produced the DLL produced it too.
+#[test]
+fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
+    let _serial = lock_settings();
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
+    reset_scratch();
+    put("EnableThumbs", 1);
+
+    let corpus = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-corpus");
+    let mut proved = 0;
+    for name in ["sample.mpeg", "real.m1v", "real-es.m2v"] {
+        let Ok(bytes) = std::fs::read(corpus.join(name)) else {
+            continue; // corpus-gated, like the other sample-backed tests
+        };
+        let got = unsafe { get_thumbnail(&bytes, 96) };
+        assert!(
+            got.is_ok(),
+            "{name} must thumbnail through the shell stream cascade: {got:?}"
+        );
+        proved += 1;
+    }
+
+    // A stream that claims the pack-header magic and holds nothing else must be DECLINED,
+    // not crashed on: the gate is the magic, and the demux is what has to survive the rest.
+    let mut liar = vec![0x00, 0x00, 0x01, 0xBA];
+    liar.extend(std::iter::repeat_n(0x5Au8, 64 * 1024));
+    let junk = unsafe { get_thumbnail(&liar, 96) };
+
+    reset_scratch();
+    assert!(
+        junk.is_err(),
+        "a file that only claims to be an MPEG program stream must be refused"
+    );
+    if corpus.join("sample.mpeg").exists() {
+        assert!(
+            proved > 0,
+            "the corpus is present but no MPEG shape decoded"
+        );
+    }
+}

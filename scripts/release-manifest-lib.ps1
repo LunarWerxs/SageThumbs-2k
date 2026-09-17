@@ -41,10 +41,13 @@ function Get-ReleaseFeatureList {
         [string]$Package
     )
     switch ($Package) {
-        # `flash-video` is named EXPLICITLY even though Cargo.toml has it in `default`: this
-        # string is compared for exact equality against the arguments the build actually ran,
-        # and it went missing once when the FLV work landed (see write-release-manifest.ps1).
-        'sagethumbs2k'     { 'webp-lossy,html-preview,hdr-capture,flash-video' }
+        # `flash-video`, `vp9-video` and `mpeg-video` are named EXPLICITLY even though
+        # Cargo.toml has all three in `default`: this string is compared for exact equality
+        # against the arguments the build actually ran, and it went missing once when the FLV
+        # work landed (see write-release-manifest.ps1). Naming them is also what makes the
+        # manifest record which out-of-process decoders a shipped build actually carries -
+        # a default flipped off would otherwise change the payload silently.
+        'sagethumbs2k'     { 'webp-lossy,html-preview,hdr-capture,flash-video,vp9-video,mpeg-video' }
         'sagethumbs2k-dll' { 'webp-lossy,dll-i18n-subset' }
     }
 }

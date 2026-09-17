@@ -349,6 +349,44 @@ mod tests {
         assert_eq!(flat(235, &hd), (255, 255, 255, 255));
     }
 
+    /// END-TO-END on a COMMITTED fixture, so CI decodes a real MPEG picture.
+    ///
+    /// The corpus test below is the stronger one - real files from other programs - but the
+    /// corpus is a gitignored sibling directory, so on CI it skips and every MPEG assertion
+    /// there is a parse or a refusal. Nothing decoded a picture on the x64 runner, and nothing
+    /// decoded one on the native ARM64 runner at all, which for a brand-new decoder crate on a
+    /// second architecture is exactly the gap a committed fixture closes. Two shapes, both
+    /// written by ffmpeg (`testsrc`, the same way `h264-high-320x240.mp4` beside them was
+    /// made, and small enough to sit in a public repo): a bare MPEG-1 elementary stream and an
+    /// MPEG-2 program stream, which between them cover both standards and the demux.
+    #[test]
+    fn committed_fixtures_decode_on_every_runner() {
+        for (name, w, h) in [
+            ("mpeg1-128x96.m1v", 128, 96),
+            ("mpeg2-ps-128x96.vob", 128, 96),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("video")
+                .join(name);
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let unit = sagethumbs2k_core::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
+                .unwrap_or_else(|| panic!("{name}: no intra unit"));
+            let png = frame_png(&unit).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let img = image::load_from_memory(&png).expect("the child must answer with a PNG");
+            assert_eq!((img.width(), img.height()), (w, h), "{name}");
+            // `testsrc` is a colour-bar pattern, so a decode that produced a flat field (or the
+            // grey no-data fill) is a failure even though it is a valid PNG.
+            let g = img.to_luma8();
+            let (lo, hi) = g
+                .pixels()
+                .fold((255u8, 0u8), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+            assert!(hi - lo > 64, "{name}: decoded frame is flat ({lo}..{hi})");
+        }
+    }
+
     /// END-TO-END on the corpus: extract the unit with the SAME core walk the parent uses
     /// (`mpeg12::intra_slice_bytes`), decode it here, and get a plausible PNG back. Covers
     /// MPEG-2 ES, MPEG-1 system stream, MPEG-2 program streams and the real MPEG-1 ES.

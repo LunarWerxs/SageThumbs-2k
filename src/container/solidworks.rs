@@ -53,4 +53,38 @@ mod tests {
             assert!(extract(&bytes).is_none());
         }
     }
+
+    /// The two refusals, WITHOUT the corpus, so CI exercises them too: the test above skips
+    /// entirely on a runner (the corpus is a gitignored sibling directory), which left the
+    /// only always-on coverage of this reader as the fuzz target's "does not panic".
+    ///
+    /// Both cases are ones a user really has: an OLE document from another application that
+    /// happens to reach this reader, and a SolidWorks file whose `PreviewPNG` stream holds
+    /// something that is not a raster. Neither may return bytes the decode tiers would then
+    /// fail on - the stock icon is the honest answer.
+    #[test]
+    fn an_ole_file_without_a_usable_preview_stream_is_declined() {
+        // A structurally valid OLE compound file with no `PreviewPNG` stream at all, taken
+        // from the fuzz seed set so this test and the fuzzer share one definition of "OLE".
+        let plain_ole = crate::container::fuzzseed::seeds()
+            .into_iter()
+            .find(|(name, _)| *name == "ole")
+            .expect("the fuzz seed set must carry an `ole` entry")
+            .1;
+        assert!(
+            looks_like_solidworks(&plain_ole),
+            "the seed must be OLE, or this proves nothing"
+        );
+        assert!(
+            extract(&plain_ole).is_none(),
+            "an OLE file with no PreviewPNG stream must decline"
+        );
+
+        // Truncated and garbage inputs take the same route as a corrupt file on disk.
+        assert!(extract(&[]).is_none());
+        assert!(extract(b"not an ole file at all").is_none());
+        for n in 0..plain_ole.len().min(2048) {
+            assert!(extract(&plain_ole[..n]).is_none());
+        }
+    }
 }
