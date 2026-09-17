@@ -907,7 +907,9 @@ mod tests {
                         dims
                     } else {
                         let img = image::load_from_memory(&raw).unwrap_or_else(|e| {
-                            panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
+                            panic!(
+                                "{name}: extract_cover handed back bytes that do not decode: {e}"
+                            )
                         });
                         (img.width(), img.height())
                     }
