@@ -7,15 +7,21 @@
 //! * `st2k vp9-frame` ([`vp9`], feature `vp9-video`): one raw VP9 keyframe on STDIN → a
 //!   PNG on STDOUT (`vp9dec` — Profile 2/3 10/12-bit, which Media Foundation cannot
 //!   decode at all; issue #26's last open codec).
+//! * `st2k mpeg-frame` ([`mpeg`], feature `mpeg-video`): one MPEG-1/2 elementary-stream
+//!   unit (sequence header + one intra picture, cut by the parent's own demux) on STDIN →
+//!   a PNG on STDOUT (`oxideav-mpeg12video` — VideoCD-era MPEG-1 system streams and bare
+//!   MPEG video elementary streams, which Media Foundation cannot open on any Windows, and
+//!   MPEG-2 program streams without the Store extension).
 //!
-//! Both are the CHILD side of a `sagethumbs2k_core` spawner (`flv::flash_frame` /
-//! `vp9::vp9_frame`, sharing one harness: `flv::child_frame_png`). The decoders here
-//! either PANIC on malformed input (nihav/h263) or carry a 0.1.x-sized unsafe surface
-//! (vp9dec's SIMD), and the workspace builds `panic = "abort"`, so they may only ever run
-//! in this throwaway process: a crash is a non-zero exit the parent shrugs at, never a
-//! dead Explorer. That is also why these modules are compiled ONLY into the `st2k`
-//! console binary behind EXE-only features — `cargo tree -p sagethumbs2k-dll` must never
-//! list nihav, h263, or vp9dec (mirrors the webview2 arrangement).
+//! All three are the CHILD side of a `sagethumbs2k_core` spawner (`flv::flash_frame` /
+//! `vp9::vp9_frame` / `mpeg12::mpeg_frame`, sharing one harness: `flv::child_frame_png`).
+//! The decoders here either PANIC on malformed input (nihav/h263), carry a 0.1.x-sized
+//! unsafe surface (vp9dec's SIMD) or are a 0.0.x crate (oxideav), and the workspace builds
+//! `panic = "abort"`, so they may only ever run in this throwaway process: a crash is a
+//! non-zero exit the parent shrugs at, never a dead Explorer. That is also why these
+//! modules are compiled ONLY into the `st2k` console binary behind EXE-only features —
+//! `cargo tree -p sagethumbs2k-dll` must never list nihav, h263, vp9dec or oxideav
+//! (mirrors the webview2 arrangement).
 //!
 //! Stdin/stdout on purpose (matching the ImageMagick child): a decoded frame of someone's
 //! video never touches the disk.
@@ -24,6 +30,8 @@ use std::io::{Read, Write};
 
 #[cfg(feature = "flash-video")]
 mod flv;
+#[cfg(feature = "mpeg-video")]
+mod mpeg;
 #[cfg(feature = "vp9-video")]
 mod vp9;
 
@@ -143,5 +151,15 @@ pub fn run_vp9() -> i32 {
         "vp9-frame",
         sagethumbs2k_core::vp9::VP9_INPUT_CAP,
         vp9::frame_png,
+    )
+}
+
+/// Entry point for `st2k mpeg-frame`: returns the process exit code.
+#[cfg(feature = "mpeg-video")]
+pub fn run_mpeg() -> i32 {
+    run_child(
+        "mpeg-frame",
+        sagethumbs2k_core::mpeg12::MPEG_INPUT_CAP,
+        mpeg::frame_png,
     )
 }

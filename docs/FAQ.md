@@ -62,11 +62,11 @@ skipped on purpose and instantly, because the Windows 10 decoder hangs on such f
 than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
 yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
 
-Two old MPEG shapes are also skipped, because Windows has no decoder path for them at all:
-MPEG-1 system streams (VideoCD-era `.mpg` and `.dat`, and what most late-1990s cameras
-recorded) and bare MPEG video elementary streams (`.m2v`). MPEG-2 program streams, which is
-what DVD rips and most `.vob` files are, do thumbnail once the free **MPEG-2 Video Extension**
-from the Microsoft Store is installed.
+MPEG-1 and MPEG-2 files need nothing installed. Windows has no decoder path at all for MPEG-1
+system streams (VideoCD-era `.mpg`, and what most late-1990s cameras recorded) or for bare MPEG
+video streams (`.m1v`, `.m2v`), and it opens DVD-style `.vob` files only with the Store's
+MPEG-2 Video Extension; SageThumbs 2K decodes all of them itself whenever Windows declines, so
+that extension is optional (with it installed, Windows draws `.vob` frames a little faster).
 
 </details>
 

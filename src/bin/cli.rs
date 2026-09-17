@@ -6,7 +6,7 @@
 use sagethumbs2k_core::cli;
 
 // The hidden video-decode child verbs (`flv-frame`: VP6 via nihav + Sorenson via h263-rs;
-// `vp9-frame`: VP9 Profile 2/3 via vp9dec). Behind EXE-only features so the panicky /
+// `vp9-frame`: VP9 Profile 2/3 via vp9dec; `mpeg-frame`: MPEG-1/2 via oxideav-mpeg12video). Behind EXE-only features so the panicky /
 // unsafe-heavy decoder crates exist ONLY in this console binary — see src/bin/vdec/mod.rs
 // for the whole containment argument.
 #[cfg(any(feature = "flash-video", feature = "vp9-video"))]
@@ -521,9 +521,10 @@ fn main() {
 
     // HIDDEN verbs, deliberately absent from USAGE (like the app's `--shot` harness): our
     // own DLL/EXE spawns `st2k flv-frame` with FLV bytes on stdin (first VP6/Sorenson
-    // keyframe back as a PNG) or `st2k vp9-frame` with one raw VP9 keyframe on stdin
-    // (decoded frame back as a PNG) — binary stdout, so neither may ever go through the
-    // println! path below. Exit 0 with output; any failure is a non-zero exit and none.
+    // keyframe back as a PNG), `st2k vp9-frame` with one raw VP9 keyframe on stdin, or
+    // `st2k mpeg-frame` with one MPEG-1/2 intra-picture unit on stdin (decoded frame back
+    // as a PNG) — binary stdout, so none may ever go through the println! path below.
+    // Exit 0 with output; any failure is a non-zero exit and none.
     if args.first().is_some_and(|a| a == "flv-frame") {
         #[cfg(feature = "flash-video")]
         std::process::exit(vdec::run_flv());
@@ -539,6 +540,15 @@ fn main() {
         #[cfg(not(feature = "vp9-video"))]
         {
             eprintln!("st2k: this build was compiled without the vp9-video feature");
+            std::process::exit(1);
+        }
+    }
+    if args.first().is_some_and(|a| a == "mpeg-frame") {
+        #[cfg(feature = "mpeg-video")]
+        std::process::exit(vdec::run_mpeg());
+        #[cfg(not(feature = "mpeg-video"))]
+        {
+            eprintln!("st2k: this build was compiled without the mpeg-video feature");
             std::process::exit(1);
         }
     }

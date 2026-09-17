@@ -282,6 +282,21 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 # `st2k vp9-frame` child process, never the shell DLL. Acceptance check:
 # `cargo tree -p sagethumbs2k-dll` must never list vp9dec.
 vp9dec = { version = "0.1.1", optional = true }
+# --- MPEG-1 / MPEG-2 video (VideoCD-era .mpg, bare .m1v/.m2v, .vob without the Store add-on) ---
+# Media Foundation has NO source for an MPEG-1 system stream or a bare MPEG video elementary
+# stream on any Windows, and opens an MPEG-2 program stream only with the Store "MPEG-2 Video
+# Extension" (measured 2026-09-17: every corpus MPEG-1 and bare-ES sample failed every MF tier
+# with the extension installed). `oxideav-mpeg12video` is a clean-room pure-Rust MPEG-1/2
+# decoder (MIT, MSRV 1.80, no `unsafe` in the decoder crate; its one dependency `oxideav-core`
+# pulls bytemuck / serde_json / thiserror), verified here on the corpus's MPEG-1 SS, MPEG-2 PS
+# and bare ES streams plus the FATE matrixbench stream, and fuzzed with 20k unit mutations
+# (0 panics, worst case 135 ms). It decodes a WHOLE elementary stream to frames, so the core
+# side (`src/mpeg12.rs`, our own bounded demux) hands it exactly one intra picture.
+# OPTIONAL behind the EXE-only `mpeg-video` feature, the same containment as `flash-video`
+# and `vp9-video` above: a 0.0.x decoder runs ONLY in the throwaway `st2k mpeg-frame` child
+# under the 512 MiB job cap, never the shell DLL. Acceptance check:
+# `cargo tree -p sagethumbs2k-dll` must never list oxideav.
+oxideav-mpeg12video = { version = "0.0.13", optional = true }
 
 nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
 nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
@@ -315,7 +330,7 @@ hdr-capture = [
 # VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
 # `default-features = false` (its effective feature set was empty before this and is
 # unchanged). See the `flash-video` entry below for why the DLL must never enable it.
-default = ["flash-video", "vp9-video"]
+default = ["flash-video", "vp9-video", "mpeg-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -349,6 +364,15 @@ flash-video = [
 # spawns the sibling st2k.exe, and a build without this feature answers that spawn with a
 # clean non-zero exit (no thumbnail — exactly the pre-support behaviour for Profile 2/3).
 vp9-video = ["dep:vp9dec"]
+# MPEG-1/2 intra-picture decode for the hidden `st2k mpeg-frame` child verb. EXE-ONLY, the
+# exact `flash-video` / `vp9-video` containment: `oxideav-mpeg12video` is referenced ONLY
+# from `src/bin/vdec/` (the st2k console binary), and the DLL package opts out via
+# `default-features = false` on its core dependency, so the 0.0.x decoder never links into
+# the shell-extension cdylib (acceptance check: `cargo tree -p sagethumbs2k-dll` lists no
+# oxideav). The core rlib needs no cfg: it just spawns the sibling st2k.exe, and a build
+# without this feature answers that spawn with a clean non-zero exit (no thumbnail — exactly
+# the pre-support behaviour for these streams).
+mpeg-video = ["dep:oxideav-mpeg12video"]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
 webp-lossy = ["dep:webp"]

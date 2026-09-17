@@ -28,6 +28,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   photos (`.sfw`, the 1990s "Pictures on Disk" floppies) and Alias/Wavefront `.pix` images are
   decoded by SageThumbs itself now, and Scitex `.sct` files reach the right reader. Found by
   feeding the test corpus real files from other programs for every format it lists.
+- **VideoCD-era and raw MPEG video files thumbnail now, without any Store extension.** Windows
+  has no decoder path for MPEG-1 system streams (the `.mpg` a 1990s camera or a VideoCD wrote)
+  or for bare MPEG video streams (`.m1v`, `.m2v`), and needs the Store's MPEG-2 Video Extension
+  before it will open DVD-style `.vob` files. SageThumbs 2K now decodes all of them itself, in
+  pure Rust and in the same separate short-lived process its FLV and VP9 decoders use, whenever
+  Windows declines. `.m1v` is a new file type.
 - **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
   on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
   highlighted button until a copy holds a licence), a personal copy's "no licence needed"

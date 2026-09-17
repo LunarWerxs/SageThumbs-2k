@@ -1713,6 +1713,27 @@
    "file": "real.mctemplate",
    "alias_of": "sample.mcworld",
    "why": "a Bedrock world template is a world zip (world_icon.jpeg, levelname.txt) plus a manifest.json"
+  },
+  {
+   "file": "real.m1v",
+   "url": "https://sembiance.com/fileFormatSamples/video/mpeg1/ROCKET.MPG",
+   "sha256": "AD11CED0A0B17B07EFCE30168C5146AA70578AFDE738EC043BBA43A597339BC5",
+   "bytes": 104987,
+   "source": "sembiance fileFormatSamples  video/mpeg1/ROCKET.MPG (a 1990s bare MPEG-1 video elementary stream, 160x120)"
+  },
+  {
+   "file": "real-vcd.mpg",
+   "url": "https://samples.ffmpeg.org/MPEG1/zelda%20first%20commercial.mpeg",
+   "sha256": "0C6498334FF4B3EF5962BBBC76875C71F913A5ECB0E1D92F7C0B500A37363DA2",
+   "bytes": 2570244,
+   "source": "samples.ffmpeg.org  MPEG1/zelda first commercial.mpeg (an MPEG-1 SYSTEM stream carrying MPEG-1 video + MP2: the VideoCD-era shape Media Foundation cannot open)"
+  },
+  {
+   "file": "real-es.m2v",
+   "url": "https://samples.ffmpeg.org/MPEG2/test422.m2v",
+   "sha256": "8B1338C09822B59C3401EDFFCABFBA509EB6ECE8E19DDEB26538915591D0A8BD",
+   "bytes": 4959840,
+   "source": "samples.ffmpeg.org  MPEG2/test422.m2v (a bare MPEG-2 4:2:2 video elementary stream, 720x576; real.m2v is a program stream, this is the ES shape)"
   }
  ],
  "existing": {
@@ -2722,13 +2743,15 @@
    "real.f4v"
   ],
   "mpg": [
-   "real.mpg"
+   "real.mpg",
+   "real-vcd.mpg"
   ],
   "mpeg": [
    "real.mpeg"
   ],
   "m2v": [
-   "real.m2v"
+   "real.m2v",
+   "real-es.m2v"
   ],
   "3gp": [
    "real.3gp"
@@ -2763,6 +2786,9 @@
   ],
   "zip": [
    "real.zip"
+  ],
+  "m1v": [
+   "real.m1v"
   ]
  },
  "waived": {

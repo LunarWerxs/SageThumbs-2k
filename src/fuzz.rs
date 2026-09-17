@@ -97,6 +97,16 @@ fn header_targets() -> Vec<Target> {
         ("flv::video_codec_id", |b| {
             let _ = crate::flv::video_codec_id(&mut Cursor::new(b));
         }),
+        // The MPEG-1/2 demux + intra-picture slicer (2026-09-17): the program-stream walk
+        // (pack / system / PES headers with file-supplied lengths) and the start-code scan
+        // that picks the GOP and picture both run IN-PROCESS in the shell; only the decode
+        // crosses to `st2k mpeg-frame`. A target from the day it landed.
+        ("mpeg12::intra_slice_bytes", |b| {
+            let _ = crate::mpeg12::intra_slice_bytes(&mut Cursor::new(b), 0.30);
+        }),
+        ("mpeg12::identify", |b| {
+            let _ = crate::mpeg12::identify(&mut Cursor::new(b));
+        }),
         ("mp4::video_codec_fourcc", |b| {
             let _ = crate::mp4::video_codec_fourcc(&mut Cursor::new(b));
         }),
@@ -231,6 +241,14 @@ fn inner_targets() -> Vec<Target> {
         ("jp2::decode_reduced", jp2::decode_reduced),
         ("flv::sps_dims", flv::sps_dims),
         ("flv::parse_sps", flv::parse_sps),
+        // The two MPEG stages on their own bytes: a mutation that breaks the four-byte magic
+        // would otherwise never reach the PES-length arithmetic or the GOP/picture walk.
+        ("mpeg12::demux_program_stream", |b| {
+            let _ = crate::mpeg12::demux_program_stream(b);
+        }),
+        ("mpeg12::intra_slice", |b| {
+            let _ = crate::mpeg12::intra_slice(b, b.len() / 3);
+        }),
         (
             "flv::strip_emulation_prevention",
             flv::strip_emulation_prevention,
@@ -1188,6 +1206,20 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("ply-tetra", mesh_seed_ply()),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
+        // The MPEG-1/2 shapes `mpeg12` walks: a bare MPEG-2 and MPEG-1 elementary stream (two
+        // GOPs, an I and a P picture, extensions), the MPEG-1 SYSTEM wrapping (MPEG-1 pack +
+        // PES headers, an audio and a padding packet) and the MPEG-2 PROGRAM wrapping
+        // (MPEG-2 pack + PES headers, a private-stream packet, a zero-length PES).
+        ("mpeg2-es", crate::mpeg12::fuzzseed::elementary(true)),
+        ("mpeg1-es", crate::mpeg12::fuzzseed::elementary(false)),
+        (
+            "mpeg1-ss",
+            crate::mpeg12::fuzzseed::mpeg1_system(&crate::mpeg12::fuzzseed::elementary(false)),
+        ),
+        (
+            "mpeg2-ps",
+            crate::mpeg12::fuzzseed::mpeg2_program(&crate::mpeg12::fuzzseed::elementary(true)),
+        ),
         // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
         // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
         // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
@@ -1285,6 +1317,24 @@ fn every_new_surface_seed_reaches_its_parser() {
         Some((64, 48)),
         "h264-avcc seed no longer parses to its known 64x48 geometry"
     );
+    // The MPEG-1/2 seeds: every wrapping demuxes to its elementary stream and slices to a
+    // unit that starts with the sequence header, through the same reader entry point the
+    // cascades call.
+    for (label, seed) in new_surface_seeds() {
+        if !label.starts_with("mpeg") {
+            continue;
+        }
+        let unit = crate::mpeg12::intra_slice_bytes(&mut Cursor::new(&seed[..]), 0.30)
+            .unwrap_or_else(|| panic!("{label} seed no longer reaches an intra picture"));
+        assert!(
+            unit.starts_with(&[0, 0, 1, 0xB3]),
+            "{label} unit must open with a sequence header"
+        );
+        assert!(
+            crate::mpeg12::identify(&mut Cursor::new(&seed[..])).is_some(),
+            "{label} seed no longer identifies its codec"
+        );
+    }
     // The audio seeds, all via the same entry point `header_targets` fuzzes.
     assert!(
         crate::container::audio_art_from_reader(Cursor::new(synthetic_wav())).is_some(),
@@ -1433,21 +1483,24 @@ fn deep_session_over_the_new_parsers() {
     for t in header_targets() {
         if matches!(
             t.0,
-            "mkv::vp9_keyframe" | "flv::scan_flash_keyframe" | "flv::video_codec_id"
+            "mkv::vp9_keyframe"
+                | "flv::scan_flash_keyframe"
+                | "flv::video_codec_id"
+                | "mpeg12::intra_slice_bytes"
         ) {
             targets.push(t);
         }
     }
-    // The three names above are matched by string, not carried as a slice from a shared
+    // The four names above are matched by string, not carried as a slice from a shared
     // constant, so a rename of any one of them would silently drop that target from this
     // session instead of failing to compile. Assert the count instead of trusting the match.
-    const EXPECTED_NAMED_HEADER_TARGETS: usize = 3;
+    const EXPECTED_NAMED_HEADER_TARGETS: usize = 4;
     assert_eq!(
         targets.len() - before_header_targets,
         EXPECTED_NAMED_HEADER_TARGETS,
         "deep_session_over_the_new_parsers expected {EXPECTED_NAMED_HEADER_TARGETS} header \
-         targets by name (mkv::vp9_keyframe, flv::scan_flash_keyframe, flv::video_codec_id) — \
-         a rename dropped one silently"
+         targets by name (mkv::vp9_keyframe, flv::scan_flash_keyframe, flv::video_codec_id, \
+         mpeg12::intra_slice_bytes) — a rename dropped one silently"
     );
     targets.push(("container::extract_cover", |b| {
         let _ = crate::container::extract_cover(b);

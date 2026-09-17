@@ -7,8 +7,9 @@
 //! indistinguishable from a bug in us.
 //!
 //! Identification is pure Rust over the container's own metadata — the Matroska `CodecID`
-//! (`crate::mkv`), the ISO-BMFF `stsd` sample-entry fourcc (`crate::mp4`), or the FLV
-//! VideoTagHeader codec id (`crate::flv`) — no MF calls, no decode attempt. The presence probe then asks MF's own registry (`MFTEnumEx`) whether
+//! (`crate::mkv`), the ISO-BMFF `stsd` sample-entry fourcc (`crate::mp4`), the FLV
+//! VideoTagHeader codec id (`crate::flv`), or the sequence header of an MPEG-1/2 program or
+//! elementary stream (`crate::mpeg12`) — no MF calls, no decode attempt. The presence probe then asks MF's own registry (`MFTEnumEx`) whether
 //! ANY decoder claims the codec's subtype, which answers "is it installed" without touching
 //! the file. Both are `doctor`-only paths, never on the thumbnail hot path.
 
@@ -42,9 +43,11 @@ pub struct CodecInfo {
     /// Foundation presence check reports separately).
     pub install_hint: Option<&'static str>,
     /// SageThumbs 2K decodes this codec ITSELF (out of process via `st2k flv-frame` —
-    /// FLV's VP6 and Sorenson Spark). No Windows decoder exists, none can be installed,
-    /// and neither fact is a problem: the thumbnail works anyway, and `doctor` must say
-    /// so instead of prescribing a Store extension that doesn't exist.
+    /// FLV's VP6 and Sorenson Spark — or `st2k mpeg-frame` — MPEG-1/2 in a program or
+    /// elementary stream). Whether a Windows decoder exists (none for VP6; the Store
+    /// MPEG-2 extension for a `.vob`) or not, none is needed: the thumbnail works anyway,
+    /// and `doctor` must say so instead of prescribing an extension that doesn't exist or
+    /// isn't required.
     pub self_decoded: bool,
     /// Set when the codec IS one Windows decodes but the track's PROFILE is one its decoder
     /// does not implement (H.264 4:4:4 / 4:2:2 / 10-bit, issue #35): the human-readable
@@ -61,14 +64,16 @@ const HINT_VP9: &str = "install the free 'VP9 Video Extensions' from the Microso
 const HINT_MPEG2: &str = "install the free 'MPEG-2 Video Extension' from the Microsoft Store";
 const HINT_THEORA: &str = "install the free 'Web Media Extensions' from the Microsoft Store";
 
-/// Identify the video codec of `r` — a Matroska/WebM, ISO-BMFF (MP4/MOV), or FLV source.
-/// Each container parser self-gates on its magic, so trying them in turn is cheap. `None`:
-/// some other container (AVI/WMV/…) or no video track found.
+/// Identify the video codec of `r` — a Matroska/WebM, ISO-BMFF (MP4/MOV), FLV, or MPEG-1/2
+/// program / elementary stream source. Each container parser self-gates on its magic, so
+/// trying them in turn is cheap. `None`: some other container (AVI/WMV/TS/…) or no video
+/// track found.
 pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     let mut info = crate::mkv::video_codec_id(r)
         .map(|id| from_mkv_codec_id(&id))
         .or_else(|| crate::mp4::video_codec_fourcc(r).map(from_mp4_fourcc))
-        .or_else(|| crate::flv::video_codec_id(r).map(from_flv_codec_id))?;
+        .or_else(|| crate::flv::video_codec_id(r).map(from_flv_codec_id))
+        .or_else(|| crate::mpeg12::identify(r).map(from_mpeg12))?;
     // "A decoder is installed" is only half the answer for H.264: the inbox decoder stops
     // at High 8-bit 4:2:0, and a 4:4:4 file with that decoder present is exactly the file
     // the cascade refuses on purpose (issue #35). Say which, so the report names the cause.
@@ -244,6 +249,30 @@ fn from_flv_codec_id(id: u8) -> CodecInfo {
         known: true,
         install_hint: None,
         self_decoded,
+        mf_profile_block: None,
+    }
+}
+
+/// MPEG-1 or MPEG-2 video in an MPEG program stream (`.mpg`/`.mpeg`/`.vob`) or a bare
+/// elementary stream (`.m1v`/`.m2v`): decoded by SageThumbs 2K itself (out of process,
+/// `st2k mpeg-frame`) since 2026-09-17, so `self_decoded` keeps `doctor` from prescribing
+/// the Store "MPEG-2 Video Extension" for a file that thumbnails without it. The hint stays
+/// on Matroska's `V_MPEG2` above on purpose: MPEG-2 inside a container Media Foundation
+/// demuxes (MKV, TS) still needs that decoder, because our demux only speaks program and
+/// elementary streams. No `subtype`: the probe would report the extension's absence as a
+/// finding, and it is not one here.
+fn from_mpeg12(codec: crate::mpeg12::Codec) -> CodecInfo {
+    let (raw, name) = match codec {
+        crate::mpeg12::Codec::Mpeg1 => ("mpeg1video", "MPEG-1 Video"),
+        crate::mpeg12::Codec::Mpeg2 => ("mpeg2video", "MPEG-2 Video"),
+    };
+    CodecInfo {
+        raw: raw.to_string(),
+        name: name.to_string(),
+        subtype: None,
+        known: true,
+        install_hint: None,
+        self_decoded: true,
         mf_profile_block: None,
     }
 }

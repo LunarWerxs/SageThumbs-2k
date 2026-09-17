@@ -1813,7 +1813,15 @@ fn try_video_tier(
         // why the pure-Rust decoder must never run in THIS process). Deliberately LAST:
         // Profile 0 is the common case and MF is hardware-accelerated and in-process —
         // it must keep winning, and only otherwise-blank tiles pay for a spawn.
-        .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at));
+        .or_else(|| crate::vp9::vp9_frame(&mut std::io::Cursor::new(bytes), at))
+        // MPEG-1 system streams, bare MPEG-1/2 elementary streams, and MPEG-2 program
+        // streams on a machine without the Store extension: Media Foundation has no source
+        // for the first two on any Windows, so when every MF tier above came back empty AND
+        // the head is one of the two MPEG magics, our own demux cuts one intra picture and
+        // the sibling st2k.exe decodes it out of process (`crate::mpeg12`). Last for the
+        // same reason as VP9: a `.vob` with the Store extension, or a transport stream
+        // named `.mpg`, keeps hitting the in-process MF path.
+        .or_else(|| crate::mpeg12::mpeg_frame(&mut std::io::Cursor::new(bytes), at));
     if let Some(frame) = frame {
         // ISSUE #32, the by-bytes twin of the gate in `streamsrc::try_video_source`, and kept
         // in step with it deliberately: a clip rotated losslessly (metadata only, no

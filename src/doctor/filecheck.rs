@@ -309,8 +309,9 @@ fn video_codec_note(r: &mut Report, path: &str) {
         r.line(
             S::Info,
             "Video codec",
-            "not identifiable from the container header (only Matroska/WebM, MP4/MOV and \
-             FLV carry one we parse) — the decode check below is the real test",
+            "not identifiable from the container header (only Matroska/WebM, MP4/MOV, FLV \
+             and MPEG program/elementary streams carry one we parse) — the decode check \
+             below is the real test",
         );
         return;
     };
@@ -332,17 +333,18 @@ fn video_codec_note(r: &mut Report, path: &str) {
         );
         return;
     }
-    // Codecs we decode OURSELVES (FLV's VP6 / Sorenson Spark, out of process via st2k):
-    // Windows has no decoder and never will, and that is fine — say so BEFORE the MF
-    // probe, whose honest answer ("no decoder installed") would come with a fix
-    // prescription that does not apply.
+    // Codecs we decode OURSELVES (FLV's VP6 / Sorenson Spark, MPEG-1/2 in a program or
+    // elementary stream; out of process via st2k): whether Windows has a decoder (the Store
+    // MPEG-2 extension) or never will (VP6), none is needed — say so BEFORE the MF probe,
+    // whose honest answer ("no decoder installed") would come with a fix prescription that
+    // does not apply.
     if info.self_decoded {
         r.line(
             S::Ok,
             "Video codec",
             &format!(
-                "{label} — decoded by SageThumbs 2K's own built-in decoder (Windows has \
-                 none for this codec, and none is needed)"
+                "{label} — decoded by SageThumbs 2K's own built-in decoder (no Windows \
+                 decoder is needed for this file)"
             ),
         );
         return;

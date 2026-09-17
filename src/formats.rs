@@ -53,11 +53,22 @@ const RAW_EXTS: &[&str] = &[
 ];
 // Video — a frame is grabbed via the OS Media Foundation codecs (no bundled bytes),
 // streamed from disk. MF decodes what the OS has a codec for; the rest keep their
-// default icon. Must mirror the Video block in FORMATS.
+// default icon — except the codecs we decode ourselves out of process (FLV's VP6 /
+// Sorenson, VP9 Profile 2/3, and MPEG-1/2 in program and elementary streams: `mpg`,
+// `mpeg`, `m1v`, `m2v`, `vob`). Must mirror the Video block in FORMATS.
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
-    "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
+    "m1v", "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
 ];
+/// The video extensions whose thumbnail does NOT depend on an OS codec: our own decoders
+/// answer them. FLV's VP6 / Sorenson Spark (`st2k flv-frame`) and the MPEG family — MPEG-1
+/// system streams and bare elementary streams have no Media Foundation source on any
+/// Windows, and MPEG-2 program streams only with the Store extension, so all five decode
+/// through `st2k mpeg-frame` when MF declines (2026-09-17). `capability()` answers at the
+/// EXTENSION level (like every other field here): an H.264 FLV or a transport stream named
+/// `.mpg` still rides Media Foundation first, and `st2k doctor`'s per-file
+/// `video_codec_note` is the byte-accurate answer for one file.
+const SELF_DECODED_VIDEO_EXTS: &[&str] = &["flv", "mpg", "mpeg", "m1v", "m2v", "vob"];
 // Generic archives — thumbnail = the contained images (first image, or the up-to-4
 // contact sheet per Settings). Deliberately ONLY the big three: the zip-in-disguise
 // long tail (jar/apk/appx/…) would mostly surface a random bundled icon as its
@@ -385,13 +396,11 @@ pub fn capability(ext: &str) -> Capability {
     };
     let os_codec = if AV1_OS_CODEC_EXTS.contains(&ext) {
         Some(OsCodec::Av1)
-    // `flv`'s OWN codecs (VP6 / Sorenson Spark) are decoded IN-PROCESS by
-    // `container::flv`/`st2k flv-frame` - never Media Foundation - so it is excluded from
-    // the blanket video->MediaFoundation rule below (audit E03 #5). An H.264-coded FLV
-    // does still ride Media Foundation via the remux path, but `capability()` answers at
-    // the EXTENSION level (like every other field here), not per-file content-sniff; `st2k
-    // doctor`'s per-file `video_codec_note` is the byte-accurate answer for one file.
-    } else if VIDEO_EXTS.contains(&ext) && ext != "flv" {
+    // The extensions whose own codecs are decoded by `st2k flv-frame` / `st2k mpeg-frame`
+    // - never Media Foundation - are excluded from the blanket video->MediaFoundation rule
+    // below (audit E03 #5; see `SELF_DECODED_VIDEO_EXTS` for why the answer is per
+    // extension, not per file).
+    } else if VIDEO_EXTS.contains(&ext) && !SELF_DECODED_VIDEO_EXTS.contains(&ext) {
         Some(OsCodec::MediaFoundation)
     } else if WMPHOTO_EXTS.contains(&ext) {
         Some(OsCodec::WmPhoto)
@@ -789,6 +798,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("f4v", "Flash MP4 Video"),
     ("mpg", "MPEG Video"),
     ("mpeg", "MPEG Video"),
+    ("m1v", "MPEG-1 Video"),
     ("m2v", "MPEG-2 Video"),
     ("3gp", "3GPP Video"),
     ("3g2", "3GPP2 Video"),
@@ -1116,13 +1126,14 @@ mod tests {
         }
     }
 
-    /// Every video extension depends on Media Foundation, with ONE named exception: `flv`'s
-    /// own codecs (VP6/Sorenson Spark) are decoded in-process by `container::flv`, never MF
-    /// (audit E03 #5) - `st2k doctor`'s per-file `video_codec_note` says the same thing.
+    /// Every video extension depends on Media Foundation, except the ones whose own codecs
+    /// are decoded by us: `flv` (VP6/Sorenson Spark, audit E03 #5) and the MPEG-1/2 program
+    /// and elementary stream family (2026-09-17) - `st2k doctor`'s per-file
+    /// `video_codec_note` says the same thing.
     #[test]
     fn video_category_maps_to_media_foundation() {
         for &ext in VIDEO {
-            let expected = if ext == "flv" {
+            let expected = if SELF_DECODED_VIDEO_EXTS.contains(&ext) {
                 None
             } else {
                 Some(OsCodec::MediaFoundation)
@@ -1136,10 +1147,21 @@ mod tests {
     }
 
     /// Audit E03 #5, pinned directly: FLV keeps its default icon claim honest - its own
-    /// codecs never depend on an OS codec that might be missing.
+    /// codecs never depend on an OS codec that might be missing. The MPEG family joined it
+    /// on 2026-09-17 (our own MPEG-1/2 decoder), and every self-decoded extension must be a
+    /// registered video extension.
     #[test]
     fn flv_os_codec_is_none() {
         assert_eq!(capability("flv").os_codec, None);
+        for ext in ["mpg", "mpeg", "m1v", "m2v", "vob"] {
+            assert_eq!(capability(ext).os_codec, None, "{ext}");
+        }
+        for ext in SELF_DECODED_VIDEO_EXTS {
+            assert!(
+                VIDEO_EXTS.contains(ext),
+                "{ext} is self-decoded but not a video ext"
+            );
+        }
     }
 
     /// Audit E03 #2: AVIF has no in-process AV1 decoder (`Cargo.toml`'s `image` feature list

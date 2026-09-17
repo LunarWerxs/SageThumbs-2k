@@ -11,6 +11,8 @@ countdown.PspTube
 cube.stl
 huge.jp2
 jxl-jpeg420.jxl
+real-es.m2v
+real-vcd.mpg
 real.3g2
 real.3gp
 real.3mf
@@ -146,6 +148,7 @@ real.k25
 real.key
 real.kra
 real.lbm
+real.m1v
 real.m2ts
 real.m2v
 real.m4a
@@ -493,6 +496,7 @@ sample.kra
 sample.lbm
 sample.livp
 sample.m2ts
+sample.m2v
 sample.m4a
 sample.m4b
 sample.m4v
@@ -512,6 +516,8 @@ sample.mov
 sample.mp3
 sample.mp4
 sample.mpc
+sample.mpeg
+sample.mpg
 sample.mpo
 sample.mrw
 sample.mts
@@ -607,6 +613,7 @@ sample.vda
 sample.vicar
 sample.viff
 sample.vips
+sample.vob
 sample.vsd
 sample.vsdm
 sample.vsdx

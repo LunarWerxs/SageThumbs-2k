@@ -488,6 +488,22 @@ unsafe fn mp4_mkv_or_else_tiers(
                 at,
             )
         })
+        .or_else(|| {
+            // 7. MPEG-1 system streams, bare MPEG-1/2 elementary streams, MPEG-2 program
+            //    streams without the Store extension: Media Foundation has no source for the
+            //    first two on any Windows, so when every tier above came back empty AND the
+            //    head is one of the two MPEG magics, our own bounded demux (a window around
+            //    the mark, coalesced block reads) cuts one intra picture and the sibling
+            //    st2k.exe decodes it out of process (`crate::mpeg12`). Deliberately LAST,
+            //    like VP9: a `.vob` on a machine with the Store extension keeps hitting the
+            //    hardware-accelerated in-process MF path.
+            crate::mpeg12::mpeg_frame(
+                &mut IStreamReader {
+                    stream: stream.clone(),
+                },
+                at,
+            )
+        })
 }
 
 /// ISSUE #32, applied HERE because here is where every tier above converges. A clip

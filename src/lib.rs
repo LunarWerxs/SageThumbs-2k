@@ -65,6 +65,7 @@ pub mod licence_state;
 pub mod mcp;
 mod mkv;
 mod mp4;
+pub mod mpeg12;
 // In-box WinRT OCR (`Windows.Media.Ocr`). `pub` so the companion `SageThumbs2K` app bin
 // can read text out of a screen capture it already holds in memory, `doc(hidden)` because
 // it isn't a stable public API — same arrangement as `parallel` below.
