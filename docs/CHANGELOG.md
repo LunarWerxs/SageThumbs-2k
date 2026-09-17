@@ -39,8 +39,9 @@ formats that were listed but never worked on a real file now do.
   files are all drawn by SageThumbs itself now, in a separate short-lived process like its
   Flash and HDR video decoders. Windows cannot open the first three at all, and asks for a
   Store add-on before it will open a `.vob`; neither is needed any more. `.m1v` is a new file
-  type. Recordings that hold MPEG-2 video inside a transport stream or a Matroska file still
-  use Windows' own decoder, so that add-on still matters there.
+  type, and so are `.mpv`, `.mp2v` and `.m2p`, three more names the same old MPEG files are
+  saved under by DVD and capture tools. Recordings that hold MPEG-2 video inside a transport
+  stream or a Matroska file still use Windows' own decoder, so that add-on still matters there.
 - For the few installations that need a business licence: the Licence page has been tidied
   up, and there is now a monthly plan, US$2.99 per computer, alongside the one-time US$49.
   Personal use is unaffected and stays free.

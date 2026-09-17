@@ -166,6 +166,7 @@ kra
 lbm
 livp
 m1v
+m2p
 m2ts
 m2v
 m4a
@@ -186,12 +187,14 @@ mng
 mobi
 mos
 mov
+mp2v
 mp3
 mp4
 mpc
 mpeg
 mpg
 mpo
+mpv
 mrw
 mts
 nef

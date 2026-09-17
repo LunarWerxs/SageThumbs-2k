@@ -58,7 +58,7 @@ const RAW_EXTS: &[&str] = &[
 // `mpeg`, `m1v`, `m2v`, `vob`). Must mirror the Video block in FORMATS.
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
-    "m1v", "m2v", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
+    "m1v", "m2v", "mpv", "mp2v", "m2p", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
 ];
 /// The video extensions whose thumbnail does NOT depend on an OS codec: our own decoders
 /// answer them. FLV's VP6 / Sorenson Spark (`st2k flv-frame`) and the MPEG family — MPEG-1
@@ -68,7 +68,9 @@ const VIDEO_EXTS: &[&str] = &[
 /// EXTENSION level (like every other field here): an H.264 FLV or a transport stream named
 /// `.mpg` still rides Media Foundation first, and `st2k doctor`'s per-file
 /// `video_codec_note` is the byte-accurate answer for one file.
-const SELF_DECODED_VIDEO_EXTS: &[&str] = &["flv", "mpg", "mpeg", "m1v", "m2v", "vob"];
+const SELF_DECODED_VIDEO_EXTS: &[&str] = &[
+    "flv", "mpg", "mpeg", "m1v", "m2v", "mpv", "mp2v", "m2p", "vob",
+];
 // Generic archives — thumbnail = the contained images (first image, or the up-to-4
 // contact sheet per Settings). Deliberately ONLY the big three: the zip-in-disguise
 // long tail (jar/apk/appx/…) would mostly surface a random bundled icon as its
@@ -800,6 +802,17 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("mpeg", "MPEG Video"),
     ("m1v", "MPEG-1 Video"),
     ("m2v", "MPEG-2 Video"),
+    // The same two shapes our own decoder already reads, under the names DVD-authoring and
+    // capture tools write them with (2026-09-17): `mpv`/`mp2v` are a bare MPEG video
+    // elementary stream (what `m2v` is), `m2p` is an MPEG-2 program stream (what `vob` and a
+    // PS-shaped `mpg` are). Nothing new had to be decoded for these - they were rendering
+    // through `mpeg12` already for anyone who renamed the file, and only the registration was
+    // missing. `.mod` (JVC camcorder MPEG-2 PS) and `.dat` (VideoCD) are deliberately NOT
+    // here: both collide with far commoner non-video files (tracker music, every other
+    // `.dat`), which is the standing rule in ROADMAP's rejected appendix.
+    ("mpv", "MPEG Video Elementary Stream"),
+    ("mp2v", "MPEG-2 Video Elementary Stream"),
+    ("m2p", "MPEG-2 Program Stream"),
     ("3gp", "3GPP Video"),
     ("3g2", "3GPP2 Video"),
     ("ts", "MPEG Transport Stream"),

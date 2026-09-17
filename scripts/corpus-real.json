@@ -1734,6 +1734,23 @@
    "sha256": "8B1338C09822B59C3401EDFFCABFBA509EB6ECE8E19DDEB26538915591D0A8BD",
    "bytes": 4959840,
    "source": "samples.ffmpeg.org  MPEG2/test422.m2v (a bare MPEG-2 4:2:2 video elementary stream, 720x576; real.m2v is a program stream, this is the ES shape)"
+  },
+  {
+   "file": "real.m2p",
+   "url": "https://samples.ffmpeg.org/A-codecs/AC3/theoddbot/a52_dvb_remuxed.m2p",
+   "sha256": "DD419BB97CFFD6D0250A20BFC07660C7967E39F00944B6B89392E68EB048FEE6",
+   "bytes": 16157422,
+   "source": "samples.ffmpeg.org  A-codecs/AC3/theoddbot/a52_dvb_remuxed.m2p (a DVB broadcast remuxed to an MPEG-2 program stream, the shape .m2p names)"
+  },
+  {
+   "file": "real.mpv",
+   "alias_of": "real-es.m2v",
+   "why": "A bare MPEG video elementary stream under the name DVD-authoring tools write: .mpv IS the .m2v shape, no container, and the same bytes decode through the same tier"
+  },
+  {
+   "file": "real.mp2v",
+   "alias_of": "real-es.m2v",
+   "why": "The Windows/DVD-tool spelling of an MPEG-2 video elementary stream - the same bytes as .m2v, named to say the codec is MPEG-2 rather than MPEG-1"
   }
  ],
  "existing": {
@@ -1815,232 +1832,64 @@
   "sample.xcf": "build-corpus.ps1 pin: https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf"
  },
  "coverage": {
-  "ai": [
-   "real.ai"
+  "3dm": [
+   "sample.3dm"
   ],
-  "apng": [
-   "real.apng"
+  "3fr": [
+   "sample.3fr"
   ],
-  "avif": [
-   "real.avif",
-   "sample-avif-alpha.avif"
+  "3g2": [
+   "real.3g2"
   ],
-  "bmp": [
-   "real.bmp"
-  ],
-  "bw": [
-   "real.bw"
-  ],
-  "cal": [
-   "real.cal"
-  ],
-  "cals": [
-   "real.cals"
-  ],
-  "cdr": [
-   "real.cdr"
-  ],
-  "cdt": [
-   "real.cdt"
-  ],
-  "cmx": [
-   "real.cmx"
-  ],
-  "cin": [
-   "real.cin"
-  ],
-  "cur": [
-   "real.cur"
-  ],
-  "cut": [
-   "real.cut"
-  ],
-  "dcm": [
-   "real.dcm",
-   "sample.dcm"
-  ],
-  "dcx": [
-   "real.dcx"
-  ],
-  "dds": [
-   "real.dds",
-   "sample-dds-bc6hs.dds",
-   "sample-dds-bc7-real.dds"
-  ],
-  "dib": [
-   "real.dib"
-  ],
-  "dicom": [
-   "real.dicom"
-  ],
-  "dpx": [
-   "real.dpx"
-  ],
-  "dxt1": [
-   "real.dxt1"
-  ],
-  "dxt5": [
-   "real.dxt5"
-  ],
-  "emf": [
-   "real.emf"
-  ],
-  "emz": [
-   "real.emz"
-  ],
-  "eps": [
-   "real.eps"
-  ],
-  "exr": [
-   "real.exr"
-  ],
-  "farbfeld": [
-   "real.farbfeld"
-  ],
-  "ff": [
-   "real.ff"
-  ],
-  "fits": [
-   "real.fits"
-  ],
-  "fts": [
-   "real.fts"
-  ],
-  "gif": [
-   "real.gif"
-  ],
-  "hdr": [
-   "real.hdr"
-  ],
-  "heic": [
-   "real.heic",
-   "sample-heic-alpha.heic",
-   "sample.heic"
-  ],
-  "heif": [
-   "real.heif"
-  ],
-  "icb": [
-   "real.icb"
-  ],
-  "ico": [
-   "real.ico"
-  ],
-  "icon": [
-   "real.icon"
-  ],
-  "icns": [
-   "real.icns"
-  ],
-  "j2c": [
-   "real.j2c"
-  ],
-  "j2k": [
-   "real.j2k"
-  ],
-  "jfif": [
-   "real.jfif"
-  ],
-  "jng": [
-   "real.jng"
-  ],
-  "jp2": [
-   "real.jp2"
-  ],
-  "jpc": [
-   "real.jpc"
-  ],
-  "jpe": [
-   "real.jpe"
-  ],
-  "jpeg": [
-   "real.jpeg"
-  ],
-  "jpg": [
-   "real.jpg"
-  ],
-  "jpm": [
-   "real.jpm"
-  ],
-  "jps": [
-   "real.jps"
-  ],
-  "jxl": [
-   "real.jxl"
-  ],
-  "jxr": [
-   "real.jxr"
-  ],
-  "wdp": [
-   "real.wdp"
-  ],
-  "hdp": [
-   "real.hdp"
-  ],
-  "mac": [
-   "real.mac"
-  ],
-  "iff": [
-   "real.iff"
-  ],
-  "ilbm": [
-   "real.ilbm"
-  ],
-  "lbm": [
-   "real.lbm"
-  ],
-  "mat": [
-   "real.mat"
-  ],
-  "miff": [
-   "real.miff"
-  ],
-  "mng": [
-   "real.mng"
-  ],
-  "mpo": [
-   "real.mpo"
-  ],
-  "ora": [
-   "real.ora"
-  ],
-  "kra": [
-   "real.kra"
+  "3gp": [
+   "real.3gp"
   ],
   "3mf": [
    "real.3mf"
   ],
-  "stl": [
-   "real.stl"
+  "7z": [
+   "archive-sample.7z",
+   "archive-nonsolid.7z"
   ],
-  "obj": [
-   "real.obj"
-  ],
-  "ply": [
-   "real.ply"
-  ],
-  "fcstd": [
-   "real.fcstd"
-  ],
-  "gcode": [
-   "real.gcode"
-  ],
-  "gco": [
-   "real.gco"
+  "aac": [
+   "real.aac"
   ],
   "afdesign": [
    "sample.afdesign"
   ],
-  "blend": [
-   "real.blend",
-   "sample.blend"
+  "ai": [
+   "real.ai"
   ],
-  "clip": [
-   "sample.clip"
+  "aif": [
+   "real.aif"
   ],
-  "pxo": [
-   "real.pxo",
-   "sample.pxo"
+  "aifc": [
+   "real.aifc"
+  ],
+  "aiff": [
+   "real.aiff"
+  ],
+  "ape": [
+   "real.ape"
+  ],
+  "apk": [
+   "real.apk",
+   "sample.apk"
+  ],
+  "apkm": [
+   "sample.apkm"
+  ],
+  "apks": [
+   "sample.apks"
+  ],
+  "apng": [
+   "real.apng"
+  ],
+  "arw": [
+   "sample.arw"
+  ],
+  "ase": [
+   "sample-banner.ase"
   ],
   "aseprite": [
    "real.aseprite",
@@ -2048,306 +1897,32 @@
    "sample-indexed.aseprite",
    "sample.aseprite"
   ],
-  "ase": [
-   "sample-banner.ase"
+  "asf": [
+   "real.asf"
+  ],
+  "avi": [
+   "real.avi"
+  ],
+  "avif": [
+   "real.avif",
+   "sample-avif-alpha.avif"
+  ],
+  "azw": [
+   "real.azw"
+  ],
+  "azw3": [
+   "real.azw3"
   ],
   "bgcode": [
    "real.bgcode",
    "sample.bgcode"
   ],
-  "sldprt": [
-   "real.sldprt"
-  ],
-  "sldasm": [
-   "real.sldasm",
-   "sample.sldasm"
-  ],
-  "slddrw": [
-   "real.slddrw"
-  ],
-  "mcworld": [
-   "sample.mcworld"
-  ],
-  "mctemplate": [
-   "real.mctemplate"
-  ],
-  "mcpack": [
-   "sample.mcpack"
-  ],
-  "mcaddon": [
-   "sample.mcaddon"
-  ],
-  "spla": [
-   "sample.spla"
-  ],
-  "pspimage": [
-   "real.pspimage"
-  ],
-  "psp": [
-   "real.psp"
-  ],
-  "pspbrush": [
-   "blob.PspBrush"
-  ],
-  "psptube": [
-   "countdown.PspTube"
-  ],
-  "tub": [
-   "real.tub"
-  ],
-  "sketch": [
-   "real.sketch"
-  ],
-  "skp": [
-   "real.skp",
-   "sample.skp"
-  ],
-  "dwg": [
-   "real.dwg",
-   "sample.dwg"
-  ],
-  "3dm": [
-   "sample.3dm"
-  ],
-  "max": [
-   "real.max",
-   "sample.max"
-  ],
-  "apk": [
-   "real.apk",
-   "sample.apk"
-  ],
-  "apks": [
-   "sample.apks"
-  ],
-  "xapk": [
-   "sample.xapk"
-  ],
-  "apkm": [
-   "sample.apkm"
-  ],
-  "pam": [
-   "real.pam"
-  ],
-  "pbm": [
-   "real.pbm"
-  ],
-  "pcd": [
-   "real.pcd"
-  ],
-  "pcx": [
-   "real.pcx"
-  ],
-  "pdb": [
-   "real.pdb"
-  ],
-  "pdn": [
-   "sample-pdn35.pdn",
-   "sample.pdn"
-  ],
-  "pes": [
-   "real.pes"
-  ],
-  "pfm": [
-   "real.pfm"
-  ],
-  "pgm": [
-   "real.pgm"
-  ],
-  "pgx": [
-   "real.pgx"
-  ],
-  "pix": [
-   "real.pix"
-  ],
-  "png": [
-   "real.png"
-  ],
-  "pnm": [
-   "real.pnm"
-  ],
-  "ppm": [
-   "real.ppm"
-  ],
-  "psb": [
-   "real.psb",
-   "sample.psb"
-  ],
-  "psd": [
-   "real.psd",
-   "sample.psd"
-  ],
-  "ptif": [
-   "real.ptif"
-  ],
-  "qoi": [
-   "real.qoi"
-  ],
-  "ras": [
-   "real.ras"
-  ],
-  "rla": [
-   "real.rla"
-  ],
-  "rle": [
-   "real.rle"
-  ],
-  "scr": [
-   "real.scr"
-  ],
-  "sct": [
-   "real.sct"
-  ],
-  "sfw": [
-   "real.sfw"
-  ],
-  "sgi": [
-   "real.sgi"
-  ],
-  "sti": [
-   "sample.sti"
-  ],
-  "sun": [
-   "real.sun"
-  ],
-  "svg": [
-   "real.svg"
-  ],
-  "svgz": [
-   "real.svgz"
-  ],
-  "tga": [
-   "real.tga"
-  ],
-  "tif": [
-   "real.tif"
-  ],
-  "tiff": [
-   "real.tiff"
-  ],
-  "tiff64": [
-   "real.tiff64"
-  ],
-  "tim": [
-   "real.tim"
-  ],
-  "tm2": [
-   "real.tm2"
-  ],
-  "vda": [
-   "real.vda"
-  ],
-  "vicar": [
-   "real.vicar"
-  ],
-  "viff": [
-   "real.viff"
-  ],
-  "vips": [
-   "real.vips"
-  ],
-  "vst": [
-   "real.vst"
-  ],
-  "webp": [
-   "real.webp"
-  ],
-  "wmf": [
-   "real.wmf"
-  ],
-  "wpg": [
-   "real.wpg"
-  ],
-  "xbm": [
-   "real.xbm"
-  ],
-  "xcf": [
-   "real.xcf",
-   "sample.xcf"
-  ],
-  "xpm": [
-   "real.xpm"
-  ],
-  "xv": [
-   "real.xv"
-  ],
-  "heics": [
-   "real.heics"
-  ],
-  "heifs": [
-   "real.heifs"
-  ],
-  "hif": [
-   "real.hif"
-  ],
-  "jpf": [
-   "real.jpf"
-  ],
-  "jpx": [
-   "real.jpx"
-  ],
-  "rgbe": [
-   "real.rgbe"
-  ],
-  "hdri": [
-   "real.hdri"
-  ],
-  "cxr": [
-   "real.cxr"
-  ],
-  "wmp": [
-   "real.wmp"
-  ],
-  "wmz": [
-   "real.wmz"
-  ],
-  "emg": [
-   "real.emg"
-  ],
-  "tpic": [
-   "real.tpic"
-  ],
-  "pdd": [
-   "real.pdd"
-  ],
-  "psdt": [
-   "real.psdt"
-  ],
-  "indt": [
-   "real.indt"
-  ],
-  "skb": [
-   "real.skb"
-  ],
-  "ph": [
-   "real.ph"
+  "blend": [
+   "real.blend",
+   "sample.blend"
   ],
   "blend1": [
    "real.blend1"
-  ],
-  "blend2": [
-   "real.blend2"
-  ],
-  "blend3": [
-   "real.blend3"
-  ],
-  "blend4": [
-   "real.blend4"
-  ],
-  "blend5": [
-   "real.blend5"
-  ],
-  "blend6": [
-   "real.blend6"
-  ],
-  "blend7": [
-   "real.blend7"
-  ],
-  "blend8": [
-   "real.blend8"
-  ],
-  "blend9": [
-   "real.blend9"
   ],
   "blend10": [
    "real.blend10"
@@ -2379,6 +1954,9 @@
   "blend19": [
    "real.blend19"
   ],
+  "blend2": [
+   "real.blend2"
+  ],
   "blend20": [
    "real.blend20"
   ],
@@ -2409,6 +1987,9 @@
   "blend29": [
    "real.blend29"
   ],
+  "blend3": [
+   "real.blend3"
+  ],
   "blend30": [
    "real.blend30"
   ],
@@ -2418,11 +1999,53 @@
   "blend32": [
    "real.blend32"
   ],
-  "3fr": [
-   "sample.3fr"
+  "blend4": [
+   "real.blend4"
   ],
-  "arw": [
-   "sample.arw"
+  "blend5": [
+   "real.blend5"
+  ],
+  "blend6": [
+   "real.blend6"
+  ],
+  "blend7": [
+   "real.blend7"
+  ],
+  "blend8": [
+   "real.blend8"
+  ],
+  "blend9": [
+   "real.blend9"
+  ],
+  "bmp": [
+   "real.bmp"
+  ],
+  "bw": [
+   "real.bw"
+  ],
+  "cal": [
+   "real.cal"
+  ],
+  "cals": [
+   "real.cals"
+  ],
+  "cbr": [
+   "sample.cbr"
+  ],
+  "cdr": [
+   "real.cdr"
+  ],
+  "cdt": [
+   "real.cdt"
+  ],
+  "cin": [
+   "real.cin"
+  ],
+  "clip": [
+   "sample.clip"
+  ],
+  "cmx": [
+   "real.cmx"
   ],
   "cr2": [
    "sample.cr2"
@@ -2433,20 +2056,248 @@
   "crw": [
    "sample.crw"
   ],
+  "cur": [
+   "real.cur"
+  ],
+  "cut": [
+   "real.cut"
+  ],
+  "cxr": [
+   "real.cxr"
+  ],
+  "dcm": [
+   "real.dcm",
+   "sample.dcm"
+  ],
   "dcr": [
    "sample.dcr"
+  ],
+  "dcx": [
+   "real.dcx"
+  ],
+  "dds": [
+   "real.dds",
+   "sample-dds-bc6hs.dds",
+   "sample-dds-bc7-real.dds"
+  ],
+  "dib": [
+   "real.dib"
+  ],
+  "dicom": [
+   "real.dicom"
+  ],
+  "divx": [
+   "real.divx"
+  ],
+  "djv": [
+   "real.djv"
+  ],
+  "djvu": [
+   "real.djvu"
   ],
   "dng": [
    "sample.dng"
   ],
+  "doc": [
+   "real.doc"
+  ],
+  "docm": [
+   "real.docm"
+  ],
+  "docx": [
+   "real.docx"
+  ],
+  "dot": [
+   "real.dot"
+  ],
+  "dotm": [
+   "real.dotm"
+  ],
+  "dotx": [
+   "real.dotx"
+  ],
+  "dpx": [
+   "real.dpx"
+  ],
+  "dsf": [
+   "sample.dsf"
+  ],
+  "dwg": [
+   "real.dwg",
+   "sample.dwg"
+  ],
+  "dxt1": [
+   "real.dxt1"
+  ],
+  "dxt5": [
+   "real.dxt5"
+  ],
+  "emf": [
+   "real.emf"
+  ],
+  "emg": [
+   "real.emg"
+  ],
+  "emz": [
+   "real.emz"
+  ],
+  "eps": [
+   "real.eps"
+  ],
+  "epub": [
+   "real.epub"
+  ],
   "erf": [
    "sample.erf"
+  ],
+  "exr": [
+   "real.exr"
+  ],
+  "f4v": [
+   "real.f4v"
+  ],
+  "farbfeld": [
+   "real.farbfeld"
+  ],
+  "fb2": [
+   "real.fb2"
+  ],
+  "fbz": [
+   "real.fbz"
+  ],
+  "fcstd": [
+   "real.fcstd"
+  ],
+  "ff": [
+   "real.ff"
   ],
   "fff": [
    "sample.fff"
   ],
+  "fits": [
+   "real.fits"
+  ],
+  "flac": [
+   "real.flac"
+  ],
+  "flv": [
+   "real.flv",
+   "sample-h264.flv",
+   "sample-vp6.flv"
+  ],
+  "fts": [
+   "real.fts"
+  ],
+  "gco": [
+   "real.gco"
+  ],
+  "gcode": [
+   "real.gcode"
+  ],
+  "ggb": [
+   "real.ggb"
+  ],
+  "gif": [
+   "real.gif"
+  ],
+  "hdp": [
+   "real.hdp"
+  ],
+  "hdr": [
+   "real.hdr"
+  ],
+  "hdri": [
+   "real.hdri"
+  ],
+  "heic": [
+   "real.heic",
+   "sample-heic-alpha.heic",
+   "sample.heic"
+  ],
+  "heics": [
+   "real.heics"
+  ],
+  "heif": [
+   "real.heif"
+  ],
+  "heifs": [
+   "real.heifs"
+  ],
+  "hif": [
+   "real.hif"
+  ],
+  "icb": [
+   "real.icb"
+  ],
+  "icns": [
+   "real.icns"
+  ],
+  "ico": [
+   "real.ico"
+  ],
+  "icon": [
+   "real.icon"
+  ],
+  "iff": [
+   "real.iff"
+  ],
   "iiq": [
    "sample.iiq"
+  ],
+  "ilbm": [
+   "real.ilbm"
+  ],
+  "indd": [
+   "real.indd",
+   "sample.indd"
+  ],
+  "indt": [
+   "real.indt"
+  ],
+  "j2c": [
+   "real.j2c"
+  ],
+  "j2k": [
+   "real.j2k"
+  ],
+  "jfif": [
+   "real.jfif"
+  ],
+  "jng": [
+   "real.jng"
+  ],
+  "jp2": [
+   "real.jp2"
+  ],
+  "jpc": [
+   "real.jpc"
+  ],
+  "jpe": [
+   "real.jpe"
+  ],
+  "jpeg": [
+   "real.jpeg"
+  ],
+  "jpf": [
+   "real.jpf"
+  ],
+  "jpg": [
+   "real.jpg"
+  ],
+  "jpm": [
+   "real.jpm"
+  ],
+  "jps": [
+   "real.jps"
+  ],
+  "jpx": [
+   "real.jpx"
+  ],
+  "jxl": [
+   "real.jxl"
+  ],
+  "jxr": [
+   "real.jxr"
   ],
   "k25": [
    "real.k25"
@@ -2454,17 +2305,114 @@
   "kdc": [
    "sample.kdc"
   ],
+  "key": [
+   "real.key"
+  ],
+  "kra": [
+   "real.kra"
+  ],
+  "lbm": [
+   "real.lbm"
+  ],
+  "m1v": [
+   "real.m1v"
+  ],
+  "m2p": [
+   "real.m2p"
+  ],
+  "m2ts": [
+   "real.m2ts"
+  ],
+  "m2v": [
+   "real.m2v",
+   "real-es.m2v"
+  ],
+  "m4a": [
+   "real.m4a"
+  ],
+  "m4b": [
+   "real.m4b"
+  ],
+  "m4v": [
+   "real.m4v"
+  ],
+  "mac": [
+   "real.mac"
+  ],
+  "mat": [
+   "real.mat"
+  ],
+  "max": [
+   "real.max",
+   "sample.max"
+  ],
+  "mcaddon": [
+   "sample.mcaddon"
+  ],
+  "mcpack": [
+   "sample.mcpack"
+  ],
+  "mctemplate": [
+   "real.mctemplate"
+  ],
+  "mcworld": [
+   "sample.mcworld"
+  ],
   "mdc": [
    "sample.mdc"
   ],
   "mef": [
    "sample.mef"
   ],
+  "miff": [
+   "real.miff"
+  ],
+  "mkv": [
+   "real.mkv"
+  ],
+  "mng": [
+   "real.mng"
+  ],
+  "mobi": [
+   "real.mobi",
+   "sample.mobi"
+  ],
   "mos": [
    "sample.mos"
   ],
+  "mov": [
+   "real.mov"
+  ],
+  "mp2v": [
+   "real.mp2v"
+  ],
+  "mp3": [
+   "real.mp3"
+  ],
+  "mp4": [
+   "real.mp4"
+  ],
+  "mpc": [
+   "real.mpc"
+  ],
+  "mpeg": [
+   "real.mpeg"
+  ],
+  "mpg": [
+   "real.mpg",
+   "real-vcd.mpg"
+  ],
+  "mpo": [
+   "real.mpo"
+  ],
+  "mpv": [
+   "real.mpv"
+  ],
   "mrw": [
    "sample.mrw"
+  ],
+  "mts": [
+   "real.mts"
   ],
   "nef": [
    "sample.nef"
@@ -2472,20 +2420,246 @@
   "nrw": [
    "sample.nrw"
   ],
+  "numbers": [
+   "real.numbers"
+  ],
+  "obj": [
+   "real.obj"
+  ],
+  "odg": [
+   "real.odg"
+  ],
+  "odp": [
+   "real.odp"
+  ],
+  "ods": [
+   "real.ods"
+  ],
+  "odt": [
+   "real.odt"
+  ],
+  "oga": [
+   "real.oga"
+  ],
+  "ogg": [
+   "real.ogg"
+  ],
+  "ogv": [
+   "real.ogv"
+  ],
+  "opus": [
+   "real.opus"
+  ],
+  "ora": [
+   "real.ora"
+  ],
   "orf": [
    "sample.orf"
+  ],
+  "ori": [
+   "sample.ori"
+  ],
+  "otp": [
+   "real.otp"
+  ],
+  "ots": [
+   "real.ots"
+  ],
+  "ott": [
+   "real.ott"
+  ],
+  "pages": [
+   "real.pages"
+  ],
+  "pam": [
+   "real.pam"
+  ],
+  "pbm": [
+   "real.pbm"
+  ],
+  "pcd": [
+   "real.pcd"
+  ],
+  "pcx": [
+   "real.pcx"
+  ],
+  "pdb": [
+   "real.pdb"
+  ],
+  "pdd": [
+   "real.pdd"
+  ],
+  "pdf": [
+   "real.pdf"
+  ],
+  "pdn": [
+   "sample-pdn35.pdn",
+   "sample.pdn"
   ],
   "pef": [
    "sample.pef"
   ],
+  "pes": [
+   "real.pes"
+  ],
+  "pfm": [
+   "real.pfm"
+  ],
+  "pgm": [
+   "real.pgm"
+  ],
+  "pgx": [
+   "real.pgx"
+  ],
+  "ph": [
+   "real.ph"
+  ],
+  "pix": [
+   "real.pix"
+  ],
+  "ply": [
+   "real.ply"
+  ],
+  "png": [
+   "real.png"
+  ],
+  "pnm": [
+   "real.pnm"
+  ],
+  "pot": [
+   "real.pot"
+  ],
+  "potm": [
+   "real.potm"
+  ],
+  "potx": [
+   "real.potx"
+  ],
+  "ppm": [
+   "real.ppm"
+  ],
+  "pps": [
+   "real.pps"
+  ],
+  "ppsm": [
+   "real.ppsm"
+  ],
+  "ppsx": [
+   "real.ppsx"
+  ],
+  "ppt": [
+   "real.ppt"
+  ],
+  "pptm": [
+   "real.pptm"
+  ],
+  "pptx": [
+   "real.pptx"
+  ],
+  "prc": [
+   "real.prc"
+  ],
+  "psb": [
+   "real.psb",
+   "sample.psb"
+  ],
+  "psd": [
+   "real.psd",
+   "sample.psd"
+  ],
+  "psdt": [
+   "real.psdt"
+  ],
+  "psp": [
+   "real.psp"
+  ],
+  "pspbrush": [
+   "blob.PspBrush"
+  ],
+  "pspimage": [
+   "real.pspimage"
+  ],
+  "psptube": [
+   "countdown.PspTube"
+  ],
+  "ptif": [
+   "real.ptif"
+  ],
+  "pub": [
+   "real.pub",
+   "sample.pub"
+  ],
+  "pxo": [
+   "real.pxo",
+   "sample.pxo"
+  ],
+  "qoi": [
+   "real.qoi"
+  ],
+  "qt": [
+   "real.qt"
+  ],
   "raf": [
    "sample.raf"
+  ],
+  "rar": [
+   "real.rar"
+  ],
+  "ras": [
+   "real.ras"
+  ],
+  "rgbe": [
+   "real.rgbe"
+  ],
+  "rla": [
+   "real.rla"
+  ],
+  "rle": [
+   "real.rle"
   ],
   "rw2": [
    "sample.rw2"
   ],
   "rwl": [
    "sample.rwl"
+  ],
+  "scr": [
+   "real.scr"
+  ],
+  "sct": [
+   "real.sct"
+  ],
+  "sfw": [
+   "real.sfw"
+  ],
+  "sgi": [
+   "real.sgi"
+  ],
+  "skb": [
+   "real.skb"
+  ],
+  "sketch": [
+   "real.sketch"
+  ],
+  "skp": [
+   "real.skp",
+   "sample.skp"
+  ],
+  "sldasm": [
+   "real.sldasm",
+   "sample.sldasm"
+  ],
+  "slddrw": [
+   "real.slddrw"
+  ],
+  "sldprt": [
+   "real.sldprt"
+  ],
+  "spla": [
+   "sample.spla"
+  ],
+  "spx": [
+   "real.spx"
   ],
   "sr2": [
    "sample.sr2"
@@ -2496,299 +2670,151 @@
   "srw": [
    "sample.srw"
   ],
-  "x3f": [
-   "sample.x3f"
+  "sti": [
+   "sample.sti"
   ],
-  "ori": [
-   "sample.ori"
+  "stl": [
+   "real.stl"
   ],
-  "azw": [
-   "real.azw"
+  "sun": [
+   "real.sun"
   ],
-  "azw3": [
-   "real.azw3"
+  "svg": [
+   "real.svg"
   ],
-  "cbr": [
-   "sample.cbr"
+  "svgz": [
+   "real.svgz"
   ],
-  "epub": [
-   "real.epub"
+  "tga": [
+   "real.tga"
   ],
-  "fb2": [
-   "real.fb2"
+  "tif": [
+   "real.tif"
   ],
-  "fbz": [
-   "real.fbz"
+  "tiff": [
+   "real.tiff"
   ],
-  "mobi": [
-   "real.mobi",
-   "sample.mobi"
+  "tiff64": [
+   "real.tiff64"
   ],
-  "prc": [
-   "real.prc"
+  "tim": [
+   "real.tim"
   ],
-  "pdf": [
-   "real.pdf"
+  "tm2": [
+   "real.tm2"
   ],
-  "djv": [
-   "real.djv"
+  "tpic": [
+   "real.tpic"
   ],
-  "djvu": [
-   "real.djvu"
+  "ts": [
+   "real.ts"
   ],
-  "ggb": [
-   "real.ggb"
+  "tub": [
+   "real.tub"
   ],
-  "odt": [
-   "real.odt"
+  "vda": [
+   "real.vda"
   ],
-  "ods": [
-   "real.ods"
+  "vicar": [
+   "real.vicar"
   ],
-  "odp": [
-   "real.odp"
+  "viff": [
+   "real.viff"
   ],
-  "odg": [
-   "real.odg"
+  "vips": [
+   "real.vips"
   ],
-  "ott": [
-   "real.ott"
-  ],
-  "ots": [
-   "real.ots"
-  ],
-  "otp": [
-   "real.otp"
-  ],
-  "pptx": [
-   "real.pptx"
-  ],
-  "pptm": [
-   "real.pptm"
-  ],
-  "potx": [
-   "real.potx"
-  ],
-  "key": [
-   "real.key"
-  ],
-  "pages": [
-   "real.pages"
-  ],
-  "numbers": [
-   "real.numbers"
-  ],
-  "indd": [
-   "real.indd",
-   "sample.indd"
-  ],
-  "vsdx": [
-   "real.vsdx",
-   "sample.vsdx"
-  ],
-  "vsdm": [
-   "real.vsdm"
+  "vob": [
+   "real.vob"
   ],
   "vsd": [
    "real.vsd",
    "sample.vsd"
   ],
-  "pub": [
-   "real.pub",
-   "sample.pub"
+  "vsdm": [
+   "real.vsdm"
   ],
-  "docx": [
-   "real.docx"
+  "vsdx": [
+   "real.vsdx",
+   "sample.vsdx"
   ],
-  "docm": [
-   "real.docm"
-  ],
-  "dotx": [
-   "real.dotx"
-  ],
-  "dotm": [
-   "real.dotm"
-  ],
-  "doc": [
-   "real.doc"
-  ],
-  "dot": [
-   "real.dot"
-  ],
-  "xlsx": [
-   "real.xlsx"
-  ],
-  "xlsm": [
-   "real.xlsm"
-  ],
-  "xltx": [
-   "real.xltx"
-  ],
-  "xltm": [
-   "real.xltm"
-  ],
-  "xls": [
-   "real.xls"
-  ],
-  "xlt": [
-   "real.xlt"
-  ],
-  "ppsx": [
-   "real.ppsx"
-  ],
-  "ppsm": [
-   "real.ppsm"
-  ],
-  "potm": [
-   "real.potm"
-  ],
-  "ppt": [
-   "real.ppt"
-  ],
-  "pps": [
-   "real.pps"
-  ],
-  "pot": [
-   "real.pot"
-  ],
-  "mp3": [
-   "real.mp3"
-  ],
-  "flac": [
-   "real.flac"
-  ],
-  "ogg": [
-   "real.ogg"
-  ],
-  "oga": [
-   "real.oga"
-  ],
-  "opus": [
-   "real.opus"
-  ],
-  "spx": [
-   "real.spx"
-  ],
-  "m4a": [
-   "real.m4a"
-  ],
-  "m4b": [
-   "real.m4b"
-  ],
-  "aac": [
-   "real.aac"
-  ],
-  "wma": [
-   "real.wma"
-  ],
-  "ape": [
-   "real.ape"
-  ],
-  "wv": [
-   "real.wv"
-  ],
-  "mpc": [
-   "real.mpc"
+  "vst": [
+   "real.vst"
   ],
   "wav": [
    "real.wav"
   ],
-  "aiff": [
-   "real.aiff"
-  ],
-  "aif": [
-   "real.aif"
-  ],
-  "aifc": [
-   "real.aifc"
-  ],
-  "dsf": [
-   "sample.dsf"
-  ],
-  "mp4": [
-   "real.mp4"
-  ],
-  "m4v": [
-   "real.m4v"
-  ],
-  "mov": [
-   "real.mov"
-  ],
-  "qt": [
-   "real.qt"
-  ],
-  "mkv": [
-   "real.mkv"
+  "wdp": [
+   "real.wdp"
   ],
   "webm": [
    "real.webm",
    "sample-vp9p2.webm",
    "sample-vp9p3.webm"
   ],
-  "avi": [
-   "real.avi"
+  "webp": [
+   "real.webp"
+  ],
+  "wma": [
+   "real.wma"
+  ],
+  "wmf": [
+   "real.wmf"
+  ],
+  "wmp": [
+   "real.wmp"
   ],
   "wmv": [
    "real.wmv"
   ],
-  "asf": [
-   "real.asf"
+  "wmz": [
+   "real.wmz"
   ],
-  "flv": [
-   "real.flv",
-   "sample-h264.flv",
-   "sample-vp6.flv"
+  "wpg": [
+   "real.wpg"
   ],
-  "f4v": [
-   "real.f4v"
+  "wv": [
+   "real.wv"
   ],
-  "mpg": [
-   "real.mpg",
-   "real-vcd.mpg"
+  "x3f": [
+   "sample.x3f"
   ],
-  "mpeg": [
-   "real.mpeg"
+  "xapk": [
+   "sample.xapk"
   ],
-  "m2v": [
-   "real.m2v",
-   "real-es.m2v"
+  "xbm": [
+   "real.xbm"
   ],
-  "3gp": [
-   "real.3gp"
+  "xcf": [
+   "real.xcf",
+   "sample.xcf"
   ],
-  "3g2": [
-   "real.3g2"
+  "xls": [
+   "real.xls"
   ],
-  "ts": [
-   "real.ts"
+  "xlsm": [
+   "real.xlsm"
   ],
-  "m2ts": [
-   "real.m2ts"
+  "xlsx": [
+   "real.xlsx"
   ],
-  "mts": [
-   "real.mts"
+  "xlt": [
+   "real.xlt"
   ],
-  "vob": [
-   "real.vob"
+  "xltm": [
+   "real.xltm"
   ],
-  "ogv": [
-   "real.ogv"
+  "xltx": [
+   "real.xltx"
   ],
-  "divx": [
-   "real.divx"
+  "xpm": [
+   "real.xpm"
   ],
-  "7z": [
-   "archive-sample.7z",
-   "archive-nonsolid.7z"
-  ],
-  "rar": [
-   "real.rar"
+  "xv": [
+   "real.xv"
   ],
   "zip": [
    "real.zip"
-  ],
-  "m1v": [
-   "real.m1v"
   ]
  },
  "waived": {

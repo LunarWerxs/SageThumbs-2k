@@ -149,6 +149,7 @@ real.key
 real.kra
 real.lbm
 real.m1v
+real.m2p
 real.m2ts
 real.m2v
 real.m4a
@@ -163,12 +164,14 @@ real.mkv
 real.mng
 real.mobi
 real.mov
+real.mp2v
 real.mp3
 real.mp4
 real.mpc
 real.mpeg
 real.mpg
 real.mpo
+real.mpv
 real.mts
 real.numbers
 real.obj
