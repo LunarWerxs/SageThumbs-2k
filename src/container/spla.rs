@@ -317,6 +317,81 @@ impl Affine {
     }
 }
 
+/// The canvas box a part can touch: its four transformed corners, clipped to the output, as
+/// inclusive pixel bounds `(x0, y0, x1, y1)`. `None` when a corner is not finite or the part
+/// lies entirely off the canvas.
+fn part_bounds(fwd: &Affine, iw: f32, ih: f32, ow: u32, oh: u32) -> Option<(u32, u32, u32, u32)> {
+    let corners = [
+        fwd.apply(0.0, 0.0),
+        fwd.apply(iw, 0.0),
+        fwd.apply(0.0, ih),
+        fwd.apply(iw, ih),
+    ];
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y) in corners {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    let bx0 = (x0.floor().max(0.0)) as u32;
+    let by0 = (y0.floor().max(0.0)) as u32;
+    let bx1 = (x1.ceil().min(ow as f32 - 1.0)).max(0.0) as u32;
+    let by1 = (y1.ceil().min(oh as f32 - 1.0)).max(0.0) as u32;
+    if x1 < 0.0 || y1 < 0.0 || x0 > ow as f32 || y0 > oh as f32 || bx1 < bx0 || by1 < by0 {
+        return None;
+    }
+    Some((bx0, by0, bx1, by1))
+}
+
+/// Straight-alpha "over" of one tinted source sample onto `dst`, `a` being the sample's alpha
+/// times the part's opacity. `false` when the result would be fully transparent.
+fn blend_over(dst: &mut image::Rgba<u8>, src: &[f32; 4], a: f32, tint: &[f32; 3]) -> bool {
+    let da = dst[3] as f32 / 255.0;
+    let out_a = a + da * (1.0 - a);
+    if out_a <= 0.0 {
+        return false;
+    }
+    for i in 0..3 {
+        let sc = (src[i] * tint[i]).clamp(0.0, 1.0);
+        let dc = dst[i] as f32 / 255.0;
+        let oc = (sc * a + dc * da * (1.0 - a)) / out_a;
+        dst[i] = (oc * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    true
+}
+
+/// Sample one part into its canvas box (inverse-mapped bilinear sampling at pixel centres) and
+/// blend it over what is there. Returns whether any pixel changed.
+fn draw_part(
+    canvas: &mut RgbaImage,
+    img: &RgbaImage,
+    inv: &Affine,
+    bounds: (u32, u32, u32, u32),
+    placed: &Placed,
+) -> bool {
+    let (bx0, by0, bx1, by1) = bounds;
+    let mut drew_any = false;
+    for y in by0..=by1 {
+        for x in bx0..=bx1 {
+            let (u, v) = inv.apply(x as f32 + 0.5, y as f32 + 0.5);
+            let Some(src) = sample_bilinear(img, u - 0.5, v - 0.5) else {
+                continue;
+            };
+            let a = src[3] * placed.opacity;
+            if a <= 0.0 {
+                continue;
+            }
+            drew_any |= blend_over(canvas.get_pixel_mut(x, y), &src, a, &placed.tint);
+        }
+    }
+    drew_any
+}
+
 /// Composite the frame onto a transparent canvas: inverse-mapped bilinear sampling per part,
 /// premultiplied "over" blending, opacity and tint applied per part.
 fn render(rig: &Rig, frame: &[Placed], assets: &[Option<RgbaImage>]) -> Option<RgbaImage> {
@@ -335,73 +410,19 @@ fn render(rig: &Rig, frame: &[Placed], assets: &[Option<RgbaImage>]) -> Option<R
         let Some(img) = assets[placed.part].as_ref() else {
             continue;
         };
-        let (iw, ih) = (img.width() as f32, img.height() as f32);
         let fwd = Affine::for_part(part, placed, s);
         let Some(inv) = fwd.inverse() else { continue };
-
-        // The canvas box this part can touch: its four transformed corners, clipped.
-        let corners = [
-            fwd.apply(0.0, 0.0),
-            fwd.apply(iw, 0.0),
-            fwd.apply(0.0, ih),
-            fwd.apply(iw, ih),
-        ];
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for (x, y) in corners {
-            if !x.is_finite() || !y.is_finite() {
-                x0 = f32::NAN;
-                break;
-            }
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
-        }
-        if x0.is_nan() {
+        let Some(bounds) = part_bounds(&fwd, img.width() as f32, img.height() as f32, ow, oh)
+        else {
             continue;
-        }
-        let bx0 = (x0.floor().max(0.0)) as u32;
-        let by0 = (y0.floor().max(0.0)) as u32;
-        let bx1 = (x1.ceil().min(ow as f32 - 1.0)).max(0.0) as u32;
-        let by1 = (y1.ceil().min(oh as f32 - 1.0)).max(0.0) as u32;
-        if x1 < 0.0 || y1 < 0.0 || x0 > ow as f32 || y0 > oh as f32 || bx1 < bx0 || by1 < by0 {
-            continue;
-        }
+        };
+        let (bx0, by0, bx1, by1) = bounds;
         let area = u64::from(bx1 - bx0 + 1) * u64::from(by1 - by0 + 1);
         if sampled + area > MAX_SAMPLED_PIXELS {
             break;
         }
         sampled += area;
-
-        let opacity = placed.opacity;
-        let tint = placed.tint;
-        for y in by0..=by1 {
-            for x in bx0..=bx1 {
-                // Sample at the pixel centre.
-                let (u, v) = inv.apply(x as f32 + 0.5, y as f32 + 0.5);
-                let Some(src) = sample_bilinear(img, u - 0.5, v - 0.5) else {
-                    continue;
-                };
-                let a = src[3] * opacity;
-                if a <= 0.0 {
-                    continue;
-                }
-                let dst = canvas.get_pixel_mut(x, y);
-                let da = dst[3] as f32 / 255.0;
-                let out_a = a + da * (1.0 - a);
-                if out_a <= 0.0 {
-                    continue;
-                }
-                for i in 0..3 {
-                    let sc = (src[i] * tint[i]).clamp(0.0, 1.0);
-                    let dc = dst[i] as f32 / 255.0;
-                    let oc = (sc * a + dc * da * (1.0 - a)) / out_a;
-                    dst[i] = (oc * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
-                dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
-                drew_any = true;
-            }
-        }
+        drew_any |= draw_part(&mut canvas, img, &inv, bounds, placed);
     }
     drew_any.then_some(canvas)
 }

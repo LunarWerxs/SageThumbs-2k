@@ -228,8 +228,17 @@ fn effective_visibility(layers: &[Layer]) -> Vec<bool> {
         .collect()
 }
 
-/// Render frame 0, or `None` when the bytes are not an Aseprite sprite or nothing draws.
-pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+/// The header fields the render needs, bounds-checked.
+struct Header {
+    width: u32,
+    height: u32,
+    depth: Depth,
+    layer_opacity_valid: bool,
+    transparent_index: u8,
+}
+
+/// `None` when the bytes are not an Aseprite sprite of a drawable size and depth.
+fn parse_header(bytes: &[u8]) -> Option<Header> {
     if !looks_like_aseprite(bytes) {
         return None;
     }
@@ -242,7 +251,6 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         _ => return None,
     };
     let flags = le32(bytes, 14)?;
-    let layer_opacity_valid = flags & 1 != 0;
     let transparent_index = *bytes.get(28)?;
     if width == 0
         || height == 0
@@ -252,8 +260,56 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     {
         return None;
     }
+    Some(Header {
+        width,
+        height,
+        depth,
+        layer_opacity_valid: flags & 1 != 0,
+        transparent_index,
+    })
+}
 
-    // Frame 0.
+/// Frame 0's chunks: the layer list, the cels and the palette.
+struct Frame {
+    layers: Vec<Layer>,
+    cels: Vec<Cel>,
+    palette: [[u8; 4]; 256],
+    have_new_palette: bool,
+}
+
+impl Frame {
+    /// One chunk, by kind. Unknown kinds are skipped, and a full layer or cel list drops the
+    /// rest rather than growing.
+    fn absorb(&mut self, kind: u16, data: &[u8], depth: Depth) {
+        match kind {
+            0x2004 => {
+                if self.layers.len() < MAX_LAYERS {
+                    self.layers.extend(parse_layer(data));
+                }
+            }
+            0x2005 => {
+                if self.cels.len() < MAX_CELS {
+                    self.cels.extend(parse_cel(data, depth));
+                }
+            }
+            0x2019 => {
+                if parse_new_palette(data, &mut self.palette).is_some() {
+                    self.have_new_palette = true;
+                }
+            }
+            // The spec says a new-format palette wins over the old chunks when both exist, so
+            // the guard is part of the arm's own pattern rather than a nested `if`.
+            0x0004 | 0x0011 if !self.have_new_palette => {
+                let _ = parse_old_palette(data, &mut self.palette, kind == 0x0011);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Frame 0's chunk run, bounded by the frame's own length and [`MAX_CHUNKS`]; a chunk cut
+/// short by the file's end keeps whatever parsed before it.
+fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
     let mut off = HEADER_LEN;
     let frame_len = le32(bytes, off)? as usize;
     if le16(bytes, off + 4)? != FRAME_MAGIC {
@@ -269,11 +325,12 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     let frame_end = off.checked_add(frame_len)?.min(bytes.len());
     off += FRAME_HEADER_LEN;
 
-    let mut layers: Vec<Layer> = Vec::new();
-    let mut cels: Vec<Cel> = Vec::new();
-    let mut palette = [[0u8, 0, 0, 255]; 256];
-    let mut have_new_palette = false;
-
+    let mut frame = Frame {
+        layers: Vec::new(),
+        cels: Vec::new(),
+        palette: [[0u8, 0, 0, 255]; 256],
+        have_new_palette: false,
+    };
     for _ in 0..chunk_count.min(MAX_CHUNKS) {
         if off + 6 > frame_end {
             break;
@@ -284,46 +341,98 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             break;
         }
         let end = off.checked_add(size)?.min(frame_end);
-        let data = &bytes[off + 6..end];
-        match kind {
-            0x2004 => {
-                if layers.len() < MAX_LAYERS {
-                    if let Some(l) = parse_layer(data) {
-                        layers.push(l);
-                    }
-                }
-            }
-            0x2005 => {
-                if cels.len() < MAX_CELS {
-                    if let Some(c) = parse_cel(data, depth) {
-                        cels.push(c);
-                    }
-                }
-            }
-            0x2019 => {
-                if parse_new_palette(data, &mut palette).is_some() {
-                    have_new_palette = true;
-                }
-            }
-            // The spec says a new-format palette wins over the old chunks when both exist, so
-            // the guard is part of the arm's own pattern rather than a nested `if`.
-            0x0004 | 0x0011 if !have_new_palette => {
-                let _ = parse_old_palette(data, &mut palette, kind == 0x0011);
-            }
-            _ => {}
-        }
+        frame.absorb(kind, &bytes[off + 6..end], depth);
         off = end;
     }
+    Some(frame)
+}
 
-    let visible = effective_visibility(&layers);
+/// One cel pixel as straight RGBA, or `None` for an indexed pixel that is the transparent
+/// index on a layer that is not the Background (which is what the editor draws).
+fn cel_rgba(
+    src: &[u8],
+    hdr: &Header,
+    palette: &[[u8; 4]; 256],
+    background: bool,
+) -> Option<[u8; 4]> {
+    Some(match hdr.depth {
+        Depth::Rgba => [src[0], src[1], src[2], src[3]],
+        Depth::Gray => [src[0], src[0], src[0], src[1]],
+        Depth::Indexed => {
+            if !background && src[0] == hdr.transparent_index {
+                return None;
+            }
+            palette[usize::from(src[0])]
+        }
+    })
+}
+
+/// Straight-alpha "over" of one source pixel onto `dst`; `sa` (0..=255) already carries the
+/// cel's and layer's opacity. `false` when nothing changed.
+fn blend_over(dst: &mut image::Rgba<u8>, rgb: [u8; 3], sa: u32) -> bool {
+    if sa == 0 {
+        return false;
+    }
+    let da = u32::from(dst[3]);
+    let out_a = sa + da * (255 - sa) / 255;
+    for (d, s) in dst.0.iter_mut().zip(rgb) {
+        let dc = u32::from(*d);
+        let sc = u32::from(s);
+        *d = ((sc * sa + dc * da * (255 - sa) / 255) / out_a).min(255) as u8;
+    }
+    dst[3] = out_a.min(255) as u8;
+    true
+}
+
+/// Composite one cel onto the canvas, clipped to it. `opacity` is the cel's times the layer's,
+/// out of 255*255. Returns whether any pixel changed.
+fn draw_cel(
+    canvas: &mut RgbaImage,
+    cel: &Cel,
+    hdr: &Header,
+    palette: &[[u8; 4]; 256],
+    background: bool,
+    opacity: u32,
+) -> bool {
+    let bpp = hdr.depth.bytes_per_pixel();
+    let mut drew_any = false;
+    for py in 0..cel.h {
+        let dy = cel.y + py as i32;
+        if dy < 0 || dy >= hdr.height as i32 {
+            continue;
+        }
+        for px in 0..cel.w {
+            let dx = cel.x + px as i32;
+            if dx < 0 || dx >= hdr.width as i32 {
+                continue;
+            }
+            let i = ((py * cel.w + px) as usize) * bpp;
+            let Some([r, g, b, a]) = cel_rgba(&cel.pixels[i..i + bpp], hdr, palette, background)
+            else {
+                continue;
+            };
+            let sa = u32::from(a) * opacity / (255 * 255); // 0..=255
+            drew_any |= blend_over(canvas.get_pixel_mut(dx as u32, dy as u32), [r, g, b], sa);
+        }
+    }
+    drew_any
+}
+
+/// Render frame 0, or `None` when the bytes are not an Aseprite sprite or nothing draws.
+pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+    let hdr = parse_header(bytes)?;
+    let mut frame = read_frame0(bytes, hdr.depth)?;
+    let visible = effective_visibility(&frame.layers);
     // Bottom to top: layer order, shifted by the cel's own z-index, ties in file order.
-    cels.sort_by_key(|c| (c.layer as i64 + i64::from(c.z), i64::from(c.z)));
+    frame
+        .cels
+        .sort_by_key(|c| (c.layer as i64 + i64::from(c.z), i64::from(c.z)));
 
-    let mut canvas = RgbaImage::new(width, height);
+    let mut canvas = RgbaImage::new(hdr.width, hdr.height);
     let mut composited: u64 = 0;
     let mut drew_any = false;
-    for cel in &cels {
-        let Some(layer) = layers.get(cel.layer) else {
+    for cel in &frame.cels {
+        let Some(layer) = frame.layers.get(cel.layer) else {
             continue;
         };
         if !visible[cel.layer] || layer.is_group || layer.is_tilemap {
@@ -334,55 +443,20 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
             break;
         }
         composited += area;
-        let layer_opacity = if layer_opacity_valid {
+        let layer_opacity = if hdr.layer_opacity_valid {
             u32::from(layer.opacity)
         } else {
             255
         };
         let opacity = u32::from(cel.opacity) * layer_opacity; // out of 255*255
-        let bpp = depth.bytes_per_pixel();
-        for py in 0..cel.h {
-            let dy = cel.y + py as i32;
-            if dy < 0 || dy >= height as i32 {
-                continue;
-            }
-            for px in 0..cel.w {
-                let dx = cel.x + px as i32;
-                if dx < 0 || dx >= width as i32 {
-                    continue;
-                }
-                let i = ((py * cel.w + px) as usize) * bpp;
-                let src = &cel.pixels[i..i + bpp];
-                let [r, g, b, a] = match depth {
-                    Depth::Rgba => [src[0], src[1], src[2], src[3]],
-                    Depth::Gray => [src[0], src[0], src[0], src[1]],
-                    Depth::Indexed => {
-                        if !layer.background && src[0] == transparent_index {
-                            continue;
-                        }
-                        palette[usize::from(src[0])]
-                    }
-                };
-                // Straight-alpha "over", with the cel's and layer's opacity folded into alpha.
-                let sa = u32::from(a) * opacity / (255 * 255); // 0..=255
-                if sa == 0 {
-                    continue;
-                }
-                let dst = canvas.get_pixel_mut(dx as u32, dy as u32);
-                let da = u32::from(dst[3]);
-                let out_a = sa + da * (255 - sa) / 255;
-                if out_a == 0 {
-                    continue;
-                }
-                for (d, s) in dst.0.iter_mut().zip([r, g, b]) {
-                    let dc = u32::from(*d);
-                    let sc = u32::from(s);
-                    *d = ((sc * sa + dc * da * (255 - sa) / 255) / out_a).min(255) as u8;
-                }
-                dst[3] = out_a.min(255) as u8;
-                drew_any = true;
-            }
-        }
+        drew_any |= draw_cel(
+            &mut canvas,
+            cel,
+            &hdr,
+            &frame.palette,
+            layer.background,
+            opacity,
+        );
     }
     drew_any.then_some(DynamicImage::ImageRgba8(canvas))
 }

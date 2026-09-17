@@ -48,6 +48,86 @@ fn param_len(kind: u16) -> Option<usize> {
     }
 }
 
+/// A preview as stored: whether it is PNG/JPG (as opposed to QOI), its area, and its bytes
+/// (inflated when the block was deflated).
+type Candidate = (bool, u64, Vec<u8>);
+
+/// One block as it sits in the file: its header words, its parameter bytes and its data.
+struct Block<'a> {
+    kind: u16,
+    compression: u16,
+    uncompressed: usize,
+    params: &'a [u8],
+    data: &'a [u8],
+    /// Offset of the next block's header, past this block's checksum.
+    next: usize,
+}
+
+/// The block at `off`, whose kind carries `plen` parameter bytes, or `None` when any size runs
+/// past the file.
+fn read_block(bytes: &[u8], off: usize, plen: usize, checksum_len: usize) -> Option<Block<'_>> {
+    let kind = le16(bytes, off)?;
+    let compression = le16(bytes, off + 2)?;
+    let uncompressed = le32(bytes, off + 4)? as usize;
+    let (stored, header_len) = if compression == 0 {
+        (uncompressed, 8)
+    } else {
+        (le32(bytes, off + 8)? as usize, 12)
+    };
+    let params_at = off.checked_add(header_len)?;
+    let data_at = params_at.checked_add(plen)?;
+    let data_end = data_at.checked_add(stored)?;
+    Some(Block {
+        kind,
+        compression,
+        uncompressed,
+        params: bytes.get(params_at..data_at)?,
+        data: bytes.get(data_at..data_end)?,
+        next: data_end.checked_add(checksum_len)?,
+    })
+}
+
+/// A thumbnail block's preview with its rank, or `None` when its sizes, dimensions or
+/// compression are not a preview this module hands on.
+fn thumbnail_candidate(block: &Block<'_>) -> Option<Candidate> {
+    if block.data.len() > MAX_THUMB_BYTES || block.uncompressed > MAX_THUMB_BYTES {
+        return None;
+    }
+    let format = le16(block.params, 0)?;
+    let w = u32::from(le16(block.params, 2)?);
+    let h = u32::from(le16(block.params, 4)?);
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        return None;
+    }
+    let raw = match block.compression {
+        0 => block.data.to_vec(),
+        1 => inflate(block.data, block.uncompressed)?,
+        _ => return None,
+    };
+    Some((matches!(format, 0 | 1), u64::from(w) * u64::from(h), raw))
+}
+
+/// The higher-ranked of two candidates: a PNG/JPG beats a QOI, then the larger area wins, and
+/// on a tie the one already held stays.
+fn better_of(held: Option<Candidate>, found: Option<Candidate>) -> Option<Candidate> {
+    match (held, found) {
+        (Some(a), Some(b)) => Some(if (b.0, b.1) > (a.0, a.1) { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The chosen preview as bytes the decode tiers accept: PNG/JPG as stored, QOI decoded here
+/// (the image crate reads it) and handed back as PNG.
+fn encode_candidate(rasterish: bool, raw: Vec<u8>) -> Option<Vec<u8>> {
+    if rasterish {
+        return super::util::decodable_image(raw);
+    }
+    let img = image::load_from_memory_with_format(&raw, image::ImageFormat::Qoi).ok()?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// The best embedded preview as encoded image bytes (PNG/JPG as stored, QOI re-encoded to PNG),
 /// or `None`.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -56,68 +136,26 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let checksum_len = if le16(bytes, 8)? == 1 { 4 } else { 0 };
     let mut off = 10usize;
-    // (is PNG/JPG, area, bytes)
-    let mut best: Option<(bool, u64, Vec<u8>)> = None;
-
+    let mut best: Option<Candidate> = None;
     for _ in 0..MAX_BLOCKS {
-        let kind = le16(bytes, off)?;
-        let compression = le16(bytes, off + 2)?;
-        let uncompressed = le32(bytes, off + 4)? as usize;
-        let (stored, header_len) = if compression == 0 {
-            (uncompressed, 8)
-        } else {
-            (le32(bytes, off + 8)? as usize, 12)
-        };
-        let Some(plen) = param_len(kind) else {
+        // A kind the spec does not define ends the walk with whatever was found so far.
+        let Some(plen) = param_len(le16(bytes, off)?) else {
             break;
         };
-        let params_at = off.checked_add(header_len)?;
-        let data_at = params_at.checked_add(plen)?;
-        let data_end = data_at.checked_add(stored)?;
-        let data = bytes.get(data_at..data_end)?;
-
-        if kind == BLOCK_THUMBNAIL && stored <= MAX_THUMB_BYTES && uncompressed <= MAX_THUMB_BYTES {
-            let params = bytes.get(params_at..params_at + plen)?;
-            let format = le16(params, 0)?;
-            let w = u32::from(le16(params, 2)?);
-            let h = u32::from(le16(params, 4)?);
-            if w > 0 && h > 0 && w <= MAX_DIM && h <= MAX_DIM {
-                let raw: Option<Vec<u8>> = match compression {
-                    0 => Some(data.to_vec()),
-                    1 => inflate(data, uncompressed),
-                    _ => None,
-                };
-                if let Some(raw) = raw {
-                    let rasterish = matches!(format, 0 | 1);
-                    let area = u64::from(w) * u64::from(h);
-                    let better = match &best {
-                        None => true,
-                        Some((b_raster, b_area, _)) => (rasterish, area) > (*b_raster, *b_area),
-                    };
-                    if better {
-                        best = Some((rasterish, area, raw));
-                    }
-                }
-            }
+        let block = read_block(bytes, off, plen, checksum_len)?;
+        if block.kind == BLOCK_THUMBNAIL {
+            best = better_of(best, thumbnail_candidate(&block));
         }
-        if kind == BLOCK_GCODE {
+        if block.kind == BLOCK_GCODE {
             break;
         }
-        off = data_end.checked_add(checksum_len)?;
+        off = block.next;
         if off >= bytes.len() {
             break;
         }
     }
-
     let (rasterish, _, raw) = best?;
-    if rasterish {
-        return super::util::decodable_image(raw);
-    }
-    // QOI: decode here (the image crate reads it) and hand back a PNG the tiers accept.
-    let img = image::load_from_memory_with_format(&raw, image::ImageFormat::Qoi).ok()?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
+    encode_candidate(rasterish, raw)
 }
 
 /// A deflated thumbnail block: zlib-wrapped first (what `deflate()` emits), raw deflate as the
