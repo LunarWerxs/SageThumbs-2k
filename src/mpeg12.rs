@@ -1,5 +1,5 @@
-//! MPEG-1 / MPEG-2 video thumbnails for `.mpg` / `.mpeg` / `.m1v` / `.m2v` / `.vob`, decoded
-//! OUT OF PROCESS.
+//! MPEG-1 / MPEG-2 video thumbnails for `.mpg` / `.mpeg` / `.m1v` / `.m2v` / `.vob` and for
+//! MPEG-2 inside a TRANSPORT stream (`.ts` / `.m2ts` / `.mts`), decoded OUT OF PROCESS.
 //!
 //! Media Foundation has no source at all for an MPEG-1 SYSTEM stream (`00 00 01 BA` with the
 //! MPEG-1 pack syntax: VideoCD and what late-1990s cameras and capture cards wrote) or for a
@@ -9,6 +9,15 @@
 //! corpus's MPEG-1 and bare-ES samples still failed every MF tier while the file, our
 //! registration and the magic gate were all healthy. The last MPEG-2 patent expired in 2018
 //! (MPEG-1's earlier), so the `container/` doctrine against codec patents is satisfied.
+//!
+//! The same Store extension gates MPEG-2 in a TRANSPORT stream, which is what a DVB or
+//! set-top-box recording is and what half the corpus's `.ts`-family samples are (the other
+//! half is H.264, which Windows decodes itself and which never reaches this tier). Without
+//! the extension those files showed the stock icon; since 2026-09-17 they are demuxed here
+//! instead. A transport stream has no magic - it is recognised by its packet CLOCK, four
+//! `0x47` sync bytes at a fixed stride: 188 for broadcast `.ts`, 192 for the M2TS/AVCHD
+//! arrival-timestamp prefix (`.m2ts`, `.mts`), 204 for the Reed-Solomon parity some DVB
+//! recorders keep. See [`ts_layout`].
 //!
 //! Division of labour across the process boundary, the same split as `crate::flv` (VP6 /
 //! Sorenson) and `crate::vp9` (Profile 2/3):
@@ -70,7 +79,7 @@ const MPEG_WALL_CEILING: Duration = Duration::from_secs(60);
 const WINDOW_BACK: u64 = 4 * 1024 * 1024;
 const WINDOW_FORWARD: u64 = 12 * 1024 * 1024;
 
-/// The two shapes this module accepts, decided by the first four bytes.
+/// The three shapes this module accepts, decided by the head of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// `00 00 01 BA`: an MPEG-1 system stream or an MPEG-2 program stream (pack headers
@@ -78,7 +87,37 @@ pub enum Shape {
     ProgramStream,
     /// `00 00 01 B3`: a bare video elementary stream (nothing to demux).
     ElementaryStream,
+    /// No magic at all: `0x47` sync bytes on a fixed clock. Carries its geometry, because
+    /// the demux has to walk packets and only the head knows how far apart they are.
+    TransportStream(TsLayout),
 }
+
+/// The packet geometry of a transport stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TsLayout {
+    /// Distance between consecutive sync bytes. 188 is the ISO packet itself (broadcast
+    /// `.ts`); 192 is M2TS/AVCHD, whose 4-byte arrival-timestamp header sits BEFORE each
+    /// packet; 204 is 188 plus 16 bytes of Reed-Solomon parity, which some DVB recorders
+    /// keep in the file. In all three the packet is the 188 bytes that START at the sync.
+    pub stride: usize,
+    /// Where the first sync byte sits in the file's head. Recorded for the tests and the
+    /// doctor note; the demux resynchronises on its own window rather than trusting it.
+    pub offset: usize,
+}
+
+/// The packet strides worth testing, narrowest first, so the simplest geometry that can
+/// explain four consecutive sync bytes wins.
+const TS_STRIDES: [usize; 3] = [188, 192, 204];
+/// The transport packet is always this long, whatever the stride wraps around it.
+const TS_PACKET: usize = 188;
+const TS_SYNC: u8 = 0x47;
+/// Bytes of the file's head read to decide the shape: enough for four syncs at the widest
+/// stride from the largest offset one may start at (204 + 3 * 204 = 816), rounded up.
+const TS_PROBE: u64 = 2048;
+/// How many program-map PIDs one Program Association Table may contribute. A stream with
+/// more programs than this is either a full multiplex (where the first programs are as good
+/// a choice as any) or hostile; either way the walk stays bounded.
+const TS_MAX_PROGRAMS: usize = 16;
 
 /// Which video standard the elementary stream is coded to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,12 +129,35 @@ pub enum Codec {
 }
 
 /// What the head of the file says, or `None` for anything that is not MPEG-1/2 at all.
+/// Give it at least [`TS_PROBE`] bytes: the two program/elementary magics are decided by the
+/// first four, but a transport stream can only be recognised from several packets.
 pub fn shape(head: &[u8]) -> Option<Shape> {
     match head.get(..4)? {
-        [0x00, 0x00, 0x01, 0xBA] => Some(Shape::ProgramStream),
-        [0x00, 0x00, 0x01, 0xB3] => Some(Shape::ElementaryStream),
-        _ => None,
+        [0x00, 0x00, 0x01, 0xBA] => return Some(Shape::ProgramStream),
+        [0x00, 0x00, 0x01, 0xB3] => return Some(Shape::ElementaryStream),
+        _ => {}
     }
+    ts_layout(head).map(Shape::TransportStream)
+}
+
+/// Recognise a transport stream by its packet clock: FOUR consecutive sync bytes at one of
+/// the known strides. Four rather than two because a lone `0x47` is a one-in-256 accident in
+/// any binary, and because an M2TS would otherwise also answer at stride 188 counting from
+/// its fifth byte — at four in a row that costs 2^-24. The first sync must sit inside the
+/// first packet: a real file starts on a packet boundary (or, for M2TS, four bytes into
+/// one), and allowing an arbitrary lead-in would turn this into a hunt through the whole
+/// head for any byte that happens to be `0x47`.
+fn ts_layout(head: &[u8]) -> Option<TsLayout> {
+    TS_STRIDES.into_iter().find_map(|stride| {
+        (0..stride)
+            .find(|&offset| syncs_at(head, offset, stride))
+            .map(|offset| TsLayout { stride, offset })
+    })
+}
+
+/// Four sync bytes, `stride` apart, starting at `offset`.
+fn syncs_at(buf: &[u8], offset: usize, stride: usize) -> bool {
+    (0..4).all(|n| buf.get(offset + n * stride) == Some(&TS_SYNC))
 }
 
 /// The video codec inside a program or elementary stream, for `doctor` (`crate::vcodec`):
@@ -255,6 +317,177 @@ fn pes_header_len(body: &[u8]) -> Option<usize> {
     (p <= body.len()).then_some(p)
 }
 
+/// Unwrap a transport stream to the elementary stream of its MPEG-1/2 video PID.
+///
+/// `layout` comes from the FILE's head, but `ts` is a WINDOW that may start anywhere, so the
+/// walk resynchronises on the first run of sync bytes it can see rather than trusting the
+/// recorded offset. Two passes over the window: one to decide which PID carries MPEG video,
+/// one to concatenate it. Bounded by its input, and empty for every stream that is not ours
+/// — an H.264 or HEVC transport stream (the usual AVCHD `.m2ts`) answers nothing here, which
+/// is right: Media Foundation decodes those in process and ran long before this tier.
+pub fn demux_transport_stream(ts: &[u8], layout: TsLayout) -> Vec<u8> {
+    let Some(start) = ts_resync(ts, layout.stride) else {
+        return Vec::new();
+    };
+    let Some(pid) = video_pid(ts, start, layout.stride) else {
+        return Vec::new();
+    };
+    collect_pid(ts, start, layout.stride, pid)
+}
+
+/// Where the first whole packet in this buffer begins. A window cut at an arbitrary byte is
+/// at most one packet out of phase, so one packet of slack either way is all that is needed;
+/// the bound matters because this runs on hostile input.
+fn ts_resync(ts: &[u8], stride: usize) -> Option<usize> {
+    (0..stride.saturating_mul(2)).find(|&o| syncs_at(ts, o, stride))
+}
+
+/// Which PID carries MPEG-1 or MPEG-2 video, preferring what the stream says about itself.
+///
+/// The Program Association Table names the program maps, and a Program Map Table names its
+/// elementary streams with their types; `stream_type` 0x01 (ISO 11172-2) and 0x02 (ISO
+/// 13818-2) are ours and nothing else is. Both tables repeat several times a second, so a
+/// mid-file window nearly always holds them — but "nearly" is not "always" (a short file, a
+/// clipped window, a recorder that writes them sparsely), so a PID whose packets open a
+/// video PES is kept as a fallback. The fallback cannot mislead the decoder: a wrong PID
+/// yields an elementary stream with no sequence header, and the slicer declines it.
+fn video_pid(ts: &[u8], start: usize, stride: usize) -> Option<u16> {
+    let mut pmt_pids: Vec<u16> = Vec::new();
+    let mut sniffed: Option<u16> = None;
+    let mut i = start;
+    while let Some(pkt) = ts.get(i..i + TS_PACKET) {
+        i += stride;
+        let Some((pid, pusi, payload)) = packet_payload(pkt) else {
+            continue;
+        };
+        if pid == 0 {
+            collect_pat(payload, pusi, &mut pmt_pids);
+        } else if pmt_pids.contains(&pid) {
+            if let Some(video) = pmt_video_pid(payload, pusi) {
+                return Some(video);
+            }
+        } else if sniffed.is_none() && pusi && starts_video_pes(payload) {
+            sniffed = Some(pid);
+        }
+    }
+    sniffed
+}
+
+/// The payload of one 188-byte transport packet, with its PID and `payload_unit_start`
+/// flag. `None` for a packet that carries none: a lost sync, the transport error indicator
+/// set, a scrambled payload (undecodable, and never ours to descramble), an adaptation
+/// field with no payload after it, or an adaptation length that runs past the packet.
+fn packet_payload(pkt: &[u8]) -> Option<(u16, bool, &[u8])> {
+    if *pkt.first()? != TS_SYNC || *pkt.get(1)? & 0x80 != 0 {
+        return None;
+    }
+    let b1 = *pkt.get(1)?;
+    let b3 = *pkt.get(3)?;
+    // transport_scrambling_control != '00', or adaptation_field_control with no payload bit.
+    if b3 & 0xC0 != 0 || b3 & 0x10 == 0 {
+        return None;
+    }
+    let mut p = 4usize;
+    if b3 & 0x20 != 0 {
+        p += 1 + usize::from(*pkt.get(4)?);
+    }
+    let pid = (u16::from(b1 & 0x1F) << 8) | u16::from(*pkt.get(2)?);
+    Some((pid, b1 & 0x40 != 0, pkt.get(p..)?))
+}
+
+/// The PSI section a packet payload starts, past the `pointer_field` that says how much of
+/// a PREVIOUS section still has to be skipped. Only the section a packet STARTS is read,
+/// which is all a PAT or a PMT for one program ever needs; a table big enough to span
+/// packets is a full broadcast multiplex, where the video PES sniff still answers.
+fn psi_section(payload: &[u8], pusi: bool) -> Option<&[u8]> {
+    if !pusi {
+        return None;
+    }
+    payload.get(1 + usize::from(*payload.first()?)..)
+}
+
+/// The variable part of a PSI section: everything after `table_id`, the `section_length`
+/// field and `fixed` bytes of table-specific header, with the trailing CRC-32 dropped and
+/// the whole thing clipped to what the packet actually holds.
+///
+/// The CRC is deliberately NOT verified. Every field read out of here is bounds-checked, so
+/// a corrupt section can only produce a wrong PID — which yields an elementary stream with
+/// no sequence header and a clean decline — while checking it would throw away a section
+/// that a window boundary merely clipped, costing a thumbnail that works.
+fn section_body(sec: &[u8], fixed: usize) -> Option<&[u8]> {
+    let len = usize::from(u16::from_be_bytes([*sec.get(1)? & 0x0F, *sec.get(2)?]));
+    let end = 3usize.checked_add(len)?.min(sec.len());
+    sec.get(3 + fixed..end.checked_sub(4)?)
+}
+
+/// Record the `program_map_PID` of every program a Program Association Table names. Program
+/// number 0 is the network information table, not a program.
+fn collect_pat(payload: &[u8], pusi: bool, out: &mut Vec<u16>) {
+    let Some(sec) = psi_section(payload, pusi) else {
+        return;
+    };
+    if sec.first() != Some(&0x00) {
+        return;
+    }
+    let Some(body) = section_body(sec, 5) else {
+        return;
+    };
+    for entry in body.as_chunks::<4>().0 {
+        let program = u16::from_be_bytes([entry[0], entry[1]]);
+        let pid = (u16::from(entry[2] & 0x1F) << 8) | u16::from(entry[3]);
+        if program != 0 && !out.contains(&pid) && out.len() < TS_MAX_PROGRAMS {
+            out.push(pid);
+        }
+    }
+}
+
+/// The elementary PID a Program Map Table gives to MPEG-1 (`stream_type` 0x01) or MPEG-2
+/// (0x02) video. Everything else — H.264 (0x1B), HEVC (0x24), AC-3, DVB subtitles, teletext
+/// — is skipped by its own descriptor length, so an AVCHD `.m2ts` answers `None`.
+fn pmt_video_pid(payload: &[u8], pusi: bool) -> Option<u16> {
+    let sec = psi_section(payload, pusi)?;
+    if sec.first() != Some(&0x02) {
+        return None;
+    }
+    let body = section_body(sec, 5)?;
+    // PCR_PID (2 bytes) then program_info_length (12 bits) worth of descriptors.
+    let info = usize::from(u16::from_be_bytes([*body.get(2)? & 0x0F, *body.get(3)?]));
+    let mut p = 4usize.checked_add(info)?;
+    while let Some(entry) = body.get(p..p + 5) {
+        if matches!(entry[0], 0x01 | 0x02) {
+            return Some((u16::from(entry[1] & 0x1F) << 8) | u16::from(entry[2]));
+        }
+        let es_info = usize::from(u16::from_be_bytes([entry[3] & 0x0F, entry[4]]));
+        p = p.checked_add(5)?.checked_add(es_info)?;
+    }
+    None
+}
+
+/// Does this payload open a video PES packet (`00 00 01 E0..EF`)?
+fn starts_video_pes(payload: &[u8]) -> bool {
+    matches!(payload.get(..4), Some([0x00, 0x00, 0x01, c]) if (0xE0..=0xEF).contains(c))
+}
+
+/// Concatenate the elementary stream carried on `pid`: a packet that STARTS a PES packet
+/// contributes the bytes after that PES header, a continuation packet contributes its whole
+/// payload. The PES `packet_length` is deliberately ignored — in a transport stream a video
+/// PES is normally declared as length 0 (unbounded) and simply runs to the next one.
+fn collect_pid(ts: &[u8], start: usize, stride: usize, pid: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = start;
+    while let Some(pkt) = ts.get(i..i + TS_PACKET) {
+        i += stride;
+        match packet_payload(pkt) {
+            Some((p, true, payload)) if p == pid && starts_video_pes(payload) => {
+                append_video_payload(&mut out, payload.get(6..));
+            }
+            Some((p, false, payload)) if p == pid => out.extend_from_slice(payload),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// `picture_coding_type` of the picture header starting at `p` (a `00 00 01 00` code).
 fn picture_type(es: &[u8], p: usize) -> Option<u8> {
     es.get(p + 5).map(|b| (b >> 3) & 7)
@@ -398,9 +631,11 @@ fn unit_bounds(es: &[u8], anchor: usize, pic: usize) -> (usize, usize) {
 /// `None` for a source that is neither (decided on the FILE's head, not the window's, so a
 /// window starting mid-file still knows which syntax it is looking at).
 fn elementary_window<R: Read + Seek>(r: &mut R, start: u64, len: u64) -> Option<Vec<u8>> {
-    let mut head = [0u8; 4];
+    // TS_PROBE bytes, not four: a transport stream has no magic and is recognised from its
+    // packet clock. `by_ref` so the reader survives the take and can be seeked again.
+    let mut head = Vec::new();
     r.seek(SeekFrom::Start(0)).ok()?;
-    r.read_exact(&mut head).ok()?;
+    r.by_ref().take(TS_PROBE).read_to_end(&mut head).ok()?;
     let shape = shape(&head)?;
     r.seek(SeekFrom::Start(start)).ok()?;
     let mut window = Vec::new();
@@ -408,6 +643,7 @@ fn elementary_window<R: Read + Seek>(r: &mut R, start: u64, len: u64) -> Option<
     Some(match shape {
         Shape::ProgramStream => demux_program_stream(&window),
         Shape::ElementaryStream => window,
+        Shape::TransportStream(layout) => demux_transport_stream(&window, layout),
     })
 }
 
@@ -609,6 +845,109 @@ pub(crate) mod fuzzseed {
         ps.extend_from_slice(&[0x00, 0x00, 0x01, 0xB9]);
         ps
     }
+
+    /// The elementary stream wrapped as a TRANSPORT stream. `stride` picks the geometry
+    /// (188 broadcast, 192 M2TS arrival-timestamp prefix, 204 DVB parity). With `tables`,
+    /// a PAT and a PMT name the video PID the way a real recording does; without them the
+    /// demux has to fall back to sniffing a video PES, which is the mid-file-window case.
+    /// An audio PID and an adaptation-field-only packet are woven in for the demux to skip.
+    pub(crate) fn transport_stream(es: &[u8], stride: usize, tables: bool) -> Vec<u8> {
+        const VIDEO: u16 = 0x0100;
+        let mut ts = Vec::new();
+        if tables {
+            // PAT: one program (number 1) whose map lives on PID 0x1000.
+            ts.extend(packet(
+                stride,
+                0,
+                true,
+                &[
+                    0x00, 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                ],
+            ));
+            // PMT: PCR on the video PID, MPEG-2 video (type 0x02) on 0x0100, MPEG audio
+            // (0x03) on 0x0101. The CRC-32 is zeros - nothing here verifies it, on purpose.
+            ts.extend(packet(
+                stride,
+                0x1000,
+                true,
+                &[
+                    0x00, 0x02, 0xB0, 0x17, 0x00, 0x01, 0xC1, 0x00, 0x00, 0xE1, 0x00, 0xF0, 0x00,
+                    0x02, 0xE1, 0x00, 0xF0, 0x00, 0x03, 0xE1, 0x01, 0xF0, 0x00, 0x00, 0x00, 0x00,
+                    0x00,
+                ],
+            ));
+        }
+        // The PES header this seed writes: '10' marker + flags, PTS only, 5 bytes of it.
+        let pes = [0x81u8, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01];
+        // One unbounded PES packet: its header rides the first packet, every later packet of
+        // the PID is a continuation. That is exactly how a real encoder writes video.
+        let mut first = true;
+        for chunk in es.chunks(48) {
+            let mut payload = Vec::new();
+            if first {
+                // packet_length 0: the normal declaration for video in a transport stream.
+                payload.extend_from_slice(&[0x00, 0x00, 0x01, 0xE0, 0x00, 0x00]);
+                payload.extend_from_slice(&pes);
+            }
+            payload.extend_from_slice(chunk);
+            ts.extend(packet(stride, VIDEO, first, &payload));
+            first = false;
+            // An audio packet and a packet with no payload at all, both to be stepped over.
+            ts.extend(packet(stride, 0x0101, true, &[0xDE, 0xAD, 0xBE, 0xEF]));
+            ts.extend(adaptation_only(stride, VIDEO));
+        }
+        ts
+    }
+
+    /// One transport packet: the 4-byte header, an adaptation field of stuffing when the
+    /// payload is short of 184 bytes, then the payload — wrapped in whatever the stride
+    /// adds (M2TS's arrival timestamp before, DVB's parity after).
+    fn packet(stride: usize, pid: u16, pusi: bool, payload: &[u8]) -> Vec<u8> {
+        let body = &payload[..payload.len().min(184)];
+        let stuff = 184 - body.len();
+        let mut p = Vec::with_capacity(stride);
+        if stride == 192 {
+            p.extend_from_slice(&[0x40, 0x00, 0x00, 0x00]);
+        }
+        p.push(0x47);
+        p.push((u8::from(pusi) << 6) | ((pid >> 8) as u8 & 0x1F));
+        p.push((pid & 0xFF) as u8);
+        // adaptation_field_control: '11' when stuffing is needed, '01' when not.
+        p.push(if stuff > 0 { 0x31 } else { 0x11 });
+        if stuff > 0 {
+            p.push((stuff - 1) as u8);
+            if stuff > 1 {
+                p.push(0x00);
+                p.resize(p.len() + stuff - 2, 0xFF);
+            }
+        }
+        p.extend_from_slice(body);
+        if stride == 204 {
+            p.extend_from_slice(&[0u8; 16]);
+        }
+        p
+    }
+
+    /// A packet carrying only an adaptation field: legal, common (it is how a PCR is sent),
+    /// and the demux must step over it without taking any bytes from it.
+    fn adaptation_only(stride: usize, pid: u16) -> Vec<u8> {
+        let mut p = Vec::with_capacity(stride);
+        if stride == 192 {
+            p.extend_from_slice(&[0x40, 0x00, 0x00, 0x00]);
+        }
+        p.push(0x47);
+        p.push((pid >> 8) as u8 & 0x1F);
+        p.push((pid & 0xFF) as u8);
+        p.push(0x20);
+        p.push(183);
+        p.push(0x00);
+        p.resize(p.len() + 182, 0xFF);
+        if stride == 204 {
+            p.extend_from_slice(&[0u8; 16]);
+        }
+        p
+    }
 }
 
 #[cfg(test)]
@@ -682,6 +1021,9 @@ mod tests {
             es.clone(),
             fuzzseed::mpeg1_system(&es),
             fuzzseed::mpeg2_program(&es),
+            fuzzseed::transport_stream(&es, 188, true),
+            fuzzseed::transport_stream(&es, 192, true),
+            fuzzseed::transport_stream(&es, 204, false),
         ] {
             for at in [0.0, 0.3, 1.0, f64::NAN, -5.0] {
                 let unit = intra_slice_bytes(&mut Cursor::new(&src), at).expect("a unit");
@@ -712,6 +1054,43 @@ mod tests {
                 let _ = intra_slice(&src[..n], n / 2);
             }
         }
+        // The transport walk gets the same treatment, at every stride and against every
+        // layout (including a layout that does NOT match the bytes, which is what a head
+        // that lied would hand it), in steps so a multi-packet seed stays a quick test.
+        for stride in TS_STRIDES {
+            let ts = fuzzseed::transport_stream(&es, stride, true);
+            for n in (0..ts.len()).step_by(7) {
+                let _ = intra_slice_bytes(&mut Cursor::new(&ts[..n]), 0.3);
+                let _ = identify(&mut Cursor::new(&ts[..n]));
+                for other in TS_STRIDES {
+                    let _ = demux_transport_stream(
+                        &ts[..n],
+                        TsLayout {
+                            stride: other,
+                            offset: 0,
+                        },
+                    );
+                }
+            }
+        }
+        assert!(packet_payload(&[]).is_none());
+        assert!(
+            packet_payload(&[TS_SYNC, 0x80, 0x00, 0x10]).is_none(),
+            "error bit"
+        );
+        assert!(
+            packet_payload(&[TS_SYNC, 0x00, 0x00, 0x90]).is_none(),
+            "scrambled"
+        );
+        assert!(
+            packet_payload(&[TS_SYNC, 0x00, 0x00, 0x20, 0x00]).is_none(),
+            "no payload"
+        );
+        assert!(
+            packet_payload(&[TS_SYNC, 0x00, 0x00, 0x30, 0xFF]).is_none(),
+            "af overruns"
+        );
+        assert!(section_body(&[0x00, 0xB0, 0x02, 0x00], 5).is_none());
         // A PES whose declared length overruns the buffer, and one whose header claims more
         // header bytes than exist.
         assert!(pes_header_len(&[0x80, 0x80, 0xFF]).is_none());
@@ -725,10 +1104,12 @@ mod tests {
 
     /// The real corpus files, every shape this tier targets: MPEG-2 ES (`sample.mpg` /
     /// `sample.m2v`), MPEG-1 system stream (`sample.mpeg`), MPEG-2 program streams
-    /// (`sample.vob`, `real.m2v`, `real.vob`) and the real MPEG-1 elementary stream
-    /// (`real.m1v`) each yield a unit that starts with a sequence header and holds one
-    /// intra picture; the corpus's `real.mpg` (a transport stream) is declined without a
-    /// spawn. Corpus-gated, like every sample-backed test.
+    /// (`sample.vob`, `real.m2v`, `real.vob`), the real MPEG-1 elementary stream
+    /// (`real.m1v`) and — since 2026-09-17 — MPEG-2 inside a TRANSPORT stream at all three
+    /// packet strides (`sample.ts` 188, `sample.m2ts` 192, `sample.mts`, and the corpus's
+    /// `real.mpg`, which is a 188-byte transport stream wearing a program-stream name).
+    /// Each yields a unit that starts with a sequence header and holds one intra picture.
+    /// Corpus-gated, like every sample-backed test.
     #[test]
     fn corpus_streams_slice_to_one_intra_picture() {
         let mut seen = 0;
@@ -742,6 +1123,10 @@ mod tests {
             ("real.m1v", Codec::Mpeg1),
             ("real-vcd.mpg", Codec::Mpeg1),
             ("real-es.m2v", Codec::Mpeg2),
+            ("sample.ts", Codec::Mpeg2),
+            ("sample.m2ts", Codec::Mpeg2),
+            ("sample.mts", Codec::Mpeg2),
+            ("real.mpg", Codec::Mpeg2),
         ] {
             let Ok(bytes) = std::fs::read(corpus(name)) else {
                 continue;
@@ -751,32 +1136,149 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: no intra unit"));
             assert!(unit.starts_with(&[0x00, 0x00, 0x01, 0xB3]), "{name}");
             assert!(unit.len() <= MPEG_INPUT_CAP, "{name}");
-            let mut intra = 0;
+            // The unit holds ONE frame. That is one picture for a frame-coded stream, and a
+            // PAIR for a field-coded one, where the second field is legitimately coded as P
+            // (predicted from the first field of the same frame) — `unit_bounds` takes the
+            // partner field on purpose, because the two fields ARE one frame to the decoder.
+            // The corpus's `real.mpg`, a field-coded DVB recording, is the sample that
+            // proves it; every earlier sample was frame-coded, so this assertion used to
+            // read "every picture is intra" and would have failed the moment one arrived.
+            let mut pictures = Vec::new();
             let mut pos = 0;
             while let Some(p) = find_start_code(&unit, pos, |c| c == SC_PICTURE) {
-                assert!(
-                    matches!(picture_type(&unit, p), Some(PIC_I | PIC_D)),
-                    "{name}: non-intra picture"
-                );
-                intra += 1;
+                pictures.push((picture_type(&unit, p), picture_structure(&unit, p)));
                 pos = p + 4;
             }
             assert!(
-                (1..=2).contains(&intra),
-                "{name}: {intra} pictures in the unit"
+                (1..=2).contains(&pictures.len()),
+                "{name}: {} pictures in the unit",
+                pictures.len()
             );
+            assert!(
+                matches!(pictures[0].0, Some(PIC_I | PIC_D)),
+                "{name}: the first picture is not intra"
+            );
+            if pictures.len() == 2 {
+                assert!(
+                    pictures[0].1.is_some_and(|s| s != STRUCT_FRAME),
+                    "{name}: a second picture is only allowed as the partner FIELD"
+                );
+            }
             assert_eq!(identify(&mut Cursor::new(&bytes)), Some(codec), "{name}");
         }
-        if let Ok(ts) = std::fs::read(corpus("real.mpg")) {
+        // The H.264 transport streams in the same corpus are recognised as transport
+        // streams and then DECLINED, because their program map names stream_type 0x1B and
+        // nothing in them is MPEG-1/2 video. Media Foundation decodes those in process and
+        // runs long before this tier; an answer here would be the wrong one.
+        for name in ["real.ts", "real.m2ts", "real.mts"] {
+            let Ok(bytes) = std::fs::read(corpus(name)) else {
+                continue;
+            };
             assert!(
-                intra_slice_bytes(&mut Cursor::new(&ts), 0.30).is_none(),
-                "a TS is not ours"
+                matches!(shape(&bytes), Some(Shape::TransportStream(_))),
+                "{name}: should still be recognised as a transport stream"
             );
-            assert!(identify(&mut Cursor::new(&ts)).is_none());
+            assert!(
+                intra_slice_bytes(&mut Cursor::new(&bytes), 0.30).is_none(),
+                "{name}: H.264 is not ours"
+            );
+            assert!(identify(&mut Cursor::new(&bytes)).is_none(), "{name}");
         }
         if seen > 0 {
             eprintln!("corpus_streams_slice_to_one_intra_picture: {seen} corpus streams sliced");
         }
+    }
+
+    /// The packet clock is read correctly at all three strides, from a head alone, and the
+    /// M2TS geometry is not mistaken for a plain one (its sync bytes also sit 188 apart
+    /// once, four bytes in — which is exactly why the probe demands four in a row).
+    #[test]
+    fn every_transport_geometry_is_recognised_and_demuxes_to_its_elementary_stream() {
+        for mpeg2 in [false, true] {
+            let es = fuzzseed::elementary(mpeg2);
+            for (stride, offset) in [(188, 0), (192, 4), (204, 0)] {
+                for tables in [true, false] {
+                    let ts = fuzzseed::transport_stream(&es, stride, tables);
+                    assert_eq!(
+                        shape(&ts),
+                        Some(Shape::TransportStream(TsLayout { stride, offset })),
+                        "stride {stride}, tables {tables}"
+                    );
+                    let out = demux_transport_stream(&ts, TsLayout { stride, offset });
+                    assert_eq!(out, es, "stride {stride}, tables {tables}");
+                    let unit = intra_slice_bytes(&mut Cursor::new(&ts), 0.30)
+                        .unwrap_or_else(|| panic!("stride {stride}: no unit"));
+                    assert!(unit.starts_with(&[0x00, 0x00, 0x01, 0xB3]));
+                    assert_eq!(
+                        identify(&mut Cursor::new(&ts)),
+                        Some(if mpeg2 { Codec::Mpeg2 } else { Codec::Mpeg1 })
+                    );
+                }
+            }
+        }
+    }
+
+    /// A window cut at an arbitrary byte — which is what `intra_slice_bytes` hands the demux
+    /// for any file bigger than the read window — resynchronises on the packet clock instead
+    /// of losing the stream.
+    #[test]
+    fn a_transport_window_that_starts_mid_packet_resynchronises() {
+        let es = fuzzseed::elementary(true);
+        for stride in TS_STRIDES {
+            let ts = fuzzseed::transport_stream(&es, stride, true);
+            let layout = TsLayout { stride, offset: 0 };
+            for cut in [1usize, 7, 93, stride - 1, stride + 5] {
+                let out = demux_transport_stream(&ts[cut..], layout);
+                assert!(
+                    !out.is_empty()
+                        && es
+                            .windows(4)
+                            .any(|w| out.starts_with(w) || out.ends_with(w)),
+                    "stride {stride}, cut {cut}: lost the stream"
+                );
+                assert!(
+                    find_start_code(&out, 0, |c| c == SC_SEQUENCE).is_some(),
+                    "stride {stride}, cut {cut}: no sequence header survived"
+                );
+            }
+        }
+    }
+
+    /// A transport stream whose program map names only H.264 is declined, and so is one
+    /// whose video PID is scrambled — neither may produce bytes for the decoder.
+    #[test]
+    fn a_transport_stream_that_is_not_ours_yields_nothing() {
+        let es = fuzzseed::elementary(true);
+        let layout = TsLayout {
+            stride: 188,
+            offset: 0,
+        };
+        // A program map whose only elementary streams are H.264 (0x1B) and AC-3 (0x81)
+        // names no video of ours. Found by its own bytes rather than by arithmetic, so a
+        // change to the seed's packing cannot quietly turn this into a test of nothing.
+        let mut h264 = fuzzseed::transport_stream(&es, 188, true);
+        let sec = h264
+            .windows(5)
+            .position(|w| w == [0x02, 0xB0, 0x17, 0x00, 0x01])
+            .expect("the PMT section this test rewrites");
+        assert_eq!(h264[sec + 12], 0x02, "the stream_type byte moved");
+        h264[sec + 12] = 0x1B;
+        h264[sec + 17] = 0x81;
+        assert!(pmt_video_pid(&h264[sec - 1..], true).is_none());
+        // A stream carrying a video PES that holds no MPEG sequence header at all — which
+        // is what a real H.264 transport stream looks like to the PES sniff — is demuxed
+        // and then DECLINED by the slicer rather than handed to the decoder.
+        let junk = fuzzseed::transport_stream(&vec![0x5Au8; 600], 188, false);
+        assert!(!demux_transport_stream(&junk, layout).is_empty());
+        assert!(intra_slice_bytes(&mut Cursor::new(&junk), 0.30).is_none());
+        // A scrambled video PID: transport_scrambling_control '10' on every packet of it.
+        let mut scrambled = fuzzseed::transport_stream(&es, 188, false);
+        for p in (0..scrambled.len() / 188).map(|n| n * 188) {
+            if scrambled[p + 1] & 0x1F == 0x01 && scrambled[p + 2] == 0x00 {
+                scrambled[p + 3] |= 0x80;
+            }
+        }
+        assert!(demux_transport_stream(&scrambled, layout).is_empty());
     }
 
     /// A real stream decodes WHEN the helper is there, and declines cleanly when it is not.

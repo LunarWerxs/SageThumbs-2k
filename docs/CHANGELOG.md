@@ -7,6 +7,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Recorded TV, set-top-box and camcorder video (`.ts`, `.m2ts`, `.mts`) no longer needs a
+  paid Windows add-on to show a thumbnail.** Those files usually hold H.264, which Windows
+  decodes on its own; when they hold MPEG-2 instead — most DVB and cable recordings, older
+  camcorders, anything captured from broadcast — Windows shows nothing unless Microsoft's
+  MPEG-2 Video Extension is installed from the Store. SageThumbs now reads those itself, the
+  same way it already read VideoCD `.mpg` and DVD `.vob`. Interlaced recordings, where each
+  frame is stored as two half-pictures, are the one kind still left to Windows.
+
 ## 3.1.0
 
 The JPEG XL crash behind issue #43 is fixed, sixteen more file types get thumbnails, and three

@@ -54,8 +54,9 @@ const RAW_EXTS: &[&str] = &[
 // Video — a frame is grabbed via the OS Media Foundation codecs (no bundled bytes),
 // streamed from disk. MF decodes what the OS has a codec for; the rest keep their
 // default icon — except the codecs we decode ourselves out of process (FLV's VP6 /
-// Sorenson, VP9 Profile 2/3, and MPEG-1/2 in program and elementary streams: `mpg`,
-// `mpeg`, `m1v`, `m2v`, `vob`). Must mirror the Video block in FORMATS.
+// Sorenson, VP9 Profile 2/3, and MPEG-1/2 in program, elementary AND transport streams:
+// `mpg`, `mpeg`, `m1v`, `m2v`, `vob`, `ts`, `m2ts`, `mts`). Must mirror the Video block in
+// FORMATS.
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
     "m1v", "m2v", "mpv", "mp2v", "m2p", "3gp", "3g2", "ts", "m2ts", "mts", "vob", "ogv", "divx",
@@ -65,9 +66,17 @@ const VIDEO_EXTS: &[&str] = &[
 /// system streams and bare elementary streams have no Media Foundation source on any
 /// Windows, and MPEG-2 program streams only with the Store extension, so all five decode
 /// through `st2k mpeg-frame` when MF declines (2026-09-17). `capability()` answers at the
-/// EXTENSION level (like every other field here): an H.264 FLV or a transport stream named
-/// `.mpg` still rides Media Foundation first, and `st2k doctor`'s per-file
-/// `video_codec_note` is the byte-accurate answer for one file.
+/// EXTENSION level (like every other field here): an H.264 FLV still rides Media Foundation
+/// first, and `st2k doctor`'s per-file `video_codec_note` is the byte-accurate answer for
+/// one file.
+///
+/// ⚠ `ts` / `m2ts` / `mts` are deliberately NOT here even though `mpeg12` learned transport
+/// streams the same day. The overwhelmingly common content in those containers is H.264
+/// (every AVCHD camcorder, every modern recorder), which Windows decodes itself and which
+/// this tier declines on purpose — so claiming "needs no OS codec" for the whole extension
+/// would be false for most files carrying it. MPEG-2 inside one now works without the Store
+/// extension, and `doctor` says so per file; the blanket claim stays pessimistic, which is
+/// the safe direction for a promise.
 const SELF_DECODED_VIDEO_EXTS: &[&str] = &[
     "flv", "mpg", "mpeg", "m1v", "m2v", "mpv", "mp2v", "m2p", "vob",
 ];

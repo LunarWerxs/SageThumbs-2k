@@ -364,6 +364,13 @@ mod tests {
         for (name, w, h) in [
             ("mpeg1-128x96.m1v", 128, 96),
             ("mpeg2-ps-128x96.vob", 128, 96),
+            // The transport geometries, committed for the same reason (2026-09-17): the
+            // corpus is gitignored, so without these no runner ever decodes MPEG-2 out of a
+            // transport stream, and the 192-byte M2TS stride — where the sync byte is four
+            // bytes into every packet — is the one a wrong probe would silently mistake for
+            // the 188-byte one.
+            ("mpeg2-ts-128x96.ts", 128, 96),
+            ("mpeg2-m2ts-128x96.m2ts", 128, 96),
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests")
@@ -387,6 +394,54 @@ mod tests {
         }
     }
 
+    /// ⚠ A FIELD-CODED stream is the one MPEG-2 shape `oxideav-mpeg12video` cannot decode,
+    /// and this test pins that as a TRIPWIRE rather than leaving it as folklore.
+    ///
+    /// When a frame is coded as two FIELD pictures, the first field of an I-frame is an
+    /// I-picture and the second is legitimately coded as P, predicted from that first field
+    /// (H.262 §7.6.2.1). The crate refuses it — "P second field before any reference frame
+    /// exists" — because it looks for a previously decoded reference FRAME, and the only
+    /// reference this picture needs is the field beside it. Measured 2026-09-17 against both
+    /// the pinned 0.0.13 and the crate's master: same refusal. Our slice is not the problem:
+    /// ffmpeg decodes the exact bytes this test builds to a correct 352x288 frame, and so
+    /// does it with the second field removed. Handing over the first field alone is not a
+    /// workaround either — the crate then returns NO frame, since a lone field is half a
+    /// picture to it.
+    ///
+    /// So a field-coded transport stream (the corpus's `real.mpg`, a DVB recording) declines
+    /// cleanly today and keeps the stock icon unless Media Foundation's Store MPEG-2
+    /// extension is installed, exactly as before this tier learned transport streams.
+    ///
+    /// WHEN THIS TEST FAILS BECAUSE THE FILE NOW DECODES, the crate has been fixed: delete
+    /// this test and move `real.mpg` into `corpus_mpeg_streams_decode`'s table (352x288).
+    #[test]
+    fn a_field_coded_stream_is_refused_by_the_decoder_upstream() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus");
+        let Ok(bytes) = std::fs::read(corpus.join("real.mpg")) else {
+            eprintln!("a_field_coded_stream_is_refused_by_the_decoder_upstream: no corpus");
+            return;
+        };
+        let unit = sagethumbs2k_core::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
+            .expect("the demux still has to produce the field pair");
+        let pictures = (0..unit.len().saturating_sub(4))
+            .filter(|&i| unit[i..i + 4] == [0x00, 0x00, 0x01, 0x00])
+            .count();
+        assert_eq!(
+            pictures, 2,
+            "real.mpg should slice to an I field and its partner"
+        );
+        let err = frame_png(&unit).expect_err(
+            "the crate decoded a field pair - it has been fixed: delete this test and move \
+             real.mpg into corpus_mpeg_streams_decode (352x288)",
+        );
+        assert!(
+            err.contains("second field"),
+            "field-pair decode failed for a NEW reason, worth reading: {err}"
+        );
+    }
+
     /// END-TO-END on the corpus: extract the unit with the SAME core walk the parent uses
     /// (`mpeg12::intra_slice_bytes`), decode it here, and get a plausible PNG back. Covers
     /// MPEG-2 ES, MPEG-1 system stream, MPEG-2 program streams and the real MPEG-1 ES.
@@ -407,6 +462,14 @@ mod tests {
             ("real.m1v", 160, 120),
             ("real-vcd.mpg", 160, 120),
             ("real-es.m2v", 720, 576),
+            // Transport streams (2026-09-17), one per packet stride: `.ts` is 188-byte
+            // broadcast packets, `.m2ts` and `.mts` carry M2TS's 4-byte arrival timestamp
+            // before each one. The corpus's `real.mpg` is a transport stream too, but it is
+            // FIELD-coded and the decoder cannot do those — see
+            // `a_field_coded_stream_is_refused_by_the_decoder_upstream`, which pins that.
+            ("sample.ts", 640, 360),
+            ("sample.m2ts", 640, 360),
+            ("sample.mts", 640, 360),
         ] {
             let Ok(bytes) = std::fs::read(corpus.join(name)) else {
                 eprintln!("corpus_mpeg_streams_decode: no {name} — skipping");

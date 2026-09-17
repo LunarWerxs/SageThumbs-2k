@@ -78,6 +78,17 @@ pub fn media_foundation_available() -> bool {
     use std::sync::OnceLock;
     use windows::core::PCWSTR;
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    // Test/diagnostic escape hatch, the twin of `ST2K_NO_MAGICK` in `decode::magick`:
+    // `ST2K_NO_MF=1` makes this process behave like a machine with no Media Foundation at
+    // all, so a gate can measure what OUR OWN decoders answer for a file the OS would
+    // otherwise have handled. That is not a hypothetical difference — MPEG-2 in a program
+    // or transport stream is decoded by Media Foundation only when the Store "MPEG-2 Video
+    // Extension" is installed, so a developer box with it silently hides whether our tier
+    // works at all. Deliberately read on EVERY call rather than cached beside the probe
+    // below: a test that flips it mid-process has to be able to change the answer.
+    if std::env::var_os("ST2K_NO_MF").is_some_and(|v| v == "1") {
+        return false;
+    }
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
         ["mfplat.dll\0", "mfreadwrite.dll\0"].iter().all(|name| {

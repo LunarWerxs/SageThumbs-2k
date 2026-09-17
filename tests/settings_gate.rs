@@ -460,7 +460,25 @@ fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
         .join("..")
         .join("test-corpus");
     let mut proved = 0;
-    for name in ["sample.mpeg", "real.m1v", "real-es.m2v"] {
+    // ST2K_NO_MF=1 makes this process behave like a machine with NO Media Foundation, which
+    // is what this test has to be: with the Store MPEG-2 Video Extension installed (as it is
+    // on the machine this was written on) MF answers for a transport stream long before our
+    // tier is reached, so without this the assertions below would pass while proving nothing
+    // about our own decoder. It is the same masking `check-magick-reliance.ps1` exists for.
+    unsafe { common::set_test_env("ST2K_NO_MF", "1") };
+
+    // The transport shapes ride the SAME tier since 2026-09-17, and they are the ones the
+    // stream cascade can get wrong on its own: a transport stream has no magic at offset
+    // zero, so the shape is read from a probe of the head, and this is the only place that
+    // probe runs against a real IStream rather than a Cursor.
+    for name in [
+        "sample.mpeg",
+        "real.m1v",
+        "real-es.m2v",
+        "sample.ts",
+        "sample.m2ts",
+        "sample.mts",
+    ] {
         let Ok(bytes) = std::fs::read(corpus.join(name)) else {
             continue; // corpus-gated, like the other sample-backed tests
         };
@@ -479,6 +497,9 @@ fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
     let junk = unsafe { get_thumbnail(&liar, 96) };
 
     reset_scratch();
+    // Give Media Foundation back before the settings lock drops, or every later test in this
+    // process would run against a machine that suddenly has no video codecs.
+    unsafe { common::remove_test_env("ST2K_NO_MF") };
     assert!(
         junk.is_err(),
         "a file that only claims to be an MPEG program stream must be refused"

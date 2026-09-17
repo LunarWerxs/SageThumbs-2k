@@ -256,6 +256,18 @@ fn inner_targets() -> Vec<Target> {
         ("mpeg12::intra_slice", |b| {
             let _ = crate::mpeg12::intra_slice(b, b.len() / 3);
         }),
+        // The transport walk on its own bytes, at every stride — including a layout that does
+        // NOT describe the buffer, which is what a head that lied about its packet clock
+        // hands it. Adaptation-field lengths, PSI section lengths and PMT descriptor lengths
+        // are all file-supplied and all walked here.
+        ("mpeg12::demux_transport_stream", |b| {
+            for stride in [188usize, 192, 204] {
+                let _ = crate::mpeg12::demux_transport_stream(
+                    b,
+                    crate::mpeg12::TsLayout { stride, offset: 0 },
+                );
+            }
+        }),
         (
             "flv::strip_emulation_prevention",
             flv::strip_emulation_prevention,
@@ -1248,6 +1260,25 @@ fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
             "mpeg2-ps",
             crate::mpeg12::fuzzseed::mpeg2_program(&crate::mpeg12::fuzzseed::elementary(true)),
         ),
+        // The TRANSPORT wrapping at both interesting geometries: 188-byte broadcast packets
+        // with a PAT and a PMT to walk, and M2TS's 192-byte stride with NO tables, so the
+        // video-PES sniff and the adaptation-field stuffing are mutated too.
+        (
+            "mpeg2-ts",
+            crate::mpeg12::fuzzseed::transport_stream(
+                &crate::mpeg12::fuzzseed::elementary(true),
+                188,
+                true,
+            ),
+        ),
+        (
+            "mpeg2-m2ts",
+            crate::mpeg12::fuzzseed::transport_stream(
+                &crate::mpeg12::fuzzseed::elementary(true),
+                192,
+                false,
+            ),
+        ),
         // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
         // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
         // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
@@ -1526,6 +1557,14 @@ fn deep_session_over_the_new_parsers() {
         "real-vcd.mpg",
         "real.m1v",
         "real-es.m2v",
+        // The transport shapes, for the same reason: real packet clocks, real adaptation
+        // fields, real PAT/PMT sections, a second program's tables, and in `real.mpg` a
+        // FIELD-coded stream. `real.ts` is H.264 in a transport stream — the demux has to
+        // walk it all and hand back nothing, which is its own worth fuzzing.
+        "sample.ts",
+        "sample.m2ts",
+        "real.mpg",
+        "real.ts",
     ] {
         if let Ok(mut bytes) = std::fs::read(corpus.join(name)) {
             bytes.truncate(512 * 1024);
