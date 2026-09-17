@@ -9,6 +9,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **JPEG XL files made from JPEGs get their thumbnails back, and a right-click on one no
+  longer takes Explorer down.** A `.jxl` that `cjxl` made from a JPEG keeps the JPEG's colour
+  layout, and the fast thumbnail path mishandled that layout: no thumbnail in the folder, and
+  Explorer restarting when you right-clicked the file. Every phone photo converted with `cjxl`
+  has that layout, so this was most `.jxl` files people actually have. Reported in issue #43.
 - **Pixelorama and SpriteLoop files get thumbnails.** A Pixelorama project (`.pxo`, from
   Pixelorama 1.0) shows the preview the app saves inside it. A SpriteLoop animation package
   (`.spla`) is drawn by SageThumbs itself, since the package carries no picture of the whole:

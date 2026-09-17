@@ -10,6 +10,7 @@ contact.png
 countdown.PspTube
 cube.stl
 huge.jp2
+jxl-jpeg420.jxl
 sample (edited).png
 sample-avif-10bit.avif
 sample-avif-601.avif

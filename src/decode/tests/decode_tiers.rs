@@ -5,6 +5,64 @@
 
 use super::*;
 
+/// Issue #43: a JPEG-transcoded jxl keeps the JPEG's chroma subsampling, and the 1:8
+/// thumbnail path handed the YCbCr conversion Cb and Cr planes still at their subsampled
+/// size. That is a panic inside the decoder ("Grid size mismatch"), which under the shell's
+/// `panic = "abort"` meant no thumbnail from the surrogate and a dead Explorer from the
+/// right-click preview. Every phone photo run through cjxl is 4:2:0, so this was most
+/// real-world JPEG XL files. The reduced path must produce the full decode's picture, scaled.
+#[test]
+fn jpeg_transcoded_jxl_thumbnails_through_the_reduced_path() {
+    for (name, bytes) in [("4:2:0", JXL_JPEG420), ("4:2:2", JXL_JPEG422)] {
+        // 256x192 reduces to 32x24, and 32 * 4 >= 32 * 3, so the reduced path takes it.
+        let reduced = crate::decode::tiers::decode_jxl(bytes, Some(32))
+            .unwrap_or_else(|e| panic!("{name}: reduced decode failed: {e:?}"));
+        assert_eq!(
+            (reduced.width(), reduced.height()),
+            (32, 24),
+            "{name}: not the 1:8 image"
+        );
+        let full = crate::decode::tiers::decode_jxl(bytes, None)
+            .unwrap_or_else(|e| panic!("{name}: full decode failed: {e:?}"));
+        assert_eq!(
+            (full.width(), full.height()),
+            (256, 192),
+            "{name}: not the full image"
+        );
+
+        // The gradient runs red (top) to blue (bottom). Swapped or unscaled chroma would move
+        // the colour, so check both ends, then the distance from the full decode scaled down.
+        let got = reduced.to_rgb8();
+        let top = got.get_pixel(16, 1).0;
+        let bottom = got.get_pixel(16, 22).0;
+        assert!(
+            top[0] > top[2] + 100,
+            "{name}: the top row should be red, got {top:?}"
+        );
+        assert!(
+            bottom[2] > bottom[0] + 100,
+            "{name}: the bottom row should be blue, got {bottom:?}"
+        );
+        let want = full
+            .resize_exact(32, 24, image::imageops::FilterType::Triangle)
+            .to_rgb8();
+        let mut worst = 0i32;
+        let mut sum = 0i64;
+        for (a, b) in got.pixels().zip(want.pixels()) {
+            for c in 0..3 {
+                let d = (i32::from(a.0[c]) - i32::from(b.0[c])).abs();
+                worst = worst.max(d);
+                sum += i64::from(d);
+            }
+        }
+        let mean = sum as f64 / (32.0 * 24.0 * 3.0);
+        assert!(
+            mean < 6.0 && worst < 40,
+            "{name}: the reduced render strays from the full decode: mean {mean:.2}, worst {worst}"
+        );
+    }
+}
+
 #[test]
 #[ignore] // needs ImageMagick (magick.exe) installed; run explicitly
 fn magick_subprocess_decodes() {

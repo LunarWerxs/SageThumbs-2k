@@ -145,6 +145,13 @@ const JXL_ADOBERGB: &[u8] = include_bytes!("../../tests/fixtures/jxl/adobergb_mo
 /// `python scripts/make-jxl-hdr-fixtures.py <dir>` then `cjxl <png> <jxl> -d 0 -e 5`.
 const JXL_PQ2020: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-pq2020.jxl");
 const JXL_SDR709: &[u8] = include_bytes!("../../tests/fixtures/jxl/scene-sdr709.jxl");
+/// Issue #43: JPEG XLs made by cjxl's default lossless transcode of a JPEG, which keeps the
+/// JPEG's YCbCr planes AND its chroma subsampling. 256x192, a red-to-blue vertical gradient,
+/// one 4:2:0 and one 4:2:2; every phone photo run through cjxl is the first kind. Regenerate
+/// with `magick -size 256x192 gradient:red-blue -sampling-factor 4:2:0 -quality 60 in.jpg`
+/// then `cjxl in.jpg jpeg420_transcode.jxl` (the same again with 4:2:2).
+const JXL_JPEG420: &[u8] = include_bytes!("../../tests/fixtures/jxl/jpeg420_transcode.jxl");
+const JXL_JPEG422: &[u8] = include_bytes!("../../tests/fixtures/jxl/jpeg422_transcode.jxl");
 /// The same twin scene as AVIF, 10-bit 4:4:4 lossless: one tagged PQ / BT.2020 (`nclx` 9, 16,
 /// 9, full range), one sRGB / BT.709. The first is the "HDR base" AVIF of issue #39 and the
 /// second its SDR control. Regenerate both with

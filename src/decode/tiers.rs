@@ -23,52 +23,79 @@ pub(super) fn is_jxl(bytes: &[u8]) -> bool {
 /// same way the EXR/Radiance path is. `rayon` is compiled out, so no global thread
 /// pool lands inside explorer.exe.
 pub(super) fn decode_jxl(bytes: &[u8], target: Option<u32>) -> Result<DynamicImage> {
-    use image::ImageDecoder;
-    let mut decoder = jxl_oxide::integration::JxlDecoder::new(std::io::Cursor::new(bytes))
-        .map_err(|_| Error::from(E_FAIL))?;
-
-    // ASK FOR THE 1:8 IMAGE WHEN A THUMBNAIL IS ALL THAT WAS ASKED FOR.
-    //
-    // This is the one format where a thumbnail cost a FULL-RESOLUTION decode, and it is the
-    // format where that hurts most: a 12 MP .jxl took ~2 s from a 50 KB file, because JPEG
-    // XL's whole point is that a small file can hold an enormous image. The cost is in
-    // PIXELS, so no file-size gate can ever catch it - `MaxSize` sees 50 KB and waves it
-    // through, correctly.
-    //
-    // A VarDCT frame codes a complete 8x-downsampled picture (the LF image) ahead of the HF
-    // coefficients, and the decoder already builds it - dequantized, chroma-from-luma
-    // corrected, adaptively smoothed - before any inverse DCT runs. Stopping there skips
-    // essentially the whole decode. See `crates/vendor/jxl-patches` and
-    // <https://github.com/tirr-c/jxl-oxide/pull/505>; when that lands upstream the patch goes
-    // away and this call site does not change.
-    //
-    // Gated on the reduced image still COVERING the request, so a thumbnail is never built by
-    // upscaling: at 1:8 a 12 MP image still gives 500x375, but a 512x384 one gives 64x48 and
-    // a 256 px request would have to blow that up. `render_size` accounts for the frame's own
-    // upsampling and returns the full size for modular frames, which have no LF image, so
-    // this correctly declines both cases without needing to know which is which.
-    if let Some(t) = target {
-        // Turning it ON loads up to the first keyframe, because whether the request applies at
-        // all (and by how much) depends on that frame's header. A failure here just means the
-        // mode is unavailable for this file, so the full decode below still runs.
-        if decoder.set_lf_only(true).is_ok() {
-            let (rw, rh) = decoder.dimensions();
-            // Accept a SLIGHT enlargement rather than demanding the reduced image cover the
-            // request outright. A strict `>= t` test looks principled and is nearly useless
-            // here: the 12 MP corpus sample has upsampling = 2, so its LF is 250x188 against a
-            // 256 px request and a strict rule declines it by SIX PIXELS, throwing away a 45x
-            // saving to avoid a 1.02x enlargement nobody can see.
-            //
-            // 3/4 of the requested edge caps that at ~1.33x, which is still imperceptible on a
-            // tile this size. Below it the LF is genuinely too coarse (a 1000 px image reduces to
-            // 125, and 125 -> 256 is visibly soft), so those keep the full decode.
-            if rw.max(rh) * 4 < t * 3 {
-                // Cannot fail when turning it OFF: it neither loads nor parses anything.
-                let _ = decoder.set_lf_only(false);
-            }
-        }
+    let mut decoder = open_jxl(bytes)?;
+    let reduced = target.is_some_and(|t| request_reduced(&mut decoder, t));
+    match render_jxl(decoder) {
+        // THE SHORTCUT NEVER COSTS A THUMBNAIL (issue #43). The 1:8 render is an
+        // approximation patched into a vendored decoder, with geometry rules of its own, and
+        // a file it cannot render is not a file that cannot be rendered: a JPEG-transcoded
+        // 4:2:0 jxl reached the YCbCr conversion with its chroma planes still at their
+        // subsampled size and failed there, where the 1:1 path had always worked. So a
+        // failure on the reduced path buys one full decode before the file is given up on; a
+        // file the 1:1 path refuses too fails here exactly as it always did.
+        Err(_) if reduced => render_jxl(open_jxl(bytes)?),
+        result => result,
     }
+}
 
+type JxlReader<'a> = jxl_oxide::integration::JxlDecoder<std::io::Cursor<&'a [u8]>>;
+
+fn open_jxl(bytes: &[u8]) -> Result<JxlReader<'_>> {
+    jxl_oxide::integration::JxlDecoder::new(std::io::Cursor::new(bytes))
+        .map_err(|_| Error::from(E_FAIL))
+}
+
+/// ASK FOR THE 1:8 IMAGE WHEN A THUMBNAIL IS ALL THAT WAS ASKED FOR. Returns whether the
+/// decoder will now produce it.
+///
+/// This is the one format where a thumbnail cost a FULL-RESOLUTION decode, and it is the
+/// format where that hurts most: a 12 MP .jxl took ~2 s from a 50 KB file, because JPEG
+/// XL's whole point is that a small file can hold an enormous image. The cost is in
+/// PIXELS, so no file-size gate can ever catch it - `MaxSize` sees 50 KB and waves it
+/// through, correctly.
+///
+/// A VarDCT frame codes a complete 8x-downsampled picture (the LF image) ahead of the HF
+/// coefficients, and the decoder already builds it - dequantized, chroma-from-luma
+/// corrected, adaptively smoothed - before any inverse DCT runs. Stopping there skips
+/// essentially the whole decode. See `crates/vendor/jxl-patches` and
+/// <https://github.com/tirr-c/jxl-oxide/pull/505>; when that lands upstream the patch goes
+/// away and this call site does not change.
+///
+/// Gated on the reduced image still COVERING the request, so a thumbnail is never built by
+/// upscaling: at 1:8 a 12 MP image still gives 500x375, but a 512x384 one gives 64x48 and
+/// a 256 px request would have to blow that up. `render_size` accounts for the frame's own
+/// upsampling and returns the full size for modular frames, which have no LF image, so
+/// this correctly declines both cases without needing to know which is which.
+fn request_reduced(decoder: &mut JxlReader<'_>, t: u32) -> bool {
+    use image::ImageDecoder;
+    // Turning it ON loads up to the first keyframe, because whether the request applies at
+    // all (and by how much) depends on that frame's header. A failure here just means the
+    // mode is unavailable for this file, so the full decode still runs.
+    if decoder.set_lf_only(true).is_err() {
+        return false;
+    }
+    let (rw, rh) = decoder.dimensions();
+    // Accept a SLIGHT enlargement rather than demanding the reduced image cover the
+    // request outright. A strict `>= t` test looks principled and is nearly useless
+    // here: the 12 MP corpus sample has upsampling = 2, so its LF is 250x188 against a
+    // 256 px request and a strict rule declines it by SIX PIXELS, throwing away a 45x
+    // saving to avoid a 1.02x enlargement nobody can see.
+    //
+    // 3/4 of the requested edge caps that at ~1.33x, which is still imperceptible on a
+    // tile this size. Below it the LF is genuinely too coarse (a 1000 px image reduces to
+    // 125, and 125 -> 256 is visibly soft), so those keep the full decode.
+    if rw.max(rh) * 4 < t * 3 {
+        // Cannot fail when turning it OFF: it neither loads nor parses anything.
+        let _ = decoder.set_lf_only(false);
+        return false;
+    }
+    true
+}
+
+/// Everything after the size decision: the bomb guard, the limits, colour management and
+/// the render itself.
+fn render_jxl(mut decoder: JxlReader<'_>) -> Result<DynamicImage> {
+    use image::ImageDecoder;
     // Reject an oversized canvas before allocating the framebuffer (matches the WIC
     // tier's guard: per-edge MAX_DIM and total MAX_PIXELS).
     let (w, h) = decoder.dimensions();

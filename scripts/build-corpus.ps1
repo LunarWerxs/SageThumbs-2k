@@ -213,6 +213,24 @@ if (Test-Path $bmpPrev) {
 # Adobe XD: ZIP keyed off the "sparkler" mimetype, with a top-level thumbnail.png.
 New-Zip "$OutDir\sample.xd" @{ 'mimetype' = 'application/vnd.adobe.sparkler.project+dcxucf'; 'thumbnail.png' = $png }
 if (Test-Path $jpgPrev) { Remove-Item $jpgPrev -Force -EA SilentlyContinue }
+# JPEG XL made by cjxl's default lossless transcode of a 4:2:0 JPEG (issue #43). It keeps the
+# JPEG's YCbCr planes and chroma subsampling, which is the shape every phone photo has once it
+# goes through cjxl, and the shape the 1:8 thumbnail path mishandled. 2048x1536 so that path
+# engages at a 256 px request. `sample.jxl` above stays magick's own encode. Needs cjxl
+# (winget `libjxl.libjxl`); skipped without it, and the committed unit-test fixtures are the
+# gate that runs everywhere.
+$cjxl = (Get-Command cjxl -EA SilentlyContinue).Source
+if (-not $cjxl) { $cjxl = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\libjxl.libjxl_*\*\bin\cjxl.exe" -EA SilentlyContinue | Select-Object -First 1).FullName }
+if ($cjxl) {
+    $jpg420 = "$OutDir\_jpeg420.jpg"
+    & $magick $base -resize '2048x1536!' -sampling-factor 4:2:0 -quality 60 $jpg420 2>$null
+    if (Test-Path $jpg420) {
+        & $cjxl $jpg420 "$OutDir\jxl-jpeg420.jxl" --quiet 2>$null
+        Remove-Item $jpg420 -Force -EA SilentlyContinue
+    }
+} else {
+    Write-Host "[corpus] cjxl not found; jxl-jpeg420.jxl not regenerated (the committed copy stays)"
+}
 # Office documents (container/office.rs — magick faked all of these before):
 # ODF detect = a `mimetype` entry containing "opendocument", preview at the
 # spec-mandated Thumbnails/thumbnail.png; OOXML detect = [Content_Types].xml,
