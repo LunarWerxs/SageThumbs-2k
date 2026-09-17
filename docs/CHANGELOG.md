@@ -7,9 +7,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.1.0
 
-The JPEG XL crash behind issue #43 is fixed, thirteen more file types get thumbnails, and three
+The JPEG XL crash behind issue #43 is fixed, sixteen more file types get thumbnails, and three
 formats that were listed but never worked on a real file now do.
 
 - **JPEG XL files made from JPEGs get their thumbnails back, and a right-click on one no
