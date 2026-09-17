@@ -440,8 +440,8 @@ mod tests {
         }
         // The monthly plan has no button, so its line is the only thing that can carry the door.
         assert!(
-            t("licence_monthly_hint").contains("st2k.lunarwerx.com/subscribe"),
-            "the monthly hint must name the door it is the only pointer to"
+            t("licence_monthly_hint").contains("sagethumbs.lunarwerx.com"),
+            "the monthly hint must name where the monthly plan is bought - it is the only pointer to it"
         );
     }
 }

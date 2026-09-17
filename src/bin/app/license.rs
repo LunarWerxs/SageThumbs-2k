@@ -474,9 +474,13 @@ pub(crate) const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 /// ⛔ THIS ONE GOES TO THE PERPETUAL PRODUCT. Since 2026-09-16 the commercial licence is sold
 /// two ways - US$49 once (this door) and US$2.99 a month - and they are two catalog products,
 /// because `catalog_products.licence_term` is one value per product with a CHECK behind it, so
-/// one product cannot be both. The monthly door is the relay's third route,
-/// `st2k.lunarwerx.com/subscribe`, and it is deliberately NOT a constant here: nothing in the
-/// app OPENS it. It is named as text by `licence_monthly_hint` and `licence_buy_pointer`,
+/// one product cannot be both. The monthly plan points at the SITE
+/// (`sagethumbs.lunarwerx.com`), NOT at a relay route: the relay never grew a `/subscribe` twin
+/// of this path, and because its catch-all answers an unknown path `200` with the sponsor
+/// manifest rather than `404`, a URL published ahead of the route showed buyers raw JSON
+/// (2026-09-17). The site's pricing card links BOTH plans straight at their hosted checkout
+/// pages, so there is no redirect to keep in step with the catalog. It is deliberately NOT a
+/// constant here: nothing in the app OPENS it. It is named as text by `licence_monthly_hint` and `licence_buy_pointer`,
 /// because the Licence page's action row is three buttons by design (Michael, 2026-09-15) and
 /// a fourth would undo that - the monthly plan gets the full-width prospect line instead. If a
 /// button for it is ever wanted, add the constant then, not before.
