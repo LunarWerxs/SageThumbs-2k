@@ -24,6 +24,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   CAD: **SolidWorks** parts, assemblies and drawings (`.sldprt`, `.sldasm`, `.slddrw`) show the
   preview stored in the file. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
   `.mctemplate`, `.mcpack`, `.mcaddon`) show the world photo or pack icon inside them.
+- **Three formats that were listed but never worked on a real file now do.** Seattle FilmWorks
+  photos (`.sfw`, the 1990s "Pictures on Disk" floppies) and Alias/Wavefront `.pix` images are
+  decoded by SageThumbs itself now, and Scitex `.sct` files reach the right reader. Found by
+  feeding the test corpus real files from other programs for every format it lists.
 - **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
   on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
   highlighted button until a copy holds a licence), a personal copy's "no licence needed"

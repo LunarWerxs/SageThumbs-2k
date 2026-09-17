@@ -39,7 +39,7 @@ fn naming_the_coder_decodes_a_tim_to_the_right_colour() {
 #[test]
 fn only_unsniffable_formats_are_offered_a_named_coder() {
     for ext in [
-        "tim", "rla", "cut", "mac", "pix", "jnx", "scr", "nef", "mdc", "TIM", ".tim",
+        "tim", "rla", "cut", "mac", "pix", "jnx", "scr", "sct", "nef", "mdc", "TIM", ".tim",
     ] {
         assert!(
             extension_has_named_coder(ext),

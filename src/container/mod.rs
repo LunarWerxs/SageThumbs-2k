@@ -58,6 +58,9 @@ mod names;
 mod office;
 pub mod ole;
 mod pdn;
+// Alias/Wavefront PIX (.pix) - run-length pixels with no signature; recognised by the runs
+// adding up to the picture exactly at end-of-file, then decoded natively.
+mod pix;
 mod project;
 mod psd;
 mod psp;
@@ -65,6 +68,9 @@ mod rar;
 mod rhino;
 pub(crate) mod select;
 mod sevenz;
+// Seattle FilmWorks (.sfw) and its PhotoWorks album (.pwp) - a JPEG with renumbered markers
+// and no Huffman tables, unwrapped back into one.
+mod sfw;
 mod skp;
 mod spla;
 mod tarfmt;
@@ -420,6 +426,11 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     if aseprite::looks_like_aseprite(bytes) {
         return aseprite::extract(bytes).map(CoverOut::Image);
     }
+    // Seattle FilmWorks: `SFW94A` (a photo) or `SFW95A` (an album, first photo). The JPEG
+    // inside is rebuilt and decoded here because it has to be flipped afterwards.
+    if sfw::looks_like_sfw(bytes) {
+        return sfw::extract(bytes).map(CoverOut::Image);
+    }
     if ilbm::looks_like_ilbm(bytes) {
         return ilbm::extract(bytes).map(CoverOut::Image);
     }
@@ -500,6 +511,12 @@ fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
     // fast on binary, so it's a cheap last resort).
     if let Some(png) = gcode::extract(bytes) {
         return Some(CoverOut::Bytes(png));
+    }
+    // Alias PIX, dead last: it has no magic, so everything with a signature has had its turn
+    // by now. The header test is ten bytes; only a file whose run lengths add up to exactly
+    // width x height on its final byte is decoded (see `pix.rs`).
+    if pix::looks_like_alias_pix(bytes) {
+        return pix::extract(bytes).map(CoverOut::Image);
     }
     None
 }
@@ -882,10 +899,18 @@ mod tests {
                     if crate::decode::looks_like_metafile(&raw) {
                         continue;
                     }
-                    let img = image::load_from_memory(&raw).unwrap_or_else(|e| {
-                        panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
-                    });
-                    (img.width(), img.height())
+                    // JPEG 2000 is the other cover the `image` crate cannot read: an old
+                    // macOS icon keeps its 256 and 512 px members as JP2 codestreams (the
+                    // real `Apple Retro.icns` in the corpus), and that tier is ours
+                    // (`decode::jp2`). Its header parse is what is checkable here.
+                    if let Some(dims) = crate::decode::jp2_dimensions(&raw) {
+                        dims
+                    } else {
+                        let img = image::load_from_memory(&raw).unwrap_or_else(|e| {
+                            panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
+                        });
+                        (img.width(), img.height())
+                    }
                 }
             };
             assert!(

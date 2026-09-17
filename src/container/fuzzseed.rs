@@ -216,6 +216,14 @@ pub(crate) fn targets() -> Vec<Target> {
         ("bgcode::extract", |b| {
             let _ = bgcode::extract(b);
         }),
+        // Seattle FilmWorks: the marker walk that rebuilds a JPEG, then the JPEG decode.
+        ("sfw::extract", |b| {
+            let _ = sfw::extract(b);
+        }),
+        // Alias PIX: the run-length accounting that stands in for a signature, then the fill.
+        ("pix::extract", |b| {
+            let _ = pix::extract(b);
+        }),
         // SolidWorks: the `PreviewPNG` stream lookup, over the OLE reader.
         ("solidworks::extract", |b| {
             let _ = solidworks::extract(b);
@@ -1287,6 +1295,24 @@ fn synthetic_bgcode() -> Vec<u8> {
     bgcode::synth(&[(2, 8, 8, &qoi), (0, 16, 16, &png16)])
 }
 
+/// Seattle FilmWorks: a small two-colour picture wrapped by the module's own builder, so the
+/// marker walk and the Huffman splice are what gets mutated.
+fn synthetic_sfw() -> Vec<u8> {
+    let picture = image::RgbImage::from_fn(16, 16, |_, y| {
+        if y < 8 {
+            image::Rgb([220, 30, 30])
+        } else {
+            image::Rgb([30, 30, 220])
+        }
+    });
+    sfw::synth(&picture, false)
+}
+
+/// Alias PIX: three colour rows, the first wide enough to need more than one run.
+fn synthetic_pix() -> Vec<u8> {
+    pix::synth(300, &[[200, 10, 20], [10, 200, 20], [10, 20, 200]], false)
+}
+
 /// SolidWorks: the same OLE container the other compound-file seeds use, with a PNG in a
 /// stream named `PreviewPNG` rather than `SummaryInformation`.
 fn synthetic_solidworks() -> Vec<u8> {
@@ -1470,6 +1496,8 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("spla", synthetic_spla()),
         ("aseprite", synthetic_aseprite()),
         ("bgcode", synthetic_bgcode()),
+        ("sfw", synthetic_sfw()),
+        ("pix", synthetic_pix()),
         ("solidworks", synthetic_solidworks()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
@@ -1634,6 +1662,13 @@ mod tests {
             bgcode::extract(&by("bgcode")).is_some(),
             "bgcode thumbnail block"
         );
+        assert!(sfw::looks_like_sfw(&by("sfw")), "sfw magic");
+        assert!(sfw::extract(&by("sfw")).is_some(), "sfw unwrapped JPEG");
+        assert!(pix::looks_like_alias_pix(&by("pix")), "alias pix header");
+        assert!(
+            pix::extract(&by("pix")).is_some(),
+            "alias pix run-length fill"
+        );
         assert!(
             solidworks::extract(&by("solidworks")).is_some(),
             "solidworks PreviewPNG stream"
@@ -1719,6 +1754,8 @@ mod tests {
             "spla",
             "aseprite",
             "bgcode",
+            "sfw",
+            "pix",
             "solidworks",
         ] {
             let bytes = seeds()

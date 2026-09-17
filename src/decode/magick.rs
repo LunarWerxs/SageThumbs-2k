@@ -335,7 +335,14 @@ pub(super) fn decode_via_magick_capped(
 /// Formats that DO sniff are deliberately absent — naming a coder for those
 /// would bypass magick's own detection and could decode bytes as a format they
 /// are not.
-const NAME_SELECTED_EXTS: &[&str] = &["cut", "jnx", "mac", "pix", "rla", "scr", "tim"];
+///
+/// `sct` is the one entry the table rule alone would have missed (added 2026-09-17, when the
+/// corpus got its first REAL Scitex files). `magick -list magic` does list SCT, as `CT` at
+/// offset 0 - but a Scitex CT file opens with its 80-byte name field and carries `CT` at
+/// offset 80, so that signature never matches a file anyone owns. Four real files from two
+/// writers all came back "no decode delegate" on stdin and decoded by name. A signature in
+/// the table is only evidence when a real file matches it.
+const NAME_SELECTED_EXTS: &[&str] = &["cut", "jnx", "mac", "pix", "rla", "scr", "sct", "tim"];
 
 /// Camera RAW, which rides magick's equally name-selected `dng` coder.
 ///
