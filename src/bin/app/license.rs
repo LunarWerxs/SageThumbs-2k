@@ -470,6 +470,16 @@ pub(crate) const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 /// purpose: the checkout is a Pay offer whose id changes with a repricing or a new product,
 /// and this string is compiled into every copy ever shipped. The redirect moves; this does
 /// not. Opened by the Licence page's Buy button and named in the business-nag notices.
+///
+/// ⛔ THIS ONE GOES TO THE PERPETUAL PRODUCT. Since 2026-09-16 the commercial licence is sold
+/// two ways - US$49 once (this door) and US$2.99 a month - and they are two catalog products,
+/// because `catalog_products.licence_term` is one value per product with a CHECK behind it, so
+/// one product cannot be both. The monthly door is the relay's third route,
+/// `st2k.lunarwerx.com/subscribe`, and it is deliberately NOT a constant here: nothing in the
+/// app OPENS it. It is named as text by `licence_monthly_hint` and `licence_buy_pointer`,
+/// because the Licence page's action row is three buttons by design (Michael, 2026-09-15) and
+/// a fourth would undo that - the monthly plan gets the full-width prospect line instead. If a
+/// button for it is ever wanted, add the constant then, not before.
 pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
 
 /// Where another 12 months of updates is bought (US$29), for a licence that is already

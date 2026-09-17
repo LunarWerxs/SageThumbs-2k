@@ -405,14 +405,18 @@ if ($fitSkipped) {
         $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${BTN3_MAX}px three-button-row budget on the Licence page - the label will be cut off")
       }
     }
-    # The Licence page's "using it at work?" line is a full-width `Row::Status` (PANE_W 528);
-    # a single-line STATIC clips silently past that, which is how its first cut shipped a
-    # capture reading "US$49 per".
-    if ($loc.Map.ContainsKey('licence_work_hint')) {
-      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map['licence_work_hint'], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+    # The Licence page's prospect line is a full-width `Row::Status` (PANE_W 528); a single-line
+    # STATIC clips silently past that, which is how its first cut shipped a capture reading
+    # "US$49 per". BOTH sentences that row can carry are measured: since the monthly plan
+    # (2026-09-16) the control shows `licence_work_hint` on a Personal copy and
+    # `licence_monthly_hint` on a Business one, and a budget that only knew about the first
+    # would let the second ship cut off in exactly the way this check exists to prevent.
+    foreach ($k in @('licence_work_hint','licence_monthly_hint')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
       if ($w -gt 520) {
         $overflow++
-        $fail.Add("locales/$($f.Name) licence_work_hint is ${w}px, over the 520px full-row budget on the Licence page - it will be cut off")
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the 520px full-row budget on the Licence page - it will be cut off")
       }
     }
   }

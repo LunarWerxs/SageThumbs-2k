@@ -699,7 +699,8 @@ begin
     + 'Home, hobby, and other non-commercial use. Every feature included.');
   LicensePage.Add('Business or commercial use' + #13#10
     + 'For work. Try it for 7 days, then enter a licence key under Settings > Licence'
-    + ' (US$49 per installation, yours permanently, from st2k.lunarwerx.com/buy).');
+    + ' (US$2.99 a month from st2k.lunarwerx.com/subscribe, or US$49 per installation'
+    + ' and it is yours permanently, from st2k.lunarwerx.com/buy).');
   LicensePage.SelectedValueIndex := LicenseModeInitial;
 end;
 

@@ -1084,9 +1084,10 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
         ID_LICENCE_MOVE,
         hinst,
     );
-    // The "using it at work?" line under the action row - see `ID_LICENCE_WORK_HINT`. Built
-    // with its text like every label (so a language switch relabels it through the table);
-    // `licence_ui::apply_conditional_visibility` shows it only where it applies.
+    // The prospect line under the action row - see `ID_LICENCE_WORK_HINT`. Seeded with the
+    // Personal wording only so the control is never born empty;
+    // `licence_ui::apply_conditional_visibility` decides BOTH its text (one of two sentences,
+    // by mode) and whether it shows at all, and runs before this page can be looked at.
     ctl(
         hwnd,
         STATIC,

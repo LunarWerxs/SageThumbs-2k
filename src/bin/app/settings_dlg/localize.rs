@@ -101,7 +101,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LICENCE_RENEW, "btn_licence_renew"),
         (ID_LICENCE_BUY, "btn_licence_buy"),
         (ID_LICENCE_MOVE, "btn_licence_move"),
-        (ID_LICENCE_WORK_HINT, "licence_work_hint"),
+        // ⛔ ID_LICENCE_WORK_HINT IS DELIBERATELY NOT HERE. Since the monthly plan (2026-09-16)
+        // that row carries one of TWO sentences depending on the copy's mode, so a static pair
+        // would relabel a Business machine with the Personal wording on every language switch.
+        // It is re-texted with the other state-derived lines at the end of this function.
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
@@ -316,6 +319,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     // live language switch leaves them in whatever language was active when they were last set.
     refresh_sync_ui(hwnd);
     set_shot_dir_label(hwnd);
+    // The Licence page's prospect line is the third of the same kind: which sentence it carries
+    // depends on this copy's mode, so the pairs table above cannot seed it (see the ⛔ note where
+    // it used to sit). This re-texts it in the new language and re-applies its visibility.
+    licence_ui::apply_conditional_visibility(hwnd);
 }
 
 pub(super) unsafe fn set_window_title(hwnd: HWND) {

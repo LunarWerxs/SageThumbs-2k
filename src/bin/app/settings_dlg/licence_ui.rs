@@ -142,23 +142,50 @@ pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
         };
         let _ = ShowWindow(h, show);
     }
-    // The "using it at work?" line shares the Renew row and speaks to the opposite case: a
-    // Personal copy with no business key. A Business copy without a key already has the
-    // reminder strip across every page (`biznag`), and a licensed machine is not a prospect.
+    // The prospect line shares the Renew row and speaks to the opposite case: a copy that
+    // could buy one. Its TEXT is state-derived (see [`prospect_hint_key`]), so it is set here
+    // on every pass rather than baked at build time - which is also why it is not in
+    // `localize`'s static pairs table, and why `apply_labels` calls this function at its end
+    // alongside the other state-derived re-texts.
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_WORK_HINT) {
-        let show = if work_hint_visible(&snap) {
-            SW_SHOW
-        } else {
-            SW_HIDE
-        };
-        let _ = ShowWindow(h, show);
+        match prospect_hint_key(&snap) {
+            Some(key) => {
+                let w = wide(t(key));
+                let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+                let _ = ShowWindow(h, SW_SHOW);
+                let _ = InvalidateRect(Some(h), None, true);
+            }
+            None => {
+                let _ = ShowWindow(h, SW_HIDE);
+            }
+        }
     }
 }
 
-/// Whether the "using it at work?" line applies: a Personal copy that holds no business
-/// licence and never had a key. See [`apply_conditional_visibility`].
-pub(super) fn work_hint_visible(snap: &crate::license::LicenceSnapshot) -> bool {
-    snap.mode == crate::license::Mode::Personal && !snap.entitled && snap.key_prefix.is_empty()
+/// Which prospect line this copy should read, or `None` for a machine that is not a prospect.
+///
+/// A licensed machine is never sold to (the same rule that steps the Buy button back from the
+/// accent once `entitled`), and neither is one whose key was merely revoked - that copy is
+/// being told something else entirely by the state line above.
+///
+/// The two prospect states get DIFFERENT sentences, because they are different people:
+///
+/// * **Personal, no key** - someone who may not know a business copy needs one at all, so the
+///   line opens with the question ("Using SageThumbs at work?") and names both prices.
+/// * **Business, no key** - someone who has already said they are a business and is looking at
+///   an accent Buy button. They know they owe a licence; what this row adds is the ONE thing
+///   the Buy button cannot say, because it opens the one-time checkout: there is a monthly
+///   plan, and where it lives. Until the monthly plan existed (2026-09-16) this state showed
+///   nothing here, on the grounds that `biznag` already nags it - which is still true, and is
+///   exactly why this line sells the alternative rather than repeating the nag.
+pub(super) fn prospect_hint_key(snap: &crate::license::LicenceSnapshot) -> Option<&'static str> {
+    if snap.entitled || !snap.key_prefix.is_empty() {
+        return None;
+    }
+    match snap.mode {
+        crate::license::Mode::Personal => Some("licence_work_hint"),
+        crate::license::Mode::Business => Some("licence_monthly_hint"),
+    }
 }
 
 /// Set the redeem-result line and its tone; repaints so the tri-state colour re-reads
@@ -329,5 +356,92 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
             set_redeem_status(hwnd, text, tone);
             refresh_licence_status(hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::license::{LicenceSnapshot, Mode, Posture};
+
+    /// A snapshot with only the three fields [`prospect_hint_key`] actually reads set by the
+    /// caller. Everything else is the quiet default, so a test that changes one of those three
+    /// is unambiguously testing that one.
+    fn snap(mode: Mode, key_prefix: &str, entitled: bool) -> LicenceSnapshot {
+        LicenceSnapshot {
+            mode,
+            posture: Posture::Silent,
+            key_prefix: key_prefix.to_string(),
+            last_positive_unix: 0,
+            last_status: String::new(),
+            last_reason: String::new(),
+            cert_expires_unix: None,
+            maint_unix: None,
+            now_unix: 0,
+            entitled,
+        }
+    }
+
+    /// The two prospect states get two DIFFERENT sentences, and every other state gets none.
+    ///
+    /// The Business arm is the one the monthly plan added (2026-09-16): before it, this row was
+    /// blank on a business copy with no key, so the only price that machine was ever shown was
+    /// the one-time US$49 behind the Buy button. The monthly plan has no button of its own - the
+    /// action row is three doors by design - so this line is the ONLY place inside the app that
+    /// a business prospect learns the cheaper plan exists.
+    #[test]
+    fn only_a_prospect_is_sold_to_and_each_prospect_hears_its_own_sentence() {
+        assert_eq!(
+            prospect_hint_key(&snap(Mode::Personal, "", false)),
+            Some("licence_work_hint")
+        );
+        assert_eq!(
+            prospect_hint_key(&snap(Mode::Business, "", false)),
+            Some("licence_monthly_hint")
+        );
+
+        // A licensed machine is never sold to - the same rule that steps the Buy button back
+        // from the accent once `entitled`.
+        assert_eq!(prospect_hint_key(&snap(Mode::Business, "", true)), None);
+        assert_eq!(prospect_hint_key(&snap(Mode::Personal, "", true)), None);
+
+        // ...and neither is one that HELD a key, whatever became of it. A revoked or lapsed copy
+        // is being told something specific by the state line above; answering it with a price
+        // list would talk over the only sentence on the page that matters to it.
+        assert_eq!(
+            prospect_hint_key(&snap(Mode::Business, "esk_A1B2", false)),
+            None
+        );
+        assert_eq!(
+            prospect_hint_key(&snap(Mode::Personal, "esk_A1B2", false)),
+            None
+        );
+    }
+
+    /// Both sentences must EXIST in the table, or the row renders the ⟨?⟩ miss marker on the one
+    /// screen a buyer is looking at. Cheap, and it is the failure a renamed key would cause.
+    #[test]
+    fn both_prospect_sentences_are_real_keys_and_name_their_price() {
+        let work = t("licence_work_hint");
+        let monthly = t("licence_monthly_hint");
+        for (name, s) in [
+            ("licence_work_hint", work),
+            ("licence_monthly_hint", monthly),
+        ] {
+            assert!(!s.is_empty(), "{name} is empty");
+            // ⛔ The miss marker is the BRACKETED `⟨?⟩`, not a bare '?' - both of these
+            // sentences legitimately ask the reader a question, and the first cut of this
+            // assertion failed on its own correct text.
+            assert!(!s.contains("⟨?⟩"), "{name} rendered a miss marker: {s}");
+            assert!(
+                s.contains("2.99"),
+                "{name} no longer names the monthly price: {s}"
+            );
+        }
+        // The monthly plan has no button, so its line is the only thing that can carry the door.
+        assert!(
+            t("licence_monthly_hint").contains("st2k.lunarwerx.com/subscribe"),
+            "the monthly hint must name the door it is the only pointer to"
+        );
     }
 }

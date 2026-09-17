@@ -12,8 +12,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
   on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
   highlighted button until a copy holds a licence), a personal copy's "no licence needed"
-  shows in green, and a personal copy gets a one-line answer to why it would ever buy one
-  (US$49 per computer, for use at work). The page subtitle no longer runs off the end.
+  shows in green, and a copy that has no licence gets a one-line answer to why it would ever
+  buy one. The page subtitle no longer runs off the end.
+- For the few installations that need a business licence: there is now a monthly plan,
+  US$2.99 per computer, alongside the one-time US$49. Personal use is unaffected and stays
+  free.
 
 ## 3.0.5
 

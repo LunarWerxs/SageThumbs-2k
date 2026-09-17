@@ -379,9 +379,11 @@ works.
 <summary><b>Can I use this at work?</b></summary>
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a commercial licence: US$49 per Windows installation, perpetual, with 12 months of
-updates. Buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
-(card via Stripe); one seat key per installation arrives by email the moment payment completes
+needs a commercial licence per Windows installation, sold two ways: US$2.99 a month at
+<https://st2k.lunarwerx.com/subscribe> (cancel whenever you like at <https://checkout.connections.icu/manage>,
+signing in with the email you paid with), or US$49 once at
+<https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+for a perpetual licence with 12 months of updates (card via Stripe); one seat key per installation arrives by email the moment payment completes
 (the checkout page calls it a "redemption code": same thing, it starts with `esk_`).
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
