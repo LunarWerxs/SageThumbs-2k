@@ -9,6 +9,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Pixelorama and SpriteLoop files get thumbnails.** A Pixelorama project (`.pxo`, from
+  Pixelorama 1.0) shows the preview the app saves inside it. A SpriteLoop animation package
+  (`.spla`) is drawn by SageThumbs itself, since the package carries no picture of the whole:
+  the first frame of its first animation, every part in its place. Both were asked for through
+  the app's feedback form.
 - **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
   on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
   highlighted button until a copy holds a licence), a personal copy's "no licence needed"

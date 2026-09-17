@@ -74,6 +74,14 @@ fn dedicated_preview<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Dedicated {
         return Dedicated::Final(Some(preview));
     }
 
+    // SpriteLoop `.spla` animation packages: no baked preview at all, a rig of part PNGs
+    // plus a JSON manifest, so frame 0 is RENDERED (`container::spla`). Before the generic
+    // pick for the same reason as the project family - it would otherwise hand back
+    // whichever body part sorts first. A package that will not draw falls through.
+    if let Some(frame) = super::spla::extract(zip) {
+        return Dedicated::Final(Some(frame));
+    }
+
     // Office documents (ODF / OOXML PowerPoint): a dedicated embedded preview. If
     // the package IS one of these, its thumbnail is the only sensible cover — take
     // it (or None) without falling through.

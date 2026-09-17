@@ -63,6 +63,7 @@ mod rhino;
 pub(crate) mod select;
 mod sevenz;
 mod skp;
+mod spla;
 mod tarfmt;
 mod util;
 // GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.

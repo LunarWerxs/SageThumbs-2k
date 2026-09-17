@@ -201,6 +201,13 @@ pub(crate) fn targets() -> Vec<Target> {
                 let _ = project::extract(&mut zip);
             }
         }),
+        // SpriteLoop `.spla`: the manifest parse and the frame-0 compositor, on a structurally
+        // valid zip whose manifest JSON and part PNGs are what gets mutated (`synthetic_spla`).
+        ("spla::extract", |b| {
+            if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(b)) {
+                let _ = spla::extract(&mut zip);
+            }
+        }),
         // APEv2 "Cover Art (Front)" item parsing, on raw item bytes rather than through the
         // Read+Seek footer wrapper (see `synthetic_apev2_item`).
         (
@@ -1195,6 +1202,30 @@ fn synthetic_project() -> Vec<u8> {
     ])
 }
 
+/// Pixelorama 1.0+ `.pxo`: the mimetype the project branch keys off, the root `preview.png`
+/// it extracts, and a `data.json` beside them as the real files carry.
+fn synthetic_pxo() -> Vec<u8> {
+    stored_zip(&[
+        ("mimetype", b"application/x-pixelorama"),
+        ("data.json", br#"{"size_x":16,"size_y":16,"frames":[]}"#),
+        ("preview.png", &png(16, 16)),
+    ])
+}
+
+/// SpriteLoop `.spla`: a two-part rig whose frame 0 places both parts on a 32x32 canvas, one
+/// of them rotated, skewed, scaled, faded and tinted, so the whole affine path is on the fuzz
+/// surface and not only the identity placement.
+fn synthetic_spla() -> Vec<u8> {
+    stored_zip(&[
+        (
+            "manifest.json",
+            br#"{"format":"spla","version":1,"name":"seed","canvas":{"width":32,"height":32},"parts":[{"id":"a","name":"a","asset":"assets/asset_0001.png","width":16,"height":16,"pivot":{"x":8,"y":8},"drawOrder":0},{"id":"b","name":"b","asset":"assets/asset_0002.png","width":16,"height":16,"pivot":{"x":0,"y":0},"drawOrder":1}],"animations":[{"id":"idle","name":"idle","fps":24,"loop":true,"frameCount":1,"frames":[{"index":0,"sourceFrame":0,"parts":[{"part":"a","x":16,"y":16,"rotation":30,"skewX":10,"skewY":0,"scaleX":0.75,"scaleY":1.25,"opacity":0.9},{"part":"b","x":4,"y":4,"rotation":0,"scaleX":1,"scaleY":1,"opacity":1,"tint":[1,0.5,0.5]}]}]}]}"#,
+        ),
+        ("assets/asset_0001.png", &png(16, 16)),
+        ("assets/asset_0002.png", &png(16, 16)),
+    ])
+}
+
 /// Raw APEv2 items (no footer): `size(4) flags(4) key\0 value[size]`, one "Cover Art
 /// (Front)" binary item whose value is `description\0 imagedata`. Fed directly to
 /// `audio::ape_fuzzapi::cover_from_items` — see that module for why the footer wrapper is
@@ -1354,6 +1385,8 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("rhino", synthetic_rhino()),
         ("wav", synthetic_wav()),
         ("project", synthetic_project()),
+        ("pxo", synthetic_pxo()),
+        ("spla", synthetic_spla()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),
@@ -1491,6 +1524,19 @@ mod tests {
                 "project krita mimetype preview"
             );
         }
+        {
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(by("pxo"))).expect("valid zip seed");
+            assert!(
+                project::extract(&mut zip).is_some(),
+                "pxo pixelorama mimetype preview"
+            );
+        }
+        {
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(by("spla"))).expect("valid zip seed");
+            assert!(spla::extract(&mut zip).is_some(), "spla frame-0 render");
+        }
         assert!(
             audio::ape_fuzzapi::cover_from_items_result(&by("apev2-item"), 1).is_some(),
             "apev2 cover item"
@@ -1548,7 +1594,7 @@ mod tests {
         for name in [
             "psd", "ilbm", "cdr", "icns", "pdn", "psp", "c4d", "max", "fb2", "gcode", "affinity",
             "indd", "mobi", "blend", "dwg", "apk", "xapk", "xcf", "skp", "rhino", "project",
-            "sevenz",
+            "sevenz", "pxo", "spla",
         ] {
             let bytes = seeds()
                 .into_iter()

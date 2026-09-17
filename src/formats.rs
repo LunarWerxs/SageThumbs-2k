@@ -332,6 +332,12 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "sketch",
     "procreate",
     "xd",
+    // Pixelorama `.pxo` (1.0+): the root `preview.png` the app bakes in for file managers.
+    "pxo",
+    // SpriteLoop `.spla` animation packages: RENDERED - frame 0 of the rig composited from
+    // the part PNGs and the manifest's transforms (`container::spla`), since the package
+    // carries no preview of its own.
+    "spla",
     // Android packages: the manifest-declared launcher icon (`container::apk`), never a
     // decode/render of the app's actual UI.
     "apk",
@@ -476,6 +482,8 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("af", "Affinity document"),
     ("blend", "Blender scene"),
     ("clip", "Clip Studio Paint document"),
+    ("pxo", "Pixelorama project"),
+    ("spla", "SpriteLoop animation package"),
     ("pspimage", "Paint Shop Pro image"),
     ("psp", "Paint Shop Pro image"),
     // The rest of the Paint Shop Pro family: same "~BK\0" block container as .pspimage,

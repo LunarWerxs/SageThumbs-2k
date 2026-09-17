@@ -45,6 +45,16 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
         if contains_ci(&mt, b"sparkler") {
             return try_paths(zip, &["thumbnail.png", "preview.png"]);
         }
+        // Pixelorama `.pxo` (1.0+, mimetype "application/x-pixelorama"): a root `preview.png`
+        // of the current frame, 256 px on its long edge, nearest-neighbour scaled - written by
+        // Pixelorama expressly so "file managers can later use this as a thumbnail" (its
+        // OpenSave.gd, verified 2026-09-17). Keyed off the mimetype like Krita: a bare root
+        // `preview.png` is not in the generic list below on purpose, since it would claim any
+        // zip that happens to carry one. Pre-1.0 `.pxo` files are zstd streams, not zips, and
+        // never reach this module; they keep the stock icon.
+        if contains_ci(&mt, b"pixelorama") {
+            return try_paths(zip, &["preview.png"]);
+        }
     }
     // Autodesk Fusion 360 `.f3d` (ZIP): a 256×256 model render at
     // `FusionAssetName[Active]/Previews/small.png`. Matched by SUFFIX so the asset-name
