@@ -438,6 +438,28 @@ if ($LASTEXITCODE) {
     $contentGateFailed = $true
 }
 
+# --- REAL-SAMPLE guard: every registered extension's real-world file is here and drew ------
+# scripts\corpus-real.json pins one file somebody else's software wrote per extension (URL +
+# SHA-256), or a written waiver. check-consistency.ps1 proves the manifest covers FORMATS
+# without needing a corpus; this proves the corpus still holds those files unchanged and that
+# at least one per extension rendered in the sweep above. Until 2026-09-17 most of the corpus
+# was ImageMagick's own output, which proved the reader survives what ImageMagick writes and
+# nothing about the files people have. Same python + exit-code contract as the known-colour gate.
+$realPy = (Get-Command python -EA SilentlyContinue).Source
+if ($realPy) {
+    & $realPy "$PSScriptRoot\fetch-real-samples.py" --check --corpus $Corpus --rendered $render | Out-Host
+    $realVerdict = Get-GateVerdict -Name 'real samples (fetch-real-samples.py --check)' -ExitCode $LASTEXITCODE
+} else {
+    $realVerdict = New-InconclusiveGate -Name 'real samples (fetch-real-samples.py --check)' -Reason 'python not available'
+}
+$script:requiredGateVerdicts += $realVerdict
+if ($realVerdict.Status -eq 'fail') {
+    Write-Host "[regression] FAIL - a pinned real sample is missing, changed, or did not render (see above); run scripts\fetch-real-samples.py to restore the files." -ForegroundColor Red
+    $script:contentGateFailed = $true
+} elseif ($realVerdict.Status -eq 'pass') {
+    Write-Host "[regression] real samples: every pinned file present, unchanged, and rendered" -ForegroundColor Green
+}
+
 # Whether a required gate ran at all is a SEPARATE question from whether the baseline sweep
 # above found a regression - a run can hold zero regressions and still not be qualified,
 # because a required gate never executed (finding F37). Both must be checked before this run

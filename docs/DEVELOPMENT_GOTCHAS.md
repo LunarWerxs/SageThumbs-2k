@@ -758,6 +758,34 @@ One real trap while generating samples: `magick in.png out.sf3` silently writes 
 file named `.sf3`. Only `magick in.png SF3:out.sf3` invokes the SF3 writer. Always run
 `magick identify` on a generated fixture and check it reports the format you asked for.
 
+### A generated sample proves the reader survives its own writer, and nothing else (2026-09-17)
+
+Measured by rendering the whole corpus and checking corners: 150 of its 396 samples were the
+one synthetic base picture written out by ImageMagick, another ~60 were byte-copies of a
+neighbour under a second extension, and 24 extensions had no file at all. Every one of those
+gates was green. The first time real files were fed in - one per extension from upstream test
+suites (Pillow, TwelveMonkeys, metadata-extractor-images, Tika, POI, OpenImageIO, FFmpeg's FATE
+suite, lofty-rs, sembiance's legacy-format archive) - three registered formats turned out never
+to have rendered a file from the real program: Scitex `.sct` (ImageMagick's magic table has the
+`CT` tag at offset 0, real files carry it at offset 80), Seattle FilmWorks `.sfw` (the coder
+cannot create its temp file on Windows) and Alias `.pix` (the coder returns nothing for real
+Alias files). None of them could have been found by any amount of running the green gates.
+
+So the corpus now carries `real.<ext>` beside `sample.<ext>`: a file some OTHER program wrote,
+pinned by URL and SHA-256 in `scripts/corpus-real.json`, fetched and verified by
+`scripts/fetch-real-samples.py`, and required by `regression.ps1` (`--check --rendered`: present,
+unchanged, and at least one per extension rendered this run). `check-consistency.ps1` §8 makes
+it a CI failure to register an extension with neither a pinned real sample nor a written waiver
+that says what was searched. Aliases are allowed only between spellings of ONE format
+(`.blend1` is a `.blend`; `.jfif` is a `.jpg`) and say so in the manifest; a copy of a `.dng`
+under `.pxn` is exactly the renamed stand-in the paragraph above forbids.
+
+Two things about finding such files, so nobody re-learns them: index the recursive git trees of
+the upstream suites (one API call per repo, 70k files) and try candidates per extension until
+st2k renders one - it is mechanical, and it took one evening for 186 formats; and GitHub code
+search by extension is useless for binary formats, because it indexes text files only (every
+`.cbz` hit was an HTML page named like a comic).
+
 ## Verifying a decode through the CLI does not verify it through Explorer
 
 The CLI knows the file name because it is sitting in argv. The shell hands the thumbnail

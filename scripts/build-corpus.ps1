@@ -1195,6 +1195,20 @@ if (Test-Path $decoyGen) {
 Set-Content -Path "$OutDir\_expected-colors.txt" -Value $expectedColors -Encoding ascii
 Write-Host ("[corpus] _expected-colors.txt: {0} samples with a known correct colour" -f (($expectedColors | Where-Object { $_ -match "`t" }).Count))
 
+# --- 9y) REAL-WORLD samples: a file somebody else's software wrote, per extension ------
+# Everything above proves the readers survive what ImageMagick and this script write. The
+# files people actually have came out of Photoshop, a camera, a slicer or a 1994 paint program,
+# and that is where the bugs live. scripts\corpus-real.json pins one such file per registered
+# extension (URL + SHA-256, or a written waiver) and scripts\fetch-real-samples.py fetches what
+# is missing and refuses what does not match its digest; regression.ps1 fails when any is
+# missing, changed or no longer renders. They sit beside the generated ones as real.<ext>: the
+# generated sample proves the PICTURE is right (known corner colours), the real one proves the
+# reader on a file it did not write. Best-effort here like every other download.
+if (-not $SkipDownloads) {
+    if ($py) { & $py "$PSScriptRoot\fetch-real-samples.py" --corpus $OutDir | Out-Host }
+    else { Write-Host "  (real samples: need python; run scripts\fetch-real-samples.py when it is available)" -ForegroundColor Yellow }
+}
+
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has
 # a small real download, aliased to pxn) plus the obscure magick-read-only long

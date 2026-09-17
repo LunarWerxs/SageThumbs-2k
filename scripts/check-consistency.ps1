@@ -486,6 +486,51 @@ Get-ChildItem $root/scripts -Recurse -File -Include *.ps1, *.py, *.mjs |
     }
   }
 
+# --- 8) every registered extension names a REAL sample, or says in writing why not ---
+# The test corpus is a sibling folder CI never sees, so the corpus itself cannot be checked
+# here. What CAN be: scripts/corpus-real.json, the manifest that pins a real-world file (one
+# some other program wrote) to every registered extension. Without this, adding a row to
+# FORMATS costs nothing and proves nothing - which is how `sct` sat registered without one
+# real Scitex file ever having rendered, until the first real ones arrived on 2026-09-17 and
+# none of them did. Now a new extension fails CI until it has a real sample pinned, or a
+# waiver whose reason someone has to write down and someone else gets to read.
+$realManifest = Join-Path $root 'scripts\corpus-real.json'
+if (-not (Test-Path $realManifest)) {
+  $fail.Add('scripts/corpus-real.json is missing - the real-sample manifest every registered extension is checked against')
+} else {
+  $real = Get-Content $realManifest -Raw | ConvertFrom-Json -AsHashtable
+  $registered = @([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  $known = @{}
+  foreach ($s in $real.samples) {
+    $known[$s.file] = $true
+    $kinds = @('url', 'alias_of', 'gzip_of', 'zip_of' | Where-Object { $s.ContainsKey($_) })
+    if ($kinds.Count -ne 1) { $fail.Add("corpus-real.json: $($s.file) needs exactly one of url / alias_of / gzip_of / zip_of") }
+    elseif ($kinds[0] -eq 'url') {
+      if ("$($s.sha256)" -notmatch '^[0-9A-Fa-f]{64}$') { $fail.Add("corpus-real.json: $($s.file) has no SHA-256 pin - an unpinned download can change under the gate") }
+    } elseif (-not "$($s.why)".Trim()) { $fail.Add("corpus-real.json: $($s.file) is derived from $($s[$kinds[0]]) without a 'why'") }
+  }
+  foreach ($f in $real.existing.Keys) { $known[$f] = $true }
+  foreach ($ext in $registered) {
+    $covered = $real.coverage.ContainsKey($ext)
+    $waived = $real.waived.ContainsKey($ext)
+    if ($covered -and $waived) { $fail.Add("corpus-real.json: .$ext is both covered and waived - pick one") }
+    elseif (-not $covered -and -not $waived) {
+      $fail.Add("corpus-real.json: .$ext is registered in FORMATS but has no real sample pinned and no waiver. Find a file another program wrote (scripts\fetch-real-samples.py explains where), or add a 'waived' entry that says why none exists.")
+    } elseif ($covered) {
+      foreach ($f in $real.coverage[$ext]) {
+        if (-not $known.ContainsKey($f)) { $fail.Add("corpus-real.json: coverage for .$ext names '$f', which is neither a pinned sample nor an 'existing' one") }
+        if (-not $f.ToLower().EndsWith(".$ext")) { $fail.Add("corpus-real.json: coverage for .$ext names '$f', which does not carry that extension") }
+      }
+    } elseif ("$($real.waived[$ext])".Trim().Length -lt 40) {
+      $fail.Add("corpus-real.json: the waiver for .$ext is too short to be a reason - say what was searched and why no real file exists")
+    }
+  }
+  foreach ($ext in @($real.coverage.Keys) + @($real.waived.Keys)) {
+    if ($registered -notcontains $ext) { $fail.Add("corpus-real.json: .$ext is covered or waived but is not in FORMATS any more - delete the stale entry") }
+  }
+}
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red
