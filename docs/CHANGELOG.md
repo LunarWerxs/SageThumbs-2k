@@ -14,11 +14,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   layout, and the fast thumbnail path mishandled that layout: no thumbnail in the folder, and
   Explorer restarting when you right-clicked the file. Every phone photo converted with `cjxl`
   has that layout, so this was most `.jxl` files people actually have. Reported in issue #43.
-- **Pixelorama and SpriteLoop files get thumbnails.** A Pixelorama project (`.pxo`, from
-  Pixelorama 1.0) shows the preview the app saves inside it. A SpriteLoop animation package
-  (`.spla`) is drawn by SageThumbs itself, since the package carries no picture of the whole:
-  the first frame of its first animation, every part in its place. Both were asked for through
-  the app's feedback form.
+- **Twelve more file types get thumbnails**, including the two asked for through the feedback
+  form. Pixel art and sprites: **Aseprite** (`.aseprite`, `.ase`) is drawn by SageThumbs itself
+  from the layers inside it, exactly as the editor shows it on open, and **Pixelorama** (`.pxo`)
+  shows the preview the app saves inside the file. **SpriteLoop** animation packages (`.spla`)
+  are drawn too, since the package holds only the separate body parts: you get the first frame
+  of its first animation, every piece in its place. 3D printing: **PrusaSlicer's new binary
+  G-code** (`.bgcode`) shows the same sliced preview the ordinary `.gcode` files already did.
+  CAD: **SolidWorks** parts, assemblies and drawings (`.sldprt`, `.sldasm`, `.slddrw`) show the
+  preview stored in the file. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
+  `.mctemplate`, `.mcpack`, `.mcaddon`) show the world photo or pack icon inside them.
 - **The Licence page reads like a page, not a form.** The key box and its Redeem button sit
   on one line, Check now, Move my licence and Buy a licence share one row (Buy is the
   highlighted button until a copy holds a licence), a personal copy's "no licence needed"

@@ -65,6 +65,19 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
             return Some(img);
         }
     }
+    // Minecraft Bedrock packages (2026-09-17): a world (`.mcworld`/`.mctemplate`) carries
+    // `world_icon.jpeg` at its root; a resource/behavior pack (`.mcpack`) and an add-on
+    // (`.mcaddon`, several packs in folders) carry `pack_icon.png` at the root or one folder
+    // down - hence the suffix match. Both names are the game's own and nothing else uses them,
+    // so a zip with either IS one of these. A pack that ships no icon falls through to the
+    // generic pick, like any other zip of images.
+    for suffix in ["world_icon.jpeg", "pack_icon.png"] {
+        if let Some(data) = read_suffix(zip, suffix) {
+            if let Some(img) = decodable_image(data) {
+                return Some(img);
+            }
+        }
+    }
     // 3MF + FreeCAD + design apps (Sketch / Procreate / Apple iWork): probe the
     // known preview paths. Each is distinctive enough not to false-positive on
     // other ZIPs (epub/cbz/office lack them); `preview.jpg` is probed LAST so a

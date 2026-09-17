@@ -208,6 +208,18 @@ pub(crate) fn targets() -> Vec<Target> {
                 let _ = spla::extract(&mut zip);
             }
         }),
+        // Aseprite: the chunk walk plus the layer/cel composite, including the zlib cel path.
+        ("aseprite::extract", |b| {
+            let _ = aseprite::extract(b);
+        }),
+        // PrusaSlicer binary G-code: the block walk and the thumbnail pick.
+        ("bgcode::extract", |b| {
+            let _ = bgcode::extract(b);
+        }),
+        // SolidWorks: the `PreviewPNG` stream lookup, over the OLE reader.
+        ("solidworks::extract", |b| {
+            let _ = solidworks::extract(b);
+        }),
         // APEv2 "Cover Art (Front)" item parsing, on raw item bytes rather than through the
         // Read+Seek footer wrapper (see `synthetic_apev2_item`).
         (
@@ -438,6 +450,13 @@ fn synthetic_ole() -> Vec<u8> {
 /// [`synthetic_ole`] carrying caller-supplied `\x05SummaryInformation` contents, so the 3ds Max
 /// seed can put a real property set inside the same container instead of duplicating all of it.
 fn synthetic_ole_with(payload: &[u8]) -> Vec<u8> {
+    synthetic_ole_named("\u{5}SummaryInformation", payload)
+}
+
+/// [`synthetic_ole_with`] over an arbitrary stream NAME - what the SolidWorks seed needs,
+/// since its preview lives in `PreviewPNG` rather than the summary property set. ONE container
+/// builder, two stream names, so the FAT/directory mutations are exercised identically for both.
+fn synthetic_ole_named(stream_name: &str, payload: &[u8]) -> Vec<u8> {
     const SECTOR: usize = 512;
     const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
     const FREESECT: u32 = 0xFFFF_FFFF;
@@ -509,13 +528,7 @@ fn synthetic_ole_with(payload: &[u8]) -> Vec<u8> {
         dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
     };
     entry(0, "Root Entry", 5, ENDOFCHAIN, 0);
-    entry(
-        1,
-        "\u{5}SummaryInformation",
-        2,
-        FIRST_DATA,
-        stream_len as u64,
-    );
+    entry(1, stream_name, 2, FIRST_DATA, stream_len as u64);
     // Root's child points at the stream entry, which is how the walk finds it.
     dir[76..80].copy_from_slice(&1u32.to_le_bytes());
     for slot in 2..4usize {
@@ -1212,6 +1225,74 @@ fn synthetic_pxo() -> Vec<u8> {
     ])
 }
 
+/// An Aseprite sprite built by the module's OWN builder, so the bytes the fuzzer mutates and
+/// the bytes its tests prove the parser on cannot drift apart: an RGBA layer under a
+/// half-opacity zlib-compressed one, offset so the composite blends.
+fn synthetic_aseprite() -> Vec<u8> {
+    use crate::container::aseprite::synth::{build, CelSpec, LayerSpec};
+    let red: Vec<u8> = [255u8, 0, 0, 255].repeat(16);
+    let blue: Vec<u8> = [0u8, 0, 255, 255].repeat(16);
+    let layer = |visible, opacity| LayerSpec {
+        visible,
+        opacity,
+        is_group: false,
+        child_level: 0,
+        background: false,
+    };
+    // Struct literals rather than a helper closure: a closure returning `CelSpec<'_>` would tie
+    // both cels to ONE inferred lifetime, which two separate locals cannot satisfy.
+    let bottom = CelSpec {
+        layer: 0,
+        x: 0,
+        y: 0,
+        opacity: 255,
+        z: 0,
+        w: 4,
+        h: 4,
+        pixels: &red,
+        zlib: false,
+    };
+    let top = CelSpec {
+        layer: 1,
+        x: 2,
+        y: 2,
+        opacity: 255,
+        z: 0,
+        w: 4,
+        h: 4,
+        pixels: &blue,
+        zlib: true,
+    };
+    build(
+        8,
+        8,
+        32,
+        0,
+        &[],
+        &[layer(true, 255), layer(true, 128)],
+        &[bottom, top],
+    )
+}
+
+/// PrusaSlicer binary G-code carrying both thumbnail kinds a real file does - a QOI and a
+/// larger PNG - so the pick, the QOI re-encode and the block walk are all on the fuzz surface.
+fn synthetic_bgcode() -> Vec<u8> {
+    let png16 = png(16, 16);
+    let qoi = {
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        let _ = image::DynamicImage::ImageRgba8(img).write_to(&mut out, image::ImageFormat::Qoi);
+        out.into_inner()
+    };
+    bgcode::synth(&[(2, 8, 8, &qoi), (0, 16, 16, &png16)])
+}
+
+/// SolidWorks: the same OLE container the other compound-file seeds use, with a PNG in a
+/// stream named `PreviewPNG` rather than `SummaryInformation`.
+fn synthetic_solidworks() -> Vec<u8> {
+    synthetic_ole_named("PreviewPNG", &png(16, 16))
+}
+
 /// SpriteLoop `.spla`: a two-part rig whose frame 0 places both parts on a 32x32 canvas, one
 /// of them rotated, skewed, scaled, faded and tinted, so the whole affine path is on the fuzz
 /// surface and not only the identity placement.
@@ -1387,6 +1468,9 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("project", synthetic_project()),
         ("pxo", synthetic_pxo()),
         ("spla", synthetic_spla()),
+        ("aseprite", synthetic_aseprite()),
+        ("bgcode", synthetic_bgcode()),
+        ("solidworks", synthetic_solidworks()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),
@@ -1538,6 +1622,23 @@ mod tests {
             assert!(spla::extract(&mut zip).is_some(), "spla frame-0 render");
         }
         assert!(
+            aseprite::looks_like_aseprite(&by("aseprite")),
+            "aseprite magic"
+        );
+        assert!(
+            aseprite::extract(&by("aseprite")).is_some(),
+            "aseprite frame-0 composite"
+        );
+        assert!(bgcode::looks_like_bgcode(&by("bgcode")), "bgcode magic");
+        assert!(
+            bgcode::extract(&by("bgcode")).is_some(),
+            "bgcode thumbnail block"
+        );
+        assert!(
+            solidworks::extract(&by("solidworks")).is_some(),
+            "solidworks PreviewPNG stream"
+        );
+        assert!(
             audio::ape_fuzzapi::cover_from_items_result(&by("apev2-item"), 1).is_some(),
             "apev2 cover item"
         );
@@ -1592,9 +1693,33 @@ mod tests {
         // rendering is reached only through `audio_art_from_reader`, never through
         // `extract_cover`'s magic dispatch.
         for name in [
-            "psd", "ilbm", "cdr", "icns", "pdn", "psp", "c4d", "max", "fb2", "gcode", "affinity",
-            "indd", "mobi", "blend", "dwg", "apk", "xapk", "xcf", "skp", "rhino", "project",
-            "sevenz", "pxo", "spla",
+            "psd",
+            "ilbm",
+            "cdr",
+            "icns",
+            "pdn",
+            "psp",
+            "c4d",
+            "max",
+            "fb2",
+            "gcode",
+            "affinity",
+            "indd",
+            "mobi",
+            "blend",
+            "dwg",
+            "apk",
+            "xapk",
+            "xcf",
+            "skp",
+            "rhino",
+            "project",
+            "sevenz",
+            "pxo",
+            "spla",
+            "aseprite",
+            "bgcode",
+            "solidworks",
         ] {
             let bytes = seeds()
                 .into_iter()

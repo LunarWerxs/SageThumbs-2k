@@ -20,6 +20,9 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+mod aseprite;
+mod bgcode;
+mod solidworks;
 // Shared checked box-header size arithmetic for every ISO-BMFF-family box walker
 // in the tree (mp4.rs, streamsrc/mp4remux.rs, decode/{color,magick}.rs, strip/isobmff.rs).
 pub(crate) mod boxhdr;
@@ -412,6 +415,11 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     }
     // Amiga / Deluxe Paint IFF ILBM (and DOS PBM): real planar-bitmap decode to
     // pixels. The `ILBM`/`PBM ` FORM type keeps this off AIFF audio (`FORM…AIFF`).
+    // Aseprite sprites: rendered from their own layers. Keyed on the magic word at offset 4,
+    // never the extension - `.ase` is also 3DS ASCII scenes, Adobe swatches and GAP data.
+    if aseprite::looks_like_aseprite(bytes) {
+        return aseprite::extract(bytes).map(CoverOut::Image);
+    }
     if ilbm::looks_like_ilbm(bytes) {
         return ilbm::extract(bytes).map(CoverOut::Image);
     }
@@ -466,6 +474,12 @@ fn try_ebook_and_cad_cover(bytes: &[u8]) -> Option<CoverOut> {
     // OLE2 compound file (3ds Max .max, legacy Office/Visio/Publisher): the
     // \x05SummaryInformation thumbnail. `extract` returns a CoverOut directly
     // (raw RGB → pixels, or a CF_DIB → BMP bytes).
+    // SolidWorks (OLE-era files): the `PreviewPNG` stream. Before the 3ds Max arm, which
+    // claims EVERY compound file for its SummaryInformation thumbnail; this one only answers
+    // when that specific stream exists and falls through otherwise.
+    if let Some(png) = solidworks::extract(bytes) {
+        return Some(CoverOut::Bytes(png));
+    }
     if max::looks_like_max(bytes) {
         return max::extract(bytes);
     }
@@ -477,6 +491,10 @@ fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Audio with embedded album art (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/…).
     if audio::looks_like_audio(bytes) {
         return audio::extract(bytes).map(CoverOut::Bytes);
+    }
+    // PrusaSlicer binary G-code: the slicer's preview stored as whole image blocks.
+    if bgcode::looks_like_bgcode(bytes) {
+        return bgcode::extract(bytes).map(CoverOut::Bytes);
     }
     // 3D-printer G-code with an embedded base64 PNG preview (text scan; bails
     // fast on binary, so it's a cheap last resort).

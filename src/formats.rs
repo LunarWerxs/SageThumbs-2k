@@ -322,6 +322,9 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     // comments (`container::gcode`) - not a render of the sliced print.
     "gcode",
     "gco",
+    // PrusaSlicer binary G-code: the slicer's preview as whole image blocks (`container::bgcode`),
+    // rather than the base64-in-comments of the text format above.
+    "bgcode",
     // ZIP-packaged project/design files: a ready-made preview baked into the package
     // (`container::project`, reached through the same ZIP dispatch as EPUB/CBZ).
     "kra",
@@ -334,6 +337,22 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "xd",
     // Pixelorama `.pxo` (1.0+): the root `preview.png` the app bakes in for file managers.
     "pxo",
+    // Aseprite sprites: RENDERED - frame 0 composited from the file's own layers and cels
+    // (`container::aseprite`), since the format bakes in no preview. `.ase` is shared with
+    // 3DS ASCII scenes and Adobe swatches, so the dispatch keys on the magic word, not this.
+    "aseprite",
+    "ase",
+    // SolidWorks (OLE-era files): the `PreviewPNG` stream (`container::solidworks`). Files
+    // saved by 2015+ releases use a wrapper that is not OLE and keep the stock icon.
+    "sldprt",
+    "sldasm",
+    "slddrw",
+    // Minecraft Bedrock packages: the game's own `world_icon.jpeg` / `pack_icon.png`
+    // (`container::project`, through the same ZIP dispatch as Krita and EPUB).
+    "mcworld",
+    "mctemplate",
+    "mcpack",
+    "mcaddon",
     // SpriteLoop `.spla` animation packages: RENDERED - frame 0 of the rig composited from
     // the part PNGs and the manifest's transforms (`container::spla`), since the package
     // carries no preview of its own.
@@ -483,6 +502,16 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("blend", "Blender scene"),
     ("clip", "Clip Studio Paint document"),
     ("pxo", "Pixelorama project"),
+    ("aseprite", "Aseprite sprite"),
+    ("ase", "Aseprite sprite"),
+    ("bgcode", "3D-printer G-code (binary)"),
+    ("sldprt", "SolidWorks part"),
+    ("sldasm", "SolidWorks assembly"),
+    ("slddrw", "SolidWorks drawing"),
+    ("mcworld", "Minecraft Bedrock world"),
+    ("mctemplate", "Minecraft Bedrock world template"),
+    ("mcpack", "Minecraft Bedrock pack"),
+    ("mcaddon", "Minecraft Bedrock add-on"),
     ("spla", "SpriteLoop animation package"),
     ("pspimage", "Paint Shop Pro image"),
     ("psp", "Paint Shop Pro image"),
