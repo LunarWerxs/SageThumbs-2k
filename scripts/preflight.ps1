@@ -63,6 +63,26 @@ if (-not $failed) {
 if (-not $failed) { Step 'build production EXEs' { cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture } }
 if (-not $failed) { Step 'build production slim DLL' { cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset } }
 if (-not $failed) { Step 'build dialog hook DLL'      { cargo build --release --locked -p sagethumbs2k-dlghook } }
+
+# ~10 SECONDS over the whole corpus, and it is the cheap half of the staged gate. With
+# ST2K_NO_MAGICK=1, every sample that used to stand on our own decoders must still stand on
+# them. A file that quietly starts leaning on ImageMagick instead looks perfect on any dev box
+# (magick_exe() falls back to C:\Program Files\ImageMagick*) and shows the stock icon in a real
+# install, because the shipped bundle omits the rsvg/cairo/pango stack on purpose. That is
+# exactly how 3.1.0 nearly shipped an SVG whose root element sits behind a licence comment: the
+# only gate that could see it was test-staged-regression.ps1, twenty-five minutes into
+# release.ps1, so it cost a whole release run to find. This sits directly behind the release
+# EXE it tests, which is the earliest minute it can possibly run.
+#   exit 2 = no corpus on this machine. Reported loudly as a SKIP, never folded into green.
+if (-not $failed) {
+    Step 'magick-free reliance (a format must not silently start needing ImageMagick)' {
+        pwsh -NoProfile -File ./scripts/check-magick-reliance.ps1
+        if ($LASTEXITCODE -eq 2) {
+            Write-Host '  SKIPPED - no test corpus on this machine; scripts/build-corpus.ps1 builds one' -ForegroundColor Yellow
+            $global:LASTEXITCODE = 0
+        }
+    }
+}
 # Guard: a build that DID succeed can still have regenerated Cargo.lock in a way `--locked`
 # let through (e.g. a lockfile-only change unrelated to what was just compiled) — if it now
 # differs from the COMMITTED lock, the committed lock is stale. CI runs `cargo-deny --locked`
