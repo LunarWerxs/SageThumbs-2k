@@ -555,13 +555,6 @@
    "source": "sembiance/palmDatabase  palmDatabase/dollar.pdb"
   },
   {
-   "file": "real.pes",
-   "url": "https://sembiance.com/fileFormatSamples/image/pes/ch1610.pes",
-   "sha256": "A067DD54D28D6E9B273A49571CA34CCD086193C700DDBF5F3C91E2DF2F62E7CE",
-   "bytes": 28873,
-   "source": "sembiance/pes  pes/ch1610.pes"
-  },
-  {
    "file": "real.pfm",
    "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pnm/src/test/resources/pfm/memorial.pfm",
    "sha256": "7408901B58365DD4B974DFA5DD7294E52BFB2FE3671452F3C3E0510EEBBF66F3",
@@ -2498,9 +2491,6 @@
   ],
   "pef": [
    "sample.pef"
-  ],
-  "pes": [
-   "real.pes"
   ],
   "pfm": [
    "real.pfm"

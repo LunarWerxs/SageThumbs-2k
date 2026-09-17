@@ -42,6 +42,10 @@ formats that were listed but never worked on a real file now do.
   type, and so are `.mpv`, `.mp2v` and `.m2p`, three more names the same old MPEG files are
   saved under by DVD and capture tools. Recordings that hold MPEG-2 video inside a transport
   stream or a Matroska file still use Windows' own decoder, so that add-on still matters there.
+- **Brother embroidery files (`.pes`) no longer claim a thumbnail they never produced.** The
+  listing promised one, but drawing those stitches needs a graphics library this app
+  deliberately does not ship, so every install has always shown the ordinary file icon for
+  them. The claim is gone; nothing that used to draw stopped drawing.
 - For the few installations that need a business licence: the Licence page has been tidied
   up, and there is now a monthly plan, US$2.99 per computer, alongside the one-time US$49.
   Personal use is unaffected and stays free.

@@ -10,7 +10,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 [![Windows 11](https://img.shields.io/badge/Windows%2011-0078D6?logo=windows11&logoColor=white)](#-install)
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
-![Formats](https://img.shields.io/badge/formats-350-2ea44f)
+![Formats](https://img.shields.io/badge/formats-349-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?sort=semver)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
@@ -44,13 +44,13 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 </div>
 
-SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 350 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
+SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 349 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
 
 ---
 
 ## TL;DR
 
-- 🖼️ Explorer thumbnails for **350 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- 🖼️ Explorer thumbnails for **349 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
 - ⚡ **Fast even on big files**: camera RAW thumbnails from its embedded preview instead of a slow demosaic (3–13× quicker), and no format is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.
@@ -86,7 +86,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 |  |  |
 |---|---|
-| 🖼️ **350 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
+| 🖼️ **349 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
 | 📚 **Ebooks & comics** | EPUB, MOBI/AZW (Kindle), FB2, CBZ/CB7/CBR/CBT: real covers in Explorer (a native-Rust [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) port). Plain ZIP/RAR/7Z archives within the configured file-size limit get a contact-sheet thumbnail of the images inside, too |
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
@@ -96,7 +96,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe`: `thumbnail · convert · batch · rotate · ocr · pdf · cbz · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any supported format to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
-| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 350 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
+| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 349 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
 | 🎨 **Colour management** | Embedded **ICC** profiles and wide-gamut images (**Display P3 / Adobe RGB**) render in correct sRGB instead of over-saturated; AVIF/HEIC read their `colr` box (incl. the iPhone-HEIC CICP Display-P3 signal), and **CMYK JPEGs** are colour-managed through their embedded profile; pure-Rust, no C deps |
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
@@ -118,8 +118,8 @@ There's a checklist of little utilities people reinstall on every new Windows bo
 
 | Instead of installing... | You already have it |
 |---|---|
-| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **350 formats**, crash-isolated so a corrupt file can't hang Explorer |
-| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 350 formats (reading pane and Open dialogs) |
+| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **349 formats**, crash-isolated so a corrupt file can't hang Explorer |
+| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 349 formats (reading pane and Open dialogs) |
 | A **Space-bar preview** app (QuickLook, Seer) | Tap Space for an instant full-size preview, macOS-style: video plays, code is syntax-highlighted, Markdown renders, PDFs page, SQLite databases open as tables **(new)** |
 | An **EXIF / metadata viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS, dimensions and audio tags as **sortable Explorer columns** |
 | A **batch converter** (XnConvert, IrfanView + plugins, ImageMagick) | Right-click **Convert** to ~29 formats (AVIF, JPEG XL, PSD, DDS, EXR...), batched across every core |
@@ -214,7 +214,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 ## 🗂 Supported formats
 
 <details open>
-<summary><strong>350 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
+<summary><strong>349 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
 
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm

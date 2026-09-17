@@ -95,6 +95,18 @@ pub const REMOVED_EXTENSIONS: &[&str] = &[
     // register()/unregister() still sweep the stale shellex hook on machines that
     // ran a build where it was registered.
     "jbig",
+    // pes: removed 2026-09-17, and it never worked in a SHIPPED build. ImageMagick's PES
+    // coder draws embroidery stitches by generating SVG and rendering it through RSVG, and
+    // this product's ImageMagick bundle deliberately omits that whole stack (rsvg, cairo,
+    // pango, harfbuzz - see docs/MAGICK.md "Reviewed omissions": "The SVG stack is handled
+    // by resvg"). Without it magick falls back to an external `rsvg-convert` delegate that
+    // is not shipped either, so every install and every portable zip answered `.pes` with
+    // the stock icon. It looked fine on a developer box only because a FULL ImageMagick is
+    // installed there and the decode tier falls back to it - exactly the masking that
+    // `test-staged-regression.ps1` exists to catch, and it did, the day the corpus gained
+    // its first real `.pes`. Re-registering it means shipping the SVG stack (megabytes, for
+    // one embroidery format) or writing a reader for the PEC thumbnail Brother embeds.
+    "pes",
 ];
 
 /// Classify an extension into a display category.
@@ -566,7 +578,6 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("pcx", "ZSoft IBM PC Paintbrush"),
     ("pdb", "Palm Database ImageViewer Format"),
     ("pdn", "Paint.NET image"),
-    ("pes", "Embird Embroidery Format"),
     ("pfm", "Portable float format"),
     ("pgm", "Portable graymap format"),
     ("pgx", "JPEG 2000 uncompressed format"),

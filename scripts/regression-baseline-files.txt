@@ -195,7 +195,6 @@ real.pcx
 real.pdb
 real.pdd
 real.pdf
-real.pes
 real.pfm
 real.pgm
 real.pgx

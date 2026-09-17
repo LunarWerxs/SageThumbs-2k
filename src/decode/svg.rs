@@ -47,8 +47,25 @@ pub(super) const SVG_MIN_DIM: f32 = 512.0;
 /// filter chains — could otherwise spin a thumbnail-host thread indefinitely.
 pub(super) const SVG_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Does this look like SVG? A case-insensitive scan for the root element.
+///
+/// THE WINDOW IS 64 KB, NOT 1 KB, AND THAT IS THE WHOLE POINT (2026-09-17). An SVG's `<svg`
+/// element does not have to be near the top: the XML declaration, a DOCTYPE, and then a
+/// LICENCE COMMENT push it down, and a licence header is what half the SVGs on the internet
+/// open with. The corpus's real-world sample (an Apache Batik file) carries the Apache
+/// Software License 1.1 in a comment and its `<svg` sits at byte 3460, so a 1 KB window
+/// missed it, the file fell through to the ImageMagick tier, and the shipped bundle has no
+/// SVG renderer at all (docs/MAGICK.md: the whole rsvg/cairo/pango stack is deliberately
+/// omitted because resvg replaces it) - so the thumbnail was the stock icon on every
+/// install. It looked fine on a developer machine only because a full ImageMagick is
+/// installed there and the tier falls back to it. Found by the staged-payload gate, which
+/// exists for exactly that masking.
+///
+/// 64 KB is the same window `has_css_animation` already scans, costs a single pass over a
+/// buffer the decoder is holding anyway, and a false positive is harmless: resvg simply
+/// fails and the remaining tiers run as before.
 pub(super) fn looks_like_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(1024)];
+    let head = &bytes[..bytes.len().min(64 * 1024)];
     head.windows(4).any(|w| w.eq_ignore_ascii_case(b"<svg"))
 }
 
@@ -256,6 +273,59 @@ mod gunzip_tests {
         assert!(
             gunzip_bounded(&gz, 4096).is_none(),
             "a truncated gzip member must fail, not return a partial inflate"
+        );
+    }
+
+    /// A real SVG does not have to start with `<svg`: an XML declaration, a DOCTYPE and a
+    /// LICENCE COMMENT routinely push the root element thousands of bytes down, and the
+    /// corpus's Apache Batik sample puts it at byte 3460. When the sniff window was 1 KB
+    /// those files missed the resvg tier entirely and fell to ImageMagick, whose SVG stack
+    /// this product deliberately does not ship - a stock icon on every install, invisible on
+    /// any developer box with a full ImageMagick.
+    #[test]
+    fn an_svg_behind_a_long_licence_comment_is_still_recognised() {
+        let mut doc = Vec::new();
+        doc.extend_from_slice(
+            b"<?xml version=\"1.0\" standalone=\"no\"?>
+",
+        );
+        doc.extend_from_slice(
+            b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.0//EN\" \"http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd\">
+",
+        );
+        doc.extend_from_slice(
+            b"<!--
+",
+        );
+        for _ in 0..60 {
+            doc.extend_from_slice(
+                b"   Licensed under the Apache License, Version 2.0 (the \"License\");
+",
+            );
+        }
+        doc.extend_from_slice(
+            b"-->
+",
+        );
+        let prologue = doc.len();
+        doc.extend_from_slice(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"/>",
+        );
+        assert!(
+            prologue > 1024,
+            "the prologue must exceed the OLD 1 KB window ({prologue})"
+        );
+        assert!(
+            looks_like_svg(&doc),
+            "an SVG whose root element sits {prologue} bytes in must still be recognised"
+        );
+        // The bytes it was mistaken for must stay unrecognised: no root element at all.
+        let mut not_svg = doc.clone();
+        let cut = not_svg.len() - 60;
+        not_svg.truncate(cut);
+        assert!(
+            !looks_like_svg(&not_svg),
+            "a comment mentioning svg is not an SVG"
         );
     }
 }

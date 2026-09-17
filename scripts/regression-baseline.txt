@@ -226,7 +226,6 @@ pdd
 pdf
 pdn
 pef
-pes
 pfm
 pgm
 pgx

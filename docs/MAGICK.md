@@ -148,7 +148,13 @@ vcruntime140_threads.dll
 ```
 
 The SVG stack is handled by resvg; Magick++ and MFC are not used by the command-line
-raster decoder. The following actual coder modules in the pinned package are omitted:
+raster decoder. ⚠ ONE ADVERTISED FORMAT DEPENDED ON THAT STACK AND NOBODY NOTICED UNTIL
+2026-09-17: ImageMagick's PES coder (Brother embroidery) renders stitches by generating SVG
+and handing it to RSVG, so without these DLLs it falls through to an external `rsvg-convert`
+delegate that is not shipped, and `.pes` produced no thumbnail in any install or portable zip.
+It was retired from `FORMATS` rather than re-adding megabytes of SVG stack for one format
+(`formats::REMOVED_EXTENSIONS`). Before adding any format that magick renders via SVG, check
+it against the STAGED bundle, not a developer box with a full ImageMagick installed. The following actual coder modules in the pinned package are omitted:
 
 ```text
 IM_MOD_RL_clipboard_.dll
