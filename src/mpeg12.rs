@@ -326,6 +326,12 @@ fn pes_header_len(body: &[u8]) -> Option<usize> {
 /// — an H.264 or HEVC transport stream (the usual AVCHD `.m2ts`) answers nothing here, which
 /// is right: Media Foundation decodes those in process and ran long before this tier.
 pub fn demux_transport_stream(ts: &[u8], layout: TsLayout) -> Vec<u8> {
+    // `TsLayout` is constructible by anyone, and a stride of 0 (or anything below the packet
+    // itself) would make the packet walks below advance by nothing and spin forever. Only the
+    // geometries `ts_layout` can produce are walked; everything else is not a transport stream.
+    if !TS_STRIDES.contains(&layout.stride) {
+        return Vec::new();
+    }
     let Some(start) = ts_resync(ts, layout.stride) else {
         return Vec::new();
     };
@@ -1091,6 +1097,15 @@ mod tests {
             "af overruns"
         );
         assert!(section_body(&[0x00, 0xB0, 0x02, 0x00], 5).is_none());
+        // A stride nobody can reach through `ts_layout` must not be walked at all: a zero
+        // stride would otherwise advance the packet loops by nothing and hang the shell.
+        let ts = fuzzseed::transport_stream(&es, 188, true);
+        for stride in [0usize, 1, 187, 189, 4096] {
+            assert!(
+                demux_transport_stream(&ts, TsLayout { stride, offset: 0 }).is_empty(),
+                "stride {stride} is not a transport geometry"
+            );
+        }
         // A PES whose declared length overruns the buffer, and one whose header claims more
         // header bytes than exist.
         assert!(pes_header_len(&[0x80, 0x80, 0xFF]).is_none());

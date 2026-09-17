@@ -11,8 +11,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **Recorded TV, set-top-box and camcorder video (`.ts`, `.m2ts`, `.mts`) no longer needs a
   paid Windows add-on to show a thumbnail.** Those files usually hold H.264, which Windows
-  decodes on its own; when they hold MPEG-2 instead — most DVB and cable recordings, older
-  camcorders, anything captured from broadcast — Windows shows nothing unless Microsoft's
+  decodes on its own; when they hold MPEG-2 instead (most DVB and cable recordings, older
+  camcorders, anything captured from broadcast) Windows shows nothing unless Microsoft's
   MPEG-2 Video Extension is installed from the Store. SageThumbs now reads those itself, the
   same way it already read VideoCD `.mpg` and DVD `.vob`. Interlaced recordings, where each
   frame is stored as two half-pictures, are the one kind still left to Windows.
