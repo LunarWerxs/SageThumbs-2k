@@ -684,8 +684,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   and opens the Licence page when clicked. Redeeming a key restores everything with the next
   thumbnail. A copy that once held a key is never stopped by a network outage, only by a
   revocation, and then with the same 3 days of notice. `st2k doctor` reports the state.
-- **Updates window and renewal:** a commercial licence is US$49 per installation, one-time,
-  and is perpetual with 12 months of updates. The Licence page shows when that window ends
+- **Updates window and renewal:** a commercial licence is sold two ways per installation -
+  US$2.99 a month, or US$49 once. The monthly plan carries every release published while it is
+  live and stops entitling the machine when it ends, so none of the window machinery below
+  applies to it. The rest of this bullet is the ONE-TIME plan: perpetual, with 12 months of
+  updates. The Licence page shows when that window ends
   ("Updates until \<date\>", or "Updates ended \<date\>" once it has passed), and a **Renew
   updates (US$29)** button appears in the last 60 days and stays available afterwards. Once
   the window has ended the app stops OFFERING builds published after it, and says so with the
