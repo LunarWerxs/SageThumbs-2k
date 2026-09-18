@@ -563,6 +563,23 @@ pub(crate) extern "system" fn wndproc(
     }
 }
 
+/// Is the static being painted (`lparam`, from WM_CTLCOLORSTATIC) one of the captions that
+/// stays ENABLED but reads dim while the control it captions is off - and is it off now?
+///
+/// None of these is ever `EnableWindow(false)`d: a disabled static draws an etched, blurry,
+/// strikethrough-looking text in dark mode. The third one was, until 2026-09-18 - it rode
+/// `DEPENDENT_ON_COMBO` with its combo, and that etched label was the Appearance page's
+/// "something failed to render" look in 3.1.0.
+unsafe fn dimmed_caption(hwnd: HWND, lparam: LPARAM) -> bool {
+    let is = |id: i32| GetDlgItem(Some(hwnd), id).is_ok_and(|l| l.0 as isize == lparam.0);
+    // The Quick-save hotkey label, while instant screenshot is off.
+    (is(ID_LBL_SHOT_QUICK_HK) && !checked(hwnd, ID_SHOT_QUICK_ENABLE))
+        // The save-folder display, while "Save to a set folder" is off.
+        || (is(ID_SHOT_DIR) && !checked(hwnd, ID_SHOT_USE_DIR))
+        // "Format mark size:", while the corner mark is not the SageThumbs badge.
+        || (is(ID_LBL_BADGE_SIZE) && !badge_size_active(hwnd))
+}
+
 /// The dialog's WM_CTLCOLORSTATIC overrides that key off LIVE control state (a
 /// dependent checkbox, a running/synced status word) rather than just window class —
 /// `dark_ctlcolor` handles the class-generic theming. Checked once, before the main
@@ -574,20 +591,10 @@ unsafe fn special_ctlcolor(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
-    // The Quick-save hotkey label stays ENABLED (a disabled static draws an
-    // etched/blurry look in dark mode) but reads as greyed when instant
-    // screenshot is off — paint its text dim here instead of the normal color.
+    // The captions that stay ENABLED but read as greyed while the thing they caption is off:
+    // paint their text dim here instead of the normal colour. See `dimmed_caption`.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-        && GetDlgItem(Some(hwnd), ID_LBL_SHOT_QUICK_HK).is_ok_and(|l| l.0 as isize == lparam.0)
-        && !checked(hwnd, ID_SHOT_QUICK_ENABLE)
-    {
-        return Some(crate::dark::dark_ctlcolor_dim(wparam));
-    }
-    // The save-folder display greys with the "Save to a set folder" toggle (same as
-    // the quick-hotkey label — a disabled static draws etched in dark mode).
-    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-        && GetDlgItem(Some(hwnd), ID_SHOT_DIR).is_ok_and(|l| l.0 as isize == lparam.0)
-        && !checked(hwnd, ID_SHOT_USE_DIR)
+        && dimmed_caption(hwnd, lparam)
     {
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }

@@ -125,17 +125,30 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
     apply_conditional_visibility(hwnd);
 }
 
-/// Hide the Renew button unless this machine is near or past its updates window.
+/// Show the Renew button and the prospect line only while BOTH their own state wants them AND
+/// the Licence page is the one on screen; hide them otherwise.
 ///
 /// ⛔ Must run AFTER anything that shows a whole page's controls. `navrail::switch_category`
 /// blanket-`SW_SHOW`s every control of the page being opened, so a decision made once at
 /// load is undone the moment the user navigates away and back - which is why that function
 /// calls this too, and why this is separate from [`refresh_licence_status`] rather than
 /// inlined in it.
+///
+/// ⛔ And it must never SHOW a row while another page is up. `SW_SHOW` does not know which
+/// page a control belongs to, and every caller but the page switch runs with whatever page
+/// the user is on still showing: the seed at open, a language switch, a Redeem or Check that
+/// finishes on its worker thread - and the page switch itself runs this for EVERY page it
+/// opens, not just this one. Without the [`licence_row_shown`] gate, 3.1.0 drew the prospect
+/// line under the last row of every Settings page for every Personal copy without a key, which
+/// is nearly every user; the first report was a Chinese-locale capture of the Appearance page
+/// with the licence prices on it. Hiding needs no gate (a hidden row is right on every page),
+/// and `switch_category` calls this on its way to the Licence page, so the row is back the
+/// moment that page opens.
 pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
     let snap = crate::license::snapshot();
+    let active = NAV.with(|n| n.borrow().active);
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_RENEW) {
-        let show = if renew_button_visible(&snap) {
+        let show = if licence_row_shown(active, renew_button_visible(&snap)) {
             SW_SHOW
         } else {
             SW_HIDE
@@ -149,17 +162,24 @@ pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
     // alongside the other state-derived re-texts.
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_WORK_HINT) {
         match prospect_hint_key(&snap) {
-            Some(key) => {
+            Some(key) if licence_row_shown(active, true) => {
                 let w = wide(t(key));
                 let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
                 let _ = ShowWindow(h, SW_SHOW);
                 let _ = InvalidateRect(Some(h), None, true);
             }
-            None => {
+            _ => {
                 let _ = ShowWindow(h, SW_HIDE);
             }
         }
     }
+}
+
+/// Whether a Licence-page row that its own state `wants` shown should be shown NOW, with
+/// category `active` on screen. Pure, so the page gate has a test of its own: the other half of
+/// [`apply_conditional_visibility`] is a `ShowWindow` call nothing can assert on.
+pub(super) fn licence_row_shown(active: usize, wants: bool) -> bool {
+    wants && active == CAT_LICENCE
 }
 
 /// Which prospect line this copy should read, or `None` for a machine that is not a prospect.
@@ -416,6 +436,26 @@ mod tests {
             prospect_hint_key(&snap(Mode::Personal, "esk_A1B2", false)),
             None
         );
+    }
+
+    /// The rows this page shows and hides on its own are only ever SHOWN while the page is on
+    /// screen. The bug this pins: `SW_SHOW` does not know which page a control belongs to, and
+    /// every caller of `apply_conditional_visibility` but the page switch runs while some OTHER
+    /// page is up - so 3.1.0 put the licence prices under the last row of every Settings page,
+    /// for every Personal copy without a key.
+    #[test]
+    fn a_licence_row_is_only_shown_on_the_licence_page() {
+        for ci in 0..NCAT {
+            assert_eq!(
+                licence_row_shown(ci, true),
+                ci == CAT_LICENCE,
+                "category {ci}: a row its state wants shows on the Licence page only"
+            );
+            assert!(
+                !licence_row_shown(ci, false),
+                "category {ci}: a row its state hides stays hidden everywhere"
+            );
+        }
     }
 
     /// Both sentences must EXIST in the table, or the row renders the ⟨?⟩ miss marker on the one

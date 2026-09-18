@@ -23,6 +23,11 @@ pub(super) const PANE_W: i32 = 528;
 pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
 pub(super) const NCAT: usize = 11;
+/// The Licence page's index: the last category, the `_` arm of [`nav_key`]. Named so the code
+/// that shows and hides that page's own rows (`licence_ui::apply_conditional_visibility`) can
+/// ask "is it the page on screen" instead of re-deriving the arm; `licence_is_the_last_category`
+/// pins the two together.
+pub(super) const CAT_LICENCE: usize = NCAT - 1;
 // ID_NAV_BASE and ID_PANE_HEADER live in ids.rs now (so `control_ids_are_unique` there
 // covers them), but the id-space relationship is this module's invariant to keep, so the
 // build-time check stays here. The nav ids and ID_PANE_HEADER share one id space, and at
@@ -394,6 +399,16 @@ fn fixed_row_next_y(row: Row, y: i32, first: bool) -> Option<i32> {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    /// `CAT_LICENCE` is what `licence_ui` gates its page-only rows on, so it must name the page
+    /// `cat_rows` actually lays those rows out on - the `_` arm - and stay there when a page is
+    /// inserted above it.
+    #[test]
+    fn licence_is_the_last_category() {
+        assert_eq!(nav_key(CAT_LICENCE), "nav_licence");
+        assert_eq!(category_index("nav_licence"), Some(CAT_LICENCE));
+        assert_eq!(CAT_LICENCE, NCAT - 1);
+    }
 
     #[test]
     fn fixed_pages_keep_space_above_the_footer() {

@@ -372,10 +372,22 @@ pub(super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
 pub(super) const DEPENDENT_ON_COMBO: &[(i32, u32, &[i32])] = &[(
     ID_CORNER_MARK,
     sagethumbs2k_core::settings::CornerMark::Badge.as_dword(),
-    // The size row joins it for the same reason, label included so the whole row greys
-    // together rather than leaving a live-looking caption beside a dead combo.
-    &[ID_BADGE_ICON, ID_LBL_BADGE_SIZE, ID_BADGE_SIZE],
+    // The size COMBO joins it for the same reason. Its LABEL is deliberately not here: a
+    // disabled static draws etched (strikethrough-looking) in dark mode, which is how the
+    // Appearance page read as "failed to render" in 3.1.0. The label stays enabled and
+    // `special_ctlcolor` paints it dim off [`badge_size_active`] instead - the rule the
+    // Quick-save hotkey label already follows - and `sync_dependent_switches` repaints it, so
+    // the row still greys as one.
+    &[ID_BADGE_ICON, ID_BADGE_SIZE],
 )];
+
+/// Is the corner-mark combo on the one answer that has a size and a style to pick? The two
+/// dependent CONTROLS read this through [`DEPENDENT_ON_COMBO`]; the row's label reads it from
+/// `special_ctlcolor`, where it is dimmed by paint rather than disabled (see the table's note).
+pub(super) unsafe fn badge_size_active(hwnd: HWND) -> bool {
+    combo_sel(hwnd, ID_CORNER_MARK, 2) as u32
+        == sagethumbs2k_core::settings::CornerMark::Badge.as_dword()
+}
 
 /// Is `id` a dependent (child) switch? The layout indents these.
 pub(super) fn is_dependent_switch(id: i32) -> bool {
@@ -425,6 +437,11 @@ pub(super) unsafe fn sync_dependent_switches(hwnd: HWND) {
     }
     for &(combo, wants, kids) in DEPENDENT_ON_COMBO {
         grey_kids(hwnd, kids, combo_sel(hwnd, combo, 2) as u32 == wants);
+    }
+    // The badge-size LABEL is dimmed by paint, not disabled (see `DEPENDENT_ON_COMBO`), so it
+    // has to be asked to repaint here or it keeps the colour of the previous selection.
+    if let Ok(lbl) = GetDlgItem(Some(hwnd), ID_LBL_BADGE_SIZE) {
+        let _ = InvalidateRect(Some(lbl), None, true);
     }
 }
 

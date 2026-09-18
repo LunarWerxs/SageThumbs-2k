@@ -16,6 +16,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   MPEG-2 Video Extension is installed from the Store. SageThumbs now reads those itself, the
   same way it already read VideoCD `.mpg` and DVD `.vob`. Interlaced recordings, where each
   frame is stored as two half-pictures, are the one kind still left to Windows.
+- **Settings ▸ Appearance no longer looks half-rendered.** The muted price line that belongs at
+  the bottom of the Licence page was showing at the bottom of every Settings page, and the
+  greyed-out "Format mark size:" label drew with a struck-through look in dark mode. Both were
+  cosmetic; no setting was affected.
 
 ## 3.1.0
 
