@@ -1,12 +1,12 @@
 # SageThumbs 2K
 
-> Windows Explorer thumbnails, previews, and a right-click image toolkit for 334 formats Windows can't render.
+> Windows Explorer thumbnails, previews, and a right-click image toolkit for 349 formats Windows can't render.
 
 <!-- odin:about HAND-OWNED above the GENERATED marker. Edit freely; `odin codex about --ingest` carries it back into Odin's Codex. -->
 
 ## What it is
 
-A crash-isolated Rust shell extension for Windows 11 that draws File Explorer thumbnails, Details-pane columns, and a large reading-pane preview for 334 file types Windows cannot render natively (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, MS Office, audio). It adds a right-click image toolkit (convert, resize, lossless rotate, combine-to-PDF/CBZ, OCR, eyedropper) and an opt-in Space-bar QuickLook-style previewer with video/audio playback, syntax highlighting, PDF paging, SQLite/email/3D-model viewing and more. It also ships a CLI and MCP server (st2k.exe) so scripts and AI agents get the same decode/convert engine offline. A clean-room, from-scratch Rust revival of the decade-abandoned SageThumbs, free for personal use with a paid commercial license.
+A crash-isolated Rust shell extension for Windows 11 that draws File Explorer thumbnails, Details-pane columns, and a large reading-pane preview for 349 file types Windows cannot render natively (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, MS Office, audio). It adds a right-click image toolkit (convert, resize, lossless rotate, combine-to-PDF/CBZ, OCR, eyedropper) and an opt-in Space-bar QuickLook-style previewer with video/audio playback, syntax highlighting, PDF paging, SQLite/email/3D-model viewing and more. It also ships a CLI and MCP server (st2k.exe) so scripts and AI agents get the same decode/convert engine offline. A clean-room, from-scratch Rust revival of the decade-abandoned SageThumbs, free for personal use with a paid commercial license.
 
 ## Things not to forget
 
@@ -54,7 +54,7 @@ edit the dossier, not this block. Everything ABOVE the marker is yours.
 
 **Shipped**
 
-- **Explorer thumbnails for 334 file types** _(free)_ - Draws real File Explorer thumbnails for 334 registered extensions (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, Office docs, audio) through a tiered decoder: the image crate, then Windows WIC, then a sandboxed bundled ImageMagick, then resvg for SVG. - `src/thumbprovider.rs`, `src/formats.rs`
+- **Explorer thumbnails for 349 file types** _(free)_ - Draws real File Explorer thumbnails for 349 registered extensions (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, Office docs, audio) through a tiered decoder: the image crate, then Windows WIC, then a sandboxed bundled ImageMagick, then resvg for SVG. - `src/thumbprovider.rs`, `src/formats.rs`
 - **Right-click image toolkit** _(free)_ - A nested 'SageThumbs 2K' submenu on both classic and Windows 11 context menus: Convert, Resize, lossless Rotate/flip, Combine into PDF/CBZ, Strip metadata, batch Rename, Files-to-folder, upload-to-catbox and more, with multi-file jobs parallelised across every CPU core. - `src/command.rs`, `src/verbs/actions/helper.rs`
 - **Set as folder icon / set as wallpaper** _(free)_ - Two right-click verbs: makes the selected image the icon of its containing folder (writes a hidden .ico + desktop.ini), or sets it as the desktop wallpaper (stretched/tiled/centered). - `src/verbs/actions/foldericon.rs`, `src/verbs/actions/wallpaper.rs`
 - **Batch rename from metadata** _(free)_ - Right-click Rename batch-renames the selection from EXIF capture date/camera (photos) or audio tags via lofty (Artist - Title, zero-padded track number), skipping files missing the needed metadata. - `src/verbs/actions/rename.rs`
@@ -64,7 +64,7 @@ edit the dossier, not this block. Everything ABOVE the marker is yours.
 - **Quick preview (Space-bar QuickLook popup)** _(free)_ - Tap Space in Explorer, on the Desktop, in Everything search results, or inside any 64-bit app's Open/Save dialog for an instant full-size popup: video/audio playback, syntax-highlighted code, rendered Markdown, multi-page PDF paging, SQLite table browsing, .eml/.msg email viewing, 3D-model rendering and more. Off by default. - `src/bin/app/preview/window.rs`
 - **Open/Save dialog selection preview (dlghook)** _(free)_ - A tiny helper DLL injected into any 64-bit app's Open/Save common dialog reads the currently-selected file path via a shared-memory handshake, so Quick preview can show what a file actually is before you commit to opening it. - `crates/dlghook/src/lib.rs`
 - **CLI toolbox (st2k.exe)** _(free)_ - A standalone console binary exposing thumbnail/convert/batch/rotate/strip/ocr/pdf/info/formats verbs over the same decode/convert engine the shell extension uses, for scripts and automation with zero extra installs. - `src/bin/cli.rs`, `src/cli/convert.rs`
-- **MCP server (st2k --mcp)** _(free)_ - st2k --mcp speaks stdio JSON-RPC 2.0 and exposes 10 tools (the CLI verbs plus agent-first `view`, which decodes any of the 334 formats to a PNG image block so an agent can see the file, and `compress`) so an AI client can discover and call an offline image toolbox. - `src/mcp.rs`
+- **MCP server (st2k --mcp)** _(free)_ - st2k --mcp speaks stdio JSON-RPC 2.0 and exposes 10 tools (the CLI verbs plus agent-first `view`, which decodes any of the 349 formats to a PNG image block so an agent can see the file, and `compress`) so an AI client can discover and call an offline image toolbox. - `src/mcp.rs`
 - **Screen OCR (Copy text)** _(free)_ - Copy text off any part of the screen (a right-click verb, Ctrl+T in the screenshot editor, a Quick preview toolbar button, or a global hotkey) via Windows' own OCR engine; recognized words land on the clipboard and in an editable window, with captured tables kept tab-separated. - `src/verbs/actions.rs`
 - **System-wide eyedropper / color picker** _(free)_ - A screen-wide color picker with a 10x magnifier loupe: click or press Space to copy the pixel under the cursor as hex/rgb()/hsl()/hsv() (Tab switches format), keeping the last 10 picks a keypress away. - `src/bin/app/eyedropper.rs`
 - **Screenshot capture + annotate** _(free)_ - A capture hotkey opens a region editor (draw/annotate, snap-to-45°, live width x height readout) with copy/save shortcuts, plus an optional quick-save hotkey that grabs the whole screen straight to clipboard + a timestamped PNG. - `src/bin/app/screenshot/overlay.rs`
@@ -95,5 +95,5 @@ _Read it with `python odin.py codex brief sagethumbs-2k` in the Odin clone._
 
 ---
 
-_Generated by `odin codex about --publish sagethumbs-2k` on 2026-09-16 from a Codex dossier stamped -. Regenerate after the product moves; `odin codex about` reports drift._
-<!-- odin:about GENERATED END sha=b4431148f39b -->
+_Generated by `odin codex about --publish sagethumbs-2k` on 2026-09-18 from a Codex dossier stamped -. Regenerate after the product moves; `odin codex about` reports drift._
+<!-- odin:about GENERATED END sha=8d8ef485fa63 -->

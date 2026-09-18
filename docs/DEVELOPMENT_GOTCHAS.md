@@ -1077,3 +1077,53 @@ The fix lives in the vendor PATCH (`crates/vendor/djvu-patches/djvu-rs.patch`): 
 vendored crate to `crate-type = ["rlib"]`. We only ever link the rlib; the cdylib was 650 KB
 of wasted link per build even when it did not collide. When vendoring any crate, read its
 `[lib]` first and trim `cdylib`/`dylib` in the patch; do not wait for the collision.
+
+## The developer box is a DIFFERENT PROGRAM from the shipped one, twice over (2026-09-17)
+
+Two dependencies are resolved at RUNTIME by looking beside the binary and then falling back to
+whatever the machine happens to have installed. On this box both fallbacks succeed, so a whole
+class of fault renders perfectly here and shows the stock icon on every install. It cost one
+release run per fault before either was noticed, and then a third to prove the fixes.
+
+**ImageMagick.** `decode/magick.rs::magick_exe()` prefers a bundle beside the running binary and
+falls back to any `C:\Program Files\ImageMagick*`. The shipped bundle deliberately omits the
+rsvg/cairo/pango stack (docs/MAGICK.md, "Reviewed omissions": resvg replaces it). So a file that
+should be served by one of our own tiers can silently start falling through to ImageMagick, and
+a format whose magick coder needs an absent delegate can be advertised for years without ever
+drawing anything. Both happened: an SVG whose root element sits behind a licence comment (the
+1 KB sniff window missed `<svg` at byte 3460) and `.pes`, whose coder renders stitches through
+RSVG and therefore never produced a thumbnail in any released build.
+
+**Media Foundation.** MPEG-2 in a program or transport stream is decoded by MF only when the
+Store "MPEG-2 Video Extension" is installed. It is installed here, so MF answers for those files
+long before our own tier is reached, and a test that merely asserts "a thumbnail appeared" passes
+while proving nothing about the decoder it was written for.
+
+**Both have an escape hatch, and a test that measures one of these tiers MUST use it:**
+
+* `ST2K_NO_MAGICK=1` - behave like a machine with no ImageMagick at all.
+* `ST2K_NO_MF=1` - behave like a machine with no Media Foundation at all.
+
+Both are read on every call rather than cached, so a test can flip them mid-process, and both are
+honoured by `st2k.exe` itself: `ST2K_NO_MF=1 st2k thumbnail <file> out.png` answers "would a user
+without the codec pack see this" in one command.
+
+**The three gates that encode this, fastest first:**
+
+```powershell
+pwsh scripts\check-staged-sample.ps1 real.svg   # seconds: named files through the SHIPPED payload
+pwsh scripts\check-magick-reliance.ps1          # ~10 s: whole corpus, ImageMagick switched off
+pwsh scripts\test-staged-regression.ps1         # ~3 min: the full sweep through the shipped payload
+```
+
+`check-magick-reliance.ps1` runs inside `preflight.ps1`, directly behind the release EXE it
+tests, and diffs the survivors against `scripts/magick-free-baseline.txt`; a file that used to
+stand on our own decoders and now needs ImageMagick has silently changed tier. `check-staged-sample.ps1`
+flattens the staged bundle the way the installer lays it out, because the stage keeps magick in a
+SUBDIRECTORY that `magick_exe()` cannot see - run in place, it would fall back to Program Files
+and mask the very thing being measured.
+
+**The rule that generalises past these two:** when the product ships its own copy of a dependency
+and the developer box has a fatter one installed, "it works here" is not evidence. Test against
+the payload, not the machine, and give every such lookup a switch that turns the fallback off.
+

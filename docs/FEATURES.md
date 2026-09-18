@@ -818,7 +818,7 @@ genuinely-outstanding work.)*
 > MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument.
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (347-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (349-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -827,7 +827,7 @@ bundle anything new**; only surface existing functions.
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
    (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
-   the 347 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   the 349 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
    ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
    a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
    `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
