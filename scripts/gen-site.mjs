@@ -171,7 +171,7 @@ const CODEC_NAMES = {
  *  above. Audit E03 #3: an unrecognized `source`/`os_codec` value THROWS rather than
  *  silently rendering an empty sentence or the raw wire token - a renamed vocabulary
  *  string must fail the build, not ship a blank/garbled sentence to the live site. */
-function capabilitySentence(items) {
+function capabilityParts(items) {
   const bySource = {};
   for (const x of items) (bySource[x.source] = bySource[x.source] || []).push(x);
   const sourceKeys = Object.keys(bySource);
@@ -211,7 +211,21 @@ function capabilitySentence(items) {
       parts.push(`.${exts.slice().sort().join(', .')} additionally need${exts.length === 1 ? 's' : ''} ${name}.`);
     }
   }
-  return [s, ...parts].filter(Boolean).join(' ');
+  return { source: s, codecs: parts.join(' ') };
+}
+
+/** One sentence group, for the self-tests and anything else that wants it as text. */
+function capabilitySentence(items) {
+  const { source, codecs } = capabilityParts(items);
+  return [source, codecs].filter(Boolean).join(' ');
+}
+
+/** What the page renders: how the thumbnails are made, and (separately) which Windows codecs
+ *  some of the formats need. Two paragraphs, not one - the Image group's single caption came
+ *  to 53 words on 2026-09-17 and the site's copy budget (every paragraph <= 40) went red. */
+function capabilityParagraphs(items) {
+  const { source, codecs } = capabilityParts(items);
+  return [source, codecs].filter(Boolean);
 }
 
 /** Builds the bar + fmtwall block from `formats` (the parsed `st2k formats --json` array).
@@ -262,11 +276,11 @@ function buildFormatWall(formats, CR) {
     const chips = items.map(x => `<span class="fc" title="${esc(x.description)}">.${x.ext}</span>`).join(' ');
     const panelId = `fgdesc-${dc}`;
     const descList = items.map(x => `<li><code>.${x.ext}</code> ${esc(x.description)}</li>`).join(CR + '            ');
-    const capSentence = n ? capabilitySentence(items) : '';
+    const capParagraphs = n ? capabilityParagraphs(items) : [];
     groups.push(
       `      <div class="fmtgroup reveal" data-cat="${dc}">${CR}` +
       `        <h3 class="fgh"><span class="sw"></span>${label} <span class="cnt">${n}</span></h3>${CR}` +
-      (capSentence ? `        <p class="fgcap">${esc(capSentence)}</p>${CR}` : '') +
+      capParagraphs.map(p => `        <p class="fgcap">${esc(p)}</p>${CR}`).join('') +
       `        <div class="fgchips">${chips}</div>${CR}` +
       `        <button type="button" class="fgtoggle" aria-expanded="false" aria-controls="${panelId}">Show ${label} format descriptions</button>${CR}` +
       `        <div class="fgdesc" id="${panelId}" hidden>${CR}` +
@@ -461,6 +475,23 @@ function runSelfTest() {
     assert.match(sentence, /\.heic additionally needs the OS's WIC HEIF codec\./);
   });
 
+  check('caption paragraphs each fit the site copy budget (40 words), Image-shaped group', () => {
+    // The live Image group on 2026-09-18: 155 full decodes, 58 carried previews, and three
+    // PARTIAL codec notes. As one paragraph that is 53 words; the site's copy-budget check
+    // refuses anything over 40, so the generator emits the two halves as two paragraphs.
+    const items = [];
+    for (let i = 0; i < 155; i++) items.push({ ext: `f${i}`, source: 'full_decode', os_codec: null });
+    for (let i = 0; i < 58; i++) items.push({ ext: `p${i}`, source: 'embedded_preview', os_codec: null });
+    for (const ext of ['avci', 'heic', 'heics', 'heif', 'heifs', 'hif']) items.push({ ext, source: 'full_decode', os_codec: 'heif' });
+    items.push({ ext: 'avif', source: 'full_decode', os_codec: 'av1' });
+    for (const ext of ['hdp', 'jxr', 'wdp', 'wmp']) items.push({ ext, source: 'full_decode', os_codec: 'wmphoto' });
+    const cap = capabilityParts(items);
+    const words = (t) => t.trim().split(/\s+/).length;
+    assert.ok(words(cap.source) <= 40, `tier sentence is ${words(cap.source)} words: ${cap.source}`);
+    assert.ok(words(cap.codecs) <= 40, `codec notes are ${words(cap.codecs)} words: ${cap.codecs}`);
+    assert.ok(words(`${cap.source} ${cap.codecs}`) > 40, 'the split is load-bearing: as one paragraph this exceeds the budget');
+  });
+
   check('mixed-source group states counts, not a blanket claim', () => {
     // Audit E03 #1: Image is exactly this shape now - most formats a full decode, a fixed
     // subset (PSD/EPS/APK/Blender/...) riding a carried preview instead.
@@ -527,7 +558,9 @@ function runSelfTest() {
     assert.match(run1.html, /v9\.9\.9/);
     // Audit E03: the per-category capability sentence is DERIVED from the data, not
     // hand-typed - the video group must name its Media Foundation dependency.
-    assert.match(run1.html, /Each thumbnail is a representative frame grabbed from the video\.\s*Every format here needs the OS Media Foundation codecs\./);
+    // The codec requirement is its own caption paragraph, so no caption outgrows the copy
+    // budget's 40-word paragraph limit.
+    assert.match(run1.html, /Each thumbnail is a representative frame grabbed from the video\.<\/p>\s*<p class="fgcap">Every format here needs the OS Media Foundation codecs\.<\/p>/);
     assert.match(run1.html, /Each thumbnail shows the images found inside the archive, not one photo\./);
 
     const wall2 = buildFormatWall(formats, '\r\n');
