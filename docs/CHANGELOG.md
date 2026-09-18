@@ -7,7 +7,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.1.1
+
+Recorded TV and camcorder files that hold MPEG-2 get thumbnails without a paid Windows add-on,
+and the Appearance page of Settings stops showing things that did not belong on it.
 
 - **Recorded TV, set-top-box and camcorder video (`.ts`, `.m2ts`, `.mts`) no longer needs a
   paid Windows add-on to show a thumbnail.** Those files usually hold H.264, which Windows
