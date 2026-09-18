@@ -1047,11 +1047,16 @@ function Format-ReleaseNotesBody {
     return $text
 }
 
-# The open items of the repo's one work queue (docs/todo/TODO.md): every `### ` heading under
-# its "Needs a person" and "Technical debt" parts, i.e. everything before the "Conditional
-# watches" part. Watches and standing decisions are not work. release.ps1 refuses to cut a
-# release while this returns anything (owner directive, Michael, 2026-09-11: nothing is
-# deferred past a release).
+# The open items of the repo's one work queue (docs/todo/TODO.md): every `### ` heading AND
+# every top-level `- ` bullet under its "Needs a person" and "Technical debt" parts, i.e.
+# everything before the "Conditional watches" part. Watches and standing decisions are not
+# work. release.ps1 refuses to cut a release while this returns anything (owner directive,
+# Michael, 2026-09-11: nothing is deferred past a release).
+#
+# Bullets count since 2026-09-18: until then only `###` headings did, and the first item filed
+# as a bullet (a dashboard token the owner has to decide on) sailed past the gate unseen - a
+# release was one command from shipping over an item that by the owner's rule blocks it. A
+# bullet's item text is its bold lead when it has one, else the line itself.
 function Get-ReleaseOpenTodoItems {
     param(
         [Parameter(Mandatory)]
@@ -1068,7 +1073,14 @@ function Get-ReleaseOpenTodoItems {
             $inWork = ($title -match '^(Needs a person|Technical debt)\b')
             continue
         }
-        if ($inWork -and $line -match '^###[ ]+(.+?)\s*$') {
+        if (-not $inWork) { continue }
+        if ($line -match '^###[ ]+(.+?)\s*$') {
+            $open.Add($Matches[1])
+        }
+        elseif ($line -match '^-[ ]+\*\*(.+?)\*\*') {
+            $open.Add($Matches[1])
+        }
+        elseif ($line -match '^-[ ]+(\S.*?)\s*$') {
             $open.Add($Matches[1])
         }
     }

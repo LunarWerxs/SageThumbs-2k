@@ -105,9 +105,14 @@ try {
 
 ### Submit the vendor form
 
+- **Rotate the token, or accept it and delete this line** (2026-09-18). Filed as a bullet,
+  the shape the gate was blind to until 2026-09-18; this continuation line is not an item.
+
 ## 2. Technical debt
 
 ### Fix the thing
+
+- a plain bullet item, no bold lead
 
 ### Fix the other thing
 
@@ -115,14 +120,18 @@ try {
 
 ### not an item, a watch
 
+- a bullet under watches is not work either
+
 ## 4. Decided, do not reopen
 
 ### not an item, a decision
 '@ | Set-Content -LiteralPath $todo -Encoding utf8
-    Assert-Passes 'the work-queue gate counts only the items under the first two parts' {
+    Assert-Passes 'the work-queue gate counts headings AND bullets, and only under the first two parts' {
         $open = @(Get-ReleaseOpenTodoItems -TodoPath $todo)
-        if ($open.Count -ne 3 -or $open[0] -ne 'Submit the vendor form' -or $open[2] -ne 'Fix the other thing') {
-            throw "expected the three work items, got: $($open -join ' | ')"
+        $want = @('Submit the vendor form', 'Rotate the token, or accept it and delete this line',
+            'Fix the thing', 'a plain bullet item, no bold lead', 'Fix the other thing')
+        if ($open.Count -ne $want.Count -or (Compare-Object $open $want -SyncWindow 0)) {
+            throw "expected the five work items, got: $($open -join ' | ')"
         }
     }
     @'
