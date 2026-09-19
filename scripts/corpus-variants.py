@@ -268,28 +268,40 @@ def heif_variants(b):
     meta = next(((s2, e2) for k, s2, e2 in top if k == b"meta"), None)
     if meta is None:
         return v
-    ms, me = meta[0] + 4, meta[1]  # full box: version+flags
-    inner = {k: (s2, e2) for k, s2, e2 in _boxes(b, ms, me)}
+    inner = {k: (s2, e2) for k, s2, e2 in _boxes(b, meta[0] + 4, meta[1])}  # full box: version+flags
     if b"iprp" in inner:
-        ps, pe = inner[b"iprp"]
-        ipco = next(((s3, e3) for k, s3, e3 in _boxes(b, ps, pe) if k == b"ipco"), None)
-        if ipco:
-            props = [k for k, _, _ in _boxes(b, *ipco)]
-            v.add("alpha" if b"auxC" in props else "no-alpha")
-            v.add("colr" if b"colr" in props else "no-colr")
-            v.add("hdr-metadata" if b"clli" in props or b"mdcv" in props else "no-hdr-metadata")
-            v.add("grid" if b"grid" in props else "single-item")
-            # pixi carries the bit depth per channel
-            for k, s3, e3 in _boxes(b, *ipco):
-                if k == b"pixi" and e3 - s3 >= 6:
-                    v.add(f"{b[s3 + 5]}-bit")
-                    break
+        v |= _heif_property_variants(b, *inner[b"iprp"])
     if b"iinf" in inner:
-        s2, e2 = inner[b"iinf"]
-        body = b[s2:e2]
-        v.add("grid" if b"grid" in body else "single-item")
-        if b"Exif" in body:
-            v.add("has-exif")
+        v |= _heif_item_variants(b, *inner[b"iinf"])
+    return v
+
+
+def _heif_property_variants(b, ps, pe):
+    """The item properties (`ipco`): alpha plane, colour box, HDR metadata, grid, bit depth."""
+    v = set()
+    ipco = next(((s3, e3) for k, s3, e3 in _boxes(b, ps, pe) if k == b"ipco"), None)
+    if not ipco:
+        return v
+    props = [k for k, _, _ in _boxes(b, *ipco)]
+    v.add("alpha" if b"auxC" in props else "no-alpha")
+    v.add("colr" if b"colr" in props else "no-colr")
+    v.add("hdr-metadata" if b"clli" in props or b"mdcv" in props else "no-hdr-metadata")
+    v.add("grid" if b"grid" in props else "single-item")
+    # pixi carries the bit depth per channel
+    for k, s3, e3 in _boxes(b, *ipco):
+        if k == b"pixi" and e3 - s3 >= 6:
+            v.add(f"{b[s3 + 5]}-bit")
+            break
+    return v
+
+
+def _heif_item_variants(b, s2, e2):
+    """The item info (`iinf`): a derived grid item, an Exif item."""
+    v = set()
+    body = b[s2:e2]
+    v.add("grid" if b"grid" in body else "single-item")
+    if b"Exif" in body:
+        v.add("has-exif")
     return v
 
 
@@ -467,10 +479,8 @@ FAMILY_WANTED = {fam: wanted for _, wanted, fam in FAMILIES.values()}
 BASELINE = Path(__file__).resolve().parent / "corpus-variants-baseline.txt"
 
 
-def main():
-    as_json = "--json" in sys.argv
-    gate = "--gate" in sys.argv
-    write_baseline = "--write-baseline" in sys.argv
+def collect_present():
+    """family -> variant -> sample names, over both corpora."""
     present = defaultdict(lambda: defaultdict(list))
     for corpus in CORPORA:
         if not corpus.is_dir():
@@ -485,6 +495,10 @@ def main():
                     present[fam][var].append(p.name)
             except Exception as e:  # a malformed sample is itself a finding
                 present[fam][f"unparseable:{type(e).__name__}"].append(p.name)
+    return present
+
+
+def build_report(present):
     report = {}
     for fam, wanted in FAMILY_WANTED.items():
         have = present.get(fam, {})
@@ -493,36 +507,50 @@ def main():
             "present": {k: sorted(v) for k, v in sorted(have.items())},
             "missing": sorted(w for w in wanted if w not in have),
         }
-    if as_json:
-        print(json.dumps(report, indent=2))
-        return
-    have_now = {f"{ext}:{k}" for ext, r in report.items() for k in r["present"] if not k.startswith("unparseable:")}
-    if write_baseline:
-        BASELINE.write_text("\n".join(sorted(have_now)) + "\n", encoding="utf-8")
-        print(f"wrote {len(have_now)} present variants to {BASELINE.name}")
-        return
-    for ext, r in report.items():
-        print(f"== {ext}: {len(r['samples'])} sample(s)")
+    return report
+
+
+def print_report(report):
+    for fam, r in report.items():
+        print(f"== {fam}: {len(r['samples'])} sample(s)")
         for k, names in r["present"].items():
             print(f"   {k:24s} {len(names)}  {', '.join(names[:4])}{' ...' if len(names) > 4 else ''}")
         if r["missing"]:
-            print(f"   MISSING {ext}: {', '.join(r['missing'])}")
-    if gate:
-        if not any(c.is_dir() for c in CORPORA):
-            print("corpus-variants: NOT MEASURED - no test corpus on this machine")
-            sys.exit(2)
-        if not BASELINE.is_file():
-            print(f"corpus-variants: no baseline at {BASELINE.name} (run --write-baseline)")
-            sys.exit(2)
-        expected = {l.strip() for l in BASELINE.read_text(encoding="utf-8").splitlines() if l.strip()}
-        lost = sorted(expected - have_now)
-        gained = sorted(have_now - expected)
-        if gained:
-            print(f"corpus-variants: {len(gained)} variant(s) present but not in the baseline - run --write-baseline: {', '.join(gained)}")
-        if lost:
-            print(f"corpus-variants: FAIL - {len(lost)} variant(s) the baseline lists are GONE from the corpus: {', '.join(lost)}")
-            sys.exit(1)
-        print(f"corpus-variants: ok - all {len(expected)} baselined variants present")
+            print(f"   MISSING {fam}: {', '.join(r['missing'])}")
+
+
+def run_gate(have_now):
+    """Exit 2 = NOT MEASURED, 1 = a baselined variant is gone, 0 = every baselined one present."""
+    if not any(c.is_dir() for c in CORPORA):
+        print("corpus-variants: NOT MEASURED - no test corpus on this machine")
+        sys.exit(2)
+    if not BASELINE.is_file():
+        print(f"corpus-variants: no baseline at {BASELINE.name} (run --write-baseline)")
+        sys.exit(2)
+    expected = {l.strip() for l in BASELINE.read_text(encoding="utf-8").splitlines() if l.strip()}
+    lost = sorted(expected - have_now)
+    gained = sorted(have_now - expected)
+    if gained:
+        print(f"corpus-variants: {len(gained)} variant(s) present but not in the baseline - run --write-baseline: {', '.join(gained)}")
+    if lost:
+        print(f"corpus-variants: FAIL - {len(lost)} variant(s) the baseline lists are GONE from the corpus: {', '.join(lost)}")
+        sys.exit(1)
+    print(f"corpus-variants: ok - all {len(expected)} baselined variants present")
+
+
+def main():
+    report = build_report(collect_present())
+    if "--json" in sys.argv:
+        print(json.dumps(report, indent=2))
+        return
+    have_now = {f"{fam}:{k}" for fam, r in report.items() for k in r["present"] if not k.startswith("unparseable:")}
+    if "--write-baseline" in sys.argv:
+        BASELINE.write_text("\n".join(sorted(have_now)) + "\n", encoding="utf-8")
+        print(f"wrote {len(have_now)} present variants to {BASELINE.name}")
+        return
+    print_report(report)
+    if "--gate" in sys.argv:
+        run_gate(have_now)
 
 
 if __name__ == "__main__":
