@@ -1291,16 +1291,29 @@ end;
 // there is no console session (a headless uninstall) or the API declines.
 function WTSGetActiveConsoleSessionId(): DWORD;
   external 'WTSGetActiveConsoleSessionId@kernel32.dll stdcall';
+// Returns Boolean, NOT BOOL. Inno's DLL marshaller reads a Boolean return correctly from a
+// WinAPI BOOL, and only a Boolean can be used in the `and` below - declared `: BOOL` the
+// whole thing was a "Type mismatch" that the [Code] LINT never caught and only a real ISCC
+// compile did (2026-09-19 audit item: the WTS block had passed the lint, never a compile).
 function WTSQuerySessionInformationW(hServer: THandle; SessionId: DWORD; InfoClass: Integer;
-  var Buffer: Cardinal; var Bytes: DWORD): BOOL;
+  var Buffer: Cardinal; var Bytes: DWORD): Boolean;
   external 'WTSQuerySessionInformationW@wtsapi32.dll stdcall';
 procedure WTSFreeMemory(Memory: Cardinal);
   external 'WTSFreeMemory@wtsapi32.dll stdcall';
+procedure RtlMoveMemory(Dest: Cardinal; Source: Cardinal; Length: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
 
+// The WTS query hands back `Buf`, a pointer to a DLL-allocated null-terminated WIDE string,
+// and `Bytes`, its length INCLUDING the terminator. Copy those bytes into a real Inno String
+// with RtlMoveMemory (`CastStringToInteger` gives the destination buffer's address); do NOT
+// `CastIntegerToString(Buf)` - that reinterprets the raw pointer as an Inno string's internal
+// representation, which has a length/refcount prefix an LPWSTR does not, so it reads garbage.
 function WtsSessionString(InfoClass: Integer): String;
 var
   Buf: Cardinal;
   Bytes: DWORD;
+  W: String;
+  CharCount: Integer;
 begin
   Result := '';
   Buf := 0;
@@ -1308,7 +1321,16 @@ begin
   if WTSQuerySessionInformationW(0, WTSGetActiveConsoleSessionId(), InfoClass, Buf, Bytes)
     and (Buf <> 0) then
   begin
-    Result := CastIntegerToString(Buf);
+    if Bytes >= 2 then
+    begin
+      CharCount := (Integer(Bytes) div 2) - 1; // drop the null terminator
+      if CharCount > 0 then
+      begin
+        SetLength(W, CharCount);
+        RtlMoveMemory(CastStringToInteger(W), Buf, Cardinal(CharCount * 2));
+        Result := W;
+      end;
+    end;
     WTSFreeMemory(Buf);
   end;
 end;
