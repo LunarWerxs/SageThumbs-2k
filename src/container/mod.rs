@@ -381,8 +381,8 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Ghostscript). A WMF-only/bare file stays terminally unsupported in the
     // decoder instead of falling through to any PostScript-capable external tier.
     if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
-        if let Some(tiff) = eps::extract(bytes) {
-            return Some(CoverOut::Bytes(tiff));
+        if let Some(cover) = eps::extract_dos_eps_cover(bytes) {
+            return Some(cover);
         }
     }
     // Plain EPS: only read an already-embedded EPSI/Photoshop raster preview;

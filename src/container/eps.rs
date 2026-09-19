@@ -57,6 +57,70 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// The cover of a DOS-EPS: its TIFF preview when the image tiers can read it, otherwise the
+/// Illustrator raster in its PostScript section, if there is one.
+///
+/// Both Adobe apps write their "8-bit TIFF" preview as a PALETTED TIFF (photometric 3;
+/// Illustrator's "transparent colour TIFF" adds an alpha sample), which the pure-Rust TIFF
+/// decoder refuses. The first real Illustrator EPS and the first real Photoshop EPS in the
+/// corpus (2026-09-19) therefore had covers that "did not decode", while each file carried a
+/// perfectly good raster in its PostScript: Illustrator's `%AI7_Thumbnail`, Photoshop's 8BIM
+/// resource 1036. A paletted preview is not handed to the tiers at all: the PostScript
+/// section is read the way a plain EPS is (EPSI, Photoshop resources, the Illustrator raster),
+/// and only a preview the tiers can decode is returned as bytes.
+pub fn extract_dos_eps_cover(bytes: &[u8]) -> Option<CoverOut> {
+    let tiff = extract(bytes)?;
+    if !tiff_is_paletted(&tiff) {
+        return Some(CoverOut::Bytes(tiff));
+    }
+    let ps_off = le32(bytes, 4)? as usize;
+    let ps_len = le32(bytes, 8)? as usize;
+    bytes
+        .get(ps_off..ps_off.checked_add(ps_len)?)
+        .and_then(extract_ascii_preview)
+        .or(Some(CoverOut::Bytes(tiff)))
+}
+
+/// Whether a TIFF's first directory declares PhotometricInterpretation 3 (RGB palette),
+/// read with a bounds-checked walk of IFD0. Anything malformed reads as "not paletted",
+/// which hands the bytes to the decoders, whose refusal is then the answer.
+fn tiff_is_paletted(tiff: &[u8]) -> bool {
+    let le = match tiff.get(..4) {
+        Some(b"II\x2A\x00") => true,
+        Some(b"MM\x00\x2A") => false,
+        _ => return false,
+    };
+    let u16 = |o: usize| -> Option<u16> {
+        let b = tiff.get(o..o + 2)?;
+        Some(if le {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        })
+    };
+    let u32 = |o: usize| -> Option<u32> {
+        let b = tiff.get(o..o + 4)?;
+        Some(if le {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        } else {
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+        })
+    };
+    let Some(ifd) = u32(4).map(|o| o as usize) else {
+        return false;
+    };
+    let Some(n) = u16(ifd) else {
+        return false;
+    };
+    for k in 0..n.min(512) as usize {
+        let e = ifd + 2 + k * 12;
+        if u16(e) == Some(262) {
+            return u16(e + 8) == Some(3);
+        }
+    }
+    false
+}
+
 /// Extract an embedded preview from a plain-text EPS, without rendering PostScript.
 pub fn extract_ascii_preview(bytes: &[u8]) -> Option<CoverOut> {
     if !bytes.starts_with(b"%!PS") {
