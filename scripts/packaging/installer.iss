@@ -248,13 +248,13 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; the flag; three entries below already rely on it for the same reason.
 Filename: "{app}\{#AppExe}"; Parameters: "--sync-user-shell"; \
   StatusMsg: "Setting up the classic context menu..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: ConsoleUserStep('--sync-user-shell')
 ; The DLL swap is waiting on a restart (StaleAfterInstall): queue the per-user thumbnail
 ; cache rebuild for the next sign-in from the ORIGINAL user's own context. Written by the
 ; elevated installer it would land in whichever admin's hive answered the UAC prompt.
 Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
   StatusMsg: "Scheduling a thumbnail refresh for the next sign-in..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending and ConsoleUserStep('--queue-cache-rebuild')
 ; Modern Win11 context menu (signed sparse package), SPLIT IN TWO STEPS since the 2026-09-05
 ; audit (F08 + F09). The old combined step trusted the cert AND registered the per-user
 ; package in ONE elevated PowerShell call. On a machine where a standard user supplied a
@@ -390,10 +390,12 @@ Filename: "powershell.exe"; \
 ; string build-release.ps1 passes in ({#MsixPublisher}), so a same-publisher upgrade keeps
 ; the add-first ordering above. The current user's registration only, which is the one this
 ; runasoriginaluser step can see; uninstall removes every user's.
+; The PowerShell text lives ONCE, in [Code] ModernMenuRegisterScript, so the console-user
+; route (ConsoleUserPsStep) runs the identical command.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){{Get-AppxPackage -Name SageThumbs2K|Where-Object{{$_.Publisher -cne '{#MsixPublisher}'}|Remove-AppxPackage -ErrorAction SilentlyContinue; try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}}"""; \
+  Parameters: "-NoProfile -Command ""{code:ModernMenuRegisterScript}"""; \
   StatusMsg: "Registering the modern context menu (this can take a moment)..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable and ConsoleUserPsStep
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
 ; installed has long since decided about Quick preview and the capture hotkey, and greeting
 ; them as a new user would silently re-offer (and, if they clicked through, re-enable)
@@ -402,7 +404,7 @@ Filename: "powershell.exe"; \
 ; written before it starts. runasoriginaluser because the flag lives in the USER's HKCU,
 ; and setup itself is elevated.
 Filename: "{app}\{#AppExe}"; Parameters: "--first-run-seen"; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade and ConsoleUserStep('--first-run-seen')
 ; Restart Explorer and drop thumbcache_*.db, so thumbnails appear for files the user has
 ; ALREADY browsed. Registering the provider does not invalidate anything Explorer cached,
 ; and for every one of our formats it has cached the generic icon it drew before we existed
@@ -429,14 +431,14 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
 ; elevation - a non-elevated Settings window is then UIPI-blocked from ever posting
 ; WM_RELOAD to it, so later hotkey changes would silently stop applying.
 Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
-  Flags: nowait runasoriginaluser; Check: WasSelfUpdate
+  Flags: nowait runasoriginaluser; Check: WasSelfUpdate and ConsoleUserStep('--updated {#AppVer}')
 ; Restart the resident hotkey daemon after EVERY install, silent or not: the setup killed
 ; it (PrepareToInstall / Restart Manager) to replace the EXE, and nothing else brings it
 ; back until the next logon - a user whose hotkeys are on would otherwise find them dead
 ; after any reinstall/upgrade. --heal-hotkeys is a silent, instant no-op when the feature
 ; is off or the daemon is already back. Same runasoriginaluser rationale as above.
 Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
-  Flags: nowait runasoriginaluser
+  Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--heal-hotkeys')
 ; Register the per-user update-check Scheduled Task ("SageThumbs2K.exe --update-check",
 ; daily with a 6h repetition, /rl LIMITED). Before this, the ONLY periodic update check
 ; lived inside the OPT-IN resident screenshot helper - so every install where the user
@@ -447,7 +449,7 @@ Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
 ; the ELEVATED setup context would be owned by the wrong principal and could not toast
 ; into the user's session.
 Filename: "{app}\{#AppExe}"; Parameters: "--update-task"; \
-  Flags: nowait runasoriginaluser
+  Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--update-task')
 
 [UninstallRun]
 ; Drop the update-check Scheduled Task first, while our EXE is still on disk. Harmless if
@@ -838,7 +840,12 @@ begin
         '/Create /TN "SageThumbs2K-Reregister" /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "\"'
           + ExpandConstant('{sys}\regsvr32.exe') + '\" /s \"' + ExpandConstant('{app}\{#AppDll}') + '\""',
         '', SW_HIDE, ewWaitUntilTerminated, R);
-      MsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
+      // SuppressibleMsgBox, not MsgBox: a plain MsgBox from [Code] ignores
+      // /SUPPRESSMSGBOXES, and a silent install with a locked DLL sat on this box for
+      // twelve minutes in a session with no desktop to show it on (the two-account VM
+      // proof, 2026-09-19). The self-updater's own silent run would have done the same.
+      // Suppressed, it is still written to the Setup log.
+      SuppressibleMsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
         + ' OLD VERSION.'
         + #13#10#13#10
         + 'Windows keeps that file open while File Explorer or another app is using it, and'
@@ -848,11 +855,11 @@ begin
         + ' needed. If the version still has not changed after that, security software is'
         + ' most likely blocking the file - allow the install folder in your antivirus and'
         + ' run this installer again.',
-        mbError, MB_OK);
+        mbError, MB_OK, IDOK);
     end;
     if not RegKeyExists(HKEY_CLASSES_ROOT,
          'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
-      MsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
+      SuppressibleMsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
         + ' Windows did not succeed, so thumbnails and the right-click menu will not appear.'
         + #13#10#13#10
         + 'This is almost always security software blocking or quarantining'
@@ -860,7 +867,7 @@ begin
         + #13#10#13#10
         + 'To fix it: allow the install folder in your antivirus, then open SageThumbs 2K'
         + ' Settings and use Advanced > Repair file associations.',
-        mbError, MB_OK);
+        mbError, MB_OK, IDOK);
   end;
 end;
 
@@ -1349,36 +1356,120 @@ begin
     Result := Domain + '\' + User;
 end;
 
+// Quote S for PowerShell: a single-quoted literal, embedded quotes doubled.
+function PsQuote(const S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
+  Result := '''' + Result + '''';
+end;
+
+// Run <Exe> <Params> as the interactive CONSOLE user, from this ELEVATED context, and wait.
+//
+// The broker is a one-shot Scheduled Task registered through the ScheduledTasks PowerShell
+// API with LogonType Interactive and RunLevel Limited: the Task Scheduler resolves that to
+// the console user's own standard token, no password needed, no prompt. It is NOT
+// `schtasks /Create /RU <user> /NP`: for any account other than the caller's, schtasks
+// still asks "Please enter the run as password" on its console, and inside a hidden Exec
+// with no stdin that prompt is a hang - the uninstaller sat in it for ten minutes on the
+// two-account VM (2026-09-19); with stdin closed it is "Access is denied". The same
+// PowerShell call starts the task, waits (bounded) for the instance to START and then to
+// END - `Get-ScheduledTask`'s State is an enum, never localized text - and unregisters
+// it, so nothing is torn down under a still-running step (the modern-menu registration
+// genuinely takes seconds). No console session at all (a headless install): the command
+// simply runs here, as the elevated user, exactly as an install with nobody at the PC
+// always has.
 procedure RunAsOriginalUser(const Exe, Params: String);
 var
-  TaskName, SchTasks, Args, Principal: String;
+  TaskName, Args, Ps: String;
   R: Integer;
 begin
-  SchTasks := ExpandConstant('{sys}\schtasks.exe');
-  TaskName := 'SageThumbs2K-RunAsUser-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
-  // /RL LIMITED is the load-bearing part - see the procedure comment. /TR takes ONE
-  // double-quoted command; the exe path itself needs its own quotes nested inside that via
-  // Inno's \" escape (this repo's own path can contain a space, "SageThumbs 2K").
-  // The PRINCIPAL is the interactive console user, named explicitly. Without /RU the task
-  // runs as the account that created it - this elevated process - and /RL only lowers its
-  // privilege LEVEL: when standard user A typed administrator B's password, that is B, so
-  // B's HKCU got the per-user removal and A kept every verb and overlay (2026-09-19 audit
-  // F11). /NP stores no password (the task runs while that user is signed in, which they
-  // are - it is their console session); no /RU at all when there is no console session.
-  Principal := '';
-  if ConsoleUser() <> '' then
-    Principal := ' /RU "' + ConsoleUser() + '" /NP';
-  Args := '/Create /TN "' + TaskName + '" /TR "\"' + Exe + '\" ' + Params
-    + '" /SC ONCE /ST 00:00 /RL LIMITED' + Principal + ' /F';
-  if not Exec(SchTasks, Args, '', SW_HIDE, ewWaitUntilTerminated, R) or (R <> 0) then
+  if ConsoleUser() = '' then
+  begin
+    Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, R);
     Exit;
-  Exec(SchTasks, '/Run /TN "' + TaskName + '"', '', SW_HIDE, ewWaitUntilTerminated, R);
-  // /Run triggers the task and returns immediately, before it finishes - not before it even
-  // STARTS. Give the short-lived CLI call a moment to actually run before tearing the task
-  // down; both operations are themselves best-effort so a slow machine loses nothing worse
-  // than a task definition left behind for the next uninstall's /F to overwrite.
-  Sleep(1500);
-  Exec(SchTasks, '/Delete /TN "' + TaskName + '" /F', '', SW_HIDE, ewWaitUntilTerminated, R);
+  end;
+  TaskName := 'SageThumbs2K-RunAsUser-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+  // The whole -Command rides inside one pair of double quotes on powershell.exe's command
+  // line, so a double quote inside the task's arguments has to arrive as \" (the C runtime
+  // argv rule powershell.exe follows); inside the single-quoted PowerShell literal it is then
+  // just a character, and the task's Arguments carry a real double quote.
+  Args := Params;
+  StringChangeEx(Args, '"', '\"', True);
+  Ps := '$ErrorActionPreference=''Stop''; '
+    + '$a = New-ScheduledTaskAction -Execute ' + PsQuote(Exe) + ' -Argument ' + PsQuote(Args) + '; '
+    + '$p = New-ScheduledTaskPrincipal -UserId ' + PsQuote(ConsoleUser()) + ' -LogonType Interactive -RunLevel Limited; '
+    + '$n = ' + PsQuote(TaskName) + '; '
+    + 'Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Force | Out-Null; '
+    + 'Start-ScheduledTask -TaskName $n; '
+    + '$d=(Get-Date).AddSeconds(4); while((Get-Date) -lt $d -and (Get-ScheduledTask -TaskName $n).State -ne ''Running''){Start-Sleep -m 150}; '
+    + '$d=(Get-Date).AddSeconds(180); while((Get-Date) -lt $d -and (Get-ScheduledTask -TaskName $n).State -eq ''Running''){Start-Sleep -m 250}; '
+    + 'Unregister-ScheduledTask -TaskName $n -Confirm:$false';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Ps + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, R);
+end;
+
+// ---- Install-side per-user steps reach the CONSOLE user (2026-09-19 audit F11, live) ----
+// Inno's own `runasoriginaluser` reaches the person at the PC only when that person started
+// Setup unelevated and answered UAC with another account's credentials. Started from an
+// already-elevated process - an admin's shell, a remote session, a deployment tool - "the
+// original user" IS the elevated account, and the two-account VM proof put every per-user
+// install step into the administrator's hive while the standard user owned the console (the
+// uninstall side, which goes through RunAsOriginalUser above, targets the console user).
+// So each per-user [Run] entry carries a Check that asks: is there a console user other than
+// the account Setup runs as? Then the step runs as THAT user through the same one-shot task,
+// and the Check returns False so Inno does not run the entry a second time. Nobody at the
+// console, or the console user is this very account: True, and Inno runs the entry itself
+// exactly as before. Each step runs at most once however often Inno evaluates the Check.
+var
+  ConsoleRoutedSteps: String;
+
+function ConsoleUserDiffers(): Boolean;
+var
+  C: String;
+  P: Integer;
+begin
+  Result := False;
+  C := ConsoleUser();
+  if C = '' then
+    Exit;
+  P := Pos('\', C);
+  if P > 0 then
+    C := Copy(C, P + 1, Length(C));
+  Result := CompareText(C, GetUserNameString()) <> 0;
+end;
+
+function ConsoleRoute(const Exe, Params, Key: String): Boolean;
+begin
+  // True = Inno runs the [Run] entry itself; False = it ran (or is running) as the console user.
+  Result := True;
+  if not ConsoleUserDiffers() then
+    Exit;
+  Result := False;
+  if Pos(';' + Key + ';', ConsoleRoutedSteps) > 0 then
+    Exit;
+  ConsoleRoutedSteps := ConsoleRoutedSteps + ';' + Key + ';';
+  RunAsOriginalUser(Exe, Params);
+end;
+
+function ConsoleUserStep(Params: String): Boolean;
+begin
+  Result := ConsoleRoute(ExpandConstant('{app}\{#AppExe}'), Params, Params);
+end;
+
+// The modern-menu registration command, the ONE copy: the [Run] entry expands it through
+// {code:ModernMenuRegisterScript}, and the console-user route passes the same text.
+function ModernMenuRegisterScript(Param: String): String;
+begin
+  Result := '$d=(Get-ItemProperty -Path ''HKLM:\Software\SageThumbs2K'' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){Get-AppxPackage -Name SageThumbs2K|Where-Object{$_.Publisher -cne ''{#MsixPublisher}''}|Remove-AppxPackage -ErrorAction SilentlyContinue; try{Add-AppxPackage -Path ($d+''\SageThumbs2K.msix'') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+''\SageThumbs2K.msix'') -ExternalLocation $d -ForceUpdateFromAnyVersion}}';
+end;
+
+function ConsoleUserPsStep(): Boolean;
+begin
+  // Real double quotes here; RunAsOriginalUser escapes them for the broker's command line.
+  Result := ConsoleRoute('powershell.exe',
+    '-NoProfile -Command "' + ModernMenuRegisterScript('') + '"', 'modern-menu');
 end;
 
 // Sweep the Run-key autostart value across EVERY loaded user hive, not just whichever account

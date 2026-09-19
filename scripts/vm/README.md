@@ -81,6 +81,42 @@ automated run removes the temptation to make that argument.
 (`new-win10-vm.ps1` is the older interactive variant - creates the VM + boots the ISO for a
 hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.)
 
+### The two-account lifecycle proof (`run-win10-lifecycle.ps1`, 2026-09-19)
+
+The 2026-09-19 release audit left two installer claims that only a machine with TWO accounts
+and a reboot can prove (F11 and F13). This script builds the same Win10 VM, adds a standard
+user `stduser` beside the admin `vmadmin`, and drives both scenarios over PowerShell Direct:
+
+```powershell
+# elevated PowerShell, after build-release.ps1 has put the installer under test in dist\:
+.\scripts\vm\run-win10-lifecycle.ps1            # -Resume reuses an applied VHDX; -Keep leaves the VM up
+```
+
+- **F11**: `stduser` owns the console (auto-logon), the install and the uninstall run
+  ELEVATED as `vmadmin` from a PowerShell Direct session. The per-user shell state (the folder
+  verb under `Software\Classes\Directory\shell`) must land in `stduser`'s hive and not in
+  `vmadmin`'s, and the uninstall must clear `stduser`'s.
+- **F13**: the previous release is installed, its DLL held open, and the version under test
+  installed over it (a deferred, locked-DLL swap). The SYSTEM `ONSTART` task
+  `SageThumbs2K-Reregister` must exist, the guest reboots with the STANDARD user signing in,
+  the DLL on disk must be the new version, and a clean reinstall must remove the task.
+
+Verdicts and every measured value go to `D:\isos\win10-lifecycle-results\lifecycle-results.json`.
+
+Three things this proof caught the first times it ran, all fixed in `installer.iss` that day:
+`schtasks /Create /RU <other user> /NP` PROMPTS for a password (a hang inside a hidden
+Exec), so the per-user broker is a `Register-ScheduledTask` with an Interactive logon type
+now; Inno's own `runasoriginaluser` reaches the console user only when that user
+personally started Setup, so every per-user `[Run]` step checks for a console user other
+than the elevated account first and routes through the same broker; and the "still running
+the old version" notice was a plain `MsgBox`, which `/SUPPRESSMSGBOXES` does not cover - a
+silent install with a locked DLL sat on it for twelve minutes (it is `SuppressibleMsgBox`
+now). Windows 10 HOME has no `query.exe`, so the console user is read from
+`Win32_ComputerSystem.UserName`; and the F13 upgrade passes `/NOCLOSEAPPLICATIONS`, because
+a silent Setup otherwise closes the holder through the Restart Manager and the installer's
+own swap-aside renames a merely LOADED DLL out of the way, so the stale path only fires
+for a handle held without delete sharing that nothing closed.
+
 ### Three traps that cost hours here - all fixed in the script, don't re-discover them
 
 1. **Never use the HOST's `bcdboot` for a Windows 10 image.** On a Win11 24H2+ host with Secure
