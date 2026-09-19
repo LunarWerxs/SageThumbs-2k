@@ -1,7 +1,6 @@
 //! File-dialog pickers + clipboard (extracted from win.rs; behavior unchanged).
 
 use core::ffi::c_void;
-use std::path::Path;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
@@ -9,38 +8,15 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
-    SHCreateItemFromParsingName, SHGetKnownFolderPath, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
-    FOS_STRICTFILETYPES, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
+    FOLDERID_Desktop, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog,
+    IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SHGetKnownFolderPath,
+    FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FOS_STRICTFILETYPES, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
 };
 
 use sagethumbs2k_core::parallel::ComGuard;
+use sagethumbs2k_core::prebuild::parsing_path;
 
 use super::wide;
-
-/// Absolute path in the grammar `SHCreateItemFromParsingName` accepts.
-///
-/// Local copy of `sagethumbs2k_core::prebuild::parsing_path` (`prebuild.rs:248`), which is
-/// `pub(crate)` to the core lib and so not reachable from this binary crate — see G86 in the
-/// paired review docs. Keep the two in step: `canonicalize` returns the extended-length
-/// form and the parsing-name grammar rejects it, so strip it back: `\\?\C:\…` -> `C:\…`, and
-/// the UNC form `\\?\UNC\server\share` -> the plain `\\server\share` (stripping only `\\?\`
-/// there would leave `UNC\…`, which resolves nowhere).
-fn parsing_path(path: &str) -> String {
-    Path::new(path)
-        .canonicalize()
-        .map(|p| {
-            let s = p.to_string_lossy().into_owned();
-            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-                format!(r"\\{rest}")
-            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-                rest.to_string()
-            } else {
-                s
-            }
-        })
-        .unwrap_or_else(|_| path.to_string())
-}
 
 pub(crate) unsafe fn desktop_dir() -> String {
     match SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) {
@@ -53,6 +29,33 @@ pub(crate) unsafe fn desktop_dir() -> String {
     }
 }
 
+/// Show `dlg` on `owner` and take the picked item's filesystem path. The tail every picker
+/// here ends with; four copies of it until 2026-09-19.
+unsafe fn shown_path(dlg: &IFileDialog, owner: HWND) -> Option<String> {
+    dlg.Show(Some(owner)).ok()?;
+    let item: IShellItem = dlg.GetResult().ok()?;
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    s
+}
+
+/// One file-type filter (`name`, `spec` such as `*.png`) and, for a save dialog, the default
+/// extension appended to a typed name.
+unsafe fn set_single_filter(dlg: &IFileDialog, name: &str, spec: &str, default_ext: Option<&str>) {
+    let spec_name = wide(name);
+    let spec_ext = wide(spec);
+    let specs = [COMDLG_FILTERSPEC {
+        pszName: PCWSTR(spec_name.as_ptr()),
+        pszSpec: PCWSTR(spec_ext.as_ptr()),
+    }];
+    let _ = dlg.SetFileTypes(&specs);
+    if let Some(ext) = default_ext {
+        let ext = wide(ext);
+        let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    }
+}
+
 /// Folder picker via IFileOpenDialog (FOS_PICKFOLDERS).
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     let _com = ComGuard::sta();
@@ -61,12 +64,7 @@ pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     let opts = dlg.GetOptions().ok()?;
     dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
         .ok()?;
-    dlg.Show(Some(owner)).ok()?;
-    let item: IShellItem = dlg.GetResult().ok()?;
-    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const c_void));
-    s
+    shown_path(&dlg, owner)
 }
 
 /// PNG "Save as" dialog via IFileSaveDialog. Unlike the classic GetSaveFileNameW — which
@@ -77,15 +75,7 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
     let _com = ComGuard::sta();
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-    let spec_name = wide("PNG image");
-    let spec_ext = wide("*.png");
-    let specs = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(spec_name.as_ptr()),
-        pszSpec: PCWSTR(spec_ext.as_ptr()),
-    }];
-    let _ = dlg.SetFileTypes(&specs);
-    let ext = wide("png");
-    let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    set_single_filter(&dlg, "PNG image", "*.png", Some("png"));
     // The dialog itself keeps the chosen name on the PNG filter: without FOS_STRICTFILETYPES a
     // typed `shot.jpg` came back as-is and the save then had to cope with a name that lied
     // about the format (2026-09-19 audit F18).
@@ -104,12 +94,7 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
             let _ = dlg.SetFolder(&item);
         }
     }
-    dlg.Show(Some(owner)).ok()?;
-    let item: IShellItem = dlg.GetResult().ok()?;
-    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const c_void));
-    s
+    shown_path(&dlg, owner)
 }
 
 /// "Save settings as" dialog (a `.json` file) via IFileSaveDialog — centres on `owner`
@@ -118,23 +103,10 @@ pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<Strin
     let _com = ComGuard::sta();
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-    let spec_name = wide("SageThumbs 2K settings");
-    let spec_ext = wide("*.json");
-    let specs = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(spec_name.as_ptr()),
-        pszSpec: PCWSTR(spec_ext.as_ptr()),
-    }];
-    let _ = dlg.SetFileTypes(&specs);
-    let ext = wide("json");
-    let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    set_single_filter(&dlg, "SageThumbs 2K settings", "*.json", Some("json"));
     let nm = wide(name);
     let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
-    dlg.Show(Some(owner)).ok()?;
-    let item: IShellItem = dlg.GetResult().ok()?;
-    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const c_void));
-    s
+    shown_path(&dlg, owner)
 }
 
 /// "Open settings" dialog (a `.json` file) via IFileOpenDialog. Returns the chosen path
@@ -146,19 +118,8 @@ pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
     if let Ok(opts) = dlg.GetOptions() {
         let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
     }
-    let spec_name = wide("SageThumbs 2K settings");
-    let spec_ext = wide("*.json");
-    let specs = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(spec_name.as_ptr()),
-        pszSpec: PCWSTR(spec_ext.as_ptr()),
-    }];
-    let _ = dlg.SetFileTypes(&specs);
-    dlg.Show(Some(owner)).ok()?;
-    let item: IShellItem = dlg.GetResult().ok()?;
-    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const c_void));
-    s
+    set_single_filter(&dlg, "SageThumbs 2K settings", "*.json", None);
+    shown_path(&dlg, owner)
 }
 
 /// Put `text` on the clipboard as Unicode text. Best-effort. Delegates the unsafe
@@ -169,31 +130,4 @@ pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
         sagethumbs2k_core::clipboard::CF_UNICODETEXT,
         &bytes,
     )
-}
-
-#[cfg(test)]
-mod parsing_path_tests {
-    use super::*;
-
-    /// `canonicalize`'s extended-length prefix must be stripped, or
-    /// `SHCreateItemFromParsingName` refuses the result.
-    #[test]
-    fn parsing_path_strips_the_extended_length_prefix() {
-        let dir = std::env::temp_dir();
-        let got = parsing_path(&dir.to_string_lossy());
-        assert!(
-            !got.starts_with(r"\\?\"),
-            "parsing_path must strip the \\\\?\\ prefix, got {got:?}"
-        );
-    }
-
-    /// A path that doesn't exist can't be canonicalized — must pass through unchanged
-    /// rather than panicking or returning empty.
-    #[test]
-    fn parsing_path_passes_through_a_missing_path() {
-        assert_eq!(
-            parsing_path(r"Z:\definitely\not\here"),
-            r"Z:\definitely\not\here"
-        );
-    }
 }

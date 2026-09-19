@@ -369,7 +369,8 @@ fn walk(
 /// `pub(crate)`: `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
 /// own `SHCreateItemFromParsingName` call, and used to carry a hand-copied duplicate of this
 /// logic (relocated from a fn into an inline block, near-verbatim) rather than importing it.
-pub(crate) fn parsing_path(path: &str) -> String {
+#[doc(hidden)]
+pub fn parsing_path(path: &str) -> String {
     Path::new(path)
         .canonicalize()
         .map(|p| {
