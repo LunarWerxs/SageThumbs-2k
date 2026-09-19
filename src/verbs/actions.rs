@@ -506,20 +506,33 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
 fn handle_convert(paths: &[String], target: Target) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
-    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| convert_one(exe_ref, p, target))
+    per_file_action(
+        paths,
+        &format!("Convert to {}", target.ext),
+        "conversion failed for some files",
+        |p| convert_one(exe_ref, p, target),
+    )
+}
+
+/// The per-file batch verbs share one shape: run `one` over the selection on the batch
+/// pool, count the files that produced an output, reveal the first, and note a partial
+/// result in the log and the report. Convert and Transform carried this by hand until
+/// 2026-09-19.
+fn per_file_action(
+    paths: &[String],
+    what: &str,
+    note: &str,
+    one: impl Fn(&str) -> Option<PathBuf> + Sync,
+) -> ActionReport {
+    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| one(p))
         .into_iter()
         .flatten()
         .collect();
     let n = outs.len();
     let first = outs.into_iter().next();
     let mut r = if n < paths.len() {
-        crate::safety::log(&format!(
-            "Convert to {}: only {}/{} succeeded",
-            target.ext,
-            n,
-            paths.len()
-        ));
-        ActionReport::applied(paths.len(), n).with_note("conversion failed for some files")
+        crate::safety::log(&format!("{what}: only {n}/{} succeeded", paths.len()));
+        ActionReport::applied(paths.len(), n).with_note(note)
     } else {
         ActionReport::applied(paths.len(), n)
     };
@@ -533,20 +546,12 @@ fn handle_convert(paths: &[String], target: Target) -> ActionReport {
 fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
-    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| transform_one(exe_ref, p, t))
-        .into_iter()
-        .flatten()
-        .collect();
-    let n = outs.len();
-    let first = outs.into_iter().next();
-    let mut r = if n < paths.len() {
-        crate::safety::log(&format!("Transform: only {}/{} succeeded", n, paths.len()));
-        ActionReport::applied(paths.len(), n).with_note("rotate/flip failed for some files")
-    } else {
-        ActionReport::applied(paths.len(), n)
-    };
-    r.output = first;
-    r
+    per_file_action(
+        paths,
+        "Transform",
+        "rotate/flip failed for some files",
+        |p| transform_one(exe_ref, p, t),
+    )
 }
 
 /// `VerbAction::Clipboard` - clipboard holds one image. Use the first *image* in the
@@ -626,6 +631,36 @@ fn handle_lock_screen(paths: &[String]) -> ActionReport {
 
 /// `VerbAction::CombineToPdf`.
 fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
+    combine_action(
+        paths,
+        "pdf",
+        "Combine to PDF",
+        "couldn't build the PDF",
+        |imgs, out| {
+            crate::topdf::combine_to_pdf(
+                imgs,
+                out,
+                crate::settings::jpeg_quality(),
+                super::OnOmit::Report,
+            )
+            .map(|combined| combined.omitted.len())
+        },
+    )
+}
+
+/// The combine verbs share one shape: every image in the selection, a held output slot
+/// beside the first (what keeps a second, concurrent Combine from picking the same name and
+/// renaming over this one's finished file), and REAL counts back. `combine` answers how
+/// many images it had to leave out (undecodable), so a partial combine surfaces through the
+/// normal `surface()` message box instead of claiming full success - which is what a flat
+/// `applied(1, 1)` used to do for a 10-image combine with three unreadable pages.
+fn combine_action<E: std::fmt::Debug>(
+    paths: &[String],
+    ext: &str,
+    what: &str,
+    note: &str,
+    combine: impl FnOnce(&[String], &std::path::Path) -> std::result::Result<usize, E>,
+) -> ActionReport {
     let imgs: Vec<String> = paths
         .iter()
         .filter(|p| is_image(p.as_str()))
@@ -634,24 +669,11 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
     if imgs.is_empty() {
         return ActionReport::default();
     }
-    // Hold the slot for the whole write: it's what keeps a second, concurrent Combine
-    // from picking the same name and renaming over this one's finished file.
-    let slot = combined_path(&imgs[0], "pdf");
+    // Hold the slot for the whole write.
+    let slot = combined_path(&imgs[0], ext);
     let out = slot.path().to_path_buf();
-    match crate::topdf::combine_to_pdf(
-        &imgs,
-        &out,
-        crate::settings::jpeg_quality(),
-        super::OnOmit::Report,
-    ) {
-        // `omitted` names every one of `imgs` that was undecodable and so excluded from the
-        // PDF by `combine_to_pdf_paged`. This used to be invisible here - any `Ok(_)`
-        // reported a flat `applied(1, 1)` ("1 of 1 succeeded") no matter how many of a
-        // 10-image combine actually made it into the PDF. Report the REAL counts instead,
-        // so a partial combine surfaces via the normal `surface()` message box (which only
-        // pops for `failed() > 0`) rather than claiming full success.
-        Ok(combined) => {
-            let dropped = combined.omitted.len();
+    match combine(&imgs, &out) {
+        Ok(dropped) => {
             let attempted = imgs.len();
             let done = attempted.saturating_sub(dropped);
             let report = ActionReport {
@@ -666,63 +688,30 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
             }
         }
         Err(e) => {
-            crate::safety::log(&format!("Combine to PDF failed: {e:?}"));
-            ActionReport::applied(1, 0).with_note("couldn't build the PDF")
+            crate::safety::log(&format!("{what} failed: {e:?}"));
+            ActionReport::applied(1, 0).with_note(note)
         }
     }
 }
 
 /// `VerbAction::CombineToCbz`.
 fn handle_combine_to_cbz(paths: &[String]) -> ActionReport {
-    let imgs: Vec<String> = paths
-        .iter()
-        .filter(|p| is_image(p.as_str()))
-        .cloned()
-        .collect();
-    if imgs.is_empty() {
-        return ActionReport::default();
-    }
-    let slot = combined_path(&imgs[0], "cbz");
-    let out = slot.path().to_path_buf();
-    match combine_to_cbz(&imgs, &out, super::OnOmit::Report) {
-        // `omitted` names every one of `imgs` that couldn't be read and so was left out of
-        // the archive - mirrors `handle_combine_to_pdf`'s reporting, which this used to
-        // lack: any `Ok(())` reported a flat `applied(1, 1)` no matter how many of a
-        // multi-image combine actually made it in.
-        Ok(combined) => {
-            let dropped = combined.omitted.len();
-            let attempted = imgs.len();
-            let done = attempted.saturating_sub(dropped);
-            let report = ActionReport {
-                output: Some(out),
-                ..ActionReport::applied(attempted, done)
-            };
-            if dropped > 0 {
-                let plural = if dropped == 1 { "" } else { "s" };
-                report.with_note(format!("{dropped} image{plural} couldn't be read"))
-            } else {
-                report
-            }
-        }
-        Err(e) => {
-            crate::safety::log(&format!("Combine to CBZ failed: {e:?}"));
-            ActionReport::applied(1, 0).with_note("couldn't build the CBZ archive")
-        }
-    }
+    combine_action(
+        paths,
+        "cbz",
+        "Combine to CBZ",
+        "couldn't build the CBZ archive",
+        |imgs, out| {
+            combine_to_cbz(imgs, out, super::OnOmit::Report).map(|combined| combined.omitted.len())
+        },
+    )
 }
 
 /// `VerbAction::Ocr`.
 fn handle_ocr(paths: &[String]) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => match crate::ocr::ocr_to_clipboard(p) {
-            Ok(()) => ActionReport::applied(1, 1),
-            Err(e) => {
-                crate::safety::log(&format!("OCR failed for {p}: {e:?}"));
-                ActionReport::applied(1, 0).with_note("couldn't read text from the image")
-            }
-        },
-        None => ActionReport::default(),
-    }
+    first_image_action(paths, "OCR", "couldn't read text from the image", |p| {
+        crate::ocr::ocr_to_clipboard(p)
+    })
 }
 
 /// `VerbAction::StripMetadata` - per-image, on the batch pool. Routed per file to
@@ -936,19 +925,12 @@ fn compress_shortfall_note(target_bytes: u64, achievable_bytes: u64, failed: usi
 /// selection. Routed to `st2k folder-icon` (helper-if-present), which runs the whole
 /// verb in the disposable child; else falls back to in-process `set_folder_icon`.
 fn handle_set_folder_icon(paths: &[String]) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => {
-            let exe = st2k_exe();
-            match folder_icon_one(exe.as_deref(), p) {
-                Ok(()) => ActionReport::applied(1, 1),
-                Err(e) => {
-                    crate::safety::log(&format!("Set folder icon failed for {p}: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't set the folder icon")
-                }
-            }
-        }
-        None => ActionReport::default(),
-    }
+    first_image_action(
+        paths,
+        "Set folder icon",
+        "couldn't set the folder icon",
+        |p| folder_icon_one(st2k_exe().as_deref(), p),
+    )
 }
 
 /// `VerbAction::FilesToFolder` - operates on ALL selected files (any type), not just

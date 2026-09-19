@@ -23,6 +23,8 @@
 //! `container`; naming them from inside keeps their production visibility unchanged instead of
 //! widening it for a test.
 
+#![cfg(test)]
+
 use super::*;
 
 /// One parser entry point: a stable name and a closure that must never panic on any input.
