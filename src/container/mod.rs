@@ -20,6 +20,7 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+pub(crate) mod ai;
 mod aseprite;
 mod bgcode;
 mod solidworks;

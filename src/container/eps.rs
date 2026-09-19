@@ -66,6 +66,10 @@ pub fn extract_ascii_preview(bytes: &[u8]) -> Option<CoverOut> {
     epsi_preview(head)
         .map(CoverOut::Image)
         .or_else(|| photoshop_preview(head).map(CoverOut::Bytes))
+        // An Illustrator file saved as PostScript/EPS (the pre-PDF shape, still the shape
+        // of an "Illustrator EPS" export) carries the same private thumbnail its PDF-based
+        // successor does; see `container::ai`.
+        .or_else(|| super::ai::private_thumbnail(head).map(CoverOut::Image))
 }
 
 /// A parsed, bounds-validated `%%BeginPreview:` header.

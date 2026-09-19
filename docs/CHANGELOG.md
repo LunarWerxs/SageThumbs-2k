@@ -9,6 +9,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Adobe Illustrator files saved without "Create PDF Compatible File" get a real thumbnail.**
+  Such a file's PDF half is only a page of small print saying it was saved without PDF
+  content, and that page is what showed as a blank white tile. The thumbnail is now the
+  small picture Illustrator itself writes into every `.ai` file, the same one other viewers
+  show. Files saved with the option ticked are unchanged. Reported in #45.
+- **An Illustrator file with several artboards shows them all.** Up to four artboards are laid
+  out in one tile, the way a comic archive shows its first pages, instead of the first
+  artboard alone. Ordinary PDFs still show their first page. Requested in #44.
 - **Settings, and every other SageThumbs window, no longer looks patchy in light mode.** The
   window behind the controls was painted a slightly different grey from the controls
   themselves, so each row, each label and the sidebar showed as a faint lighter block: obvious

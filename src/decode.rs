@@ -1951,12 +1951,71 @@ fn try_pdf_tier(
         return None;
     }
     let edge = pdf_raster_edge(wic_thumbnail_cx);
+    // Adobe Illustrator is a PDF with the artwork's own rules (issues #44 and #45): every
+    // artboard is a page, and a file saved without "Create PDF Compatible File" has a
+    // placeholder page where the artwork should be. Answered before the plain page-one
+    // render, and only for a file that carries Illustrator's private data.
+    if crate::container::ai::is_illustrator(bytes) {
+        if let Some(img) = illustrator_thumbnail(bytes, edge) {
+            return Some(Ok(img));
+        }
+    }
     let png = crate::pdf::render_first_page(bytes, edge)?;
     Some(decode_image_with_raw_order(
         &png,
         raw_preview,
         wic_thumbnail_cx,
     ))
+}
+
+/// Pages of an Illustrator file laid out as a contact sheet: up to this many artboards.
+const AI_SHEET_PAGES: usize = 4;
+
+/// The thumbnail of an Illustrator file, by what the file actually holds:
+///
+/// - several pages (one per artboard): the first [`AI_SHEET_PAGES`] laid out as a contact
+///   sheet, so a three-artboard file shows three artboards (issue #44), the way a comic
+///   archive shows its pages;
+/// - one page that is the "saved without PDF content" placeholder: the raster thumbnail
+///   Illustrator wrote into its private data, which is the artwork at low resolution and what
+///   every other viewer shows for such a file (issue #45);
+/// - one page of real artwork: that page, rendered as before.
+///
+/// `None` hands the file to the ordinary page-one render (a PDF the session cannot open, a
+/// file whose private thumbnail is missing or malformed).
+fn illustrator_thumbnail(bytes: &[u8], edge: u32) -> Option<DynamicImage> {
+    let session = crate::pdf::PdfSession::open(bytes)?;
+    let pages = session.page_count();
+    if pages >= 2 {
+        if let Some(sheet) = illustrator_sheet(&session, pages.min(AI_SHEET_PAGES), edge) {
+            return Some(sheet);
+        }
+    }
+    let page = session
+        .render_to_width(0, edge)
+        .and_then(|png| image::load_from_memory(&png).ok());
+    match (page, crate::container::ai::private_thumbnail(bytes)) {
+        (Some(page), Some(thumb)) if crate::container::ai::page_is_placeholder(&page, &thumb) => {
+            Some(thumb)
+        }
+        (Some(page), _) => Some(page),
+        (None, thumb) => thumb,
+    }
+}
+
+/// Render pages `0..n` of an open session at `edge` and fold them into one square sheet.
+fn illustrator_sheet(
+    session: &crate::pdf::PdfSession,
+    n: usize,
+    edge: u32,
+) -> Option<DynamicImage> {
+    let mut prepared = Vec::with_capacity(n);
+    for i in 0..n {
+        let png = session.render_to_width(i, edge)?;
+        let img = image::load_from_memory(&png).ok()?;
+        prepared.push(crate::container::collage::prepare_for_sheet(&img, edge));
+    }
+    crate::container::collage::compose_prepared(&prepared, edge).map(DynamicImage::ImageRgba8)
 }
 
 fn decode_preview_with_raw_order(
@@ -2499,5 +2558,131 @@ mod reduced_ifd0_evidence {
             eprintln!("  {r}");
         }
         eprintln!("\n{} sample(s)\n", rows.len());
+    }
+}
+
+/// Adobe Illustrator through the PDF tier (issues #44 and #45, 2026-09-19).
+#[cfg(test)]
+mod illustrator_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("st2k_ai_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A three-page PDF from three flat colours (one page per "artboard"), optionally wearing
+    /// Illustrator's private-data header lifted from the real corpus file, so the tier treats
+    /// it as an Illustrator file without a byte of Illustrator's own PDF being needed.
+    fn three_page_pdf(dir: &std::path::Path, illustrator: bool) -> Vec<u8> {
+        let mut paths = Vec::new();
+        for (name, rgb) in [
+            ("a", [220u8, 30, 30]),
+            ("b", [30, 200, 40]),
+            ("c", [30, 60, 220]),
+        ] {
+            let p = dir.join(format!("{name}.png"));
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(120, 80, image::Rgb(rgb)))
+                .save(&p)
+                .unwrap();
+            paths.push(p.to_string_lossy().into_owned());
+        }
+        let out = dir.join("boards.pdf");
+        crate::topdf::combine_to_pdf_paged(
+            &paths,
+            &out,
+            90,
+            crate::topdf::PdfPage::Tight,
+            crate::verbs::OnOmit::Report,
+        )
+        .expect("pdf");
+        let mut bytes = std::fs::read(&out).unwrap();
+        if illustrator {
+            let real = std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("test-corpus")
+                    .join("real.ai"),
+            )
+            .unwrap();
+            let start = real
+                .windows(15)
+                .position(|w| w == b"%AI7_Thumbnail:")
+                .unwrap();
+            let end = start
+                + real[start..]
+                    .windows(9)
+                    .position(|w| w == b"%%EndData")
+                    .unwrap()
+                + 9;
+            bytes.extend_from_slice(b"\r%!PS-Adobe-3.0\r");
+            bytes.extend_from_slice(&real[start..end]);
+            bytes.extend_from_slice(b"\r");
+        }
+        bytes
+    }
+
+    fn dominant(img: &DynamicImage, x: u32, y: u32) -> char {
+        let p = img.to_rgba8().get_pixel(x, y).0;
+        if p[3] < 128 {
+            return 't';
+        }
+        if p[0] > p[1] && p[0] > p[2] {
+            'r'
+        } else if p[1] > p[0] && p[1] > p[2] {
+            'g'
+        } else {
+            'b'
+        }
+    }
+
+    /// Issue #44: a file with several artboards shows them all - the first pages laid out as a
+    /// contact sheet, one large cell and two stacked, rather than page one alone.
+    #[test]
+    fn an_illustrator_file_with_three_artboards_shows_all_three() {
+        let dir = scratch("sheet");
+        let bytes = three_page_pdf(&dir, true);
+        assert!(crate::container::ai::is_illustrator(&bytes));
+        let img = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
+            .expect("pdf tier")
+            .expect("decoded");
+        let e = img.width();
+        assert_eq!(img.height(), e, "a square sheet ({e}x{})", img.height());
+        assert_eq!(
+            e,
+            pdf_raster_edge(Some(256)),
+            "the sheet is the tier's raster edge"
+        );
+        // 3-up layout: one large left column (page 1, red), two stacked right cells
+        // (page 2 green above page 3 blue).
+        assert_eq!(dominant(&img, e / 4, e / 2), 'r');
+        assert_eq!(dominant(&img, e * 3 / 4, e / 4), 'g');
+        assert_eq!(dominant(&img, e * 3 / 4, e * 3 / 4), 'b');
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same three pages WITHOUT Illustrator's private data are an ordinary document: page
+    /// one, nothing else - a report's first page is its thumbnail, never a sheet of its pages.
+    #[test]
+    fn a_plain_multipage_pdf_still_shows_page_one_only() {
+        let dir = scratch("plain");
+        let bytes = three_page_pdf(&dir, false);
+        assert!(!crate::container::ai::is_illustrator(&bytes));
+        let img = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
+            .expect("pdf tier")
+            .expect("decoded");
+        assert_ne!(
+            (img.width(), img.height()),
+            (256, 256),
+            "page one keeps its own aspect"
+        );
+        let rgba = img.to_rgba8();
+        assert!(
+            rgba.pixels().all(|p| p[0] > p[1] && p[0] > p[2]),
+            "every pixel is page one's red"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
