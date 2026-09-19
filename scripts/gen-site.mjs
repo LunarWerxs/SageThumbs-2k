@@ -174,60 +174,68 @@ const CODEC_OPTIONAL_WITH_BUNDLE = new Set(['heif', 'av1']);
  *  silently rendering an empty sentence or the raw wire token - a renamed vocabulary
  *  string must fail the build, not ship a blank/garbled sentence to the live site. */
 function capabilityParts(items) {
+  return { source: sourceSentence(items), codecs: codecSentences(items) };
+}
+
+/** "Each thumbnail is ..." for a single-source group; "N formats ... ; M formats ..." for a
+ *  mixed one (audit E03 #1: never claim one blanket behaviour for a category whose formats
+ *  don't share it - say how many are which, biggest group first). */
+function sourceSentence(items) {
   const bySource = {};
   for (const x of items) (bySource[x.source] = bySource[x.source] || []).push(x);
   const sourceKeys = Object.keys(bySource);
-
-  let s;
   if (sourceKeys.length <= 1) {
     const source = items[0] && items[0].source;
-    s = SOURCE_SENTENCE[source];
+    const s = SOURCE_SENTENCE[source];
     if (s === undefined) {
       throw new Error(`gen-site: unknown capability source "${source}" - add it to SOURCE_SENTENCE (and SOURCE_COUNT_PHRASE)`);
     }
-  } else {
-    // Audit E03 #1: never claim one blanket behaviour for a category whose formats don't
-    // share it - say how many are which, biggest group first.
-    const bits = sourceKeys
-      .slice()
-      .sort((a, b) => bySource[b].length - bySource[a].length)
-      .map(src => {
-        const phrase = SOURCE_COUNT_PHRASE[src];
-        if (!phrase) throw new Error(`gen-site: unknown capability source "${src}" - add it to SOURCE_COUNT_PHRASE (and SOURCE_SENTENCE)`);
-        return `${bySource[src].length} ${phrase}`;
-      });
-    s = bits.join('; ') + '.';
+    return s;
   }
+  const bits = sourceKeys
+    .slice()
+    .sort((a, b) => bySource[b].length - bySource[a].length)
+    .map(src => {
+      const phrase = SOURCE_COUNT_PHRASE[src];
+      if (!phrase) throw new Error(`gen-site: unknown capability source "${src}" - add it to SOURCE_COUNT_PHRASE (and SOURCE_SENTENCE)`);
+      return `${bySource[src].length} ${phrase}`;
+    });
+  return bits.join('; ') + '.';
+}
 
+/** One sentence per Windows codec some of the group's formats use, as an array (one
+ *  paragraph each on the page: the Image group's three notes ran to 60 words joined, and
+ *  the site's copy budget refuses any paragraph over 40). Empty when none. */
+function codecSentences(items) {
   const byCodec = {};
   for (const x of items) {
     if (x.os_codec) (byCodec[x.os_codec] = byCodec[x.os_codec] || []).push(x.ext);
   }
-  const parts = [];
-  for (const [codec, exts] of Object.entries(byCodec)) {
-    const name = CODEC_NAMES[codec];
-    if (!name) throw new Error(`gen-site: unknown os_codec "${codec}" - add it to CODEC_NAMES`);
-    // The HEIF and AV1 image routes are the FAST route, not the only one: a Full install
-    // decodes those through the bundled ImageMagick when Windows has no codec (2026-09-19
-    // audit F23, measured on real files). Video and JPEG XR genuinely need theirs.
-    const optional = CODEC_OPTIONAL_WITH_BUNDLE.has(codec);
-    const tail = optional
-      ? `${name} when Windows has it; a Full install decodes ${exts.length === 1 ? 'it' : 'them'} through the bundled decoder otherwise.`
-      : `${name}.`;
-    if (exts.length === items.length) {
-      parts.push(optional ? `Every format here uses ${tail}` : `Every format here needs ${tail}`);
-    } else {
-      const verb = optional ? 'use' : 'need';
-      parts.push(`.${exts.slice().sort().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`);
-    }
+  return Object.entries(byCodec).map(([codec, exts]) => codecSentence(codec, exts, items.length));
+}
+
+/** The sentence for one codec: "Every format here needs/uses ..." when the whole group
+ *  shares it, otherwise ".a, .b additionally need(s)/use(s) ...". */
+function codecSentence(codec, exts, groupSize) {
+  const name = CODEC_NAMES[codec];
+  if (!name) throw new Error(`gen-site: unknown os_codec "${codec}" - add it to CODEC_NAMES`);
+  // The HEIF and AV1 image routes are the FAST route, not the only one: a Full install
+  // decodes those through the bundled ImageMagick when Windows has no codec (2026-09-19
+  // audit F23, measured on real files). Video and JPEG XR genuinely need theirs.
+  const optional = CODEC_OPTIONAL_WITH_BUNDLE.has(codec);
+  const tail = optional
+    ? `${name} when Windows has it; a Full install decodes ${exts.length === 1 ? 'it' : 'them'} through the bundled decoder otherwise.`
+    : `${name}.`;
+  if (exts.length === groupSize) {
+    return optional ? `Every format here uses ${tail}` : `Every format here needs ${tail}`;
   }
-  return { source: s, codecs: parts.join(' ') };
+  const verb = optional ? 'use' : 'need';
+  return `.${exts.slice().sort().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`;
 }
 
 /** One sentence group, for the self-tests and anything else that wants it as text. */
 function capabilitySentence(items) {
-  const { source, codecs } = capabilityParts(items);
-  return [source, codecs].filter(Boolean).join(' ');
+  return capabilityParagraphs(items).join(' ');
 }
 
 /** What the page renders: how the thumbnails are made, and (separately) which Windows codecs
@@ -235,7 +243,7 @@ function capabilitySentence(items) {
  *  to 53 words on 2026-09-17 and the site's copy budget (every paragraph <= 40) went red. */
 function capabilityParagraphs(items) {
   const { source, codecs } = capabilityParts(items);
-  return [source, codecs].filter(Boolean);
+  return [source, ...codecs].filter(Boolean);
 }
 
 /** Builds the bar + fmtwall block from `formats` (the parsed `st2k formats --json` array).
@@ -482,24 +490,27 @@ function runSelfTest() {
     const sentence = capabilitySentence(items);
     assert.match(sentence, /^Each thumbnail is a full decode of the image itself\./);
     assert.match(sentence, /\.jxr additionally needs the OS's WIC JPEG XR codec\./);
-    assert.match(sentence, /\.heic additionally needs the OS's WIC HEIF codec\./);
+    // Audit F23: HEIF is the fast route, not a hard dependency - a Full install decodes it
+    // through the bundled ImageMagick when Windows has no codec.
+    assert.match(sentence, /\.heic additionally uses the OS's WIC HEIF codec when Windows has it; a Full install decodes it through the bundled decoder otherwise\./);
   });
 
   check('caption paragraphs each fit the site copy budget (40 words), Image-shaped group', () => {
     // The live Image group on 2026-09-18: 155 full decodes, 58 carried previews, and three
-    // PARTIAL codec notes. As one paragraph that is 53 words; the site's copy-budget check
-    // refuses anything over 40, so the generator emits the two halves as two paragraphs.
+    // PARTIAL codec notes. As one paragraph that is 53 words (73 since the F23 wording that
+    // names the bundled fallback); the site's copy-budget check refuses anything over 40,
+    // so the generator emits the tier sentence and EACH codec note as its own paragraph.
     const items = [];
     for (let i = 0; i < 155; i++) items.push({ ext: `f${i}`, source: 'full_decode', os_codec: null });
     for (let i = 0; i < 58; i++) items.push({ ext: `p${i}`, source: 'embedded_preview', os_codec: null });
     for (const ext of ['avci', 'heic', 'heics', 'heif', 'heifs', 'hif']) items.push({ ext, source: 'full_decode', os_codec: 'heif' });
     items.push({ ext: 'avif', source: 'full_decode', os_codec: 'av1' });
     for (const ext of ['hdp', 'jxr', 'wdp', 'wmp']) items.push({ ext, source: 'full_decode', os_codec: 'wmphoto' });
-    const cap = capabilityParts(items);
+    const paras = capabilityParagraphs(items);
     const words = (t) => t.trim().split(/\s+/).length;
-    assert.ok(words(cap.source) <= 40, `tier sentence is ${words(cap.source)} words: ${cap.source}`);
-    assert.ok(words(cap.codecs) <= 40, `codec notes are ${words(cap.codecs)} words: ${cap.codecs}`);
-    assert.ok(words(`${cap.source} ${cap.codecs}`) > 40, 'the split is load-bearing: as one paragraph this exceeds the budget');
+    assert.strictEqual(paras.length, 4, `one tier sentence plus three codec notes, got ${paras.length}`);
+    for (const p of paras) assert.ok(words(p) <= 40, `a caption paragraph is ${words(p)} words: ${p}`);
+    assert.ok(words(paras.join(' ')) > 40, 'the split is load-bearing: as one paragraph this exceeds the budget');
   });
 
   check('mixed-source group states counts, not a blanket claim', () => {
@@ -539,7 +550,7 @@ function runSelfTest() {
 
   check('av1 os_codec renders its AV1 Video Extension sentence', () => {
     const sentence = capabilitySentence([{ ext: 'avif', source: 'full_decode', os_codec: 'av1' }]);
-    assert.match(sentence, /Every format here needs the AV1 Video Extension\./);
+    assert.match(sentence, /Every format here uses the AV1 Video Extension when Windows has it; a Full install decodes it through the bundled decoder otherwise\./);
   });
 
   check('unknown category fails', () => {
