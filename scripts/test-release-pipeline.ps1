@@ -706,6 +706,47 @@ Some more filler so the section clears the minimum length check that runs before
         }
     }
 
+    # 2026-09-19 audit concern 1: the run the release waits on is OUR dispatch, picked by
+    # commit (and tag), never "the first run that appeared after we dispatched".
+    $ours = 'a' * 40
+    $theirs = 'b' * 40
+    $dispatchedAt = '2026-09-19T06:00:00.0000000Z'
+    $runs = @(
+        [pscustomobject]@{ databaseId = 101; headSha = $theirs; createdAt = '2026-09-19T06:00:05Z'; displayTitle = 'ARM64 portable verify v9.9.8' },
+        [pscustomobject]@{ databaseId = 102; headSha = $ours;   createdAt = '2026-09-19T05:59:00Z'; displayTitle = 'ARM64 portable verify v9.9.9' },
+        [pscustomobject]@{ databaseId = 103; headSha = $ours;   createdAt = '2026-09-19T06:00:09Z'; displayTitle = 'ARM64 portable verify v9.9.9' },
+        [pscustomobject]@{ databaseId = 104; headSha = $ours;   createdAt = '2026-09-19T06:00:30Z'; displayTitle = 'ARM64 portable verify v9.9.9' }
+    )
+    Assert-Passes 'dispatched run is picked by commit, not by being the first run after the dispatch' {
+        $id = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt
+        if ($id -ne '103') { throw "expected run 103 (ours, earliest after the dispatch), got '$id'" }
+    }
+    Assert-Passes 'a concurrent dispatch on another commit is never picked' {
+        $id = Select-ReleaseDispatchedRun -Runs @($runs[0]) -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked run $id on somebody else's commit" }
+    }
+    Assert-Passes 'a run on our commit from before the dispatch is not ours' {
+        $id = Select-ReleaseDispatchedRun -Runs @($runs[1]) -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked run $id created before the dispatch" }
+    }
+    Assert-Passes 'the tag in the run title is required when asked for' {
+        $id = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt -TitleContains 'v9.9.9'
+        if ($id -ne '103') { throw "expected 103, got '$id'" }
+        $none = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt -TitleContains 'v1.0.0'
+        if ($null -ne $none) { throw "picked run $none whose title does not carry the tag" }
+    }
+    Assert-Passes 'an empty run list yields nothing rather than an error' {
+        $id = Select-ReleaseDispatchedRun -Runs @() -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked '$id' from nothing" }
+    }
+    Assert-Passes 'release.ps1 waits on runs found by identity and the ARM64 workflow titles its run with the tag' {
+        $release = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release.ps1') -Raw
+        if ($release -match 'createdAt >= ') { throw 'release.ps1 still picks a dispatched run by timestamp' }
+        if (([regex]::Matches($release, 'Find-ReleaseDispatchedRun ')).Count -lt 2) { throw 'both dispatch sites must use Find-ReleaseDispatchedRun' }
+        $wf = Get-Content -LiteralPath (Join-Path $root '.github/workflows/arm64-portable-verify.yml') -Raw
+        if ($wf -notmatch "run-name:.*inputs\.tag") { throw 'arm64-portable-verify.yml must title a dispatched run with its tag input' }
+    }
+
     Write-Host "[release-pipeline-test] ALL GREEN ($script:passed cases)" -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $scratch) {

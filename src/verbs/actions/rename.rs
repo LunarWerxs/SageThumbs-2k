@@ -174,12 +174,36 @@ pub fn expand_pattern(
     ctx: &PatternCtx<'_>,
 ) -> std::result::Result<String, PatternError> {
     let mut out = String::with_capacity(pattern.len());
+    for tok in tokenize(pattern)? {
+        match tok {
+            Tok::Lit(c) => out.push(c),
+            Tok::Placeholder(body) => out.push_str(&expand_placeholder(&body, ctx)?),
+        }
+    }
+    if !ctx.find.is_empty() {
+        out = out.replace(ctx.find, ctx.replace);
+    }
+    Ok(out)
+}
+
+/// One piece of a pattern: a literal character, or the body of a `{...}` placeholder.
+enum Tok {
+    Lit(char),
+    Placeholder(String),
+}
+
+/// Split `pattern` into literals and placeholder bodies, honouring `{{`/`}}` as literal
+/// braces. The one tokenizer both [`expand_pattern`] and [`pattern_reads`] use, so what
+/// counts as a placeholder can never differ between "what does this pattern need" and
+/// "what does this pattern produce".
+fn tokenize(pattern: &str) -> std::result::Result<Vec<Tok>, PatternError> {
+    let mut toks = Vec::with_capacity(pattern.len());
     let mut chars = pattern.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '{' if chars.peek() == Some(&'{') => {
                 chars.next();
-                out.push('{');
+                toks.push(Tok::Lit('{'));
             }
             '{' => {
                 let mut body = String::new();
@@ -194,20 +218,43 @@ pub fn expand_pattern(
                 if !closed {
                     return Err(PatternError::UnclosedBrace);
                 }
-                out.push_str(&expand_placeholder(&body, ctx)?);
+                toks.push(Tok::Placeholder(body));
             }
             '}' if chars.peek() == Some(&'}') => {
                 chars.next();
-                out.push('}');
+                toks.push(Tok::Lit('}'));
             }
             '}' => return Err(PatternError::StrayCloseBrace),
-            c => out.push(c),
+            c => toks.push(Tok::Lit(c)),
         }
     }
-    if !ctx.find.is_empty() {
-        out = out.replace(ctx.find, ctx.replace);
+    Ok(toks)
+}
+
+/// Which of the placeholders that READ THE FILE `pattern` actually uses. `{date}` costs a
+/// tag/EXIF parse plus a metadata call; `{w}`/`{h}` cost an image header read and, for a
+/// container, the bounded full-fidelity decode. Until 2026-09-19 `pattern_stem` computed
+/// all three for every file whatever the pattern said, so the dialog's live preview decoded
+/// every selected file on every keystroke of a name-only pattern (audit concern 2). A
+/// pattern that does not parse reads nothing: expansion fails on the same error anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PatternReads {
+    pub date: bool,
+    pub dims: bool,
+}
+
+pub fn pattern_reads(pattern: &str) -> PatternReads {
+    let mut reads = PatternReads::default();
+    if let Ok(toks) = tokenize(pattern) {
+        for tok in toks {
+            match tok {
+                Tok::Placeholder(b) if b == "date" => reads.date = true,
+                Tok::Placeholder(b) if b == "w" || b == "h" => reads.dims = true,
+                _ => {}
+            }
+        }
     }
-    Ok(out)
+    reads
 }
 
 /// One `{...}` placeholder body (already stripped of its braces) → its substitution.
@@ -307,8 +354,14 @@ pub fn pattern_stem(
     let src = Path::new(path);
     let name = src.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let ext = src.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let date = pattern_date(path);
-    let (w, h) = pattern_dims(path).map_or((None, None), |(w, h)| (Some(w), Some(h)));
+    // Only the fields the pattern names are read off the file (see `pattern_reads`).
+    let reads = pattern_reads(pattern);
+    let date = if reads.date { pattern_date(path) } else { None };
+    let (w, h) = if reads.dims {
+        pattern_dims(path).map_or((None, None), |(w, h)| (Some(w), Some(h)))
+    } else {
+        (None, None)
+    };
     let ctx = PatternCtx {
         name,
         ext,
@@ -433,6 +486,82 @@ mod pattern_tests {
     fn expands_name_and_ext() {
         let c = ctx("vacation", "jpg", 1);
         assert_eq!(expand_pattern("{name}.{ext}", &c).unwrap(), "vacation.jpg");
+    }
+
+    /// Audit concern 2 (2026-09-19): a name-only pattern must not cost a decode per file.
+    /// `pattern_reads` is what `pattern_stem` consults before touching the file.
+    #[test]
+    fn pattern_reads_names_only_the_fields_the_pattern_uses() {
+        let none = PatternReads::default();
+        assert_eq!(pattern_reads("{name}-{n:3}.{ext}"), none);
+        assert_eq!(pattern_reads(""), none);
+        // Literal braces are not placeholders.
+        assert_eq!(pattern_reads("{{date}} {{w}}x{{h}}"), none);
+        assert_eq!(
+            pattern_reads("{date}_{name}"),
+            PatternReads {
+                date: true,
+                dims: false
+            }
+        );
+        assert_eq!(
+            pattern_reads("{name} {w}"),
+            PatternReads {
+                date: false,
+                dims: true
+            }
+        );
+        assert_eq!(
+            pattern_reads("{h}"),
+            PatternReads {
+                date: false,
+                dims: true
+            }
+        );
+        assert_eq!(
+            pattern_reads("{date} {w}x{h}"),
+            PatternReads {
+                date: true,
+                dims: true
+            }
+        );
+        // A pattern that does not parse reads nothing - expansion fails the same way.
+        assert_eq!(pattern_reads("{date"), none);
+        assert_eq!(pattern_reads("{w}}"), none);
+    }
+
+    /// A name-only pattern on a file that cannot be opened for reading still previews: the
+    /// stem never needed the bytes. (A share-mode-0 handle makes any open fail with a
+    /// sharing violation, which is what a decode would hit.)
+    #[test]
+    fn name_only_pattern_does_not_open_the_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("st2k_rn_noopen_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("locked.png");
+        std::fs::write(&p, b"\x89PNG not really").unwrap();
+        let _hold = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&p)
+            .expect("exclusive handle");
+        assert!(
+            std::fs::File::open(&p).is_err(),
+            "the fixture must be unopenable"
+        );
+        let s = p.to_string_lossy().into_owned();
+        assert_eq!(
+            pattern_stem(&s, 3, "{name}-{n:2}", "", "").unwrap(),
+            "locked-03"
+        );
+        // And the dims placeholder degrades to empty rather than erroring, as before.
+        assert_eq!(
+            pattern_stem(&s, 3, "{name}[{w}]", "", "").unwrap(),
+            "locked[]"
+        );
+        drop(_hold);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

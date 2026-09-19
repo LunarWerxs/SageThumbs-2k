@@ -9,7 +9,7 @@
 
 use core::ffi::c_void;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
@@ -43,6 +43,8 @@ const DLG_H: i32 = 404;
 
 /// Posted by the worker thread when the rename pass finishes.
 const WM_RN_DONE: u32 = 0x8000 + 42; // WM_APP + 42
+/// Posted by a preview worker when its rows are ready (`RN_PREVIEW` holds them).
+const WM_RN_PREVIEW: u32 = 0x8000 + 43; // WM_APP + 43
 
 /// The HKCU value that persists the last pattern the user typed, restored the next
 /// time the dialog opens. Find/replace are deliberately NOT persisted (they're
@@ -60,6 +62,22 @@ static RN_RUNNING: AtomicBool = AtomicBool::new(false);
 /// three fields rather than storing the type itself — the type isn't re-exported past
 /// the lib's own `verbs` facade, only the function that returns it is.
 static RN_RESULT: Mutex<Option<(usize, usize, Option<String>)>> = Mutex::new(None);
+
+/// The live preview is computed on a worker thread, one per keystroke, and only the newest
+/// one's answer is shown: every `rebuild_preview` bumps this generation, a worker that
+/// finishes behind a newer one drops its rows, and a worker that notices it has been
+/// superseded stops walking early. Until 2026-09-19 the walk ran on the UI thread, every
+/// selected file on every keystroke (audit concern 2); a `{w}` pattern over a folder of
+/// PSDs froze the dialog for the length of the decodes.
+static RN_PREVIEW_GEN: AtomicU32 = AtomicU32::new(0);
+/// A finished preview: its generation, the rows to show, and the first pattern error.
+struct PreviewResult {
+    gen: u32,
+    rows: Vec<String>,
+    error: Option<String>,
+}
+/// The newest finished preview. Read once by `on_rn_preview`.
+static RN_PREVIEW: Mutex<Option<PreviewResult>> = Mutex::new(None);
 
 pub(crate) unsafe fn run_rename_with_pattern_dialog(_hinst: HINSTANCE, listfile: &str) {
     let files = read_listfile(listfile);
@@ -106,6 +124,7 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             WM_CREATE => on_create(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
             WM_RN_DONE => on_rn_done(hwnd),
+            WM_RN_PREVIEW => on_rn_preview(hwnd),
             WM_DPICHANGED => {
                 wm_dpichanged(hwnd, lparam);
                 LRESULT(0)
@@ -342,11 +361,47 @@ unsafe fn rebuild_preview(hwnd: HWND) {
     let find = get_edit_text(hwnd, CID_RN_FIND);
     let replace = get_edit_text(hwnd, CID_RN_REPLACE);
 
+    // Nothing can be applied until the newest preview has checked every file.
+    if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
+        let _ = EnableWindow(btn, false);
+    }
+    let gen = RN_PREVIEW_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    let raw = hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let superseded = || RN_PREVIEW_GEN.load(Ordering::Acquire) != gen;
+        let Some((rows, error)) = compute_preview(files, &pattern, &find, &replace, superseded)
+        else {
+            return; // a newer keystroke owns the preview now
+        };
+        *RN_PREVIEW.lock().unwrap() = Some(PreviewResult { gen, rows, error });
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut c_void)),
+            WM_RN_PREVIEW,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+}
+
+/// The preview's rows ("old → new", first [`PREVIEW_ROWS`]) and the first pattern error, for
+/// `files` under `pattern`/`find`/`replace`. Checks EVERY file, not just the shown rows.
+/// `superseded` is polled between files; `None` when it says a newer preview has taken
+/// over, so a long walk is abandoned rather than finished for nobody.
+fn compute_preview(
+    files: &[String],
+    pattern: &str,
+    find: &str,
+    replace: &str,
+    superseded: impl Fn() -> bool,
+) -> Option<(Vec<String>, Option<String>)> {
     let mut rows: Vec<String> = Vec::new();
     let mut error: Option<String> = None;
     for (i, p) in files.iter().enumerate() {
+        if superseded() {
+            return None;
+        }
         let preview =
-            sagethumbs2k_core::rename_pattern_preview(p, (i + 1) as u32, &pattern, &find, &replace);
+            sagethumbs2k_core::rename_pattern_preview(p, (i + 1) as u32, pattern, find, replace);
         match preview {
             Ok(new_name) => {
                 if rows.len() < PREVIEW_ROWS {
@@ -362,6 +417,21 @@ unsafe fn rebuild_preview(hwnd: HWND) {
                 break;
             }
         }
+    }
+    Some((rows, error))
+}
+
+/// `WM_RN_PREVIEW`: show the newest finished preview, ignoring one a later keystroke has
+/// already outdated.
+unsafe fn on_rn_preview(hwnd: HWND) -> LRESULT {
+    let Some(files) = RN_FILES.get() else {
+        return LRESULT(0);
+    };
+    let Some(PreviewResult { gen, rows, error }) = RN_PREVIEW.lock().unwrap().take() else {
+        return LRESULT(0);
+    };
+    if gen != RN_PREVIEW_GEN.load(Ordering::Acquire) {
+        return LRESULT(0);
     }
     let valid = error.is_none();
 
@@ -386,8 +456,9 @@ unsafe fn rebuild_preview(hwnd: HWND) {
         }
     }
     if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
-        let _ = EnableWindow(btn, valid);
+        let _ = EnableWindow(btn, valid && !RN_RUNNING.load(Ordering::Relaxed));
     }
+    LRESULT(0)
 }
 
 /// `IDOK`: persist the pattern, then run the real rename on a worker thread (same
@@ -473,5 +544,62 @@ unsafe fn request_close(hwnd: HWND) {
         }
     } else {
         let _ = DestroyWindow(hwnd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worker's half of the live preview (audit concern 2, 2026-09-19): rows for the
+    /// first `PREVIEW_ROWS` files, the pattern checked against EVERY file, and a walk that
+    /// stops the moment a newer keystroke has taken over.
+    #[test]
+    fn compute_preview_checks_every_file_and_caps_the_rows() {
+        let files: Vec<String> = (1..=PREVIEW_ROWS + 5)
+            .map(|i| format!("C:\\nowhere\\pic{i}.png"))
+            .collect();
+        let (rows, error) = compute_preview(&files, "{name}-{n:2}", "", "", || false).unwrap();
+        assert!(error.is_none());
+        assert_eq!(
+            rows.len(),
+            PREVIEW_ROWS,
+            "the list shows at most PREVIEW_ROWS rows"
+        );
+        assert!(
+            rows[0].starts_with("pic1.png") && rows[0].ends_with("pic1-01.png"),
+            "{}",
+            rows[0]
+        );
+        // A find/replace acts on the expanded name.
+        let (rows, _) = compute_preview(&files[..1], "{name}", "pic", "photo", || false).unwrap();
+        assert!(rows[0].ends_with("photo1.png"), "{}", rows[0]);
+    }
+
+    #[test]
+    fn compute_preview_reports_a_pattern_error_and_disables_nothing_else() {
+        let files = vec!["C:\\nowhere\\a.png".to_string()];
+        let (rows, error) = compute_preview(&files, "{nope}", "", "", || false).unwrap();
+        assert!(rows.is_empty());
+        assert!(
+            error.is_some(),
+            "an unknown placeholder is the error the dialog shows"
+        );
+    }
+
+    #[test]
+    fn compute_preview_abandons_a_superseded_walk() {
+        let files: Vec<String> = (1..=10).map(|i| format!("C:\\nowhere\\{i}.png")).collect();
+        let seen = std::cell::Cell::new(0u32);
+        let superseded = || {
+            seen.set(seen.get() + 1);
+            seen.get() > 3
+        };
+        assert!(compute_preview(&files, "{name}", "", "", superseded).is_none());
+        assert!(
+            seen.get() <= 4,
+            "stopped polling once superseded: {}",
+            seen.get()
+        );
     }
 }

@@ -285,36 +285,69 @@ fn read_local() -> Map<String, Value> {
 
 /// Apply a remote `settings` object to local storage — but ONLY allowlisted keys with the
 /// expected type. Unknown keys are ignored (forward-compat + a hostile/expanded doc can't
-/// write arbitrary registry values). Returns how many values were applied.
+/// write arbitrary registry values). Returns how many values were applied, or an error
+/// naming every accepted value the LOCAL store refused to take.
 ///
 /// Same portable-redirect reasoning as [`read_local`]: writing straight to `CURRENT_USER`
 /// meant a pulled setting never reached a portable install's actual backing store (the
 /// ini), so `pull_on_open` silently applied zero values there every time.
-fn apply_remote(settings_obj: &Value) -> u32 {
+///
+/// Until 2026-09-19 this only COUNTED the writes that succeeded, and `sync_once` wrapped
+/// the count in `Ok`, so a read-only ini or a registry key the user cannot write reported a
+/// clean sync while nothing had changed locally (audit concern 8). A value the remote
+/// document holds in the wrong shape is still simply rejected - that is the hostile-doc
+/// rule, not a local failure - but a value we accepted and could not write is an error.
+fn apply_remote(settings_obj: &Value) -> Result<u32, String> {
+    apply_remote_with(
+        settings_obj,
+        |name, n| settings::set_dword(name, n).map_err(|e| e.to_string()),
+        |name, s| settings::set_string(name, s).map_err(|e| e.to_string()),
+    )
+}
+
+/// [`apply_remote`] with the two local setters injected, so a test can make the local
+/// store fail without a read-only registry or a second process for the portable ini
+/// (the ini path is resolved once per process).
+fn apply_remote_with(
+    settings_obj: &Value,
+    set_dword: impl Fn(&str, u32) -> Result<(), String>,
+    set_string: impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<u32, String> {
     let Some(obj) = settings_obj.as_object() else {
-        return 0;
+        return Ok(0);
     };
     let mut applied = 0;
+    let mut failed: Vec<String> = Vec::new();
     for (name, kind) in ALLOW {
         let Some(val) = obj.get(*name) else { continue };
-        let ok = match kind {
+        let write = match kind {
             // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
             // or corrupted doc) must be REJECTED, not silently truncated and then counted as
             // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
             // success, writing a value the remote document never actually held.
-            Kind::Dword => val
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .is_some_and(|n| settings::set_dword(name, n).is_ok()),
-            Kind::Str => val
-                .as_str()
-                .is_some_and(|s| settings::set_string(name, s).is_ok()),
+            Kind::Dword => match val.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                Some(n) => set_dword(name, n),
+                None => continue,
+            },
+            Kind::Str => match val.as_str() {
+                Some(s) => set_string(name, s),
+                None => continue,
+            },
         };
-        if ok {
-            applied += 1;
+        match write {
+            Ok(()) => applied += 1,
+            Err(e) => failed.push(format!("{name} ({e})")),
         }
     }
-    applied
+    if failed.is_empty() {
+        Ok(applied)
+    } else {
+        Err(format!(
+            "{} pulled setting(s) could not be written to this PC's settings store ({applied} were): {}",
+            failed.len(),
+            failed.join(", ")
+        ))
+    }
 }
 
 // ---- store transport -----------------------------------------------------
@@ -906,7 +939,8 @@ fn record_initial_sync_outcome(outcome: &ConnectOutcome) {
 fn sync_once(token: &str) -> Result<bool, String> {
     let (version, settings) = store_get(token)?;
     if version > 0 {
-        Ok(apply_remote(&settings) > 0)
+        // A local write that fails is a failed sync, not a quiet zero (audit concern 8).
+        Ok(apply_remote(&settings)? > 0)
     } else {
         push_snapshot(token)?;
         Ok(false)
@@ -1127,8 +1161,56 @@ mod tests {
             "SomeRandomKey": 1,                 // off-list → ignored
             "JPEG": "not-a-number"              // on-list but wrong type → not applied
         });
-        // Only off-list / wrong-typed entries → nothing applies.
-        assert_eq!(apply_remote(&doc), 0);
+        // Only off-list / wrong-typed entries → nothing applies, and a rejected value is
+        // not a failed write: the result is a clean zero, never an error.
+        assert_eq!(apply_remote(&doc), Ok(0));
+    }
+
+    /// Audit concern 8 (2026-09-19): a value we ACCEPTED from the remote document and then
+    /// could not write locally (a read-only ini, a registry key the account cannot write)
+    /// is a sync error that names the key - `sync_once` used to wrap the count of
+    /// successful writes in `Ok`, so a store that took nothing reported a clean sync.
+    #[test]
+    fn apply_remote_reports_a_failed_local_write_as_an_error() {
+        let doc = serde_json::json!({ "JPEG": 85, "ShotSaveDir": "ignored (off-list)" });
+        let refused = |_: &str, _: u32| Err("access is denied".to_string());
+        let never =
+            |_: &str, _: &str| -> Result<(), String> { panic!("no string value is on the doc") };
+        let err = apply_remote_with(&doc, refused, never).unwrap_err();
+        assert!(err.contains("JPEG"), "names the key: {err}");
+        assert!(
+            err.contains("access is denied"),
+            "carries the store's reason: {err}"
+        );
+        assert!(err.contains("0 were"), "says how many did land: {err}");
+
+        // The same document against a store that accepts is a plain count.
+        let ok = |_: &str, _: u32| Ok(());
+        assert_eq!(apply_remote_with(&doc, ok, never), Ok(1));
+    }
+
+    /// A partial failure still names only the keys that failed and counts the rest, and it
+    /// keeps going past the first refusal rather than stopping - the store failing for one
+    /// key says nothing about the next.
+    #[test]
+    fn apply_remote_keeps_applying_after_one_refused_write_and_names_each_failure() {
+        // Two on-list DWORD keys with distinct values; refuse exactly one of them.
+        let (a, b) = {
+            let mut dwords = ALLOW.iter().filter(|(_, k)| matches!(k, Kind::Dword));
+            (dwords.next().unwrap().0, dwords.next().unwrap().0)
+        };
+        let doc = serde_json::json!({ a: 1, b: 2 });
+        let refuse_b = move |name: &str, _: u32| {
+            if name == b {
+                Err("read-only".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let never = |_: &str, _: &str| -> Result<(), String> { unreachable!() };
+        let err = apply_remote_with(&doc, refuse_b, never).unwrap_err();
+        assert!(err.contains(b) && !err.contains(&format!("{a} (")), "{err}");
+        assert!(err.contains("1 were"), "{err}");
     }
 
     #[test]
@@ -1137,7 +1219,7 @@ mod tests {
         // The old `as u32` cast wrapped it to 0 and still counted it as applied; `try_from`
         // must reject it instead, so nothing is written and the count stays 0.
         let doc = serde_json::json!({ "JPEG": 4294967296u64 });
-        assert_eq!(apply_remote(&doc), 0);
+        assert_eq!(apply_remote(&doc), Ok(0));
     }
 
     #[test]

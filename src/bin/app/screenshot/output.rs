@@ -64,21 +64,48 @@ pub(super) fn save_png_to_dir(dir: &std::path::Path, top_down_bgra: &[u8], w: i3
         return false;
     };
     let _ = std::fs::create_dir_all(dir);
+    // Encode first: a reserved name is only worth keeping once there are bytes for it.
+    let mut png = Vec::new();
+    if img
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .is_err()
+    {
+        return false;
+    }
     let name = unsafe { timestamped_name() };
-    img.save(unique_name_in(dir, &name)).is_ok()
+    write_reserved(dir, &name, &png).is_some()
 }
 
-/// Pick a filename in `dir` that doesn't already exist, appending " (2)", " (3)", … before the
-/// extension when `name` collides. `timestamped_name` only has 1-second resolution, so two
-/// captures started within the same second would otherwise silently overwrite each other —
-/// `img.save` has no "don't clobber" mode of its own. `pub(super)` so `upload.rs`'s
-/// failed-upload recovery copy routes through the same collision guard as an ordinary save
-/// instead of writing `dir.join(name)` directly.
-pub(super) fn unique_name_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
+/// Reserve a fresh name in `dir` and write `bytes` into it; the path on success. A write that
+/// fails removes the reservation again, so a failed capture never leaves an empty file where
+/// the next capture's disambiguator would count it as a taken name.
+pub(super) fn write_reserved(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    let (path, mut file) = reserve_unique_in(dir, name).ok()?;
+    if file.write_all(bytes).and_then(|()| file.flush()).is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return None;
     }
+    Some(path)
+}
+
+/// Reserve a filename in `dir` that nothing else owns, appending " (2)", " (3)", ... before the
+/// extension when `name` is taken, and return it OPEN: the entry is created with `create_new`,
+/// so the reservation and the check are one operation. `timestamped_name` only has 1-second
+/// resolution, and until 2026-09-19 this picked a free name with `exists()` and handed it back
+/// unreserved, so two captures in the same tick could both be told the same name and the
+/// second silently overwrote the first (audit concern 6). `pub(super)` so `upload.rs`'s
+/// failed-upload recovery copy routes through the same guard instead of writing
+/// `dir.join(name)` directly.
+pub(super) fn reserve_unique_in(
+    dir: &std::path::Path,
+    name: &str,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
     let stem = std::path::Path::new(name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -87,16 +114,26 @@ pub(super) fn unique_name_in(dir: &std::path::Path, name: &str) -> std::path::Pa
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("png");
-    let mut n = 2u32;
-    loop {
-        let candidate = dir.join(format!("{stem} ({n}).{ext}"));
-        // Give up disambiguating past a pathological run rather than looping forever; a rare
-        // overwrite here beats a hang on the capture path.
-        if !candidate.exists() || n >= 1000 {
-            return candidate;
+    // Give up disambiguating past a pathological run rather than looping forever; the last
+    // attempt's error is the answer then, never an overwrite.
+    let mut last = None;
+    for n in 1u32..=1000 {
+        let candidate = if n == 1 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{stem} ({n}).{ext}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
         }
-        n += 1;
     }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no free capture name")))
 }
 
 /// Save the PNG to an exact path — the location the user chose in the Save-As dialog
@@ -213,7 +250,7 @@ mod tests {
     }
 
     /// Two captures landing on the same second must not collide — `timestamped_name` only has
-    /// 1-second resolution, so without a disambiguator the second capture's `img.save` would
+    /// 1-second resolution, so without a disambiguator the second capture's write would
     /// silently destroy the first one with no error.
     #[test]
     fn unique_name_in_does_not_collide_with_an_existing_same_second_capture() {
@@ -225,20 +262,55 @@ mod tests {
         let name = "Screenshot 2026-01-01 00.00.00.png";
         std::fs::write(dir.join(name), b"first capture").expect("write first capture");
 
-        let picked = unique_name_in(&dir, name);
+        let (picked, _file) = reserve_unique_in(&dir, name).expect("reserve");
         assert_ne!(
             picked,
             dir.join(name),
             "a second same-second capture must not be pointed at the first capture's path"
         );
-        assert!(
-            !picked.exists(),
-            "the disambiguated path must not itself already be taken"
+        assert_eq!(picked, dir.join("Screenshot 2026-01-01 00.00.00 (2).png"));
+        assert_eq!(
+            std::fs::read(dir.join(name)).unwrap(),
+            b"first capture",
+            "the first capture's bytes are untouched"
         );
 
         // A name with no existing collision is returned unchanged.
-        let free = unique_name_in(&dir, "Screenshot 2026-01-01 00.00.01.png");
+        let (free, _f) = reserve_unique_in(&dir, "Screenshot 2026-01-01 00.00.01.png").unwrap();
         assert_eq!(free, dir.join("Screenshot 2026-01-01 00.00.01.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit concern 6 (2026-09-19): the name is RESERVED when it is picked, not merely found
+    /// free. Two picks with no write in between - two captures in one tick, or a recovery copy
+    /// landing beside a Ctrl+S save - must come back with different names, and the reservation
+    /// must be the entry the bytes then land in.
+    #[test]
+    fn two_reservations_in_one_tick_get_different_names() {
+        let dir =
+            std::env::temp_dir().join(format!("st2k_reserve_twice_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let name = "Screenshot 2026-01-01 00.00.00.png";
+        let (a, _fa) = reserve_unique_in(&dir, name).expect("first reservation");
+        let (b, _fb) = reserve_unique_in(&dir, name).expect("second reservation");
+        let (c, _fc) = reserve_unique_in(&dir, name).expect("third reservation");
+        assert_eq!(a, dir.join(name));
+        assert_eq!(b, dir.join("Screenshot 2026-01-01 00.00.00 (2).png"));
+        assert_eq!(c, dir.join("Screenshot 2026-01-01 00.00.00 (3).png"));
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            3,
+            "three reserved entries"
+        );
+
+        // Writing through the reservation lands in the reserved entry, and a same-named write
+        // afterwards still steps past every reservation.
+        let d = write_reserved(&dir, name, b"fourth").expect("write");
+        assert_eq!(d, dir.join("Screenshot 2026-01-01 00.00.00 (4).png"));
+        assert_eq!(std::fs::read(&d).unwrap(), b"fourth");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -385,17 +385,16 @@ pub(crate) unsafe fn run_upload(path: &str) {
 /// name. Split out from [`save_recovery_copy`] so the write itself is testable
 /// without touching the registry-backed save-folder setting.
 ///
-/// Routes through [`super::output::unique_name_in`] rather than writing
+/// Routes through [`super::output::write_reserved`] rather than writing
 /// `dir.join(name)` directly: `timestamped_name` only has 1-second resolution, so two
 /// failed-upload recoveries (or a recovery landing in the same second as an ordinary
 /// Ctrl+S capture) into the same folder would otherwise silently overwrite each other —
-/// in exactly the path whose whole purpose is not losing the shot.
+/// in exactly the path whose whole purpose is not losing the shot. The name is reserved
+/// with `create_new` at pick time, so even two recoveries in the same tick cannot share it.
 fn write_recovery_copy(dir: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
     let _ = std::fs::create_dir_all(dir);
     let name = unsafe { super::output::timestamped_name() };
-    let path = super::output::unique_name_in(dir, &name);
-    std::fs::write(&path, bytes).ok()?;
-    Some(path)
+    super::output::write_reserved(dir, &name, bytes)
 }
 
 /// Recover a failed upload's bytes to the user's normal capture save location (their
@@ -1003,7 +1002,7 @@ https://bad example/upload | file | text
     /// Two recovery copies landing in the same second (the real trigger — a batch
     /// upload where more than one file fails, or a recovery racing an ordinary Ctrl+S save)
     /// used to write `dir.join(timestamped_name())` directly, so the second write silently
-    /// clobbered the first. Routing through `output::unique_name_in` must give the second
+    /// clobbered the first. Routing through `output::write_reserved` must give the second
     /// call its own path and leave the first file's bytes intact.
     #[test]
     fn same_second_recovery_copies_do_not_clobber_each_other() {

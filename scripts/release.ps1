@@ -308,10 +308,10 @@ try {
             $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
             gh workflow run 'release-profile-tests.yml'
             if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+            # By identity, not by timestamp: the run must be on THIS commit (audit concern 1).
             for ($i = 0; $i -lt 40 -and -not $rptRunId; $i++) {
                 Start-Sleep -Seconds 6
-                $rptRunId = (gh run list --workflow 'release-profile-tests.yml' --event workflow_dispatch --limit 10 `
-                        --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$rptDispatchedAt`")][0].databaseId" 2>$null)
+                $rptRunId = Find-ReleaseDispatchedRun -Workflow 'release-profile-tests.yml' -Sha $sha -DispatchedAt $rptDispatchedAt
             }
             if (-not $rptRunId) { throw 'release-profile-tests.yml was dispatched but no run appeared in 4 min; nothing has been built or published' }
         }
@@ -607,10 +607,11 @@ try {
         gh workflow run 'arm64-portable-verify.yml' -f "tag=$tag"
         if ($LASTEXITCODE) { throw "could not dispatch arm64-portable-verify.yml for $tag; $tag remains a draft" }
         $armRunId = $null
+        # By identity, not by timestamp: on THIS commit and titled with THIS tag (the
+        # workflow's run-name carries its `tag` input; audit concern 1).
         for ($i = 0; $i -lt 40 -and -not $armRunId; $i++) {
             Start-Sleep -Seconds 6
-            $armRunId = (gh run list --workflow 'arm64-portable-verify.yml' --event workflow_dispatch --limit 10 `
-                    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= `"$dispatchedAt`")][0].databaseId" 2>$null)
+            $armRunId = Find-ReleaseDispatchedRun -Workflow 'arm64-portable-verify.yml' -Sha $sha -DispatchedAt $dispatchedAt -TitleContains $tag
         }
         if (-not $armRunId) { throw "arm64-portable-verify.yml was dispatched for $tag but no run appeared in 4 min; $tag remains a draft" }
         Write-Host "      run $armRunId found - waiting for the ARM64 runner..." -ForegroundColor Green

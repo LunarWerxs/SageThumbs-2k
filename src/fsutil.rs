@@ -61,6 +61,37 @@ pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     last
 }
 
+/// `ERROR_NOT_SAME_DEVICE`: a rename cannot move a file to another volume.
+const ERROR_NOT_SAME_DEVICE: i32 = 17;
+
+/// Move `from` onto `to` (which may already exist as a placeholder), across volumes if it
+/// has to. A same-volume move is [`rename_retrying`]. When the volumes differ, `rename` fails
+/// with `ERROR_NOT_SAME_DEVICE` and until 2026-09-19 that was the end of it: Tags to folders
+/// with a destination on another drive reported every file skipped while Copy worked (audit
+/// concern 7). The fallback is `MoveFileExW` with `MOVEFILE_COPY_ALLOWED`, which copies the
+/// data, attributes, timestamps and alternate streams and deletes the source only once the
+/// copy is complete; on any failure the source is untouched and the caller still owns
+/// whatever landed at `to`.
+pub(crate) fn move_file_replacing(from: &Path, to: &Path) -> io::Result<()> {
+    match rename_retrying(from, to) {
+        Err(e) if e.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) => {}
+        other => return other,
+    }
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_COPY_ALLOWED, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    // SAFETY: two NUL-terminated wide paths, no callbacks, no retained pointers.
+    unsafe {
+        MoveFileExW(
+            &HSTRING::from(from.as_os_str()),
+            &HSTRING::from(to.as_os_str()),
+            MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xFFFF))
+}
+
 /// Read a whole file, retrying past a transient lock on the same policy as [`rename_retrying`].
 /// `Ok(None)` when the file does not exist; any OTHER failure - still locked after the retries,
 /// access denied for real - is an error, never "an empty file". That distinction is what keeps

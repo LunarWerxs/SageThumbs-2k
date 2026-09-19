@@ -304,10 +304,17 @@ fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
     // from its zero-byte-cleanup drop AFTER that succeeds, so a failed rename still
     // leaves the empty placeholder to be cleaned up, and a legitimately empty `src`
     // isn't mistaken for an abandoned reservation and deleted right after landing.
+    // Across volumes it is a copy-then-delete (`move_file_replacing`); a failure there can
+    // leave a partial copy in the placeholder, which `OutSlot`'s zero-byte drop cannot see,
+    // so it is removed here explicitly - the source is never touched by a failed move.
     // Keep `{e}` rather than mapping to a bare E_FAIL: it's the only place a caller
-    // could learn WHY a file didn't move (locked, cross-volume, permission denied).
-    crate::fsutil::rename_retrying(src, slot.path())
-        .map_err(|e| Error::new(E_FAIL, format!("move {}: {e}", src.display())))?;
+    // could learn WHY a file didn't move (locked, permission denied, disk full).
+    if let Err(e) = crate::fsutil::move_file_replacing(src, slot.path()) {
+        if slot.created() {
+            cleanup_failed_dest(slot.path());
+        }
+        return Err(Error::new(E_FAIL, format!("move {}: {e}", src.display())));
+    }
     Ok(slot.release())
 }
 
@@ -665,6 +672,99 @@ pub fn tags_to_folders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writable directory on a fixed volume OTHER than `dir`'s, when this machine has one
+    /// (the dev box: D: source, C: temp; GitHub's Windows runners: C: and D:). None when it
+    /// does not - the test then proves nothing and says so rather than failing.
+    fn other_volume_dir(dir: &Path, tag: &str) -> Option<PathBuf> {
+        let here = dir
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_ascii_uppercase())?;
+        for letter in ('C'..='H').chain('R'..='Z') {
+            let root = format!("{letter}:\\");
+            if root.to_ascii_uppercase().starts_with(&here) || !Path::new(&root).is_dir() {
+                continue;
+            }
+            let candidate =
+                PathBuf::from(&root).join(format!("st2k_xvol_{tag}_{}", std::process::id()));
+            if std::fs::create_dir_all(&candidate).is_ok()
+                && std::fs::write(candidate.join("probe"), b"x").is_ok()
+            {
+                let _ = std::fs::remove_file(candidate.join("probe"));
+                return Some(candidate);
+            }
+            let _ = std::fs::remove_dir_all(&candidate);
+        }
+        None
+    }
+
+    /// 2026-09-19 audit concern 7: Tags to folders with Move and a destination on another
+    /// drive reported `(0, 1)` - every file skipped - while Copy worked, because `rename`
+    /// cannot cross volumes. Move must land the bytes on the other volume and remove the
+    /// source, exactly as Explorer's own drag-to-another-drive does.
+    #[test]
+    fn move_into_crosses_volumes() {
+        let src_dir = std::env::temp_dir().join(format!("st2k_xvol_src_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src_dir);
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let Some(dst_dir) = other_volume_dir(&src_dir, "dst") else {
+            eprintln!("move_into_crosses_volumes: no second writable volume here; NOT MEASURED");
+            let _ = std::fs::remove_dir_all(&src_dir);
+            return;
+        };
+        let src = src_dir.join("track.bin");
+        std::fs::write(&src, b"cross-volume payload").unwrap();
+
+        let landed = move_into(&src, &dst_dir).expect("move across volumes");
+        assert_eq!(landed, dst_dir.join("track.bin"));
+        assert_eq!(std::fs::read(&landed).unwrap(), b"cross-volume payload");
+        assert!(
+            !src.exists(),
+            "the source must be gone after a completed move"
+        );
+
+        // A second file of the same name still dodges the collision on the far volume.
+        std::fs::write(&src, b"second").unwrap();
+        let landed2 = move_into(&src, &dst_dir).expect("second move");
+        assert_ne!(landed2, landed);
+        assert_eq!(std::fs::read(&landed2).unwrap(), b"second");
+
+        let _ = std::fs::remove_dir_all(&src_dir);
+        let _ = std::fs::remove_dir_all(&dst_dir);
+    }
+
+    /// The whole verb, across volumes, the way the audit measured it: Move now counts the
+    /// file as done and Copy keeps behaving as before.
+    #[test]
+    fn tags_to_folders_move_across_volumes_counts_the_file_as_done() {
+        let src_dir = std::env::temp_dir().join(format!("st2k_xvol_ttf_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src_dir);
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let Some(dest) = other_volume_dir(&src_dir, "ttf") else {
+            eprintln!(
+                "tags_to_folders_move_across_volumes: no second writable volume here; NOT MEASURED"
+            );
+            let _ = std::fs::remove_dir_all(&src_dir);
+            return;
+        };
+        let a = src_dir.join("a.mp3");
+        std::fs::write(&a, b"not really audio").unwrap();
+        let files = vec![a.to_string_lossy().into_owned()];
+        // A constant template needs no tags at all.
+        assert_eq!(
+            tags_to_folders(&files, &dest, "sorted", "Unknown", true),
+            (1, 0)
+        );
+        assert_eq!(
+            std::fs::read(dest.join("sorted").join("a.mp3")).unwrap(),
+            b"not really audio"
+        );
+        assert!(!a.exists(), "Move must remove the source");
+
+        let _ = std::fs::remove_dir_all(&src_dir);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
 
     fn png(dir: &Path, name: &str, w: u32, h: u32) -> String {
         let p = dir.join(name);

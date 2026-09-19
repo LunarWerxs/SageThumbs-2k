@@ -540,6 +540,50 @@ function Test-ReleaseVerificationOnlyRange {
 # was not queued/in_progress, so a run that GitHub reported as 'waiting' ended the release
 # with "finished ''" while the suite was still running (3.0.1, 2026-09-10). Returns the
 # conclusion string, or "still <status>" when the budget runs out.
+# The run OUR dispatch started, identified by what it is rather than by when it appeared.
+# Until 2026-09-19 `release.ps1` took the first workflow_dispatch run created after the
+# dispatch time, so a second dispatch of the same workflow - another machine, a re-run of
+# the script, a hand dispatch from the Actions tab - could be picked and waited on instead
+# (audit concern 1): the release would then be gated on somebody else's commit. A run counts
+# only when its headSha IS the commit being released, it was created no earlier than the
+# dispatch, and (when the workflow carries the tag in its run name) its title names the tag.
+function Select-ReleaseDispatchedRun {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Runs,
+        [Parameter(Mandatory)] [string]$Sha,
+        [Parameter(Mandatory)] [string]$DispatchedAt,
+        [string]$TitleContains = ''
+    )
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $since = [DateTimeOffset]::Parse($DispatchedAt, $culture)
+    $picked = @($Runs | Where-Object {
+        $_ -and [string]$_.headSha -ceq $Sha -and
+        (-not $TitleContains -or ([string]$_.displayTitle).Contains($TitleContains))
+    } | ForEach-Object {
+        $created = try { [DateTimeOffset]::Parse([string]$_.createdAt, $culture) } catch { $null }
+        if ($null -ne $created -and $created -ge $since) {
+            [pscustomobject]@{ databaseId = [string]$_.databaseId; created = $created }
+        }
+    } | Sort-Object created)
+    if ($picked.Count) { return [string]$picked[0].databaseId }
+    return $null
+}
+
+function Find-ReleaseDispatchedRun {
+    param(
+        [Parameter(Mandatory)] [string]$Workflow,
+        [Parameter(Mandatory)] [string]$Sha,
+        [Parameter(Mandatory)] [string]$DispatchedAt,
+        [string]$TitleContains = ''
+    )
+    # No space after a comma in --json (see release.ps1's CI lookup for why).
+    $raw = & gh run list --workflow $Workflow --event workflow_dispatch --limit 10 `
+        --json databaseId,headSha,createdAt,displayTitle 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
+    $runs = @($raw | ConvertFrom-Json)
+    return Select-ReleaseDispatchedRun -Runs $runs -Sha $Sha -DispatchedAt $DispatchedAt -TitleContains $TitleContains
+}
+
 function Wait-ReleaseRunConclusion {
     param(
         [Parameter(Mandatory)] [string]$RunId,

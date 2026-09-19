@@ -12,6 +12,9 @@
 # publishes only on green, so a broken ARM64 payload never becomes downloadable. The
 # `release: published` trigger stays as the record for anything published another way.
 name: ARM64 portable verify
+# The dispatched run is titled with the tag it verifies, so release.ps1 can pick OUR run by
+# commit AND tag rather than by "the first run after we dispatched" (2026-09-19 audit).
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('ARM64 portable verify {0}', inputs.tag) || '' }}
 
 on:
   release:
