@@ -88,8 +88,8 @@ def psd_variants(b):
     return v
 
 
-PSD_WANTED = {"psd", "psb", "8-bit", "16-bit", "32-bit", "rgb", "cmyk", "greyscale", "indexed",
-              "lab", "has-layers", "no-layers", "has-composite", "no-composite", "has-thumbnail-1036"}
+PSD_WANTED = {"8-bit", "16-bit", "32-bit", "rgb", "cmyk", "greyscale", "indexed", "lab",
+              "has-layers", "no-layers", "has-composite", "no-composite", "has-thumbnail-1036"}
 
 
 # ---- PDF ---------------------------------------------------------------------------------------

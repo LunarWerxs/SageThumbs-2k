@@ -37,6 +37,18 @@ body:
       placeholder: "2.0.0"
 
   - type: textarea
+    id: sample
+    attributes:
+      label: A file that shows what you mean
+      description: |
+        If this is about how a kind of file looks or behaves, **attach one** — it turns "make X
+        better" into something we can test against. Drag it into this box, zipped if GitHub
+        refuses the extension, small, yours to share, nothing private, and say which program and
+        version made it. If it's not about a file, write "no file".
+    validations:
+      required: true
+
+  - type: textarea
     id: extra
     attributes:
       label: Anything else?

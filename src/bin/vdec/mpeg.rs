@@ -369,7 +369,9 @@ mod tests {
             // transport stream, and the 192-byte M2TS stride — where the sync byte is four
             // bytes into every packet — is the one a wrong probe would silently mistake for
             // the 188-byte one.
-            ("mpeg2-ts-128x96.ts", 128, 96),
+            // `.m2ts`, not `.ts`: the fixture is a transport stream, and a `.ts` name reads as
+            // TypeScript to every source tool (the Architect's NUL-byte check flagged it).
+            ("mpeg2-ts-128x96.m2ts", 128, 96),
             ("mpeg2-m2ts-128x96.m2ts", 128, 96),
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -184,7 +184,12 @@ fn epsi_preview(bytes: &[u8]) -> Option<DynamicImage> {
 }
 
 fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
-    let (header, mut rest) = find_comment(bytes, b"%%BeginPhotoshop:")?;
+    // Photoshop itself writes `%BeginPhotoshop: <n>` with ONE percent sign (Photoshop 2026,
+    // measured on 2026-09-19 when the first real "Preview: None" EPS reached the corpus and
+    // could not decode); the `%%` form is the DSC-style spelling other writers use. Until
+    // that day the only sample of this block was one this code's own test had written.
+    let (header, mut rest) = find_comment(bytes, b"%BeginPhotoshop:")
+        .or_else(|| find_comment(bytes, b"%%BeginPhotoshop:"))?;
     let declared = std::str::from_utf8(header.trim_ascii())
         .ok()?
         .parse::<usize>()
@@ -196,7 +201,7 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     while resource.len() < declared {
         let (line, next) = take_line(rest);
         rest = next;
-        if line == b"%%EndPhotoshop" {
+        if line == b"%%EndPhotoshop" || line == b"%EndPhotoshop" {
             return None;
         }
         append_hex(comment_payload(line)?, &mut resource, declared)?;
@@ -276,6 +281,37 @@ fn unpack_row(packed: &[u8], width: usize, depth: u32, out: &mut Vec<u8>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Photoshop EPS saved with "Preview: None" carries its thumbnail in the resource
+    /// block Photoshop itself opens with `%BeginPhotoshop:` (ONE percent sign). Until
+    /// 2026-09-19 the only sample of this block was one this test module had written with the
+    /// `%%` spelling, and the first real file could not decode. The corpus file was written by
+    /// Photoshop 2026 that day; the test reports NOT MEASURED and returns when it is absent.
+    #[test]
+    fn a_real_photoshop_eps_without_a_preview_yields_its_resource_thumbnail() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-corpus")
+            .join("real-photoshop-nopreview.eps");
+        let Ok(bytes) = std::fs::read(&p) else {
+            eprintln!("NOT MEASURED: {} is absent", p.display());
+            return;
+        };
+        assert!(
+            bytes.starts_with(b"%!PS"),
+            "a plain PostScript EPS, no DOS header"
+        );
+        assert!(
+            bytes.windows(16).any(|w| w == b"%BeginPhotoshop:"),
+            "the single-percent marker"
+        );
+        let cover = extract_ascii_preview(&bytes).expect("the 8BIM 1036 thumbnail");
+        let CoverOut::Bytes(jpeg) = cover else {
+            panic!("the Photoshop resource thumbnail is JPEG bytes");
+        };
+        let img = image::load_from_memory(&jpeg).expect("decodable thumbnail");
+        assert!(img.width() > 0 && img.height() > 0);
+    }
 
     fn epsi(width: u32, height: u32, depth: u32, rows: &[&str]) -> Vec<u8> {
         let mut out = format!(

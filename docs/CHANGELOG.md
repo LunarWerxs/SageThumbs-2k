@@ -9,11 +9,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
-- **Adobe Illustrator files saved without "Create PDF Compatible File" get a real thumbnail.**
-  Such a file's PDF half is only a page of small print saying it was saved without PDF
-  content, and that page is what showed as a blank white tile. The thumbnail is now the
-  small picture Illustrator itself writes into every `.ai` file, the same one other viewers
-  show. Files saved with the option ticked are unchanged. Reported in #45.
+- **Adobe Illustrator files saved without "Create PDF Compatible File" no longer show a blank
+  page.** Such a file's PDF half is only a page of small print saying it was saved without PDF
+  content, and that page is what showed as a white tile with unreadable text. Files from
+  Illustrator CS4 and earlier carry a small picture of the artwork inside, and that is shown
+  now. Files from Illustrator 2020 and later carry no picture at all, so they get the
+  Illustrator icon instead, and `st2k doctor` says exactly why and how to re-save. Files saved
+  with the option ticked are unchanged. Reported in #45.
+- **Photoshop EPS files saved with "Preview: None" now thumbnail.** Photoshop writes its
+  embedded thumbnail with a marker spelled one way and SageThumbs looked for another; the
+  first real such file showed the mismatch.
 - **An Illustrator file with several artboards shows them all.** Up to four artboards are laid
   out in one tile, the way a comic archive shows its first pages, instead of the first
   artboard alone. Ordinary PDFs still show their first page. Requested in #44.

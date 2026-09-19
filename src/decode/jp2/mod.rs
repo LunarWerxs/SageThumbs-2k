@@ -1405,6 +1405,14 @@ mod tests {
         match decode_reduced(&bytes, 1024) {
             Ok((rgb, w, h)) => {
                 eprintln!("jp2 native: decoded {w}x{h} in {:?}", t0.elapsed());
+                // What IS a contract, even for an unfinished path: a success is a well-formed
+                // picture. Wrong-sized pixel data or a zero dimension is a bug wherever the
+                // decoder is on its way, and it must never reach a caller as "Ok".
+                assert!(
+                    w > 0 && h > 0 && w <= 1024 && h <= 1024,
+                    "reduced to {w}x{h}"
+                );
+                assert_eq!(rgb.len(), w as usize * h as usize * 3, "pixel buffer size");
                 if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
                     let out = std::env::temp_dir().join("st2k_jp2_native.png");
                     let _ = img.save(&out);

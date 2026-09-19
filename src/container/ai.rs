@@ -36,10 +36,112 @@ const MAX_EDGE: u32 = 512;
 const PALETTE_BYTES: usize = 256 * 3;
 const RUN: u8 = 0xFD;
 
-/// Whether `bytes` carry Illustrator's private data (the thumbnail header is the cheapest
-/// tell, and the one this module goes on to use). Content-based: a shell stream is nameless.
+/// The PDF dictionary key every PDF-based Illustrator file carries, whatever its era: the
+/// catalog's `/Private` object names `/AIPrivateData1..N` (the compressed art) beside
+/// `/AIMetaData`. Illustrator 2020+ files carry NO `%AI7_Thumbnail`, so this is the tell.
+const PRIVATE_KEY: &[u8] = b"/AIPrivateData";
+
+/// The user-facing reason a modern file saved without PDF content gets no thumbnail; the
+/// doctor prints it as the decode's failure.
+pub(crate) const NO_PDF_CONTENT: &str = "Adobe Illustrator file saved without \"Create PDF \
+    Compatible File\": it holds no picture another program can show. Re-save it in Illustrator \
+    with that option ticked (File > Save As > Illustrator Options).";
+
+/// Whether `bytes` carry Illustrator's private data: the `/AIPrivateData` key of every
+/// PDF-based file, or the `%AI7_Thumbnail` header of the PostScript-era ones. Content-based:
+/// a shell stream is nameless.
 pub(crate) fn is_illustrator(bytes: &[u8]) -> bool {
-    find(&bytes[..bytes.len().min(SCAN_MAX)], THUMB_KEY).is_some()
+    let head = &bytes[..bytes.len().min(SCAN_MAX)];
+    find(head, PRIVATE_KEY).is_some() || find(head, THUMB_KEY).is_some()
+}
+
+/// Streams looked at, and bytes inflated per stream, before the placeholder question is
+/// given up on: the notice is always among the first objects Illustrator writes.
+const MAX_STREAMS: usize = 256;
+const MAX_INFLATED: u64 = 1 << 20;
+
+/// Is the single page of an Illustrator file with no private raster (2020+) the "saved
+/// without PDF content" placeholder rather than artwork? Structural, not visual, and not
+/// tied to the UI language: that page draws one text-only Form XObject over and over, and
+/// the text Adobe puts there names "Adobe Illustrator" and "PDF" in every language seen
+/// (Illustrator 30.8 in English: "This is an Adobe Illustrator File that was saved without
+/// PDF Content"; Spanish, from issue #45's screenshot: "Este es un archivo de Adobe
+/// Illustrator guardado sin contenido en PDF"). The file's stream objects are walked
+/// (bounded), Flate ones inflated (bounded), and the strings of the text operators read: a
+/// text stream that names both words is the notice. Artwork whose only content is text
+/// mentioning both would be judged the same way and get no thumbnail; that is the cheaper
+/// mistake, and one no real file has produced.
+pub(crate) fn looks_like_placeholder_page(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(SCAN_MAX)];
+    let mut at = 0;
+    for _ in 0..MAX_STREAMS {
+        let Some(rel) = find(&head[at..], b"stream") else {
+            return false;
+        };
+        let kw = at + rel;
+        let mut data = kw + 6;
+        if head[..kw].ends_with(b"end") {
+            at = data; // the tail of an `endstream`, not a stream start
+            continue;
+        }
+        if head[data..].starts_with(b"\r\n") {
+            data += 2;
+        } else if head[data..].starts_with(b"\n") {
+            data += 1;
+        }
+        let Some(end_rel) = find(&head[data..], b"endstream") else {
+            return false;
+        };
+        let end = data + end_rel;
+        at = end + 9;
+        let dict = &head[kw.saturating_sub(600)..kw];
+        let raw = &head[data..end];
+        let inflated;
+        let body: &[u8] = if find(dict, b"FlateDecode").is_some() {
+            use std::io::Read;
+            let mut out = Vec::new();
+            if flate2::read::ZlibDecoder::new(raw)
+                .take(MAX_INFLATED)
+                .read_to_end(&mut out)
+                .is_err()
+            {
+                continue;
+            }
+            inflated = out;
+            &inflated
+        } else {
+            raw
+        };
+        if find(body, b"BT").is_some() && text_names_illustrator_and_pdf(body) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The text of a content stream's string operands (`(…) Tj`, `[(…) … (…)] TJ`), joined and
+/// lowercased, names both "illustrator" and "pdf".
+fn text_names_illustrator_and_pdf(stream: &[u8]) -> bool {
+    let mut text = String::with_capacity(256);
+    let mut i = 0;
+    while i < stream.len() {
+        if stream[i] == b'(' {
+            i += 1;
+            while i < stream.len() && stream[i] != b')' {
+                if stream[i] == b'\\' {
+                    i += 1; // skip the escaped byte (`\)`, `\256`'s first digit, ...)
+                } else if stream[i].is_ascii_alphabetic() {
+                    text.push(stream[i].to_ascii_lowercase() as char);
+                }
+                i += 1;
+            }
+        }
+        i += 1;
+        if text.len() > 4096 {
+            break;
+        }
+    }
+    text.contains("illustrator") && text.contains("pdf")
 }
 
 /// The raster thumbnail Illustrator wrote into its private data, or `None` when there is

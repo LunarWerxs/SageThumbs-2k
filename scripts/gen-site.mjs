@@ -193,8 +193,7 @@ function sourceSentence(items) {
     return s;
   }
   const bits = sourceKeys
-    .slice()
-    .sort((a, b) => bySource[b].length - bySource[a].length)
+    .toSorted((a, b) => bySource[b].length - bySource[a].length)
     .map(src => {
       const phrase = SOURCE_COUNT_PHRASE[src];
       if (!phrase) throw new Error(`gen-site: unknown capability source "${src}" - add it to SOURCE_COUNT_PHRASE (and SOURCE_SENTENCE)`);
@@ -230,7 +229,7 @@ function codecSentence(codec, exts, groupSize) {
     return optional ? `Every format here uses ${tail}` : `Every format here needs ${tail}`;
   }
   const verb = optional ? 'use' : 'need';
-  return `.${exts.slice().sort().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`;
+  return `.${exts.toSorted().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`;
 }
 
 /** One sentence group, for the self-tests and anything else that wants it as text. */
@@ -287,7 +286,7 @@ function buildFormatWall(formats, CR) {
 
   const aria = [], spans = [], groups = [];
   for (const [dc, cat, label, color] of ORDER) {
-    const items = (by[cat] || []).slice().sort((a, b) => a.ext.localeCompare(b.ext));
+    const items = (by[cat] || []).toSorted((a, b) => a.ext.localeCompare(b.ext));
     const n = items.length, pct = TOTAL ? (n / TOTAL * 100).toFixed(1) : '0.0';
     aria.push(n + ' ' + ARIA[dc]);
     spans.push(`      <span style="width:${pct}%;background:${color}"></span>`);
