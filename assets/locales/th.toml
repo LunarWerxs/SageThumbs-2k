@@ -466,6 +466,11 @@ btn_portable_register = "เปิดภาพขนาดย่อใน File E
 btn_portable_unregister = "ปิดภาพขนาดย่อใน File Explorer"
 state_on = "เปิด"
 state_off = "ปิด"
+shot_status_running = "กำลังทำงาน"
+shot_status_started = "เริ่มทำงานแล้ว"
+shot_status_stopped = "หยุดแล้ว — คลิกเริ่มบริการแป้นพิมพ์ลัดใหม่"
+shot_status_running_conflict = "กำลังทำงาน — แป้นพิมพ์ลัดถูกใช้งานโดยแอปอื่น (เลือกแป้นพิมพ์ลัดอื่น)"
+shot_status_off_conflict = "ปิด — แป้นพิมพ์ลัดที่กำหนดเองถูกใช้งานโดยแอปอื่น (เลือกแป้นพิมพ์ลัดอื่น)"
 msg_portable_dll_missing = "ไม่พบไฟล์ sagethumbs2k.dll ในโฟลเดอร์นี้ กรุณาแตกไฟล์ที่ดาวน์โหลดแบบพกพาทั้งหมดแล้วลองใหม่อีกครั้ง"
 msg_portable_reg_failed = "Windows ไม่อนุญาตให้เราเขียนการลงทะเบียนสำหรับบัญชีผู้ใช้ของคุณ"
 

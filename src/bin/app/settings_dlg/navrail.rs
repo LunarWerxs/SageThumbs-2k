@@ -181,6 +181,25 @@ pub(super) fn pair_field_ids() -> (Vec<i32>, Vec<i32>) {
     (edits, combos)
 }
 
+/// Every full-width TEXT edit from every page's `Row::Wide` / `Row::WideBtn` rows: the ones
+/// `restyle::paint_chrome` frames with the text-centred 5/3 pads. Derived for the reason
+/// [`pair_field_ids`] is: `paint_chrome` named `ID_SEARCH` by hand, so the licence-key edit
+/// (`Row::WideBtn`, laid out around "its 5/3 frame" - see `place_wide_btn_row`) shipped with no
+/// frame at all, a bare white strip beside a rounded button.
+pub(super) fn wide_edit_ids() -> Vec<i32> {
+    let mut edits = Vec::new();
+    for ci in 0..NCAT {
+        for &row in cat_rows(ci) {
+            if let Row::Wide(id) | Row::WideBtn(id, _, _) = row {
+                if !edits.contains(&id) {
+                    edits.push(id);
+                }
+            }
+        }
+    }
+    edits
+}
+
 pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
     match ci {
@@ -1584,6 +1603,28 @@ mod pair_field_ids_tests {
             assert!(
                 !combos.contains(id),
                 "id {id} classified as both edit and combo"
+            );
+        }
+    }
+
+    /// The same regression one row kind over: the licence-key edit is a `Row::WideBtn`, which
+    /// no hand-kept list in `paint_chrome` named, so it shipped as a bare strip with no frame.
+    #[test]
+    fn every_wide_text_edit_is_framed_and_none_is_framed_twice() {
+        let wide = wide_edit_ids();
+        assert!(
+            wide.contains(&ID_SEARCH),
+            "the format filter lost its frame"
+        );
+        assert!(
+            wide.contains(&ID_LICENCE_KEY_EDIT),
+            "the licence key lost its frame"
+        );
+        let (edits, combos) = pair_field_ids();
+        for id in &wide {
+            assert!(
+                !edits.contains(id) && !combos.contains(id),
+                "id {id} would be framed twice"
             );
         }
     }

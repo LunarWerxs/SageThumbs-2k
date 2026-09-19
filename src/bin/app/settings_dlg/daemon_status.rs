@@ -106,28 +106,30 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
         0
     };
     let daemon_running = enabled && crate::screenshot::is_daemon_running();
-    let txt = if !enabled {
+    // Localized like every other line on the page: these were hard-coded English until
+    // 2026-09-18, so a Chinese UI read "Running" beside translated labels. The tint never
+    // depends on the text (see SHOT_STATUS_GREEN), so any language is safe here.
+    let key = if !enabled {
         // Screenshot feature off — but a bound CUSTOM action hotkey still runs through
         // the same daemon, and ITS conflict (bit2) would otherwise be invisible in the
         // whole UI (this is the only status line).
         if bind_failed & 4 != 0 {
-            "Off \u{2014} custom hotkey in use by another app (pick a different one)"
+            "shot_status_off_conflict"
         } else {
-            "Off"
+            "state_off"
         }
     } else if daemon_running {
-        // Keep the "Running" prefix: the balloon-nudge logic below string-matches it.
         if bind_failed != 0 {
-            "Running \u{2014} a hotkey is in use by another app (pick a different one)"
+            "shot_status_running_conflict"
         } else {
-            "Running"
+            "shot_status_running"
         }
     } else {
-        "Stopped \u{2014} click Restart"
+        "shot_status_stopped"
     };
     // Green exactly when the daemon is actually confirmed running: a bind conflict still
-    // shows "Running" text (the daemon IS up) but the color question is the same either way.
-    set_shot_status(hwnd, txt, daemon_running);
+    // shows the running text (the daemon IS up) but the color question is the same either way.
+    set_shot_status(hwnd, t(key), daemon_running);
     // The Restart button does nothing when the hotkey is off — disable + repaint it.
     if let Ok(btn) = GetDlgItem(Some(hwnd), ID_SHOT_RESTART) {
         let _ = EnableWindow(btn, enabled);

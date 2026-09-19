@@ -17,6 +17,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **A greyed-out text box or drop-down in Settings now looks like one greyed-out field**, not a
   grey slab inside a white outline, and the "Never preview these extensions:" caption greys
   with its box while Quick preview is off.
+- **The licence-key box on the Licence page gets the same rounded frame as every other field.**
+  It was a bare white strip beside a rounded button.
+- **The hotkey service's status line on the Screenshots page ("Running", "Stopped") is now
+  translated** in all 36 languages; it was English everywhere.
 
 ## 3.1.1
 

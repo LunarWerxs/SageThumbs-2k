@@ -561,12 +561,16 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
             }
         }
     }
-    // The format filter is the same 18px edit, but it holds a sentence of cue text rather
-    // than digits — so it wants the symmetric-looking 5/3 (ink dead centre in a 26px
-    // frame), not the digit bias above. Matches the settings-wide search box in the header.
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SEARCH) {
-        if IsWindowVisible(c).as_bool() {
-            draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 5, 3);
+    // The full-width TEXT edits (the format filter, the licence key) are the same 18px edit,
+    // but hold a sentence rather than digits — so they want the symmetric-looking 5/3 (ink
+    // dead centre in a 26px frame), not the digit bias above. Matches the settings-wide search
+    // box in the header. Derived from the rows for the reason the Pair lists are.
+    for id in navrail::wide_edit_ids() {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            if IsWindowVisible(c).as_bool() {
+                let fill_c = crate::dark::field_fill(enabled(c));
+                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 5, 3);
+            }
         }
     }
     for id in combo_ids {

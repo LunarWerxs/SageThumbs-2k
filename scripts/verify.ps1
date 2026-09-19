@@ -374,6 +374,16 @@ if ($Release) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-theme-shots.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-theme-shots.ps1 failed' }
     }
+    # The REAL Settings window (normal launch path, real message loop, invisible), every page
+    # and every field, plus a live toggle: the stills above cannot see a field nobody framed or
+    # a repaint nobody asked for, and both shipped past them (ROADMAP 2026-09-18). Exit 2 =
+    # could not run (no Pillow, a Settings window already open), a skip, not a failure.
+    Stage 'settings live' {
+        $liveExe = Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release\SageThumbs2K.exe'
+        & python (Join-Path $PSScriptRoot 'check-settings-live.py') --exe $liveExe
+        if ($LASTEXITCODE -eq 1) { throw 'check-settings-live.py failed' }
+        $global:LASTEXITCODE = 0
+    }
     # Did this release change any PICTURE? Nothing else in the ladder can ask that: the
     # render sweep only wants a non-empty PNG, so a decoder that succeeds at drawing the
     # wrong thing passes everything (2.0.0's XCF layer budget did exactly that). Compares

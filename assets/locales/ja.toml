@@ -472,6 +472,11 @@ btn_portable_register = "エクスプローラーのサムネイルをオンに�
 btn_portable_unregister = "エクスプローラーのサムネイルをオフにする"
 state_on = "オン"
 state_off = "オフ"
+shot_status_running = "実行中"
+shot_status_started = "開始しました"
+shot_status_stopped = "停止 — 「ホットキーサービスを再起動」をクリック"
+shot_status_running_conflict = "実行中 — ホットキーが他のアプリで使用中です（別のキーを選択してください）"
+shot_status_off_conflict = "オフ — カスタムホットキーが他のアプリで使用中です（別のキーを選択してください）"
 msg_portable_dll_missing = "このフォルダーに sagethumbs2k.dll がありません。ポータブル版をすべて解凍してからもう一度お試しください。"
 msg_portable_reg_failed = "Windows がユーザー アカウントへの登録の書き込みを許可しませんでした。"
 

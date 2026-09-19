@@ -594,6 +594,7 @@ unsafe fn disabled_framed_edit(hwnd: HWND, lparam: LPARAM) -> bool {
     let (edit_ids, _) = navrail::pair_field_ids();
     edit_ids
         .into_iter()
+        .chain(navrail::wide_edit_ids())
         .any(|id| GetDlgItem(Some(hwnd), id).is_ok_and(|c| c == ctl))
 }
 
@@ -1085,7 +1086,7 @@ unsafe fn on_shot_restart(hwnd: HWND) {
     crate::screenshot::set_enabled(true);
     crate::screenshot::reload_hotkey();
     check(hwnd, ID_SHOT_ENABLE, true);
-    set_shot_status(hwnd, "Started", true);
+    set_shot_status(hwnd, t("shot_status_started"), true);
     // check() above is a raw BM_SETCHECK, not a click: it never sends
     // WM_COMMAND, so the normal ID_SHOT_ENABLE handler (which greys/ungreys
     // ID_SHOT_QUICK_ENABLE / ID_SHOT_USE_DIR) never runs on its own here.
