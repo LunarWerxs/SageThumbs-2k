@@ -686,7 +686,7 @@ mod tests {
     /// (CI), like `indd.rs` and `audio.rs`.
     #[test]
     fn real_packages_render_and_a_manifestless_zip_is_refused() {
-        let dir = std::path::Path::new("../test-corpus");
+        let dir = crate::testcorpus::dir();
         for name in [
             "sample.spla",
             "sample-skew-rotate.spla",

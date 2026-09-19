@@ -353,10 +353,7 @@ mod tests {
     /// Photoshop 2026 that day; the test reports NOT MEASURED and returns when it is absent.
     #[test]
     fn a_real_photoshop_eps_without_a_preview_yields_its_resource_thumbnail() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("real-photoshop-nopreview.eps");
+        let p = crate::testcorpus::dir().join("real-photoshop-nopreview.eps");
         let Ok(bytes) = std::fs::read(&p) else {
             eprintln!("NOT MEASURED: {} is absent", p.display());
             return;

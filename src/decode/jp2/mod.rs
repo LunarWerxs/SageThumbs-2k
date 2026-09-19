@@ -1344,7 +1344,7 @@ mod tests {
     /// the preview-handler integration tests; this one pins breadth and speed.)
     #[test]
     fn decode_every_corpus_jp2() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        let dir = crate::testcorpus::dir();
         for name in [
             "sample.j2k",
             "sample.jp2",
@@ -1374,8 +1374,7 @@ mod tests {
     /// the image is genuinely blank and the palette is genuinely two-entry.
     #[test]
     fn bilevel_paletted_page_renders_white() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../test-corpus/tiny-bilevel.jp2");
+        let p = crate::testcorpus::dir().join("tiny-bilevel.jp2");
         let Ok(bytes) = std::fs::read(&p) else {
             eprintln!("skipping: no tiny-bilevel.jp2");
             return;
@@ -1390,7 +1389,7 @@ mod tests {
 
     #[test]
     fn decode_huge_corpus_jp2() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/huge.jp2");
+        let p = crate::testcorpus::dir().join("huge.jp2");
         let Ok(bytes) = std::fs::read(&p) else {
             eprintln!("skipping: no ../test-corpus/huge.jp2");
             return;
@@ -1459,7 +1458,7 @@ mod dim_tests {
     /// tested against every JPEG 2000 flavour in the corpus.
     #[test]
     fn dimensions_match_the_corpus() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        let dir = crate::testcorpus::dir();
         let cases = [
             ("sample.jp2", 512u32, 384u32),
             ("sample.jpf", 512, 384),
@@ -1602,7 +1601,7 @@ mod fuzz_tests {
     }
 
     fn corpus() -> Vec<Vec<u8>> {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        let dir = crate::testcorpus::dir();
         ["sample.jp2", "sample.j2k", "sample.jpf", "huge.jp2"]
             .iter()
             .filter_map(|n| std::fs::read(dir.join(n)).ok())
@@ -1821,7 +1820,7 @@ mod exactness_tests {
 
     #[test]
     fn lossless_tiny_files_decode_bit_exactly() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        let dir = crate::testcorpus::dir();
         for name in [
             "tiny8-gray",
             "tiny16-rgb",

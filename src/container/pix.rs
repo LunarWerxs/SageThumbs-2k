@@ -207,7 +207,7 @@ mod tests {
     /// with a real picture in it. Skips where the sibling corpus is absent (CI).
     #[test]
     fn a_real_alias_pix_file_decodes() {
-        let Ok(bytes) = std::fs::read("../test-corpus/real.pix") else {
+        let Ok(bytes) = std::fs::read(crate::testcorpus::dir().join("real.pix")) else {
             return;
         };
         let img = extract(&bytes)

@@ -277,7 +277,7 @@ mod tests {
     /// The corpus-driven assertion: a real PrusaSlicer MK4 file yields its 640x480 PNG.
     #[test]
     fn a_real_prusaslicer_file_yields_its_largest_png() {
-        let Ok(bytes) = std::fs::read("../test-corpus/sample.bgcode") else {
+        let Ok(bytes) = std::fs::read(crate::testcorpus::dir().join("sample.bgcode")) else {
             return;
         };
         let out = extract(&bytes).expect("thumbnail");

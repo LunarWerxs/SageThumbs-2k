@@ -366,9 +366,7 @@ fn preview_streams_cover_from_oversized_cbz() {
 /// stream to prove the pane actually paints, rather than reasoning about it.
 #[test]
 fn preview_renders_a_jp2_from_memory_stream() {
-    let jp2 = std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2"),
-    );
+    let jp2 = std::fs::read(sagethumbs2k_core::testcorpus::dir().join("sample.jp2"));
     let Ok(jp2) = jp2 else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;
@@ -424,9 +422,7 @@ unsafe fn wait_for_pixel(parent: HWND, is_hit: impl Fn([u8; 4]) -> bool, secs: u
 /// pane actually changes each time, rather than keeping the previous file's pixels.
 #[test]
 fn preview_refreshes_when_one_handler_is_reused_across_files() {
-    let jp2 = std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2"),
-    );
+    let jp2 = std::fs::read(sagethumbs2k_core::testcorpus::dir().join("sample.jp2"));
     let Ok(jp2) = jp2 else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;
@@ -709,7 +705,7 @@ unsafe fn run_jp2_pane_walkthrough(paths: &[std::path::PathBuf]) -> Vec<String> 
 /// Every selection must render. A blank pane here is the bug the reporter is seeing.
 #[test]
 fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.jp2");
+    let corpus = sagethumbs2k_core::testcorpus::dir().join("sample.jp2");
     let Ok(jp2) = std::fs::read(&corpus) else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;
@@ -763,7 +759,7 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
 /// `scripts/build-corpus.ps1`; the test skips when the corpus has not been built.
 #[test]
 fn preview_renders_a_76_megapixel_jp2_inside_the_budget() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/huge.jp2");
+    let path = sagethumbs2k_core::testcorpus::dir().join("huge.jp2");
     let Ok(huge) = std::fs::read(&path) else {
         eprintln!("skipping: ../test-corpus/huge.jp2 not present (run scripts/build-corpus.ps1)");
         return;

@@ -456,9 +456,7 @@ fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
     reset_scratch();
     put("EnableThumbs", 1);
 
-    let corpus = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("test-corpus");
+    let corpus = sagethumbs2k_core::testcorpus::dir();
     let mut proved = 0;
     // ST2K_NO_MF=1 makes this process behave like a machine with NO Media Foundation, which
     // is what this test has to be: with the Store MPEG-2 Video Extension installed (as it is

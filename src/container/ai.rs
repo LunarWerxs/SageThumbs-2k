@@ -273,19 +273,14 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    fn corpus(name: &str) -> Vec<u8> {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join(name);
-        std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-    }
-
     /// The layout established against Illustrator 14's own output: 56x128, 8-bit, a 256
-    /// palette, the RLE tag, FD-escaped runs, exactly w*h pixels.
+    /// palette, the RLE tag, FD-escaped runs, exactly w*h pixels. `real.ai` is a corpus
+    /// sample, not a fixture in git: absent (CI), the test says NOT MEASURED and returns.
     #[test]
     fn real_ai_private_thumbnail_decodes_to_its_declared_size() {
-        let bytes = corpus("real.ai");
+        let Some(bytes) = crate::testcorpus::read("real.ai") else {
+            return;
+        };
         assert!(is_illustrator(&bytes));
         let img = private_thumbnail(&bytes).expect("thumbnail");
         assert_eq!((img.width(), img.height()), (56, 128));
@@ -315,7 +310,9 @@ mod tests {
     /// stand-in when the page is the placeholder.
     #[test]
     fn real_ai_private_thumbnail_agrees_with_the_rendered_page() {
-        let bytes = corpus("real.ai");
+        let Some(bytes) = crate::testcorpus::read("real.ai") else {
+            return;
+        };
         let thumb = private_thumbnail(&bytes).expect("thumbnail");
         let png = crate::pdf::render_first_page(&bytes, 256).expect("page render");
         let page = image::load_from_memory(&png).expect("png");
@@ -370,7 +367,16 @@ mod tests {
     /// other than 8, a missing end marker, an oversized declared edge.
     #[test]
     fn malformed_thumbnails_are_refused() {
-        let good = corpus("real.ai");
+        // The refusals that need no sample run everywhere.
+        assert!(private_thumbnail(b"%PDF-1.4 nothing here").is_none());
+        assert!(!is_illustrator(b"%PDF-1.4 nothing here"));
+        assert!(
+            private_thumbnail(b"%AI7_Thumbnail: 2 2 8\r%%BeginData: 4 Hex Bytes\r%00").is_none()
+        );
+        // The mutations of a real block need the corpus file (NOT MEASURED without it).
+        let Some(good) = crate::testcorpus::read("real.ai") else {
+            return;
+        };
         let at = find(&good, THUMB_KEY).unwrap();
         // Declare more rows than the runs supply.
         let mut short = good.clone();
@@ -394,7 +400,5 @@ mod tests {
         let end = find(&good, b"%%EndData").unwrap();
         let truncated = good[..end].to_vec();
         assert!(private_thumbnail(&truncated).is_none());
-        assert!(private_thumbnail(b"%PDF-1.4 nothing here").is_none());
-        assert!(!is_illustrator(b"%PDF-1.4 nothing here"));
     }
 }

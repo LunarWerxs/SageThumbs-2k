@@ -1536,9 +1536,7 @@ fn deep_session_over_the_new_parsers() {
     let mut seeds = new_surface_seeds();
     // Real samples where the corpus has them: a synthetic seed is a scaffold this code wrote
     // for itself, so it can only ever contain structures this code already thought of.
-    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("test-corpus");
+    let corpus = crate::testcorpus::dir();
     for name in [
         "sample.apk",
         "sample.xapk",
@@ -2034,11 +2032,7 @@ fn fuzz_seeds_over_decode_cascade(
 #[test]
 #[ignore = "deep corpus fuzz (minutes); run with --ignored"]
 fn parsers_survive_mutation_of_corpus_samples() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let roots = [
-        manifest.join("..").join("test-corpus"),
-        manifest.join("..").join("test-corpus-real"),
-    ];
+    let roots = [crate::testcorpus::dir(), crate::testcorpus::real_dir()];
     // Cap per-file bytes so a multi-MB RAW doesn't make the mutation loop crawl; the header
     // parsers only ever look near the start, and decode caps its own input anyway.
     const CAP: usize = 96 * 1024;

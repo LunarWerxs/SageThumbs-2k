@@ -856,9 +856,7 @@ mod tests {
         // is how the 2.0.0 wrong-layer bug was caught. The `--ignored` sweep still runs them.
         let slow_by_design = max_read != u64::MAX;
 
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         let Ok(entries) = std::fs::read_dir(&corpus) else {
             return;
         };
@@ -1218,9 +1216,7 @@ mod tests {
     /// Seeds for `fuzz_extract_cover`: every corpus sample (size-capped) plus a few
     /// degenerate buffers.
     fn fuzz_seed_corpus() -> Vec<Vec<u8>> {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         let mut seeds: Vec<Vec<u8>> = vec![Vec::new(), vec![0u8; 64], vec![0xFFu8; 64]];
         if let Ok(rd) = std::fs::read_dir(&corpus) {
             for entry in rd.flatten() {

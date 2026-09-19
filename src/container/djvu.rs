@@ -395,9 +395,7 @@ mod tests {
     #[test]
     #[ignore = "writes corpus fixtures on demand"]
     fn write_djvu_corpus_fixtures() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         assert!(corpus.is_dir(), "no test-corpus at {}", corpus.display());
 
         // Page-shaped and past the 4267 px long edge where the IW44 subsample reaches 4, i.e.
@@ -432,10 +430,7 @@ mod tests {
     /// corpus is absent (it is a sibling of the repo and CI never checks it out).
     #[test]
     fn the_corpus_scan_still_decodes_to_a_picture() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample.djvu");
+        let p = crate::testcorpus::dir().join("sample.djvu");
         let Ok(bytes) = std::fs::read(&p) else {
             return;
         };

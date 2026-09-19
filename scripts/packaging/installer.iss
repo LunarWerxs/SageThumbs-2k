@@ -73,10 +73,19 @@ OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}
 ; native codec tree. A 64 MiB dictionary keeps those repeated code regions in one
 ; solid window; /max's 8 MiB window evicts them and adds several megabytes without
 ; changing the installed files. 64 MiB is modest on supported Windows 10/11.
+#ifdef GateCompile
+; The pre-push gate compiles this script for real (the [Code] section has broken the
+; release build after a green push before: a Pascal type mismatch on 2026-09-19 cost a CI
+; round trip) against the last staged payload, and throws the output away. Stored, not
+; compressed, so the compile costs seconds; nothing built this way is ever shipped.
+Compression=none
+SolidCompression=no
+#else
 Compression=lzma2/ultra64
 ; Spend compile time, not runtime compatibility, on a denser match search.
 LZMANumFastBytes=273
 SolidCompression=yes
+#endif
 WizardStyle=modern
 ; Rich VERSIONINFO on Setup.exe - a metadata-less installer is heuristic-AV
 ; false-positive bait (same reason the binaries + magick stubs carry it).

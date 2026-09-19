@@ -922,32 +922,9 @@ if ($LASTEXITCODE) { throw "installer.iss [Code] lint failed (see above)" }
 # Pascal copy can actually be EXECUTED against the shared table - CI reports that leg as SKIP.
 & "$PSScriptRoot\check-email-rule.ps1"
 if ($LASTEXITCODE) { throw "email-rule implementations disagree (see above)" }
-$iscc = @(
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) {
-    # Fall back to the registry (Inno can install to a non-standard location).
-    # Most Uninstall keys have NO DisplayName/InstallLocation at all, and
-    # release-manifest-lib.ps1 turns on StrictMode, under which touching a missing
-    # property is a terminating error rather than $null. So probe the property bag
-    # instead of dotting straight into it: the un-guarded version crashed here before
-    # it could ever reach the per-user install this machine actually has, which would
-    # have taken out the x64 release build too, not just ARM64.
-    foreach ($r in 'HKLM:\SOFTWARE\WOW6432Node','HKLM:\SOFTWARE','HKCU:\SOFTWARE') {
-        $hit = Get-ChildItem "$r\Microsoft\Windows\CurrentVersion\Uninstall" -EA SilentlyContinue |
-            ForEach-Object { Get-ItemProperty $_.PSPath -EA SilentlyContinue } |
-            Where-Object {
-                $props = $_.PSObject.Properties
-                $props['DisplayName'] -and $props['InstallLocation'] -and
-                    $props['DisplayName'].Value -match 'Inno Setup' -and
-                    $props['InstallLocation'].Value
-            } |
-            ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
-            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if ($hit) { $iscc = $hit; break }
-    }
-}
+# The one lookup (standard folders, then the registry for a per-user or non-standard
+# install), shared with the pre-push gate's compile of the same script.
+$iscc = Find-ReleaseInnoSetupCompiler
 if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found. Install with: winget install JRSoftware.InnoSetup" }
 Write-Host "      ISCC: $iscc" -ForegroundColor DarkGray
 New-Item -ItemType Directory "$root\dist" -Force | Out-Null

@@ -838,9 +838,7 @@ mod tests {
     #[test]
     #[ignore = "writes a corpus fixture on demand"]
     fn write_pdf_corpus_fixture() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         assert!(corpus.is_dir(), "no test-corpus at {}", corpus.display());
         let pdf = solid_colour_pdf(&PAGES);
         let p = corpus.join("sample-multipage.pdf");

@@ -843,7 +843,7 @@ mod tests {
     /// one Background layer) and a legacy `.ase` banner. Skips where the sibling corpus is absent.
     #[test]
     fn real_sprites_render_at_their_declared_size() {
-        let dir = std::path::Path::new("../test-corpus");
+        let dir = crate::testcorpus::dir();
         for (name, w, h, min_opaque_pct) in [
             ("sample.aseprite", 48, 48, 30),
             ("sample-indexed.aseprite", 256, 256, 100),

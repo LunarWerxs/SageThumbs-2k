@@ -39,10 +39,7 @@ const CASES: &[&str] = &[
 
 fn corpus() -> std::path::PathBuf {
     // `..\test-corpus`, a sibling of the project root.
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("project root has a parent")
-        .join("test-corpus")
+    sagethumbs2k_core::testcorpus::dir()
 }
 
 /// Ask the shell for a thumbnail exactly the way a picker does.

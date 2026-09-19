@@ -384,11 +384,7 @@ mod illustrator_tests {
     use super::*;
 
     fn corpus(name: &str) -> Option<Vec<u8>> {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join(name);
-        std::fs::read(&p).ok()
+        crate::testcorpus::read(name)
     }
 
     /// Files Illustrator 30.8 (2026) wrote on 2026-09-19, authored through the app's own
@@ -397,7 +393,6 @@ mod illustrator_tests {
     #[test]
     fn a_modern_file_saved_without_pdf_content_gets_no_thumbnail_and_says_why() {
         let Some(bytes) = corpus("real-nocompat.ai") else {
-            eprintln!("NOT MEASURED: test-corpus/real-nocompat.ai is absent");
             return;
         };
         assert!(crate::container::ai::is_illustrator(&bytes));
@@ -417,7 +412,6 @@ mod illustrator_tests {
     #[test]
     fn a_modern_file_with_three_artboards_shows_all_three() {
         let Some(bytes) = corpus("real-artboards.ai") else {
-            eprintln!("NOT MEASURED: test-corpus/real-artboards.ai is absent");
             return;
         };
         let img = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
@@ -444,7 +438,6 @@ mod illustrator_tests {
         // Three artboards saved WITHOUT PDF content: one placeholder page, no raster -> no
         // thumbnail (nothing in the file can separate the artboards; issue #44's reply says so).
         let Some(bytes) = corpus("real-artboards-nocompat.ai") else {
-            eprintln!("NOT MEASURED: test-corpus/real-artboards-nocompat.ai is absent");
             return;
         };
         let r = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256)).expect("pdf tier");
@@ -456,7 +449,6 @@ mod illustrator_tests {
     #[test]
     fn a_legacy_postscript_ai_shows_its_private_thumbnail() {
         let Some(bytes) = corpus("real-legacy8.ai") else {
-            eprintln!("NOT MEASURED: test-corpus/real-legacy8.ai is absent");
             return;
         };
         assert!(bytes.starts_with(b"%!PS"));
@@ -503,26 +495,11 @@ mod illustrator_tests {
         .expect("pdf");
         let mut bytes = std::fs::read(&out).unwrap();
         if illustrator {
-            let real = std::fs::read(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("test-corpus")
-                    .join("real.ai"),
-            )
-            .unwrap();
-            let start = real
-                .windows(15)
-                .position(|w| w == b"%AI7_Thumbnail:")
-                .unwrap();
-            let end = start
-                + real[start..]
-                    .windows(9)
-                    .position(|w| w == b"%%EndData")
-                    .unwrap()
-                + 9;
-            bytes.extend_from_slice(b"\r%!PS-Adobe-3.0\r");
-            bytes.extend_from_slice(&real[start..end]);
-            bytes.extend_from_slice(b"\r");
+            // The Illustrator tell for every era is the `/AIPrivateData` key (a real file
+            // carries it in the PDF catalog; trailing bytes after %%EOF are what every
+            // Illustrator file has and what the renderer tolerates). No corpus file is
+            // needed, so this test runs on a CI checkout too.
+            bytes.extend_from_slice(b"\r%!PS-Adobe-3.0\r/AIPrivateData1 7 0 R\r");
         }
         bytes
     }

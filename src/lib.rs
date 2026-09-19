@@ -105,6 +105,10 @@ pub mod shellcmd;
 pub mod sqlite_prim;
 mod streamsrc;
 mod strip;
+// The one place test code learns where `..\test-corpus` is; public for the integration
+// tests and the `vdec` bin, and the pre-push gate's switch for making the corpus vanish.
+#[doc(hidden)]
+pub mod testcorpus;
 mod thumbprovider;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 mod topdf;

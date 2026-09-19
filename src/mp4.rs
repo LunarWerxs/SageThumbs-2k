@@ -1515,17 +1515,16 @@ mod tests {
     /// fixture.
     #[test]
     fn real_mp4_round_trips_through_mediafoundation() {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let candidates = [
             std::env::var("ST2K_TEST_VIDEO").ok(),
             Some(
-                base.join("test-corpus-real")
+                crate::testcorpus::real_dir()
                     .join("sample.mp4")
                     .to_string_lossy()
                     .into_owned(),
             ),
             Some(
-                base.join("test-corpus")
+                crate::testcorpus::dir()
                     .join("sample.mp4")
                     .to_string_lossy()
                     .into_owned(),

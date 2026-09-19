@@ -585,7 +585,7 @@ mod tests {
     /// ours to decide, so they deliberately stay out of tree.
     #[test]
     fn decodes_real_psp_family_samples_via_lz77() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus");
+        let corpus = crate::testcorpus::dir();
         // (file, expected dimensions, expected mostly-white background)
         let cases = [
             ("blob.PspBrush", 300u32, 300u32),

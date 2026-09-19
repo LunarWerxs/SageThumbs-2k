@@ -250,10 +250,8 @@ fn raw_corpus_samples_show_via_embedded_jpeg() {
     // Diagnostic (prints per-format coverage); skips when no corpus is present.
     // Prefer the REAL-content corpus (`test-corpus-real`) — the plain `test-corpus`
     // RAW entries are synthetic stubs with no embedded preview, which would mislead.
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let dir = ["test-corpus-real", "test-corpus"]
+    let dir = [crate::testcorpus::real_dir(), crate::testcorpus::dir()]
         .into_iter()
-        .map(|d| base.join(d))
         .find(|p| p.exists());
     let Some(dir) = dir else {
         eprintln!("no test corpus present — skipping RAW coverage check");

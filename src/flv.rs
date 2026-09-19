@@ -795,7 +795,6 @@ fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::path::Path;
 
     // --- Synthetic FLV construction ----------------------------------------------------------
 
@@ -1088,10 +1087,7 @@ mod tests {
     /// present (CI).
     #[test]
     fn corpus_sorenson_flv_declines_the_mp4_remux_path() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample.flv");
+        let path = crate::testcorpus::dir().join("sample.flv");
         let Ok(bytes) = std::fs::read(&path) else {
             eprintln!("corpus_sorenson_flv: no sample.flv — skipping");
             return;
@@ -1119,10 +1115,7 @@ mod tests {
     /// kind — would cost a process per thumbnail while still looking perfectly correct.
     #[test]
     fn corpus_h264_flv_remuxes_in_process() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample-h264.flv");
+        let path = crate::testcorpus::dir().join("sample-h264.flv");
         let Ok(bytes) = std::fs::read(&path) else {
             eprintln!("corpus_h264_flv: no sample-h264.flv — skipping");
             return;
@@ -1225,10 +1218,7 @@ mod tests {
     /// without committing a video fixture. Skips when no corpus sample is available.
     #[test]
     fn real_h264_flv_round_trips_through_mediafoundation() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample.mp4");
+        let path = crate::testcorpus::dir().join("sample.mp4");
         let Ok(bytes) = std::fs::read(&path) else {
             eprintln!("real_h264_flv_round_trips: no sample.mp4 — skipping");
             return;

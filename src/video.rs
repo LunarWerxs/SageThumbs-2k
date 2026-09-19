@@ -1017,7 +1017,6 @@ unsafe fn copy_bgrx_to_rgba(
 #[cfg(test)]
 mod tests {
     use super::is_near_black;
-    use std::path::Path;
 
     /// Build an RGBA buffer of `n` pixels, every channel set to `v`.
     fn flat(n: usize, v: u8) -> Vec<u8> {
@@ -1090,10 +1089,8 @@ mod tests {
     /// wherever the corpus isn't present (e.g. CI, or before that script has run).
     #[test]
     fn block_stream_decodes_avi_and_wmv() {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let dirs: Vec<_> = ["test-corpus-real", "test-corpus"]
+        let dirs: Vec<_> = [crate::testcorpus::real_dir(), crate::testcorpus::dir()]
             .into_iter()
-            .map(|d| base.join(d))
             .filter(|p| p.exists())
             .collect();
         let samples: Vec<_> = ["sample.avi", "sample.wmv"]

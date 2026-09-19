@@ -1161,3 +1161,35 @@ function Get-ReleaseOpenTodoItems {
     # site re-wraps zero or one item correctly.
     return $open.ToArray()
 }
+
+# Where Inno Setup's compiler is on this machine, or $null. The ONE lookup, shared by the
+# release build (which compiles the installer for real) and the pre-push gate (which compiles
+# it in gate mode to prove the [Code] section still compiles). The standard locations first,
+# then the registry, because Inno can install per-user or to a non-standard folder.
+function Find-ReleaseInnoSetupCompiler {
+    $iscc = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if ($iscc) { return $iscc }
+    # Most Uninstall keys have NO DisplayName/InstallLocation at all, and this library turns
+    # on StrictMode, under which touching a missing property is a terminating error rather
+    # than $null. So probe the property bag instead of dotting straight into it: the
+    # un-guarded version crashed here before it could ever reach the per-user install this
+    # machine actually has.
+    foreach ($r in 'HKLM:\SOFTWARE\WOW6432Node', 'HKLM:\SOFTWARE', 'HKCU:\SOFTWARE') {
+        $hit = Get-ChildItem "$r\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
+            Where-Object {
+                $props = $_.PSObject.Properties
+                $props['DisplayName'] -and $props['InstallLocation'] -and
+                    $props['DisplayName'].Value -match 'Inno Setup' -and
+                    $props['InstallLocation'].Value
+            } |
+            ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if ($hit) { return $hit }
+    }
+    return $null
+}

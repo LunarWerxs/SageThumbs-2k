@@ -525,8 +525,7 @@ mod visual {
     /// can be LOOKED AT. Pixel assertions prove placement; only eyes prove legibility.
     #[test]
     fn render_sample_sheet() {
-        let src =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.png");
+        let src = crate::testcorpus::dir().join("sample.png");
         let Ok(img) = image::open(&src) else {
             eprintln!("skipping: no ../test-corpus/sample.png");
             return;

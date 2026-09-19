@@ -582,8 +582,8 @@ mod tests {
     /// Skipped when the corpus isn't present (it is a sibling of the repo; CI has none).
     #[test]
     fn corpus_audio_covers_are_real_pictures() {
-        let dir = std::path::Path::new("../test-corpus");
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let dir = crate::testcorpus::dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             return;
         };
         let mut checked = 0usize;

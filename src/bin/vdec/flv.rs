@@ -336,10 +336,7 @@ mod tests {
     /// now decode to a plausible PNG. Skips when the dev corpus isn't present (CI).
     #[test]
     fn corpus_sorenson_sample_decodes() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample.flv");
+        let path = sagethumbs2k_core::testcorpus::dir().join("sample.flv");
         let Ok(bytes) = std::fs::read(&path) else {
             eprintln!("corpus_sorenson_sample_decodes: no sample.flv — skipping");
             return;

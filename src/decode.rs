@@ -2120,9 +2120,7 @@ mod reduced_ifd0_gate {
     /// The real files, by name. Skipped when the corpus is absent (CI never checks it out).
     #[test]
     fn the_corpus_raws_land_on_the_side_the_measurement_says() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         // (file, tile, must this be served from IFD0?)
         let cases = [
             // The placeholder. Bigger than both small tiles and still worthless.
@@ -2171,9 +2169,7 @@ mod reduced_ifd0_evidence {
     #[test]
     #[ignore = "prints corpus measurements; needs ../test-corpus"]
     fn what_every_raw_sample_holds_in_its_reduced_ifd0() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = crate::testcorpus::dir();
         let Ok(rd) = std::fs::read_dir(&corpus) else {
             eprintln!("no corpus at {}", corpus.display());
             return;

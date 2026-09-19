@@ -1429,10 +1429,7 @@ mod tests {
     /// this also covers the first-cluster fallback). Skips when the corpus is absent (CI).
     #[test]
     fn corpus_vp9_profile2_yields_a_keyframe() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample-vp9p2.webm");
+        let path = crate::testcorpus::dir().join("sample-vp9p2.webm");
         let Ok(bytes) = std::fs::read(&path) else {
             eprintln!("corpus_vp9_profile2: no sample-vp9p2.webm — skipping");
             return;

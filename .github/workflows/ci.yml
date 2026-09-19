@@ -264,6 +264,11 @@ jobs:
     runs-on: windows-11-arm
     env:
       RUSTFLAGS: -C target-feature=+crt-static
+      # rust-toolchain.toml names the x64 host toolchain, which rustup on this ARM64 runner
+      # refuses ("target tuple in channel name"), so every plain `rustc`/`cargo` here - the
+      # cache action's `rustc -vV` probe included - must resolve to the native toolchain.
+      # Without this the cache action failed on every run and the job rebuilt from scratch.
+      RUSTUP_TOOLCHAIN: stable-aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

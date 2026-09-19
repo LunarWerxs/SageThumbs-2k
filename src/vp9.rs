@@ -83,7 +83,6 @@ pub(crate) fn vp9_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<imag
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::path::Path;
 
     /// Junk in, `None` out, without ever reaching a spawn: the track gate must reject
     /// non-VP9 input before the keyframe walk touches a cluster.
@@ -104,10 +103,7 @@ mod tests {
     /// nothing about the feature, so it is inverted here into the stronger claim.
     #[test]
     fn a_real_profile2_container_decodes_when_the_helper_exists() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join("sample-vp9p2.webm");
+        let path = crate::testcorpus::dir().join("sample-vp9p2.webm");
         let Ok(bytes) = std::fs::read(&path) else {
             return; // corpus-gated, like the other sample-backed tests
         };

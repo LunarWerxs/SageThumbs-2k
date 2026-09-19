@@ -1470,10 +1470,7 @@ mod tests {
 
     #[test]
     fn real_large_pef_stream_uses_bounded_preview_when_corpus_is_available() {
-        let Some(parent) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent() else {
-            return;
-        };
-        let path = parent.join("test-corpus-real").join("sample.pef");
+        let path = crate::testcorpus::real_dir().join("sample.pef");
         if !path.exists() {
             return;
         }

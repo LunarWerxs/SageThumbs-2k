@@ -960,13 +960,10 @@ pub(crate) mod fuzzseed {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     fn corpus(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus")
-            .join(name)
+        crate::testcorpus::dir().join(name)
     }
 
     /// The three synthetic shapes all demux to the SAME elementary stream, byte for byte:
