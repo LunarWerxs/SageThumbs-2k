@@ -781,6 +781,90 @@ fn verify_signature(key: &[u8; 32], bytes: &[u8], sig_hex: &str) -> bool {
         .is_ok()
 }
 
+/// The file version stamped into a PE's `VS_VERSIONINFO` resource, as (major, minor, patch),
+/// read with the Windows version API. `None` when the file carries no version resource or
+/// the API refuses it. Reads the file on disk: the caller passes the locked, re-verified
+/// installer, so the bytes read here are the signed bytes.
+fn pe_stamped_version(path: &Path) -> Option<(u32, u32, u32)> {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+    };
+    let wide = HSTRING::from(path.as_os_str());
+    // SAFETY: plain wide-string in, a buffer we size from the API's own answer, and a pointer
+    // into that buffer that VerQueryValueW promises stays valid while the buffer does.
+    unsafe {
+        let mut handle = 0u32;
+        let size = GetFileVersionInfoSizeW(&wide, Some(&mut handle));
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        GetFileVersionInfoW(&wide, Some(0), size, buf.as_mut_ptr().cast()).ok()?;
+        let mut info: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        if !VerQueryValueW(buf.as_ptr().cast(), w!("\\"), &mut info, &mut len).as_bool()
+            || info.is_null()
+            || (len as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+        {
+            return None;
+        }
+        let fixed = std::ptr::read_unaligned(info as *const VS_FIXEDFILEINFO);
+        if fixed.dwSignature != 0xFEEF_04BD {
+            return None;
+        }
+        Some((
+            fixed.dwFileVersionMS >> 16,
+            fixed.dwFileVersionMS & 0xFFFF,
+            fixed.dwFileVersionLS >> 16,
+        ))
+    }
+}
+
+/// Bind the signed installer to the update it claims to be: the version stamped inside the
+/// file must equal `advertised` (the feed's tag) and be newer than `running`. `Err` carries
+/// the user-facing refusal. Pure in `stamped`; [`pe_stamped_version`] supplies it.
+fn version_binding(
+    stamped: Option<(u32, u32, u32)>,
+    advertised: &str,
+    running: &str,
+) -> Result<(), String> {
+    let Some(stamped) = stamped else {
+        return Err("The downloaded update carries no version stamp, so it was not run.".into());
+    };
+    let Some(advertised) = parse_ver(advertised) else {
+        return Err("The update's advertised version could not be read, so it was not run.".into());
+    };
+    let fmt = |(a, b, c): (u32, u32, u32)| format!("{a}.{b}.{c}");
+    if stamped != advertised {
+        return Err(format!(
+            "The downloaded update is version {} but was offered as {}, so it was not run.",
+            fmt(stamped),
+            fmt(advertised)
+        ));
+    }
+    if let Some(running) = parse_ver(running) {
+        if stamped <= running {
+            return Err(format!(
+                "The downloaded update is version {}, not newer than the installed {}, so it \
+                 was not run.",
+                fmt(stamped),
+                fmt(running)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// [`version_binding`] for the installer saved at `path`.
+fn stamped_version_is_the_advertised_upgrade(
+    path: &Path,
+    advertised: &str,
+    running: &str,
+) -> Result<(), String> {
+    version_binding(pe_stamped_version(path), advertised, running)
+}
+
 /// Validate downloaded installer bytes before we ever run them elevated: a real PE, the
 /// exact advertised size, and (when GitHub supplied a digest) a matching sha256. False =
 /// refuse — we'd rather fall back to the manual page than run an unverified installer. We
@@ -1169,6 +1253,19 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
         }
         let written = write_locked_installer(&tag, &bytes, &asset)
             .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
+        // The signature proves these bytes are a release WE signed; it does not say which
+        // one. A feed that hands out a genuine, older installer under a newer tag would
+        // pass everything above and downgrade the machine (2026-09-19 audit concern 3).
+        // The version Inno stamps into the setup's own resource is inside the signed bytes,
+        // so it is the binding: it must be the version the feed advertised and newer than
+        // this running build, or the file is never launched.
+        if let Err(why) =
+            stamped_version_is_the_advertised_upgrade(&written.0, &tag, env!("CARGO_PKG_VERSION"))
+        {
+            drop(written.1);
+            cleanup_installer_payload(&written.0);
+            return Err(UpdateError::Failed(why));
+        }
         unsafe {
             set_line(&dlg, 1, "Installing update\u{2026}");
             let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
@@ -1405,6 +1502,55 @@ mod tests {
     /// will be; see `the_compiled_in_key_is_not_the_placeholder` below for that one.
     fn test_signing_key() -> SigningKey {
         SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    /// 2026-09-19 audit concern 3: the signature says "ours", the stamp says "which". A
+    /// genuine older installer served under a newer tag, or the right tag with the wrong
+    /// bytes, is refused; only the advertised version, newer than the running one, passes.
+    #[test]
+    fn version_binding_refuses_a_mismatch_and_a_downgrade() {
+        assert_eq!(
+            super::version_binding(Some((3, 1, 2)), "v3.1.2", "3.1.1"),
+            Ok(())
+        );
+        assert_eq!(
+            super::version_binding(Some((3, 1, 2)), "3.1.2", "3.1.1"),
+            Ok(())
+        );
+        // A genuine, signed 3.0.5 offered as 3.1.2: the stamp gives it away.
+        let err = super::version_binding(Some((3, 0, 5)), "v3.1.2", "3.1.1").unwrap_err();
+        assert!(err.contains("3.0.5") && err.contains("3.1.2"), "{err}");
+        // The advertised tag matches the stamp but is not newer than what runs here.
+        let err = super::version_binding(Some((3, 1, 1)), "v3.1.1", "3.1.1").unwrap_err();
+        assert!(err.contains("not newer"), "{err}");
+        let err = super::version_binding(Some((3, 0, 9)), "v3.0.9", "3.1.1").unwrap_err();
+        assert!(err.contains("not newer"), "{err}");
+        // No stamp at all is a refusal, never a pass.
+        assert!(super::version_binding(None, "v3.1.2", "3.1.1").is_err());
+        // An unparseable tag is a refusal too.
+        assert!(super::version_binding(Some((3, 1, 2)), "latest", "3.1.1").is_err());
+    }
+
+    /// The stamp reader on real PEs: this very binary is stamped with the crate version by
+    /// the build script (the same stamp the installer's stub gets from `installer.iss`), a
+    /// Windows system file carries the OS version, and a missing file is `None`, not a panic.
+    #[test]
+    fn pe_stamped_version_reads_a_real_resource_and_tolerates_none() {
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(
+            super::pe_stamped_version(&me),
+            super::parse_ver(env!("CARGO_PKG_VERSION")),
+            "this binary's stamp is the crate version"
+        );
+        let sys = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap())
+            .join("System32")
+            .join("kernel32.dll");
+        let v = super::pe_stamped_version(&sys).expect("kernel32 carries a version resource");
+        assert!(v.0 >= 6, "an NT 6+ kernel32: {v:?}");
+        assert_eq!(
+            super::pe_stamped_version(std::path::Path::new("C:\\does\\not\\exist.exe")),
+            None
+        );
     }
 
     fn hex_sig(sig: &ed25519_dalek::Signature) -> String {

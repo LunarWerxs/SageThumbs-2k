@@ -326,6 +326,61 @@ mod tests {
 
     use crate::fsutil::lock_until_first_retry;
 
+    /// 2026-09-19 audit F19: a desktop.ini this process cannot READ (a sharing lock that
+    /// outlasts the retry budget here; a permission denial in the wild) used to read as "no
+    /// file", and the merge then replaced the folder's real desktop.ini - InfoTip,
+    /// `[LocalizedFileNames]` and all - with our two keys, reporting success. The verb must
+    /// refuse, leave desktop.ini byte-for-byte, and write no `.ico` either.
+    #[test]
+    fn set_folder_icon_refuses_when_desktop_ini_cannot_be_read_and_leaves_it_untouched() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_foldericon_unreadable_ini_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = make_src(&dir);
+        let ini = dir.join("desktop.ini");
+        let original = b"[.ShellClassInfo]\r\nInfoTip=keep me\r\n[LocalizedFileNames]\r\nsrc.png=@shell32.dll,-1\r\n";
+        std::fs::write(&ini, original).unwrap();
+
+        // Held with NO sharing for the whole call: every read attempt is a sharing violation,
+        // and `read_retrying` gives up after its budget rather than reading "nothing".
+        let hold = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&ini)
+            .expect("exclusive handle on desktop.ini");
+        let result = set_folder_icon(src_path.to_str().unwrap());
+        drop(hold);
+
+        assert!(
+            result.is_err(),
+            "an unreadable desktop.ini must refuse the verb"
+        );
+        assert_eq!(
+            std::fs::read(&ini).unwrap(),
+            original,
+            "desktop.ini must be untouched"
+        );
+        assert!(
+            !dir.join("SageThumbsFolder.ico").exists(),
+            "no icon may be written when the ini could not be read"
+        );
+        assert!(
+            std::fs::read_dir(&dir).unwrap().flatten().all(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n == "src.png" || n == "desktop.ini"
+            }),
+            "no staging file may be left behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A transient Explorer/shell lock on the destination `.ico` (Windows os error 5/32)
     /// must not fail the folder-icon write outright — the rename has to retry past it
     /// (`fsutil::rename_retrying`), not fail on a bare `std::fs::rename`.

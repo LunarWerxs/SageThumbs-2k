@@ -811,7 +811,7 @@ unsafe fn apply_container_settings(hwnd: HWND) {
 /// decisions that do not get retuned, and each polarity would have to be re-derived by hand
 /// from its accessor - getting one wrong silently INVERTS a setting for every user who ever
 /// pressed OK, which is a far worse failure than the one being fixed.
-unsafe fn apply_tuning_numbers(hwnd: HWND) {
+pub(super) unsafe fn apply_tuning_numbers(hwnd: HWND) {
     let mut ok = Default::default();
     let max_mb = GetDlgItemInt(hwnd, ID_MAXSIZE, Some(&mut ok), false);
     let _ = note(settings::set_dword_tracking_default(

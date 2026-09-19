@@ -403,21 +403,28 @@ pub(super) fn post_sync(target: isize, event: SyncEvent) {
     }
 }
 
+/// The UI half of a successful connect (or initial-sync retry): the pull has just landed in
+/// the settings store, so every control is reloaded from it BEFORE the user can Save.
+///
+/// Until 2026-09-19 this arm only refreshed the sync row: the open dialog's controls still
+/// showed the pre-pull values, so a Save wrote them straight back over the pull and pushed
+/// them to the account (audit F07: second PC, sign in, Save = the other PC's settings
+/// overwritten). `Pulled(Ok(true))` had always reloaded; this route now does the same.
+/// Split from the message box so the regression test can drive it headlessly.
+pub(super) unsafe fn on_connected_synced(hwnd: HWND) {
+    super::values::refresh_from_settings(hwnd);
+    refresh_sync_ui(hwnd);
+    // However they got here — the banner, the sync button, or credentials this machine
+    // already had — the sign-in campaign is finished. Retire it so it is never asked
+    // again, including if they later sign out.
+    crate::nudge::mark_signed_in();
+}
+
 /// Apply a finished sync op to the UI (runs on the message thread).
 pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
         SyncEvent::Connected(Ok(crate::sync_client::ConnectOutcome::Synced { label })) => {
-            // The connect (or the initial-sync retry) has just PULLED the account's settings
-            // into HKCU, exactly like `Pulled(Ok(true))` below - and like there, the open
-            // dialog's controls still show the pre-pull values, so a Save now would write
-            // them straight back over the pull and push them to the account (2026-09-19
-            // audit F07: second PC, sign in, Save = the other PC's settings overwritten).
-            super::values::refresh_from_settings(hwnd);
-            refresh_sync_ui(hwnd);
-            // However they got here — the banner, the sync button, or credentials this machine
-            // already had — the sign-in campaign is finished. Retire it so it is never asked
-            // again, including if they later sign out.
-            crate::nudge::mark_signed_in();
+            on_connected_synced(hwnd);
             msg(
                 hwnd,
                 &t("sync_signed_in").replace("{who}", &label),
@@ -541,6 +548,69 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-09-19 audit F07, the connect -> pull -> Save round trip. Runs the body in a child
+    /// copy of this test binary with `ST2K_PORTABLE_INI` pointing at a scratch file, because
+    /// the settings store's backing is resolved once per process and the parent process
+    /// must never write to the developer's real HKCU.
+    #[test]
+    fn a_pull_delivered_by_connect_reaches_the_controls_before_save_can_overwrite_it() {
+        const MARK: &str = "ST2K_TEST_CONNECT_PULL_SAVE";
+        if std::env::var_os(MARK).is_none() {
+            let dir = std::env::temp_dir().join(format!("st2k_f07_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let ini = dir.join("SageThumbs2K.ini");
+            std::fs::write(&ini, "[Settings]\r\nJPEG=70\r\n").unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "settings_dlg::sync::tests::a_pull_delivered_by_connect_reaches_the_controls_before_save_can_overwrite_it",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(MARK, "1")
+                .env("ST2K_PORTABLE_INI", &ini)
+                .output()
+                .expect("spawn the child test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stdout.contains("test result: ok. 1 passed"),
+                "child failed:\n{stdout}\n{stderr}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        assert!(settings::portable(), "the child must be on the scratch ini");
+        assert_eq!(settings::jpeg_quality(), 70, "the seeded pre-pull value");
+        unsafe {
+            let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .unwrap()
+                .into();
+            let hwnd = super::super::shot::build_settings_shot_window(hinst, false)
+                .expect("headless settings window");
+            let mut ok = windows::core::BOOL::default();
+            assert_eq!(GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false), 70);
+
+            // The pull lands in the store while the dialog is open - what `connect` /
+            // `retry_initial_sync` do through `apply_remote` - and the control still shows 70.
+            settings::set_dword("JPEG", 42).unwrap();
+            assert_eq!(GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false), 70);
+
+            // The regression: before the fix a Save here wrote 70 back over the pull.
+            on_connected_synced(hwnd);
+            assert_eq!(
+                GetDlgItemInt(hwnd, ID_JPEG, Some(&mut ok), false),
+                42,
+                "Connected(Synced) must reload the controls from the pulled store"
+            );
+            super::super::values::apply_tuning_numbers(hwnd);
+            assert_eq!(settings::jpeg_quality(), 42, "Save kept the pulled value");
+            let _ = DestroyWindow(hwnd);
+        }
+    }
 
     #[test]
     fn signed_out_state_ignores_pending_markers() {

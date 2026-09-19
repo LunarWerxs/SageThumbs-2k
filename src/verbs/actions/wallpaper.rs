@@ -182,6 +182,69 @@ mod tests {
         assert_eq!(style_and_tile(WallpaperMode::Span), ("22", "0"));
     }
 
+    /// 2026-09-19 audit F21: Set as lock screen used to rewrite `wallpaper.png`, the desktop
+    /// wallpaper's persistent asset (the desktop re-reads that exact path at logon), so the
+    /// lock screen replaced the wallpaper's backing file. Each has its own file now: after a
+    /// lock-screen prepare the wallpaper bytes are identical, and the other order holds too.
+    #[test]
+    fn lock_screen_and_wallpaper_keep_separate_assets() {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_wallpaper_vs_lockscreen_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = |name: &str, rgb: [u8; 3]| {
+            let p = dir.join(name);
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb(rgb));
+            image::DynamicImage::ImageRgb8(img)
+                .save_with_format(&p, ImageFormat::Png)
+                .unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let red = png("red.png", [200, 0, 0]);
+        let blue = png("blue.png", [0, 0, 200]);
+
+        let wall = prepare_wallpaper_in(&dir, &red).unwrap();
+        assert_eq!(wall, dir.join("wallpaper.png"));
+        let wall_bytes = std::fs::read(&wall).unwrap();
+
+        let lock = prepare_lock_screen_in(&dir, &blue).unwrap();
+        assert_eq!(
+            lock,
+            dir.join("lockscreen.png"),
+            "the lock screen has its own file"
+        );
+        assert_ne!(lock, wall);
+        assert_eq!(
+            std::fs::read(&wall).unwrap(),
+            wall_bytes,
+            "Set as lock screen must not touch the wallpaper's bytes"
+        );
+        let lock_bytes = std::fs::read(&lock).unwrap();
+        assert_ne!(
+            lock_bytes, wall_bytes,
+            "two different pictures, two different files"
+        );
+
+        // And the other order: a new wallpaper leaves the lock screen alone.
+        let wall2 = prepare_wallpaper_in(&dir, &blue).unwrap();
+        assert_eq!(wall2, wall);
+        assert_eq!(
+            std::fs::read(&lock).unwrap(),
+            lock_bytes,
+            "the lock screen is untouched"
+        );
+        assert!(
+            crate::fsutil::staging_leftovers(&wall).is_empty()
+                && crate::fsutil::staging_leftovers(&lock).is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A transient Explorer/AV lock on the destination (Windows os error 5/32) must not
     /// fail the wallpaper write outright — `prepare_wallpaper_in`'s final rename has to
     /// retry past it (`fsutil::rename_retrying`), not fail on a bare `std::fs::rename`.
