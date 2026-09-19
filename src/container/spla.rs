@@ -59,7 +59,13 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     let rig = Rig::parse(&root)?;
     let frame = rig.first_frame()?;
 
-    // Load every asset the frame actually references, once, keyed by part index.
+    // Load every asset the frame actually references, once, keyed by part index - under ONE
+    // aggregate budget on the DECODED pixels. The per-asset and per-canvas caps each bound one
+    // picture, not their sum: 256 parts x 4096^2 x 4 bytes is 16 GiB of retained buffers from
+    // a few KB of zip (2026-09-19 audit F01), and this runs inside Explorer for the menu
+    // preview. Charged as each asset is KEPT, so the peak is this budget plus one asset.
+    const MAX_TOTAL_DECODED_BYTES: u64 = 96 * 1024 * 1024;
+    let mut decoded_bytes: u64 = 0;
     let mut assets: Vec<Option<RgbaImage>> = vec![None; rig.parts.len()];
     for placed in &frame {
         let part = &rig.parts[placed.part];
@@ -72,7 +78,14 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
         let Some(bytes) = read_named(zip, path) else {
             continue;
         };
-        assets[placed.part] = decode_asset(&bytes);
+        let Some(img) = decode_asset(&bytes) else {
+            continue;
+        };
+        decoded_bytes += u64::from(img.width()) * u64::from(img.height()) * 4;
+        if decoded_bytes > MAX_TOTAL_DECODED_BYTES {
+            return None;
+        }
+        assets[placed.part] = Some(img);
     }
 
     let canvas = render(&rig, &frame, &assets)?;

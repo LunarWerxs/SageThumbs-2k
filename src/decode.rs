@@ -1109,6 +1109,7 @@ pub use readers::{
     wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, ANY_PREVIEW, COLOR_HEAD_BYTES,
     EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
 };
+pub(crate) use thumb::exif_orientation;
 pub use thumb::{
     decode_thumbnail_opts, embedded_preview_serves, reduce_to_fit, thumbnail_from_covers,
     thumbnail_from_image,
@@ -1410,12 +1411,26 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
 ///     (measured against the bundled binary, 6.0 s for the `.mef` and 3.2 s for the `.iiq`)
 ///     where the tile path is tens of milliseconds and already correct.
 pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
-    let small = decode_full_for_output(bytes)?;
-    let Some(ext) = std::path::Path::new(path)
+    let ext = std::path::Path::new(path)
         .extension()
         .and_then(|x| x.to_str())
-        .map(|x| x.to_ascii_lowercase())
-    else {
+        .map(|x| x.to_ascii_lowercase());
+    let small = match decode_full_for_output(bytes) {
+        Ok(img) => img,
+        // A NAME-selected coder (sct, pix, rla, ...) has no byte signature the sniffing full
+        // decode can find. The tile path already retried these by name; the full path did
+        // not, so a file that thumbnailed still failed to Convert or Copy (2026-09-19 audit
+        // F06). Same full-fidelity limits as the RAW re-read below.
+        Err(e) => {
+            return match ext.as_deref() {
+                Some(x) if magick::has_name_selected_coder(x) => {
+                    magick::decode_named_extension_native(bytes, x)
+                }
+                _ => Err(e),
+            };
+        }
+    };
+    let Some(ext) = ext else {
         return Ok(small);
     };
     if !magick::is_raw_coder_ext(&ext) {

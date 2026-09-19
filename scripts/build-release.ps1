@@ -257,16 +257,30 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 # The portable zip carries the same slim DLL: `st2k register` points HKCU at it, which is how
 # a no-install copy gets Explorer thumbnails at all. Under -SkipBuild this is whatever the
 # preceding installer pass built for this architecture, which is exactly what we want.
-Copy-Item "$targetRel\sagethumbs2k.dll" $stage
+# Under -SkipBuild the PORTABLE payload is taken from the installer stage that release.ps1 has
+# just re-hashed and validated, never from the mutable cargo output directory: a same-version
+# default-feature build run in between (a `git push` does exactly that) would otherwise put
+# unverified EXEs without html-preview/hdr-capture/webp-lossy into the zip while the signed
+# installer still passed its hashes (2026-09-19 audit F12). A fresh build copies its own output.
+$binSrc = $targetRel
+if ($SkipBuild -and $Portable) {
+    $installerStage = Join-Path $root "scripts\packaging\stage\$Architecture"
+    if (-not (Test-Path (Join-Path $installerStage 'SageThumbs2K.exe'))) {
+        throw "-SkipBuild -Portable needs the validated installer stage at $installerStage (run the installer build for this architecture first)"
+    }
+    $binSrc = $installerStage
+    Write-Host "  portable payload: taken from the validated installer stage ($installerStage)" -ForegroundColor DarkGray
+}
+Copy-Item "$binSrc\sagethumbs2k.dll" $stage
 # The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly
 # (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
-Copy-Item "$targetRel\SageThumbs2K.exe" $stage
-Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
+Copy-Item "$binSrc\SageThumbs2K.exe" $stage
+Copy-Item "$binSrc\st2k.exe" $stage  # the command-line / AI-agent tool
 # The Open/Save-dialog selection reader. A SEPARATE tiny cdylib because it is loaded into
 # other applications by a WH_CALLWNDPROC hook (see dlghook/Cargo.toml) - the app looks for it
 # beside its own exe and simply has no dialog support when it is absent, so shipping it is
 # what turns the feature on.
-Copy-Item "$targetRel\st2k_dlghook.dll" $stage
+Copy-Item "$binSrc\st2k_dlghook.dll" $stage
 # Sign the shipped PE files IN THE STAGE, before the installer, the portable zip and the
 # MSIX pick them up, so every artifact carries the same signed bytes (issue #30; the owner
 # reopened code signing on 2026-09-01, docs/RELEASE-SECURITY.md). Until the Azure Artifact

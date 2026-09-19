@@ -153,7 +153,9 @@ pub(super) unsafe fn load_defaults(hwnd: HWND) {
     );
     check(hwnd, ID_C_SORT, true);
     check(hwnd, ID_C_PREFER_COVER, true);
-    check(hwnd, ID_C_SKIP_SCAN, false);
+    // ON, like `settings::container_skip_scanlation`'s fallback and a clean install (Michael,
+    // 2026-09-15); a reset used to switch it off and so differ from a fresh install (F08).
+    check(hwnd, ID_C_SKIP_SCAN, true);
     check(hwnd, ID_C_ARCHIVE_SHEET, true);
     check(hwnd, ID_MENU_QUICK, false); // see settings::menu_quick_verbs's documented default
     check(hwnd, ID_MENU_CHECKER, true);

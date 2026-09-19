@@ -761,7 +761,7 @@ fn failed_magick_conversion_preserves_an_existing_destination() {
         "a failed conversion must not truncate or delete the old destination"
     );
     assert!(
-        !with_tmp_suffix(&out).exists(),
+        staging_leftovers(&out).is_empty(),
         "a failed conversion must clean up its temporary file"
     );
 
@@ -783,7 +783,7 @@ fn atomic_write_replaces_an_existing_destination_without_temp_debris() {
     .unwrap();
 
     assert_eq!(std::fs::read(&out).unwrap(), b"finished new bytes");
-    assert!(!with_tmp_suffix(&out).exists());
+    assert!(staging_leftovers(&out).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

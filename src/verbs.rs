@@ -48,8 +48,8 @@ pub(crate) use menu::leaf_count;
 pub use encode::{
     compress_to_size, convert_file, convert_file_opts, convert_file_opts_named,
     convert_image_to_pdf_in, convert_to, convert_to_magick_in, convert_to_magick_in_named,
-    convert_to_reporting, resize_file, shrink_for_email, transform_file, ConvertOpts, Corner,
-    Resize, Target, Watermark,
+    convert_to_reporting, convert_to_stripped, resize_file, shrink_for_email, transform_file,
+    ConvertOpts, Corner, Resize, Target, Watermark,
 };
 pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 
@@ -78,14 +78,16 @@ pub use actions::{rename_by_pattern, rename_pattern_preview};
 // Crate-internal helpers surfaced ONLY for the in-crate `tests` module below
 // (module-private in the monolith). `#[cfg(test)]` so they don't warn as unused
 // in a normal (non-test) lib build — they're reached only via `super::*` in tests.
-pub(crate) use actions::{prepare_wallpaper_in, set_folder_icon};
+pub(crate) use actions::{prepare_lock_screen_in, prepare_wallpaper_in, set_folder_icon};
 #[cfg(test)]
 pub(crate) use actions::{rename_one, set_wallpaper, tag_base};
 // `write_atomic` is reachable in normal builds too: `topdf` writes through it.
+#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use encode::staging_leftovers;
+pub(crate) use encode::write_atomic;
 #[cfg(test)]
 pub(crate) use encode::{apply_resize, convert_to_magick};
-#[allow(unused_imports)]
-pub(crate) use encode::{with_tmp_suffix, write_atomic};
 #[cfg(test)]
 pub(crate) use fileops::{combined_path, expand_template, sanitize_component, sort_by_dimensions};
 

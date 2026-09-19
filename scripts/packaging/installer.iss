@@ -785,6 +785,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Stale: String;
+  R: Integer;
 begin
   if CurStep = ssInstall then
   begin
@@ -806,6 +807,10 @@ begin
   if CurStep = ssPostInstall then
   begin
     Stale := StaleAfterInstall;
+    // Remove the start-up re-registration task an EARLIER stale install may have left; it is
+    // recreated just below if this install is stale too (2026-09-19 audit F13).
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
+      SW_HIDE, ewWaitUntilTerminated, R);
     if Stale <> '' then
     begin
       // The [Run] regsvr32 above just re-registered whichever DLL was actually on disk at
@@ -824,6 +829,15 @@ begin
       RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
         'SageThumbs2KReregister',
         ExpandConstant('"{sys}\regsvr32.exe" /s "{app}\{#AppDll}"'));
+      // HKLM RunOnce runs only when an ADMINISTRATOR signs in after the restart; on a PC
+      // whose people are standard users the new DLL would sit unregistered for as long as
+      // that takes (2026-09-19 audit F13). A SYSTEM task at the next start runs for anybody,
+      // before any sign-in; it is removed again by the next install that completes cleanly
+      // (below) and by the uninstaller. Re-registering an already registered DLL is a no-op.
+      Exec(ExpandConstant('{sys}\schtasks.exe'),
+        '/Create /TN "SageThumbs2K-Reregister" /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "\"'
+          + ExpandConstant('{sys}\regsvr32.exe') + '\" /s \"' + ExpandConstant('{app}\{#AppDll}') + '\""',
+        '', SW_HIDE, ewWaitUntilTerminated, R);
       MsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
         + ' OLD VERSION.'
         + #13#10#13#10
@@ -1272,9 +1286,50 @@ end;
 // INTERACTIVE user's standard token regardless of the elevation of the process that created
 // and triggered it. Best-effort: every step is allowed to fail (a missing schtasks.exe, or no
 // interactive session at all - a headless uninstall) without blocking the rest of removal.
+// The interactive CONSOLE user as "DOMAIN\name", asked of the Terminal Services API - not the
+// account this elevated process runs as (see RunAsOriginalUser for why that differs). '' when
+// there is no console session (a headless uninstall) or the API declines.
+function WTSGetActiveConsoleSessionId(): DWORD;
+  external 'WTSGetActiveConsoleSessionId@kernel32.dll stdcall';
+function WTSQuerySessionInformationW(hServer: THandle; SessionId: DWORD; InfoClass: Integer;
+  var Buffer: Cardinal; var Bytes: DWORD): BOOL;
+  external 'WTSQuerySessionInformationW@wtsapi32.dll stdcall';
+procedure WTSFreeMemory(Memory: Cardinal);
+  external 'WTSFreeMemory@wtsapi32.dll stdcall';
+
+function WtsSessionString(InfoClass: Integer): String;
+var
+  Buf: Cardinal;
+  Bytes: DWORD;
+begin
+  Result := '';
+  Buf := 0;
+  Bytes := 0;
+  if WTSQuerySessionInformationW(0, WTSGetActiveConsoleSessionId(), InfoClass, Buf, Bytes)
+    and (Buf <> 0) then
+  begin
+    Result := CastIntegerToString(Buf);
+    WTSFreeMemory(Buf);
+  end;
+end;
+
+function ConsoleUser(): String;
+var
+  User, Domain: String;
+begin
+  User := WtsSessionString(5);   // WTSUserName
+  Domain := WtsSessionString(7); // WTSDomainName
+  if User = '' then
+    Result := ''
+  else if Domain = '' then
+    Result := User
+  else
+    Result := Domain + '\' + User;
+end;
+
 procedure RunAsOriginalUser(const Exe, Params: String);
 var
-  TaskName, SchTasks, Args: String;
+  TaskName, SchTasks, Args, Principal: String;
   R: Integer;
 begin
   SchTasks := ExpandConstant('{sys}\schtasks.exe');
@@ -1282,8 +1337,17 @@ begin
   // /RL LIMITED is the load-bearing part - see the procedure comment. /TR takes ONE
   // double-quoted command; the exe path itself needs its own quotes nested inside that via
   // Inno's \" escape (this repo's own path can contain a space, "SageThumbs 2K").
+  // The PRINCIPAL is the interactive console user, named explicitly. Without /RU the task
+  // runs as the account that created it - this elevated process - and /RL only lowers its
+  // privilege LEVEL: when standard user A typed administrator B's password, that is B, so
+  // B's HKCU got the per-user removal and A kept every verb and overlay (2026-09-19 audit
+  // F11). /NP stores no password (the task runs while that user is signed in, which they
+  // are - it is their console session); no /RU at all when there is no console session.
+  Principal := '';
+  if ConsoleUser() <> '' then
+    Principal := ' /RU "' + ConsoleUser() + '" /NP';
   Args := '/Create /TN "' + TaskName + '" /TR "\"' + Exe + '\" ' + Params
-    + '" /SC ONCE /ST 00:00 /RL LIMITED /F';
+    + '" /SC ONCE /ST 00:00 /RL LIMITED' + Principal + ' /F';
   if not Exec(SchTasks, Args, '', SW_HIDE, ewWaitUntilTerminated, R) or (R <> 0) then
     Exit;
   Exec(SchTasks, '/Run /TN "' + TaskName + '"', '', SW_HIDE, ewWaitUntilTerminated, R);
@@ -1402,8 +1466,13 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  TaskR: Integer;
 begin
   if CurUninstallStep = usUninstall then begin
+    // The start-up re-registration task (see CurStepChanged) must not outlive the DLL.
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
+      SW_HIDE, ewWaitUntilTerminated, TaskR);
     // Ask why first (interactive uninstalls only), then send the optional survey answer.
     // NotifyUninstall itself stays gated the same way: an unattended/SCCM/Intune uninstall
     // should not phone home OR pop a dialog that has nobody there to answer it.

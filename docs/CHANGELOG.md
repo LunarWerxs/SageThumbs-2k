@@ -21,6 +21,39 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   It was a bare white strip beside a rounded button.
 - **The hotkey service's status line on the Screenshots page ("Running", "Stopped") is now
   translated** in all 36 languages; it was English everywhere.
+- **Strip metadata no longer damages two kinds of file.** An SVG whose metadata quoted a
+  closing tag inside a CDATA block or a comment was cut short and saved malformed; it is now
+  handled correctly, and a rewrite that would not be valid XML is refused instead of saved. A
+  photo that relied on its EXIF rotation came out sideways after stripping; the rotation tag,
+  and nothing else, is now kept.
+- **Convert, Resize and Strip can no longer overwrite another file through their temporary
+  file.** The temporary name was predictable; it is now unique and never reuses a file that
+  already exists.
+- **Screenshot "Save as" can no longer wipe the file it was saving over.** Choosing a name
+  ending in `.jpg` emptied an existing picture and then reported a failure; the save now
+  writes a PNG to a temporary file first and only then replaces the destination, and the
+  dialog keeps the `.png` extension.
+- **Quick Convert and Resize from the right-click menu now honour "Keep metadata"**, as the
+  Convert dialog always did. Shrink for email still produces a clean file.
+- **Scitex `.sct` files convert and copy**, not only thumbnail.
+- **Signing in to settings sync and then pressing Save no longer overwrites the settings that
+  were just pulled from your account** with what was on screen before.
+- **Reset all settings now matches a fresh install** (comic-cover credit skipping stays on).
+- **Portable copies keep folder names containing ` #`, ` ;`, brackets or `=`.** A screenshot
+  folder like `D:\Screenshots #2026` was silently shortened to `D:\Screenshots`, and exporting
+  then importing settings dropped such values entirely.
+- **Set as folder icon keeps the folder's existing `desktop.ini` details** when that file
+  cannot be read at that moment, instead of replacing them.
+- **Set as lock screen no longer replaces the picture your desktop wallpaper uses.**
+- **A mistake in a custom screenshot upload host now stops the upload with an explanation**
+  instead of quietly sending the file to the public default hosts.
+- **`st2k batch` reports an input that does not exist as a failure** instead of leaving it out
+  of the totals.
+- **`st2k doctor` no longer says HEIC/HEIF keep their default icon when the HEVC extension is
+  missing on a Full install**: the bundled decoder handles them, more slowly.
+- **Stability:** two animation/sprite formats (SPLA, Aseprite) can no longer make Explorer
+  hold hundreds of megabytes for one tile, and the preview pane cleans up after itself when
+  its DLL unloads.
 - **Sign-in and settings sync moved to Connections' new permanent address**
   (`accounts.connectionsapi.com` / `studio.connectionsapi.com`); the previous domain was
   suspended by its registry on 18 September. Existing sign-ins carry over. The "Move my

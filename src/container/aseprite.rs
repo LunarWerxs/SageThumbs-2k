@@ -38,6 +38,13 @@ const MAX_CANVAS_PIXELS: u64 = 64 * 1024 * 1024;
 const MAX_CHUNKS: u32 = 1 << 16;
 const MAX_LAYERS: usize = 4096;
 const MAX_CELS: usize = 4096;
+/// Aggregate ceiling on the INFLATED cel bytes frame 0 keeps until compositing. Each cel is
+/// bounded on its own, but 4096 of them were not, and every one - hidden, duplicate,
+/// off-canvas - is retained before any visibility guard runs (2026-09-19 audit F01).
+/// 64 MiB, not more: measured with the audit's own probe, the process holds about TWICE the
+/// retained cel bytes at its peak (the cels plus the compositing copies), and this runs inside
+/// Explorer for the menu preview. 64 MiB is sixteen full 1024x1024 RGBA layers in ONE frame.
+const MAX_TOTAL_CEL_BYTES: usize = 64 * 1024 * 1024;
 /// Total cel area composited before the rest is dropped - the CPU bound for the in-process
 /// classic-menu path.
 const MAX_COMPOSITED_PIXELS: u64 = 4 * MAX_CANVAS_PIXELS;
@@ -275,6 +282,11 @@ struct Frame {
     cels: Vec<Cel>,
     palette: [[u8; 4]; 256],
     have_new_palette: bool,
+    /// Inflated cel bytes retained so far, against [`MAX_TOTAL_CEL_BYTES`].
+    cel_bytes: usize,
+    /// Set once a cel would take the total past the budget; the frame is then refused whole
+    /// rather than drawn from a truncated cel list.
+    over_budget: bool,
 }
 
 impl Frame {
@@ -288,8 +300,15 @@ impl Frame {
                 }
             }
             0x2005 => {
-                if self.cels.len() < MAX_CELS {
-                    self.cels.extend(parse_cel(data, depth));
+                if self.cels.len() < MAX_CELS && !self.over_budget {
+                    if let Some(cel) = parse_cel(data, depth) {
+                        self.cel_bytes = self.cel_bytes.saturating_add(cel.pixels.len());
+                        if self.cel_bytes > MAX_TOTAL_CEL_BYTES {
+                            self.over_budget = true;
+                        } else {
+                            self.cels.push(cel);
+                        }
+                    }
                 }
             }
             0x2019 => {
@@ -330,6 +349,8 @@ fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
         cels: Vec::new(),
         palette: [[0u8, 0, 0, 255]; 256],
         have_new_palette: false,
+        cel_bytes: 0,
+        over_budget: false,
     };
     for _ in 0..chunk_count.min(MAX_CHUNKS) {
         if off + 6 > frame_end {
@@ -343,6 +364,9 @@ fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
         let end = off.checked_add(size)?.min(frame_end);
         frame.absorb(kind, &bytes[off + 6..end], depth);
         off = end;
+    }
+    if frame.over_budget {
+        return None;
     }
     Some(frame)
 }

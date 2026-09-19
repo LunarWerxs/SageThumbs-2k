@@ -165,6 +165,8 @@ const CODEC_NAMES = {
   heif: "the OS's WIC HEIF codec",
   av1: 'the AV1 Video Extension',
 };
+// Codecs the bundled ImageMagick can stand in for on a Full install (see capabilityParts).
+const CODEC_OPTIONAL_WITH_BUNDLE = new Set(['heif', 'av1']);
 
 /** One capability sentence for a category's items, built from the data (never hand-typed
  *  per category) - see the `SOURCE_SENTENCE`/`SOURCE_COUNT_PHRASE`/`CODEC_NAMES` maps
@@ -205,10 +207,18 @@ function capabilityParts(items) {
   for (const [codec, exts] of Object.entries(byCodec)) {
     const name = CODEC_NAMES[codec];
     if (!name) throw new Error(`gen-site: unknown os_codec "${codec}" - add it to CODEC_NAMES`);
+    // The HEIF and AV1 image routes are the FAST route, not the only one: a Full install
+    // decodes those through the bundled ImageMagick when Windows has no codec (2026-09-19
+    // audit F23, measured on real files). Video and JPEG XR genuinely need theirs.
+    const optional = CODEC_OPTIONAL_WITH_BUNDLE.has(codec);
+    const tail = optional
+      ? `${name} when Windows has it; a Full install decodes ${exts.length === 1 ? 'it' : 'them'} through the bundled decoder otherwise.`
+      : `${name}.`;
     if (exts.length === items.length) {
-      parts.push(`Every format here needs ${name}.`);
+      parts.push(optional ? `Every format here uses ${tail}` : `Every format here needs ${tail}`);
     } else {
-      parts.push(`.${exts.slice().sort().join(', .')} additionally need${exts.length === 1 ? 's' : ''} ${name}.`);
+      const verb = optional ? 'use' : 'need';
+      parts.push(`.${exts.slice().sort().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`);
     }
   }
   return { source: s, codecs: parts.join(' ') };

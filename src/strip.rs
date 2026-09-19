@@ -147,7 +147,27 @@ const MPF_PREFIX: &[u8] = b"MPF\0";
 /// the offsets of the pictures stored after its EOI; removing segments ahead of the scan
 /// moves every byte it points at while the index itself would be kept verbatim, and the
 /// result is written over the original. Same all-or-nothing rule as [`isobmff::strip`].
+/// The smallest EXIF that carries Orientation and nothing else: a little-endian TIFF header
+/// and one IFD0 entry (tag 0x0112, SHORT, count 1, value left-justified), 26 bytes.
+fn tiff_orientation_only(orientation: u32) -> Vec<u8> {
+    let mut t = vec![b'I', b'I', 0x2A, 0x00, 8, 0, 0, 0, 1, 0];
+    t.extend_from_slice(&[0x12, 0x01, 0x03, 0x00, 1, 0, 0, 0]);
+    t.extend_from_slice(&(orientation as u16).to_le_bytes());
+    t.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    t
+}
+
+/// The Orientation this file displays with, when it is anything but the identity. Orientation
+/// is rendering-critical, not metadata ABOUT the picture: a photo tagged 6 displays portrait,
+/// and dropping the tag turned it landscape in an operation sold as lossless metadata removal
+/// (2026-09-19 audit F04). Every stripper puts this one tag back, in a fresh EXIF that holds
+/// nothing else - no make, no date, no GPS, no thumbnail.
+fn kept_orientation(bytes: &[u8]) -> Option<u32> {
+    crate::decode::exif_orientation(bytes).filter(|o| (2..=8).contains(o))
+}
+
 fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
+    let orientation = kept_orientation(&input);
     let mut jpeg =
         Jpeg::from_bytes(input).map_err(|e| Error::new(E_FAIL, format!("jpeg parse: {e}")))?;
     if jpeg
@@ -193,6 +213,14 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
         }
         true
     });
+    if let Some(o) = orientation {
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(tiff_orientation_only(o));
+        jpeg.segments_mut().insert(
+            0,
+            img_parts::jpeg::JpegSegment::new_with_contents(markers::APP1, Bytes::from(app1)),
+        );
+    }
     let bytes = jpeg.encoder().bytes();
     // Sanity re-parse.
     Jpeg::from_bytes(bytes.clone())
@@ -203,12 +231,21 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
 /// PNG arm of [`strip_metadata`]: drop EXIF/text/time chunks plus any C2PA chunk. iCCP (color
 /// profile) is intentionally NOT removed, stripping it shifts colors on wide-gamut displays.
 fn strip_png(input: Bytes) -> Result<Vec<u8>> {
+    let orientation = kept_orientation(&input);
     let mut png =
         Png::from_bytes(input).map_err(|e| Error::new(E_FAIL, format!("png parse: {e}")))?;
     for k in [b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"] {
         png.remove_chunks_by_type(*k);
     }
     png.remove_chunks_by_type(jumbf::PNG_C2PA_CHUNK);
+    if let Some(o) = orientation {
+        // eXIf sits after IHDR (chunk 0) and before the image data, per the PNG spec.
+        let at = png.chunks().len().min(1);
+        png.chunks_mut().insert(
+            at,
+            img_parts::png::PngChunk::new(*b"eXIf", Bytes::from(tiff_orientation_only(o))),
+        );
+    }
     let bytes = png.encoder().bytes();
     Png::from_bytes(bytes.clone()).map_err(|e| Error::new(E_FAIL, format!("png re-parse: {e}")))?;
     Ok(bytes.to_vec())
@@ -230,11 +267,11 @@ fn atomic_overwrite(dst: &Path, data: &[u8]) -> Result<()> {
 /// Keeping the notification callback explicit lets the rewrite path be tested
 /// without depending on a running Explorer shell.
 fn atomic_overwrite_with(dst: &Path, data: &[u8], notify: impl FnOnce(&Path)) -> Result<()> {
-    let tmp: PathBuf = {
-        let mut s = dst.to_path_buf().into_os_string();
-        s.push(".st2ktmp");
-        PathBuf::from(s)
-    };
+    // A reserved, unique staging entry (`create_new`), never the bare `<dst>.st2ktmp` this used
+    // to write into: a pre-existing entry at a predictable name - a hard link to the file
+    // itself, say - was truncated by the write (2026-09-19 audit F03).
+    let tmp: PathBuf = crate::fsutil::create_staging(dst)
+        .map_err(|e| Error::new(E_FAIL, format!("stage {}: {e}", dst.display())))?;
     let mtime = std::fs::metadata(dst).and_then(|m| m.modified()).ok();
     std::fs::write(&tmp, data).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

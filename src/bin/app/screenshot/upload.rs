@@ -111,12 +111,34 @@ fn upload_hosts() -> Result<Vec<UploadHost>, String> {
     // live in the shared core module so the `st2k` CLI resolves the SAME file.
     let cfg = sagethumbs2k_core::upload_config::ensure_config();
 
-    // 1) The config file wins when it defines any host.
+    // 1) The config file wins when it defines any host. A file whose ACTIVE lines are all
+    //    unusable is a misconfiguration, not "no configuration": the user chose a destination
+    //    and it cannot be honoured, so nothing may be sent anywhere else (2026-09-19 audit
+    //    F22: an `http://` typo in the only active line silently selected the public
+    //    defaults). The all-commented template still means the built-ins, as documented.
     if let Some(path) = cfg {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let hosts = parse_hosts_config(&text);
-            if !hosts.is_empty() {
-                return Ok(hosts);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let (hosts, rejected) = parse_hosts_config(&text);
+                if !hosts.is_empty() {
+                    return Ok(hosts);
+                }
+                if !rejected.is_empty() {
+                    return Err(format!(
+                        "The upload-hosts file names a destination that cannot be used, and no \
+                         other:\n\n{}\n\nEvery host must be an https:// URL on port 443 with no \
+                         user info. Fix the line or comment it out; nothing was uploaded.\n\n{}",
+                        rejected.join("\n"),
+                        path.display()
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "The upload-hosts file exists but could not be read ({e}); nothing was \
+                     uploaded.\n\n{}",
+                    path.display()
+                ));
             }
         }
     }
@@ -194,9 +216,12 @@ pub(crate) unsafe fn open_hosts_config() {
 /// Parse the config file into hosts. One host per non-blank, non-`#` line:
 /// `https-url | field | response | extra=val | extra2=val …`
 /// where `response` is `text` (the reply IS the URL; the default) or `json` (the URL
-/// is embedded in a JSON reply). Malformed lines / non-`https://` URLs are skipped.
-fn parse_hosts_config(text: &str) -> Vec<UploadHost> {
+/// is embedded in a JSON reply). Malformed lines / non-`https://` URLs are skipped for the
+/// host list and returned as the second element, so the caller can tell "nothing
+/// configured" from "configured, but nothing usable".
+fn parse_hosts_config(text: &str) -> (Vec<UploadHost>, Vec<String>) {
     let mut hosts = Vec::new();
+    let mut rejected = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -205,6 +230,7 @@ fn parse_hosts_config(text: &str) -> Vec<UploadHost> {
         let mut parts = line.split('|').map(str::trim);
         let Some(url) = parts.next() else { continue };
         let Some((host, path)) = crate::http::split_https(url) else {
+            rejected.push(line.to_string());
             continue;
         };
         let field = parts
@@ -230,7 +256,7 @@ fn parse_hosts_config(text: &str) -> Vec<UploadHost> {
             json,
         });
     }
-    hosts
+    (hosts, rejected)
 }
 
 const MAX_RESP: usize = 64 * 1024; // a URL response is tiny; cap to be safe
@@ -865,10 +891,30 @@ https://user@bad.example/upload | file | text
 https://bad.example:8443/upload | file | text
 https://bad example/upload | file | text
 ";
-        let hosts = parse_hosts_config(text);
+        let (hosts, rejected) = parse_hosts_config(text);
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host, "good.example");
         assert_eq!(hosts[0].path, "/upload");
+        assert_eq!(
+            rejected.len(),
+            3,
+            "every unusable active line is reported: {rejected:?}"
+        );
+    }
+
+    /// 2026-09-19 audit F22: an all-commented file means the built-ins; a file whose only
+    /// active line is unusable means NOTHING usable, and must never read as the built-ins.
+    #[test]
+    fn an_all_commented_file_and_an_all_invalid_file_are_told_apart() {
+        let (hosts, rejected) = parse_hosts_config("# https://x.example/upload | file | text\n\n");
+        assert!(hosts.is_empty() && rejected.is_empty());
+        let (hosts, rejected) =
+            parse_hosts_config("http://my-own-host.example/upload | file | text\n");
+        assert!(hosts.is_empty());
+        assert_eq!(
+            rejected,
+            vec!["http://my-own-host.example/upload | file | text"]
+        );
     }
 
     #[test]

@@ -619,6 +619,7 @@ fn dispatch_convert(args: &Value) -> Result<String, String> {
         q,
         wq,
         cli::parse_resize(want_str(args, "resize")?.as_deref())?,
+        false,
     )
 }
 

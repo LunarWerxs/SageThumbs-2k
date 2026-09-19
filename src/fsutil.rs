@@ -61,6 +61,28 @@ pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     last
 }
 
+/// Read a whole file, retrying past a transient lock on the same policy as [`rename_retrying`].
+/// `Ok(None)` when the file does not exist; any OTHER failure - still locked after the retries,
+/// access denied for real - is an error, never "an empty file". That distinction is what keeps
+/// a merge-and-replace writer (desktop.ini) from replacing content it could not read
+/// (2026-09-19 audit F19), while a scanner's momentary lock still costs nothing but ~200 ms.
+pub(crate) fn read_retrying(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let mut last = None;
+    for attempt in 1..=RENAME_RETRIES {
+        match std::fs::read(path) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if is_transient(&e) => {
+                note_transient_failure(attempt);
+                last = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+        std::thread::sleep(RENAME_BACKOFF);
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("read: no attempt was made")))
+}
+
 /// A per-process counter folded into every staging filename [`write_atomically`] stages,
 /// so two atomic writes to the SAME destination from this process (the user clicking
 /// Settings ▸ Export twice, or two `st2k --export-settings` runs) can never stage into the
@@ -75,6 +97,71 @@ fn staging_path(path: &Path) -> PathBuf {
     let n = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()))
+}
+
+/// The suffix every reserved staging entry ends in, so a stale one is recognisable by eye
+/// and by [`staging_leftovers`].
+const STAGING_SUFFIX: &str = ".st2ktmp";
+
+/// Reserve a staging file beside `out` that nothing else already owns, and return its path.
+///
+/// The name is `<out name>.<pid>-<n>.st2ktmp` and the entry is opened with `create_new`, so
+/// whatever may already sit at a name - another writer's temp, a stale leftover, or a hard
+/// link somebody planted so that our write lands in THEIR file - is never opened and never
+/// truncated; the next counter value is tried instead. Until 2026-09-19 every conversion and
+/// Strip staged into the bare, predictable `<out>.st2ktmp`, and a link of that name pointing at
+/// the source turned a Convert into a rewrite of the original (audit F03). The caller owns the
+/// entry from here until it renames it into place or removes it.
+pub fn create_staging(out: &Path) -> io::Result<PathBuf> {
+    let name = out
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    for _ in 0..64 {
+        let n = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = out.with_file_name(format!("{name}.{}-{n}{STAGING_SUFFIX}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(_) => return Ok(tmp),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(
+        "could not reserve a staging file beside the destination",
+    ))
+}
+
+/// Every staging entry beside `out` that [`create_staging`] could have reserved for it, any
+/// counter value. A finished or failed write leaves none; this is what a test asserts now that
+/// the name is not predictable.
+pub fn staging_leftovers(out: &Path) -> Vec<PathBuf> {
+    let name = out
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let prefix = format!("{name}.");
+    let dir = match out.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|f| f.to_str())
+                        .is_some_and(|f| f.starts_with(&prefix) && f.ends_with(STAGING_SUFFIX))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Write `content` to `path` without ever leaving `path` partially written or destroyed -
@@ -114,7 +201,13 @@ pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
 /// improvement on top of that, not a precondition for it, so its own failure is swallowed
 /// rather than propagated.
 fn stage_then_swap(tmp: &Path, path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut f = std::fs::File::create(tmp)?;
+    // `create_new`, never `create`: a pre-existing entry at the staging name is not ours to
+    // truncate (see `create_staging`); the name carries pid + counter, so a collision is a
+    // stale leftover or a plant, and either is an error rather than a file to write into.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)?;
     write_staged_content(&mut f, content)?;
     let _ = f.sync_all();
     drop(f);

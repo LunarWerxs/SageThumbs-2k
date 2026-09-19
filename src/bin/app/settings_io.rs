@@ -214,7 +214,7 @@ impl Plan {
         obj.iter()
             .filter(|(name, _)| !protected(name))
             .filter_map(|(name, val)| normalize(val).map(|v| (name.clone(), v)))
-            .filter(|(name, val)| !portable || (ini_safe(name) && ini_safe(&text_of(val))))
+            .filter(|(name, val)| !portable || (ini_safe(name) && ini_safe_value(&text_of(val))))
             .collect()
     }
 
@@ -249,12 +249,19 @@ fn text_of(val: &Json) -> String {
     }
 }
 
-/// A name or value carrying the ini's own syntax would corrupt the file on the next write,
-/// so those are refused rather than escaped - no setting we store contains them. The leading
-/// `;`/`#` rule mirrors the store's own `value_is_ini_safe`, which the atomic import below
-/// bypasses by writing the parsed document directly.
+/// A NAME (a value name or a subkey/section name) carrying the ini's own syntax would corrupt
+/// the file on the next write, so those are refused rather than escaped - no name we store
+/// contains them.
 fn ini_safe(s: &str) -> bool {
     !s.contains(['[', ']', '\r', '\n', '=']) && !s.starts_with([';', '#'])
+}
+
+/// A VALUE only has to stay on one line: the store quotes brackets, equals signs and comment
+/// characters on the way out and unquotes them on the way in, so a backup the app itself
+/// wrote round-trips instead of silently dropping `D:\Screenshots [edited]` on import
+/// (2026-09-19 audit F17). Mirrors the store's own `value_is_ini_safe`.
+fn ini_safe_value(s: &str) -> bool {
+    !s.contains(['\r', '\n'])
 }
 
 // ---- import: apply -----------------------------------------------------------------------
@@ -623,8 +630,9 @@ mod tests {
     }
 
     /// The portable plan is built from the document alone, so its filters are checkable
-    /// without a portable backend: protected names out, ini-unsafe names and values out,
-    /// unrepresentable types out, and the empty result refused.
+    /// without a portable backend: protected names out, ini-unsafe NAMES out, multi-line
+    /// values out, unrepresentable types out, and the empty result refused. A value that
+    /// merely LOOKS like ini syntax (`; nope`) stays: the store quotes it (2026-09-19, F17).
     #[test]
     fn the_portable_plan_drops_protected_unsafe_and_unrepresentable_entries() {
         let plan = Plan::from_document(
@@ -638,11 +646,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             plan.values.keys().cloned().collect::<Vec<_>>(),
-            ["Flag", "Lang", "Theme"]
+            ["Comment", "Flag", "Lang", "Theme"]
         );
         assert_eq!(text_of(&plan.values["Flag"]), "1");
+        assert_eq!(text_of(&plan.values["Comment"]), "; nope");
         assert_eq!(plan.subkeys.keys().cloned().collect::<Vec<_>>(), ["jpg"]);
-        assert_eq!(plan.planned(), 4);
+        assert_eq!(plan.planned(), 5);
 
         assert!(Plan::from_document(r#"{"values":{"OAuth_Name":"x"}}"#, true).is_err());
         assert!(Plan::from_document(r#"{"values":{"Bad=Name":1}}"#, true).is_err());

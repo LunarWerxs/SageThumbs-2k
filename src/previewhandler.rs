@@ -41,9 +41,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     GetParent, GetWindowLongPtrW, IsWindow, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCDESTROY,
-    WM_PAINT, WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND,
+    WM_NCDESTROY, WM_PAINT, WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_VISIBLE,
 };
 use windows_implement::implement;
 
@@ -475,7 +476,9 @@ impl PreviewHandler_Impl {
             .spawn(move || {
                 #[allow(clippy::default_constructed_unit_structs)]
                 let _module = crate::ModuleRef::default();
-                ensure_class();
+                // Held for the whole window lifetime, released after the loop below ends and
+                // BEFORE `_module` drops: the class must be gone before the DLL can be.
+                class_acquire();
                 let hwnd = unsafe {
                     CreateWindowExW(
                         WINDOW_EX_STYLE(0),
@@ -509,6 +512,7 @@ impl PreviewHandler_Impl {
                         let _ = tx.send(0);
                     }
                 }
+                class_release();
             });
         let handle = match spawned {
             Ok(h) => h,
@@ -632,21 +636,61 @@ impl Drop for PreviewHandler {
 
 // ── window class + paint ──────────────────────────────────────────────────────
 
-/// Register our child window class once per process.
-fn ensure_class() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        let wc = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
-            hInstance: HINSTANCE(crate::dll_hmodule().0),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            lpszClassName: CLASS_NAME,
-            ..Default::default()
+/// Our window class's lifetime: registered while at least one UI thread holds it (from before
+/// its `CreateWindowExW` until after its message loop has ended), UNREGISTERED when the last
+/// one lets go.
+///
+/// It used to be registered once per process and never unregistered. Windows does not
+/// unregister a DLL's classes when the DLL unloads, so after `DllCanUnloadNow` let this DLL
+/// go the host still held a class whose WndProc pointed into unmapped memory (2026-09-19
+/// audit F15: `GetClassInfoW` still found it, `VirtualQuery` said `MEM_FREE`). Every holder
+/// also holds a `ModuleRef` for the same span, so the class is always gone before the DLL
+/// can be; and the count, not a `Once`, is what lets a later preview register it again.
+struct ClassLease {
+    registered: bool,
+    holders: usize,
+}
+
+static CLASS: std::sync::Mutex<ClassLease> = std::sync::Mutex::new(ClassLease {
+    registered: false,
+    holders: 0,
+});
+
+fn class_acquire() {
+    let mut c = CLASS.lock().unwrap_or_else(|p| p.into_inner());
+    if !c.registered {
+        unsafe {
+            let wc = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(wndproc),
+                hInstance: HINSTANCE(crate::dll_hmodule().0),
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                lpszClassName: CLASS_NAME,
+                ..Default::default()
+            };
+            // ATOM 0 = failure, which for a class that ALREADY exists (an earlier unregister
+            // was refused) is the outcome wanted anyway; a genuine failure leaves
+            // CreateWindowExW to fail and the pane empty, exactly as before.
+            RegisterClassW(&wc);
+        }
+        c.registered = true;
+    }
+    c.holders += 1;
+}
+
+fn class_release() {
+    let mut c = CLASS.lock().unwrap_or_else(|p| p.into_inner());
+    c.holders = c.holders.saturating_sub(1);
+    if c.holders == 0 && c.registered {
+        // Refused (ERROR_CLASS_HAS_WINDOWS) while any window of the class is still alive; then
+        // it stays registered and the next acquire simply does not re-register.
+        let gone = unsafe {
+            UnregisterClassW(CLASS_NAME, Some(HINSTANCE(crate::dll_hmodule().0))).is_ok()
         };
-        RegisterClassW(&wc); // ATOM 0 on failure is fine — DefWindowProc still applies
-    });
+        if gone {
+            c.registered = false;
+        }
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

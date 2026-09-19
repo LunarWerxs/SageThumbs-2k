@@ -159,7 +159,7 @@ pub use clipboard::{copy_data_uri_to_clipboard, copy_rgba_to_clipboard, copy_to_
 pub(crate) use foldericon::set_folder_icon;
 #[cfg(test)]
 pub use wallpaper::set_wallpaper;
-pub use wallpaper::{prepare_wallpaper, prepare_wallpaper_in};
+pub use wallpaper::{prepare_lock_screen_in, prepare_wallpaper, prepare_wallpaper_in};
 // Re-exported onward by the `verbs` facade (and consumed from the bin crates through
 // it), which this module can't see - so the lint reads them as unused here.
 #[allow(unused_imports)]

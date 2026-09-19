@@ -154,6 +154,7 @@ mod tests {
             85,
             None,
             verbs::Resize::Fit(100, 100),
+            false,
         )
         .unwrap();
         assert!(image::open(&cv).unwrap().width() <= 100);

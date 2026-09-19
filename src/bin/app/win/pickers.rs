@@ -11,7 +11,7 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
     SHCreateItemFromParsingName, SHGetKnownFolderPath, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
-    KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
+    FOS_STRICTFILETYPES, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
 };
 
 use sagethumbs2k_core::parallel::ComGuard;
@@ -86,6 +86,12 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
     let _ = dlg.SetFileTypes(&specs);
     let ext = wide("png");
     let _ = dlg.SetDefaultExtension(PCWSTR(ext.as_ptr()));
+    // The dialog itself keeps the chosen name on the PNG filter: without FOS_STRICTFILETYPES a
+    // typed `shot.jpg` came back as-is and the save then had to cope with a name that lied
+    // about the format (2026-09-19 audit F18).
+    if let Ok(opts) = dlg.GetOptions() {
+        let _ = dlg.SetOptions(opts | FOS_STRICTFILETYPES | FOS_FORCEFILESYSTEM);
+    }
     let nm = wide(name);
     let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
     if !dir.is_empty() {

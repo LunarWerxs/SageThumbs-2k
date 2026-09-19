@@ -766,7 +766,7 @@ fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
     None
 }
 
-pub(super) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
+pub(crate) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
     // Magic-gate before handing the bytes to `exif::Reader`: it only reads EXIF from
     // JPEG / TIFF / PNG / WebP / HEIF, returning an error (→ None) for anything else.
     // Skipping the reader setup for the formats it can't read (GIF/BMP/ICO/QOI/TGA/

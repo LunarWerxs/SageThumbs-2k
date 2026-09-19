@@ -77,11 +77,18 @@ pub fn portable() -> bool {
 /// then fails `u32::parse` in `get_u32` and silently falls back to the default). Only a
 /// `;`/`#` preceded by whitespace counts, so a value that legitimately contains one (a
 /// path, a URL fragment) passes through untouched.
+///
+/// ⛔ And only after a NUMBER. The rule exists for hand-annotated numeric settings; applied to
+/// every value it cut `D:\Screenshots #2026` down to `D:\Screenshots` and silently redirected
+/// the user's screenshots (2026-09-19 audit F16). The renderer quotes such values now, but a
+/// file written by an OLDER build still holds them bare, so the reader has to be right on its
+/// own: what is left of the comment must parse as the number it annotates, or nothing is cut.
 fn strip_inline_comment(v: &str) -> &str {
     let bytes = v.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         if (b == b';' || b == b'#') && i > 0 && bytes[i - 1].is_ascii_whitespace() {
-            return v[..i].trim_end();
+            let head = v[..i].trim_end();
+            return if head.parse::<u32>().is_ok() { head } else { v };
         }
     }
     v
@@ -113,10 +120,9 @@ fn parse(text: &str) -> Doc {
             continue;
         }
         if let Some((k, v)) = line.split_once('=') {
-            doc.entry(section.clone()).or_default().insert(
-                k.trim().to_string(),
-                strip_inline_comment(v.trim()).to_string(),
-            );
+            doc.entry(section.clone())
+                .or_default()
+                .insert(k.trim().to_string(), parse_value(v));
         }
     }
     doc
@@ -138,9 +144,59 @@ fn render(doc: &Doc) -> String {
         };
         out.push_str(&format!("\n[{section}]\n"));
         for (k, v) in values {
-            out.push_str(&format!("{k}={v}\n"));
+            out.push_str(&format!("{k}={}\n", quote_if_needed(v)));
         }
     }
+    out
+}
+
+/// A value the bare `k=v` line would mis-read on the way back is written QUOTED: one with
+/// whitespace before a `;`/`#` (`D:\Screenshots #2026` came back as `D:\Screenshots`,
+/// 2026-09-19 audit F16), one that opens with a quote, `[`, `;` or `#`, or one with leading
+/// or trailing whitespace. `"` and `\` inside are backslash-escaped. Everything else stays
+/// bare, byte-identical to what this file always wrote.
+fn quote_if_needed(v: &str) -> String {
+    let needs = v.starts_with(['"', '[', ';', '#'])
+        || v != v.trim()
+        || strip_inline_comment(v).len() != v.len();
+    if !needs {
+        return v.to_string();
+    }
+    let mut q = String::with_capacity(v.len() + 2);
+    q.push('"');
+    for c in v.chars() {
+        if c == '"' || c == '\\' {
+            q.push('\\');
+        }
+        q.push(c);
+    }
+    q.push('"');
+    q
+}
+
+/// The value half of a `k=v` line: a quoted form is unescaped up to its closing quote
+/// (whatever follows - a comment - is ignored); a bare one loses a trailing `; comment`
+/// exactly as before ([`strip_inline_comment`]).
+fn parse_value(raw: &str) -> String {
+    let raw = raw.trim();
+    let Some(body) = raw.strip_prefix('"') else {
+        return strip_inline_comment(raw).to_string();
+    };
+    let mut out = String::with_capacity(body.len());
+    let mut escaped = false;
+    for c in body.chars() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return out;
+        } else {
+            out.push(c);
+        }
+    }
+    // No closing quote - a hand edit. Keep what is there rather than lose the value.
     out
 }
 
@@ -290,15 +346,16 @@ pub fn get_u32(sub: Option<&str>, name: &str) -> Option<u32> {
 /// `settings_io.rs`'s import already applies to its own writes — this generic setter did
 /// not share it (item 112).
 fn value_is_ini_safe(value: &str) -> bool {
-    !value.contains(['\r', '\n']) && !value.starts_with(['[', ';', '#'])
+    // Only a line break can still break the file: everything else the renderer quotes
+    // (`quote_if_needed`) and the parser unquotes, so `[x]`, `;x` and `a #b` all round-trip.
+    !value.contains(['\r', '\n'])
 }
 
 pub fn set_string(sub: Option<&str>, name: &str, value: &str) -> io::Result<()> {
     if !value_is_ini_safe(value) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "value contains a newline or starts with an ini syntax character ([, ;, #) \
-             and cannot be safely stored",
+            "value contains a line break and cannot be stored in the settings file",
         ));
     }
     let (sec, name) = (section(sub).to_string(), name.to_string());
@@ -452,13 +509,7 @@ mod tests {
     /// them verbatim (item 112).
     #[test]
     fn set_string_rejects_values_that_would_corrupt_the_ini_on_reparse() {
-        for bad in [
-            "a\nEnableThumbs=0",
-            "a\r\nb",
-            "[Settings]",
-            ";a comment",
-            "#a comment",
-        ] {
+        for bad in ["a\nEnableThumbs=0", "a\r\nb"] {
             assert!(
                 !value_is_ini_safe(bad),
                 "{bad:?} must be rejected as unsafe to store"
@@ -469,9 +520,47 @@ mod tests {
             r"C:\Users\me\Desktop",
             "x#not-a-comment",
             "",
+            "[Settings]",
+            ";a comment",
+            "#a comment",
         ] {
             assert!(value_is_ini_safe(good), "{good:?} must be accepted");
         }
+    }
+
+    /// 2026-09-19 audit F16: a folder name with whitespace before `#`/`;` was truncated by the
+    /// inline-comment rule on the way back in. Every value here must survive render -> parse
+    /// byte-for-byte, and a hand-written `100 ; big files` must still parse as `100`.
+    #[test]
+    fn values_with_comment_characters_and_ini_syntax_round_trip_quoted() {
+        for v in [
+            r"D:\Screenshots #2026",
+            r"D:\Screenshots ; keep",
+            r"D:\Screenshots [edited]",
+            r"D:\Screenshots=edited",
+            "[Settings]",
+            ";a comment",
+            "#a comment",
+            " padded ",
+            r#"say "hi" \ there"#,
+            "plain",
+            "",
+        ] {
+            let mut doc = Doc::new();
+            doc.entry(ROOT_SECTION.to_string())
+                .or_default()
+                .insert("ShotSaveDir".to_string(), v.to_string());
+            let back = parse(&render(&doc));
+            assert_eq!(
+                back[ROOT_SECTION]["ShotSaveDir"], v,
+                "{v:?} did not round-trip"
+            );
+        }
+        let hand =
+            "[Settings]\nMaxSize=100 ; big files\nName=\"quoted ; not a comment\" ; comment\n";
+        let d = parse(hand);
+        assert_eq!(d[ROOT_SECTION]["MaxSize"], "100");
+        assert_eq!(d[ROOT_SECTION]["Name"], "quoted ; not a comment");
     }
 
     /// No entry in `dir` may end in `.tmp` - `write_atomic`'s staging files (named

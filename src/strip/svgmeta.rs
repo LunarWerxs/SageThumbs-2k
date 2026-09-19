@@ -78,6 +78,13 @@ pub(super) fn strip(input: &[u8]) -> Result<Vec<u8>> {
     while let Some(lt) = rest.find('<') {
         let (before, tail) = rest.split_at(lt);
         out.push_str(before);
+        // A CDATA section or a comment is character data from here to its terminator: copy
+        // it through whole, so a `<title>` written INSIDE one is never mistaken for markup.
+        if let Some(end) = opaque_section_end(tail) {
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
         let name = element_name(tail);
 
         if let Some(new_rest) = try_drop_element(tail, name, depth_after_svg) {
@@ -92,7 +99,35 @@ pub(super) fn strip(input: &[u8]) -> Result<Vec<u8>> {
         rest = &tail[end..];
     }
     out.push_str(rest);
+    // A text edit can only be trusted as far as its tokenizer sees. Before the caller replaces
+    // the user's file, ask an independent XML parser the one question that matters: if the
+    // ORIGINAL was well-formed and the REWRITE is not, the edit went wrong and nothing is
+    // written (2026-09-19 audit F02: a `</metadata>` quoted inside a CDATA section cut the
+    // element short and the malformed result was swapped over a valid file). An original the
+    // parser already rejects is stripped as before - a stricter parser than the browser is
+    // no reason to refuse the user.
+    if roxmltree::Document::parse(text).is_ok() && roxmltree::Document::parse(&out).is_err() {
+        return Err(Error::new(
+            E_FAIL,
+            "svg: the rewrite would not be well-formed XML; the file was left untouched",
+        ));
+    }
     Ok(out.into_bytes())
+}
+
+/// Byte length of the CDATA section or comment that `tail` opens with, terminator included.
+/// `None` when `tail` opens neither, or the section is never terminated (then it is treated
+/// as ordinary markup, exactly as before).
+fn opaque_section_end(tail: &str) -> Option<usize> {
+    if let Some(body) = tail.strip_prefix("<![CDATA[") {
+        return body
+            .find("]]>")
+            .map(|i| "<![CDATA[".len() + i + "]]>".len());
+    }
+    if let Some(body) = tail.strip_prefix("<!--") {
+        return body.find("-->").map(|i| "<!--".len() + i + "-->".len());
+    }
+    None
 }
 
 /// The local name of the element a `<...` slice opens, lowercased and without any
@@ -145,16 +180,24 @@ fn element_span(tag: &str, name: &str) -> Option<usize> {
     if is_self_closing(tag) {
         return Some(open_end);
     }
-    // Same-name nesting is not legal for these elements, so a plain search for the
-    // matching close tag is enough.
+    // Same-name nesting is not legal for these elements, so a search for the matching close
+    // tag is enough - as long as a `</name>` that is merely TEXT inside a CDATA section or a
+    // comment is stepped over rather than matched (2026-09-19 audit F02).
     let mut p = open_end;
     loop {
-        let idx = tag[p..].find("</")? + p;
-        let after = &tag[idx..];
-        if element_name(after) == Some(name) {
-            return Some(idx + tag_end(after)? + 1);
+        let close = tag[p..].find("</").map(|i| i + p);
+        let cdata = tag[p..].find("<![CDATA[").map(|i| i + p);
+        let comment = tag[p..].find("<!--").map(|i| i + p);
+        let next = [close, cdata, comment].into_iter().flatten().min()?;
+        if Some(next) == cdata || Some(next) == comment {
+            p = next + opaque_section_end(&tag[next..])?;
+            continue;
         }
-        p = idx + 2;
+        let after = &tag[next..];
+        if element_name(after) == Some(name) {
+            return Some(next + tag_end(after)? + 1);
+        }
+        p = next + 2;
     }
 }
 
@@ -239,6 +282,60 @@ mod tests {
             !out.contains("Two"),
             "later elements stopped being stripped: {out}"
         );
+    }
+
+    /// 2026-09-19 audit F02, verbatim: a close tag quoted inside a CDATA section ended the
+    /// element early and the malformed result was written over a valid file.
+    #[test]
+    fn a_close_tag_inside_cdata_does_not_end_the_element() {
+        let out = run(concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\">",
+            "<metadata><![CDATA[Author: Audit. An example close tag is </metadata> inside documentation.]]></metadata>",
+            "<rect width=\"64\" height=\"64\" fill=\"red\"/></svg>"
+        ));
+        assert_eq!(
+            out,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"red\"/></svg>"
+        );
+        assert!(roxmltree::Document::parse(&out).is_ok(), "{out}");
+    }
+
+    #[test]
+    fn a_close_tag_inside_a_comment_does_not_end_the_element() {
+        let out = run(concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">",
+            "<desc>secret <!-- not the end: </desc> --> still secret</desc>",
+            "<path d=\"M0 0h1\"/></svg>"
+        ));
+        assert!(!out.contains("secret"), "{out}");
+        assert!(out.contains("<path d=\"M0 0h1\"/>"), "{out}");
+        assert!(roxmltree::Document::parse(&out).is_ok(), "{out}");
+    }
+
+    /// A `<title>` that is TEXT inside a top-level CDATA section or comment is not an element
+    /// and must survive the strip byte-for-byte.
+    #[test]
+    fn markup_quoted_inside_cdata_or_a_comment_at_top_level_is_kept() {
+        let src = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">",
+            "<style><![CDATA[/* <title>not an element</title> */]]></style>",
+            "<!-- <desc>also not an element</desc> -->",
+            "<path d=\"M0 0h1\"/></svg>"
+        );
+        assert_eq!(run(src), src);
+    }
+
+    /// The parser check guards the swap: an original the parser accepts must never turn
+    /// into a rewrite it rejects. Exercised by feeding the check a rewrite that is broken.
+    #[test]
+    fn a_rewrite_that_stops_being_well_formed_is_refused() {
+        let good = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>";
+        assert!(roxmltree::Document::parse(good).is_ok());
+        assert!(roxmltree::Document::parse("<svg><rect></svg>").is_err());
+        // strip() itself now keeps every well-formed input well-formed; the CDATA case above
+        // is the one that used to fail here.
+        let out = run(good);
+        assert!(roxmltree::Document::parse(&out).is_ok());
     }
 
     #[test]

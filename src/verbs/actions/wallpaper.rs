@@ -22,11 +22,22 @@ pub(super) fn appdata_dir() -> Result<PathBuf> {
 /// real `%APPDATA%` (writing the production wallpaper.png from a test would
 /// pollute the live desktop state).
 pub fn prepare_wallpaper_in(dir: &Path, path: &str) -> Result<PathBuf> {
+    prepare_desktop_image_in(dir, path, "wallpaper.png")
+}
+
+/// [`prepare_wallpaper_in`] for Set as lock screen, into its OWN file. Both verbs used to write
+/// `wallpaper.png`, so setting a lock screen replaced the bytes the DESKTOP wallpaper re-reads
+/// at the next sign-in (2026-09-19 audit F21): two features, one persistent asset.
+pub fn prepare_lock_screen_in(dir: &Path, path: &str) -> Result<PathBuf> {
+    prepare_desktop_image_in(dir, path, "lockscreen.png")
+}
+
+fn prepare_desktop_image_in(dir: &Path, path: &str, file_name: &str) -> Result<PathBuf> {
     let bytes = read_full_fidelity_capped(path)?;
     // A wallpaper never needs more than screen resolution; downscale large
     // sources so we don't re-encode (and block the shell thread on) a giant PNG.
     let img = cap_to_screen(decode::decode_full_for_output(&bytes)?);
-    let out = dir.join("wallpaper.png");
+    let out = dir.join(file_name);
     // Atomic write (temp + rename) so a failed/interrupted encode can never
     // leave the live, OS-referenced wallpaper file half-written (the desktop
     // re-reads this exact path at logon). Mirrors `convert_file`. A per-call
@@ -76,6 +87,11 @@ fn cap_to_screen(img: DynamicImage) -> DynamicImage {
 /// and write it as a PNG the desktop can use. Returns the wallpaper image path.
 pub fn prepare_wallpaper(path: &str) -> Result<PathBuf> {
     prepare_wallpaper_in(&appdata_dir()?, path)
+}
+
+/// The lock-screen twin of [`prepare_wallpaper`]: same directory, its own file.
+pub fn prepare_lock_screen(path: &str) -> Result<PathBuf> {
+    prepare_lock_screen_in(&appdata_dir()?, path)
 }
 
 /// The `HKCU\Control Panel\Desktop` `WallpaperStyle`/`TileWallpaper` pair for a

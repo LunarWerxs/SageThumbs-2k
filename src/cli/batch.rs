@@ -143,9 +143,17 @@ fn expand_inputs_walk(
 /// [`MAX_RECURSE_DEPTH`] so a cycle can't spin forever — the same two guards
 /// `prebuild::walk` applies, duplicated rather than shared because that function is
 /// private to `prebuild.rs` and unreachable from here.
-fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
+///
+/// Third element: the EXPLICIT arguments that resolved to nothing - a path that does not
+/// exist, or a named file of a type we do not read - each with why. A directory scan drops
+/// incidental unsupported files quietly by design; an input the caller NAMED is different, and
+/// until 2026-09-19 it simply vanished from the totals (`requested=1 succeeded=1 status=ok` for
+/// two inputs, audit F20), so nothing downstream could report or retry it.
+#[allow(clippy::type_complexity)]
+fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize, Vec<(String, String)>) {
     let mut out = Vec::new();
     let mut skipped_offline = 0usize;
+    let mut unresolved = Vec::new();
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
@@ -156,9 +164,13 @@ fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize) {
             } else {
                 out.push(i.clone());
             }
+        } else if p.is_file() {
+            unresolved.push((i.clone(), "not a supported image type".to_string()));
+        } else {
+            unresolved.push((i.clone(), "input not found".to_string()));
         }
     }
-    (out, skipped_offline)
+    (out, skipped_offline, unresolved)
 }
 
 /// BULK process many inputs (files and/or folders) in ONE process, fanned out
@@ -358,7 +370,7 @@ pub fn batch(
         "png".to_string()
     };
 
-    let (files, skipped_offline) = expand_inputs(inputs, recurse);
+    let (files, skipped_offline, unresolved) = expand_inputs(inputs, recurse);
     if files.is_empty() {
         return Err("no supported image files found in the inputs".to_string());
     }
@@ -375,7 +387,11 @@ pub fn batch(
         resize,
     };
     // Fan out: each (input, pre-reserved output) is independent → no naming race.
-    let outcomes = crate::parallel::map(&pairs, |_, (input, slot)| job.run(input, slot));
+    let mut outcomes = crate::parallel::map(&pairs, |_, (input, slot)| job.run(input, slot));
+    // AFTER the real outcomes, so `clean_failed_placeholders`' pair-by-pair zip still lines up.
+    outcomes.extend(unresolved.iter().map(|(input, why)| {
+        verbs::FileOutcome::failed(input, Some(verbs::OmitCause::Unreadable), why)
+    }));
     let report = verbs::BatchReport {
         files: outcomes,
         skipped_offline,
@@ -517,7 +533,7 @@ fn batch_report(report: &verbs::BatchReport, json: bool) -> Result<String, Strin
 /// hide the other 999 results).
 fn batch_info(inputs: &[String], recurse: bool) -> Result<String, String> {
     // Cloud placeholders are simply absent from the result array, same as `thumbnail`/`convert`.
-    let (files, _skipped_offline) = expand_inputs(inputs, recurse);
+    let (files, _skipped_offline, _unresolved) = expand_inputs(inputs, recurse);
     if files.is_empty() {
         return Err("no supported image files found in the inputs".to_string());
     }
@@ -746,7 +762,7 @@ mod tests {
         assert!(crate::prebuild::is_cloud_placeholder(&placeholder));
         assert!(!crate::prebuild::is_cloud_placeholder(&normal));
 
-        let (files, skipped) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
+        let (files, skipped, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
         assert_eq!(skipped, 1);
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("normal.png"));
@@ -774,7 +790,7 @@ mod tests {
         std::fs::write(dir.join("sub").join("mid.png"), b"mid").unwrap();
         std::fs::write(nested.join("bottom.png"), b"bottom").unwrap();
 
-        let (shallow, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
+        let (shallow, _, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], false);
         assert_eq!(
             shallow.len(),
             1,
@@ -782,7 +798,7 @@ mod tests {
         );
         assert!(shallow[0].ends_with("top.png"));
 
-        let (deep, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], true);
+        let (deep, _, _) = expand_inputs(&[dir.to_str().unwrap().to_string()], true);
         assert_eq!(deep.len(), 3, "recursive scan must find every depth");
         assert!(deep.iter().any(|p| p.ends_with("top.png")));
         assert!(deep.iter().any(|p| p.ends_with("mid.png")));

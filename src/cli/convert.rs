@@ -152,6 +152,7 @@ pub fn convert(
     quality: u8,
     webp_quality: Option<u8>,
     resize: verbs::Resize,
+    strip_metadata: bool,
 ) -> Result<String, String> {
     reject_output_alias(output, [input])?;
     // Clamp HERE, not just at each front end, so the CLI (which only clamped via
@@ -160,8 +161,14 @@ pub fn convert(
     // argument means, regardless of which one a caller went through.
     let quality = quality.clamp(1, 100);
     let webp_quality = webp_quality.map(|w| w.clamp(1, 100));
-    verbs::convert_to(input, Path::new(output), quality, webp_quality, resize)
-        .map_err(|e| format!("convert failed: {input}: {e}"))?;
+    // `--strip-metadata` is Shrink for email's opt-out; every other caller follows the user's
+    // "keep metadata" preference (2026-09-19 audit F05).
+    let converted = if strip_metadata {
+        verbs::convert_to_stripped(input, Path::new(output), quality, webp_quality, resize)
+    } else {
+        verbs::convert_to(input, Path::new(output), quality, webp_quality, resize)
+    };
+    converted.map_err(|e| format!("convert failed: {input}: {e}"))?;
     Ok(output.to_string())
 }
 
@@ -348,6 +355,7 @@ mod tests {
             0,
             None,
             verbs::Resize::None,
+            false,
         )
         .unwrap();
         assert!(out.exists());
@@ -493,7 +501,7 @@ mod tests {
             "a failed write must not touch the existing destination"
         );
         assert!(
-            !verbs::with_tmp_suffix(&out).exists(),
+            verbs::staging_leftovers(&out).is_empty(),
             "the temp file must be cleaned up"
         );
 
@@ -714,11 +722,19 @@ mod tests {
         let dir = scratch("convert_alias");
         let src = save_png(&dir.join("a.png"), 20, 20);
         let before = std::fs::read(&src).unwrap();
-        let err = convert(&src, &src, 90, None, verbs::Resize::None).unwrap_err();
+        let err = convert(&src, &src, 90, None, verbs::Resize::None, false).unwrap_err();
         assert!(err.contains("same file"), "{err}");
         assert_eq!(std::fs::read(&src).unwrap(), before);
         let out = dir.join("a.jpg");
-        convert(&src, out.to_str().unwrap(), 90, None, verbs::Resize::None).unwrap();
+        convert(
+            &src,
+            out.to_str().unwrap(),
+            90,
+            None,
+            verbs::Resize::None,
+            false,
+        )
+        .unwrap();
         assert!(out.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -13,6 +13,20 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
         .parent()
         .ok_or_else(|| Error::new(E_FAIL, "image has no parent folder"))?;
 
+    // Read desktop.ini FIRST, before anything is written, and let only NotFound mean "there is
+    // none": any other read error (a sharing lock that outlasts the retries, a permission
+    // denial) used to read as an empty file, so the merge below replaced the folder's real
+    // desktop.ini - InfoTip, [LocalizedFileNames] and all - with our two keys and reported
+    // success (2026-09-19 audit F19). A transient lock is retried exactly like the rename
+    // below; refusing here, before the .ico exists, leaves the folder exactly as it was.
+    let ini_path = dir.join("desktop.ini");
+    let existing = crate::fsutil::read_retrying(&ini_path).map_err(|e| {
+        Error::new(
+            E_FAIL,
+            format!("read desktop.ini: {e} - leaving the folder untouched"),
+        )
+    })?;
+
     let bytes = read_full_fidelity_capped(image_path)?;
     let icon = make_icon_square(&decode::decode_full_for_output(&bytes)?, 256);
 
@@ -54,8 +68,6 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     // tool wrote — a `[LocalizedFileNames]` block, `[ViewState]`, an InfoTip, a ConfirmFileOp
     // flag. Blindly overwriting it silently destroyed all of that. And write it atomically, like
     // the .ico above: a half-written desktop.ini makes the folder lose its identity entirely.
-    let ini_path = dir.join("desktop.ini");
-    let existing = std::fs::read(&ini_path).ok();
     let (prior, utf16) = match existing.as_deref() {
         // UTF-16 LE with BOM — what Explorer writes for a localized folder name.
         Some(b) if b.starts_with(&[0xFF, 0xFE]) => (decode_utf16le(&b[2..]), true),

@@ -407,6 +407,12 @@ pub(super) fn post_sync(target: isize, event: SyncEvent) {
 pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
         SyncEvent::Connected(Ok(crate::sync_client::ConnectOutcome::Synced { label })) => {
+            // The connect (or the initial-sync retry) has just PULLED the account's settings
+            // into HKCU, exactly like `Pulled(Ok(true))` below - and like there, the open
+            // dialog's controls still show the pre-pull values, so a Save now would write
+            // them straight back over the pull and push them to the account (2026-09-19
+            // audit F07: second PC, sign in, Save = the other PC's settings overwritten).
+            super::values::refresh_from_settings(hwnd);
             refresh_sync_ui(hwnd);
             // However they got here — the banner, the sync button, or credentials this machine
             // already had — the sign-in campaign is finished. Retire it so it is never asked

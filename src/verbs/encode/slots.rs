@@ -139,21 +139,24 @@ pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
     })
 }
 
-/// `<out>.st2ktmp` — the temp path a write goes to before the atomic rename.
-pub(crate) fn with_tmp_suffix(out: &Path) -> PathBuf {
-    let mut s = out.to_path_buf().into_os_string();
-    s.push(".st2ktmp");
-    PathBuf::from(s)
+/// The staging entries left beside `out` (`<out>.<pid>-<n>.st2ktmp`, reserved by
+/// [`crate::fsutil::create_staging`]). A finished or failed write leaves none — the thing
+/// every "the temp file must be cleaned up" test asserts.
+#[cfg(test)]
+pub(crate) fn staging_leftovers(out: &Path) -> Vec<PathBuf> {
+    crate::fsutil::staging_leftovers(out)
 }
 
-/// Atomic write: run `write` against a same-volume `<out>.st2ktmp`, then rename
-/// it over `out`. Owns the temp naming ([`with_tmp_suffix`]), the on-error temp
-/// cleanup (a failed/partial write leaves no `.st2ktmp` and never an `out`), and
-/// a short bounded rename retry (strip.rs-style: 5×40 ms) so a transient
-/// Explorer/thumbnail-cache lock (os error 5/32) doesn't fail an otherwise good
-/// write. `write` receives the temp path and must produce the finished file there.
+/// Atomic write: run `write` against a same-volume staging file reserved beside `out`
+/// ([`crate::fsutil::create_staging`]: a unique `.st2ktmp` name opened with `create_new`, so
+/// nothing that already exists there is ever truncated), then rename it over `out`. Owns the
+/// on-error temp cleanup (a failed/partial write leaves no staging file and never an `out`)
+/// and a short bounded rename retry (strip.rs-style: 5×40 ms) so a transient
+/// Explorer/thumbnail-cache lock (os error 5/32) doesn't fail an otherwise good write.
+/// `write` receives the temp path and must produce the finished file there.
 pub(crate) fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
-    let tmp = with_tmp_suffix(out);
+    let tmp = crate::fsutil::create_staging(out)
+        .map_err(|e| Error::new(E_FAIL, format!("stage {}: {e}", out.display())))?;
     write(&tmp).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })?;

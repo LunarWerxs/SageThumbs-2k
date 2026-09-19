@@ -150,6 +150,9 @@ webp = { version = "0.3", default-features = false, optional = true }
 # fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
 # the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
 resvg = { version = "0.48", default-features = false }
+# The XML parser resvg already brings in, named directly so the SVG metadata strip can ask it
+# "is the rewrite still well-formed?" before a file is replaced (2026-09-19 audit F02).
+roxmltree = "0.21"
 windows-registry = "0.6"
 # NOT unused despite what cargo-machete says: the `#[implement]` macro from
 # windows-implement EXPANDS to code that references `windows_core::` paths, so the

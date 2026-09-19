@@ -96,6 +96,8 @@ const VALUE_FLAGS: &[&str] = &[
 /// before this fix, was the one flag that could slip into `pos` as a bogus input path
 /// since it doesn't start with `--`).
 const BOOL_FLAGS: &[&str] = &[
+    "--strip-metadata",
+    "--lockscreen",
     "--recurse",
     "-r",
     "--rebuild-all",
@@ -218,7 +220,7 @@ fn run_convert(pos: &[&String], rest: &[String]) -> Result<String, String> {
     let q = flag_num(rest, "--quality", 90u8)?;
     let wq = flag_num_opt::<u8>(rest, "--webp-quality")?;
     let resize = cli::parse_resize(flag(rest, "--resize").as_deref())?;
-    cli::convert(i, o, q, wq, resize)
+    cli::convert(i, o, q, wq, resize, has_flag(rest, "--strip-metadata"))
 }
 
 /// The input list `batch --retry-from <report.json>` runs: the failed entries of a report
@@ -327,9 +329,9 @@ fn run_compress(pos: &[&String], rest: &[String]) -> Result<String, String> {
 
 /// `wallpaper-prepare <in> <out-dir>` — the decode/resize-to-screen half of
 /// Set-as-wallpaper, routed out of the shell host. See `cli::wallpaper_prepare`.
-fn run_wallpaper_prepare(pos: &[&String], _rest: &[String]) -> Result<String, String> {
+fn run_wallpaper_prepare(pos: &[&String], rest: &[String]) -> Result<String, String> {
     let (i, out_dir) = (need(pos, 0)?, need(pos, 1)?);
-    cli::wallpaper_prepare(i, out_dir)
+    cli::wallpaper_prepare(i, out_dir, has_flag(rest, "--lockscreen"))
 }
 
 /// `st2k clip-pixels <in>` — binary on success (a `w h` little-endian-u32 header then

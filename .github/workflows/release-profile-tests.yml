@@ -116,5 +116,14 @@ jobs:
       # `--tests` DOES include the library and binary unit tests: Cargo's documented target
       # selection builds every target with `test = true` in test mode. A comment in
       # preflight.ps1 once claimed the opposite and was wrong (2026-09-05 audit, F21).
-      - name: Unit and integration tests (release profile)
-        run: cargo test --release --locked --lib --tests
+      #
+      # The FEATURES ARE NAMED AGAIN HERE, because a build does not carry its feature selection
+      # into the next Cargo invocation (2026-09-19 audit F09): `cargo test` with the default set
+      # rebuilt the EXE without webp-lossy/html-preview/hdr-capture, so the HTML-route and HDR
+      # test cases vanished from the inventory and every `CARGO_BIN_EXE_*` integration test ran
+      # against a binary nobody ships. `-p sagethumbs2k` keeps this to the core+EXE package; the
+      # slim DLL above is not a test target and is not rebuilt; the dialog hook has its own step.
+      - name: Unit and integration tests (release profile, shipped EXE features)
+        run: cargo test --release --locked -p sagethumbs2k --lib --tests --features webp-lossy,html-preview,hdr-capture
+      - name: Dialog hook tests (release profile)
+        run: cargo test --release --locked -p sagethumbs2k-dlghook

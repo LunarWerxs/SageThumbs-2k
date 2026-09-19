@@ -46,9 +46,11 @@ use samplers::*;
 use streaming::*;
 
 pub use compress::compress_to_size;
+#[cfg(test)]
+pub(crate) use slots::staging_leftovers;
 pub(crate) use slots::{
     predict_unique_suffix, preserve_src_time, reserve, reserve_unique_suffix, unique_output,
-    with_tmp_suffix, write_atomic, OutSlot,
+    write_atomic, OutSlot,
 };
 pub use watermark::{Corner, Watermark};
 
@@ -826,6 +828,35 @@ pub fn convert_to_reporting(
     webp_quality: Option<u8>,
     resize: Resize,
 ) -> std::result::Result<(), (OmitCause, Error)> {
+    convert_to_reporting_with(input, out, quality, webp_quality, resize, true)
+}
+
+/// [`convert_to`] for the one caller that must NOT carry metadata across even while the
+/// user's "keep metadata" preference is on: Shrink for email, whose point is a small, clean
+/// attachment (`st2k convert --strip-metadata`).
+pub fn convert_to_stripped(
+    input: &str,
+    out: &Path,
+    quality: u8,
+    webp_quality: Option<u8>,
+    resize: Resize,
+) -> Result<()> {
+    convert_to_reporting_with(input, out, quality, webp_quality, resize, false).map_err(|(_, e)| e)
+}
+
+/// The body of [`convert_to_reporting`]. `carry_metadata` = graft the source's EXIF/ICC onto a
+/// NATIVE output when the "keep metadata" preference allows it (`carry::read` checks that).
+/// The installed quick Convert and Resize verbs run through here (`st2k convert`), and until
+/// 2026-09-19 this path never carried anything, so the preference held in the Convert dialog
+/// and silently did not in the right-click menu (audit F05).
+fn convert_to_reporting_with(
+    input: &str,
+    out: &Path,
+    quality: u8,
+    webp_quality: Option<u8>,
+    resize: Resize,
+    carry_metadata: bool,
+) -> std::result::Result<(), (OmitCause, Error)> {
     let ext = out
         .extension()
         .and_then(|e| e.to_str())
@@ -868,6 +899,9 @@ pub fn convert_to_reporting(
     if matches!(format, ImageFormat::Jpeg) {
         img = flatten_onto_white(&img);
     }
+    let carried = carry_metadata
+        .then(|| carry::read(&bytes, &src_ext(input)))
+        .flatten();
     write_atomic(out, |tmp| {
         encode_to_opts(
             &img,
@@ -877,7 +911,11 @@ pub fn convert_to_reporting(
             webp_quality,
             &ext,
             tmp,
-        )
+        )?;
+        if let Some(m) = &carried {
+            carry::apply(m, tmp, &ext)?;
+        }
+        Ok(())
     })
     .map_err(|e| (OmitCause::Unencodable, e))?;
     preserve_src_time(Path::new(input), out);
@@ -1438,7 +1476,7 @@ mod bounded_native_encoder_tests {
 
         assert!(convert_to(input.to_str().unwrap(), &output, 90, None, Resize::None).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"original destination");
-        assert!(!with_tmp_suffix(&output).exists());
+        assert!(staging_leftovers(&output).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1510,7 +1548,7 @@ mod bounded_native_encoder_tests {
         std::fs::write(&psd, b"old destination").unwrap();
         convert_to(input.to_str().unwrap(), &psd, 90, None, Resize::None).unwrap();
         assert!(std::fs::read(&psd).unwrap().starts_with(b"8BPS"));
-        assert!(!with_tmp_suffix(&psd).exists());
+        assert!(staging_leftovers(&psd).is_empty());
 
         let edited = transform_file(psd.to_str().unwrap(), Transform::Right90).unwrap();
         assert_eq!(edited.extension().and_then(|ext| ext.to_str()), Some("psd"));

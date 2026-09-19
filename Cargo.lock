@@ -1389,6 +1389,7 @@ dependencies = [
  "pulldown-cmark",
  "rars",
  "resvg",
+ "roxmltree",
  "ruzstd",
  "serde_json",
  "sevenz-rust2",

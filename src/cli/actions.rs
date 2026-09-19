@@ -14,7 +14,9 @@ use super::*;
 /// listed, since it's a documented part of the Clipboard routing contract.
 pub fn clip_pixels(input: &str) -> Result<Vec<u8>, String> {
     let bytes = verbs::read_full_fidelity_capped(input).map_err(|e| e.to_string())?;
-    let img = decode::decode_full_for_output(&bytes)
+    // By PATH, not bytes: a name-selected coder (SCT, ...) and a RAW that needs its named
+    // coder both depend on the extension reaching the decoder (2026-09-19 audit F06).
+    let img = decode::decode_full_for_path(&bytes, input)
         .map_err(|e| format!("decode {input}: {e}"))?
         .to_rgba8();
     let (w, h) = (img.width(), img.height());
@@ -29,8 +31,15 @@ pub fn clip_pixels(input: &str) -> Result<Vec<u8>, String> {
 /// Powers the routed Wallpaper verb: the parent supplies its own
 /// `%APPDATA%\SageThumbs2K` as `out_dir` and applies the result (registry write +
 /// `SystemParametersInfoW`) without decoding the source itself.
-pub fn wallpaper_prepare(input: &str, out_dir: &str) -> Result<String, String> {
-    verbs::prepare_wallpaper_in(Path::new(out_dir), input)
+pub fn wallpaper_prepare(input: &str, out_dir: &str, lock_screen: bool) -> Result<String, String> {
+    // `--lockscreen` writes the lock screen's own file, so it never replaces the desktop
+    // wallpaper's persistent asset (2026-09-19 audit F21).
+    let prepared = if lock_screen {
+        verbs::prepare_lock_screen_in(Path::new(out_dir), input)
+    } else {
+        verbs::prepare_wallpaper_in(Path::new(out_dir), input)
+    };
+    prepared
         .map(|p| p.display().to_string())
         .map_err(|e| format!("wallpaper-prepare failed: {input}: {e}"))
 }

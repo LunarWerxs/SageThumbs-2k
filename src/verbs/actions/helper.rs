@@ -311,6 +311,9 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
                     &quality,
                     "--resize",
                     &resize,
+                    // An email attachment stays clean even while "keep metadata" is on; the
+                    // in-process `shrink_for_email` never carried any either.
+                    "--strip-metadata",
                 ],
             ) {
                 RunOutcome::Ok => Some(slot.path().to_path_buf()),
@@ -444,22 +447,31 @@ pub(super) fn parse_clip_pixels(stdout: &[u8]) -> Option<(u32, u32, &[u8])> {
 /// the file lands, else falls back to in-process `prepare_wallpaper`. Split out from
 /// [`wallpaper_one`] so this - the only decode-heavy half - is testable without
 /// touching the live desktop; applying the result is a separate, decode-free step.
-pub(super) fn prepare_wallpaper_routed(exe: Option<&Path>, p: &str) -> Result<PathBuf> {
+pub(super) fn prepare_wallpaper_routed(
+    exe: Option<&Path>,
+    p: &str,
+    lock_screen: bool,
+) -> Result<PathBuf> {
     match exe {
         Some(exe) => {
             let dir = wallpaper::appdata_dir()?;
             let Some(dir_s) = dir.to_str() else {
-                return prepare_wallpaper_routed(None, p);
+                return prepare_wallpaper_routed(None, p, lock_screen);
             };
-            match run_st2k_capture(exe, p, &["wallpaper-prepare", p, dir_s]) {
+            let mut args = vec!["wallpaper-prepare", p, dir_s];
+            if lock_screen {
+                args.push("--lockscreen");
+            }
+            match run_st2k_capture(exe, p, &args) {
                 CaptureOutcome::Ok(wp) => Ok(wp),
                 CaptureOutcome::Failed => {
                     crate::safety::log(&format!("Set wallpaper (st2k) failed for {p}"));
                     Err(Error::new(E_FAIL, "couldn't set the wallpaper"))
                 }
-                CaptureOutcome::SpawnFailed => prepare_wallpaper_routed(None, p),
+                CaptureOutcome::SpawnFailed => prepare_wallpaper_routed(None, p, lock_screen),
             }
         }
+        None if lock_screen => wallpaper::prepare_lock_screen(p),
         None => prepare_wallpaper(p),
     }
 }
@@ -469,7 +481,7 @@ pub(super) fn prepare_wallpaper_routed(exe: Option<&Path>, p: &str) -> Result<Pa
 /// (`wallpaper::apply_wallpaper` - registry write + `SystemParametersInfoW`, no
 /// decode either way).
 pub(super) fn wallpaper_one(exe: Option<&Path>, p: &str, mode: WallpaperMode) -> Result<()> {
-    let wp = prepare_wallpaper_routed(exe, p)?;
+    let wp = prepare_wallpaper_routed(exe, p, false)?;
     wallpaper::apply_wallpaper(&wp, mode)
 }
 
@@ -479,7 +491,7 @@ pub(super) fn wallpaper_one(exe: Option<&Path>, p: &str, mode: WallpaperMode) ->
 /// (`wallpaper::apply_lock_screen` - WinRT `LockScreen::SetImageFileAsync`, no decode either
 /// way).
 pub(super) fn lock_screen_one(exe: Option<&Path>, p: &str) -> Result<()> {
-    let wp = prepare_wallpaper_routed(exe, p)?;
+    let wp = prepare_wallpaper_routed(exe, p, true)?;
     wallpaper::apply_lock_screen(&wp)
 }
 
@@ -859,11 +871,11 @@ mod tests {
         let Some(exe) = st2k_exe() else {
             panic!("st2k.exe must be resolvable under test — see the module docs' fallback note");
         };
-        let routed = prepare_wallpaper_routed(Some(&exe), path)
+        let routed = prepare_wallpaper_routed(Some(&exe), path, false)
             .expect("the routed arm must succeed for a valid PNG");
         let routed_bytes = std::fs::read(&routed).unwrap();
 
-        let in_process = prepare_wallpaper_routed(None, path)
+        let in_process = prepare_wallpaper_routed(None, path, false)
             .expect("the in-process (fallback) arm must succeed for the same PNG");
         let in_process_bytes = std::fs::read(&in_process).unwrap();
 

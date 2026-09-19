@@ -239,16 +239,34 @@ pub(super) fn check_format_capability(r: &mut Report) {
                             exts.join(", ")
                         ),
                     ),
+                    // The OS route is the fast, hardware-assisted one, not the ONLY one: a
+                    // Full install decodes HEIC/HEIF through the bundled ImageMagick when
+                    // Windows cannot (2026-09-19 audit F23 measured real corpus files
+                    // rendering that way), so a missing Store extension is a slower route on
+                    // such a copy, and a genuine gap only on a Compact one.
+                    Some(false) if crate::decode::magick_available() => r.line(
+                        S::Info,
+                        label,
+                        &format!(
+                            "container decoder present, but the HEVC Video Extension is NOT \
+                             installed - {} format(s) decode through the bundled ImageMagick \
+                             instead, slower and without the OS's hardware route ({}); the \
+                             \"HEVC Video Extensions\" from the Microsoft Store would speed them up",
+                            exts.len(),
+                            exts.join(", ")
+                        ),
+                    ),
                     Some(false) => r.fail_with_fix(
                         label,
                         &format!(
                             "container decoder present, but the HEVC Video Extension it needs \
-                             is NOT installed - {} format(s) keep their default icon ({})",
+                             is NOT installed, and this Compact install has no bundled decoder \
+                             to fall back on - {} format(s) keep their default icon ({})",
                             exts.len(),
                             exts.join(", ")
                         ),
                         "install the \"HEVC Video Extensions\" (or \"HEIF Image Extensions\", \
-                         which bundles it) from the Microsoft Store",
+                         which bundles it) from the Microsoft Store, or reinstall the Full edition",
                     ),
                     None => r.line(
                         S::Info,

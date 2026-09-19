@@ -497,21 +497,37 @@ function Get-ReleaseVerificationOnlyPaths {
     )
 }
 
+# Paths a commit may touch without changing WHAT A TEST RUN PROVES. Deliberately NARROWER than
+# the artifact list above (2026-09-19 audit F10): a workflow file, a check script or a test
+# script IS the validation, so an older green run says nothing about a commit that changed one
+# - in particular, a commit that ADDS a required check must not be proven by a run from before
+# the check existed. verify.ps1 and preflight.ps1 stay: they run on the developer's machine,
+# not in the run being reused.
+function Get-ReleaseValidationOnlyPaths {
+    return @(
+        '^docs/', '^README\.md$', '^LICENSE', '^SECURITY\.md$',
+        '^scripts/release\.ps1$', '^scripts/release-manifest-lib\.ps1$',
+        '^scripts/verify\.ps1$', '^scripts/preflight\.ps1$'
+    )
+}
+
 # $true when $From is an ancestor of $To (or the same commit) and every path changed between
-# them is verification-only. Returns $false for anything else, including a git failure: a
+# them is in $Allowed (the artifact-reuse list by default; pass the validation list to decide
+# whether a RUN carries over). Returns $false for anything else, including a git failure: a
 # range this cannot read is a range that does not qualify.
 function Test-ReleaseVerificationOnlyRange {
     param(
         [Parameter(Mandatory)] [string]$Root,
         [Parameter(Mandatory)] [string]$From,
-        [Parameter(Mandatory)] [string]$To
+        [Parameter(Mandatory)] [string]$To,
+        [string[]]$Allowed = (Get-ReleaseVerificationOnlyPaths)
     )
     if ($From -ceq $To) { return $true }
     $null = & git -C $Root merge-base --is-ancestor $From $To 2>$null
     if ($LASTEXITCODE -ne 0) { return $false }
     $changed = @(& git -C $Root diff --name-only "$From..$To" 2>$null)
     if ($LASTEXITCODE -ne 0) { return $false }
-    $allowed = Get-ReleaseVerificationOnlyPaths
+    $allowed = $Allowed
     foreach ($path in $changed) {
         if (-not ($allowed | Where-Object { $path -match $_ })) { return $false }
     }
@@ -560,17 +576,29 @@ function Find-ReleaseProvingRun {
     $raw = & gh @args 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
     $runs = @($raw | ConvertFrom-Json | Sort-Object createdAt -Descending)
+    $asResult = { param($run) @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion } }
+    # A completed run on THIS commit is the last word (2026-09-19 audit F10): green proves it,
+    # and a FAILED one must never be talked over by an older green ancestor - the failure is the
+    # newest fact about these binaries. Only when this commit has no completed run does the
+    # ancestor rule below apply.
+    $exact = @($runs | Where-Object { [string]$_.headSha -ceq $Sha -and $_.status -eq 'completed' })
+    $exactGreen = @($exact | Where-Object { $_.conclusion -eq 'success' })
+    if ($exactGreen.Count) { return (& $asResult $exactGreen[0]) }
+    if ($exact.Count) { return (& $asResult $exact[0]) }
     # A GREEN qualifying run beats a live one, even when the live one is on this very commit:
     # the push that carries a script-only fix starts its own CI run, and waiting on that run
     # is exactly the 30 minutes the ancestor rule exists to save (3.0.1's relaunch waited on it).
+    # An ANCESTOR's run carries over only across validation-only commits (the narrower list):
+    # a commit that touched a workflow, a check or a test changed what a run proves.
+    $validationOnly = Get-ReleaseValidationOnlyPaths
     foreach ($wantGreen in $true, $false) {
         foreach ($run in $runs) {
             $green = $run.status -eq 'completed' -and $run.conclusion -eq 'success'
             $live = $run.status -ne 'completed'
             if ($wantGreen -and -not $green) { continue }
             if (-not $wantGreen -and -not $live) { continue }
-            if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha)) { continue }
-            return @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion }
+            if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha -Allowed $validationOnly)) { continue }
+            return (& $asResult $run)
         }
     }
     return $null
