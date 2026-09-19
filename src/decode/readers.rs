@@ -59,7 +59,6 @@ pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
 /// carry on from. Callers that *should* be refused are refused by the ceiling; callers that
 /// merely cannot fit today are told so.
 pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
     let len = std::fs::metadata(path)?.len();
     if len > limits::MAX_FULL_FIDELITY_INPUT_BYTES {
         return Err(std::io::Error::new(
@@ -70,6 +69,14 @@ pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
             ),
         ));
     }
+    read_full_fidelity_from(std::fs::File::open(path)?, len)
+}
+
+/// Exactly `len` bytes of `reader` (fewer only at its EOF), into a fallibly reserved buffer.
+/// The seam behind [`read_full_fidelity`], so the growing-file property is testable with an
+/// in-memory source instead of a race against a writer thread.
+fn read_full_fidelity_from(reader: impl std::io::Read, len: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
     let mut buf = Vec::new();
     let want = usize::try_from(len).map_err(|_| {
         std::io::Error::new(
@@ -84,14 +91,14 @@ pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
         )
     })?;
     // `len` is a metadata SNAPSHOT, not a bound: plain `read_to_end` keeps reading past it
-    // to EOF, so a file that grows between the check above and this read (a download in
+    // to EOF, so a file that grows between the caller's check and this read (a download in
     // progress, a log, a share) would both sail past the ceiling just checked AND grow the
     // `Vec` past its fallible reservation via `read_to_end`'s own infallible `reserve` —
     // which aborts the process under `panic = "abort"`, defeating the whole point of the
     // fallible reserve above. `Read::take(len)` makes the reader itself stop at `len`
     // bytes, so growth past the reservation can't happen regardless of how the file behaves
     // on disk while this reads it.
-    std::fs::File::open(path)?.take(len).read_to_end(&mut buf)?;
+    reader.take(len).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -758,34 +765,21 @@ mod tests {
     /// checked against the ceiling, and could grow the `Vec` past its fallible reservation
     /// via `read_to_end`'s own infallible growth. `Read::take(len)` must cap the read at
     /// exactly the metadata-time size no matter how much more the file grows underneath it.
+    ///
+    /// Driven through the reader seam with a source that holds far more than `len`, so the
+    /// growth is a fact of the input rather than a race. The earlier version of this test
+    /// raced a writer thread against the real function's metadata call and lost on a loaded
+    /// box (2026-09-19: the writer appended 25 blocks before the metadata read, so the
+    /// "metadata-time length" it asserted against was simply wrong), which blocked a push on
+    /// a test that measured scheduling, not the code.
     #[test]
     fn read_full_fidelity_caps_at_the_metadata_time_length_even_if_the_file_grows() {
-        let path = std::env::temp_dir().join(format!(
-            "st2k_full_fidelity_growing_{}.bin",
-            std::process::id()
-        ));
         let initial = vec![b'a'; 4096];
-        std::fs::write(&path, &initial).expect("stage temp file");
-        let p = path.to_string_lossy().into_owned();
+        let mut grown = initial.clone();
+        grown.extend(std::iter::repeat_n(b'b', 200 * 4096));
 
-        // Grow the file well past its checked size WHILE the read is (likely) in flight, so
-        // the fix is exercised rather than merely re-reading a static file.
-        let grow_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            use std::io::Write;
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&grow_path)
-                .expect("reopen for append");
-            for _ in 0..200 {
-                let _ = f.write_all(&[b'b'; 4096]);
-                let _ = f.flush();
-            }
-        });
-
-        let got = read_full_fidelity(&p).expect("must still read the checked-size prefix");
-        writer.join().expect("writer thread must not panic");
-
+        let got = read_full_fidelity_from(&grown[..], initial.len() as u64)
+            .expect("must still read the checked-size prefix");
         assert_eq!(
             got.len(),
             initial.len(),
@@ -796,7 +790,14 @@ mod tests {
             got.iter().all(|&b| b == b'a'),
             "must be exactly the original bytes, no appended ones"
         );
-
+        // And the real function still goes through that seam: a static file reads whole.
+        let path = std::env::temp_dir().join(format!(
+            "st2k_full_fidelity_static_{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, &initial).expect("stage temp file");
+        let whole = read_full_fidelity(&path.to_string_lossy()).expect("static file");
+        assert_eq!(whole, initial);
         let _ = std::fs::remove_file(&path);
     }
 
