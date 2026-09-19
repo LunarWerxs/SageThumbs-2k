@@ -40,7 +40,7 @@ use windows::Win32::UI::Shell::{
 };
 
 #[test]
-#[ignore]
+#[ignore = "needs the packaged handler registered on this machine and mutates the thumbnail cache; run with --ignored"]
 fn packaged_thumbnail_handler_loads_in_shell() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

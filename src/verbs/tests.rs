@@ -706,10 +706,9 @@ fn converts_to_native_long_tail_formats_with_correct_signatures() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Needs ImageMagick (bundled on a full install, or on PATH). Run explicitly:
-//   cargo test --release -- --ignored converts_psd_via_magick
+// Run explicitly: cargo test --release -- --ignored converts_psd_via_magick
 #[test]
-#[ignore]
+#[ignore = "needs ImageMagick (bundled on a full install, or on PATH); run with --ignored"]
 fn converts_psd_via_magick() {
     if !crate::decode::magick_available() {
         return;
@@ -1109,11 +1108,9 @@ fn prepares_wallpaper_image() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Disruptive (changes the live desktop wallpaper, then restores it), so
-// `#[ignore]`d — run explicitly:
-//   cargo test --release -- --ignored sets_and_restores_wallpaper
+// Run explicitly: cargo test --release -- --ignored sets_and_restores_wallpaper
 #[test]
-#[ignore]
+#[ignore = "changes the live desktop wallpaper (then restores it); run with --ignored"]
 fn sets_and_restores_wallpaper() {
     use windows::Win32::UI::WindowsAndMessaging::{
         SPI_GETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,

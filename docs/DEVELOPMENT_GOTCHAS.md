@@ -564,6 +564,29 @@ A gate that covers most of a job is worse than no gate, because it is trusted. I
 step to `build-test` in `ci.yml`, add it to `scripts/preflight.ps1` in the same position, or
 change the comment to stop claiming a mirror it no longer is.
 
+## The gate runs on the one machine that HAS the corpus, so it cannot see a test that needs it
+
+`..\test-corpus` is a sibling of the repo, never in git, so a CI checkout has none. On
+2026-09-19 four tests read `real.ai` with an `unwrap()`, passed the pre-push gate, and painted
+three CI runs red in a row - a class the mirror above is structurally blind to, because every
+step it mirrors runs on the machine that has the files.
+
+Two things closed it, and both are load-bearing. **The path is spelled in ONE place,
+`src/testcorpus.rs`** (`dir()`, `read()`, `path()`, `real_dir()`); a test in that module scans
+`src/` and `tests/` for any other spelling and fails on it. **The gate makes the corpus
+vanish:** `ST2K_CORPUS_ABSENT=1` makes every accessor answer a path that does not exist, and
+`ST2K_CORPUS_TOUCH_LOG` records the calling test's name (libtest names the thread after the
+test), so `preflight.ps1` runs the suite once with the log on and then re-runs exactly the
+recorded tests with the corpus absent - the CI shape, proven before the push in seconds. The
+step refuses to pass when fewer tests ran than were recorded (a garbled log would otherwise
+read as green). A test that reads a sample says `let Some(bytes) = testcorpus::read("x") else
+{ return };` and prints NOT MEASURED when it skips; it never unwraps the read.
+
+The same day's second gate of this kind: `installer.iss` is now COMPILED by ISCC in gate mode
+(`/DGateCompile=1`, stored not compressed, output discarded) against the last staged payload,
+one second, because the static lints read the script and only the compiler compiles it - a
+Pascal type mismatch in the `[Code]` section had passed every local gate that morning.
+
 ## Explorer's own settings lie to the registry, and the performance profile lies twice
 
 Two traps that cost hours on a real machine (2026-08-05), both of which make a registry read

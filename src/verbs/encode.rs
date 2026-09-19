@@ -1519,9 +1519,8 @@ mod bounded_native_encoder_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Needs ImageMagick (bundled on a full install, or on PATH).
     #[test]
-    #[ignore]
+    #[ignore = "needs ImageMagick (bundled on a full install, or on PATH); run with --ignored"]
     fn exact_psd_and_magick_backed_edits_have_psd_signatures() {
         if !decode::magick_available() {
             return;

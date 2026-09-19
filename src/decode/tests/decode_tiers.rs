@@ -64,7 +64,7 @@ fn jpeg_transcoded_jxl_thumbnails_through_the_reduced_path() {
 }
 
 #[test]
-#[ignore] // needs ImageMagick (magick.exe) installed; run explicitly
+#[ignore = "needs ImageMagick (magick.exe) installed; CI runs it explicitly with --ignored"]
 fn magick_subprocess_decodes() {
     // Feed a PNG straight to the ImageMagick tier (bypassing the image-first
     // tier) to prove the stdin->stdout subprocess plumbing works end-to-end.

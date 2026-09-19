@@ -555,18 +555,33 @@ fn handle_transform(paths: &[String], t: Transform) -> ActionReport {
 /// clip-pixels` (helper-if-present) - the child decodes and prints raw pixels, the
 /// parent only does a bounded memcpy - else falls back to in-process `copy_to_clipboard`.
 fn handle_clipboard(paths: &[String]) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => {
-            let exe = st2k_exe();
-            match clipboard_one(exe.as_deref(), p) {
-                Ok(()) => ActionReport::applied(1, 1),
-                Err(e) => {
-                    crate::safety::log(&format!("Copy to clipboard failed for {p}: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't decode or copy the image")
-                }
-            }
+    first_image_action(
+        paths,
+        "Copy to clipboard",
+        "couldn't decode or copy the image",
+        |p| clipboard_one(st2k_exe().as_deref(), p),
+    )
+}
+
+/// The "first image in the selection" verbs share one shape: find the first image path, run
+/// the verb on it, and report one applied or one failed with the verb's own note and a log
+/// line naming the file. Four handlers carried this by hand until 2026-09-19.
+fn first_image_action<E: std::fmt::Debug>(
+    paths: &[String],
+    what: &str,
+    note: &str,
+    run: impl FnOnce(&str) -> std::result::Result<(), E>,
+) -> ActionReport {
+    let Some(p) = paths.iter().find(|p| is_image(p.as_str())) else {
+        return ActionReport::default();
+    };
+    crate::safety::log_debugf!("{what}: using {p}");
+    match run(p) {
+        Ok(()) => ActionReport::applied(1, 1),
+        Err(e) => {
+            crate::safety::log(&format!("{what} failed for {p}: {e:?}"));
+            ActionReport::applied(1, 0).with_note(note)
         }
-        None => ActionReport::default(),
     }
 }
 
@@ -575,16 +590,12 @@ fn handle_clipboard(paths: &[String]) -> ActionReport {
 /// carries the original file byte for byte) and places `data:<mime>;base64,…` on the
 /// clipboard as text.
 fn handle_copy_data_uri(paths: &[String]) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => match copy_data_uri_to_clipboard(p) {
-            Ok(()) => ActionReport::applied(1, 1),
-            Err(e) => {
-                crate::safety::log(&format!("Copy as data URI failed for {p}: {e:?}"));
-                ActionReport::applied(1, 0).with_note("couldn't read or copy the file")
-            }
-        },
-        None => ActionReport::default(),
-    }
+    first_image_action(
+        paths,
+        "Copy as data URI",
+        "couldn't read or copy the file",
+        copy_data_uri_to_clipboard,
+    )
 }
 
 /// `VerbAction::Wallpaper` - one wallpaper. Use the first *image* in the selection (see
@@ -593,20 +604,9 @@ fn handle_copy_data_uri(paths: &[String]) -> ActionReport {
 /// (registry + `SystemParametersInfoW`) always runs in-process either way - see
 /// [`helper::wallpaper_one`].
 fn handle_wallpaper(paths: &[String], mode: WallpaperMode) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => {
-            crate::safety::log_debugf!("Set wallpaper: using {p}");
-            let exe = st2k_exe();
-            match wallpaper_one(exe.as_deref(), p, mode) {
-                Ok(()) => ActionReport::applied(1, 1),
-                Err(e) => {
-                    crate::safety::log(&format!("Set wallpaper failed for {p}: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't set the wallpaper")
-                }
-            }
-        }
-        None => ActionReport::default(),
-    }
+    first_image_action(paths, "Set wallpaper", "couldn't set the wallpaper", |p| {
+        wallpaper_one(st2k_exe().as_deref(), p, mode)
+    })
 }
 
 /// `VerbAction::LockScreen` - one lock-screen image. Use the first *image* in the selection
@@ -616,20 +616,12 @@ fn handle_wallpaper(paths: &[String], mode: WallpaperMode) -> ActionReport {
 /// screen (`LockScreen::SetImageFileAsync`, no decode) always runs in-process - see
 /// [`helper::lock_screen_one`].
 fn handle_lock_screen(paths: &[String]) -> ActionReport {
-    match paths.iter().find(|p| is_image(p.as_str())) {
-        Some(p) => {
-            crate::safety::log_debugf!("Set lock screen: using {p}");
-            let exe = st2k_exe();
-            match lock_screen_one(exe.as_deref(), p) {
-                Ok(()) => ActionReport::applied(1, 1),
-                Err(e) => {
-                    crate::safety::log(&format!("Set lock screen failed for {p}: {e:?}"));
-                    ActionReport::applied(1, 0).with_note("couldn't set the lock screen")
-                }
-            }
-        }
-        None => ActionReport::default(),
-    }
+    first_image_action(
+        paths,
+        "Set lock screen",
+        "couldn't set the lock screen",
+        |p| lock_screen_one(st2k_exe().as_deref(), p),
+    )
 }
 
 /// `VerbAction::CombineToPdf`.

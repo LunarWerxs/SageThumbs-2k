@@ -2215,7 +2215,7 @@ mod dds_cost_tests {
     /// tree) moved a 4000x3000 DXT1 by under a millisecond. The block loop was simply not
     /// where the time was, and three runs of the speed gate could not tell me that.
     #[test]
-    #[ignore]
+    #[ignore = "timing measurement over a 12 MP DXT1, not a gate; run --release --nocapture"]
     fn where_a_twelve_megapixel_dds_spends_its_time() {
         const W: u32 = 4000;
         const H: u32 = 3000;
