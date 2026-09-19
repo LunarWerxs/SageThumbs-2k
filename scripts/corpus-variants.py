@@ -14,6 +14,14 @@ gate that wants a number reads the `MISSING` lines.
 
     python scripts/corpus-variants.py            # both corpora
     python scripts/corpus-variants.py --json     # machine-readable
+    python scripts/corpus-variants.py --gate     # exit 1 if a variant the committed baseline
+                                                 # lists has DISAPPEARED (the ratchet: the
+                                                 # corpus may only gain variants, never lose
+                                                 # one); MISSING variants print, never fail
+    python scripts/corpus-variants.py --write-baseline   # after adding samples, record them
+
+The baseline is `scripts/corpus-variants-baseline.txt` (one `ext:variant` per line, committed).
+`verify.ps1` runs the gate; a sample deleted by mistake fails there, not at the next report.
 
 Variant definitions are deliberately about what the FILE holds, never about what SageThumbs does
 with it, so the report stays true when the decoder changes.
@@ -78,18 +86,76 @@ def psd_variants(b):
     res_len, = struct.unpack(">I", b[i:i + 4]); res = b[i + 4:i + 4 + res_len]; i += 4 + res_len
     if b"8BIM\x04\x0c" in res:
         v.add("has-thumbnail-1036")
-    if ver == 2:
-        lm_len, = struct.unpack(">Q", b[i:i + 8]); i += 8 + lm_len
-    else:
-        lm_len, = struct.unpack(">I", b[i:i + 4]); i += 4 + lm_len
-    v.add("has-layers" if lm_len > 0 else "no-layers")
-    # Merged image data follows: present when "Maximize Compatibility" was on (or no layers).
-    v.add("has-composite" if len(b) - i > 2 + (w * h * channels * depth // 8) // 50 else "no-composite")
+    # The Layer and Mask Information section is present even for a flattened file (Photoshop
+    # writes it with an empty layer info block), so its LENGTH is not the tell: the layer
+    # COUNT inside it is. Layer info = length (u32, u64 for PSB) + i16 count (negative when the
+    # first alpha channel holds the merged result's transparency; the magnitude is the count).
+    wide = 8 if ver == 2 else 4
+    fmt = ">Q" if ver == 2 else ">I"
+    lm_len, = struct.unpack(fmt, b[i:i + wide]); lm_start = i + wide; i = lm_start + lm_len
+    layers = 0
+    if lm_len > 0:
+        li_len, = struct.unpack(fmt, b[lm_start:lm_start + wide])
+        if li_len > 0:
+            layers = abs(struct.unpack(">h", b[lm_start + wide:lm_start + wide + 2])[0])
+        # 16- and 32-bit files keep their layers in the `Lr16` / `Lr32` tagged blocks instead,
+        # with the main layer info length at zero (real-16bit.psd read as flat until this).
+        section = b[lm_start:lm_start + lm_len]
+        for tag in (b"Lr16", b"Lr32"):
+            at = section.find(tag)
+            if at != -1 and layers == 0:
+                off = at + 4 + wide  # tag, block length, then the count directly
+                if off + 2 <= len(section):
+                    layers = abs(struct.unpack(">h", section[off:off + 2])[0])
+    v.add("has-layers" if layers > 0 else "no-layers")
+    # Merged image data follows. Photoshop ALWAYS writes the section; with "Maximize
+    # Compatibility" off it writes a blank (uniform) composite instead of the artwork, so the
+    # tell is whether the composite is uniform, not whether it is there. RLE rows of a uniform
+    # image are two runs at most (a run is 2 bytes); raw rows are sampled for a second value.
+    v.add(composite_kind(b, i, w, h, channels, ver, mode))
     return v
 
 
+def composite_kind(b, i, w, h, channels, ver, mode):
+    if len(b) - i < 2:
+        return "no-composite"
+    comp, = struct.unpack(">H", b[i:i + 2])
+    i += 2
+    rows = h * channels
+    # "Blank" is what Photoshop writes there with Maximize Compatibility off: every row one
+    # colour, and that colour paper white (255 in every channel; 0 for a bitmap). A flat-colour
+    # ARTWORK is uniform too (real-flat.psd is a red rectangle) and is a real composite.
+    if comp == 1:  # RLE: a table of per-row byte counts, then the packed rows
+        wide, fmt = (4, ">I") if ver == 2 else (2, ">H")
+        if len(b) < i + rows * wide:
+            return "no-composite"
+        counts = [struct.unpack(fmt, b[i + k * wide:i + k * wide + wide])[0] for k in range(rows)]
+        runs_per_row = (w + 127) // 128  # a uniform row is one run per 128 pixels
+        if not all(c <= runs_per_row * 2 for c in counts):
+            return "has-composite"
+        first = b[i + rows * wide:i + rows * wide + counts[0]]
+        value = first[1] if len(first) >= 2 and first[0] > 128 else None
+        return "composite-blank" if value == 255 and mode in PAPER_WHITE_MODES else "has-composite"
+    if comp == 0:  # raw planar samples
+        n = w * h * channels
+        data = b[i:i + n]
+        if len(data) < n:
+            return "no-composite"
+        uniform = data.count(data[:1]) == len(data)
+        return "composite-blank" if uniform and data[0] == 255 and mode in PAPER_WHITE_MODES else "has-composite"
+    return "has-composite"
+
+
+# Greyscale, RGB, CMYK (stored inverted, so 255 is no ink) and Lab all write paper white as
+# 255; an indexed or bitmap file's 0/255 is a palette entry or ink, never a blank marker.
+PAPER_WHITE_MODES = {1, 3, 4, 9}
+
+# `no-composite` (the section absent altogether) is not a variant any writer seen here
+# produces - Photoshop always writes the section and blanks it instead - so it is reported
+# when found and never wanted.
 PSD_WANTED = {"8-bit", "16-bit", "32-bit", "rgb", "cmyk", "greyscale", "indexed", "lab",
-              "has-layers", "no-layers", "has-composite", "no-composite", "has-thumbnail-1036"}
+              "has-layers", "no-layers", "has-composite", "composite-blank",
+              "has-thumbnail-1036"}
 
 
 # ---- PDF ---------------------------------------------------------------------------------------
@@ -182,8 +248,13 @@ FAMILIES = {
 }
 
 
+BASELINE = Path(__file__).resolve().parent / "corpus-variants-baseline.txt"
+
+
 def main():
     as_json = "--json" in sys.argv
+    gate = "--gate" in sys.argv
+    write_baseline = "--write-baseline" in sys.argv
     present = defaultdict(lambda: defaultdict(list))
     for corpus in CORPORA:
         if not corpus.is_dir():
@@ -209,12 +280,33 @@ def main():
     if as_json:
         print(json.dumps(report, indent=2))
         return
+    have_now = {f"{ext}:{k}" for ext, r in report.items() for k in r["present"] if not k.startswith("unparseable:")}
+    if write_baseline:
+        BASELINE.write_text("\n".join(sorted(have_now)) + "\n", encoding="utf-8")
+        print(f"wrote {len(have_now)} present variants to {BASELINE.name}")
+        return
     for ext, r in report.items():
         print(f"== .{ext}: {len(r['samples'])} sample(s)")
         for k, names in r["present"].items():
             print(f"   {k:24s} {len(names)}  {', '.join(names[:4])}{' ...' if len(names) > 4 else ''}")
         if r["missing"]:
             print(f"   MISSING {ext}: {', '.join(r['missing'])}")
+    if gate:
+        if not any(c.is_dir() for c in CORPORA):
+            print("corpus-variants: NOT MEASURED - no test corpus on this machine")
+            sys.exit(2)
+        if not BASELINE.is_file():
+            print(f"corpus-variants: no baseline at {BASELINE.name} (run --write-baseline)")
+            sys.exit(2)
+        expected = {l.strip() for l in BASELINE.read_text(encoding="utf-8").splitlines() if l.strip()}
+        lost = sorted(expected - have_now)
+        gained = sorted(have_now - expected)
+        if gained:
+            print(f"corpus-variants: {len(gained)} variant(s) present but not in the baseline - run --write-baseline: {', '.join(gained)}")
+        if lost:
+            print(f"corpus-variants: FAIL - {len(lost)} variant(s) the baseline lists are GONE from the corpus: {', '.join(lost)}")
+            sys.exit(1)
+        print(f"corpus-variants: ok - all {len(expected)} baselined variants present")
 
 
 if __name__ == "__main__":

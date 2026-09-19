@@ -248,6 +248,25 @@ if ($Fast) {
     Stage 'cargo test (all)' { cargo test --quiet 2>&1 | Where-Object { $_ -match 'test result|FAILED|error' } | Write-Host }
 }
 
+# ---- corpus variants: which AUTHORING variants the corpus holds -------------------------
+# (2026-09-19.) Issues #44 and #45 shipped through fifty releases because every corpus pass
+# graded the same PDF-compatible, single-artboard Illustrator files; the hole was in the
+# sample set, by save-time option. `corpus-variants.py` classifies every sample by those
+# options (Illustrator, Photoshop PSD/PSB, PDF, EPS, TIFF) and its gate fails only when a
+# variant the committed baseline lists has DISAPPEARED from the corpus (a sample deleted by
+# mistake). Variants with no sample print as MISSING - coverage gaps, said out loud, never
+# folded into green. Exit 2 is NOT MEASURED (no corpus on this machine, or no baseline).
+Stage 'corpus variants (none lost since the baseline; gaps printed)' {
+    $lines = & python (Join-Path $root 'scripts\corpus-variants.py') --gate 2>&1 | ForEach-Object { "$_" }
+    $rc = $LASTEXITCODE
+    $lines | Where-Object { $_ -match 'MISSING|corpus-variants:' } | ForEach-Object { Write-Host "[verify]   $_" -ForegroundColor $(if ($_ -match 'FAIL') { 'Red' } elseif ($_ -match 'MISSING') { 'Yellow' } else { 'DarkGray' }) }
+    if ($rc -eq 2) {
+        Write-Host '[verify] corpus variants NOT MEASURED (no corpus or no baseline on this machine)' -ForegroundColor Yellow
+        $rc = 0
+    }
+    $global:LASTEXITCODE = $rc
+}
+
 # ---- corpus samples with expectations -------------------------------------
 if ($Samples) {
     Stage "samples: $Samples" {
