@@ -134,14 +134,36 @@ function Assert-ArchitectureContractFails([string]$Name, [string]$Text) {
 # safe-form/brace rules, not user-context or certificate-scope semantics) so a future edit to
 # the [Run]/[UninstallRun] entries cannot silently regress either fix.
 function Test-ModernMenuRegistersAsOriginalUser([string]$Text) {
-    # The per-user step is identified by the Add-AppxPackage call it actually makes (not by
-    # position), then its OWN Flags value - up to the end of that physical line - must carry
-    # runasoriginaluser. The cert-trust step above it deliberately does NOT carry the flag
-    # (it is genuinely machine-wide), so this must anchor on the Add-AppxPackage text itself,
-    # not merely "the flag appears somewhere in the file" (it does, on unrelated entries).
-    $registerBlock = [regex]::Match($Text, 'Add-AppxPackage -Path[\s\S]*?Flags:[^\r\n]*')
-    return $registerBlock.Success -and
-        $registerBlock.Value.Contains('runasoriginaluser', [StringComparison]::Ordinal)
+    # Since 2026-09-19 the per-user registration command lives ONCE, in the [Code] function
+    # ModernMenuRegisterScript (the Add-AppxPackage call is there), and the [Run] entry expands
+    # it through {code:ModernMenuRegisterScript}. That entry's OWN Flags line must still carry
+    # runasoriginaluser (the route Inno takes when nobody but the elevated account is at the
+    # console) AND the console-user Check (ConsoleUserPsStep), which is what reaches a standard
+    # user at the console when an administrator's process ran Setup (the two-account VM proof).
+    # The cert-trust step above it deliberately carries neither (it is machine-wide), so this
+    # anchors on the {code:} reference, never on "the flag appears somewhere in the file".
+    $fn = [regex]::Match($Text, '(?s)function ModernMenuRegisterScript\(Param: String\): String;.*?\r?\nend;')
+    if (-not $fn.Success -or -not $fn.Value.Contains('Add-AppxPackage -Path', [StringComparison]::Ordinal)) { return $false }
+    $entry = [regex]::Match($Text, '\{code:ModernMenuRegisterScript\}[\s\S]*?Flags:[^\r\n]*')
+    if (-not $entry.Success) { return $false }
+    if (-not $entry.Value.Contains('runasoriginaluser', [StringComparison]::Ordinal)) { return $false }
+    if (-not $entry.Value.Contains('ConsoleUserPsStep', [StringComparison]::Ordinal)) { return $false }
+    # And the route must hand the SAME text to the broker, not a second copy of the command.
+    return [regex]::IsMatch($Text, "(?s)function ConsoleUserPsStep\(\): Boolean;.*?ModernMenuRegisterScript\(''\).*?\r?\nend;")
+}
+function Test-PerUserRunEntriesRouteToConsoleUser([string]$Text) {
+    # Every [Run] entry that Inno would run as the "original user" - except the interactive,
+    # postinstall ones a human at the console just clicked - must ALSO carry a console-user
+    # Check, or an install from an already-elevated process puts that user's state in the
+    # administrator's hive (2026-09-19 audit F11, measured on the two-account VM).
+    $run = [regex]::Match($Text, '(?s)\[Run\].*?\[UninstallRun\]')
+    if (-not $run.Success) { return $false }
+    foreach ($m in [regex]::Matches($run.Value, 'Flags:[^\r\n]*runasoriginaluser[^\r\n]*')) {
+        $line = $m.Value
+        if ($line.Contains('postinstall', [StringComparison]::Ordinal)) { continue }
+        if (-not [regex]::IsMatch($line, 'Check:[^\r\n]*ConsoleUser(Ps)?Step')) { return $false }
+    }
+    return $true
 }
 function Test-NoSubjectWildcardCertRemoval([string]$Text) {
     # F09's bug, verbatim: `Get-ChildItem Cert:\...\TrustedPeople | Where-Object Subject -like
@@ -235,7 +257,13 @@ function Test-PackageRemovalIsSynchronousAllUsers([string]$Text) {
 function Assert-ModernMenuUserContextContract([string]$Text) {
     if (-not (Test-ModernMenuRegistersAsOriginalUser $Text)) {
         throw 'F08: the per-user Add-AppxPackage registration must run as the original ' +
-            'interactive user (runasoriginaluser), not whichever administrator answered UAC'
+            'interactive user (runasoriginaluser + the ConsoleUserPsStep route, one command ' +
+            'text in ModernMenuRegisterScript), not whichever administrator answered UAC'
+    }
+    if (-not (Test-PerUserRunEntriesRouteToConsoleUser $Text)) {
+        throw 'F11: every non-postinstall [Run] entry flagged runasoriginaluser must also carry ' +
+            'a ConsoleUserStep/ConsoleUserPsStep Check, or an install from an elevated process ' +
+            'writes that user''s state into the administrator''s hive'
     }
     if (-not (Test-NoSubjectWildcardCertRemoval $Text)) {
         throw 'F09: certificate cleanup must never match by subject wildcard - it can ' +
