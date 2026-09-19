@@ -24,7 +24,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Sign-in and settings sync moved to Connections' new permanent address**
   (`accounts.connectionsapi.com` / `studio.connectionsapi.com`); the previous domain was
   suspended by its registry on 18 September. Existing sign-ins carry over. The "Move my
-  licence" and sign-in links now go through st2k.lunarwerx.com, like Buy already did, so a
+  licence" and sign-in links now go through a LunarWerx redirect, like Buy already did, so a
   future address change never needs an update.
 
 ## 3.1.1
