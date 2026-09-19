@@ -438,10 +438,13 @@ pub(super) unsafe fn sync_dependent_switches(hwnd: HWND) {
     for &(combo, wants, kids) in DEPENDENT_ON_COMBO {
         grey_kids(hwnd, kids, combo_sel(hwnd, combo, 2) as u32 == wants);
     }
-    // The badge-size LABEL is dimmed by paint, not disabled (see `DEPENDENT_ON_COMBO`), so it
-    // has to be asked to repaint here or it keeps the colour of the previous selection.
-    if let Ok(lbl) = GetDlgItem(Some(hwnd), ID_LBL_BADGE_SIZE) {
-        let _ = InvalidateRect(Some(lbl), None, true);
+    // The captions dimmed by paint, not disabled (see `DEPENDENT_ON_COMBO` and
+    // `dimmed_caption`), have to be asked to repaint here or they keep the colour of the
+    // previous state.
+    for lbl in [ID_LBL_BADGE_SIZE, ID_LBL_PREVIEW_BLOCKED_EXTS] {
+        if let Ok(lbl) = GetDlgItem(Some(hwnd), lbl) {
+            let _ = InvalidateRect(Some(lbl), None, true);
+        }
     }
 }
 
@@ -451,6 +454,31 @@ unsafe fn grey_kids(hwnd: HWND, kids: &[i32], on: bool) {
         if let Ok(c) = GetDlgItem(Some(hwnd), kid) {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(c, on);
             let _ = InvalidateRect(Some(c), None, true);
+            // A framed field's rounded frame is painted by the DIALOG around the control, and
+            // its fill follows the enabled state too (`restyle::paint_chrome`), so the ring
+            // outside the control has to repaint with it.
+            let mut rc = RECT::default();
+            if GetWindowRect(c, &mut rc).is_ok() {
+                let mut pts = [
+                    POINT {
+                        x: rc.left,
+                        y: rc.top,
+                    },
+                    POINT {
+                        x: rc.right,
+                        y: rc.bottom,
+                    },
+                ];
+                windows::Win32::Graphics::Gdi::MapWindowPoints(None, Some(hwnd), &mut pts);
+                let pad = s(hwnd, 12);
+                let ring = RECT {
+                    left: pts[0].x - pad,
+                    top: pts[0].y - pad,
+                    right: pts[1].x + pad,
+                    bottom: pts[1].y + pad,
+                };
+                let _ = InvalidateRect(Some(hwnd), Some(&ring), false);
+            }
         }
     }
 }

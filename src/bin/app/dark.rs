@@ -141,6 +141,22 @@ pub(crate) fn SURFACE() -> COLORREF {
 pub(crate) fn INPUT_BG() -> COLORREF {
     tchc(rgb(45, 45, 45), rgb(255, 255, 255), COLOR_WINDOW)
 } // edit / dropdown field fill
+/// The fill of a DISABLED edit / dropdown: halfway between the window tone and the live field,
+/// so a greyed field still reads as a field but no longer as one you can type in. The rounded
+/// frame, the control's own fill and its WM_CTLCOLOR brush all take it from here; when they
+/// disagreed, a disabled edit drew a window-grey slab inside a white frame.
+#[allow(non_snake_case)]
+pub(crate) fn INPUT_BG_DISABLED() -> COLORREF {
+    tchc(rgb(38, 38, 38), rgb(249, 249, 249), COLOR_WINDOW)
+}
+/// The field fill for a control in the given enabled state.
+pub(crate) fn field_fill(enabled: bool) -> COLORREF {
+    if enabled {
+        INPUT_BG()
+    } else {
+        INPUT_BG_DISABLED()
+    }
+}
 #[allow(non_snake_case)]
 pub(crate) fn BTN_FACE() -> COLORREF {
     tchc(rgb(50, 50, 50), rgb(251, 251, 251), COLOR_BTNFACE)
@@ -453,6 +469,18 @@ pub(crate) unsafe fn dark_ctlcolor_dim(wparam: WPARAM) -> LRESULT {
     SetBkColor(hdc, DARK_BG());
     SetBkMode(hdc, TRANSPARENT);
     LRESULT(dark_bg_brush().0 as isize)
+}
+
+/// For a DISABLED framed edit. Windows asks a disabled (or read-only) edit for its colours
+/// with WM_CTLCOLORSTATIC, not WM_CTLCOLOREDIT, so the static arm of [`dark_ctlcolor`] would
+/// hand it the WINDOW tone - a grey slab inside the rounded field frame the dialog paints
+/// behind it. This keeps it a field: the disabled field fill, greyed text.
+pub(crate) unsafe fn dark_ctlcolor_field_disabled(wparam: WPARAM) -> LRESULT {
+    static B: [OnceLock<usize>; 2] = brush_slots();
+    let hdc = HDC(wparam.0 as *mut c_void);
+    SetTextColor(hdc, DISABLED_TEXT());
+    SetBkColor(hdc, INPUT_BG_DISABLED());
+    LRESULT(cached_brush(INPUT_BG_DISABLED(), &B).0 as isize)
 }
 
 #[cfg(test)]

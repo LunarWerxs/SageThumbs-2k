@@ -578,6 +578,23 @@ unsafe fn dimmed_caption(hwnd: HWND, lparam: LPARAM) -> bool {
         || (is(ID_SHOT_DIR) && !checked(hwnd, ID_SHOT_USE_DIR))
         // "Format mark size:", while the corner mark is not the SageThumbs badge.
         || (is(ID_LBL_BADGE_SIZE) && !badge_size_active(hwnd))
+        // "Never preview these extensions:", while Quick preview itself is off - its field is
+        // greyed then, and a full-strength caption beside a greyed field reads as a mistake.
+        || (is(ID_LBL_PREVIEW_BLOCKED_EXTS) && !checked(hwnd, ID_PREVIEW_ENABLED))
+}
+
+/// Is the control behind this WM_CTLCOLORSTATIC one of the FRAMED edits (a `Row::Pair` field),
+/// currently disabled? Windows routes a disabled edit through the STATIC message, so without
+/// this it takes the window tone and shows as a grey slab inside its own rounded frame.
+unsafe fn disabled_framed_edit(hwnd: HWND, lparam: LPARAM) -> bool {
+    let ctl = HWND(lparam.0 as *mut c_void);
+    if windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(ctl).as_bool() {
+        return false;
+    }
+    let (edit_ids, _) = navrail::pair_field_ids();
+    edit_ids
+        .into_iter()
+        .any(|id| GetDlgItem(Some(hwnd), id).is_ok_and(|c| c == ctl))
 }
 
 /// The dialog's WM_CTLCOLORSTATIC overrides that key off LIVE control state (a
@@ -597,6 +614,11 @@ unsafe fn special_ctlcolor(
         && dimmed_caption(hwnd, lparam)
     {
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
+    }
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && disabled_framed_edit(hwnd, lparam)
+    {
+        return Some(crate::dark::dark_ctlcolor_field_disabled(wparam));
     }
     // The hotkey-service status word: green when running/started, red otherwise.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
@@ -1358,19 +1380,17 @@ unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 /// SAME frame instead of flashing the bare background between them. The blit is
 /// clipped to non-child pixels by WS_CLIPCHILDREN, so the child controls keep
 /// their own (SetWindowPos-preserved) pixels and aren't briefly overpainted.
-/// The fill brush MIRRORS the class hbrBackground (main.rs) exactly so light
-/// mode is byte-identical to before (COLOR_BTNFACE, not the 243 surface tone).
+/// The fill is the palette's window tone in BOTH themes - the colour every control on the
+/// pane fills itself with. Light mode used to fill with the system button-face brush here
+/// (240 on a stock theme, anything on a customised one) under controls painted 243, and the
+/// page read as a patchwork of lighter blocks.
 unsafe fn on_paint(hwnd: HWND) -> LRESULT {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     let pr = ps.rcPaint;
     let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
     if pw > 0 && ph > 0 {
-        let br = if is_dark() {
-            dark_bg_brush()
-        } else {
-            HBRUSH(16isize as *mut c_void)
-        };
+        let br = dark_bg_brush();
         let mem = CreateCompatibleDC(Some(hdc));
         let bmp = CreateCompatibleBitmap(hdc, pw, ph);
         // Under GDI handle exhaustion either call can come back invalid, so mirror

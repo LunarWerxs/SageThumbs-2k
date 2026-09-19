@@ -7,6 +7,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Settings, and every other SageThumbs window, no longer looks patchy in light mode.** The
+  window behind the controls was painted a slightly different grey from the controls
+  themselves, so each row, each label and the sidebar showed as a faint lighter block: obvious
+  on some displays and Windows themes, nearly invisible on others. Every window now uses one
+  background colour. Dark mode was not affected.
+- **A greyed-out text box or drop-down in Settings now looks like one greyed-out field**, not a
+  grey slab inside a white outline, and the "Never preview these extensions:" caption greys
+  with its box while Quick preview is off.
+
 ## 3.1.1
 
 Recorded TV and camcorder files that hold MPEG-2 get thumbnails without a paid Windows add-on,

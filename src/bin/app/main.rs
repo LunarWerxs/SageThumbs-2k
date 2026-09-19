@@ -77,11 +77,8 @@ mod update;
 mod upload_result;
 mod win;
 
-use core::ffi::c_void;
-
 use windows::core::w;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_BAR_CLASSES, ICC_LINK_CLASS, ICC_LISTVIEW_CLASSES,
@@ -1024,13 +1021,10 @@ unsafe fn create_and_show_settings_window(
         lpszClassName: class,
         hIcon: app_icon().unwrap_or_default(),
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // Dark window background when the system is dark; otherwise the
-        // classic button-face system color ((COLOR_BTNFACE + 1) as HBRUSH).
-        hbrBackground: if dark {
-            dark_bg_brush()
-        } else {
-            HBRUSH(16isize as *mut c_void)
-        },
+        // The palette's window tone in BOTH themes. Light mode used to take the system
+        // button-face brush here while every control filled with the palette's 243, so each
+        // row showed as a lighter block on the pane (feedback, 3.1.1); one source, one colour.
+        hbrBackground: dark_bg_brush(),
         ..Default::default()
     };
     RegisterClassW(&wc);

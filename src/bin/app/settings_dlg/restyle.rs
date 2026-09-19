@@ -547,11 +547,17 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     // pair_field_ids`) rather than hand-kept here — a hand-kept list silently stopped
     // covering a `Pair` row the moment one was added without a matching edit here (six
     // input fields never got their frame this way; see `pair_field_ids`'s doc comment).
+    // A frame's fill follows its control's ENABLED state (`field_fill`), the same answer the
+    // control gives for its own interior - a white frame round a greyed edit is two colours
+    // for one field.
+    let enabled =
+        |c: HWND| windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(c).as_bool();
     let (edit_ids, combo_ids) = navrail::pair_field_ids();
     for id in edit_ids {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
-                draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 6, 2);
+                let fill_c = crate::dark::field_fill(enabled(c));
+                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 6, 2);
             }
         }
     }
@@ -566,7 +572,8 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     for id in combo_ids {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
-                draw_rounded_panel(hwnd, hdc, c, INPUT_BG(), BORDER(), 10, 4, 2, 2);
+                let fill_c = crate::dark::field_fill(enabled(c));
+                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 2, 2);
             }
         }
     }
@@ -601,11 +608,11 @@ unsafe extern "system" fn combo_subclass(
             let hdc = BeginPaint(h, &mut ps);
             let mut rc = RECT::default();
             let _ = GetClientRect(h, &mut rc);
-            fill(hdc, &rc, INPUT_BG());
-            // Dim the text + chevron when the combo is disabled (e.g. the quick-save
+            // Dim the fill, text + chevron when the combo is disabled (e.g. the quick-save
             // picker while "instant screenshot" is off). Native Win32 greys a disabled
             // combo automatically; our owner-draw must do it explicitly.
             let enabled = windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(h).as_bool();
+            fill(hdc, &rc, crate::dark::field_fill(enabled));
             let text_col = if enabled {
                 DARK_TEXT()
             } else {

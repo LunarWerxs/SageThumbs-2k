@@ -14,7 +14,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     DeleteObject, DrawTextW, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, DT_CALCRECT,
-    DT_LEFT, DT_NOPREFIX, DT_WORDBREAK, HBITMAP, HBRUSH, HFONT, HGDIOBJ,
+    DT_LEFT, DT_NOPREFIX, DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -537,11 +537,10 @@ pub(crate) unsafe fn run_dialog(
             Default::default()
         },
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: if dark {
-            crate::dark::dark_bg_brush()
-        } else {
-            HBRUSH(16isize as *mut c_void)
-        },
+        // The palette's window tone in both themes: it is what `dark_ctlcolor` hands every
+        // control, so the window behind them has to be the same colour or each one reads as
+        // a block.
+        hbrBackground: crate::dark::dark_bg_brush(),
         ..Default::default()
     };
     RegisterClassW(&wc); // idempotent: re-register returns 0 (already registered) — fine
@@ -725,11 +724,7 @@ pub(crate) unsafe fn create_shot_window(
         lpszClassName: class,
         hIcon: app_icon().unwrap_or_default(),
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: if dark {
-            crate::dark::dark_bg_brush()
-        } else {
-            HBRUSH(16isize as *mut c_void)
-        },
+        hbrBackground: crate::dark::dark_bg_brush(), // same tone as the real window classes
         ..Default::default()
     };
     RegisterClassW(&wc); // idempotent
