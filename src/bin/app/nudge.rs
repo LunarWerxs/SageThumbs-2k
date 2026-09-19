@@ -175,6 +175,13 @@ fn now_ms() -> u64 {
 fn config() -> Config {
     let mut cfg = Config::new(APP_ID, APP_NAME);
     cfg.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    // The engine's default base is Connections' own host; this app points the link at its
+    // relay's `/link/<app>` redirect instead (st2k.lunarwerx.com). `connections.icu` was
+    // suspended by its registry on 2026-09-18, and a base compiled into every shipped copy has
+    // to be one whose target can move without a release; the relay forwards the path segment
+    // and the whole query string, so attribution survives the hop. Set HERE, not in the
+    // engine: that file is vendored verbatim and must stay byte-identical to the shared copy.
+    cfg.link_base = "https://st2k.lunarwerx.com/link".to_string();
     cfg
 }
 
@@ -511,7 +518,9 @@ mod tests {
     #[test]
     fn app_id_matches_the_landing_page_slug() {
         assert_eq!(APP_ID, "sagethumbs");
-        assert!(config().link_base.contains("connections.icu"));
+        assert!(config()
+            .link_base
+            .starts_with("https://st2k.lunarwerx.com/link"));
     }
 
     /// Issue #94: the whole point of a NAMED (not process-local) mutex is that a second

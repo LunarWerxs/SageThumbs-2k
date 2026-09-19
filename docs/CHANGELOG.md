@@ -21,6 +21,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   It was a bare white strip beside a rounded button.
 - **The hotkey service's status line on the Screenshots page ("Running", "Stopped") is now
   translated** in all 36 languages; it was English everywhere.
+- **Sign-in and settings sync moved to Connections' new permanent address**
+  (`accounts.connectionsapi.com` / `studio.connectionsapi.com`); the previous domain was
+  suspended by its registry on 18 September. Existing sign-ins carry over. The "Move my
+  licence" and sign-in links now go through st2k.lunarwerx.com, like Buy already did, so a
+  future address change never needs an update.
 
 ## 3.1.1
 

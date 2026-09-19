@@ -61,8 +61,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 
-/// Pay's Ed25519 public key, as the raw 32 bytes (the tail of the SPKI DER served at
-/// `GET https://licensing.connections.icu/api/licences/verification-key`).
+/// Pay's Ed25519 public key, as the raw 32 bytes (the tail of the SPKI DER served by the
+/// licensing plane at `GET /api/licences/verification-key`).
 ///
 /// Baked in at build time on purpose: an offline check cannot fetch a key, which is the
 /// entire point. Verified 2026-09-04 against BOTH encodings that endpoint publishes - the

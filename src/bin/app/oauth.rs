@@ -1,6 +1,7 @@
 //! OAuth 2.0 **Authorization Code + PKCE via loopback redirect** (RFC 8252) against
-//! Connections (`accounts.connections.icu`). This is the native-app sign-in for the
-//! optional settings-sync feature.
+//! Connections (`accounts.connectionsapi.com`, the permanent backend domain since
+//! 2026-09-18; `connections.icu` was suspended by its registry). This is the native-app
+//! sign-in for the optional settings-sync feature.
 //!
 //! Fully synchronous — no async runtime. The flow:
 //!   1. mint a PKCE `code_verifier`/`code_challenge` (RNG + SHA-256 via CNG),
@@ -27,8 +28,11 @@ use crate::http;
 /// Connections 2026-07-05; a public PKCE client, so there is NO client secret here.
 pub(crate) const CLIENT_ID: &str = "c6e85c7caceb03d51c0b389435ed1906";
 
-const AUTHORIZE: &str = "https://accounts.connections.icu/oauth/authorize";
-const TOKEN: &str = "https://accounts.connections.icu/oauth/token";
+// Set explicitly, never from OIDC discovery, and no issuer is pinned: the Connections
+// migration note says discovery may self-describe with a host mid-move and the `iss` value
+// is still settling. The signature check against the token endpoint's own keys is what counts.
+const AUTHORIZE: &str = "https://accounts.connectionsapi.com/oauth/authorize";
+const TOKEN: &str = "https://accounts.connectionsapi.com/oauth/token";
 const SCOPE: &str = "openid profile email photo";
 /// How long to wait for the user to finish signing in before giving up.
 const LOGIN_TIMEOUT_SECS: u64 = 180;

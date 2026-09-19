@@ -389,10 +389,10 @@ works.
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
 needs a commercial licence per Windows installation, sold two ways: US$2.99 a month at
-<https://checkout.connections.icu/licence/c16cca94-53a4-4e7a-b434-0737fdfc21bb?slug=sagethumbs>
-(cancel whenever you like at <https://checkout.connections.icu/manage>, signing in with the
+<https://st2k.lunarwerx.com/buy/monthly>
+(cancel whenever you like at <https://st2k.lunarwerx.com/manage>, signing in with the
 email you paid with), or US$49 once at
-<https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+<https://st2k.lunarwerx.com/buy>
 for a perpetual licence with 12 months of updates (card via Stripe); one seat key per
 installation arrives by email the moment payment completes
 (the checkout page calls it a "redemption code": same thing, it starts with `esk_`).

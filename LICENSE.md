@@ -5,7 +5,7 @@ full text is reproduced below.
 
 **In plain terms:** you may use, copy, modify, and share SageThumbs 2K for any
 **noncommercial** purpose, free of charge. **Commercial use requires a separate
-license** - to arrange one, buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
+license** - to arrange one, buy it at <https://st2k.lunarwerx.com/buy>
 (US$49 per Windows installation, one-time; a perpetual licence with 12 months of updates,
 one seat key per installation, redeemed under Settings ▸ Licence). A copy installed for
 business use may be evaluated in full for 7 days before a key is required. Afterwards the app

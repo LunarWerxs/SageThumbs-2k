@@ -507,7 +507,11 @@ const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";
 /// field and POSTed, never carried in a URL/query string (same posture this module already
 /// takes with the licence key elsewhere - see `renew_url`'s doc for why a *prefix* is never
 /// substituted into a URL either). Opened bare; the buyer pastes their key on the page itself.
-pub(crate) const PORTAL_CLAIM_URL: &str = "https://licensing.connections.icu/seats/claim";
+///
+/// A relay redirect (`/claim`, like `/buy`) since 2026-09-18, when `connections.icu` was
+/// suspended by its registry: the portal's host is a [vars] line on the relay now, so it can
+/// move again without a release.
+pub(crate) const PORTAL_CLAIM_URL: &str = "https://st2k.lunarwerx.com/claim";
 
 /// The renewal link for this machine: the checkout page for our product, with the stored
 /// licence key pre-filled when we have one.
@@ -2272,10 +2276,7 @@ mod tests {
     /// browser history / a proxy log.
     #[test]
     fn portal_claim_url_never_carries_a_query_string() {
-        assert_eq!(
-            PORTAL_CLAIM_URL,
-            "https://licensing.connections.icu/seats/claim"
-        );
+        assert_eq!(PORTAL_CLAIM_URL, "https://st2k.lunarwerx.com/claim");
         assert!(
             !PORTAL_CLAIM_URL.contains('?'),
             "the licence key must never ride in a URL - see PORTAL_CLAIM_URL's doc comment"

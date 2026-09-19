@@ -1,5 +1,6 @@
 //! Connections settings-sync: the allowlisted push/pull between the local HKCU settings
-//! and the per-user cloud document at `studio.connections.icu/v1/app-data/{appId}`.
+//! and the per-user cloud document at `studio.connectionsapi.com/v1/app-data/{appId}`
+//! (the permanent backend domain since 2026-09-18; `connections.icu` was suspended).
 //!
 //! Only an explicit **allowlist** of portable preferences is synced — never machine-local
 //! values (absolute paths, the upload-host config), local-only flags, or secrets. The
@@ -23,7 +24,7 @@ use sagethumbs2k_core::settings;
 
 use crate::{cred_store, http, oauth};
 
-const STORE_BASE: &str = "https://studio.connections.icu/v1/app-data";
+const STORE_BASE: &str = "https://studio.connectionsapi.com/v1/app-data";
 const TIMEOUT_SECS: u64 = 20;
 const MAX_RESP: usize = 128 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
