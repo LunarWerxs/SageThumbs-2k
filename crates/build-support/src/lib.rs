@@ -87,6 +87,40 @@ pub fn versioninfo_rc(
     )
 }
 
+/// Write `rc_text` to `<out_dir>/<stem>.rc` and compile it to something the linker takes:
+/// on ARM64 an SDK `rc.exe` `.res` (GNU windres on an x64 host emits x64 COFF even for ARM
+/// targets), otherwise a windres COFF object. `Ok` is the path for `cargo:rustc-link-arg`.
+/// `Err` is every reason it did not happen, one per line, because "windres unavailable" as
+/// the answer to all of them once sent a session an hour down the wrong road when windres
+/// was installed, on PATH and ran fine by hand. The DLL build scripts each carried this.
+pub fn compile_rc(out_dir: &str, stem: &str, rc_text: &str) -> Result<String, String> {
+    let input = format!("{out_dir}/{stem}.rc");
+    if let Err(e) = std::fs::write(&input, rc_text) {
+        return Err(format!("couldn't write {input}: {e}"));
+    }
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        let res = format!("{out_dir}/{stem}.res");
+        return if compile_with_windows_sdk_rc(&input, &res) {
+            Ok(res)
+        } else {
+            Err("ARM64 resource compilation requires Windows SDK rc.exe".to_string())
+        };
+    }
+    let obj = format!("{out_dir}/{stem}.o");
+    let mut why: Vec<String> = Vec::new();
+    for windres in ["windres", "x86_64-w64-mingw32-windres"] {
+        match std::process::Command::new(windres)
+            .args(["-I", out_dir, &input, "-O", "coff", "-o", &obj])
+            .status()
+        {
+            Ok(s) if s.success() => return Ok(obj),
+            Ok(s) => why.push(format!("{windres}: ran but exited {s}")),
+            Err(e) => why.push(format!("{windres}: could not run it ({e})")),
+        }
+    }
+    Err(why.join("\n  "))
+}
+
 /// Compile an architecture-neutral Windows `.res` with the SDK resource compiler.
 /// GNU windres installations on x64 emit x64 COFF objects even for ARM targets;
 /// `link.exe` can instead consume this `.res` while producing the final ARM64 PE.
