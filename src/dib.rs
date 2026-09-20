@@ -76,7 +76,7 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
 /// GDI hands a DIB section's bits back as `B,G,R,A` and every `image::RgbaImage` in this repo
 /// wants `R,G,B,A`, so BGRA -> RGBA and RGBA -> BGRA are the SAME operation - swap channels 0
 /// and 2 - which is why one function serves both directions. Four call sites had pasted the
-/// identical four-line loop: `safety::create_dib_from_rgba`'s fully-opaque fast path,
+/// identical four-line loop: `safety::composite_rgba_over_bg`'s fully-opaque fast path,
 /// `contextmenu::paint`'s menu-preview capture, the preview font specimen's read-back, and the
 /// `previewhandler_shot` example.
 ///
