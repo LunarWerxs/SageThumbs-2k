@@ -28,6 +28,26 @@ pub(super) unsafe fn release_gdi_on_fail(screen: HDC, mem: HDC, bmp: HBITMAP, ms
     }
 }
 
+/// Create the memory DC and its compatible bitmap for a virtual-screen-sized capture.
+/// A GDI failure here (object-quota exhaustion is the realistic cause) must not fall
+/// through to SelectObject/BitBlt on a null handle, which paints "you captured a black
+/// screen" instead of a diagnosable failure (A139), so this logs `fail_msg`, releases
+/// everything already allocated (`screen` included), and returns `None` instead.
+unsafe fn create_fullscreen_dc_pair(
+    screen: HDC,
+    vw: i32,
+    vh: i32,
+    fail_msg: &str,
+) -> Option<(HDC, HBITMAP)> {
+    let mem = CreateCompatibleDC(Some(screen));
+    let bmp = CreateCompatibleBitmap(screen, vw, vh);
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        release_gdi_on_fail(screen, mem, bmp, fail_msg);
+        return None;
+    }
+    Some((mem, bmp))
+}
+
 /// Freeze the screen into a memory DC (the normal overlay paints from this, never the
 /// live desktop, so annotations don't fight with what's underneath), or fill it with the
 /// deterministic synthetic automation canvas, since the automation route MUST NOT copy or
@@ -43,17 +63,12 @@ pub(super) unsafe fn freeze_screen_to_dc(
     vh: i32,
     automation: bool,
 ) -> Option<(HDC, HBITMAP)> {
-    let mem = CreateCompatibleDC(Some(screen));
-    let bmp = CreateCompatibleBitmap(screen, vw, vh);
-    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        release_gdi_on_fail(
-            screen,
-            mem,
-            bmp,
-            "screenshot: full-screen GDI setup failed, aborting capture",
-        );
-        return None;
-    }
+    let (mem, bmp) = create_fullscreen_dc_pair(
+        screen,
+        vw,
+        vh,
+        "screenshot: full-screen GDI setup failed, aborting capture",
+    )?;
     SelectObject(mem, HGDIOBJ(bmp.0));
     if automation {
         draw_automation_canvas(mem, vw, vh);
@@ -304,19 +319,16 @@ pub(crate) unsafe fn capture_instant() {
         return;
     }
     let screen = GetDC(None);
-    let mem = CreateCompatibleDC(Some(screen));
-    let bmp = CreateCompatibleBitmap(screen, vw, vh);
     // Same null-check as run_capture_inner's screen-freeze (A139): a GDI failure must not
     // fall through to SelectObject/BitBlt on a null handle.
-    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        release_gdi_on_fail(
-            screen,
-            mem,
-            bmp,
-            "instant capture: full-screen GDI setup failed",
-        );
+    let Some((mem, bmp)) = create_fullscreen_dc_pair(
+        screen,
+        vw,
+        vh,
+        "instant capture: full-screen GDI setup failed",
+    ) else {
         return;
-    }
+    };
     let old = SelectObject(mem, HGDIOBJ(bmp.0));
     // HDR capture first, same as run_capture_inner's non-automation path (A017): the
     // quick-save hotkey used to always plain-BitBlt, shipping a washed-out capture on an
