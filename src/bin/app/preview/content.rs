@@ -279,7 +279,10 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
 /// `path`'s extension, lowercased and without the dot — `""` when it has none. Every
 /// extension test in this module wants exactly this: Windows names are case-insensitive, and
 /// a missing extension must compare unequal to the empty string, not panic or return `None`.
-fn lower_ext(path: &str) -> String {
+///
+/// The one implementation: [`super::loader::ext_of`] delegates here, so the loader's many
+/// extension tests and this module's `classify` cannot drift apart.
+pub(super) fn lower_ext(path: &str) -> String {
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

@@ -433,13 +433,10 @@ fn is_load_blocked(path: &str) -> bool {
     sagethumbs2k_core::settings::preview_blocked(&ext_of(path))
 }
 
-/// Lowercase extension of `path` (no dot).
+/// Lowercase extension of `path` (no dot). Delegates to [`content::lower_ext`], the single
+/// implementation shared with `content::classify` and the decode pipeline.
 pub(super) fn ext_of(path: &str) -> String {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
+    content::lower_ext(path)
 }
 
 /// Whether `path` is a frame-animatable format (GIF/APNG/animated WebP).
