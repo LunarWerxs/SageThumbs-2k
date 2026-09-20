@@ -243,6 +243,21 @@ struct ContainerProbe {
     mf: bool,
 }
 
+/// The two container facts the MP4/MKV keyframe tiers yield besides their clip bytes:
+/// whether either container mapped a mini-clip at all, and the display rotation such a
+/// parse already read out of its own moov/Tracks (so the caller never re-reads the
+/// container for it). Shared with the by-bytes twin in `decode::pdf_tier`.
+pub(crate) fn container_facts(
+    mp4_clip: Option<&(Vec<u8>, Option<u32>)>,
+    mkv_clip: Option<&(Vec<u8>, Option<u32>)>,
+) -> (bool, Option<u32>) {
+    let container_ran = mp4_clip.is_some() || mkv_clip.is_some();
+    let container_rotation = mp4_clip
+        .and_then(|(_, r)| *r)
+        .or_else(|| mkv_clip.and_then(|(_, r)| *r));
+    (container_ran, container_rotation)
+}
+
 unsafe fn probe_container_tiers(stream: &IStream, mf: bool, at: f64, who: &str) -> ContainerProbe {
     // The MP4/MKV keyframe tiers hand back the display rotation they already parsed out of
     // the same moov/Tracks they read for the mini-clip - captured here, once,
@@ -271,11 +286,7 @@ unsafe fn probe_container_tiers(stream: &IStream, mf: bool, at: f64, who: &str) 
     } else {
         None
     };
-    let container_ran = mp4_clip.is_some() || mkv_clip.is_some();
-    let container_rotation = mp4_clip
-        .as_ref()
-        .and_then(|(_, r)| *r)
-        .or_else(|| mkv_clip.as_ref().and_then(|(_, r)| *r));
+    let (container_ran, container_rotation) = container_facts(mp4_clip.as_ref(), mkv_clip.as_ref());
     // ISSUE #35: decide from the container's OWN bytes whether Windows can decode this track
     // at all, BEFORE any tier hands Media Foundation the stream. Windows' H.264 decoder does
     // Baseline/Main/High 8-bit 4:2:0 only; Windows 11 refuses a 4:4:4 file at once, but the
@@ -462,6 +473,21 @@ unsafe fn try_raw_preview_fast(
     }
 }
 
+/// Log a rescued frame and hand it back as [`StreamSource::Frame`], or rewind `stream` so
+/// the next rescue reads it from the start. Both oversized-file rescues in
+/// [`oversized_rescue`] end that way and differ only in their decode call and debug line;
+/// the format string stays a literal at the call site so the two lines read exactly as
+/// they did before.
+macro_rules! frame_or_rewind {
+    ($stream:expr, $decode:expr, $fmt:literal) => {
+        if let Some(img) = $decode {
+            safety::log_debugf!($fmt, img.width(), img.height());
+            return Ok(StreamSource::Frame(img));
+        }
+        let _ = $stream.Seek(0, STREAM_SEEK_SET, None);
+    };
+}
+
 /// The oversized-file branch of the tail size match in [`stream_source_with_caps`]:
 /// a streamed archive cover, a head-preview prefix, a streamed XCF flatten, and
 /// finally the OS-codec (WIC) rescue reading straight off the stream - each tried
@@ -504,15 +530,11 @@ unsafe fn oversized_rescue(
         // big layered XCF is precisely the file that reaches this branch, and it is
         // also the one that used to spend seconds building a full-resolution canvas
         // nobody would look at.
-        if let Some(img) = crate::container::xcf_from_reader(&mut reader, Some(target_edge)) {
-            safety::log_debugf!(
-                "{who}: streamed XCF decode of {size}-byte file -> {}x{}",
-                img.width(),
-                img.height()
-            );
-            return Ok(StreamSource::Frame(img));
-        }
-        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+        frame_or_rewind!(
+            stream,
+            crate::container::xcf_from_reader(&mut reader, Some(target_edge)),
+            "{who}: streamed XCF decode of {size}-byte file -> {}x{}"
+        );
     }
     // LAST RESCUE: let the OS codecs read THIS STREAM and scale during decode, so a
     // huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
@@ -529,15 +551,11 @@ unsafe fn oversized_rescue(
     // around, "don't spend effort on files over N MB" is their decision to keep.
     if size <= max_file_bytes {
         let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
-        if let Some(img) = decode::wic_scaled_from_stream(stream, target_edge, &head) {
-            safety::log_debugf!(
-                "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}",
-                img.width(),
-                img.height()
-            );
-            return Ok(StreamSource::Frame(img));
-        }
-        let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+        frame_or_rewind!(
+            stream,
+            decode::wic_scaled_from_stream(stream, target_edge, &head),
+            "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}"
+        );
     }
     safety::log_debugf!("{who}: skip, {size} bytes over limit");
     Err(Error::from(E_FAIL))

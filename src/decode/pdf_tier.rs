@@ -128,11 +128,8 @@ pub(crate) fn try_video_tier(
     } else {
         None
     };
-    let container_ran = mp4_clip.is_some() || mkv_clip.is_some();
-    let container_rotation = mp4_clip
-        .as_ref()
-        .and_then(|(_, r)| *r)
-        .or_else(|| mkv_clip.as_ref().and_then(|(_, r)| *r));
+    let (container_ran, container_rotation) =
+        crate::streamsrc::container_facts(mp4_clip.as_ref(), mkv_clip.as_ref());
     let mini = mp4_clip
         .map(|(b, _)| b)
         .or_else(|| mkv_clip.map(|(b, _)| b));
