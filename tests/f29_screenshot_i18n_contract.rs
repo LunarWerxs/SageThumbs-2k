@@ -191,9 +191,10 @@ fn tool_hint_label_body_has_no_hardcoded_display_words() {
         );
     }
     // And it must actually call into the locale system at all - an empty/no-op body would
-    // trivially pass the check above too.
+    // trivially pass the check above too. The body is `t(<key expression>)`; the key table
+    // itself (`tool_strings`) is pinned per variant by `hint_label_reads_the_locale_table_by_key`.
     assert!(
-        body.contains("t(match self"),
+        body.trim_start_matches('{').trim_start().starts_with("t("),
         "hint_label no longer routes through t()"
     );
 }
