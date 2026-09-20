@@ -87,6 +87,17 @@ fn copy_image_content(st: &ViewerState) {
     });
 }
 
+/// A path's extension, lowercased; empty when there is none. Feeds the animation decoder's
+/// dispatch, so it must never be the trailing path component of a dotfile or a dotted
+/// directory name.
+fn lower_extension(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 /// Build the RGBA pixels the viewer is currently SHOWING: the given PDF page / animation frame
 /// when navigated. `None` for anything else (the caller decides what to fall back to) — this
 /// deliberately does NOT cover the "neither navigated" case, since that differs between callers
@@ -110,11 +121,7 @@ pub(in crate::preview) fn navigated_shown_image_rgba(
         return Some((rgba.width() as i32, rgba.height() as i32, rgba.into_raw()));
     }
     if let Some(frame) = anim_frame {
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .unwrap_or_default();
+        let ext = lower_extension(path);
         let frames = sagethumbs2k_core::decode::read_preview_capped(path)
             .ok()
             .and_then(|b| crate::preview::anim::decode_animation(&b, &ext))?;
@@ -182,6 +189,12 @@ pub(in crate::preview) fn is_pdf(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Where a `delta`-page jump from `cur` lands in a `pages`-page document. i64 math: `pages` is
+/// capped at ingestion, but never trust it enough to wrap an i32.
+fn clamp_pdf_page(cur: u32, delta: i32, pages: u32) -> u32 {
+    (cur as i64 + delta as i64).clamp(0, pages as i64 - 1) as u32
+}
+
 /// Navigate a multi-page PDF by `delta` pages. Keeps the current page visible until the new one
 /// decodes (no Loading flash); the `decode_gen` bump fences a stale in-flight page decode.
 pub(in crate::preview) unsafe fn goto_pdf_page(hwnd: HWND, delta: i32) {
@@ -201,8 +214,7 @@ pub(in crate::preview) unsafe fn goto_pdf_page(hwnd: HWND, delta: i32) {
         crate::preview::pdfview::scroll_to_page(hwnd, want);
         return;
     }
-    // i64 math: `pages` is capped at ingestion, but never trust it enough to wrap an i32.
-    let new = (st.pdf_page.get() as i64 + delta as i64).clamp(0, pages as i64 - 1) as u32;
+    let new = clamp_pdf_page(st.pdf_page.get(), delta, pages);
     if new == st.pdf_page.get() {
         return;
     }
@@ -228,6 +240,19 @@ pub(in crate::preview) fn image_dims(st: &ViewerState) -> Option<(i32, i32)> {
     st.render.borrow().as_ref().map(|rd| (rd.iw, rd.ih))
 }
 
+/// The content rectangle for a client area of `client`: skipped down by the caption and the open
+/// find bar, and cut short on the right by the PDF thumbnail strip. The `.max(0)` matters — a
+/// window narrower than the strip must yield an EMPTY content area, never a negative right edge,
+/// since scroll clamping and the child-window rects are all derived from this one value.
+fn content_rect_from(client: &RECT, cap: i32, find_h: i32, strip: i32) -> RECT {
+    RECT {
+        left: 0,
+        top: cap + find_h,
+        right: (client.right - strip).max(0),
+        bottom: client.bottom,
+    }
+}
+
 pub(in crate::preview) unsafe fn content_rect(hwnd: HWND) -> RECT {
     let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
     let mut r = RECT::default();
@@ -245,12 +270,7 @@ pub(in crate::preview) unsafe fn content_rect(hwnd: HWND) -> RECT {
     // window rects all inherit the narrower content area without knowing the strip exists.
     // Zero for everything that is not a multi-page PDF, so every other window is unchanged.
     let strip = crate::preview::pdfview::strip_width(hwnd);
-    RECT {
-        left: 0,
-        top: cap + find_h,
-        right: (r.right - strip).max(0),
-        bottom: r.bottom,
-    }
+    content_rect_from(&r, cap, find_h, strip)
 }
 
 /// The strip's own rect: the slice `content_rect` gave up, or an empty rect when there is none.
@@ -264,5 +284,104 @@ pub(in crate::preview) unsafe fn strip_rect(hwnd: HWND) -> RECT {
         top: content.top,
         right: r.right,
         bottom: content.bottom,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::RECT;
+
+    /// The extension alone decides, so a scan saved as `.PDF` in some other directory is still
+    /// a PDF; the viewer has to page it, not show it as a static bitmap.
+    #[test]
+    fn pdf_detection_ignores_case_and_directories() {
+        assert!(is_pdf("report.pdf"));
+        assert!(is_pdf("Report.PDF"));
+        assert!(is_pdf(r"C:\Scans\2024\Report.PdF"));
+    }
+
+    /// The near misses matter: a `.png` handed to the PDF renderer renders nothing, and a
+    /// trailing extension after `.pdf` describes a different decoder entirely. A dotfile and a
+    /// file inside a dotted directory have NO extension, which `Path` gets right and a naive
+    /// `rsplit('.')` would not.
+    #[test]
+    fn non_pdf_paths_are_rejected() {
+        assert!(!is_pdf("photo.png"));
+        assert!(!is_pdf("report.pd"));
+        assert!(!is_pdf("report.pdf.txt"));
+        assert!(!is_pdf(".pdf"));
+        assert!(!is_pdf(r"C:\dir.d\report"));
+        assert!(!is_pdf(""));
+    }
+
+    /// Paging stops at the first and last page however hard the caller pushes. The i64 math is
+    /// what makes an extreme `delta` land on the end of the document instead of wrapping around
+    /// an i32 into a page number that does not exist.
+    #[test]
+    fn paging_clamps_at_both_document_ends() {
+        assert_eq!(clamp_pdf_page(2, 10, 5), 4);
+        assert_eq!(clamp_pdf_page(2, -10, 5), 0);
+        assert_eq!(clamp_pdf_page(2, 0, 5), 2);
+        assert_eq!(clamp_pdf_page(2, i32::MAX, 5), 4);
+        assert_eq!(clamp_pdf_page(2, i32::MIN, 5), 0);
+    }
+
+    /// Both the find bar and the PDF strip are folded into the rect HERE, and every consumer
+    /// (paint, scroll clamping, hit-testing, the child-window rects) inherits them — so an
+    /// offset that lands wrong moves the whole content area at once.
+    #[test]
+    fn content_rect_offsets_by_caption_find_bar_and_strip() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        };
+        assert_eq!(
+            content_rect_from(&client, 36, 0, 0),
+            RECT {
+                left: 0,
+                top: 36,
+                right: 800,
+                bottom: 600,
+            }
+        );
+        assert_eq!(
+            content_rect_from(&client, 36, 28, 120),
+            RECT {
+                left: 0,
+                top: 64,
+                right: 680,
+                bottom: 600,
+            }
+        );
+    }
+
+    /// A window no wider than the strip leaves an EMPTY content area, never a negative right
+    /// edge: that value feeds scroll clamping and the child-window rects, where a negative edge
+    /// is not a harmless zero — it is a rect running the wrong way.
+    #[test]
+    fn content_rect_never_goes_negative_on_the_right() {
+        let narrow = RECT {
+            left: 0,
+            top: 0,
+            right: 40,
+            bottom: 300,
+        };
+        assert_eq!(content_rect_from(&narrow, 36, 0, 120).right, 0);
+        // Exactly the strip wide is still empty, not a one-column sliver.
+        assert_eq!(content_rect_from(&narrow, 36, 0, 40).right, 0);
+    }
+
+    /// This string selects the animation decoder, so it must be lowercased, and it must be
+    /// empty — never a path component — when the file has no extension.
+    #[test]
+    fn animation_extension_is_lowercased_or_empty() {
+        assert_eq!(lower_extension("clip.GIF"), "gif");
+        assert_eq!(lower_extension("archive.tar.gz"), "gz");
+        assert_eq!(lower_extension("clip"), "");
+        assert_eq!(lower_extension(".gitignore"), "");
+        assert_eq!(lower_extension("dir.d/clip"), "");
     }
 }
