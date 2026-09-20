@@ -114,6 +114,25 @@ fn decode_test_block(
 /// modules can reach it under cfg(test), exactly like [`super::psd::testutil`].
 #[cfg(test)]
 pub(crate) mod testutil {
+    /// Minimal legacy `.blend` (BHead4) carrying `px` as its TEST thumbnail.
+    pub(crate) fn legacy_blend(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BLENDER");
+        b.push(b'_'); // 32-bit pointers
+        b.push(b'v'); // little-endian
+        b.extend_from_slice(b"277"); // 3 version digits → 12-byte header
+        b.extend_from_slice(b"TEST");
+        // BHead4 (20 bytes): code, len, old(4), sdna, nr / body: width, height, RGBA.
+        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(px);
+        b.extend_from_slice(b"ENDB");
+        b.extend_from_slice(&[0u8; 16]);
+        b
+    }
+
     /// Minimal valid legacy .blend (BHead4) with a 4x3 TEST thumbnail, plus an arbitrary
     /// `tail` after ENDB standing in for the scene data a real file is huge from. (The
     /// tail's CONTENT is not always filler: the gzip-truncation test needs bytes that
@@ -125,19 +144,7 @@ pub(crate) mod testutil {
     pub(crate) fn synthetic_blend(tail: &[u8]) -> Vec<u8> {
         let (w, h) = (4u32, 3u32);
         let px = vec![200u8; (w * h * 4) as usize];
-        let mut b = Vec::new();
-        b.extend_from_slice(b"BLENDER");
-        b.push(b'_'); // 32-bit pointers
-        b.push(b'v'); // little-endian
-        b.extend_from_slice(b"277");
-        b.extend_from_slice(b"TEST");
-        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
-        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
-        b.extend_from_slice(&(w as i32).to_le_bytes());
-        b.extend_from_slice(&(h as i32).to_le_bytes());
-        b.extend_from_slice(&px);
-        b.extend_from_slice(b"ENDB");
-        b.extend_from_slice(&[0u8; 16]);
+        let mut b = legacy_blend(w, h, &px);
         b.extend_from_slice(tail);
         b
     }
@@ -146,24 +153,6 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a minimal legacy (BHead4) .blend carrying `px` as its TEST thumbnail.
-    fn legacy_blend(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend_from_slice(b"BLENDER");
-        b.push(b'_'); // 32-bit pointers
-        b.push(b'v'); // little-endian
-        b.extend_from_slice(b"277"); // 3 version digits → 12-byte header
-        b.extend_from_slice(b"TEST");
-        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
-        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
-        b.extend_from_slice(&(w as i32).to_le_bytes());
-        b.extend_from_slice(&(h as i32).to_le_bytes());
-        b.extend_from_slice(px);
-        b.extend_from_slice(b"ENDB");
-        b.extend_from_slice(&[0u8; 16]);
-        b
-    }
 
     #[test]
     fn thumbnail_rows_are_flipped_to_top_down() {
@@ -174,7 +163,7 @@ mod tests {
         let mut px = Vec::new();
         px.extend_from_slice(&[255, 0, 0, 255].repeat(w as usize)); // stored first = bottom
         px.extend_from_slice(&[0, 0, 255, 255].repeat(w as usize)); // stored last  = top
-        let img = extract(&legacy_blend(w, h, &px))
+        let img = extract(&testutil::legacy_blend(w, h, &px))
             .expect("thumbnail")
             .to_rgba8();
         assert_eq!(
@@ -193,22 +182,8 @@ mod tests {
     fn extracts_legacy_test_block_thumbnail() {
         let (w, h) = (4u32, 3u32);
         let px = vec![200u8; (w * h * 4) as usize];
-
-        let mut b = Vec::new();
-        b.extend_from_slice(b"BLENDER");
-        b.push(b'_'); // 32-bit pointers
-        b.push(b'v'); // little-endian
-        b.extend_from_slice(b"277"); // 3 version digits → 12-byte header
-                                     // BHead4 (20 bytes): code, len, old(4), sdna, nr
-        b.extend_from_slice(b"TEST");
-        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
-        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
-                                         // body: width, height, RGBA
-        b.extend_from_slice(&(w as i32).to_le_bytes());
-        b.extend_from_slice(&(h as i32).to_le_bytes());
-        b.extend_from_slice(&px);
-        b.extend_from_slice(b"ENDB");
-        b.extend_from_slice(&[0u8; 16]);
+        // BHead4 (20 bytes): code, len, old(4), sdna, nr; body: width, height, RGBA.
+        let b = testutil::legacy_blend(w, h, &px);
 
         let img = extract(&b).expect("thumbnail");
         assert_eq!((img.width(), img.height()), (4, 3));
