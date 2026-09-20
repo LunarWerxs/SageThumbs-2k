@@ -193,6 +193,19 @@ pub(crate) unsafe fn stream_source_with_caps(
         return Ok(src);
     }
 
+    finish_bounded_read(stream, &head, max_file_bytes, hard_cap, target_edge, who)
+}
+
+/// Not audio, not video: the size-gated tail — oversized streamed cover / head-preview rescue,
+/// name-less-7z refusal, otherwise the bounded whole-file read.
+unsafe fn finish_bounded_read(
+    stream: &IStream,
+    head: &StreamHead,
+    max_file_bytes: u64,
+    hard_cap: u64,
+    target_edge: u32,
+    who: &str,
+) -> Result<StreamSource> {
     // Not audio, not video: skip oversized files cheaply via the stream length
     // before reading into memory. The effective cap is the user's MaxSize but
     // never above the hard MAX_BYTES ceiling ("0 = unlimited" means "up to
@@ -209,7 +222,7 @@ pub(crate) unsafe fn stream_source_with_caps(
         // rescue: their baked thumbnail sits in the first bytes, so a
         // bounded prefix read suffices no matter the file size (issue #1).
         Some(size) if size > max => {
-            oversized_rescue(stream, &head, size, max_file_bytes, target_edge, who)
+            oversized_rescue(stream, head, size, max_file_bytes, target_edge, who)
         }
         None if head.is_7z() => {
             // A provider stream with neither a recoverable name nor a Stat size

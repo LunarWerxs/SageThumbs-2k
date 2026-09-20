@@ -350,6 +350,12 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
     if !magick::is_raw_coder_ext(&ext) {
         return Ok(small);
     }
+    raw_extension_reread(bytes, &ext, &small)
+}
+
+/// Camera-RAW re-read through the named decoders for `ext`, taking the result only when it is a
+/// meaningful resolution gain over `small`.
+fn raw_extension_reread(bytes: &[u8], ext: &str, small: &DynamicImage) -> Result<DynamicImage> {
     // Only take the re-read when it is a MEANINGFUL improvement, because it is not free: the
     // named coder demosaics the sensor data and that costs seconds.
     //
@@ -373,7 +379,7 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
     // does, falling straight to `small` would REGRESS such files below what the capped decode
     // already delivers. The retry costs seconds, but only on exactly the rare giant where the
     // alternative is handing back a 304px preview of a 150 MP photograph.
-    match magick::decode_named_extension_native(bytes, &ext) {
+    match magick::decode_named_extension_native(bytes, ext) {
         Ok(full) if big_enough(&full) => {
             crate::safety::log_debug(
                 "decode: full-fidelity RAW re-read through the named coder for its extension",
@@ -383,15 +389,15 @@ pub fn decode_full_for_path(bytes: &[u8], path: &str) -> Result<DynamicImage> {
         // Succeeded, just not meaningfully bigger. The capped variant of the SAME decode can
         // only be smaller still, so retrying it would spend seconds to learn nothing — which
         // is exactly what it did on a .cr2 before this arm existed (6.5 s against 4.4 s).
-        Ok(_) => Ok(small),
-        Err(_) => match decode_by_extension(bytes, &ext, None) {
+        Ok(_) => Ok(small.clone()),
+        Err(_) => match decode_by_extension(bytes, ext, None) {
             Ok(full) if big_enough(&full) => {
                 crate::safety::log_debug(
                     "decode: RAW re-read fell back to the capped named-coder decode",
                 );
                 Ok(full)
             }
-            _ => Ok(small),
+            _ => Ok(small.clone()),
         },
     }
 }

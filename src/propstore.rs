@@ -260,38 +260,7 @@ impl PropertyStore_Impl {
         }
 
         // Audio tags (lofty + our ASF parser) — probed alongside `info` above. Empty for non-audio.
-        if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
-        }
-        if let Some(album) = tags.album.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_AlbumTitle, pv_lpwstr(&album)));
-        }
-        if let Some(title) = tags.title.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Title, pv_lpwstr(&title)));
-        }
-        if let Some(track) = tags.track.filter(|&t| t > 0) {
-            out.push((PKEY_Music_TrackNumber, PROPVARIANT::from(track)));
-        }
-        if let Some(genre) = tags.genre.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_Genre, pv_lpwstr_vec(&genre))); // multi-value key
-        }
-        if let Some(year) = tags.year.filter(|&y| y > 0) {
-            out.push((PKEY_Media_Year, PROPVARIANT::from(year)));
-        }
-        // System.Media.Duration is in 100-nanosecond units (VT_UI8); ms × 10 000.
-        if tags.duration_ms > 0 {
-            out.push((
-                PKEY_Media_Duration,
-                PROPVARIANT::from(tags.duration_ms.saturating_mul(10_000)),
-            ));
-        }
-        // System.Audio.EncodingBitrate is bits-per-second (VT_UI4); kbps × 1000.
-        if tags.bitrate_kbps > 0 {
-            out.push((
-                PKEY_Audio_EncodingBitrate,
-                PROPVARIANT::from(tags.bitrate_kbps.saturating_mul(1000)),
-            ));
-        }
+        push_audio_props(&mut out, tags);
 
         safety::log_debugf!(
             "PropStore::build_props: dims {}x{} -> {} props",
@@ -300,6 +269,46 @@ impl PropertyStore_Impl {
             out.len()
         );
         out
+    }
+}
+
+/// Push the audio-tag properties (artist, album, title, track, genre, year, duration,
+/// bitrate) onto `out`; empty or non-positive tags contribute nothing.
+fn push_audio_props(
+    out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>,
+    tags: crate::strip::AudioTags,
+) {
+    if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
+    }
+    if let Some(album) = tags.album.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_AlbumTitle, pv_lpwstr(&album)));
+    }
+    if let Some(title) = tags.title.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Title, pv_lpwstr(&title)));
+    }
+    if let Some(track) = tags.track.filter(|&t| t > 0) {
+        out.push((PKEY_Music_TrackNumber, PROPVARIANT::from(track)));
+    }
+    if let Some(genre) = tags.genre.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_Genre, pv_lpwstr_vec(&genre))); // multi-value key
+    }
+    if let Some(year) = tags.year.filter(|&y| y > 0) {
+        out.push((PKEY_Media_Year, PROPVARIANT::from(year)));
+    }
+    // System.Media.Duration is in 100-nanosecond units (VT_UI8); ms × 10 000.
+    if tags.duration_ms > 0 {
+        out.push((
+            PKEY_Media_Duration,
+            PROPVARIANT::from(tags.duration_ms.saturating_mul(10_000)),
+        ));
+    }
+    // System.Audio.EncodingBitrate is bits-per-second (VT_UI4); kbps × 1000.
+    if tags.bitrate_kbps > 0 {
+        out.push((
+            PKEY_Audio_EncodingBitrate,
+            PROPVARIANT::from(tags.bitrate_kbps.saturating_mul(1000)),
+        ));
     }
 }
 
@@ -381,6 +390,20 @@ pub(crate) fn split_exif_datetime(s: &str) -> Option<(Vec<&str>, Vec<&str>)> {
 /// Details pane shows the original wall-clock — matching Windows' own photo property handler.
 fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
     let (d, t) = split_exif_datetime(s)?;
+    let local = exif_systemtime(&d, &t)?;
+    if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
+        return None; // a camera that never had its clock set writes 0000:00:00
+    }
+    let mut utc = SYSTEMTIME::default();
+    unsafe { TzSpecificLocalTimeToSystemTime(None, &local, &mut utc) }.ok()?;
+    let mut ft = FILETIME::default();
+    unsafe { SystemTimeToFileTime(&utc, &mut ft) }.ok()?;
+    unsafe { InitPropVariantFromFileTime(&ft) }.ok()
+}
+
+/// Assemble the `SYSTEMTIME` from the split EXIF date/time components; `None` if any of them
+/// fails to parse as a number.
+fn exif_systemtime(d: &[&str], t: &[&str]) -> Option<SYSTEMTIME> {
     let num = |x: &str| x.trim().parse::<u16>().ok();
     let local = SYSTEMTIME {
         wYear: num(d[0])?,
@@ -392,14 +415,7 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
         wDayOfWeek: 0,
         wMilliseconds: 0,
     };
-    if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
-        return None; // a camera that never had its clock set writes 0000:00:00
-    }
-    let mut utc = SYSTEMTIME::default();
-    unsafe { TzSpecificLocalTimeToSystemTime(None, &local, &mut utc) }.ok()?;
-    let mut ft = FILETIME::default();
-    unsafe { SystemTimeToFileTime(&utc, &mut ft) }.ok()?;
-    unsafe { InitPropVariantFromFileTime(&ft) }.ok()
+    Some(local)
 }
 
 /// Run the header/metadata-only file probe ([`crate::strip::read_info_bounded`] + audio tags) on

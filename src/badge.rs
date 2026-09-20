@@ -316,20 +316,30 @@ fn chip_pixel_color(
     Some(match style {
         // Near-black at ~72% so the underlying image still shows through slightly.
         BadgeStyle::Text => ((16, 16, 16), 184),
-        BadgeStyle::Icon => {
-            let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
-            let outline = cx || cy || on_fold_edge;
-            if g.fold > 0 && dx + dy < g.fold {
-                // The folded-back flap: lighter, so it reads as the sheet's underside.
-                (blend_to_white(tint, 150), 245)
-            } else if outline {
-                // A darker rim keeps the mark legible on a same-coloured picture.
-                (shade(tint, 150), 255)
-            } else {
-                (tint, 235)
-            }
-        }
+        BadgeStyle::Icon => icon_chip_color(g, tint, dx, dy, cx, cy),
     })
+}
+
+/// Pick the dog-eared page's pixel colour for [`BadgeStyle::Icon`] from its fold/corner position.
+fn icon_chip_color(
+    g: &BadgeGeom,
+    tint: (u8, u8, u8),
+    dx: u32,
+    dy: u32,
+    cx: bool,
+    cy: bool,
+) -> ((u8, u8, u8), u32) {
+    let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
+    let outline = cx || cy || on_fold_edge;
+    if g.fold > 0 && dx + dy < g.fold {
+        // The folded-back flap: lighter, so it reads as the sheet's underside.
+        (blend_to_white(tint, 150), 245)
+    } else if outline {
+        // A darker rim keeps the mark legible on a same-coloured picture.
+        (shade(tint, 150), 255)
+    } else {
+        (tint, 235)
+    }
 }
 
 /// Paint the chip background over its whole rect, pixel by pixel via [`chip_pixel_color`].
@@ -355,28 +365,33 @@ fn paint_glyphs(rgba: &mut [u8], w: u32, h: u32, g: &BadgeGeom, label: &str) {
     let mut cx = g.x0 + g.pad;
     for ch in label.bytes() {
         if let Some(gl) = glyph(ch) {
-            for (row, bits) in gl.iter().enumerate() {
-                for col in 0..5u32 {
-                    if bits & (1 << (4 - col)) == 0 {
-                        continue;
-                    }
-                    for sy in 0..g.scale {
-                        for sx in 0..g.scale {
-                            put_px(
-                                rgba,
-                                w,
-                                h,
-                                cx + col * g.scale + sx,
-                                g.y0 + g.pad + row as u32 * g.scale + sy,
-                                (245, 245, 245),
-                                255,
-                            );
-                        }
-                    }
+            paint_glyph(rgba, w, h, g, &gl, cx);
+        }
+        cx += g.gw + g.gap;
+    }
+}
+
+/// Blit one glyph bitmap `gl` at x `cx`, scaled by [`BadgeGeom::scale`] as opaque near-white pixels.
+fn paint_glyph(rgba: &mut [u8], w: u32, h: u32, g: &BadgeGeom, gl: &[u8; 7], cx: u32) {
+    for (row, bits) in gl.iter().enumerate() {
+        for col in 0..5u32 {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
+            for sy in 0..g.scale {
+                for sx in 0..g.scale {
+                    put_px(
+                        rgba,
+                        w,
+                        h,
+                        cx + col * g.scale + sx,
+                        g.y0 + g.pad + row as u32 * g.scale + sy,
+                        (245, 245, 245),
+                        255,
+                    );
                 }
             }
         }
-        cx += g.gw + g.gap;
     }
 }
 

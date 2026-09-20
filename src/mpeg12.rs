@@ -363,20 +363,27 @@ fn video_pid(ts: &[u8], start: usize, stride: usize) -> Option<u16> {
     let mut i = start;
     while let Some(pkt) = ts.get(i..i + TS_PACKET) {
         i += stride;
-        let Some((pid, pusi, payload)) = packet_payload(pkt) else {
-            continue;
-        };
-        if pid == 0 {
-            collect_pat(payload, pusi, &mut pmt_pids);
-        } else if pmt_pids.contains(&pid) {
-            if let Some(video) = pmt_video_pid(payload, pusi) {
-                return Some(video);
-            }
-        } else if sniffed.is_none() && pusi && starts_video_pes(payload) {
-            sniffed = Some(pid);
+        if let Some(video) = scan_video_packet(pkt, &mut pmt_pids, &mut sniffed) {
+            return Some(video);
         }
     }
     sniffed
+}
+
+/// Fold one transport packet into the `video_pid` walk: record a PAT's program map PIDs, return
+/// the video PID of a program map table, or remember the first PID whose packets open a video PES.
+fn scan_video_packet(pkt: &[u8], pmt_pids: &mut Vec<u16>, sniffed: &mut Option<u16>) -> Option<u16> {
+    let (pid, pusi, payload) = packet_payload(pkt)?;
+    if pid == 0 {
+        collect_pat(payload, pusi, pmt_pids);
+    } else if pmt_pids.contains(&pid) {
+        if let Some(video) = pmt_video_pid(payload, pusi) {
+            return Some(video);
+        }
+    } else if sniffed.is_none() && pusi && starts_video_pes(payload) {
+        *sniffed = Some(pid);
+    }
+    None
 }
 
 /// The payload of one 188-byte transport packet, with its PID and `payload_unit_start`

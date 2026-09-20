@@ -339,32 +339,36 @@ pub enum Phase {
 pub fn phase(now_unix: u64, mode: Mode, history: Option<&History>) -> Phase {
     match mode {
         Mode::Personal => Phase::Clear,
-        Mode::Business => {
-            let Some(h) = history else {
-                return Phase::Clear;
-            };
-            if h.last_status == "revoked" {
-                if entitlement_from_cache(now_unix, h.last_positive_unix) == Entitlement::Licensed {
-                    return Phase::Clear;
-                }
-                if h.revoked_unix == 0 {
-                    return Phase::Clear;
-                }
-                return after_deadline(now_unix, h.revoked_unix.saturating_add(GRACE_SECS));
-            }
-            if h.last_positive_unix > 0 {
-                return Phase::Clear;
-            }
-            if h.trial_started_unix == 0 {
-                return Phase::Clear;
-            }
-            let ends = h.trial_started_unix.saturating_add(TRIAL_SECS);
-            if now_unix < ends {
-                return Phase::Trial { ends_unix: ends };
-            }
-            after_deadline(now_unix, ends)
-        }
+        Mode::Business => business_phase(now_unix, history),
     }
+}
+
+/// Judges a business copy from its breadcrumb alone: the [`Mode::Business`] arm of
+/// [`phase`], failing OPEN (to [`Phase::Clear`]) wherever the record is silent or absent.
+fn business_phase(now_unix: u64, history: Option<&History>) -> Phase {
+    let Some(h) = history else {
+        return Phase::Clear;
+    };
+    if h.last_status == "revoked" {
+        if entitlement_from_cache(now_unix, h.last_positive_unix) == Entitlement::Licensed {
+            return Phase::Clear;
+        }
+        if h.revoked_unix == 0 {
+            return Phase::Clear;
+        }
+        return after_deadline(now_unix, h.revoked_unix.saturating_add(GRACE_SECS));
+    }
+    if h.last_positive_unix > 0 {
+        return Phase::Clear;
+    }
+    if h.trial_started_unix == 0 {
+        return Phase::Clear;
+    }
+    let ends = h.trial_started_unix.saturating_add(TRIAL_SECS);
+    if now_unix < ends {
+        return Phase::Trial { ends_unix: ends };
+    }
+    after_deadline(now_unix, ends)
 }
 
 /// The shared tail of both lock paths: a deadline has passed, the notice period runs from

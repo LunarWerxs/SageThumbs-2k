@@ -249,8 +249,34 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(
         }
     }
 
-    for candidate_abs in candidates {
-        let Some((cluster_hlen, mut cluster)) = read_cluster(r, &map, candidate_abs) else {
+    mini_mkv_from_candidates(
+        r,
+        &map,
+        &candidates,
+        video_track,
+        &info,
+        info_hlen,
+        &tracks,
+        rotation,
+    )
+}
+
+/// Try each candidate Cluster in order: the first one that holds a keyframe for the video
+/// track (when known) has its Timecode and Info's Duration zeroed and is muxed into the
+/// mini-MKV. `None` when no candidate qualifies.
+#[allow(clippy::too_many_arguments)] // the muxer's inputs, passed through from the caller that gathered them
+fn mini_mkv_from_candidates<R: Read + Seek>(
+    r: &mut R,
+    map: &SegmentMap,
+    candidates: &[u64],
+    video_track: Option<u64>,
+    info: &[u8],
+    info_hlen: usize,
+    tracks: &[u8],
+    rotation: Option<u32>,
+) -> Option<(Vec<u8>, Option<u32>)> {
+    for &candidate_abs in candidates {
+        let Some((cluster_hlen, mut cluster)) = read_cluster(r, map, candidate_abs) else {
             continue;
         };
         if let Some(vt) = video_track {
@@ -262,12 +288,9 @@ pub fn keyframe_mini_mkv<R: Read + Seek>(
         // `frame_from_bytes`'s near-the-head seek would land before the cluster's real
         // timestamp and grab nothing). Likewise zero Info's Duration so that seek computes ~0.
         zero_child(&mut cluster, cluster_hlen, ID_CLUSTER_TIMECODE);
-        let mut info = info.clone();
+        let mut info = info.to_vec();
         zero_child(&mut info, info_hlen, ID_DURATION);
-        return Some((
-            build_mini_mkv(&map.ebml, &info, &tracks, &cluster),
-            rotation,
-        ));
+        return Some((build_mini_mkv(&map.ebml, &info, tracks, &cluster), rotation));
     }
     None
 }
@@ -295,22 +318,8 @@ pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>>
     // the fallback — also taken when the indexed cluster turns out to hold no keyframe
     // block we can use (e.g. its video blocks are laced).
     let mut candidates: Vec<u64> = Vec::new();
-    if let (Some(cues_pos), Some(info_pos)) = (map.cues, map.info) {
-        if let (Some((_, cues_hlen, cues)), Some((_, info_hlen, info))) = (
-            read_element_full(r, cues_pos, CUES_MAX, ID_CUES),
-            read_element_full(r, info_pos, META_MAX, ID_INFO),
-        ) {
-            if let Some(rel) = cue_cluster_position(
-                &cues[cues_hlen..],
-                &info[info_hlen..],
-                Some(video_track),
-                fraction,
-            ) {
-                if let Some(abs) = map.seg_data.checked_add(rel) {
-                    candidates.push(abs);
-                }
-            }
-        }
+    if let Some(abs) = vp9_cued_cluster(r, &map, video_track, fraction) {
+        candidates.push(abs);
     }
     if let Some(first) = map.first_cluster {
         if !candidates.contains(&first) {
@@ -318,11 +327,47 @@ pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>>
         }
     }
 
-    for cluster_abs in candidates {
+    vp9_keyframe_in_clusters(r, &map, &candidates, video_track)
+}
+
+/// The absolute Cluster position of the Cues entry nearest `fraction`, read from the file's
+/// own Cues and Info elements (both read even when one turns out unusable, matching the
+/// caller's original evaluation) — the representative mid-video candidate. `None` (so the
+/// caller falls back to the first Cluster) when either element is missing or the lookup fails.
+fn vp9_cued_cluster<R: Read + Seek>(
+    r: &mut R,
+    map: &SegmentMap,
+    video_track: u64,
+    fraction: f64,
+) -> Option<u64> {
+    let cues_pos = map.cues?;
+    let info_pos = map.info?;
+    let cues_elem = read_element_full(r, cues_pos, CUES_MAX, ID_CUES);
+    let info_elem = read_element_full(r, info_pos, META_MAX, ID_INFO);
+    let (_, cues_hlen, cues) = cues_elem?;
+    let (_, info_hlen, info) = info_elem?;
+    let rel = cue_cluster_position(
+        &cues[cues_hlen..],
+        &info[info_hlen..],
+        Some(video_track),
+        fraction,
+    )?;
+    map.seg_data.checked_add(rel)
+}
+
+/// The first VP9 keyframe among the candidate Clusters, in order; a Cluster past the file
+/// end, one that cannot be read, or one holding no keyframe for the video track is skipped.
+fn vp9_keyframe_in_clusters<R: Read + Seek>(
+    r: &mut R,
+    map: &SegmentMap,
+    candidates: &[u64],
+    video_track: u64,
+) -> Option<Vec<u8>> {
+    for &cluster_abs in candidates {
         if cluster_abs >= map.total {
             continue;
         }
-        let Some((chlen, cluster)) = read_cluster(r, &map, cluster_abs) else {
+        let Some((chlen, cluster)) = read_cluster(r, map, cluster_abs) else {
             continue;
         };
         if let Some(frame) = cluster_keyframe(&cluster[chlen..], video_track) {

@@ -37,19 +37,7 @@ fn read_line_capped<R: BufRead>(
     loop {
         // Consume out of the buffer in whole chunks (not byte at a time) — the newline scan is
         // the same work `read_line` does, just with a ceiling on how much we're willing to keep.
-        let (done, used) = {
-            let available = reader.fill_buf()?;
-            if available.is_empty() {
-                (true, 0) // EOF
-            } else if let Some(i) = available.iter().position(|&b| b == b'\n') {
-                buf.extend_from_slice(&available[..=i]);
-                (true, i + 1)
-            } else {
-                buf.extend_from_slice(available);
-                (false, available.len())
-            }
-        };
-        reader.consume(used);
+        let done = read_chunk(reader, &mut buf)?;
         // Check the cap BEFORE the done/break check: a chunk that pushes `buf` past `max`
         // can be the very chunk that also carries the terminating newline, and checking
         // order previously let `done` short-circuit past the size check on that same
@@ -71,6 +59,25 @@ fn read_line_capped<R: BufRead>(
     Ok(n)
 }
 
+/// Append the next chunk from `reader` to `buf`, returning `true` once the chunk that ends the
+/// line (carrying its `\n`) has been consumed, or `false` on EOF or a chunk without a newline.
+fn read_chunk<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<bool> {
+    let (done, used) = {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            (true, 0) // EOF
+        } else if let Some(i) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..=i]);
+            (true, i + 1)
+        } else {
+            buf.extend_from_slice(available);
+            (false, available.len())
+        }
+    };
+    reader.consume(used);
+    Ok(done)
+}
+
 /// Read JSON-RPC messages from stdin and reply on stdout until EOF (the client
 /// closing its end). Locks both streams for the process lifetime — fine for a
 /// dedicated child server.
@@ -87,29 +94,39 @@ pub fn serve() -> std::io::Result<()> {
     const MAX_MSG_BYTES: usize = 8 * 1024 * 1024;
 
     let mut line = String::new();
-    loop {
-        line.clear();
-        if read_line_capped(&mut reader, &mut line, MAX_MSG_BYTES)? == 0 {
-            break; // EOF: client closed the pipe, or a message blew the cap
-        }
-        // Trim whitespace AND a stray UTF-8 BOM (`U+FEFF`) — some clients/shells
-        // prepend one to the stream, and Rust's `trim()` doesn't treat it as
-        // whitespace, so it would otherwise poison the first message.
-        let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
-        if trimmed.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(trimmed) {
-            Ok(req) => {
-                if let Some(resp) = handle(&req) {
-                    write_msg(&mut out, &resp)?;
-                }
-            }
-            // Malformed JSON: JSON-RPC parse error, id unknowable → null.
-            Err(_) => write_msg(&mut out, &error_resp(Value::Null, -32700, "parse error"))?,
-        }
-    }
+    while serve_one(&mut reader, &mut out, &mut line, MAX_MSG_BYTES)? {}
     Ok(())
+}
+
+/// Read, parse and answer ONE JSON-RPC message on `reader`/`out`; returns `false` when the
+/// stream ended (EOF, or a message past `max`) so `serve` stops, `true` to keep reading.
+fn serve_one<R: BufRead, W: Write>(
+    reader: &mut R,
+    out: &mut W,
+    line: &mut String,
+    max: usize,
+) -> std::io::Result<bool> {
+    line.clear();
+    if read_line_capped(reader, line, max)? == 0 {
+        return Ok(false); // EOF: client closed the pipe, or a message blew the cap
+    }
+    // Trim whitespace AND a stray UTF-8 BOM (`U+FEFF`) — some clients/shells
+    // prepend one to the stream, and Rust's `trim()` doesn't treat it as
+    // whitespace, so it would otherwise poison the first message.
+    let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    if trimmed.is_empty() {
+        return Ok(true);
+    }
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(req) => {
+            if let Some(resp) = handle(&req) {
+                write_msg(out, &resp)?;
+            }
+        }
+        // Malformed JSON: JSON-RPC parse error, id unknowable → null.
+        Err(_) => write_msg(out, &error_resp(Value::Null, -32700, "parse error"))?,
+    }
+    Ok(true)
 }
 
 /// A request envelope that has been CHECKED, not merely read (2026-09-05 audit, F20).

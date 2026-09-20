@@ -540,24 +540,26 @@ pub fn foreign_overlays() -> Vec<(String, String)> {
             continue;
         }
         for progid in progids_for(ext) {
-            let Ok(k) = CLASSES_ROOT.open(&progid) else {
-                continue;
-            };
-            if k.get_string(MARK).is_ok() {
-                continue; // ours
-            }
-            let Ok(v) = k.get_string(VALUE) else {
-                continue;
-            };
-            if v.trim().is_empty() {
-                continue; // already suppressed by its owner
-            }
-            if !out.iter().any(|(p, _)| p == &progid) {
+            if is_foreign_overlay(&progid) && !out.iter().any(|(p, _)| p == &progid) {
                 out.push((progid.clone(), format!(".{ext}")));
             }
         }
     }
     out
+}
+
+/// Returns true if the ProgID has an active foreign overlay not written by us.
+fn is_foreign_overlay(progid: &str) -> bool {
+    let Ok(k) = CLASSES_ROOT.open(progid) else {
+        return false;
+    };
+    if k.get_string(MARK).is_ok() {
+        return false; // ours
+    }
+    let Ok(v) = k.get_string(VALUE) else {
+        return false;
+    };
+    !v.trim().is_empty()
 }
 
 /// One corner [`sync`]`(false)` took responsibility for. For `st2k doctor`.

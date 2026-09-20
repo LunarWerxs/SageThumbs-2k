@@ -52,24 +52,30 @@ pub fn compose_under(rgba: &mut [u8], w: u32, h: u32) {
 
     let cell = cell_for(w.min(h));
     for y in 0..h {
-        let row_dark = (y / cell) % 2 == 1;
-        for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let a = rgba[i + 3] as u32;
-            if a == 255 {
-                continue;
-            }
-            let bg = if ((x / cell) % 2 == 1) != row_dark {
-                DARK
-            } else {
-                LIGHT
-            };
-            let over = |src: u8, dst: u8| ((src as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
-            rgba[i] = over(rgba[i], bg.0);
-            rgba[i + 1] = over(rgba[i + 1], bg.1);
-            rgba[i + 2] = over(rgba[i + 2], bg.2);
-            rgba[i + 3] = 255;
+        blend_row(rgba, w, y, cell);
+    }
+}
+
+/// Blend one image row (`y`) of `rgba` over its checkerboard cells, leaving opaque pixels
+/// untouched. `cell` is the checker cell size in pixels.
+fn blend_row(rgba: &mut [u8], w: u32, y: u32, cell: u32) {
+    let row_dark = (y / cell) % 2 == 1;
+    for x in 0..w {
+        let i = ((y * w + x) * 4) as usize;
+        let a = rgba[i + 3] as u32;
+        if a == 255 {
+            continue;
         }
+        let bg = if ((x / cell) % 2 == 1) != row_dark {
+            DARK
+        } else {
+            LIGHT
+        };
+        let over = |src: u8, dst: u8| ((src as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
+        rgba[i] = over(rgba[i], bg.0);
+        rgba[i + 1] = over(rgba[i + 1], bg.1);
+        rgba[i + 2] = over(rgba[i + 2], bg.2);
+        rgba[i + 3] = 255;
     }
 }
 

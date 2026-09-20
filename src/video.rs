@@ -187,6 +187,11 @@ pub fn is_video_magic(head: &[u8]) -> bool {
             || brand == b"cr3 ";
         return !not_video; // mp4/mov/m4v/3gp brands → video
     }
+    static_video_magic(head)
+}
+
+/// The fixed-magic container checks (MPEG-TS sync at the 188/192 stride, then the EBML/RIFF-AVI/ASF/FLV/MPEG/Ogg signatures) applied after `ftyp` declines.
+fn static_video_magic(head: &[u8]) -> bool {
     // MPEG-TS (.ts/.mts): 188-byte packets, each led by the 0x47 sync byte. Requiring TWO
     // syncs (head[0] AND head[188]) avoids matching any file that merely starts with 'G'.
     // M2TS (.m2ts) prefixes each packet with a 4-byte timestamp → sync at offset 4, 192 stride.
@@ -363,7 +368,11 @@ unsafe fn grab_reader(reader: &IMFSourceReader, seek: Seek) -> Option<DynamicIma
     // source just leaves us at the start. The read loop below grabs the first decoded keyframe
     // at/after the seek point.
     seek_to_fraction(reader, seek);
+    scan_for_frame(reader, first_video)
+}
 
+/// Read samples (skipping ticks/format changes, keeping the first black frame as fallback) until a non-black frame or the read/decode bounds.
+unsafe fn scan_for_frame(reader: &IMFSourceReader, first_video: u32) -> Option<DynamicImage> {
     // Read decoded samples, skipping stream ticks / format-change notifications (a null sample
     // with no end-of-stream flag), and skipping frames that decode to BLACK.
     //

@@ -509,48 +509,45 @@ impl MenuCommand {
     /// again once it's OK to be slow rather than stalling its own thread once per
     /// top-level item on a large selection.
     unsafe fn state(&self, items: &Ref<'_, IShellItemArray>, slow_ok: bool) -> Result<u32> {
-        let has_image = match self.has_image.get() {
-            Some(v) => v,
-            None if !slow_ok => return Err(Error::from(E_PENDING)),
-            None => {
-                let v = selection_has_image(items);
-                self.has_image.set(Some(v));
-                v
-            }
-        };
+        let has_image = cached_verdict(&self.has_image, slow_ok, items, selection_has_image)?;
         let base = state_for(self.gate, has_image);
         if base != ECS_ENABLED.0 as u32 {
             return Ok(base); // menu off or unsupported selection — already hidden
         }
         if self.top_level && !verbs::top_level_audio_ok(self.item.title()) {
-            let audio_only = match self.audio_only.get() {
-                Some(v) => v,
-                None if !slow_ok => return Err(Error::from(E_PENDING)),
-                None => {
-                    let v = selection_is_audio_only(items);
-                    self.audio_only.set(Some(v));
-                    v
-                }
-            };
+            let audio_only =
+                cached_verdict(&self.audio_only, slow_ok, items, selection_is_audio_only)?;
             if audio_only {
                 return Ok(ECS_HIDDEN.0 as u32);
             }
         }
         if self.top_level && !verbs::top_level_video_ok(self.item.title()) {
-            let video_only = match self.video_only.get() {
-                Some(v) => v,
-                None if !slow_ok => return Err(Error::from(E_PENDING)),
-                None => {
-                    let v = selection_is_video_only(items);
-                    self.video_only.set(Some(v));
-                    v
-                }
-            };
+            let video_only =
+                cached_verdict(&self.video_only, slow_ok, items, selection_is_video_only)?;
             if video_only {
                 return Ok(ECS_HIDDEN.0 as u32);
             }
         }
         Ok(base)
+    }
+}
+
+/// Cached per-selection verdict: returns `cell`'s value, or runs `walk` and caches its
+/// result on a miss — unless `!slow_ok`, when it defers with `E_PENDING` instead.
+fn cached_verdict(
+    cell: &Cell<Option<bool>>,
+    slow_ok: bool,
+    items: &Ref<'_, IShellItemArray>,
+    walk: unsafe fn(&Ref<'_, IShellItemArray>) -> bool,
+) -> Result<bool> {
+    match cell.get() {
+        Some(v) => Ok(v),
+        None if !slow_ok => Err(Error::from(E_PENDING)),
+        None => {
+            let v = unsafe { walk(items) };
+            cell.set(Some(v));
+            Ok(v)
+        }
     }
 }
 

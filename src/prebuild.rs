@@ -334,22 +334,36 @@ fn walk(
         return;
     };
     for e in rd.flatten() {
-        let p = e.path();
-        let a = crate::fsutil::file_attributes(&p);
-        if a & REPARSE != 0 {
-            continue;
+        visit_entry(&e, opts, depth, out, rep, snap);
+    }
+}
+
+/// Handle one directory entry from [`walk`]: descend into a subdirectory, or record a supported,
+/// non-offline file into `out`. A reparse point or an offline placeholder returns early, which is
+/// the caller's `continue`.
+fn visit_entry(
+    e: &std::fs::DirEntry,
+    opts: &Options,
+    depth: u32,
+    out: &mut Vec<String>,
+    rep: &mut Report,
+    snap: &crate::settings::FormatEnabledSnapshot,
+) {
+    let p = e.path();
+    let a = crate::fsutil::file_attributes(&p);
+    if a & REPARSE != 0 {
+        return;
+    }
+    if p.is_dir() {
+        if opts.recurse {
+            walk(&p, opts, depth + 1, out, rep, snap);
         }
-        if p.is_dir() {
-            if opts.recurse {
-                walk(&p, opts, depth + 1, out, rep, snap);
-            }
-        } else if p.is_file() && wanted(&p, snap) {
-            if is_cloud_placeholder(&p) {
-                rep.skipped_offline += 1;
-                continue;
-            }
-            out.push(p.to_string_lossy().into_owned());
+    } else if p.is_file() && wanted(&p, snap) {
+        if is_cloud_placeholder(&p) {
+            rep.skipped_offline += 1;
+            return;
         }
+        out.push(p.to_string_lossy().into_owned());
     }
 }
 
@@ -435,8 +449,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
     use windows::core::HSTRING;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
-        IShellItem, IThumbnailCache, LocalThumbnailCache, SHCreateItemFromParsingName, WTS_EXTRACT,
-        WTS_INCACHEONLY,
+        IShellItem, IThumbnailCache, LocalThumbnailCache, SHCreateItemFromParsingName,
     };
 
     APARTMENT.with(|_| {});
@@ -451,64 +464,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
             CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER)?;
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(abs.as_str()), None)?;
 
-        let (mut built, mut already) = (false, false);
-        let mut missing: Vec<u32> = Vec::new();
-        for &size in &opts.sizes {
-            if !opts.rebuild_all {
-                // Probe first. This never extracts, so a library that is already built costs
-                // one cheap call per size instead of a full re-render.
-                let mut bmp = None;
-                if cache
-                    .GetThumbnail(&item, size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
-                    .is_ok()
-                {
-                    already = true;
-                    continue;
-                }
-            }
-            let mut bmp = None;
-            match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
-                Ok(()) => built = true,
-                // SAY WHICH FILE, WHICH SIZE, AND WHY. A per-size failure only ever landed in
-                // a total count, so "it didn't pre-build my PDFs" (issue #26.3) could not be
-                // told apart from "it never tried", from "the shell refused this one format",
-                // from "this size is not one the view reads". All three look identical in a
-                // summary line, and the reporter and I both ended up guessing.
-                //
-                // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
-                // unless someone has turned diagnostics on to find exactly this.
-                Err(e) => {
-                    crate::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
-                    missing.push(size);
-                }
-            }
-        }
-        // ONE retry for the sizes that did not land, after the rest of this file is done.
-        //
-        // The dominant failure here is a TIMEOUT, not a refusal: several worker threads drive
-        // the OS rasterizer at once, so a bucket can miss its budget purely because it was
-        // unlucky. That matters more since `build_order` put the LARGEST bucket first — the
-        // expensive render is now the one that runs while contention is highest, and it is also
-        // the one whose loss costs the most (lose it and every smaller bucket is derived from
-        // whatever renders next instead). Bounded to one pass so a genuinely unsupported file
-        // costs one extra cheap refusal, not an unbounded loop.
-        if !missing.is_empty() {
-            missing.retain(|&size| {
-                let mut bmp = None;
-                match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
-                    Ok(()) => {
-                        built = true;
-                        false // landed on the retry — no longer missing
-                    }
-                    Err(e) => {
-                        crate::safety::log_debugf!(
-                            "prebuild: {abs} size {size} still not built after retry: {e}"
-                        );
-                        true
-                    }
-                }
-            });
-        }
+        let (built, already, missing) = build_sizes(&cache, &item, &abs, opts);
         if let Some(o) = verdict(built, already, missing.is_empty()) {
             Ok(o)
         } else {
@@ -521,6 +477,79 @@ fn one(path: &str, opts: &Options) -> Outcome {
     })();
 
     r.unwrap_or(Outcome::Failed)
+}
+
+/// Drive every requested size bucket for one shell item: probe the cache first (unless
+/// `rebuild_all`), extract what is missing, then retry the sizes that did not land once.
+/// Returns `(built, already, missing)` — the three facts `one` feeds to [`verdict`].
+/// Unsafe for the same reason its caller's block is: it drives COM objects the caller created.
+unsafe fn build_sizes(
+    cache: &windows::Win32::UI::Shell::IThumbnailCache,
+    item: &windows::Win32::UI::Shell::IShellItem,
+    abs: &str,
+    opts: &Options,
+) -> (bool, bool, Vec<u32>) {
+    use windows::Win32::UI::Shell::{WTS_EXTRACT, WTS_INCACHEONLY};
+
+    let (mut built, mut already) = (false, false);
+    let mut missing: Vec<u32> = Vec::new();
+    for &size in &opts.sizes {
+        if !opts.rebuild_all {
+            // Probe first. This never extracts, so a library that is already built costs
+            // one cheap call per size instead of a full re-render.
+            let mut bmp = None;
+            if cache
+                .GetThumbnail(item, size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
+                .is_ok()
+            {
+                already = true;
+                continue;
+            }
+        }
+        let mut bmp = None;
+        match cache.GetThumbnail(item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+            Ok(()) => built = true,
+            // SAY WHICH FILE, WHICH SIZE, AND WHY. A per-size failure only ever landed in
+            // a total count, so "it didn't pre-build my PDFs" (issue #26.3) could not be
+            // told apart from "it never tried", from "the shell refused this one format",
+            // from "this size is not one the view reads". All three look identical in a
+            // summary line, and the reporter and I both ended up guessing.
+            //
+            // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
+            // unless someone has turned diagnostics on to find exactly this.
+            Err(e) => {
+                crate::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
+                missing.push(size);
+            }
+        }
+    }
+    // ONE retry for the sizes that did not land, after the rest of this file is done.
+    //
+    // The dominant failure here is a TIMEOUT, not a refusal: several worker threads drive
+    // the OS rasterizer at once, so a bucket can miss its budget purely because it was
+    // unlucky. That matters more since `build_order` put the LARGEST bucket first — the
+    // expensive render is now the one that runs while contention is highest, and it is also
+    // the one whose loss costs the most (lose it and every smaller bucket is derived from
+    // whatever renders next instead). Bounded to one pass so a genuinely unsupported file
+    // costs one extra cheap refusal, not an unbounded loop.
+    if !missing.is_empty() {
+        missing.retain(|&size| {
+            let mut bmp = None;
+            match cache.GetThumbnail(item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+                Ok(()) => {
+                    built = true;
+                    false // landed on the retry — no longer missing
+                }
+                Err(e) => {
+                    crate::safety::log_debugf!(
+                        "prebuild: {abs} size {size} still not built after retry: {e}"
+                    );
+                    true
+                }
+            }
+        });
+    }
+    (built, already, missing)
 }
 
 /// Repair the one way Explorer's `"%1"` substitution can hand us a broken path: a DRIVE ROOT.

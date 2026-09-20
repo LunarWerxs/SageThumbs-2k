@@ -107,11 +107,19 @@ pub fn strip_metadata(path: &str) -> Result<()> {
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let out_bytes: Vec<u8> = match ext.as_str() {
-        "jpg" | "jpeg" | "jpe" | "jfif" => strip_jpeg(input)?,
-        "png" => strip_png(input)?,
-        "webp" => webpmeta::strip(input)?,
-        "svg" => svgmeta::strip(&input)?,
+    let out_bytes: Vec<u8> = strip_by_extension(&ext, input)?;
+
+    atomic_overwrite(Path::new(path), &out_bytes)
+}
+
+/// Rewrite `input` (JPEG / PNG / WebP / SVG / `.svgz` / HEIC), refusing a format this
+/// cannot losslessly strip instead of lossy-converting it.
+fn strip_by_extension(ext: &str, input: Bytes) -> Result<Vec<u8>> {
+    match ext {
+        "jpg" | "jpeg" | "jpe" | "jfif" => strip_jpeg(input),
+        "png" => strip_png(input),
+        "webp" => webpmeta::strip(input),
+        "svg" => svgmeta::strip(&input),
         // .svgz is gzip-compressed SVG (Illustrator/Inkscape's "compressed" save option). The
         // old match arm here (`"svg" | "svgz" if ext == "svg"`) guarded the WHOLE or-pattern on
         // `ext == "svg"`, so it could only ever fire for "svg" and every real .svgz file fell
@@ -123,7 +131,7 @@ pub fn strip_metadata(path: &str) -> Result<()> {
             let inflated = gunzip_bounded(&input)
                 .ok_or_else(|| Error::new(E_FAIL, "svgz: not a gzip stream, or empty"))?;
             let stripped = svgmeta::strip(&inflated)?;
-            regzip(&stripped)?
+            regzip(&stripped)
         }
         // HEIC/AVIF items are rewritten in place (see `isobmff`); `None` means the
         // layout was not one we can touch without risking the picture.
@@ -132,15 +140,13 @@ pub fn strip_metadata(path: &str) -> Result<()> {
                 E_FAIL,
                 "heif: no strippable item, or a layout not rewritten in place",
             )
-        })?,
+        }),
         // Unsupported: refuse, never lossy-convert.
         _ => {
             let why = format!("strip: .{ext} is not a format this can rewrite");
-            return Err(Error::new(E_FAIL, why));
+            Err(Error::new(E_FAIL, why))
         }
-    };
-
-    atomic_overwrite(Path::new(path), &out_bytes)
+    }
 }
 
 /// The APP2 payload prefix of a Multi-Picture Format index (CIPA DC-007).
@@ -200,26 +206,7 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
         .filter(|s| s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
         .filter_map(|s| app11_identity(s.contents()).map(|(inst, _)| inst))
         .collect();
-    jpeg.segments_mut().retain(|s| {
-        if STRIP_APP_MARKERS.contains(&s.marker()) {
-            return false;
-        }
-        if s.marker() == markers::APP11 {
-            if jumbf::is_jumbf_app11(s.contents()) {
-                return false; // the box-defining packet itself
-            }
-            // A JPEG XT HDR layer wears the same marker and must survive - only a
-            // genuine CONTINUATION packet (sequence > 1) of a flagged box instance is
-            // dropped, never an unrelated first-of-its-own-box packet that happens to
-            // reuse the same instance number.
-            if let Some((inst, seq)) = app11_identity(s.contents()) {
-                if seq > 1 && c2pa_instances.contains(&inst) {
-                    return false;
-                }
-            }
-        }
-        true
-    });
+    jpeg.segments_mut().retain(|s| !is_stripped_segment(s, &c2pa_instances));
     if let Some(o) = orientation {
         let mut app1 = b"Exif\0\0".to_vec();
         app1.extend(tiff_orientation_only(o));
@@ -233,6 +220,32 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
     Jpeg::from_bytes(bytes.clone())
         .map_err(|e| Error::new(E_FAIL, format!("jpeg re-parse: {e}")))?;
     Ok(bytes.to_vec())
+}
+
+/// Whether a JPEG segment is strip-worthy metadata: an APP1/APP13/COM marker, a JUMBF
+/// box-defining APP11 packet, or a continuation packet of a flagged C2PA box instance.
+fn is_stripped_segment(
+    s: &img_parts::jpeg::JpegSegment,
+    c2pa_instances: &std::collections::HashSet<u16>,
+) -> bool {
+    if STRIP_APP_MARKERS.contains(&s.marker()) {
+        return true;
+    }
+    if s.marker() == markers::APP11 {
+        if jumbf::is_jumbf_app11(s.contents()) {
+            return true; // the box-defining packet itself
+        }
+        // A JPEG XT HDR layer wears the same marker and must survive - only a
+        // genuine CONTINUATION packet (sequence > 1) of a flagged box instance is
+        // dropped, never an unrelated first-of-its-own-box packet that happens to
+        // reuse the same instance number.
+        if let Some((inst, seq)) = app11_identity(s.contents()) {
+            if seq > 1 && c2pa_instances.contains(&inst) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// PNG arm of [`strip_metadata`]: drop EXIF/text/time chunks plus any C2PA chunk. iCCP (color
