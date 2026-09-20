@@ -169,6 +169,17 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     walk_avc_tags(r, total, data_offset.checked_add(4)?)?
 }
 
+/// One step of an FLV tag walk's cap: bump the tag count and return `None` once the count or
+/// the byte position exceeds [`MAX_TAGS`] / [`WALK_MAX`]. Shared by both walks, so a future
+/// caller can't silently inherit only half the bound.
+fn walk_step_ok(tags: &mut u32, pos: u64) -> Option<()> {
+    *tags = tags.checked_add(1)?;
+    if *tags > MAX_TAGS || pos > WALK_MAX {
+        return None;
+    }
+    Some(())
+}
+
 /// Walk the FLV from `start` (past PreviousTagSize0) for the AVC config + first keyframe.
 /// `Some(v)` once a keyframe tag arrives (`v` is the mux result), `None` when the walk ends
 /// or a cap/read/bound fails.
@@ -181,10 +192,7 @@ fn walk_avc_tags<R: Read + Seek>(r: &mut R, total: u64, start: u64) -> Option<Op
     // walk is STRUCTURALLY forward-only — a hostile DataSize can overshoot (caught by the
     // bounds check) but never stall or rewind. The caps bound a long crafted crawl anyway.
     while pos.checked_add(11)? <= total {
-        tags = tags.checked_add(1)?;
-        if tags > MAX_TAGS || pos > WALK_MAX {
-            return None;
-        }
+        walk_step_ok(&mut tags, pos)?;
         let (tag_type, payload_pos, data_size) = read_stream_tag_header(r, pos, total)?;
         match handle_video_tag(r, tag_type, data_size, payload_pos, &mut avc_config)? {
             TagOutcome::Continue => {}
@@ -193,6 +201,17 @@ fn walk_avc_tags<R: Read + Seek>(r: &mut R, total: u64, start: u64) -> Option<Op
         pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
     }
     None
+}
+
+/// The payload offset of the tag whose 11-byte header sits at `pos` and whose 24-bit
+/// `DataSize` field is `data_size`: `pos + 11`, or `None` if that payload runs past `total`
+/// (truncated mid-tag) — or if either addition overflows.
+fn tag_payload_pos(pos: u64, data_size: u64, total: u64) -> Option<u64> {
+    let payload_pos = pos.checked_add(11)?;
+    if payload_pos.checked_add(data_size)? > total {
+        return None; // truncated mid-tag
+    }
+    Some(payload_pos)
 }
 
 /// Read one tag's fixed 11-byte header from the stream at `pos`: `(tag_type, payload offset,
@@ -207,10 +226,7 @@ fn read_stream_tag_header<R: Read + Seek>(
     read_exact_at(r, pos, &mut th)?;
     let tag_type = th[0] & 0x1F; // top bits: reserved + encryption filter
     let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-    let payload_pos = pos.checked_add(11)?;
-    if payload_pos.checked_add(data_size)? > total {
-        return None; // truncated mid-tag
-    }
+    let payload_pos = tag_payload_pos(pos, data_size, total)?;
     Some((tag_type, payload_pos, data_size))
 }
 
@@ -354,14 +370,11 @@ fn slice_walk<'a, T>(
     let mut pos = flv_first_tag_pos(flv)?;
     let mut tags = 0u32;
     while pos.checked_add(11)? <= total {
-        tags = tags.checked_add(1)?;
         // Same pair of caps `keyframe_mini_mp4` applies. Currently redundant in practice —
         // every caller already bounds `flv` well under WALK_MAX (32 MiB/4 MiB vs 256 MiB) —
         // but keeping both walks on the same two caps means a future caller can't silently
         // inherit only half the bound.
-        if tags > MAX_TAGS || pos > WALK_MAX {
-            return None;
-        }
+        walk_step_ok(&mut tags, pos)?;
         let (tag_type, payload_pos, data_size) = read_tag_header(flv, pos, total)?;
         // Outer `None` aborts the walk (malformed payload), inner `Some` stops it.
         if let Some(out) = visit_video_tag(flv, tag_type, payload_pos, data_size, visit)? {
@@ -413,10 +426,7 @@ fn read_tag_header(flv: &[u8], pos: u64, total: u64) -> Option<(u8, u64, u64)> {
     let th = flv.get(pos as usize..pos as usize + 11)?;
     let tag_type = th[0] & 0x1F;
     let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-    let payload_pos = pos.checked_add(11)?;
-    if payload_pos.checked_add(data_size)? > total {
-        return None; // truncated mid-tag
-    }
+    let payload_pos = tag_payload_pos(pos, data_size, total)?;
     Some((tag_type, payload_pos, data_size))
 }
 
