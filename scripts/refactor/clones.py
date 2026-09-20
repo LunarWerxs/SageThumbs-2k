@@ -20,8 +20,12 @@ TEST_FILE = re.compile(r"^\s*#!\[cfg\(test\)\]", re.M)
 TEST_MOD = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", re.M)
 
 
-def test_ranges(root, rel, cache={}):
+_RANGES = {}
+
+
+def test_ranges(root, rel, cache=None):
     """Line ranges of `rel` that are test code: the whole file, or each inline test module."""
+    cache = _RANGES if cache is None else cache
     if rel in cache:
         return cache[rel]
     path = os.path.join(root, rel)
