@@ -77,8 +77,34 @@ fn first_file_folder() -> Option<String> {
     TTF_FILES
         .get()
         .and_then(|f| f.first())
-        .and_then(|p| std::path::Path::new(p).parent())
+        .and_then(|p| parent_folder(p))
+}
+
+/// The parent folder of `path` as a lossy UTF-8 string, or `None` when `path` has no
+/// parent — a bare drive root, or an empty path.
+fn parent_folder(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .parent()
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The field's text, trimmed, or `fallback` when the field holds only whitespace (or is
+/// empty): the dialog pre-fills every field, so a cleared one means "use the default",
+/// never "use an empty string".
+fn ttf_field_or(field: &str, fallback: &str) -> String {
+    let value = field.trim();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// The y (96-DPI design px) of the dialog's button row: the physical client bottom
+/// scaled back to design px, less the 12px bottom margin and the 30px the row is tall.
+/// The caller floors the DPI at 96, so this never divides below 1:1.
+fn button_row_y(client_bottom_px: i32, dpi: i32) -> i32 {
+    client_bottom_px * 96 / dpi - 12 - 30
 }
 
 /// `WM_CREATE`: lay out the destination/template/missing-token edits, the move/copy radio
@@ -178,7 +204,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-    let by = rc.bottom * 96 / dpi - 12 - 30;
+    let by = button_row_y(rc.bottom, dpi);
     crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, by, 92, 342);
     LRESULT(0)
 }
@@ -207,18 +233,12 @@ unsafe fn on_command_ok(hwnd: HWND) {
     if TTF_RUNNING.load(Ordering::Relaxed) {
         return;
     }
-    let mut dest = get_edit_text(hwnd, CID_TTF_DEST).trim().to_string();
-    if dest.is_empty() {
-        dest = first_file_folder().unwrap_or_else(|| ".".to_string());
-    }
-    let mut template = get_edit_text(hwnd, CID_TTF_TEMPLATE).trim().to_string();
-    if template.is_empty() {
-        template = t("ttf_template_default").to_string();
-    }
-    let mut missing = get_edit_text(hwnd, CID_TTF_MISSING).trim().to_string();
-    if missing.is_empty() {
-        missing = t("ttf_missing_default").to_string();
-    }
+    let dest = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_DEST),
+        &first_file_folder().unwrap_or_else(|| ".".to_string()),
+    );
+    let template = ttf_field_or(&get_edit_text(hwnd, CID_TTF_TEMPLATE), t("ttf_template_default"));
+    let missing = ttf_field_or(&get_edit_text(hwnd, CID_TTF_MISSING), t("ttf_missing_default"));
     let move_files = checked(hwnd, CID_TTF_MOVE);
     let Some(files) = TTF_FILES.get().cloned() else {
         return;
@@ -262,20 +282,27 @@ unsafe fn on_command_ok(hwnd: HWND) {
     });
 }
 
+/// The locale key of the finished-sort prompt, chosen by whether the batch moved or copied.
+fn ttf_done_key(move_files: bool) -> &'static str {
+    if move_files {
+        "ttf_done_moved"
+    } else {
+        "ttf_done_copied"
+    }
+}
+
+/// Fills the `{done}` and `{skipped}` placeholders of a finished-sort prompt.
+fn ttf_done_message(prompt: &str, done: usize, skipped: usize) -> String {
+    prompt
+        .replace("{done}", &done.to_string())
+        .replace("{skipped}", &skipped.to_string())
+}
+
 /// `WM_TTF_DONE`: report the done/skipped counts the worker thread produced, then close.
 unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
     TTF_RUNNING.store(false, Ordering::Relaxed);
     if let Some((done, skipped, move_files)) = TTF_RESULT.lock().unwrap().take() {
-        let key = if move_files {
-            "ttf_done_moved"
-        } else {
-            "ttf_done_copied"
-        };
-        let m = wide(
-            &t(key)
-                .replace("{done}", &done.to_string())
-                .replace("{skipped}", &skipped.to_string()),
-        );
+        let m = wide(&ttf_done_message(t(ttf_done_key(move_files)), done, skipped));
         let cap = wide("SageThumbs 2K");
         MessageBoxW(
             Some(hwnd),
@@ -292,4 +319,62 @@ unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
 /// reasoning as `files_to_folder.rs::request_close`.
 unsafe fn request_close(hwnd: HWND) {
     crate::files_to_folder::close_or_defer(hwnd, &TTF_RUNNING);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttf_field_or_keeps_a_trimmed_value() {
+        assert_eq!(ttf_field_or("  C:\\music \t", "fallback"), "C:\\music");
+    }
+
+    #[test]
+    fn ttf_field_or_falls_back_when_nothing_was_typed() {
+        assert_eq!(ttf_field_or("   \n", "Unknown"), "Unknown");
+        assert_eq!(ttf_field_or("", "Unknown"), "Unknown");
+    }
+
+    #[test]
+    fn ttf_done_message_fills_both_placeholders() {
+        let got = ttf_done_message("Moved {done} file(s).\n{skipped} skipped.", 3, 2);
+        assert_eq!(got, "Moved 3 file(s).\n2 skipped.");
+    }
+
+    #[test]
+    fn ttf_done_message_fills_placeholders_in_either_order() {
+        assert_eq!(
+            ttf_done_message("{skipped} skipped, {done} moved", 4, 1),
+            "1 skipped, 4 moved"
+        );
+    }
+
+    #[test]
+    fn ttf_done_message_renders_a_zero_count_without_leaving_a_brace() {
+        let got = ttf_done_message("{done} done, {skipped} skipped", 0, 0);
+        assert_eq!(got, "0 done, 0 skipped");
+    }
+
+    #[test]
+    fn ttf_done_key_names_the_move_prompt() {
+        assert_eq!(ttf_done_key(true), "ttf_done_moved");
+        assert_eq!(ttf_done_key(false), "ttf_done_copied");
+    }
+
+    #[test]
+    fn parent_folder_keeps_the_folder() {
+        assert_eq!(parent_folder("C:\\media\\song.mp3"), Some("C:\\media".to_string()));
+    }
+
+    #[test]
+    fn parent_folder_has_none_for_a_drive_root() {
+        assert_eq!(parent_folder("C:\\"), None);
+    }
+
+    #[test]
+    fn button_row_y_scales_the_client_bottom_back_to_design_px() {
+        assert_eq!(button_row_y(300, 96), 258);
+        assert_eq!(button_row_y(300, 192), 108);
+    }
 }
