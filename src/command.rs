@@ -52,6 +52,12 @@ fn app_icon_ref() -> Result<PWSTR> {
     })
 }
 
+/// The `E_NOTIMPL` failure shared by the COM members that have no value to report
+/// (`GetToolTip`, `GetCanonicalName`), for both result types they declare.
+fn not_implemented<T>() -> Result<T> {
+    Err(Error::from(E_NOTIMPL))
+}
+
 /// Extract filesystem paths from a shell selection (the IShellItemArray the
 /// shell passes to Invoke). Null/empty selection yields an empty Vec.
 unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
@@ -333,13 +339,13 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
         app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetCanonicalName(&self) -> Result<GUID> {
         // No stable canonical verb name (we'd return GUID_NULL); report
         // not-implemented to match the rest of the surface instead of an
         // S_OK + null GUID the shell would treat as meaningful.
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
@@ -561,12 +567,12 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetCanonicalName(&self) -> Result<GUID> {
         // No stable canonical verb name; not-implemented (was S_OK + GUID_NULL),
         // matching the root command and the rest of the COM surface.
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
