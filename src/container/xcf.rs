@@ -1514,17 +1514,21 @@ mod tests {
         }
     }
 
+    /// Big-endian byte view of a 32-bit word, matching XCF's on-wire encoding.
+    fn u32b(v: u32) -> [u8; 4] {
+        v.to_be_bytes()
+    }
+
+    /// Big-endian byte view of a 64-bit word, matching XCF's on-wire encoding.
+    fn u64b(v: u64) -> [u8; 8] {
+        v.to_be_bytes()
+    }
+
     /// A structurally valid v011 (wide-pointer) prologue declaring `n` layer pointers, ALL
     /// pointing at the SAME offset — a zero-filled blob big enough that every successful read
     /// gets its full (possibly shrunk) window's worth of bytes, so the fixture stays a few MB
     /// regardless of how large `n` gets instead of needing `n` distinct targets.
     fn crafted_many_layer_pointers(n: usize, filler_len: usize) -> Vec<u8> {
-        fn u32b(v: u32) -> [u8; 4] {
-            v.to_be_bytes()
-        }
-        fn u64b(v: u64) -> [u8; 8] {
-            v.to_be_bytes()
-        }
         let mut b = Vec::new();
         b.extend_from_slice(b"gimp xcf v011\0");
         b.extend_from_slice(&u32b(4)); // width
@@ -1787,16 +1791,42 @@ mod tests {
         synthetic_xcf_with_props(w, h, rgb, &[])
     }
 
+    /// Push the common v011 image header for a `w`-by-`h` RGB image carrying only the
+    /// compression method (none) and no other image-level properties.
+    fn push_xcf_header(b: &mut Vec<u8>, w: u32, h: u32) {
+        b.extend_from_slice(b"gimp xcf v011\0");
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(0)); // base type RGB
+        b.extend_from_slice(&u32b(150)); // 8-bit gamma
+        b.extend_from_slice(&u32b(17)); // PROP_COMPRESSION
+        b.extend_from_slice(&u32b(1));
+        b.push(0); // none
+        b.extend_from_slice(&u32b(0)); // PROP_END
+        b.extend_from_slice(&u32b(0));
+    }
+
+    /// Push a layer's fixed record prefix: canvas-sized dimensions, channel type `ltype`
+    /// (0 = RGB, 1 = RGBA) and an empty name.
+    fn push_layer_start(b: &mut Vec<u8>, w: u32, h: u32, ltype: u32) {
+        b.extend_from_slice(&u32b(w));
+        b.extend_from_slice(&u32b(h));
+        b.extend_from_slice(&u32b(ltype));
+        b.extend_from_slice(&u32b(1)); // name length (just the NUL)
+        b.push(0);
+    }
+
+    /// Push one raw `(ptype, payload)` entry of a property list.
+    fn push_property(b: &mut Vec<u8>, ptype: u32, payload: &[u8]) {
+        b.extend_from_slice(&u32b(ptype));
+        b.extend_from_slice(&u32b(payload.len() as u32));
+        b.extend_from_slice(payload);
+    }
+
     /// The same, with `props` written into the LAYER's property list as raw
     /// `(ptype, payload)` pairs, so the opacity / visibility / offset branches can be
     /// exercised with real bytes instead of being assumed.
     fn synthetic_xcf_with_props(w: u32, h: u32, rgb: [u8; 3], props: &[(u32, Vec<u8>)]) -> Vec<u8> {
-        fn u32b(v: u32) -> [u8; 4] {
-            v.to_be_bytes()
-        }
-        fn u64b(v: u64) -> [u8; 8] {
-            v.to_be_bytes()
-        }
         // Sizes of each region, so the absolute pointers can be resolved before writing.
         let header = 14 + 4 * 4 + (4 + 4 + 1) + (4 + 4); // magic..props incl. PROP_END
         let ptr_list = 8 + 8; // one layer pointer + terminator
@@ -1810,16 +1840,7 @@ mod tests {
         let tile_off = level_off + level_len;
 
         let mut b: Vec<u8> = Vec::new();
-        b.extend_from_slice(b"gimp xcf v011\0");
-        b.extend_from_slice(&u32b(w));
-        b.extend_from_slice(&u32b(h));
-        b.extend_from_slice(&u32b(0)); // base type RGB
-        b.extend_from_slice(&u32b(150)); // 8-bit gamma
-        b.extend_from_slice(&u32b(17)); // PROP_COMPRESSION
-        b.extend_from_slice(&u32b(1));
-        b.push(0); // none
-        b.extend_from_slice(&u32b(0)); // PROP_END
-        b.extend_from_slice(&u32b(0));
+        push_xcf_header(&mut b, w, h);
         assert_eq!(
             b.len(),
             header,
@@ -1830,15 +1851,9 @@ mod tests {
         b.extend_from_slice(&u64b(0)); // end of layer list
 
         // --- layer ---
-        b.extend_from_slice(&u32b(w));
-        b.extend_from_slice(&u32b(h));
-        b.extend_from_slice(&u32b(0)); // RGB, 3 channels
-        b.extend_from_slice(&u32b(1)); // name length (just the NUL)
-        b.push(0);
+        push_layer_start(&mut b, w, h, 0); // RGB, 3 channels
         for (ptype, payload) in props {
-            b.extend_from_slice(&u32b(*ptype));
-            b.extend_from_slice(&u32b(payload.len() as u32));
-            b.extend_from_slice(payload);
+            push_property(&mut b, *ptype, payload);
         }
         b.extend_from_slice(&u32b(0)); // PROP_END
         b.extend_from_slice(&u32b(0));
@@ -2066,13 +2081,6 @@ mod tests {
             w <= TILE && h <= TILE,
             "the fixture writes ONE tile per layer, so it cannot exceed the tile grid"
         );
-        fn u32b(v: u32) -> [u8; 4] {
-            v.to_be_bytes()
-        }
-        fn u64b(v: u64) -> [u8; 8] {
-            v.to_be_bytes()
-        }
-
         let header = 14 + 4 * 4 + (4 + 4 + 1) + (4 + 4);
         let ptr_list = 8 * specs.len() + 8;
         // dims + type + name + PROP_OPACITY + PROP_VISIBLE + PROP_END + hierarchy + mask
@@ -2085,16 +2093,7 @@ mod tests {
         let layer_off = |i: usize| first_layer + i * per_layer;
 
         let mut b: Vec<u8> = Vec::new();
-        b.extend_from_slice(b"gimp xcf v011\0");
-        b.extend_from_slice(&u32b(w));
-        b.extend_from_slice(&u32b(h));
-        b.extend_from_slice(&u32b(0)); // base type RGB
-        b.extend_from_slice(&u32b(150)); // 8-bit gamma
-        b.extend_from_slice(&u32b(17)); // PROP_COMPRESSION
-        b.extend_from_slice(&u32b(1));
-        b.push(0); // none
-        b.extend_from_slice(&u32b(0)); // PROP_END
-        b.extend_from_slice(&u32b(0));
+        push_xcf_header(&mut b, w, h);
         assert_eq!(
             b.len(),
             header,
@@ -2109,17 +2108,9 @@ mod tests {
 
         for (i, spec) in specs.iter().enumerate() {
             assert_eq!(b.len(), layer_off(i));
-            b.extend_from_slice(&u32b(w));
-            b.extend_from_slice(&u32b(h));
-            b.extend_from_slice(&u32b(1)); // RGBA, 4 channels
-            b.extend_from_slice(&u32b(1)); // name length (just the NUL)
-            b.push(0);
-            b.extend_from_slice(&u32b(6)); // PROP_OPACITY
-            b.extend_from_slice(&u32b(4));
-            b.extend_from_slice(&u32b(u32::from(spec.opacity)));
-            b.extend_from_slice(&u32b(8)); // PROP_VISIBLE
-            b.extend_from_slice(&u32b(4));
-            b.extend_from_slice(&u32b(u32::from(spec.visible)));
+            push_layer_start(&mut b, w, h, 1); // RGBA, 4 channels
+            push_property(&mut b, 6, &u32b(u32::from(spec.opacity))); // PROP_OPACITY
+            push_property(&mut b, 8, &u32b(u32::from(spec.visible))); // PROP_VISIBLE
             b.extend_from_slice(&u32b(0)); // PROP_END
             b.extend_from_slice(&u32b(0));
             b.extend_from_slice(&u64b((layer_off(i) + layer_rec) as u64));
