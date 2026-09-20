@@ -194,13 +194,30 @@ fn file_props(body: &[u8], tags: &mut AsfTags) -> Option<()> {
     Some(())
 }
 
-/// Extended Content Description Object body: `count(u16)` then descriptors of
-/// `name-len(u16), name, value-type(u16), value-len(u16), value`. Yields
-/// `(name, value-type, value)` for each. Stops at the first malformed entry.
-fn ecd_attrs(body: &[u8], mut visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
+/// Walk a `count(u16)`-prefixed attribute-record list starting at offset 2, calling
+/// `visit(name, value-type, value)` for each record. `record(body, p)` decodes the record
+/// at `p` and returns the next offset plus that record's `(name, value-type, value)`.
+/// Stops at the first malformed record.
+fn walk_attrs<'b>(
+    body: &'b [u8],
+    mut visit: impl FnMut(&'b [u8], u16, &'b [u8]),
+    mut record: impl FnMut(&'b [u8], usize) -> Option<(usize, &'b [u8], u16, &'b [u8])>,
+) -> Option<()> {
     let count = le16(body, 0)?;
     let mut p = 2usize;
     for _ in 0..count {
+        let (next, name, dtype, val) = record(body, p)?;
+        visit(name, dtype, val);
+        p = next;
+    }
+    Some(())
+}
+
+/// Extended Content Description Object body: `count(u16)` then descriptors of
+/// `name-len(u16), name, value-type(u16), value-len(u16), value`. Yields
+/// `(name, value-type, value)` for each. Stops at the first malformed entry.
+fn ecd_attrs(body: &[u8], visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
+    walk_attrs(body, visit, |body, p| {
         let name_len = le16(body, p)? as usize;
         let ns = p.checked_add(2)?;
         let ne = ns.checked_add(name_len)?;
@@ -210,19 +227,15 @@ fn ecd_attrs(body: &[u8], mut visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()
         let vs = ne.checked_add(4)?;
         let ve = vs.checked_add(vlen)?;
         let val = body.get(vs..ve)?;
-        visit(name, vtype, val);
-        p = ve;
-    }
-    Some(())
+        Some((ve, name, vtype, val))
+    })
 }
 
 /// Metadata / Metadata Library Object body: `count(u16)` then records of `lang(u16),
 /// stream(u16), name-len(u16), data-type(u16), data-len(u32), name, data`. Yields
 /// `(name, data-type, data)` for each (full-size album art + extended tags live here).
-fn mdlib_attrs(body: &[u8], mut visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
-    let count = le16(body, 0)?;
-    let mut p = 2usize;
-    for _ in 0..count {
+fn mdlib_attrs(body: &[u8], visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
+    walk_attrs(body, visit, |body, p| {
         let name_len = le16(body, p.checked_add(4)?)? as usize;
         let dtype = le16(body, p.checked_add(6)?)?;
         let data_len = le32(body, p.checked_add(8)?)? as usize;
@@ -231,10 +244,8 @@ fn mdlib_attrs(body: &[u8], mut visit: impl FnMut(&[u8], u16, &[u8])) -> Option<
         let name = body.get(ns..ne)?;
         let de = ne.checked_add(data_len)?;
         let data = body.get(ne..de)?;
-        visit(name, dtype, data);
-        p = de;
-    }
-    Some(())
+        Some((de, name, dtype, data))
+    })
 }
 
 /// Content Description Object: `title-len, author-len, copyright-len, description-len,
