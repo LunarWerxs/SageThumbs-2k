@@ -68,10 +68,55 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     }
 }
 
+/// This executable's instance handle: what every `ctl` / `label` / `edit_field` call in a
+/// dialog's `WM_CREATE` needs. Shared by this file, `rename_dlg` and `tags_to_folders`.
+pub(crate) fn module_instance() -> HINSTANCE {
+    // SAFETY: GetModuleHandleW(None) has no preconditions; it answers for the running module.
+    unsafe { GetModuleHandleW(None) }.unwrap().into()
+}
+
+/// The default OK button (`ok_key`, `ok_w` wide) and the 88-wide Cancel 6 px to its right,
+/// both 30 px high, at `(x, y)` of `hwnd` — the button row every `WM_CREATE` in this file,
+/// `rename_dlg` and `tags_to_folders` ends with.
+pub(crate) unsafe fn ok_cancel_buttons(
+    hwnd: HWND,
+    hinst: HINSTANCE,
+    ok_key: &str,
+    x: i32,
+    y: i32,
+    ok_w: i32,
+    cancel_x: i32,
+) {
+    ctl(
+        hwnd,
+        BUTTON,
+        t(ok_key),
+        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
+        x,
+        y,
+        ok_w,
+        30,
+        IDOK,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_cancel"),
+        WS_TABSTOP,
+        cancel_x,
+        y,
+        88,
+        30,
+        IDCANCEL,
+        hinst,
+    );
+}
+
 /// `WM_CREATE`: the name edit plus an indeterminate progress bar (hidden until a
 /// move is actually running) in the same slot, and the Create/Cancel buttons.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    let hinst = module_instance();
     let n = F2F_FILES.get().map(|f| f.len()).unwrap_or(0);
     let prompt = t("f2f_prompt").replace("{n}", &n.to_string());
     label(hwnd, hinst, &prompt, 16, 16, 344, 18);
@@ -103,30 +148,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
-    ctl(
-        hwnd,
-        BUTTON,
-        t("f2f_create"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        176,
-        92,
-        104,
-        30,
-        IDOK,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_cancel"),
-        WS_TABSTOP,
-        286,
-        92,
-        88,
-        30,
-        IDCANCEL,
-        hinst,
-    );
+    ok_cancel_buttons(hwnd, hinst, "f2f_create", 176, 92, 104, 286);
     LRESULT(0)
 }
 
@@ -232,13 +254,22 @@ unsafe fn on_f2f_done(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
-/// Close the dialog, or defer the close if a move is still running. There is no
-/// per-file cancellation checkpoint inside `files_to_folder` (it is one lib call,
-/// not a loop this dialog drives) — Cancel while running just refuses to close
-/// early, so `on_f2f_done`'s `DestroyWindow` is the one that actually tears the
-/// window down, instead of destroying it out from under the worker thread mid-move.
+/// Close the dialog, or defer the close if a move is still running — see
+/// [`close_or_defer`] for why a running batch must not be destroyed.
 unsafe fn request_close(hwnd: HWND) {
-    if F2F_RUNNING.load(Ordering::Relaxed) {
+    close_or_defer(hwnd, &F2F_RUNNING);
+}
+
+/// Close `hwnd`, or — while `running` says a worker thread still owns the batch — just
+/// disable Cancel and leave the teardown to that worker's own done message
+/// (`on_f2f_done` / `on_rn_done` / `on_ttf_done`). None of these dialogs has a per-file
+/// cancellation checkpoint inside its lib call (it is one call, not a loop the dialog
+/// drives), so Cancel while running just refuses to close early: the done message's
+/// `DestroyWindow` is the one that actually tears the window down, instead of destroying
+/// it out from under the worker thread mid-move. Shared by this file, `rename_dlg` and
+/// `tags_to_folders`.
+pub(crate) unsafe fn close_or_defer(hwnd: HWND, running: &AtomicBool) {
+    if running.load(Ordering::Relaxed) {
         if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
             let _ = EnableWindow(b, false);
         }

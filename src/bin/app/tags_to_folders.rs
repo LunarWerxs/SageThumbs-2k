@@ -9,7 +9,6 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -85,7 +84,7 @@ fn first_file_folder() -> Option<String> {
 /// `WM_CREATE`: lay out the destination/template/missing-token edits, the move/copy radio
 /// pair, and the sort/cancel button row anchored to the real client bottom.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    let hinst = crate::files_to_folder::module_instance();
     // Default destination = the first file's folder.
     let default_dest = first_file_folder().unwrap_or_default();
 
@@ -180,30 +179,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let _ = GetClientRect(hwnd, &mut rc);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
     let by = rc.bottom * 96 / dpi - 12 - 30;
-    ctl(
-        hwnd,
-        BUTTON,
-        t("ttf_sort"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        244,
-        by,
-        92,
-        30,
-        IDOK,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_cancel"),
-        WS_TABSTOP,
-        342,
-        by,
-        88,
-        30,
-        IDCANCEL,
-        hinst,
-    );
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, by, 92, 342);
     LRESULT(0)
 }
 
@@ -312,17 +288,8 @@ unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
-/// Close the dialog, or defer the close if a sort is still running. There is no
-/// per-file cancellation checkpoint inside `tags_to_folders` (it is one lib call,
-/// not a loop this dialog drives) — Cancel while running just refuses to close
-/// early, so `on_ttf_done`'s `DestroyWindow` is the one that actually tears the
-/// window down, instead of destroying it out from under the worker thread mid-sort.
+/// Close the dialog, or defer the close if a sort is still running — same
+/// reasoning as `files_to_folder.rs::request_close`.
 unsafe fn request_close(hwnd: HWND) {
-    if TTF_RUNNING.load(Ordering::Relaxed) {
-        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
-            let _ = EnableWindow(b, false);
-        }
-    } else {
-        let _ = DestroyWindow(hwnd);
-    }
+    crate::files_to_folder::close_or_defer(hwnd, &TTF_RUNNING);
 }

@@ -14,7 +14,6 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -24,7 +23,7 @@ use sagethumbs2k_core::settings;
 use crate::dark::dark_ctlcolor;
 use crate::win::{
     ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, set_edit_text, t, wide,
-    BUTTON, EM_SETSEL, IDCANCEL, IDOK, STATIC,
+    EM_SETSEL, IDCANCEL, IDOK, STATIC,
 };
 
 const CID_RN_PATTERN: i32 = 5201;
@@ -128,7 +127,7 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
 }
 
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    let hinst = crate::files_to_folder::module_instance();
     let lbl = WINDOW_STYLE(0);
 
     let last_pattern = settings::get_string_opt(SETTING_LAST_PATTERN)
@@ -206,30 +205,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
-    ctl(
-        hwnd,
-        BUTTON,
-        t("rn_rename_btn"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        260,
-        360,
-        90,
-        30,
-        IDOK,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_cancel"),
-        WS_TABSTOP,
-        356,
-        360,
-        88,
-        30,
-        IDCANCEL,
-        hinst,
-    );
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "rn_rename_btn", 260, 360, 90, 356);
 
     rebuild_preview(hwnd);
     LRESULT(0)
@@ -444,13 +420,7 @@ unsafe fn on_rn_done(hwnd: HWND) -> LRESULT {
 /// Close the dialog, or defer the close if a rename is still running — same
 /// reasoning as `files_to_folder.rs::request_close`.
 unsafe fn request_close(hwnd: HWND) {
-    if RN_RUNNING.load(Ordering::Relaxed) {
-        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
-            let _ = EnableWindow(b, false);
-        }
-    } else {
-        let _ = DestroyWindow(hwnd);
-    }
+    crate::files_to_folder::close_or_defer(hwnd, &RN_RUNNING);
 }
 
 #[cfg(test)]
