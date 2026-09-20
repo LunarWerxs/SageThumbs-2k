@@ -308,6 +308,17 @@ Read this before doing either again.
      statement `#[cfg(test)]`, a second clippy run flags the ones nobody uses at all, and the
      second pass deletes those. `mark_test_files.py` also scans UNTRACKED files now - a split's
      new files are exactly the ones that need the marker, and `git ls-files` did not see them.
+  11. **Clippy on the default feature set is not the release build.** `preview/loader/web.rs`
+     is `#[cfg(feature = "html-preview")]` through and through; the default build sees an empty
+     module, reports its imports unused, and the settler removes them - then the release build
+     (WITH the feature) fails on the missing names twenty minutes into the push preflight. A
+     child whose every item is gated is gated as a whole at the `mod` line, and the clippy gate
+     runs the app bin with `--features html-preview` too (`scripts/refactor/gate.py clippy`).
+  12. **A settler cannot tell "unused" from "unresolved downstream".** When a worker dropped
+     `refusal` from `topdf.rs`'s import list while its new helper still called it, the hub's
+     `pub(crate) use outcome::refusal` became "unused" in the same run and the settler deleted
+     it too. Read the real errors (`E0425`, `E0603`) before the unused-import lines; the gate
+     script prints them last for that reason.
 - **A test-only file says `#![cfg(test)]` itself.** A file declared as `#[cfg(test)] mod tests;`
   carries no sign of being test code, so any per-file reader (a duplication or complexity
   scanner, a reviewer opening it cold) counts it as production code; moving tests out of their

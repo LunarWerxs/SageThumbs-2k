@@ -13,11 +13,17 @@ warm clippy run. This script runs the whole round trip itself:
                             when the plan is {hub: [what, paths...]}).
   gate.py consistency       CI's ten consistency scripts, the way CI runs them (a non-zero
                             LASTEXITCODE fails the step even when every assertion passed).
+  gate.py tests [filter]    the workspace suite, or only the tests matching `filter` (the
+                            tests for what you touched - the pre-push preflight runs the whole
+                            suite anyway, so a local full run before a push is the duplication
+                            that cost four 15-minute runs on 2026-09-20).
   gate.py all <plan.json>   clippy, then consistency, then commit - the pre-push shape.
+  gate.py prepush           clippy + consistency, nothing else: everything a preflight fails
+                            on that a minute catches. Then push; the preflight is the suite.
 
 Everything heavy still belongs under fairjob on the shared box; this script is what fairjob runs.
 
-usage: gate.py <clippy|commit|consistency|all> [plan.json]
+usage: gate.py <clippy|commit|consistency|tests|all|prepush> [plan.json | test filter]
 """
 import json
 import os
@@ -100,6 +106,21 @@ def consistency():
     return 1 if bad else 0
 
 
+def tests(filt=None):
+    cmd = ["cargo", "test", "--workspace"] + ([filt] if filt else [])
+    code, out = run(cmd)
+    passed = failed = 0
+    for l in out.split("\n"):
+        m = re.match(r"test result: \w+\. (\d+) passed; (\d+) failed", l)
+        if m:
+            passed += int(m.group(1)); failed += int(m.group(2))
+    print(f"tests: exit {code}, {passed} passed, {failed} failed")
+    for l in out.split("\n"):
+        if l.startswith("test ") and l.endswith("FAILED") or "panicked at" in l:
+            print("  " + l[:200])
+    return code
+
+
 def main():
     what = sys.argv[1] if len(sys.argv) > 1 else "clippy"
     if what == "clippy":
@@ -108,6 +129,10 @@ def main():
         return commit(sys.argv[2])
     if what == "consistency":
         return consistency()
+    if what == "tests":
+        return tests(sys.argv[2] if len(sys.argv) > 2 else None)
+    if what == "prepush":
+        return clippy() or consistency()
     if what == "all":
         return clippy() or consistency() or commit(sys.argv[2])
     print(__doc__)
