@@ -153,14 +153,10 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 
 unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let nmhdr = lparam.0 as *const NMHDR;
-    let code = (*nmhdr).code;
-    if code == windows::Win32::UI::Controls::LVN_BEGINDRAG
-        && (*nmhdr).hwndFrom == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
-    {
-        let nmlv = lparam.0 as *const NMLISTVIEW;
-        list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);
-        return LRESULT(0);
+    if let Some(r) = super::notify::on_notify_begindrag(hwnd, nmhdr, lparam) {
+        return r;
     }
+    let code = (*nmhdr).code;
     if code == NM_CUSTOMDRAW {
         if is_button_class((*nmhdr).hwndFrom) {
             return LRESULT(restyle::draw_button_cd(
