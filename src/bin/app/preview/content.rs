@@ -463,3 +463,153 @@ pub(super) fn human_size(b: u64) -> String {
         format!("{v:.1} {}", U[i])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every fixed-offset signature the table declares, at the offset it declares. A reader
+    /// keeping only some of these (say, dropping the TIFF pair or QOI) would send a real image
+    /// to the info card, which reads as "we can't open this".
+    #[test]
+    fn magic_is_image_recognises_the_offset_zero_signatures() {
+        assert!(magic_is_image(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])); // PNG/APNG
+        assert!(magic_is_image(&[0xFF, 0xD8, 0xFF, 0xE0])); // JPEG
+        assert!(magic_is_image(b"GIF87a...."));
+        assert!(magic_is_image(b"GIF89a...."));
+        assert!(magic_is_image(b"BM......")); // BMP
+        assert!(magic_is_image(b"qoif....")); // QOI
+        assert!(magic_is_image(b"II*\0....")); // TIFF little-endian
+        assert!(magic_is_image(b"MM\0*....")); // TIFF big-endian
+    }
+
+    /// WEBP and the ISO-BMFF stills (AVIF/HEIC/HEIF) carry their signature at an OFFSET, not at
+    /// byte 0 — and a RIFF container that is not WEBP (a WAV) must not be mistaken for an image.
+    #[test]
+    fn magic_is_image_checks_the_offset_of_the_container_signatures() {
+        let mut webp = Vec::from(*b"RIFF");
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(b"WEBPVP8 ");
+        assert!(magic_is_image(&webp));
+
+        let mut wav = Vec::from(*b"RIFF");
+        wav.extend_from_slice(&[0u8; 4]);
+        wav.extend_from_slice(b"WAVEfmt ");
+        assert!(
+            !magic_is_image(&wav),
+            "a RIFF that is not WEBP must not read as an image"
+        );
+
+        let mut avif = vec![0u8; 4];
+        avif.extend_from_slice(b"ftypavif");
+        assert!(magic_is_image(&avif));
+        let mut heic = vec![0u8; 4];
+        heic.extend_from_slice(b"ftypheic");
+        assert!(magic_is_image(&heic));
+    }
+
+    /// The bounds check is the whole safety of the table: a short buffer must answer `false`
+    /// rather than index past its end. `looks_like_image` runs this on whatever 64-byte prefix
+    /// a file happened to yield.
+    #[test]
+    fn magic_is_image_rejects_buffers_shorter_than_the_signature() {
+        assert!(!magic_is_image(b""));
+        assert!(!magic_is_image(b"GIF8")); // one byte short of GIF87a
+        let mut near_avif = vec![0u8; 4];
+        near_avif.extend_from_slice(b"ftypav"); // offset 4 + 7 of 8 bytes
+        assert!(!magic_is_image(&near_avif));
+    }
+
+    /// The listing table is exact-match and the caller lowercases first (`ext_of` delegates to
+    /// `lower_ext`), so the documented members must all be present — and `.apk`/comics/ebooks,
+    /// which have real covers or inline previews, must NOT be dragged into a text listing.
+    #[test]
+    fn is_archive_ext_covers_the_zip_in_disguise_tail_only() {
+        for ext in [
+            "zip", "7z", "rar", "jar", "war", "xpi", "whl", "nupkg", "vsix", "ipa", "aar",
+            "appx", "msix", "appxbundle", "msixbundle", "oxt",
+        ] {
+            assert!(is_archive_ext(ext), "{ext} must take the archive listing");
+        }
+        for ext in ["apk", "apks", "xapk", "apkm", "cbz", "epub", "png", ""] {
+            assert!(!is_archive_ext(ext), "{ext} must not take the archive listing");
+        }
+    }
+
+    /// The unit boundary: 1023 bytes stays in `B`, 1024 rolls to `KB`, and each later unit
+    /// follows. This is arithmetic a reader would check by hand once and never again.
+    #[test]
+    fn human_size_switches_unit_exactly_at_1024() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_size(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(human_size(1024u64.pow(4)), "1.0 TB");
+    }
+
+    /// Past the table's last unit the loop must stop dividing rather than run off the end of
+    /// `U`: a multi-petabyte figure stays in TB (the `i < U.len() - 1` guard).
+    #[test]
+    fn human_size_never_grows_a_unit_past_terabytes() {
+        assert_eq!(human_size(2 * 1024u64.pow(5)), "2048.0 TB");
+    }
+
+    /// The single extension helper everything else routes through: lowercased, without the dot,
+    /// and `""` — not `None` and not a panic — when there is no extension at all.
+    #[test]
+    fn lower_ext_lowercases_the_tail_and_reports_a_missing_one_as_empty() {
+        assert_eq!(lower_ext("C:\\Photos\\IMG.JPEG"), "jpeg");
+        assert_eq!(lower_ext("archive.tar.gz"), "gz");
+        assert_eq!(lower_ext("no_extension"), "");
+        assert_eq!(lower_ext(""), "");
+        assert_eq!(lower_ext(".gitignore"), "", "a leading-dot name has no extension");
+    }
+
+    /// Build a small stored-mode zip so the listing formatter can be exercised on real bytes.
+    fn write_sample_zip(tag: &str) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "st2k_contenttest_{tag}_{}.zip",
+            std::process::id()
+        ));
+        let opts = || {
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+        };
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.add_directory("docs/", opts()).unwrap();
+        zip.start_file("zebra.txt", opts()).unwrap();
+        zip.write_all(b"zebra").unwrap(); // 5 bytes
+        zip.start_file("apple.txt", opts()).unwrap();
+        zip.write_all(b"hello world").unwrap(); // 11 bytes
+        zip.start_file("Beta.txt", opts()).unwrap(); // 0 bytes
+        let cursor = zip.finish().unwrap();
+        std::fs::write(&path, cursor.into_inner()).unwrap();
+        path
+    }
+
+    /// The listing's two obligations: a summary counting FILES (not directories) and summing the
+    /// uncompressed sizes, and an entry order with directories first, then case-insensitively by
+    /// path. A `.zip` is exactly the kind of thing a reader opens and counts by eye.
+    #[test]
+    fn archive_listing_puts_directories_first_and_summarises_the_entries() {
+        let path = write_sample_zip("listing");
+        let path_str = path.to_string_lossy().into_owned();
+        let listing = archive_listing(&path_str).expect("a real zip must list");
+
+        assert!(
+            listing.contains("3 file(s) \u{b7} 16 B uncompressed"),
+            "wrong summary line in:\n{listing}"
+        );
+        let dir = listing.find("docs/").expect("directory entry listed");
+        let apple = listing.find("apple.txt").expect("apple.txt listed");
+        let beta = listing.find("Beta.txt").expect("Beta.txt listed");
+        let zebra = listing.find("zebra.txt").expect("zebra.txt listed");
+        assert!(dir < apple, "directories must sort before files");
+        assert!(apple < beta && beta < zebra, "files must sort case-insensitively");
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
