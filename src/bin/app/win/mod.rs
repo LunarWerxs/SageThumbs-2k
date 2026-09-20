@@ -1004,6 +1004,37 @@ pub(crate) unsafe fn dialog_tail(
     }
 }
 
+/// A plain caption in a dialog: a static with no style bits and no id, at design-pixel
+/// `x, y, w, h`. The dialogs' most common control, so its ten-argument `ctl` call is spelled
+/// once here.
+pub(crate) unsafe fn label(
+    hwnd: HWND,
+    hinst: HINSTANCE,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> HWND {
+    ctl(hwnd, STATIC, text, WINDOW_STYLE(0), x, y, w, h, -1, hinst)
+}
+
+/// A single-line text field in a dialog: bordered, tab-stop, scrolling horizontally as the
+/// user types past its width, holding `text` initially.
+pub(crate) unsafe fn edit_field(
+    hwnd: HWND,
+    hinst: HINSTANCE,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    id: i32,
+) -> HWND {
+    let style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP;
+    ctl(hwnd, EDIT, text, style, x, y, w, h, id, hinst)
+}
+
 /// Register a top-level app window class: the app icon, the arrow cursor, and the palette's
 /// window tone as the background in BOTH themes (light mode used to take the system
 /// button-face brush here while every control filled with the palette's 243, so each row

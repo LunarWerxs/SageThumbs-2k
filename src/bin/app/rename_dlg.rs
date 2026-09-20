@@ -23,8 +23,8 @@ use sagethumbs2k_core::settings;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, set_edit_text, t, wide, BUTTON, EDIT, EM_SETSEL,
-    IDCANCEL, IDOK, STATIC,
+    ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, set_edit_text, t, wide,
+    BUTTON, EM_SETSEL, IDCANCEL, IDOK, STATIC,
 };
 
 const CID_RN_PATTERN: i32 = 5201;
@@ -134,30 +134,8 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let last_pattern = settings::get_string_opt(SETTING_LAST_PATTERN)
         .unwrap_or_else(|| t("rn_pattern_default").to_string());
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_pattern_label"),
-        lbl,
-        16,
-        16,
-        300,
-        18,
-        -1,
-        hinst,
-    );
-    let pattern_edit = ctl(
-        hwnd,
-        EDIT,
-        &last_pattern,
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        16,
-        36,
-        428,
-        24,
-        CID_RN_PATTERN,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_pattern_label"), 16, 16, 300, 18);
+    let pattern_edit = edit_field(hwnd, hinst, &last_pattern, 16, 36, 428, 24, CID_RN_PATTERN);
     SendMessageW(pattern_edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
     let _ = SetFocus(Some(pattern_edit));
 
@@ -174,67 +152,12 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         hinst,
     );
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_find_label"),
-        lbl,
-        16,
-        88,
-        206,
-        18,
-        -1,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_replace_label"),
-        lbl,
-        238,
-        88,
-        206,
-        18,
-        -1,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
-        "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        16,
-        106,
-        206,
-        24,
-        CID_RN_FIND,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
-        "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        238,
-        106,
-        206,
-        24,
-        CID_RN_REPLACE,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_find_label"), 16, 88, 206, 18);
+    label(hwnd, hinst, t("rn_replace_label"), 238, 88, 206, 18);
+    edit_field(hwnd, hinst, "", 16, 106, 206, 24, CID_RN_FIND);
+    edit_field(hwnd, hinst, "", 238, 106, 206, 24, CID_RN_REPLACE);
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_preview_label"),
-        lbl,
-        16,
-        138,
-        300,
-        18,
-        -1,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_preview_label"), 16, 138, 300, 18);
     ctl(
         hwnd,
         w!("LISTBOX"),

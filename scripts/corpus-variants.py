@@ -76,44 +76,67 @@ def psd_variants(b):
     if not b.startswith(b"8BPS"):
         return v
     ver, = struct.unpack(">H", b[4:6])
-    v.add("psb" if ver == 2 else "psd")
     channels, h, w, depth, mode = struct.unpack(">HIIHH", b[12:26])
-    v.add({1: "8-bit", 16: "16-bit", 32: "32-bit"}.get(depth, f"{depth}-bit"))
-    v.add({0: "bitmap", 1: "greyscale", 2: "indexed", 3: "rgb", 4: "cmyk", 7: "multichannel",
-           8: "duotone", 9: "lab"}.get(mode, f"mode-{mode}"))
+    v |= _psd_colour_variants(ver, depth, mode)
     i = 26
     cm_len, = struct.unpack(">I", b[i:i + 4]); i += 4 + cm_len
     res_len, = struct.unpack(">I", b[i:i + 4]); res = b[i + 4:i + 4 + res_len]; i += 4 + res_len
     if b"8BIM\x04\x0c" in res:
         v.add("has-thumbnail-1036")
+    i, layers = _psd_layers(b, i, ver)
+    v.add("has-layers" if layers > 0 else "no-layers")
+    # Merged image data follows. Photoshop ALWAYS writes the section; with "Maximize
+    # Compatibility" off it writes a blank (uniform) composite instead of the artwork, so the
+    # tell is whether the composite is uniform, not whether it is there.
+    v.add(composite_kind(b, i, w, h, channels, ver, mode))
+    return v
+
+
+def _psd_colour_variants(ver, depth, mode):
+    v = {"psb" if ver == 2 else "psd"}
+    v.add({1: "8-bit", 16: "16-bit", 32: "32-bit"}.get(depth, f"{depth}-bit"))
+    v.add({0: "bitmap", 1: "greyscale", 2: "indexed", 3: "rgb", 4: "cmyk", 7: "multichannel",
+           8: "duotone", 9: "lab"}.get(mode, f"mode-{mode}"))
+    return v
+
+
+def _psd_layers(b, i, ver):
     # The Layer and Mask Information section is present even for a flattened file (Photoshop
     # writes it with an empty layer info block), so its LENGTH is not the tell: the layer
     # COUNT inside it is. Layer info = length (u32, u64 for PSB) + i16 count (negative when the
     # first alpha channel holds the merged result's transparency; the magnitude is the count).
     wide = 8 if ver == 2 else 4
     fmt = ">Q" if ver == 2 else ">I"
-    lm_len, = struct.unpack(fmt, b[i:i + wide]); lm_start = i + wide; i = lm_start + lm_len
+    lm_len, = struct.unpack(fmt, b[i:i + wide])
+    lm_start = i + wide
     layers = 0
     if lm_len > 0:
-        li_len, = struct.unpack(fmt, b[lm_start:lm_start + wide])
-        if li_len > 0:
-            layers = abs(struct.unpack(">h", b[lm_start + wide:lm_start + wide + 2])[0])
-        # 16- and 32-bit files keep their layers in the `Lr16` / `Lr32` tagged blocks instead,
-        # with the main layer info length at zero (real-16bit.psd read as flat until this).
-        section = b[lm_start:lm_start + lm_len]
-        for tag in (b"Lr16", b"Lr32"):
-            at = section.find(tag)
-            if at != -1 and layers == 0:
-                off = at + 4 + wide  # tag, block length, then the count directly
-                if off + 2 <= len(section):
-                    layers = abs(struct.unpack(">h", section[off:off + 2])[0])
-    v.add("has-layers" if layers > 0 else "no-layers")
-    # Merged image data follows. Photoshop ALWAYS writes the section; with "Maximize
-    # Compatibility" off it writes a blank (uniform) composite instead of the artwork, so the
-    # tell is whether the composite is uniform, not whether it is there. RLE rows of a uniform
-    # image are two runs at most (a run is 2 bytes); raw rows are sampled for a second value.
-    v.add(composite_kind(b, i, w, h, channels, ver, mode))
-    return v
+        layers = _psd_flat_layer_count(b, lm_start, wide, fmt)
+        if layers == 0:
+            layers = _psd_tagged_layer_count(b[lm_start:lm_start + lm_len], wide)
+    return lm_start + lm_len, layers
+
+
+def _psd_flat_layer_count(b, lm_start, wide, fmt):
+    li_len, = struct.unpack(fmt, b[lm_start:lm_start + wide])
+    if li_len > 0:
+        return abs(struct.unpack(">h", b[lm_start + wide:lm_start + wide + 2])[0])
+    return 0
+
+
+def _psd_tagged_layer_count(section, wide):
+    # 16- and 32-bit files keep their layers in the `Lr16` / `Lr32` tagged blocks instead,
+    # with the main layer info length at zero (real-16bit.psd read as flat until this).
+    for tag in (b"Lr16", b"Lr32"):
+        at = section.find(tag)
+        if at == -1:
+            continue
+        off = at + 4 + wide  # tag, block length, then the count directly
+        if off + 2 <= len(section):
+            layers = abs(struct.unpack(">h", section[off:off + 2])[0])
+            if layers > 0:
+                return layers
+    return 0
 
 
 def composite_kind(b, i, w, h, channels, ver, mode):
@@ -121,29 +144,39 @@ def composite_kind(b, i, w, h, channels, ver, mode):
         return "no-composite"
     comp, = struct.unpack(">H", b[i:i + 2])
     i += 2
-    rows = h * channels
+    if comp == 1:  # RLE: a table of per-row byte counts, then the packed rows
+        return _composite_rle(b, i, w, h, channels, ver, mode)
+    if comp == 0:  # raw planar samples
+        return _composite_raw(b, i, w, h, channels, mode)
+    return "has-composite"
+
+
+def _composite_rle(b, i, w, h, channels, ver, mode):
     # "Blank" is what Photoshop writes there with Maximize Compatibility off: every row one
     # colour, and that colour paper white (255 in every channel; 0 for a bitmap). A flat-colour
-    # ARTWORK is uniform too (real-flat.psd is a red rectangle) and is a real composite.
-    if comp == 1:  # RLE: a table of per-row byte counts, then the packed rows
-        wide, fmt = (4, ">I") if ver == 2 else (2, ">H")
-        if len(b) < i + rows * wide:
-            return "no-composite"
-        counts = [struct.unpack(fmt, b[i + k * wide:i + k * wide + wide])[0] for k in range(rows)]
-        runs_per_row = (w + 127) // 128  # a uniform row is one run per 128 pixels
-        if not all(c <= runs_per_row * 2 for c in counts):
-            return "has-composite"
-        first = b[i + rows * wide:i + rows * wide + counts[0]]
-        value = first[1] if len(first) >= 2 and first[0] > 128 else None
-        return "composite-blank" if value == 255 and mode in PAPER_WHITE_MODES else "has-composite"
-    if comp == 0:  # raw planar samples
-        n = w * h * channels
-        data = b[i:i + n]
-        if len(data) < n:
-            return "no-composite"
-        uniform = data.count(data[:1]) == len(data)
-        return "composite-blank" if uniform and data[0] == 255 and mode in PAPER_WHITE_MODES else "has-composite"
-    return "has-composite"
+    # ARTWORK is uniform too (real-flat.psd is a red rectangle) and is a real composite. RLE
+    # rows of a uniform image are two runs at most (a run is 2 bytes).
+    rows = h * channels
+    wide, fmt = (4, ">I") if ver == 2 else (2, ">H")
+    if len(b) < i + rows * wide:
+        return "no-composite"
+    counts = [struct.unpack(fmt, b[i + k * wide:i + k * wide + wide])[0] for k in range(rows)]
+    runs_per_row = (w + 127) // 128  # a uniform row is one run per 128 pixels
+    if not all(c <= runs_per_row * 2 for c in counts):
+        return "has-composite"
+    first = b[i + rows * wide:i + rows * wide + counts[0]]
+    value = first[1] if len(first) >= 2 and first[0] > 128 else None
+    return "composite-blank" if value == 255 and mode in PAPER_WHITE_MODES else "has-composite"
+
+
+def _composite_raw(b, i, w, h, channels, mode):
+    # Raw rows are sampled for a second value; a uniform composite is blank paper white.
+    n = w * h * channels
+    data = b[i:i + n]
+    if len(data) < n:
+        return "no-composite"
+    uniform = data.count(data[:1]) == len(data)
+    return "composite-blank" if uniform and data[0] == 255 and mode in PAPER_WHITE_MODES else "has-composite"
 
 
 # Greyscale, RGB, CMYK (stored inverted, so 255 is no ink) and Lab all write paper white as
@@ -207,6 +240,19 @@ def tiff_variants(b):
     v = set()
     if b[:4] not in (b"II*\x00", b"MM\x00*"):
         return v
+    ifds, tags = _tiff_first_ifds(b)
+    v.add("multi-page" if ifds > 1 else "single-page")
+    if 37724 in tags:
+        v.add("photoshop-layers")
+    if 34665 in tags:
+        v.add("has-exif")
+    if 259 in tags:
+        v.add("compressed-tag-present")
+    return v
+
+
+def _tiff_first_ifds(b):
+    """The IFD count (capped at 64) and the tag set of the first-IFD chain."""
     le = b[:2] == b"II"
     u16 = (lambda o: struct.unpack("<H" if le else ">H", b[o:o + 2])[0])
     u32 = (lambda o: struct.unpack("<I" if le else ">I", b[o:o + 4])[0])
@@ -225,14 +271,7 @@ def tiff_variants(b):
         if nxt + 4 > len(b):
             break
         off = u32(nxt)
-    v.add("multi-page" if ifds > 1 else "single-page")
-    if 37724 in tags:
-        v.add("photoshop-layers")
-    if 34665 in tags:
-        v.add("has-exif")
-    if 259 in tags:
-        v.add("compressed-tag-present")
-    return v
+    return ifds, tags
 
 
 TIFF_WANTED = {"single-page", "multi-page", "photoshop-layers", "has-exif"}
@@ -287,12 +326,16 @@ def _heif_property_variants(b, ps, pe):
     v.add("colr" if b"colr" in props else "no-colr")
     v.add("hdr-metadata" if b"clli" in props or b"mdcv" in props else "no-hdr-metadata")
     v.add("grid" if b"grid" in props else "single-item")
-    # pixi carries the bit depth per channel
-    for k, s3, e3 in _boxes(b, *ipco):
-        if k == b"pixi" and e3 - s3 >= 6:
-            v.add(f"{b[s3 + 5]}-bit")
-            break
+    v |= _heif_bit_depth(b, *ipco)
     return v
+
+
+def _heif_bit_depth(b, ps, pe):
+    # pixi carries the bit depth per channel
+    for k, s3, e3 in _boxes(b, ps, pe):
+        if k == b"pixi" and e3 - s3 >= 6:
+            return {f"{b[s3 + 5]}-bit"}
+    return set()
 
 
 def _heif_item_variants(b, s2, e2):
@@ -324,7 +367,18 @@ def indd_variants(b):
     v.add("document")
     packets = b.count(b"<x:xmpmeta")
     v.add("several-xmp-packets" if packets > 1 else ("one-xmp-packet" if packets == 1 else "no-xmp-packet"))
-    opens, contiguous, fragmented, whole = 0, 0, 0, 0
+    opens, contiguous, fragmented, whole = _indd_scan_elements(b)
+    v.add("has-xmp-preview" if opens else "no-xmp-preview")
+    if opens:
+        v.add("contiguous-element" if contiguous else "no-contiguous-element")
+        v.add("fragmented-elements" if fragmented else "no-fragmented-elements")
+        v.add("whole-jpeg" if whole else "no-whole-jpeg")
+    return v
+
+
+def _indd_scan_elements(b):
+    """(opens, contiguous, fragmented, whole) over the `<xmpGImg:image>` elements in b."""
+    opens = contiguous = fragmented = whole = 0
     pos = 0
     while True:
         at = b.find(b"<xmpGImg:image>", pos)
@@ -332,29 +386,33 @@ def indd_variants(b):
             break
         opens += 1
         s = at + len(b"<xmpGImg:image>")
-        j = s
-        while j < len(b):  # InDesign breaks the base64 into lines with the XML entity &#xA;
-            if b[j] in _B64:
-                j += 1
-            elif b[j:j + 5] == b"&#xA;":
-                j += 5
-            else:
-                break
+        j = _indd_base64_end(b, s)
         if b[j:j + len(b"</xmpGImg:image>")] == b"</xmpGImg:image>":
             contiguous += 1
-            run = b[s:j].replace(b"&#xA;", b"")
-            # FFD8FF opens as /9j/; the EOI FFD9 closes as /9k= , 2Q== or /Z by alignment.
-            if run.startswith(b"/9j/") and run.rstrip().endswith((b"/9k=", b"2Q==", b"/Z")):
+            if _indd_whole_jpeg(b[s:j]):
                 whole += 1
         else:
             fragmented += 1
         pos = j
-    v.add("has-xmp-preview" if opens else "no-xmp-preview")
-    if opens:
-        v.add("contiguous-element" if contiguous else "no-contiguous-element")
-        v.add("fragmented-elements" if fragmented else "no-fragmented-elements")
-        v.add("whole-jpeg" if whole else "no-whole-jpeg")
-    return v
+    return opens, contiguous, fragmented, whole
+
+
+def _indd_base64_end(b, j):
+    """First index past the base64 run at b[j:] (InDesign breaks it into lines with &#xA;)."""
+    while j < len(b):
+        if b[j] in _B64:
+            j += 1
+        elif b[j:j + 5] == b"&#xA;":
+            j += 5
+        else:
+            break
+    return j
+
+
+def _indd_whole_jpeg(run):
+    # FFD8FF opens as /9j/; the EOI FFD9 closes as /9k= , 2Q== or /Z by alignment.
+    run = run.replace(b"&#xA;", b"")
+    return run.startswith(b"/9j/") and run.rstrip().endswith((b"/9k=", b"2Q==", b"/Z"))
 
 
 INDD_WANTED = {"document", "one-xmp-packet", "several-xmp-packets", "has-xmp-preview",
@@ -380,13 +438,8 @@ CDR_WANTED = {"riff-cdr", "zip-cdr", "has-bmp-preview", "no-bmp-preview"}
 # ---- camera RAW (TIFF-based) ----------------------------------------------------------------------
 def _tiff_ifds(b):
     """Every IFD's (tag -> (type, count, value_or_offset)) for a TIFF-shaped RAW, breadth first."""
-    if b[:2] == b"II":
-        u16 = lambda o: struct.unpack("<H", b[o:o + 2])[0]
-        u32 = lambda o: struct.unpack("<I", b[o:o + 4])[0]
-    elif b[:2] == b"MM":
-        u16 = lambda o: struct.unpack(">H", b[o:o + 2])[0]
-        u32 = lambda o: struct.unpack(">I", b[o:o + 4])[0]
-    else:
+    u16, u32 = _tiff_readers(b)
+    if u16 is None:
         return []
     ifds, queue, seen = [], [u32(4)], set()
     while queue and len(ifds) < 32:
@@ -397,37 +450,76 @@ def _tiff_ifds(b):
         n = u16(off)
         if n > 512 or off + 2 + n * 12 + 4 > len(b):
             continue
-        tags = {}
-        for k in range(n):
-            e = off + 2 + k * 12
-            tag, typ, cnt = u16(e), u16(e + 2), u32(e + 4)
-            val = u32(e + 8) if typ in (4, 9, 13) or (typ == 3 and cnt > 2) else (u16(e + 8) if typ == 3 else u32(e + 8))
-            tags[tag] = (typ, cnt, val)
+        tags = _tiff_read_tags(b, off, n, u16, u32)
         ifds.append(tags)
         queue.append(u32(off + 2 + n * 12))          # next IFD
-        for sub in (0x14A, 0x8769):                  # SubIFDs, Exif IFD
-            if sub in tags:
-                typ, cnt, val = tags[sub]
-                if cnt == 1:
-                    queue.append(val)
-                elif val + cnt * 4 <= len(b):
-                    queue.extend(u32(val + 4 * j) for j in range(min(cnt, 8)))
+        queue.extend(_tiff_child_offsets(b, tags, u32))
     return ifds
+
+
+def _tiff_readers(b):
+    if b[:2] == b"II":
+        return (lambda o: struct.unpack("<H", b[o:o + 2])[0],
+                lambda o: struct.unpack("<I", b[o:o + 4])[0])
+    if b[:2] == b"MM":
+        return (lambda o: struct.unpack(">H", b[o:o + 2])[0],
+                lambda o: struct.unpack(">I", b[o:o + 4])[0])
+    return None, None
+
+
+def _tiff_read_tags(b, off, n, u16, u32):
+    tags = {}
+    for k in range(n):
+        e = off + 2 + k * 12
+        tag, typ, cnt = u16(e), u16(e + 2), u32(e + 4)
+        val = u32(e + 8) if typ in (4, 9, 13) or (typ == 3 and cnt > 2) else (u16(e + 8) if typ == 3 else u32(e + 8))
+        tags[tag] = (typ, cnt, val)
+    return tags
+
+
+def _tiff_child_offsets(b, tags, u32):
+    """Offsets referenced by the SubIFD (0x14A) and Exif IFD (0x8769) tags."""
+    offsets = []
+    for sub in (0x14A, 0x8769):
+        if sub not in tags:
+            continue
+        _, cnt, val = tags[sub]
+        if cnt == 1:
+            offsets.append(val)
+        elif val + cnt * 4 <= len(b):
+            offsets.extend(u32(val + 4 * j) for j in range(min(cnt, 8)))
+    return offsets
 
 
 def raw_variants(b):
     v = set()
     ifds = _tiff_ifds(b)
     if not ifds:
-        if b[:16] == b"FUJIFILMCCD-RAW ":
-            v.add("fuji-raf")
-            v.add("has-jpeg-preview" if b"\xff\xd8\xff" in b[:2 << 20] else "no-jpeg-preview")
-        elif b[:4] == b"FOVb":
-            v.add("sigma-x3f")
-        return v
+        return _raw_non_tiff_variants(b)
     v.add("tiff-based")
     if b[:4] == b"II\x55\x00":
         v.add("panasonic-rw2")
+    previews = _raw_previews(ifds)
+    if 0xC612 in ifds[0]:
+        v.add("dng")
+    if any(0x8769 in t for t in ifds):
+        v.add("has-exif")
+    v |= _raw_preview_variants(previews)
+    return v
+
+
+def _raw_non_tiff_variants(b):
+    v = set()
+    if b[:16] == b"FUJIFILMCCD-RAW ":
+        v.add("fuji-raf")
+        v.add("has-jpeg-preview" if b"\xff\xd8\xff" in b[:2 << 20] else "no-jpeg-preview")
+    elif b[:4] == b"FOVb":
+        v.add("sigma-x3f")
+    return v
+
+
+def _raw_previews(ifds):
+    """(width, height) of every IFD that carries an embedded preview."""
     previews = []
     for tags in ifds:
         comp = tags.get(0x103, (0, 0, 0))[2]
@@ -435,17 +527,15 @@ def raw_variants(b):
         h = tags.get(0x101, (0, 0, 0))[2]
         if 0x201 in tags or comp in (6, 7):
             previews.append((w, h))
-    if 0xC612 in ifds[0]:
-        v.add("dng")
-    if any(0x8769 in t for t in ifds):
-        v.add("has-exif")
+    return previews
+
+
+def _raw_preview_variants(previews):
     if not previews:
-        v.add("no-embedded-preview")
-    else:
-        big = max(max(w, h) for w, h in previews)
-        v.add("preview-large" if big >= 1024 else ("preview-small" if big > 0 else "preview-size-unknown"))
-        v.add("several-previews" if len(previews) > 1 else "one-preview")
-    return v
+        return {"no-embedded-preview"}
+    big = max(max(w, h) for w, h in previews)
+    return {"preview-large" if big >= 1024 else ("preview-small" if big > 0 else "preview-size-unknown"),
+            "several-previews" if len(previews) > 1 else "one-preview"}
 
 
 RAW_WANTED = {"tiff-based", "fuji-raf", "dng", "has-exif", "no-embedded-preview", "preview-large",

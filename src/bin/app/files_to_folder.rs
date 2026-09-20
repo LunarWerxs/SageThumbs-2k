@@ -17,8 +17,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, t, wide, BUTTON, EDIT, EM_SETSEL, IDCANCEL,
-    IDOK, STATIC,
+    ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, t, wide, BUTTON, EM_SETSEL,
+    IDCANCEL, IDOK,
 };
 
 const CID_F2F_NAME: i32 = 5001;
@@ -73,20 +73,17 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
     let n = F2F_FILES.get().map(|f| f.len()).unwrap_or(0);
-    let lbl = WINDOW_STYLE(0);
     let prompt = t("f2f_prompt").replace("{n}", &n.to_string());
-    ctl(hwnd, STATIC, &prompt, lbl, 16, 16, 344, 18, -1, hinst);
-    let edit = ctl(
+    label(hwnd, hinst, &prompt, 16, 16, 344, 18);
+    let edit = edit_field(
         hwnd,
-        EDIT,
+        hinst,
         t("f2f_default_name"),
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         16,
         44,
         344,
         26,
         CID_F2F_NAME,
-        hinst,
     );
     // Select-all + focus so the suggested name is replaced on first type.
     SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));

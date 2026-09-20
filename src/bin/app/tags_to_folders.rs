@@ -17,8 +17,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{
-    checked, ctl, get_edit_text, pick_folder, read_listfile, run_dialog, set_edit_text, t, wide,
-    BM_SETCHECK_MSG, BUTTON, EDIT, IDCANCEL, IDOK, STATIC,
+    checked, ctl, edit_field, get_edit_text, label, pick_folder, read_listfile, run_dialog,
+    set_edit_text, t, wide, BM_SETCHECK_MSG, BUTTON, IDCANCEL, IDOK,
 };
 
 const CID_TTF_DEST: i32 = 5101;
@@ -77,7 +77,6 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 /// pair, and the sort/cancel button row anchored to the real client bottom.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-    let lbl = WINDOW_STYLE(0);
     // Default destination = the first file's folder.
     let default_dest = TTF_FILES
         .get()
@@ -86,30 +85,8 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("ttf_destination"),
-        lbl,
-        16,
-        18,
-        90,
-        18,
-        -1,
-        hinst,
-    );
-    let dest = ctl(
-        hwnd,
-        EDIT,
-        &default_dest,
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        110,
-        16,
-        268,
-        24,
-        CID_TTF_DEST,
-        hinst,
-    );
+    label(hwnd, hinst, t("ttf_destination"), 16, 18, 90, 18);
+    let dest = edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
     let _ = dest;
     ctl(
         hwnd,
@@ -124,66 +101,29 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         hinst,
     );
 
-    ctl(
+    label(hwnd, hinst, t("ttf_template"), 16, 56, 90, 18);
+    edit_field(
         hwnd,
-        STATIC,
-        t("ttf_template"),
-        lbl,
-        16,
-        56,
-        90,
-        18,
-        -1,
         hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
         t("ttf_template_default"),
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         110,
         54,
         318,
         24,
         CID_TTF_TEMPLATE,
-        hinst,
     );
-    ctl(
-        hwnd,
-        STATIC,
-        t("ttf_tokens"),
-        lbl,
-        110,
-        82,
-        318,
-        16,
-        -1,
-        hinst,
-    );
+    label(hwnd, hinst, t("ttf_tokens"), 110, 82, 318, 16);
 
-    ctl(
+    label(hwnd, hinst, t("ttf_missing"), 16, 112, 90, 18);
+    edit_field(
         hwnd,
-        STATIC,
-        t("ttf_missing"),
-        lbl,
-        16,
-        112,
-        90,
-        18,
-        -1,
         hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
         t("ttf_missing_default"),
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         110,
         110,
         160,
         24,
         CID_TTF_MISSING,
-        hinst,
     );
 
     let mv = ctl(
