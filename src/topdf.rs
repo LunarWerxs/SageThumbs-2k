@@ -8,9 +8,8 @@ use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, RgbImage};
-use windows::core::{Error, Result, PCWSTR};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
-use windows::Win32::UI::Shell::StrCmpLogicalW;
 
 use crate::decode;
 use crate::verbs::{
@@ -178,7 +177,8 @@ pub fn combine_to_pdf(
     combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page(), on_omit)
 }
 
-/// A page's file name as a NUL-terminated UTF-16 buffer for [`StrCmpLogicalW`].
+/// A page's file name as a NUL-terminated UTF-16 buffer — the pre-encoded key for the
+/// logical name compare in [`natural_sort_paths`].
 fn logical_key(p: &str) -> Vec<u16> {
     let fname = Path::new(p)
         .file_name()
@@ -194,9 +194,7 @@ fn logical_key(p: &str) -> Vec<u16> {
 /// which output format you picked.
 fn natural_sort_paths(paths: &[String]) -> Vec<String> {
     let mut keyed: Vec<(Vec<u16>, &String)> = paths.iter().map(|p| (logical_key(p), p)).collect();
-    keyed.sort_by(|a, b| {
-        unsafe { StrCmpLogicalW(PCWSTR(a.0.as_ptr()), PCWSTR(b.0.as_ptr())) }.cmp(&0)
-    });
+    keyed.sort_by(|a, b| crate::container::select::cmp_logical_keys(&a.0, &b.0));
     keyed.into_iter().map(|(_, p)| p.clone()).collect()
 }
 

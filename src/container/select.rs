@@ -148,6 +148,13 @@ pub fn cover_candidates(entries: &[Entry], prefs: &CoverPrefs) -> Vec<usize> {
     candidates
 }
 
+/// Natural (logical) compare of two pre-encoded, NUL-terminated UTF-16 sort keys — so
+/// page2 sorts before page10, matching Explorer (Win32 `StrCmpLogicalW`). Shared with the
+/// PDF combiner's page sorter in `crate::topdf`.
+pub(crate) fn cmp_logical_keys(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
+    unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0)
+}
+
 /// Natural-sort candidate indices by entry name via `StrCmpLogicalW` (page2 before
 /// page10, matching Explorer). Precomputes each candidate's UTF-16 sort key ONCE
 /// (demote brackets, then encode), so the O(n log n) sort doesn't re-allocate two
@@ -158,9 +165,7 @@ fn natural_sort(pool: &mut Vec<usize>, entries: &[Entry]) {
         .iter()
         .map(|&i| (wide(&demote_brackets(&entries[i].name)), i))
         .collect();
-    keyed.sort_by(|a, b| {
-        unsafe { StrCmpLogicalW(PCWSTR(a.0.as_ptr()), PCWSTR(b.0.as_ptr())) }.cmp(&0)
-    });
+    keyed.sort_by(|a, b| cmp_logical_keys(&a.0, &b.0));
     *pool = keyed.into_iter().map(|(_, i)| i).collect();
 }
 
