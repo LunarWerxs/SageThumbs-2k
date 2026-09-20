@@ -109,11 +109,44 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code == 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let m = wparam.0 as u32;
-        let is_down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
+        let is_down = is_key_down_message(m);
         handle_key(kb.vkCode, is_down);
     }
     // ALWAYS fall through — never swallow a key.
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Which of our trigger keys a virtual-key code is. The pure half of the dispatch in
+/// [`handle_key`]: Space has its own latch/peek handling, Esc and Enter are the same close
+/// action, and everything else is passed straight through untouched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Trigger {
+    Space,
+    Close,
+    None,
+}
+
+fn trigger_key(vk: u32) -> Trigger {
+    if vk == VK_SPACE.0 as u32 {
+        Trigger::Space
+    } else if vk == VK_ESCAPE.0 as u32 || vk == VK_RETURN.0 as u32 {
+        Trigger::Close
+    } else {
+        Trigger::None
+    }
+}
+
+/// The key-up decision: a release after at least [`HOLD_PEEK_MS`] of a held Space closes the
+/// preview ("hold to peek"), but only while the setting is on. Pure, so the boundary is
+/// testable without the Win32 tick counter.
+fn release_is_peek(held_ms: u64, hold_peek: bool) -> bool {
+    held_ms >= HOLD_PEEK_MS && hold_peek
+}
+
+/// Whether a `WM_*` message id is a key-down (as opposed to a key-up or an unrelated event).
+/// The pure half of the callback's classification.
+fn is_key_down_message(m: u32) -> bool {
+    m == WM_KEYDOWN || m == WM_SYSKEYDOWN
 }
 
 /// The (fast) per-key logic. Posts to the daemon; never blocks.
@@ -123,11 +156,9 @@ unsafe fn handle_key(vk: u32, is_down: bool) {
         return;
     }
     let daemon = HWND(raw as *mut c_void);
-    let space = VK_SPACE.0 as u32;
-    let esc = VK_ESCAPE.0 as u32;
-    let enter = VK_RETURN.0 as u32;
+    let key = trigger_key(vk);
 
-    if vk == space {
+    if key == Trigger::Space {
         if is_down {
             if SPACE_LATCHED.load(Ordering::Relaxed) {
                 return; // auto-repeat while held — debounce (QuickLook's _spaceIsDown)
@@ -140,11 +171,11 @@ unsafe fn handle_key(vk: u32, is_down: bool) {
         } else if SPACE_LATCHED.swap(false, Ordering::Relaxed) {
             // Key-up decision uses the LATCHED verdict (QuickLook keeps the down-time judgment).
             let held = GetTickCount64().saturating_sub(SPACE_DOWN_TICK.load(Ordering::Relaxed));
-            if held >= HOLD_PEEK_MS && HOLD_PEEK.load(Ordering::Relaxed) {
+            if release_is_peek(held, HOLD_PEEK.load(Ordering::Relaxed)) {
                 let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW_CLOSE, WPARAM(0), LPARAM(0));
             }
         }
-    } else if is_down && (vk == esc || vk == enter) && qualifies() {
+    } else if key == Trigger::Close && is_down && qualifies() {
         // Esc / Enter close the preview if it's up. We never swallow, so Explorer still gets the
         // key too (Enter then opens the file natively — the intended hand-off).
         let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW_CLOSE, WPARAM(0), LPARAM(0));
@@ -171,13 +202,21 @@ unsafe fn qualifies() -> bool {
     true
 }
 
+/// Classes that qualify with no further probe: an Explorer folder window, or our own viewer
+/// (so Space closes the preview). The other classes still need a child-window / result-list
+/// probe and stay in [`foreground_qualifies`].
+fn class_is_directly_qualified(cls: &str) -> bool {
+    matches!(cls, "CabinetWClass" | "ExploreWClass" | "SageThumbs2KViewer")
+}
+
 /// The foreground window class must be an Explorer view, the Desktop, an Everything search
 /// window, or our viewer. Same dispatch QuickLook uses (`Shell32.cpp::GetFocusedWindowType`).
 unsafe fn foreground_qualifies(fg: HWND) -> bool {
     let cls = crate::explorer_selection::class_name(fg);
+    if class_is_directly_qualified(&cls) {
+        return true;
+    }
     match cls.as_str() {
-        "CabinetWClass" | "ExploreWClass" => true, // an Explorer folder window
-        "SageThumbs2KViewer" => true,              // our own viewer (so Space closes it)
         "Progman" | "WorkerW" => has_defview(fg),  // the Desktop (has a SHELLDLL_DefView child)
         // A common Open/Save dialog. `is_typing` below still holds the file-name box, which
         // has the caret whenever the dialog opens — Space only becomes a preview once the
@@ -240,4 +279,60 @@ unsafe fn is_typing(fg: HWND) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::WM_KEYUP;
+
+    /// Space is the preview trigger, Esc and Enter are the same "close" action, and every
+    /// other key must be ignored — the hook only ever acts on these three vks.
+    #[test]
+    fn trigger_key_maps_space_close_and_ignores_everything_else() {
+        assert_eq!(trigger_key(VK_SPACE.0 as u32), Trigger::Space);
+        assert_eq!(trigger_key(VK_ESCAPE.0 as u32), Trigger::Close);
+        assert_eq!(trigger_key(VK_RETURN.0 as u32), Trigger::Close);
+        assert_eq!(trigger_key(b'A' as u32), Trigger::None);
+        assert_eq!(trigger_key(0), Trigger::None);
+    }
+
+    /// Only `WM_KEYDOWN` / `WM_SYSKEYDOWN` are presses: a key-up (or any other message) must
+    /// not be misread as a fresh press, or the latch would never release.
+    #[test]
+    fn only_key_down_messages_are_presses() {
+        assert!(is_key_down_message(WM_KEYDOWN));
+        assert!(is_key_down_message(WM_SYSKEYDOWN));
+        assert!(!is_key_down_message(WM_KEYUP));
+    }
+
+    /// The hold-to-peek boundary: exactly `HOLD_PEEK_MS` counts, one tick less does not, and
+    /// turning the setting off suppresses the close at every duration.
+    #[test]
+    fn peek_fires_only_at_the_hold_boundary_and_when_enabled() {
+        assert!(release_is_peek(HOLD_PEEK_MS, true));
+        assert!(release_is_peek(HOLD_PEEK_MS + 1, true));
+        assert!(!release_is_peek(HOLD_PEEK_MS - 1, true));
+        assert!(!release_is_peek(0, true));
+        assert!(!release_is_peek(HOLD_PEEK_MS, false));
+        assert!(!release_is_peek(u64::MAX, false));
+    }
+
+    /// The literal class-name table: the two Explorer folder windows and our own viewer
+    /// qualify with no further probe, while the desktop, a file dialog and Everything must
+    /// NOT short-circuit here (each still needs its own child-window / result-list probe).
+    #[test]
+    fn only_folder_and_viewer_classes_qualify_directly() {
+        assert!(class_is_directly_qualified("CabinetWClass"));
+        assert!(class_is_directly_qualified("ExploreWClass"));
+        assert!(class_is_directly_qualified("SageThumbs2KViewer"));
+        assert!(!class_is_directly_qualified("Progman"));
+        assert!(!class_is_directly_qualified("WorkerW"));
+        assert!(!class_is_directly_qualified("#32770"));
+        assert!(!class_is_directly_qualified(""));
+        assert!(
+            !class_is_directly_qualified("cabinetwclass"),
+            "class names are case-sensitive"
+        );
+    }
 }
