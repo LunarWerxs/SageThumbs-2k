@@ -16,7 +16,7 @@
 
 use core::ffi::c_void;
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -719,17 +719,30 @@ extern "system" fn first_run_wndproc(
 /// before capturing; page-1 choices are NOT applied (the flip path that applies them is
 /// the button handler, deliberately not exercised here).
 pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
+    shot_first_run(out, w!("SageThumbs2KFirstRunShot2"), |hwnd, hinst| unsafe {
+        flip_to_page2(hwnd, hinst)
+    })
+}
+
+/// Shared body of the two headless first-run captures: build the window of class `class`
+/// (title and design size from the dialog's own constants), run `after_create` for the
+/// one thing that page needs done to the fresh window, and capture to `out`.
+unsafe fn shot_first_run(
+    out: &str,
+    class: PCWSTR,
+    after_create: impl FnOnce(HWND, HINSTANCE),
+) -> bool {
     crate::win::capture_shot_window(
         out,
         crate::dark::is_dark(),
         crate::win::ShotWindowSpec {
-            class: w!("SageThumbs2KFirstRunShot2"),
+            class,
             wndproc: Some(first_run_wndproc),
             title: t("fr_title"),
             design_w: DLG_W,
             design_h: dlg_h(),
         },
-        |hwnd, hinst| unsafe { flip_to_page2(hwnd, hinst) },
+        after_create,
         20,
         8,
         false,
@@ -739,21 +752,7 @@ pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
 /// Headless capture (`--shot <out.png> --window firstrun`) so the layout is verifiable
 /// without opening a window or touching any setting.
 pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
-    crate::win::capture_shot_window(
-        out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
-            class: w!("SageThumbs2KFirstRunShot"),
-            wndproc: Some(first_run_wndproc),
-            title: t("fr_title"),
-            design_w: DLG_W,
-            design_h: dlg_h(),
-        },
-        |_hwnd, _hinst| {},
-        20,
-        8,
-        false,
-    )
+    shot_first_run(out, w!("SageThumbs2KFirstRunShot"), |_hwnd, _hinst| {})
 }
 
 #[cfg(test)]
