@@ -281,12 +281,19 @@ macro_rules! event_args_uri {
     }};
 }
 
+/// True for an `http(s)` URI, matched case-insensitively — the ONLY shape
+/// `launch_http_in_browser` hands to the OS. Anything else (an arbitrary protocol handler, a
+/// UNC `file://`) is ignored outright.
+fn is_http_uri(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
 /// Hand an `http(s)` URI to the OS default browser via `ShellExecuteW` — the allow-and-launch
 /// shape shared by the navigation and new-window guards. Any other URI (an arbitrary protocol
 /// handler, a UNC `file://`) is ignored outright.
 unsafe fn launch_http_in_browser(parent: HWND, uri: &str) {
-    let lower = uri.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
+    if is_http_uri(uri) {
         let w = HSTRING::from(uri);
         let _ = ShellExecuteW(
             Some(parent),
@@ -397,6 +404,14 @@ unsafe fn install_local_mode_guards(
     Some(())
 }
 
+/// Parse the pid out of a `wv2-ephemeral-<pid>` folder name. `None` when the name is not a
+/// decimal pid behind that prefix, so a foreign folder under the root is never a candidate.
+fn ephemeral_profile_pid(name: &std::ffi::OsStr) -> Option<u32> {
+    name.to_str()
+        .and_then(|n| n.strip_prefix("wv2-ephemeral-"))
+        .and_then(|p| p.parse::<u32>().ok())
+}
+
 /// Remove `wv2-ephemeral-<pid>` folders left behind by earlier runs.
 ///
 /// The pid in the name is the check: a folder is only removed when NO live process holds that id,
@@ -409,11 +424,7 @@ fn sweep_stale_profiles(root: &std::path::Path) {
     };
     for e in entries.flatten().take(256) {
         let name = e.file_name();
-        let Some(pid) = name
-            .to_str()
-            .and_then(|n| n.strip_prefix("wv2-ephemeral-"))
-            .and_then(|p| p.parse::<u32>().ok())
-        else {
+        let Some(pid) = ephemeral_profile_pid(name.as_os_str()) else {
             continue;
         };
         if pid == std::process::id() || pid_is_alive(pid) {
@@ -456,5 +467,65 @@ impl Drop for WebViewHost {
         if let Some(d) = &self.profile_dir {
             let _ = std::fs::remove_dir_all(d); // ephemeral profile — wipe cookies/cache
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn is_local_file_uri_accepts_the_authorityless_shapes() {
+        assert!(is_local_file_uri("file:///C:/tmp/page.html"));
+        assert!(is_local_file_uri("file:/C:/tmp/page.html"));
+        assert!(is_local_file_uri("file:C:/tmp/page.html"));
+        assert!(is_local_file_uri("file://localhost/C:/tmp/page.html"));
+        assert!(is_local_file_uri("file://LOCALHOST/C:/tmp/page.html"));
+        assert!(is_local_file_uri("file:///C:/tmp/")); // directory URI, no file part
+    }
+
+    #[test]
+    fn is_local_file_uri_rejects_hosts_and_non_file_schemes() {
+        // The two- and four-slash forms name an SMB host; loading one leaks a Net-NTLM hash.
+        assert!(!is_local_file_uri("file://server/share/x.html"));
+        assert!(!is_local_file_uri("file:////server/share/x.html"));
+        assert!(!is_local_file_uri("file://server\\share\\x.html"));
+        // The authority must equal "localhost", not merely start with it.
+        assert!(!is_local_file_uri("file://localhost.evil.example/x.html"));
+        // A bare drive letter in the authority slot is not a local file either.
+        assert!(!is_local_file_uri("file://C:/x.html"));
+        assert!(!is_local_file_uri("http://example.com/"));
+        assert!(!is_local_file_uri("https://localhost/x.html"));
+        assert!(!is_local_file_uri(""));
+    }
+
+    #[test]
+    fn is_http_uri_matches_the_scheme_case_insensitively_and_only_exactly() {
+        assert!(is_http_uri("http://example.com/"));
+        assert!(is_http_uri("https://example.com/"));
+        assert!(is_http_uri("HTTP://EXAMPLE.COM/"));
+        assert!(is_http_uri("HtTpS://example.com/x"));
+        assert!(!is_http_uri("ftp://example.com/"));
+        assert!(!is_http_uri("file:///C:/x.html"));
+        assert!(!is_http_uri("javascript:alert(1)"));
+        // One slash short of the "//" the OS launcher expects.
+        assert!(!is_http_uri("http:/example.com"));
+        assert!(!is_http_uri(""));
+    }
+
+    #[test]
+    fn ephemeral_profile_pid_parses_only_the_prefixed_decimal_names() {
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4242")), Some(4242));
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-0")), Some(0));
+        assert_eq!(
+            ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4294967295")),
+            Some(u32::MAX)
+        );
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4294967296")), None); // MAX + 1
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-")), None);
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-12x")), None);
+        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral")), None); // prefix needs its '-'
+        assert_eq!(ephemeral_profile_pid(OsStr::new("some-other-folder")), None);
     }
 }
