@@ -458,35 +458,14 @@ unsafe fn build_menu_into(
                     continue;
                 };
                 build_menu_into(sub, children, idcmdfirst, next_leaf, budget, vis);
-                if sep_pending {
-                    let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
-                    sep_pending = false;
-                }
-                if AppendMenuW(
-                    parent,
-                    MF_POPUP | MF_STRING,
-                    sub.0 as usize,
-                    &HSTRING::from(crate::i18n::t(title)),
-                )
-                .is_ok()
-                {
-                    has_emitted = true;
-                } else {
-                    // `sub` only becomes `parent`'s responsibility once the attach
-                    // succeeds; an unattached popup is a USER object nothing else
-                    // frees, and attach failures cluster right at the 10,000-handle
-                    // process quota this would otherwise help exhaust.
-                    let _ = DestroyMenu(sub);
-                }
+                flush_pending_separator(parent, &mut sep_pending);
+                has_emitted |= attach_popup(parent, sub, title);
             }
             verbs::MenuItem::Verb(title, _) => {
                 if *next_leaf >= budget {
                     return;
                 }
-                if sep_pending {
-                    let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
-                    sep_pending = false;
-                }
+                flush_pending_separator(parent, &mut sep_pending);
                 // The leaf's command id is its global leaf index, mapped through
                 // the central id_for() so the offset convention lives in one place.
                 let cmd =
@@ -511,6 +490,33 @@ unsafe fn build_menu_into(
             }
         }
     }
+}
+
+/// Append the divider `build_menu_into` has been holding back, if any, now that a real item
+/// is about to follow it.
+unsafe fn flush_pending_separator(parent: HMENU, sep_pending: &mut bool) {
+    if *sep_pending {
+        let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
+        *sep_pending = false;
+    }
+}
+
+/// Attach the built submenu `sub` to `parent` under `title`. `sub` only becomes `parent`'s
+/// responsibility once the attach succeeds; an unattached popup is a USER object nothing
+/// else frees, and attach failures cluster right at the 10,000-handle process quota this
+/// would otherwise help exhaust, so a failed attach destroys it here. True when attached.
+unsafe fn attach_popup(parent: HMENU, sub: HMENU, title: &str) -> bool {
+    let attached = AppendMenuW(
+        parent,
+        MF_POPUP | MF_STRING,
+        sub.0 as usize,
+        &HSTRING::from(crate::i18n::t(title)),
+    )
+    .is_ok();
+    if !attached {
+        let _ = DestroyMenu(sub);
+    }
+    attached
 }
 
 impl ContextMenu {

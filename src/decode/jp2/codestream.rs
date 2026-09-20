@@ -180,34 +180,8 @@ pub(super) fn find_codestream_and_palette(
         if guard > 1024 {
             return Err(Jp2Error::Malformed("box chain too long"));
         }
-        let Some(len_be) = bytes.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
-            return Err(Jp2Error::Truncated);
-        };
-        let len = u32::from_be_bytes(*len_be) as u64;
-        let typ = &bytes[p + 4..p + 8];
-        let (hdr, size) = match len {
-            0 => (8u64, (bytes.len() - p) as u64),
-            1 => {
-                let s = bytes
-                    .get(p + 8..p + 16)
-                    .and_then(|b| b.first_chunk::<8>())
-                    .ok_or(Jp2Error::Truncated)?;
-                (16u64, u64::from_be_bytes(*s))
-            }
-            n if n >= 8 => (8u64, n),
-            _ => return Err(Jp2Error::Malformed("box length < 8")),
-        };
-        if size < hdr {
-            return Err(Jp2Error::Malformed("box shorter than its header"));
-        }
-        let body_start = p + hdr as usize;
-        let end = (p as u64)
-            .checked_add(size)
-            .ok_or(Jp2Error::Malformed("box overflow"))? as usize;
-        if end > bytes.len() {
-            return Err(Jp2Error::Truncated);
-        }
-        match typ {
+        let (body_start, end) = box_extent(bytes, p)?;
+        match &bytes[p + 4..p + 8] {
             b"jp2h" => palette = parse_palette(&bytes[body_start..end])?,
             b"jp2c" => {
                 return Ok((
@@ -220,6 +194,38 @@ pub(super) fn find_codestream_and_palette(
         p = end;
     }
     Err(Jp2Error::Malformed("no jp2c box"))
+}
+
+/// The body start and end offsets of the JP2 box whose header begins at `p`: an 8-byte
+/// header with a 32-bit length, a 16-byte one when that length is 1 (64-bit length
+/// follows), and "to the end of the file" when it is 0. Both offsets are proven to lie
+/// inside `bytes` here, so callers may slice without re-checking.
+fn box_extent(bytes: &[u8], p: usize) -> Result<(usize, usize), Jp2Error> {
+    let Some(len_be) = bytes.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
+        return Err(Jp2Error::Truncated);
+    };
+    let (hdr, size) = match u32::from_be_bytes(*len_be) as u64 {
+        0 => (8u64, (bytes.len() - p) as u64),
+        1 => {
+            let s = bytes
+                .get(p + 8..p + 16)
+                .and_then(|b| b.first_chunk::<8>())
+                .ok_or(Jp2Error::Truncated)?;
+            (16u64, u64::from_be_bytes(*s))
+        }
+        n if n >= 8 => (8u64, n),
+        _ => return Err(Jp2Error::Malformed("box length < 8")),
+    };
+    if size < hdr {
+        return Err(Jp2Error::Malformed("box shorter than its header"));
+    }
+    let end = (p as u64)
+        .checked_add(size)
+        .ok_or(Jp2Error::Malformed("box overflow"))? as usize;
+    if end > bytes.len() {
+        return Err(Jp2Error::Truncated);
+    }
+    Ok((p + hdr as usize, end))
 }
 
 /// Back-compat shim for callers that only need the codestream.

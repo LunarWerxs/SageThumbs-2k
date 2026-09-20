@@ -2,6 +2,8 @@
 
 use super::*;
 
+use windows::Win32::UI::Shell::IProgressDialog;
+
 /// Switches handed to the freshly-downloaded Inno setup for an unattended in-place upgrade.
 /// `/SILENT` = bare progress bar, no wizard; `/SUPPRESSMSGBOXES` + `/FORCECLOSEAPPLICATIONS`
 /// let it close+restart Explorer to swap the in-use DLL without prompting; `/NORESTART`
@@ -190,11 +192,7 @@ pub(super) fn launch_installer_silent(path: &Path, owner: HWND) -> Result<(), Up
 }
 
 /// Set one line (1-based) of the shell progress dialog. Best-effort.
-pub(super) unsafe fn set_line(
-    dlg: &windows::Win32::UI::Shell::IProgressDialog,
-    line: u32,
-    text: &str,
-) {
+pub(super) unsafe fn set_line(dlg: &IProgressDialog, line: u32, text: &str) {
     let w = crate::win::wide(text);
     let _ = dlg.SetLine(line, PCWSTR(w.as_ptr()), false, None);
 }
@@ -202,6 +200,84 @@ pub(super) unsafe fn set_line(
 /// Human-readable size for the progress sub-line (e.g. 9_223_820 → "8.8 MB").
 pub(super) fn human_mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// The shell progress dialog for the download, already showing "Downloading update" under
+/// `parent`. It needs COM on this thread; leaving that initialized afterward is benign (one
+/// extra init on the UI thread), and the matching uninit never runs, because the success path
+/// exits the process and the failure path keeps the app running.
+fn open_progress_dialog(parent: HWND) -> Result<IProgressDialog, UpdateError> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{CLSID_ProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL};
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    let dlg: IProgressDialog =
+        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }.map_err(
+            |_| UpdateError::Failed("Couldn't open the download progress dialog.".into()),
+        )?;
+    let title = crate::win::wide("Updating SageThumbs 2K");
+    unsafe {
+        let _ = dlg.SetTitle(PCWSTR(title.as_ptr()));
+        let _ =
+            dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
+        set_line(&dlg, 1, "Downloading update\u{2026}");
+    }
+    Ok(dlg)
+}
+
+/// Turn downloaded installer bytes into a launchable, still-locked file: integrity check,
+/// signature check, write, and the stamped-version check. Any refusal leaves nothing behind.
+fn verify_and_stage(
+    dlg: &IProgressDialog,
+    bytes: Vec<u8>,
+    asset: &InstallerAsset,
+    sig_url: &str,
+    tag: &str,
+) -> Result<(PathBuf, std::fs::File), UpdateError> {
+    unsafe { set_line(dlg, 1, "Verifying\u{2026}") };
+    if !verify_installer_bytes(&bytes, asset) {
+        return Err(UpdateError::Failed(
+            "The downloaded update failed its integrity check, so it was not run.".into(),
+        ));
+    }
+    // The size + sha256 above only prove the download matches what the GitHub API's JSON
+    // claimed - the same response an attacker who controlled that endpoint (or the asset
+    // it points at) would also control. The signature is the actual trust anchor: it must
+    // verify against the key COMPILED INTO THIS BINARY, which such an attacker cannot
+    // rewrite. Never launch on a missing or failing signature, whatever the digest says.
+    let sig_hex = http_fetch_capped(sig_url, true, MAX_SIG_BYTES, SIG_TIMEOUT_SECS)
+        .and_then(|b| String::from_utf8(b).ok());
+    let signed = sig_hex
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|hex| verify_signature(&UPDATE_PUBLIC_KEY, &bytes, hex));
+    if !signed {
+        return Err(unverified_release_error());
+    }
+    let written = write_locked_installer(tag, &bytes, asset)
+        .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
+    // The signature proves these bytes are a release WE signed; it does not say which
+    // one. A feed that hands out a genuine, older installer under a newer tag would
+    // pass everything above and downgrade the machine (2026-09-19 audit concern 3).
+    // The version Inno stamps into the setup's own resource is inside the signed bytes,
+    // so it is the binding: it must be the version the feed advertised and newer than
+    // this running build, or the file is never launched.
+    if let Err(why) =
+        stamped_version_is_the_advertised_upgrade(&written.0, tag, env!("CARGO_PKG_VERSION"))
+    {
+        drop(written.1);
+        cleanup_installer_payload(&written.0);
+        return Err(UpdateError::Failed(why));
+    }
+    unsafe {
+        set_line(dlg, 1, "Installing update\u{2026}");
+        let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
+    }
+    Ok(written)
 }
 
 /// The whole one-click flow behind the Settings "download & install" action, with a live
@@ -212,13 +288,6 @@ pub(super) fn human_mb(bytes: u64) -> String {
 /// or a classified [`UpdateError`] so the UI can explain itself and offer the manual page.
 /// `parent` owns the progress dialog AND, once that is down, the elevation prompt.
 pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::{
-        CLSID_ProgressDialog, IProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NORMAL,
-    };
-
     // Issue #12: the portable zip's whole promise is "no installer, no admin rights". This is
     // the actual choke point every caller funnels through, so it is refused here even if a
     // caller (e.g. the About page's Update button) forgets its own `!settings::portable()`
@@ -242,24 +311,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     // would control too, so a missing signature is refused exactly like a bad one.
     let sig_url = asset.sig_url.clone().ok_or_else(unverified_release_error)?;
 
-    // The shell progress dialog needs COM on this thread. Leaving it initialized afterward is
-    // benign (one extra init on the UI thread); we never run the matching uninit, because the
-    // success path exits the process and the failure path keeps the app running.
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
-    let dlg: IProgressDialog =
-        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }.map_err(
-            |_| UpdateError::Failed("Couldn't open the download progress dialog.".into()),
-        )?;
-
-    let title = crate::win::wide("Updating SageThumbs 2K");
-    unsafe {
-        let _ = dlg.SetTitle(PCWSTR(title.as_ptr()));
-        let _ =
-            dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
-        set_line(&dlg, 1, "Downloading update\u{2026}");
-    }
+    let dlg = open_progress_dialog(parent)?;
 
     // Stream the download, driving the bar from bytes-so-far; Cancel aborts cleanly.
     let total = asset.size;
@@ -285,59 +337,19 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     );
 
     // Everything up to (but NOT including) the elevated launch happens under the dialog.
-    let prepared: Result<(PathBuf, std::fs::File), UpdateError> = (|| {
-        let bytes = bytes.ok_or_else(|| {
-            if cancelled {
-                UpdateError::Cancelled
-            } else {
-                UpdateError::Failed(
-                    "The update download didn't finish. Check your internet connection and \
-                     try again."
-                        .into(),
-                )
-            }
-        })?;
-        unsafe { set_line(&dlg, 1, "Verifying\u{2026}") };
-        if !verify_installer_bytes(&bytes, &asset) {
-            return Err(UpdateError::Failed(
-                "The downloaded update failed its integrity check, so it was not run.".into(),
-            ));
+    let downloaded = bytes.ok_or_else(|| {
+        if cancelled {
+            UpdateError::Cancelled
+        } else {
+            UpdateError::Failed(
+                "The update download didn't finish. Check your internet connection and \
+                 try again."
+                    .into(),
+            )
         }
-        // The size + sha256 above only prove the download matches what the GitHub API's JSON
-        // claimed - the same response an attacker who controlled that endpoint (or the asset
-        // it points at) would also control. The signature is the actual trust anchor: it must
-        // verify against the key COMPILED INTO THIS BINARY, which such an attacker cannot
-        // rewrite. Never launch on a missing or failing signature, whatever the digest says.
-        let sig_hex = http_fetch_capped(&sig_url, true, MAX_SIG_BYTES, SIG_TIMEOUT_SECS)
-            .and_then(|b| String::from_utf8(b).ok());
-        let signed = sig_hex
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|hex| verify_signature(&UPDATE_PUBLIC_KEY, &bytes, hex));
-        if !signed {
-            return Err(unverified_release_error());
-        }
-        let written = write_locked_installer(&tag, &bytes, &asset)
-            .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
-        // The signature proves these bytes are a release WE signed; it does not say which
-        // one. A feed that hands out a genuine, older installer under a newer tag would
-        // pass everything above and downgrade the machine (2026-09-19 audit concern 3).
-        // The version Inno stamps into the setup's own resource is inside the signed bytes,
-        // so it is the binding: it must be the version the feed advertised and newer than
-        // this running build, or the file is never launched.
-        if let Err(why) =
-            stamped_version_is_the_advertised_upgrade(&written.0, &tag, env!("CARGO_PKG_VERSION"))
-        {
-            drop(written.1);
-            cleanup_installer_payload(&written.0);
-            return Err(UpdateError::Failed(why));
-        }
-        unsafe {
-            set_line(&dlg, 1, "Installing update\u{2026}");
-            let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
-        }
-        Ok(written)
-    })();
+    });
+    let prepared =
+        downloaded.and_then(|bytes| verify_and_stage(&dlg, bytes, &asset, &sig_url, &tag));
 
     // Take the progress dialog DOWN before the elevation prompt goes up. It is a topmost
     // shell dialog, and leaving it in front is one of the ways a UAC consent prompt ends up

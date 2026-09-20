@@ -464,59 +464,58 @@ fn build_sponsors_from_manifest(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<Spo
         .or_else(|| manifest.get("ads"))
         .and_then(|v| v.as_array())?;
 
-    let mut sponsors: Vec<Sponsor> = Vec::new();
-    for item in items {
-        let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        // Only accept an http(s) click target from the (remote, untrusted)
-        // manifest; anything else falls back to the product page. `open_url`
-        // re-checks at the ShellExecute boundary (defense in depth).
-        let link = item
-            .get("link")
-            .and_then(|v| v.as_str())
-            .filter(|s| is_web_url(s))
-            .unwrap_or(URL_PRODUCT);
-        // `image` is a single URL or a list of interchangeable URLs.
-        let urls: Vec<&str> = if let Some(s) = item.get("image").and_then(|v| v.as_str()) {
-            vec![s]
-        } else if let Some(arr) = item.get("image").and_then(|v| v.as_array()) {
-            arr.iter().filter_map(|v| v.as_str()).collect()
-        } else {
-            continue;
-        };
-        let mut images: Vec<SponsorImage> = Vec::new();
-        for url in urls {
-            let Some(img_bytes) = http_fetch(url, false) else {
-                continue;
-            };
-            // Animated GIF → many frames; anything else → one still frame.
-            let (frames, delay_ms) =
-                if let Some((fr, d)) = decode_gif_frames_sized(&img_bytes, w, h) {
-                    (fr, d)
-                } else if let Some(handle) =
-                    sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h)
-                {
-                    (vec![handle], 0)
-                } else {
-                    continue;
-                };
-            if frames.is_empty() {
-                continue;
-            }
-            images.push(SponsorImage { frames, delay_ms });
-        }
-        if images.is_empty() {
-            continue;
-        }
-        sponsors.push(Sponsor {
-            images,
-            tip: wide(text),
-            link: wide(link),
-        });
-    }
-    if sponsors.is_empty() {
-        return None;
-    }
-    Some((sponsors, rotate_ms, random))
+    let sponsors: Vec<Sponsor> = items
+        .iter()
+        .filter_map(|item| sponsor_from_item(item, w, h))
+        .collect();
+    (!sponsors.is_empty()).then_some((sponsors, rotate_ms, random))
+}
+
+/// One manifest entry as a [`Sponsor`] with its art decoded at `w`×`h`, or None when it
+/// names no image or none of its images could be fetched and decoded.
+fn sponsor_from_item(item: &serde_json::Value, w: u32, h: u32) -> Option<Sponsor> {
+    let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    // Only accept an http(s) click target from the (remote, untrusted)
+    // manifest; anything else falls back to the product page. `open_url`
+    // re-checks at the ShellExecute boundary (defense in depth).
+    let link = item
+        .get("link")
+        .and_then(|v| v.as_str())
+        .filter(|s| is_web_url(s))
+        .unwrap_or(URL_PRODUCT);
+    // `image` is a single URL or a list of interchangeable URLs.
+    let image = item.get("image")?;
+    let urls: Vec<&str> = if let Some(s) = image.as_str() {
+        vec![s]
+    } else {
+        image
+            .as_array()?
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect()
+    };
+    let images: Vec<SponsorImage> = urls
+        .into_iter()
+        .filter_map(|url| sponsor_image(url, w, h))
+        .collect();
+    (!images.is_empty()).then(|| Sponsor {
+        images,
+        tip: wide(text),
+        link: wide(link),
+    })
+}
+
+/// Fetch and decode one sponsor image at `w`×`h`: an animated GIF gives many frames,
+/// anything else one still frame. None when it cannot be fetched or decoded.
+fn sponsor_image(url: &str, w: u32, h: u32) -> Option<SponsorImage> {
+    let img_bytes = http_fetch(url, false)?;
+    let (frames, delay_ms) = if let Some((fr, d)) = decode_gif_frames_sized(&img_bytes, w, h) {
+        (fr, d)
+    } else {
+        let handle = sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h)?;
+        (vec![handle], 0)
+    };
+    (!frames.is_empty()).then_some(SponsorImage { frames, delay_ms })
 }
 
 /// Decode the (already-fetched, cached) sponsor manifest on a background thread:

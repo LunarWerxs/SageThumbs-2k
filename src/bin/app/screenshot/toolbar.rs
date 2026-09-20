@@ -415,9 +415,21 @@ pub(super) unsafe fn draw(
     dpi: i32,
     focus: Option<usize>,
 ) {
-    let bar = bar_rect(buttons, dpi);
+    draw_backdrop_and_cells(hdc, buttons, active, dpi, focus);
+    draw_dividers(hdc, buttons, dpi);
+    draw_icons(hdc, buttons, color, dpi);
+}
 
-    // Rounded backdrop + every cell background, in one anti-aliased GDI+ pass.
+/// The rounded backdrop, every cell background and the keyboard focus ring, in one
+/// anti-aliased GDI+ pass.
+unsafe fn draw_backdrop_and_cells(
+    hdc: HDC,
+    buttons: &[(Button, RECT)],
+    active: Tool,
+    dpi: i32,
+    focus: Option<usize>,
+) {
+    let bar = bar_rect(buttons, dpi);
     let r_bar = dpi_scale_dpi(9, dpi); // bar corner radius
     let r_cell = dpi_scale_dpi(6, dpi); // per-cell corner radius
     gdip::with_aa(hdc, |g| {
@@ -485,8 +497,10 @@ pub(super) unsafe fn draw(
             gdip::drop_pen(pen);
         }
     });
+}
 
-    // Group divider lines (between the rounded cells).
+/// Group divider lines (between the rounded cells).
+unsafe fn draw_dividers(hdc: HDC, buttons: &[(Button, RECT)], dpi: i32) {
     let div_inset = dpi_scale_dpi(5, dpi);
     for (btn, r) in buttons {
         if let Button::Sep = btn {
@@ -502,8 +516,11 @@ pub(super) unsafe fn draw(
             let _ = DeleteObject(b.into());
         }
     }
+}
 
-    // Icons / colour swatch, on top of the cells.
+/// Each button's icon (a Segoe Fluent glyph, an AA vector glyph, or the colour swatch), on
+/// top of the cells.
+unsafe fn draw_icons(hdc: HDC, buttons: &[(Button, RECT)], color: COLORREF, dpi: i32) {
     SelectObject(hdc, HGDIOBJ(gui_font().0));
     SetBkMode(hdc, TRANSPARENT);
     let icon = icon_font(dpi);

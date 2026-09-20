@@ -79,8 +79,22 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     p = p.checked_add(4)?; // skip the overall image-data size (u32)
     let count = *bytes.get(p)?;
     p = p.checked_add(1)?;
+    let [png, dib, wmf] = preview_records(bytes, p, count)?;
 
-    // Walk the records; prefer PNG (6) > DIB (2) > WMF (3).
+    // Try each candidate in priority order (PNG > DIB > WMF); an undecodable record — bad
+    // image data, or an offset/size that doesn't fit the buffer — falls through to the next
+    // instead of aborting the whole extraction. Real R2018 files carry multiple preview
+    // records, so a busted PNG must not hide a good DIB/WMF sitting right behind it.
+    try_decode(bytes, png, |s| Some(s.to_vec()))
+        .or_else(|| try_decode(bytes, dib, dib_to_bmp))
+        .or_else(|| try_decode(bytes, wmf, |s| Some(s.to_vec())))
+}
+
+/// Walk the `count` preview records starting at `p`: the first usable PNG (6), DIB (2) and
+/// WMF (3) record as `(offset, size)`, in that order. A record with no size, or one bigger
+/// than any cover we would extract, is skipped; a record table that runs off the buffer is
+/// `None`.
+fn preview_records(bytes: &[u8], mut p: usize, count: u8) -> Option<[Option<(usize, usize)>; 3]> {
     let (mut png, mut dib, mut wmf) = (None, None, None);
     for _ in 0..count {
         let code = *bytes.get(p)?;
@@ -97,21 +111,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
             _ => {} // 1 = header/palette block, etc.
         }
     }
-
-    // Try each candidate in priority order (PNG > DIB > WMF); an undecodable record — bad
-    // image data, or an offset/size that doesn't fit the buffer — falls through to the next
-    // instead of aborting the whole extraction. Real R2018 files carry multiple preview
-    // records, so a busted PNG must not hide a good DIB/WMF sitting right behind it.
-    if let Some(img) = try_decode(bytes, png, |s| Some(s.to_vec())) {
-        return Some(img);
-    }
-    if let Some(img) = try_decode(bytes, dib, dib_to_bmp) {
-        return Some(img);
-    }
-    if let Some(img) = try_decode(bytes, wmf, |s| Some(s.to_vec())) {
-        return Some(img);
-    }
-    None
+    Some([png, dib, wmf])
 }
 
 /// Slice one `(off, size)` record out of `bytes`, run it through `convert` (identity for

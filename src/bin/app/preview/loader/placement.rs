@@ -145,57 +145,22 @@ pub(in super::super) unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let cap = sc(CAPTION_H);
     if !st.shot {
-        if st.user_sized.get() {
-            let mut r = RECT::default();
-            if GetClientRect(hwnd, &mut r).is_ok() {
-                return (r.right - r.left, r.bottom - r.top);
-            }
-        }
-        if let Some((w, h)) = sagethumbs2k_core::settings::preview_window_size() {
-            let (_dpi, work) = crate::win::cursor_monitor_metrics();
-            return clamp_remembered_size(
-                (sc(w), sc(h)),
-                (sc(MIN_W), sc(MIN_H)),
-                (work.right - work.left, work.bottom - work.top),
-            );
+        if let Some(size) = user_chosen_size(hwnd, st) {
+            return size;
         }
     }
     match st.kind.get() {
-        ContentKind::Image => {
-            if let Some((rdw, rdh)) = image_dims(st) {
-                let (_dpi, work) = crate::win::cursor_monitor_metrics();
-                let cap_w = (work.right - work.left) * 80 / 100;
-                let cap_h = (work.bottom - work.top) * 80 / 100 - cap;
-                let mut scale = f64::min(cap_w as f64 / rdw as f64, cap_h as f64 / rdh as f64);
-                if scale > 1.0 {
-                    scale = 1.0; // never upscale past 100%
-                }
-                let iw = ((rdw as f64 * scale).round() as i32).max(1);
-                let ih = ((rdh as f64 * scale).round() as i32).max(1);
-                ((iw).max(sc(MIN_W)), (ih + cap).max(sc(MIN_H)))
-            } else {
-                (sc(LOADING_W), sc(LOADING_H))
-            }
-        }
+        ContentKind::Image => match image_dims(st) {
+            Some((rdw, rdh)) => fit_to_work_area(hwnd, rdw, rdh, cap),
+            None => (sc(LOADING_W), sc(LOADING_H)),
+        },
         ContentKind::InfoCard => (sc(CARD_W), sc(CARD_H) + cap),
         ContentKind::Text | ContentKind::Markdown => (sc(TEXT_W), sc(TEXT_H)),
         ContentKind::Video => match st.video_dims.get() {
             // Real clip dimensions (rotation applied), known once MF has read the metadata. Fit
             // them the same way an image is fitted, then add the chrome. Without this every clip
             // opened into the same 16:9 shell and portrait phone video sat letterboxed inside it.
-            Some((vw, vh)) if vw > 0 && vh > 0 => {
-                let (_dpi, work) = crate::win::cursor_monitor_metrics();
-                let chrome = cap + sc(SCRUB_H);
-                let cap_w = (work.right - work.left) * 80 / 100;
-                let cap_h = (work.bottom - work.top) * 80 / 100 - chrome;
-                let mut scale = f64::min(cap_w as f64 / vw as f64, cap_h as f64 / vh as f64);
-                if scale > 1.0 {
-                    scale = 1.0; // never upscale a small clip past 100%
-                }
-                let w = ((vw as f64 * scale).round() as i32).max(1);
-                let h = ((vh as f64 * scale).round() as i32).max(1);
-                (w.max(sc(MIN_W)), (h + chrome).max(sc(MIN_H)))
-            }
+            Some((vw, vh)) if vw > 0 && vh > 0 => fit_to_work_area(hwnd, vw, vh, cap + sc(SCRUB_H)),
             // Audio, or metadata not in yet: the placeholder shell.
             _ => (sc(VIDEO_W), sc(VIDEO_H) + cap + sc(SCRUB_H)),
         },
@@ -203,6 +168,40 @@ pub(in super::super) unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
 
         ContentKind::Loading => (sc(LOADING_W), sc(LOADING_H)),
     }
+}
+
+/// The size the user chose, when there is one: the live client rect while a resize drag is
+/// in progress (or after one), else the remembered `preview_window_size`, clamped to the
+/// monitor. None when neither applies and the per-content default should decide.
+unsafe fn user_chosen_size(hwnd: HWND, st: &ViewerState) -> Option<(i32, i32)> {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    if st.user_sized.get() {
+        let mut r = RECT::default();
+        if GetClientRect(hwnd, &mut r).is_ok() {
+            return Some((r.right - r.left, r.bottom - r.top));
+        }
+    }
+    let (w, h) = sagethumbs2k_core::settings::preview_window_size()?;
+    let (_dpi, work) = crate::win::cursor_monitor_metrics();
+    Some(clamp_remembered_size(
+        (sc(w), sc(h)),
+        (sc(MIN_W), sc(MIN_H)),
+        (work.right - work.left, work.bottom - work.top),
+    ))
+}
+
+/// The client size that shows a `dw`×`dh` picture (or clip) at up to 80% of the work area
+/// with `chrome` pixels of caption/transport below it, never upscaled past 100% and never
+/// under the minimum window size. Images and video clips are fitted the same way.
+unsafe fn fit_to_work_area(hwnd: HWND, dw: i32, dh: i32, chrome: i32) -> (i32, i32) {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    let (_dpi, work) = crate::win::cursor_monitor_metrics();
+    let cap_w = (work.right - work.left) * 80 / 100;
+    let cap_h = (work.bottom - work.top) * 80 / 100 - chrome;
+    let scale = f64::min(cap_w as f64 / dw as f64, cap_h as f64 / dh as f64).min(1.0);
+    let w = ((dw as f64 * scale).round() as i32).max(1);
+    let h = ((dh as f64 * scale).round() as i32).max(1);
+    (w.max(sc(MIN_W)), (h + chrome).max(sc(MIN_H)))
 }
 
 /// Resize (and optionally move) the window so its CLIENT area is `cw`×`ch`. `pos` = top-left

@@ -572,9 +572,7 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
     let mut seen: Vec<&'static str> = Vec::new();
     for tok in saved {
         if tok == MENU_SEP_TOKEN {
-            if let Some(s) = sep {
-                body.push(s);
-            }
+            body.extend(sep);
         } else if reorderable(tok) && !seen.contains(&tok.as_str()) {
             if let Some(p) = item(tok) {
                 body.push(p);
@@ -590,8 +588,16 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
         }
     }
 
-    // Normalize dividers: drop a leading one, collapse consecutive, drop a trailing one
-    // (the always-on divider before Settings stands in for any trailing divider).
+    let mut out = normalize_dividers(body);
+    // Tail: one divider, then the always-last Settings entry.
+    out.extend(sep);
+    out.extend(item("menu_settings"));
+    out
+}
+
+/// Drop a leading divider, collapse consecutive ones, drop a trailing one (the always-on
+/// divider before Settings stands in for any trailing divider).
+fn normalize_dividers(body: Vec<(&'static MenuItem, u32)>) -> Vec<(&'static MenuItem, u32)> {
     let mut out: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(body.len() + 2);
     for p in body {
         if matches!(p.0, MenuItem::Separator)
@@ -605,13 +611,6 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
     }
     while matches!(out.last().map(|p| p.0), Some(MenuItem::Separator)) {
         out.pop();
-    }
-    // Tail: one divider, then the always-last Settings entry.
-    if let Some(s) = sep {
-        out.push(s);
-    }
-    if let Some(p) = item("menu_settings") {
-        out.push(p);
     }
     out
 }

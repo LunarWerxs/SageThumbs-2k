@@ -42,34 +42,32 @@ fn find_magick() -> Option<PathBuf> {
     if std::env::var_os("ST2K_NO_MAGICK").is_some_and(|v| v == "1") {
         return None;
     }
-    if let Ok(dll) = crate::module_path() {
-        if let Some(dir) = std::path::Path::new(&dll).parent() {
-            let p = dir.join("magick.exe");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Ok(base) = std::env::var(var) {
-            if let Ok(entries) = std::fs::read_dir(&base) {
-                for e in entries.flatten() {
-                    if e.file_name().to_string_lossy().starts_with("ImageMagick") {
-                        let p = e.path().join("magick.exe");
-                        if p.exists() {
-                            return Some(p);
-                        }
-                    }
-                }
-            }
-        }
-    }
     // Deliberately NO bare-"magick.exe" PATH fallback: Windows' CreateProcess
     // search order includes the current directory, so a bare name could run a
     // malicious magick.exe planted in a browsed folder. We only ever launch an
     // absolute path (bundled or Program Files); if none is found the tier is
     // simply skipped and the obscure format falls back to its default icon.
-    None
+    bundled_magick().or_else(program_files_magick)
+}
+
+/// `magick.exe` next to this module (the Full install bundles it there).
+fn bundled_magick() -> Option<PathBuf> {
+    let dll = crate::module_path().ok()?;
+    let p = std::path::Path::new(&dll).parent()?.join("magick.exe");
+    p.exists().then_some(p)
+}
+
+/// The first `magick.exe` under any `C:\Program Files[ (x86)]\ImageMagick*` (a developer
+/// PC's own install; never shipped).
+fn program_files_magick() -> Option<PathBuf> {
+    ["ProgramFiles", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .filter_map(|base| std::fs::read_dir(base).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("ImageMagick"))
+        .map(|e| e.path().join("magick.exe"))
+        .find(|p| p.exists())
 }
 
 /// Constrain ImageMagick to the tree that contains the exact executable we found.

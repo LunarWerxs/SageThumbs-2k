@@ -320,38 +320,17 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::Transform(t) => handle_transform(paths, t),
         VerbAction::Clipboard => handle_clipboard(paths),
         VerbAction::CopyDataUri => handle_copy_data_uri(paths),
-        VerbAction::Upload => {
-            // Upload the selected image(s) to the keyless host in the companion app,
-            // which copies the resulting link(s) to the clipboard. The originals are
-            // never modified; the app owns the network + result UX (delegated) —
-            // unless the listfile handoff itself couldn't be written, in which case
-            // there's no window coming to explain the silently dead menu item.
-            match launch_upload(paths) {
-                ListLaunch::Failed => {
-                    ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
-                }
-                _ => ActionReport::delegated(),
-            }
-        }
+        // Upload the selected image(s) to the keyless host in the companion app, which
+        // copies the resulting link(s) to the clipboard. The originals are never modified.
+        VerbAction::Upload => delegated_via_listfile(launch_upload(paths)),
         VerbAction::Wallpaper(mode) => handle_wallpaper(paths, mode),
         VerbAction::LockScreen => handle_lock_screen(paths),
         VerbAction::CombineToPdf => handle_combine_to_pdf(paths),
         VerbAction::CombineToCbz => handle_combine_to_cbz(paths),
         VerbAction::Ocr => handle_ocr(paths),
-        VerbAction::ImageInfo => {
-            // Opens its own info window (a message box) — the app owns the UX.
-            if let Some(p) = paths.iter().find(|p| is_image(p.as_str())) {
-                show_info(p);
-            }
-            ActionReport::delegated()
-        }
+        VerbAction::ImageInfo => handle_image_info(paths),
         VerbAction::StripMetadata => handle_strip_metadata(paths),
-        VerbAction::ConvertDialog => match launch_convert_dialog(paths) {
-            ListLaunch::Failed => {
-                ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
-            }
-            _ => ActionReport::delegated(),
-        },
+        VerbAction::ConvertDialog => delegated_via_listfile(launch_convert_dialog(paths)),
         VerbAction::OpenSettings => {
             launch_app(&[]);
             ActionReport::delegated()
@@ -374,6 +353,27 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::TagsToFolders => handle_tags_to_folders(paths),
         VerbAction::SaveVideoFrame => handle_save_video_frame(paths),
     }
+}
+
+/// A verb the companion app owns end to end (network, result window): delegated, unless
+/// the listfile handoff itself could not be written, in which case there is no window
+/// coming to explain the silently dead menu item, so the failure is reported here.
+fn delegated_via_listfile(launch: ListLaunch) -> ActionReport {
+    match launch {
+        ListLaunch::Failed => {
+            ActionReport::applied(1, 0).with_note("couldn't hand off the file list")
+        }
+        _ => ActionReport::delegated(),
+    }
+}
+
+/// `VerbAction::ImageInfo`: opens its own info window (a message box) for the first
+/// image in the selection - the app owns the UX.
+fn handle_image_info(paths: &[String]) -> ActionReport {
+    if let Some(p) = paths.iter().find(|p| is_image(p.as_str())) {
+        show_info(p);
+    }
+    ActionReport::delegated()
 }
 
 /// `VerbAction::Convert` - counts over ALL paths (no image filter), so the attempted

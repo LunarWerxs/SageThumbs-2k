@@ -233,18 +233,7 @@ unsafe fn keydown_page_nav(
     // move a viewport, Home/End jump to the ends. Left/Right are NOT here, and
     // must never be: they stay file navigation on every kind of content.
     if crate::preview::pdfview::active(hwnd) && !ctrl && !shift {
-        let line = crate::win::dpi_scale(hwnd, 64);
-        let page = crate::preview::pdfview::viewport_step(hwnd);
-        let delta = match vk {
-            v if v == VK_DOWN.0 => Some(line),
-            v if v == VK_UP.0 => Some(-line),
-            v if v == VK_NEXT.0 => Some(page),
-            v if v == VK_PRIOR.0 => Some(-page),
-            v if v == VK_HOME.0 => Some(i32::MIN / 2),
-            v if v == VK_END.0 => Some(i32::MAX / 2),
-            _ => None,
-        };
-        if let Some(d) = delta {
+        if let Some(d) = pdf_scroll_delta(hwnd, vk) {
             crate::preview::pdfview::scroll_by(hwnd, d);
             return Some(LRESULT(0));
         }
@@ -260,6 +249,22 @@ unsafe fn keydown_page_nav(
             Some(LRESULT(0))
         }
         None => None,
+    }
+}
+
+/// How far a vertical key scrolls a continuously scrolled PDF: Up/Down one line, PgUp/PgDn
+/// one viewport, Home/End to the ends. None for every other key.
+unsafe fn pdf_scroll_delta(hwnd: HWND, vk: u16) -> Option<i32> {
+    let line = crate::win::dpi_scale(hwnd, 64);
+    let page = crate::preview::pdfview::viewport_step(hwnd);
+    match vk {
+        v if v == VK_DOWN.0 => Some(line),
+        v if v == VK_UP.0 => Some(-line),
+        v if v == VK_NEXT.0 => Some(page),
+        v if v == VK_PRIOR.0 => Some(-page),
+        v if v == VK_HOME.0 => Some(i32::MIN / 2),
+        v if v == VK_END.0 => Some(i32::MAX / 2),
+        _ => None,
     }
 }
 

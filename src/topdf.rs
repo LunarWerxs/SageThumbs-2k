@@ -59,11 +59,6 @@ fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> s
     let n = pages.len();
     let total = 2 + n * 3; // 1=Catalog, 2=Pages, then page/content/image per image
     let mut off = vec![0usize; total + 1];
-    let mark = |off: &mut [usize], i: usize, pos: usize| {
-        if let Some(o) = off.get_mut(i) {
-            *o = pos;
-        }
-    };
 
     w.write_all(b"%PDF-1.7\n")?;
     w.write_all(&[b'%', 0xE2, 0xE3, 0xCF, 0xD3, b'\n'])?; // binary marker
@@ -81,26 +76,52 @@ fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> s
     )?;
 
     for (i, (jpeg, iw, ih)) in pages.into_iter().enumerate() {
-        let (pw, ph, dx, dy, dw, dh) = page.place(iw as f64, ih as f64);
-        let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
-
-        mark(&mut off, pg, w.pos);
-        write!(w, "{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n")?;
-
-        // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
-        let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
-        mark(&mut off, ct, w.pos);
-        write!(w, "{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len())?;
-        w.write_all(content.as_bytes())?;
-        w.write_all(b"endstream\nendobj\n")?;
-
-        mark(&mut off, im, w.pos);
-        write!(w, "{im} 0 obj\n<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n", jpeg.len())?;
-        w.write_all(&jpeg)?; // raw JPEG bytes — never string-formatted
-        w.write_all(b"\nendstream\nendobj\n")?;
+        write_page(w, &mut off, i, &jpeg, iw, ih, page)?;
         // `jpeg` drops here: one page's compressed bytes at a time.
     }
 
+    write_xref(w, &off, total)
+}
+
+/// Record object `i`'s byte offset for the xref table.
+fn mark(off: &mut [usize], i: usize, pos: usize) {
+    if let Some(o) = off.get_mut(i) {
+        *o = pos;
+    }
+}
+
+/// Page `i`'s three objects: the Page, its content stream (one `cm` + `Do`), and the JPEG
+/// image XObject.
+fn write_page<W: Write>(
+    w: &mut Counted<W>,
+    off: &mut [usize],
+    i: usize,
+    jpeg: &[u8],
+    iw: u32,
+    ih: u32,
+    page: PdfPage,
+) -> std::io::Result<()> {
+    let (pw, ph, dx, dy, dw, dh) = page.place(iw as f64, ih as f64);
+    let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
+
+    mark(off, pg, w.pos);
+    write!(w, "{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n")?;
+
+    // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
+    let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
+    mark(off, ct, w.pos);
+    write!(w, "{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len())?;
+    w.write_all(content.as_bytes())?;
+    w.write_all(b"endstream\nendobj\n")?;
+
+    mark(off, im, w.pos);
+    write!(w, "{im} 0 obj\n<< /Type /XObject /Subtype /Image /Width {iw} /Height {ih} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n", jpeg.len())?;
+    w.write_all(jpeg)?; // raw JPEG bytes — never string-formatted
+    w.write_all(b"\nendstream\nendobj\n")
+}
+
+/// The xref table over `off` and the trailer.
+fn write_xref<W: Write>(w: &mut Counted<W>, off: &[usize], total: usize) -> std::io::Result<()> {
     let xref = w.pos;
     write!(w, "xref\n0 {}\n", total + 1)?;
     w.write_all(b"0000000000 65535 f \n")?;
@@ -112,8 +133,7 @@ fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> s
         "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
         total + 1,
         xref
-    )?;
-    Ok(())
+    )
 }
 
 /// How each image is placed on its page.

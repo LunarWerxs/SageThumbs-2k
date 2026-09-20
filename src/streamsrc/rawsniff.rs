@@ -197,21 +197,11 @@ pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
     // own embedded preview and the tiers that would run instead cannot do better (WIC
     // refuses `.mef` outright and hands back the same small preview for `.iiq`). Adding a
     // routing rule that provably does nothing is how a decoder accretes risk for free.
-    let little = match head.get(..4) {
-        Some(b"II\x2A\0") => true,
-        Some(b"MM\0\x2A") => false,
-        _ => return false, // BigTIFF's IFD layout differs; not worth a second walker.
+    // BigTIFF's IFD layout differs; not worth a second walker.
+    let Some(little) = tiff_is_little_endian(head) else {
+        return false;
     };
-    let num = |offset: usize, wide: bool| -> Option<u32> {
-        let n = if wide { 4 } else { 2 };
-        let raw = head.get(offset..offset.checked_add(n)?)?;
-        Some(match (wide, little) {
-            (true, true) => u32::from_le_bytes(raw.try_into().ok()?),
-            (true, false) => u32::from_be_bytes(raw.try_into().ok()?),
-            (false, true) => u16::from_le_bytes(raw.try_into().ok()?) as u32,
-            (false, false) => u16::from_be_bytes(raw.try_into().ok()?) as u32,
-        })
-    };
+    let num = |offset: usize, wide: bool| tiff_num(head, little, offset, wide);
     let Some(ifd) = num(4, true).map(|v| v as usize) else {
         return false;
     };
@@ -227,30 +217,34 @@ pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
     false
 }
 
+/// The byte order of a classic TIFF header, or None for anything else (BigTIFF included:
+/// its IFD layout differs and neither walker here reads it).
+fn tiff_is_little_endian(head: &[u8]) -> Option<bool> {
+    match head.get(..4) {
+        Some(b"II\x2A\0") => Some(true),
+        Some(b"MM\0\x2A") => Some(false),
+        _ => None,
+    }
+}
+
+/// A u32 (`wide`) or u16 at `offset` in `head`, in the file's byte order; None past the end.
+fn tiff_num(head: &[u8], little: bool, offset: usize, wide: bool) -> Option<u32> {
+    let n = if wide { 4 } else { 2 };
+    let raw = head.get(offset..offset.checked_add(n)?)?;
+    Some(match (wide, little) {
+        (true, true) => u32::from_le_bytes(raw.try_into().ok()?),
+        (true, false) => u32::from_be_bytes(raw.try_into().ok()?),
+        (false, true) => u16::from_le_bytes(raw.try_into().ok()?) as u32,
+        (false, false) => u16::from_be_bytes(raw.try_into().ok()?) as u32,
+    })
+}
+
 pub(super) fn tiff_has_raw_ifd_marker(head: &[u8]) -> bool {
-    let little = match head.get(..4) {
-        Some(b"II\x2A\0") => true,
-        Some(b"MM\0\x2A") => false,
-        _ => return false, // BigTIFF needs an extension; its IFD layout differs.
+    let Some(little) = tiff_is_little_endian(head) else {
+        return false;
     };
-    let u16_at = |offset: usize| -> Option<u16> {
-        let end = offset.checked_add(2)?;
-        let bytes: [u8; 2] = head.get(offset..end)?.try_into().ok()?;
-        Some(if little {
-            u16::from_le_bytes(bytes)
-        } else {
-            u16::from_be_bytes(bytes)
-        })
-    };
-    let u32_at = |offset: usize| -> Option<u32> {
-        let end = offset.checked_add(4)?;
-        let bytes: [u8; 4] = head.get(offset..end)?.try_into().ok()?;
-        Some(if little {
-            u32::from_le_bytes(bytes)
-        } else {
-            u32::from_be_bytes(bytes)
-        })
-    };
+    let u16_at = |offset: usize| tiff_num(head, little, offset, false).map(|v| v as u16);
+    let u32_at = |offset: usize| tiff_num(head, little, offset, true);
 
     let Some(ifd) = u32_at(4).map(|value| value as usize) else {
         return false;

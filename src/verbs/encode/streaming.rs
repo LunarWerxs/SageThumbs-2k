@@ -294,31 +294,35 @@ pub(super) fn encode_ppm_streaming<W: Write>(
     img: &DynamicImage,
 ) -> std::io::Result<()> {
     // PPM is always RGB and therefore drops alpha, but it can retain 16-bit
-    // integer precision. Float inputs are clamped into that same 0..65535 range.
-    let wide = matches!(
-        img,
-        DynamicImage::ImageLuma16(_)
-            | DynamicImage::ImageLumaA16(_)
-            | DynamicImage::ImageRgb16(_)
-            | DynamicImage::ImageRgba16(_)
-            | DynamicImage::ImageRgb32F(_)
-            | DynamicImage::ImageRgba32F(_)
-    );
+    // integer precision. Float inputs are clamped into that same 0..65535 range: the
+    // same "wide samples" verdict PAM makes for the same source types.
+    let (_, _, wide) = pam_layout(img);
     writeln!(writer, "P6")?;
     writeln!(writer, "{} {}", img.width(), img.height())?;
     writeln!(writer, "{}", if wide { 65_535 } else { 255 })?;
     for y in 0..img.height() {
         for x in 0..img.width() {
-            if wide {
-                let [r, g, b, _] = rgba_u16_at(img, x, y);
-                writer.write_all(&r.to_be_bytes())?;
-                writer.write_all(&g.to_be_bytes())?;
-                writer.write_all(&b.to_be_bytes())?;
-            } else {
-                let [r, g, b, _] = rgba_u8_at(img, x, y);
-                writer.write_all(&[r, g, b])?;
-            }
+            write_ppm_pixel(writer, img, x, y, wide)?;
         }
     }
     Ok(())
+}
+
+/// One PPM pixel: three big-endian `u16` samples when `wide`, three bytes otherwise.
+fn write_ppm_pixel<W: Write>(
+    writer: &mut W,
+    img: &DynamicImage,
+    x: u32,
+    y: u32,
+    wide: bool,
+) -> std::io::Result<()> {
+    if wide {
+        let [r, g, b, _] = rgba_u16_at(img, x, y);
+        writer.write_all(&r.to_be_bytes())?;
+        writer.write_all(&g.to_be_bytes())?;
+        writer.write_all(&b.to_be_bytes())
+    } else {
+        let [r, g, b, _] = rgba_u8_at(img, x, y);
+        writer.write_all(&[r, g, b])
+    }
 }

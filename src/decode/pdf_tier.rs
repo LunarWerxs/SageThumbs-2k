@@ -147,8 +147,38 @@ pub(crate) fn try_video_tier(
     }
     let mf = mf_refused.is_none();
 
-    let frame = mini
-        .filter(|_| mf)
+    if let Some(frame) = frame_by_bytes(bytes, mini, mf, at) {
+        return Some(Ok(rotated_as_displayed(
+            frame,
+            bytes,
+            container_ran,
+            container_rotation,
+        )));
+    }
+    // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
+    // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
+    // rips and media managers routinely write) is still a faithful picture of the file,
+    // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
+    // `streamsrc`, so the CLI, the preview and Explorer all agree. Skipped when the
+    // prefer-cover-art pass above already tried and found nothing.
+    if !tried_cover_art {
+        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
+            return Some(decode_image_with_raw_order(
+                &cover,
+                raw_preview,
+                wic_thumbnail_cx,
+            ));
+        }
+    }
+    None
+}
+
+/// One representative frame from the whole capped buffer, trying every decoder tier in
+/// order: the container's own keyframe mini-clip through Media Foundation (`mf`), then the
+/// FLV remux, the out-of-process Flash decoder, MF over the raw buffer, and last the
+/// out-of-process VP9 and MPEG-1/2 decoders. `at` is the user's `VideoOffset` mark.
+fn frame_by_bytes(bytes: &[u8], mini: Option<Vec<u8>>, mf: bool, at: f64) -> Option<DynamicImage> {
+    mini.filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
         // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
@@ -187,46 +217,36 @@ pub(crate) fn try_video_tier(
         // the sibling st2k.exe decodes it out of process (`crate::mpeg12`). Last for the
         // same reason as VP9: a `.vob` with the Store extension, or a transport stream
         // named `.mpg`, keeps hitting the in-process MF path.
-        .or_else(|| crate::mpeg12::mpeg_frame(&mut std::io::Cursor::new(bytes), at));
-    if let Some(frame) = frame {
-        // ISSUE #32, the by-bytes twin of the gate in `streamsrc::try_video_source`, and kept
-        // in step with it deliberately: a clip rotated losslessly (metadata only, no
-        // re-encode) must thumbnail the way it plays on every surface, or `st2k` and Explorer
-        // disagree about one file. See `video::apply_display_rotation` for why this cannot
-        // double-rotate whichever tier above produced the frame.
-        //
-        // Only fall back to the standalone probe when NEITHER container tier parsed the
-        // file — a tier that did, already answered this exact question.
-        let rotation = if container_ran {
-            container_rotation
-        } else {
-            crate::mp4::display_rotation(&mut std::io::Cursor::new(bytes))
-                .or_else(|| crate::mkv::display_rotation(&mut std::io::Cursor::new(bytes)))
-        };
-        return Some(Ok(match rotation {
-            Some(deg) => {
-                crate::safety::log_debugf!("video: display matrix asks for {deg} deg");
-                crate::video::apply_display_rotation(frame, deg)
-            }
-            None => frame,
-        }));
-    }
-    // No decodable frame — usually a missing OS codec (HEVC/AV1 are Store add-ons).
-    // An embedded cover (a Matroska attachment or an MP4 `covr` item, which library
-    // rips and media managers routinely write) is still a faithful picture of the file,
-    // and unlike a frame it needs no codec at all. Mirrors the provider's fallback in
-    // `streamsrc`, so the CLI, the preview and Explorer all agree. Skipped when the
-    // prefer-cover-art pass above already tried and found nothing.
-    if !tried_cover_art {
-        if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
-            return Some(decode_image_with_raw_order(
-                &cover,
-                raw_preview,
-                wic_thumbnail_cx,
-            ));
+        .or_else(|| crate::mpeg12::mpeg_frame(&mut std::io::Cursor::new(bytes), at))
+}
+
+/// ISSUE #32, the by-bytes twin of the gate in `streamsrc::try_video_source`, and kept in
+/// step with it deliberately: a clip rotated losslessly (metadata only, no re-encode) must
+/// thumbnail the way it plays on every surface, or `st2k` and Explorer disagree about one
+/// file. See `video::apply_display_rotation` for why this cannot double-rotate whichever
+/// tier produced the frame.
+///
+/// Only falls back to the standalone probe when NEITHER container tier parsed the file
+/// (`container_ran`) — a tier that did, already answered this exact question.
+fn rotated_as_displayed(
+    frame: DynamicImage,
+    bytes: &[u8],
+    container_ran: bool,
+    container_rotation: Option<u32>,
+) -> DynamicImage {
+    let rotation = if container_ran {
+        container_rotation
+    } else {
+        crate::mp4::display_rotation(&mut std::io::Cursor::new(bytes))
+            .or_else(|| crate::mkv::display_rotation(&mut std::io::Cursor::new(bytes)))
+    };
+    match rotation {
+        Some(deg) => {
+            crate::safety::log_debugf!("video: display matrix asks for {deg} deg");
+            crate::video::apply_display_rotation(frame, deg)
         }
+        None => frame,
     }
-    None
 }
 
 /// GIMP `.xcf` FIRST, and only when the caller told us how big a picture it can use.

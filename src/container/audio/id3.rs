@@ -55,13 +55,7 @@ fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
         if id == [0, 0, 0, 0] {
             break; // padding region — no more frames
         }
-        // Frame size is synchsafe in ID3v2.4, plain big-endian in 2.3/2.2-on-2.3-header.
-        let sz = &body[pos + 4..pos + 8];
-        let size = if major >= 4 {
-            id3_synchsafe(sz)?
-        } else {
-            u32::from_be_bytes([sz[0], sz[1], sz[2], sz[3]])
-        } as usize;
+        let size = id3_frame_size(&body[pos + 4..pos + 8], major)? as usize;
         let start = pos + 10;
         let end = start.checked_add(size)?;
         if end > body.len() {
@@ -70,12 +64,7 @@ fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
         if id == b"APIC" {
             if let Some((ptype, img)) = parse_apic(&body[start..end]) {
                 let rank = super::id3_pic_rank(ptype);
-                let better = match &best {
-                    None => true,
-                    // Lower rank always wins; inside one rank, the bigger image does.
-                    Some((r, cur)) => rank < *r || (rank == *r && img.len() > cur.len()),
-                };
-                if better {
+                if beats_best(best.as_ref(), rank, img.len()) {
                     best = Some((rank, img));
                 }
             }
@@ -83,6 +72,15 @@ fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
         pos = end;
     }
     best.map(|(_, img)| img)
+}
+
+/// Does a picture of `rank` and `len` bytes replace the best so far? Lower rank always wins;
+/// inside one rank, the bigger image does; a tie keeps the earlier frame.
+fn beats_best(best: Option<&(u8, Vec<u8>)>, rank: u8, len: usize) -> bool {
+    match best {
+        None => true,
+        Some((r, cur)) => rank < *r || (rank == *r && len > cur.len()),
+    }
 }
 
 /// Parse one `APIC` frame body: `encoding(u8), mime(latin1\0), pic_type(u8),
@@ -115,6 +113,16 @@ fn parse_apic(d: &[u8]) -> Option<(u8, Vec<u8>)> {
     let img = d.get(p..)?;
     (crate::container::looks_like_raster(img) && img.len() as u64 <= crate::container::MAX_COVER)
         .then(|| (ptype, img.to_vec()))
+}
+
+/// An ID3v2 frame's size field: synchsafe in ID3v2.4, plain big-endian in 2.3 (and 2.2 on
+/// a 2.3 header).
+fn id3_frame_size(sz: &[u8], major: u8) -> Option<u32> {
+    if major >= 4 {
+        id3_synchsafe(sz)
+    } else {
+        Some(u32::from_be_bytes([sz[0], sz[1], sz[2], sz[3]]))
+    }
 }
 
 /// Decode a 4-byte ID3v2 synchsafe integer (the high bit of each byte is zero).

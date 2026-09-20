@@ -360,30 +360,8 @@ fn ipynb_md(text: &str) -> Converted {
         let kind = cell.get("cell_type").and_then(|t| t.as_str()).unwrap_or("");
         let src = join_source(cell.get("source"));
         match kind {
-            "markdown" => {
-                // Each cell's `attachment:` namespace is private, so prefix both the in-markdown
-                // refs and the decoded cache keys with the cell index (`c{idx}/attachment:NAME`)
-                // to keep identical names across cells from clashing. The rewritten src stays a
-                // colon-scheme local ref (never `http(s)`/`//`/`data:`), so it renders as an
-                // inline image whose bytes the loader pre-seeds into the image cache.
-                let rewritten = src.replace("](attachment:", &format!("](c{idx}/attachment:"));
-                if attachments.len() < MAX_ATTACHMENTS {
-                    collect_attachments(cell, idx, &mut attachments);
-                }
-                out.push_str(rewritten.trim_end());
-                out.push_str("\n\n");
-            }
-            "code" => {
-                if !src.trim().is_empty() {
-                    let fence = fence_for(&src);
-                    out.push_str(&format!("{fence}{lang}\n{}\n{fence}\n\n", src.trim_end()));
-                }
-                if let Some(outputs) = cell.get("outputs").and_then(|o| o.as_array()) {
-                    for o in outputs {
-                        push_output(&mut out, o);
-                    }
-                }
-            }
+            "markdown" => push_markdown_cell(&mut out, &mut attachments, cell, idx, &src),
+            "code" => push_code_cell(&mut out, cell, &src, &lang),
             "raw" if !src.trim().is_empty() => {
                 let fence = fence_for(&src);
                 out.push_str(&format!("{fence}\n{}\n{fence}\n\n", src.trim_end()));
@@ -403,6 +381,40 @@ fn ipynb_md(text: &str) -> Converted {
         out
     };
     Converted { md, attachments }
+}
+
+/// A markdown cell: its source verbatim, with the cell's pasted images decoded out. Each
+/// cell's `attachment:` namespace is private, so prefix both the in-markdown refs and the
+/// decoded cache keys with the cell index (`c{idx}/attachment:NAME`) to keep identical names
+/// across cells from clashing. The rewritten src stays a colon-scheme local ref (never
+/// `http(s)`/`//`/`data:`), so it renders as an inline image whose bytes the loader pre-seeds
+/// into the image cache.
+fn push_markdown_cell(
+    out: &mut String,
+    attachments: &mut Vec<(String, Vec<u8>)>,
+    cell: &serde_json::Value,
+    idx: usize,
+    src: &str,
+) {
+    let rewritten = src.replace("](attachment:", &format!("](c{idx}/attachment:"));
+    if attachments.len() < MAX_ATTACHMENTS {
+        collect_attachments(cell, idx, attachments);
+    }
+    out.push_str(rewritten.trim_end());
+    out.push_str("\n\n");
+}
+
+/// A code cell: a fenced block in the kernel language (skipped when empty), then each output.
+fn push_code_cell(out: &mut String, cell: &serde_json::Value, src: &str, lang: &str) {
+    if !src.trim().is_empty() {
+        let fence = fence_for(src);
+        out.push_str(&format!("{fence}{lang}\n{}\n{fence}\n\n", src.trim_end()));
+    }
+    if let Some(outputs) = cell.get("outputs").and_then(|o| o.as_array()) {
+        for o in outputs {
+            push_output(out, o);
+        }
+    }
 }
 
 /// Decode a markdown cell's `attachments` object into `(key, bytes)` pairs, where `key` matches

@@ -320,68 +320,9 @@ pub(crate) fn color_profile(bytes: &[u8]) -> Option<Vec<u8>> {
 /// is not something we can rewrite without moving a byte (see the module docs).
 pub(super) fn strip(bytes: &[u8]) -> Option<Vec<u8>> {
     let found = items(bytes);
-    let targets: Vec<&Item> = found
-        .iter()
-        .filter(|i| &i.kind == b"Exif" || (&i.kind == b"mime" && i.is_xmp))
-        .collect();
-    if targets.is_empty() {
+    let targets: Vec<&Item> = found.iter().filter(|i| is_target(i)).collect();
+    if targets.is_empty() || !targets_replaceable(&targets) || !targets_disjoint(bytes, &found) {
         return None;
-    }
-    // Every target must be locatable, or we refuse the whole file rather than
-    // half-strip it and report success.
-    if targets.iter().any(|i| i.extent.is_none()) {
-        return None;
-    }
-    // An EXIF item too small to hold a valid empty TIFF cannot be replaced with
-    // anything a reader will accept.
-    if targets
-        .iter()
-        .any(|i| &i.kind == b"Exif" && i.extent.is_some_and(|(_, l)| l < MIN_EXIF_ITEM))
-    {
-        return None;
-    }
-    // Same refusal for a too-short XMP item: write_empty_xmp only writes its xpacket
-    // header when the slot is at least EMPTY.len() bytes, so without this guard a
-    // short XMP item would be blanked to bare spaces (no valid xpacket at all) while
-    // strip() still reported success — exactly the "half-fix" this module refuses to do.
-    if targets
-        .iter()
-        .any(|i| &i.kind == b"mime" && i.is_xmp && i.extent.is_some_and(|(_, l)| l < MIN_XMP_ITEM))
-    {
-        return None;
-    }
-    // A target must not overlap ANY other item's bytes, nor the `meta` box itself.
-    // `iloc` is attacker-controlled: a crafted file can point an Exif item at
-    // another item's payload (or at the box structure), and overwriting it in place
-    // would silently destroy data we were never asked to touch. Both extents fit
-    // inside the file, so the bounds check alone does not catch this.
-    //
-    // The target itself is excluded by its INDEX in `found`, never by extent value:
-    // a crafted Exif extent equal byte-for-byte to the image item's extent would
-    // otherwise exclude that image item from the comparison too, and the overwrite
-    // would land on the picture.
-    let meta_span = boxes(bytes, 0)
-        .into_iter()
-        .find(|(t, _, _)| t == b"meta")
-        .map(|(_, o, l)| (o, l));
-    let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 < b.0 + b.1 && b.0 < a.0 + a.1;
-    for (ti, t) in found.iter().enumerate() {
-        if !(&t.kind == b"Exif" || (&t.kind == b"mime" && t.is_xmp)) {
-            continue;
-        }
-        let te = t.extent?;
-        if found
-            .iter()
-            .enumerate()
-            .filter(|&(oi, _)| oi != ti)
-            .filter_map(|(_, o)| o.extent)
-            .any(|e| overlaps(te, e))
-        {
-            return None;
-        }
-        if meta_span.is_some_and(|m| overlaps(te, m)) {
-            return None;
-        }
     }
     let mut out = bytes.to_vec();
     for it in targets {
@@ -394,6 +335,64 @@ pub(super) fn strip(bytes: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// An item [`strip`] rewrites: the EXIF item, or the XMP `mime` item.
+fn is_target(i: &Item) -> bool {
+    &i.kind == b"Exif" || (&i.kind == b"mime" && i.is_xmp)
+}
+
+/// Can every target be overwritten in place with a valid empty payload? Every target
+/// must be locatable (or we refuse the whole file rather than half-strip it and report
+/// success); an EXIF item too small to hold a valid empty TIFF cannot be replaced with
+/// anything a reader will accept; and the same refusal holds for a too-short XMP item:
+/// `write_empty_xmp` only writes its xpacket header when the slot is at least
+/// `EMPTY.len()` bytes, so without this guard a short XMP item would be blanked to bare
+/// spaces (no valid xpacket at all) while `strip` still reported success - exactly the
+/// "half-fix" this module refuses to do.
+fn targets_replaceable(targets: &[&Item]) -> bool {
+    targets.iter().all(|i| {
+        let min = if &i.kind == b"Exif" {
+            MIN_EXIF_ITEM
+        } else {
+            MIN_XMP_ITEM
+        };
+        i.extent.is_some_and(|(_, l)| l >= min)
+    })
+}
+
+/// Does no target overlap ANY other item's bytes, nor the `meta` box itself? `iloc` is
+/// attacker-controlled: a crafted file can point an Exif item at another item's payload
+/// (or at the box structure), and overwriting it in place would silently destroy data we
+/// were never asked to touch. Both extents fit inside the file, so the bounds check alone
+/// does not catch this.
+///
+/// The target itself is excluded by its INDEX in `found`, never by extent value: a crafted
+/// Exif extent equal byte-for-byte to the image item's extent would otherwise exclude that
+/// image item from the comparison too, and the overwrite would land on the picture. A
+/// target with no extent answers false (`targets_replaceable` already refused it).
+fn targets_disjoint(bytes: &[u8], found: &[Item]) -> bool {
+    let meta_span = boxes(bytes, 0)
+        .into_iter()
+        .find(|(t, _, _)| t == b"meta")
+        .map(|(_, o, l)| (o, l));
+    let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 < b.0 + b.1 && b.0 < a.0 + a.1;
+    found
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| is_target(t))
+        .all(|(ti, t)| {
+            let Some(te) = t.extent else {
+                return false;
+            };
+            let clear_of_items = !found
+                .iter()
+                .enumerate()
+                .filter(|&(oi, _)| oi != ti)
+                .filter_map(|(_, o)| o.extent)
+                .any(|e| overlaps(te, e));
+            clear_of_items && !meta_span.is_some_and(|m| overlaps(te, m))
+        })
 }
 
 /// The 18 bytes an empty HEIF EXIF item needs: a 4-byte TIFF-header offset plus a
