@@ -12,20 +12,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     if rec_count == 0 {
         return None;
     }
-    // PalmDB record-info table: 8 bytes/record at offset 78; first u32 = data offset.
-    let rec_off = |n: usize| -> Option<usize> { be32(bytes, 78 + n * 8).map(|v| v as usize) };
-    let rec = |n: usize| -> Option<&[u8]> {
-        let start = rec_off(n)?;
-        let end = if n + 1 < rec_count {
-            rec_off(n + 1)?
-        } else {
-            bytes.len()
-        };
-        if end < start {
-            return None;
-        }
-        bytes.get(start..end)
-    };
+    let rec = |n: usize| record(bytes, rec_count, n);
 
     let rec0 = rec(0)?;
     // PalmDOC header: encryption type at offset 12 — only handle unencrypted books.
@@ -41,6 +28,32 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         })
         .collect();
 
+    pick_cover(rec0, rec_count, &images, &rec)
+}
+
+/// PalmDB record `n`: its data offset from the record-info table (8 bytes/record at offset
+/// 78; first u32), sliced up to the next record or end of file, or None if unusable.
+fn record(bytes: &[u8], rec_count: usize, n: usize) -> Option<&[u8]> {
+    let start = be32(bytes, 78 + n * 8).map(|v| v as usize)?;
+    let end = if n + 1 < rec_count {
+        be32(bytes, 78 + (n + 1) * 8).map(|v| v as usize)?
+    } else {
+        bytes.len()
+    };
+    if end < start {
+        return None;
+    }
+    bytes.get(start..end)
+}
+
+/// Pick the cover: EXTH CoverOffset/ThumbOffset at the derived image base, else the largest
+/// image record (avoids tiny publisher logos when the base is unusable).
+fn pick_cover<'a>(
+    rec0: &'a [u8],
+    rec_count: usize,
+    images: &[(usize, usize)],
+    rec: &dyn Fn(usize) -> Option<&'a [u8]>,
+) -> Option<Vec<u8>> {
     // First image index. Calibre reads it from record0[108:112] (its canonical,
     // battle-tested offset); we trust that value when it actually lands on an
     // image record, else derive it from the first image we found.
@@ -50,7 +63,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         .or_else(|| images.first().map(|&(i, _)| i));
 
     if let (Some(base), Some(mobi_len)) = (image_base, mobi_header_len(rec0)) {
-        if let Some(cover) = cover_via_exth_or_base(rec0, base, mobi_len, &rec) {
+        if let Some(cover) = cover_via_exth_or_base(rec0, base, mobi_len, rec) {
             return Some(cover);
         }
     }
@@ -75,22 +88,35 @@ fn cover_via_exth_or_base<'a>(
 ) -> Option<Vec<u8>> {
     let exth_start = 16usize.saturating_add(mobi_len);
     for tag in [201u32, 202] {
-        if let Some(off) = exth_u32(rec0, exth_start, tag) {
-            if off != u32::MAX {
-                if let Some(idx) = base.checked_add(off as usize) {
-                    if let Some(data) = rec(idx) {
-                        if is_image(data) && data.len() as u64 <= super::MAX_COVER {
-                            return Some(data.to_vec());
-                        }
-                    }
-                }
-            }
+        if let Some(cover) = exth_cover_at(rec0, exth_start, tag, base, rec) {
+            return Some(cover);
         }
     }
     if let Some(data) = rec(base) {
         if is_image(data) && data.len() as u64 <= super::MAX_COVER {
             return Some(data.to_vec());
         }
+    }
+    None
+}
+
+/// Resolve one EXTH CoverOffset/ThumbOffset tag to a cover record, or None when the offset
+/// is absent, `u32::MAX`, out of range, or not a viable image.
+fn exth_cover_at<'a>(
+    rec0: &'a [u8],
+    exth_start: usize,
+    tag: u32,
+    base: usize,
+    rec: &dyn Fn(usize) -> Option<&'a [u8]>,
+) -> Option<Vec<u8>> {
+    let off = exth_u32(rec0, exth_start, tag)?;
+    if off == u32::MAX {
+        return None;
+    }
+    let idx = base.checked_add(off as usize)?;
+    let data = rec(idx)?;
+    if is_image(data) && data.len() as u64 <= super::MAX_COVER {
+        return Some(data.to_vec());
     }
     None
 }

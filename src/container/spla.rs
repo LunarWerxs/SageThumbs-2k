@@ -59,6 +59,25 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     let rig = Rig::parse(&root)?;
     let frame = rig.first_frame()?;
 
+    let mut assets: Vec<Option<RgbaImage>> = vec![None; rig.parts.len()];
+    load_assets(zip, &rig, &frame, &mut assets)?;
+
+    let canvas = render(&rig, &frame, &assets)?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(canvas)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .ok()?;
+    Some(out.into_inner())
+}
+
+/// Loads every asset the frame references into `assets` keyed by part index, once each, and
+/// bounds their total DECODED bytes; `None` when that aggregate budget is exceeded.
+fn load_assets<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    rig: &Rig,
+    frame: &[Placed],
+    assets: &mut [Option<RgbaImage>],
+) -> Option<()> {
     // Load every asset the frame actually references, once, keyed by part index - under ONE
     // aggregate budget on the DECODED pixels. The per-asset and per-canvas caps each bound one
     // picture, not their sum: 256 parts x 4096^2 x 4 bytes is 16 GiB of retained buffers from
@@ -66,8 +85,7 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     // preview. Charged as each asset is KEPT, so the peak is this budget plus one asset.
     const MAX_TOTAL_DECODED_BYTES: u64 = 96 * 1024 * 1024;
     let mut decoded_bytes: u64 = 0;
-    let mut assets: Vec<Option<RgbaImage>> = vec![None; rig.parts.len()];
-    for placed in &frame {
+    for placed in frame {
         let part = &rig.parts[placed.part];
         if assets[placed.part].is_some() {
             continue;
@@ -87,13 +105,7 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
         }
         assets[placed.part] = Some(img);
     }
-
-    let canvas = render(&rig, &frame, &assets)?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(canvas)
-        .write_to(&mut out, image::ImageFormat::Png)
-        .ok()?;
-    Some(out.into_inner())
+    Some(())
 }
 
 /// A part as the manifest declares it: which PNG, where its pivot sits in that PNG's own
@@ -182,35 +194,7 @@ impl Rig {
             .map(|placed| {
                 placed
                     .iter()
-                    .filter_map(|fp| {
-                        let id = fp.get("part")?.as_str()?;
-                        let part = parts.iter().position(|p| p.id == id)?;
-                        let tint = fp
-                            .get("tint")
-                            .and_then(Value::as_array)
-                            .filter(|t| t.len() >= 3)
-                            .map(|t| {
-                                [
-                                    f32_of(t.first(), 1.0),
-                                    f32_of(t.get(1), 1.0),
-                                    f32_of(t.get(2), 1.0),
-                                ]
-                            })
-                            .unwrap_or([1.0, 1.0, 1.0]);
-                        Some(Placed {
-                            part,
-                            x: f32_of(fp.get("x"), 0.0),
-                            y: f32_of(fp.get("y"), 0.0),
-                            rotation_deg: f32_of(fp.get("rotation"), 0.0),
-                            skew_x_deg: f32_of(fp.get("skewX"), 0.0),
-                            skew_y_deg: f32_of(fp.get("skewY"), 0.0),
-                            scale_x: f32_of(fp.get("scaleX"), 1.0),
-                            scale_y: f32_of(fp.get("scaleY"), 1.0),
-                            opacity: f32_of(fp.get("opacity"), 1.0).clamp(0.0, 1.0),
-                            tint,
-                            z_offset: fp.get("zOffset").and_then(Value::as_i64).unwrap_or(0),
-                        })
-                    })
+                    .filter_map(|fp| Self::placed_from_json(fp, &parts))
                     .collect()
             });
 
@@ -218,6 +202,38 @@ impl Rig {
             canvas: (cw as u32, ch as u32),
             parts,
             frame0,
+        })
+    }
+
+    /// One placed part from a frame entry's JSON: the part id resolved against `parts` (`None`
+    /// when the id is missing or unknown), with every transform defaulted.
+    fn placed_from_json(fp: &Value, parts: &[Part]) -> Option<Placed> {
+        let id = fp.get("part")?.as_str()?;
+        let part = parts.iter().position(|p| p.id == id)?;
+        let tint = fp
+            .get("tint")
+            .and_then(Value::as_array)
+            .filter(|t| t.len() >= 3)
+            .map(|t| {
+                [
+                    f32_of(t.first(), 1.0),
+                    f32_of(t.get(1), 1.0),
+                    f32_of(t.get(2), 1.0),
+                ]
+            })
+            .unwrap_or([1.0, 1.0, 1.0]);
+        Some(Placed {
+            part,
+            x: f32_of(fp.get("x"), 0.0),
+            y: f32_of(fp.get("y"), 0.0),
+            rotation_deg: f32_of(fp.get("rotation"), 0.0),
+            skew_x_deg: f32_of(fp.get("skewX"), 0.0),
+            skew_y_deg: f32_of(fp.get("skewY"), 0.0),
+            scale_x: f32_of(fp.get("scaleX"), 1.0),
+            scale_y: f32_of(fp.get("scaleY"), 1.0),
+            opacity: f32_of(fp.get("opacity"), 1.0).clamp(0.0, 1.0),
+            tint,
+            z_offset: fp.get("zOffset").and_then(Value::as_i64).unwrap_or(0),
         })
     }
 

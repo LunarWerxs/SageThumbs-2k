@@ -84,12 +84,18 @@ fn binary_by_id<'a>(bytes: &'a [u8], id: &[u8]) -> Option<&'a [u8]> {
         let p = find(bytes.get(from..)?, &needle)? + from;
         let lt = rfind_byte(bytes.get(..p)?, b'<')?;
         if bytes.get(lt..)?.starts_with(b"<binary") {
-            let gt = find(bytes.get(p..)?, b">")? + p + 1;
-            let end = find(bytes.get(gt..)?, b"</binary>")? + gt;
-            return bytes.get(gt..end);
+            return binary_payload_at(bytes, p);
         }
         from = p + needle.len();
     }
+}
+
+/// The base64 payload inside the `<binary ...>...</binary>` tag whose opening
+/// tag contains the `id="..."` match at `p`.
+fn binary_payload_at(bytes: &[u8], p: usize) -> Option<&[u8]> {
+    let gt = find(bytes.get(p..)?, b">")? + p + 1;
+    let end = find(bytes.get(gt..)?, b"</binary>")? + gt;
+    bytes.get(gt..end)
 }
 
 #[cfg(test)]

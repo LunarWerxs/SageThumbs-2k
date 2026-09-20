@@ -35,6 +35,12 @@ pub fn looks_like_max(head: &[u8]) -> bool {
 fn thumbnail_value_offset(s: &[u8]) -> Option<usize> {
     let section = le32(s, 44)? as usize;
     let num_props = le32(s, section.checked_add(4)?)? as usize;
+    search_thumbnail_prop(s, section, num_props)
+}
+
+/// Walk the section's property entries (capped at 256) and return the offset of the
+/// `PIDSI_THUMBNAIL` value.
+fn search_thumbnail_prop(s: &[u8], section: usize, num_props: usize) -> Option<usize> {
     for i in 0..num_props.min(256) {
         let pair = section.checked_add(8)?.checked_add(i.checked_mul(8)?)?;
         let pid = le32(s, pair)?;
@@ -93,6 +99,12 @@ fn sentinel_payload(data: &[u8]) -> Option<CoverOut> {
     }
     // Otherwise: 3ds Max's custom payload — u32(3), u16(1), u16 W, u16 H, … then
     // top-down 24-bit RGB at offset 98 (exactly `RgbImage`'s layout: no flip/swap).
+    max_rgb_payload(data)
+}
+
+/// Decode the 3ds Max custom payload: u16 W at +6, u16 H at +8, then top-down 24-bit
+/// RGB pixels at offset 98.
+fn max_rgb_payload(data: &[u8]) -> Option<CoverOut> {
     let w = le16(data, 6)? as u32;
     let h = le16(data, 8)? as u32;
     if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {

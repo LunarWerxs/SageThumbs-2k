@@ -124,28 +124,7 @@ fn to_jpeg(sfw: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(body.get(13..4 + app0_len)?);
 
     // Every segment up to the scan: marker renumbered, length and payload kept as they are.
-    let mut at = 4 + app0_len;
-    let mut has_own_tables = false;
-    let mut scan_at = None;
-    for _ in 0..MAX_SEGMENTS {
-        if *body.get(at)? != 0xFF {
-            return None;
-        }
-        let marker = jpeg_marker(*body.get(at + 1)?);
-        if marker == 0xDA {
-            scan_at = Some(at);
-            break;
-        }
-        has_own_tables |= marker == 0xC4;
-        let len = usize::from(be16(body, at + 2)?);
-        if len < 2 {
-            return None;
-        }
-        out.extend_from_slice(&[0xFF, marker]);
-        out.extend_from_slice(body.get(at + 2..at + 2 + len)?);
-        at += 2 + len;
-    }
-    let scan_at = scan_at?;
+    let (scan_at, has_own_tables) = append_segments(body, &mut out, 4 + app0_len)?;
     // Entropy-coded data cannot contain `FF C9` (a literal FF is always stuffed with 00), so
     // the first one after the scan header is the renumbered EOI.
     let scan = body.get(scan_at + 2..)?;
@@ -157,6 +136,49 @@ fn to_jpeg(sfw: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(scan.get(..end)?);
     out.extend_from_slice(&[0xFF, 0xD9]);
     Some(out)
+}
+
+/// What one renumbered segment in a Seattle FilmWorks stream turned out to be.
+enum Segment {
+    /// The `SOS` marker: the entropy-coded data starts at this offset.
+    Sos,
+    /// A segment to copy on: the next offset and whether it was a `DHT`.
+    More { next: usize, own_dht: bool },
+}
+
+/// Walk the renumbered segments from `at` up to the `SOS`, copying each into `out`; returns
+/// the `SOS` offset and whether the stream carried its own Huffman tables.
+fn append_segments(body: &[u8], out: &mut Vec<u8>, mut at: usize) -> Option<(usize, bool)> {
+    let mut has_own_tables = false;
+    for _ in 0..MAX_SEGMENTS {
+        match append_segment(body, out, at)? {
+            Segment::Sos => return Some((at, has_own_tables)),
+            Segment::More { next, own_dht } => {
+                has_own_tables |= own_dht;
+                at = next;
+            }
+        }
+    }
+    None
+}
+
+/// Copy the one renumbered segment at `at` into `out`, reporting what it was; `None` when
+/// the markers do not line up.
+fn append_segment(body: &[u8], out: &mut Vec<u8>, at: usize) -> Option<Segment> {
+    if *body.get(at)? != 0xFF {
+        return None;
+    }
+    let marker = jpeg_marker(*body.get(at + 1)?);
+    if marker == 0xDA {
+        return Some(Segment::Sos);
+    }
+    let len = usize::from(be16(body, at + 2)?);
+    if len < 2 {
+        return None;
+    }
+    out.extend_from_slice(&[0xFF, marker]);
+    out.extend_from_slice(body.get(at + 2..at + 2 + len)?);
+    Some(Segment::More { next: at + 2 + len, own_dht: marker == 0xC4 })
 }
 
 fn decode_jpeg(jpeg: &[u8]) -> Option<DynamicImage> {

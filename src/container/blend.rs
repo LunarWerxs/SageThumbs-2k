@@ -30,20 +30,39 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     };
     let legacy_hdr = 16 + ptr_size; // BHead4 = 20, SmallBHead8 = 24
 
-    let mut off = block_start;
+    scan_blocks(bytes, block_start, v1, legacy_hdr)
+}
+
+/// Walk the file-block stream from `start`, decoding the first `TEST` block that checks out
+/// and stopping at `ENDB`; `None` on a miss or a hard abort (truncated/corrupt stream).
+fn scan_blocks(bytes: &[u8], start: usize, v1: bool, legacy_hdr: usize) -> Option<DynamicImage> {
+    let mut off = start;
     while off + 8 <= bytes.len() {
         let (code, len, hdr) = read_block_header(bytes, off, v1, legacy_hdr)?;
         if code == b"ENDB" {
             break;
         }
-        if code == b"TEST" {
-            if let Some(img) = decode_test_block(bytes, off, hdr, len)? {
-                return Some(img);
-            }
+        if let Some(img) = block_thumbnail(code, bytes, off, hdr, len)? {
+            return Some(img);
         }
         off = off.checked_add(hdr)?.checked_add(len)?;
     }
     None
+}
+
+/// Routine for one block: decode it when `code` is `TEST`, else report the soft miss
+/// (`Some(None)`) that keeps the stream walk going. Hard abort stays the outer `None`.
+fn block_thumbnail(
+    code: &[u8],
+    bytes: &[u8],
+    off: usize,
+    hdr: usize,
+    len: usize,
+) -> Option<Option<DynamicImage>> {
+    if code != b"TEST" {
+        return Some(None);
+    }
+    decode_test_block(bytes, off, hdr, len)
 }
 
 /// One block-stream record's header: `(code, block length, header size)`. A `None` here is a

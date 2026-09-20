@@ -90,35 +90,39 @@ fn tiff_is_paletted(tiff: &[u8]) -> bool {
         Some(b"MM\x00\x2A") => false,
         _ => return false,
     };
-    let u16 = |o: usize| -> Option<u16> {
-        let b = tiff.get(o..o + 2)?;
-        Some(if le {
-            u16::from_le_bytes([b[0], b[1]])
-        } else {
-            u16::from_be_bytes([b[0], b[1]])
-        })
-    };
-    let u32 = |o: usize| -> Option<u32> {
-        let b = tiff.get(o..o + 4)?;
-        Some(if le {
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-        } else {
-            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-        })
-    };
-    let Some(ifd) = u32(4).map(|o| o as usize) else {
+    let Some(ifd) = tiff_u32(tiff, le, 4).map(|o| o as usize) else {
         return false;
     };
-    let Some(n) = u16(ifd) else {
+    let Some(n) = tiff_u16(tiff, le, ifd) else {
         return false;
     };
     for k in 0..n.min(512) as usize {
         let e = ifd + 2 + k * 12;
-        if u16(e) == Some(262) {
-            return u16(e + 8) == Some(3);
+        if tiff_u16(tiff, le, e) == Some(262) {
+            return tiff_u16(tiff, le, e + 8) == Some(3);
         }
     }
     false
+}
+
+/// Read a little- or big-endian `u16` at offset `o`, or `None` when the bytes run short.
+fn tiff_u16(tiff: &[u8], le: bool, o: usize) -> Option<u16> {
+    let b = tiff.get(o..o + 2)?;
+    Some(if le {
+        u16::from_le_bytes([b[0], b[1]])
+    } else {
+        u16::from_be_bytes([b[0], b[1]])
+    })
+}
+
+/// Read a little- or big-endian `u32` at offset `o`, or `None` when the bytes run short.
+fn tiff_u32(tiff: &[u8], le: bool, o: usize) -> Option<u32> {
+    let b = tiff.get(o..o + 4)?;
+    Some(if le {
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+    } else {
+        u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+    })
 }
 
 /// Extract an embedded preview from a plain-text EPS, without rendering PostScript.
@@ -155,14 +159,7 @@ fn parse_epsi_header(header: &[u8]) -> Option<EpsiHeader> {
     let height = fields.next()?.parse::<u32>().ok()?;
     let depth = fields.next()?.parse::<u32>().ok()?;
     let lines = fields.next()?.parse::<u32>().ok()?;
-    if fields.next().is_some()
-        || !matches!(depth, 1 | 2 | 4 | 8)
-        || width == 0
-        || height == 0
-        || lines == 0
-        || width > crate::decode::limits::MAX_DIM
-        || height > crate::decode::limits::MAX_DIM
-    {
+    if epsi_header_invalid(fields.next().is_some(), depth, width, height, lines) {
         return None;
     }
     let pixels = (width as u64).checked_mul(height as u64)?;
@@ -184,6 +181,17 @@ fn parse_epsi_header(header: &[u8]) -> Option<EpsiHeader> {
         packed_len,
         pixels,
     })
+}
+
+/// Whether a `%%BeginPreview:` header's trailing token or declared dimensions are out of range.
+fn epsi_header_invalid(trailing: bool, depth: u32, width: u32, height: u32, lines: u32) -> bool {
+    trailing
+        || !matches!(depth, 1 | 2 | 4 | 8)
+        || width == 0
+        || height == 0
+        || lines == 0
+        || width > crate::decode::limits::MAX_DIM
+        || height > crate::decode::limits::MAX_DIM
 }
 
 /// Read `lines` hex-encoded `%` comment lines into a packed buffer of exactly `packed_len`
@@ -252,7 +260,7 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     // measured on 2026-09-19 when the first real "Preview: None" EPS reached the corpus and
     // could not decode); the `%%` form is the DSC-style spelling other writers use. Until
     // that day the only sample of this block was one this code's own test had written.
-    let (header, mut rest) = find_comment(bytes, b"%BeginPhotoshop:")
+    let (header, rest) = find_comment(bytes, b"%BeginPhotoshop:")
         .or_else(|| find_comment(bytes, b"%%BeginPhotoshop:"))?;
     let declared = std::str::from_utf8(header.trim_ascii())
         .ok()?
@@ -261,6 +269,12 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     if declared == 0 || declared as u64 > MAX_COVER || declared > ASCII_SCAN_MAX / 2 {
         return None;
     }
+    let resource = read_photoshop_resource(rest, declared)?;
+    psd::thumbnail_from_resources(&resource)
+}
+
+/// Read `declared` hex-encoded `%` lines into a resource buffer, refusing an early terminator.
+fn read_photoshop_resource(mut rest: &[u8], declared: usize) -> Option<Vec<u8>> {
     let mut resource = Vec::with_capacity(declared);
     while resource.len() < declared {
         let (line, next) = take_line(rest);
@@ -270,7 +284,7 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         append_hex(comment_payload(line)?, &mut resource, declared)?;
     }
-    psd::thumbnail_from_resources(&resource)
+    Some(resource)
 }
 
 fn find_comment<'a>(bytes: &'a [u8], marker: &[u8]) -> Option<(&'a [u8], &'a [u8])> {

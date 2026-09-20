@@ -59,14 +59,7 @@ struct Block<'a> {
 /// The block at `off`, whose kind carries `plen` parameter bytes, or `None` when any size runs
 /// past the file.
 fn read_block(bytes: &[u8], off: usize, plen: usize, checksum_len: usize) -> Option<Block<'_>> {
-    let kind = le16(bytes, off)?;
-    let compression = le16(bytes, off + 2)?;
-    let uncompressed = le32(bytes, off + 4)? as usize;
-    let (stored, header_len) = if compression == 0 {
-        (uncompressed, 8)
-    } else {
-        (le32(bytes, off + 8)? as usize, 12)
-    };
+    let (kind, compression, uncompressed, stored, header_len) = read_block_head(bytes, off)?;
     let params_at = off.checked_add(header_len)?;
     let data_at = params_at.checked_add(plen)?;
     let data_end = data_at.checked_add(stored)?;
@@ -78,6 +71,20 @@ fn read_block(bytes: &[u8], off: usize, plen: usize, checksum_len: usize) -> Opt
         data: bytes.get(data_at..data_end)?,
         next: data_end.checked_add(checksum_len)?,
     })
+}
+
+/// A block's header words - kind, compression, uncompressed size, stored size - plus the length
+/// of the header section, which is 4 bytes longer when the block is compressed.
+fn read_block_head(bytes: &[u8], off: usize) -> Option<(u16, u16, usize, usize, usize)> {
+    let kind = le16(bytes, off)?;
+    let compression = le16(bytes, off + 2)?;
+    let uncompressed = le32(bytes, off + 4)? as usize;
+    let (stored, header_len) = if compression == 0 {
+        (uncompressed, 8)
+    } else {
+        (le32(bytes, off + 8)? as usize, 12)
+    };
+    Some((kind, compression, uncompressed, stored, header_len))
 }
 
 /// A thumbnail block's preview with its rank, or `None` when its sizes, dimensions or
@@ -128,6 +135,13 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let checksum_len = if le16(bytes, 8)? == 1 { 4 } else { 0 };
+    let (rasterish, _, raw) = best_thumbnail(bytes, checksum_len)?;
+    encode_candidate(rasterish, raw)
+}
+
+/// Walk the blocks from the header, keeping the best thumbnail block seen so far, until the
+/// G-code block, a kind the spec does not define, or the end of the file.
+fn best_thumbnail(bytes: &[u8], checksum_len: usize) -> Option<Candidate> {
     let mut off = 10usize;
     let mut best: Option<Candidate> = None;
     for _ in 0..MAX_BLOCKS {
@@ -147,8 +161,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
             break;
         }
     }
-    let (rasterish, _, raw) = best?;
-    encode_candidate(rasterish, raw)
+    best
 }
 
 /// A deflated thumbnail block: zlib-wrapped first (what `deflate()` emits), raw deflate as the

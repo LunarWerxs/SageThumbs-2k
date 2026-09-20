@@ -54,7 +54,13 @@ pub fn preview_prefix_len<R: std::io::Read + std::io::Seek>(r: &mut R) -> Option
     let mut table = vec![0u8; count.checked_mul(9)?];
     r.read_exact(&mut table).ok()?;
     // The table itself must be covered even if every record is filtered out.
-    let mut end = imgptr.checked_add(21)?.checked_add(table.len() as u64)?;
+    let end = imgptr.checked_add(21)?.checked_add(table.len() as u64)?;
+    max_record_end(&table, end)
+}
+
+/// Largest `off + size` over the usable records of `table`, starting from the table's own
+/// `end`, or `None` if a candidate record's offset/size overflows.
+fn max_record_end(table: &[u8], mut end: u64) -> Option<u64> {
     let (table_chunks, _) = table.as_chunks::<9>();
     for rec in table_chunks {
         let off = u32::from_le_bytes(rec[1..5].try_into().ok()?) as u64;
@@ -97,10 +103,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 fn preview_records(bytes: &[u8], mut p: usize, count: u8) -> Option<[Option<(usize, usize)>; 3]> {
     let (mut png, mut dib, mut wmf) = (None, None, None);
     for _ in 0..count {
-        let code = *bytes.get(p)?;
-        let off = le32(bytes, p.checked_add(1)?)? as usize;
-        let size = le32(bytes, p.checked_add(5)?)? as usize;
-        p = p.checked_add(9)?;
+        let (code, off, size) = read_record(bytes, &mut p)?;
         if size == 0 || size as u64 > super::MAX_COVER {
             continue;
         }
@@ -112,6 +115,16 @@ fn preview_records(bytes: &[u8], mut p: usize, count: u8) -> Option<[Option<(usi
         }
     }
     Some([png, dib, wmf])
+}
+
+/// Read one 9-byte preview record at `*p` and advance `*p` past it: its
+/// `(code, offset, size)`, or `None` if the record table runs off the end of `bytes`.
+fn read_record(bytes: &[u8], p: &mut usize) -> Option<(u8, usize, usize)> {
+    let code = *bytes.get(*p)?;
+    let off = le32(bytes, p.checked_add(1)?)? as usize;
+    let size = le32(bytes, p.checked_add(5)?)? as usize;
+    *p = p.checked_add(9)?;
+    Some((code, off, size))
 }
 
 /// Slice one `(off, size)` record out of `bytes`, run it through `convert` (identity for

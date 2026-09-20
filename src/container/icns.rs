@@ -26,22 +26,9 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut best_jp2: Option<&[u8]> = None;
     let mut off = 8usize;
     while off + 8 <= end {
-        let len = u32::from_be_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize;
-        if len < 8 {
-            break; // corrupt length would loop forever
-        }
-        let data_end = off.checked_add(len)?;
-        if data_end > end {
+        let Some(data_end) = scan_member(bytes, end, off, &mut best_png, &mut best_jp2) else {
             break;
-        }
-        let data = &bytes[off + 8..data_end];
-        if data.starts_with(&[0x89, b'P', b'N', b'G']) {
-            if best_png.is_none_or(|b| data.len() > b.len()) {
-                best_png = Some(data);
-            }
-        } else if data.starts_with(&JP2_MAGIC) && best_jp2.is_none_or(|b| data.len() > b.len()) {
-            best_jp2 = Some(data);
-        }
+        };
         off = data_end;
     }
     // Bound the returned member to the same `MAX_COVER` (32 MiB) pre-decode budget every sibling
@@ -52,6 +39,34 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         .or(best_jp2)
         .filter(|d| d.len() as u64 <= crate::container::MAX_COVER)
         .map(|d| d.to_vec())
+}
+
+/// Scans one icns member at `off`, updating the running best PNG/JP2 slices and returning
+/// the offset past it, or None when the header is malformed or the member list ends.
+fn scan_member<'a>(
+    bytes: &'a [u8],
+    end: usize,
+    off: usize,
+    best_png: &mut Option<&'a [u8]>,
+    best_jp2: &mut Option<&'a [u8]>,
+) -> Option<usize> {
+    let len = u32::from_be_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize;
+    if len < 8 {
+        return None; // corrupt length would loop forever
+    }
+    let data_end = off.checked_add(len)?;
+    if data_end > end {
+        return None;
+    }
+    let data = &bytes[off + 8..data_end];
+    if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+        if best_png.is_none_or(|b| data.len() > b.len()) {
+            *best_png = Some(data);
+        }
+    } else if data.starts_with(&JP2_MAGIC) && best_jp2.is_none_or(|b| data.len() > b.len()) {
+        *best_jp2 = Some(data);
+    }
+    Some(data_end)
 }
 
 #[cfg(test)]

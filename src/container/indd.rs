@@ -66,36 +66,44 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut best: Option<Vec<u8>> = None;
     let mut pos = 0usize;
     for _ in 0..MAX_ELEMENTS {
-        let open = match find(bytes.get(pos..)?, OPEN) {
-            Some(o) => pos + o + OPEN.len(),
-            None => break,
+        let Some((next, jpeg)) = scan_element(bytes, pos) else {
+            break;
         };
-        let rest = bytes.get(open..)?;
-        // The close tag bounds the element WHEN the element is intact. When it is not,
-        // the nearest close tag belongs to some other packet, so treat it as an upper
-        // bound only — `clean_b64` decides where the data really ended.
-        let close = find(rest, CLOSE);
-        let span = rest.get(..close.unwrap_or(rest.len()))?;
+        pos = next;
 
-        let (b64, used) = clean_b64(span);
-
-        // Advance. Consuming the whole span means the element was intact, so step over
-        // its close tag; stopping early means we hit foreign bytes, and a REAL element
-        // can still sit between here and that far-away close tag — resume from the stop
-        // point instead of jumping over it. `open` always exceeds the previous `pos`, so
-        // this makes progress either way.
-        pos = match close {
-            Some(c) if used == span.len() => open + c + CLOSE.len(),
-            _ => open + used,
-        };
-
-        if let Some(jpeg) = decode_b64_jpeg(b64) {
+        if let Some(jpeg) = jpeg {
             if best.as_ref().is_none_or(|b| jpeg.len() > b.len()) {
                 best = Some(jpeg);
             }
         }
     }
     best
+}
+
+/// Scan one `<xmpGImg:image>` element starting at `pos`: returns its decoded JPEG (if
+/// any) and the position to resume from, or None when no further open tag exists.
+fn scan_element(bytes: &[u8], pos: usize) -> Option<(usize, Option<Vec<u8>>)> {
+    let open = pos + find(bytes.get(pos..)?, OPEN)? + OPEN.len();
+    let rest = bytes.get(open..)?;
+    // The close tag bounds the element WHEN the element is intact. When it is not,
+    // the nearest close tag belongs to some other packet, so treat it as an upper
+    // bound only — `clean_b64` decides where the data really ended.
+    let close = find(rest, CLOSE);
+    let span = rest.get(..close.unwrap_or(rest.len()))?;
+
+    let (b64, used) = clean_b64(span);
+
+    // Advance. Consuming the whole span means the element was intact, so step over
+    // its close tag; stopping early means we hit foreign bytes, and a REAL element
+    // can still sit between here and that far-away close tag — resume from the stop
+    // point instead of jumping over it. `open` always exceeds the previous `pos`, so
+    // this makes progress either way.
+    let next = match close {
+        Some(c) if used == span.len() => open + c + CLOSE.len(),
+        _ => open + used,
+    };
+
+    Some((next, decode_b64_jpeg(b64)))
 }
 
 /// Collect one element's base64, returning `(cleaned, bytes consumed from `raw`)`.
@@ -110,25 +118,32 @@ fn clean_b64(raw: &[u8]) -> (Vec<u8>, usize) {
     let mut b64: Vec<u8> = Vec::with_capacity(raw.len().min(B64_HINT));
     let mut i = 0;
     while i < raw.len() {
-        let c = raw[i];
-        if c.is_ascii_alphanumeric() || c == b'+' || c == b'/' {
-            if b64.len() >= MAX_B64 {
-                break;
-            }
-            b64.push(c);
-            i += 1;
-        } else if c == b'=' || c.is_ascii_whitespace() {
-            i += 1; // padding is re-derived below; whitespace is XML line wrapping
-        } else if c == b'&' {
-            match entity_len(&raw[i..]) {
-                Some(n) => i += n,
-                None => break, // a bare `&` is not valid XML text either
-            }
-        } else {
-            break; // binary — we have left the XMP packet
+        match b64_advance(raw, i, &mut b64) {
+            Some(next) => i = next,
+            None => break,
         }
     }
     (b64, i)
+}
+
+/// Classify the byte at `raw[i]`: append it to `b64` when it is base64 data and return
+/// the next index, or None at the first byte (or size cap) that ends the run.
+fn b64_advance(raw: &[u8], i: usize, b64: &mut Vec<u8>) -> Option<usize> {
+    let c = raw[i];
+    if c.is_ascii_alphanumeric() || c == b'+' || c == b'/' {
+        if b64.len() >= MAX_B64 {
+            return None;
+        }
+        b64.push(c);
+        Some(i + 1)
+    } else if c == b'=' || c.is_ascii_whitespace() {
+        Some(i + 1) // padding is re-derived below; whitespace is XML line wrapping
+    } else if c == b'&' {
+        // A bare `&` is not valid XML text either.
+        entity_len(&raw[i..]).map(|n| i + n)
+    } else {
+        None // binary — we have left the XMP packet
+    }
 }
 
 /// Length of the XML numeric character reference at the start of `s` (`&#xA;`,

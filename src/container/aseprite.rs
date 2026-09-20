@@ -287,12 +287,7 @@ fn parse_header(bytes: &[u8]) -> Option<Header> {
     };
     let flags = le32(bytes, 14)?;
     let transparent_index = *bytes.get(28)?;
-    if width == 0
-        || height == 0
-        || width > MAX_DIM
-        || height > MAX_DIM
-        || u64::from(width) * u64::from(height) > MAX_CANVAS_PIXELS
-    {
+    if !validate_canvas_dimensions(width, height) {
         return None;
     }
     Some(Header {
@@ -302,6 +297,15 @@ fn parse_header(bytes: &[u8]) -> Option<Header> {
         layer_opacity_valid: flags & 1 != 0,
         transparent_index,
     })
+}
+
+/// Validates dimensions and pixel budget for the canvas.
+fn validate_canvas_dimensions(width: u32, height: u32) -> bool {
+    width != 0
+        && height != 0
+        && width <= MAX_DIM
+        && height <= MAX_DIM
+        && u64::from(width) * u64::from(height) <= MAX_CANVAS_PIXELS
 }
 
 /// Frame 0's chunks: the layer list, the cels and the palette.

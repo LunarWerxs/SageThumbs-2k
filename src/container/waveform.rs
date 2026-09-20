@@ -147,17 +147,30 @@ fn scan_wav_chunks<R: Read + Seek>(r: &mut R) -> Option<(Option<WavFmt>, Option<
         let id = &hdr[0..4];
         let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
         let body = pos + 8;
-        if id == b"fmt " {
-            fmt = Some(parse_wav_fmt_chunk(r, size)?);
-        } else if id == b"data" {
-            data = Some((body, size));
-        }
-        if fmt.is_some() && data.is_some() {
+        if collect_wav_chunk(r, id, size, body, &mut fmt, &mut data)? {
             break;
         }
         pos = body + size + (size & 1); // chunks are word-aligned
     }
     Some((fmt, data))
+}
+
+/// Fold one RIFF chunk's payload into `fmt`/`data`; `true` once both are present,
+/// `None` when a malformed `fmt ` body must abort the whole scan.
+fn collect_wav_chunk<R: Read + Seek>(
+    r: &mut R,
+    id: &[u8],
+    size: u64,
+    body: u64,
+    fmt: &mut Option<WavFmt>,
+    data: &mut Option<WavData>,
+) -> Option<bool> {
+    if id == b"fmt " {
+        *fmt = Some(parse_wav_fmt_chunk(r, size)?);
+    } else if id == b"data" {
+        *data = Some((body, size));
+    }
+    Some(fmt.is_some() && data.is_some())
 }
 
 /// Parse a `fmt ` chunk body (cursor already at its start) into
@@ -218,32 +231,45 @@ fn scan_aiff_chunks<R: Read + Seek>(r: &mut R, mut pos: u64) -> AiffCommSsnd {
         let id = &hdr[0..4];
         let size = u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
         let body = pos + 8;
-        if id == b"COMM" {
-            let n = size.min(40) as usize;
-            let mut buf = vec![0u8; n];
-            if r.read_exact(&mut buf).is_err() {
-                break;
-            }
-            comm = parse_aiff_comm(&buf);
-            if comm.is_none() {
-                break;
-            }
-        } else if id == b"SSND" {
-            // SSND body = offset_be[4] + blockSize_be[4] + sample frames.
-            let Some(head) = read_arr::<8, _>(r) else {
-                break;
-            };
-            let offset = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64;
-            let sample_start = body + 8 + offset;
-            let sample_len = size.saturating_sub(8 + offset);
-            ssnd = Some((sample_start, sample_len));
-        }
-        if comm.is_some() && ssnd.is_some() {
+        if !scan_aiff_chunk(r, id, size, body, &mut comm, &mut ssnd) {
             break;
         }
         pos = body + size + (size & 1);
     }
     (comm, ssnd)
+}
+
+/// Read one AIFF chunk body into `comm`/`ssnd`; `false` stops the walk (a short read,
+/// an unreadable COMM, or both chunks now found).
+fn scan_aiff_chunk<R: Read + Seek>(
+    r: &mut R,
+    id: &[u8],
+    size: u64,
+    body: u64,
+    comm: &mut Option<(u16, u16, Kind)>,
+    ssnd: &mut Option<(u64, u64)>,
+) -> bool {
+    if id == b"COMM" {
+        let n = size.min(40) as usize;
+        let mut buf = vec![0u8; n];
+        if r.read_exact(&mut buf).is_err() {
+            return false;
+        }
+        *comm = parse_aiff_comm(&buf);
+        if comm.is_none() {
+            return false;
+        }
+    } else if id == b"SSND" {
+        // SSND body = offset_be[4] + blockSize_be[4] + sample frames.
+        let Some(head) = read_arr::<8, _>(r) else {
+            return false;
+        };
+        let offset = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64;
+        let sample_start = body + 8 + offset;
+        let sample_len = size.saturating_sub(8 + offset);
+        *ssnd = Some((sample_start, sample_len));
+    }
+    !(comm.is_some() && ssnd.is_some())
 }
 
 /// Validate the COMM/SSND chunk data `scan_aiff_chunks` collected into a final `Pcm`.
@@ -327,26 +353,29 @@ fn sample_to_f32(b: &[u8], kind: Kind) -> f32 {
                 0.0
             }
         }
-        Kind::IntLe | Kind::IntBe => {
-            let n = b.len();
-            let mut v: i64 = 0;
-            if matches!(kind, Kind::IntLe) {
-                for (i, &byte) in b.iter().enumerate() {
-                    v |= (byte as i64) << (8 * i);
-                }
-            } else {
-                for &byte in b {
-                    v = (v << 8) | byte as i64;
-                }
-            }
-            let bits = 8 * n as u32;
-            // Sign-extend from `bits` to i64, then normalize by the bit-depth max.
-            let shift = 64 - bits;
-            let v = (v << shift) >> shift;
-            let denom = (1i64 << (bits - 1)) as f32;
-            v as f32 / denom
+        Kind::IntLe | Kind::IntBe => int_sample_to_f32(b, kind),
+    }
+}
+
+/// Sign-extend an N-byte integer sample of either endianness and normalize it.
+fn int_sample_to_f32(b: &[u8], kind: Kind) -> f32 {
+    let n = b.len();
+    let mut v: i64 = 0;
+    if matches!(kind, Kind::IntLe) {
+        for (i, &byte) in b.iter().enumerate() {
+            v |= (byte as i64) << (8 * i);
+        }
+    } else {
+        for &byte in b {
+            v = (v << 8) | byte as i64;
         }
     }
+    let bits = 8 * n as u32;
+    // Sign-extend from `bits` to i64, then normalize by the bit-depth max.
+    let shift = 64 - bits;
+    let v = (v << shift) >> shift;
+    let denom = (1i64 << (bits - 1)) as f32;
+    v as f32 / denom
 }
 
 // ── drawing ───────────────────────────────────────────────────────────────────

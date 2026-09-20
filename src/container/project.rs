@@ -34,26 +34,8 @@ use super::zipfmt::read_named;
 pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
     // Krita / OpenRaster: keyed off their `mimetype` entry (like ODF).
     if let Some(mt) = read_named(zip, "mimetype") {
-        if contains_ci(&mt, b"krita") {
-            return try_paths(zip, &["mergedimage.png", "preview.png"]);
-        }
-        if contains_ci(&mt, b"openraster") {
-            return try_paths(zip, &["Thumbnails/thumbnail.png", "mergedimage.png"]);
-        }
-        // Adobe XD: mimetype "application/vnd.adobe.sparkler.project…". Top-level
-        // thumbnail.png (small) preferred, preview.png (larger) as fallback.
-        if contains_ci(&mt, b"sparkler") {
-            return try_paths(zip, &["thumbnail.png", "preview.png"]);
-        }
-        // Pixelorama `.pxo` (1.0+, mimetype "application/x-pixelorama"): a root `preview.png`
-        // of the current frame, 256 px on its long edge, nearest-neighbour scaled - written by
-        // Pixelorama expressly so "file managers can later use this as a thumbnail" (its
-        // OpenSave.gd, verified 2026-09-17). Keyed off the mimetype like Krita: a bare root
-        // `preview.png` is not in the generic list below on purpose, since it would claim any
-        // zip that happens to carry one. Pre-1.0 `.pxo` files are zstd streams, not zips, and
-        // never reach this module; they keep the stock icon.
-        if contains_ci(&mt, b"pixelorama") {
-            return try_paths(zip, &["preview.png"]);
+        if let Some(paths) = mimetype_paths(&mt) {
+            return try_paths(zip, paths);
         }
     }
     // Autodesk Fusion 360 `.f3d` (ZIP): a 256×256 model render at
@@ -99,6 +81,33 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
             "preview.jpg",            // Apple iWork (root preview) — least specific, last
         ],
     )
+}
+
+/// The preview paths for a `mimetype` we key off (Krita / OpenRaster / Adobe XD /
+/// Pixelorama), or None when this ZIP is not one of those packages.
+fn mimetype_paths(mt: &[u8]) -> Option<&'static [&'static str]> {
+    if contains_ci(mt, b"krita") {
+        return Some(&["mergedimage.png", "preview.png"]);
+    }
+    if contains_ci(mt, b"openraster") {
+        return Some(&["Thumbnails/thumbnail.png", "mergedimage.png"]);
+    }
+    // Adobe XD: mimetype "application/vnd.adobe.sparkler.project…". Top-level
+    // thumbnail.png (small) preferred, preview.png (larger) as fallback.
+    if contains_ci(mt, b"sparkler") {
+        return Some(&["thumbnail.png", "preview.png"]);
+    }
+    // Pixelorama `.pxo` (1.0+, mimetype "application/x-pixelorama"): a root `preview.png`
+    // of the current frame, 256 px on its long edge, nearest-neighbour scaled - written by
+    // Pixelorama expressly so "file managers can later use this as a thumbnail" (its
+    // OpenSave.gd, verified 2026-09-17). Keyed off the mimetype like Krita: a bare root
+    // `preview.png` is not in the generic list below on purpose, since it would claim any
+    // zip that happens to carry one. Pre-1.0 `.pxo` files are zstd streams, not zips, and
+    // never reach this module; they keep the stock icon.
+    if contains_ci(mt, b"pixelorama") {
+        return Some(&["preview.png"]);
+    }
+    None
 }
 
 fn try_paths<R: Read + Seek>(zip: &mut ZipArchive<R>, paths: &[&str]) -> Option<Vec<u8>> {

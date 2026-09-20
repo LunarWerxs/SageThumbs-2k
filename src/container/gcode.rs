@@ -37,13 +37,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
             continue;
         }
         // Accumulate the base64 body until the matching "thumbnail end".
-        let mut b64 = String::new();
-        for l in lines.by_ref() {
-            if l.contains("thumbnail end") {
-                break;
-            }
-            b64.push_str(l.trim_start_matches(';').trim());
-        }
+        let b64 = read_thumbnail_body(&mut lines);
         if let Ok(png) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
             if png.starts_with(&[0x89, b'P', b'N', b'G'])
                 && best.as_ref().is_none_or(|b| png.len() > b.len())
@@ -53,6 +47,18 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
         }
     }
     best
+}
+
+/// Read one thumbnail block's base64 body up to the matching "thumbnail end".
+fn read_thumbnail_body(lines: &mut std::str::Lines<'_>) -> String {
+    let mut b64 = String::new();
+    for l in lines.by_ref() {
+        if l.contains("thumbnail end") {
+            break;
+        }
+        b64.push_str(l.trim_start_matches(';').trim());
+    }
+    b64
 }
 
 #[cfg(test)]

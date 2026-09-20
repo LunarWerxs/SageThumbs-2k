@@ -99,28 +99,42 @@ fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Op
         fat_sectors.push(v);
     }
     let mut difat = first_difat;
-    // Bound the DIFAT chain by a hop counter INDEPENDENT of whether `fat_sectors` grew, the way
-    // `follow()` bounds every other chain in this file. Without it a crafted DIFAT sector whose
-    // n-1 FAT entries are all FREESECT/ENDOFCHAIN (so none are pushed) and whose trailing next
-    // pointer self-references loops forever — a true hang, reachable for anything the sniffer
-    // classifies as OLE2 (legacy Office, .msi, .max, .msg) in the thumbnail/preview host.
     let mut difat_hops = 0usize;
     while difat != ENDOFCHAIN && difat != FREESECT && fat_sectors.len() <= MAX_SECTORS {
-        if difat_hops >= MAX_SECTORS {
-            return None; // DIFAT chain longer than any real file could need: a cycle.
-        }
-        difat_hops += 1;
-        let sec = read_sector(bytes, difat, sector_size)?;
-        let n = sector_size / 4;
-        for i in 0..n - 1 {
-            let v = le32(sec, i * 4)?;
-            if v != FREESECT && v != ENDOFCHAIN {
-                fat_sectors.push(v);
-            }
-        }
-        difat = le32(sec, (n - 1) * 4)?;
+        append_difat_sector(bytes, &mut difat, &mut difat_hops, sector_size, &mut fat_sectors)?;
     }
     Some(fat_sectors)
+}
+
+/// Advance one DIFAT hop: append that sector's FAT entries to `fat_sectors` and step
+/// `difat`/`difat_hops` on to the next link; `None` once the hop count is a cycle.
+///
+/// Bound the DIFAT chain by a hop counter INDEPENDENT of whether `fat_sectors` grew, the way
+/// `follow()` bounds every other chain in this file. Without it a crafted DIFAT sector whose
+/// n-1 FAT entries are all FREESECT/ENDOFCHAIN (so none are pushed) and whose trailing next
+/// pointer self-references loops forever — a true hang, reachable for anything the sniffer
+/// classifies as OLE2 (legacy Office, .msi, .max, .msg) in the thumbnail/preview host.
+fn append_difat_sector(
+    bytes: &[u8],
+    difat: &mut u32,
+    difat_hops: &mut usize,
+    sector_size: usize,
+    fat_sectors: &mut Vec<u32>,
+) -> Option<()> {
+    if *difat_hops >= MAX_SECTORS {
+        return None; // DIFAT chain longer than any real file could need: a cycle.
+    }
+    *difat_hops += 1;
+    let sec = read_sector(bytes, *difat, sector_size)?;
+    let n = sector_size / 4;
+    for i in 0..n - 1 {
+        let v = le32(sec, i * 4)?;
+        if v != FREESECT && v != ENDOFCHAIN {
+            fat_sectors.push(v);
+        }
+    }
+    *difat = le32(sec, (n - 1) * 4)?;
+    Some(())
 }
 
 /// Read the FAT itself (concatenated u32 entries) from its sector list.
@@ -160,27 +174,42 @@ fn find_directory_entries(
     let mut root: Option<(u32, u64)> = None;
     let (dir_chunks, _) = dir.as_chunks::<128>();
     for e in dir_chunks {
-        let etype = e[66];
-        if etype != 1 && etype != 2 && etype != 5 {
-            continue; // unused/free
-        }
-        let start = le32(e, 116)?;
-        let size = le64(e, 120)?;
-        if etype == 5 {
-            root = Some((start, size));
-        }
-        let name_len = le16(e, 64)? as usize; // bytes incl null terminator
-        if (2..=64).contains(&name_len) && targets.len() < max {
-            let chars = (name_len / 2).saturating_sub(1);
-            let nm: String = (0..chars)
-                .filter_map(|c| char::from_u32(u16::from_le_bytes([e[c * 2], e[c * 2 + 1]]) as u32))
-                .collect();
-            if nm == name {
-                targets.push((start, size));
-            }
-        }
+        scan_directory_entry(e, name, max, targets.len(), &mut root, &mut targets)?;
     }
     Some((targets, root))
+}
+
+/// Read one 128-byte directory slot: record it as the root entry when it is the root
+/// (ETYPE 5), and push its (start, size) onto `targets` when its name matches `name` and
+/// fewer than `max` targets have been found so far. Free/unused slots are ignored.
+fn scan_directory_entry(
+    e: &[u8],
+    name: &str,
+    max: usize,
+    found: usize,
+    root: &mut Option<StreamLoc>,
+    targets: &mut Vec<StreamLoc>,
+) -> Option<()> {
+    let etype = e[66];
+    if etype != 1 && etype != 2 && etype != 5 {
+        return Some(()); // unused/free
+    }
+    let start = le32(e, 116)?;
+    let size = le64(e, 120)?;
+    if etype == 5 {
+        *root = Some((start, size));
+    }
+    let name_len = le16(e, 64)? as usize; // bytes incl null terminator
+    if (2..=64).contains(&name_len) && found < max {
+        let chars = (name_len / 2).saturating_sub(1);
+        let nm: String = (0..chars)
+            .filter_map(|c| char::from_u32(u16::from_le_bytes([e[c * 2], e[c * 2 + 1]]) as u32))
+            .collect();
+        if nm == name {
+            targets.push((start, size));
+        }
+    }
+    Some(())
 }
 
 /// Read a stream whose declared size is >= the mini-stream cutoff, walking the
@@ -318,12 +347,35 @@ pub fn read_streams(bytes: &[u8], name: &str, max: usize) -> Option<Vec<Vec<u8>>
     let (targets, root) =
         find_directory_entries(bytes, &fat, hdr.sector_size, hdr.first_dir, name, max)?;
 
-    let mut results: Vec<Vec<u8>> = Vec::with_capacity(targets.len());
     // The mini-stream and mini-FAT are shared by every small stream; built at most once,
     // on first need.
     let mut ministream_cache: Option<Vec<u8>> = None;
     let mut minifat_cache: Option<Vec<u32>> = None;
-    for (tstart, tsize) in targets {
+    read_target_streams(
+        bytes,
+        &fat,
+        &hdr,
+        root,
+        &targets,
+        &mut ministream_cache,
+        &mut minifat_cache,
+    )
+}
+
+/// Read every located target stream in directory order: big targets via the main FAT,
+/// small ones via the shared (build-once) mini-stream and mini-FAT caches. Zero-length
+/// targets are skipped; `None` if any chain is malformed.
+fn read_target_streams(
+    bytes: &[u8],
+    fat: &[u32],
+    hdr: &Header,
+    root: Option<StreamLoc>,
+    targets: &[StreamLoc],
+    ministream_cache: &mut Option<Vec<u8>>,
+    minifat_cache: &mut Option<Vec<u32>>,
+) -> Option<Vec<Vec<u8>>> {
+    let mut results: Vec<Vec<u8>> = Vec::with_capacity(targets.len());
+    for &(tstart, tsize) in targets {
         let tsize = (tsize.min(MAX_STREAM as u64)) as usize;
         if tsize == 0 {
             continue;
@@ -331,19 +383,19 @@ pub fn read_streams(bytes: &[u8], name: &str, max: usize) -> Option<Vec<Vec<u8>>
 
         // --- Big stream → main FAT; small stream → mini-FAT inside the root stream.
         let out = if tsize as u64 >= hdr.mini_cutoff {
-            read_big_stream(bytes, &fat, hdr.sector_size, tstart, tsize)?
+            read_big_stream(bytes, fat, hdr.sector_size, tstart, tsize)?
         } else {
             read_mini_stream(
                 bytes,
-                &fat,
+                fat,
                 hdr.sector_size,
                 hdr.mini_size,
                 hdr.first_minifat,
                 root,
                 tstart,
                 tsize,
-                &mut ministream_cache,
-                &mut minifat_cache,
+                ministream_cache,
+                minifat_cache,
             )?
         };
         results.push(out);

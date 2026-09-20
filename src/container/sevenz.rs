@@ -175,59 +175,73 @@ fn non_solid_covers<R: Read + Seek>(
     let mut found = Vec::with_capacity(picks.len());
 
     for &i in picks {
-        let (Some(file), Some(entry)) = (archive.files.get(i), entries.get(i)) else {
-            continue;
-        };
-        // The selection metadata is built directly from archive.files in the
-        // same order. Check each pick against the CURRENT remaining budget.
-        // Every byte actually emitted is charged even when validation fails;
-        // a zero-byte failure remains free so a later valid pick can be tried.
-        if file.size() != entry.size || file.size() > remaining {
-            continue;
-        }
-        let Some(block_index) = archive
-            .stream_map
-            .file_block_index
-            .get(i)
-            .copied()
-            .flatten()
-        else {
-            continue;
-        };
-
-        let target = file as *const sevenz_rust2::ArchiveEntry;
-        let decoder = BlockDecoder::new(1, block_index, archive, password, source);
-        // `archive.is_solid == false` promises one substream per block. Refuse
-        // an inconsistent/crafted map rather than draining an unbudgeted neighbor.
-        if decoder.entries().len() != 1 || !std::ptr::eq(&decoder.entries()[0], file) {
-            continue;
-        }
-
-        let mut captured = None;
-        let mut spent = 0u64;
-        let decoded = decoder.for_each_entries(&mut |actual, rd| {
-            if !std::ptr::eq(actual, target) || actual.size() > remaining {
-                return Ok(false);
-            }
-            let mut data = Vec::with_capacity(actual.size() as usize);
-            let ok = rd.take(remaining).read_to_end(&mut data).is_ok();
-            // Charge every byte the codec emitted, even if CRC/length validation
-            // later rejects the entry. Otherwise four corrupt picks could each
-            // consume the full 8 MiB allowance while none reduced `remaining`.
-            spent = data.len() as u64;
-            if ok && !data.is_empty() && data.len() as u64 == actual.size() {
-                captured = Some(data);
-            }
-            Ok(false)
-        });
-        remaining = remaining.saturating_sub(spent);
-        if decoded.is_ok() {
-            if let Some(data) = captured {
+        if let Some((spent, data)) =
+            non_solid_pick(source, archive, password, i, entries, remaining)
+        {
+            remaining = remaining.saturating_sub(spent);
+            if let Some(data) = data {
                 found.push(data);
             }
         }
     }
     found
+}
+
+/// Decode one budgeted non-solid pick: the entry at index `i` in its own one-file
+/// block, charging every byte the codec emitted (whether or not it validated).
+/// `None` means "skip this pick" (metadata mismatch, over budget, or a block map
+/// inconsistent with the one-substream-per-block promise).
+fn non_solid_pick<R: Read + Seek>(
+    source: &mut R,
+    archive: &Archive,
+    password: &Password,
+    i: usize,
+    entries: &[Entry],
+    remaining: u64,
+) -> Option<(u64, Option<Vec<u8>>)> {
+    let (Some(file), Some(entry)) = (archive.files.get(i), entries.get(i)) else {
+        return None;
+    };
+    // The selection metadata is built directly from archive.files in the
+    // same order. Check each pick against the CURRENT remaining budget.
+    // Every byte actually emitted is charged even when validation fails;
+    // a zero-byte failure remains free so a later valid pick can be tried.
+    if file.size() != entry.size || file.size() > remaining {
+        return None;
+    }
+    let block_index = archive
+        .stream_map
+        .file_block_index
+        .get(i)
+        .copied()
+        .flatten()?;
+
+    let target = file as *const sevenz_rust2::ArchiveEntry;
+    let decoder = BlockDecoder::new(1, block_index, archive, password, source);
+    // `archive.is_solid == false` promises one substream per block. Refuse
+    // an inconsistent/crafted map rather than draining an unbudgeted neighbor.
+    if decoder.entries().len() != 1 || !std::ptr::eq(&decoder.entries()[0], file) {
+        return None;
+    }
+
+    let mut captured = None;
+    let mut spent = 0u64;
+    let decoded = decoder.for_each_entries(&mut |actual, rd| {
+        if !std::ptr::eq(actual, target) || actual.size() > remaining {
+            return Ok(false);
+        }
+        let mut data = Vec::with_capacity(actual.size() as usize);
+        let ok = rd.take(remaining).read_to_end(&mut data).is_ok();
+        // Charge every byte the codec emitted, even if CRC/length validation
+        // later rejects the entry. Otherwise four corrupt picks could each
+        // consume the full 8 MiB allowance while none reduced `remaining`.
+        spent = data.len() as u64;
+        if ok && !data.is_empty() && data.len() as u64 == actual.size() {
+            captured = Some(data);
+        }
+        Ok(false)
+    });
+    Some((spent, captured.filter(|_| decoded.is_ok())))
 }
 
 /// Does this entry's filename (lowercased, last path component) look like an
@@ -338,44 +352,15 @@ fn solid_covers<R: Read + Seek>(
     let mut each = |entry: &sevenz_rust2::ArchiveEntry,
                     rd: &mut dyn Read|
      -> Result<bool, sevenz_rust2::Error> {
-        // Done — enough images, or the peek budget is spent. Bail at the TOP,
-        // BEFORE reading `rd`.
-        if found.len() >= want || drained >= SOLID_SCAN_BUDGET {
-            return Ok(false);
-        }
-        let name = entry.name();
-        if target_names.contains(name) && !captured.contains(name) {
-            let room = SOLID_SCAN_BUDGET.saturating_sub(drained);
-            if entry.size() > room {
-                // A partial image is useless and would violate the advertised hard
-                // total budget. Stop before asking the decoder for any of it.
-                return Ok(false);
-            }
-            // Capture on first sighting of the name (7z legally allows two entries
-            // with the same name — take one, drain any later twin).
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            let ok = rd.take(room).read_to_end(&mut buf).is_ok();
-            drained = drained.saturating_add(buf.len() as u64);
-            if !ok || buf.len() as u64 != entry.size() {
-                // A failed mid-entry read leaves the SHARED solid stream desynced —
-                // the crate aborts the walk on any error, so stop with what we have.
-                return Ok(false);
-            }
-            if !buf.is_empty() {
-                captured.insert(name.to_string());
-                found.push(buf);
-            }
-        } else {
-            // A non-target neighbor must be decoded to advance the solid stream to
-            // the next entry — drain it to nowhere, capped at the remaining budget
-            // so one large neighbor can't overshoot (a partial drain only ever
-            // precedes the top-of-callback bail, so it never desyncs a later read).
-            let room = SOLID_SCAN_BUDGET.saturating_sub(drained);
-            drained = drained.saturating_add(
-                std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX),
-            );
-        }
-        Ok(found.len() < want && drained < SOLID_SCAN_BUDGET)
+        solid_step(
+            entry,
+            rd,
+            &mut found,
+            &mut captured,
+            &mut drained,
+            want,
+            &target_names,
+        )
     };
 
     // Drive blocks ourselves so Ok(false) really stops the outer loop. The pinned
@@ -389,6 +374,58 @@ fn solid_covers<R: Read + Seek>(
         }
     }
     found
+}
+
+/// One step of the solid-cover walk: capture the entry `rd` is streaming when it
+/// is an unclaimed target that fits the remaining budget, otherwise drain it to
+/// advance the solid stream. `Ok(false)` stops the block walk (done or spent).
+fn solid_step(
+    entry: &sevenz_rust2::ArchiveEntry,
+    rd: &mut dyn Read,
+    found: &mut Vec<Vec<u8>>,
+    captured: &mut std::collections::HashSet<String>,
+    drained: &mut u64,
+    want: usize,
+    target_names: &std::collections::HashSet<&str>,
+) -> Result<bool, sevenz_rust2::Error> {
+    // Done — enough images, or the peek budget is spent. Bail at the TOP,
+    // BEFORE reading `rd`.
+    if found.len() >= want || *drained >= SOLID_SCAN_BUDGET {
+        return Ok(false);
+    }
+    let name = entry.name();
+    if target_names.contains(name) && !captured.contains(name) {
+        let room = SOLID_SCAN_BUDGET.saturating_sub(*drained);
+        if entry.size() > room {
+            // A partial image is useless and would violate the advertised hard
+            // total budget. Stop before asking the decoder for any of it.
+            return Ok(false);
+        }
+        // Capture on first sighting of the name (7z legally allows two entries
+        // with the same name — take one, drain any later twin).
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        let ok = rd.take(room).read_to_end(&mut buf).is_ok();
+        *drained = drained.saturating_add(buf.len() as u64);
+        if !ok || buf.len() as u64 != entry.size() {
+            // A failed mid-entry read leaves the SHARED solid stream desynced —
+            // the crate aborts the walk on any error, so stop with what we have.
+            return Ok(false);
+        }
+        if !buf.is_empty() {
+            captured.insert(name.to_string());
+            found.push(buf);
+        }
+    } else {
+        // A non-target neighbor must be decoded to advance the solid stream to
+        // the next entry — drain it to nowhere, capped at the remaining budget
+        // so one large neighbor can't overshoot (a partial drain only ever
+        // precedes the top-of-callback bail, so it never desyncs a later read).
+        let room = SOLID_SCAN_BUDGET.saturating_sub(*drained);
+        *drained = drained.saturating_add(
+            std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX),
+        );
+    }
+    Ok(found.len() < want && *drained < SOLID_SCAN_BUDGET)
 }
 
 /// List up to `max` of a 7-Zip archive's entries from metadata only (no block decode, no bomb risk).

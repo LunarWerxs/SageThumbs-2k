@@ -65,19 +65,7 @@ pub(super) fn le16(b: &[u8], o: usize) -> Option<u16> {
 /// valid set, computes `bfOffBits` from the header (palette size for ≤8bpp, +12 for
 /// `BI_BITFIELDS`), and bounds the wrapped output to [`super::MAX_COVER`].
 pub(super) fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
-    if dib.len() < 40 {
-        return None;
-    }
-    let bi_size = le32(dib, 0)?;
-    if !matches!(bi_size, 40 | 52 | 56 | 108 | 124) {
-        return None; // not a BITMAPINFOHEADER-family DIB (we don't handle the old OS/2 core header)
-    }
-    let bit_count = le16(dib, 14)?;
-    if !matches!(bit_count, 1 | 4 | 8 | 16 | 24 | 32) {
-        return None;
-    }
-    let compression = le32(dib, 16)?;
-    let clr_used = le32(dib, 32)?;
+    let (bi_size, bit_count, compression, clr_used) = dib_header_fields(dib)?;
     let ncol = if clr_used != 0 {
         clr_used
     } else if bit_count <= 8 {
@@ -99,6 +87,23 @@ pub(super) fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(&bf_off_bits.to_le_bytes());
     out.extend_from_slice(dib);
     (out.len() as u64 <= super::MAX_COVER).then_some(out)
+}
+/// Read and validate a bare DIB's `BITMAPINFOHEADER` fields (`biSize`, `biBitCount`, `biCompression`, `biClrUsed`), rejecting a size or bit depth outside the known sets.
+fn dib_header_fields(dib: &[u8]) -> Option<(u32, u16, u32, u32)> {
+    if dib.len() < 40 {
+        return None;
+    }
+    let bi_size = le32(dib, 0)?;
+    if !matches!(bi_size, 40 | 52 | 56 | 108 | 124) {
+        return None; // not a BITMAPINFOHEADER-family DIB (we don't handle the old OS/2 core header)
+    }
+    let bit_count = le16(dib, 14)?;
+    if !matches!(bit_count, 1 | 4 | 8 | 16 | 24 | 32) {
+        return None;
+    }
+    let compression = le32(dib, 16)?;
+    let clr_used = le32(dib, 32)?;
+    Some((bi_size, bit_count, compression, clr_used))
 }
 
 /// Big-endian `u32` at byte offset `o`, bounds-checked.
@@ -172,16 +177,23 @@ fn skip_length_prefixed_segment(data: &[u8], p: usize) -> Option<usize> {
 /// position of the next real `0xFF` marker byte.
 fn skip_entropy_coded_scan(data: &[u8], mut p: usize) -> Option<usize> {
     loop {
-        if *data.get(p)? == 0xFF {
-            let n = *data.get(p + 1)?;
-            if n == 0x00 || (0xD0..=0xD7).contains(&n) {
-                p = p.checked_add(2)?; // byte-stuffed FF / restart marker
-                continue;
-            }
-            return Some(p); // a real marker (EOI, or next scan) — outer loop handles it
+        match entropy_scan_step(data, p)? {
+            SpanStep::Continue(next) => p = next,
+            SpanStep::Done => return Some(p),
         }
-        p = p.checked_add(1)?;
     }
+}
+
+/// One step of an entropy-coded scan from `p`: the next position to resume scanning at, or `SpanStep::Done` when `p` sits on the next real `0xFF` marker byte.
+fn entropy_scan_step(data: &[u8], p: usize) -> Option<SpanStep> {
+    if *data.get(p)? == 0xFF {
+        let n = *data.get(p + 1)?;
+        if n == 0x00 || (0xD0..=0xD7).contains(&n) {
+            return Some(SpanStep::Continue(p.checked_add(2)?)); // byte-stuffed FF / restart marker
+        }
+        return Some(SpanStep::Done); // a real marker (EOI, or next scan) — caller reports it
+    }
+    Some(SpanStep::Continue(p.checked_add(1)?))
 }
 
 /// One marker's effect on [`jpeg_span`]'s walk, starting right after the marker byte (`p`).

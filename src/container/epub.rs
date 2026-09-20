@@ -140,14 +140,22 @@ fn first_html_image(html: &str) -> Option<String> {
             continue;
         }
         if let Some(tag) = tag_from(html, pos) {
-            let href = tag_attr(tag, "src")
-                .or_else(|| tag_attr(tag, "xlink:href"))
-                .or_else(|| tag_attr(tag, "href"));
-            if let Some(v) = href {
-                if !v.is_empty() {
-                    return Some(v);
-                }
+            if let Some(src) = tag_image_src(tag) {
+                return Some(src);
             }
+        }
+    }
+    None
+}
+
+/// Extracts the image source attribute (`src`, `xlink:href`, or `href`) from an image tag.
+fn tag_image_src(tag: &str) -> Option<String> {
+    let href = tag_attr(tag, "src")
+        .or_else(|| tag_attr(tag, "xlink:href"))
+        .or_else(|| tag_attr(tag, "href"));
+    if let Some(v) = href {
+        if !v.is_empty() {
+            return Some(v);
         }
     }
     None

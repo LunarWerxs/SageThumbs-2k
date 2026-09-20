@@ -352,24 +352,39 @@ fn collect_channel_planes<'a>(
     let mut palette: Option<&[u8]> = None;
     let mut chan: [Option<Vec<u8>>; 4] = [None, None, None, None];
     for (id, c, _sub_len) in sub_blocks(b, content, end) {
-        match id {
-            COLOR_BLOCK => {
-                // chunk(4) entryCount(4) then `count` BGRA quads (Windows RGBQUAD order).
-                let n = le32(b, c + 4)? as usize;
-                if n > 0 && n <= 256 {
-                    palette = b.get(c + 8..c + 8 + n * 4);
-                }
-            }
-            CHANNEL_BLOCK => {
-                let (ctype, raw) = read_channel_plane(b, c, a, px)?;
-                if let Some(slot) = chan.get_mut(ctype as usize) {
-                    *slot = Some(raw);
-                }
-            }
-            _ => {}
-        }
+        collect_sub_block(b, id, c, a, px, &mut palette, &mut chan)?;
     }
     Some((palette, chan))
+}
+
+/// Fold one sub-block into `palette`/`chan`: record the palette it carries, or the channel
+/// plane it carries into its numbered slot.
+fn collect_sub_block<'a>(
+    b: &'a [u8],
+    id: u16,
+    c: usize,
+    a: &Attrs,
+    px: usize,
+    palette: &mut Option<&'a [u8]>,
+    chan: &mut [Option<Vec<u8>>; 4],
+) -> Option<()> {
+    match id {
+        COLOR_BLOCK => {
+            // chunk(4) entryCount(4) then `count` BGRA quads (Windows RGBQUAD order).
+            let n = le32(b, c + 4)? as usize;
+            if n > 0 && n <= 256 {
+                *palette = b.get(c + 8..c + 8 + n * 4);
+            }
+        }
+        CHANNEL_BLOCK => {
+            let (ctype, raw) = read_channel_plane(b, c, a, px)?;
+            if let Some(slot) = chan.get_mut(ctype as usize) {
+                *slot = Some(raw);
+            }
+        }
+        _ => {}
+    }
+    Some(())
 }
 
 /// Render the collected channel planes to interleaved RGB per the block's bit depth: 8-bit
@@ -385,35 +400,52 @@ fn render_rgb(
 ) -> Option<Vec<u8>> {
     let mut rgb = vec![0u8; px.checked_mul(3)?];
     match a.depth {
-        8 => {
-            let idx = chan[CHAN_COMPOSITE as usize].as_ref()?;
-            let pal = palette?;
-            for i in 0..px {
-                let e = idx[i] as usize * 4;
-                let (bl, g, r) = (
-                    pal.get(e).copied().unwrap_or(0),
-                    pal.get(e + 1).copied().unwrap_or(0),
-                    pal.get(e + 2).copied().unwrap_or(0),
-                );
-                rgb[i * 3] = r;
-                rgb[i * 3 + 1] = g;
-                rgb[i * 3 + 2] = bl;
-            }
-        }
-        24 | 32 => {
-            let r = chan[CHAN_RED as usize].as_ref()?;
-            let g = chan[CHAN_GREEN as usize].as_ref()?;
-            let bl = chan[CHAN_BLUE as usize].as_ref()?;
-            for i in 0..px {
-                rgb[i * 3] = r[i];
-                rgb[i * 3 + 1] = g[i];
-                rgb[i * 3 + 2] = bl[i];
-            }
-        }
+        8 => fill_indexed_rgb(&mut rgb, px, chan, palette)?,
+        24 | 32 => fill_planar_rgb(&mut rgb, px, chan)?,
         1 | 4 => return None, // sub-byte packing, no sample to verify against
         _ => return None,
     }
     Some(rgb)
+}
+
+/// Expand the 8-bit composite index plane through the BGRA `palette` into `rgb`.
+fn fill_indexed_rgb(
+    rgb: &mut [u8],
+    px: usize,
+    chan: &[Option<Vec<u8>>; 4],
+    palette: Option<&[u8]>,
+) -> Option<()> {
+    let idx = chan[CHAN_COMPOSITE as usize].as_ref()?;
+    let pal = palette?;
+    for i in 0..px {
+        let e = idx[i] as usize * 4;
+        let (bl, g, r) = (
+            pal.get(e).copied().unwrap_or(0),
+            pal.get(e + 1).copied().unwrap_or(0),
+            pal.get(e + 2).copied().unwrap_or(0),
+        );
+        rgb[i * 3] = r;
+        rgb[i * 3 + 1] = g;
+        rgb[i * 3 + 2] = bl;
+    }
+    Some(())
+}
+
+/// Interleave the RED/GREEN/BLUE channel planes into `rgb`.
+fn fill_planar_rgb(
+    rgb: &mut [u8],
+    px: usize,
+    chan: &[Option<Vec<u8>>; 4],
+) -> Option<()> {
+    let r = chan[CHAN_RED as usize].as_ref()?;
+    let g = chan[CHAN_GREEN as usize].as_ref()?;
+    let bl = chan[CHAN_BLUE as usize].as_ref()?;
+    for i in 0..px {
+        rgb[i * 3] = r[i];
+        rgb[i * 3 + 1] = g[i];
+        rgb[i * 3 + 2] = bl[i];
+    }
+    Some(())
 }
 
 fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<image::DynamicImage> {
@@ -462,23 +494,37 @@ fn largest_jpeg(data: &[u8]) -> Option<&[u8]> {
     let mut i = 0usize;
     let mut seen = 0usize;
     while i + 3 <= lim {
-        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
-            if let Some(len) = crate::container::jpeg_span_len(data, i) {
-                if best.is_none_or(|(_, bl)| len > bl) {
-                    best = Some((i, len));
-                }
-                seen += 1;
-                if seen >= MAX_JPEGS {
-                    break;
-                }
-                i += len;
-                continue;
-            }
+        if scan_jpeg_candidate(data, &mut i, &mut best, &mut seen) {
+            break;
         }
-        i += 1;
     }
     let (start, len) = best?;
     data.get(start..start.checked_add(len)?)
+}
+
+/// Advance `i` past the JPEG candidate starting there — measuring and recording it when it
+/// is longer than `best` — and return true once `MAX_JPEGS` candidates have been counted.
+fn scan_jpeg_candidate(
+    data: &[u8],
+    i: &mut usize,
+    best: &mut Option<(usize, usize)>,
+    seen: &mut usize,
+) -> bool {
+    if data[*i] == 0xFF && data[*i + 1] == 0xD8 && data[*i + 2] == 0xFF {
+        if let Some(len) = crate::container::jpeg_span_len(data, *i) {
+            if (*best).is_none_or(|(_, bl)| len > bl) {
+                *best = Some((*i, len));
+            }
+            *seen += 1;
+            if *seen >= MAX_JPEGS {
+                return true;
+            }
+            *i += len;
+            return false;
+        }
+    }
+    *i += 1;
+    false
 }
 
 /// Synthetic JPEG of the given pixel size, for building fixture containers. Lives

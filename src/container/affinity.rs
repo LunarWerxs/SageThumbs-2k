@@ -38,34 +38,44 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 
     let mut i = 0usize;
     while i + PNG_SIG.len() <= sig_limit {
-        if bytes[i..i + 8] != PNG_SIG {
-            i += 1;
-            continue;
-        }
-        // Found a PNG header; find its IEND terminator (incl. CRC) within a
-        // bounded window after the header (don't linearly scan to EOF).
-        let span_end = (i + 8).saturating_add(MAX_SCAN).min(bytes.len());
-        match find(&bytes[i + 8..span_end], IEND.as_slice()) {
-            Some(rel) => {
-                let end = i + 8 + rel + IEND.len();
-                let png = &bytes[i..end];
-                // Bound the cover we hand back (shared CBXMEM cap): a hostile `.af`
-                // could carry an enormous embedded PNG that's decoded downstream
-                // under panic=abort. Oversized candidates are simply skipped.
-                if png.len() >= 57 && png.len() as u64 <= crate::container::MAX_COVER {
-                    last_any = Some(png);
-                    if let Some((w, h)) = ihdr_dims(png) {
-                        if w.max(h) <= 512 {
-                            best_le512 = Some(png);
-                        }
-                    }
-                }
-                i = end; // resume after this PNG (don't rescan inside it)
-            }
+        match scan_step(bytes, i, &mut best_le512, &mut last_any) {
+            Some(next) => i = next,
             None => break, // no terminator → no more complete PNGs
         }
     }
     best_le512.or(last_any).map(|p| p.to_vec())
+}
+
+/// Advance the scan from `i` by one step, recording any bounded PNG candidate;
+/// returns the next offset, or None once no more complete PNGs can follow.
+fn scan_step<'a>(
+    bytes: &'a [u8],
+    i: usize,
+    best_le512: &mut Option<&'a [u8]>,
+    last_any: &mut Option<&'a [u8]>,
+) -> Option<usize> {
+    if bytes[i..i + 8] != PNG_SIG {
+        return Some(i + 1);
+    }
+    // Found a PNG header; find its IEND terminator (incl. CRC) within a
+    // bounded window after the header (don't linearly scan to EOF).
+    let span_end = (i + 8).saturating_add(MAX_SCAN).min(bytes.len());
+    // No terminator (→ None) means no more complete PNGs can follow.
+    let rel = find(&bytes[i + 8..span_end], IEND.as_slice())?;
+    let end = i + 8 + rel + IEND.len();
+    let png = &bytes[i..end];
+    // Bound the cover we hand back (shared CBXMEM cap): a hostile `.af`
+    // could carry an enormous embedded PNG that's decoded downstream
+    // under panic=abort. Oversized candidates are simply skipped.
+    if png.len() >= 57 && png.len() as u64 <= crate::container::MAX_COVER {
+        *last_any = Some(png);
+        if let Some((w, h)) = ihdr_dims(png) {
+            if w.max(h) <= 512 {
+                *best_le512 = Some(png);
+            }
+        }
+    }
+    Some(end) // resume after this PNG (don't rescan inside it)
 }
 
 /// PNG IHDR dimensions (bytes 12..16 must be "IHDR"; width/height big-endian).
