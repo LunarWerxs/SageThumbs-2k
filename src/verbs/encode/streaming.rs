@@ -126,26 +126,40 @@ pub(super) fn write_hdr_component_rle<W: Write>(
             continue;
         }
 
-        let mut literal_len = 0;
-        while index < scanline.len() && literal_len < MAX_LITERAL {
-            let run = hdr_component_run(scanline, index, component);
-            if run >= 3 {
-                break;
-            }
-
-            let take = run.min(MAX_LITERAL - literal_len);
-            for pixel in &scanline[index..index + take] {
-                literal[literal_len] = pixel[component];
-                literal_len += 1;
-            }
-            index += take;
-        }
+        let literal_len = collect_hdr_component_literal(scanline, index, component, &mut literal);
+        index += literal_len;
 
         debug_assert!(literal_len > 0);
         writer.write_all(&[literal_len as u8])?;
         writer.write_all(&literal[..literal_len])?;
     }
     Ok(())
+}
+
+/// Copy the pixels of one not-yet-RLE-able run into `literal`, returning how many were written.
+fn collect_hdr_component_literal(
+    scanline: &[[u8; 4]],
+    mut index: usize,
+    component: usize,
+    literal: &mut [u8],
+) -> usize {
+    const MAX_LITERAL: usize = 128;
+
+    let mut literal_len = 0;
+    while index < scanline.len() && literal_len < MAX_LITERAL {
+        let run = hdr_component_run(scanline, index, component);
+        if run >= 3 {
+            break;
+        }
+
+        let take = run.min(MAX_LITERAL - literal_len);
+        for pixel in &scanline[index..index + take] {
+            literal[literal_len] = pixel[component];
+            literal_len += 1;
+        }
+        index += take;
+    }
+    literal_len
 }
 
 pub(super) fn encode_hdr_bounded<W: Write>(
@@ -162,13 +176,7 @@ pub(super) fn encode_hdr_bounded<W: Write>(
     if !(8..=32_767).contains(&width) {
         // Radiance's new component-RLE marker cannot represent these widths.
         // Old readers accept a raw row-major RGBE stream after the same header.
-        for y in 0..img.height() {
-            for x in 0..img.width() {
-                let pixel = escape_raw_rgbe_marker(rgbe_at(img, x, y), x == 0);
-                writer.write_all(&pixel)?;
-            }
-        }
-        return Ok(());
+        return write_hdr_raw_pixels(writer, img);
     }
 
     // The new RLE format stores one scanline, then compresses its R/G/B/E
@@ -176,13 +184,34 @@ pub(super) fn encode_hdr_bounded<W: Write>(
     // 128 KiB regardless of the image height.
     let mut scanline = vec![[0u8; 4]; width];
     let marker = [2, 2, (width / 256) as u8, (width % 256) as u8];
+    write_hdr_rle_scanlines(writer, img, &mut scanline, marker)
+}
+
+/// Write `img` as a raw row-major RGBE stream, for widths the component-RLE marker cannot represent.
+fn write_hdr_raw_pixels<W: Write>(writer: &mut W, img: &DynamicImage) -> std::io::Result<()> {
+    for y in 0..img.height() {
+        for x in 0..img.width() {
+            let pixel = escape_raw_rgbe_marker(rgbe_at(img, x, y), x == 0);
+            writer.write_all(&pixel)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write every component-RLE scanline of `img`, refilling `scanline` for each row.
+fn write_hdr_rle_scanlines<W: Write>(
+    writer: &mut W,
+    img: &DynamicImage,
+    scanline: &mut [[u8; 4]],
+    marker: [u8; 4],
+) -> std::io::Result<()> {
     for y in 0..img.height() {
         for (x, pixel) in scanline.iter_mut().enumerate() {
             *pixel = rgbe_at(img, x as u32, y);
         }
         writer.write_all(&marker)?;
         for component in 0..4 {
-            write_hdr_component_rle(writer, &scanline, component)?;
+            write_hdr_component_rle(writer, scanline, component)?;
         }
     }
     Ok(())
@@ -277,13 +306,24 @@ fn write_pam_pixels<W: Write>(
     for y in 0..img.height() {
         for x in 0..img.width() {
             let samples = pam_tuple(rgba_u16_at(img, x, y), depth);
-            for sample in &samples[..depth] {
-                if wide {
-                    writer.write_all(&sample.to_be_bytes())?;
-                } else {
-                    writer.write_all(&[u16_to_u8(*sample)])?;
-                }
-            }
+            write_pam_pixel(writer, &samples, depth, wide)?;
+        }
+    }
+    Ok(())
+}
+
+/// One PAM pixel: its first `depth` samples, big-endian `u16` when `wide`, one byte each otherwise.
+fn write_pam_pixel<W: Write>(
+    writer: &mut W,
+    samples: &[u16; 4],
+    depth: usize,
+    wide: bool,
+) -> std::io::Result<()> {
+    for sample in &samples[..depth] {
+        if wide {
+            writer.write_all(&sample.to_be_bytes())?;
+        } else {
+            writer.write_all(&[u16_to_u8(*sample)])?;
         }
     }
     Ok(())
