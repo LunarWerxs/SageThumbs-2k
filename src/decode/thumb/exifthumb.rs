@@ -119,6 +119,11 @@ pub(super) fn ifd1_thumbnail_range(tiff: &[u8], le: bool, ifd0: usize) -> Option
     }
 
     let n1 = r16(tiff, ifd1, le)? as usize;
+    scan_ifd1_entries(tiff, le, ifd1, n1)
+}
+
+/// Scan IFD1's `n1`-entry table for the thumbnail offset (0x0201) and length (0x0202) tags.
+fn scan_ifd1_entries(tiff: &[u8], le: bool, ifd1: usize, n1: usize) -> Option<(usize, usize)> {
     let (mut off, mut len) = (None, None);
     for e in 0..n1 {
         let entry = ifd1 + 2 + e * 12;
