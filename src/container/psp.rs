@@ -481,17 +481,20 @@ fn largest_jpeg(data: &[u8]) -> Option<&[u8]> {
     data.get(start..start.checked_add(len)?)
 }
 
+/// Synthetic JPEG of the given pixel size, for building fixture containers. Lives
+/// outside `mod tests` so sibling container modules (C4D) can reach it too.
+#[cfg(test)]
+pub(crate) fn jpeg(w: u32, h: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(w, h))
+        .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
+        .unwrap();
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn jpeg(w: u32, h: u32) -> Vec<u8> {
-        let mut b = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(w, h))
-            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
-            .unwrap();
-        b
-    }
 
     /// Build a minimal PSP: signature + version + one Composite Image Bank block
     /// whose content is `[bank info chunk][a JPEG]`, plus a decoy block before it.

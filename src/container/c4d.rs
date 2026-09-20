@@ -51,14 +51,7 @@ fn find_soi(b: &[u8], window: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn jpeg(w: u32, h: u32) -> Vec<u8> {
-        let mut b = Vec::new();
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(w, h))
-            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
-            .unwrap();
-        b
-    }
+    use crate::container::psp::jpeg;
 
     /// header byte + "C4DC4D6" + version, then `gap` filler, then the preview JPEG,
     /// then a late material-swatch JPEG.
