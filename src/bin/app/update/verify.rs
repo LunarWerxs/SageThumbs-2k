@@ -137,12 +137,8 @@ pub(super) fn installer_asset_from_json_for_arch(
 
 /// SHA-256 of `data` as lowercase hex, via Windows CNG (no extra crate). None on failure.
 pub(super) fn sha256_hex(data: &[u8]) -> Option<String> {
-    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
-    let mut out = [0u8; 32];
-    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
-    status
-        .is_ok()
-        .then(|| out.iter().map(|b| format!("{b:02x}")).collect())
+    let digest = crate::license::sha256(data)?;
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Parse 128 lowercase-or-uppercase hex characters into a raw 64-byte ed25519 signature.

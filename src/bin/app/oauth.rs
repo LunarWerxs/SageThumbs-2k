@@ -60,14 +60,6 @@ fn random_bytes(n: usize) -> Option<Vec<u8>> {
     status.is_ok().then_some(buf)
 }
 
-/// SHA-256 via CNG's single-shot helper (same as `update.rs::sha256_hex`, raw bytes).
-fn sha256(data: &[u8]) -> Option<[u8; 32]> {
-    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
-    let mut out = [0u8; 32];
-    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
-    status.is_ok().then_some(out)
-}
-
 /// URL-safe base64 without padding — the encoding PKCE + JWT segments use.
 fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -77,7 +69,7 @@ fn b64url(bytes: &[u8]) -> String {
 /// random bytes; challenge = base64url(SHA-256(verifier)).
 fn pkce() -> Option<(String, String)> {
     let verifier = b64url(&random_bytes(32)?);
-    let challenge = b64url(&sha256(verifier.as_bytes())?);
+    let challenge = b64url(&crate::license::sha256(verifier.as_bytes())?);
     Some((verifier, challenge))
 }
 
@@ -528,7 +520,7 @@ mod tests {
             "verifier must be URL-safe, unpadded"
         );
         // The challenge must equal base64url(SHA-256(verifier)) — the relying party recomputes this.
-        let expected = b64url(&sha256(verifier.as_bytes()).unwrap());
+        let expected = b64url(&crate::license::sha256(verifier.as_bytes()).unwrap());
         assert_eq!(challenge, expected);
     }
 

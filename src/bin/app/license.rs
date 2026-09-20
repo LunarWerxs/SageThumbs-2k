@@ -556,10 +556,10 @@ const FINGERPRINT_SALT: &str = "SageThumbs2K-seat-v1";
 /// design doc calls it out by name as the fingerprint source.
 const CRYPTOGRAPHY_KEY: &str = r"SOFTWARE\Microsoft\Cryptography";
 
-/// SHA-256 via CNG's single-shot helper (same helper `oauth.rs::sha256` and
-/// `update.rs::sha256_hex` use; copied rather than imported across `bin/app`
-/// modules, per that helper's own doc comment).
-fn sha256(data: &[u8]) -> Option<[u8; 32]> {
+/// SHA-256 of `data` via CNG's single-shot helper, raw 32 bytes. `None` on the
+/// vanishingly unlikely CNG failure. The one copy: `oauth`'s PKCE challenge and
+/// `update::verify`'s asset digest call it as `crate::license::sha256`.
+pub(crate) fn sha256(data: &[u8]) -> Option<[u8; 32]> {
     use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
     let mut out = [0u8; 32];
     let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
