@@ -44,13 +44,15 @@ mod woff;
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::fmt::Write as _;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA,
+    FindWindowW, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA, WM_KEYDOWN,
 };
 
 /// Last time we spawned a `--preview` in response to a Space press (ms tick), or 0. Serializes
@@ -269,6 +271,27 @@ fn bench_viewer(hinst: HINSTANCE, dir: &str) -> Result<(Vec<std::path::PathBuf>,
     Ok((files, hwnd))
 }
 
+/// The mash/nav benches' shared start: the viewer opened headlessly on `dir`'s ordered previewable
+/// files, plus a report buffer that already carries `tag`'s headline line. `None` means the viewer
+/// would not start, and the reason has already gone to `flush`.
+fn bench_prepare(
+    hinst: HINSTANCE,
+    dir: &str,
+    tag: &str,
+    flush: &dyn Fn(&str),
+) -> Option<(Vec<std::path::PathBuf>, HWND, String)> {
+    let (files, hwnd) = match bench_viewer(hinst, dir) {
+        Ok(ready) => ready,
+        Err(e) => {
+            flush(&format!("{tag}: {e}\n"));
+            return None;
+        }
+    };
+    let mut out = String::new();
+    let _ = writeln!(out, "{tag}: {} files in {dir}", files.len());
+    Some((files, hwnd, out))
+}
+
 /// `--bench-preview <dir>`: measure what a ←/→ step actually costs.
 ///
 /// Runs the viewer's REAL decode entry point (`content::bench_decode_uncached`, the same
@@ -313,7 +336,6 @@ pub(crate) fn run_bench(dir: &str) {
     );
     let _ = writeln!(out, "{}", "-".repeat(82));
 
-    use std::fmt::Write as _;
     let (mut cold_total, mut warm_total, mut counted) = (0u128, 0u128, 0usize);
     for p in &files {
         let path = p.to_string_lossy().into_owned();
@@ -411,21 +433,11 @@ pub(crate) fn run_bench(dir: &str) {
 ///
 /// Set `ST2K_NO_CANCEL=1` to measure the same binary with abandonment switched off.
 pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
-
     let flush = bench_output(4, "st2k-mashbench.txt");
-    let (files, hwnd) = match bench_viewer(hinst, dir) {
-        Ok(ready) => ready,
-        Err(e) => {
-            flush(&format!("bench-mash: {e}\n"));
-            return;
-        }
+    let Some(start) = bench_prepare(hinst, dir, "bench-mash", &flush) else {
+        return;
     };
-
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    let _ = writeln!(out, "bench-mash: {} files in {dir}", files.len());
+    let (files, hwnd, mut out) = start;
     let _ = writeln!(
         out,
         "cancellation: {}",
@@ -462,7 +474,7 @@ pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
         last_press = std::time::Instant::now();
         let deadline = last_press + std::time::Duration::from_millis(REPEAT_MS);
         while std::time::Instant::now() < deadline {
-            pump_once(hwnd);
+            drain_messages();
         }
     }
     let landed = wait_until_loaded(hwnd, &target, 30_000);
@@ -501,21 +513,11 @@ pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
 
 /// so this needs no desktop, steals no focus, and runs unattended.
 pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
-
-    let mut out = String::new();
     let flush = bench_output(4, "st2k-navbench.txt");
-    let (files, hwnd) = match bench_viewer(hinst, dir) {
-        Ok(ready) => ready,
-        Err(e) => {
-            flush(&format!("bench-nav: {e}\n"));
-            return;
-        }
+    let Some(start) = bench_prepare(hinst, dir, "bench-nav", &flush) else {
+        return;
     };
-
-    use std::fmt::Write as _;
-    let _ = writeln!(out, "bench-nav: {} files in {dir}", files.len());
+    let (files, hwnd, mut out) = start;
     let _ = writeln!(out, "{}\n", load_snapshot());
     let _ = writeln!(
         out,
@@ -570,14 +572,10 @@ pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
     flush(&out);
 }
 
-/// Pump the viewer's message loop until it has fully loaded `expected`, or `budget_ms` passes.
-///
-/// "Loaded" is deliberately BOTH conditions: the state's path is the file we asked for AND the
-/// kind has left `Loading`. Checking only the path would stop the clock when navigation began
-/// rather than when the picture arrived, which would measure nothing worth measuring.
-/// Drain whatever is in the queue right now, once. Shared by the mash bench, which has to keep
-/// the window alive BETWEEN keypresses rather than only after the last one.
-fn pump_once(_hwnd: HWND) {
+/// Drain whatever the viewer's message queue holds right now, once. The mash bench runs this
+/// BETWEEN keypresses (to keep the window alive); [`wait_until_loaded`] runs it at the top of every
+/// poll.
+fn drain_messages() {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
     };
@@ -590,23 +588,19 @@ fn pump_once(_hwnd: HWND) {
     }
 }
 
+/// Pump the viewer's message loop until it has fully loaded `expected`, or `budget_ms` passes.
+///
+/// "Loaded" is deliberately BOTH conditions: the state's path is the file we asked for AND the
+/// kind has left `Loading`. Checking only the path would stop the clock when navigation began
+/// rather than when the picture arrived, which would measure nothing worth measuring.
 fn wait_until_loaded(hwnd: HWND, expected: &str, budget_ms: u64) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
-    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget_ms);
     loop {
         // Drain the queue DIRECTLY rather than via `win::pump_msgs`, which sleeps 16 ms per
         // "frame" — it exists to let a headless screenshot settle, not to time anything. Using
         // it here put a 128 ms floor under every measured step and made a 400x300 JPEG look
         // exactly as slow as a 12 MP one, which is what gave the game away.
-        unsafe {
-            let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
+        drain_messages();
         // The window can die under us (a decode abort, a close, anything), and `state()` then
         // hands back a NULL pointer that `&*` would happily dereference -- an access
         // violation, which is exactly how this harness crashed at 14 steps while passing at 8.
@@ -670,18 +664,10 @@ fn fmt_us(us: u128) -> String {
 }
 
 /// Spawn a fresh detached instance of ourselves with `args` (launches the viewer + the Info
-/// dialog).
+/// dialog), through the screenshot side's shared `spawn_self` — the app's one detached-spawn
+/// implementation.
 pub(super) fn spawn_self(args: &[&str]) {
-    if let Ok(exe) = std::env::current_exe() {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new(exe)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
-            .spawn();
-    }
+    let _ = crate::screenshot::spawn_self(args);
 }
 
 /// Daemon-side "Space pressed" handler (posted from the hook): if a viewer is up, close it

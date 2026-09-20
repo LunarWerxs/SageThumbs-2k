@@ -54,7 +54,8 @@ use sagethumbs2k_core::CREATE_NO_WINDOW;
 
 /// Spawn another instance of ourselves with `args`, fully detached (null stdio, no
 /// console). Used everywhere the feature launches a sibling process (capture,
-/// daemon, pin, upload, OCR) so each truly outlives its spawner.
+/// daemon, pin, upload, OCR) so each truly outlives its spawner. The app's one
+/// detached-spawn implementation: the preview viewer's `preview::spawn_self` delegates here.
 ///
 /// Returns whether the child actually started. Callers that handed the child a temp file
 /// to own (the capture PNG the `--upload` / `--ocr` helpers delete after reading)
