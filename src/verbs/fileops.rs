@@ -13,7 +13,7 @@ use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR,
 
 use super::actions::is_image;
 use super::encode::{read_full_fidelity_capped, reserve, write_atomic, OutSlot};
-use super::outcome::{refusal, Combined, OmitCause, Omitted, OnOmit};
+use super::outcome::{Combined, OmitCause, Omitted, OnOmit};
 
 /// Case-insensitive whole-path comparison (Windows file names are case-folding,
 /// so `Photo.JPG` and `photo.jpg` are the same file — don't bump the counter or
@@ -77,20 +77,9 @@ pub(crate) fn combined_path(first: &str, ext: &str) -> super::encode::OutSlot {
     })
 }
 
-/// A path's **file name** as a NUL-terminated UTF-16 buffer — the pre-encoded
-/// sort key for [`natural_key_cmp`], built once per element (not once per
-/// comparison) so `sort_by_cached_key` doesn't re-encode UTF-16 on every compare.
-fn natural_sort_key(p: &str) -> Vec<u16> {
-    let fname = Path::new(p)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(p);
-    fname.encode_utf16().chain(once(0)).collect()
-}
-
 /// Natural (logical) compare of two pre-encoded file-name keys — so page2 sorts
 /// before page10, matching Explorer (Win32 `StrCmpLogicalW`). Used to order CBZ
-/// pages. Inputs are the NUL-terminated buffers from [`natural_sort_key`].
+/// pages. Inputs are the NUL-terminated buffers from `crate::topdf::file_name_key`.
 fn natural_key_cmp(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
     unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0)
 }
@@ -185,8 +174,10 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
 
     // Pre-encode each file name to UTF-16 ONCE (the sort key), then natural-sort
     // by the cached buffers — `StrCmpLogicalW` never re-allocates per comparison.
-    let mut keyed: Vec<(Vec<u16>, &String)> =
-        imgs.iter().map(|p| (natural_sort_key(p), p)).collect();
+    let mut keyed: Vec<(Vec<u16>, &String)> = imgs
+        .iter()
+        .map(|p| (crate::topdf::file_name_key(p), p))
+        .collect();
     keyed.sort_by(|a, b| natural_key_cmp(&a.0, &b.0));
     let sorted: Vec<&String> = keyed.into_iter().map(|(_, p)| p).collect();
 
@@ -206,7 +197,7 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
     }
     if pages.is_empty() {
         let headline = format!("cbz: none of the {} inputs could be read", imgs.len());
-        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+        return Err(crate::topdf::refuse(headline, &omitted));
     }
     if on_omit == OnOmit::Fail && !omitted.is_empty() {
         let headline = format!(
@@ -214,7 +205,7 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
             omitted.len(),
             imgs.len()
         );
-        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+        return Err(crate::topdf::refuse(headline, &omitted));
     }
 
     // Header-only probe, before anything is written: the sidecar has to be the

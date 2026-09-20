@@ -177,14 +177,15 @@ pub fn combine_to_pdf(
     combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page(), on_omit)
 }
 
-/// A page's file name as a NUL-terminated UTF-16 buffer — the pre-encoded key for the
-/// logical name compare in [`natural_sort_paths`].
-fn logical_key(p: &str) -> Vec<u16> {
+/// A path's file name as a NUL-terminated UTF-16 buffer — the pre-encoded sort key for the
+/// natural (logical) compares here and in the CBZ combiner (`verbs::fileops`), built once
+/// per element so an O(n log n) sort doesn't re-encode UTF-16 on every comparison.
+pub(crate) fn file_name_key(p: &str) -> Vec<u16> {
     let fname = Path::new(p)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(p);
-    fname.encode_utf16().chain(std::iter::once(0)).collect()
+    crate::wide(fname)
 }
 
 /// Natural-sort `paths` by file name (page2 before page10), matching Explorer and
@@ -193,7 +194,7 @@ fn logical_key(p: &str) -> Vec<u16> {
 /// "combine N images" action silently produced a different page order depending on
 /// which output format you picked.
 fn natural_sort_paths(paths: &[String]) -> Vec<String> {
-    let mut keyed: Vec<(Vec<u16>, &String)> = paths.iter().map(|p| (logical_key(p), p)).collect();
+    let mut keyed: Vec<(Vec<u16>, &String)> = paths.iter().map(|p| (file_name_key(p), p)).collect();
     keyed.sort_by(|a, b| crate::container::select::cmp_logical_keys(&a.0, &b.0));
     keyed.into_iter().map(|(_, p)| p.clone()).collect()
 }
@@ -212,6 +213,14 @@ fn decode_page(p: &str, quality: u8) -> std::result::Result<Page, Omitted> {
         crate::safety::log(&format!("pdf: cannot encode {p}: {e}"));
         Omitted::new(p, OmitCause::Unencodable, e)
     })
+}
+
+/// The `E_FAIL` a combine aborts with: `headline` plus one line per left-out input. Shared by
+/// the "nothing usable" and `OnOmit::Fail` refusals of the PDF and CBZ combiners, so the
+/// refusal text is assembled one way. Consumes `headline` (the refusal copies it into the
+/// message).
+pub(crate) fn refuse(headline: String, omitted: &[Omitted]) -> Error {
+    Error::new(E_FAIL, refusal(&headline, omitted))
 }
 
 /// [`combine_to_pdf`] with the layout passed in rather than read from settings -
@@ -255,7 +264,7 @@ pub fn combine_to_pdf_paged(
     let (pages, omitted) = partition(attempts);
     if pages.is_empty() {
         let headline = format!("pdf: none of the {} inputs could be decoded", paths.len());
-        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+        return Err(refuse(headline, &omitted));
     }
     if on_omit == OnOmit::Fail && !omitted.is_empty() {
         let headline = format!(
@@ -263,7 +272,7 @@ pub fn combine_to_pdf_paged(
             omitted.len(),
             paths.len()
         );
-        return Err(Error::new(E_FAIL, refusal(&headline, &omitted)));
+        return Err(refuse(headline, &omitted));
     }
     let used = pages.len();
 
