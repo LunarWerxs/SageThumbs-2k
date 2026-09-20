@@ -230,7 +230,7 @@ fn sniff_utf16(bytes: &[u8]) -> Option<bool> {
 /// free: one stray byte pairing with the very next ASCII letter is enough to validate the
 /// whole (tiny) buffer, and [`cjk_score`]'s majority check has nothing else to weigh it
 /// against. Below [`SHORT_BUFFER_RESCUE_BYTES`], a non-dominant win is treated as inconclusive
-/// and the system code page is preferred instead - see the check at the end of this function.
+/// and the system code page is preferred instead - the check lives in [`pick_best_dbcs`].
 ///
 /// Ties fall to the system ANSI codepage when it is itself DBCS, which is the case that matters
 /// most: a Chinese/Japanese/Korean user opening a local file on their own localized Windows,

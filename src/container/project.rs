@@ -101,7 +101,7 @@ fn mimetype_paths(mt: &[u8]) -> Option<&'static [&'static str]> {
     // of the current frame, 256 px on its long edge, nearest-neighbour scaled - written by
     // Pixelorama expressly so "file managers can later use this as a thumbnail" (its
     // OpenSave.gd, verified 2026-09-17). Keyed off the mimetype like Krita: a bare root
-    // `preview.png` is not in the generic list below on purpose, since it would claim any
+    // `preview.png` is not in the generic `try_paths` list above on purpose, since it would claim any
     // zip that happens to carry one. Pre-1.0 `.pxo` files are zstd streams, not zips, and
     // never reach this module; they keep the stock icon.
     if contains_ci(mt, b"pixelorama") {

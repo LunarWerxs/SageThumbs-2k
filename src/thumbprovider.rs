@@ -174,7 +174,7 @@ fn log_identity_fields(ext: Option<String>, size: Option<u64>) -> (String, Strin
 }
 
 /// The thumbnail edge actually asked of the decoder: the shell's request capped at the
-/// user's `MaxWidth`/`MaxHeight` so a small request is never upscaled to the limit.
+/// user's `Width`/`Height` thumbnail limit so a small request is never upscaled to the limit.
 fn capped_edge(cx: u32, max_thumb: u32) -> u32 {
     cx.min(max_thumb)
 }
@@ -394,8 +394,8 @@ mod tests {
         );
     }
 
-    /// A nameless stream reports neither field; the failure log prints `?` for the
-    /// extension rather than an empty string the doctor cannot key on (#37).
+    /// A nameless stream reports no extension even when its size is known; the failure log
+    /// prints `?` for the extension rather than an empty string the doctor cannot key on (#37).
     #[test]
     fn log_identity_prints_a_question_mark_for_a_missing_extension() {
         assert_eq!(
@@ -424,7 +424,7 @@ mod tests {
         );
     }
 
-    /// The user's `MaxWidth`/`MaxHeight` is a ceiling, not a target: a smaller shell
+    /// The user's `Width`/`Height` thumbnail limit is a ceiling, not a target: a smaller shell
     /// request stays small so the decode never upscales to the limit.
     #[test]
     fn capped_edge_keeps_a_request_below_the_user_limit() {

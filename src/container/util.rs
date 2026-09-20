@@ -196,10 +196,11 @@ fn entropy_scan_step(data: &[u8], p: usize) -> Option<SpanStep> {
     Some(SpanStep::Continue(p.checked_add(1)?))
 }
 
-/// One marker's effect on [`jpeg_span`]'s walk, starting right after the marker byte (`p`).
-/// `Continue` carries the position to resume scanning from; `Done` is EOI (the caller computes
-/// the span length itself, since only it has `off`); `None` aborts the whole walk (an unreadable
-/// segment length).
+/// One step's effect on a walk. For [`jpeg_span`]'s marker walk (starting right after the
+/// marker byte `p`), `Continue` carries the position to resume scanning from and `Done` is EOI
+/// (the caller computes the span length itself, since only it has `off`); for
+/// [`entropy_scan_step`], `Done` is any real marker, which is where the entropy-coded data
+/// ends. `None` aborts the whole walk (an unreadable segment length, or running off the end).
 enum SpanStep {
     Continue(usize),
     Done,

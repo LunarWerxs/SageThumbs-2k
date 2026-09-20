@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(row, [(ID_NUDGE_ACTION, 92), (ID_NUDGE_LATER, 80)]);
     }
 
-    /// The backstop: four translated labels that overrun the card are scaled back so the row - not
+    /// The backstop: translated labels that overrun the card are scaled back so the row - not
     /// just the widest button - fits in the space left after the padding and the gaps.
     #[test]
     fn an_overlong_row_is_scaled_back_to_fit() {
