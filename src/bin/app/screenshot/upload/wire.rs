@@ -93,9 +93,13 @@ pub(super) fn extract_url(body: &str, json: bool) -> Option<String> {
         return (is_http_url(t) && t.len() < 2048 && !t.contains(char::is_whitespace))
             .then(|| t.to_string());
     }
-    // JSON reply: take the first embedded http(s) URL, un-escaping `\/`.
-    let start = t.find("http")?;
-    let rest: Vec<char> = t[start..].chars().collect();
+    extract_json_url(t)
+}
+
+/// Extract the first embedded HTTP(S) URL from a JSON response, un-escaping `\/`.
+fn extract_json_url(text: &str) -> Option<String> {
+    let start = text.find("http")?;
+    let rest: Vec<char> = text[start..].chars().collect();
     let mut url = String::new();
     let mut i = 0;
     while i < rest.len() {

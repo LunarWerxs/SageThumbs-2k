@@ -71,31 +71,8 @@ pub(super) fn upload_hosts() -> Result<Vec<UploadHost>, String> {
     //    and it cannot be honoured, so nothing may be sent anywhere else (2026-09-19 audit
     //    F22: an `http://` typo in the only active line silently selected the public
     //    defaults). The all-commented template still means the built-ins, as documented.
-    if let Some(path) = cfg {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let (hosts, rejected) = parse_hosts_config(&text);
-                if !hosts.is_empty() {
-                    return Ok(hosts);
-                }
-                if !rejected.is_empty() {
-                    return Err(format!(
-                        "The upload-hosts file names a destination that cannot be used, and no \
-                         other:\n\n{}\n\nEvery host must be an https:// URL on port 443 with no \
-                         user info. Fix the line or comment it out; nothing was uploaded.\n\n{}",
-                        rejected.join("\n"),
-                        path.display()
-                    ));
-                }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "The upload-hosts file exists but could not be read ({e}); nothing was \
-                     uploaded.\n\n{}",
-                    path.display()
-                ));
-            }
-        }
+    if let Some(hosts) = hosts_from_config_file(cfg.as_deref())? {
+        return Ok(hosts);
     }
 
     // 2) Legacy single-host override. Routed through settings::get_string_opt (not a
@@ -135,6 +112,41 @@ pub(super) fn upload_hosts() -> Result<Vec<UploadHost>, String> {
 
     // 3) Built-in fallback chain.
     Ok(builtin_hosts())
+}
+
+/// Read the user's upload-hosts config file (when one exists) and turn it into the
+/// authoritative host list: `Ok(Some(hosts))` for a usable config, `Ok(None)` when the
+/// file is absent or defines nothing usable, `Err(message)` for an unusable one.
+fn hosts_from_config_file(
+    cfg: Option<&std::path::Path>,
+) -> Result<Option<Vec<UploadHost>>, String> {
+    if let Some(path) = cfg {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let (hosts, rejected) = parse_hosts_config(&text);
+                if !hosts.is_empty() {
+                    return Ok(Some(hosts));
+                }
+                if !rejected.is_empty() {
+                    return Err(format!(
+                        "The upload-hosts file names a destination that cannot be used, and no \
+                         other:\n\n{}\n\nEvery host must be an https:// URL on port 443 with no \
+                         user info. Fix the line or comment it out; nothing was uploaded.\n\n{}",
+                        rejected.join("\n"),
+                        path.display()
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "The upload-hosts file exists but could not be read ({e}); nothing was \
+                     uploaded.\n\n{}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Ensure the config exists, then open it in the user's default text editor. Wired to
