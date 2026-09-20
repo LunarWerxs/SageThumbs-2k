@@ -356,6 +356,45 @@ unsafe fn apply_drag(hwnd: HWND, drag: Option<DragSpec>) {
     crate::win::pump_msgs(8);
 }
 
+/// Parse a named key token (e.g. "left", "esc", "c") into a virtual key code.
+fn parse_press_key(name: &str) -> Option<u16> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT, VK_UP,
+    };
+    Some(match name {
+        "left" => VK_LEFT.0,
+        "right" => VK_RIGHT.0,
+        "up" => VK_UP.0,
+        "down" => VK_DOWN.0,
+        "home" => VK_HOME.0,
+        "end" => VK_END.0,
+        "escape" | "esc" => VK_ESCAPE.0,
+        s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+            s.as_bytes()[0].to_ascii_uppercase() as u16
+        }
+        _ => return None,
+    })
+}
+
+/// Parse a comma-separated key press spec into a list of `(ctrl_pressed, vk_code)`.
+fn parse_press_spec(spec: &str) -> Vec<(bool, u16)> {
+    let mut out = Vec::new();
+    for raw in spec.split(',') {
+        let token = raw.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            continue;
+        }
+        let (ctrl, key) = match token.split_once('+') {
+            Some(("ctrl", k)) => (true, k),
+            _ => (false, token.as_str()),
+        };
+        if let Some(vk) = parse_press_key(key) {
+            out.push((ctrl, vk));
+        }
+    }
+    out
+}
+
 /// `--press SPEC[,SPEC...]`: post each token as a real key through the exact `WM_KEYDOWN`
 /// dispatch a live window receives. `ctrl+X` genuinely holds `VK_CONTROL` down first (the same
 /// `keybd_event` technique `--wheel --ctrl` already relies on, since `on_keydown`'s modifier
@@ -366,40 +405,11 @@ unsafe fn apply_drag(hwnd: HWND, drag: Option<DragSpec>) {
 /// Unrecognised tokens are silently skipped.
 unsafe fn apply_press(hwnd: HWND, press: Option<&str>) {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT,
-        VK_RIGHT, VK_UP,
-    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_CONTROL};
     let Some(spec) = press else {
         return;
     };
-    let named_vk = |name: &str| -> Option<u16> {
-        Some(match name {
-            "left" => VK_LEFT.0,
-            "right" => VK_RIGHT.0,
-            "up" => VK_UP.0,
-            "down" => VK_DOWN.0,
-            "home" => VK_HOME.0,
-            "end" => VK_END.0,
-            "escape" | "esc" => VK_ESCAPE.0,
-            s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
-                s.as_bytes()[0].to_ascii_uppercase() as u16
-            }
-            _ => return None,
-        })
-    };
-    for raw in spec.split(',') {
-        let token = raw.trim().to_ascii_lowercase();
-        if token.is_empty() {
-            continue;
-        }
-        let (ctrl, key) = match token.split_once('+') {
-            Some(("ctrl", k)) => (true, k),
-            _ => (false, token.as_str()),
-        };
-        let Some(vk) = named_vk(key) else {
-            continue;
-        };
+    for (ctrl, vk) in parse_press_spec(spec) {
         if ctrl {
             keybd_event(VK_CONTROL.0 as u8, 0, Default::default(), 0);
         }
@@ -439,4 +449,102 @@ pub(super) fn write_synthetic_png() -> Option<String> {
     let path = std::env::temp_dir().join(format!("st2k_preview_shot_{}.png", std::process::id()));
     img.save(&path).ok()?;
     Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn point_lparam_packs_signed_coordinates_into_low_and_high_words() {
+        let lp = point_lparam(100, 200);
+        let raw = lp.0 as usize;
+        assert_eq!((raw & 0xFFFF) as i16, 100);
+        assert_eq!(((raw >> 16) & 0xFFFF) as i16, 200);
+
+        // Verify negative coordinates round-trip through 16-bit signed cast
+        let lp_neg = point_lparam(-10, -25);
+        let raw_neg = lp_neg.0 as usize;
+        assert_eq!((raw_neg & 0xFFFF) as i16, -10);
+        assert_eq!(((raw_neg >> 16) & 0xFFFF) as i16, -25);
+    }
+
+    #[test]
+    fn parse_drag_extracts_coordinates_without_interrupt() {
+        let parsed = parse_drag("10, 20, 30, 40, 50, 60");
+        assert_eq!(parsed, Some((10, 20, 30, 40, 50, 60, false)));
+    }
+
+    #[test]
+    fn parse_drag_recognises_interrupt_token() {
+        let with_interrupt = parse_drag("1, 2, 3, 4, 5, 6, interrupt");
+        assert_eq!(with_interrupt, Some((1, 2, 3, 4, 5, 6, true)));
+
+        let with_other_token = parse_drag("1, 2, 3, 4, 5, 6, anything_else");
+        assert_eq!(with_other_token, Some((1, 2, 3, 4, 5, 6, false)));
+    }
+
+    #[test]
+    fn parse_drag_rejects_malformed_specifications() {
+        assert_eq!(parse_drag(""), None);
+        assert_eq!(parse_drag("1, 2, 3, 4, 5"), None);
+        assert_eq!(parse_drag("1, 2, 3, 4, 5, 6, interrupt, extra"), None);
+        assert_eq!(parse_drag("1, 2, not_a_num, 4, 5, 6"), None);
+    }
+
+    #[test]
+    fn parse_press_key_resolves_named_keys_and_single_letters() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT, VK_UP,
+        };
+
+        assert_eq!(parse_press_key("left"), Some(VK_LEFT.0));
+        assert_eq!(parse_press_key("right"), Some(VK_RIGHT.0));
+        assert_eq!(parse_press_key("up"), Some(VK_UP.0));
+        assert_eq!(parse_press_key("down"), Some(VK_DOWN.0));
+        assert_eq!(parse_press_key("home"), Some(VK_HOME.0));
+        assert_eq!(parse_press_key("end"), Some(VK_END.0));
+        assert_eq!(parse_press_key("escape"), Some(VK_ESCAPE.0));
+        assert_eq!(parse_press_key("esc"), Some(VK_ESCAPE.0));
+
+        // Single ascii letter converts to uppercase virtual key code
+        assert_eq!(parse_press_key("u"), Some(b'U' as u16));
+        assert_eq!(parse_press_key("F"), Some(b'F' as u16));
+
+        // Unknown names or multi-character non-alphabetic
+        assert_eq!(parse_press_key("tab"), None);
+        assert_eq!(parse_press_key("1"), None);
+        assert_eq!(parse_press_key(""), None);
+    }
+
+    #[test]
+    fn parse_press_spec_parses_comma_delimited_tokens_with_modifiers() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_LEFT};
+
+        let spec = "ctrl+u, left, ctrl+f, esc, unknown, ctrl+p";
+        let parsed = parse_press_spec(spec);
+        assert_eq!(
+            parsed,
+            vec![
+                (true, b'U' as u16),
+                (false, VK_LEFT.0),
+                (true, b'F' as u16),
+                (false, VK_ESCAPE.0),
+                (true, b'P' as u16),
+            ]
+        );
+    }
+
+    #[test]
+    fn write_synthetic_png_creates_valid_readable_image() {
+        let path_str = write_synthetic_png().expect("synthetic png must be written");
+        let path = std::path::Path::new(&path_str);
+        assert!(path.exists(), "generated temp file exists");
+
+        let reader = image::ImageReader::open(path).expect("open synthetic png");
+        let dims = reader.into_dimensions().expect("decode png dimensions");
+        assert_eq!(dims, (640, 400));
+
+        let _ = std::fs::remove_file(path);
+    }
 }
