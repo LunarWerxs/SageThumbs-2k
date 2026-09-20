@@ -102,26 +102,55 @@ struct HuffEnc {
 /// condition): a canonical code at length `l` that reaches `1 << l` cannot exist,
 /// and a table built from it decodes to `code - mincode[l]` values below zero.
 fn canonical(bits: &[u8]) -> Option<(Vec<u8>, Vec<i32>)> {
+    let sizes = code_sizes(bits);
+    let codes = canonical_codes(&sizes)?;
+    Some((sizes, codes))
+}
+
+/// Expand a `bits[16]` count array into the canonical code-size list: one entry
+/// per code, in increasing length order.
+fn code_sizes(bits: &[u8]) -> Vec<u8> {
     let mut sizes = Vec::new();
     for (l, &n) in bits.iter().enumerate() {
         for _ in 0..n {
             sizes.push((l + 1) as u8);
         }
     }
+    sizes
+}
+
+/// Emit the codes of one run of equal code lengths (`sizes[*k..]` all equal to
+/// `si`), advancing `code`/`k` as it goes. `None` when the run over-subscribes
+/// the code space at its length (see `canonical`).
+fn emit_run(
+    sizes: &[u8],
+    si: u8,
+    code: &mut i32,
+    k: &mut usize,
+    codes: &mut Vec<i32>,
+) -> Option<()> {
+    while *k < sizes.len() && sizes[*k] == si {
+        if *code >= 1i32 << si {
+            return None; // over-subscribed at this length
+        }
+        codes.push(*code);
+        *code += 1;
+        *k += 1;
+    }
+    Some(())
+}
+
+/// Assign each code in `sizes` its canonical value (Annex C): one run per code
+/// length, left-shifting `code` once per length step. `None` when the counts
+/// over-subscribe the code space.
+fn canonical_codes(sizes: &[u8]) -> Option<Vec<i32>> {
     let mut codes = Vec::with_capacity(sizes.len());
     let mut code = 0i32;
     let mut k = 0;
     if let Some(&first) = sizes.first() {
         let mut si = first;
         loop {
-            while k < sizes.len() && sizes[k] == si {
-                if code >= 1i32 << si {
-                    return None; // over-subscribed at this length
-                }
-                codes.push(code);
-                code += 1;
-                k += 1;
-            }
+            emit_run(sizes, si, &mut code, &mut k, &mut codes)?;
             if k >= sizes.len() {
                 break;
             }
@@ -131,7 +160,7 @@ fn canonical(bits: &[u8]) -> Option<(Vec<u8>, Vec<i32>)> {
             }
         }
     }
-    Some((sizes, codes))
+    Some(codes)
 }
 
 /// Build a decode table. `None` for a table the file must not be trusted with: an
@@ -299,31 +328,54 @@ fn decode_block(
     let diff = extend(br.receive(t)?, t);
     *pred += diff;
     blk[0] = *pred;
+    decode_ac(br, ac, &mut blk)?;
+    Some(blk)
+}
+
+/// Decode one AC symbol into its `(run-length, magnitude category)` pair.
+fn decode_ac_symbol(br: &mut BitReader, ac: &HuffDec) -> Option<(usize, u32)> {
+    let rs = decode_huff(br, ac)?;
+    Some(((rs >> 4) as usize, (rs & 0xf) as u32))
+}
+
+/// Store one non-zero AC coefficient at zig-zag index `k + r`, decoding its `s`
+/// value bits. Returns the next zig-zag index. `None` when the run-length pushes
+/// past the block's 64 coefficients: the source table/data is then corrupt or
+/// crafted. Silently truncating here used to return `Some(blk)` with the tail
+/// zeroed out — a wrong-but-"successful" lossless rotate/flip. Decline instead,
+/// like the DC-category guard, so the caller falls back to the lossy re-encode
+/// path rather than writing garbage.
+fn store_ac_coef(
+    br: &mut BitReader,
+    blk: &mut [i32; 64],
+    k: usize,
+    r: usize,
+    s: u32,
+) -> Option<usize> {
+    let k = k + r;
+    if k >= 64 {
+        return None;
+    }
+    blk[ZIGZAG[k]] = extend(br.receive(s)?, s);
+    Some(k + 1)
+}
+
+/// Decode a block's AC coefficients (zig-zag indices 1..64) into `blk`, stopping
+/// early on an end-of-block symbol.
+fn decode_ac(br: &mut BitReader, ac: &HuffDec, blk: &mut [i32; 64]) -> Option<()> {
     let mut k = 1usize;
     while k < 64 {
-        let rs = decode_huff(br, ac)?;
-        let r = (rs >> 4) as usize;
-        let s = (rs & 0xf) as u32;
+        let (r, s) = decode_ac_symbol(br, ac)?;
         if s == 0 {
-            if r == 15 {
-                k += 16; // ZRL: 16 zeros
-                continue;
+            if r != 15 {
+                return Some(()); // EOB
             }
-            break; // EOB
+            k += 16; // ZRL: 16 zeros
+            continue;
         }
-        k += r;
-        if k >= 64 {
-            // A run-length that pushes past the block's 64 coefficients means the source
-            // table/data is corrupt or crafted. Silently truncating here used to return
-            // `Some(blk)` with the tail zeroed out — a wrong-but-"successful" lossless
-            // rotate/flip. Decline instead, like the DC-category guard above, so the caller
-            // falls back to the lossy re-encode path rather than writing garbage.
-            return None;
-        }
-        blk[ZIGZAG[k]] = extend(br.receive(s)?, s);
-        k += 1;
+        k = store_ac_coef(br, blk, k, r, s)?;
     }
-    Some(blk)
+    Some(())
 }
 
 // --- Bit writer (entropy encode) -------------------------------------------
@@ -465,13 +517,22 @@ fn be16(d: &[u8], i: usize) -> usize {
 ///   transverse  = transpose then rot-180  → negate odd (row + col) parity
 fn xform_cell(op: Op, r: usize, c: usize) -> (usize, usize, i32) {
     match op {
-        Op::Rot90 => (c, r, if r & 1 == 1 { -1 } else { 1 }),
-        Op::Rot270 => (c, r, if c & 1 == 1 { -1 } else { 1 }),
-        Op::Rot180 => (r, c, if (r + c) & 1 == 1 { -1 } else { 1 }),
-        Op::FlipH => (r, c, if c & 1 == 1 { -1 } else { 1 }),
-        Op::FlipV => (r, c, if r & 1 == 1 { -1 } else { 1 }),
+        Op::Rot90 => (c, r, mirror_sign(r & 1 == 1)),
+        Op::Rot270 => (c, r, mirror_sign(c & 1 == 1)),
+        Op::Rot180 => (r, c, mirror_sign((r + c) & 1 == 1)),
+        Op::FlipH => (r, c, mirror_sign(c & 1 == 1)),
+        Op::FlipV => (r, c, mirror_sign(r & 1 == 1)),
         Op::Transpose => (c, r, 1),
-        Op::Transverse => (c, r, if (r + c) & 1 == 1 { -1 } else { 1 }),
+        Op::Transverse => (c, r, mirror_sign((r + c) & 1 == 1)),
+    }
+}
+
+/// Sign of a mirror axis: -1 when its parity is odd, else 1.
+fn mirror_sign(odd: bool) -> i32 {
+    if odd {
+        -1
+    } else {
+        1
     }
 }
 
@@ -787,17 +848,32 @@ fn alloc_grids(width: usize, height: usize, comps: &mut [Comp]) -> Option<(usize
 
     let mut total_cells = 0usize;
     for c in comps.iter_mut() {
-        c.grid_w = mcus_x * c.h;
-        c.grid_h = mcus_y * c.v;
-        let cells = c.grid_w.checked_mul(c.grid_h)?;
-        total_cells = total_cells.checked_add(cells)?;
-        if total_cells > MAX_TOTAL_CELLS {
-            return None;
-        }
-        c.blocks = vec![[0i32; 64]; cells];
+        total_cells = alloc_comp_grid(c, mcus_x, mcus_y, total_cells, MAX_TOTAL_CELLS)?;
     }
 
     Some((mcus_x, mcus_y))
+}
+
+/// Size and allocate one component's coefficient grid from the MCU grid, adding
+/// its cell count to the running `total_cells` budget. `None` when the product
+/// overflows or the budget `max_cells` is exceeded. Returns the new running
+/// total.
+fn alloc_comp_grid(
+    c: &mut Comp,
+    mcus_x: usize,
+    mcus_y: usize,
+    total_cells: usize,
+    max_cells: usize,
+) -> Option<usize> {
+    c.grid_w = mcus_x * c.h;
+    c.grid_h = mcus_y * c.v;
+    let cells = c.grid_w.checked_mul(c.grid_h)?;
+    let total_cells = total_cells.checked_add(cells)?;
+    if total_cells > max_cells {
+        return None;
+    }
+    c.blocks = vec![[0i32; 64]; cells];
+    Some(total_cells)
 }
 
 /// Decode every component's blocks for one MCU at grid position `(mx, my)`,
@@ -847,13 +923,25 @@ fn decode_scan(
     let mut mcu = 0usize;
     for my in 0..mcus_y {
         for mx in 0..mcus_x {
-            if restart_interval > 0 && mcu > 0 && mcu.is_multiple_of(restart_interval) {
-                br.restart()?;
-                preds.iter_mut().for_each(|p| *p = 0);
-            }
+            maybe_restart(&mut br, &mut preds, restart_interval, mcu)?;
             decode_mcu(&mut br, huff, &cparams, comps, &mut preds, mx, my)?;
             mcu += 1;
         }
+    }
+    Some(())
+}
+
+/// Consume a restart marker and reset every DC predictor, when this MCU index
+/// starts a new restart interval.
+fn maybe_restart(
+    br: &mut BitReader,
+    preds: &mut [i32],
+    restart_interval: usize,
+    mcu: usize,
+) -> Option<()> {
+    if restart_interval > 0 && mcu > 0 && mcu.is_multiple_of(restart_interval) {
+        br.restart()?;
+        preds.iter_mut().for_each(|p| *p = 0);
     }
     Some(())
 }
@@ -900,9 +988,6 @@ fn encode_scan(comps: &[Comp], out_w: usize, out_h: usize) -> Option<Vec<u8>> {
         build_enc(&AC_LUMA_BITS, &AC_LUMA_VALS),
         build_enc(&AC_CHROMA_BITS, &AC_CHROMA_VALS),
     ];
-    // Component 0 uses the luma tables; the rest use chroma.
-    let tbl = |ci: usize| if ci == 0 { 0usize } else { 1usize };
-
     let nhmax = comps.iter().map(|c| c.h).max()?;
     let nvmax = comps.iter().map(|c| c.v).max()?;
     let nmcus_x = out_w.div_ceil(8 * nhmax);
@@ -912,28 +997,74 @@ fn encode_scan(comps: &[Comp], out_w: usize, out_h: usize) -> Option<Vec<u8>> {
     let mut preds = vec![0i32; comps.len()];
     for my in 0..nmcus_y {
         for mx in 0..nmcus_x {
-            for (ci, c) in comps.iter().enumerate() {
-                for by in 0..c.v {
-                    for bx in 0..c.h {
-                        let gx = mx * c.h + bx;
-                        let gy = my * c.v + by;
-                        let blk = &c.blocks[gy * c.grid_w + gx];
-                        if !encode_block(
-                            &mut bw,
-                            blk,
-                            &enc_dc[tbl(ci)],
-                            &enc_ac[tbl(ci)],
-                            &mut preds[ci],
-                        ) {
-                            return None; // unencodable coefficient → fall back to lossy
-                        }
-                    }
-                }
+            if !encode_mcu(&mut bw, comps, mx, my, &enc_dc, &enc_ac, &mut preds) {
+                return None; // unencodable coefficient → fall back to lossy
             }
         }
     }
     bw.flush();
     Some(bw.out)
+}
+
+/// Huffman table class for a component: component 0 uses the luma tables, the
+/// rest use chroma.
+fn table_class(ci: usize) -> usize {
+    if ci == 0 {
+        0usize
+    } else {
+        1usize
+    }
+}
+
+/// Encode every block of one component for one MCU. False when a block needs a
+/// magnitude category the standard tables don't have.
+#[allow(clippy::too_many_arguments)] // the writer, the component, its index, the MCU and the predictors
+fn encode_component(
+    bw: &mut BitWriter,
+    c: &Comp,
+    ci: usize,
+    mx: usize,
+    my: usize,
+    enc_dc: &[HuffEnc; 2],
+    enc_ac: &[HuffEnc; 2],
+    pred: &mut i32,
+) -> bool {
+    for by in 0..c.v {
+        for bx in 0..c.h {
+            let gx = mx * c.h + bx;
+            let gy = my * c.v + by;
+            let blk = &c.blocks[gy * c.grid_w + gx];
+            if !encode_block(
+                bw,
+                blk,
+                &enc_dc[table_class(ci)],
+                &enc_ac[table_class(ci)],
+                pred,
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Encode every component's blocks for one MCU. False when any block is
+/// unencodable (see `encode_component`).
+fn encode_mcu(
+    bw: &mut BitWriter,
+    comps: &[Comp],
+    mx: usize,
+    my: usize,
+    enc_dc: &[HuffEnc; 2],
+    enc_ac: &[HuffEnc; 2],
+    preds: &mut [i32],
+) -> bool {
+    for (ci, c) in comps.iter().enumerate() {
+        if !encode_component(bw, c, ci, mx, my, enc_dc, enc_ac, &mut preds[ci]) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Does this JPEG carry an index to further pictures stored after its EOI: a
@@ -946,48 +1077,72 @@ fn encode_scan(comps: &[Comp], out_w: usize, out_h: usize) -> Option<Vec<u8>> {
 /// index would survive verbatim while everything it points at moves or disappears;
 /// such a file is declined instead. Walks the segments ahead of the scan only.
 pub fn has_multi_picture_index(jpeg: &[u8]) -> bool {
-    const MPF: &[u8] = b"MPF\0";
-    const XMP: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
-    const DIRECTORY: &[u8] = b"Container:Directory";
     let d = jpeg;
     if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
         return false;
     }
     let mut i = 2usize;
     while i + 4 <= d.len() {
-        if d[i] != 0xFF {
-            return false; // not a segment stream we understand
+        match index_segment_step(d, i) {
+            IndexStep::Advance(next) => i += next,
+            IndexStep::CarriesIndex => return true,
+            IndexStep::Stop => return false,
         }
-        let marker = d[i + 1];
-        match marker {
-            0xFF => {
-                i += 1; // fill byte
-                continue;
-            }
-            0x01 | 0xD0..=0xD9 => {
-                i += 2; // standalone marker, no length
-                continue;
-            }
-            0xDA => return false, // SOS: every APP segment is behind us
-            _ => {}
-        }
-        let len = be16(d, i + 2);
-        if len < 2 {
-            return false;
-        }
-        let Some(payload) = d.get(i + 4..i + 2 + len) else {
-            return false;
-        };
-        if marker == 0xE2 && payload.starts_with(MPF) {
-            return true;
-        }
-        if marker == 0xE1
-            && payload.starts_with(XMP)
-            && payload.windows(DIRECTORY.len()).any(|w| w == DIRECTORY)
-        {
-            return true;
-        }
-        i += 2 + len;
+    }
+    false
+}
+
+/// What one step of [`has_multi_picture_index`]'s segment walk should do.
+enum IndexStep {
+    /// Skip this many bytes and keep walking.
+    Advance(usize),
+    /// This segment is a multi-picture index.
+    CarriesIndex,
+    /// Stop the walk: not a segment stream we understand, or SOS reached.
+    Stop,
+}
+
+/// Classify the segment whose `0xFF` marker byte is `d[i]`: how far to advance
+/// past it, that it carries a picture index, or that the walk must stop.
+fn index_segment_step(d: &[u8], i: usize) -> IndexStep {
+    if d[i] != 0xFF {
+        return IndexStep::Stop; // not a segment stream we understand
+    }
+    let marker = d[i + 1];
+    match marker {
+        0xFF => return IndexStep::Advance(1),               // fill byte
+        0x01 | 0xD0..=0xD9 => return IndexStep::Advance(2), // standalone marker, no length
+        0xDA => return IndexStep::Stop,                     // SOS: every APP segment is behind us
+        _ => {}
+    }
+    let len = be16(d, i + 2);
+    if len < 2 {
+        return IndexStep::Stop;
+    }
+    let Some(payload) = d.get(i + 4..i + 2 + len) else {
+        return IndexStep::Stop;
+    };
+    if payload_names_further_pictures(marker, payload) {
+        return IndexStep::CarriesIndex;
+    }
+    IndexStep::Advance(2 + len)
+}
+
+/// Whether this APPn payload indexes further pictures stored after the EOI: a
+/// Multi-Picture Format APP2 (`MPF\0`) or the XMP `Container:Directory` of a
+/// GContainer.
+fn payload_names_further_pictures(marker: u8, payload: &[u8]) -> bool {
+    const MPF: &[u8] = b"MPF\0";
+    const XMP: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+    const DIRECTORY: &[u8] = b"Container:Directory";
+    if marker == 0xE2 && payload.starts_with(MPF) {
+        return true;
+    }
+    if marker == 0xE1
+        && payload.starts_with(XMP)
+        && payload.windows(DIRECTORY.len()).any(|w| w == DIRECTORY)
+    {
+        return true;
     }
     false
 }
