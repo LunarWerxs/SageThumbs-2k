@@ -21,12 +21,13 @@ CFG = re.compile(r"^\s*#\[cfg\(test\)\]\s*$")
 PATH = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]\s*$')
 MOD = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
 HAS = re.compile(r"^\s*#!\[cfg\(test\)\]", re.M)
-ROOT_PARENTS = {"bin", "tests", "benches", "examples"}
+ROOT_PARENTS = {"src/bin", "tests", "benches", "examples"}
 
 
 def children_dir(rel):
     d, f = os.path.split(rel)
-    if f in _rs.ROOT_FILES or os.path.basename(d) in ROOT_PARENTS:
+    # only the repo-level `tests/` and `src/bin/` hold crate roots; a `src/x/tests/` is an ordinary module dir
+    if f in _rs.ROOT_FILES or d.replace(os.sep, '/') in ROOT_PARENTS:
         return d
     return os.path.join(d, f[:-3])
 

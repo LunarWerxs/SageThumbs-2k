@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! HDR (PQ) samples land at reference white, twin by twin.
 
 use super::*;
