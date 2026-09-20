@@ -346,6 +346,89 @@ struct Res {
     bands: Vec<SubBand>, // r == 0: [LL]; r > 0: [HL, LH, HH]
 }
 
+/// Charge one materialized band's floats against the running tile-pyramid
+/// budget, refusing the tile if it would exceed `max_alloc_floats`.
+fn charge_alloc(
+    alloc_floats: &mut u64,
+    max_alloc_floats: u64,
+    w: usize,
+    h: usize,
+) -> Result<(), Jp2Error> {
+    *alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
+    if *alloc_floats > max_alloc_floats {
+        return Err(Jp2Error::Unsupported("tile pyramid too large"));
+    }
+    Ok(())
+}
+
+/// Charge every band in `dims` against the budget, but only when the storage
+/// is actually materialized.
+fn charge_dims_if(
+    materialize: bool,
+    alloc_floats: &mut u64,
+    max_alloc_floats: u64,
+    dims: &[(usize, usize)],
+) -> Result<(), Jp2Error> {
+    if !materialize {
+        return Ok(());
+    }
+    for &(w, h) in dims {
+        charge_alloc(alloc_floats, max_alloc_floats, w, h)?;
+    }
+    Ok(())
+}
+
+/// The single LL band of resolution 0, sized on its own grid `(x0..x1, y0..y1)`.
+fn build_ll_band(
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    materialize: bool,
+    alloc_floats: &mut u64,
+    max_alloc_floats: u64,
+) -> Result<Vec<SubBand>, Jp2Error> {
+    let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    if materialize {
+        charge_alloc(alloc_floats, max_alloc_floats, w, h)?;
+    }
+    Ok(vec![sized_band(w, h, materialize)])
+}
+
+/// The three detail bands (HL, LH, HH) of resolution r>0 for a tile bounded by
+/// `(tx0..tx1, ty0..ty1)` at decomposition depth `nb`.
+#[allow(clippy::too_many_arguments)]
+fn build_detail_bands(
+    nb: u32,
+    tx0: u32,
+    ty0: u32,
+    tx1: u32,
+    ty1: u32,
+    materialize: bool,
+    alloc_floats: &mut u64,
+    max_alloc_floats: u64,
+) -> Result<Vec<SubBand>, Jp2Error> {
+    // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
+    // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
+    // high-pass axis. The previous floor-based shortcut agreed with this only
+    // when (t mod 2^n) <= 2^(n-1), so odd-sized tiles came out a sample short
+    // in the detail bands and the whole packet walk drifted after them.
+    let d = nb + 1;
+    let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
+    let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
+    let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
+    let dims = [
+        (hl0.1, hl1.1), // HL: high-pass x, low-pass y
+        (lh0.1, lh1.1), // LH: low-pass x, high-pass y
+        (hh0.1, hh1.1), // HH
+    ];
+    charge_dims_if(materialize, alloc_floats, max_alloc_floats, &dims)?;
+    Ok(dims
+        .into_iter()
+        .map(|(w, h)| sized_band(w, h, materialize))
+        .collect())
+}
+
 /// Build one resolution's subband descriptors (LL for r==0, HL/LH/HH for
 /// r>0) on the reference grid at decomposition depth `nb`, accounting any
 /// materialized allocation against the running `alloc_floats` budget.
@@ -366,40 +449,18 @@ fn build_res(
     let x1 = tx1.div_ceil(1 << nb);
     let y1 = ty1.div_ceil(1 << nb);
     let bands = if r == 0 {
-        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        if materialize {
-            *alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
-            if *alloc_floats > max_alloc_floats {
-                return Err(Jp2Error::Unsupported("tile pyramid too large"));
-            }
-        }
-        vec![sized_band(w, h, materialize)]
+        build_ll_band(x0, y0, x1, y1, materialize, alloc_floats, max_alloc_floats)?
     } else {
-        // Band bounds per spec equation B-15 (what opj_tcd_init_tile computes):
-        // tbx0 = ceil((tx0 - 2^(n-1)*xob) / 2^n), with xob/yob = 1 on the
-        // high-pass axis. The previous floor-based shortcut agreed with this only
-        // when (t mod 2^n) <= 2^(n-1), so odd-sized tiles came out a sample short
-        // in the detail bands and the whole packet walk drifted after them.
-        let d = nb + 1;
-        let (hl0, hl1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, false));
-        let (lh0, lh1) = (band_span(tx0, tx1, d, false), band_span(ty0, ty1, d, true));
-        let (hh0, hh1) = (band_span(tx0, tx1, d, true), band_span(ty0, ty1, d, true));
-        let dims = [
-            (hl0.1, hl1.1), // HL: high-pass x, low-pass y
-            (lh0.1, lh1.1), // LH: low-pass x, high-pass y
-            (hh0.1, hh1.1), // HH
-        ];
-        if materialize {
-            for (w, h) in dims {
-                *alloc_floats = alloc_floats.saturating_add((w as u64) * (h as u64));
-                if *alloc_floats > max_alloc_floats {
-                    return Err(Jp2Error::Unsupported("tile pyramid too large"));
-                }
-            }
-        }
-        dims.into_iter()
-            .map(|(w, h)| sized_band(w, h, materialize))
-            .collect()
+        build_detail_bands(
+            nb,
+            tx0,
+            ty0,
+            tx1,
+            ty1,
+            materialize,
+            alloc_floats,
+            max_alloc_floats,
+        )?
     };
     Ok(Res {
         x0,
@@ -651,23 +712,46 @@ fn build_precinct_states(
             let (cbw, cbh) = code_block_dims(c, r);
             let (npx, npy) = nprec.get(r).copied().unwrap_or((0, 0));
             let nbands = if r == 0 { 1 } else { 3 };
-            let mut per_prec = Vec::with_capacity(npx * npy);
-            for py in 0..npy {
-                for px in 0..npx {
-                    let mut bands = Vec::with_capacity(nbands);
-                    for b in 0..nbands {
-                        bands.push(build_prec_band(
-                            c, ci, r, b, px, py, bppx, bppy, cbw, cbh, tx0, ty0, comps,
-                        ));
-                    }
-                    per_prec.push(bands);
-                }
-            }
-            per_res.push(per_prec);
+            per_res.push(build_res_precincts(
+                c, ci, r, npx, npy, nbands, bppx, bppy, cbw, cbh, tx0, ty0, comps,
+            ));
         }
         states.push(per_res);
     }
     states
+}
+
+/// Build one resolution's raster-order precinct bands: for each of the `npx` x
+/// `npy` precincts, its `nbands` band bookkeeping, in order.
+#[allow(clippy::too_many_arguments)]
+fn build_res_precincts(
+    c: &codestream::Codestream,
+    ci: usize,
+    r: usize,
+    npx: usize,
+    npy: usize,
+    nbands: usize,
+    bppx: u8,
+    bppy: u8,
+    cbw: usize,
+    cbh: usize,
+    tx0: u32,
+    ty0: u32,
+    comps: &[Vec<Res>],
+) -> Vec<Vec<PrecBand>> {
+    let mut per_prec = Vec::with_capacity(npx * npy);
+    for py in 0..npy {
+        for px in 0..npx {
+            let mut bands = Vec::with_capacity(nbands);
+            for b in 0..nbands {
+                bands.push(build_prec_band(
+                    c, ci, r, b, px, py, bppx, bppy, cbw, cbh, tx0, ty0, comps,
+                ));
+            }
+            per_prec.push(bands);
+        }
+    }
+    per_prec
 }
 
 /// Visit every (layer, resolution, component, precinct-index) packet address of
@@ -771,6 +855,63 @@ struct BlockAcc {
 /// within the precinct's band).
 type BlockAccMap = std::collections::HashMap<(usize, usize, usize, usize, usize), BlockAcc>;
 
+/// Consume an SOP marker pair at the cursor if the body has one.
+fn skip_sop(br: &mut BitReader, body: &[u8]) {
+    let q = br.pos();
+    if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
+        br.seek(q + 6);
+    }
+}
+
+/// Consume an EPH marker pair at the cursor if the body has one.
+fn skip_eph(br: &mut BitReader, body: &[u8]) {
+    let q = br.pos();
+    if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
+        br.seek(q + 2);
+    }
+}
+
+/// Account one code-block's segment in a packet: advance the body cursor past
+/// it and, for a decoded resolution/component, concatenate it into that block's
+/// accumulated bytes.
+#[allow(clippy::too_many_arguments)]
+fn account_contribution(
+    q: &mut usize,
+    body: &[u8],
+    bands: &[PrecBand],
+    acc: &mut BlockAccMap,
+    ci: usize,
+    r: usize,
+    pi: usize,
+    max_res: u32,
+    decode_comps: usize,
+    b: usize,
+    cb: packet::BlockContribution,
+) -> Result<(), Jp2Error> {
+    let start = *q;
+    let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
+    if end > body.len() {
+        return Err(Jp2Error::Truncated);
+    }
+    *q = end;
+    if r as u32 > max_res || ci >= decode_comps {
+        return Ok(()); // walked for its length only; this is the whole saving
+    }
+    let nbx = bands.get(b).map_or(0, |pb| pb.nbx);
+    let a = acc
+        .entry((ci, r, b, pi, cb.cblk_y * nbx + cb.cblk_x))
+        .or_insert_with(|| BlockAcc {
+            bytes: Vec::new(),
+            passes: 0,
+            zero_bitplanes: cb.zero_bitplanes,
+            cblk_x: cb.cblk_x,
+            cblk_y: cb.cblk_y,
+        });
+    a.bytes.extend_from_slice(&body[start..end]);
+    a.passes += cb.passes;
+    Ok(())
+}
+
 /// Parse ONE packet's header and account its code-block segments. Segments of
 /// resolutions above `max_res` and of components at or past `decode_comps`
 /// are walked for their length only and never copied.
@@ -789,10 +930,7 @@ fn accumulate_one_packet(
     pi: usize,
 ) -> Result<(), Jp2Error> {
     if c.cod.sop {
-        let q = br.pos();
-        if body.get(q..q + 2) == Some(&[0xFF, 0x91]) {
-            br.seek(q + 6);
-        }
+        skip_sop(br, body);
     }
     // ONE header parse per packet, covering all its bands — including packets whose
     // bands are all zero-area, which still own their "non-empty" bit in the stream.
@@ -805,34 +943,23 @@ fn accumulate_one_packet(
     };
     let contributions = packet::parse_packet(br, layer, bands)?;
     if c.cod.eph {
-        let q = br.pos();
-        if body.get(q..q + 2) == Some(&[0xFF, 0x92]) {
-            br.seek(q + 2);
-        }
+        skip_eph(br, body);
     }
     let mut q = br.pos();
     for (b, cb) in contributions {
-        let start = q;
-        let end = start.checked_add(cb.len).ok_or(Jp2Error::Truncated)?;
-        if end > body.len() {
-            return Err(Jp2Error::Truncated);
-        }
-        q = end;
-        if r as u32 > max_res || ci >= decode_comps {
-            continue; // walked for its length only; this is the whole saving
-        }
-        let nbx = bands.get(b).map_or(0, |pb| pb.nbx);
-        let a = acc
-            .entry((ci, r, b, pi, cb.cblk_y * nbx + cb.cblk_x))
-            .or_insert_with(|| BlockAcc {
-                bytes: Vec::new(),
-                passes: 0,
-                zero_bitplanes: cb.zero_bitplanes,
-                cblk_x: cb.cblk_x,
-                cblk_y: cb.cblk_y,
-            });
-        a.bytes.extend_from_slice(&body[start..end]);
-        a.passes += cb.passes;
+        account_contribution(
+            &mut q,
+            body,
+            bands,
+            acc,
+            ci,
+            r,
+            pi,
+            max_res,
+            decode_comps,
+            b,
+            cb,
+        )?;
     }
     br.seek(q);
     Ok(())
@@ -997,48 +1124,95 @@ fn reconstruct_tile_planes(
         let res = &comps[ci][keep as usize];
         let ox = res.x0.saturating_sub(siz.xosiz.div_ceil(1 << drop));
         let oy = res.y0.saturating_sub(siz.yosiz.div_ceil(1 << drop));
-        for y in 0..cur.h {
-            let py = oy as usize + y;
-            if py >= out_h as usize {
+        blit_band_into_plane(&mut planes[ci], &cur, ox, oy, out_w, out_h);
+    }
+}
+
+/// Copy one reconstructed resolution band into the shared output plane at
+/// (ox, oy), clipping to the output bounds.
+fn blit_band_into_plane(
+    plane: &mut [f32],
+    cur: &SubBand,
+    ox: u32,
+    oy: u32,
+    out_w: u32,
+    out_h: u32,
+) {
+    for y in 0..cur.h {
+        let py = oy as usize + y;
+        if py >= out_h as usize {
+            break;
+        }
+        for x in 0..cur.w {
+            let pxx = ox as usize + x;
+            if pxx >= out_w as usize {
                 break;
             }
-            for x in 0..cur.w {
-                let pxx = ox as usize + x;
-                if pxx >= out_w as usize {
-                    break;
-                }
-                planes[ci][py * out_w as usize + pxx] = cur.data[y * cur.w + x];
-            }
+            plane[py * out_w as usize + pxx] = cur.data[y * cur.w + x];
         }
     }
 }
 
-/// Decode one tile's contribution into the output planes.
-#[allow(clippy::too_many_arguments)]
-fn decode_tile(
-    c: &codestream::Codestream,
-    tx: u32,
-    ty: u32,
-    keep: u32,
-    drop: u32,
-    planes: &mut [Vec<f32>],
-    out_w: u32,
-    out_h: u32,
-) -> Result<(), Jp2Error> {
-    let siz = &c.siz;
-    let ti = (ty * siz.num_tiles_x() + tx) as usize;
-
-    // Tile bounds on the reference grid.
+/// Tile bounds `(tx0, ty0, tx1, ty1)` on the reference grid, or `None` for a
+/// degenerate (empty) tile.
+fn tile_bounds(siz: &codestream::Siz, tx: u32, ty: u32) -> Option<(u32, u32, u32, u32)> {
     let tx0 = (siz.xtosiz + tx * siz.xtsiz).max(siz.xosiz);
     let ty0 = (siz.ytosiz + ty * siz.ytsiz).max(siz.yosiz);
     let tx1 = (siz.xtosiz + (tx + 1) * siz.xtsiz).min(siz.xsiz);
     let ty1 = (siz.ytosiz + (ty + 1) * siz.ytsiz).min(siz.ysiz);
     if tx1 <= tx0 || ty1 <= ty0 {
-        return Ok(());
+        return None;
     }
+    Some((tx0, ty0, tx1, ty1))
+}
 
-    let ncomp = siz.components.len();
-    let decode_comps = used_components(ncomp);
+/// Print one band's coefficients, row by row, for tier-1 debugging.
+#[cfg(test)]
+fn dump_band(ci: usize, r: usize, b: usize, band: &SubBand) {
+    eprintln!("DUMP c{ci} r{r} b{b} {}x{}", band.w, band.h);
+    for y in 0..band.h {
+        let row: Vec<String> = (0..band.w)
+            .map(|x| format!("{}", band.data[y * band.w + x] as i64))
+            .collect();
+        eprintln!("DUMP   {}", row.join(" "));
+    }
+}
+
+/// Print every band of every decoded component/resolution, row by row.
+#[cfg(test)]
+fn dump_all_bands(comps: &[Vec<Res>], decode_comps: usize, keep: u32) {
+    for ci in 0..decode_comps {
+        for r in 0..=keep as usize {
+            for (b, band) in comps[ci][r].bands.iter().enumerate() {
+                dump_band(ci, r, b, band);
+            }
+        }
+    }
+}
+
+/// Coefficient dump for tier-1 debugging: compare against a Python FORWARD 5/3 of the
+/// known-good pixels (reversible, so the true coefficients are recoverable exactly).
+#[cfg(test)]
+fn dump_tile_coefficients(comps: &[Vec<Res>], decode_comps: usize, keep: u32) {
+    if std::env::var_os("ST2K_JP2_DUMP").is_some() {
+        dump_all_bands(comps, decode_comps, keep);
+    }
+}
+
+/// Walk one tile's packets and tier-1 decode every code-block, returning the
+/// component resolution pyramids with their coefficients filled in.
+#[allow(clippy::too_many_arguments)]
+fn decode_tile_coefficients(
+    c: &codestream::Codestream,
+    ti: usize,
+    decode_comps: usize,
+    keep: u32,
+    tx0: u32,
+    ty0: u32,
+    tx1: u32,
+    ty1: u32,
+) -> Result<Vec<Vec<Res>>, Jp2Error> {
+    let ncomp = c.siz.components.len();
     let levels = c.cod.levels as u32;
 
     // Concatenate the tile's parts; packets may straddle a tile-part boundary.
@@ -1108,25 +1282,33 @@ fn decode_tile(
     for ((ci, r, b, pi, _), a) in &acc {
         decode_block_into_band(c, *ci, *r, *b, *pi, &states, &mut comps, a);
     }
+    Ok(comps)
+}
 
-    // Coefficient dump for tier-1 debugging: compare against a Python FORWARD 5/3 of the
-    // known-good pixels (reversible, so the true coefficients are recoverable exactly).
+/// Decode one tile's contribution into the output planes.
+#[allow(clippy::too_many_arguments)]
+fn decode_tile(
+    c: &codestream::Codestream,
+    tx: u32,
+    ty: u32,
+    keep: u32,
+    drop: u32,
+    planes: &mut [Vec<f32>],
+    out_w: u32,
+    out_h: u32,
+) -> Result<(), Jp2Error> {
+    let siz = &c.siz;
+    let ti = (ty * siz.num_tiles_x() + tx) as usize;
+
+    let Some((tx0, ty0, tx1, ty1)) = tile_bounds(siz, tx, ty) else {
+        return Ok(());
+    };
+
+    let decode_comps = used_components(siz.components.len());
+    let mut comps = decode_tile_coefficients(c, ti, decode_comps, keep, tx0, ty0, tx1, ty1)?;
+
     #[cfg(test)]
-    if std::env::var_os("ST2K_JP2_DUMP").is_some() {
-        for ci in 0..decode_comps {
-            for r in 0..=keep as usize {
-                for (b, band) in comps[ci][r].bands.iter().enumerate() {
-                    eprintln!("DUMP c{ci} r{r} b{b} {}x{}", band.w, band.h);
-                    for y in 0..band.h {
-                        let row: Vec<String> = (0..band.w)
-                            .map(|x| format!("{}", band.data[y * band.w + x] as i64))
-                            .collect();
-                        eprintln!("DUMP   {}", row.join(" "));
-                    }
-                }
-            }
-        }
-    }
+    dump_tile_coefficients(&comps, decode_comps, keep);
 
     reconstruct_tile_planes(
         &mut comps,
