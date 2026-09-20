@@ -236,10 +236,7 @@ impl NudgeLock {
 
 impl Drop for NudgeLock {
     fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
+        sagethumbs2k_core::release_mutex_handle!(self.0);
     }
 }
 

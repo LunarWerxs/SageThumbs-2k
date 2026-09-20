@@ -230,6 +230,22 @@ fn load() -> io::Result<Doc> {
     }
 }
 
+/// Releases a mutex's ownership and closes its handle, ignoring either failure — the exact
+/// teardown every cross-process mutex in this product performs in its `Drop` (`IniLock`
+/// here, `NudgeLock` in the app EXE). `#[macro_export]` rather than a `fn` because the
+/// callers straddle the library and the `SageThumbs2K` binary, which can only name this
+/// crate's exported root.
+#[macro_export]
+macro_rules! release_mutex_handle {
+    ($handle:expr) => {{
+        let handle = $handle;
+        unsafe {
+            let _ = windows::Win32::System::Threading::ReleaseMutex(handle);
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+        }
+    }};
+}
+
 /// Short-lived cross-process lock guarding one `update()` call, so two writers to the
 /// SAME portable ini (the Settings EXE, `st2k`, the screenshot daemon, or two `st2k`
 /// invocations, all in portable mode) cannot race a load-edit-write and silently drop
@@ -274,10 +290,7 @@ impl IniLock {
 
 impl Drop for IniLock {
     fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
+        release_mutex_handle!(self.0);
     }
 }
 
