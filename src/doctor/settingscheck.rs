@@ -213,95 +213,7 @@ pub(super) fn check_format_capability(r: &mut Report) {
         if exts.is_empty() {
             continue;
         }
-        let label = match codec {
-            OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
-            OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
-            OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
-            OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
-        };
-        if crate::decode::os_codec_available(codec) {
-            if codec == OsCodec::Heif {
-                // The WIC container-decoder lookup above proves HEIC/HEIF CONTAINERS parse,
-                // not that the HEVC pixels inside decode - that needs the separate "HEVC
-                // Video Extension" Store package. Audit E03 #4: printing bare "present" here
-                // let doctor claim success on a machine where `.heic` still fails. Probe the
-                // same way `video_codec_note` does for a video HEVC stream - a real Media
-                // Foundation decoder-presence query (`vcodec::decoder_installed`), not a guess.
-                use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
-                match crate::vcodec::decoder_installed(MFVideoFormat_HEVC) {
-                    Some(true) => r.line(
-                        S::Ok,
-                        label,
-                        &format!(
-                            "container decoder present; the HEVC Video Extension it needs is \
-                             ALSO installed - {} format(s) decode here ({})",
-                            exts.len(),
-                            exts.join(", ")
-                        ),
-                    ),
-                    // The OS route is the fast, hardware-assisted one, not the ONLY one: a
-                    // Full install decodes HEIC/HEIF through the bundled ImageMagick when
-                    // Windows cannot (2026-09-19 audit F23 measured real corpus files
-                    // rendering that way), so a missing Store extension is a slower route on
-                    // such a copy, and a genuine gap only on a Compact one.
-                    Some(false) if crate::decode::magick_available() => r.line(
-                        S::Info,
-                        label,
-                        &format!(
-                            "container decoder present, but the HEVC Video Extension is NOT \
-                             installed - {} format(s) decode through the bundled ImageMagick \
-                             instead, slower and without the OS's hardware route ({}); the \
-                             \"HEVC Video Extensions\" from the Microsoft Store would speed them up",
-                            exts.len(),
-                            exts.join(", ")
-                        ),
-                    ),
-                    Some(false) => r.fail_with_fix(
-                        label,
-                        &format!(
-                            "container decoder present, but the HEVC Video Extension it needs \
-                             is NOT installed, and this Compact install has no bundled decoder \
-                             to fall back on - {} format(s) keep their default icon ({})",
-                            exts.len(),
-                            exts.join(", ")
-                        ),
-                        "install the \"HEVC Video Extensions\" (or \"HEIF Image Extensions\", \
-                         which bundles it) from the Microsoft Store, or reinstall the Full edition",
-                    ),
-                    None => r.line(
-                        S::Info,
-                        label,
-                        &format!(
-                            "container decoder present; the HEVC Video Extension it needs was \
-                             not verified (Media Foundation unavailable) - {} format(s) may or \
-                             may not decode here ({})",
-                            exts.len(),
-                            exts.join(", ")
-                        ),
-                    ),
-                }
-            } else {
-                r.line(
-                    S::Ok,
-                    label,
-                    &format!(
-                        "present - {} format(s) decode here ({})",
-                        exts.len(),
-                        exts.join(", ")
-                    ),
-                );
-            }
-        } else {
-            r.line(
-                S::Warn,
-                label,
-                &format!(
-                    "MISSING - {} format(s) keep their default icon ({})",
-                    exts.len(),
-                    exts.join(", ")
-                ),
-            );
-        }
+        report_os_codec(r, codec, &exts);
     }
 
     // AV1 (AVIF): no WIC container GUID exists to probe (see `OsCodec::Av1`'s doc), so - unlike
@@ -322,6 +234,101 @@ pub(super) fn check_format_capability(r: &mut Report) {
                  {} format(s) affected ({})",
                 av1_exts.len(),
                 av1_exts.join(", ")
+            ),
+        );
+    }
+}
+
+/// Reports one OS-codec dependency: its label and whether the codec is present here, over the
+/// formats that ride on it.
+fn report_os_codec(r: &mut Report, codec: crate::formats::OsCodec, exts: &[&str]) {
+    use crate::formats::OsCodec;
+    let label = match codec {
+        OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
+        OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
+        OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
+        OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
+    };
+    if crate::decode::os_codec_available(codec) {
+        if codec == OsCodec::Heif {
+            // The WIC container-decoder lookup above proves HEIC/HEIF CONTAINERS parse,
+            // not that the HEVC pixels inside decode - that needs the separate "HEVC
+            // Video Extension" Store package. Audit E03 #4: printing bare "present" here
+            // let doctor claim success on a machine where `.heic` still fails. Probe the
+            // same way `video_codec_note` does for a video HEVC stream - a real Media
+            // Foundation decoder-presence query (`vcodec::decoder_installed`), not a guess.
+            use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
+            match crate::vcodec::decoder_installed(MFVideoFormat_HEVC) {
+                Some(true) => r.line(
+                    S::Ok,
+                    label,
+                    &format!(
+                        "container decoder present; the HEVC Video Extension it needs is \
+                         ALSO installed - {} format(s) decode here ({})",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                ),
+                // The OS route is the fast, hardware-assisted one, not the ONLY one: a
+                // Full install decodes HEIC/HEIF through the bundled ImageMagick when
+                // Windows cannot (2026-09-19 audit F23 measured real corpus files
+                // rendering that way), so a missing Store extension is a slower route on
+                // such a copy, and a genuine gap only on a Compact one.
+                Some(false) if crate::decode::magick_available() => r.line(
+                    S::Info,
+                    label,
+                    &format!(
+                        "container decoder present, but the HEVC Video Extension is NOT \
+                         installed - {} format(s) decode through the bundled ImageMagick \
+                         instead, slower and without the OS's hardware route ({}); the \
+                         \"HEVC Video Extensions\" from the Microsoft Store would speed them up",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                ),
+                Some(false) => r.fail_with_fix(
+                    label,
+                    &format!(
+                        "container decoder present, but the HEVC Video Extension it needs \
+                         is NOT installed, and this Compact install has no bundled decoder \
+                         to fall back on - {} format(s) keep their default icon ({})",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                    "install the \"HEVC Video Extensions\" (or \"HEIF Image Extensions\", \
+                     which bundles it) from the Microsoft Store, or reinstall the Full edition",
+                ),
+                None => r.line(
+                    S::Info,
+                    label,
+                    &format!(
+                        "container decoder present; the HEVC Video Extension it needs was \
+                         not verified (Media Foundation unavailable) - {} format(s) may or \
+                         may not decode here ({})",
+                        exts.len(),
+                        exts.join(", ")
+                    ),
+                ),
+            }
+        } else {
+            r.line(
+                S::Ok,
+                label,
+                &format!(
+                    "present - {} format(s) decode here ({})",
+                    exts.len(),
+                    exts.join(", ")
+                ),
+            );
+        }
+    } else {
+        r.line(
+            S::Warn,
+            label,
+            &format!(
+                "MISSING - {} format(s) keep their default icon ({})",
+                exts.len(),
+                exts.join(", ")
             ),
         );
     }

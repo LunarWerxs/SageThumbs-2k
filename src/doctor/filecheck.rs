@@ -413,13 +413,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
 /// file (issue #37: every failing path was on one drive, every passing one on another).
 fn volume_note(r: &mut Report, path: &str) {
     use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{
-        GetDriveTypeW, GetVolumeInformationW, QueryDosDeviceW,
-    };
-    use windows::Win32::System::WindowsProgramming::{
-        DRIVE_CDROM, DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
-        DRIVE_UNKNOWN,
-    };
+    use windows::Win32::Storage::FileSystem::{GetVolumeInformationW, QueryDosDeviceW};
     let bytes = path.as_bytes();
     if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
         return; // UNC and relative paths: nothing per-drive to say
@@ -429,16 +423,7 @@ fn volume_note(r: &mut Report, path: &str) {
         .encode_utf16()
         .chain(Some(0))
         .collect();
-    let kind = match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
-        DRIVE_FIXED => "fixed",
-        DRIVE_REMOVABLE => "removable",
-        DRIVE_REMOTE => "network",
-        DRIVE_CDROM => "optical",
-        DRIVE_RAMDISK => "RAM disk",
-        DRIVE_NO_ROOT_DIR => "no such drive",
-        DRIVE_UNKNOWN => "unknown type",
-        _ => "unknown type",
-    };
+    let kind = drive_kind(&root);
     let mut fs_name = [0u16; 64];
     let fs = unsafe {
         GetVolumeInformationW(
@@ -494,6 +479,26 @@ fn volume_note(r: &mut Report, path: &str) {
         )
     };
     r.line(status, "Volume", &detail);
+}
+
+/// Maps the raw GetDriveTypeW code for the drive `root` names to a human-readable kind.
+fn drive_kind(root: &[u16]) -> &'static str {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+        DRIVE_UNKNOWN,
+    };
+    match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
+        DRIVE_FIXED => "fixed",
+        DRIVE_REMOVABLE => "removable",
+        DRIVE_REMOTE => "network",
+        DRIVE_CDROM => "optical",
+        DRIVE_RAMDISK => "RAM disk",
+        DRIVE_NO_ROOT_DIR => "no such drive",
+        DRIVE_UNKNOWN => "unknown type",
+        _ => "unknown type",
+    }
 }
 
 pub(super) fn probe_file(
@@ -588,81 +593,87 @@ pub(super) fn probe_file(
             &format!("could not read the bytes: {e}"),
             "check the file isn't locked, truncated, or over the size limit",
         ),
-        Ok(bytes) => match crate::decode::decode_preview(&bytes) {
-            Ok(img) => {
-                r.line(
-                    S::Ok,
-                    "Decode this file",
-                    &format!(
-                        "OK ({}x{}) — a thumbnail CAN be produced",
-                        img.width(),
-                        img.height()
-                    ),
-                );
-                // Our half is proven good, so now ask the shell the same question and see
-                // whether the two answers agree. When they don't, that disagreement IS the
-                // diagnosis, and it is the only line in this report that can produce it.
-                shell_roundtrip(r, path);
-                // Reaching here means the decoder is fine and the file is fine, yet the user
-                // is running `doctor` on it — so what is left is almost always the shell, and
-                // this is the one the report cannot see. Explorer remembers a view PER FOLDER,
-                // and Details / List / Small icons never draw thumbnails at all, by design; a
-                // folder Windows auto-classified as "Documents" opens in Details. Only said on
-                // success, where it is the likely remaining answer rather than noise.
-                r.line(
-                    S::Info,
-                    "  if it still looks wrong",
-                    "check this file's FOLDER view: Details, List and Small icons never show \
-                     thumbnails. Set Medium icons or larger (View menu, or Ctrl+Shift+2..4).",
-                );
-                // The live request above is not read-only from Explorer's point of view: a
-                // fresh answer replaces whatever the thumbnail cache remembered for this path
-                // at that size, including a miss cached when the file was still being copied
-                // in (issue #36: the same PSD drew a thumbnail on the Desktop and an icon in
-                // an Explorer window, one size per view). Say so, or the user reads "it works
-                // now" as proof nothing was wrong, and the other sizes and files still hold
-                // their stale entries.
-                r.line(
-                    S::Info,
-                    "  note",
-                    "this check also refreshed Explorer's cached thumbnail for this file at \
-                     that one size. Other sizes and other files can still hold a stale \
-                     'no thumbnail' entry (the sign: a thumbnail on the Desktop but an icon \
-                     in an Explorer window of the same folder). Settings > Advanced > \
-                     'Rebuild thumbnail cache' clears them all.",
-                );
-            }
-            Err(_) if is_video => {
-                // Video never touches ImageMagick — the frame comes from the OS Media
-                // Foundation codecs, so point at the codec finding instead of the
-                // (irrelevant, and previously misleading) ImageMagick hint.
-                r.fail_with_fix(
-                    "Decode this file",
-                    "FAILED — no frame could be decoded from this video",
-                    "see the 'Video codec' line above: a missing OS decoder is the usual \
-                     cause. If a decoder IS installed, an unusual profile (10-bit, Dolby \
-                     Vision) or a truncated file are the next suspects",
-                );
-            }
-            Err(_) => {
-                // Registered + enabled, but the pixels won't come out. Point at the
-                // likely reason: the long-tail formats decode only through the bundled
-                // ImageMagick, whose coders lag newer file-format versions.
-                let magick = crate::decode::magick_available();
-                let hint = if magick {
-                    "ImageMagick is present but its coder could not decode this file \
-                     (often a newer version of the format than the coder supports)"
-                } else {
-                    "this format decodes only via ImageMagick, which is NOT installed here \
-                     (use the full installer, or install ImageMagick)"
-                };
-                r.fail_with_fix(
-                    "Decode this file",
-                    "FAILED — no thumbnail possible for this file",
-                    hint,
-                );
-            }
-        },
+        Ok(bytes) => report_decode(r, path, &bytes, is_video),
+    }
+}
+
+/// Decodes the file's bytes and reports the decode outcome: a thumbnail that can be
+/// produced, a video with no frame, or a failure with the matching hint.
+fn report_decode(r: &mut Report, path: &str, bytes: &[u8], is_video: bool) {
+    match crate::decode::decode_preview(bytes) {
+        Ok(img) => {
+            r.line(
+                S::Ok,
+                "Decode this file",
+                &format!(
+                    "OK ({}x{}) — a thumbnail CAN be produced",
+                    img.width(),
+                    img.height()
+                ),
+            );
+            // Our half is proven good, so now ask the shell the same question and see
+            // whether the two answers agree. When they don't, that disagreement IS the
+            // diagnosis, and it is the only line in this report that can produce it.
+            shell_roundtrip(r, path);
+            // Reaching here means the decoder is fine and the file is fine, yet the user
+            // is running `doctor` on it — so what is left is almost always the shell, and
+            // this is the one the report cannot see. Explorer remembers a view PER FOLDER,
+            // and Details / List / Small icons never draw thumbnails at all, by design; a
+            // folder Windows auto-classified as "Documents" opens in Details. Only said on
+            // success, where it is the likely remaining answer rather than noise.
+            r.line(
+                S::Info,
+                "  if it still looks wrong",
+                "check this file's FOLDER view: Details, List and Small icons never show \
+                 thumbnails. Set Medium icons or larger (View menu, or Ctrl+Shift+2..4).",
+            );
+            // The live request above is not read-only from Explorer's point of view: a
+            // fresh answer replaces whatever the thumbnail cache remembered for this path
+            // at that size, including a miss cached when the file was still being copied
+            // in (issue #36: the same PSD drew a thumbnail on the Desktop and an icon in
+            // an Explorer window, one size per view). Say so, or the user reads "it works
+            // now" as proof nothing was wrong, and the other sizes and files still hold
+            // their stale entries.
+            r.line(
+                S::Info,
+                "  note",
+                "this check also refreshed Explorer's cached thumbnail for this file at \
+                 that one size. Other sizes and other files can still hold a stale \
+                 'no thumbnail' entry (the sign: a thumbnail on the Desktop but an icon \
+                 in an Explorer window of the same folder). Settings > Advanced > \
+                 'Rebuild thumbnail cache' clears them all.",
+            );
+        }
+        Err(_) if is_video => {
+            // Video never touches ImageMagick — the frame comes from the OS Media
+            // Foundation codecs, so point at the codec finding instead of the
+            // (irrelevant, and previously misleading) ImageMagick hint.
+            r.fail_with_fix(
+                "Decode this file",
+                "FAILED — no frame could be decoded from this video",
+                "see the 'Video codec' line above: a missing OS decoder is the usual \
+                 cause. If a decoder IS installed, an unusual profile (10-bit, Dolby \
+                 Vision) or a truncated file are the next suspects",
+            );
+        }
+        Err(_) => {
+            // Registered + enabled, but the pixels won't come out. Point at the
+            // likely reason: the long-tail formats decode only through the bundled
+            // ImageMagick, whose coders lag newer file-format versions.
+            let magick = crate::decode::magick_available();
+            let hint = if magick {
+                "ImageMagick is present but its coder could not decode this file \
+                 (often a newer version of the format than the coder supports)"
+            } else {
+                "this format decodes only via ImageMagick, which is NOT installed here \
+                 (use the full installer, or install ImageMagick)"
+            };
+            r.fail_with_fix(
+                "Decode this file",
+                "FAILED — no thumbnail possible for this file",
+                hint,
+            );
+        }
     }
 }
 

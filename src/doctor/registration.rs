@@ -275,31 +275,11 @@ pub(super) fn check_extensions(r: &mut Report, snap: &crate::settings::FormatEna
     let mut missing_examples: Vec<String> = Vec::new();
 
     for &(ext, _) in FORMATS.iter() {
-        if !snap.enabled(ext) {
-            disabled += 1;
-            continue;
-        }
-        // register.rs writes BOTH the SystemFileAssociations twin and the bare-extension
-        // key, and Windows consults the former first (see register.rs's module doc). Check
-        // it first here too, falling back to the bare key: reading only the bare key would
-        // report a wrong verdict on a machine where just one of the pair was overwritten.
-        let sfa_key = format!(r"SystemFileAssociations\.{ext}\shellex\{THUMB_HANDLER}");
-        let bare_key = format!(".{ext}\\shellex\\{THUMB_HANDLER}");
-        let effective = effective_thumb_handler(&sfa_key, &bare_key, hkcr_default);
-        match effective.as_deref() {
-            Some(c) if c.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR) => ours += 1,
-            Some(other) => {
-                stolen += 1;
-                if stolen_examples.len() < 6 {
-                    stolen_examples.push(format!(".{ext} -> {other}"));
-                }
-            }
-            None => {
-                missing += 1;
-                if missing_examples.len() < 6 {
-                    missing_examples.push(format!(".{ext}"));
-                }
-            }
+        match thumb_slot_verdict(ext, snap, &mut stolen_examples, &mut missing_examples) {
+            ThumbSlotVerdict::Disabled => disabled += 1,
+            ThumbSlotVerdict::Ours => ours += 1,
+            ThumbSlotVerdict::Stolen => stolen += 1,
+            ThumbSlotVerdict::Missing => missing += 1,
         }
     }
 
@@ -359,6 +339,49 @@ pub(super) fn check_extensions(r: &mut Report, snap: &crate::settings::FormatEna
     }
 }
 
+/// What one format's effective thumbnail slot resolves to: ours, another program's, never
+/// written, or switched off in settings.
+enum ThumbSlotVerdict {
+    Ours,
+    Stolen,
+    Missing,
+    Disabled,
+}
+
+/// Resolve one format's effective thumbnail handler into its bucket, recording a capped example.
+fn thumb_slot_verdict(
+    ext: &str,
+    snap: &crate::settings::FormatEnabledSnapshot,
+    stolen_examples: &mut Vec<String>,
+    missing_examples: &mut Vec<String>,
+) -> ThumbSlotVerdict {
+    if !snap.enabled(ext) {
+        return ThumbSlotVerdict::Disabled;
+    }
+    // register.rs writes BOTH the SystemFileAssociations twin and the bare-extension
+    // key, and Windows consults the former first (see register.rs's module doc). Check
+    // it first here too, falling back to the bare key: reading only the bare key would
+    // report a wrong verdict on a machine where just one of the pair was overwritten.
+    let sfa_key = format!(r"SystemFileAssociations\.{ext}\shellex\{THUMB_HANDLER}");
+    let bare_key = format!(".{ext}\\shellex\\{THUMB_HANDLER}");
+    let effective = effective_thumb_handler(&sfa_key, &bare_key, hkcr_default);
+    match effective.as_deref() {
+        Some(c) if c.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR) => ThumbSlotVerdict::Ours,
+        Some(other) => {
+            if stolen_examples.len() < 6 {
+                stolen_examples.push(format!(".{ext} -> {other}"));
+            }
+            ThumbSlotVerdict::Stolen
+        }
+        None => {
+            if missing_examples.len() < 6 {
+                missing_examples.push(format!(".{ext}"));
+            }
+            ThumbSlotVerdict::Missing
+        }
+    }
+}
+
 /// The ProgID-level half `check_extensions` cannot see: Windows resolves a thumbnail
 /// handler at the **ProgID** level BEFORE it ever reaches the SystemFileAssociations or
 /// bare-extension keys (`register.rs`'s module doc names the exact precedence: per-user
@@ -394,34 +417,7 @@ pub(super) fn check_progid_handlers(r: &mut Report, snap: &crate::settings::Form
         if !snap.enabled(ext) {
             continue;
         }
-        // Every ProgID that could resolve `.ext`'s thumbnail before Explorer ever reaches the
-        // SystemFileAssociations/bare-extension keys `check_extensions` audits: the per-user
-        // `UserChoice` the shell honours first, then the class default under `.ext`. The
-        // overlay module's lookup is the same two reads and nothing else (this module stays
-        // read-only registry access by design).
-        for progid in crate::typeoverlay::progids_for(ext) {
-            let thumb = hkcr_default(&format!(r"{progid}\shellex\{THUMB_HANDLER}"));
-            let extract = hkcr_default(&format!(r"{progid}\shellex\{EXTRACT_IMAGE_HANDLER}"));
-            for (kind, clsid) in [("IThumbnailProvider", thumb), ("IExtractImage", extract)] {
-                let Some(clsid) = clsid else { continue };
-                if clsid.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR)
-                    || is_windows_own_handler(&clsid)
-                {
-                    continue;
-                }
-                total += 1;
-                if examples.len() < 8 {
-                    let dll = inproc_path(&clsid)
-                        .and_then(|p| {
-                            Path::new(&p)
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                        })
-                        .unwrap_or_else(|| "(no InprocServer32)".to_string());
-                    examples.push(format!(".{ext} -> {progid} [{kind} {clsid}] {dll}"));
-                }
-            }
-        }
+        total += foreign_progid_handlers_for(ext, &mut examples);
     }
 
     if total == 0 {
@@ -438,6 +434,41 @@ pub(super) fn check_progid_handlers(r: &mut Report, snap: &crate::settings::Form
              reconfigure it, or reassociate the file type to remove its ProgID-level hook.",
         );
     }
+}
+
+/// Scan every ProgID that could resolve one format's thumbnail before our own keys, adding
+/// each foreign handler to the count and appending a capped example line for the first few.
+fn foreign_progid_handlers_for(ext: &str, examples: &mut Vec<String>) -> usize {
+    let mut total = 0usize;
+    // Every ProgID that could resolve `.ext`'s thumbnail before Explorer ever reaches the
+    // SystemFileAssociations/bare-extension keys `check_extensions` audits: the per-user
+    // `UserChoice` the shell honours first, then the class default under `.ext`. The
+    // overlay module's lookup is the same two reads and nothing else (this module stays
+    // read-only registry access by design).
+    for progid in crate::typeoverlay::progids_for(ext) {
+        let thumb = hkcr_default(&format!(r"{progid}\shellex\{THUMB_HANDLER}"));
+        let extract = hkcr_default(&format!(r"{progid}\shellex\{EXTRACT_IMAGE_HANDLER}"));
+        for (kind, clsid) in [("IThumbnailProvider", thumb), ("IExtractImage", extract)] {
+            let Some(clsid) = clsid else { continue };
+            if clsid.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR)
+                || is_windows_own_handler(&clsid)
+            {
+                continue;
+            }
+            total += 1;
+            if examples.len() < 8 {
+                let dll = inproc_path(&clsid)
+                    .and_then(|p| {
+                        Path::new(&p)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| "(no InprocServer32)".to_string());
+                examples.push(format!(".{ext} -> {progid} [{kind} {clsid}] {dll}"));
+            }
+        }
+    }
+    total
 }
 
 #[cfg(test)]
