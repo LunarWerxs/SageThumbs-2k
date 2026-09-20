@@ -399,6 +399,43 @@ where
     image::ImageBuffer::from_raw(w, h, out).unwrap_or(original)
 }
 
+/// Visit every output pixel of a box reduction in row-major order, handing `visit` the output
+/// index and the source block `[x0, x1) x [y0, y1)` it averages: the `k`-by-`k` block starting
+/// at `(ox*k, oy*k)`, clipped at the right and bottom edges so a size that is not a multiple of
+/// `k` keeps its last partial block instead of being cropped. The index is `oy * nw + ox` for
+/// an output `w/k` pixels wide, i.e. `index * channels` is the first output sample.
+fn for_each_block(
+    w: usize,
+    h: usize,
+    k: usize,
+    mut visit: impl FnMut(usize, usize, usize, usize, usize),
+) {
+    let nw = w.div_ceil(k);
+    let nh = h.div_ceil(k);
+    for oy in 0..nh {
+        let y0 = oy * k;
+        let y1 = (y0 + k).min(h);
+        for ox in 0..nw {
+            let x0 = ox * k;
+            let x1 = (x0 + k).min(w);
+            visit(oy * nw + ox, x0, x1, y0, y1);
+        }
+    }
+}
+
+/// Add one source row's samples into a four-channel accumulator, `channels` at a time.
+fn accumulate_row<T, A>(acc: &mut [A; 4], row: &[T], channels: usize)
+where
+    T: Copy + Into<A>,
+    A: std::ops::AddAssign,
+{
+    for px in row.chunks_exact(channels) {
+        for (a, v) in acc.iter_mut().zip(px) {
+            *a += (*v).into();
+        }
+    }
+}
+
 /// The box average itself: output pixel `(ox, oy)` is the mean of source block
 /// `[ox*k, ox*k+k) x [oy*k, oy*k+k)`, clipped at the right and bottom edges so a size that is
 /// not a multiple of `k` keeps its last partial block instead of being cropped. Rounded, not
@@ -415,28 +452,18 @@ macro_rules! box_reduce {
             let nw = w.div_ceil(k);
             let nh = h.div_ceil(k);
             let mut out = vec![0 as $t; nw * nh * ch];
-            for oy in 0..nh {
-                let y0 = oy * k;
-                let y1 = (y0 + k).min(h);
-                for ox in 0..nw {
-                    let x0 = ox * k;
-                    let x1 = (x0 + k).min(w);
-                    let mut acc = [0 as $acc; 4];
-                    for y in y0..y1 {
-                        let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
-                        for px in row.chunks_exact(ch) {
-                            for (a, v) in acc.iter_mut().zip(px) {
-                                *a += *v as $acc;
-                            }
-                        }
-                    }
-                    let n = ((x1 - x0) * (y1 - y0)) as $acc;
-                    let d = (oy * nw + ox) * ch;
-                    for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
-                        *o = ((a + n / 2) / n) as $t;
-                    }
+            for_each_block(w, h, k, |i, x0, x1, y0, y1| {
+                let mut acc = [0 as $acc; 4];
+                for y in y0..y1 {
+                    let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
+                    accumulate_row(&mut acc, row, ch);
                 }
-            }
+                let n = ((x1 - x0) * (y1 - y0)) as $acc;
+                let d = i * ch;
+                for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
+                    *o = ((a + n / 2) / n) as $t;
+                }
+            });
             out
         }
     };
@@ -457,19 +484,13 @@ fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f
     let nw = w.div_ceil(k);
     let nh = h.div_ceil(k);
     let mut out = vec![0f32; nw * nh * ch];
-    for oy in 0..nh {
-        let y0 = oy * k;
-        let y1 = (y0 + k).min(h);
-        for ox in 0..nw {
-            let x0 = ox * k;
-            let x1 = (x0 + k).min(w);
-            let acc = box_block_mean_f32(src, w, ch, x0, x1, y0, y1);
-            let d = (oy * nw + ox) * ch;
-            for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
-                *o = a;
-            }
+    for_each_block(w, h, k, |i, x0, x1, y0, y1| {
+        let acc = box_block_mean_f32(src, w, ch, x0, x1, y0, y1);
+        let d = i * ch;
+        for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
+            *o = a;
         }
-    }
+    });
     out
 }
 
@@ -488,11 +509,7 @@ fn box_block_mean_f32(
     let mut acc = [0f32; 4];
     for y in y0..y1 {
         let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
-        for px in row.chunks_exact(ch) {
-            for (a, v) in acc.iter_mut().zip(px) {
-                *a += *v;
-            }
-        }
+        accumulate_row(&mut acc, row, ch);
     }
     let n = ((x1 - x0) * (y1 - y0)).max(1) as f32;
     for a in &mut acc {
