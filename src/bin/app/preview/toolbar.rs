@@ -220,17 +220,26 @@ pub(super) fn tooltip_layout_changed(cached: &[RECT], now: &[RECT]) -> bool {
         })
 }
 
-/// Register one rect tool. comctl32 copies the text on add, so the wide temporary is fine.
-unsafe fn add_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT, text: &str) {
-    let text = crate::win::wide(text);
-    let mut ti = TTTOOLINFOW {
+/// Build the `TTTOOLINFOW` naming tool `id` on `hwnd`, with `lpszText` pointing at the caller-owned
+/// `text` buffer, which must outlive the `SendMessageW` that consumes the struct. `rect` is left
+/// default; the callers that carry one fill it in over the result.
+fn tool_info(hwnd: HWND, id: usize, text: &[u16]) -> TTTOOLINFOW {
+    TTTOOLINFOW {
         cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
         uFlags: TTF_SUBCLASS,
         hwnd,
         uId: id,
-        rect,
         lpszText: PWSTR(text.as_ptr() as *mut u16),
         ..Default::default()
+    }
+}
+
+/// Register one rect tool. comctl32 copies the text on add, so the wide temporary is fine.
+unsafe fn add_tool(tip: HWND, hwnd: HWND, id: usize, rect: RECT, text: &str) {
+    let text = crate::win::wide(text);
+    let mut ti = TTTOOLINFOW {
+        rect,
+        ..tool_info(hwnd, id, &text)
     };
     SendMessageW(
         tip,
@@ -296,14 +305,7 @@ pub(super) unsafe fn update_tooltips(hwnd: HWND, tip: HWND) {
 /// is fine — but it must OUTLIVE the `SendMessageW`, which is why it is a named local.
 unsafe fn set_tool_text(tip: HWND, hwnd: HWND, id: usize, text: &str) {
     let text = crate::win::wide(text);
-    let mut ti = TTTOOLINFOW {
-        cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
-        uFlags: TTF_SUBCLASS,
-        hwnd,
-        uId: id,
-        lpszText: PWSTR(text.as_ptr() as *mut u16),
-        ..Default::default()
-    };
+    let mut ti = tool_info(hwnd, id, &text);
     SendMessageW(
         tip,
         TTM_UPDATETIPTEXTW,
