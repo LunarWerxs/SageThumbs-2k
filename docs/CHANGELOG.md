@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.2.0
 
 - **Uninstalling keeps Windows' thumbnail cache unless you ask.** Since 3.0.5 the uninstaller
   cleared the whole cache at the next restart - every thumbnail on the machine, not only the

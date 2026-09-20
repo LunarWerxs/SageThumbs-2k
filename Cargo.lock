@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "build-support"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "toml",
 ]
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "base64",
  "bcdec_rs",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dlghook"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "build-support",
  "windows",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "sagethumbs2k-dll"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "build-support",
  "sagethumbs2k",
