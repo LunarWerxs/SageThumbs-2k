@@ -56,6 +56,16 @@ pub(super) unsafe fn timestamped_name() -> String {
     )
 }
 
+/// Encode `img` as PNG bytes in memory, or `None` if the encoder fails. Both save paths need
+/// the bytes before deciding where they go, so a failed encode never truncates a destination or
+/// keeps a reserved name.
+fn encode_png(img: &image::RgbaImage) -> Option<Vec<u8>> {
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 /// Auto-save a timestamped PNG into `dir` (created if missing). Used by Ctrl+S / the
 /// Save button when "use a fixed save folder" is on, and by the editor-less instant
 /// capture. Returns whether the file was written.
@@ -65,13 +75,9 @@ pub(super) fn save_png_to_dir(dir: &std::path::Path, top_down_bgra: &[u8], w: i3
     };
     let _ = std::fs::create_dir_all(dir);
     // Encode first: a reserved name is only worth keeping once there are bytes for it.
-    let mut png = Vec::new();
-    if img
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .is_err()
-    {
+    let Some(png) = encode_png(&img) else {
         return false;
-    }
+    };
     let name = unsafe { timestamped_name() };
     write_reserved(dir, &name, &png).is_some()
 }
@@ -155,13 +161,9 @@ pub(super) fn save_png_to_path(
     // name it truncated the destination before refusing RGBA: 2026-09-19 audit F18) - then
     // stage beside the destination and swap, so a failure at any point leaves whatever the
     // path already held. The picker enforces `.png` too (FOS_STRICTFILETYPES).
-    let mut png = Vec::new();
-    if img
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .is_err()
-    {
+    let Some(png) = encode_png(&img) else {
         return false;
-    }
+    };
     sagethumbs2k_core::fsutil::write_atomically(path, &png).is_ok()
 }
 
