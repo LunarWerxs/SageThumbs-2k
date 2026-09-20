@@ -165,12 +165,21 @@ fn to_verbatim(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// `path` as a NUL-terminated UTF-16 buffer for the Win32 `…W` calls, prefixed through
+/// [`to_verbatim`] so it still works past the legacy path-length limit.
+fn wide_verbatim(path: &Path) -> Vec<u16> {
+    to_verbatim(path)
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect()
+}
+
 /// OR `add` into a path's existing file attributes (best-effort; a permission
 /// failure just leaves the file as-is). Goes through [`to_verbatim`] so this still
 /// works past the legacy path-length limit.
 fn add_attrs(path: &Path, add: FILE_FLAGS_AND_ATTRIBUTES) {
-    let verbatim = to_verbatim(path);
-    let wide: Vec<u16> = verbatim.as_os_str().encode_wide().chain(once(0)).collect();
+    let wide = wide_verbatim(path);
     unsafe {
         let cur = GetFileAttributesW(PCWSTR(wide.as_ptr()));
         // GetFileAttributesW returns INVALID_FILE_ATTRIBUTES (u32::MAX) on error;
@@ -199,8 +208,7 @@ fn add_attrs(path: &Path, add: FILE_FLAGS_AND_ATTRIBUTES) {
 /// and logs the rare case where the failure means something else (permissions, a
 /// transient I/O error) instead of pretending the file simply isn't there.
 fn clear_attrs(path: &Path, drop: FILE_FLAGS_AND_ATTRIBUTES) -> Option<FILE_FLAGS_AND_ATTRIBUTES> {
-    let verbatim = to_verbatim(path);
-    let wide: Vec<u16> = verbatim.as_os_str().encode_wide().chain(once(0)).collect();
+    let wide = wide_verbatim(path);
     unsafe {
         let cur = GetFileAttributesW(PCWSTR(wide.as_ptr()));
         if cur == u32::MAX {
@@ -226,8 +234,7 @@ fn clear_attrs(path: &Path, drop: FILE_FLAGS_AND_ATTRIBUTES) -> Option<FILE_FLAG
 /// [`to_verbatim`]) — undoes a [`clear_attrs`] when the step it was staged for
 /// (a rename) didn't happen after all.
 fn restore_attrs(path: &Path, prior: FILE_FLAGS_AND_ATTRIBUTES) {
-    let verbatim = to_verbatim(path);
-    let wide: Vec<u16> = verbatim.as_os_str().encode_wide().chain(once(0)).collect();
+    let wide = wide_verbatim(path);
     unsafe {
         let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), prior);
     }
@@ -324,7 +331,44 @@ mod tests {
         src_path
     }
 
+    /// A fresh, unique `%TEMP%` directory for one test, with the source PNG `set_folder_icon`
+    /// reads already in it — `tag` keeps the tests' directory names distinct.
+    fn make_test_dir(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "st2k_foldericon_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = make_src(&dir);
+        (dir, src_path)
+    }
+
     use crate::fsutil::lock_until_first_retry;
+
+    /// Hold `lock_path` open with no sharing across a `set_folder_icon` run over `src_path`,
+    /// then assert the rename retried past that transient lock instead of failing outright —
+    /// and clean `dir` up.
+    fn assert_retries_past_lock(dir: &Path, lock_path: &Path, src_path: &Path) {
+        let failures = lock_until_first_retry(lock_path);
+
+        let result = set_folder_icon(src_path.to_str().unwrap());
+        crate::fsutil::clear_transient_failure_hook();
+
+        assert!(
+            result.is_ok(),
+            "rename must retry past the transient lock, not fail immediately: {result:?}"
+        );
+        assert!(
+            failures.load(Ordering::SeqCst) >= 1,
+            "the rename never met the lock, so nothing here exercised retrying"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// 2026-09-19 audit F19: a desktop.ini this process cannot READ (a sharing lock that
     /// outlasts the retry budget here; a permission denial in the wild) used to read as "no
@@ -334,16 +378,7 @@ mod tests {
     #[test]
     fn set_folder_icon_refuses_when_desktop_ini_cannot_be_read_and_leaves_it_untouched() {
         use std::os::windows::fs::OpenOptionsExt;
-        let dir = std::env::temp_dir().join(format!(
-            "st2k_foldericon_unreadable_ini_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src_path = make_src(&dir);
+        let (dir, src_path) = make_test_dir("unreadable_ini");
         let ini = dir.join("desktop.ini");
         let original = b"[.ShellClassInfo]\r\nInfoTip=keep me\r\n[LocalizedFileNames]\r\nsrc.png=@shell32.dll,-1\r\n";
         std::fs::write(&ini, original).unwrap();
@@ -386,70 +421,24 @@ mod tests {
     /// (`fsutil::rename_retrying`), not fail on a bare `std::fs::rename`.
     #[test]
     fn set_folder_icon_survives_a_transient_lock_on_the_ico() {
-        let dir = std::env::temp_dir().join(format!(
-            "st2k_foldericon_lock_ico_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src_path = make_src(&dir);
+        let (dir, src_path) = make_test_dir("lock_ico");
 
         // Pre-create the .ico target and hold it open with no sharing, mimicking a
         // transient Explorer/thumbnail-cache lock on the rename destination.
         let ico_path = dir.join("SageThumbsFolder.ico");
         std::fs::write(&ico_path, b"placeholder").unwrap();
-        let failures = lock_until_first_retry(&ico_path);
-
-        let result = set_folder_icon(src_path.to_str().unwrap());
-        crate::fsutil::clear_transient_failure_hook();
-
-        assert!(
-            result.is_ok(),
-            "rename must retry past the transient lock, not fail immediately: {result:?}"
-        );
-        assert!(
-            failures.load(Ordering::SeqCst) >= 1,
-            "the rename never met the lock, so nothing here exercised retrying"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_retries_past_lock(&dir, &ico_path, &src_path);
     }
 
     /// Same as above, for the `desktop.ini` rename (the second of the two writer sites
     /// this file owns).
     #[test]
     fn set_folder_icon_survives_a_transient_lock_on_desktop_ini() {
-        let dir = std::env::temp_dir().join(format!(
-            "st2k_foldericon_lock_ini_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src_path = make_src(&dir);
+        let (dir, src_path) = make_test_dir("lock_ini");
 
         let ini_path = dir.join("desktop.ini");
         std::fs::write(&ini_path, b"placeholder").unwrap();
-        let failures = lock_until_first_retry(&ini_path);
-
-        let result = set_folder_icon(src_path.to_str().unwrap());
-        crate::fsutil::clear_transient_failure_hook();
-
-        assert!(
-            result.is_ok(),
-            "rename must retry past the transient lock, not fail immediately: {result:?}"
-        );
-        assert!(
-            failures.load(Ordering::SeqCst) >= 1,
-            "the rename never met the lock, so nothing here exercised retrying"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_retries_past_lock(&dir, &ini_path, &src_path);
     }
 
     /// A280/P41: re-running Set-as-folder-icon on a folder that already has one must not
@@ -457,16 +446,7 @@ mod tests {
     /// rename too, mirroring the desktop.ini handling that already existed.
     #[test]
     fn set_folder_icon_survives_a_re_run_against_an_already_hidden_ico() {
-        let dir = std::env::temp_dir().join(format!(
-            "st2k_foldericon_rerun_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src_path = make_src(&dir);
+        let (dir, src_path) = make_test_dir("rerun");
 
         // First run: creates the .ico and (per the normal add_attrs pass) marks it Hidden.
         let first = set_folder_icon(src_path.to_str().unwrap());
