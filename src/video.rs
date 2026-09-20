@@ -21,9 +21,8 @@ use windows::Win32::Foundation::{HANDLE, RPC_S_CALLPENDING, WAIT_OBJECT_0};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::{PropVariantToUInt64, PROPVARIANT};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CoWaitForMultipleHandles,
-    IGlobalInterfaceTable, IStream, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, COWAIT_DEFAULT,
-    COWAIT_DISPATCH_CALLS,
+    CoCreateInstance, CoWaitForMultipleHandles, IGlobalInterfaceTable, IStream,
+    CLSCTX_INPROC_SERVER, COWAIT_DEFAULT, COWAIT_DISPATCH_CALLS,
 };
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -649,13 +648,7 @@ where
         .name("st2k-video-worker".into())
         .spawn(move || {
             // Pin the DLL for this detached worker's whole lifetime (see `grab_budgeted`).
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
-            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-            let r = f();
-            if inited {
-                unsafe { CoUninitialize() };
-            }
+            let r = crate::pdf::with_mta_apartment(f);
             *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
             // Last act, after the apartment is gone: "done" means done with Media Foundation.
             w_done.store(true, Ordering::SeqCst);
@@ -766,14 +759,7 @@ where
         // Pin the DLL for this detached worker's whole lifetime: on timeout we return but
         // leave it running, and `DllCanUnloadNow` ignores it, so the thumbnail host could
         // unload the DLL mid-grab and crash. Mirrors run_action_detached.
-        #[allow(clippy::default_constructed_unit_structs)]
-        let _module = crate::ModuleRef::default();
-        // S_OK / S_FALSE both add a ref to balance; RPC_E_CHANGED_MODE does not.
-        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let r = f();
-        if inited {
-            unsafe { CoUninitialize() };
-        }
+        let r = crate::pdf::with_mta_apartment(f);
         let _ = tx.send(r);
         // Last act, after the apartment is gone: "done" means done with Media Foundation.
         finished.store(true, Ordering::SeqCst);

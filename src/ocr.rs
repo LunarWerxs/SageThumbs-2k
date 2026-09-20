@@ -14,11 +14,10 @@ use windows::Graphics::Imaging::{
     ColorManagementMode, ExifOrientationMode, SoftwareBitmap,
 };
 use windows::Media::Ocr::{OcrEngine, OcrLine, OcrResult};
-use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
-use crate::pdf::block_op;
+use crate::pdf::{block_op, stream_with_bytes};
 use crate::verbs::read_full_fidelity_capped;
 
 mod table;
@@ -129,14 +128,7 @@ const OCR_MAX_UPSCALE: u32 = 4;
 
 /// Load `bytes` into a WinRT in-memory stream and open a `BitmapDecoder` on it.
 fn decode_source(bytes: &[u8]) -> Result<BitmapDecoder> {
-    let stream = InMemoryRandomAccessStream::new()?;
-    {
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        writer.WriteBytes(bytes)?;
-        block_op(&writer.StoreAsync()?)?;
-        writer.DetachStream()?;
-    }
-    stream.Seek(0)?;
+    let stream = stream_with_bytes(bytes)?;
     block_op(&BitmapDecoder::CreateAsync(&stream)?)
 }
 

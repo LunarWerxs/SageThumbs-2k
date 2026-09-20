@@ -34,6 +34,23 @@ use windows_future::{AsyncStatus, IAsyncAction, IAsyncOperation};
 /// accepted trade-off, same as `decode_svg`).
 const PDF_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Run `f` on the current thread inside a fresh MTA COM apartment, holding a [`crate::ModuleRef`]
+/// DLL pin for the whole call. WinRT's blocking waits can deadlock in an STA and we can't assume
+/// the caller's apartment (see the module docs), so every detached worker wraps its body in this.
+/// The apartment is unbalanced again before returning, and only if this call initialized it.
+/// Shared with `crate::video`'s Media Foundation workers.
+pub(crate) fn with_mta_apartment<T>(f: impl FnOnce() -> T) -> T {
+    #[allow(clippy::default_constructed_unit_structs)]
+    let _module = crate::ModuleRef::default();
+    // S_OK / S_FALSE both add a ref to balance; RPC_E_CHANGED_MODE does not.
+    let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let out = f();
+    if inited {
+        unsafe { CoUninitialize() };
+    }
+    out
+}
+
 pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
     render_page_counted(bytes, 0, max_dim).map(|(png, _count)| png)
 }
@@ -50,13 +67,7 @@ pub fn render_page_counted(bytes: &[u8], page_index: u32, max_dim: u32) -> Optio
     // PDF_TIMEOUT. The worker holds a ModuleRef so that, if it outlives the budget, the
     // in-process host can't unload the DLL mid-render and access-violate (mirrors decode_svg).
     std::thread::spawn(move || {
-        #[allow(clippy::default_constructed_unit_structs)]
-        let _module = crate::ModuleRef::default();
-        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let out = render(&owned, page_index, max_dim).ok();
-        if inited {
-            unsafe { CoUninitialize() };
-        }
+        let out = with_mta_apartment(|| render(&owned, page_index, max_dim).ok());
         let _ = tx.send(out);
     });
     match rx.recv_timeout(PDF_TIMEOUT) {
@@ -153,10 +164,7 @@ impl PdfSession {
         let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<Vec<PageSize>>>();
         std::thread::spawn(move || {
-            #[allow(clippy::default_constructed_unit_structs)]
-            let _module = crate::ModuleRef::default();
-            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-            match open_document(&owned) {
+            with_mta_apartment(|| match open_document(&owned) {
                 Ok((doc, sizes)) => {
                     // Announce success BEFORE serving, so `open` returns as soon as the layout
                     // is known rather than waiting on the first render.
@@ -170,10 +178,7 @@ impl PdfSession {
                 Err(_) => {
                     let _ = ready_tx.send(None);
                 }
-            }
-            if inited {
-                unsafe { CoUninitialize() };
-            }
+            });
         });
         let sizes = ready_rx.recv_timeout(PDF_TIMEOUT).ok().flatten()?;
         Some(Self {
@@ -227,14 +232,7 @@ impl PdfSession {
 
 /// Load a document from bytes and read every page's declared size.
 fn open_document(bytes: &[u8]) -> Result<(PdfDocument, Vec<PageSize>)> {
-    let stream = InMemoryRandomAccessStream::new()?;
-    {
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        writer.WriteBytes(bytes)?;
-        block_op(&writer.StoreAsync()?)?;
-        writer.DetachStream()?;
-    }
-    stream.Seek(0)?;
+    let stream = stream_with_bytes(bytes)?;
     let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
     let count = doc.PageCount()?;
     if count == 0 || count as usize > MAX_SESSION_PAGES {
@@ -266,7 +264,7 @@ fn render_page_of(doc: &PdfDocument, page_index: u32, width: u32) -> Result<Vec<
 }
 
 fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
-    let stream = copy_bytes_to_pdf_stream(bytes)?;
+    let stream = stream_with_bytes(bytes)?;
 
     // Load the document and grab the requested page (clamped into range).
     let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
@@ -281,8 +279,9 @@ fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)>
     Ok((buf, count))
 }
 
-/// Copy `bytes` into a fresh WinRT in-memory stream, rewound to the start.
-fn copy_bytes_to_pdf_stream(bytes: &[u8]) -> Result<InMemoryRandomAccessStream> {
+/// Copy `bytes` into a fresh WinRT in-memory stream, rewound to the start. Shared with
+/// `crate::ocr`, whose `BitmapDecoder` is fed from the very same kind of stream.
+pub(crate) fn stream_with_bytes(bytes: &[u8]) -> Result<InMemoryRandomAccessStream> {
     let stream = InMemoryRandomAccessStream::new()?;
     {
         let writer = DataWriter::CreateDataWriter(&stream)?;
