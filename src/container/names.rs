@@ -78,8 +78,9 @@ fn looks_like_shift_jis(bytes: &[u8]) -> bool {
 
 /// Decode `bytes` with Windows code page `cp`. With `strict`, any byte sequence the code page
 /// can't map makes this return `None` (`MB_ERR_INVALID_CHARS`); without it, unmappable bytes
-/// become the code page's default replacement character.
-fn decode_codepage(bytes: &[u8], cp: u32, strict: bool) -> Option<String> {
+/// become the code page's default replacement character. `pub`: the app's text-preview
+/// decoder runs the same call over whole files (it used to carry its own copy).
+pub fn decode_codepage(bytes: &[u8], cp: u32, strict: bool) -> Option<String> {
     if bytes.is_empty() {
         return Some(String::new());
     }

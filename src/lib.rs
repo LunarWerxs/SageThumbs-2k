@@ -29,6 +29,9 @@ mod container;
 pub use container::list_archive;
 // The read-only CFB reader, for the app EXE's Outlook-.msg preview (`preview::mailmsg`).
 // Hidden like `ocr`: an implementation detail shared across the workspace, not API.
+/// Windows code-page decoding (`MultiByteToWideChar`) for archive entry names and the app's
+/// text preview alike: one copy of the call.
+pub use container::decode_codepage;
 #[doc(hidden)]
 pub use container::ole;
 /// True document dimensions for containers whose extracted cover is only a small baked-in

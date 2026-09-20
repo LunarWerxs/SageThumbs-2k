@@ -1,3 +1,7 @@
+// Windows code-page decoding lives in the core (the archive-name decoder): one copy of the
+// `MultiByteToWideChar` call for both.
+use sagethumbs2k_core::decode_codepage;
+
 /// Read a text/code file for preview: cap at 5 MB, reject binaries, decode (BOM-aware, lossy),
 /// truncate absurdly long lines, and mark a capped file. `None` if unreadable or binary.
 pub(crate) fn read_text(path: &str) -> Option<String> {
@@ -338,33 +342,6 @@ const CJK_DOMINANT_BONUS: i64 = 1_000;
 /// Is `cp` one of the double-byte codepages we test?
 fn is_dbcs(cp: u32) -> bool {
     DBCS_CODEPAGES.contains(&cp)
-}
-
-/// Decode `bytes` with Windows codepage `cp`. With `strict`, an invalid byte sequence for that
-/// codepage makes this return `None` (that's `MB_ERR_INVALID_CHARS`); without it, undecodable
-/// bytes become the codepage's default char.
-fn decode_codepage(bytes: &[u8], cp: u32, strict: bool) -> Option<String> {
-    use windows::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
-
-    if bytes.is_empty() {
-        return Some(String::new());
-    }
-    let flags = if strict {
-        MB_ERR_INVALID_CHARS
-    } else {
-        Default::default()
-    };
-    let n = unsafe { MultiByteToWideChar(cp, flags, bytes, None) };
-    if n <= 0 {
-        return None;
-    }
-    let mut buf = vec![0u16; n as usize];
-    let written = unsafe { MultiByteToWideChar(cp, flags, bytes, Some(&mut buf)) };
-    if written <= 0 {
-        return None;
-    }
-    buf.truncate(written as usize);
-    Some(String::from_utf16_lossy(&buf))
 }
 
 /// How much does this decode look like genuine CJK text? `0` means "reject this codepage".
