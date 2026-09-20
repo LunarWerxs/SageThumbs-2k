@@ -42,6 +42,16 @@ fn alloc_pwstr(s: &str) -> Result<PWSTR> {
     Ok(PWSTR(p))
 }
 
+/// The companion EXE's app icon as the modern menu's `"<module>,-<resid>"` reference
+/// (resource 1). Installed next to the DLL — if it isn't there, no icon (`E_NOTIMPL`),
+/// never an error.
+fn app_icon_ref() -> Result<PWSTR> {
+    safety::guard_val(|| {
+        let exe = crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
+        alloc_pwstr(&format!("{},-1", exe.display()))
+    })
+}
+
 /// Extract filesystem paths from a shell selection (the IShellItemArray the
 /// shell passes to Invoke). Null/empty selection yields an empty Vec.
 unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
@@ -294,19 +304,33 @@ impl Default for ExplorerCommand {
     }
 }
 
+/// Map a raw top-level verb list ([`verbs::ordered_top_level`] /
+/// [`verbs::condensed_top_level`]) to modern-menu commands: drop the separators, honor the
+/// per-item visibility snapshot, and build one [`MenuCommand`] per item. All are top-level
+/// (`top_level: true`) so `GetState` can hide the image-only ones on an audio-only
+/// selection; `condensed` picks the always-enabled file-agnostic gate flag for the items
+/// shown on an unsupported selection.
+fn top_level_commands(
+    entries: Vec<(&'static verbs::MenuItem, u32)>,
+    vis: &settings::MenuVisibility,
+    condensed: bool,
+    gate: settings::MenuGate,
+) -> Vec<IExplorerCommand> {
+    entries
+        .into_iter()
+        .map(|(it, _)| it)
+        .filter(|it| !matches!(it, verbs::MenuItem::Separator))
+        .filter(|it| vis.shown(it.title()))
+        .map(|it| MenuCommand::new(it, true, condensed, gate).into())
+        .collect()
+}
+
 impl IExplorerCommand_Impl for ExplorerCommand_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         safety::guard_val(|| alloc_pwstr("SageThumbs 2K"))
     }
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        safety::guard_val(|| {
-            // The companion EXE carries the app icon as resource 1; the modern
-            // menu takes "<module>,-<resid>" icon references. Installed next to
-            // the DLL — if it isn't there, no icon (E_NOTIMPL), never an error.
-            let exe =
-                crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
-            alloc_pwstr(&format!("{},-1", exe.display()))
-        })
+        app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         Err(Error::from(E_NOTIMPL))
@@ -371,29 +395,14 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             // (and no-op) on an unsupported file.
             let condensed = self.has_image.get() != Some(true) && gate.all_file_types;
             let items: Vec<IExplorerCommand> = if condensed {
-                verbs::condensed_top_level()
-                    .into_iter()
-                    .map(|(it, _)| it)
-                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
-                    .filter(|it| vis.shown(it.title()))
-                    // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
-                    .map(|it| MenuCommand::new(it, true, true, gate).into())
-                    .collect()
+                // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
+                top_level_commands(verbs::condensed_top_level(), &vis, true, gate)
             } else {
                 // `ordered_top_level()` (not raw `MENU`) so the user's drag-reorder in Settings
                 // also applies to the modern flyout, matching the classic handler. Leaf indices
                 // aren't used here (IExplorerCommand dispatches the action directly), so the `_`
                 // start-index is discarded.
-                verbs::ordered_top_level()
-                    .into_iter()
-                    .map(|(it, _)| it)
-                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
-                    // Per-item visibility: hide top-level entries the user unticked in Settings.
-                    .filter(|it| vis.shown(it.title()))
-                    // These ARE the top-level items — `top_level: true` so `GetState` can hide
-                    // the image-only ones on an audio-only selection.
-                    .map(|it| MenuCommand::new(it, true, false, gate).into())
-                    .collect()
+                top_level_commands(verbs::ordered_top_level(), &vis, false, gate)
             };
             Ok(SubCommandEnum::new(items).into())
         })
@@ -549,11 +558,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         if !self.quick_root {
             return Err(Error::from(E_NOTIMPL));
         }
-        safety::guard_val(|| {
-            let exe =
-                crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
-            alloc_pwstr(&format!("{},-1", exe.display()))
-        })
+        app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         Err(Error::from(E_NOTIMPL))
