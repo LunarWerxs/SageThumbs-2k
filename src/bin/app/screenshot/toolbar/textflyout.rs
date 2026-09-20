@@ -214,16 +214,7 @@ pub(crate) unsafe fn draw_text_flyout(
     let underline = font.lfUnderline != 0;
     let bold = font.lfWeight >= 700;
 
-    let mut down = RECT::default();
-    let mut up = RECT::default();
-    for (it, r) in items {
-        if let TextItem::SizeDown = it {
-            down = *r;
-        }
-        if let TextItem::SizeUp = it {
-            up = *r;
-        }
-    }
+    let (down, up) = size_button_rects(items);
 
     for (it, r) in items {
         match it {
@@ -331,4 +322,19 @@ pub(crate) unsafe fn draw_text_flyout(
             DT_CENTER | DT_VCENTER | DT_SINGLELINE,
         );
     }
+}
+
+/// Locate the SizeDown/SizeUp rows the size readout is centred between.
+fn size_button_rects(items: &[(TextItem, RECT)]) -> (RECT, RECT) {
+    let mut down = RECT::default();
+    let mut up = RECT::default();
+    for (it, r) in items {
+        if let TextItem::SizeDown = it {
+            down = *r;
+        }
+        if let TextItem::SizeUp = it {
+            up = *r;
+        }
+    }
+    (down, up)
 }
