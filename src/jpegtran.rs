@@ -561,19 +561,6 @@ fn dst_pos(op: Op, gw: usize, gh: usize, c: usize, r: usize) -> (usize, usize) {
     }
 }
 
-/// Parsed JPEG segments, from just after SOI up to (but not including) the
-/// entropy-coded scan data.
-struct ParsedHeader {
-    pre_frame: Vec<u8>,
-    dqt: Vec<(u8, [u8; 64])>,
-    huff: [[Option<HuffDec>; 4]; 2],
-    restart_interval: usize,
-    width: usize,
-    height: usize,
-    comps: Vec<Comp>,
-    scan_start: usize,
-}
-
 /// Parse an SOF0 (baseline) segment starting at `d[i]` (the `0xFFC0` marker):
 /// length, precision, height, width, ncomp, comps. Returns
 /// `(width, height, comps, next i)`.
@@ -705,7 +692,9 @@ fn parse_sos_selectors(d: &[u8], i: usize, comps: &mut [Comp]) -> Option<usize> 
     Some(i + 2 + len)
 }
 
-/// Accumulated header-parse state for `parse_headers`'s main loop.
+/// Parsed JPEG segments, from just after SOI up to (but not including) the
+/// entropy-coded scan data; `parse_headers` returns this plus the scan-data
+/// offset.
 #[derive(Default)]
 struct HeaderAccum {
     pre_frame: Vec<u8>,       // APPn/COM kept verbatim, before the frame
@@ -782,7 +771,7 @@ fn handle_header_marker(
 ///
 /// Each segment type's own parsing lives in a `parse_*` helper above, or a
 /// `HeaderAccum` method; this function is just the marker dispatch loop.
-fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
+fn parse_headers(d: &[u8]) -> Option<(HeaderAccum, usize)> {
     let mut i = 2usize;
     let mut hdr = HeaderAccum::default();
     let mut scan_start = 0usize;
@@ -805,16 +794,7 @@ fn parse_headers(d: &[u8]) -> Option<ParsedHeader> {
         return None;
     }
 
-    Some(ParsedHeader {
-        pre_frame: hdr.pre_frame,
-        dqt: hdr.dqt,
-        huff: hdr.huff,
-        restart_interval: hdr.restart_interval,
-        width: hdr.width,
-        height: hdr.height,
-        comps: hdr.comps,
-        scan_start,
-    })
+    Some((hdr, scan_start))
 }
 
 /// Validate dimensions are in-scope and block-aligned, then size and allocate
@@ -1156,7 +1136,8 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
         return None;
     }
 
-    let ParsedHeader {
+    let (hdr, scan_start) = parse_headers(d)?;
+    let HeaderAccum {
         pre_frame,
         dqt,
         huff,
@@ -1164,8 +1145,7 @@ pub fn transform(jpeg: &[u8], op: Op) -> Option<Vec<u8>> {
         width,
         height,
         mut comps,
-        scan_start,
-    } = parse_headers(d)?;
+    } = hdr;
 
     let (mcus_x, mcus_y) = alloc_grids(width, height, &mut comps)?;
     decode_scan(
