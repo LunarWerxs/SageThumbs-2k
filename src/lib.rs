@@ -45,7 +45,7 @@ pub use container::util::find;
 pub mod cli;
 mod contextmenu;
 pub mod decode;
-mod dib;
+pub mod dib;
 pub mod doctor;
 mod factory;
 // Bounded, process-local memory of thumbnail decode failures (a circuit breaker), so a
@@ -67,6 +67,7 @@ pub mod fsutil;
 #[cfg(test)]
 mod fuzz;
 mod guids;
+pub mod hex;
 mod jpegtran;
 pub mod licence_state;
 pub mod mcp;

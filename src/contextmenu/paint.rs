@@ -138,12 +138,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
         };
         let src = core::slice::from_raw_parts(bits as *const u8, n);
         let mut rgba = vec![0u8; n];
-        for i in 0..(iw * ih) as usize {
-            rgba[i * 4] = src[i * 4 + 2]; // R
-            rgba[i * 4 + 1] = src[i * 4 + 1]; // G
-            rgba[i * 4 + 2] = src[i * 4]; // B
-            rgba[i * 4 + 3] = 255;
-        }
+        crate::dib::swap_rb_opaque(src, &mut rgba);
         SelectObject(memdc, oldbmp);
         let _ = DeleteDC(memdc);
         let _ = DeleteObject(dib.into());

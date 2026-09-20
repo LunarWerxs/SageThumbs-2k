@@ -284,12 +284,7 @@ pub unsafe fn composite_rgba_over_bg(
     // A photo is always fully opaque, so ask once (or trust a caller who already knows), then
     // take the plain swizzle when there is no transparency to honour.
     if opaque.unwrap_or_else(|| (0..px).all(|i| rgba[i * 4 + 3] == 255)) {
-        for i in 0..px {
-            dst[i * 4] = rgba[i * 4 + 2]; // B
-            dst[i * 4 + 1] = rgba[i * 4 + 1]; // G
-            dst[i * 4 + 2] = rgba[i * 4]; // R
-            dst[i * 4 + 3] = 255;
-        }
+        crate::dib::swap_rb_opaque(rgba, dst);
         return Some(hbmp);
     }
     for i in 0..px {
