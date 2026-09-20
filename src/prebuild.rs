@@ -291,13 +291,6 @@ pub(crate) const OFFLINE_ATTRS: u32 = 0x0000_1000 | 0x0040_0000 | 0x0004_0000;
 /// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions and symlinks, which the walk does not follow.
 const REPARSE: u32 = 0x0000_0400;
 
-fn attrs(p: &Path) -> u32 {
-    use std::os::windows::fs::MetadataExt;
-    std::fs::symlink_metadata(p)
-        .map(|m| m.file_attributes())
-        .unwrap_or(0)
-}
-
 /// True when `path` is a cloud placeholder (a OneDrive/Dropbox file not yet downloaded to this
 /// machine): a `symlink_metadata` attribute check ONLY, so calling this never itself triggers
 /// hydration. `pub` (not `pub(crate)`): `cli.rs`'s `expand_inputs` cloud guard and
@@ -306,7 +299,7 @@ fn attrs(p: &Path) -> u32 {
 /// definition now, reused everywhere a caller needs to decide "would extracting this file's
 /// thumbnail download the whole thing?" (item C13).
 pub fn is_cloud_placeholder(path: &Path) -> bool {
-    attrs(path) & OFFLINE_ATTRS != 0
+    crate::fsutil::file_attributes(path) & OFFLINE_ATTRS != 0
 }
 
 /// Is this extension one we hook AND the user still has enabled? A format they turned off has
@@ -342,7 +335,7 @@ fn walk(
     };
     for e in rd.flatten() {
         let p = e.path();
-        let a = attrs(&p);
+        let a = crate::fsutil::file_attributes(&p);
         if a & REPARSE != 0 {
             continue;
         }
@@ -567,29 +560,36 @@ pub fn unmangle_shell_path(arg: &str) -> String {
 /// admin prompt, every thumbnail lands in the administrator's cache and the user sees exactly
 /// no change — the most confusing possible failure, because it reports total success.
 pub fn is_elevated() -> bool {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     unsafe {
         let mut token = HANDLE::default();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
             return false;
         }
-        let mut el = TOKEN_ELEVATION::default();
-        let mut len = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            Some(core::ptr::addr_of_mut!(el).cast()),
-            core::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut len,
-        )
-        .is_ok();
-        let _ = windows::Win32::Foundation::CloseHandle(token);
-        ok && el.TokenIsElevated != 0
+        let elevated = token_is_elevated(token);
+        let _ = CloseHandle(token);
+        elevated
     }
+}
+
+/// `TokenElevation` of an open `TOKEN_QUERY` token; a refused query answers "not elevated"
+/// (both callers use the answer to EXPLAIN a problem, so a wrong "yes" would invent one).
+/// The token stays the caller's to close.
+unsafe fn token_is_elevated(token: windows::Win32::Foundation::HANDLE) -> bool {
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
+    let mut el = TOKEN_ELEVATION::default();
+    let mut len = 0u32;
+    GetTokenInformation(
+        token,
+        TokenElevation,
+        Some(core::ptr::addr_of_mut!(el).cast()),
+        core::mem::size_of::<TOKEN_ELEVATION>() as u32,
+        &mut len,
+    )
+    .is_ok()
+        && el.TokenIsElevated != 0
 }
 
 /// True when the process `pid` is running elevated.
@@ -603,9 +603,7 @@ pub fn is_elevated() -> bool {
 /// "yes" would invent one; a wrong "no" just leaves things as they were.
 pub fn process_is_elevated(pid: u32) -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
+    use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::System::Threading::{
         OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -619,19 +617,7 @@ pub fn process_is_elevated(pid: u32) -> bool {
         let mut token = HANDLE::default();
         let mut elevated = false;
         if OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok() {
-            let mut el = TOKEN_ELEVATION::default();
-            let mut len = 0u32;
-            if GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(core::ptr::addr_of_mut!(el).cast()),
-                core::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut len,
-            )
-            .is_ok()
-            {
-                elevated = el.TokenIsElevated != 0;
-            }
+            elevated = token_is_elevated(token);
             let _ = CloseHandle(token);
         }
         let _ = CloseHandle(process);

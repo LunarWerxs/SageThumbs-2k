@@ -5,6 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+/// A path's raw `FILE_ATTRIBUTE_*` bits from `symlink_metadata` (so a reparse point answers
+/// for itself and a cloud placeholder is never hydrated by the question); 0 when the path
+/// cannot be stat'ed. The `st2k batch` walk and the prebuild walk each had their own copy.
+pub(crate) fn file_attributes(p: &Path) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_attributes())
+        .unwrap_or(0)
+}
+
 /// A fresh write or a move can briefly hit a transient Explorer / thumbnail-cache
 /// lock on the destination (Windows os error 5/32). We retry a few times with a
 /// short backoff before giving up. These consts are the retry POLICY in ONE place

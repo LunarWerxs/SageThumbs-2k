@@ -79,13 +79,6 @@ fn expand_inputs_is_supported(p: &Path) -> bool {
         .is_some_and(formats::is_known)
 }
 
-fn expand_inputs_attrs(p: &Path) -> u32 {
-    use std::os::windows::fs::MetadataExt;
-    std::fs::symlink_metadata(p)
-        .map(|m| m.file_attributes())
-        .unwrap_or(0)
-}
-
 /// One directory entry from [`expand_inputs_walk`]'s `read_dir` loop, classified and
 /// (if it's a wanted file) pushed into `out`/`skipped_offline`. Split out so the loop
 /// body itself is a single call and the branching lives in one place.
@@ -96,7 +89,7 @@ fn expand_inputs_visit(
     out: &mut Vec<String>,
     skipped_offline: &mut usize,
 ) {
-    let a = expand_inputs_attrs(p);
+    let a = crate::fsutil::file_attributes(p);
     if a & REPARSE_ATTR != 0 {
         return;
     }
