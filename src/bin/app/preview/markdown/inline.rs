@@ -291,6 +291,24 @@ struct RunTokCtx<'a> {
     base: Option<usize>,
 }
 
+/// Build the [`Tok::Word`] both [`flush_word`] and [`split_overwide_word`] push: the run's fixed
+/// style comes from `rc`, `cx` is the measured text width (the padding is added here) and `doc`
+/// the selection-document span this token maps back to.
+fn word_tok(s: Vec<u16>, cx: i32, doc: Option<(usize, usize)>, rc: &RunTokCtx) -> Tok {
+    Tok::Word {
+        s,
+        w: cx + 2 * rc.pad,
+        pad: rc.pad,
+        font: rc.font,
+        color: rc.color,
+        code: rc.code,
+        strike: rc.strike,
+        link: rc.link.clone(),
+        doc,
+        spec: rc.spec,
+    }
+}
+
 /// Measure the pending `word` and push it onto `toks` as one [`Tok::Word`] (or several, via
 /// [`split_overwide_word`], when it is wider than `width`). `wend` is the source byte offset the
 /// word ends at, `wstart` where it began (both only matter for the selection-document span this
@@ -319,18 +337,12 @@ unsafe fn flush_word(
         // like. Split it between characters instead, the way CSS `overflow-wrap: anywhere` does.
         split_overwide_word(hdc, word, unit_at.as_slice(), wend, width, sz, toks, rc);
     } else {
-        toks.push(Tok::Word {
-            s: core::mem::take(word),
-            w: sz.cx + 2 * rc.pad,
-            pad: rc.pad,
-            font: rc.font,
-            color: rc.color,
-            code: rc.code,
-            strike: rc.strike,
-            link: rc.link.clone(),
-            doc: rc.base.map(|b| (b + wstart, b + wend)),
-            spec: rc.spec,
-        });
+        toks.push(word_tok(
+            core::mem::take(word),
+            sz.cx,
+            rc.base.map(|b| (b + wstart, b + wend)),
+            rc,
+        ));
     }
     unit_at.clear();
 }
@@ -363,18 +375,12 @@ unsafe fn split_overwide_word(
         }
         let to = if b < word.len() { unit_at[b] } else { wend };
         let from = unit_at[a];
-        toks.push(Tok::Word {
-            s: word[a..b].to_vec(),
-            w: csz.cx + 2 * rc.pad,
-            pad: rc.pad,
-            font: rc.font,
-            color: rc.color,
-            code: rc.code,
-            strike: rc.strike,
-            link: rc.link.clone(),
-            doc: rc.base.map(|bb| (bb + from, bb + to)),
-            spec: rc.spec,
-        });
+        toks.push(word_tok(
+            word[a..b].to_vec(),
+            csz.cx,
+            rc.base.map(|bb| (bb + from, bb + to)),
+            rc,
+        ));
         a = b;
     }
     word.clear();
