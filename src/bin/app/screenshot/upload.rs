@@ -32,8 +32,7 @@ use core::ffi::c_void;
 
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinInet::{
-    HttpOpenRequestW, HttpQueryInfoW, HttpSendRequestW, InternetCloseHandle, InternetConnectW,
-    InternetOpenW, InternetSetOptionW, HTTP_QUERY_FLAG_NUMBER, HTTP_QUERY_STATUS_CODE,
+    HttpOpenRequestW, HttpSendRequestW, InternetCloseHandle, InternetConnectW, InternetSetOptionW,
     INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
     INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
 };
@@ -758,11 +757,7 @@ const DRAIN_DEADLINE_SECS: u64 = 20;
 
 /// A minimal WinInet HTTPS POST (mirrors `sponsors.rs::http_fetch`, but with a body).
 unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<PostResp> {
-    let agent = wide("SageThumbs2K");
-    let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
-    if session.is_null() {
-        return None;
-    }
+    let session = crate::http::open_session()?;
     let host_w = wide(host);
     let conn = InternetConnectW(
         session,
@@ -826,7 +821,7 @@ unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Pos
     // status BEFORE draining (HttpQueryInfoW wants it off the still-open request) so a
     // 4xx/5xx page can never be scraped for a URL as if it were a success.
     let resp = if sent {
-        let status = query_status(req).unwrap_or(0);
+        let status = crate::http::query_status(req).unwrap_or(0);
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(DRAIN_DEADLINE_SECS);
         crate::win::wininet_drain(req, MAX_RESP, Some(deadline), None)
@@ -838,21 +833,6 @@ unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<Pos
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
     resp
-}
-
-/// Read the numeric HTTP status off a completed request (mirrors `http.rs::query_status`).
-unsafe fn query_status(req: *mut c_void) -> Option<u16> {
-    let mut code: u32 = 0;
-    let mut len: u32 = size_of::<u32>() as u32;
-    HttpQueryInfoW(
-        req,
-        HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-        Some(&mut code as *mut u32 as *mut c_void),
-        &mut len,
-        None,
-    )
-    .ok()?;
-    Some(code as u16)
 }
 
 #[cfg(test)]

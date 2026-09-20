@@ -93,6 +93,15 @@ pub(crate) fn request(
     unsafe { request_raw(method, &host, &path, headers, body, timeout_secs, max_resp) }
 }
 
+/// Resolve `url` into WinINet's `(host, path)` pair plus the wall-clock deadline that
+/// `overall_timeout_secs` (floor 1 s, so a caller passing 0 still gets a bound) puts on the
+/// WHOLE call — the prologue [`request_with_deadline`] and [`request_ex`] share.
+fn split_with_deadline(url: &str, overall_timeout_secs: u64) -> Option<(String, String, Instant)> {
+    let (host, path) = split_https(url)?;
+    let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
+    Some((host, path, deadline))
+}
+
 /// [`request`] with the wall-clock backstop [`request_ex`] has: `overall_timeout_secs` bounds
 /// the whole call, so a peer that trickles bytes just inside the per-phase timeout cannot hold
 /// a worker thread open indefinitely. For callers that need a method, headers and a body,
@@ -106,8 +115,7 @@ pub(crate) fn request_with_deadline(
     overall_timeout_secs: u64,
     max_resp: usize,
 ) -> Option<Resp> {
-    let (host, path) = split_https(url)?;
-    let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
+    let (host, path, deadline) = split_with_deadline(url, overall_timeout_secs)?;
     unsafe {
         request_raw_ex(
             method,
@@ -147,8 +155,7 @@ pub(crate) fn request_ex(
     max_resp: usize,
     on_progress: Option<&mut dyn FnMut(u64)>,
 ) -> Option<Resp> {
-    let (host, path) = split_https(url)?;
-    let deadline = Instant::now() + Duration::from_secs(overall_timeout_secs.max(1));
+    let (host, path, deadline) = split_with_deadline(url, overall_timeout_secs)?;
     unsafe {
         request_raw_ex(
             method,
@@ -202,6 +209,15 @@ unsafe fn request_raw(
     )
 }
 
+/// Open a WinINet session under the app's `SageThumbs2K` user agent, or `None` when
+/// WinINet refuses one. One copy for both WinINet callers: this module and
+/// `screenshot::upload::post`.
+pub(crate) unsafe fn open_session() -> Option<*mut c_void> {
+    let agent = wide("SageThumbs2K");
+    let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
+    (!session.is_null()).then_some(session)
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn request_raw_ex(
     method: &str,
@@ -215,11 +231,7 @@ unsafe fn request_raw_ex(
     max_resp: usize,
     on_progress: Option<&mut dyn FnMut(u64)>,
 ) -> Option<Resp> {
-    let agent = wide("SageThumbs2K");
-    let session = InternetOpenW(PCWSTR(agent.as_ptr()), 0, PCWSTR::null(), PCWSTR::null(), 0);
-    if session.is_null() {
-        return None;
-    }
+    let session = open_session()?;
     // Bound each phase so a dead host can't hang the Settings window / worker thread.
     let timeout_ms: u32 = (timeout_secs as u32) * 1000;
     for opt in [
@@ -324,8 +336,9 @@ unsafe fn request_raw_ex(
 }
 
 /// Read the numeric HTTP status code off a completed request via `HttpQueryInfoW`
-/// with `HTTP_QUERY_FLAG_NUMBER` (fills a DWORD, no string parsing).
-unsafe fn query_status(req: *mut c_void) -> Option<u16> {
+/// with `HTTP_QUERY_FLAG_NUMBER` (fills a DWORD, no string parsing). One copy for
+/// both WinINet callers that need the status: this module and `screenshot::upload::post`.
+pub(crate) unsafe fn query_status(req: *mut c_void) -> Option<u16> {
     let mut code: u32 = 0;
     let mut len: u32 = std::mem::size_of::<u32>() as u32;
     HttpQueryInfoW(
