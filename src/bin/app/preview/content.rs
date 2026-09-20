@@ -752,6 +752,13 @@ pub(super) fn decode_sync(path: &str) -> Option<DecodedRgba> {
     Some(first)
 }
 
+/// Convert a decoded image to tight RGBA8 at full resolution: the pixels ARE the image.
+fn rgba8_full(img: image::DynamicImage) -> DecodedRgba {
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+    DecodedRgba::full(w, h, rgba.into_raw())
+}
+
 /// Markdown remote-image fetch cap: badges are a few KB, hotlinked art rarely tops 8 MB.
 const MD_IMG_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Per-phase network timeout for one markdown image (seconds).
@@ -772,9 +779,7 @@ pub(super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
                     // Same display-cap policy as local markdown images (bounds the cached DIB).
                     // `reduce_to_fit` never enlarges, so it carries its own no-op case.
                     let img = sagethumbs2k_core::decode::reduce_to_fit(img, 2048, 4096);
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    DecodedRgba::full(w, h, rgba.into_raw())
+                    rgba8_full(img)
                 });
         let payload: Box<(u64, String, Option<DecodedRgba>)> = Box::new((gen, src, decoded));
         let raw = Box::into_raw(payload);
@@ -807,11 +812,7 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
             .and_then(|bytes| sagethumbs2k_core::pdf::render_page_counted(&bytes, page, 1600));
         let (rgba, count) = match rendered {
             Some((png, count)) => {
-                let d = image::load_from_memory(&png).ok().map(|img| {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                    DecodedRgba::full(w, h, rgba.into_raw())
-                });
+                let d = image::load_from_memory(&png).ok().map(rgba8_full);
                 (d, Some(count))
             }
             None => (None, None),
@@ -830,19 +831,9 @@ pub(super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: u32, gen: 
                 drop(Box::from_raw(raw));
             }
         }
-        let payload: Box<(u64, Option<SharedRgba>)> =
-            Box::new((gen, rgba.map(std::sync::Arc::new)));
-        let raw = Box::into_raw(payload);
-        if PostMessageW(
-            Some(hwnd),
-            WM_APP_RENDER,
-            WPARAM(gen as usize),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(raw));
-        }
+        // Same post-and-reclaim as every other decode result: the box is handed to the UI
+        // thread, or freed here if the window died before the post.
+        unsafe { post_render(hwnd, gen, rgba.map(std::sync::Arc::new)) };
     });
 }
 
@@ -864,9 +855,7 @@ fn streamed_decode(path: &str) -> Option<DecodedRgba> {
         path,
         sagethumbs2k_core::decode::EXR_PATH_EDGE,
     )?;
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    Some(DecodedRgba::full(w, h, rgba.into_raw()))
+    Some(rgba8_full(img))
 }
 
 /// Decode bytes already acquired by the path-aware reader. Keeping this separate lets the
@@ -877,9 +866,7 @@ fn streamed_decode(path: &str) -> Option<DecodedRgba> {
 /// invisible for a 2 MB JPEG, 120 MB for a big PNG.
 fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgba> {
     let img = decode_preview_budgeted(bytes)?;
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    Some(DecodedRgba::full(w, h, rgba.into_raw()))
+    Some(rgba8_full(img))
 }
 
 /// Run `decode::decode_preview` on a detached sub-thread, returning its result only if it
