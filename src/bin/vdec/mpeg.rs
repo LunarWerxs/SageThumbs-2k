@@ -23,8 +23,6 @@
 //!    HD-sized MPEG-2 frames — the same size heuristic every player uses. 4:2:0, 4:2:2 and
 //!    4:4:4 are handled by the generic `x >> ss_x, y >> ss_y` lookup.
 
-use std::io::Cursor;
-
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{decode_video_sequence, PictureCodingType};
 use sagethumbs2k_core::flv::Bits;
@@ -70,13 +68,7 @@ pub(super) fn frame_png(unit: &[u8]) -> Result<Vec<u8>, String> {
         .or_else(|| frames.first())
         .ok_or("MPEG unit decoded to no frame")?;
     let (width, height, rgba) = to_rgba(&decoded.frame, &hdr)?;
-    let img = image::RgbaImage::from_raw(width, height, rgba)
-        .ok_or("decoded plane sizes do not match the frame dimensions")?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode: {e}"))?;
-    Ok(png)
+    super::encode_png(width, height, rgba)
 }
 
 /// Convert a decoded frame to 8-bit RGBA (see the module docs for the exact rules).
@@ -132,10 +124,7 @@ fn to_rgba(
             let r = yy + 2.0 * (1.0 - kr) * pr;
             let b = yy + 2.0 * (1.0 - kb) * pb;
             let g = (yy - kr * r - kb * b) / kg;
-            rgba.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push(255);
+            super::push_rgb(&mut rgba, r, g, b);
         }
     }
     Ok((w as u32, h as u32, rgba))
@@ -223,6 +212,7 @@ fn display_extension(hdr: &mut SeqHeader, eb: &mut Bits<'_>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     /// An MPEG-2 sequence header + extension pair declaring the given size (12 + 2 bits
     /// each), plus a display extension declaring BT.709 — bit-exact to the layout

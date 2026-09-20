@@ -26,7 +26,7 @@
 //! Stdin/stdout on purpose (matching the ImageMagick child): a decoded frame of someone's
 //! video never touches the disk.
 
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 
 #[cfg(feature = "flash-video")]
 mod flv;
@@ -95,6 +95,28 @@ fn cap_own_memory() {
             let _ = AssignProcessToJobObject(job, GetCurrentProcess());
         }
     }
+}
+
+/// Encode one decoded frame's top-down RGBA bytes as a PNG — the shared tail of every
+/// `frame_png` here, so the failure strings and the encoder cannot drift apart.
+fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    let img = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or("decoded plane sizes do not match the frame dimensions")?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode: {e}"))?;
+    Ok(png)
+}
+
+/// Push one clamped RGB triple plus opaque alpha — the per-pixel tail the MPEG and VP9
+/// converters share verbatim.
+#[cfg(any(feature = "mpeg-video", feature = "vp9-video"))]
+fn push_rgb(rgba: &mut Vec<u8>, r: f32, g: f32, b: f32) {
+    rgba.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    rgba.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    rgba.push((b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    rgba.push(255);
 }
 
 /// The shared child shell: memory cap FIRST, then capped stdin → `frame_png` → stdout.

@@ -23,8 +23,6 @@
 //!    lookup; the one declined layout is `CS_RGB` (a profile-1/3 sRGB stream — the plane
 //!    order convention differs and real-world files are practically nonexistent).
 
-use std::io::Cursor;
-
 use sagethumbs2k_core::flv::Bits;
 use sagethumbs2k_core::vp9::MAX_DIM;
 use vp9dec::PlaneData;
@@ -72,13 +70,7 @@ pub(super) fn frame_png(chunk: &[u8]) -> Result<Vec<u8>, String> {
         .next()
         .ok_or("VP9 chunk held no displayable frame")?;
     let (width, height, rgba) = to_rgba(&frame, &hdr)?;
-    let img = image::RgbaImage::from_raw(width, height, rgba)
-        .ok_or("decoded plane sizes do not match the frame dimensions")?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode: {e}"))?;
-    Ok(png)
+    super::encode_png(width, height, rgba)
 }
 
 /// Convert a decoded frame to 8-bit RGBA (see the module docs for the exact rules).
@@ -151,10 +143,7 @@ fn to_rgba(frame: &vp9dec::Frame, hdr: &KeyHeader) -> Result<(u32, u32, Vec<u8>)
             let r = yy + 2.0 * (1.0 - kr) * cr;
             let b = yy + 2.0 * (1.0 - kb) * cb;
             let g = (yy - kr * r - kb * b) / kg;
-            rgba.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push(255);
+            super::push_rgb(&mut rgba, r, g, b);
         }
     }
     Ok((frame.width, frame.height, rgba))
@@ -249,6 +238,7 @@ fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     /// Bit-pack a VP9 keyframe header prefix: profile-2, 10-bit, BT.709, limited range,
     /// with the given dimensions. Bit-exact to `parse_keyframe_header`'s layout, so these
