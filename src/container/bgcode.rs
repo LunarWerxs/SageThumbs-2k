@@ -18,6 +18,7 @@
 
 use std::io::Read;
 
+use super::util::{le16, le32};
 use crate::decode::limits::MAX_DIM;
 
 const MAGIC: &[u8; 4] = b"GCDE";
@@ -29,14 +30,6 @@ const MAX_THUMB_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn looks_like_bgcode(head: &[u8]) -> bool {
     head.len() >= 10 && &head[..4] == MAGIC && le32(head, 4) == Some(1)
-}
-
-fn le16(b: &[u8], o: usize) -> Option<u16> {
-    b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
-}
-fn le32(b: &[u8], o: usize) -> Option<u32> {
-    b.get(o..o + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Parameter-section length per block type, from the spec.
