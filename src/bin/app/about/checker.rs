@@ -1,0 +1,240 @@
+//! The status pill's life: check for an update, offer it or a renewal, install it and report what happened.
+
+use super::*;
+
+/// Whether the boxed update-check tag must be reclaimed right here, on the worker thread,
+/// rather than waiting for [`WM_ABOUT_CHECKED`]'s own reclaim (below) to run.
+///
+/// That handler already frees the tag when the window was torn down between post and
+/// dispatch (its `st.is_null()` check) — but only for a message that actually made it into
+/// the queue. When `PostMessageW` itself fails (an invalid or already-destroyed HWND), no
+/// message is ever queued, so that reclaim path never fires and the box would otherwise leak.
+/// Pure so the decision is unit-testable without a real HWND or a real post.
+pub(super) fn post_failed_leaks_tag(posted_ok: bool, lp: isize) -> bool {
+    !posted_ok && lp != 0
+}
+
+/// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
+/// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
+/// value crosses the thread boundary and is rebuilt for the (thread-safe) post.
+pub(super) unsafe fn start_check(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let (code, lp) = match update::check() {
+            update::UpdateCheck::UpToDate => (0usize, 0isize),
+            update::UpdateCheck::Available(latest) => {
+                (1usize, Box::into_raw(Box::new(latest)) as isize)
+            }
+            update::UpdateCheck::Failed => (2usize, 0isize),
+        };
+        let posted = PostMessageW(
+            Some(HWND(raw as *mut c_void)),
+            WM_ABOUT_CHECKED,
+            WPARAM(code),
+            LPARAM(lp),
+        );
+        if post_failed_leaks_tag(posted.is_ok(), lp) {
+            drop(Box::from_raw(lp as *mut update::LatestRelease));
+        }
+    });
+}
+
+pub(super) unsafe fn invalidate_status(hwnd: HWND) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), ID_STATUS_PILL) {
+        let _ = InvalidateRect(Some(h), None, true);
+    }
+}
+
+/// Kick off an update check with the deliberate ≈2 s "Checking…" animation. The real
+/// network probe is near-instant; the spinning ring (and its minimum on-screen time) is the
+/// illusion of work — people want to see something move. Guarded by `checking` so a second
+/// click while it runs is a no-op.
+pub(super) unsafe fn begin_check(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    (*st).checking = true;
+    (*st).status = Status::Checking;
+    (*st).pending = None;
+    (*st).spin_frame = 0;
+    let _ = SetTimer(Some(hwnd), SPIN_TIMER_ID, SPIN_INTERVAL_MS, None);
+    invalidate_status(hwnd);
+    start_check(hwnd);
+}
+
+/// Commit a finished check to the pill and stop the spinner.
+pub(super) unsafe fn reveal(hwnd: HWND, result: Status) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
+    (*st).checking = false;
+    (*st).pending = None;
+    (*st).status = result;
+    invalidate_status(hwnd);
+}
+
+/// The status pill was clicked while an update is available: offer the same one-click,
+/// in-place update the Settings button used to (download → verify → elevated install),
+/// falling back to the releases page if it can't complete.
+///
+/// The actual download+install runs on a worker thread ([`start_install`]) — this used to
+/// call `update::download_and_install` directly, blocking the About window's (and Settings'
+/// behind it) message loop for the whole download, up to `overall_timeout_secs(120) = 480`
+/// wall-clock seconds; the shell `IProgressDialog` pumps on its own thread regardless, which
+/// is why its bar stayed smooth while every other window of ours went "(Not Responding)".
+pub(super) unsafe fn offer_update(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() || (*st).installing {
+        return;
+    }
+    // A licensed machine whose 12 months of updates have ended is offered the RENEWAL
+    // instead of the install (2026-09-10). Never an auto-install past the window, and never
+    // a refusal of the app itself - the copy already here keeps working exactly as it is.
+    if let Some(ends_unix) = outside_window_end(hwnd) {
+        offer_renewal(hwnd, ends_unix);
+        return;
+    }
+    let cap = wide(crate::win::t("upd_confirm_title"));
+    let prompt = wide(crate::win::t("upd_confirm"));
+    if MessageBoxW(
+        Some(hwnd),
+        PCWSTR(prompt.as_ptr()),
+        PCWSTR(cap.as_ptr()),
+        MB_YESNO | MB_ICONINFORMATION,
+    ) != IDYES
+    {
+        return;
+    }
+    (*st).installing = true;
+    start_install(hwnd);
+}
+
+/// Is the release this card is currently offering published AFTER this machine's updates
+/// window closed? `Some(ends_unix)` when it is; `None` in every other case, including a card
+/// that has no release on offer at all.
+///
+/// The whole decision lives in `update::update_offer`; this only feeds it the two things the
+/// window owns - the release the pill is showing, and the licence snapshot as of now.
+pub(super) unsafe fn outside_window_end(hwnd: HWND) -> Option<u64> {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return None;
+    }
+    let Status::Available(latest) = &(*st).status else {
+        return None;
+    };
+    match update::offer_for(&crate::license::snapshot(), Some(latest)) {
+        update::Offer::OutsideWindow { ends_unix } => Some(ends_unix),
+        _ => None,
+    }
+}
+
+/// The renewal dialog shown in place of the install offer: what is available, when this
+/// machine's updates ended, what renewing costs, and - said plainly, because it is the thing
+/// people actually worry about - that the version they have keeps working.
+///
+/// Yes opens the checkout with the stored key; No does nothing at all. There is deliberately
+/// no third "install anyway" button: past the window the build is not ours to hand over.
+pub(super) unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
+    let st = about_state(hwnd);
+    let ver = if st.is_null() {
+        String::new()
+    } else {
+        match &(*st).status {
+            Status::Available(latest) => latest.tag.clone(),
+            _ => String::new(),
+        }
+    };
+    let body = crate::win::t("upd_outside_window")
+        .replace("{ver}", &ver)
+        .replace("{date}", &crate::settings_dlg::format_unix_date(ends_unix));
+    if crate::win::confirm_verbs(
+        hwnd,
+        crate::win::t("upd_renew_title"),
+        &body,
+        crate::win::t("btn_renew"),
+        crate::win::t("btn_not_now"),
+    ) {
+        open_url(&crate::license::renew_url());
+    }
+}
+
+/// Kick off `update::download_and_install` on a worker thread; it posts the outcome back
+/// to `hwnd` via [`WM_ABOUT_INSTALLED`]. HWND isn't `Send`, so the raw handle value crosses
+/// the thread boundary and is rebuilt for both the (still `IProgressDialog`-owning) call and
+/// the (thread-safe) post — same pattern as [`start_check`].
+pub(super) unsafe fn start_install(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let owner = HWND(raw as *mut c_void);
+        let result = update::download_and_install(owner);
+        let lp = Box::into_raw(Box::new(result)) as isize;
+        let posted = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(lp));
+        if posted.is_err() {
+            // Window torn down between spawn and post — nobody will ever reclaim this box,
+            // so reclaim it right here (mirrors `post_failed_leaks_tag` for the check path).
+            drop(Box::from_raw(
+                lp as *mut Result<String, update::UpdateError>,
+            ));
+        }
+    });
+}
+
+/// [`WM_ABOUT_INSTALLED`] handler: reclaim the boxed result and do what `offer_update` used
+/// to do inline once the call returned — exit on success (the installer closes us and
+/// relaunches), stay silent on a user cancel, or show the failure and fall back to the
+/// releases page.
+pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    if lparam.0 == 0 {
+        return LRESULT(0);
+    }
+    let result = *Box::from_raw(lparam.0 as *mut Result<String, update::UpdateError>);
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        (*st).installing = false;
+    }
+    match result {
+        // Installer launched: it closes us, upgrades in place, and relaunches — so exit.
+        Ok(_) => {
+            crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
+            std::process::exit(0)
+        }
+        // The user backed out themselves — the one case that stays silent.
+        Err(update::UpdateError::Cancelled) => {}
+        // Anything else: SAY SO, then fall back to the manual download page. Silently
+        // opening a browser (or, worse, doing nothing at all, which is what a scanner block
+        // used to produce) is why "the auto-updater doesn't work" arrived with no detail.
+        Err(e) => {
+            let cap = wide("SageThumbs 2K update");
+            let body = wide(e.message());
+            MessageBoxW(
+                Some(hwnd),
+                PCWSTR(body.as_ptr()),
+                PCWSTR(cap.as_ptr()),
+                MB_OK | MB_ICONWARNING,
+            );
+            open_url(update::RELEASES_URL);
+        }
+    }
+    LRESULT(0)
+}
+
+/// Status-pill click: install a waiting update, otherwise re-run the check (unless one is
+/// already in flight).
+pub(super) unsafe fn on_status_click(hwnd: HWND) {
+    let st = about_state(hwnd);
+    if st.is_null() {
+        return;
+    }
+    if let Status::Available(_) = (*st).status {
+        offer_update(hwnd);
+        return;
+    }
+    if (*st).checking {
+        return;
+    }
+    begin_check(hwnd);
+}
