@@ -94,38 +94,42 @@ pub(in super::super) unsafe fn import_settings_from_file(hwnd: HWND) {
         .collect();
     match crate::settings_io::import_settings(&text) {
         Err(e) => msg(hwnd, &e, "Import Settings", MB_ICONERROR),
-        Ok(n) => {
-            refresh_from_settings(hwnd);
-            let formats_changed = formats::FORMATS
-                .iter()
-                .enumerate()
-                .any(|(i, &(ext, _))| settings::format_enabled(ext) != before[i]);
-            if formats_changed {
-                // Sync the machine-wide HKCR hooks to the imported per-format flags. A
-                // declined UAC prompt or a failed regsvr32 must not be reported as success —
-                // roll the imported per-format flags back to their pre-import state (the
-                // same rule `apply_format_flags` follows) so HKCU never disagrees with the
-                // (unchanged) HKCR hooks, and refresh the model + list to match.
-                if !matches!(reregister_elevated(), Reg::Ok) {
-                    for (i, &(ext, _)) in formats::FORMATS.iter().enumerate() {
-                        let _ = settings::set_format_enabled(ext, before[i]);
-                    }
-                    revert_format_list_view(hwnd);
-                    message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
-                    return;
-                }
-                // Same reason as `apply_format_flags`: the elevated pass cannot write this
-                // user's per-format shell pieces, so bring them in line here.
-                let _ = sagethumbs2k_core::register::sync_user_shell();
-            }
-            msg(
-                hwnd,
-                &format!("Imported {n} settings — applied now."),
-                "Import Settings",
-                MB_ICONINFORMATION,
-            );
-        }
+        Ok(n) => apply_imported_settings(hwnd, n, &before),
     }
+}
+
+/// Apply a successful import: refresh the dialog, and if the per-format enables changed,
+/// re-register the machine-wide shell hooks (rolling the flags back on failure) before reporting.
+unsafe fn apply_imported_settings(hwnd: HWND, n: usize, before: &[bool]) {
+    refresh_from_settings(hwnd);
+    let formats_changed = formats::FORMATS
+        .iter()
+        .enumerate()
+        .any(|(i, &(ext, _))| settings::format_enabled(ext) != before[i]);
+    if formats_changed {
+        // Sync the machine-wide HKCR hooks to the imported per-format flags. A
+        // declined UAC prompt or a failed regsvr32 must not be reported as success —
+        // roll the imported per-format flags back to their pre-import state (the
+        // same rule `apply_format_flags` follows) so HKCU never disagrees with the
+        // (unchanged) HKCR hooks, and refresh the model + list to match.
+        if !matches!(reregister_elevated(), Reg::Ok) {
+            for (i, &(ext, _)) in formats::FORMATS.iter().enumerate() {
+                let _ = settings::set_format_enabled(ext, before[i]);
+            }
+            revert_format_list_view(hwnd);
+            message_box(hwnd, t("msg_admin_required"), "SageThumbs 2K");
+            return;
+        }
+        // Same reason as `apply_format_flags`: the elevated pass cannot write this
+        // user's per-format shell pieces, so bring them in line here.
+        let _ = sagethumbs2k_core::register::sync_user_shell();
+    }
+    msg(
+        hwnd,
+        &format!("Imported {n} settings — applied now."),
+        "Import Settings",
+        MB_ICONINFORMATION,
+    );
 }
 
 /// An OK message box with an explicit info/error icon, for the import/export feedback.

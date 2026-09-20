@@ -349,19 +349,7 @@ pub(super) unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
     }
     // Instant screenshot: the checkbox is the on/off switch. On → save the combo's
     // chord; off → save 0 so the daemon skips registering a second hotkey.
-    let quick_on = checked(hwnd, ID_SHOT_QUICK_ENABLE);
-    let qpacked = if !quick_on {
-        0
-    } else if let Ok(quick) = GetDlgItem(Some(hwnd), ID_SHOT_QUICK_HOTKEY) {
-        let qsel = SendMessageW(quick, CB_GETCURSEL, None, None).0;
-        if qsel >= 0 {
-            SendMessageW(quick, CB_GETITEMDATA, Some(WPARAM(qsel as usize)), None).0 as u32
-        } else {
-            0
-        }
-    } else {
-        0
-    };
+    let qpacked = quick_shot_chord(hwnd);
     let _ = note(settings::set_screenshot_quick_hotkey(qpacked));
     let _ = note(settings::set_dword(
         "ScreenshotHideTray",
@@ -392,6 +380,21 @@ pub(super) unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
         };
         let _ = note(settings::set_custom_action_hotkey(packed));
     }
+}
+
+/// Packed chord for the instant-screenshot combo: the enable checkbox is the on/off switch,
+/// so off (or no selected item) yields 0 and the daemon skips a second hotkey.
+unsafe fn quick_shot_chord(hwnd: HWND) -> u32 {
+    if !checked(hwnd, ID_SHOT_QUICK_ENABLE) {
+        return 0;
+    }
+    if let Ok(quick) = GetDlgItem(Some(hwnd), ID_SHOT_QUICK_HOTKEY) {
+        let qsel = SendMessageW(quick, CB_GETCURSEL, None, None).0;
+        if qsel >= 0 {
+            return SendMessageW(quick, CB_GETITEMDATA, Some(WPARAM(qsel as usize)), None).0 as u32;
+        }
+    }
+    0
 }
 
 /// Quick preview's master toggle + behavior prefs, then the screenshot enable checkbox -
