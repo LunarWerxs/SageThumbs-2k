@@ -4,9 +4,10 @@
 //! The SDK-rc lookup, the windres dispatch and the VERSIONINFO `.rc` template live in the
 //! shared `build-support` crate (a `[build-dependencies]`-only crate under
 //! `crates/build-support`, so none of it reaches the shipped DLL) - build scripts can't share
-//! code across crates any other way. Best-effort on x64: if OUT_DIR/windres is unavailable,
-//! emit a `cargo:warning` and move on - the DLL just lacks a version (REPORTED, never fatal).
-//! ARM64 has no fallback and refuses, as it always did.
+//! code across crates any other way. Best-effort: if the `.rc` cannot be written, or windres
+//! is unavailable on x64, emit a `cargo:warning` and move on - the DLL just lacks a version
+//! (REPORTED, never fatal). The one refusal is ARM64 without the SDK `rc.exe`, which has no
+//! fallback compiler at all.
 
 fn main() {
     delay_load_media_foundation();
@@ -43,13 +44,18 @@ fn main() {
         &ver,
         build_support::FileType::Dll,
     );
+    use build_support::RcFailure;
     match build_support::compile_rc(&out, "dll_version", &rc) {
         // This crate is cdylib-only, so `-arg` reaches the DLL (no bins to confuse).
         Ok(arg) => println!("cargo:rustc-link-arg={arg}"),
-        Err(why) if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") => {
-            panic!("{why}; refusing a version-metadata-free shell DLL")
+        Err(RcFailure::NoSdkRc) => panic!(
+            "ARM64 resource compilation requires Windows SDK rc.exe; refusing a \
+             version-metadata-free shell DLL"
+        ),
+        Err(RcFailure::Write(why)) => {
+            println!("cargo:warning=DLL VERSIONINFO: {why}; DLL will have no version")
         }
-        Err(why) => println!(
+        Err(RcFailure::Windres(why)) => println!(
             "cargo:warning=DLL VERSIONINFO: sagethumbs2k.dll will have no file version.\n  \
              {why}\n  Install binutils/llvm-windres (or put it on PATH) to enable it."
         ),

@@ -26,12 +26,17 @@ fn main() {
         &ver,
         build_support::FileType::Dll,
     );
+    use build_support::RcFailure;
+    // Unlike the shell extension, this one REFUSES to ship without a version on every cause:
+    // an unsigned DLL that injects into other processes and carries no identity is the worst
+    // of both.
     match build_support::compile_rc(&out, "dlghook_version", &rc) {
         // cdylib-only crate, so `-arg` reaches the DLL (no bins to confuse).
         Ok(arg) => println!("cargo:rustc-link-arg={arg}"),
-        // Unlike the shell extension, this one REFUSES to ship without a version: an unsigned
-        // DLL that injects into other processes and carries no identity is the worst of both.
-        Err(why) => panic!(
+        Err(why @ (RcFailure::Write(_) | RcFailure::NoSdkRc)) => {
+            panic!("{why}; refusing a version-metadata-free hook DLL")
+        }
+        Err(RcFailure::Windres(why)) => panic!(
             "cannot compile the VERSIONINFO for st2k_dlghook.dll, and refusing to ship it \
              without one.\n  {why}\nIf the reason above is \"could not run it\", windres is not \
              being FOUND (install binutils/llvm-windres, or put it on PATH). If it RAN and \
