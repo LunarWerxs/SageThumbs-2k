@@ -304,8 +304,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
         7 => &ADVANCED,
         // Quick preview — QuickLook-style "press Space, see the file". The master toggle drives
         // daemon residency (like Screenshots); the rest are viewer prefs. The HTML/.url rows only
-        // exist when the `html-preview` feature is compiled in.
-        #[cfg(feature = "html-preview")]
+        // exist when the `html-preview` feature is compiled in: ONE list, with the two rows
+        // gated in place, because this page used to exist twice (one copy per build) and a
+        // control added to only one of them was invisible in whichever build you were not
+        // looking at - exactly how the theme row came to be missing the first time.
         8 => &[
             Head(ID_LBL_PREVIEW_BEHAVIOR),
             Switch(ID_PREVIEW_ENABLED),
@@ -329,30 +331,10 @@ pub(super) fn cat_rows(ci: usize) -> &'static [Row] {
             Head(ID_LBL_PREVIEW_KINDS),
             Switch(ID_PREVIEW_TEXT),
             Switch(ID_PREVIEW_MARKDOWN),
+            #[cfg(feature = "html-preview")]
             Switch(ID_PREVIEW_HTML),
+            #[cfg(feature = "html-preview")]
             Switch(ID_PREVIEW_URL_LIVE),
-        ],
-        #[cfg(not(feature = "html-preview"))]
-        8 => &[
-            Head(ID_LBL_PREVIEW_BEHAVIOR),
-            Switch(ID_PREVIEW_ENABLED),
-            Switch(ID_PREVIEW_HOLD_PEEK),
-            Switch(ID_PREVIEW_CLOSE_FOCUS),
-            Switch(ID_PREVIEW_TOPMOST),
-            // Keep in step with the `html-preview` variant above: this page exists twice and a
-            // control added to only one of them is invisible in whichever build you are not
-            // looking at. That is exactly how this line came to be missing the first time.
-            Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
-            // Keep in step with the `html-preview` variant above too — see its own comment.
-            Pair(
-                ID_LBL_PREVIEW_BLOCKED_EXTS,
-                ID_PREVIEW_BLOCKED_EXTS,
-                156,
-                18,
-            ),
-            Head(ID_LBL_PREVIEW_KINDS),
-            Switch(ID_PREVIEW_TEXT),
-            Switch(ID_PREVIEW_MARKDOWN),
         ],
         9 => &[
             // Data & Backup — settings portability: optional cloud sync + local backup/restore.

@@ -184,16 +184,8 @@ unsafe fn on_measureitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
     if m.CtlType != ODT_MENU {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
-    let label = wide(list::ctx_menu_label(m.itemID as usize));
-    let n = label.len().saturating_sub(1);
-    let hdc = GetDC(Some(hwnd));
-    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
-    let mut sz = SIZE::default();
-    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
-    SelectObject(hdc, old);
-    ReleaseDC(Some(hwnd), hdc);
-    m.itemWidth = (sz.cx + 30) as u32;
-    m.itemHeight = 26;
+    let label = list::ctx_menu_label(m.itemID as usize);
+    crate::win::measure_menu_item(hwnd, m, label);
     LRESULT(1)
 }
 
@@ -202,26 +194,7 @@ unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> L
     if d.CtlType != ODT_MENU {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
-    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
-    let bg = if selected {
-        dark_menu_sel_brush()
-    } else {
-        dark_menu_brush()
-    };
-    FillRect(d.hDC, &d.rcItem, bg);
-    SetBkMode(d.hDC, TRANSPARENT);
-    SetTextColor(d.hDC, DARK_TEXT());
-    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
-    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
-    let n = label.len().saturating_sub(1);
-    let mut rc = d.rcItem;
-    rc.left += 14;
-    DrawTextW(
-        d.hDC,
-        &mut label[..n],
-        &mut rc,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-    );
+    crate::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
     LRESULT(1)
 }
 

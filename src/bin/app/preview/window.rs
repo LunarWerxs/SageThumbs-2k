@@ -73,6 +73,16 @@ pub(super) const SETTLE_CLOSE_MS: u64 = 400;
 
 // Layout, 96-dpi design px.
 pub(super) const CAPTION_H: i32 = 36;
+
+/// Repaint just the caption strip (toolbar buttons, focus ring, page indicator and pager): every
+/// hover, focus or page-count change that touches only the top bar invalidates that band alone,
+/// so the rendered page underneath is not repainted for a button highlight.
+pub(super) unsafe fn invalidate_caption(hwnd: HWND) {
+    let mut r = RECT::default();
+    let _ = GetClientRect(hwnd, &mut r);
+    r.bottom = crate::win::dpi_scale(hwnd, CAPTION_H);
+    let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+}
 pub(super) const BTN_W: i32 = 38;
 /// The narrowest a toolbar cell is allowed to get when the caption cannot fit the visible set at
 /// [`BTN_W`] (see `toolbar::button_rects`). Wide enough to still hold a ~14 px glyph with a

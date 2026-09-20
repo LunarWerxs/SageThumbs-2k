@@ -471,6 +471,22 @@ pub(crate) unsafe fn dark_ctlcolor_dim(wparam: WPARAM) -> LRESULT {
     LRESULT(dark_bg_brush().0 as isize)
 }
 
+/// The green a status line turns when what it reports is healthy (hotkey service running,
+/// settings synced, licence active) and the red for the opposite; the rename dialog's error
+/// label shares the red.
+pub(crate) const STATUS_GREEN: COLORREF = COLORREF(0x0059_C734);
+pub(crate) const STATUS_RED: COLORREF = COLORREF(0x004D_48E5);
+
+/// Like [`dark_ctlcolor_dim`] with the text in `colour` instead of the dimmed grey: a status
+/// line answering WM_CTLCOLORSTATIC in green or red on the dialog background.
+pub(crate) unsafe fn dark_ctlcolor_tinted(wparam: WPARAM, colour: COLORREF) -> LRESULT {
+    let hdc = HDC(wparam.0 as *mut c_void);
+    SetTextColor(hdc, colour);
+    SetBkColor(hdc, DARK_BG());
+    SetBkMode(hdc, TRANSPARENT);
+    LRESULT(dark_bg_brush().0 as isize)
+}
+
 /// For a DISABLED framed edit. Windows asks a disabled (or read-only) edit for its colours
 /// with WM_CTLCOLORSTATIC, not WM_CTLCOLOREDIT, so the static arm of [`dark_ctlcolor`] would
 /// hand it the WINDOW tone - a grey slab inside the rounded field frame the dialog paints

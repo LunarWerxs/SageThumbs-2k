@@ -256,15 +256,7 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
             // Same trap as the capture overlay: without this the picker takes mouse
             // clicks but no keys, so Space and Esc silently do nothing.
             crate::win::force_foreground(hwnd);
-            let mut msg = MSG::default();
-            loop {
-                let r = GetMessageW(&mut msg, None, 0, 0).0;
-                if r == 0 || r == -1 {
-                    break;
-                }
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            crate::win::pump_plain();
         }
         // Issue #95: window creation failed, so `WM_DESTROY` (which normally
         // frees the snapshot) never fires — free it here instead of leaking the

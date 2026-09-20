@@ -279,20 +279,6 @@ fn expand_placeholder(
     }
 }
 
-/// `path`'s pixel size, or `None` when it can't be read as an image — mirrors
-/// `fileops::dims` exactly (that one is private to its module and this engine can't
-/// reach it, so the same two-tier probe — a fast header read, then the bounded
-/// full-fidelity decode chain — is repeated here rather than exposed).
-fn pattern_dims(path: &str) -> Option<(u32, u32)> {
-    if let Ok(r) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
-        if let Ok(d) = r.into_dimensions() {
-            return Some(d);
-        }
-    }
-    let bytes = read_full_fidelity_capped(path).ok()?;
-    crate::container::real_or_decoded_dims(&bytes)
-}
-
 /// `path`'s modified date as `"YYYY-MM-DD"` in local time, or `None` if it can't be
 /// read. The `{date}` placeholder's fallback when there's no EXIF/tag capture date.
 fn pattern_modified_date(path: &str) -> Option<String> {
@@ -358,7 +344,9 @@ pub fn pattern_stem(
     let reads = pattern_reads(pattern);
     let date = if reads.date { pattern_date(path) } else { None };
     let (w, h) = if reads.dims {
-        pattern_dims(path).map_or((None, None), |(w, h)| (Some(w), Some(h)))
+        // The same two-tier probe the Dimensions-to-folders verb uses: a fast header read,
+        // then the bounded full-fidelity decode chain.
+        crate::verbs::fileops::dims(path).map_or((None, None), |(w, h)| (Some(w), Some(h)))
     } else {
         (None, None)
     };

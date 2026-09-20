@@ -247,7 +247,9 @@ fn this_pc_namespace_entries() -> Vec<(String, String)> {
             let Ok(target) = bag.get_string("TargetFolderPath") else {
                 continue;
             };
-            let target = expand_env_strings(target.trim());
+            // `%VAR%` expansion for a REG_EXPAND_SZ read back raw; the overlay module's
+            // expander, an unknown variable left as written.
+            let target = crate::typeoverlay::expand_env(target.trim());
             if target.is_empty() {
                 continue;
             }
@@ -259,36 +261,6 @@ fn this_pc_namespace_entries() -> Vec<(String, String)> {
             out.push((name, target));
         }
     }
-    out
-}
-
-/// `%VAR%` expansion for a REG_EXPAND_SZ read back raw; an unknown variable is left as is.
-fn expand_env_strings(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(start) = rest.find('%') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        match after.find('%') {
-            Some(end) => {
-                let name = &after[..end];
-                match std::env::var(name) {
-                    Ok(v) => out.push_str(&v),
-                    Err(_) => {
-                        out.push('%');
-                        out.push_str(name);
-                        out.push('%');
-                    }
-                }
-                rest = &after[end + 1..];
-            }
-            None => {
-                out.push_str(&rest[start..]);
-                return out;
-            }
-        }
-    }
-    out.push_str(rest);
     out
 }
 

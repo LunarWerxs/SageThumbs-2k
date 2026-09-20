@@ -724,15 +724,7 @@ unsafe fn run_overlay_message_loop(
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let _ = ShowWindow(hwnd, SW_SHOW);
         activate_overlay(hwnd);
-        let mut msg = MSG::default();
-        loop {
-            let r = GetMessageW(&mut msg, None, 0, 0).0;
-            if r == 0 || r == -1 {
-                break;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        crate::win::pump_plain();
     } else {
         // CreateWindowExW failed (window-handle exhaustion is the realistic cause): `state`
         // drops right here as a plain Box, which does NOT release the four GDI objects it

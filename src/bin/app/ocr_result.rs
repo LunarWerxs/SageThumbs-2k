@@ -14,12 +14,12 @@
 use core::cell::RefCell;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, run_dialog, set_clipboard_text, t, wide, BUTTON, EDIT, IDOK, ID_RESULT_COPY, STATIC,
+    ctl, result_buttons, result_edit, result_layout, result_window_proc, run_dialog,
+    set_clipboard_text, t, wide, ResultWindow, STATIC,
 };
 
 const ID_EDIT: i32 = 100;
@@ -122,7 +122,7 @@ fn show_ocr_result(text: &str) {
         // translated in every shipped locale.
         run_dialog(
             w!("SageThumbs2KOcrResult"),
-            Some(ocr_wndproc),
+            Some(result_window_proc::<OcrResult>),
             t("menu_copy_text"),
             520,
             420,
@@ -154,7 +154,7 @@ pub(crate) unsafe fn run_shot_ocr(out: &str, file: Option<&str>) -> bool {
         crate::dark::is_dark(),
         crate::win::ShotWindowSpec {
             class: w!("SageThumbs2KOcrResult"),
-            wndproc: Some(ocr_wndproc),
+            wndproc: Some(result_window_proc::<OcrResult>),
             title: t("menu_copy_text"),
             design_w: 520,
             design_h: 420,
@@ -189,103 +189,38 @@ unsafe fn edit_text(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..got.max(0) as usize])
 }
 
-unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
-    // Shared with the Image-info and Upload-links result windows — see `win::result_layout`
-    // for why this has to come off the real client rect rather than the design size.
-    let crate::win::ResultLayout {
-        cw,
-        m,
-        btn_w,
-        btn_h,
-        gap,
-        btn_y,
-        close_x,
-        copy_x,
-        ..
-    } = crate::win::result_layout(hwnd);
-    let head_h = 32; // two wrapped lines of the "it's on your clipboard" note
-    let edit_y = m + head_h + gap;
-    let edit_h = (btn_y - gap - edit_y).max(48);
+/// The result-window shape with two differences from Image info: a two-line "it's on your
+/// clipboard" note above an EDITABLE edit, and Copy reading the edit's CURRENT contents (not
+/// the stored text) so a correction the user typed over a misread character is what lands on
+/// the clipboard.
+struct OcrResult;
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("ocr_heading"),
-        WINDOW_STYLE(0),
-        m,
-        m,
-        cw - 2 * m,
-        head_h,
-        -1,
-        hinst,
-    );
-
-    // Editable (not read-only, unlike the info/upload windows): ES_WANTRETURN so Enter
-    // inserts a newline in here instead of firing the dialog's default Close button.
-    let edit_style =
-        WINDOW_STYLE((ES_MULTILINE | ES_WANTRETURN) as u32) | WS_VSCROLL | WS_BORDER | WS_TABSTOP;
-    let edit = ctl(
-        hwnd,
-        EDIT,
-        "",
-        edit_style,
-        m,
-        edit_y,
-        cw - 2 * m,
-        edit_h,
-        ID_EDIT,
-        hinst,
-    );
-    // `ctl` themes edits with DarkMode_CFD, which leaves a LIGHT vertical scrollbar.
-    // Re-theme to DarkMode_Explorer so the scrollbar renders dark (the edit's own
-    // bg/text stay dark via WM_CTLCOLOREDIT in `dark_ctlcolor`).
-    if crate::dark::is_dark() {
-        crate::dark::dark_control(edit, w!("DarkMode_Explorer"));
+impl ResultWindow for OcrResult {
+    unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
+        let l = result_layout(hwnd);
+        let head_h = 32; // two wrapped lines of the "it's on your clipboard" note
+        ctl(
+            hwnd,
+            STATIC,
+            t("ocr_heading"),
+            WINDOW_STYLE(0),
+            l.m,
+            l.m,
+            l.cw - 2 * l.m,
+            head_h,
+            -1,
+            hinst,
+        );
+        // ES_WANTRETURN so Enter inserts a newline in here instead of firing the dialog's
+        // default Close button. The recognizer returns one LF-separated line per recognized
+        // text line; `result_edit` gives the control the CRLF it wants.
+        let style = WINDOW_STYLE((ES_MULTILINE | ES_WANTRETURN) as u32);
+        let edit_y = l.m + head_h + l.gap;
+        TEXT.with(|s| result_edit(hwnd, hinst, &l, edit_y, style, ID_EDIT, &s.borrow()));
+        result_buttons(hwnd, hinst, &l);
     }
-    // Edit controls want CRLF line breaks (a lone LF renders as a box). The recognizer
-    // returns one LF-separated line per recognized text line.
-    let body = TEXT.with(|s| sagethumbs2k_core::clipboard::to_crlf(&s.borrow()).into_owned());
-    let w = wide(&body);
-    let _ = SetWindowTextW(edit, PCWSTR(w.as_ptr()));
 
-    // Buttons bottom-right, inside the client (Close rightmost, Copy to its left).
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_copy"),
-        WS_TABSTOP,
-        copy_x,
-        btn_y,
-        btn_w,
-        btn_h,
-        ID_RESULT_COPY,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_close"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        close_x,
-        btn_y,
-        btn_w,
-        btn_h,
-        IDOK,
-        hinst,
-    );
-}
-
-extern "system" fn ocr_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
-        if let Some(r) = dark_ctlcolor(msg, wparam) {
-            return r;
-        }
-        // Create / Copy / close / quit are identical across the three result dialogs. Copy
-        // reads the EDIT's CURRENT contents (not the stored text) so a correction the user
-        // typed over a misread character is what lands on the clipboard.
-        if let Some(r) = crate::win::result_wndproc(hwnd, msg, wparam, build, edit_text) {
-            return r;
-        }
-        DefWindowProcW(hwnd, msg, wparam, lparam)
+    unsafe fn copy_source(hwnd: HWND) -> String {
+        edit_text(hwnd)
     }
 }

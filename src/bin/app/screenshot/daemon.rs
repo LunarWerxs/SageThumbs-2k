@@ -273,15 +273,7 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
     let _ = SetTimer(Some(hwnd), REARM_TIMER_ID, REARM_TIMER_MS, None);
 
-    let mut msg = MSG::default();
-    loop {
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
-            break;
-        }
-        let _ = TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    crate::win::pump_plain();
 }
 
 /// (Re-)register the global capture hotkey from the persisted setting, converting

@@ -420,8 +420,9 @@ pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<(PathBuf, 
 }
 
 /// Read an image's pixel dimensions: a cheap header read first, falling back to a
-/// full decode for formats the `image` crate can't probe (HEIC/RAW/containers).
-fn dims(path: &str) -> Option<(u32, u32)> {
+/// full decode for formats the `image` crate can't probe (HEIC/RAW/containers). Shared
+/// with the rename engine's `{w}`/`{h}` placeholders.
+pub(crate) fn dims(path: &str) -> Option<(u32, u32)> {
     if let Ok(r) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
         if let Ok(d) = r.into_dimensions() {
             return Some(d);
@@ -476,35 +477,45 @@ fn claim_bucket_dir(dir: &Path) -> (bool, bool) {
 /// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own parent
 /// folder (skwire "Dimensions 2 Folders"). Returns (moved, skipped).
 pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
-    let mut moved = 0usize;
-    let mut skipped = 0usize;
-    let mut touched: Vec<PathBuf> = Vec::new();
     let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
     // Probe dimensions IN PARALLEL first — `dims()` can fall back to a full decode (up
     // to an ImageMagick subprocess per exotic RAW/HEIC file), and every other multi-file
-    // verb already fans that out via `parallel::map`. The moves stay serial below: they're
-    // cheap, and two files with equal dims share a target dir (no create/move races).
-    let probed = crate::parallel::map(&images, |_, p| dims(p.as_str()));
-    for (p, d) in images.iter().zip(probed) {
+    // verb already fans that out via `parallel::map`. The moves stay serial in
+    // `move_into_buckets`: they're cheap, and two files with equal dims share a target dir
+    // (no create/move races).
+    let buckets = crate::parallel::map(&images, |_, p| {
+        dims(p.as_str()).map(|(w, h)| format!("{w}x{h}"))
+    });
+    move_into_buckets(&images, buckets)
+}
+
+/// The serial half every bucket sort shares: move each probed image into `<parent>/<bucket>`,
+/// claiming the bucket directory first and removing a bucket this call created when the move
+/// into it fails; an image whose probe answered `None` is skipped and counted. Every parent
+/// folder touched is refreshed once at the end. Returns (moved, skipped).
+fn move_into_buckets(images: &[&String], buckets: Vec<Option<String>>) -> (usize, usize) {
+    let mut moved = 0usize;
+    let mut skipped = 0usize;
+    let mut touched: Vec<PathBuf> = Vec::new();
+    for (p, bucket) in images.iter().zip(buckets) {
         let src = Path::new(p.as_str());
         let parent = src.parent().unwrap_or_else(|| Path::new("."));
-        match d {
-            Some((w, h)) => {
-                let dir = parent.join(format!("{w}x{h}"));
-                let (usable, bucket_is_new) = claim_bucket_dir(&dir);
-                if usable && move_into(src, &dir).is_ok() {
-                    moved += 1;
-                    if !touched.iter().any(|t| t == parent) {
-                        touched.push(parent.to_path_buf());
-                    }
-                } else {
-                    skipped += 1;
-                    if bucket_is_new {
-                        let _ = std::fs::remove_dir(&dir);
-                    }
-                }
+        let Some(name) = bucket else {
+            skipped += 1;
+            continue;
+        };
+        let dir = parent.join(name);
+        let (usable, bucket_is_new) = claim_bucket_dir(&dir);
+        if usable && move_into(src, &dir).is_ok() {
+            moved += 1;
+            if !touched.iter().any(|t| t == parent) {
+                touched.push(parent.to_path_buf());
             }
-            None => skipped += 1,
+        } else {
+            skipped += 1;
+            if bucket_is_new {
+                let _ = std::fs::remove_dir(&dir);
+            }
         }
     }
     for dir in &touched {
@@ -528,39 +539,11 @@ fn date_taken_folder_name(path: &str) -> Option<String> {
 /// file with no capture date is skipped and counted, same as an unreadable image
 /// there. Returns (moved, skipped).
 pub fn sort_by_date_taken(paths: &[String]) -> (usize, usize) {
-    let mut moved = 0usize;
-    let mut skipped = 0usize;
-    let mut touched: Vec<PathBuf> = Vec::new();
     let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
     // Reading EXIF can fall back to a full decode for formats without a fast header
     // path, so probe in parallel like `sort_by_dimensions` does; moves stay serial.
-    let probed = crate::parallel::map(&images, |_, p| date_taken_folder_name(p.as_str()));
-    for (p, date) in images.iter().zip(probed) {
-        let src = Path::new(p.as_str());
-        let parent = src.parent().unwrap_or_else(|| Path::new("."));
-        match date {
-            Some(name) => {
-                let dir = parent.join(name);
-                let (usable, bucket_is_new) = claim_bucket_dir(&dir);
-                if usable && move_into(src, &dir).is_ok() {
-                    moved += 1;
-                    if !touched.iter().any(|t| t == parent) {
-                        touched.push(parent.to_path_buf());
-                    }
-                } else {
-                    skipped += 1;
-                    if bucket_is_new {
-                        let _ = std::fs::remove_dir(&dir);
-                    }
-                }
-            }
-            None => skipped += 1,
-        }
-    }
-    for dir in &touched {
-        refresh_dir(dir);
-    }
-    (moved, skipped)
+    let buckets = crate::parallel::map(&images, |_, p| date_taken_folder_name(p.as_str()));
+    move_into_buckets(&images, buckets)
 }
 
 /// Expand a folder-name template against one file's tags. Tokens: `$artist`,

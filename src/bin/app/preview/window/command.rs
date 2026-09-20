@@ -128,11 +128,7 @@ unsafe fn on_btn_pin(hwnd: HWND, st: &ViewerState) {
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
-    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-    let mut r = RECT::default();
-    let _ = GetClientRect(hwnd, &mut r);
-    r.bottom = cap;
-    let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+    super::invalidate_caption(hwnd);
 }
 
 unsafe fn on_btn_copy(path: Option<String>) {

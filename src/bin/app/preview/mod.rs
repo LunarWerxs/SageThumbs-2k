@@ -50,8 +50,7 @@ use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, 
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetMessageW, SendMessageTimeoutW, TranslateMessage, MSG,
-    SMTO_ABORTIFHUNG, WM_COPYDATA,
+    FindWindowW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA,
 };
 
 /// Last time we spawned a `--preview` in response to a Space press (ms tick), or 0. Serializes
@@ -154,15 +153,7 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     }
 
     // Standard modal-less pump; `WM_DESTROY` posts `WM_QUIT` which ends this.
-    let mut msg = MSG::default();
-    loop {
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
-            break;
-        }
-        let _ = TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    crate::win::pump_plain();
     // `_mutex` drops here, releasing single-instance ownership as the process exits.
 }
 

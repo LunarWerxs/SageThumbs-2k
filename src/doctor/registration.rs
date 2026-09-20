@@ -359,34 +359,6 @@ pub(super) fn check_extensions(r: &mut Report, snap: &crate::settings::FormatEna
     }
 }
 
-/// Every ProgID that could resolve `.ext`'s thumbnail before Explorer ever reaches the
-/// SystemFileAssociations/bare-extension keys [`check_extensions`] audits: the per-user
-/// `UserChoice` the shell honours first, then the class default under `.ext`. Mirrors
-/// `typeoverlay.rs`'s private `progids_for` (same two sources, same rules) — duplicated
-/// here rather than called because that function is not `pub(crate)` and this module stays
-/// read-only registry access by design (see the module doc's "nothing is written").
-fn progid_candidates(ext: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |s: Option<String>| {
-        if let Some(s) = s {
-            let s = s.trim().to_string();
-            if !s.is_empty() && !s.contains('\\') && !out.contains(&s) {
-                out.push(s);
-            }
-        }
-    };
-    let user_choice =
-        format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice");
-    push(
-        CURRENT_USER
-            .open(&user_choice)
-            .ok()
-            .and_then(|k| k.get_string("ProgId").ok()),
-    );
-    push(hkcr_default(&format!(".{ext}")));
-    out
-}
-
 /// The ProgID-level half `check_extensions` cannot see: Windows resolves a thumbnail
 /// handler at the **ProgID** level BEFORE it ever reaches the SystemFileAssociations or
 /// bare-extension keys (`register.rs`'s module doc names the exact precedence: per-user
@@ -422,7 +394,12 @@ pub(super) fn check_progid_handlers(r: &mut Report, snap: &crate::settings::Form
         if !snap.enabled(ext) {
             continue;
         }
-        for progid in progid_candidates(ext) {
+        // Every ProgID that could resolve `.ext`'s thumbnail before Explorer ever reaches the
+        // SystemFileAssociations/bare-extension keys `check_extensions` audits: the per-user
+        // `UserChoice` the shell honours first, then the class default under `.ext`. The
+        // overlay module's lookup is the same two reads and nothing else (this module stays
+        // read-only registry access by design).
+        for progid in crate::typeoverlay::progids_for(ext) {
             let thumb = hkcr_default(&format!(r"{progid}\shellex\{THUMB_HANDLER}"));
             let extract = hkcr_default(&format!(r"{progid}\shellex\{EXTRACT_IMAGE_HANDLER}"));
             for (kind, clsid) in [("IThumbnailProvider", thumb), ("IExtractImage", extract)] {

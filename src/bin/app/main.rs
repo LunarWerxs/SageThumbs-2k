@@ -89,12 +89,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use sagethumbs2k_core::i18n;
 
 use crate::convert::run_convert_dialog;
-use crate::dark::{dark_bg_brush, dark_control, dark_titlebar, init_dark_app, is_dark};
+use crate::dark::{dark_control, dark_titlebar, init_dark_app, is_dark};
 use crate::eyedropper::run_eyedropper;
 use crate::files_to_folder::run_files_to_folder_dialog;
 use crate::rename_dlg::run_rename_with_pattern_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
-use crate::win::{app_icon, t};
+use crate::win::t;
 
 /// Is this process running with an ELEVATED (admin) token? The installer's post-install
 /// [Run] steps carry `runasoriginaluser`, but when Setup itself was launched pre-elevated
@@ -612,12 +612,7 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
     if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
         // The folder verb is a registry entry, not a menu the DLL gates, so the lock is
         // applied here: a stopped copy would only fill the cache with icons anyway.
-        if license::shell_locked() {
-            crate::win::notify_toast(
-                "SageThumbs 2K",
-                t("licence_locked_notice"),
-                std::time::Duration::from_secs(5),
-            );
+        if refused_by_licence("licence_locked_notice") {
             return true;
         }
         if let Some(dir) = args.get(pos + 1) {
@@ -663,14 +658,8 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
     // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
     // viewer. A second launch forwards its path to the running viewer and exits.
     if let Some(pos) = args.iter().position(|a| a == "--preview") {
-        // The business-licence lock reaches the Quick preview too (`licence_state`): say
-        // why and where the key goes, and do not open the viewer.
-        if license::shell_locked() {
-            crate::win::notify_toast(
-                "SageThumbs 2K",
-                t("licence_preview_locked"),
-                std::time::Duration::from_secs(5),
-            );
+        // The business-licence lock reaches the Quick preview too (`licence_state`).
+        if refused_by_licence("licence_preview_locked") {
             return true;
         }
         let path = args
@@ -681,6 +670,21 @@ unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> 
         return true;
     }
     false
+}
+
+/// The business-licence lock on a shell-launched mode (the folder verb's pre-build, the
+/// Quick preview): when the copy is stopped, say why and where the key goes (a toast, since
+/// the process has no window yet) and report that the mode was refused.
+unsafe fn refused_by_licence(notice_key: &str) -> bool {
+    if !license::shell_locked() {
+        return false;
+    }
+    crate::win::notify_toast(
+        "SageThumbs 2K",
+        t(notice_key),
+        std::time::Duration::from_secs(5),
+    );
+    true
 }
 
 /// The screenshot-related CLI flags: `--screenshot-instant`, `--screenshot-ocr`,
@@ -1015,19 +1019,8 @@ unsafe fn create_and_show_settings_window(
     want_tab: Option<usize>,
 ) -> HWND {
     let class = w!("SageThumbs2KOptions");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(settings_dlg::wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // The palette's window tone in BOTH themes. Light mode used to take the system
-        // button-face brush here while every control filled with the palette's 243, so each
-        // row showed as a lighter block on the pane (feedback, 3.1.1); one source, one colour.
-        hbrBackground: dark_bg_brush(),
-        ..Default::default()
-    };
-    RegisterClassW(&wc);
+    // The palette's window tone in BOTH themes (feedback, 3.1.1) - `register_app_class`.
+    win::register_app_class(class, Some(settings_dlg::wndproc), hinst);
 
     // HISTORICAL (v2, before the nav-rail): WS_THICKFRAME let the user drag the window
     // TALLER; that machinery still exists in `settings_dlg::mod::on_resize` (harmless — it
@@ -1164,22 +1157,10 @@ unsafe fn create_and_show_settings_window(
     hwnd
 }
 
-/// The classic Win32 message pump, run until `WM_QUIT`.
+/// The classic Win32 message pump, run until `WM_QUIT`: the same dialog pump every
+/// top-level dialog runs.
 unsafe fn run_message_loop(hwnd: HWND) {
-    let mut msg = MSG::default();
-    loop {
-        // GetMessageW returns -1 on error, 0 on WM_QUIT, >0 otherwise.
-        // as_bool() (`!= 0`) would treat -1 as "keep going" and then spin on
-        // a MSG it never populated — branch on the raw value instead.
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
-            break;
-        }
-        if !IsDialogMessageW(hwnd, &msg).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    win::pump_until_quit(hwnd);
 }
 
 /// The Settings page `--tab N` asks for, or `None` when the flag is absent, malformed, or names

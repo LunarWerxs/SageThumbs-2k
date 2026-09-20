@@ -714,11 +714,7 @@ pub(super) unsafe fn set_focus(
 /// Repaint both toolbar bars — the caption strip and (if showing) the transport strip — so a
 /// focus-ring move, or a click that clears focus, is never left half-drawn on either.
 pub(super) unsafe fn invalidate_focus_bars(hwnd: HWND) {
-    let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-    let mut r = RECT::default();
-    let _ = GetClientRect(hwnd, &mut r);
-    r.bottom = cap;
-    let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+    super::window::invalidate_caption(hwnd);
     let sr = super::transport::scrub_rect(hwnd);
     let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
 }

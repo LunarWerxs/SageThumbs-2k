@@ -29,7 +29,7 @@ use crate::dark::{
 };
 use crate::update;
 use crate::win::{
-    app_icon, ctl, dpi_scale, dpi_scale_dpi, gui_font_for, gui_font_sized, load_art, open_url,
+    ctl, dpi_scale, dpi_scale_dpi, gui_font_for, gui_font_sized, load_art, open_url,
     set_static_bitmap, t, text_width, wide, wm_dpichanged, IDCANCEL, IDOK, SS_BITMAP, SS_CENTER,
     SS_NOTIFY, SS_OWNERDRAW, STATIC, URL_GITHUB, URL_PARENT,
 };
@@ -143,17 +143,8 @@ struct About {
 pub(crate) unsafe fn show_about(parent: HWND) {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
     let class = w!("SageThumbs2KAbout");
-    // Idempotent: a second RegisterClassW returns 0 (already registered) — fine.
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(about_wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: dark_bg_brush(), // theme-aware: light bg in light, dark bg in dark
-        ..Default::default()
-    };
-    RegisterClassW(&wc);
+    // Theme-aware background, app icon, arrow cursor; idempotent on a second call.
+    crate::win::register_app_class(class, Some(about_wndproc), hinst);
 
     // Size the frame so the *client* area is exactly the design size, scaled to the
     // parent's DPI (identity at 96 → standard displays are unchanged).

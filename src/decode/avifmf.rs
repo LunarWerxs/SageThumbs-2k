@@ -200,27 +200,14 @@ struct FoundIpcoBoxes {
 /// properties `eligible_mf_still` needs. A nested `fn`'s body counts toward its enclosing
 /// function under this repo's complexity scanner, so this lives at module scope instead.
 fn walk_ipco_boxes(buf: &[u8], depth: u8, f: &mut FoundIpcoBoxes) {
+    use core::ops::ControlFlow;
     if depth > 6 {
         return;
     }
-    let mut p = 0usize;
-    while p + 8 <= buf.len() {
-        let Ok(raw) = buf[p..p + 4].try_into() else {
-            return;
-        };
-        let size32 = u32::from_be_bytes(raw);
-        let typ = &buf[p + 4..p + 8];
-        let Some((full, hdr)) =
-            crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
-        else {
-            return;
-        };
-        let (full, hdr) = (full as usize, hdr as usize);
-        let end = p + full;
-        let body = &buf[p + hdr..end];
+    crate::container::boxhdr::for_each_box(buf, |typ, body, whole| {
         match typ {
-            b"av1C" => f.av1c.push(buf[p..end].to_vec()),
-            b"colr" if body.get(..4) == Some(b"nclx") => f.colr.push(buf[p..end].to_vec()),
+            b"av1C" => f.av1c.push(whole.to_vec()),
+            b"colr" if body.get(..4) == Some(b"nclx") => f.colr.push(whole.to_vec()),
             b"auxC" => f.aux_c = true,
             // ImageSpatialExtentsProperty: FullBox, then width u32, height u32.
             b"ispe" => {
@@ -236,8 +223,8 @@ fn walk_ipco_boxes(buf: &[u8], depth: u8, f: &mut FoundIpcoBoxes) {
             b"iprp" | b"ipco" => walk_ipco_boxes(body, depth + 1, f),
             _ => {}
         }
-        p = end;
-    }
+        ControlFlow::<()>::Continue(())
+    });
 }
 
 /// Apply the BT.601-eligibility gates documented at module level to one already-located
@@ -322,41 +309,26 @@ pub(super) fn primary_av1_payload(bytes: &[u8]) -> Option<&[u8]> {
 /// `pitm` under `meta`: a FullBox whose body is the primary item id — u16 at version 0,
 /// u32 from version 1.
 pub(super) fn primary_item_id(bytes: &[u8]) -> Option<u32> {
+    use core::ops::ControlFlow;
     fn walk(buf: &[u8], depth: u8) -> Option<u32> {
         if depth > 4 {
             return None;
         }
-        let mut p = 0usize;
-        while p + 8 <= buf.len() {
-            let size32 = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?);
-            let typ = &buf[p + 4..p + 8];
-            let (full, hdr) = crate::container::boxhdr::decode_box_size(
-                size32,
-                None,
-                p as u64,
-                buf.len() as u64,
-            )?;
-            let (full, hdr) = (full as usize, hdr as usize);
-            let body = &buf[p + hdr..p + full];
-            match typ {
-                b"pitm" => {
-                    let version = *body.first()?;
-                    return if version == 0 {
-                        be16(body, 4).map(u32::from)
-                    } else {
-                        be32(body, 4)
-                    };
-                }
-                b"meta" => {
-                    if let Some(r) = body.get(4..).and_then(|c| walk(c, depth + 1)) {
-                        return Some(r);
-                    }
-                }
-                _ => {}
-            }
-            p += full;
-        }
-        None
+        crate::container::boxhdr::for_each_box(buf, |typ, body, _| match typ {
+            // The first `pitm` answers, well-formed or not: an empty body is "no id", not
+            // "keep looking".
+            b"pitm" => ControlFlow::Break(match body.first() {
+                Some(0) => be16(body, 4).map(u32::from),
+                Some(_) => be32(body, 4),
+                None => None,
+            }),
+            b"meta" => match body.get(4..).and_then(|c| walk(c, depth + 1)) {
+                Some(id) => ControlFlow::Break(Some(id)),
+                None => ControlFlow::Continue(()),
+            },
+            _ => ControlFlow::Continue(()),
+        })
+        .flatten()
     }
     walk(bytes, 0)
 }

@@ -108,7 +108,7 @@ fn user_classes() -> windows_registry::Result<windows_registry::Key> {
 /// `HKCU\Software\Classes\.ext` / `HKCR\.ext`. Duplicates and empties are dropped; a name
 /// with a backslash is refused so a malformed value can never steer a write outside the
 /// classes tree.
-fn progids_for(ext: &str) -> Vec<String> {
+pub(crate) fn progids_for(ext: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |s: Option<String>| {
         if let Some(s) = s {
@@ -248,7 +248,8 @@ fn remove_progid(classes: &windows_registry::Key, progid: &str) {
 
 /// Expand `%NAME%` references the way a REG_EXPAND_SZ reader does. A name that is not set
 /// is left as written, so a broken value stays visibly broken instead of collapsing to `\`.
-fn expand_env(s: &str) -> String {
+/// Shared with the doctor's shell-namespace check, which reads the same value shape.
+pub(crate) fn expand_env(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find('%') {
@@ -574,10 +575,11 @@ pub struct Restored {
     pub stale: bool,
 }
 
-/// The overlays [`sync`]`(false)` wrote for the user, each checked against the disk.
-pub fn restored_overlays() -> Vec<Restored> {
-    let mut out: Vec<Restored> = Vec::new();
+/// Every enabled format's effective ProgID with its class key opened: the set
+/// [`restored_overlays`] and [`owner_suppressed`] both walk.
+fn enabled_progid_keys() -> Vec<(&'static str, String, windows_registry::Key)> {
     let fmt = crate::settings::format_enabled_snapshot();
+    let mut out = Vec::new();
     for (ext, _) in formats::FORMATS {
         if !fmt.enabled(ext) {
             continue;
@@ -588,6 +590,16 @@ pub fn restored_overlays() -> Vec<Restored> {
         let Ok(k) = CLASSES_ROOT.open(&progid) else {
             continue;
         };
+        let ext: &'static str = ext;
+        out.push((ext, progid, k));
+    }
+    out
+}
+
+/// The overlays [`sync`]`(false)` wrote for the user, each checked against the disk.
+pub fn restored_overlays() -> Vec<Restored> {
+    let mut out: Vec<Restored> = Vec::new();
+    for (ext, progid, k) in enabled_progid_keys() {
         if k.get_string(MARK).is_err() {
             continue;
         }
@@ -614,17 +626,7 @@ pub fn restored_overlays() -> Vec<Restored> {
 /// themes) are skipped: that is the OS talking, not a program the user installed.
 pub fn owner_suppressed() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    let fmt = crate::settings::format_enabled_snapshot();
-    for (ext, _) in formats::FORMATS {
-        if !fmt.enabled(ext) {
-            continue;
-        }
-        let Some(progid) = effective_progid(ext) else {
-            continue;
-        };
-        let Ok(k) = CLASSES_ROOT.open(&progid) else {
-            continue;
-        };
+    for (ext, progid, k) in enabled_progid_keys() {
         if k.get_string(MARK).is_ok() {
             continue;
         }

@@ -482,33 +482,16 @@ fn isobmff_colr_box_icc(typ: &[u8], body: &[u8], depth: u8) -> Option<Vec<u8>> {
 /// Walk one ISOBMFF box level looking for a `colr` box (recursing through
 /// `meta`/`iprp`/`ipco` containers), returning the first ICC profile found.
 fn walk_isobmff_colr(buf: &[u8], depth: u8) -> Option<Vec<u8>> {
+    use core::ops::ControlFlow;
     if depth > 6 {
         return None;
     }
-    let mut p = 0usize;
-    while p + 8 <= buf.len() {
-        let size32 = u32::from_be_bytes(buf[p..p + 4].try_into().ok()?);
-        let typ = &buf[p + 4..p + 8];
-        let extended = if size32 == 1 {
-            Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
-        } else {
-            None
-        };
-        let (full, hdr) = crate::container::boxhdr::decode_box_size(
-            size32,
-            extended,
-            p as u64,
-            buf.len() as u64,
-        )?;
-        let (full, hdr) = (full as usize, hdr as usize);
-        let end = p + full;
-        let body = &buf[p + hdr..end];
-        if let Some(icc) = isobmff_colr_box_icc(typ, body, depth) {
-            return Some(icc);
+    crate::container::boxhdr::for_each_box(buf, |typ, body, _| {
+        match isobmff_colr_box_icc(typ, body, depth) {
+            Some(icc) => ControlFlow::Break(icc),
+            None => ControlFlow::Continue(()),
         }
-        p = end;
-    }
-    None
+    })
 }
 
 pub(super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -832,32 +815,17 @@ fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut AvifWicFound) {
     }
 }
 
-/// Walk one ISOBMFF box level, recording AV1/colour signals into `f`.
+/// Walk one ISOBMFF box level, recording AV1/colour signals into `f`. A 64-bit `mdat` is
+/// stepped over (it holds no colour metadata) so the property boxes after it are still read.
 fn walk_avif_wic(buf: &[u8], depth: u8, f: &mut AvifWicFound) {
+    use core::ops::ControlFlow;
     if depth > 6 {
         return;
     }
-    let mut p = 0usize;
-    while p + 8 <= buf.len() {
-        let Ok(raw) = buf[p..p + 4].try_into() else {
-            return;
-        };
-        let size32 = u32::from_be_bytes(raw);
-        let typ = &buf[p + 4..p + 8];
-        // 64-bit sizes only ever wrap `mdat` here, which holds no colour metadata, so this
-        // never reads the extended field — `decode_box_size` declines a `size32 == 1` box
-        // when `extended` is `None`, matching the original "just stop" behaviour exactly.
-        let Some((full, hdr)) =
-            crate::container::boxhdr::decode_box_size(size32, None, p as u64, buf.len() as u64)
-        else {
-            return;
-        };
-        let (full, hdr) = (full as usize, hdr as usize);
-        let end = p + full;
-        let body = &buf[p + hdr..end];
+    crate::container::boxhdr::for_each_box(buf, |typ, body, _| {
         avif_wic_note_box(typ, body, depth, f);
-        p = end;
-    }
+        ControlFlow::<()>::Continue(())
+    });
 }
 
 /// Which probe class this file's colour signalling puts it in, or `None` when nothing

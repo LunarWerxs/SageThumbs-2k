@@ -33,9 +33,8 @@ use windows::Win32::UI::Controls::{
     LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR, LVNI_FOCUSED, LVNI_SELECTED, LVN_ITEMCHANGED,
     LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_NOCOLUMNHEADER, LVS_NOSORTHEADER, LVS_REPORT,
     MEASUREITEMSTRUCT, NMCUSTOMDRAW, NMHDR, NMLINK, NMLISTVIEW, NMLVCUSTOMDRAW, NMTTDISPINFOW,
-    NM_CLICK, NM_CUSTOMDRAW, NM_RETURN, ODS_SELECTED, ODT_MENU, ODT_STATIC, TTF_IDISHWND,
-    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_POP, TTM_SETMAXTIPWIDTH, TTN_GETDISPINFOW, TTTOOLINFOW,
-    WC_LISTVIEWW,
+    NM_CLICK, NM_CUSTOMDRAW, NM_RETURN, ODT_MENU, ODT_STATIC, TTF_IDISHWND, TTF_SUBCLASS,
+    TTM_ADDTOOLW, TTM_POP, TTM_SETMAXTIPWIDTH, TTN_GETDISPINFOW, TTTOOLINFOW, WC_LISTVIEWW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::Shell::{
@@ -47,21 +46,21 @@ use sagethumbs2k_core::{default_menu_tokens, formats, i18n, settings, MENU_SEP_T
 
 use crate::about::show_about;
 use crate::dark::{
-    dark_bg_brush, dark_control, dark_ctlcolor, dark_menu_brush, dark_menu_sel_brush,
-    dark_theme_combo, is_dark, ACCENT, ACCENT_HOT, ACCENT_PRESS, ACCENT_TEXT, BORDER,
-    BORDER_STRONG, BTN_FACE, BTN_FACE_HOT, BTN_FACE_PRESS, CHECK_BG, DARK_BG, DARK_TEXT,
-    DISABLED_TEXT, HEADER_TEXT, INPUT_BG, ON_ACCENT, SEL_BG, SURFACE, ZEBRA,
+    dark_bg_brush, dark_control, dark_ctlcolor, dark_theme_combo, is_dark, ACCENT, ACCENT_HOT,
+    ACCENT_PRESS, ACCENT_TEXT, BORDER, BORDER_STRONG, BTN_FACE, BTN_FACE_HOT, BTN_FACE_PRESS,
+    CHECK_BG, DARK_BG, DARK_TEXT, DISABLED_TEXT, HEADER_TEXT, INPUT_BG, ON_ACCENT, SEL_BG, SURFACE,
+    ZEBRA,
 };
 use crate::sponsors::{
     drop_sponsor_rotator, show_current_image, sponsors_enabled, SponsorRotator, TIMER_BANNER,
     TIMER_ROTATE, WM_APP_SPONSORS,
 };
 use crate::win::{
-    check, checked, ctl, dpi_scale, get_edit_text, gui_font, gui_font_for, gui_font_header,
-    message_box, open_url, t, wide, wm_dpichanged, wstr_to_string, BTN_H, BUTTON, CHECKED,
-    COMBOBOX, EDIT, EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN, SS_BITMAP, SS_NOTIFY,
-    SS_OWNERDRAW, SS_REALSIZECONTROL, STATIC, SYSLINK, TTS_ALWAYSTIP, TTS_NOPREFIX, UNCHECKED,
-    URL_PARENT, URL_PRODUCT,
+    check, checked, ctl, dpi_scale, get_edit_text, gui_font_for, gui_font_header, message_box,
+    open_url, t, wide, wm_dpichanged, wstr_to_string, BTN_H, BUTTON, CHECKED, COMBOBOX, EDIT,
+    EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN, SS_BITMAP, SS_NOTIFY, SS_OWNERDRAW,
+    SS_REALSIZECONTROL, STATIC, SYSLINK, TTS_ALWAYSTIP, TTS_NOPREFIX, UNCHECKED, URL_PARENT,
+    URL_PRODUCT,
 };
 
 // Submodules split out of this (formerly ~2030-line) file. They're descendants of
@@ -625,20 +624,16 @@ unsafe fn special_ctlcolor(
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
     {
-        let hdc = HDC(wparam.0 as *mut c_void);
         // Decided from the typed state SHOT_STATUS_GREEN was set to alongside the text
         // (see set_shot_status), not by sniffing the (eventually localized) label for
         // English words, which broke silently in every non-English build.
         let running = SHOT_STATUS_GREEN.with(|g| g.get());
         let col = if running {
-            COLORREF(0x0059_C734)
+            crate::dark::STATUS_GREEN
         } else {
-            COLORREF(0x004D_48E5)
-        }; // green / red
-        SetTextColor(hdc, col);
-        windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-        SetBkMode(hdc, TRANSPARENT);
-        return Some(LRESULT(dark_bg_brush().0 as isize));
+            crate::dark::STATUS_RED
+        };
+        return Some(crate::dark::dark_ctlcolor_tinted(wparam, col));
     }
     // The Settings-sync status line: green in a healthy synced state, else a muted grey
     // (the signed-out invite / a transient "Connecting…"). Mirrors the hotkey-service
@@ -650,11 +645,10 @@ unsafe fn special_ctlcolor(
         && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
     {
         if sync::sync_status_is_green() {
-            let hdc = HDC(wparam.0 as *mut c_void);
-            SetTextColor(hdc, COLORREF(0x0059_C734)); // green
-            windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-            SetBkMode(hdc, TRANSPARENT);
-            return Some(LRESULT(dark_bg_brush().0 as isize));
+            return Some(crate::dark::dark_ctlcolor_tinted(
+                wparam,
+                crate::dark::STATUS_GREEN,
+            ));
         }
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
@@ -672,50 +666,33 @@ unsafe fn special_ctlcolor(
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
     {
-        return match licence_ui::state_tone() {
-            // Not a special case: hand it to the generic class-based theming instead of
-            // returning `None` here, which would skip dark theming for this control
-            // entirely (this `if` has already committed to answering for it).
-            licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
-            licence_ui::Tone::Good => {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
-                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-                SetBkMode(hdc, TRANSPARENT);
-                Some(LRESULT(dark_bg_brush().0 as isize))
-            }
-            licence_ui::Tone::Bad => {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, COLORREF(0x004D_48E5)); // red
-                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-                SetBkMode(hdc, TRANSPARENT);
-                Some(LRESULT(dark_bg_brush().0 as isize))
-            }
-        };
+        return tone_ctlcolor(licence_ui::state_tone(), msg, wparam);
     }
     // The redeem-result line, same tri-state (idle / just-redeemed / just-rejected).
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_LICENCE_REDEEM_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
     {
-        return match licence_ui::redeem_tone() {
-            licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
-            licence_ui::Tone::Good => {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, COLORREF(0x0059_C734)); // green
-                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-                SetBkMode(hdc, TRANSPARENT);
-                Some(LRESULT(dark_bg_brush().0 as isize))
-            }
-            licence_ui::Tone::Bad => {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, COLORREF(0x004D_48E5)); // red
-                windows::Win32::Graphics::Gdi::SetBkColor(hdc, DARK_BG());
-                SetBkMode(hdc, TRANSPARENT);
-                Some(LRESULT(dark_bg_brush().0 as isize))
-            }
-        };
+        return tone_ctlcolor(licence_ui::redeem_tone(), msg, wparam);
     }
     dark_ctlcolor(msg, wparam)
+}
+
+/// A tri-state status line: green when good, red when bad, and the plain class-based theming
+/// when neutral (Personal / no key entered yet - a normal state, not a problem one). Neutral
+/// is handed to `dark_ctlcolor` rather than answered `None`, because the caller's `if` has
+/// already committed to answering for the control and `None` would skip its dark theming.
+unsafe fn tone_ctlcolor(tone: licence_ui::Tone, msg: u32, wparam: WPARAM) -> Option<LRESULT> {
+    match tone {
+        licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
+        licence_ui::Tone::Good => Some(crate::dark::dark_ctlcolor_tinted(
+            wparam,
+            crate::dark::STATUS_GREEN,
+        )),
+        licence_ui::Tone::Bad => Some(crate::dark::dark_ctlcolor_tinted(
+            wparam,
+            crate::dark::STATUS_RED,
+        )),
+    }
 }
 
 /// Window-lifecycle + app-posted messages: creation, teardown, resize limits, the
@@ -1300,16 +1277,8 @@ unsafe fn on_measureitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         return LRESULT(1);
     }
     if m.CtlType == ODT_MENU {
-        let label = wide(list::ctx_menu_label(m.itemID as usize));
-        let n = label.len().saturating_sub(1);
-        let hdc = GetDC(Some(hwnd));
-        let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
-        let mut sz = SIZE::default();
-        let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
-        SelectObject(hdc, old);
-        ReleaseDC(Some(hwnd), hdc);
-        m.itemWidth = (sz.cx + 30) as u32;
-        m.itemHeight = 26;
+        let label = list::ctx_menu_label(m.itemID as usize);
+        crate::win::measure_menu_item(hwnd, m, label);
         LRESULT(1)
     } else {
         DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1323,37 +1292,14 @@ unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> L
         return LRESULT(1);
     }
     if d.CtlType == ODT_MENU {
-        return on_drawitem_menu(d);
+        crate::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
+        return LRESULT(1);
     }
     if d.CtlType == ODT_STATIC {
         on_drawitem_static(hwnd, d);
         return LRESULT(1);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
-}
-
-unsafe fn on_drawitem_menu(d: &DRAWITEMSTRUCT) -> LRESULT {
-    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
-    let bg = if selected {
-        dark_menu_sel_brush()
-    } else {
-        dark_menu_brush()
-    };
-    FillRect(d.hDC, &d.rcItem, bg);
-    SetBkMode(d.hDC, TRANSPARENT);
-    SetTextColor(d.hDC, DARK_TEXT());
-    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
-    let mut label = wide(list::ctx_menu_label(d.itemID as usize));
-    let n = label.len().saturating_sub(1);
-    let mut rc = d.rcItem;
-    rc.left += 14;
-    DrawTextW(
-        d.hDC,
-        &mut label[..n],
-        &mut rc,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-    );
-    LRESULT(1)
 }
 
 unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {

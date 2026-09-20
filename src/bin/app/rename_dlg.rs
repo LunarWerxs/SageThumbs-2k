@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{SetBkColor, SetBkMode, SetTextColor, HDC, TRANSPARENT};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
@@ -22,10 +21,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use sagethumbs2k_core::settings;
 
-use crate::dark::{dark_bg_brush, dark_ctlcolor, DARK_BG};
+use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, set_edit_text, t, wide, wm_dpichanged, BUTTON,
-    EDIT, EM_SETSEL, IDCANCEL, IDOK, STATIC,
+    ctl, get_edit_text, read_listfile, run_dialog, set_edit_text, t, wide, BUTTON, EDIT, EM_SETSEL,
+    IDCANCEL, IDOK, STATIC,
 };
 
 const CID_RN_PATTERN: i32 = 5201;
@@ -106,11 +105,8 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
         if msg == WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), CID_RN_ERROR).is_ok_and(|s| s.0 as isize == lparam.0)
         {
-            let hdc = HDC(wparam.0 as *mut c_void);
-            SetTextColor(hdc, COLORREF(0x004D_48E5)); // red — same tone the Settings status lines use
-            SetBkColor(hdc, DARK_BG());
-            SetBkMode(hdc, TRANSPARENT);
-            return LRESULT(dark_bg_brush().0 as isize);
+            // The same red the Settings status lines use.
+            return crate::dark::dark_ctlcolor_tinted(wparam, crate::dark::STATUS_RED);
         }
         if msg == WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), CID_RN_HINT).is_ok_and(|s| s.0 as isize == lparam.0)
@@ -125,21 +121,8 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             WM_COMMAND => on_command(hwnd, wparam),
             WM_RN_DONE => on_rn_done(hwnd),
             WM_RN_PREVIEW => on_rn_preview(hwnd),
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            // Same deferred-close shape as `files_to_folder.rs`: a rename started on
-            // the worker thread must not be torn out from under it.
-            WM_CLOSE => {
-                request_close(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            // DPI, the deferred close a running rename needs, destroy, default.
+            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }

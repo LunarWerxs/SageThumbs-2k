@@ -17,8 +17,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, t, wide, wm_dpichanged, BUTTON, EDIT, EM_SETSEL,
-    IDCANCEL, IDOK, STATIC,
+    ctl, get_edit_text, read_listfile, run_dialog, t, wide, BUTTON, EDIT, EM_SETSEL, IDCANCEL,
+    IDOK, STATIC,
 };
 
 const CID_F2F_NAME: i32 = 5001;
@@ -62,21 +62,8 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_CREATE => on_create(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
             WM_F2F_DONE => on_f2f_done(hwnd),
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            // Mirror IDCANCEL's deferred close: a move started on the worker thread
-            // must not be torn out from under it by an unconditional DestroyWindow.
-            WM_CLOSE => {
-                request_close(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            // DPI, the deferred close a running move needs, destroy, default.
+            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }

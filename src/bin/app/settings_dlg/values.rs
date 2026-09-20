@@ -1490,18 +1490,12 @@ pub(super) unsafe fn msg(hwnd: HWND, text: &str, caption: &str, icon: MESSAGEBOX
 /// — it briefly blinks the taskbar. This is the fix for the classic "I changed a setting
 /// but the thumbnails look the same" (Explorer keeps serving stale cached thumbnails).
 pub(super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
-    let warn = wide(
+    if !crate::win::confirm_warning(
+        hwnd,
+        "Rebuild Thumbnail Cache",
         "This clears Windows' thumbnail cache and briefly restarts File Explorer (your \
          taskbar will blink). Open windows and files are not affected.\n\nContinue?",
-    );
-    let cap = wide("Rebuild Thumbnail Cache");
-    if MessageBoxW(
-        Some(hwnd),
-        PCWSTR(warn.as_ptr()),
-        PCWSTR(cap.as_ptr()),
-        MB_YESNO | MB_ICONWARNING,
-    ) != IDYES
-    {
+    ) {
         return;
     }
     // Kill Explorer (releases the cache files' lock), delete thumbcache_*.db, relaunch.
@@ -1622,19 +1616,13 @@ pub(super) unsafe fn reregister_elevated() -> Reg {
 /// context-menu / property hooks back to us), then clears the thumbnail cache + restarts
 /// Explorer so the repaired thumbnails render immediately instead of serving stale blanks.
 pub(super) unsafe fn repair_associations(hwnd: HWND) {
-    let warn = wide(
+    if !crate::win::confirm_warning(
+        hwnd,
+        "Repair File Associations",
         "This re-registers SageThumbs 2K for all your enabled file types — the fix when \
          thumbnails go blank after another program takes over a format — then clears the \
          thumbnail cache and briefly restarts File Explorer (your taskbar will blink).\n\nContinue?",
-    );
-    let cap = wide("Repair File Associations");
-    if MessageBoxW(
-        Some(hwnd),
-        PCWSTR(warn.as_ptr()),
-        PCWSTR(cap.as_ptr()),
-        MB_YESNO | MB_ICONWARNING,
-    ) != IDYES
-    {
+    ) {
         return;
     }
     // Report what actually happened. Each of these needs a different action from the

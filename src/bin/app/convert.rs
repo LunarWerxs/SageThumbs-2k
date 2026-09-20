@@ -1934,25 +1934,9 @@ extern "system" fn convert_wndproc(
             WM_COMMAND => on_convert_command(hwnd, wparam),
             WM_CONVERT_PROGRESS => on_convert_progress(hwnd, wparam),
             WM_CONVERT_DONE => on_convert_done(hwnd, wparam, lparam),
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            // The title-bar X / Alt+F4 / taskbar-close path must mirror IDCANCEL's
-            // deferred close (below), NOT destroy unconditionally. A batch write is
-            // detached and keeps running after DestroyWindow tears the window down;
-            // without this check WM_CLOSE cascades straight to WM_DESTROY ->
-            // PostQuitMessage and kills the worker mid-write regardless of
-            // CONVERT_RUNNING.
-            WM_CLOSE => {
-                request_close(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            // DPI, the deferred close a running batch needs (see `request_close` below),
+            // destroy, default.
+            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }

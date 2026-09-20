@@ -147,11 +147,7 @@ unsafe fn mousemove_hover(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> LRESU
     let button_changed = now != st.hot.get();
     if button_changed {
         st.hot.set(now);
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+        super::invalidate_caption(hwnd);
     }
     let scroll_changed = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
     if button_changed || scroll_changed {
@@ -171,11 +167,7 @@ pub(super) unsafe fn on_mouseleave(hwnd: HWND) -> LRESULT {
     let st = &*state(hwnd);
     if st.hot.get().is_some() {
         st.hot.set(None);
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false);
+        super::invalidate_caption(hwnd);
     }
     let _ = set_scroll_hot(hwnd, false);
     LRESULT(0)

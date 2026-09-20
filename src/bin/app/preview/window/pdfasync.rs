@@ -170,11 +170,7 @@ pub(super) unsafe fn on_app_pdfinfo(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         // Cap the UNTRUSTED count (a crafted PDF can report > i32::MAX pages, which
         // would wrap the nav math negative and panic a clamp — panic=abort).
         st.pdf_pages.set(count.min(1_000_000));
-        let cap = crate::win::dpi_scale(hwnd, CAPTION_H);
-        let mut r = RECT::default();
-        let _ = GetClientRect(hwnd, &mut r);
-        r.bottom = cap;
-        let _ = InvalidateRect(Some(hwnd), Some(&r), false); // repaint the page indicator + pager
+        super::invalidate_caption(hwnd); // repaint the page indicator + pager
     }
     LRESULT(0)
 }

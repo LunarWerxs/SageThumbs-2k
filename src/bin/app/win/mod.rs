@@ -11,12 +11,14 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::OnceLock;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    DeleteObject, DrawTextW, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, DT_CALCRECT,
-    DT_LEFT, DT_NOPREFIX, DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ,
+    DeleteObject, DrawTextW, FillRect, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject,
+    SetBkMode, SetTextColor, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -494,6 +496,105 @@ pub(crate) unsafe fn result_wndproc(
 /// Control id of the Copy button in every result dialog (see [`result_wndproc`]).
 pub(crate) const ID_RESULT_COPY: i32 = 101;
 
+/// The edit every result window fills its body with: `style` says read-only or editable (the
+/// scrollbar, border and tab stop are added here), it starts at `y` and stops above the button
+/// row, its scrollbar is re-themed dark, and it is filled with `text` in the CRLF the control
+/// wants. Returns the edit for a caller that goes on to set a font on it.
+///
+/// `ctl` themes edits with DarkMode_CFD, which leaves a LIGHT vertical scrollbar; DarkMode_Explorer
+/// renders it dark (the edit's own bg/text stay dark via WM_CTLCOLOREDIT in `dark_ctlcolor`). And
+/// edit controls want CRLF line breaks (a lone LF renders as a box): `to_crlf` rather than a
+/// one-way `\n` -> `\r\n` replace, because a line that is ALREADY CRLF (any EXIF/XMP value carrying
+/// its own line breaks) would come out as `\r\r\n` and show a stray box anyway.
+pub(crate) unsafe fn result_edit(
+    hwnd: HWND,
+    hinst: HINSTANCE,
+    l: &ResultLayout,
+    y: i32,
+    style: WINDOW_STYLE,
+    id: i32,
+    text: &str,
+) -> HWND {
+    let edit_h = (l.btn_y - l.gap - y).max(48);
+    let style = style | WS_VSCROLL | WS_BORDER | WS_TABSTOP;
+    let edit = ctl(
+        hwnd,
+        EDIT,
+        "",
+        style,
+        l.m,
+        y,
+        l.cw - 2 * l.m,
+        edit_h,
+        id,
+        hinst,
+    );
+    if crate::dark::is_dark() {
+        crate::dark::dark_control(edit, w!("DarkMode_Explorer"));
+    }
+    let w = wide(&sagethumbs2k_core::clipboard::to_crlf(text));
+    let _ = SetWindowTextW(edit, PCWSTR(w.as_ptr()));
+    edit
+}
+
+/// The Copy + Close pair every result window ends with, on the row [`result_layout`] computed:
+/// Close rightmost and the default button, Copy immediately to its left.
+pub(crate) unsafe fn result_buttons(hwnd: HWND, hinst: HINSTANCE, l: &ResultLayout) {
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_copy"),
+        WS_TABSTOP,
+        l.copy_x,
+        l.btn_y,
+        l.btn_w,
+        l.btn_h,
+        ID_RESULT_COPY,
+        hinst,
+    );
+    ctl(
+        hwnd,
+        BUTTON,
+        t("btn_close"),
+        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
+        l.close_x,
+        l.btn_y,
+        l.btn_w,
+        l.btn_h,
+        IDOK,
+        hinst,
+    );
+}
+
+/// A result window whose message handling is entirely the shared kind: dark control colours,
+/// then [`result_wndproc`], then the default. Image info, Upload links and OCR are exactly this
+/// and register [`result_window_proc`] over their type; Doctor (a font to free on destroy) and the
+/// Convert report (two buttons of its own, and no quit on destroy) keep a hand-written procedure
+/// around the same shared core.
+pub(crate) trait ResultWindow {
+    /// Lay the window out; runs on WM_CREATE with the module handle already resolved.
+    unsafe fn build(hwnd: HWND, hinst: HINSTANCE);
+    /// What the Copy button puts on the clipboard.
+    unsafe fn copy_source(hwnd: HWND) -> String;
+}
+
+pub(crate) extern "system" fn result_window_proc<W: ResultWindow>(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        if let Some(r) = crate::dark::dark_ctlcolor(msg, wparam) {
+            return r;
+        }
+        if let Some(r) = result_wndproc(hwnd, msg, wparam, W::build, W::copy_source) {
+            return r;
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
 pub(crate) unsafe fn result_layout(hwnd: HWND) -> ResultLayout {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
@@ -718,16 +819,7 @@ pub(crate) unsafe fn create_shot_window(
     design_w: i32,
     design_h: i32,
 ) -> Option<HWND> {
-    let wc = WNDCLASSW {
-        lpfnWndProc: wndproc,
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: crate::dark::dark_bg_brush(), // same tone as the real window classes
-        ..Default::default()
-    };
-    RegisterClassW(&wc); // idempotent
+    register_app_class(class, wndproc, hinst); // same tone as the real window classes
 
     // Position it ON-SCREEN (centered on the cursor monitor), NOT off the virtual desktop: an
     // off-screen window's DWM redirection surface can be stale/blank when PrintWindow grabs it
@@ -881,8 +973,130 @@ pub(crate) fn cursor_monitor_metrics() -> (i32, windows::Win32::Foundation::RECT
     }
 }
 
-/// Standard top-level pump: dialog-key translation + dispatch until WM_QUIT.
-unsafe fn pump_until_quit(hwnd: HWND) {
+/// The lifecycle tail every worker-backed dialog (Convert, Rename, Files-to-folder,
+/// Tags-to-folders) shares once its own messages are handled: a DPI change re-lays out; the
+/// title-bar X / Alt+F4 / taskbar close go through the dialog's own `request_close`, which
+/// mirrors IDCANCEL's deferred close - a batch started on the worker thread must not be torn out
+/// from under it by an unconditional `DestroyWindow` (WM_CLOSE would cascade to WM_DESTROY ->
+/// `PostQuitMessage` and kill the worker mid-write); destroy quits the pump; the rest is the
+/// default.
+pub(crate) unsafe fn dialog_tail(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    request_close: unsafe fn(HWND),
+) -> LRESULT {
+    match msg {
+        WM_DPICHANGED => {
+            wm_dpichanged(hwnd, lparam);
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            request_close(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Register a top-level app window class: the app icon, the arrow cursor, and the palette's
+/// window tone as the background in BOTH themes (light mode used to take the system
+/// button-face brush here while every control filled with the palette's 243, so each row
+/// showed as a lighter block on the pane; one source, one colour). Idempotent: a second
+/// registration of the same name returns 0, which is fine.
+pub(crate) unsafe fn register_app_class(class: PCWSTR, wndproc: WNDPROC, hinst: HINSTANCE) {
+    let wc = WNDCLASSW {
+        lpfnWndProc: wndproc,
+        hInstance: hinst,
+        lpszClassName: class,
+        hIcon: app_icon().unwrap_or_default(),
+        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+        hbrBackground: crate::dark::dark_bg_brush(),
+        ..Default::default()
+    };
+    RegisterClassW(&wc);
+}
+
+/// A Yes/No question under the warning icon, for an action that briefly disrupts the desktop
+/// (restarting Explorer, re-registering every format); `true` when the user chose Yes.
+pub(crate) unsafe fn confirm_warning(parent: HWND, title: &str, body: &str) -> bool {
+    let w_body = wide(body);
+    let w_title = wide(title);
+    MessageBoxW(
+        Some(parent),
+        PCWSTR(w_body.as_ptr()),
+        PCWSTR(w_title.as_ptr()),
+        MB_YESNO | MB_ICONWARNING,
+    ) == IDYES
+}
+
+/// The measuring half of an owner-drawn dark menu (WM_MEASUREITEM for an `ODT_MENU` item):
+/// the label's width in the GUI font plus the 14px indent and the padding [`draw_menu_item`]
+/// uses, 26px tall.
+pub(crate) unsafe fn measure_menu_item(hwnd: HWND, m: &mut MEASUREITEMSTRUCT, label: &str) {
+    let label = wide(label);
+    let n = label.len().saturating_sub(1);
+    let hdc = GetDC(Some(hwnd));
+    let old = SelectObject(hdc, HGDIOBJ(gui_font().0));
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &label[..n], &mut sz);
+    SelectObject(hdc, old);
+    ReleaseDC(Some(hwnd), hdc);
+    m.itemWidth = (sz.cx + 30) as u32;
+    m.itemHeight = 26;
+}
+
+/// The drawing half (WM_DRAWITEM for an `ODT_MENU` item): the dark or selected fill, then
+/// the label 14px in, vertically centred, in the GUI font.
+pub(crate) unsafe fn draw_menu_item(d: &DRAWITEMSTRUCT, label: &str) {
+    let selected = (d.itemState.0 & ODS_SELECTED.0) != 0;
+    let bg = if selected {
+        crate::dark::dark_menu_sel_brush()
+    } else {
+        crate::dark::dark_menu_brush()
+    };
+    FillRect(d.hDC, &d.rcItem, bg);
+    SetBkMode(d.hDC, TRANSPARENT);
+    SetTextColor(d.hDC, crate::dark::DARK_TEXT());
+    SelectObject(d.hDC, HGDIOBJ(gui_font().0));
+    let mut label = wide(label);
+    let n = label.len().saturating_sub(1);
+    let mut rc = d.rcItem;
+    rc.left += 14;
+    DrawTextW(
+        d.hDC,
+        &mut label[..n],
+        &mut rc,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+}
+
+/// The plain top-level pump: translate + dispatch until `WM_DESTROY` posts `WM_QUIT` (a
+/// `GetMessageW` of 0) or the queue dies (-1). No `IsDialogMessageW` here, unlike
+/// [`pump_until_quit`]: the preview, capture overlay, eyedropper and hotkey daemon windows
+/// handle every key in their own procedure, and dialog translation would eat Tab, Esc and the
+/// arrows before they got there.
+pub(crate) unsafe fn pump_plain() {
+    let mut msg = MSG::default();
+    loop {
+        let r = GetMessageW(&mut msg, None, 0, 0).0;
+        if r == 0 || r == -1 {
+            break;
+        }
+        let _ = TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+/// Standard top-level pump: dialog-key translation + dispatch until WM_QUIT. Branches on
+/// `GetMessageW`'s raw value: `as_bool()` (`!= 0`) would treat the -1 of a destroyed queue
+/// as "keep going" and then spin on a MSG it never populated.
+pub(crate) unsafe fn pump_until_quit(hwnd: HWND) {
     let mut msg = MSG::default();
     loop {
         let r = GetMessageW(&mut msg, None, 0, 0).0;
@@ -1423,70 +1637,9 @@ pub(crate) unsafe fn confirm_verbs(
 /// Best-effort: any failed step just means no toast, never a hang. The `linger` is how
 /// long we keep pumping (the shell auto-dismisses the balloon on its own schedule).
 pub(crate) unsafe fn notify_toast(title: &str, body: &str, linger: std::time::Duration) {
-    use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW,
-    };
-
-    unsafe extern "system" fn toast_wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-        DefWindowProcW(h, m, w, l)
-    }
-
-    let hmod = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
-    let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
-    let class = windows::core::w!("SageThumbs2KToast");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(toast_wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        ..Default::default()
-    };
-    RegisterClassW(&wc); // ok if already registered (one-shot process)
-    let Ok(hwnd) = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        class,
-        windows::core::w!("st2k-toast"),
-        WS_OVERLAPPED, // never shown — it only owns the tray icon
-        0,
-        0,
-        0,
-        0,
-        None,
-        None,
-        Some(hinst),
-        None,
-    ) else {
-        return;
-    };
-
-    let mut nid = NOTIFYICONDATAW {
-        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: 0xA1,
-        uFlags: NIF_ICON,
-        hIcon: app_icon().unwrap_or_default(),
-        ..Default::default()
-    };
-    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-
-    nid.uFlags = NIF_INFO;
-    nid.dwInfoFlags = NIIF_INFO;
-    copy_wide_capped(&mut nid.szInfoTitle, title);
-    copy_wide_capped(&mut nid.szInfo, body);
-    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
-
-    // Pump so the balloon paints + lingers, then clean up and return to the caller.
-    let start = std::time::Instant::now();
-    let mut msg = MSG::default();
-    while start.elapsed() < linger {
-        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-    let _ = DestroyWindow(hwnd);
+    // The action toast with nothing to run: a click on the balloon just ends the linger
+    // early, which the shell was about to do on its own anyway.
+    notify_toast_action(title, body, linger, || {});
 }
 
 /// Like [`notify_toast`], but with ONE clickable action: clicking the balloon runs
