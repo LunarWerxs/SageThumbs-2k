@@ -287,18 +287,26 @@ fn install_autostart_entry() {
     }
 }
 
+/// Drop the autostart `...\Run` entry, unless autostart isn't allowed at all, in which case
+/// there is nothing of ours there. `action` names the caller in the failure log line
+/// (`screenshot: {action} autostart Run entry: ...`).
+fn remove_autostart_entry(action: &str) {
+    if !autostart_allowed() {
+        return;
+    }
+    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
+        if let Err(e) = k.remove_value(RUN_NAME) {
+            sagethumbs2k_core::safety::log(&format!(
+                "screenshot: {action} autostart Run entry: {e}"
+            ));
+        }
+    }
+}
+
 /// The "nothing wants it" branch of [`reconcile`]: drop the autostart entry (when autostart
 /// is allowed at all) and close the daemon now.
 fn reconcile_not_wanted() {
-    if autostart_allowed() {
-        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-            if let Err(e) = k.remove_value(RUN_NAME) {
-                sagethumbs2k_core::safety::log(&format!(
-                    "screenshot: failed to remove autostart Run entry: {e}"
-                ));
-            }
-        }
-    }
+    remove_autostart_entry("failed to remove");
     unsafe { stop_daemon() };
 }
 
@@ -316,15 +324,7 @@ pub(crate) fn quit() {
     // function just removed.
     let _ = sagethumbs2k_core::settings::set_dword(DAEMON_STOPPED_KEY, 1);
     let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", 0);
-    if autostart_allowed() {
-        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-            if let Err(e) = k.remove_value(RUN_NAME) {
-                sagethumbs2k_core::safety::log(&format!(
-                    "screenshot: quit failed to remove autostart Run entry: {e}"
-                ));
-            }
-        }
-    }
+    remove_autostart_entry("quit failed to remove");
     unsafe { stop_daemon() };
 }
 
