@@ -1065,6 +1065,21 @@ window messages through the OS loop, so a split wndproc is proven only by a huma
 click-through of the window it serves. Do it in a dedicated session, never as a casual
 extract-and-move pass, and add the click-through to the release checklist.
 
+**The warn band is ratcheted now (2026-09-20), and it had to be.** The gate fails at 30 and
+PRINTS everything in 15..29, which for months gated on nothing - `scripts/complexity-scan.py`'s
+own header records the backlog regrowing from 0 to 19 in a week with every visible gate green,
+and by that evening the band was 538. `scripts/complexity-warn-ceiling.json` holds the highest
+band size each engine may report, `check-complexity.ps1` fails when the count grows, and the CI
+job already runs that script, so the band can only fall. Two things follow. **Splitting a
+function can make the band WORSE** (one finding at 29 becomes two at 16), so measure after, not
+before: `pwsh scripts\check-complexity.ps1` prints the count. And when the count drops, lower
+the ceiling in the same change - `pwsh scripts\check-complexity.ps1 -WriteWarnCeiling` - because
+a ceiling left high is a gate that quietly stops meaning anything. The ceiling is keyed by
+ENGINE (odin's probe.py versus the vendored scanner) since the two need not agree on a score;
+an engine with no ceiling is reported as unratcheted rather than silently passed, and an
+unreadable ceiling file is "cannot measure" (exit 3), never a pass. All four outcomes are in
+`-ProveItFails`.
+
 ## `git apply` run inside a vendored subdirectory silently skips a git-style patch
 
 Found 2026-09-07 while vendoring `djvu-rs` the way `exr` and the jxl crates are vendored. The

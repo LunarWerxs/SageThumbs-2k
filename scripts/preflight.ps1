@@ -34,6 +34,16 @@ function Step([string]$name, [scriptblock]$block) {
 # PARALLEL across runners, so its ordering carries no signal about what should block first on
 # one machine. Anything that needs no build artifacts belongs above this line.
 Step 'rustfmt (--check)' { cargo fmt --all --check }
+# The complexity gate, which until 2026-09-20 ran ONLY in CI - so a function over the line, or
+# a warn band that had grown, was discovered after the push, by a red runner, which is the
+# exact round trip this gate exists to prevent. It costs about two seconds (stdlib-only Python
+# over the tracked scanner), so it belongs in the cheap tier beside rustfmt. It mirrors CI's
+# own `complexity` job byte for byte: same script, same default arguments.
+if (-not $failed) {
+    Step 'complexity (gate at 30, and the warn band may not grow)' {
+        & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-complexity.ps1')
+    }
+}
 # CI's `consistency` job, run HERE and first (they are seconds, the builds are minutes): every
 # gate before the push, none discovered by a red CI after `release.ps1` has already pushed
 # (2026-08-02) or by a launch that died at [4/6] on a gate script fault (2026-09-09, twice).
