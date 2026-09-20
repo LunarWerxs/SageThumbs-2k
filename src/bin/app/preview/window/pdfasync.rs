@@ -9,6 +9,8 @@
 
 use super::*;
 
+use crate::preview::pdfview::PdfDoc;
+
 /// `WM_APP_MDIMG`: a fetched remote Markdown image landed, install it (stale gen / wrong
 /// kind → drop).
 pub(super) unsafe fn on_app_mdimg(hwnd: HWND, lparam: LPARAM) -> LRESULT {
@@ -87,8 +89,16 @@ pub(super) unsafe fn on_app_pdfdoc(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     LRESULT(0)
 }
 
-/// `WM_APP_PDFTILE`: one rasterized PDF page for the continuous view.
-pub(super) unsafe fn on_app_pdftile(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+/// Shared tail of `WM_APP_PDFTILE` and `WM_APP_PDFSTRIP`: rasterize the posted tile payload
+/// and either hand it to the document (`put`) or clear its in-flight flag (`clear`), then
+/// repaint `rect` (the sheet or the side strip).
+unsafe fn finish_tile(
+    hwnd: HWND,
+    lparam: LPARAM,
+    put: fn(&mut PdfDoc, usize, i32, RenderData),
+    clear: fn(&mut PdfDoc, usize),
+    rect: unsafe fn(HWND) -> RECT,
+) -> LRESULT {
     let boxed = Box::from_raw(lparam.0 as *mut crate::preview::pdfview::TilePayload);
     let (gen, page, width, decoded) = *boxed;
     let st = &*state(hwnd);
@@ -102,39 +112,40 @@ pub(super) unsafe fn on_app_pdftile(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     if let Some(doc) = slot.as_mut() {
         if gen == doc.gen {
             match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg)) {
-                Some(rd) => doc.put_tile(page, width, rd),
+                Some(rd) => put(doc, page, width, rd),
                 // The page did not rasterize. Clearing the flag is the whole point
                 // of posting on failure: without it the sheet stays blank and no
                 // later paint ever asks for it again.
-                None => doc.clear_pending(page),
+                None => clear(doc, page),
             }
             drop(slot);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+            let r = rect(hwnd);
+            let _ = InvalidateRect(Some(hwnd), Some(&r), false);
         }
     }
     LRESULT(0)
 }
 
+/// `WM_APP_PDFTILE`: one rasterized PDF page for the continuous view.
+pub(super) unsafe fn on_app_pdftile(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    finish_tile(
+        hwnd,
+        lparam,
+        PdfDoc::put_tile,
+        PdfDoc::clear_pending,
+        content_rect,
+    )
+}
+
 /// `WM_APP_PDFSTRIP`: one rendered page thumbnail for the side strip.
 pub(super) unsafe fn on_app_pdfstrip(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut crate::preview::pdfview::TilePayload);
-    let (gen, page, width, decoded) = *boxed;
-    let st = &*state(hwnd);
-    let bg = letterbox_bg(st);
-    let mut slot = st.pdf_doc.borrow_mut();
-    if let Some(doc) = slot.as_mut() {
-        if gen == doc.gen {
-            match decoded.and_then(|(w, h, rgba)| content::make_render(w, h, &rgba, bg)) {
-                Some(rd) => doc.put_strip_tile(page, width, rd),
-                None => doc.clear_strip_pending(page),
-            }
-            drop(slot);
-            let sr = strip_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
-        }
-    }
-    LRESULT(0)
+    finish_tile(
+        hwnd,
+        lparam,
+        PdfDoc::put_strip_tile,
+        PdfDoc::clear_strip_pending,
+        strip_rect,
+    )
 }
 
 /// `WM_APP_PDFTEXT`: one page's recognized text for the Ctrl+F index.
