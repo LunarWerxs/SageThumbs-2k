@@ -40,6 +40,21 @@ pub const RESTART_EXPLORER_CLEARING_CACHE: &str = "taskkill /f /im explorer.exe 
      del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
      start \"\" explorer.exe";
 
+/// Poll `is_up` every 200 ms for ~15 s, returning `true` as soon as it reports the shell
+/// back and `false` if the window never appears.
+///
+/// ~15s for `start` to bring Explorer back; a cold shell on a busy machine takes a few
+/// seconds.
+fn wait_for_shell(is_up: &impl Fn() -> bool) -> bool {
+    for _ in 0..75 {
+        if is_up() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
+}
+
 /// Restart Explorer + clear the thumbnail cache, then CHECK THE SHELL CAME BACK.
 ///
 /// The one-liner above is fire-and-forget: it kills Explorer, deletes the cache, and asks
@@ -80,11 +95,8 @@ pub fn restart_explorer_clearing_cache() -> bool {
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     // ~15s for `start` to bring it back; a cold shell on a busy machine takes a few seconds.
-    for _ in 0..75 {
-        if shell_is_up() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    if wait_for_shell(&shell_is_up) {
+        return true;
     }
 
     // Not back. Relaunch WITHOUT cmd, so no quoting can be misread this time (issue #5 was a
@@ -93,11 +105,8 @@ pub fn restart_explorer_clearing_cache() -> bool {
     let _ = std::process::Command::new("explorer.exe")
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
-    for _ in 0..75 {
-        if shell_is_up() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    if wait_for_shell(&shell_is_up) {
+        return true;
     }
     crate::safety::log("explorer STILL not back after a direct relaunch");
     false
