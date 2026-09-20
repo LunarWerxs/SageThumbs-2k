@@ -95,12 +95,29 @@ foreach ($line in $lines) {
 }
 
 # --- 3. Every function that WRITES through a shared-slot helper must guard or record. ----
+# The write itself is not always a literal `set_string` in the same function: a refactor can
+# lift it one call deeper (2026-09-20, `hook_ext`'s write became `set_shellex_key`), and this
+# check then matched nothing and failed closed for four days of red CI. So first collect the
+# file's WRITE HELPERS - top-level functions whose own body sets a key's default value - and
+# treat a call to one of those as a write too. One level is enough for this file's shape and
+# keeps the rule readable; if the write ever moves two levels down, this list grows, it does
+# not silently pass (a writer set of zero is still a hard failure below).
+$writeHelpers = @()
+foreach ($name in $funcs.Keys) {
+    if ($funcs[$name].ToString() -match 'set_string\s*\(') { $writeHelpers += $name }
+}
+if ($writeHelpers.Count -eq 0) {
+    Write-Host '[reg-symmetry] FAIL: found no function writing a key default at all — has register.rs been restructured?' -ForegroundColor Red
+    exit 1
+}
+Write-Host "[reg-symmetry] key-write helpers: $($writeHelpers -join ', ')"
+
 $writers = @()
 foreach ($name in $funcs.Keys) {
     $body = $funcs[$name].ToString()
-    if ($slotHelpers | Where-Object { $body -match "\b$_\s*\(" }) {
-        if ($body -match 'set_string\s*\(') { $writers += $name }
-    }
+    if (-not ($slotHelpers | Where-Object { $body -match "\b$_\s*\(" })) { continue }
+    $viaHelper = $writeHelpers | Where-Object { $_ -ne $name -and $body -match "\b$_\s*\(" }
+    if (($body -match 'set_string\s*\(') -or $viaHelper) { $writers += $name }
 }
 
 if ($writers.Count -eq 0) {
