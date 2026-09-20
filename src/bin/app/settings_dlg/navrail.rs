@@ -127,17 +127,19 @@ unsafe fn set_active_category_controls(ci: usize) {
 /// over — so the box must repaint with it, or it flashes as a hole in the header).
 unsafe fn invalidate_nav_chrome(hwnd: HWND) {
     for i in 0..NCAT as i32 {
-        if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
-            let _ = InvalidateRect(Some(nav), None, true);
-        }
+        invalidate_control(hwnd, ID_NAV_BASE + i);
     }
-    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
-        let _ = InvalidateRect(Some(ph), None, true);
-    }
-    if let Ok(sb) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
-        let _ = InvalidateRect(Some(sb), None, true);
-    }
+    invalidate_control(hwnd, ID_PANE_HEADER);
+    invalidate_control(hwnd, ID_SEARCH_GLOBAL);
     let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Repaint control `id` of `hwnd`, if the dialog actually has that child (a missing one is
+/// simply skipped, as the other repaint paths here do).
+pub(super) unsafe fn invalidate_control(hwnd: HWND, id: i32) {
+    if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+        let _ = InvalidateRect(Some(c), None, true);
+    }
 }
 
 /// Show category `ci`'s controls, hide the others, repaint the nav + pane.

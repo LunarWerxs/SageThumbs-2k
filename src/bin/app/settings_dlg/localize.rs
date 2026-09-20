@@ -213,13 +213,9 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     // labels from nav_label()/cat_blurb(), which now follow the active language).
     for i in 0..NCAT as i32 {
         crate::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
-        if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
-            let _ = InvalidateRect(Some(nav), None, true);
-        }
+        invalidate_control(hwnd, ID_NAV_BASE + i);
     }
-    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
-        let _ = InvalidateRect(Some(ph), None, true);
-    }
+    invalidate_control(hwnd, ID_PANE_HEADER);
     // The "Menu items" checklist rows relabel from their own menu keys (single col).
     // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam —
     // relabeling by fixed toggle index would scramble the labels after a reorder.
