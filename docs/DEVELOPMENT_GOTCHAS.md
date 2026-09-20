@@ -1113,6 +1113,18 @@ portable scanner, and two of its habits decide whether a split counts:
    function usually produces a coordinator (a marker-dispatch loop, a per-line `handle_line`)
    whose own complexity lands in the 20s-40s with zero nesting. Measure it; land every new
    helper comfortably under the line, not merely smaller than before.
+3. **A `?` inside a loop carries the nesting penalty** (2026-09-20). Cognitive complexity adds
+   the nesting depth to every branch, and a `?` is a branch, so seven `?`s in a per-pixel body
+   two loops deep scored 28 on a function that reads as nothing (`encode_ppm_streaming`), and
+   `write_pdf`'s per-page block did the same. Move the loop body into a function at nesting
+   zero (`write_ppm_pixel`, `write_page`): the `?`s cost 1 each there and the loop costs 2. The
+   same shape hides in `for` loops over records (`dwg::extract` -> `preview_records`) and in
+   closures assigned inside a function (`tiff_ifd0_is_reduced`'s `num`, now the free
+   `tiff_num`). When a small function scores 25+, look for the `?`s under a loop before
+   anything else. What does NOT move: a dispatcher's cyclomatic score is its arm count
+   (`run_action` at 26 is 26 verbs), a flat twelve-field mapper with twelve `?`s
+   (`History::from_json`) is what the metric misreads rather than a problem, and a test that
+   spells out its expectation as an if-chain is deliberately a second encoding. Leave those.
 
 **Win32 wndproc dispatchers are their own project.** They are large, stateful, side-effect-
 heavy message loops; the mechanical method (one `on_<message>` helper per non-trivial arm,
