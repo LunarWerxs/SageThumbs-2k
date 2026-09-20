@@ -350,6 +350,19 @@ fn main() {
     }
 }
 
+/// Parses a `--<flag> <dir> [<n>]` diagnostic argument: the directory that follows
+/// `flag`, plus the numeric argument after that (defaulting to 20). `None` when `flag`
+/// is absent.
+fn bench_flag_args(args: &[String], flag: &str) -> Option<(String, usize)> {
+    let pos = args.iter().position(|a| a == flag)?;
+    let dir = args.get(pos + 1).cloned().unwrap_or_default();
+    let count = args
+        .get(pos + 2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20);
+    Some((dir, count))
+}
+
 /// Hidden, side-effect-free UI integration route (`--screenshot-automation`) plus the
 /// hidden dev measurement flags (`--bench-preview` / `--bench-nav` / `--bench-mash`).
 /// Checked first: the automation route takes precedence over every other output-capable
@@ -364,31 +377,20 @@ unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     // `--bench-preview <dir>`: times the Quick preview's REAL decode path over a folder —
     // a cold pass, then a warm pass off the cache — so the arrow-key stepping cost is a
     // number rather than an impression. Console output, no window, no side effects.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-preview") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
+    if let Some((dir, _)) = bench_flag_args(args, "--bench-preview") {
         crate::preview::run_bench(&dir);
         return true;
     }
     // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
     // real WM_KEYDOWN arrow presses, timed from keypress to painted.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-nav") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
-        let steps = args
-            .get(pos + 2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(20);
+    if let Some((dir, steps)) = bench_flag_args(args, "--bench-nav") {
         crate::preview::run_nav_bench(hinst, &dir, steps);
         return true;
     }
     // `--bench-mash <dir> <keys>`: the HELD arrow key, pressed without waiting for each
     // paint, so several decodes really are in flight at once. `ST2K_NO_CANCEL=1` switches
     // abandonment off for an A/B on the same binary.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-mash") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
-        let keys = args
-            .get(pos + 2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(20);
+    if let Some((dir, keys)) = bench_flag_args(args, "--bench-mash") {
         crate::preview::run_mash_bench(hinst, &dir, keys);
         return true;
     }
