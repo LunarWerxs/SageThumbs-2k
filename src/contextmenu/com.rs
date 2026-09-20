@@ -27,36 +27,40 @@ impl IShellExtInit_Impl for ContextMenu_Impl {
         pdtobj: Ref<'_, IDataObject>,
         _hkeyprogid: HKEY,
     ) -> Result<()> {
-        safety::guard(|| {
-            let obj = pdtobj.ok()?;
-            let paths = unsafe { hdrop_paths(obj)? };
-            let preview_mode = settings::menu_preview();
-            // One registry open for all three menu-gate flags (see `settings::MenuGate`)
-            // instead of a separate one for `menu_enabled` here.
-            let gate = settings::menu_gate();
-            // Also captures the file's `Metadata` so `ensure_preview`/`build_preview`
-            // don't stat it a second time later.
-            let meta = if gate.enabled
-                && preview_mode != 0
-                && paths.len() == 1
-                && verbs::is_image(&paths[0])
-            {
-                preview_metadata(&paths[0])
-            } else {
-                None
-            };
-            let eligible = meta.is_some();
-            self.preview_eligible.set(eligible);
-            *self.preview_meta.borrow_mut() = meta;
-            *self.preview_job.borrow_mut() = if eligible {
-                start_menu_thumb(&paths[0])
-            } else {
-                None
-            };
-            *self.paths.borrow_mut() = paths;
-            Ok(())
-        })
+        safety::guard(|| initialize_state(self, pdtobj))
     }
+}
+
+/// Decode the dropped paths, apply the enabled/preview/single-image gate and store the
+/// resulting per-right-click state (`paths`, `preview_eligible`, `preview_meta`, job).
+fn initialize_state(cm: &ContextMenu_Impl, pdtobj: Ref<'_, IDataObject>) -> Result<()> {
+    let obj = pdtobj.ok()?;
+    let paths = unsafe { hdrop_paths(obj)? };
+    let preview_mode = settings::menu_preview();
+    // One registry open for all three menu-gate flags (see `settings::MenuGate`)
+    // instead of a separate one for `menu_enabled` here.
+    let gate = settings::menu_gate();
+    // Also captures the file's `Metadata` so `ensure_preview`/`build_preview`
+    // don't stat it a second time later.
+    let meta = if gate.enabled
+        && preview_mode != 0
+        && paths.len() == 1
+        && verbs::is_image(&paths[0])
+    {
+        preview_metadata(&paths[0])
+    } else {
+        None
+    };
+    let eligible = meta.is_some();
+    cm.preview_eligible.set(eligible);
+    *cm.preview_meta.borrow_mut() = meta;
+    *cm.preview_job.borrow_mut() = if eligible {
+        start_menu_thumb(&paths[0])
+    } else {
+        None
+    };
+    *cm.paths.borrow_mut() = paths;
+    Ok(())
 }
 
 /// Selection-kind flags derived from the request's paths: `any_image` (reused for the
@@ -114,56 +118,74 @@ unsafe fn insert_quick_verb_groups(
     vis: &settings::MenuVisibility,
 ) -> u32 {
     for item in verbs::quick_items() {
-        // Honor per-item visibility: a hidden top-level item drops its quick-verb copy
-        // from the main menu too.
-        let qtitle = match &item {
-            verbs::QuickItem::Group(t, _, _) => *t,
-            verbs::QuickItem::Leaf(t, _) => *t,
-        };
-        if !vis.shown(qtitle) {
-            continue;
+        pos = insert_quick_verb_item(hmenu, pos, idcmdfirst, budget, vis, item);
+    }
+    pos
+}
+
+/// Insert ONE quick-verb item at `pos` and report the position after it: a group becomes a
+/// popup (destroyed again if it cannot be attached), a leaf reuses its submenu command id. A
+/// per-item-hidden entry, a failed `CreatePopupMenu`, a failed insert and an out-of-budget
+/// leaf all leave `pos` unchanged.
+unsafe fn insert_quick_verb_item(
+    hmenu: HMENU,
+    pos: u32,
+    idcmdfirst: u32,
+    budget: u32,
+    vis: &settings::MenuVisibility,
+    item: verbs::QuickItem,
+) -> u32 {
+    // Honor per-item visibility: a hidden top-level item drops its quick-verb copy
+    // from the main menu too.
+    let qtitle = match &item {
+        verbs::QuickItem::Group(t, _, _) => *t,
+        verbs::QuickItem::Leaf(t, _) => *t,
+    };
+    if !vis.shown(qtitle) {
+        return pos;
+    }
+    match item {
+        verbs::QuickItem::Group(title, children, start) => {
+            let Ok(qsub) = CreatePopupMenu() else {
+                return pos;
+            };
+            let mut n = start;
+            build_menu_into(qsub, children, idcmdfirst, &mut n, budget, vis);
+            if InsertMenuW(
+                hmenu,
+                pos,
+                MF_BYPOSITION | MF_POPUP | MF_STRING,
+                qsub.0 as usize,
+                &HSTRING::from(crate::i18n::t(title)),
+            )
+            .is_ok()
+            {
+                pos + 1
+            } else {
+                // `qsub` never became `hmenu`'s responsibility; an unattached
+                // popup is a USER object nothing else frees.
+                let _ = DestroyMenu(qsub);
+                pos
+            }
         }
-        match item {
-            verbs::QuickItem::Group(title, children, start) => {
-                let Ok(qsub) = CreatePopupMenu() else {
-                    continue;
-                };
-                let mut n = start;
-                build_menu_into(qsub, children, idcmdfirst, &mut n, budget, vis);
-                if InsertMenuW(
+        verbs::QuickItem::Leaf(title, idx) => {
+            // A top-level leaf reusing its submenu command id: same global leaf
+            // index → same id_for() id → same action.
+            if idx < budget {
+                let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(idx)), idcmdfirst);
+                let _ = InsertMenuW(
                     hmenu,
                     pos,
-                    MF_BYPOSITION | MF_POPUP | MF_STRING,
-                    qsub.0 as usize,
+                    MF_BYPOSITION | MF_STRING,
+                    cmd as usize,
                     &HSTRING::from(crate::i18n::t(title)),
-                )
-                .is_ok()
-                {
-                    pos += 1;
-                } else {
-                    // `qsub` never became `hmenu`'s responsibility; an unattached
-                    // popup is a USER object nothing else frees.
-                    let _ = DestroyMenu(qsub);
-                }
-            }
-            verbs::QuickItem::Leaf(title, idx) => {
-                // A top-level leaf reusing its submenu command id: same global leaf
-                // index → same id_for() id → same action.
-                if idx < budget {
-                    let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(idx)), idcmdfirst);
-                    let _ = InsertMenuW(
-                        hmenu,
-                        pos,
-                        MF_BYPOSITION | MF_STRING,
-                        cmd as usize,
-                        &HSTRING::from(crate::i18n::t(title)),
-                    );
-                    pos += 1;
-                }
+                );
+                pos + 1
+            } else {
+                pos
             }
         }
     }
-    pos
 }
 
 /// WHERE this handler may write and within WHAT id range: the four values the shell hands
@@ -450,38 +472,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
     }
 
     fn InvokeCommand(&self, pici: *const CMINVOKECOMMANDINFO) -> Result<()> {
-        safety::guard(|| {
-            let pici = unsafe { pici.as_ref().ok_or_else(|| Error::from(E_FAIL))? };
-            let lp = pici.lpVerb.0 as usize;
-            if (lp >> 16) != 0 {
-                return Err(Error::from(E_FAIL)); // string verb, not the offset form
-            }
-            let offset = (lp & 0xFFFF) as u32;
-            let leaves = verbs::leaves();
-            // Map the raw offset back to a typed slot through the central slot_for(),
-            // so the "preview == leaves.len()" convention isn't re-derived here.
-            let action = match verbs::slot_for(offset, leaves.len() as u32) {
-                Some(verbs::CmdSlot::Preview) if self.preview_cmd.get().is_some() => {
-                    // The preview thumbnail itself: open the image.
-                    if let Some(p) = self.paths.borrow().first() {
-                        open_with_default(p);
-                    }
-                    return Ok(());
-                }
-                Some(verbs::CmdSlot::Leaf(verbs::LeafId(i))) => {
-                    leaves.get(i as usize).ok_or_else(|| Error::from(E_FAIL))?.1
-                }
-                // Preview slot but no preview added, or out of our range entirely.
-                _ => return Err(Error::from(E_FAIL)),
-            };
-            let paths = self.paths.borrow().clone();
-            // Run the (possibly multi-file, multi-second) batch on a DETACHED worker so
-            // this Invoke returns immediately instead of freezing explorer.exe's UI
-            // thread; the worker surfaces errors + reveals new-folder output itself. The
-            // shell window is the natural parent for any error dialog.
-            verbs::run_action_detached(action, paths, Some(pici.hwnd.0 as isize));
-            Ok(())
-        })
+        safety::guard(|| invoke_command(self, pici))
     }
 
     fn GetCommandString(
@@ -494,6 +485,41 @@ impl IContextMenu_Impl for ContextMenu_Impl {
     ) -> Result<()> {
         Err(Error::from(E_NOTIMPL))
     }
+}
+
+/// Run the verb the click mapped to: resolve the offset back to a typed command slot, open
+/// the image for the preview slot, and hand every leaf action to the detached worker.
+fn invoke_command(cm: &ContextMenu_Impl, pici: *const CMINVOKECOMMANDINFO) -> Result<()> {
+    let pici = unsafe { pici.as_ref().ok_or_else(|| Error::from(E_FAIL))? };
+    let lp = pici.lpVerb.0 as usize;
+    if (lp >> 16) != 0 {
+        return Err(Error::from(E_FAIL)); // string verb, not the offset form
+    }
+    let offset = (lp & 0xFFFF) as u32;
+    let leaves = verbs::leaves();
+    // Map the raw offset back to a typed slot through the central slot_for(),
+    // so the "preview == leaves.len()" convention isn't re-derived here.
+    let action = match verbs::slot_for(offset, leaves.len() as u32) {
+        Some(verbs::CmdSlot::Preview) if cm.preview_cmd.get().is_some() => {
+            // The preview thumbnail itself: open the image.
+            if let Some(p) = cm.paths.borrow().first() {
+                open_with_default(p);
+            }
+            return Ok(());
+        }
+        Some(verbs::CmdSlot::Leaf(verbs::LeafId(i))) => {
+            leaves.get(i as usize).ok_or_else(|| Error::from(E_FAIL))?.1
+        }
+        // Preview slot but no preview added, or out of our range entirely.
+        _ => return Err(Error::from(E_FAIL)),
+    };
+    let paths = cm.paths.borrow().clone();
+    // Run the (possibly multi-file, multi-second) batch on a DETACHED worker so
+    // this Invoke returns immediately instead of freezing explorer.exe's UI
+    // thread; the worker surfaces errors + reveals new-folder output itself. The
+    // shell window is the natural parent for any error dialog.
+    verbs::run_action_detached(action, paths, Some(pici.hwnd.0 as isize));
+    Ok(())
 }
 
 // Explorer forwards owner-draw measure/paint messages here. Bitmap items need no
