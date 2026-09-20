@@ -16,6 +16,8 @@
 
 use std::path::PathBuf;
 
+pub mod locales;
+
 /// The Windows `VERSIONINFO` `FILETYPE` field. The three original build scripts differed
 /// only here: `src/build.rs` emits `VFT_APP` for its two EXE bin targets, while both DLL
 /// build scripts (`crates/dll`, `crates/dlghook`) emit `VFT_DLL`.

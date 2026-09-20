@@ -114,6 +114,9 @@ dependencies = [
 [[package]]
 name = "build-support"
 version = "3.1.1"
+dependencies = [
+ "toml",
+]
 
 [[package]]
 name = "bumpalo"
