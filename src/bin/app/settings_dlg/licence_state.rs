@@ -237,31 +237,14 @@ pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'st
 
 /// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
-/// line has no use for a time-of-day). No chrono/time dependency for one call site.
+/// line has no use for a time-of-day). Shares the conversion with the lib's
+/// `pattern_modified_date` through `sagethumbs2k_core::unix_secs_local_date!`; no
+/// chrono/time dependency for one line.
 pub(crate) fn format_unix_date(unix_secs: u64) -> String {
-    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     if unix_secs == 0 {
         return String::new();
     }
-    // FILETIME ticks are 100ns units since 1601-01-01; the Unix epoch (1970-01-01) is
-    // 11_644_473_600 seconds later.
-    let ticks = unix_secs
-        .saturating_add(11_644_473_600)
-        .saturating_mul(10_000_000);
-    let ft = FILETIME {
-        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    if unsafe { FileTimeToSystemTime(&ft, &mut utc) }.is_err() {
-        return String::new();
-    }
-    let mut local = utc;
-    unsafe {
-        let _ = SystemTimeToTzSpecificLocalTime(None, &utc, &mut local);
-    }
-    format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay)
+    sagethumbs2k_core::unix_secs_local_date!(unix_secs).unwrap_or_default()
 }
 
 #[cfg(test)]

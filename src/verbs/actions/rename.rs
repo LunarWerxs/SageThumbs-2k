@@ -299,39 +299,50 @@ fn expand_placeholder(
     }
 }
 
+/// `$unix_secs` (Unix seconds, UTC) as a local-time `"YYYY-MM-DD"` string, or `None` when the
+/// FILETIME conversion fails. A macro rather than a `fn` because its two callers straddle this
+/// library module (`pattern_modified_date`) and the `SageThumbs2K` binary's
+/// `settings_dlg::format_unix_date`, which can only name this crate's exported root.
+#[macro_export]
+macro_rules! unix_secs_local_date {
+    ($unix_secs:expr) => {{
+        use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+        use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+        let secs: u64 = $unix_secs;
+        // FILETIME ticks are 100ns units since 1601-01-01; the Unix epoch (1970-01-01) is
+        // 11_644_473_600 seconds later.
+        let ticks = secs
+            .saturating_add(11_644_473_600)
+            .saturating_mul(10_000_000);
+        let ft = FILETIME {
+            dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+            dwHighDateTime: (ticks >> 32) as u32,
+        };
+        let mut utc = SYSTEMTIME::default();
+        if unsafe { FileTimeToSystemTime(&ft, &mut utc) }.is_err() {
+            None
+        } else {
+            let mut local = utc;
+            unsafe {
+                let _ = SystemTimeToTzSpecificLocalTime(None, &utc, &mut local);
+            }
+            Some(format!(
+                "{:04}-{:02}-{:02}",
+                local.wYear, local.wMonth, local.wDay
+            ))
+        }
+    }};
+}
+
 /// `path`'s modified date as `"YYYY-MM-DD"` in local time, or `None` if it can't be
 /// read. The `{date}` placeholder's fallback when there's no EXIF/tag capture date.
 fn pattern_modified_date(path: &str) -> Option<String> {
-    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let unix_secs = modified
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    // FILETIME ticks are 100ns units since 1601-01-01; the Unix epoch (1970-01-01) is
-    // 11_644_473_600 seconds later (same plumbing the app EXE's `format_unix_date` uses
-    // — duplicated here because this is the lib side and that one lives in the bin crate).
-    let ticks = unix_secs
-        .saturating_add(11_644_473_600)
-        .saturating_mul(10_000_000);
-    let ft = FILETIME {
-        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    if unsafe { FileTimeToSystemTime(&ft, &mut utc) }.is_err() {
-        return None;
-    }
-    let mut local = utc;
-    unsafe {
-        let _ = SystemTimeToTzSpecificLocalTime(None, &utc, &mut local);
-    }
-    Some(format!(
-        "{:04}-{:02}-{:02}",
-        local.wYear, local.wMonth, local.wDay
-    ))
+    unix_secs_local_date!(unix_secs)
 }
 
 /// `{date}`'s value for `path`: the same capture date [`RenamePattern::DateTaken`]
