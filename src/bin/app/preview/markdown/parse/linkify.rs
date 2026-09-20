@@ -165,26 +165,36 @@ pub(super) fn trim_trailing_punct(raw: &[u8], scheme_len: usize) -> Option<usize
     let opens = raw.iter().filter(|&&x| x == b'(').count();
     let mut closes = raw.iter().filter(|&&x| x == b')').count();
     while e > scheme_len {
-        let c = raw[e - 1];
-        if matches!(
-            c,
-            b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"' | b'*' | b'_' | b'~'
-        ) {
-            e -= 1;
-        } else if c == b')' {
-            if closes > opens {
+        match trim_step(raw[e - 1], opens, closes) {
+            // plain punctuation: drop it, counts unchanged
+            Some(false) => e -= 1,
+            // unbalanced `)`: drop it and retire it from the running count
+            Some(true) => {
                 e -= 1;
                 closes -= 1; // this `)` is no longer part of raw[..e]
-            } else {
-                break;
             }
-        } else {
-            break;
+            // anything else is kept: trimming stops here
+            None => break,
         }
     }
     if e <= scheme_len {
         None
     } else {
         Some(e)
+    }
+}
+
+/// Decide how one trailing byte is consumed: `Some(true)` trims it and retires a `)`,
+/// `Some(false)` trims plain punctuation, `None` keeps it (trimming must stop).
+fn trim_step(c: u8, opens: usize, closes: usize) -> Option<bool> {
+    if matches!(
+        c,
+        b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"' | b'*' | b'_' | b'~'
+    ) {
+        Some(false)
+    } else if c == b')' && closes > opens {
+        Some(true)
+    } else {
+        None
     }
 }

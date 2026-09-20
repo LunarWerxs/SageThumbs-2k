@@ -59,25 +59,8 @@ pub(super) fn handle_structural_event<'e>(
         Event::End(TagEnd::Heading(_)) => b.end_heading(),
         Event::Start(Tag::Paragraph) => b.open_para(),
         Event::End(TagEnd::Paragraph) => b.close_para(),
-        Event::Start(Tag::CodeBlock(kind)) => {
-            code.in_code = true;
-            code.buf.clear();
-            code.lang = match kind {
-                CodeBlockKind::Fenced(info) => {
-                    highlight::lang_from_fence(info.split_whitespace().next().unwrap_or(""))
-                }
-                CodeBlockKind::Indented => highlight::Lang::Plain,
-            };
-        }
-        Event::End(TagEnd::CodeBlock) => {
-            code.in_code = false;
-            let text = code.buf.trim_end_matches('\n').to_string();
-            code.buf.clear();
-            if !text.is_empty() {
-                b.flush();
-                b.out.push(Block::Code(text, code.lang));
-            }
-        }
+        Event::Start(Tag::CodeBlock(kind)) => start_code_block(kind, code),
+        Event::End(TagEnd::CodeBlock) => end_code_block(b, code),
         Event::Start(Tag::List(start)) => b.open_list(start.is_some(), start.unwrap_or(1)),
         Event::End(TagEnd::List(_)) => b.close_list(),
         Event::Start(Tag::Item) => b.open_item(),
@@ -87,6 +70,29 @@ pub(super) fn handle_structural_event<'e>(
         other => return Some(other),
     }
     None
+}
+
+/// Start a fenced or indented code block, initializing the fence buffer and language.
+fn start_code_block(kind: CodeBlockKind, code: &mut CodeBlockState) {
+    code.in_code = true;
+    code.buf.clear();
+    code.lang = match kind {
+        CodeBlockKind::Fenced(info) => {
+            highlight::lang_from_fence(info.split_whitespace().next().unwrap_or(""))
+        }
+        CodeBlockKind::Indented => highlight::Lang::Plain,
+    };
+}
+
+/// Finish an open code block and emit it as a block if non-empty.
+fn end_code_block(b: &mut Builder, code: &mut CodeBlockState) {
+    code.in_code = false;
+    let text = code.buf.trim_end_matches('\n').to_string();
+    code.buf.clear();
+    if !text.is_empty() {
+        b.flush();
+        b.out.push(Block::Code(text, code.lang));
+    }
 }
 
 /// Table start/end and its head/row/cell boundaries.
@@ -107,20 +113,7 @@ pub(super) fn handle_table_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<E
                 })
                 .collect();
         }
-        Event::End(TagEnd::Table) => {
-            let header = core::mem::take(&mut b.tbl_header);
-            let rows = core::mem::take(&mut b.tbl_rows);
-            let aligns = core::mem::take(&mut b.tbl_aligns);
-            let note = table_cap_note(b.tbl_rows_dropped, b.tbl_cols_dropped);
-            b.out.push(Block::Table {
-                header,
-                rows,
-                aligns,
-            });
-            if let Some(note) = note {
-                b.out.push(Block::Para(note, false));
-            }
-        }
+        Event::End(TagEnd::Table) => end_table(b),
         Event::Start(Tag::TableHead) => b.cur_row.clear(),
         Event::End(TagEnd::TableHead) => b.tbl_header = core::mem::take(&mut b.cur_row),
         Event::Start(Tag::TableRow) => b.cur_row.clear(),
@@ -148,6 +141,22 @@ pub(super) fn handle_table_event<'e>(ev: Event<'e>, b: &mut Builder) -> Option<E
         other => return Some(other),
     }
     None
+}
+
+/// Finalize a table block and emit any truncation notice.
+fn end_table(b: &mut Builder) {
+    let header = core::mem::take(&mut b.tbl_header);
+    let rows = core::mem::take(&mut b.tbl_rows);
+    let aligns = core::mem::take(&mut b.tbl_aligns);
+    let note = table_cap_note(b.tbl_rows_dropped, b.tbl_cols_dropped);
+    b.out.push(Block::Table {
+        header,
+        rows,
+        aligns,
+    });
+    if let Some(note) = note {
+        b.out.push(Block::Para(note, false));
+    }
 }
 
 /// Bold/italic/strikethrough toggles, links, and images.
