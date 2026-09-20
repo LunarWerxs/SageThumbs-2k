@@ -230,6 +230,36 @@ fn read_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<Vec<
     (bytes.len() <= MAX_ICON).then_some(bytes)
 }
 
+/// Is `(is_base, size)` a better wrapper pick than the current one?
+fn better_wrapper_pick(current: Option<(bool, u64, usize)>, is_base: bool, size: u64) -> bool {
+    match current {
+        None => true,
+        Some((pb, ps, _)) => (is_base && !pb) || (is_base == pb && size > ps),
+    }
+}
+
+/// Pick the wrapper's inner `.apk` to thumbnail: `base.apk` if present (the split that
+/// owns the manifest and launcher resources), else the largest `.apk` entry.
+fn pick_wrapper_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<usize> {
+    let mut pick: Option<(bool, u64, usize)> = None;
+    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
+        let Ok(f) = zip.by_index(i) else { continue };
+        let name = f.name();
+        if !ends_with_ci(name, ".apk") {
+            continue;
+        }
+        let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");
+        let size = f.size();
+        if size == 0 || size > MAX_INNER_APK {
+            continue;
+        }
+        if better_wrapper_pick(pick, is_base, size) {
+            pick = Some((is_base, size, i));
+        }
+    }
+    pick.map(|(_, _, i)| i)
+}
+
 /// Split-bundle wrapper (.xapk/.apks/.apkm): a zip whose payload is one or more APKs.
 fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Vec<u8>> {
     // APK-in-wrapper only, never wrapper-in-wrapper: a second nesting level is not a
@@ -244,29 +274,8 @@ fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Ve
             return Some(icon);
         }
     }
-    // Otherwise thumbnail the payload: prefer `base.apk` (the split that owns the
-    // manifest and launcher resources), else the largest `.apk` entry.
-    let mut pick: Option<(bool, u64, usize)> = None;
-    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
-        let Ok(f) = zip.by_index(i) else { continue };
-        let name = f.name();
-        if !ends_with_ci(name, ".apk") {
-            continue;
-        }
-        let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");
-        let size = f.size();
-        if size == 0 || size > MAX_INNER_APK {
-            continue;
-        }
-        let better = match pick {
-            None => true,
-            Some((pb, ps, _)) => (is_base && !pb) || (is_base == pb && size > ps),
-        };
-        if better {
-            pick = Some((is_base, size, i));
-        }
-    }
-    let (_, _, idx) = pick?;
+    // Otherwise thumbnail the payload: prefer `base.apk`, else the largest `.apk` entry.
+    let idx = pick_wrapper_apk(zip)?;
     // Real XAPK/APKM/APKS bundlers commonly store the inner `.apk` members UNCOMPRESSED
     // (STORED) — a compressed inner `.apk` buys nothing, since it is already compressed
     // itself — so this is the common case in practice, not a rare one. When it holds,
@@ -291,6 +300,24 @@ fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Ve
     extract_inner(&inner, depth.saturating_add(1))
 }
 
+/// Density-qualifier rank of a lower-cased `res/` name; longest qualifier checked first
+/// because "hdpi" is a substring of all the others.
+fn density_rank(lower: &str) -> u8 {
+    if lower.contains("xxxhdpi") {
+        6
+    } else if lower.contains("xxhdpi") {
+        5
+    } else if lower.contains("xhdpi") {
+        4
+    } else if lower.contains("hdpi") {
+        3
+    } else if lower.contains("mdpi") {
+        2
+    } else {
+        1
+    }
+}
+
 /// Last rung: best `ic_launcher` raster by density qualifier, biggest file on ties.
 fn scan_for_launcher<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> {
     let mut best: Option<(u8, u64, String)> = None;
@@ -301,20 +328,7 @@ fn scan_for_launcher<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> 
         if !lower.starts_with("res/") || !lower.contains("ic_launcher") || !is_raster_path(&lower) {
             continue;
         }
-        // Longest qualifier checked first — "hdpi" is a substring of all the others.
-        let rank = if lower.contains("xxxhdpi") {
-            6
-        } else if lower.contains("xxhdpi") {
-            5
-        } else if lower.contains("xhdpi") {
-            4
-        } else if lower.contains("hdpi") {
-            3
-        } else if lower.contains("mdpi") {
-            2
-        } else {
-            1
-        };
+        let rank = density_rank(&lower);
         let size = f.size();
         let better = match &best {
             None => true,
@@ -491,9 +505,9 @@ enum IconAttr {
     Reference(u32),
 }
 
-/// `<application android:icon>` (falling back to `android:roundIcon`) out of a
-/// compiled AndroidManifest.xml.
-fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
+/// Validate the RES_XML header (`headerSize`/`size` bounds included) and return the
+/// chunk body that follows it.
+fn axml_body(axml: &[u8]) -> Option<&[u8]> {
     if le16(axml, 0)? != RES_XML {
         return None;
     }
@@ -502,7 +516,34 @@ fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
     if hs < 8 || size < hs || size > axml.len() {
         return None;
     }
-    let body = axml.get(hs..size)?;
+    axml.get(hs..size)
+}
+
+/// Handle one START_ELEMENT chunk in the manifest walk: returns an icon to stop on,
+/// otherwise updates the roundIcon fallback.
+fn manifest_element(
+    chunk: &[u8],
+    pool: Option<&Pool>,
+    resmap: Option<&[u8]>,
+    round: &mut Option<IconAttr>,
+) -> Option<IconAttr> {
+    let (Some(p), Some(map)) = (pool, resmap) else {
+        return None;
+    };
+    let (icon, r) = element_icon(chunk, p, map);
+    if icon.is_some() {
+        return icon;
+    }
+    if round.is_none() {
+        *round = r;
+    }
+    None
+}
+
+/// `<application android:icon>` (falling back to `android:roundIcon`) out of a
+/// compiled AndroidManifest.xml.
+fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
+    let body = axml_body(axml)?;
     let mut pool: Option<Pool> = None;
     let mut resmap: Option<&[u8]> = None;
     let mut round: Option<IconAttr> = None;
@@ -511,15 +552,8 @@ fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
             RES_STRING_POOL if pool.is_none() => pool = Pool::parse(chunk, chs),
             RES_XML_RESOURCE_MAP if resmap.is_none() => resmap = chunk.get(chs..),
             RES_XML_START_ELEMENT => {
-                let (Some(p), Some(map)) = (pool.as_ref(), resmap) else {
-                    continue;
-                };
-                let (icon, r) = element_icon(chunk, p, map);
-                if icon.is_some() {
-                    return icon;
-                }
-                if round.is_none() {
-                    round = r;
+                if let Some(icon) = manifest_element(chunk, pool.as_ref(), resmap, &mut round) {
+                    return Some(icon);
                 }
             }
             _ => {}
@@ -528,67 +562,94 @@ fn manifest_icon(axml: &[u8]) -> Option<IconAttr> {
     round
 }
 
-/// Scan one START_ELEMENT chunk: if it is `<application>`, return its icon attribute
-/// (and separately any roundIcon, the fallback). Malformed records stop the scan of
-/// this element rather than the whole parse.
-fn element_icon(chunk: &[u8], pool: &Pool, map: &[u8]) -> (Option<IconAttr>, Option<IconAttr>) {
-    let nothing = (None, None);
-    // Node header is 16 bytes (chunk header + lineNumber + comment); attrExt follows.
-    let Some(name_idx) = le32(chunk, 20) else {
-        return nothing;
+/// One `<application>` attribute record's contribution to the icon scan.
+enum AttrStep {
+    /// Stop scanning attributes (a truncated/malformed record); keep what we have.
+    Stop,
+    /// Not a platform icon attribute, or not a usable value; try the next record.
+    Skip,
+    /// A resolved icon attribute: `true` for `android:icon`, `false` for `android:roundIcon`.
+    Icon(bool, IconAttr),
+}
+
+/// The `i`-th attribute record slice in the run starting at `base`, records `asize` apart.
+fn attr_record(chunk: &[u8], base: usize, i: usize, asize: usize) -> Option<&[u8]> {
+    let at = i.checked_mul(asize).and_then(|o| base.checked_add(o))?;
+    let end = at.checked_add(asize)?;
+    chunk.get(at..end)
+}
+
+/// Classify one `<application>` attribute record: its resource-map id must be the platform
+/// `android:icon`/`android:roundIcon`, whose `Res_value` is then a path or a reference.
+fn attr_step(attr: &[u8], pool: &Pool, map: &[u8]) -> AttrStep {
+    let Some(name) = le32(attr, 4) else {
+        return AttrStep::Stop;
     };
+    // The name STRING is usually "" — the resource map is the identity.
+    let Some(rid) = (name as usize).checked_mul(4).and_then(|o| le32(map, o)) else {
+        return AttrStep::Skip; // not a platform attribute
+    };
+    if rid != ID_ICON && rid != ID_ROUND_ICON {
+        return AttrStep::Skip;
+    }
+    let (Some(raw), Some(&dtype), Some(data)) = (le32(attr, 8), attr.get(15), le32(attr, 16))
+    else {
+        return AttrStep::Stop;
+    };
+    let val = match dtype {
+        TYPE_STRING => match pool.get(raw) {
+            Some(path) => IconAttr::Path(path),
+            None => return AttrStep::Skip,
+        },
+        TYPE_REFERENCE => IconAttr::Reference(data),
+        _ => return AttrStep::Skip,
+    };
+    AttrStep::Icon(rid == ID_ICON, val)
+}
+
+/// The `<application>` attribute run `(base, asize, acount)` for a START_ELEMENT chunk, or
+/// `None` when it isn't `<application>` or the run header is malformed.
+fn application_attrs(chunk: &[u8], pool: &Pool) -> Option<(usize, usize, usize)> {
+    // Node header is 16 bytes (chunk header + lineNumber + comment); attrExt follows.
+    let name_idx = le32(chunk, 20)?;
     if pool.get(name_idx).as_deref() != Some("application") {
-        return nothing;
+        return None;
     }
     let (Some(astart), Some(asize), Some(acount)) =
         (le16(chunk, 24), le16(chunk, 26), le16(chunk, 28))
     else {
-        return nothing;
+        return None;
     };
     let (astart, asize, acount) = (astart as usize, asize as usize, acount as usize);
     // A stride under the record size would re-read or LOOP IN PLACE; refuse it.
     if asize < 20 || acount > MAX_ATTRS {
-        return nothing;
+        return None;
     }
-    let Some(base) = 16usize.checked_add(astart) else {
-        return nothing;
+    let base = 16usize.checked_add(astart)?;
+    Some((base, asize, acount))
+}
+
+/// Scan one START_ELEMENT chunk: if it is `<application>`, return its icon attribute
+/// (and separately any roundIcon, the fallback). Malformed records stop the scan of
+/// this element rather than the whole parse.
+fn element_icon(chunk: &[u8], pool: &Pool, map: &[u8]) -> (Option<IconAttr>, Option<IconAttr>) {
+    let Some((base, asize, acount)) = application_attrs(chunk, pool) else {
+        return (None, None);
     };
     let mut round = None;
     for i in 0..acount {
-        let Some(at) = i.checked_mul(asize).and_then(|o| base.checked_add(o)) else {
-            break;
-        };
-        let Some(end) = at.checked_add(asize) else {
-            break;
-        };
-        let Some(attr) = chunk.get(at..end) else {
+        let Some(attr) = attr_record(chunk, base, i, asize) else {
             break; // truncated attribute run — stop, keep what we have
         };
-        let Some(name) = le32(attr, 4) else { break };
-        // The name STRING is usually "" — the resource map is the identity.
-        let Some(rid) = (name as usize).checked_mul(4).and_then(|o| le32(map, o)) else {
-            continue; // not a platform attribute
-        };
-        if rid != ID_ICON && rid != ID_ROUND_ICON {
-            continue;
-        }
-        let (Some(raw), Some(&dtype), Some(data)) = (le32(attr, 8), attr.get(15), le32(attr, 16))
-        else {
-            break;
-        };
-        let val = match dtype {
-            TYPE_STRING => match pool.get(raw) {
-                Some(path) => IconAttr::Path(path),
-                None => continue,
-            },
-            TYPE_REFERENCE => IconAttr::Reference(data),
-            _ => continue,
-        };
-        if rid == ID_ICON {
-            return (Some(val), round);
-        }
-        if round.is_none() {
-            round = Some(val);
+        match attr_step(attr, pool, map) {
+            AttrStep::Stop => break,
+            AttrStep::Skip => continue,
+            AttrStep::Icon(true, val) => return (Some(val), round),
+            AttrStep::Icon(false, val) => {
+                if round.is_none() {
+                    round = Some(val);
+                }
+            }
         }
     }
     (None, round)
@@ -603,7 +664,9 @@ struct Arsc<'a> {
     packages: Vec<(u32, &'a [u8], usize)>,
 }
 
-fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
+/// Validate the RES_TABLE header (`headerSize`/`size` bounds included) and return the
+/// chunk body that follows it.
+fn arsc_body(arsc: &[u8]) -> Option<&[u8]> {
     if le16(arsc, 0)? != RES_TABLE {
         return None;
     }
@@ -612,19 +675,28 @@ fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
     if hs < 12 || size < hs || size > arsc.len() {
         return None;
     }
+    arsc.get(hs..size)
+}
+
+/// Append one RES_TABLE_PACKAGE chunk to the package list, bounded by `MAX_PACKAGES`.
+fn push_package<'a>(packages: &mut Vec<(u32, &'a [u8], usize)>, chunk: &'a [u8], hs: usize) {
+    if packages.len() < MAX_PACKAGES {
+        if let Some(id) = le32(chunk, 8) {
+            packages.push((id, chunk, hs));
+        }
+    }
+}
+
+fn parse_arsc(arsc: &[u8]) -> Option<Arsc<'_>> {
     // The header's packageCount is deliberately IGNORED: packages are discovered by
     // walking chunks, so a lying 0xFFFF can neither allocate nor loop anything.
-    let body = arsc.get(hs..size)?;
+    let body = arsc_body(arsc)?;
     let mut global = None;
     let mut packages = Vec::new();
     for (t, chs, chunk) in Chunks::new(body) {
         match t {
             RES_STRING_POOL if global.is_none() => global = Pool::parse(chunk, chs),
-            RES_TABLE_PACKAGE if packages.len() < MAX_PACKAGES => {
-                if let Some(id) = le32(chunk, 8) {
-                    packages.push((id, chunk, chs));
-                }
-            }
+            RES_TABLE_PACKAGE => push_package(&mut packages, chunk, chs),
             _ => {}
         }
     }
@@ -666,31 +738,43 @@ fn collect_icon_candidates(
         if t != RES_TABLE_TYPE || candidates.len() >= MAX_CANDIDATES {
             continue;
         }
-        if chunk.get(8) != Some(&type_id) {
-            continue;
-        }
-        let Some((density, dtype, data)) = type_chunk_value(chunk, chs, entry_idx) else {
-            continue;
-        };
-        match dtype {
-            TYPE_STRING => {
-                if let Some(path) = table.global.get(data) {
-                    if is_raster_path(&path) {
-                        candidates.push((density, path));
-                    }
-                }
-            }
-            // An alias (e.g. roundIcon -> icon): chase it; a self/mutual cycle is cut
-            // by the depth cap above.
-            TYPE_REFERENCE => {
-                if let Some(path) = resolve_icon_path(table, data, depth.saturating_add(1), work) {
-                    candidates.push((density, path));
-                }
-            }
-            _ => {}
-        }
+        candidates.extend(type_chunk_candidates(
+            table, chunk, chs, type_id, entry_idx, depth, work,
+        ));
     }
     candidates
+}
+
+/// One TYPE chunk's contribution to the candidate list: the entry's `Res_value`, kept when
+/// it is a raster path or a chased reference that resolves to one.
+fn type_chunk_candidates(
+    table: &Arsc,
+    chunk: &[u8],
+    chs: usize,
+    type_id: u8,
+    entry_idx: u16,
+    depth: u8,
+    work: &mut u32,
+) -> Vec<(u16, String)> {
+    if chunk.get(8) != Some(&type_id) {
+        return Vec::new();
+    }
+    let Some((density, dtype, data)) = type_chunk_value(chunk, chs, entry_idx) else {
+        return Vec::new();
+    };
+    match dtype {
+        TYPE_STRING => match table.global.get(data) {
+            Some(path) if is_raster_path(&path) => vec![(density, path)],
+            _ => Vec::new(),
+        },
+        // An alias (e.g. roundIcon -> icon): chase it; a self/mutual cycle is cut
+        // by the depth cap.
+        TYPE_REFERENCE => match resolve_icon_path(table, data, depth.saturating_add(1), work) {
+            Some(path) => vec![(density, path)],
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 /// Prefer ANY density, else the highest dpi.

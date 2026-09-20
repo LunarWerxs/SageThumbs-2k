@@ -474,94 +474,37 @@ pub(super) unsafe fn render(
             hits: &mut *sel.hits,
             bg: c.sel,
         };
+        let mut p = PaintCtx {
+            hwnd,
+            hdc,
+            rc,
+            x0,
+            full_w,
+            c,
+            links: &mut *links,
+            rsel: &mut rsel,
+            fonts_cache: &mut fonts_cache,
+        };
         let y_block_start = y;
         match block {
             Block::Heading(level, runs, center) => {
-                y = paint_heading(
-                    hwnd,
-                    hdc,
-                    rc,
-                    *level,
-                    runs,
-                    *center,
-                    first,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    &mut rsel,
-                    &mut fonts_cache,
-                );
+                y = paint_heading(&mut p, *level, runs, *center, first, y);
             }
             Block::Para(runs, center) => {
-                y = paint_para(
-                    hwnd,
-                    hdc,
-                    rc,
-                    runs,
-                    *center,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    &mut rsel,
-                    &mut fonts_cache,
-                );
+                y = paint_para(&mut p, runs, *center, y);
             }
             Block::Code(text, lang) => {
                 let base = match layout.bases.get(bi) {
                     Some(DocBase::Code(b)) => *b,
                     _ => 0,
                 };
-                y = paint_code(
-                    hwnd,
-                    hdc,
-                    rc,
-                    text,
-                    *lang,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    sel.range,
-                    &mut *sel.hits,
-                    base,
-                );
+                y = paint_code(&mut p, text, *lang, y, base);
             }
             Block::Item(depth, marker, runs, task) => {
-                y = paint_item(
-                    hwnd,
-                    hdc,
-                    rc,
-                    *depth,
-                    marker,
-                    runs,
-                    *task,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    &mut rsel,
-                    &mut fonts_cache,
-                );
+                y = paint_item(&mut p, *depth, marker, runs, *task, y);
             }
             Block::Quote(runs) => {
-                y = paint_quote(
-                    hwnd,
-                    hdc,
-                    rc,
-                    runs,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    &mut rsel,
-                    &mut fonts_cache,
-                );
+                y = paint_quote(&mut p, runs, y);
             }
             Block::Rule => {
                 // GitHub hr: a short solid bar, not a hairline.
@@ -646,24 +589,33 @@ pub(super) unsafe fn render(
     y + scroll - top + margin // total content height
 }
 
-/// `Block::Heading` paint arm: heading text + the h1/h2 hairline underline.
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_heading(
+/// What every block painter needs besides its own block: the target, the column, the palette and
+/// the accumulators.
+struct PaintCtx<'a> {
     hwnd: HWND,
     hdc: HDC,
-    rc: &RECT,
+    rc: &'a RECT,
+    x0: i32,
+    full_w: i32,
+    c: &'a MdColors,
+    links: &'a mut Vec<LinkHit>,
+    rsel: &'a mut RunSel<'a>,
+    fonts_cache: &'a mut FontCache,
+}
+
+/// `Block::Heading` paint arm: heading text + the h1/h2 hairline underline.
+unsafe fn paint_heading(
+    p: &mut PaintCtx<'_>,
     level: u8,
     runs: &[Run],
     center: bool,
     first: bool,
-    x0: i32,
     mut y: i32,
-    full_w: i32,
-    c: &MdColors,
-    links: &mut Vec<LinkHit>,
-    rsel: &mut RunSel,
-    fonts_cache: &mut FontCache,
 ) -> i32 {
+    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
+    let links = &mut *p.links;
+    let rsel = &mut *p.rsel;
+    let fonts_cache = &mut *p.fonts_cache;
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     if !first {
         y += sc(8); // extra top margin before a heading (GitHub 24px total)
@@ -694,21 +646,11 @@ unsafe fn paint_heading(
 }
 
 /// `Block::Para` paint arm.
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_para(
-    hwnd: HWND,
-    hdc: HDC,
-    rc: &RECT,
-    runs: &[Run],
-    center: bool,
-    x0: i32,
-    y: i32,
-    full_w: i32,
-    c: &MdColors,
-    links: &mut Vec<LinkHit>,
-    rsel: &mut RunSel,
-    fonts_cache: &mut FontCache,
-) -> i32 {
+unsafe fn paint_para(p: &mut PaintCtx<'_>, runs: &[Run], center: bool, y: i32) -> i32 {
+    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
+    let links = &mut *p.links;
+    let rsel = &mut *p.rsel;
+    let fonts_cache = &mut *p.fonts_cache;
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let fonts = fonts_cache.get(hwnd, BODY_PX, false, false);
     let ctx = ctx_for(hwnd, c, c.fg);
@@ -733,21 +675,16 @@ unsafe fn paint_para(
 }
 
 /// `Block::Code` paint arm: the rounded panel + syntax-highlighted, unwrapped lines.
-#[allow(clippy::too_many_arguments)]
 unsafe fn paint_code(
-    hwnd: HWND,
-    hdc: HDC,
-    rc: &RECT,
+    p: &mut PaintCtx<'_>,
     text: &str,
     lang: highlight::Lang,
-    x0: i32,
     y: i32,
-    full_w: i32,
-    c: &MdColors,
-    sel_range: Option<(usize, usize)>,
-    sel_hits: &mut Vec<SelHit>,
     base: usize,
 ) -> i32 {
+    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
+    let sel_range = p.rsel.range;
+    let sel_hits = &mut *p.rsel.hits;
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let f = font(hwnd, 13, false, false, true);
     let pad = sc(12);
@@ -809,23 +746,18 @@ unsafe fn paint_code(
 }
 
 /// `Block::Item` paint arm: bullet/number or task checkbox, then the item's runs.
-#[allow(clippy::too_many_arguments)]
 unsafe fn paint_item(
-    hwnd: HWND,
-    hdc: HDC,
-    rc: &RECT,
+    p: &mut PaintCtx<'_>,
     depth: u8,
     marker: &str,
     runs: &[Run],
     task: Option<bool>,
-    x0: i32,
     y: i32,
-    full_w: i32,
-    c: &MdColors,
-    links: &mut Vec<LinkHit>,
-    rsel: &mut RunSel,
-    fonts_cache: &mut FontCache,
 ) -> i32 {
+    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
+    let links = &mut *p.links;
+    let rsel = &mut *p.rsel;
+    let fonts_cache = &mut *p.fonts_cache;
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let indent = sc(22) * (depth as i32 + 1);
     let mx = x0 + indent - sc(18);
@@ -856,20 +788,11 @@ unsafe fn paint_item(
 }
 
 /// `Block::Quote` paint arm: the runs, then the GitHub-style gray quote bar.
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_quote(
-    hwnd: HWND,
-    hdc: HDC,
-    rc: &RECT,
-    runs: &[Run],
-    x0: i32,
-    y: i32,
-    full_w: i32,
-    c: &MdColors,
-    links: &mut Vec<LinkHit>,
-    rsel: &mut RunSel,
-    fonts_cache: &mut FontCache,
-) -> i32 {
+unsafe fn paint_quote(p: &mut PaintCtx<'_>, runs: &[Run], y: i32) -> i32 {
+    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
+    let links = &mut *p.links;
+    let rsel = &mut *p.rsel;
+    let fonts_cache = &mut *p.fonts_cache;
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     let indent = sc(16);
     let y_start = y;
