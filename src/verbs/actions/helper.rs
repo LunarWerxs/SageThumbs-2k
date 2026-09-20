@@ -73,6 +73,30 @@ fn run_st2k(exe: &Path, path: &str, args: &[&str]) -> RunOutcome {
     }
 }
 
+/// Spawn `st2k` with `args` (no console window) and collect its output: stdin unused,
+/// stdout and stderr piped. The shape every capturing caller needs.
+fn spawn_st2k(exe: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
+/// The stdout of a successful `st2k` run read back as the real output path it printed
+/// (`println!`'s trailing newline and any stray CR trimmed off), or `None` when it
+/// printed nothing usable.
+fn stdout_path(out: &std::process::Output) -> Option<PathBuf> {
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
 /// Outcome of a routed `st2k` run whose stdout IS the answer (the produced file's
 /// real path), not just success/failure.
 enum CaptureOutcome {
@@ -90,21 +114,12 @@ enum CaptureOutcome {
 /// `st2k` actually produced instead of predicting the name it will pick. `path` is
 /// the file this call is acting on, for the failure log line only (see [`run_st2k`]).
 fn run_st2k_capture(exe: &Path, path: &str, args: &[&str]) -> CaptureOutcome {
-    match Command::new(exe)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
+    match spawn_st2k(exe, args) {
         Ok(out) if out.status.success() => {
             // `println!` adds the trailing newline; trim it (and any stray CR) off.
-            let stdout_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if stdout_path.is_empty() {
-                CaptureOutcome::Failed
-            } else {
-                CaptureOutcome::Ok(PathBuf::from(stdout_path))
+            match stdout_path(&out) {
+                Some(path) => CaptureOutcome::Ok(path),
+                None => CaptureOutcome::Failed,
             }
         }
         Ok(out) => {
@@ -238,6 +253,28 @@ pub(super) fn transform_one(exe: Option<&Path>, p: &str, t: Transform) -> Option
     }
 }
 
+/// The shared tail of a routed verb that writes to a caller-reserved path: `exe` runs
+/// `st2k` with `args`; a clean exit yields `out` (the reserved path), a per-file failure
+/// logs `fail_msg` and yields `None`, and a spawn failure yields the caller's in-process
+/// `fallback` instead.
+fn finish_st2k<F: FnOnce() -> Option<PathBuf>>(
+    exe: &Path,
+    p: &str,
+    args: &[&str],
+    out: PathBuf,
+    fail_msg: &str,
+    fallback: F,
+) -> Option<PathBuf> {
+    match run_st2k(exe, p, args) {
+        RunOutcome::Ok => Some(out),
+        RunOutcome::Failed => {
+            crate::safety::log(fail_msg);
+            None
+        }
+        RunOutcome::SpawnFailed => fallback(),
+    }
+}
+
 /// Resize one file. Routes to `st2k convert <in> <out> --resize …`, computing the
 /// SAME `<stem> (resized).<ext>` sibling (and source format) that `resize_file`
 /// writes, else falls back to in-process `resize_file`.
@@ -251,18 +288,14 @@ pub(super) fn resize_one(exe: Option<&Path>, p: &str, r: Resize) -> Option<PathB
                 return resize_one(None, p, r);
             };
             let q = crate::settings::jpeg_quality().to_string();
-            match run_st2k(
+            finish_st2k(
                 exe,
                 p,
                 &["convert", p, out_s, "--quality", &q, "--resize", &rs],
-            ) {
-                RunOutcome::Ok => Some(slot.path().to_path_buf()),
-                RunOutcome::Failed => {
-                    crate::safety::log(&format!("Resize (st2k) failed for {p}"));
-                    None
-                }
-                RunOutcome::SpawnFailed => resize_one(None, p, r),
-            }
+                slot.path().to_path_buf(),
+                &format!("Resize (st2k) failed for {p}"),
+                || resize_one(None, p, r),
+            )
         }
         None => match resize_file(p, r) {
             Ok(out) => Some(out),
@@ -300,7 +333,7 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
             // Same constant the in-process path uses (encode::EMAIL_JPEG_QUALITY is
             // pub(crate) exactly so this can't silently desync from it).
             let quality = crate::verbs::encode::EMAIL_JPEG_QUALITY.to_string();
-            match run_st2k(
+            finish_st2k(
                 exe,
                 p,
                 &[
@@ -315,14 +348,10 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
                     // in-process `shrink_for_email` never carried any either.
                     "--strip-metadata",
                 ],
-            ) {
-                RunOutcome::Ok => Some(slot.path().to_path_buf()),
-                RunOutcome::Failed => {
-                    crate::safety::log(&format!("Shrink for email (st2k) failed for {p}"));
-                    None
-                }
-                RunOutcome::SpawnFailed => shrink_one(None, p, size),
-            }
+                slot.path().to_path_buf(),
+                &format!("Shrink for email (st2k) failed for {p}"),
+                || shrink_one(None, p, size),
+            )
         }
         None => match shrink_for_email(p, size) {
             Ok(out) => Some(out),
@@ -561,22 +590,11 @@ enum TextOutcome {
 }
 
 fn run_st2k_capture_text(exe: &Path, path: &str, args: &[&str]) -> TextOutcome {
-    match Command::new(exe)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            let stdout_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if stdout_path.is_empty() {
-                TextOutcome::Failed(String::new())
-            } else {
-                TextOutcome::Ok(PathBuf::from(stdout_path))
-            }
-        }
+    match spawn_st2k(exe, args) {
+        Ok(out) if out.status.success() => match stdout_path(&out) {
+            Some(path) => TextOutcome::Ok(path),
+            None => TextOutcome::Failed(String::new()),
+        },
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             crate::safety::log_error(&format!("st2k helper failed for {path}: {stderr}"));
@@ -604,14 +622,7 @@ enum BytesOutcome {
 }
 
 fn run_st2k_capture_bytes(exe: &Path, path: &str, args: &[&str]) -> BytesOutcome {
-    match Command::new(exe)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
+    match spawn_st2k(exe, args) {
         Ok(out) if out.status.success() => BytesOutcome::Ok(out.stdout),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
