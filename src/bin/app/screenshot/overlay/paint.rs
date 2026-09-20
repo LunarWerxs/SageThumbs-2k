@@ -163,21 +163,28 @@ unsafe fn paint_selection_chrome(mem: HDC, s: &Shot, sel: RECT) {
     }
 }
 
+/// The DPI of the monitor under the cursor, taken as the 1x1 rect at the cursor
+/// point - the fallback for the loupe and hint strip when there is no committed
+/// selection yet.
+unsafe fn dpi_at_cursor(s: &Shot) -> i32 {
+    shot_dpi_for_sel(
+        s,
+        RECT {
+            left: s.cur.x,
+            top: s.cur.y,
+            right: s.cur.x + 1,
+            bottom: s.cur.y + 1,
+        },
+    )
+}
+
 /// The Eyedropper magnifier following the cursor, on top of everything. Sized for the
 /// monitor under the cursor (committed selection if there is one, else the cursor
 /// point); drawn from the bright snapshot so the zoom shows true colours.
 unsafe fn paint_eyedropper_loupe(mem: HDC, s: &Shot) {
     let dpi = match s.sel {
         Some(sel) => shot_dpi_for_sel(s, sel),
-        None => shot_dpi_for_sel(
-            s,
-            RECT {
-                left: s.cur.x,
-                top: s.cur.y,
-                right: s.cur.x + 1,
-                bottom: s.cur.y + 1,
-            },
-        ),
+        None => dpi_at_cursor(s),
     };
     draw_loupe(
         mem,
@@ -506,15 +513,7 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
     let dpi = match s.sel {
         Some(sel) => shot_dpi_for_sel(s, sel),
         None if s.sel_dragging => shot_dpi_for_sel(s, tools::norm(s.sel_anchor, s.cur)),
-        None => shot_dpi_for_sel(
-            s,
-            RECT {
-                left: s.cur.x,
-                top: s.cur.y,
-                right: s.cur.x + 1,
-                bottom: s.cur.y + 1,
-            },
-        ),
+        None => dpi_at_cursor(s),
     };
     // Wide enough for the longest hint string (the committed-selection one, which grew
     // with Ctrl+T) — a short bar leaves the tail of the text spilling onto the capture.
