@@ -47,15 +47,22 @@ pub(super) fn packet_count(nprec: &[(usize, usize)], r: usize) -> usize {
     nprec.get(r).map_or(0, |&(x, y)| x * y)
 }
 
+/// Visit every component and precinct-position address of one (layer,
+/// resolution) pair, in component-then-position order.
+fn walk_layer_level(w: &mut PacketWalk<'_>, l: u32, r: usize) -> Result<(), Jp2Error> {
+    for ci in 0..w.ncomp {
+        for pi in 0..packet_count(w.nprec, r) {
+            (*w.visit)(l, r, ci, pi)?;
+        }
+    }
+    Ok(())
+}
+
 /// LRCP: layer outermost, then resolution, component, position.
 pub(super) fn walk_packets_lrcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
     for l in 0..w.layers {
         for r in 0..=w.walk_levels as usize {
-            for ci in 0..w.ncomp {
-                for pi in 0..packet_count(w.nprec, r) {
-                    (*w.visit)(l, r, ci, pi)?;
-                }
-            }
+            walk_layer_level(w, l, r)?;
         }
     }
     Ok(())
@@ -65,11 +72,7 @@ pub(super) fn walk_packets_lrcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> 
 pub(super) fn walk_packets_rlcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
     for r in 0..=w.walk_levels as usize {
         for l in 0..w.layers {
-            for ci in 0..w.ncomp {
-                for pi in 0..packet_count(w.nprec, r) {
-                    (*w.visit)(l, r, ci, pi)?;
-                }
-            }
+            walk_layer_level(w, l, r)?;
         }
     }
     Ok(())
