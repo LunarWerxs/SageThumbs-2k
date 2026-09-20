@@ -44,18 +44,38 @@ $pathAttrRe = [regex]'^\s*#\[\s*path\s*=\s*"([^"]+)"\s*\]'
 
 # Files whose child modules live in the SAME directory. `mod.rs` owns its directory; the rest are
 # CRATE ROOTS, and a crate root's children sit beside it.
-$rootBasenames = @('mod.rs', 'lib.rs', 'main.rs', 'build.rs')
+$rootBasenames = @('mod.rs', 'lib.rs', 'main.rs')
 # Cargo auto-discovers a crate root for every .rs directly inside these. `src/bin/cli.rs` is the
 # reason this exists: the first cut of this check looked for its `mod vdec;` in `src/bin/cli/` and
 # reported a FALSE RED, when the answer was `src/bin/vdec/mod.rs` sitting tracked in the same
 # folder. A gate that cries wolf gets ignored, and then it misses the real thing.
+# ⚠ THESE NAMES ONLY MEAN "CRATE ROOT" WHERE CARGO ACTUALLY LOOKS, i.e. directly under a package
+# root (a directory holding a tracked Cargo.toml). Matching them by NAME ANYWHERE is the bug this
+# check shipped with (found 2026-09-20, five false findings): `build.rs` was in $rootBasenames for
+# the sake of the two real build scripts at `crates/*/build.rs`, so the FOUR ordinary modules also
+# named `build.rs` (`src/build.rs`, `src/bin/app/{about,convert,settings_dlg}/build.rs`) had their
+# children looked for beside them instead of inside `build/`; and `tests` in $rootParents made
+# `src/decode/tests/colour.rs` - a module named `tests`, not Cargo's integration-test directory -
+# read as a crate root too. Both were FALSE REDS on a tree that compiles from a fresh clone.
 $rootParents = @('bin', 'tests', 'benches', 'examples')
+# Package roots: every directory holding a tracked Cargo.toml ('' for the workspace root).
+$packageRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
 function Test-OwnsOwnDirectory([string]$rel) {
     $leaf = Split-Path $rel -Leaf
     if ($rootBasenames -contains $leaf) { return $true }
-    $parent = Split-Path (Split-Path $rel -Parent) -Leaf
-    return ($rootParents -contains $parent)
+    $dir = (Split-Path $rel -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+    # A Cargo build script, and only a real one: `<pkg>/build.rs`, never a module called `build`.
+    if ($leaf -eq 'build.rs') { return $packageRoots.Contains($dir) }
+    # `<pkg>/src/bin/x.rs`, `<pkg>/tests/x.rs`, `<pkg>/benches/x.rs`, `<pkg>/examples/x.rs`.
+    $parent = Split-Path $dir -Leaf
+    if ($rootParents -notcontains $parent) { return $false }
+    $above = (Split-Path $dir -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+    if ($parent -eq 'bin') {
+        if ((Split-Path $above -Leaf) -ne 'src') { return $false }
+        $above = (Split-Path $above -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+    }
+    return $packageRoots.Contains($above)
 }
 
 # Split-Path hands back Windows separators, and every path compared here is forward-slashed
@@ -71,6 +91,16 @@ try {
     $tracked = @(git ls-files) | ForEach-Object { $_.Replace([char]92, [char]47) }
     if (-not $tracked) { Write-Host '[untracked-mods] git ls-files returned nothing' -ForegroundColor Red; exit 1 }
     $trackedSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$tracked, [System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($t in $tracked) {
+        if ((Split-Path $t -Leaf) -eq 'Cargo.toml') {
+            [void]$packageRoots.Add((Split-Path $t -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/'))
+        }
+    }
+    if ($packageRoots.Count -eq 0) {
+        Write-Host '[untracked-mods] no tracked Cargo.toml found - cannot tell a crate root from a module' -ForegroundColor Red
+        exit 1
+    }
 
     # Vendored third-party trees are not ours to police and may use layouts we do not.
     $sources = @($tracked | Where-Object { $_ -like '*.rs' -and $_ -notlike '*/vendor/*' -and $_ -notlike 'vendor/*' })
