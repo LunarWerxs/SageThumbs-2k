@@ -63,27 +63,38 @@ pub(super) fn parse_pclr(pc: &[u8]) -> Result<(Vec<[u8; 3]>, usize), Jp2Error> {
     let mut off = 3 + npc;
     let mut entries = Vec::with_capacity(ne);
     for _ in 0..ne {
-        let mut rgb = [0u8; 3];
-        for c in 0..npc {
-            let w = widths[c];
-            let raw = pc
-                .get(off..off + w)
-                .ok_or(Jp2Error::Malformed("pclr entries"))?;
-            let mut v = 0u32;
-            for &b in raw {
-                v = (v << 8) | b as u32;
-            }
-            let v8 = ((v * 255) / maxes[c].max(1)) as u8;
-            if npc == 1 {
-                rgb = [v8, v8, v8];
-            } else {
-                rgb[c] = v8;
-            }
-            off += w;
-        }
-        entries.push(rgb);
+        entries.push(parse_entry(pc, &mut off, npc, &widths, &maxes)?);
     }
     Ok((entries, npc))
+}
+
+/// Decode one `pclr` entry's `npc` channel values, advancing `off` past them.
+fn parse_entry(
+    pc: &[u8],
+    off: &mut usize,
+    npc: usize,
+    widths: &[usize],
+    maxes: &[u32],
+) -> Result<[u8; 3], Jp2Error> {
+    let mut rgb = [0u8; 3];
+    for c in 0..npc {
+        let w = widths[c];
+        let raw = pc
+            .get(*off..*off + w)
+            .ok_or(Jp2Error::Malformed("pclr entries"))?;
+        let mut v = 0u32;
+        for &b in raw {
+            v = (v << 8) | b as u32;
+        }
+        let v8 = ((v * 255) / maxes[c].max(1)) as u8;
+        if npc == 1 {
+            rgb = [v8, v8, v8];
+        } else {
+            rgb[c] = v8;
+        }
+        *off += w;
+    }
+    Ok(rgb)
 }
 
 /// Validate a `cmap` box body: (CMP u16, MTYP u8, PCOL u8) per output

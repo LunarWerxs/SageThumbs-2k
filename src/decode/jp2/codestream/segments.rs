@@ -104,22 +104,11 @@ pub(super) fn parse_coding_params(
     let cblk_h = 1u32 << (cbh + 2);
     let cblk_style = r.u8()?;
     let transform = r.u8()?;
-    let mut precincts = Vec::new();
-    if has_precincts {
-        while r.p < seg_end {
-            let b = r.u8()?;
-            let (ppx, ppy) = (b & 0x0F, b >> 4);
-            // A precinct exponent of 0 (or 1) means a 1x1 (or 2x2) precinct, so the
-            // resolution's precinct grid approaches its full pixel count — and mod.rs
-            // allocates one struct per precinct, so an unbounded npx*npy from a tiny
-            // file is an allocation bomb, not just a non-conformant encoder. Real
-            // encoders don't emit exponents this small; reject rather than guess a cap.
-            if ppx < 2 || ppy < 2 {
-                return Err(Jp2Error::Unsupported("precinct size"));
-            }
-            precincts.push((ppx, ppy));
-        }
-    }
+    let precincts = if has_precincts {
+        parse_precincts(r, seg_end)?
+    } else {
+        Vec::new()
+    };
     Ok(Cod {
         progression: 0,
         layers: 1,
@@ -133,6 +122,25 @@ pub(super) fn parse_coding_params(
         sop: false,
         eph: false,
     })
+}
+
+/// Read the SPcod/SPcoc precinct exponents that follow the coding parameters.
+fn parse_precincts(r: &mut Reader, seg_end: usize) -> Result<Vec<(u8, u8)>, Jp2Error> {
+    let mut precincts = Vec::new();
+    while r.p < seg_end {
+        let b = r.u8()?;
+        let (ppx, ppy) = (b & 0x0F, b >> 4);
+        // A precinct exponent of 0 (or 1) means a 1x1 (or 2x2) precinct, so the
+        // resolution's precinct grid approaches its full pixel count — and mod.rs
+        // allocates one struct per precinct, so an unbounded npx*npy from a tiny
+        // file is an allocation bomb, not just a non-conformant encoder. Real
+        // encoders don't emit exponents this small; reject rather than guess a cap.
+        if ppx < 2 || ppy < 2 {
+            return Err(Jp2Error::Unsupported("precinct size"));
+        }
+        precincts.push((ppx, ppy));
+    }
+    Ok(precincts)
 }
 
 pub(super) fn parse_cod(r: &mut Reader, seg_end: usize) -> Result<Cod, Jp2Error> {
@@ -183,23 +191,13 @@ pub(super) fn parse_quant(r: &mut Reader, seg_end: usize) -> Result<Qcd, Jp2Erro
     let sq = r.u8()?;
     let style = sq & 0x1F;
     let guard_bits = sq >> 5;
-    let mut steps = Vec::new();
-    match style {
+    let steps = match style {
         // No quantization: one 8-bit exponent per subband.
-        0 => {
-            while r.p < seg_end {
-                steps.push((r.u8()? >> 3, 0));
-            }
-        }
+        0 => read_quant_steps_8(r, seg_end)?,
         // Scalar derived (one value) or expounded (one per subband): 16-bit each.
-        1 | 2 => {
-            while r.p + 1 < seg_end {
-                let v = r.u16()?;
-                steps.push(((v >> 11) as u8, v & 0x7FF));
-            }
-        }
+        1 | 2 => read_quant_steps_16(r, seg_end)?,
         _ => return Err(Jp2Error::Unsupported("quantization style")),
-    }
+    };
     if steps.is_empty() {
         return Err(Jp2Error::Malformed("empty quantization table"));
     }
@@ -208,6 +206,25 @@ pub(super) fn parse_quant(r: &mut Reader, seg_end: usize) -> Result<Qcd, Jp2Erro
         guard_bits,
         steps,
     })
+}
+
+/// Read a style-0 (none) quantization table: one 8-bit exponent per subband.
+fn read_quant_steps_8(r: &mut Reader, seg_end: usize) -> Result<Vec<(u8, u16)>, Jp2Error> {
+    let mut steps = Vec::new();
+    while r.p < seg_end {
+        steps.push((r.u8()? >> 3, 0));
+    }
+    Ok(steps)
+}
+
+/// Read a style-1/2 (scalar derived/expounded) table: one 16-bit value per subband.
+fn read_quant_steps_16(r: &mut Reader, seg_end: usize) -> Result<Vec<(u8, u16)>, Jp2Error> {
+    let mut steps = Vec::new();
+    while r.p + 1 < seg_end {
+        let v = r.u16()?;
+        steps.push(((v >> 11) as u8, v & 0x7FF));
+    }
+    Ok(steps)
 }
 
 pub(super) fn parse_qcd(r: &mut Reader, seg_end: usize) -> Result<Qcd, Jp2Error> {
