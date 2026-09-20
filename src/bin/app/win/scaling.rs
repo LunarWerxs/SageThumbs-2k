@@ -95,6 +95,26 @@ pub(crate) fn dpi_unscale(hwnd: HWND, v: i32) -> i32 {
     unsafe { MulDiv(v, 96, dpi) }
 }
 
+/// Query the `dpi`-sized system message-font metrics via
+/// `SystemParametersInfoForDpi`, or `None` when the query fails. Shared by
+/// [`gui_font_for`] and [`gui_font_variant`], which each fall back to a plain
+/// GUI font on `None`.
+unsafe fn message_font_metrics(dpi: u32) -> Option<NONCLIENTMETRICSW> {
+    let mut ncm = NONCLIENTMETRICSW {
+        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
+        ncm.cbSize,
+        Some(&mut ncm as *mut _ as *mut c_void),
+        0,
+        dpi,
+    )
+    .is_ok()
+    .then_some(ncm)
+}
+
 /// Create a DPI-aware GUI font for `hwnd`: the system message font with its
 /// height scaled to the window's DPI (via SystemParametersInfoForDpi, which
 /// returns the metrics already sized for that DPI). Cached per DPI. Falls back
@@ -113,19 +133,7 @@ pub(crate) unsafe fn gui_font_for(hwnd: HWND) -> HFONT {
     if let Some(&(_, p)) = guard.iter().find(|(d, _)| *d == dpi) {
         return HFONT(p as *mut c_void);
     }
-    let mut ncm = NONCLIENTMETRICSW {
-        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
-        ..Default::default()
-    };
-    let hf = if SystemParametersInfoForDpi(
-        SPI_GETNONCLIENTMETRICS.0,
-        ncm.cbSize,
-        Some(&mut ncm as *mut _ as *mut c_void),
-        0,
-        dpi,
-    )
-    .is_ok()
-    {
+    let hf = if let Some(ncm) = message_font_metrics(dpi) {
         CreateFontIndirectW(&ncm.lfMessageFont)
     } else {
         gui_font() // fall back to the unscaled font
@@ -168,19 +176,7 @@ unsafe fn gui_font_variant(hwnd: HWND, variant: FontVariant) -> HFONT {
         return HFONT(p as *mut c_void);
     }
 
-    let mut ncm = NONCLIENTMETRICSW {
-        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
-        ..Default::default()
-    };
-    let hf = if SystemParametersInfoForDpi(
-        SPI_GETNONCLIENTMETRICS.0,
-        ncm.cbSize,
-        Some(&mut ncm as *mut _ as *mut c_void),
-        0,
-        dpi,
-    )
-    .is_ok()
-    {
+    let hf = if let Some(ncm) = message_font_metrics(dpi) {
         let mut lf = ncm.lfMessageFont;
         match variant {
             FontVariant::Header => {
