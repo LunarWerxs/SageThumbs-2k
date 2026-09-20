@@ -36,11 +36,7 @@ pub(super) unsafe fn do_print(hwnd: HWND, st: &ViewerState, path: Option<String>
         return;
     }
     let Some(p) = path else { return };
-    let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
-    let anim_frame = {
-        let frames = st.frames.borrow();
-        (frames.len() > 1).then(|| st.cur_frame.get())
-    };
+    let (pdf_page, anim_frame) = super::window::navigated_targets(st);
 
     // A pinned viewer is topmost, and a modal common dialog opens BEHIND a topmost owner and
     // looks like a freeze -- the same trap `screenshot/overlay/dialogs.rs::with_modal` guards

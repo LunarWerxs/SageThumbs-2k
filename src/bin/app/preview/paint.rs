@@ -16,7 +16,8 @@ use super::selection::sel_range;
 use super::toolbar::{button_rects, live_focus, FocusTarget};
 use super::transport::{draw_scrub_strip, scrub_rect, video_rect, TBTNS};
 use super::window::{
-    clamp_text_scroll, state, text_scrollbar, Btn, ContentKind, ViewerState, BTNS, CAPTION_H, PAD,
+    clamp_text_scroll, file_leaf_name, state, text_scrollbar, Btn, ContentKind, ViewerState, BTNS,
+    CAPTION_H, PAD,
 };
 use super::{highlight, infocard};
 
@@ -548,15 +549,7 @@ unsafe fn paint_caption_title(
     } else {
         0
     };
-    let mut title = st
-        .path
-        .borrow()
-        .as_ref()
-        .and_then(|p| {
-            std::path::Path::new(p)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-        })
+    let mut title = file_leaf_name(st)
         .unwrap_or_default()
         .encode_utf16()
         .collect::<Vec<u16>>();
@@ -621,18 +614,24 @@ unsafe fn paint_caption_toolbar(hwnd: HWND, hdc: HDC, st: &ViewerState, buttons:
     let _ = DeleteObject(icon.into());
 }
 
+/// `r` shrunk by 3 DPI-scaled px on each side: the hover-pill / focus-ring inset of the caption
+/// toolbar buttons.
+fn inset_rect(hwnd: HWND, r: &RECT) -> RECT {
+    let pad = crate::win::dpi_scale(hwnd, 3);
+    RECT {
+        left: r.left + pad,
+        top: r.top + pad,
+        right: r.right - pad,
+        bottom: r.bottom - pad,
+    }
+}
+
 /// Keyboard-focus ring for one caption toolbar button: a 1px accent frame drawn just inside the
 /// button's hover-pill rect (same inset [`draw_button`] uses for the hover pill itself), so
 /// focus reads as an outline around that pill rather than a second hover state, and never
 /// overlaps a neighbouring button.
 unsafe fn draw_toolbar_focus_ring(hwnd: HWND, hdc: HDC, r: &RECT) {
-    let pad = crate::win::dpi_scale(hwnd, 3);
-    let pr = RECT {
-        left: r.left + pad,
-        top: r.top + pad,
-        right: r.right - pad,
-        bottom: r.bottom - pad,
-    };
+    let pr = inset_rect(hwnd, r);
     let b = CreateSolidBrush(COLORREF(crate::dark::ACCENT().0));
     FrameRect(hdc, &pr, b);
     let _ = DeleteObject(b.into());
@@ -972,13 +971,7 @@ pub(super) unsafe fn draw_button(
 ) {
     // Hover background pill.
     if hot {
-        let pad = crate::win::dpi_scale(hwnd, 3);
-        let pr = RECT {
-            left: r.left + pad,
-            top: r.top + pad,
-            right: r.right - pad,
-            bottom: r.bottom - pad,
-        };
+        let pr = inset_rect(hwnd, r);
         fill(hdc, &pr, crate::dark::BTN_FACE_HOT().0);
     }
     let active = (matches!(btn, Btn::Pin) && pinned)

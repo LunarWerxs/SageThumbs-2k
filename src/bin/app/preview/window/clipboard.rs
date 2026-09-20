@@ -56,11 +56,7 @@ pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
             let Some(p) = st.path.borrow().clone() else {
                 return;
             };
-            let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
-            let anim_frame = {
-                let frames = st.frames.borrow();
-                (frames.len() > 1).then(|| st.cur_frame.get())
-            };
+            let (pdf_page, anim_frame) = super::navigated_targets(st);
             // Captured on the UI thread, at the keypress — NOT read from `st` again inside the
             // worker, which runs on its own thread and must never touch `ViewerState`'s
             // `Cell`/`RefCell` fields without the UI thread's synchronization. `copy_shown_image`

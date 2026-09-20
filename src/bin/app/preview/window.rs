@@ -225,6 +225,19 @@ fn savepage_visible(
         || (kind == ContentKind::Video && has_video)
 }
 
+/// The navigation targets the viewer is currently SHOWING: the PDF page when the file has more
+/// than one, and the animation frame when the animation has more than one -- each `Some` only
+/// while it actually applies. Shared by Ctrl+C, `Btn::SavePage` and Ctrl+P, all of which act on
+/// the shown page/frame rather than on the file's first one.
+pub(super) fn navigated_targets(st: &ViewerState) -> (Option<u32>, Option<usize>) {
+    let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
+    let anim_frame = {
+        let frames = st.frames.borrow();
+        (frames.len() > 1).then(|| st.cur_frame.get())
+    };
+    (pdf_page, anim_frame)
+}
+
 /// Whether a toolbar button is currently shown (PDF pager only for multi-page PDFs; the outline
 /// toggle only for Markdown that has headings; the source toggle only for files that HAVE a
 /// rendered view to toggle away from).
@@ -641,19 +654,20 @@ pub(super) fn letterbox_bg(st: &ViewerState) -> u32 {
     crate::dark::SURFACE().0
 }
 
+/// The leaf (file-name) component of the currently loaded path, `None` when no path is set or it
+/// has no file name (e.g. a bare drive root).
+pub(super) fn file_leaf_name(st: &ViewerState) -> Option<String> {
+    st.path.borrow().as_ref().and_then(|p| {
+        std::path::Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    })
+}
+
 /// Set the window title text to the current file's leaf name (used by tools reading the title).
 pub(super) unsafe fn set_title(hwnd: HWND) {
     let st = &*state(hwnd);
-    let name = st
-        .path
-        .borrow()
-        .as_ref()
-        .and_then(|p| {
-            std::path::Path::new(p)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "SageThumbs 2K".to_string());
+    let name = file_leaf_name(st).unwrap_or_else(|| "SageThumbs 2K".to_string());
     let w = crate::win::wide(&name);
     let _ = SetWindowTextW(hwnd, PCWSTR(w.as_ptr()));
 }

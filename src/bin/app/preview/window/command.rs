@@ -153,11 +153,7 @@ unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
     if st.kind.get() == ContentKind::Video {
         return on_btn_save_video_frame(hwnd, st, &p);
     }
-    let pdf_page = (st.pdf_pages.get() > 1).then(|| st.pdf_page.get());
-    let anim_frame = {
-        let frames = st.frames.borrow();
-        (frames.len() > 1).then(|| st.cur_frame.get())
-    };
+    let (pdf_page, anim_frame) = super::navigated_targets(st);
     if pdf_page.is_none() && anim_frame.is_none() {
         return;
     }
