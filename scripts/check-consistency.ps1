@@ -286,7 +286,9 @@ foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
 # and reopened. Seven of them had drifted this way (ID_PDF_MARGIN, ID_KEEP_METADATA,
 # ID_PREVIEW_MD_REMOTE, ID_EDIT_UPLOAD_HOSTS, the two html-preview toggles) before this check.
 $dlgDir   = Join-Path $root 'src\bin\app\settings_dlg'
-$buildSrc = Get-Content (Join-Path $dlgDir 'build.rs') -Raw
+# build.rs is a hub since 2026-09-20: one build_<section> fn per settings page, in build\*.rs
+$buildSrc = @(Join-Path $dlgDir 'build.rs') + @(Get-ChildItem (Join-Path $dlgDir 'build') -Filter '*.rs' | Sort-Object Name | ForEach-Object { $_.FullName }) |
+  ForEach-Object { Get-Content $_ -Raw } | Out-String
 $locSrc   = Get-Content (Join-Path $dlgDir 'localize.rs') -Raw
 
 # Which id owns the visible translated string:
