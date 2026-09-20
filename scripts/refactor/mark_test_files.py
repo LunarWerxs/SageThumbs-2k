@@ -89,7 +89,8 @@ def one_pass(root, ours, apply):
 def main():
     root = sys.argv[1]
     apply = "--apply" in sys.argv
-    tracked = subprocess.run(["git", "ls-files", "*.rs"], cwd=root, capture_output=True, text=True).stdout.split("\n")
+    # tracked AND untracked: the files a split just wrote are the ones that need the marker
+    tracked = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.rs"], cwd=root, capture_output=True, text=True).stdout.split("\n")
     ours = [r for r in tracked if r and "/vendor/" not in r and not r.startswith("vendor/")]
     total = changed = one_pass(root, ours, apply)
     while apply and changed:
