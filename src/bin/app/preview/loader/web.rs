@@ -1,10 +1,11 @@
 //! The WebView2 route: HTML files and .url shortcuts.
 
+use super::*;
+
 /// Whether `path`'s extension is one [`try_load_web`] handles at all (`html`/`htm`/`xhtml`/
 /// `url`/`webloc`). Used by `window::on_app_load_resolved` to exclude the `try_load_web` route
 /// from its own "apply" stage timing: creating the WebView2 host pumps the message loop for
 /// hundreds of ms, which is not a stall, see `window::log_ui_stage_stall`'s doc comment.
-#[cfg(feature = "html-preview")]
 pub(in super::super) fn is_web_route_ext(ext: &str) -> bool {
     matches!(ext, "html" | "htm" | "xhtml" | "url" | "webloc")
 }
@@ -12,7 +13,6 @@ pub(in super::super) fn is_web_route_ext(ext: &str) -> bool {
 /// Build an HTML/`.url` WebView2 preview when the ext + Settings toggle allow it. Returns true if
 /// handled (webview created, a card shown, or the `.url` target shown as text). Falls through
 /// (false) to show HTML source as text when the toggle is off or it isn't a web file.
-#[cfg(feature = "html-preview")]
 pub(super) unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
     let st = &*state(hwnd);
     match ext_of(path).as_str() {
@@ -52,7 +52,6 @@ pub(super) unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
 /// close/switch requests are DEFERRED (see `request_close`/`request_load`), and after the pump we
 /// RE-VALIDATE the window (it may have been destroyed) and re-fetch state before touching it — the
 /// `st` from before the pump could be dangling.
-#[cfg(feature = "html-preview")]
 pub(super) unsafe fn create_web(hwnd: HWND, url: &str, mode: super::super::webview::Mode) -> bool {
     {
         let st = &*state(hwnd);
@@ -104,7 +103,6 @@ pub(super) unsafe fn create_web(hwnd: HWND, url: &str, mode: super::super::webvi
 }
 
 /// Turn a local path into a `file:///` URI (forward slashes, minimal escaping of space/#/?).
-#[cfg(feature = "html-preview")]
 pub(super) fn file_uri(path: &str) -> String {
     let esc = path
         .replace('\\', "/")
@@ -126,7 +124,6 @@ pub(super) fn file_uri(path: &str) -> String {
 /// (UTF-8 only) silently failed on those, so the live-preview feature never engaged for
 /// them. Sniff the BOM and decode accordingly; UTF-8 (the common case, and `.webloc`'s
 /// plist encoding) falls through unchanged.
-#[cfg(feature = "html-preview")]
 pub(super) fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         let (chunks, _) = rest.as_chunks::<2>();
@@ -142,7 +139,6 @@ pub(super) fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(bytes).ok().map(str::to_string)
 }
 
-#[cfg(feature = "html-preview")]
 pub(super) fn parse_url_shortcut(path: &str) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     let text = decode_shortcut_text(&bytes)?;

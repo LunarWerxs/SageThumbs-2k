@@ -9,6 +9,7 @@ use resolve::*;
 mod syncload;
 use syncload::*;
 mod placement;
+#[cfg(feature = "html-preview")]
 mod web;
 #[cfg(test)]
 pub(super) use placement::clamp_remembered_size;
@@ -19,6 +20,8 @@ pub(super) use resolve::{abandon_pending_prepare, apply_resolved, is_load_curren
 pub(super) use syncload::load_sync;
 #[cfg(feature = "html-preview")]
 pub(super) use web::is_web_route_ext;
+#[cfg(feature = "html-preview")]
+use web::*;
 
 use super::content::{self, RenderData};
 use super::hexview;
