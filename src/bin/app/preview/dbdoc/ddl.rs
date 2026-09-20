@@ -322,29 +322,48 @@ fn find_top_level_open_paren(s: &str) -> Option<usize> {
     None
 }
 
+/// What the byte at some offset of a top-level scanner's input is.
+enum TopLevel {
+    /// A quoted run, bracketed identifier or comment ends just before this index.
+    SkipTo(usize),
+    /// A quoted run, bracketed identifier or comment runs past the end of the input.
+    Unterminated,
+    /// An ordinary byte, left to the caller (`(`, `)`, `,`, ...).
+    Plain,
+}
+
+/// Classify the byte at `i`: quotes, brackets and comments are skipped as a unit.
+fn top_level(b: &[u8], i: usize) -> TopLevel {
+    match b[i] {
+        b'\'' | b'"' | b'`' => match skip_quoted(b, i) {
+            Some(j) => TopLevel::SkipTo(j),
+            None => TopLevel::Unterminated,
+        },
+        b'[' => match skip_bracket(b, i) {
+            Some(j) => TopLevel::SkipTo(j),
+            None => TopLevel::Unterminated,
+        },
+        b'-' if b.get(i + 1) == Some(&b'-') => TopLevel::SkipTo(skip_line_comment(b, i)),
+        b'/' if b.get(i + 1) == Some(&b'*') => TopLevel::SkipTo(skip_block_comment(b, i)),
+        _ => TopLevel::Plain,
+    }
+}
+
 /// Offset of the `)` matching the `(` at `open`.
 fn matching_paren(s: &str, open: usize) -> Option<usize> {
     let b = s.as_bytes();
     let mut depth = 0usize;
     let mut i = open;
     while i < b.len() {
+        match top_level(b, i) {
+            TopLevel::SkipTo(j) => {
+                i = j;
+                continue;
+            }
+            TopLevel::Unterminated => return None,
+            TopLevel::Plain => {}
+        }
         match b[i] {
-            b'\'' | b'"' | b'`' => {
-                i = skip_quoted(b, i)?;
-                continue;
-            }
-            b'[' => {
-                i = skip_bracket(b, i)?;
-                continue;
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                i = skip_line_comment(b, i);
-                continue;
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = skip_block_comment(b, i);
-                continue;
-            }
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -367,29 +386,15 @@ fn split_top_level(s: &str) -> Vec<&str> {
     let mut start = 0usize;
     let mut i = 0usize;
     while i < b.len() {
+        match top_level(b, i) {
+            TopLevel::SkipTo(j) => {
+                i = j;
+                continue;
+            }
+            TopLevel::Unterminated => break,
+            TopLevel::Plain => {}
+        }
         match b[i] {
-            b'\'' | b'"' | b'`' => {
-                i = match skip_quoted(b, i) {
-                    Some(j) => j,
-                    None => break,
-                };
-                continue;
-            }
-            b'[' => {
-                i = match skip_bracket(b, i) {
-                    Some(j) => j,
-                    None => break,
-                };
-                continue;
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                i = skip_line_comment(b, i);
-                continue;
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = skip_block_comment(b, i);
-                continue;
-            }
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
