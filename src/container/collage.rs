@@ -18,12 +18,14 @@ const MAX_UPSCALE: f32 = 2.0;
 const MIN_EDGE: u32 = 32;
 const MAX_EDGE: u32 = 1024;
 
-/// Compose 2-4 decoded images into a square contact-sheet tile of `edge` x `edge`
-/// pixels. Layouts: 2 = side-by-side halves; 3 = one large left column + two
-/// stacked right cells; 4 = 2x2 grid. Each cell is filled center-crop (cover
-/// fit). Returns None if fewer than 2 images (caller uses the single-cover path).
-#[cfg(test)]
-pub fn compose(images: &[DynamicImage], edge: u32) -> Option<RgbaImage> {
+/// Shared body of [`compose`] and [`compose_prepared`]: clamp the edge, reject
+/// fewer than 2 images, then overlay the cell `cell_for` renders for every
+/// layout rect. `None` from `cell_for` aborts the composite.
+fn compose_tiles<I>(
+    images: &[I],
+    edge: u32,
+    cell_for: impl Fn(&I, u32, u32) -> Option<RgbaImage>,
+) -> Option<RgbaImage> {
     if images.len() < 2 {
         return None;
     }
@@ -33,10 +35,19 @@ pub fn compose(images: &[DynamicImage], edge: u32) -> Option<RgbaImage> {
 
     let mut out = RgbaImage::from_pixel(edge, edge, Rgba([0, 0, 0, 0]));
     for (&(x, y, w, h), img) in layout(n, edge).iter().zip(images) {
-        let cell = fit_cell(img, w, h);
+        let cell = cell_for(img, w, h)?;
         image::imageops::overlay(&mut out, &cell, x as i64, y as i64);
     }
     Some(out)
+}
+
+/// Compose 2-4 decoded images into a square contact-sheet tile of `edge` x `edge`
+/// pixels. Layouts: 2 = side-by-side halves; 3 = one large left column + two
+/// stacked right cells; 4 = 2x2 grid. Each cell is filled center-crop (cover
+/// fit). Returns None if fewer than 2 images (caller uses the single-cover path).
+#[cfg(test)]
+pub fn compose(images: &[DynamicImage], edge: u32) -> Option<RgbaImage> {
+    compose_tiles(images, edge, |img, w, h| Some(fit_cell(img, w, h)))
 }
 
 /// A bounded rendering of one decoded cover. `alternate_square` exists only for
@@ -110,14 +121,19 @@ pub fn prepare_for_sheet(img: &DynamicImage, edge: u32) -> PreparedSheetImage {
     }
 }
 
+/// `(width, height)` of `img`, or `None` when either edge is zero.
+fn nonzero_dims(img: &DynamicImage) -> Option<(u32, u32)> {
+    let (sw, sh) = (img.width(), img.height());
+    (sw > 0 && sh > 0).then_some((sw, sh))
+}
+
 /// Center-crop the source only to the union of sheet cell aspects ([1:2, 1:1])
 /// and shrink that region to the final edge. Used when every later fit is a
 /// cover fit, so no letterboxed content can be discarded.
 fn bounded_cover_source(img: &DynamicImage, edge: u32) -> RgbaImage {
-    let (sw, sh) = (img.width(), img.height());
-    if sw == 0 || sh == 0 {
+    let Some((sw, sh)) = nonzero_dims(img) else {
         return RgbaImage::new(0, 0);
-    }
+    };
     let (cw, ch) = if sw > sh {
         (sh, sh)
     } else if (sw as u64) * 2 < sh as u64 {
@@ -139,10 +155,9 @@ fn bounded_cover_source(img: &DynamicImage, edge: u32) -> RgbaImage {
 /// Shrink the full source proportionally into the final edge. This preserves
 /// all content needed by a later letterbox fit while bounding retained memory.
 fn bounded_contained_source(img: &DynamicImage, edge: u32) -> RgbaImage {
-    let (sw, sh) = (img.width(), img.height());
-    if sw == 0 || sh == 0 {
+    let Some((sw, sh)) = nonzero_dims(img) else {
         return RgbaImage::new(0, 0);
-    }
+    };
     let scale = (edge as f64 / sw as f64)
         .min(edge as f64 / sh as f64)
         .min(1.0);
@@ -154,16 +169,8 @@ fn bounded_contained_source(img: &DynamicImage, edge: u32) -> RgbaImage {
 /// Compose covers already reduced by [`prepare_for_sheet`]. This is the
 /// memory-bounded production path.
 pub fn compose_prepared(images: &[PreparedSheetImage], edge: u32) -> Option<RgbaImage> {
-    if images.len() < 2 {
-        return None;
-    }
-    let n = images.len().min(4);
-    let images = &images[..n];
-    let edge = edge.clamp(MIN_EDGE, MAX_EDGE);
-
-    let mut out = RgbaImage::from_pixel(edge, edge, Rgba([0, 0, 0, 0]));
-    for (&(x, y, w, h), img) in layout(n, edge).iter().zip(images) {
-        let cell = match img.mode {
+    compose_tiles(images, edge, |img, w, h| {
+        Some(match img.mode {
             PreparedMode::Cover => fit_cover(&img.image, w, h),
             PreparedMode::Letterbox => fit_letterbox_prepared(&img.image, img.original, w, h),
             PreparedMode::Mixed if h > w => fit_letterbox_prepared(&img.image, img.original, w, h),
@@ -171,10 +178,8 @@ pub fn compose_prepared(images: &[PreparedSheetImage], edge: u32) -> Option<Rgba
                 let square = img.alternate_square.as_ref()?;
                 image::imageops::resize(square, w, h, FilterType::Triangle)
             }
-        };
-        image::imageops::overlay(&mut out, &cell, x as i64, y as i64);
-    }
-    Some(out)
+        })
+    })
 }
 
 /// Center-crop and resize without applying the native-size upscale decision.
@@ -195,6 +200,18 @@ where
     image::imageops::resize(&*cropped, w, h, FilterType::Triangle)
 }
 
+/// Resize `img` to `new_w` x `new_h` and center the result over the transparent
+/// `cell` whose size is `w` x `h`.
+fn overlay_centered<I>(cell: &mut RgbaImage, img: &I, new_w: u32, new_h: u32, w: u32, h: u32)
+where
+    I: image::GenericImageView<Pixel = Rgba<u8>>,
+{
+    let scaled = image::imageops::resize(img, new_w, new_h, FilterType::Triangle);
+    let ox = ((w - new_w) / 2) as i64;
+    let oy = ((h - new_h) / 2) as i64;
+    image::imageops::overlay(cell, &scaled, ox, oy);
+}
+
 /// Letterbox a bounded source using its ORIGINAL dimensions for the same 2x
 /// decision and output geometry as [`fit_cell`].
 fn fit_letterbox_prepared(img: &RgbaImage, (sw, sh): (u32, u32), w: u32, h: u32) -> RgbaImage {
@@ -205,10 +222,7 @@ fn fit_letterbox_prepared(img: &RgbaImage, (sw, sh): (u32, u32), w: u32, h: u32)
     let scale = ((w as f32 / sw as f32).min(h as f32 / sh as f32)).min(MAX_UPSCALE);
     let new_w = ((sw as f32 * scale).round() as u32).clamp(1, w);
     let new_h = ((sh as f32 * scale).round() as u32).clamp(1, h);
-    let scaled = image::imageops::resize(img, new_w, new_h, FilterType::Triangle);
-    let ox = ((w - new_w) / 2) as i64;
-    let oy = ((h - new_h) / 2) as i64;
-    image::imageops::overlay(&mut cell, &scaled, ox, oy);
+    overlay_centered(&mut cell, img, new_w, new_h, w, h);
     cell
 }
 
@@ -278,10 +292,7 @@ fn fit_cell(img: &DynamicImage, w: u32, h: u32) -> RgbaImage {
     let contain_scale = ((w as f32 / sw as f32).min(h as f32 / sh as f32)).min(MAX_UPSCALE);
     let new_w = ((sw as f32 * contain_scale).round() as u32).clamp(1, w);
     let new_h = ((sh as f32 * contain_scale).round() as u32).clamp(1, h);
-    let scaled = image::imageops::resize(img, new_w, new_h, FilterType::Triangle);
-    let ox = ((w - new_w) / 2) as i64;
-    let oy = ((h - new_h) / 2) as i64;
-    image::imageops::overlay(&mut cell, &scaled, ox, oy);
+    overlay_centered(&mut cell, img, new_w, new_h, w, h);
     cell
 }
 
