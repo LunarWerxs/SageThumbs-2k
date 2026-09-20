@@ -16,33 +16,12 @@ def run(cmd):
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--before", default="tmp/cx.json")
-    ap.add_argument("--after", default="tmp/cx-after.json")
-    ap.add_argument("--files", default="")
-    ap.add_argument("--no-scan", action="store_true")
-    a = ap.parse_args()
-
-    if not a.no_scan:
-        out = run(["python", "scripts/complexity-scan.py", "--root", ".", "--json", "--warnings"])
-        with open(os.path.join(ROOT, a.after), "w", encoding="utf-8") as fh:
-            fh.write(out)
-    before = json.load(open(os.path.join(ROOT, a.before), encoding="utf-8"))
-    after = json.load(open(os.path.join(ROOT, a.after), encoding="utf-8"))
-
-    if a.files:
-        files = [f for f in a.files.split(",") if f]
-    else:
-        files = [l[3:].strip() for l in run(["git", "status", "--short"]).split("\n") if l[:2].strip() in ("M", "A", "AM", "MM") and l.strip().endswith(".rs")]
-
-    key = lambda x: (x["file"], x["function"], x["metric"])
-    b = {key(x): x["score"] for x in before}
-    af = {key(x): x["score"] for x in after}
+def compare(files, before, after):
+    """Print per file what left, stayed or is new in the band; return the three totals."""
     left = stayed = new = 0
     for f in files:
-        bk = {k: v for k, v in b.items() if k[0] == f}
-        ak = {k: v for k, v in af.items() if k[0] == f}
+        bk = {k: v for k, v in before.items() if k[0] == f}
+        ak = {k: v for k, v in after.items() if k[0] == f}
         rows = []
         for k, v in sorted(bk.items()):
             if k in ak:
@@ -58,6 +37,35 @@ def main():
         print(f"{f}: before {len(bk)} after {len(ak)}")
         for r in rows:
             print(r)
+    return left, stayed, new
+
+
+def modified_rust_files():
+    out = run(["git", "status", "--short"]).split("\n")
+    return [l[3:].strip() for l in out if l[:2].strip() in ("M", "A", "AM", "MM") and l.strip().endswith(".rs")]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--before", default="tmp/cx.json")
+    ap.add_argument("--after", default="tmp/cx-after.json")
+    ap.add_argument("--files", default="")
+    ap.add_argument("--no-scan", action="store_true")
+    a = ap.parse_args()
+
+    if not a.no_scan:
+        out = run(["python", "scripts/complexity-scan.py", "--root", ".", "--json", "--warnings"])
+        with open(os.path.join(ROOT, a.after), "w", encoding="utf-8") as fh:
+            fh.write(out)
+    before = json.load(open(os.path.join(ROOT, a.before), encoding="utf-8"))
+    after = json.load(open(os.path.join(ROOT, a.after), encoding="utf-8"))
+
+    files = [f for f in a.files.split(",") if f] if a.files else modified_rust_files()
+
+    key = lambda x: (x["file"], x["function"], x["metric"])
+    b = {key(x): x["score"] for x in before}
+    af = {key(x): x["score"] for x in after}
+    left, stayed, new = compare(files, b, af)
     print(f"touched files {len(files)}: left {left}, stayed {stayed}, new {new}; band total {len(before)} -> {len(after)}")
 
 

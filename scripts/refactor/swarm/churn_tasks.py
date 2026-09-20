@@ -79,6 +79,10 @@ Do this, in order:
 Do not modify `compare-renders.py` unless a one-line change is needed to make a function reachable from a test (say so). Do not touch any other file. Answer through submit_result with: status (done | skipped), tests_added (test names), extracted (functions you had to change, or []), reason ("" or why skipped)."""
 
 
+def wanted(name, excluded, only):
+    return name not in excluded and (not only or name in only)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exclude", default="")
@@ -88,17 +92,18 @@ def main():
     excluded = set(x for x in a.exclude.split(",") if x)
     only = set(x for x in a.only.split(",") if x)
 
-    tasks = []
-    for f in RUST_FILES:
-        if f in excluded or (only and f not in only):
-            continue
-        tasks.append({"id": f.replace("/", "_").replace(".rs", ""), "prompt": RUST_PROMPT.format(file=f)})
-    if "scripts/gen-site.mjs" not in excluded and (not only or "scripts/gen-site.mjs" in only):
-        tasks.append({"id": "scripts_gen-site", "prompt": MJS_PROMPT})
-    if "scripts/compare-renders.py" not in excluded and (not only or "scripts/compare-renders.py" in only):
-        tasks.append({"id": "scripts_compare-renders", "prompt": PY_PROMPT})
-    if "src/build.rs" not in excluded and (not only or "src/build.rs" in only):
-        tasks.append({"id": "src_build", "prompt": BUILD_PROMPT})
+    tasks = [
+        {"id": f.replace("/", "_").replace(".rs", ""), "prompt": RUST_PROMPT.format(file=f)}
+        for f in RUST_FILES
+        if wanted(f, excluded, only)
+    ]
+    for name, tid, prompt in [
+        ("scripts/gen-site.mjs", "scripts_gen-site", MJS_PROMPT),
+        ("scripts/compare-renders.py", "scripts_compare-renders", PY_PROMPT),
+        ("src/build.rs", "src_build", BUILD_PROMPT),
+    ]:
+        if wanted(name, excluded, only):
+            tasks.append({"id": tid, "prompt": prompt})
 
     job = {"defaults": {"cwd": ROOT, "tools": "all", "schema": SCHEMA, "max_turns": 40, "timeout_s": 1500, "model": "deepseek-flash-or"}, "tasks": tasks}
     with open(a.out, "w", encoding="utf-8") as fh:

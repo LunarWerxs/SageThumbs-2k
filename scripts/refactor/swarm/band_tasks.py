@@ -93,17 +93,8 @@ def is_test_fn(lines, line_no):
     return any(l.strip().startswith("#[test]") or l.strip().startswith("#[cfg(test)]") for l in above)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pilot", type=int, default=0)
-    ap.add_argument("--out", default=os.path.join(ROOT, "tmp/band-tasks.json"))
-    ap.add_argument("--exclude", default="", help="comma list of files to leave out (already done)")
-    a = ap.parse_args()
-
-    with open(os.path.join(ROOT, "tmp/cx.json"), encoding="utf-8") as fh:
-        findings = json.load(fh)
-    excluded = set(x for x in a.exclude.split(",") if x)
-
+def group_findings(findings, excluded):
+    """Bucket the band findings by file, dropping the leave-alone files and functions and test code."""
     by_file = {}
     dropped = {"file": 0, "func": 0, "test": 0}
     cache = {}
@@ -122,12 +113,11 @@ def main():
             dropped["test"] += 1
             continue
         by_file.setdefault(path, []).append(f)
+    return by_file, dropped
 
-    files = sorted(by_file, key=lambda p: (-max(x["score"] for x in by_file[p]), p))
-    if a.pilot:
-        one = [p for p in files if len(by_file[p]) == 1 and 16 <= by_file[p][0]["score"] <= 24]
-        files = one[: a.pilot]
 
+def build_tasks(files, by_file):
+    """One task per file, its band functions listed in the prompt."""
     tasks = []
     for path in files:
         rows = "\n".join(
@@ -136,6 +126,26 @@ def main():
         )
         tid = path.replace("/", "_").replace(".rs", "")
         tasks.append({"id": tid, "prompt": PROMPT.format(file=path, rows=rows)})
+    return tasks
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pilot", type=int, default=0)
+    ap.add_argument("--out", default=os.path.join(ROOT, "tmp/band-tasks.json"))
+    ap.add_argument("--exclude", default="", help="comma list of files to leave out (already done)")
+    a = ap.parse_args()
+
+    with open(os.path.join(ROOT, "tmp/cx.json"), encoding="utf-8") as fh:
+        findings = json.load(fh)
+    excluded = set(x for x in a.exclude.split(",") if x)
+
+    by_file, dropped = group_findings(findings, excluded)
+    files = sorted(by_file, key=lambda p: (-max(x["score"] for x in by_file[p]), p))
+    if a.pilot:
+        one = [p for p in files if len(by_file[p]) == 1 and 16 <= by_file[p][0]["score"] <= 24]
+        files = one[: a.pilot]
+    tasks = build_tasks(files, by_file)
 
     job = {
         "defaults": {"cwd": ROOT, "tools": "all", "schema": SCHEMA, "max_turns": 24, "timeout_s": 900, "model": "deepseek-flash-or"},

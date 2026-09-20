@@ -48,6 +48,61 @@ def load_results(paths):
     return res
 
 
+def group_files(files, results, kind):
+    """Bucket the mapped files (by directory for the band, one per file for churn); report the rest."""
+    groups = {}
+    unmapped = []
+    for f in files:
+        if task_id(f) not in results:
+            unmapped.append(f)
+            continue
+        key = os.path.dirname(f) if kind == "band" else f
+        groups.setdefault(key, []).append(f)
+    if unmapped:
+        print("UNMAPPED (no task result; left out):", " ".join(unmapped))
+    return groups
+
+
+def describe_band_file(f, data):
+    """Body lines for one band file, plus the names of the functions that left the band."""
+    lines, names = [], []
+    for fn in data.get("functions", []):
+        if fn.get("after", 99) < 15 or fn.get("after") == -1:
+            names.append(fn["name"])
+        lines.append(f"- {f}: {fn['name']} {fn['metric']} {fn['before']} -> {fn['after']}: {fn.get('action', '')}")
+    if data.get("helpers_added"):
+        lines.append(f"  helpers: {', '.join(data['helpers_added'])}")
+    return lines, names
+
+
+def describe_churn_file(f, data):
+    """Body lines for one churn file, plus its test names."""
+    tests = data.get("tests_added", [])
+    lines = [f"- {f}: {len(tests)} tests: {', '.join(tests)}"]
+    if data.get("extracted"):
+        lines.append(f"  extracted for testability: {', '.join(data['extracted'])}")
+    return lines, tests
+
+
+def build_plan(groups, results, kind):
+    """One (subject, body, paths) per group."""
+    plan = []
+    for key in sorted(groups):
+        paths = groups[key]
+        lines, names = [], []
+        for f in paths:
+            data = (results.get(task_id(f)) or {}).get("data") or {}
+            fl, fn = (describe_band_file if kind == "band" else describe_churn_file)(f, data)
+            lines += fl
+            names += fn
+        if kind == "band":
+            subject = f"complexity band ({key}): {len(names)} function(s) below 15 - {', '.join(names)[:150]}"
+        else:
+            subject = f"churn hotspot: unit tests for {key} ({len(names)} tests)"
+        plan.append((subject, "\n".join(lines), paths))
+    return plan
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kind", choices=["band", "churn"], required=True)
@@ -61,47 +116,7 @@ def main():
     results = load_results(a.out)
     files = [f for f in modified_files() if f not in excluded and (not only or f in only)]
 
-    groups = {}
-    unmapped = []
-    for f in files:
-        if task_id(f) not in results:
-            unmapped.append(f)
-            continue
-        key = os.path.dirname(f) if a.kind == "band" else f
-        groups.setdefault(key, []).append(f)
-    if unmapped:
-        print("UNMAPPED (no task result; left out):", " ".join(unmapped))
-
-    plan = []
-    for key in sorted(groups):
-        paths = groups[key]
-        lines = []
-        names = []
-        n_left = 0
-        for f in paths:
-            r = results.get(task_id(f)) or {}
-            data = r.get("data") or {}
-            if a.kind == "band":
-                for fn in data.get("functions", []):
-                    if fn.get("after", 99) < 15 or fn.get("after") == -1:
-                        n_left += 1
-                        names.append(fn["name"])
-                    lines.append(f"- {f}: {fn['name']} {fn['metric']} {fn['before']} -> {fn['after']}: {fn.get('action', '')}")
-                if data.get("helpers_added"):
-                    lines.append(f"  helpers: {', '.join(data['helpers_added'])}")
-            else:
-                tests = data.get("tests_added", [])
-                names = tests
-                lines.append(f"- {f}: {len(tests)} tests: {', '.join(tests)}")
-                if data.get("extracted"):
-                    lines.append(f"  extracted for testability: {', '.join(data['extracted'])}")
-        if a.kind == "band":
-            subject = f"complexity band ({key}): {n_left} function(s) below 15 - {', '.join(names)[:150]}"
-        else:
-            subject = f"churn hotspot: unit tests for {key} ({len(names)} tests)"
-        body = "\n".join(lines)
-        plan.append((subject, body, paths))
-
+    plan = build_plan(group_files(files, results, a.kind), results, a.kind)
     for subject, body, paths in plan:
         print(subject)
         print("  paths:", " ".join(paths))
