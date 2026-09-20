@@ -1080,18 +1080,45 @@ function Format-ReleaseNotesBody {
         if ($lines[$i].Trim()) { $intro.Add($lines[$i].Trim()) }
         $i++
     }
+    # ⚠ UNWRAP THE BULLETS (owner report, 2026-09-20, reading v3.2.0's notes on a phone: "hard to
+    # read ... due to all the hard line breaks"). docs/CHANGELOG.md is hard-wrapped at ~95 columns
+    # for reading in an editor, and GitHub renders a RELEASE BODY with `breaks: true` - every one
+    # of those newlines becomes a real `<br>`. On a desktop that merely looks odd; on a phone the
+    # 95-column wrap lands inside an already-narrow column and each bullet comes out as a ragged
+    # staircase. So a bullet's continuation lines are folded back into ONE line here and the
+    # renderer does the wrapping, which is the only thing that knows how wide the screen is.
+    # The changelog file itself is untouched - it is read in an editor and stays wrapped.
     $body = New-Object System.Collections.Generic.List[string]
     $sawHeading = $false
+    $fenced = $false
+    $pending = $null
     for (; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
+        # Never fold anything inside a fenced block: its line breaks ARE the content.
+        if ($line -match '^\s*```') {
+            if ($null -ne $pending) { $body.Add($pending); $pending = $null }
+            $fenced = -not $fenced
+            $body.Add($line)
+            continue
+        }
+        if ($fenced) { $body.Add($line); continue }
         if ($line -match '^###[ ]+(New|Changed|Fixed)\s*$') {
+            if ($null -ne $pending) { $body.Add($pending); $pending = $null }
             if ($sawHeading) { $body.Add(''); $body.Add('---'); $body.Add('') }
             $body.Add("### $($emoji[$Matches[1]])")
             $sawHeading = $true
-        } else {
-            $body.Add($line)
+            continue
         }
+        # A continuation line: indented, not blank, and not the start of its own bullet.
+        if ($null -ne $pending -and $line -match '^\s+\S' -and $line -notmatch '^\s*[-*+][ ]') {
+            $pending = $pending + ' ' + $line.Trim()
+            continue
+        }
+        if ($null -ne $pending) { $body.Add($pending); $pending = $null }
+        if ($line -match '^\s*[-*+][ ]') { $pending = $line.TrimEnd(); continue }
+        $body.Add($line)
     }
+    if ($null -ne $pending) { $body.Add($pending) }
     $out = New-Object System.Collections.Generic.List[string]
     $out.Add('<div align="center">')
     $out.Add(('<img src="https://raw.githubusercontent.com/LunarWerxs/SageThumbs-2k/v' + $Version +
