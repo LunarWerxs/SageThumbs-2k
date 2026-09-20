@@ -29,6 +29,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from st2k_exe import find_exe
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # Panel geometry. The capture is requested at this size through `--size`, so the window really
@@ -38,32 +40,6 @@ GAP = 22
 MARGIN = 26
 HEADER_H = 150
 BG = (13, 13, 13)
-
-
-def find_exe(argv: list[str]) -> Path:
-    """The app EXE: an explicit argument, then the configured target dir, then the install."""
-    candidates: list[Path] = []
-    if len(argv) > 1:
-        candidates.append(Path(argv[1]))
-    try:
-        meta = json.loads(
-            subprocess.run(
-                ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        candidates.append(Path(meta["target_directory"]) / "release" / "SageThumbs2K.exe")
-    except Exception:
-        pass
-    candidates.append(ROOT / "target" / "release" / "SageThumbs2K.exe")
-    candidates.append(Path(r"C:\Program Files\SageThumbs2K\SageThumbs2K.exe"))
-    for c in candidates:
-        if c.is_file():
-            return c
-    sys.exit("SageThumbs2K.exe not found - build it, or pass its path as arg 1")
 
 
 def format_count(exe: Path) -> int:
@@ -211,7 +187,7 @@ def font(name: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 def main() -> None:
-    exe = find_exe(sys.argv)
+    exe = find_exe(sys.argv, label="make-collage")
     total = format_count(exe)
     print(f"collage: exe={exe}")
     print(f"  live format count = {total}")
