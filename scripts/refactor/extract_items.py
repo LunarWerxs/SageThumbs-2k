@@ -72,11 +72,19 @@ def after_use_block(keep):
     return at
 
 
+def after_inner_docs(keep):
+    """A file with no `mod`/`use` block yet: past its `//!` docs and `#![...]` attributes."""
+    at = 0
+    while at < len(keep) and keep[at].startswith(("//!", "#![")):
+        at += 1
+    return at
+
+
 def insert_point(keep):
     at = after_mod_block(keep)
     if at is None:
         at = after_use_block(keep)
-    return at or 0
+    return at or after_inner_docs(keep)
 
 
 def list_items(parsed):

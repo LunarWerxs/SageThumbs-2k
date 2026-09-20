@@ -140,11 +140,11 @@ def reexports(lines, found, child):
         kind, _, name = key.partition(" ")
         vis = declared_vis(lines[s:e])
         if vis and kind not in ("impl", "macro"):
-            # a `#[cfg(test)]` item's re-export must carry the same gate or the non-test build breaks
-            test_only = any(ln.strip() == "#[cfg(test)]" for ln in lines[s:e] if ln.startswith("#"))
-            by_vis.setdefault((vis, test_only), []).append(name)
+            # a gated item's re-export must carry the same `#[cfg(...)]` or the other build breaks
+            cfgs = tuple(ln.strip() for ln in lines[s:e] if ln.startswith("#[cfg("))
+            by_vis.setdefault((vis, cfgs), []).append(name)
     out = []
-    for (vis, test_only), names in sorted(by_vis.items()):
-        out += ["#[cfg(test)]"] if test_only else []
+    for (vis, cfgs), names in sorted(by_vis.items()):
+        out += list(cfgs)
         out.append(f"{vis} use {child}::{{{', '.join(names)}}};")
     return out
