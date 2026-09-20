@@ -337,12 +337,17 @@ accumulated reputation (`Microsoft ID Verified CS AOC CA 04` is the one on our p
 reputation is earned per publisher over downloads. The signature is what stops the
 machine-learning "unknown binary" verdicts and lets that counter go up at all.
 
-Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## 3.0.0`
-(the exporter takes exactly that heading); bump `version` in `Cargo.toml` and the
-`Version="…"` attribute in `scripts/packaging/AppxManifest.xml` to `3.0.0` / `3.0.0.0` (the
-consistency check refuses a mismatch); and rewrite the README FAQ answer "Why did Windows or
-my antivirus flag the installer?", which today correctly says the installer is unsigned and
-signing is planned. On release day that becomes: 3.0 and later are signed by LUNARWERX LLC
+Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## <version>`
+(the exporter takes exactly that heading, and refuses a section that has more than one); bump
+`version` in `Cargo.toml` and the `Version="…"` attribute in
+`scripts/packaging/AppxManifest.xml` to `X.Y.Z` / `X.Y.Z.0` (the consistency check refuses a
+mismatch), then refresh `Cargo.lock` so the workspace members' recorded version moves with it.
+The version numbers in the rest of this section are **3.0.0 because that is the release it was
+written for**; they are not the version you are cutting.
+
+The last item was one-off and is DONE: rewriting the README FAQ answer "Why did Windows or
+my antivirus flag the installer?", which before 3.0 said the installer was unsigned and
+signing was planned. On release day that became: 3.0 and later are signed by LUNARWERX LLC
 through Azure Artifact Signing; the machine-learning "unknown binary" verdicts are what the
 signature removes; SmartScreen's reputation prompt can still appear for a while because
 reputation is earned per publisher over downloads, and the More info / Run anyway steps stay.

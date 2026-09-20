@@ -996,7 +996,8 @@ end;
 // read by NotifyUninstall. Reason is a short bucket key; Note and Contact are optional text.
 // ResetThumbCache is the survey form's one functional checkbox: whether usPostUninstall may
 // schedule the thumbnail-cache wipe (ScheduleThumbnailCacheReset). It defaults to False and is
-// only ever set by that interactive form or the /RESETTHUMBCACHE=1 switch, so an unattended
+// only ever set by that interactive form or the bare /RESETTHUMBCACHE switch (usPostUninstall
+// CompareTexts the WHOLE argument, so `/RESETTHUMBCACHE=1` does NOT match), so an unattended
 // uninstall keeps the user's cache.
 var
   UninstallReason: String;
