@@ -83,6 +83,13 @@ fn be_n(b: &[u8], o: usize, n: usize) -> Option<u64> {
     Some(s.iter().fold(0u64, |a, &x| (a << 8) | x as u64))
 }
 
+/// The body offset and length of the first box of type `want`, if present.
+fn find_box(kids: &[([u8; 4], usize, usize)], want: &[u8; 4]) -> Option<(usize, usize)> {
+    kids.iter()
+        .find(|(t, _, _)| t == want)
+        .map(|&(_, o, l)| (o, l))
+}
+
 /// Everything `meta` declares, with locations filled in from `iloc` where we can
 /// read them unambiguously. Empty for a non-ISOBMFF file.
 pub(crate) fn items(bytes: &[u8]) -> Vec<Item> {
@@ -103,18 +110,10 @@ pub(crate) fn items(bytes: &[u8]) -> Vec<Item> {
     let kids = boxes(children, moff + 4);
 
     let mut out: Vec<Item> = Vec::new();
-    if let Some((o, l)) = kids
-        .iter()
-        .find(|(t, _, _)| t == b"iinf")
-        .map(|&(_, o, l)| (o, l))
-    {
+    if let Some((o, l)) = find_box(&kids, b"iinf") {
         out = parse_iinf(bytes, o, l);
     }
-    if let Some((o, l)) = kids
-        .iter()
-        .find(|(t, _, _)| t == b"iloc")
-        .map(|&(_, o, l)| (o, l))
-    {
+    if let Some((o, l)) = find_box(&kids, b"iloc") {
         let locs = parse_iloc(bytes, o, l);
         for it in out.iter_mut() {
             it.extent = locs.iter().find(|(id, _)| *id == it.id).map(|(_, e)| *e);
