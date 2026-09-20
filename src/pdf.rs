@@ -262,20 +262,7 @@ fn render_page_of(doc: &PdfDocument, page_index: u32, width: u32) -> Result<Vec<
     let (pw, ph) = (size.Width.max(1.0), size.Height.max(1.0));
     let dw = width.max(1);
     let dh = ((ph / pw) * dw as f32).round().max(1.0) as u32;
-
-    let out = InMemoryRandomAccessStream::new()?;
-    let opts = PdfPageRenderOptions::new()?;
-    opts.SetDestinationWidth(dw)?;
-    opts.SetDestinationHeight(dh)?;
-    block_action(&page.RenderWithOptionsToStreamAsync(&out, &opts)?)?;
-
-    out.Seek(0)?;
-    let len = out.Size()? as u32;
-    let reader = DataReader::CreateDataReader(&out)?;
-    block_op(&reader.LoadAsync(len)?)?;
-    let mut buf = vec![0u8; len as usize];
-    reader.ReadBytes(&mut buf)?;
-    Ok(buf)
+    rasterize_page_to_png(&page, dw, dh)
 }
 
 fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
@@ -343,21 +330,23 @@ const WAIT_BUDGET: u32 = 30_000; // ~30 s at 1 ms/poll
 /// (windows-future's event-based `.join()` lives on a private trait, so we poll
 /// `Status()` — fine on our dedicated render thread.)
 pub(crate) fn block_op<T: RuntimeType>(op: &IAsyncOperation<T>) -> Result<T> {
-    for _ in 0..WAIT_BUDGET {
-        if op.Status()? != AsyncStatus::Started {
-            return op.GetResults();
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    Err(E_FAIL.into())
+    wait_until_settled(|| op.Status())?;
+    op.GetResults()
 }
 
 /// Block until a WinRT `IAsyncAction` finishes. Shared with the lock-screen verb, which
 /// waits on `LockScreen::SetImageFileAsync` the same way.
 pub(crate) fn block_action(op: &IAsyncAction) -> Result<()> {
+    wait_until_settled(|| op.Status())?;
+    op.GetResults()
+}
+
+/// Poll `status` once a millisecond until the operation has left `Started`, giving up after
+/// [`WAIT_BUDGET`] polls so a pathological PDF cannot hang the thread.
+fn wait_until_settled(status: impl Fn() -> Result<AsyncStatus>) -> Result<()> {
     for _ in 0..WAIT_BUDGET {
-        if op.Status()? != AsyncStatus::Started {
-            return op.GetResults();
+        if status()? != AsyncStatus::Started {
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(1));
     }
