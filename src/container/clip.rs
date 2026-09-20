@@ -285,6 +285,30 @@ fn is_text_serial(s: u64) -> bool {
     s >= 13 && s % 2 == 1
 }
 
+/// SQLite 3-byte signed big-endian integer (serial type 3).
+fn i24_from_be(data: &[u8]) -> Option<i64> {
+    let b: [u8; 3] = data.try_into().ok()?;
+    let v = ((b[0] as i32) << 16) | ((b[1] as i32) << 8) | b[2] as i32;
+    Some(if b[0] & 0x80 != 0 {
+        (v - 0x0100_0000) as i64
+    } else {
+        v as i64
+    })
+}
+
+/// SQLite 6-byte signed big-endian integer (serial type 5).
+fn i48_from_be(data: &[u8]) -> Option<i64> {
+    let b: [u8; 6] = data.try_into().ok()?;
+    let mut buf = [0u8; 8];
+    buf[2..].copy_from_slice(&b);
+    let v = i64::from_be_bytes(buf);
+    Some(if b[0] & 0x80 != 0 {
+        v - (1i64 << 48)
+    } else {
+        v
+    })
+}
+
 /// Decode a SQLite INTEGER serial (types 0,1..6,8,9) to `i64`. `None` for anything else
 /// (TEXT/BLOB/NULL) — a `rootpage` column is always an integer in a well-formed schema.
 fn serial_to_i64(serial: u64, data: &[u8]) -> Option<i64> {
@@ -293,30 +317,53 @@ fn serial_to_i64(serial: u64, data: &[u8]) -> Option<i64> {
         9 => Some(1),
         1 => Some(*data.first()? as i8 as i64),
         2 => Some(i16::from_be_bytes(data.try_into().ok()?) as i64),
-        3 => {
-            let b: [u8; 3] = data.try_into().ok()?;
-            let v = ((b[0] as i32) << 16) | ((b[1] as i32) << 8) | b[2] as i32;
-            Some(if b[0] & 0x80 != 0 {
-                (v - 0x0100_0000) as i64
-            } else {
-                v as i64
-            })
-        }
+        3 => i24_from_be(data),
         4 => Some(i32::from_be_bytes(data.try_into().ok()?) as i64),
-        5 => {
-            let b: [u8; 6] = data.try_into().ok()?;
-            let mut buf = [0u8; 8];
-            buf[2..].copy_from_slice(&b);
-            let v = i64::from_be_bytes(buf);
-            Some(if b[0] & 0x80 != 0 {
-                v - (1i64 << 48)
-            } else {
-                v
-            })
-        }
+        5 => i48_from_be(data),
         6 => Some(i64::from_be_bytes(data.try_into().ok()?)),
         _ => None,
     }
+}
+
+/// Resolve a table-leaf page to `(page offset, b-tree header offset, clamped cell count)`, or
+/// `None` when the page is unreadable, is not a table leaf, or its header is short. Clamping
+/// the count to `ptr_space / 2` keeps a lying cell count from reading the next page's bytes.
+fn table_leaf_page(db: &[u8], page_size: usize, pg: usize) -> Option<(usize, usize, usize)> {
+    let (ptype, hdr_off) = page_type(db, page_size, pg)?;
+    if ptype != TABLE_LEAF {
+        return None;
+    }
+    let page_off = (pg - 1) * page_size;
+    let hdr_in_page = hdr_off - page_off;
+    let ptr_space = page_size.saturating_sub(hdr_in_page + 8);
+    let max_cells_in_page = ptr_space / 2;
+    let (Some(&nh), Some(&nl)) = (db.get(hdr_off + 3), db.get(hdr_off + 4)) else {
+        return None;
+    };
+    let num_cells = (u16::from_be_bytes([nh, nl]) as usize).min(max_cells_in_page);
+    Some((page_off, hdr_off, num_cells))
+}
+
+/// Reconstruct one table-leaf cell and, if it is the `sqlite_master` row for `name`, its
+/// rootpage. `None` covers an unparsable cell, a column mismatch, or a non-positive rootpage —
+/// all of which the caller skips.
+fn table_root_from_cell(
+    db: &[u8],
+    cell_off: usize,
+    page_size: usize,
+    usable: usize,
+    name: &[u8],
+    alloc_budget: &mut usize,
+) -> Option<usize> {
+    let rec = cell_payload(db, cell_off, page_size, usable, alloc_budget)?;
+    // sqlite_master's columns are (type, name, tbl_name, rootpage, sql).
+    let (tn_serial, tn_data) = nth_column(&rec, 2)?;
+    if !is_text_serial(tn_serial) || tn_data != name {
+        return None;
+    }
+    let (rp_serial, rp_data) = nth_column(&rec, 3)?;
+    let root = serial_to_i64(rp_serial, rp_data)?;
+    (root > 0).then_some(root as usize)
 }
 
 /// Look up `sqlite_master` (always rooted at page 1) for a table named `name`, returning its
@@ -334,20 +381,9 @@ fn find_table_rootpage(
     let mut leaves = Vec::new();
     collect_leaf_pages(db, page_size, 1, &mut leaves);
     for pg in leaves {
-        let Some((ptype, hdr_off)) = page_type(db, page_size, pg) else {
+        let Some((page_off, hdr_off, num_cells)) = table_leaf_page(db, page_size, pg) else {
             continue;
         };
-        if ptype != TABLE_LEAF {
-            continue;
-        }
-        let page_off = (pg - 1) * page_size;
-        let hdr_in_page = hdr_off - page_off;
-        let ptr_space = page_size.saturating_sub(hdr_in_page + 8);
-        let max_cells_in_page = ptr_space / 2;
-        let (Some(&nh), Some(&nl)) = (db.get(hdr_off + 3), db.get(hdr_off + 4)) else {
-            continue;
-        };
-        let num_cells = (u16::from_be_bytes([nh, nl]) as usize).min(max_cells_in_page);
         for c in 0..num_cells {
             if *cell_budget == 0 {
                 return None;
@@ -358,27 +394,21 @@ fn find_table_rootpage(
                 continue;
             };
             let cell_off = page_off + u16::from_be_bytes([ph, pl]) as usize;
-            let Some(rec) = cell_payload(db, cell_off, page_size, usable, alloc_budget) else {
-                continue;
-            };
-            // sqlite_master's columns are (type, name, tbl_name, rootpage, sql).
-            let Some((tn_serial, tn_data)) = nth_column(&rec, 2) else {
-                continue;
-            };
-            if !is_text_serial(tn_serial) || tn_data != name {
-                continue;
-            }
-            let Some((rp_serial, rp_data)) = nth_column(&rec, 3) else {
-                continue;
-            };
-            if let Some(root) = serial_to_i64(rp_serial, rp_data) {
-                if root > 0 {
-                    return Some(root as usize);
-                }
+            if let Some(root) =
+                table_root_from_cell(db, cell_off, page_size, usable, name, alloc_budget)
+            {
+                return Some(root);
             }
         }
     }
     None
+}
+
+/// Keep `png` when it is larger than the current best (a tie keeps the earlier one).
+fn keep_larger(best: &mut Option<Vec<u8>>, png: Vec<u8>) {
+    if best.as_ref().is_none_or(|b: &Vec<u8>| png.len() > b.len()) {
+        *best = Some(png);
+    }
 }
 
 /// Scan `pages` (table-leaf page numbers) for the largest PNG blob among their cells.
@@ -392,26 +422,9 @@ fn scan_pages_for_png(
 ) -> Option<Vec<u8>> {
     let mut best: Option<Vec<u8>> = None;
     'pages: for pg in pages {
-        let Some((ptype, hdr_off)) = page_type(db, page_size, pg) else {
+        let Some((page_off, hdr_off, num_cells)) = table_leaf_page(db, page_size, pg) else {
             continue;
         };
-        if ptype != TABLE_LEAF {
-            continue; // table-leaf pages only (where row payloads live)
-        }
-        let page_off = (pg - 1) * page_size;
-        let (Some(&nh), Some(&nl)) = (db.get(hdr_off + 3), db.get(hdr_off + 4)) else {
-            continue;
-        };
-        // Clamp to what THIS page can actually hold: the cell-pointer array
-        // (2 bytes/entry) starts right after the 8-byte leaf header and cannot
-        // extend past the page itself. Without this, a page can lie about its
-        // cell count (up to 65535) and the loop below reads cell pointers out
-        // of the NEXT page's bytes — still in-bounds for `db.get`, so it never
-        // errors, it just does unbounded cross-page busywork.
-        let hdr_in_page = hdr_off - page_off;
-        let ptr_space = page_size.saturating_sub(hdr_in_page + 8);
-        let max_cells_in_page = ptr_space / 2;
-        let num_cells = (u16::from_be_bytes([nh, nl]) as usize).min(max_cells_in_page);
         for c in 0..num_cells {
             if *cell_budget == 0 || *alloc_budget == 0 {
                 break 'pages; // scan-wide work budget spent
@@ -423,9 +436,7 @@ fn scan_pages_for_png(
             };
             let cell_off = page_off + u16::from_be_bytes([ph, pl]) as usize;
             if let Some(png) = cell_png(db, cell_off, page_size, usable, alloc_budget) {
-                if best.as_ref().is_none_or(|b: &Vec<u8>| png.len() > b.len()) {
-                    best = Some(png);
-                }
+                keep_larger(&mut best, png);
             }
         }
     }
@@ -488,6 +499,26 @@ fn read_sqlite_preview(db: &[u8]) -> Option<Vec<u8>> {
     )
 }
 
+/// Follow a cell's overflow-page chain from `next`, appending up to `payload_len` bytes to
+/// `payload` (each page contributes `usable - 4` bytes after its 4-byte next pointer).
+fn read_overflow_chain(
+    db: &[u8],
+    mut next: usize,
+    payload: &mut Vec<u8>,
+    payload_len: usize,
+    page_size: usize,
+    usable: usize,
+) -> Option<()> {
+    while next != 0 && payload.len() < payload_len {
+        let po = (next - 1).checked_mul(page_size)?;
+        let nxt = u32::from_be_bytes(db.get(po..po + 4)?.try_into().ok()?) as usize;
+        let take = (usable - 4).min(payload_len - payload.len());
+        payload.extend_from_slice(db.get(po + 4..po + 4 + take)?);
+        next = nxt;
+    }
+    Some(())
+}
+
 /// Reconstruct a table-leaf cell's payload, following the overflow-page chain if the record
 /// spilled past the leaf cell itself. `alloc_budget` is the shared scan-wide allocation
 /// budget: charged before the `Vec::with_capacity` below so a page with many large cells
@@ -516,14 +547,8 @@ fn cell_payload(
     payload.extend_from_slice(db.get(payload_start..payload_start + local)?);
     if payload_len > local {
         let ov = payload_start + local;
-        let mut next = u32::from_be_bytes(db.get(ov..ov + 4)?.try_into().ok()?) as usize;
-        while next != 0 && payload.len() < payload_len {
-            let po = (next - 1).checked_mul(page_size)?;
-            let nxt = u32::from_be_bytes(db.get(po..po + 4)?.try_into().ok()?) as usize;
-            let take = (usable - 4).min(payload_len - payload.len());
-            payload.extend_from_slice(db.get(po + 4..po + 4 + take)?);
-            next = nxt;
-        }
+        let next = u32::from_be_bytes(db.get(ov..ov + 4)?.try_into().ok()?) as usize;
+        read_overflow_chain(db, next, &mut payload, payload_len, page_size, usable)?;
     }
     Some(payload)
 }
@@ -546,16 +571,10 @@ fn cell_png(
     )?)
 }
 
-/// Walk a record's serial types and return the first BLOB column that's a PNG.
-fn find_png_blob(rec: &[u8]) -> Option<Vec<u8>> {
-    let (hdr_len, n) = varint(rec, 0)?;
-    let hdr_len = hdr_len as usize;
-    if hdr_len > rec.len() {
-        return None;
-    }
-    // Column data starts right after the record header.
+/// Walk a record's column serial types from header offset `o`, returning the first BLOB
+/// column that starts with the PNG magic. Column data begins at `hdr_len`.
+fn first_png_column(rec: &[u8], hdr_len: usize, mut o: usize) -> Option<Vec<u8>> {
     let mut data_off = hdr_len;
-    let mut o = n;
     while o < hdr_len {
         let (serial, sn) = varint(rec, o)?;
         o += sn;
@@ -571,6 +590,16 @@ fn find_png_blob(rec: &[u8]) -> Option<Vec<u8>> {
         data_off = end;
     }
     None
+}
+
+/// Walk a record's serial types and return the first BLOB column that's a PNG.
+fn find_png_blob(rec: &[u8]) -> Option<Vec<u8>> {
+    let (hdr_len, n) = varint(rec, 0)?;
+    let hdr_len = hdr_len as usize;
+    if hdr_len > rec.len() {
+        return None;
+    }
+    first_png_column(rec, hdr_len, n)
 }
 
 /// Test-only builders shared with the `container`/`decode` oversized-path tests:

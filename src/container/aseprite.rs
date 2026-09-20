@@ -121,6 +121,32 @@ fn parse_layer(d: &[u8]) -> Option<Layer> {
     })
 }
 
+/// Cel dimensions are drawable: non-zero, within [`MAX_DIM`] and [`MAX_CANVAS_PIXELS`].
+fn cel_dims_ok(w: u32, h: u32) -> bool {
+    w != 0
+        && h != 0
+        && w <= MAX_DIM
+        && h <= MAX_DIM
+        && u64::from(w) * u64::from(h) <= MAX_CANVAS_PIXELS
+}
+
+/// A cel's `need` bytes: the raw slice for raw (0) cels, or a bounded inflate for zlib (2)
+/// cels. A short body or a stream shorter than `need` is `None`.
+fn cel_pixels(kind: u16, body: &[u8], need: usize) -> Option<Vec<u8>> {
+    let pixels = if kind == 0 {
+        body.get(..need)?.to_vec()
+    } else {
+        // Bounded inflate: a stream that would grow past the cel's own size is refused, not
+        // truncated (`read_bounded` errors past the cap), and a short one is rejected below.
+        let dec = flate2::read::ZlibDecoder::new(body);
+        crate::decode::read_bounded(dec.take(need as u64 + 1), need as u64).ok()?
+    };
+    if pixels.len() != need {
+        return None;
+    }
+    Some(pixels)
+}
+
 /// Cel chunk: layer(2) x(2) y(2) opacity(1) type(2) z(2) reserved(5), then for raw (0) and
 /// zlib (2) cels width(2) height(2) and the pixels. Linked (1) and tilemap (3) cels are skipped.
 fn parse_cel(d: &[u8], depth: Depth) -> Option<Cel> {
@@ -135,27 +161,11 @@ fn parse_cel(d: &[u8], depth: Depth) -> Option<Cel> {
     }
     let w = u32::from(le16(d, 16)?);
     let h = u32::from(le16(d, 18)?);
-    if w == 0
-        || h == 0
-        || w > MAX_DIM
-        || h > MAX_DIM
-        || u64::from(w) * u64::from(h) > MAX_CANVAS_PIXELS
-    {
+    if !cel_dims_ok(w, h) {
         return None;
     }
     let need = (w as usize) * (h as usize) * depth.bytes_per_pixel();
-    let body = d.get(20..)?;
-    let pixels = if kind == 0 {
-        body.get(..need)?.to_vec()
-    } else {
-        // Bounded inflate: a stream that would grow past the cel's own size is refused, not
-        // truncated (`read_bounded` errors past the cap), and a short one is rejected below.
-        let dec = flate2::read::ZlibDecoder::new(body);
-        crate::decode::read_bounded(dec.take(need as u64 + 1), need as u64).ok()?
-    };
-    if pixels.len() != need {
-        return None;
-    }
+    let pixels = cel_pixels(kind, d.get(20..)?, need)?;
     Some(Cel {
         layer,
         x,
@@ -190,6 +200,41 @@ fn parse_new_palette(d: &[u8], palette: &mut [[u8; 4]; 256]) -> Option<()> {
     Some(())
 }
 
+/// One palette RGB triplet at `off`: 8-bit straight, or 6-bit VGA scaled by 4, alpha opaque.
+fn palette_triplet(d: &[u8], off: usize, vga: bool) -> Option<[u8; 4]> {
+    let rgb = d.get(off..off + 3)?;
+    let scale = |v: u8| if vga { v.saturating_mul(4) } else { v };
+    Some([scale(rgb[0]), scale(rgb[1]), scale(rgb[2]), 255])
+}
+
+/// One palette packet: skip(1) count(1, 0 = 256) then RGB triplets. Returns the advanced
+/// `(offset, palette index)` and whether the palette filled past index 255 (ending the chunk).
+fn parse_palette_packet(
+    d: &[u8],
+    mut off: usize,
+    mut index: usize,
+    vga: bool,
+    palette: &mut [[u8; 4]; 256],
+) -> Option<(usize, usize, bool)> {
+    let skip = usize::from(*d.get(off)?);
+    let count = match *d.get(off + 1)? {
+        0 => 256,
+        n => usize::from(n),
+    };
+    off += 2;
+    index += skip;
+    for _ in 0..count {
+        let rgba = palette_triplet(d, off, vga)?;
+        if index > 255 {
+            return Some((off, index, true));
+        }
+        palette[index] = rgba;
+        index += 1;
+        off += 3;
+    }
+    Some((off, index, false))
+}
+
 /// Old palette chunks (`0x0004` 8-bit RGB, `0x0011` 6-bit VGA RGB): packets of skip(1)
 /// count(1, 0 = 256) then RGB triplets. Alpha is always opaque here.
 fn parse_old_palette(d: &[u8], palette: &mut [[u8; 4]; 256], vga: bool) -> Option<()> {
@@ -197,22 +242,11 @@ fn parse_old_palette(d: &[u8], palette: &mut [[u8; 4]; 256], vga: bool) -> Optio
     let mut off = 2;
     let mut index = 0usize;
     for _ in 0..packets {
-        let skip = usize::from(*d.get(off)?);
-        let count = match *d.get(off + 1)? {
-            0 => 256,
-            n => usize::from(n),
-        };
-        off += 2;
-        index += skip;
-        for _ in 0..count {
-            let rgb = d.get(off..off + 3)?;
-            if index > 255 {
-                return Some(());
-            }
-            let scale = |v: u8| if vga { v.saturating_mul(4) } else { v };
-            palette[index] = [scale(rgb[0]), scale(rgb[1]), scale(rgb[2]), 255];
-            index += 1;
-            off += 3;
+        let (o, i, done) = parse_palette_packet(d, off, index, vga, palette)?;
+        off = o;
+        index = i;
+        if done {
+            return Some(());
         }
     }
     Some(())
@@ -294,23 +328,8 @@ impl Frame {
     /// rest rather than growing.
     fn absorb(&mut self, kind: u16, data: &[u8], depth: Depth) {
         match kind {
-            0x2004 => {
-                if self.layers.len() < MAX_LAYERS {
-                    self.layers.extend(parse_layer(data));
-                }
-            }
-            0x2005 => {
-                if self.cels.len() < MAX_CELS && !self.over_budget {
-                    if let Some(cel) = parse_cel(data, depth) {
-                        self.cel_bytes = self.cel_bytes.saturating_add(cel.pixels.len());
-                        if self.cel_bytes > MAX_TOTAL_CEL_BYTES {
-                            self.over_budget = true;
-                        } else {
-                            self.cels.push(cel);
-                        }
-                    }
-                }
-            }
+            0x2004 => self.absorb_layer(data),
+            0x2005 => self.absorb_cel(data, depth),
             0x2019 => {
                 if parse_new_palette(data, &mut self.palette).is_some() {
                     self.have_new_palette = true;
@@ -324,34 +343,54 @@ impl Frame {
             _ => {}
         }
     }
+
+    /// `0x2004`: append a parsed layer while under [`MAX_LAYERS`].
+    fn absorb_layer(&mut self, data: &[u8]) {
+        if self.layers.len() < MAX_LAYERS {
+            self.layers.extend(parse_layer(data));
+        }
+    }
+
+    /// `0x2005`: append a parsed cel while under [`MAX_CELS`] and the total-byte budget; the
+    /// first cel that would pass [`MAX_TOTAL_CEL_BYTES`] flags the frame over budget.
+    fn absorb_cel(&mut self, data: &[u8], depth: Depth) {
+        if self.cels.len() < MAX_CELS && !self.over_budget {
+            if let Some(cel) = parse_cel(data, depth) {
+                self.cel_bytes = self.cel_bytes.saturating_add(cel.pixels.len());
+                if self.cel_bytes > MAX_TOTAL_CEL_BYTES {
+                    self.over_budget = true;
+                } else {
+                    self.cels.push(cel);
+                }
+            }
+        }
+    }
 }
 
-/// Frame 0's chunk run, bounded by the frame's own length and [`MAX_CHUNKS`]; a chunk cut
-/// short by the file's end keeps whatever parsed before it.
-fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
-    let mut off = HEADER_LEN;
-    let frame_len = le32(bytes, off)? as usize;
-    if le16(bytes, off + 4)? != FRAME_MAGIC {
-        return None;
-    }
+/// The frame header's chunk count: the old 16-bit field, unless it is the `0xFFFF` overflow
+/// marker (or zero while the 32-bit field is set), in which case the new 32-bit count wins.
+fn chunk_count(bytes: &[u8], off: usize) -> Option<u32> {
     let old_count = u32::from(le16(bytes, off + 6)?);
     let new_count = le32(bytes, off + 12)?;
-    let chunk_count = if old_count == 0xFFFF || (old_count == 0 && new_count != 0) {
-        new_count
-    } else {
-        old_count
-    };
-    let frame_end = off.checked_add(frame_len)?.min(bytes.len());
-    off += FRAME_HEADER_LEN;
+    Some(
+        if old_count == 0xFFFF || (old_count == 0 && new_count != 0) {
+            new_count
+        } else {
+            old_count
+        },
+    )
+}
 
-    let mut frame = Frame {
-        layers: Vec::new(),
-        cels: Vec::new(),
-        palette: [[0u8, 0, 0, 255]; 256],
-        have_new_palette: false,
-        cel_bytes: 0,
-        over_budget: false,
-    };
+/// Feed up to `chunk_count` chunks from `off` to `frame_end` into `frame`. A chunk cut short by
+/// the frame's end keeps whatever parsed before it; a malformed header is a hard failure.
+fn absorb_chunks(
+    frame: &mut Frame,
+    bytes: &[u8],
+    mut off: usize,
+    frame_end: usize,
+    chunk_count: u32,
+    depth: Depth,
+) -> Option<()> {
     for _ in 0..chunk_count.min(MAX_CHUNKS) {
         if off + 6 > frame_end {
             break;
@@ -365,6 +404,30 @@ fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
         frame.absorb(kind, &bytes[off + 6..end], depth);
         off = end;
     }
+    Some(())
+}
+
+/// Frame 0's chunk run, bounded by the frame's own length and [`MAX_CHUNKS`]; a chunk cut
+/// short by the file's end keeps whatever parsed before it.
+fn read_frame0(bytes: &[u8], depth: Depth) -> Option<Frame> {
+    let mut off = HEADER_LEN;
+    let frame_len = le32(bytes, off)? as usize;
+    if le16(bytes, off + 4)? != FRAME_MAGIC {
+        return None;
+    }
+    let chunk_count = chunk_count(bytes, off)?;
+    let frame_end = off.checked_add(frame_len)?.min(bytes.len());
+    off += FRAME_HEADER_LEN;
+
+    let mut frame = Frame {
+        layers: Vec::new(),
+        cels: Vec::new(),
+        palette: [[0u8, 0, 0, 255]; 256],
+        have_new_palette: false,
+        cel_bytes: 0,
+        over_budget: false,
+    };
+    absorb_chunks(&mut frame, bytes, off, frame_end, chunk_count, depth)?;
     if frame.over_budget {
         return None;
     }
@@ -531,6 +594,60 @@ pub(crate) mod synth {
         v
     }
 
+    /// The `0x0004` old-palette chunk for `old_palette` (index = entry number; 256 entries
+    /// encode as a zero count).
+    fn old_palette_chunk(old_palette: &[[u8; 3]]) -> Vec<u8> {
+        let mut b = 1u16.to_le_bytes().to_vec(); // one packet
+        b.push(0); // skip 0
+        b.push(if old_palette.len() == 256 {
+            0
+        } else {
+            old_palette.len() as u8
+        });
+        for c in old_palette {
+            b.extend_from_slice(c);
+        }
+        chunk(0x0004, &b)
+    }
+
+    /// The `0x2004` layer chunk for layer `i`.
+    fn layer_chunk(i: usize, l: &LayerSpec) -> Vec<u8> {
+        let mut b = Vec::new();
+        let flags: u16 = (l.visible as u16) | 2 | if l.background { 8 } else { 0 };
+        b.extend_from_slice(&flags.to_le_bytes());
+        b.extend_from_slice(&(if l.is_group { 1u16 } else { 0 }).to_le_bytes());
+        b.extend_from_slice(&l.child_level.to_le_bytes());
+        b.extend_from_slice(&0u16.to_le_bytes()); // default width
+        b.extend_from_slice(&0u16.to_le_bytes()); // default height
+        b.extend_from_slice(&0u16.to_le_bytes()); // blend: normal
+        b.push(l.opacity);
+        b.extend_from_slice(&[0, 0, 0]);
+        b.extend(string(&format!("layer{i}")));
+        chunk(0x2004, &b)
+    }
+
+    /// The `0x2005` cel chunk for `c`, zlib-compressing the pixels when `c.zlib`.
+    fn cel_chunk(c: &CelSpec<'_>) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&c.layer.to_le_bytes());
+        b.extend_from_slice(&c.x.to_le_bytes());
+        b.extend_from_slice(&c.y.to_le_bytes());
+        b.push(c.opacity);
+        b.extend_from_slice(&(if c.zlib { 2u16 } else { 0 }).to_le_bytes());
+        b.extend_from_slice(&c.z.to_le_bytes());
+        b.extend_from_slice(&[0; 5]);
+        b.extend_from_slice(&c.w.to_le_bytes());
+        b.extend_from_slice(&c.h.to_le_bytes());
+        if c.zlib {
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            let _ = e.write_all(c.pixels);
+            b.extend(e.finish().unwrap_or_default());
+        } else {
+            b.extend_from_slice(c.pixels);
+        }
+        chunk(0x2005, &b)
+    }
+
     /// `depth` is 32 / 16 / 8; `old_palette` is the `0x0004` RGB list for indexed sprites (its
     /// index is the entry number); `transparent` is the header's transparent index.
     pub(crate) fn build(
@@ -545,54 +662,15 @@ pub(crate) mod synth {
         let mut chunks: Vec<u8> = Vec::new();
         let mut count = 0u32;
         if !old_palette.is_empty() {
-            let mut b = 1u16.to_le_bytes().to_vec(); // one packet
-            b.push(0); // skip 0
-            b.push(if old_palette.len() == 256 {
-                0
-            } else {
-                old_palette.len() as u8
-            });
-            for c in old_palette {
-                b.extend_from_slice(c);
-            }
-            chunks.extend(chunk(0x0004, &b));
+            chunks.extend(old_palette_chunk(old_palette));
             count += 1;
         }
         for (i, l) in layers.iter().enumerate() {
-            let mut b = Vec::new();
-            let flags: u16 = (l.visible as u16) | 2 | if l.background { 8 } else { 0 };
-            b.extend_from_slice(&flags.to_le_bytes());
-            b.extend_from_slice(&(if l.is_group { 1u16 } else { 0 }).to_le_bytes());
-            b.extend_from_slice(&l.child_level.to_le_bytes());
-            b.extend_from_slice(&0u16.to_le_bytes()); // default width
-            b.extend_from_slice(&0u16.to_le_bytes()); // default height
-            b.extend_from_slice(&0u16.to_le_bytes()); // blend: normal
-            b.push(l.opacity);
-            b.extend_from_slice(&[0, 0, 0]);
-            b.extend(string(&format!("layer{i}")));
-            chunks.extend(chunk(0x2004, &b));
+            chunks.extend(layer_chunk(i, l));
             count += 1;
         }
         for c in cels {
-            let mut b = Vec::new();
-            b.extend_from_slice(&c.layer.to_le_bytes());
-            b.extend_from_slice(&c.x.to_le_bytes());
-            b.extend_from_slice(&c.y.to_le_bytes());
-            b.push(c.opacity);
-            b.extend_from_slice(&(if c.zlib { 2u16 } else { 0 }).to_le_bytes());
-            b.extend_from_slice(&c.z.to_le_bytes());
-            b.extend_from_slice(&[0; 5]);
-            b.extend_from_slice(&c.w.to_le_bytes());
-            b.extend_from_slice(&c.h.to_le_bytes());
-            if c.zlib {
-                let mut e =
-                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-                let _ = e.write_all(c.pixels);
-                b.extend(e.finish().unwrap_or_default());
-            } else {
-                b.extend_from_slice(c.pixels);
-            }
-            chunks.extend(chunk(0x2005, &b));
+            chunks.extend(cel_chunk(c));
             count += 1;
         }
 

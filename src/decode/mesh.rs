@@ -138,22 +138,36 @@ pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     for line in text.lines() {
         let l = line.trim_start();
         if let Some(rest) = l.strip_prefix("vertex") {
-            for tok in rest.split_ascii_whitespace().take(3) {
-                cur.push(tok.parse::<f32>().ok().filter(|v| v.is_finite())?);
-            }
+            parse_ascii_stl_vertex(rest, &mut cur)?;
         } else if l.starts_with("endfacet") {
-            if cur.len() == 9 {
-                tris.push([
-                    cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7], cur[8],
-                ]);
-                if tris.len() >= MAX_TRIS {
-                    break;
-                }
+            if flush_ascii_stl_facet(&mut tris, &mut cur) {
+                break;
             }
-            cur.clear();
         }
     }
     Some(tris)
+}
+
+/// Push the three x/y/z tokens after a `vertex` keyword onto `cur`. `None` when a token
+/// is missing, unparseable or non-finite, matching the original `?`-chained behaviour.
+fn parse_ascii_stl_vertex(rest: &str, cur: &mut Vec<f32>) -> Option<()> {
+    for tok in rest.split_ascii_whitespace().take(3) {
+        cur.push(tok.parse::<f32>().ok().filter(|v| v.is_finite())?);
+    }
+    Some(())
+}
+
+/// Flush a completed 9-float facet from `cur` into `tris`; returns whether the `MAX_TRIS`
+/// cap was reached (the caller then stops).
+fn flush_ascii_stl_facet(tris: &mut Vec<[f32; 9]>, cur: &mut Vec<f32>) -> bool {
+    let capped = cur.len() == 9 && {
+        tris.push([
+            cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7], cur[8],
+        ]);
+        tris.len() >= MAX_TRIS
+    };
+    cur.clear();
+    capped
 }
 
 /// Parse one OBJ `v` line's x/y/z. `None` propagates as a whole-file parse
@@ -263,33 +277,13 @@ impl PlyHeaderState {
     /// malformed element count, since the whole header parse should decline then.
     fn handle_line(&mut self, l: &str) -> Option<()> {
         if let Some(fmt) = l.strip_prefix("format ") {
-            if fmt.starts_with("binary_little_endian") {
-                self.ascii = false;
-            } else if !fmt.starts_with("ascii") {
-                return None; // big-endian: not worth the matrix of cases
-            }
-        } else if let Some(rest) = l.strip_prefix("element vertex ") {
-            self.n_verts = rest.trim().parse().ok()?;
-            self.in_vertex = true;
-        } else if let Some(rest) = l.strip_prefix("element face ") {
-            self.n_faces = rest.trim().parse().ok()?;
-            self.in_vertex = false;
-        } else if l.starts_with("element ") {
-            self.in_vertex = false;
-        } else if l.starts_with("property ") && self.in_vertex {
-            self.vert_props += 1;
-            // The NAME alone (`x`/`y`/`z`) is not enough: `read_ply_binary` always reads a
-            // 4-byte `f32` per property, so a declared type other than `float`/`float32` —
-            // `double` (CloudCompare, Open3D, PCL all write it), a `short`, whatever — would
-            // be read at the wrong stride, producing garbage rather than a decode error.
-            // Requiring the type here means such a file simply never reaches `xyz_lead >= 3`
-            // and the whole parse declines instead of misreading.
-            let ty = l.split_ascii_whitespace().nth(1).unwrap_or("");
-            let is_float_xyz = matches!(ty, "float" | "float32")
-                && (l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z"));
-            if is_float_xyz && self.vert_props == self.xyz_lead + 1 && self.vert_props <= 3 {
-                self.xyz_lead += 1;
-            }
+            return handle_format_line(self, fmt);
+        }
+        if l.starts_with("element ") {
+            return handle_element_line(self, l);
+        }
+        if l.starts_with("property ") && self.in_vertex {
+            handle_property_line(self, l);
         }
         Some(())
     }
@@ -301,6 +295,49 @@ impl PlyHeaderState {
             && self.n_verts > 0
             && self.n_verts <= MAX_VERTS
             && self.n_faces <= MAX_TRIS * 2
+    }
+}
+
+/// Apply a `format ` header line: ASCII stays ASCII, `binary_little_endian` flips to
+/// binary, any other declared format (big-endian) declines the whole header.
+fn handle_format_line(state: &mut PlyHeaderState, fmt: &str) -> Option<()> {
+    if fmt.starts_with("binary_little_endian") {
+        state.ascii = false;
+    } else if !fmt.starts_with("ascii") {
+        return None; // big-endian: not worth the matrix of cases
+    }
+    Some(())
+}
+
+/// Apply an `element ...` header line: record the vertex/face count and whether the
+/// properties that follow belong to the vertex element. `None` on a malformed count.
+fn handle_element_line(state: &mut PlyHeaderState, l: &str) -> Option<()> {
+    if let Some(rest) = l.strip_prefix("element vertex ") {
+        state.n_verts = rest.trim().parse().ok()?;
+        state.in_vertex = true;
+    } else if let Some(rest) = l.strip_prefix("element face ") {
+        state.n_faces = rest.trim().parse().ok()?;
+        state.in_vertex = false;
+    } else if l.starts_with("element ") {
+        state.in_vertex = false;
+    }
+    Some(())
+}
+
+/// Fold one in-vertex `property ` header line into `state`, counting it and leading x/y/z
+/// when its declared type is a 4-byte float. The NAME alone (`x`/`y`/`z`) is not enough:
+/// `read_ply_binary` always reads a 4-byte `f32` per property, so a declared type other
+/// than `float`/`float32` — `double` (CloudCompare, Open3D, PCL all write it), a `short`,
+/// whatever — would be read at the wrong stride, producing garbage rather than a decode
+/// error. Requiring the type here means such a file simply never reaches `xyz_lead >= 3`
+/// and the whole parse declines instead of misreading.
+fn handle_property_line(state: &mut PlyHeaderState, l: &str) {
+    state.vert_props += 1;
+    let ty = l.split_ascii_whitespace().nth(1).unwrap_or("");
+    let is_float_xyz = matches!(ty, "float" | "float32")
+        && (l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z"));
+    if is_float_xyz && state.vert_props == state.xyz_lead + 1 && state.vert_props <= 3 {
+        state.xyz_lead += 1;
     }
 }
 
@@ -346,8 +383,14 @@ fn parse_ply_ascii_vertex(line: &str) -> Option<[f32; 3]> {
 fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f32; 9]>> {
     let text = core::str::from_utf8(body).ok()?;
     let mut lines = text.lines();
+    let verts = read_ply_ascii_verts(&mut lines, n_verts);
+    read_ply_ascii_faces(&mut lines, n_faces, &verts)
+}
+
+/// Read up to `n_verts` ASCII vertex lines, pushing a `[0.0; 3]` placeholder for a
+/// non-finite vertex so face indices stay aligned; a short/malformed line stops the loop.
+fn read_ply_ascii_verts(lines: &mut core::str::Lines<'_>, n_verts: usize) -> Vec<[f32; 3]> {
     let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
-    let mut tris: Vec<[f32; 9]> = Vec::new();
     for _ in 0..n_verts {
         let Some(line) = lines.next() else { break };
         let Some(v) = parse_ply_ascii_vertex(line) else {
@@ -359,6 +402,17 @@ fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f3
             verts.push([0.0; 3]);
         }
     }
+    verts
+}
+
+/// Read up to `n_faces` ASCII face lines, fan-triangulating each; returns the triangles
+/// built, stopping at a short/malformed count line or the `MAX_TRIS` cap.
+fn read_ply_ascii_faces(
+    lines: &mut core::str::Lines<'_>,
+    n_faces: usize,
+    verts: &[[f32; 3]],
+) -> Option<Vec<[f32; 9]>> {
+    let mut tris: Vec<[f32; 9]> = Vec::new();
     for _ in 0..n_faces {
         let Some(line) = lines.next() else { break };
         let mut it = line.split_ascii_whitespace();
@@ -368,7 +422,7 @@ fn read_ply_ascii(body: &[u8], n_verts: usize, n_faces: usize) -> Option<Vec<[f3
             .filter_map(|t| t.parse::<usize>().ok())
             .filter(|&i| i < verts.len())
             .collect();
-        fan(&mut tris, &verts, &idx);
+        fan(&mut tris, verts, &idx);
         if tris.len() >= MAX_TRIS {
             break;
         }
@@ -393,24 +447,34 @@ fn read_ply_binary(
     vert_props: usize,
 ) -> Option<Vec<[f32; 9]>> {
     let stride = vert_props.checked_mul(4)?;
+    let (verts, o) = read_ply_binary_verts(body, n_verts, stride);
+    Some(read_ply_binary_faces(body, o, n_faces, &verts))
+}
+
+/// Parse one binary vertex's leading x/y/z floats from a stride-sized slice; `None` when
+/// fewer than three 4-byte components are present.
+fn read_ply_binary_vertex(vbytes: &[u8]) -> Option<[f32; 3]> {
+    let mut v = [0f32; 3];
+    for (j, c) in v.iter_mut().enumerate() {
+        let b: [u8; 4] = vbytes.get(j * 4..j * 4 + 4)?.try_into().ok()?;
+        *c = f32::from_le_bytes(b);
+    }
+    Some(v)
+}
+
+/// Read the binary-little-endian vertex block into `verts` (pushing `[0.0; 3]` for a
+/// non-finite vertex so face indices stay aligned) until it runs out of bytes; returns the
+/// vertices and the byte offset where the face block starts.
+fn read_ply_binary_verts(body: &[u8], n_verts: usize, stride: usize) -> (Vec<[f32; 3]>, usize) {
     let mut verts: Vec<[f32; 3]> = Vec::with_capacity(n_verts.min(1 << 16));
     let mut o = 0usize;
     for _ in 0..n_verts {
         let Some(vbytes) = o.checked_add(stride).and_then(|end| body.get(o..end)) else {
             break; // vertex block ran out of bytes: keep whatever verts we already read
         };
-        let mut v = [0f32; 3];
-        let mut complete = true;
-        for (j, c) in v.iter_mut().enumerate() {
-            let Some(b) = vbytes.get(j * 4..j * 4 + 4).and_then(|s| s.try_into().ok()) else {
-                complete = false;
-                break;
-            };
-            *c = f32::from_le_bytes(b);
-        }
-        if !complete {
+        let Some(v) = read_ply_binary_vertex(vbytes) else {
             break;
-        }
+        };
         verts.push(if v.iter().all(|c| c.is_finite()) {
             v
         } else {
@@ -418,6 +482,38 @@ fn read_ply_binary(
         });
         o += stride;
     }
+    (verts, o)
+}
+
+/// Read one binary face's `cnt` 4-byte indices from `body` at `o`, keeping only in-range
+/// ones; `None` when the list runs past the end of `body`. Returns the indices and the
+/// offset just past them.
+fn read_ply_binary_indices(
+    body: &[u8],
+    mut o: usize,
+    cnt: usize,
+    n_verts: usize,
+) -> Option<(Vec<usize>, usize)> {
+    let mut idx = Vec::with_capacity(cnt);
+    for _ in 0..cnt {
+        let b: [u8; 4] = body.get(o..o + 4)?.try_into().ok()?;
+        let i = u32::from_le_bytes(b) as usize;
+        if i < n_verts {
+            idx.push(i);
+        }
+        o += 4;
+    }
+    Some((idx, o))
+}
+
+/// Read up to `n_faces` binary faces from `body` starting at `o`, fan-triangulating each;
+/// stops at a bad count byte, a short index list, or the `MAX_TRIS` cap.
+fn read_ply_binary_faces(
+    body: &[u8],
+    mut o: usize,
+    n_faces: usize,
+    verts: &[[f32; 3]],
+) -> Vec<[f32; 9]> {
     let mut tris: Vec<[f32; 9]> = Vec::new();
     for _ in 0..n_faces {
         let Some(&cnt_byte) = body.get(o) else { break };
@@ -426,28 +522,16 @@ fn read_ply_binary(
             break;
         }
         o += 1;
-        let mut idx = Vec::with_capacity(cnt);
-        let mut complete = true;
-        for _ in 0..cnt {
-            let Some(b) = body.get(o..o + 4).and_then(|s| s.try_into().ok()) else {
-                complete = false;
-                break;
-            };
-            let i = u32::from_le_bytes(b) as usize;
-            if i < verts.len() {
-                idx.push(i);
-            }
-            o += 4;
-        }
-        if !complete {
+        let Some((idx, next)) = read_ply_binary_indices(body, o, cnt, verts.len()) else {
             break; // face's index list ran out of bytes: keep the triangles built so far
-        }
-        fan(&mut tris, &verts, &idx);
+        };
+        o = next;
+        fan(&mut tris, verts, &idx);
         if tris.len() >= MAX_TRIS {
             break;
         }
     }
-    Some(tris)
+    tris
 }
 
 /// PLY: ASCII and binary_little_endian, the two variants real exporters write. Vertices
@@ -611,13 +695,44 @@ fn rasterize_triangle(
     if minx > maxx || miny > maxy {
         return 0;
     }
+    rasterize_fill(
+        [(x0, y0, z0), (x1, y1, z1), (x2, y2, z2)],
+        area,
+        (minx, miny, maxx, maxy),
+        big,
+        lum,
+        zbuf,
+        shade,
+    );
+    u64::from(maxx - minx + 1) * u64::from(maxy - miny + 1)
+}
+
+/// Whether a pixel's barycentric weights put it outside the triangle (any weight < 0).
+fn barycentric_outside(w0: f32, w1: f32, w2: f32) -> bool {
+    w0 < 0.0 || w1 < 0.0 || w2 < 0.0
+}
+
+/// Barycentric-fill one already-projected screen triangle into the shared buffers, writing
+/// `lum` where a pixel wins the depth test over the clamped box `[minx..=maxx]×[miny..=maxy]`.
+// Arg list mirrors the projection/fill state shared with `rasterize_triangle`.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_fill(
+    sxy: [(f32, f32, f32); 3],
+    area: f32,
+    (minx, miny, maxx, maxy): (u32, u32, u32, u32),
+    big: u32,
+    lum: u8,
+    zbuf: &mut [f32],
+    shade: &mut [u8],
+) {
+    let [(x0, y0, z0), (x1, y1, z1), (x2, y2, z2)] = sxy;
     for py in miny..=maxy {
         for px in minx..=maxx {
             let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
             let w0 = ((x2 - x1) * (fy - y1) - (y2 - y1) * (fx - x1)) / area;
             let w1 = ((x0 - x2) * (fy - y2) - (y0 - y2) * (fx - x2)) / area;
             let w2 = 1.0 - w0 - w1;
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            if barycentric_outside(w0, w1, w2) {
                 continue;
             }
             let z = w0 * z0 + w1 * z1 + w2 * z2;
@@ -628,7 +743,6 @@ fn rasterize_triangle(
             }
         }
     }
-    u64::from(maxx - minx + 1) * u64::from(maxy - miny + 1)
 }
 
 /// Box-average SS×SS down into the final image; coverage becomes alpha, so edges blend
@@ -637,17 +751,7 @@ fn downsample_mesh(edge: u32, big: u32, zbuf: &[f32], shade: &[u8]) -> image::Rg
     let mut img = image::RgbaImage::new(edge, edge);
     for y in 0..edge {
         for x in 0..edge {
-            let (mut sum, mut cov) = (0u32, 0u32);
-            for dy in 0..SS {
-                for dx in 0..SS {
-                    let i = ((y * SS + dy) * big + (x * SS + dx)) as usize;
-                    if zbuf[i] > f32::NEG_INFINITY {
-                        sum += shade[i] as u32;
-                        cov += 1;
-                    }
-                }
-            }
-            if let Some(mean) = sum.checked_div(cov) {
+            if let Some((mean, cov)) = downsample_block(big, zbuf, shade, x, y) {
                 let l = mean as u8;
                 let a = (cov * 255 / (SS * SS)) as u8;
                 // A cool slate tint reads as "3D model" next to photo thumbnails.
@@ -661,6 +765,22 @@ fn downsample_mesh(edge: u32, big: u32, zbuf: &[f32], shade: &[u8]) -> image::Rg
         }
     }
     img
+}
+
+/// Average the SS×SS supersampled block for output pixel `(x, y)`; returns the shaded mean
+/// luminance and coverage count, or `None` when the whole block is background.
+fn downsample_block(big: u32, zbuf: &[f32], shade: &[u8], x: u32, y: u32) -> Option<(u32, u32)> {
+    let (mut sum, mut cov) = (0u32, 0u32);
+    for dy in 0..SS {
+        for dx in 0..SS {
+            let i = ((y * SS + dy) * big + (x * SS + dx)) as usize;
+            if zbuf[i] > f32::NEG_INFINITY {
+                sum += shade[i] as u32;
+                cov += 1;
+            }
+        }
+    }
+    Some((sum.checked_div(cov)?, cov))
 }
 
 /// Orthographic flat-shaded render with a z-buffer, supersampled [`SS`]× and box-averaged
