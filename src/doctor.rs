@@ -73,6 +73,13 @@ impl Report {
         }
     }
 
+    /// An info line for a path, with the byte size of the file it points at (0 when the
+    /// metadata cannot be read).
+    fn line_with_size(&mut self, label: &str, p: &Path) {
+        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        self.line(S::Info, label, &format!("{} ({size} bytes)", p.display()));
+    }
+
     /// A failure that also carries the fix, so the user is not left holding a symptom.
     fn fail_with_fix(&mut self, label: &str, detail: &str, fix: &str) {
         self.line(S::Fail, label, detail);
@@ -157,24 +164,12 @@ pub fn report(file: Option<&str>) -> String {
         );
     }
     match installed_dll() {
-        Some(p) => {
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            r.line(
-                S::Info,
-                "Shell extension DLL",
-                &format!("{} ({size} bytes)", p.display()),
-            );
-        }
+        Some(p) => r.line_with_size("Shell extension DLL", &p),
         None => r.line(S::Warn, "Shell extension DLL", "could not determine a path"),
     }
     match crate::safety::log_file() {
         Some(p) if p.exists() => {
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            r.line(
-                S::Info,
-                "Diagnostics log",
-                &format!("{} ({size} bytes)", p.display()),
-            );
+            r.line_with_size("Diagnostics log", &p);
             append_log_tail(&mut r, &p);
         }
         Some(p) => r.line(
