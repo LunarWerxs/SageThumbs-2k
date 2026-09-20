@@ -49,40 +49,44 @@ pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
                 let _ = set_clipboard(CF_UNICODETEXT, &utf16_nul_bytes(&c.copy_text()));
             }
         }
-        ContentKind::Image => {
-            // Copy what is DISPLAYED — the navigated-to PDF page / the animation frame on
-            // screen at the keypress — not blindly the file's first page/frame. Decode + pack
-            // off the UI thread (a RAW/HEIC decode isn't instant); the WIC tier needs COM.
-            let Some(p) = st.path.borrow().clone() else {
-                return;
-            };
-            let (pdf_page, anim_frame) = super::navigated_targets(st);
-            // Captured on the UI thread, at the keypress — NOT read from `st` again inside the
-            // worker, which runs on its own thread and must never touch `ViewerState`'s
-            // `Cell`/`RefCell` fields without the UI thread's synchronization. `copy_shown_image`
-            // re-checks this against the live generation right before the clipboard write, so a
-            // fast file-switch during the decode drops the copy instead of putting the file just
-            // left on the clipboard under the still-held Ctrl+C.
-            let gen = st.decode_gen.get();
-            std::thread::spawn(move || {
-                use windows::Win32::System::Com::{
-                    CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
-                };
-                let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-                if !copy_shown_image(&p, pdf_page, anim_frame, gen) {
-                    // The viewer has no toast/status surface, so a failed copy is otherwise
-                    // indistinguishable from the keypress not registering — say so in the log.
-                    // (Also reached when the copy was dropped as stale, not just a real decode
-                    // failure — both cases end in "nothing landed on the clipboard".)
-                    sagethumbs2k_core::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
-                }
-                if inited {
-                    unsafe { CoUninitialize() };
-                }
-            });
-        }
+        ContentKind::Image => copy_image_content(st),
         _ => {}
     }
+}
+
+/// Copy the image the viewer is SHOWING by decoding + packing it off the UI thread (a RAW/HEIC
+/// decode isn't instant); the WIC tier needs COM. Nothing follows this call, so the early
+/// `return` when the viewer has no path is behaviourally the same as returning from the caller.
+fn copy_image_content(st: &ViewerState) {
+    // Copy what is DISPLAYED — the navigated-to PDF page / the animation frame on
+    // screen at the keypress — not blindly the file's first page/frame.
+    let Some(p) = st.path.borrow().clone() else {
+        return;
+    };
+    let (pdf_page, anim_frame) = super::navigated_targets(st);
+    // Captured on the UI thread, at the keypress — NOT read from `st` again inside the
+    // worker, which runs on its own thread and must never touch `ViewerState`'s
+    // `Cell`/`RefCell` fields without the UI thread's synchronization. `copy_shown_image`
+    // re-checks this against the live generation right before the clipboard write, so a
+    // fast file-switch during the decode drops the copy instead of putting the file just
+    // left on the clipboard under the still-held Ctrl+C.
+    let gen = st.decode_gen.get();
+    std::thread::spawn(move || {
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
+        };
+        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        if !copy_shown_image(&p, pdf_page, anim_frame, gen) {
+            // The viewer has no toast/status surface, so a failed copy is otherwise
+            // indistinguishable from the keypress not registering — say so in the log.
+            // (Also reached when the copy was dropped as stale, not just a real decode
+            // failure — both cases end in "nothing landed on the clipboard".)
+            sagethumbs2k_core::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
+        }
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+    });
 }
 
 /// Build the RGBA pixels the viewer is currently SHOWING: the given PDF page / animation frame

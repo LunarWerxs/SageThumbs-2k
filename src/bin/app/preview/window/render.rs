@@ -6,20 +6,8 @@ use super::*;
 /// while it runs), so the two events that need the viewer to act are handled here.
 pub(super) unsafe fn on_video_event(hwnd: HWND, event: u32) {
     let st = &*state(hwnd);
-    let (what, dims) = {
-        let vb = st.video.borrow();
-        match vb.as_ref() {
-            Some(p) => {
-                let what = p.on_event(event); // CANPLAY -> autoplay, etc.
-                let dims = if what == super::super::video::VideoEvent::Metadata {
-                    p.native_size()
-                } else {
-                    None
-                };
-                (what, dims)
-            }
-            None => return,
-        }
+    let Some((what, dims)) = player_event(st, event) else {
+        return;
     };
     match what {
         super::super::video::VideoEvent::Metadata => {
@@ -49,6 +37,26 @@ pub(super) unsafe fn on_video_event(hwnd: HWND, event: u32) {
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
         super::super::video::VideoEvent::None => {}
+    }
+}
+
+/// Ask the borrowed player what `event` was, reading the clip's real size when metadata just arrived.
+unsafe fn player_event(
+    st: &ViewerState,
+    event: u32,
+) -> Option<(super::super::video::VideoEvent, Option<(i32, i32)>)> {
+    let vb = st.video.borrow();
+    match vb.as_ref() {
+        Some(p) => {
+            let what = p.on_event(event); // CANPLAY -> autoplay, etc.
+            let dims = if what == super::super::video::VideoEvent::Metadata {
+                p.native_size()
+            } else {
+                None
+            };
+            Some((what, dims))
+        }
+        None => None,
     }
 }
 
@@ -82,36 +90,41 @@ pub(super) unsafe fn on_render(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         }
         let _ = InvalidateRect(Some(hwnd), None, false);
     } else {
-        match decoded {
-            Some(d) => match content::make_render_for(&d, letterbox_bg(st)) {
-                Some(rd) => {
-                    // A full-resolution decode landing clears any pending request for one,
-                    // whether this IS that decode or the user simply navigated to a small image.
-                    if d.is_full() {
-                        st.full_pending.set(false);
-                    }
-                    *st.render.borrow_mut() = Some(rd);
-                    st.kind.set(ContentKind::Image);
-                }
-                // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
-                // under memory pressure) must not orphan a valid image already on screen,
-                // mirrors the None-decode guard just below rather than falling to InfoCard.
-                None if st.render.borrow().is_some() => st.full_pending.set(false),
-                None => fallback_card(st),
-            },
-            // A failed decode must never REPLACE a picture that is already on screen. That only
-            // became reachable once the fit view started being served by a scaled decode: a
-            // subsequent full-resolution fetch can fail (a file deleted mid-zoom, a format the
-            // scaled path opened and the buffered one refuses) and swapping the visible image
-            // for an error card would be a plain downgrade. With nothing installed yet, the card
-            // is still the right answer.
-            None if st.render.borrow().is_some() => st.full_pending.set(false),
-            None => fallback_card(st), // decode failure / timeout → the calm card
-        }
-        ensure_shown(hwnd);
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        install_still_image(hwnd, st, decoded);
     }
     log_ui_stage_stall("render", stage_start.elapsed(), gen, &path);
+}
+
+/// Install a decoded still frame (or fall back to the InfoCard) and then show + repaint it.
+unsafe fn install_still_image(hwnd: HWND, st: &ViewerState, decoded: Option<content::SharedRgba>) {
+    match decoded {
+        Some(d) => match content::make_render_for(&d, letterbox_bg(st)) {
+            Some(rd) => {
+                // A full-resolution decode landing clears any pending request for one,
+                // whether this IS that decode or the user simply navigated to a small image.
+                if d.is_full() {
+                    st.full_pending.set(false);
+                }
+                *st.render.borrow_mut() = Some(rd);
+                st.kind.set(ContentKind::Image);
+            }
+            // A successful DECODE that then fails to become a DIB (e.g. CreateDIBSection
+            // under memory pressure) must not orphan a valid image already on screen,
+            // mirrors the None-decode guard just below rather than falling to InfoCard.
+            None if st.render.borrow().is_some() => st.full_pending.set(false),
+            None => fallback_card(st),
+        },
+        // A failed decode must never REPLACE a picture that is already on screen. That only
+        // became reachable once the fit view started being served by a scaled decode: a
+        // subsequent full-resolution fetch can fail (a file deleted mid-zoom, a format the
+        // scaled path opened and the buffered one refuses) and swapping the visible image
+        // for an error card would be a plain downgrade. With nothing installed yet, the card
+        // is still the right answer.
+        None if st.render.borrow().is_some() => st.full_pending.set(false),
+        None => fallback_card(st), // decode failure / timeout → the calm card
+    }
+    ensure_shown(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
 /// Fetch the real pixels if the zoom has outgrown the codec-scaled ones the fit view is served

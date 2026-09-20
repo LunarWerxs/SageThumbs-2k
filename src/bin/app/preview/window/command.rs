@@ -37,18 +37,22 @@ pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
                 request_load(hwnd, &p);
             }
         }
-        CMD_TOGGLE => {
-            if in_grace {
-                return;
-            }
-            let same = same_file(path.as_deref(), st.path.borrow().as_deref());
-            match path {
-                Some(p) if !same => request_load(hwnd, &p),
-                _ => request_close(hwnd),
-            }
-        }
+        CMD_TOGGLE => toggle_or_close(hwnd, st, path, in_grace),
         CMD_CLOSE if !in_grace => request_close(hwnd),
         _ => {}
+    }
+}
+
+/// Apply the `CMD_TOGGLE` arm: switch to the named file, or close the window (a re-click
+/// during the settle grace window is ignored).
+unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in_grace: bool) {
+    if in_grace {
+        return;
+    }
+    let same = same_file(path.as_deref(), st.path.borrow().as_deref());
+    match path {
+        Some(p) if !same => request_load(hwnd, &p),
+        _ => request_close(hwnd),
     }
 }
 

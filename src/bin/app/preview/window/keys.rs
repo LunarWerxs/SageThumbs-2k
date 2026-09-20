@@ -71,13 +71,7 @@ unsafe fn keydown_edit_actions(
     // text, the info-card text, or the decoded image) — the whole point of a viewer
     // you can lift text out of. Ctrl+Shift+C copies a Markdown file's raw source.
     if ctrl && vk == 'A' as u16 {
-        if let Some(len) = selection::doc_len(hwnd) {
-            if len > 0 {
-                st.sel.set(Some((0, len)));
-                let cr = content_rect(hwnd);
-                let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-            }
-        }
+        select_all_content(hwnd, st);
         return Some(LRESULT(0));
     }
     if ctrl && vk == 'C' as u16 {
@@ -104,6 +98,18 @@ unsafe fn keydown_edit_actions(
         return Some(LRESULT(0));
     }
     None
+}
+
+/// Select the whole viewable content (Ctrl+A): set the document selection to its full length and
+/// repaint the content pane so the highlight shows. Does nothing when the document is empty.
+unsafe fn select_all_content(hwnd: HWND, st: &ViewerState) {
+    if let Some(len) = selection::doc_len(hwnd) {
+        if len > 0 {
+            st.sel.set(Some((0, len)));
+            let cr = content_rect(hwnd);
+            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+        }
+    }
 }
 
 /// Bare W and the Ctrl+=/Ctrl+-/Ctrl+0 keyboard-zoom trio: the image-view-only keys.

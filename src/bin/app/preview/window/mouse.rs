@@ -124,24 +124,7 @@ unsafe fn mousemove_drag(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> Option
     // scrolling — the offset must match the frame the user is looking at (and the
     // Markdown rects are from that paint); the next move picks up the new scroll.
     if st.sel_drag.get() {
-        if let Some(off) = selection::hit(hwnd, x, y) {
-            if let Some((a, _)) = st.sel.get() {
-                st.sel.set(Some((a, off)));
-            }
-        }
-        let c = content_rect(hwnd);
-        let overshoot = if y < c.top {
-            y - c.top
-        } else if y > c.bottom {
-            y - c.bottom
-        } else {
-            0
-        };
-        if overshoot != 0 {
-            let step_cap = crate::win::dpi_scale(hwnd, 40);
-            selection::scroll_by(hwnd, overshoot.clamp(-step_cap, step_cap));
-        }
-        let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+        sel_drag_move(hwnd, st, x, y);
         return Some(LRESULT(0));
     }
     // Active pan drag: move the image with the cursor.
@@ -156,6 +139,29 @@ unsafe fn mousemove_drag(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> Option
         return Some(LRESULT(0));
     }
     None
+}
+
+/// Extend an active text/Markdown selection drag to `(x, y)`: re-hit the selection at the
+/// cursor, then auto-scroll past the pane edges so a drag can select beyond the viewport.
+unsafe fn sel_drag_move(hwnd: HWND, st: &ViewerState, x: i32, y: i32) {
+    if let Some(off) = selection::hit(hwnd, x, y) {
+        if let Some((a, _)) = st.sel.get() {
+            st.sel.set(Some((a, off)));
+        }
+    }
+    let c = content_rect(hwnd);
+    let overshoot = if y < c.top {
+        y - c.top
+    } else if y > c.bottom {
+        y - c.bottom
+    } else {
+        0
+    };
+    if overshoot != 0 {
+        let step_cap = crate::win::dpi_scale(hwnd, 40);
+        selection::scroll_by(hwnd, overshoot.clamp(-step_cap, step_cap));
+    }
+    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
 }
 
 /// Toolbar-button hover + custom-scrollbar hover feedback, and arming `TrackMouseEvent` so
@@ -274,16 +280,7 @@ pub(super) unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         let _ = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
         invalidate_text_scrollbar(hwnd); // pressed → hover/idle feedback
     } else if st.scrub_drag.get() || st.vol_drag.get() {
-        let was_vol = st.vol_drag.get();
-        st.scrub_drag.set(false);
-        st.vol_drag.set(false);
-        let _ = ReleaseCapture();
-        // Slider let go: remember the level ONCE, not on every mouse-move of the drag.
-        if was_vol {
-            if let Some(v) = st.video.borrow().as_ref() {
-                persist_volume(v);
-            }
-        }
+        end_scrub_drag(st);
     } else if st.drag.get().is_some() {
         st.drag.set(None);
         let _ = ReleaseCapture();
@@ -304,6 +301,21 @@ pub(super) unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         click_content(hwnd, x, y);
     }
     LRESULT(0)
+}
+
+/// End a video seek/volume drag: clear both drag flags, release the capture, and persist
+/// the volume once the drag is over.
+unsafe fn end_scrub_drag(st: &ViewerState) {
+    let was_vol = st.vol_drag.get();
+    st.scrub_drag.set(false);
+    st.vol_drag.set(false);
+    let _ = ReleaseCapture();
+    // Slider let go: remember the level ONCE, not on every mouse-move of the drag.
+    if was_vol {
+        if let Some(v) = st.video.borrow().as_ref() {
+            persist_volume(v);
+        }
+    }
 }
 
 /// `WM_CAPTURECHANGED`: capture stolen mid-drag (alt-tab, another SetCapture), end every
@@ -329,39 +341,43 @@ pub(super) unsafe fn on_capturechanged(hwnd: HWND) -> LRESULT {
 pub(super) unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if (lparam.0 & 0xFFFF) as i32 == HTCLIENT as i32 {
         let st = &*state(hwnd);
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = ScreenToClient(hwnd, &mut pt);
-        // Keep the standard arrow over the scrollbar instead of presenting the
-        // text-selection I-beam, which made the painted thumb look non-interactive.
-        if st.scroll_drag.get().is_some()
-            || st.scroll_page_press.get()
-            || hit_text_scrollbar(hwnd, pt.x, pt.y).is_some()
-        {
-            if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
-                SetCursor(Some(arrow));
-            }
-            return LRESULT(1);
-        }
-        if st.kind.get() == ContentKind::Markdown
-            && (hit_link(hwnd, pt.x, pt.y).is_some() || hit_toc(hwnd, pt.x, pt.y).is_some())
-        {
-            if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
-                SetCursor(Some(hand));
-            }
-            return LRESULT(1);
-        }
-        if selection::selectable(st.kind.get())
-            && pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H)
-            && hit_toc(hwnd, pt.x, pt.y).is_none()
-        {
-            if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
-                SetCursor(Some(ibeam));
+        if let Some(shape) = setcursor_client(hwnd, st) {
+            if let Ok(cur) = LoadCursorW(None, shape) {
+                SetCursor(Some(cur));
             }
             return LRESULT(1);
         }
     }
     DefWindowProcW(hwnd, WM_SETCURSOR, wparam, lparam)
+}
+
+/// The cursor shape to show for the pointer's client-space position: the standard arrow
+/// over the scrollbar, the hand over a Markdown link/outline row, the I-beam over
+/// selectable text; `None` lets the default sizing/move cursor through.
+unsafe fn setcursor_client(hwnd: HWND, st: &ViewerState) -> Option<PCWSTR> {
+    let mut pt = POINT::default();
+    let _ = GetCursorPos(&mut pt);
+    let _ = ScreenToClient(hwnd, &mut pt);
+    // Keep the standard arrow over the scrollbar instead of presenting the
+    // text-selection I-beam, which made the painted thumb look non-interactive.
+    if st.scroll_drag.get().is_some()
+        || st.scroll_page_press.get()
+        || hit_text_scrollbar(hwnd, pt.x, pt.y).is_some()
+    {
+        return Some(IDC_ARROW);
+    }
+    if st.kind.get() == ContentKind::Markdown
+        && (hit_link(hwnd, pt.x, pt.y).is_some() || hit_toc(hwnd, pt.x, pt.y).is_some())
+    {
+        return Some(IDC_HAND);
+    }
+    if selection::selectable(st.kind.get())
+        && pt.y >= crate::win::dpi_scale(hwnd, CAPTION_H)
+        && hit_toc(hwnd, pt.x, pt.y).is_none()
+    {
+        return Some(IDC_IBEAM);
+    }
+    None
 }
 
 /// `WM_LBUTTONDBLCLK`: double-click content = toggle fit/100%; double-click text = select word.
@@ -433,21 +449,27 @@ pub(super) unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -
         // with text scrolling (same accumulate-to-a-full-notch reasoning) so a
         // precision trackpad's tiny deltas don't yank the volume on every tick.
         ContentKind::Video => {
-            if let Some(v) = st.video.borrow().as_ref() {
-                let (notches, remainder) = wheel_notches(st.wheel_remainder.get(), delta);
-                st.wheel_remainder.set(remainder);
-                if notches != 0 {
-                    if GetKeyState(VK_CONTROL.0 as i32) < 0 {
-                        v.seek_by(f64::from(notches) * 5.0);
-                    } else {
-                        v.nudge_volume(f64::from(notches) * 0.05);
-                        persist_volume(v);
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-            }
+            wheel_video(hwnd, st, delta);
         }
         _ => {}
     }
     LRESULT(0)
+}
+
+/// Wheel over video/audio: accumulate the deltas into whole notches and nudge the volume
+/// (Ctrl seeks instead), sharing `wheel_remainder` with text scrolling.
+unsafe fn wheel_video(hwnd: HWND, st: &ViewerState, delta: i32) {
+    if let Some(v) = st.video.borrow().as_ref() {
+        let (notches, remainder) = wheel_notches(st.wheel_remainder.get(), delta);
+        st.wheel_remainder.set(remainder);
+        if notches != 0 {
+            if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                v.seek_by(f64::from(notches) * 5.0);
+            } else {
+                v.nudge_volume(f64::from(notches) * 0.05);
+                persist_volume(v);
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
 }
