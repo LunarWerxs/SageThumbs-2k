@@ -29,6 +29,9 @@ pub(super) const NUM_CONTEXTS: usize = 19;
 pub(super) const CTX_UNI: usize = 17;
 pub(super) const CTX_RL: usize = 18;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy, Default)]
 struct Ctx {
     index: u8,
