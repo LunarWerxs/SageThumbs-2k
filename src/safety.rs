@@ -803,6 +803,18 @@ mod dib_tests {
 mod worker_tests {
     use super::*;
 
+    /// A fresh baseline counter plus the caller/worker state word that every interleaving
+    /// scenario below starts from: a running worker, nothing abandoned yet.
+    fn fresh_abandoned_state() -> (AtomicU64, AtomicU8) {
+        (AtomicU64::new(0), AtomicU8::new(WORKER_RUNNING))
+    }
+
+    /// The abandoned count must read exactly `expected`; `msg` names the interleaving under
+    /// test, so a failure still points at the ordering that broke.
+    fn assert_abandoned_count(count: &AtomicU64, expected: u64, msg: &str) {
+        assert_eq!(count.load(Ordering::Acquire), expected, "{msg}");
+    }
+
     /// The caller/worker handshake behind the abandoned-worker count: whichever side marks
     /// second sees the other's mark, so an increment is always paired with exactly one
     /// decrement, and a worker that finished before the caller gave up counts for nothing.
@@ -833,63 +845,43 @@ mod worker_tests {
     #[test]
     fn abandoned_count_returns_to_baseline_on_every_interleaving() {
         // Worker finishes BEFORE the caller gives up: nothing is ever counted.
-        let count = AtomicU64::new(0);
-        let s = AtomicU8::new(WORKER_RUNNING);
+        let (count, s) = fresh_abandoned_state();
         finish_worker(&s, &count);
         reserve_abandoned(&count);
         publish_abandoned(&s, &count);
-        assert_eq!(
-            count.load(Ordering::Acquire),
-            0,
-            "worker-first must count nothing"
-        );
+        assert_abandoned_count(&count, 0, "worker-first must count nothing");
 
         // Worker finishes BETWEEN the caller's reservation and its publication: the
         // reservation is undone, and the worker (which saw RUNNING) touched nothing.
-        let count = AtomicU64::new(0);
-        let s = AtomicU8::new(WORKER_RUNNING);
+        let (count, s) = fresh_abandoned_state();
         reserve_abandoned(&count);
         finish_worker(&s, &count);
         publish_abandoned(&s, &count);
-        assert_eq!(
-            count.load(Ordering::Acquire),
+        assert_abandoned_count(
+            &count,
             0,
-            "a worker finishing inside the caller's gap must leave no phantom"
+            "a worker finishing inside the caller's gap must leave no phantom",
         );
 
         // Worker finishes AFTER the caller gave up: counted while late, uncounted when done.
-        let count = AtomicU64::new(0);
-        let s = AtomicU8::new(WORKER_RUNNING);
+        let (count, s) = fresh_abandoned_state();
         reserve_abandoned(&count);
         publish_abandoned(&s, &count);
-        assert_eq!(count.load(Ordering::Acquire), 1, "a late worker is counted");
+        assert_abandoned_count(&count, 1, "a late worker is counted");
         finish_worker(&s, &count);
-        assert_eq!(
-            count.load(Ordering::Acquire),
-            0,
-            "and uncounted when it finishes"
-        );
+        assert_abandoned_count(&count, 0, "and uncounted when it finishes");
 
         // Both sides repeated: a caller that times out and later drops its handle, a worker
         // path that reports twice. Neither may move the count a second time.
-        let count = AtomicU64::new(0);
-        let s = AtomicU8::new(WORKER_RUNNING);
+        let (count, s) = fresh_abandoned_state();
         reserve_abandoned(&count);
         publish_abandoned(&s, &count);
         reserve_abandoned(&count);
         publish_abandoned(&s, &count);
-        assert_eq!(
-            count.load(Ordering::Acquire),
-            1,
-            "a second give-up is a no-op"
-        );
+        assert_abandoned_count(&count, 1, "a second give-up is a no-op");
         finish_worker(&s, &count);
         finish_worker(&s, &count);
-        assert_eq!(
-            count.load(Ordering::Acquire),
-            0,
-            "a second finish is a no-op"
-        );
+        assert_abandoned_count(&count, 0, "a second finish is a no-op");
     }
 
     /// The refusal predicate over the same local counter: eight workers abandoned in the
