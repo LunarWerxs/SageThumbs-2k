@@ -81,9 +81,20 @@ fn to_png(bytes: &[u8], page: Option<u32>) -> Option<Vec<u8>> {
         }
     }
     let img = sagethumbs2k_core::decode::decode_full(bytes).ok()?;
+    encode_png(|buf| img.write_to(&mut std::io::Cursor::new(buf), image::ImageFormat::Png))
+}
+
+/// PNG-encode an image into bytes in memory, or `None` if the encoder fails. Callers hold
+/// different image types (`DynamicImage` in `to_png`, `RgbaImage` in the capture save paths),
+/// whose `write_to` methods are inherent rather than trait-shared, so the write itself is
+/// passed in as a closure. `pub(crate)` and living here because the capture-side module
+/// (`crate::screenshot::output`) is private to `screenshot`, so its save paths could not
+/// reach a helper defined there.
+pub(crate) fn encode_png(
+    write: impl FnOnce(&mut Vec<u8>) -> image::ImageResult<()>,
+) -> Option<Vec<u8>> {
     let mut png = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
+    write(&mut png).ok()?;
     Some(png)
 }
 
