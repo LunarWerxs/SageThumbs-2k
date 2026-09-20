@@ -10,19 +10,8 @@ use super::*;
 /// buffering, so each single-byte read used to cost its own marshaled COM round trip — up to
 /// 12 of them per header, and `segment_map`'s walk can call this dozens of times per file.
 pub(super) fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64, u64, bool)> {
-    r.seek(SeekFrom::Start(pos)).ok()?;
-    let mut buf = [0u8; 12];
-    let mut have = 0usize;
-    while have < buf.len() {
-        match r.read(&mut buf[have..]) {
-            // A short read here just means the header we actually need (which may be far
-            // fewer than 12 bytes) fits before EOF; validated below by `have`, not here.
-            Ok(0) => break,
-            Ok(n) => have += n,
-            Err(_) => return None,
-        }
-    }
-    let buf = &buf[..have];
+    let (raw, have) = read_header_bytes(r, pos)?;
+    let buf = &raw[..have];
 
     // Element ID: 1–4 bytes, value keeps the length-marker bit.
     let b0 = *buf.first()?;
@@ -62,6 +51,23 @@ pub(super) fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64
         }
     }
     Some((id, size, (id_len + sz_len) as u64, all_ones))
+}
+
+/// Read up to 12 bytes of element header at `pos`; returns the bytes and how many were read.
+fn read_header_bytes<R: Read + Seek>(r: &mut R, pos: u64) -> Option<([u8; 12], usize)> {
+    r.seek(SeekFrom::Start(pos)).ok()?;
+    let mut buf = [0u8; 12];
+    let mut have = 0usize;
+    while have < buf.len() {
+        match r.read(&mut buf[have..]) {
+            // A short read here just means the header we actually need (which may be far
+            // fewer than 12 bytes) fits before EOF; validated below by `have`, not here.
+            Ok(0) => break,
+            Ok(n) => have += n,
+            Err(_) => return None,
+        }
+    }
+    Some((buf, have))
 }
 
 /// Read a whole element (header + data) at `pos`, verifying its id and bounding its size.
