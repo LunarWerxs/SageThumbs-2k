@@ -1,11 +1,11 @@
 //! Caption toolbar: button rects, tooltips, and button hit-testing.
 
-use windows::core::{w, PCWSTR, PWSTR};
+use windows::core::PWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Controls::{
     TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
-    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+    TTTOOLINFOW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
@@ -153,20 +153,7 @@ pub(super) unsafe fn tool_texts(hwnd: HWND) -> Vec<&'static str> {
 /// tip auto-tracks the mouse over the parent (the buttons are custom-drawn, not child HWNDs).
 /// Returns `HWND::default()` on failure. Rects are refreshed on resize via [`update_tooltips`].
 pub(super) unsafe fn create_tooltips(hwnd: HWND, hinst: HINSTANCE) -> HWND {
-    let Ok(tip) = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        w!("tooltips_class32"),
-        PCWSTR::null(),
-        WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
-        0,
-        0,
-        0,
-        0,
-        Some(hwnd),
-        None,
-        Some(hinst),
-        None,
-    ) else {
+    let Some(tip) = crate::win::create_tooltip_window(hwnd, hinst) else {
         return HWND::default();
     };
     SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(320)));

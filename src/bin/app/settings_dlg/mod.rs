@@ -59,8 +59,7 @@ use crate::win::{
     check, checked, ctl, dpi_scale, get_edit_text, gui_font_for, gui_font_header, message_box,
     open_url, t, wide, wm_dpichanged, wstr_to_string, BTN_H, BUTTON, CHECKED, COMBOBOX, EDIT,
     EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN, SS_BITMAP, SS_NOTIFY, SS_OWNERDRAW,
-    SS_REALSIZECONTROL, STATIC, SYSLINK, TTS_ALWAYSTIP, TTS_NOPREFIX, UNCHECKED, URL_PARENT,
-    URL_PRODUCT,
+    SS_REALSIZECONTROL, STATIC, SYSLINK, UNCHECKED, URL_PARENT, URL_PRODUCT,
 };
 
 // Submodules split out of this (formerly ~2030-line) file. They're descendants of
@@ -152,6 +151,24 @@ use lifecycle::*;
 // Win32 message consts the `windows` crate omits (local so they shadow the `WindowsAndMessaging::*` glob).
 const EM_SETCUEBANNER: u32 = 0x1501;
 const CB_SETDROPPEDWIDTH: u32 = 0x0160;
+
+/// Post a boxed `event` to `target` as `msg`, reclaiming the box when the window is already
+/// gone. The shared shape of every `WM_APP_*` completion hop (`licence_ui::WM_APP_LICENCE`,
+/// `sync::WM_APP_SYNC`): a worker thread boxes its outcome, the UI thread unboxes it.
+pub(super) fn post_boxed_event<E>(target: isize, msg: u32, event: E) {
+    let raw = Box::into_raw(Box::new(event));
+    unsafe {
+        let posted = PostMessageW(
+            Some(HWND(target as *mut c_void)),
+            msg,
+            WPARAM(0),
+            LPARAM(raw as isize),
+        );
+        if posted.is_err() {
+            drop(Box::from_raw(raw));
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct SponsorLayout {

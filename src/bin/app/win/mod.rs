@@ -18,7 +18,7 @@ use windows::Win32::Graphics::Gdi::{
     DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, NMLINK, ODS_SELECTED};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow, SetFocus};
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -251,6 +251,27 @@ pub(crate) unsafe fn register_app_class(class: PCWSTR, wndproc: WNDPROC, hinst: 
         ..Default::default()
     };
     RegisterClassW(&wc);
+}
+
+/// Create a `tooltips_class32` control owned by `parent`: `TTS_ALWAYSTIP` so it shows without the
+/// parent being active and `TTS_NOPREFIX` so an `&` in a hint stays literal. `None` when the class
+/// could not be created, so each caller keeps its own failure policy.
+pub(crate) unsafe fn create_tooltip_window(parent: HWND, hinst: HINSTANCE) -> Option<HWND> {
+    CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("tooltips_class32"),
+        PCWSTR::null(),
+        WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
+        0,
+        0,
+        0,
+        0,
+        Some(parent),
+        None,
+        Some(hinst),
+        None,
+    )
+    .ok()
 }
 
 /// The measuring half of an owner-drawn dark menu (WM_MEASUREITEM for an `ODT_MENU` item):
@@ -501,6 +522,16 @@ pub(crate) fn read_listfile(path: &str) -> Vec<String> {
 pub(crate) fn wstr_to_string(w: &[u16]) -> String {
     let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
     String::from_utf16_lossy(&w[..end])
+}
+
+/// Open the `NMLINK` a `WM_NOTIFY`'s `NM_CLICK` / `NM_RETURN` carries — the SysLink
+/// click every dialog with a rendered link shares. `link` must be the `lparam` of that
+/// notification, cast to `*const NMLINK`.
+pub(crate) unsafe fn open_notify_link(link: *const NMLINK) {
+    let url = wstr_to_string(&(*link).item.szUrl);
+    if !url.is_empty() {
+        open_url(&url);
+    }
 }
 
 /// Decode logo/banner artwork to an HBITMAP sized to `w`x`h`. Prefers a file of

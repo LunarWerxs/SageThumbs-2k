@@ -264,7 +264,7 @@ pub(super) fn spawn_redeem(hwnd: HWND, raw_key: String) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
         let outcome = crate::license::redeem(&raw_key);
-        post_licence(target, LicenceEvent::Redeemed(outcome));
+        post_boxed_event(target, WM_APP_LICENCE, LicenceEvent::Redeemed(outcome));
     });
 }
 
@@ -274,25 +274,8 @@ pub(super) fn spawn_check_now(hwnd: HWND) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
         let result = crate::license::refresh_entitlement_now();
-        post_licence(target, LicenceEvent::Checked(result));
+        post_boxed_event(target, WM_APP_LICENCE, LicenceEvent::Checked(result));
     });
-}
-
-/// Post a boxed `LicenceEvent` to the window; reclaim the box if the window is already
-/// gone. Identical shape to `sync::post_sync`.
-pub(super) fn post_licence(target: isize, event: LicenceEvent) {
-    let raw = Box::into_raw(Box::new(event));
-    unsafe {
-        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            Some(HWND(target as *mut core::ffi::c_void)),
-            WM_APP_LICENCE,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        );
-        if posted.is_err() {
-            drop(Box::from_raw(raw));
-        }
-    }
 }
 
 /// A Redeem outcome is the one licence event worth a dialog: the customer has just typed in a key

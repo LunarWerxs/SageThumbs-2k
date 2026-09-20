@@ -28,9 +28,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
 use crate::win::{
-    combo_sel, ctl, get_edit_text, open_url, run_dialog, set_clipboard_text, t, wide,
-    wm_dpichanged, wstr_to_string, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK,
-    URL_GITHUB,
+    combo_sel, ctl, get_edit_text, open_notify_link, open_url, run_dialog, set_clipboard_text, t,
+    wide, wm_dpichanged, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK, URL_GITHUB,
 };
 
 /// Where a submitted message goes. Same host as the sponsor manifest / update check.
@@ -513,11 +512,7 @@ extern "system" fn feedback_wndproc(
                 let nmhdr = lparam.0 as *const NMHDR;
                 let code = (*nmhdr).code;
                 if code == NM_CLICK || code == NM_RETURN {
-                    let link = lparam.0 as *const NMLINK;
-                    let url = wstr_to_string(&(*link).item.szUrl);
-                    if !url.is_empty() {
-                        open_url(&url);
-                    }
+                    open_notify_link(lparam.0 as *const NMLINK);
                 }
                 LRESULT(0)
             }

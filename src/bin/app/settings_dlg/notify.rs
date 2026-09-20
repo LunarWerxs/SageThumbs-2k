@@ -90,11 +90,7 @@ pub(super) unsafe fn on_notify_link_or_tip(
 ) -> LRESULT {
     let code = (*nmhdr).code;
     if code == NM_CLICK || code == NM_RETURN {
-        let link = lparam.0 as *const NMLINK;
-        let url = wstr_to_string(&(*link).item.szUrl);
-        if !url.is_empty() {
-            open_url(&url);
-        }
+        crate::win::open_notify_link(lparam.0 as *const NMLINK);
     } else if code == TTN_GETDISPINFOW {
         // Banner hover: hand back the current sponsor's tooltip. The buffer
         // lives in the SponsorRotator (stable until WM_DESTROY frees it).

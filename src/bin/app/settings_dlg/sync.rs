@@ -353,7 +353,7 @@ pub(super) fn spawn_sync(hwnd: HWND, op: SyncOp) {
             }
             SyncOp::Disconnect => SyncEvent::Disconnected(crate::sync_client::disconnect()),
         };
-        post_sync(target, event);
+        post_boxed_event(target, WM_APP_SYNC, event);
     });
 }
 
@@ -364,8 +364,9 @@ pub(super) fn spawn_sync_pull(hwnd: HWND) {
     }
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        post_sync(
+        post_boxed_event(
             target,
+            WM_APP_SYNC,
             SyncEvent::Pulled(crate::sync_client::pull_on_open()),
         );
     });
@@ -383,24 +384,8 @@ pub(super) fn spawn_sync_push(hwnd: HWND) {
     std::thread::spawn(move || {
         let result = crate::sync_client::push();
         crate::sync_client::finish_push_worker(result.is_ok());
-        post_sync(target, SyncEvent::Pushed(result));
+        post_boxed_event(target, WM_APP_SYNC, SyncEvent::Pushed(result));
     });
-}
-
-/// Post a boxed `SyncEvent` to the window; reclaim the box if the window is already gone.
-pub(super) fn post_sync(target: isize, event: SyncEvent) {
-    let raw = Box::into_raw(Box::new(event));
-    unsafe {
-        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            Some(HWND(target as *mut core::ffi::c_void)),
-            WM_APP_SYNC,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        );
-        if posted.is_err() {
-            drop(Box::from_raw(raw));
-        }
-    }
 }
 
 /// The UI half of a successful connect (or initial-sync retry): the pull has just landed in

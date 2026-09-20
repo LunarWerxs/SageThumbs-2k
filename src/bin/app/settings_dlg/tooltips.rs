@@ -117,20 +117,7 @@ fn tool_info(hwnd: HWND, ctl: HWND, text: &[u16], u_flags: TOOLTIP_FLAGS) -> TTT
 /// describe — which is what a user actually hovers. The tooltip window HWND is
 /// stashed in the dialog's GWLP_USERDATA so `refresh_tooltips` can re-text it.
 pub(super) unsafe fn add_tooltips(hwnd: HWND, hinst: HINSTANCE) {
-    let Ok(tip) = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        w!("tooltips_class32"),
-        PCWSTR::null(),
-        WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
-        0,
-        0,
-        0,
-        0,
-        Some(hwnd),
-        None,
-        Some(hinst),
-        None,
-    ) else {
+    let Some(tip) = crate::win::create_tooltip_window(hwnd, hinst) else {
         return;
     };
     // Let long hints wrap (and honor explicit line breaks) instead of one wide line.
