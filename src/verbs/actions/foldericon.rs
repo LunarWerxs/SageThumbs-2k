@@ -60,6 +60,26 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
         Error::new(E_FAIL, format!("rename .ico into place: {e}"))
     })?;
 
+    write_desktop_ini(&existing, ico_name, &ini_path)?;
+
+    // Hide the helper files; mark the folder System+ReadOnly so Explorer actually
+    // reads desktop.ini (the documented requirement to honor a custom icon).
+    add_attrs(&ico_path, FILE_ATTRIBUTE_HIDDEN);
+    add_attrs(&ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    add_attrs(dir, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM);
+
+    // Nudge the shell to repaint the folder with its new icon.
+    crate::verbs::fileops::refresh_dir(dir);
+    Ok(())
+}
+
+/// Merge the icon keys into `existing` desktop.ini content (or into a fresh `[.ShellClassInfo]`)
+/// and write it atomically at `ini_path`, keeping UTF-16 LE encoding when the existing file used it.
+fn write_desktop_ini(
+    existing: &Option<Vec<u8>>,
+    ico_name: &str,
+    ini_path: &Path,
+) -> Result<()> {
     // desktop.ini references the icon by a RELATIVE name (so it survives a move).
     // `IconResource` is the modern key; `IconFile`/`IconIndex` keep older Explorer
     // happy. CRLF + a trailing newline, matching what Explorer writes.
@@ -90,7 +110,7 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     } else {
         ini.into_bytes()
     };
-    let ini_tmp = unique_tmp(&ini_path);
+    let ini_tmp = unique_tmp(ini_path);
     std::fs::write(&ini_tmp, &bytes).map_err(|e| {
         let _ = std::fs::remove_file(&ini_tmp);
         Error::new(E_FAIL, format!("write desktop.ini: {e}"))
@@ -100,25 +120,16 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     // the rename doesn't take, put the ORIGINAL attributes straight back rather than leaving a
     // bare, unhidden desktop.ini behind — `map_err` below is the only path out of this function
     // once they're cleared, so it's the only place that can still restore them.
-    let ini_prior_attrs = clear_attrs(&ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    let ini_prior_attrs = clear_attrs(ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
     // Retry past a transient Explorer/shell lock on the target (Windows os error 5/32)
     // instead of failing outright — see `fsutil::rename_retrying`.
-    crate::fsutil::rename_retrying(&ini_tmp, &ini_path).map_err(|e| {
+    crate::fsutil::rename_retrying(&ini_tmp, ini_path).map_err(|e| {
         let _ = std::fs::remove_file(&ini_tmp);
         if let Some(prior) = ini_prior_attrs {
-            restore_attrs(&ini_path, prior);
+            restore_attrs(ini_path, prior);
         }
         Error::new(E_FAIL, format!("rename desktop.ini into place: {e}"))
     })?;
-
-    // Hide the helper files; mark the folder System+ReadOnly so Explorer actually
-    // reads desktop.ini (the documented requirement to honor a custom icon).
-    add_attrs(&ico_path, FILE_ATTRIBUTE_HIDDEN);
-    add_attrs(&ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-    add_attrs(dir, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM);
-
-    // Nudge the shell to repaint the folder with its new icon.
-    crate::verbs::fileops::refresh_dir(dir);
     Ok(())
 }
 

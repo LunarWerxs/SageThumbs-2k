@@ -225,21 +225,7 @@ fn tokenize(pattern: &str) -> std::result::Result<Vec<Tok>, PatternError> {
                 chars.next();
                 toks.push(Tok::Lit('{'));
             }
-            '{' => {
-                let mut body = String::new();
-                let mut closed = false;
-                for c2 in chars.by_ref() {
-                    if c2 == '}' {
-                        closed = true;
-                        break;
-                    }
-                    body.push(c2);
-                }
-                if !closed {
-                    return Err(PatternError::UnclosedBrace);
-                }
-                toks.push(Tok::Placeholder(body));
-            }
+            '{' => toks.push(Tok::Placeholder(read_placeholder_body(&mut chars)?)),
             '}' if chars.peek() == Some(&'}') => {
                 chars.next();
                 toks.push(Tok::Lit('}'));
@@ -249,6 +235,26 @@ fn tokenize(pattern: &str) -> std::result::Result<Vec<Tok>, PatternError> {
         }
     }
     Ok(toks)
+}
+
+/// Read one `{...}` placeholder body up to its closing `}` (consuming that `}`),
+/// or `UnclosedBrace` when the pattern ends first.
+fn read_placeholder_body(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> std::result::Result<String, PatternError> {
+    let mut body = String::new();
+    let mut closed = false;
+    for c2 in chars.by_ref() {
+        if c2 == '}' {
+            closed = true;
+            break;
+        }
+        body.push(c2);
+    }
+    if !closed {
+        return Err(PatternError::UnclosedBrace);
+    }
+    Ok(body)
 }
 
 /// Which of the placeholders that READ THE FILE `pattern` actually uses. `{date}` costs a
@@ -266,15 +272,21 @@ pub struct PatternReads {
 pub fn pattern_reads(pattern: &str) -> PatternReads {
     let mut reads = PatternReads::default();
     if let Ok(toks) = tokenize(pattern) {
-        for tok in toks {
-            match tok {
-                Tok::Placeholder(b) if b == "date" => reads.date = true,
-                Tok::Placeholder(b) if b == "w" || b == "h" => reads.dims = true,
-                _ => {}
-            }
-        }
+        note_reads(&toks, &mut reads);
     }
     reads
+}
+
+/// Mark in `reads` which file-reading placeholders `toks` uses (`{date}`, and
+/// `{w}`/`{h}`) — the per-token scan behind [`pattern_reads`].
+fn note_reads(toks: &[Tok], reads: &mut PatternReads) {
+    for tok in toks {
+        match tok {
+            Tok::Placeholder(b) if b == "date" => reads.date = true,
+            Tok::Placeholder(b) if b == "w" || b == "h" => reads.dims = true,
+            _ => {}
+        }
+    }
 }
 
 /// One `{...}` placeholder body (already stripped of its braces) → its substitution.
