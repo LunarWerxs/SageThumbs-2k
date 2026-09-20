@@ -193,6 +193,22 @@ unsafe fn eye_finish(pick: Option<(u8, u8, u8)>) {
     set_clipboard_text(&text.join("\r\n"));
 }
 
+/// Register the picker's window class with `hinst` and hand back its class name
+/// for `CreateWindowExW`.
+unsafe fn register_eyedropper_class(hinst: HINSTANCE) -> windows::core::PCWSTR {
+    let class = w!("SageThumbs2KEyedropper");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(eyedropper_wndproc),
+        hInstance: hinst,
+        lpszClassName: class,
+        hIcon: app_icon().unwrap_or_default(),
+        hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
+        ..Default::default()
+    };
+    RegisterClassW(&wc);
+    class
+}
+
 pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     if let Ok(mut st) = EYE_STASH.lock() {
         st.clear();
@@ -224,16 +240,7 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     EYE_VW.store(vw, Ordering::Relaxed);
     EYE_VH.store(vh, Ordering::Relaxed);
 
-    let class = w!("SageThumbs2KEyedropper");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(eyedropper_wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
-        ..Default::default()
-    };
-    RegisterClassW(&wc);
+    let class = register_eyedropper_class(hinst);
 
     // Fullscreen, borderless, topmost — covers the whole virtual screen so the
     // cursor is always over us (no global hook needed to catch clicks).
@@ -305,16 +312,7 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
         Ok(h) => h.into(),
         Err(_) => return false,
     };
-    let class = w!("SageThumbs2KEyedropper");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(eyedropper_wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
-        ..Default::default()
-    };
-    RegisterClassW(&wc);
+    let class = register_eyedropper_class(hinst);
     // Off the left edge of the virtual desktop (NOT topmost) so it never appears on screen.
     let x = GetSystemMetrics(SM_XVIRTUALSCREEN) - pw - 64;
     let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
