@@ -187,11 +187,9 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     crate::win::result_buttons(hwnd, hinst, &l);
 }
 
-/// What the Copy button puts on the clipboard: the whole report, paths and all. The EDIT is
-/// read-only, so its contents can never differ from the stored text.
-unsafe fn copy_source(_hwnd: HWND) -> String {
-    REPORT.with(|r| r.borrow().clone())
-}
+// What the Copy button puts on the clipboard: the whole report, paths and all. The EDIT is
+// read-only, so its contents can never differ from the stored text.
+crate::win::report_copy_source!(REPORT);
 
 extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {

@@ -11,8 +11,7 @@ use image::RgbaImage;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, FillRect,
-    GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+    GetDC, GetDIBits, ReleaseDC, SelectObject, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -120,18 +119,7 @@ pub(super) unsafe fn pull_top_down_bgra(
     h: i32,
     n: usize,
 ) -> Option<Vec<u8>> {
-    let mut bi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let mut bi = crate::win::top_down_bgra_bmi(w, h);
     let mut buf = vec![0u8; n];
     let got = GetDIBits(
         dc,

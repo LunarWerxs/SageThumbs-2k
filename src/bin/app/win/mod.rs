@@ -14,8 +14,8 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     DeleteObject, DrawTextW, FillRect, GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ, TRANSPARENT,
+    SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DT_CALCRECT, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, HBITMAP, HFONT, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
@@ -355,6 +355,24 @@ mod icon_font_tests {
     }
 }
 
+/// A top-down 32-bpp `BITMAPINFO` for a `w`×`h` canvas — the header every DIB path in this app
+/// wants (`CreateDIBSection`, `GetDIBits`, `StretchDIBits`), with the negative `biHeight` that
+/// means top-down rows and `BI_RGB` that means packed BGRA, no colour table.
+pub(crate) fn top_down_bgra_bmi(w: i32, h: i32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s)
         .encode_wide()
@@ -492,6 +510,19 @@ pub(crate) unsafe fn result_wndproc(
         _ => None,
     }
 }
+
+/// Declares the `copy_source` a verbatim-report dialog hands to [`result_wndproc`]: the whole of
+/// its per-thread `report` text, which is what the Copy button puts on the clipboard. The
+/// dialogs that copy a stored report verbatim are identical here but for which thread-local
+/// holds that text, so the macro takes the caller's own name for it.
+macro_rules! report_copy_source {
+    ($report:ident) => {
+        unsafe fn copy_source(_hwnd: windows::Win32::Foundation::HWND) -> String {
+            $report.with(|r| r.borrow().clone())
+        }
+    };
+}
+pub(crate) use report_copy_source;
 
 /// Control id of the Copy button in every result dialog (see [`result_wndproc`]).
 pub(crate) const ID_RESULT_COPY: i32 = 101;
@@ -1887,19 +1918,10 @@ mod text_width_tests {
         let s = "v1.2.3";
         let design_w = unsafe { text_width(hwnd, s) };
 
-        // The raw 192-DPI measurement `text_width` is supposed to un-scale from —
-        // computed independently so the test doesn't just echo the implementation.
-        let raw_w = unsafe {
-            let hdc = GetDC(None);
-            let old = SelectObject(hdc, HGDIOBJ(gui_font_for(hwnd).0));
-            let w = wide(s);
-            let n = w.len().saturating_sub(1);
-            let mut sz = windows::Win32::Foundation::SIZE::default();
-            let _ = GetTextExtentPoint32W(hdc, &w[..n], &mut sz);
-            SelectObject(hdc, old);
-            ReleaseDC(None, hdc);
-            sz.cx
-        };
+        // The raw 192-DPI measurement `text_width` is supposed to un-scale from: the same
+        // `text_w_in` measurement `text_width` itself takes, without the 96-DPI unscale that
+        // is exactly what this test is about.
+        let raw_w = unsafe { text_w_in(gui_font_for(hwnd), s) };
 
         let rescaled = dpi_scale(hwnd, design_w);
         assert!(

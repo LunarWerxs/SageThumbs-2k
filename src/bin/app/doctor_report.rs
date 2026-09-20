@@ -113,10 +113,8 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     crate::win::result_buttons(hwnd, hinst, &l);
 }
 
-/// Copy puts the whole report on the clipboard — the point is pasting it into an issue.
-unsafe fn copy_source(_hwnd: HWND) -> String {
-    REPORT.with(|r| r.borrow().clone())
-}
+// Copy puts the whole report on the clipboard — the point is pasting it into an issue.
+crate::win::report_copy_source!(REPORT);
 
 extern "system" fn doctor_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {

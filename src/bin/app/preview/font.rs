@@ -13,10 +13,9 @@ use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::{
     AddFontResourceExW, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush,
     DeleteDC, DeleteObject, FillRect, GdiFlush, GetDC, ReleaseDC, RemoveFontResourceExW,
-    SelectObject, SetBkMode, SetTextColor, TextOutW, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, FF_DONTCARE, FONT_QUALITY,
-    FONT_RESOURCE_CHARACTERISTICS, FW_NORMAL, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_TT_PRECIS,
-    TRANSPARENT,
+    SelectObject, SetBkMode, SetTextColor, TextOutW, CLEARTYPE_QUALITY, DEFAULT_CHARSET,
+    DEFAULT_PITCH, DIB_RGB_COLORS, FF_DONTCARE, FONT_QUALITY, FONT_RESOURCE_CHARACTERISTICS,
+    FW_NORMAL, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_TT_PRECIS, TRANSPARENT,
 };
 
 /// Deletes the reconstructed-WOFF temp file however this function exits — including the
@@ -251,18 +250,7 @@ pub(super) unsafe fn render_specimen(
 
     // Off-screen 32bpp top-down DIB canvas.
     let (w, h) = (1000i32, 720i32);
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h, // top-down
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let bmi = crate::win::top_down_bgra_bmi(w, h);
     let screen = GetDC(None);
     let mut bits: *mut c_void = core::ptr::null_mut();
     let dib: HBITMAP =
