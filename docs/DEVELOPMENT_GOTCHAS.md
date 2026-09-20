@@ -641,6 +641,45 @@ script that does the wrong thing:
 - **`$args` is an automatic variable.** Assigning to it and then splatting `@args` does not do
   what you wrote. Name it anything else.
 
+And one that the session's own review caught before it could rot: the derived runner must invoke
+each step with **`pwsh -Command "& '<script>'; if (Test-Path variable:\LASTEXITCODE) { exit
+$LASTEXITCODE }"`, never `pwsh -File`**. GitHub's `shell: pwsh` appends `exit $LASTEXITCODE`, so a
+script that ENDS on a failed native command without calling `exit` fails on CI while `-File`
+reports the script's own clean exit. The hand-typed loop that was being replaced had this right;
+the replacement lost it, which would have been a gate claiming a fidelity it did not have - the
+exact defect this whole change exists to remove, reintroduced one layer down.
+
+## A CONCURRENT SESSION CAN REWRITE `Cargo.lock` UNDER A RELEASE, AND IT LOOKS LIKE YOUR CODE (2026-09-20)
+
+3.2.0's first release run built x64 clean through `[4/4] done` and then died on the ARM64 leg with
+**153 compile errors**, every one of them in COM code nobody had touched: `the trait bound
+IExplorerCommand: windows_core::Interface is not satisfied`, `no associated function named
+matches found for type _`, and helpfully suggesting `use crypto_common::KeyInit`. It reads exactly
+like a broken refactor of `#[implement]`.
+
+It was not. The first error carried the whole diagnosis in one line: *"there are multiple different
+versions of crate `windows_core` in the dependency graph"* - **0.100.0 and 0.62.2**. This repo pins
+`windows` / `windows-core` at 0.62 and `windows-implement` at 0.60 precisely because the
+`#[implement]` macro expands to `windows_core::` paths, so two `windows_core` in one graph makes
+every generated impl target the wrong trait. The 0.100 family is not in the committed `Cargo.lock`
+and the build ran `--locked`, so it could only have come from a lock that was rewritten **between
+the x64 and ARM64 legs of the same run**, by something outside it. `git status` after the failure
+showed exactly one modified file: `Cargo.lock`.
+
+**Diagnosis in one minute, not one hour:**
+
+1. `grep -n '^error' <log> | head -1` and read THAT error, not the 153 downstream ones. "Multiple
+   different versions of crate X" is a resolution fault, never a code fault.
+2. `git status --porcelain` - a modified `Cargo.lock` after a `--locked` build is the answer.
+3. `git checkout -- Cargo.lock`, then re-run the leg alone:
+   `cargo check --release --locked --target aarch64-pc-windows-msvc -p sagethumbs2k --features
+   webp-lossy,html-preview,hdr-capture,flash-video,vp9-video,mpeg-video` (~60 s warm). Clean means
+   the tree was always fine.
+
+These trees are shared with other agent sessions (CLAUDE.md 6.1.1). Before believing any local red,
+ask whether someone else is editing this repo - and before a release, prefer a moment when nothing
+else is. The same class already cost a run at the provenance gate on 2026-09-15.
+
 ## The gate runs on the one machine that HAS the corpus, so it cannot see a test that needs it
 
 `..\test-corpus` is a sibling of the repo, never in git, so a CI checkout has none. On
