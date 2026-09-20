@@ -17,28 +17,7 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     // line below, which a revoked copy (no longer entitled) would otherwise fall into and read
     // "Personal use, no licence needed" - the revocation silently vanishing (owner test, 2026-09-11).
     if !snap.key_prefix.is_empty() && snap.last_status == "revoked" {
-        let mut line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
-        if let Some(why) = licence_reason_line(&snap.last_reason) {
-            line.push(' ');
-            line.push_str(why);
-        }
-        // The lock, from the same phase the shell reads: the date it lands, or that it has.
-        match snap.posture {
-            crate::license::Posture::DeauthorizedLoud {
-                locks_unix: Some(locks),
-            } => {
-                line.push(' ');
-                line.push_str(
-                    &t("licence_deauthorized_locks").replace("{date}", &format_unix_date(locks)),
-                );
-            }
-            crate::license::Posture::Locked { revoked: true } => {
-                line.push(' ');
-                line.push_str(t("licence_state_locked"));
-            }
-            _ => {}
-        }
-        return line;
+        return revoked_state_line(snap);
     }
     // The evaluation and its lock, before the plain "no key" line: a Business copy with no
     // key is on a clock, and the line says where on it this machine stands.
@@ -87,6 +66,34 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
         }
     }
     t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
+}
+
+
+/// Builds the revoked-key state line for [`licence_state_line`]: the plain revocation
+/// sentence, the relay's reason when recorded, then the lock from the current posture.
+fn revoked_state_line(snap: &crate::license::LicenceSnapshot) -> String {
+    let mut line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
+    if let Some(why) = licence_reason_line(&snap.last_reason) {
+        line.push(' ');
+        line.push_str(why);
+    }
+    // The lock, from the same phase the shell reads: the date it lands, or that it has.
+    match snap.posture {
+        crate::license::Posture::DeauthorizedLoud {
+            locks_unix: Some(locks),
+        } => {
+            line.push(' ');
+            line.push_str(
+                &t("licence_deauthorized_locks").replace("{date}", &format_unix_date(locks)),
+            );
+        }
+        crate::license::Posture::Locked { revoked: true } => {
+            line.push(' ');
+            line.push_str(t("licence_state_locked"));
+        }
+        _ => {}
+    }
+    line
 }
 
 /// How long before the updates window ends the Licence page starts offering the renewal:

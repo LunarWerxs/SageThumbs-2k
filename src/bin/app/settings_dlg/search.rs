@@ -424,40 +424,46 @@ unsafe fn ensure_index(hwnd: HWND) {
         if !s.entries.is_empty() {
             return;
         }
-        let push = |page: usize, label_id: i32, focus_id: i32, entries: &mut Vec<Entry>| {
-            entries.push(Entry {
-                page,
-                label_id,
-                focus_id,
-                label_lc: label_lc(hwnd, label_id),
-                tip_label_lc: tip_lc(label_id),
-                tip_focus_lc: tip_lc(focus_id),
-            });
-        };
-        for page in 0..navrail::NCAT {
-            for &row in navrail::cat_rows(page) {
-                use navrail::Row::*;
-                let (label_id, focus_id) = match row {
-                    Switch(id) | Btn(id, _) | Head(id) => (id, id),
-                    Pair(lbl, field, _, _) => (lbl, field),
-                    BtnStatus(bid, _, _) | StatusBtn(_, bid, _) => (bid, bid),
-                    // The licence key row: found by its Redeem button's label, focus lands
-                    // in the edit where the key is typed.
-                    WideBtn(eid, bid, _) => (bid, eid),
-                    // Btn3 rows are Select all/Clear all/Defaults — reachable, useful.
-                    Btn3(a, b, c) => {
-                        for id in [a, b, c] {
-                            push(page, id, id, &mut s.entries);
-                        }
-                        continue;
-                    }
-                    // The format filter box and the two lists aren't setting rows.
-                    Wide(_) | ListFill(_) | Status(_) => continue,
-                };
-                push(page, label_id, focus_id, &mut s.entries);
-            }
-        }
+        build_index_entries(hwnd, &mut s.entries);
     });
+}
+
+/// Fill `entries` with one cached row per searchable control, walking every navrail page's
+/// rows; Btn3 rows contribute all three of their ids.
+unsafe fn build_index_entries(hwnd: HWND, entries: &mut Vec<Entry>) {
+    let push = |page: usize, label_id: i32, focus_id: i32, entries: &mut Vec<Entry>| {
+        entries.push(Entry {
+            page,
+            label_id,
+            focus_id,
+            label_lc: label_lc(hwnd, label_id),
+            tip_label_lc: tip_lc(label_id),
+            tip_focus_lc: tip_lc(focus_id),
+        });
+    };
+    for page in 0..navrail::NCAT {
+        for &row in navrail::cat_rows(page) {
+            use navrail::Row::*;
+            let (label_id, focus_id) = match row {
+                Switch(id) | Btn(id, _) | Head(id) => (id, id),
+                Pair(lbl, field, _, _) => (lbl, field),
+                BtnStatus(bid, _, _) | StatusBtn(_, bid, _) => (bid, bid),
+                // The licence key row: found by its Redeem button's label, focus lands
+                // in the edit where the key is typed.
+                WideBtn(eid, bid, _) => (bid, eid),
+                // Btn3 rows are Select all/Clear all/Defaults — reachable, useful.
+                Btn3(a, b, c) => {
+                    for id in [a, b, c] {
+                        push(page, id, id, entries);
+                    }
+                    continue;
+                }
+                // The format filter box and the two lists aren't setting rows.
+                Wide(_) | ListFill(_) | Status(_) => continue,
+            };
+            push(page, label_id, focus_id, entries);
+        }
+    }
 }
 
 /// Lower-cased text of a control, for matching.
@@ -499,39 +505,11 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
     }
     ensure_index(hwnd);
     SendMessageW(list, LB_RESETCONTENT, None, None);
-    let mut shown = 0usize;
-    SEARCH.with(|s| {
-        let mut s = s.borrow_mut();
-        let mut hits: Vec<usize> = Vec::new();
-        for (i, e) in s.entries.iter().enumerate() {
-            if e.label_lc.is_empty() {
-                continue;
-            }
-            let page_name = navrail::nav_label(e.page).to_lowercase();
-            if e.label_lc.contains(&needle)
-                || page_name.contains(&needle)
-                || e.tip_label_lc.contains(&needle)
-                || e.tip_focus_lc.contains(&needle)
-            {
-                // Row text: "Page > Label", both already localized. Re-fetch the label in its
-                // real casing: the cached `label_lc` is lowercased for matching only, and must
-                // not leak into what the user sees.
-                let row = format!(
-                    "{}  >  {}",
-                    navrail::nav_label(e.page),
-                    label_text(hwnd, e.label_id)
-                );
-                let w = wide(&row);
-                SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-                hits.push(i);
-                shown += 1;
-                if shown >= 12 {
-                    break; // a dozen rows is a usable dropdown; past that, keep typing
-                }
-            }
-        }
-        s.hits = hits;
+    let (hits, shown) = SEARCH.with(|s| {
+        let s = s.borrow();
+        scan_entries(hwnd, list, &needle, &s.entries)
     });
+    SEARCH.with(|s| s.borrow_mut().hits = hits);
     if shown > 0 {
         // Size the dropdown to EXACTLY its rows (the fixed 180px box left dead space
         // under short result lists), then re-clip the rounded corners to the new size.
@@ -553,6 +531,46 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
     } else {
         let _ = ShowWindow(list, SW_HIDE);
     }
+}
+
+/// Scan `entries` for `needle`, appending up to 12 matching rows to `list`; returns the hit
+/// indices and the number of rows shown.
+unsafe fn scan_entries(
+    hwnd: HWND,
+    list: HWND,
+    needle: &str,
+    entries: &[Entry],
+) -> (Vec<usize>, usize) {
+    let mut hits: Vec<usize> = Vec::new();
+    let mut shown = 0usize;
+    for (i, e) in entries.iter().enumerate() {
+        if e.label_lc.is_empty() {
+            continue;
+        }
+        let page_name = navrail::nav_label(e.page).to_lowercase();
+        if e.label_lc.contains(needle)
+            || page_name.contains(needle)
+            || e.tip_label_lc.contains(needle)
+            || e.tip_focus_lc.contains(needle)
+        {
+            // Row text: "Page > Label", both already localized. Re-fetch the label in its
+            // real casing: the cached `label_lc` is lowercased for matching only, and must
+            // not leak into what the user sees.
+            let row = format!(
+                "{}  >  {}",
+                navrail::nav_label(e.page),
+                label_text(hwnd, e.label_id)
+            );
+            let w = wide(&row);
+            SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+            hits.push(i);
+            shown += 1;
+            if shown >= 12 {
+                break; // a dozen rows is a usable dropdown; past that, keep typing
+            }
+        }
+    }
+    (hits, shown)
 }
 
 /// LBN_SELCHANGE: jump to the picked control — switch page, force focus rings visible,

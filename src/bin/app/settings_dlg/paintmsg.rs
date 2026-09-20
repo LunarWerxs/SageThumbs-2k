@@ -60,6 +60,34 @@ pub(super) unsafe fn special_ctlcolor(
     {
         return Some(crate::dark::dark_ctlcolor_field_disabled(wparam));
     }
+    if let Some(r) = status_ctlcolor(hwnd, msg, wparam, lparam) {
+        return Some(r);
+    }
+    // The licence-state line: green when actively licensed, red when revoked, the plain
+    // theme colour otherwise (Personal / no key entered yet — a normal state, not a
+    // problem one). Same green/red pair the hotkey-service and sync badges above use.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        return tone_ctlcolor(licence_ui::state_tone(), msg, wparam);
+    }
+    // The redeem-result line, same tri-state (idle / just-redeemed / just-rejected).
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
+        && GetDlgItem(Some(hwnd), ID_LICENCE_REDEEM_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
+    {
+        return tone_ctlcolor(licence_ui::redeem_tone(), msg, wparam);
+    }
+    dark_ctlcolor(msg, wparam)
+}
+
+/// The ID-keyed state-driven status-line WM_CTLCOLORSTATIC cases (hotkey-service, settings
+/// sync and the licence work hint); `None` means none did.
+unsafe fn status_ctlcolor(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
     // The hotkey-service status word: green when running/started, red otherwise.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
@@ -100,21 +128,7 @@ pub(super) unsafe fn special_ctlcolor(
     {
         return Some(crate::dark::dark_ctlcolor_dim(wparam));
     }
-    // The licence-state line: green when actively licensed, red when revoked, the plain
-    // theme colour otherwise (Personal / no key entered yet — a normal state, not a
-    // problem one). Same green/red pair the hotkey-service and sync badges above use.
-    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-        && GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
-    {
-        return tone_ctlcolor(licence_ui::state_tone(), msg, wparam);
-    }
-    // The redeem-result line, same tri-state (idle / just-redeemed / just-rejected).
-    if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
-        && GetDlgItem(Some(hwnd), ID_LICENCE_REDEEM_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
-    {
-        return tone_ctlcolor(licence_ui::redeem_tone(), msg, wparam);
-    }
-    dark_ctlcolor(msg, wparam)
+    None
 }
 
 /// A tri-state status line: green when good, red when bad, and the plain class-based theming

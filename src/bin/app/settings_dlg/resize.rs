@@ -50,42 +50,48 @@ const REFLOW_CTLS: &[(i32, bool)] = &[
     (IDOK, false),
 ];
 
+/// Measure the current geometry of every `REFLOW_CTLS` entry (and the window rect) and
+/// store it as the design layout in `RESIZE`.
+unsafe fn capture_design_layout(hwnd: HWND, client_h: i32) {
+    let mut wr = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut wr);
+    let mut ctrls = Vec::new();
+    for &(id, stretchy) in REFLOW_CTLS {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            let mut r = RECT::default();
+            if GetWindowRect(h, &mut r).is_ok() {
+                let mut tl = POINT {
+                    x: r.left,
+                    y: r.top,
+                };
+                let _ = ScreenToClient(hwnd, &mut tl);
+                ctrls.push(ReflowCtl {
+                    id,
+                    x: tl.x,
+                    y: tl.y,
+                    w: r.right - r.left,
+                    h: r.bottom - r.top,
+                    stretchy,
+                });
+            }
+        }
+    }
+    RESIZE.with(|s| {
+        *s.borrow_mut() = Some(ResizeState {
+            win_w: wr.right - wr.left,
+            win_h0: wr.bottom - wr.top,
+            client_h0: client_h,
+            ctrls,
+        });
+    });
+}
+
 /// Reflow the bottom-anchored controls for the new client height + recompute the left
 /// scroll viewport. The first call (during creation) just captures the design layout.
 pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
     let first = RESIZE.with(|s| s.borrow().is_none());
     if first {
-        let mut wr = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut wr);
-        let mut ctrls = Vec::new();
-        for &(id, stretchy) in REFLOW_CTLS {
-            if let Ok(h) = GetDlgItem(Some(hwnd), id) {
-                let mut r = RECT::default();
-                if GetWindowRect(h, &mut r).is_ok() {
-                    let mut tl = POINT {
-                        x: r.left,
-                        y: r.top,
-                    };
-                    let _ = ScreenToClient(hwnd, &mut tl);
-                    ctrls.push(ReflowCtl {
-                        id,
-                        x: tl.x,
-                        y: tl.y,
-                        w: r.right - r.left,
-                        h: r.bottom - r.top,
-                        stretchy,
-                    });
-                }
-            }
-        }
-        RESIZE.with(|s| {
-            *s.borrow_mut() = Some(ResizeState {
-                win_w: wr.right - wr.left,
-                win_h0: wr.bottom - wr.top,
-                client_h0: client_h,
-                ctrls,
-            });
-        });
+        capture_design_layout(hwnd, client_h);
         return; // the first size IS the design layout — nothing to reflow yet
     }
     RESIZE.with(|s| {

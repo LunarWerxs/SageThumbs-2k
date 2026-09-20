@@ -451,33 +451,50 @@ pub(super) unsafe extern "system" fn list_subclass(
         // commit on release (capture routes these here). Idle → fall through to default.
         // While a drag is active, repaint the rows normally, then draw our accent
         // drop-indicator line on top (the native insertion mark crashes in report view).
-        WM_PAINT if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let res = DefSubclassProc(h, msg, w, l);
-            draw_insert_line(h);
-            return res;
-        }
-        WM_MOUSEMOVE if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-            let (row, after) = insert_point(h, x, y);
-            set_insert_mark(h, row, after);
-            return LRESULT(0);
-        }
-        WM_LBUTTONUP if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-            finish_menu_drag(h, x, y);
-            return LRESULT(0);
-        }
-        WM_CAPTURECHANGED if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            // Capture pulled away (Esc / another window) — cancel cleanly.
-            DRAG_SRC.with(|s| s.set(-1));
-            set_insert_mark(h, -1, false);
+        WM_PAINT | WM_MOUSEMOVE | WM_LBUTTONUP | WM_CAPTURECHANGED
+            if DRAG_SRC.with(|s| s.get()) >= 0 =>
+        {
+            if let Some(res) = on_drag_msg(h, msg, w, l) {
+                return res;
+            }
         }
         // WM_CONTEXTMENU is handled in the dialog proc (it bubbles to the parent).
         _ => {}
     }
     DefSubclassProc(h, msg, w, l)
+}
+
+/// `list_subclass`'s drag-active messages: repaint the rows normally then draw the accent
+/// drop-indicator line, move/release to commit the reorder, or cancel on capture-loss.
+/// `Some(res)` means the subclass should return `res`; `None` falls through to `DefSubclassProc`.
+unsafe fn on_drag_msg(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
+    match msg {
+        WM_PAINT => {
+            let res = DefSubclassProc(h, msg, w, l);
+            draw_insert_line(h);
+            Some(res)
+        }
+        WM_MOUSEMOVE => {
+            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+            let (row, after) = insert_point(h, x, y);
+            set_insert_mark(h, row, after);
+            Some(LRESULT(0))
+        }
+        WM_LBUTTONUP => {
+            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+            finish_menu_drag(h, x, y);
+            Some(LRESULT(0))
+        }
+        WM_CAPTURECHANGED => {
+            // Capture pulled away (Esc / another window) — cancel cleanly.
+            DRAG_SRC.with(|s| s.set(-1));
+            set_insert_mark(h, -1, false);
+            None
+        }
+        _ => None,
+    }
 }
 
 /// `list_subclass`'s `WM_NOTIFY` handling: a finished column drag (floor + refit), the

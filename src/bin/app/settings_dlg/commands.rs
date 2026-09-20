@@ -40,6 +40,9 @@ pub(super) unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 /// Core dialog chrome: Save/Cancel, the file-type list's bulk toggles + search + reset,
 /// and the menu-items list's reset/editor.
 pub(super) unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
+    if on_command_format_and_menu(hwnd, id) {
+        return;
+    }
     match id {
         IDOK => {
             // Refuse the whole Save when two enabled hotkeys share a chord, naming both,
@@ -56,17 +59,34 @@ pub(super) unsafe fn on_command_dialog(hwnd: HWND, id: i32, notify: u32) {
         ID_SEARCH_GLOBAL if notify == EN_CHANGE => search::on_change(hwnd),
         ID_SEARCH_RESULTS if notify == LBN_SELCHANGE => search::on_pick(hwnd),
         ID_SEARCH if notify == EN_CHANGE => on_search_filter_changed(hwnd),
-        ID_DEFAULTS => reset_formats(hwnd), // file-type list only (see its tip)
-        ID_RESET_ALL => load_defaults(hwnd), // whole dialog → factory defaults
+        _ => {}
+    }
+}
+
+/// Reset and editor buttons for the file-type and menu-items lists.
+unsafe fn on_command_format_and_menu(hwnd: HWND, id: i32) -> bool {
+    match id {
+        ID_DEFAULTS => {
+            reset_formats(hwnd); // file-type list only (see its tip)
+            true
+        }
+        ID_RESET_ALL => {
+            load_defaults(hwnd); // whole dialog → factory defaults
+            true
+        }
         ID_MENU_RESET => {
             if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
                 list::reset_menu_order(mlist);
             }
+            true
         }
         // The checklist itself lives in a popup editor now — room it never
         // had on the page, and the page gets its breathing space back.
-        ID_MENU_ITEMS_EDIT => menuitems::open(hwnd),
-        _ => {}
+        ID_MENU_ITEMS_EDIT => {
+            menuitems::open(hwnd);
+            true
+        }
+        _ => false,
     }
 }
 

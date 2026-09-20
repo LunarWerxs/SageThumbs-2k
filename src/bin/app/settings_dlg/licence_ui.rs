@@ -73,10 +73,7 @@ pub(super) unsafe fn seed_licence_ui(hwnd: HWND) {
 /// leaves the page showing the SAME thing a fresh open would.
 unsafe fn refresh_licence_status(hwnd: HWND) {
     let snap = crate::license::snapshot();
-    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_MODE_STATUS) {
-        let w = wide(&licence_mode_line(&snap));
-        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
-    }
+    set_licence_line(hwnd, ID_LICENCE_MODE_STATUS, &licence_mode_line(&snap), false);
     // The colour follows the LICENCE, not the installer's answer: a Personal copy carrying a live
     // business key is green and one whose key was revoked is red, exactly as a Business copy is.
     let tone = if (!snap.key_prefix.is_empty() && snap.last_status == "revoked")
@@ -96,33 +93,35 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
     };
     STATE_TONE.with(|c| c.set(tone));
     BUY_PRIMARY.with(|c| c.set(!snap.entitled));
-    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_BUY) {
-        let _ = InvalidateRect(Some(h), None, true);
-    }
-    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_STATE_STATUS) {
-        let w = wide(&licence_state_line(&snap));
-        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
-        let _ = InvalidateRect(Some(h), None, true);
-    }
+    invalidate_control(hwnd, ID_LICENCE_BUY);
+    set_licence_line(hwnd, ID_LICENCE_STATE_STATUS, &licence_state_line(&snap), true);
     // The updates window: its own line, and the renewal button that goes with it. Both are
     // driven from the SAME snapshot as everything above, so the page can never show a
     // window end that disagrees with the licence state printed one line up.
-    if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_UPDATES_STATUS) {
-        let text = licence_updates_line(&snap).unwrap_or_default();
-        let w = wide(&text);
-        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
-        let _ = InvalidateRect(Some(h), None, true);
-    }
+    set_licence_line(
+        hwnd,
+        ID_LICENCE_UPDATES_STATUS,
+        &licence_updates_line(&snap).unwrap_or_default(),
+        true,
+    );
     // The page's big title names the licence ("Business licence" / "Personal licence"), so a
     // Redeem or Check that changes it must repaint the header - and the search box that floats
     // over it, or that box flashes as a hole (the same pairing the page switch uses).
-    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
-        let _ = InvalidateRect(Some(ph), None, true);
-    }
-    if let Ok(sb) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
-        let _ = InvalidateRect(Some(sb), None, true);
-    }
+    invalidate_control(hwnd, ID_PANE_HEADER);
+    invalidate_control(hwnd, ID_SEARCH_GLOBAL);
     apply_conditional_visibility(hwnd);
+}
+
+/// Publish `text` to the Licence-page control `id` and repaint it, when `repaint`; the mode
+/// line passes `false` because it has no per-line repaint of its own.
+unsafe fn set_licence_line(hwnd: HWND, id: i32, text: &str, repaint: bool) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+        let w = wide(text);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+        if repaint {
+            let _ = InvalidateRect(Some(h), None, true);
+        }
+    }
 }
 
 /// Show the Renew button and the prospect line only while BOTH their own state wants them AND
@@ -298,46 +297,7 @@ unsafe fn licence_popup(hwnd: HWND, body: &str, caption: &str, icon: MESSAGEBOX_
 pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
     set_busy(hwnd, false);
     match event {
-        LicenceEvent::Redeemed(outcome) => match outcome {
-            crate::license::RedeemOutcome::Redeemed { key_prefix } => {
-                set_redeem_status(
-                    hwnd,
-                    &t("licence_redeemed").replace("{key}", &key_prefix),
-                    Tone::Good,
-                );
-                // The key has done its job; it must not go on sitting in the field (see
-                // this module's rule at the top).
-                if let Ok(e) = GetDlgItem(Some(hwnd), ID_LICENCE_KEY_EDIT) {
-                    let empty = wide("");
-                    let _ = SetWindowTextW(e, PCWSTR(empty.as_ptr()));
-                }
-                refresh_licence_status(hwnd);
-                licence_popup(
-                    hwnd,
-                    &t("licence_popup_activated").replace("{key}", &key_prefix),
-                    t("licence_popup_title"),
-                    MB_ICONINFORMATION,
-                );
-            }
-            crate::license::RedeemOutcome::Rejected { message } => {
-                set_redeem_status(hwnd, &message, Tone::Bad);
-                licence_popup(
-                    hwnd,
-                    &message,
-                    t("licence_popup_rejected_title"),
-                    MB_ICONWARNING,
-                );
-            }
-            crate::license::RedeemOutcome::Offline => {
-                set_redeem_status(hwnd, t("licence_offline"), Tone::Bad);
-                licence_popup(
-                    hwnd,
-                    t("licence_offline"),
-                    t("licence_popup_title"),
-                    MB_ICONWARNING,
-                );
-            }
-        },
+        LicenceEvent::Redeemed(outcome) => apply_redeem_outcome(hwnd, outcome),
         LicenceEvent::Checked(result) => {
             if let Ok(b) = GetDlgItem(Some(hwnd), ID_LICENCE_CHECK_NOW) {
                 let w = wide(t("btn_licence_check_now"));
@@ -358,6 +318,51 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
             };
             set_redeem_status(hwnd, text, tone);
             refresh_licence_status(hwnd);
+        }
+    }
+}
+
+/// Apply one [`LicenceEvent::Redeemed`] outcome to the page: the redeem-result line, and (on a
+/// successful redeem) the cleared key field, a status refresh and the activation popup.
+unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: crate::license::RedeemOutcome) {
+    match outcome {
+        crate::license::RedeemOutcome::Redeemed { key_prefix } => {
+            set_redeem_status(
+                hwnd,
+                &t("licence_redeemed").replace("{key}", &key_prefix),
+                Tone::Good,
+            );
+            // The key has done its job; it must not go on sitting in the field (see
+            // this module's rule at the top).
+            if let Ok(e) = GetDlgItem(Some(hwnd), ID_LICENCE_KEY_EDIT) {
+                let empty = wide("");
+                let _ = SetWindowTextW(e, PCWSTR(empty.as_ptr()));
+            }
+            refresh_licence_status(hwnd);
+            licence_popup(
+                hwnd,
+                &t("licence_popup_activated").replace("{key}", &key_prefix),
+                t("licence_popup_title"),
+                MB_ICONINFORMATION,
+            );
+        }
+        crate::license::RedeemOutcome::Rejected { message } => {
+            set_redeem_status(hwnd, &message, Tone::Bad);
+            licence_popup(
+                hwnd,
+                &message,
+                t("licence_popup_rejected_title"),
+                MB_ICONWARNING,
+            );
+        }
+        crate::license::RedeemOutcome::Offline => {
+            set_redeem_status(hwnd, t("licence_offline"), Tone::Bad);
+            licence_popup(
+                hwnd,
+                t("licence_offline"),
+                t("licence_popup_title"),
+                MB_ICONWARNING,
+            );
         }
     }
 }
