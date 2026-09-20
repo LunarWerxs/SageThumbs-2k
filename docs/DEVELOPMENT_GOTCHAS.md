@@ -620,6 +620,27 @@ A gate that covers most of a job is worse than no gate, because it is trusted. I
 step to `build-test` in `ci.yml`, add it to `scripts/preflight.ps1` in the same position, or
 change the comment to stop claiming a mirror it no longer is.
 
+**The same rule, learned much more expensively on 2026-09-20: a hand-typed mirror does not stay
+a mirror, so DERIVE it.** `preflight.ps1` and `scripts/refactor/gate.py` each held a literal
+list of eleven `consistency`-job script names, typed when the job had eleven steps. The job grew
+to twenty-two. Neither list did, and nobody noticed, because both gates still printed a
+confident "11/11 clean" - the drift is invisible from the inside, which is exactly what a
+hard-coded copy of someone else's list buys you. Among the eleven steps the local gates had
+never heard of was `check-registration-symmetry.ps1`, which had just gone stale against a
+refactor, so `main` carried four commits of red CI on a PUBLIC repo while every desk gate read
+green. `scripts/ci-consistency-steps.ps1` now parses the job out of `ci.yml` and both callers
+consume it; it refuses (exit 2) rather than report a list it could not parse, because a gate
+that reports zero steps as "clean" is the failure it exists to prevent.
+
+Two PowerShell traps that script paid for on its first run, both of which produce a WORKING
+script that does the wrong thing:
+
+- **`$parts[1..($parts.Count - 1)]` counts DOWN when `Count` is 1.** `1..0` is a descending
+  range, so a step with no arguments got `@($null, 'check-complexity.ps1')` - its own filename
+  handed back as a positional parameter. Guard the length: `if ($n -gt 1) { ... } else { @() }`.
+- **`$args` is an automatic variable.** Assigning to it and then splatting `@args` does not do
+  what you wrote. Name it anything else.
+
 ## The gate runs on the one machine that HAS the corpus, so it cannot see a test that needs it
 
 `..\test-corpus` is a sibling of the repo, never in git, so a CI checkout has none. On
