@@ -266,27 +266,7 @@ pub(super) fn redeem_outcome_from_response(
 ) -> RedeemOutcome {
     let json: Option<Value> = serde_json::from_slice(body).ok();
     if (200..300).contains(&status) {
-        return match json
-            .as_ref()
-            .and_then(|v| v.get("ok"))
-            .and_then(Value::as_bool)
-        {
-            Some(true) => match json
-                .as_ref()
-                .and_then(|v| v.get("keyPrefix"))
-                .and_then(Value::as_str)
-            {
-                Some(prefix) if !prefix.is_empty() => RedeemOutcome::Redeemed {
-                    key_prefix: prefix.to_string(),
-                },
-                // The relay accepted the key but did not echo a prefix: the local
-                // prefix of the key that was sent is the same value.
-                _ => RedeemOutcome::Redeemed {
-                    key_prefix: key_prefix(canonical),
-                },
-            },
-            _ => RedeemOutcome::Offline,
-        };
+        return redeem_outcome_ok(&json, canonical);
     }
     if status == 429 {
         // The relay's rate limit, not a verdict on the key: say so, rather than let a
@@ -316,4 +296,29 @@ pub(super) fn redeem_outcome_from_response(
     }
     // 5xx, redirects we don't follow, anything else: Offline.
     RedeemOutcome::Offline
+}
+
+/// Map a 2xx `POST /license/redeem` response body to a [`RedeemOutcome`].
+fn redeem_outcome_ok(json: &Option<Value>, canonical: &str) -> RedeemOutcome {
+    match json
+        .as_ref()
+        .and_then(|v| v.get("ok"))
+        .and_then(Value::as_bool)
+    {
+        Some(true) => match json
+            .as_ref()
+            .and_then(|v| v.get("keyPrefix"))
+            .and_then(Value::as_str)
+        {
+            Some(prefix) if !prefix.is_empty() => RedeemOutcome::Redeemed {
+                key_prefix: prefix.to_string(),
+            },
+            // The relay accepted the key but did not echo a prefix: the local
+            // prefix of the key that was sent is the same value.
+            _ => RedeemOutcome::Redeemed {
+                key_prefix: key_prefix(canonical),
+            },
+        },
+        _ => RedeemOutcome::Offline,
+    }
 }
