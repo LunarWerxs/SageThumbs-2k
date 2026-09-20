@@ -66,10 +66,8 @@ pub(super) fn default_menu_rows(check: impl Fn(usize) -> bool) -> Vec<(isize, bo
     menu_rows_from_tokens(&tokens, check)
 }
 
-/// The toggle index stored in a menu-list row's `lParam` (its `MENU_ITEM_TOGGLES`
-/// index), or None if the row/param is out of range. Lets load/save map row→key
-/// after the rows have been drag-reordered.
-pub(super) unsafe fn menu_row_toggle(list: HWND, row: i32) -> Option<usize> {
+/// The raw `lParam` of a menu-list row, or None if the row can't be read.
+unsafe fn menu_row_lparam(list: HWND, row: i32) -> Option<isize> {
     let mut item = LVITEMW {
         mask: windows::Win32::UI::Controls::LVIF_PARAM,
         iItem: row,
@@ -81,28 +79,20 @@ pub(super) unsafe fn menu_row_toggle(list: HWND, row: i32) -> Option<usize> {
         Some(WPARAM(0)),
         Some(LPARAM(&mut item as *mut _ as isize)),
     );
-    let ti = item.lParam.0 as usize;
-    (ok.0 != 0 && ti < MENU_ITEM_TOGGLES.len()).then_some(ti)
+    (ok.0 != 0).then_some(item.lParam.0)
+}
+
+/// The toggle index stored in a menu-list row's `lParam` (its `MENU_ITEM_TOGGLES`
+/// index), or None if the row/param is out of range. Lets load/save map row→key
+/// after the rows have been drag-reordered.
+pub(super) unsafe fn menu_row_toggle(list: HWND, row: i32) -> Option<usize> {
+    let ti = menu_row_lparam(list, row)? as usize;
+    (ti < MENU_ITEM_TOGGLES.len()).then_some(ti)
 }
 
 /// The raw `lParam` of a menu-list row (a toggle index, or `list::SEP_PARAM` for a
 /// divider row); `isize::MIN` if the row can't be read. Lets save distinguish divider
 /// rows from item rows after a drag-reorder.
 pub(super) unsafe fn menu_row_param(list: HWND, row: i32) -> isize {
-    let mut item = LVITEMW {
-        mask: windows::Win32::UI::Controls::LVIF_PARAM,
-        iItem: row,
-        ..Default::default()
-    };
-    let ok = SendMessageW(
-        list,
-        windows::Win32::UI::Controls::LVM_GETITEMW,
-        Some(WPARAM(0)),
-        Some(LPARAM(&mut item as *mut _ as isize)),
-    );
-    if ok.0 != 0 {
-        item.lParam.0
-    } else {
-        isize::MIN
-    }
+    menu_row_lparam(list, row).unwrap_or(isize::MIN)
 }
