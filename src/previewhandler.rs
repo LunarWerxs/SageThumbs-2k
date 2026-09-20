@@ -85,7 +85,13 @@ const CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SageThumbs2KPreview
 /// pane and the letterbox around an aspect-fit image blend in. COLORREF (0x00BBGGRR); 0x202020 ≈
 /// the Win11 dark content surface.
 fn theme_default_bg() -> u32 {
-    if safety::apps_use_dark_theme() {
+    bg_for_dark(safety::apps_use_dark_theme())
+}
+
+/// The OS-theme default background for a light/dark theme. Split out of
+/// [`theme_default_bg`] so the value itself is testable without asking the OS.
+fn bg_for_dark(dark: bool) -> u32 {
+    if dark {
         0x0020_2020
     } else {
         0x00FF_FFFF
@@ -96,6 +102,25 @@ fn theme_default_bg() -> u32 {
 fn colorref_is_light(c: u32) -> bool {
     let (r, g, b) = (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF);
     (r + g + b) / 3 > 128
+}
+
+/// The background to hand the compositor for a host-supplied `host` colour under a
+/// light/dark OS theme: the host's colour ONLY when it agrees with the theme (light
+/// colour in light mode, dark colour in dark mode), otherwise our themed default.
+/// Split out of `SetBackgroundColor`'s decision so the conflict rule is testable.
+fn themed_bg(host: u32, dark: bool) -> u32 {
+    if colorref_is_light(host) != dark {
+        host
+    } else {
+        bg_for_dark(dark)
+    }
+}
+
+/// The width and height of a host `RECT`, clamped at zero: the host calls `SetWindow`
+/// with a degenerate/zero rect before `SetRect` supplies the real pane size, and neither
+/// `MoveWindow` nor `CreateWindowExW` should see a negative extent.
+fn rect_extent(r: &RECT) -> (i32, i32) {
+    ((r.right - r.left).max(0), (r.bottom - r.top).max(0))
 }
 
 /// Per-window paint state, owned via the child window's `GWLP_USERDATA`. Holds the
@@ -388,11 +413,7 @@ impl IPreviewHandlerVisuals_Impl for PreviewHandler_Impl {
             // "Agrees with the theme" = light colour in light mode, or dark colour in dark mode,
             // i.e. host-is-light XOR theme-is-dark is false → the two booleans differ. (`a != b`,
             // which clippy prefers over the equivalent `a == !b`.)
-            let bg = if colorref_is_light(color.0) != safety::apps_use_dark_theme() {
-                color.0
-            } else {
-                theme_default_bg()
-            };
+            let bg = themed_bg(color.0, safety::apps_use_dark_theme());
             self.bg.set(bg);
             // Re-composite from the cached pixels (no re-decode) so transparency + the letterbox
             // sit on the chosen colour.
@@ -464,6 +485,7 @@ impl PreviewHandler_Impl {
             return false;
         }
         let r = self.rect.get();
+        let (win_w, win_h) = rect_extent(&r);
         let hinst_isize = crate::dll_hmodule().0 as isize;
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
         // Create + OWN the preview window on a DEDICATED UI thread whose own GetMessage loop pumps
@@ -489,8 +511,8 @@ impl PreviewHandler_Impl {
                         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                         r.left,
                         r.top,
-                        (r.right - r.left).max(0),
-                        (r.bottom - r.top).max(0),
+                        win_w,
+                        win_h,
                         Some(HWND(parent_isize as *mut c_void)),
                         None,
                         Some(HINSTANCE(hinst_isize as *mut c_void)),
@@ -539,6 +561,7 @@ impl PreviewHandler_Impl {
             return;
         }
         let r = self.rect.get();
+        let (w, h) = rect_extent(&r);
         unsafe {
             // MoveWindow + InvalidateRect are cross-thread (COM thread -> UI-thread-owned window),
             // both fine. The host calls SetWindow with a tiny/zero rect FIRST, then SetRect with the
@@ -549,8 +572,8 @@ impl PreviewHandler_Impl {
                 hwnd,
                 r.left,
                 r.top,
-                (r.right - r.left).max(0),
-                (r.bottom - r.top).max(0),
+                w,
+                h,
                 true,
             );
             _ = InvalidateRect(Some(hwnd), None, true);
@@ -701,4 +724,72 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::Dynamic
             safety::PREVIEW_DECODE_BUDGET
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorref_lightness_splits_at_mid_grey() {
+        // 0x808080 averages exactly 128, which is not "above mid".
+        assert!(!colorref_is_light(0x0080_8080));
+        assert!(colorref_is_light(0x0081_8181));
+        assert!(colorref_is_light(0x00FF_FFFF));
+        assert!(!colorref_is_light(0x0000_0000));
+    }
+
+    #[test]
+    fn host_colour_wins_only_when_it_agrees_with_the_theme() {
+        // Dark theme: a dark host colour is kept...
+        assert_eq!(themed_bg(0x0020_2020, true), 0x0020_2020);
+        // ...but the file dialog's WHITE is refused for the themed dark surface.
+        assert_eq!(themed_bg(0x00FF_FFFF, true), 0x0020_2020);
+        // Light theme: a light host colour is kept, a dark one refused for white.
+        assert_eq!(themed_bg(0x00F0_F0F0, false), 0x00F0_F0F0);
+        assert_eq!(themed_bg(0x0000_0000, false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn host_colour_at_the_lightness_boundary_still_agrees_then_loses() {
+        // 0x808080 is "dark" by our rule: it agrees with a dark theme (kept) and
+        // conflicts with a light one (themed default wins).
+        assert_eq!(themed_bg(0x0080_8080, true), 0x0080_8080);
+        assert_eq!(themed_bg(0x0080_8080, false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn theme_default_is_the_win11_dark_surface_or_white() {
+        assert_eq!(bg_for_dark(true), 0x0020_2020);
+        assert_eq!(bg_for_dark(false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn rect_extent_is_the_edge_difference_of_a_normal_rect() {
+        assert_eq!(
+            rect_extent(&RECT {
+                left: 5,
+                top: 7,
+                right: 105,
+                bottom: 27,
+            }),
+            (100, 20)
+        );
+    }
+
+    #[test]
+    fn rect_extent_clamps_zero_and_inverted_rects_to_zero() {
+        // The host's first SetWindow hands a zero rect before SetRect supplies the pane.
+        assert_eq!(rect_extent(&RECT::default()), (0, 0));
+        // right < left / bottom < top must not reach MoveWindow as negative extents.
+        assert_eq!(
+            rect_extent(&RECT {
+                left: 40,
+                top: 30,
+                right: 10,
+                bottom: 5,
+            }),
+            (0, 0)
+        );
+    }
 }
