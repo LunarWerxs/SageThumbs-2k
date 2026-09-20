@@ -11,9 +11,7 @@
 //! the NEXT Settings open decides differently (a key was redeemed).
 
 use super::*;
-use crate::gdip;
 use crate::license::Posture;
-use windows::Win32::Graphics::Gdi::DT_WORDBREAK;
 
 /// Top offset of the body text within the card. Smaller than `nudge`'s `BODY_TOP` (36):
 /// this card has no headline above the body, just the body then the button row.
@@ -197,25 +195,9 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let hdc = d.hDC;
     let rc = d.rcItem;
     fill(hdc, &rc, DARK_BG());
+    let pad = nudge::paint_panel(hwnd, d, tint());
 
-    let bw = s(hwnd, 1).max(1);
-    let r = s(hwnd, 8);
-    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-    let fill_c = tint();
-    let border_c = BORDER();
-    gdip::with_aa(hdc, |g| {
-        let b = gdip::brush(fill_c);
-        gdip::fill_round(g, b, rc.left, rc.top, w, h, r);
-        gdip::drop_brush(b);
-        let p = gdip::pen(border_c, bw);
-        gdip::stroke_round(g, p, rc.left, rc.top, w, h, r);
-        gdip::drop_pen(p);
-    });
-
-    SetBkMode(hdc, TRANSPARENT);
-    let pad = s(hwnd, PAD);
     let mut text = wide(&body_text());
-    let tn = text.len().saturating_sub(1);
     SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
     SetTextColor(hdc, DARK_TEXT());
     let mut tr = RECT {
@@ -224,12 +206,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
         right: rc.right - pad,
         bottom: rc.bottom - s(hwnd, BTN_H + 18),
     };
-    DrawTextW(
-        hdc,
-        &mut text[..tn],
-        &mut tr,
-        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-    );
+    nudge::draw_body(hdc, &mut text, &mut tr);
 }
 
 /// Handle a click on one of the strip's buttons. Returns whether the id belonged to it.
