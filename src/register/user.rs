@@ -16,11 +16,7 @@ pub fn register_user(dll_path: &str) -> Result<()> {
         (CLSID_THUMBNAIL_PROVIDER_STR, NAME),
         (CLSID_CONTEXT_MENU_STR, CM_NAME),
     ] {
-        let base = format!("CLSID\\{clsid}");
-        classes.create(&base)?.set_string("", name)?;
-        let inproc = classes.create(format!("{base}\\InprocServer32"))?;
-        inproc.set_string("", dll_path)?;
-        inproc.set_string("ThreadingModel", "Apartment")?;
+        write_inproc_server(&classes, clsid, name, dll_path)?;
     }
 
     // Same per-extension layout as the machine-wide path, so precedence behaves identically.
@@ -129,33 +125,16 @@ pub(super) fn remove_user_if_ours(classes: &Key, ext: &str) {
         let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
             continue;
         };
-        if !user_key_is_empty(classes, shellex) {
+        if !is_empty_key(classes, shellex) {
             continue;
         }
         let _ = classes.remove_tree(shellex);
         if let Some(assoc) = shellex.rsplit_once('\\').map(|(parent, _)| parent) {
-            if user_key_is_empty(classes, assoc) {
+            if is_empty_key(classes, assoc) {
                 let _ = classes.remove_tree(assoc);
             }
         }
     }
-}
-
-/// No subkeys and no values. Missing counts as NOT empty so a failed open never licenses a
-/// delete (mirrors `is_empty_key`, which guards the machine-wide path the same way).
-pub(super) fn user_key_is_empty(classes: &Key, path: &str) -> bool {
-    let Ok(key) = classes.open(path) else {
-        return false;
-    };
-    let no_subkeys = key
-        .keys()
-        .map(|mut it| it.next().is_none())
-        .unwrap_or(false);
-    let no_values = key
-        .values()
-        .map(|mut it| it.next().is_none())
-        .unwrap_or(false);
-    no_subkeys && no_values
 }
 
 /// The DLL path currently registered for THIS USER, if any.

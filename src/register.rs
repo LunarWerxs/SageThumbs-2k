@@ -328,6 +328,17 @@ fn register_preview_handler(
     Ok(())
 }
 
+/// Write the `CLSID\{clsid}` (friendly name) and `InprocServer32` (dll path, Apartment
+/// threading) keys for one in-proc COM server under `classes`, without an Approved entry.
+/// Shared by the machine-wide and the per-user registration paths, which configure alike.
+fn write_inproc_server(classes: &Key, clsid: &str, name: &str, dll_path: &str) -> Result<()> {
+    let base = format!("CLSID\\{clsid}");
+    classes.create(&base)?.set_string("", name)?;
+    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
+    inproc.set_string("", dll_path)?;
+    inproc.set_string("ThreadingModel", "Apartment")
+}
+
 /// Register one in-proc COM server: `CLSID\{guid}` (friendly name) +
 /// `InprocServer32` (dll path, Apartment threading) + the Approved entry.
 /// All of our coclasses configure identically through here.
@@ -338,11 +349,7 @@ fn register_inproc_server(
     dll_path: &str,
     approved: &Key,
 ) -> Result<()> {
-    let base = format!("CLSID\\{clsid_str}");
-    classes.create(&base)?.set_string("", name)?;
-    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
-    inproc.set_string("", dll_path)?;
-    inproc.set_string("ThreadingModel", "Apartment")?;
+    write_inproc_server(classes, clsid_str, name, dll_path)?;
     approved.set_string(clsid_str, name)?;
     Ok(())
 }
