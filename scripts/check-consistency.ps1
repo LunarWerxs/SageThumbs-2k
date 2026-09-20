@@ -470,7 +470,8 @@ if ($lic -notmatch [regex]::Escape('"was_business": self.was_business')) { $fail
 if ($lic -notmatch [regex]::Escape('"downgrade_acknowledged": self.downgrade_acknowledged')) { $fail.Add("licence_state.rs: the breadcrumb no longer serializes downgrade_acknowledged under that name - the installer greps for it") }
 # The shell honours the lock: every in-process surface consults it, and nothing may quietly
 # drop one (a surface that keeps serving a stopped copy is the lock's only failure mode).
-foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'src/settings/thumbs.rs') {
+# (the menu gate moved to settings/thumbs/menu.rs on 2026-09-20 when thumbs.rs was split)
+foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'src/settings/thumbs/menu.rs') {
   if ((Get-Content -Raw "$root/$surface") -notmatch [regex]::Escape('licence_state::shell_locked()')) { $fail.Add("$surface no longer consults licence_state::shell_locked() - a stopped business copy would keep serving through it") }
 }
 
