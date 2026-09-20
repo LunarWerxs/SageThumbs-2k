@@ -184,17 +184,7 @@ pub(super) fn reduce_job_outputs(
     let mut first: Option<PathBuf> = None;
     let mut reason: Option<String> = None;
     for (i, job) in produced.iter().enumerate() {
-        let pdf_duplicate = is_pdf && i > 0;
-        match job {
-            Some(Ok(p)) if first.is_none() => first = Some(p.clone()),
-            Some(Ok(_)) => {}
-            Some(Err(e)) if reason.is_none() => reason = Some(e.clone()),
-            Some(Err(_)) => {}
-            // Nothing ran. Only the suppressed duplicate PDF job reaches here; anything
-            // else would be a job that silently vanished, which is a failure.
-            None if !pdf_duplicate && reason.is_none() => reason = Some(String::new()),
-            None => {}
-        }
+        fold_job_output(is_pdf, i, job, &mut first, &mut reason);
     }
     // No output at all is a failure even when no single job reported one (an empty job
     // list, or a PDF whose only honored job was suppressed). Before this, `all_ok` was
@@ -203,6 +193,27 @@ pub(super) fn reduce_job_outputs(
         reason = Some(String::new());
     }
     (first, reason)
+}
+
+/// Folds ONE job's output into the running first-produced-output / first-reason pair.
+fn fold_job_output(
+    is_pdf: bool,
+    i: usize,
+    job: &Option<Result<PathBuf, String>>,
+    first: &mut Option<PathBuf>,
+    reason: &mut Option<String>,
+) {
+    let pdf_duplicate = is_pdf && i > 0;
+    match job {
+        Some(Ok(p)) if first.is_none() => *first = Some(p.clone()),
+        Some(Ok(_)) => {}
+        Some(Err(e)) if reason.is_none() => *reason = Some(e.clone()),
+        Some(Err(_)) => {}
+        // Nothing ran. Only the suppressed duplicate PDF job reaches here; anything
+        // else would be a job that silently vanished, which is a failure.
+        None if !pdf_duplicate && reason.is_none() => *reason = Some(String::new()),
+        None => {}
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
