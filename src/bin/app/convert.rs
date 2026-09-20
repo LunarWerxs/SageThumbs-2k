@@ -416,6 +416,18 @@ const CV_WM_SCALE_DEFAULT: u8 = 20;
 const CV_WM_OPACITIES: &[u8] = &[25, 50, 65, 75, 80, 90, 100];
 const CV_WM_OPACITY_DEFAULT: u8 = 80;
 
+/// Restore the per-format export settings the user last chose (persisted in HKCU),
+/// so the dialog and its Settings popup start from the stored values rather than
+/// the compiled-in defaults.
+fn restore_export_settings() {
+    QUALITY.store(settings::cv_jpeg_quality() as i32, Ordering::Relaxed);
+    WEBP_QUALITY.store(settings::cv_webp_quality() as i32, Ordering::Relaxed);
+    WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
+    PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
+    MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
+    load_watermark_settings();
+}
+
 pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
     let listed = read_listfile(listfile);
     if listed.is_empty() {
@@ -452,12 +464,7 @@ pub(crate) unsafe fn run_convert_dialog(_hinst: HINSTANCE, listfile: &str) {
 
     // Restore the per-format export settings the user last chose (persisted in
     // HKCU); without this the Settings popup resets to defaults every launch.
-    QUALITY.store(settings::cv_jpeg_quality() as i32, Ordering::Relaxed);
-    WEBP_QUALITY.store(settings::cv_webp_quality() as i32, Ordering::Relaxed);
-    WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
-    PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
-    MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
-    load_watermark_settings();
+    restore_export_settings();
 
     let title = t("cv_title").replace("{n}", &n.to_string());
     run_dialog(
@@ -480,12 +487,7 @@ pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
     if CONVERT_FILES.get().is_none() {
         let _ = CONVERT_FILES.set(vec!["photo.psd".to_string()]);
     }
-    QUALITY.store(settings::cv_jpeg_quality() as i32, Ordering::Relaxed);
-    WEBP_QUALITY.store(settings::cv_webp_quality() as i32, Ordering::Relaxed);
-    WEBP_LOSSLESS.store(settings::cv_webp_lossless() as i32, Ordering::Relaxed);
-    PNG_LEVEL.store(settings::cv_png_level() as i32, Ordering::Relaxed);
-    MAGICK_QUALITY.store(settings::cv_magick_quality() as i32, Ordering::Relaxed);
-    load_watermark_settings();
+    restore_export_settings();
 
     let title = t("cv_title").replace("{n}", "1");
     crate::win::capture_shot_window(
