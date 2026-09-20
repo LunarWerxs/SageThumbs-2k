@@ -13,31 +13,67 @@ use super::*;
 /// (Ok(false): missing metadata / name clash) is expected and not counted as
 /// failed, so `attempted` is renamed + errored (NOT the skips).
 pub(super) fn rename_by_exif(paths: &[String], pattern: RenamePattern) -> ActionReport {
-    let mut renamed = 0usize;
-    let mut skipped = 0usize;
-    let mut errored = 0usize;
-    for p in paths.iter().filter(|p| is_image(p.as_str())) {
-        match rename_one(p, pattern) {
+    rename_batch_report(
+        paths
+            .iter()
+            .filter(|p| is_image(p.as_str()))
+            .map(|p| rename_one(p, pattern)),
+        |renamed, skipped, errored| {
+            format!(
+                "Rename by EXIF: {renamed} renamed, {skipped} skipped (no capture date / name \
+                 clash), {errored} errored"
+            )
+        },
+        |errored| format!("{errored} couldn't be renamed (locked or name clash)"),
+    )
+}
+
+/// Tally a batch of per-file rename outcomes into an [`ActionReport`]. `log` / `note`
+/// build their wording from the final counts, so each caller keeps its own strings.
+/// Only a real rename ERROR (`Err`) is a failure; a deliberate skip (`Ok(false)`:
+/// missing metadata / name clash) is expected and not counted as failed, so
+/// `attempted` is renamed + errored (NOT the skips).
+fn rename_batch_report(
+    results: impl Iterator<Item = Result<bool>>,
+    log: impl FnOnce(usize, usize, usize) -> String,
+    note: impl FnOnce(usize) -> String,
+) -> ActionReport {
+    let (mut renamed, mut skipped, mut errored) = (0usize, 0usize, 0usize);
+    for r in results {
+        match r {
             Ok(true) => renamed += 1,
             Ok(false) => skipped += 1,
             Err(_) => errored += 1,
         }
     }
     if skipped > 0 || errored > 0 {
-        crate::safety::log(&format!(
-            "Rename by EXIF: {renamed} renamed, {skipped} skipped (no capture date / name clash), \
-             {errored} errored"
-        ));
+        crate::safety::log(&log(renamed, skipped, errored));
     }
     // Count only true attempts (rename or error) — a skip means the file
     // intentionally has nothing to do, so it shouldn't read as "failed".
-    let mut r = ActionReport::applied(renamed + errored, renamed);
+    let mut report = ActionReport::applied(renamed + errored, renamed);
     if errored > 0 {
-        r.note = Some(format!(
-            "{errored} couldn't be renamed (locked or name clash)"
-        ));
+        report.note = Some(note(errored));
     }
-    r
+    report
+}
+
+/// Reserve a free sibling name for `base` next to `path` (atomically — see
+/// `reserve_dest`, the same race-prone `while target.exists()` picker
+/// `fileops::move_into`/`copy_into` used to have, where an external writer landing a
+/// file in the gap between the check and the rename could collide) and move the file
+/// onto it. `Ok(false)` when the source is already correctly named. The move retries
+/// briefly because a freshly-selected file can hold a transient Explorer lock.
+fn move_to_reserved_target(path: &str, base: &str) -> Result<bool> {
+    let src = Path::new(path);
+    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+    let Some(slot) = reserve_dest(src, dir, base)? else {
+        return Ok(false); // already correctly named
+    };
+    crate::fsutil::rename_retrying(src, slot.path())
+        .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", slot.path().display())))?;
+    slot.release();
+    Ok(true)
 }
 
 /// Rename one file per `pattern`. Returns Ok(true) if renamed, Ok(false) if it
@@ -48,23 +84,7 @@ pub(crate) fn rename_one(path: &str, pattern: RenamePattern) -> Result<bool> {
         return Ok(false); // missing the metadata this pattern needs → leave it alone
     };
     let base = sanitize_component(&base);
-
-    let src = Path::new(path);
-    let dir = src.parent().unwrap_or_else(|| Path::new("."));
-
-    // Reserve a free target atomically (see `reserve_dest` — the same race-prone
-    // `while target.exists()` picker `fileops::move_into`/`copy_into` used to have,
-    // where an external writer landing a file in the gap between the check and the
-    // rename could collide). `None` = the source is already correctly named.
-    let Some(slot) = reserve_dest(src, dir, &base)? else {
-        return Ok(false);
-    };
-
-    // Retry briefly: a freshly-selected file can hold a transient Explorer lock.
-    crate::fsutil::rename_retrying(src, slot.path())
-        .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", slot.path().display())))?;
-    slot.release();
-    Ok(true)
+    move_to_reserved_target(path, &base)
 }
 
 /// The new base name (no extension) for `path` under `pattern`, or None when the
@@ -404,15 +424,7 @@ pub(crate) fn rename_by_pattern_one(
 ) -> Result<bool> {
     let base = pattern_stem(path, n, pattern, find, replace)
         .map_err(|e| Error::new(E_FAIL, format!("pattern: {e}")))?;
-    let src = Path::new(path);
-    let dir = src.parent().unwrap_or_else(|| Path::new("."));
-    let Some(slot) = reserve_dest(src, dir, &base)? else {
-        return Ok(false); // already correctly named
-    };
-    crate::fsutil::rename_retrying(src, slot.path())
-        .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", slot.path().display())))?;
-    slot.release();
-    Ok(true)
+    move_to_reserved_target(path, &base)
 }
 
 /// `VerbAction::RenameWithPattern`'s apply step, run on the dialog's worker thread
@@ -428,29 +440,19 @@ pub fn rename_by_pattern(
     find: &str,
     replace: &str,
 ) -> ActionReport {
-    let mut renamed = 0usize;
-    let mut skipped = 0usize;
-    let mut errored = 0usize;
-    for (i, p) in paths.iter().enumerate() {
-        match rename_by_pattern_one(p, (i + 1) as u32, pattern, find, replace) {
-            Ok(true) => renamed += 1,
-            Ok(false) => skipped += 1,
-            Err(_) => errored += 1,
-        }
-    }
-    if skipped > 0 || errored > 0 {
-        crate::safety::log(&format!(
-            "Rename with pattern: {renamed} renamed, {skipped} skipped (already named / name \
-             clash), {errored} errored"
-        ));
-    }
-    let mut r = ActionReport::applied(renamed + errored, renamed);
-    if errored > 0 {
-        r.note = Some(format!(
-            "{errored} couldn't be renamed (locked, invalid pattern, or name clash)"
-        ));
-    }
-    r
+    rename_batch_report(
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| rename_by_pattern_one(p, (i + 1) as u32, pattern, find, replace)),
+        |renamed, skipped, errored| {
+            format!(
+                "Rename with pattern: {renamed} renamed, {skipped} skipped (already named / name \
+                 clash), {errored} errored"
+            )
+        },
+        |errored| format!("{errored} couldn't be renamed (locked, invalid pattern, or name clash)"),
+    )
 }
 
 #[cfg(test)]
