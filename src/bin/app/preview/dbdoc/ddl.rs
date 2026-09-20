@@ -309,16 +309,8 @@ fn strip_sql_comments(s: &str) -> String {
 fn find_top_level_open_paren(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
-    while i < b.len() {
-        match top_level(b, i) {
-            TopLevel::SkipTo(j) => {
-                i = j;
-                continue;
-            }
-            TopLevel::Unterminated => return None,
-            TopLevel::Plain => {}
-        }
-        if b[i] == b'(' {
+    while let Some(c) = next_plain(b, &mut i) {
+        if c == b'(' {
             return Some(i);
         }
         i += 1;
@@ -353,21 +345,32 @@ fn top_level(b: &[u8], i: usize) -> TopLevel {
     }
 }
 
+/// Step `*i` over every quoted run, bracketed identifier and comment, and hand back the next
+/// ORDINARY byte, leaving `*i` ON it so the caller can slice at that offset.
+///
+/// `None` means STOP, for either reason a top-level scan stops: the input ran out, or a quote,
+/// bracket or comment was left open. The three callers below all treated those two the same way
+/// before this helper existed - two `return None`, and `split_top_level`'s `break`, which falls
+/// through to the same `out.push(&s[start..])` tail that end-of-input reaches. Keep it that way:
+/// a caller that reads `None` as "clean end" would silently accept a truncated CREATE statement.
+fn next_plain(b: &[u8], i: &mut usize) -> Option<u8> {
+    while *i < b.len() {
+        match top_level(b, *i) {
+            TopLevel::SkipTo(j) => *i = j,
+            TopLevel::Unterminated => return None,
+            TopLevel::Plain => return Some(b[*i]),
+        }
+    }
+    None
+}
+
 /// Offset of the `)` matching the `(` at `open`.
 fn matching_paren(s: &str, open: usize) -> Option<usize> {
     let b = s.as_bytes();
     let mut depth = 0usize;
     let mut i = open;
-    while i < b.len() {
-        match top_level(b, i) {
-            TopLevel::SkipTo(j) => {
-                i = j;
-                continue;
-            }
-            TopLevel::Unterminated => return None,
-            TopLevel::Plain => {}
-        }
-        match b[i] {
+    while let Some(c) = next_plain(b, &mut i) {
+        match c {
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -389,16 +392,8 @@ fn split_top_level(s: &str) -> Vec<&str> {
     let mut depth = 0usize;
     let mut start = 0usize;
     let mut i = 0usize;
-    while i < b.len() {
-        match top_level(b, i) {
-            TopLevel::SkipTo(j) => {
-                i = j;
-                continue;
-            }
-            TopLevel::Unterminated => break,
-            TopLevel::Plain => {}
-        }
-        match b[i] {
+    while let Some(c) = next_plain(b, &mut i) {
+        match c {
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
