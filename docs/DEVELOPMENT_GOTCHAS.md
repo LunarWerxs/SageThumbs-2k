@@ -1125,6 +1125,14 @@ portable scanner, and two of its habits decide whether a split counts:
    (`run_action` at 26 is 26 verbs), a flat twelve-field mapper with twelve `?`s
    (`History::from_json`) is what the metric misreads rather than a problem, and a test that
    spells out its expectation as an if-chain is deliberately a second encoding. Leave those.
+4. **A bool that stands in for a `break` has a sense, and the caller must read it the way the
+   loop did** (2026-09-20). Lifting a loop body into a helper turns `break` into `return false`
+   (or `true`), and the one caller in the fifth session's 160-file swarm that got the sense
+   backwards (`waveform::scan_aiff_chunk` reports `false` to stop; the loop broke on `true`)
+   compiled, passed clippy on both feature sets, and failed exactly one test - the fuzz-surface
+   check that every synthetic seed reaches its parser, which is why that test exists. Before
+   trusting a split, trace one iteration that used to break and one that used to continue
+   through the new call; the review-swarm prompt in CLAUDE.md 2.3 asks for that trace by name.
 
 **Win32 wndproc dispatchers are their own project.** They are large, stateful, side-effect-
 heavy message loops; the mechanical method (one `on_<message>` helper per non-trivial arm,
