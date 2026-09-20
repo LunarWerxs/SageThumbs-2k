@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Design-px height one string needs in the window's full-width column, pinned to 96

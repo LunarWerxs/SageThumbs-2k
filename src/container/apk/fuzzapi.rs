@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// The compiled `AndroidManifest.xml` parser: chunk walk, resource map, attribute stride.

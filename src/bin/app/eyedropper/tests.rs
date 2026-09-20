@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// The four formats a pick can copy as. Exactness on the primaries matters: a designer

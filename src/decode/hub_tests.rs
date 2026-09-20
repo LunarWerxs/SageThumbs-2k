@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Issue #41's arithmetic: a preview under a quarter of the declared picture on its

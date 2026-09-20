@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Round-trip a representative tree (DWORDs + a string at the root, plus a per-format

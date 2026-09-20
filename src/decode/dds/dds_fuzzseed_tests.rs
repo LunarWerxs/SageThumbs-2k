@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// **The load-bearing half of adding a fuzz seed.** A seed its own parser REJECTS is worse

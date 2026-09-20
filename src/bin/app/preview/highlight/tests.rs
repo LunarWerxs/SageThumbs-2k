@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{
     col_at, disp_extent, lang_from_name_or_shebang, lang_from_shebang, paint_lines, word_at, Lang,
 };

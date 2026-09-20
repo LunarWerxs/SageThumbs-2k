@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Little-endian TIFF with Make and Orientation, so the rewrite has to find

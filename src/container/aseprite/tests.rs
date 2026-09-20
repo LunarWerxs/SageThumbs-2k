@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::synth::{build, CelSpec, LayerSpec};
 use super::*;
 

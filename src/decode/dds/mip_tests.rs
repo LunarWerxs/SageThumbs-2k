@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Build a BC1 DDS whose mip chain is deliberately DIFFERENT per level: level 0 is red,

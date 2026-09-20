@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The tier-1 debugging harness. The tiny corpus files are LOSSLESS (5/3, no
 //! quantization, verified `magick compare` AE = 0 against their source PNGs), so a
 //! correct decoder must reproduce them BIT-EXACTLY at full resolution. Any mismatch is

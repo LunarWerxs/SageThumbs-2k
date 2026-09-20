@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A file that landed at SOME sizes and missed others must not report as done. This is the

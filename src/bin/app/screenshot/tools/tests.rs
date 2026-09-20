@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn point(x: i32, y: i32) -> POINT {

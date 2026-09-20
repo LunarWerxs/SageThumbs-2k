@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A scratch stand-in for the classes root these helpers write into, removed when the guard

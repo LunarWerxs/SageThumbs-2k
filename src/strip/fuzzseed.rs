@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Direct fuzz entry points into `strip`'s private per-format parsers. Test-only.
 //!
 //! Lives here rather than in `crate::fuzz` because these modules (`isobmff`, `svgmeta`,

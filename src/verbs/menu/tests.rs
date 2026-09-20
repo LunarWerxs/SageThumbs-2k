@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Depth-first leaf titles under `items` (the same walk `leaves()` does, but

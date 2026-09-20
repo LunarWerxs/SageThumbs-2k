@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A writable directory on a fixed volume OTHER than `dir`'s, when this machine has one

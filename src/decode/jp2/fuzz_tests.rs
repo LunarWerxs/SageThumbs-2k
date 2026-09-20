@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Red team for the half of this module that is WIRED IN.
 //!
 //! `jp2_dimensions` runs on files arriving from Explorer, in-process, in a crate built

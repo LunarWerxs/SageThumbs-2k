@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::container::psd_testutil::synthetic_psd;
 use std::os::windows::ffi::OsStrExt;

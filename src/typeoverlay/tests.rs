@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A scratch stand-in for `HKCU\Software\Classes`, removed when the guard drops, so these

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn args(v: &[&str]) -> Vec<String> {

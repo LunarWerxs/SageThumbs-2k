@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 // The ASF object GUIDs + the name comparator the synthetic-header builders below need.
 use super::asf::{

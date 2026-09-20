@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Serialises the tests that touch the process-wide Ctrl+C `CANCEL` flag against each

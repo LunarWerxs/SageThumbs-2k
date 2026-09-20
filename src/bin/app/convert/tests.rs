@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 

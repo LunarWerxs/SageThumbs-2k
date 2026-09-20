@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The MQ decoder on hostile and degenerate input: it must never panic, only ever answer 0
 //! or 1, and be deterministic - the properties every later JPEG 2000 stage relies on, and
 //! the ones a crafted codestream would attack first.

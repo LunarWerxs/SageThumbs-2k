@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A deterministic photographic source: smooth large-scale structure plus per-pixel noise.

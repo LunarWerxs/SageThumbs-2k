@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// The doctor reports displaced handlers BY FORMAT, which means parsing the extension back

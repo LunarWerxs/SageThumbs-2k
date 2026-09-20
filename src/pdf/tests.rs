@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::render_page_counted;
 
 /// Build a minimal, valid multi-page PDF where page `i` is a solid `colours[i]`.

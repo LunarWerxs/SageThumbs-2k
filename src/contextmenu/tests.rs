@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, GetMenuItemInfoW, MENU_ITEM_TYPE, MFT_BITMAP, MFT_OWNERDRAW, MIIM_FTYPE, MIIM_ID,

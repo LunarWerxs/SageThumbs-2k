@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 // Locks the fix for A121: shrink_one's routed `--quality` arg must be DERIVED from

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Registry-default cover prefs, for tests that don't care about the values.

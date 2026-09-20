@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{
     cleanup_installer_payload, is_security_body, offer_for, parse_cache, parse_ver, update_offer,
     LatestRelease, Offer,

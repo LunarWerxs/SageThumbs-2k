@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The measurement behind [`super::reduced_ifd0_has_content`]'s threshold.
 //!
 //! Run it, do not trust it from memory:

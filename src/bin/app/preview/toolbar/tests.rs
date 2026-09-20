@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// Left/Right steps one place and wraps at both ends of the CURRENT bar, and never

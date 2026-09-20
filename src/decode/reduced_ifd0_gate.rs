@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The picture-quality decision in [`super::reduced_ifd0_serves`], pinned.
 //!
 //! This repo has been bitten by a threshold before, so the tests below assert BOTH sides of

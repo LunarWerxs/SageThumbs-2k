@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// 2026-09-19 audit F07, the connect -> pull -> Save round trip. Runs the body in a child

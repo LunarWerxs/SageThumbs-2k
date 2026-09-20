@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// `MaxSize = 0` ("no limit") reaches here as `u64::MAX`, and dividing that by a

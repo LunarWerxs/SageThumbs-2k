@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use std::io::Cursor;
 use std::path::PathBuf;

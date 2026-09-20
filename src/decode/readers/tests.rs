@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn noisy_jpeg_bytes(w: u32, h: u32) -> Vec<u8> {

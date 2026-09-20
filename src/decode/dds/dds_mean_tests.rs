@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// The reference: what the block average WAS, i.e. decode all sixteen texels through

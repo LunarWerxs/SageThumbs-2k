@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 /// `dimensions` must report the FILE's real size from the header alone, with no decode.
 /// This is the part of the module that is wired in today, so it is the part that is
 /// tested against every JPEG 2000 flavour in the corpus.

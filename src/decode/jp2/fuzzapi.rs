@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 pub(crate) fn dimensions(bytes: &[u8]) {

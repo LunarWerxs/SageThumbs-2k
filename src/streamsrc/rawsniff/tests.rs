@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The RAW-recognition decisions, on hand-built heads: which TIFF-shaped stream may take
 //! the RAW shortcut, and which IFD0 is only a reduced copy of the real picture.
 

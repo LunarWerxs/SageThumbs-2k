@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 /// A minimal elementary stream: sequence header (64x48), an MPEG-2 sequence extension
 /// when `mpeg2`, a GOP header, one I-picture with a coding extension (MPEG-2) and a slice
 /// of arbitrary bytes, then a P-picture, then a second GOP + I-picture. Two GOPs so the

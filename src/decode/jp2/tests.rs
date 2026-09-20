@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A one-tile 8x8 codestream header with no tile data, for the pure header-derived

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::foldericon::merge_shell_class_info;
 use super::helper::routed_edit_output_ext;
 use super::reveal_is_noise;

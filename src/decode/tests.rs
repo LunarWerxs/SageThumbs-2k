@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Unit tests for the decode pipeline.
 //!
 //! One submodule per thing under test. The shared fixtures stay here because

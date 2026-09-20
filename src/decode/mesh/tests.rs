@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 /// A unit cube as binary STL, built in code — 12 triangles, the classic first render.
