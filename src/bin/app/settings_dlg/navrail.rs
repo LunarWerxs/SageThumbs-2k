@@ -1133,6 +1133,22 @@ pub(super) const V3_ALWAYS_HIDDEN: &[i32] = &[
     ID_MENU_RESET,
 ];
 
+/// Applies `place` to one control and collects it into the row's `Vec`: the tail every
+/// single-control row placer (`Head`, `Switch`, `Btn`, `Status`, `Wide`) repeats verbatim.
+fn place_one(
+    place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
+    id: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Vec<HWND> {
+    match place(id, x, y, w, h) {
+        Some(c) => vec![c],
+        None => Vec::new(),
+    }
+}
+
 /// `Row::Head`: a section header, extra top margin unless it's the pane's first row.
 fn place_head_row(
     place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
@@ -1140,12 +1156,8 @@ fn place_head_row(
     y: i32,
     first: bool,
 ) -> Vec<HWND> {
-    let mut placed = Vec::new();
     let row_y = y + if first { 0 } else { 20 };
-    if let Some(c) = place(id, PANE_X, row_y, PANE_W, 18) {
-        placed.push(c);
-    }
-    placed
+    place_one(place, id, PANE_X, row_y, PANE_W, 18)
 }
 
 /// `Row::Switch`: dependent switches sit indented under their parent, the same visual
@@ -1156,16 +1168,12 @@ fn place_switch_row(
     id: i32,
     y: i32,
 ) -> Vec<HWND> {
-    let mut placed = Vec::new();
     let indent = if super::values::is_dependent_switch(id) {
         18
     } else {
         0
     };
-    if let Some(c) = place(id, PANE_X + indent, y, PANE_W - indent, 28) {
-        placed.push(c);
-    }
-    placed
+    place_one(place, id, PANE_X + indent, y, PANE_W - indent, 28)
 }
 
 /// `Row::Pair`: a label + a right-aligned field of its own width/height.
@@ -1195,11 +1203,7 @@ fn place_btn_row(
     w: i32,
     y: i32,
 ) -> Vec<HWND> {
-    let mut placed = Vec::new();
-    if let Some(c) = place(id, PANE_X, y, w, 26) {
-        placed.push(c);
-    }
-    placed
+    place_one(place, id, PANE_X, y, w, 26)
 }
 
 /// `Row::BtnStatus`: a button, then a status badge right-aligned on the SAME row, in the
@@ -1248,11 +1252,7 @@ fn place_status_row(
     id: i32,
     y: i32,
 ) -> Vec<HWND> {
-    let mut placed = Vec::new();
-    if let Some(c) = place(id, PANE_X, y, PANE_W, 18) {
-        placed.push(c);
-    }
-    placed
+    place_one(place, id, PANE_X, y, PANE_W, 18)
 }
 
 /// `Row::Btn3`: three equal-width buttons across the pane with a fixed gap between them.
@@ -1282,11 +1282,7 @@ fn place_wide_row(
     id: i32,
     y: i32,
 ) -> Vec<HWND> {
-    let mut placed = Vec::new();
-    if let Some(c) = place(id, PANE_X, y + 8, PANE_W, 18) {
-        placed.push(c);
-    }
-    placed
+    place_one(place, id, PANE_X, y + 8, PANE_W, 18)
 }
 
 /// `Row::WideBtn`: a wide edit that fills the row up to a right-aligned button (the licence
