@@ -291,6 +291,20 @@ fn neighbour_counts(flags: &[u8], x: usize, y: usize, sw: usize) -> (u32, u32, u
     (hcount, vcount, dcount)
 }
 
+/// Visit every sample of the block in the order the passes walk it: 4-row stripes on the
+/// outside, columns left to right, rows within the stripe. The order is what makes the MQ
+/// symbol sequence match the encoder's, so this is shared by the passes that scan the grid.
+#[inline]
+fn for_each_stripe_sample(w: usize, h: usize, mut body: impl FnMut(usize, usize)) {
+    for y0 in (0..h).step_by(4) {
+        for x in 0..w {
+            for y in y0..(y0 + 4).min(h) {
+                body(x, y);
+            }
+        }
+    }
+}
+
 /// Significance-propagation pass (D.2): for every not-yet-significant sample with at least
 /// one significant neighbour, decode whether it becomes significant this plane (and, if so,
 /// its sign).
@@ -306,30 +320,21 @@ fn significance_pass(
     sw: usize,
     plane_bit: i32,
 ) {
-    for y0 in (0..h).step_by(4) {
-        for x in 0..w {
-            for y in y0..(y0 + 4).min(h) {
-                let f = flags[cblk_fidx(x, y, sw)];
-                if f & SIG != 0 {
-                    continue;
-                }
-                let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
-                if hc + vc + dc == 0 {
-                    continue;
-                }
-                let cx = zc_context(band, hc, vc, dc);
-                if mq.decode(cx) == 1 {
-                    let (sx, sv) = sign_neighbours(flags, neg, x, y, sw, w);
-                    let (scx, xorbit) = sc_context(sx, sv);
-                    let s = mq.decode(scx) ^ xorbit;
-                    neg[cblk_idx(x, y, w)] = s == 1;
-                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
-                    flags[cblk_fidx(x, y, sw)] |= SIG;
-                }
-                flags[cblk_fidx(x, y, sw)] |= VISIT;
-            }
+    for_each_stripe_sample(w, h, |x, y| {
+        let f = flags[cblk_fidx(x, y, sw)];
+        if f & SIG != 0 {
+            return;
         }
-    }
+        let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
+        if hc + vc + dc == 0 {
+            return;
+        }
+        let cx = zc_context(band, hc, vc, dc);
+        if mq.decode(cx) == 1 {
+            mark_significant(mq, flags, coeffs, neg, x, y, sw, w, plane_bit);
+        }
+        flags[cblk_fidx(x, y, sw)] |= VISIT;
+    });
 }
 
 /// Magnitude-refinement pass (D.2): for every already-significant, not-yet-visited sample,
@@ -343,23 +348,19 @@ fn refinement_pass(
     sw: usize,
     plane_bit: i32,
 ) {
-    for y0 in (0..h).step_by(4) {
-        for x in 0..w {
-            for y in y0..(y0 + 4).min(h) {
-                let f = flags[cblk_fidx(x, y, sw)];
-                if f & SIG == 0 || f & VISIT != 0 {
-                    continue;
-                }
-                let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
-                let first = f & REFINED == 0;
-                let cx = mr_context(first, hc + vc + dc);
-                if mq.decode(cx) == 1 {
-                    coeffs[cblk_idx(x, y, w)] |= plane_bit;
-                }
-                flags[cblk_fidx(x, y, sw)] |= REFINED;
-            }
+    for_each_stripe_sample(w, h, |x, y| {
+        let f = flags[cblk_fidx(x, y, sw)];
+        if f & SIG == 0 || f & VISIT != 0 {
+            return;
         }
-    }
+        let (hc, vc, dc) = neighbour_counts(flags, x, y, sw);
+        let first = f & REFINED == 0;
+        let cx = mr_context(first, hc + vc + dc);
+        if mq.decode(cx) == 1 {
+            coeffs[cblk_idx(x, y, w)] |= plane_bit;
+        }
+        flags[cblk_fidx(x, y, sw)] |= REFINED;
+    });
 }
 
 /// Decode the sign of a newly-significant sample and record it: shared by the
