@@ -269,6 +269,30 @@ Read this before doing either again.
   (e.g. `foo.rs` → `foo/bar.rs`) silently breaks any `include_bytes!("../asset.bin")`-style path
   in it; add the extra `../` the new depth requires. This fails at compile time with a missing-
   file error, but it's easy to miss in a large diff.
+- **Six more, all from the 2026-09-20 pass that split 42 files in one session** (the
+  instruments are in `scripts/refactor/`; each script's docstring is its manual):
+  1. **A crate root's children sit BESIDE it.** `src/bin/cli.rs` declaring `mod tests;` looks
+     for `src/bin/tests.rs`, which Cargo would auto-discover as a binary named `tests`. It
+     carries `#[path = "cli/tests.rs"]` instead.
+  2. **A child named like an extern crate shadows that crate for everything under it.**
+     `decode/thumb/exif.rs` made `exif::Reader` resolve to the module (through `use super::*`),
+     not to the `exif` crate. It is `exifthumb.rs`.
+  3. **A trait impl's methods take no visibility.** The "widen the inherent methods" pass above
+     must skip `impl Trait for Type` blocks, or every method is an `E0449`.
+  4. **When the hub names everything through re-exports, its `use child::*` is unused - and
+     deleting it takes the TESTS' access with it.** A `tests.rs` that reached a private helper
+     through the glob then needs `#[cfg(test)] use child::helper;` in the hub.
+  5. **`clippy::items_after_test_module`:** an inline `#[cfg(test)] mod probe { }` that moves
+     with a cluster must end up LAST in the new file.
+  6. **Macro invocations are not items.** A `thread_local!` between two functions stays behind
+     when the functions move, and any doc comment or `#[allow]` that sat above the NEXT item
+     ends up attached to it. Move it by hand, with the code that uses it.
+- **A test-only file says `#![cfg(test)]` itself.** A file declared as `#[cfg(test)] mod tests;`
+  carries no sign of being test code, so any per-file reader (a duplication or complexity
+  scanner, a reviewer opening it cold) counts it as production code; moving tests out of their
+  parents RAISED the duplication count until the files said so. `scripts/refactor/mark_test_files.py`
+  finds every such file, and every child of a whole-file test module, and adds the attribute.
+  A no-op for the compiler.
 - **The const-shadowing-a-glob trap:** a local `const` in the original file that happened to
   shadow a name from a `windows::*` (or other) glob import stops being unambiguous once that
   file is split and the const gets re-exported through the parent-hub `use child::*`. The name
