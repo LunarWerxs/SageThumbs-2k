@@ -138,24 +138,14 @@ pub(super) fn installer_asset_from_json_for_arch(
 /// SHA-256 of `data` as lowercase hex, via Windows CNG (no extra crate). None on failure.
 pub(super) fn sha256_hex(data: &[u8]) -> Option<String> {
     let digest = crate::license::sha256(data)?;
-    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+    Some(sagethumbs2k_core::hex::encode(&digest))
 }
 
 /// Parse 128 lowercase-or-uppercase hex characters into a raw 64-byte ed25519 signature.
 /// `None` on anything else - wrong length, non-ASCII, non-hex - worked byte-wise so a
 /// downloaded `.sig` file can never panic this on a bad char boundary.
 pub(super) fn parse_sig_hex(sig_hex: &str) -> Option<[u8; 64]> {
-    let bytes = sig_hex.as_bytes();
-    if bytes.len() != 128 || !bytes.is_ascii() {
-        return None;
-    }
-    let mut out = [0u8; 64];
-    for i in 0..64 {
-        let hi = (bytes[i * 2] as char).to_digit(16)?;
-        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
-        out[i] = ((hi << 4) | lo) as u8;
-    }
-    Some(out)
+    sagethumbs2k_core::hex::decode::<64>(sig_hex)
 }
 
 /// Verify a detached ed25519 signature over `bytes`. `sig_hex` is the `.sig` asset's raw

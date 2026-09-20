@@ -122,7 +122,7 @@ pub(crate) fn machine_fingerprint() -> Option<String> {
 /// touching HKLM.
 pub(super) fn fingerprint_from_guid(guid: &str) -> Option<String> {
     let digest = sha256(format!("{guid}{FINGERPRINT_SALT}").as_bytes())?;
-    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+    Some(sagethumbs2k_core::hex::encode(&digest))
 }
 
 /// Turn whatever a human typed or pasted into the canonical `esk_XXXXX-XXXXX-XXXXX-
