@@ -11,7 +11,7 @@ warm clippy run. This script runs the whole round trip itself:
   gate.py commit <plan.json>   one commit per hub: [[hub, child-or-dir, ...], ...] with the
                             standard "<hub>: <what> (N lines -> M)" message ("what" = plan[hub]
                             when the plan is {hub: [what, paths...]}).
-  gate.py consistency       CI's eleven consistency scripts, the way CI runs them (a non-zero
+  gate.py consistency       CI's consistency scripts, DERIVED from the workflow, the way CI runs them (a non-zero
                             LASTEXITCODE fails the step even when every assertion passed).
   gate.py tests [filter]    the workspace suite, or only the tests matching `filter` (the
                             tests for what you touched - the pre-push preflight runs the whole
@@ -36,11 +36,12 @@ CLIPPY = [
     ["cargo", "clippy", "--workspace", "--all-targets", "--message-format", "short", "--", "-D", "warnings"],
     ["cargo", "clippy", "-p", "sagethumbs2k", "--bin", "SageThumbs2K", "--features", "html-preview", "--message-format", "short", "--", "-D", "warnings"],
 ]
-CONSISTENCY = [
-    "check-consistency", "test-release-size", "test-release-pipeline", "test-installer-lint", "test-msix-integrity",
-    "test-architecture-release-contract", "test-dev-architecture", "test-magick-dependency-freshness",
-    "check-vendored-exr", "check-email-rule", "test-script-tests",
-]
+# ⚠ NEVER TYPE THIS LIST OUT (2026-09-20). It was eleven hand-copied script names while CI's
+# consistency job had grown to twenty-two, so `gate.py prepush` reported "11/11 clean" on a tree
+# whose `check-registration-symmetry.ps1` had been red for four commits on a PUBLIC repo.
+# `scripts/ci-consistency-steps.ps1` parses the workflow and prints exactly what CI runs, in
+# CI's order, and exits 2 rather than hand back a list it could not parse.
+CI_STEPS = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/ci-consistency-steps.ps1"]
 ERR = re.compile(r"^(?:src|crates|tests)[^ ]*: (?:error|warning)", re.M)
 
 
@@ -95,14 +96,19 @@ def commit(plan_path):
 
 
 def consistency():
+    listing = subprocess.run(CI_STEPS, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if listing.returncode:
+        print("consistency: could not derive CI's step list -", (listing.stdout + listing.stderr).strip()[-300:])
+        return 1
+    steps = [s.strip() for s in listing.stdout.splitlines() if s.strip()]
     bad = 0
-    for s in CONSISTENCY:
-        cmd = ["pwsh", "-NoProfile", "-Command", f"./scripts/{s}.ps1 *> $null; if (Test-Path variable:\\LASTEXITCODE) {{ exit $LASTEXITCODE }}"]
+    for step in steps:
+        cmd = ["pwsh", "-NoProfile", "-Command", f"./scripts/{step} *> $null; if (Test-Path variable:\\LASTEXITCODE) {{ exit $LASTEXITCODE }}"]
         code = subprocess.run(cmd, cwd=ROOT).returncode
         if code:
             bad += 1
-            print(f"FAIL {s} (exit {code}) - run it by hand for the detail")
-    print(f"consistency: {len(CONSISTENCY) - bad}/{len(CONSISTENCY)} clean")
+            print(f"FAIL {step} (exit {code}) - run it by hand for the detail")
+    print(f"consistency: {len(steps) - bad}/{len(steps)} clean")
     return 1 if bad else 0
 
 

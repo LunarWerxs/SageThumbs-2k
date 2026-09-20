@@ -49,18 +49,17 @@ if (-not $failed) {
 # (2026-08-02) or by a launch that died at [4/6] on a gate script fault (2026-09-09, twice).
 # Invoked the way CI's `shell: pwsh` does - a script that leaves a non-zero $LASTEXITCODE
 # behind fails the step even when every assertion passed - so a local green means a CI green.
+#
+# ⚠ THE LIST IS DERIVED, NEVER TYPED (2026-09-20). It used to be eleven script names written out
+# here by hand; CI's consistency job had grown to twenty-two, and the eleven this file had never
+# heard of included `check-registration-symmetry.ps1`, which went stale the moment a refactor
+# moved a registry write one call deeper and then sat red on a PUBLIC repo for four commits
+# because nothing local ran it. `ci-consistency-steps.ps1` reads the workflow and hands back
+# exactly what CI runs, in CI's order, and refuses to report fewer than ten steps as "the gate".
+# `check-complexity.ps1` is the one deliberate omission here: the cheap tier above already ran it.
 if (-not $failed) {
-    Step 'consistency scripts (mirrors CI)' {
-        foreach ($s in 'check-consistency','test-release-size','test-release-pipeline','test-installer-lint','test-msix-integrity','test-architecture-release-contract','test-dev-architecture','test-magick-dependency-freshness','check-vendored-exr','check-email-rule','test-script-tests') {
-            $null = pwsh -NoProfile -Command "./scripts/$s.ps1 *> `$null; if (Test-Path variable:\LASTEXITCODE) { exit `$LASTEXITCODE }"
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  FAILED: scripts/$s.ps1 (exit $LASTEXITCODE) - run it by hand for the detail" -ForegroundColor Red
-                $global:LASTEXITCODE = 1
-                return
-            }
-            Write-Host ("  ok  {0}" -f $s)
-        }
-        $global:LASTEXITCODE = 0
+    Step 'consistency scripts (derived from CI''s consistency job)' {
+        & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'ci-consistency-steps.ps1') -Run -Skip 'check-complexity.ps1'
     }
 }
 
