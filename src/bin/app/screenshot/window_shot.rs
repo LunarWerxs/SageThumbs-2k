@@ -142,10 +142,9 @@ pub(super) unsafe fn pull_top_down_bgra(
 /// it can NEVER eat into real content (content is never a uniformly near-black line), and only an
 /// edge that is entirely near-black is trimmed (so a legitimately dark-but-not-black edge stays).
 fn trim_black_edges(buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
-    const MAX: usize = 4; // never trim more than this per side
-                          // R+G+B <= this = a dark border line. The window's own 1px outer border reads ~30-40; the
-                          // darkest real content (the nav well, SURFACE 24,24,24 = 72; the window bg 32,32,32 = 96) is
-                          // well above 55, so this catches the border line without ever eating a content column/row.
+    // R+G+B <= this = a dark border line. The window's own 1px outer border reads ~30-40; the
+    // darkest real content (the nav well, SURFACE 24,24,24 = 72; the window bg 32,32,32 = 96) is
+    // well above 55, so this catches the border line without ever eating a content column/row.
     const DARK: u16 = 55;
     let (wu, hu) = (w as usize, h as usize);
     if wu == 0 || hu == 0 {
@@ -159,22 +158,8 @@ fn trim_black_edges(buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
         |y: usize| (0..wu).filter(|&x| dark_at((y * wu + x) * 4)).count() * 100 >= wu * 60;
     let col_black =
         |x: usize| (0..hu).filter(|&y| dark_at((y * wu + x) * 4)).count() * 100 >= hu * 60;
-    let mut top = 0;
-    while top < MAX.min(hu) && row_black(top) {
-        top += 1;
-    }
-    let mut bot = 0;
-    while bot < MAX.min(hu.saturating_sub(top)) && row_black(hu - 1 - bot) {
-        bot += 1;
-    }
-    let mut lft = 0;
-    while lft < MAX.min(wu) && col_black(lft) {
-        lft += 1;
-    }
-    let mut rgt = 0;
-    while rgt < MAX.min(wu.saturating_sub(lft)) && col_black(wu - 1 - rgt) {
-        rgt += 1;
-    }
+    let (top, bot) = dark_edge_run(hu, &row_black);
+    let (lft, rgt) = dark_edge_run(wu, &col_black);
     let (nw, nh) = (wu - lft - rgt, hu - top - bot);
     if (top == 0 && bot == 0 && lft == 0 && rgt == 0) || nw == 0 || nh == 0 {
         return (buf, w, h);
@@ -186,6 +171,21 @@ fn trim_black_edges(buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
         out[dst..dst + nw * 4].copy_from_slice(&buf[src..src + nw * 4]);
     }
     (out, nw as i32, nh as i32)
+}
+
+/// Count how many near-black edge lines `is_black` reports at the front and at the back of a
+/// `len`-long axis, capped at MAX per side and never overlapping — `(front, back)`.
+fn dark_edge_run(len: usize, is_black: &impl Fn(usize) -> bool) -> (usize, usize) {
+    const MAX: usize = 4; // never trim more than this per side
+    let mut front = 0;
+    while front < MAX.min(len) && is_black(front) {
+        front += 1;
+    }
+    let mut back = 0;
+    while back < MAX.min(len.saturating_sub(front)) && is_black(len - 1 - back) {
+        back += 1;
+    }
+    (front, back)
 }
 
 /// Crop a top-down BGRA capture (taken at `wr` = the window's `GetWindowRect`) down to the
