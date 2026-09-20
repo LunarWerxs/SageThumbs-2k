@@ -25,6 +25,8 @@
 
 use image::{DynamicImage, RgbaImage};
 
+use super::util::find;
+
 /// The header that names the thumbnail's size. Present in every Illustrator file since 7.
 const THUMB_KEY: &[u8] = b"%AI7_Thumbnail:";
 /// Never scan more of a file than this for the header: it sits near the start of the private
@@ -313,14 +315,6 @@ pub(crate) fn page_is_placeholder(page: &DynamicImage, thumb: &DynamicImage) -> 
     let page_ink = ink_fraction(page);
     let thumb_ink = ink_fraction(thumb);
     page_ink < 0.04 && thumb_ink > page_ink * 2.0 && thumb_ink > 0.02
-}
-
-/// Naive substring search; the needles here are short and the haystack is scanned once.
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return None;
-    }
-    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]
