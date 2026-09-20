@@ -1,0 +1,583 @@
+use super::*;
+// The ASF object GUIDs + the name comparator the synthetic-header builders below need.
+use super::asf::{
+    name_eq, ASF_CONTENT_DESC_GUID, ASF_ECD_GUID, ASF_HDR_EXT_GUID, ASF_HEADER_GUID,
+    ASF_MDLIB_GUID, ASF_META_GUID,
+};
+
+/// The size cap on what lofty is allowed to READ must be enforced regardless of how
+/// much data the underlying stream actually offers — a hostile file's declared
+/// picture/frame size is exactly the kind of backing-reader size this stands in for.
+/// Small budget so the test stays instant; the mechanism is size-independent.
+#[test]
+fn budgeted_reader_stops_at_the_budget_regardless_of_backing_size() {
+    let huge = vec![0xABu8; 10_000]; // far more than the reader is allowed to hand out
+    let mut cursor = Cursor::new(huge);
+    let budget = 256u64;
+    let mut bounded = BudgetedReader {
+        inner: &mut cursor,
+        read_so_far: 0,
+        budget,
+    };
+    let mut out = Vec::new();
+    bounded.read_to_end(&mut out).unwrap();
+    assert_eq!(
+        out.len() as u64,
+        budget,
+        "read_to_end must stop AT the budget, not the underlying reader's real size \
+         (this is what stands between an attacker-declared oversized picture and lofty \
+         actually materializing all of it before the MAX_COVER check runs)"
+    );
+}
+
+/// Seeking must stay free — an EOF-once-spent read budget would be useless if a big
+/// seek (e.g. lofty jumping to a trailing APEv2/ID3v1 footer) also ate into it.
+#[test]
+fn budgeted_reader_seeking_does_not_spend_the_read_budget() {
+    let data = vec![0xCDu8; 10_000];
+    let mut cursor = Cursor::new(data);
+    let budget = 10u64;
+    let mut bounded = BudgetedReader {
+        inner: &mut cursor,
+        read_so_far: 0,
+        budget,
+    };
+    bounded.seek(SeekFrom::Start(9_000)).unwrap();
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        bounded.read(&mut byte).unwrap(),
+        1,
+        "a seek must not have spent the budget"
+    );
+}
+
+/// Smallest bytes that pass `looks_like_raster` as a JPEG (so the extracted art
+/// is "decodable" without shipping a real image fixture).
+const FAKE_JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F'];
+
+fn utf16(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// A `WM/Picture` byte-array value of an explicit picture TYPE wrapping `image`.
+fn wm_picture_typed(ptype: u8, image: &[u8]) -> Vec<u8> {
+    let mut v = vec![ptype];
+    v.extend_from_slice(&(image.len() as u32).to_le_bytes());
+    v.extend_from_slice(&utf16("image/jpeg")); // MIME
+    v.extend_from_slice(&[0, 0]); // NUL
+    v.extend_from_slice(&[0, 0]); // empty description + NUL
+    v.extend_from_slice(image);
+    v
+}
+
+/// A JPEG-shaped blob of a given length, so "which picture won" is decided by size
+/// rather than by content.
+fn fake_jpeg_of(len: usize) -> Vec<u8> {
+    let mut v = FAKE_JPEG.to_vec();
+    v.resize(len.max(FAKE_JPEG.len()), 0x5A);
+    v
+}
+
+/// A `WM/Picture` byte-array value (front cover) wrapping `image`.
+fn wm_picture(image: &[u8]) -> Vec<u8> {
+    let mut v = vec![3u8]; // picture type 3 = front cover
+    v.extend_from_slice(&(image.len() as u32).to_le_bytes());
+    v.extend_from_slice(&utf16("image/jpeg")); // MIME
+    v.extend_from_slice(&[0, 0]); // NUL
+    v.extend_from_slice(&[0, 0]); // empty description + NUL
+    v.extend_from_slice(image);
+    v
+}
+
+fn asf_object(guid: [u8; 16], payload: &[u8]) -> Vec<u8> {
+    let mut o = guid.to_vec();
+    o.extend_from_slice(&((24 + payload.len()) as u64).to_le_bytes());
+    o.extend_from_slice(payload);
+    o
+}
+
+/// Wrap nested objects in a Header Extension Object (where real files put the
+/// Metadata / Metadata Library Objects): reserved GUID(16) + reserved u16(6) +
+/// data-size u32 + nested.
+fn hdr_ext(nested: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0u8; 16]; // reserved GUID (contents irrelevant — we skip it)
+    payload.extend_from_slice(&6u16.to_le_bytes());
+    payload.extend_from_slice(&(nested.len() as u32).to_le_bytes());
+    payload.extend_from_slice(nested);
+    asf_object(ASF_HDR_EXT_GUID, &payload)
+}
+
+/// Wrap one header sub-object in a complete ASF Header Object.
+fn asf_file(sub: &[u8]) -> Vec<u8> {
+    let mut h = ASF_HEADER_GUID.to_vec();
+    h.extend_from_slice(&((30 + sub.len()) as u64).to_le_bytes()); // header object size
+    h.extend_from_slice(&1u32.to_le_bytes()); // number of header objects
+    h.extend_from_slice(&[1, 2]); // reserved
+    h.extend_from_slice(sub);
+    h
+}
+
+/// Picture in the Extended Content Description Object (the small-cover path,
+/// `value-len` is u16). This is where mutagen/encoders put covers ≤ 64 KiB.
+fn ecd_payload(name: &str, value: &[u8]) -> Vec<u8> {
+    let nm = {
+        let mut n = utf16(name);
+        n.extend_from_slice(&[0, 0]);
+        n
+    };
+    let mut p = 1u16.to_le_bytes().to_vec(); // descriptor count
+    p.extend_from_slice(&(nm.len() as u16).to_le_bytes());
+    p.extend_from_slice(&nm);
+    p.extend_from_slice(&1u16.to_le_bytes()); // value type 1 = byte array
+    p.extend_from_slice(&(value.len() as u16).to_le_bytes());
+    p.extend_from_slice(value);
+    p
+}
+
+/// Picture in the Metadata Library Object (the full-size path, `data-len` is u32).
+fn mdlib_payload(name: &str, value: &[u8]) -> Vec<u8> {
+    let nm = {
+        let mut n = utf16(name);
+        n.extend_from_slice(&[0, 0]);
+        n
+    };
+    let mut p = 1u16.to_le_bytes().to_vec(); // record count
+    p.extend_from_slice(&0u16.to_le_bytes()); // language list index
+    p.extend_from_slice(&0u16.to_le_bytes()); // stream number
+    p.extend_from_slice(&(nm.len() as u16).to_le_bytes());
+    p.extend_from_slice(&1u16.to_le_bytes()); // data type 1 = byte array
+    p.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    p.extend_from_slice(&nm);
+    p.extend_from_slice(value);
+    p
+}
+
+/// Build a 4-byte ID3v2 synchsafe size (high bit of each byte is zero).
+fn synchsafe_bytes(n: u32) -> [u8; 4] {
+    [
+        ((n >> 21) & 0x7f) as u8,
+        ((n >> 14) & 0x7f) as u8,
+        ((n >> 7) & 0x7f) as u8,
+        (n & 0x7f) as u8,
+    ]
+}
+
+/// A minimal `.dsf`: the 28-byte `DSD ` header pointing at a trailing ID3v2.4 tag
+/// carrying one `APIC` frame per `(picture type, image)` pair, in order.
+fn dsf_with_pics(pics: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    let mut frames = Vec::new();
+    for (ptype, image) in pics {
+        let mut apic = vec![0u8]; // text encoding: latin1
+        apic.extend_from_slice(b"image/jpeg\0"); // MIME
+        apic.push(*ptype);
+        apic.push(0); // empty description (latin1 NUL)
+        apic.extend_from_slice(image);
+        frames.extend_from_slice(b"APIC");
+        frames.extend_from_slice(&synchsafe_bytes(apic.len() as u32));
+        frames.extend_from_slice(&[0, 0]); // frame flags
+        frames.extend_from_slice(&apic);
+    }
+    let mut id3 = b"ID3".to_vec();
+    id3.extend_from_slice(&[4, 0, 0]); // v2.4.0, no flags
+    id3.extend_from_slice(&synchsafe_bytes(frames.len() as u32));
+    id3.extend_from_slice(&frames);
+    let mut f = b"DSD ".to_vec();
+    f.extend_from_slice(&28u64.to_le_bytes()); // DSD chunk size
+    f.extend_from_slice(&(28 + id3.len() as u64).to_le_bytes()); // total file size
+    f.extend_from_slice(&28u64.to_le_bytes()); // metadata pointer → right after the header
+    f.extend_from_slice(&id3);
+    f
+}
+
+fn dsf_with_cover(image: &[u8]) -> Vec<u8> {
+    dsf_with_pics(&[(3, image.to_vec())])
+}
+
+/// A file whose only content is an APEv2 tag: `items…` then the 32-byte footer.
+fn apev2_file(items: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (key, value) in items {
+        body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // flags: UTF-8/binary bits unused here
+        body.extend_from_slice(key.as_bytes());
+        body.push(0);
+        body.extend_from_slice(value);
+    }
+    let mut f = vec![0u8; 8]; // a little "audio" ahead of the tag
+    f.extend_from_slice(&body);
+    f.extend_from_slice(b"APETAGEX");
+    f.extend_from_slice(&2000u32.to_le_bytes()); // version
+    f.extend_from_slice(&((body.len() + 32) as u32).to_le_bytes()); // items + footer
+    f.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    f.extend_from_slice(&0u32.to_le_bytes()); // flags
+    f.extend_from_slice(&[0u8; 8]); // reserved
+    f
+}
+
+/// An APEv2 cover item value: `description\0image`.
+fn ape_cover_value(image: &[u8]) -> Vec<u8> {
+    let mut v = b"cover.jpg\0".to_vec();
+    v.extend_from_slice(image);
+    v
+}
+
+// ── Picking the RIGHT picture when a file carries several ──────────────────
+// Every one of these fails on the code that shipped in 2.3.0, which took the first
+// type-3 picture and otherwise the first picture of any type. The corpus `.flac` and
+// `.wav` both carry a 1x1 white PNG ahead of the real sleeve, so both thumbnailed as a
+// blank white tile; ID3 type 1 is a 32x32 "file icon" and taggers do write one.
+
+#[test]
+fn picture_type_ranking_puts_the_cover_first_and_file_icons_last() {
+    // front cover < other < anything else < the two file-icon types
+    assert!(id3_pic_rank(3) < id3_pic_rank(0));
+    assert!(id3_pic_rank(0) < id3_pic_rank(4)); // 4 = back cover
+    assert!(id3_pic_rank(4) < id3_pic_rank(1)); // 1 = 32x32 file icon
+    assert_eq!(id3_pic_rank(1), id3_pic_rank(2));
+}
+
+#[test]
+fn id3_cover_beats_a_bigger_file_icon() {
+    let icon = fake_jpeg_of(4096);
+    let cover = fake_jpeg_of(64);
+    let f = dsf_with_pics(&[(1, icon), (3, cover.clone())]);
+    assert_eq!(
+        extract(&f),
+        Some(cover),
+        "a 32x32 file icon is never the cover"
+    );
+}
+
+#[test]
+fn id3_picks_the_largest_of_several_front_covers() {
+    let small = fake_jpeg_of(32);
+    let big = fake_jpeg_of(4096);
+    // Small one FIRST — the shipped code returned it and never looked further.
+    let f = dsf_with_pics(&[(3, small), (3, big.clone())]);
+    assert_eq!(extract(&f), Some(big));
+}
+
+#[test]
+fn id3_falls_back_to_the_largest_untyped_picture_when_no_cover_exists() {
+    let small = fake_jpeg_of(32);
+    let big = fake_jpeg_of(2048);
+    let f = dsf_with_pics(&[(0, small), (0, big.clone())]);
+    assert_eq!(extract(&f), Some(big));
+}
+
+#[test]
+fn asf_cover_picks_the_largest_front_cover_not_the_first() {
+    let small = fake_jpeg_of(32);
+    let big = fake_jpeg_of(4096);
+    let mut ecd = ecd_payload("WM/Picture", &wm_picture_typed(3, &small));
+    // Two attributes in one Extended Content Description object.
+    let second = ecd_payload("WM/Picture", &wm_picture_typed(3, &big));
+    ecd[0..2].copy_from_slice(&2u16.to_le_bytes()); // attribute count
+    ecd.extend_from_slice(&second[2..]);
+    let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), Some(big));
+}
+
+#[test]
+fn asf_cover_never_picks_a_file_icon_over_a_cover() {
+    let icon = fake_jpeg_of(4096);
+    let cover = fake_jpeg_of(64);
+    let mut ecd = ecd_payload("WM/Picture", &wm_picture_typed(1, &icon));
+    let second = ecd_payload("WM/Picture", &wm_picture_typed(3, &cover));
+    ecd[0..2].copy_from_slice(&2u16.to_le_bytes());
+    ecd.extend_from_slice(&second[2..]);
+    let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), Some(cover));
+}
+
+#[test]
+fn apev2_front_cover_beats_a_back_cover_listed_first() {
+    let back = fake_jpeg_of(4096);
+    let front = fake_jpeg_of(64);
+    let f = apev2_file(&[
+        ("Cover Art (Back)", ape_cover_value(&back)),
+        ("Cover Art (Front)", ape_cover_value(&front)),
+    ]);
+    assert_eq!(apev2_cover(&mut Cursor::new(f)), Some(front));
+}
+
+#[test]
+fn apev2_picks_the_largest_front_cover() {
+    let small = fake_jpeg_of(32);
+    let big = fake_jpeg_of(4096);
+    let f = apev2_file(&[
+        ("Cover Art (Front)", ape_cover_value(&small)),
+        ("Cover Art (Front)", ape_cover_value(&big)),
+    ]);
+    assert_eq!(apev2_cover(&mut Cursor::new(f)), Some(big));
+}
+
+/// Every real audio sample in the corpus must yield a cover that DECODES and is a
+/// real picture rather than a stamp. This is the assertion the 1x1 bug walked past:
+/// `extract` returned `Some`, the thumbnail rendered, and it was a blank white tile.
+/// Skipped when the corpus isn't present (it is a sibling of the repo; CI has none).
+#[test]
+fn corpus_audio_covers_are_real_pictures() {
+    let dir = crate::testcorpus::dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut checked = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_audio = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            crate::formats::category(&e.to_ascii_lowercase()) == crate::formats::Category::Audio
+        });
+        if !is_audio {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if !looks_like_audio(&bytes) {
+            continue; // not a tagged container we claim
+        }
+        let Some(cover) = extract(&bytes) else {
+            continue; // no embedded art is a legitimate outcome
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let img = image::load_from_memory(&cover)
+            .unwrap_or_else(|e| panic!("{name}: cover does not decode: {e}"));
+        assert!(
+            img.width() > 8 && img.height() > 8,
+            "{name}: cover is {}x{} — a stamp, not the sleeve",
+            img.width(),
+            img.height()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0 || !dir.exists(),
+        "corpus present but no audio checked"
+    );
+}
+
+/// DSD `.dsf` carries its cover in a trailing ID3v2 tag that lofty can't read; the
+/// hand-rolled `dsf_cover` must pull the front-cover APIC out.
+/// Build a minimal MP4 audio file whose only content is the iTunes cover path,
+/// `ftyp` then `moov > udta > meta > ilst > covr > data`. `meta` is written as a FULL
+/// box (four bytes of version and flags before its children), which is what iTunes and
+/// every tagger that follows it emit.
+fn m4a_with_cover(img: &[u8]) -> Vec<u8> {
+    fn atom(name: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(name);
+        v.extend_from_slice(body);
+        v
+    }
+    // data: 4 bytes of type indicator (13 = JPEG), 4 bytes of locale, then the image.
+    let mut data_body = 13u32.to_be_bytes().to_vec();
+    data_body.extend_from_slice(&0u32.to_be_bytes());
+    data_body.extend_from_slice(img);
+    let covr = atom(b"covr", &atom(b"data", &data_body));
+    let ilst = atom(b"ilst", &covr);
+    let mut meta_body = 0u32.to_be_bytes().to_vec(); // full-box version and flags
+    meta_body.extend_from_slice(&ilst);
+    let meta = atom(b"meta", &meta_body);
+    let udta = atom(b"udta", &meta);
+    let moov = atom(b"moov", &udta);
+    let mut out = atom(b"ftyp", b"M4A isomM4A ");
+    out.extend_from_slice(&moov);
+    out
+}
+
+/// 2026-09-05 audit F38. `.m4a`/`.m4b` cover art was reaching the shell only through the
+/// brute-force embedded-JPEG scan, about 113 ms, because nothing in the audio chain read
+/// the `covr` atom and lofty does not surface it. The atom read costs about 0.2 ms, so
+/// the thumbnail was roughly 45 times its recorded baseline while still showing the right
+/// picture, which is why no correctness test noticed.
+#[test]
+fn mp4_audio_cover_is_read_from_the_covr_atom() {
+    assert_eq!(
+        extract(&m4a_with_cover(FAKE_JPEG)),
+        Some(FAKE_JPEG.to_vec()),
+        "an .m4a covr atom must be read by the audio chain, not left to a later fallback"
+    );
+}
+
+/// The branch must not become the thing every audio file pays for. A non-MP4 input has
+/// to be rejected on the `ftyp` check rather than walked, and must still reach the
+/// handler that does own it.
+#[test]
+fn the_mp4_cover_branch_declines_anything_that_is_not_an_mp4() {
+    assert_eq!(
+        mp4_cover(&mut Cursor::new(b"not an mp4 at all".to_vec())),
+        None
+    );
+    assert_eq!(mp4_cover(&mut Cursor::new(Vec::new())), None);
+    // A DSF file still reaches the DSF handler with the MP4 branch in front of it.
+    assert_eq!(
+        extract(&dsf_with_cover(FAKE_JPEG)),
+        Some(FAKE_JPEG.to_vec()),
+        "the MP4 branch must not shadow the other hand-parsed formats"
+    );
+}
+
+#[test]
+fn dsf_cover_reads_id3v2_apic() {
+    assert_eq!(
+        extract(&dsf_with_cover(FAKE_JPEG)),
+        Some(FAKE_JPEG.to_vec())
+    );
+}
+
+#[test]
+fn asf_cover_reads_wm_picture_from_ecd() {
+    let pic = wm_picture(FAKE_JPEG);
+    let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd_payload("WM/Picture", &pic)));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), Some(FAKE_JPEG.to_vec()));
+}
+
+#[test]
+fn asf_cover_reads_wm_picture_from_metadata_library() {
+    // Real files nest the Metadata Library Object inside the Header Extension
+    // Object — the case that the first implementation missed.
+    let pic = wm_picture(FAKE_JPEG);
+    let mdlib = asf_object(ASF_MDLIB_GUID, &mdlib_payload("WM/Picture", &pic));
+    let file = asf_file(&hdr_ext(&mdlib));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), Some(FAKE_JPEG.to_vec()));
+}
+
+#[test]
+fn asf_cover_reads_wm_picture_from_metadata_object() {
+    // The older Metadata Object (same record layout) also nests in Header Extension.
+    let pic = wm_picture(FAKE_JPEG);
+    let meta = asf_object(ASF_META_GUID, &mdlib_payload("WM/Picture", &pic));
+    let file = asf_file(&hdr_ext(&meta));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), Some(FAKE_JPEG.to_vec()));
+}
+
+#[test]
+fn asf_cover_ignores_non_picture_attributes_and_non_asf() {
+    // A WM/Picture whose payload isn't a decodable raster → rejected.
+    let junk = wm_picture(&[0u8; 16]);
+    let file = asf_file(&asf_object(
+        ASF_MDLIB_GUID,
+        &mdlib_payload("WM/Picture", &junk),
+    ));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), None);
+    // A non-picture attribute name → ignored.
+    let pic = wm_picture(FAKE_JPEG);
+    let file = asf_file(&asf_object(ASF_ECD_GUID, &ecd_payload("WM/Author", &pic)));
+    assert_eq!(asf_cover(&mut Cursor::new(file)), None);
+    // Non-ASF bytes bail immediately.
+    assert_eq!(
+        asf_cover(&mut Cursor::new(b"ID3\x04not an asf file".to_vec())),
+        None
+    );
+}
+
+#[test]
+fn name_matcher_is_exact() {
+    let mut wp = utf16("WM/Picture");
+    assert!(name_eq(&wp, b"WM/Picture"));
+    wp.extend_from_slice(&[0, 0]); // trailing NUL is allowed
+    assert!(name_eq(&wp, b"WM/Picture"));
+    assert!(!name_eq(&utf16("WM/PictureX"), b"WM/Picture"));
+    assert!(!name_eq(&utf16("WM/Author"), b"WM/Picture"));
+    assert!(!name_eq(b"WM/Picture", b"WM/Picture")); // ASCII (not UTF-16) → no
+}
+
+/// Multiple header sub-objects (the tag tests need Content Description + ECD).
+fn asf_file_n(subs: &[Vec<u8>]) -> Vec<u8> {
+    let body: Vec<u8> = subs.iter().flatten().copied().collect();
+    let mut h = ASF_HEADER_GUID.to_vec();
+    h.extend_from_slice(&((30 + body.len()) as u64).to_le_bytes());
+    h.extend_from_slice(&(subs.len() as u32).to_le_bytes());
+    h.extend_from_slice(&[1, 2]);
+    h.extend_from_slice(&body);
+    h
+}
+
+fn utf16z(s: &str) -> Vec<u8> {
+    let mut v = utf16(s);
+    v.extend_from_slice(&[0, 0]);
+    v
+}
+
+/// Content Description Object payload (Title + Author; other fields empty).
+fn cd_payload(title: &str, author: &str) -> Vec<u8> {
+    let (t, a) = (utf16z(title), utf16z(author));
+    let mut p = (t.len() as u16).to_le_bytes().to_vec();
+    p.extend_from_slice(&(a.len() as u16).to_le_bytes());
+    p.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // copyright/description/rating lengths = 0
+    p.extend_from_slice(&t);
+    p.extend_from_slice(&a);
+    p
+}
+
+/// Extended Content Description payload of Unicode-string attributes.
+fn ecd_str_payload(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let mut p = (pairs.len() as u16).to_le_bytes().to_vec();
+    for (name, val) in pairs {
+        let (nm, vv) = (utf16z(name), utf16z(val));
+        p.extend_from_slice(&(nm.len() as u16).to_le_bytes());
+        p.extend_from_slice(&nm);
+        p.extend_from_slice(&0u16.to_le_bytes()); // value type 0 = Unicode string
+        p.extend_from_slice(&(vv.len() as u16).to_le_bytes());
+        p.extend_from_slice(&vv);
+    }
+    p
+}
+
+#[test]
+fn asf_tags_reads_content_description_and_wm_attrs() {
+    let cd = asf_object(ASF_CONTENT_DESC_GUID, &cd_payload("My Song", "The Artist"));
+    let ecd = asf_object(
+        ASF_ECD_GUID,
+        &ecd_str_payload(&[("WM/AlbumTitle", "The Album"), ("WM/TrackNumber", "7/12")]),
+    );
+    let tags = asf_tags(&mut Cursor::new(asf_file_n(&[cd, ecd]))).unwrap();
+    assert_eq!(tags.title.as_deref(), Some("My Song"));
+    assert_eq!(tags.artist.as_deref(), Some("The Artist"));
+    assert_eq!(tags.album.as_deref(), Some("The Album"));
+    assert_eq!(tags.track, Some(7));
+}
+
+#[test]
+fn asf_tags_reads_attrs_nested_in_metadata_library() {
+    // Album/track can live in the Header-Extension-nested Metadata Library too.
+    let mdlib = asf_object(
+        ASF_MDLIB_GUID,
+        &mdlib_str_payload("WM/AlbumTitle", "Nested Album"),
+    );
+    let tags = asf_tags(&mut Cursor::new(asf_file_n(&[hdr_ext(&mdlib)]))).unwrap();
+    assert_eq!(tags.album.as_deref(), Some("Nested Album"));
+}
+
+/// One Metadata Library record holding a Unicode-string attribute.
+fn mdlib_str_payload(name: &str, val: &str) -> Vec<u8> {
+    let (nm, vv) = (utf16z(name), utf16z(val));
+    let mut p = 1u16.to_le_bytes().to_vec(); // record count
+    p.extend_from_slice(&0u16.to_le_bytes()); // language list index
+    p.extend_from_slice(&0u16.to_le_bytes()); // stream number
+    p.extend_from_slice(&(nm.len() as u16).to_le_bytes());
+    p.extend_from_slice(&0u16.to_le_bytes()); // data type 0 = Unicode string
+    p.extend_from_slice(&(vv.len() as u32).to_le_bytes());
+    p.extend_from_slice(&nm);
+    p.extend_from_slice(&vv);
+    p
+}
+
+#[test]
+fn asf_tags_prefers_track_author_over_album_artist() {
+    // Real files store the ECD before the Content Description Object, so without
+    // care WM/AlbumArtist would win. The track Author must win regardless of order.
+    let ecd = asf_object(
+        ASF_ECD_GUID,
+        &ecd_str_payload(&[("WM/AlbumArtist", "Various Artists")]),
+    );
+    let cd = asf_object(ASF_CONTENT_DESC_GUID, &cd_payload("Song", "Real Artist"));
+    let tags = asf_tags(&mut Cursor::new(asf_file_n(&[ecd, cd]))).unwrap();
+    assert_eq!(tags.artist.as_deref(), Some("Real Artist"));
+}
+
+#[test]
+fn asf_tags_none_for_non_asf() {
+    assert!(asf_tags(&mut Cursor::new(b"ID3\x04 not an asf file".to_vec())).is_none());
+}
