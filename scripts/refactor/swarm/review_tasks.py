@@ -48,6 +48,26 @@ def git(*args):
 TEST_PREFIXES = ("churn hotspot:", "build.rs:", "gen-site.mjs:", "compare-renders.py:", "test-script-tests.ps1:")
 
 
+def tasks_for_commit(sha, kind, per_file_over):
+    """One task for the commit, or one per file when it touches more than `per_file_over` files."""
+    subject = git("log", "-1", "--format=%s", sha).strip()
+    if subject.startswith("complexity: re-seed"):
+        return []
+    if kind == "auto":
+        kind = "tests" if subject.startswith(TEST_PREFIXES) else "refactor"
+    head = HEAD_TESTS if kind == "tests" else HEAD_REFACTOR
+    short = git("rev-parse", "--short", sha).strip()
+    files = [f for f in git("show", "--name-only", "--format=", sha).split("\n") if f.strip()]
+    if len(files) <= per_file_over:
+        diff = git("show", "--format=", sha)
+        return [{"id": short, "prompt": f"{head}\n\nCommit: {subject}\nFiles: {', '.join(files)}\n\n```diff\n{diff}\n```"}]
+    return [
+        {"id": f"{short}-{f.replace('/', '_')}", "prompt": f"{head}\n\nCommit: {subject}\nFile: {f}\n\n```diff\n{diff}\n```"}
+        for f in files
+        for diff in [git("show", "--format=", sha, "--", f)]
+    ]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("commits", nargs="*")
@@ -62,20 +82,7 @@ def main():
 
     tasks = []
     for sha in commits:
-        subject = git("log", "-1", "--format=%s", sha).strip()
-        kind = a.kind if a.kind != "auto" else ("tests" if subject.startswith(TEST_PREFIXES) else "refactor")
-        if subject.startswith("complexity: re-seed"):
-            continue
-        head = HEAD_TESTS if kind == "tests" else HEAD_REFACTOR
-        short = git("rev-parse", "--short", sha).strip()
-        files = [f for f in git("show", "--name-only", "--format=", sha).split("\n") if f.strip()]
-        if len(files) > a.per_file_over:
-            for f in files:
-                diff = git("show", "--format=", sha, "--", f)
-                tasks.append({"id": f"{short}-{f.replace('/', '_')}", "prompt": f"{head}\n\nCommit: {subject}\nFile: {f}\n\n```diff\n{diff}\n```"})
-        else:
-            diff = git("show", "--format=", sha)
-            tasks.append({"id": f"{short}", "prompt": f"{head}\n\nCommit: {subject}\nFiles: {', '.join(files)}\n\n```diff\n{diff}\n```"})
+        tasks += tasks_for_commit(sha, a.kind, a.per_file_over)
 
     job = {"defaults": {"cwd": ROOT, "tools": "read", "schema": SCHEMA, "max_turns": 12, "timeout_s": 300}, "tasks": tasks}
     with open(a.out, "w", encoding="utf-8") as fh:
