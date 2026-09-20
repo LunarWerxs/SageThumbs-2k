@@ -287,6 +287,27 @@ Read this before doing either again.
   6. **Macro invocations are not items.** A `thread_local!` between two functions stays behind
      when the functions move, and any doc comment or `#[allow]` that sat above the NEXT item
      ends up attached to it. Move it by hand, with the code that uses it.
+- **Four more from the second pass (2026-09-20, another 14 files):**
+  7. **A child named like a SIBLING module shadows it for the whole hub.** `about/update.rs`
+     made `update::UpdateCheck` resolve to the child (through `use update::*`), not to
+     `crate::update`; `fuzzseed/ole.rs` and `fuzzseed/apk.rs` did the same to
+     `container::{ole, apk}`. Same trap as the extern-crate one, one level closer. They are
+     `checker`, `oleseed`, `apkseed`.
+  8. **A `super::x` path in a moved item is now one level short.** `daemon/hotkeys.rs` read
+     `super::spacehook` and found `daemon`, not `screenshot`. A hub that itself does
+     `use super::*` HIDES this (navrail's children kept resolving `super::restyle` through the
+     glob), which is why it only bit in daemon. `extract_items.py` now deepens the path.
+  9. **A test that reads its module's SOURCE (`include_str!("mod.rs")`) follows the text, not
+     the symbol.** `settings_dlg/tests.rs` scans the IDOK arm of `on_command_dialog` for the
+     hotkey-conflict guard; moving that fn to `commands.rs` left the scan searching a file it
+     was no longer in. Grep for `include_str!` before moving a function out of a hub.
+  10. **Clippy's "unused import" for a re-export is TWO answers folded into one.** With
+     `--all-targets`, a `pub(super) use child::name` that only the tests reach is reported
+     unused by the non-test build and used by the test build, and the log shows one line.
+     `fix_unused_imports.py <clippy.log>` settles it: the first pass gives every flagged
+     statement `#[cfg(test)]`, a second clippy run flags the ones nobody uses at all, and the
+     second pass deletes those. `mark_test_files.py` also scans UNTRACKED files now - a split's
+     new files are exactly the ones that need the marker, and `git ls-files` did not see them.
 - **A test-only file says `#![cfg(test)]` itself.** A file declared as `#[cfg(test)] mod tests;`
   carries no sign of being test code, so any per-file reader (a duplication or complexity
   scanner, a reviewer opening it cold) counts it as production code; moving tests out of their
