@@ -118,7 +118,7 @@ pub(crate) unsafe fn ok_cancel_buttons(
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst = module_instance();
     let n = F2F_FILES.get().map(|f| f.len()).unwrap_or(0);
-    let prompt = t("f2f_prompt").replace("{n}", &n.to_string());
+    let prompt = f2f_prompt(t("f2f_prompt"), n);
     label(hwnd, hinst, &prompt, 16, 16, 344, 18);
     let edit = edit_field(
         hwnd,
@@ -169,10 +169,7 @@ unsafe fn start_move(hwnd: HWND) {
     if F2F_RUNNING.load(Ordering::Relaxed) {
         return;
     }
-    let mut name = get_edit_text(hwnd, CID_F2F_NAME).trim().to_string();
-    if name.is_empty() {
-        name = t("f2f_default_name").to_string();
-    }
+    let name = f2f_folder_name(&get_edit_text(hwnd, CID_F2F_NAME), t("f2f_default_name"));
     let Some(files) = F2F_FILES.get().cloned() else {
         return;
     };
@@ -216,11 +213,11 @@ unsafe fn on_f2f_done(hwnd: HWND) -> LRESULT {
     let cap = wide("SageThumbs 2K");
     match result {
         Some(Ok((_dir, moved, skipped))) if skipped > 0 => {
-            let m = wide(
-                &t("f2f_done_partial")
-                    .replace("{moved}", &moved.to_string())
-                    .replace("{skipped}", &skipped.to_string()),
-            );
+            let m = wide(&f2f_partial_message(
+                t("f2f_done_partial"),
+                moved,
+                skipped,
+            ));
             MessageBoxW(
                 Some(hwnd),
                 PCWSTR(m.as_ptr()),
@@ -275,5 +272,76 @@ pub(crate) unsafe fn close_or_defer(hwnd: HWND, running: &AtomicBool) {
         }
     } else {
         let _ = DestroyWindow(hwnd);
+    }
+}
+
+/// The prompt line: `template` with its `{n}` placeholder filled by the number of
+/// files the DLL passed in (`on_create`).
+fn f2f_prompt(template: &str, n: usize) -> String {
+    template.replace("{n}", &n.to_string())
+}
+
+/// The folder name to create: the user's edit trimmed, or `default` when they left
+/// it empty (or typed only whitespace) — `start_move`.
+fn f2f_folder_name(typed: &str, default: &str) -> String {
+    let name = typed.trim().to_string();
+    if name.is_empty() {
+        default.to_string()
+    } else {
+        name
+    }
+}
+
+/// The partial-move message (some files skipped — issue #27): `template` with its
+/// `{moved}` and `{skipped}` placeholders filled in (`on_f2f_done`).
+fn f2f_partial_message(template: &str, moved: usize, skipped: usize) -> String {
+    template
+        .replace("{moved}", &moved.to_string())
+        .replace("{skipped}", &skipped.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f2f_prompt_fills_the_item_count() {
+        let got = f2f_prompt("Move {n} item(s) into a new folder named:", 7);
+        assert_eq!(got, "Move 7 item(s) into a new folder named:");
+        assert!(!got.contains("{n}"), "the placeholder must be gone: {got}");
+    }
+
+    #[test]
+    fn f2f_prompt_renders_a_zero_count() {
+        assert_eq!(f2f_prompt("{n} files", 0), "0 files");
+    }
+
+    #[test]
+    fn f2f_folder_name_keeps_a_trimmed_name() {
+        assert_eq!(
+            f2f_folder_name("  holiday pics \t", "New Folder"),
+            "holiday pics"
+        );
+    }
+
+    #[test]
+    fn f2f_folder_name_falls_back_when_nothing_was_typed() {
+        assert_eq!(f2f_folder_name("   \n", "New Folder"), "New Folder");
+        assert_eq!(f2f_folder_name("", "New Folder"), "New Folder");
+    }
+
+    #[test]
+    fn f2f_partial_message_fills_both_placeholders() {
+        let got =
+            f2f_partial_message("Moved {moved} item(s); {skipped} couldn't be moved.", 3, 2);
+        assert_eq!(got, "Moved 3 item(s); 2 couldn't be moved.");
+    }
+
+    #[test]
+    fn f2f_partial_message_fills_placeholders_in_either_order() {
+        assert_eq!(
+            f2f_partial_message("{skipped} skipped, {moved} moved", 4, 1),
+            "1 skipped, 4 moved"
+        );
     }
 }
