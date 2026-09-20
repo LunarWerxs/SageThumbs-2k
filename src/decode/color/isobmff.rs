@@ -66,26 +66,29 @@ pub(super) fn isobmff_boxes<'a>(
         }
         *boxes_left -= 1;
 
-        let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
-        let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
-        let extended = if size32 == 1 {
-            Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
-        } else {
-            None
-        };
-        let (size, header_len) = crate::container::boxhdr::decode_box_size(
-            size32,
-            extended,
-            p as u64,
-            buf.len() as u64,
-        )?;
-        let (size, header_len) = (size as usize, header_len as usize);
-        let end = p + size;
-        let body = buf.get(p + header_len..end)?;
+        let (typ, body, end) = isobmff_parse_box(buf, p)?;
         out.push((typ, body));
         p = end;
     }
     Some(out)
+}
+
+/// Parse the header and body of the single box starting at `p`, returning its
+/// type, body slice and the offset of the next box.
+fn isobmff_parse_box(buf: &[u8], p: usize) -> Option<([u8; 4], &[u8], usize)> {
+    let size32 = u32::from_be_bytes(buf.get(p..p + 4)?.try_into().ok()?);
+    let typ = buf.get(p + 4..p + 8)?.try_into().ok()?;
+    let extended = if size32 == 1 {
+        Some(u64::from_be_bytes(buf.get(p + 8..p + 16)?.try_into().ok()?))
+    } else {
+        None
+    };
+    let (size, header_len) =
+        crate::container::boxhdr::decode_box_size(size32, extended, p as u64, buf.len() as u64)?;
+    let (size, header_len) = (size as usize, header_len as usize);
+    let end = p + size;
+    let body = buf.get(p + header_len..end)?;
+    Some((typ, body, end))
 }
 
 pub(super) fn isobmff_item_id(body: &[u8], version: u8, p: &mut usize) -> Option<u32> {
@@ -180,19 +183,29 @@ pub(super) fn isobmff_auxl_targets_primary(
         if typ != *b"auxl" {
             continue;
         }
-        let mut p = 0usize;
-        let from = isobmff_item_id(reference, version, &mut p)?;
-        let count = u16::from_be_bytes(reference.get(p..p + 2)?.try_into().ok()?) as usize;
-        p += 2;
-        for _ in 0..count {
-            let target = isobmff_item_id(reference, version, &mut p)?;
-            found |= alpha_items.contains(&from) && target == primary;
-        }
-        if p != reference.len() {
-            return None;
-        }
+        found |= isobmff_auxl_reference_targets(reference, version, alpha_items, primary)?;
     }
     Some(found)
+}
+
+/// One `auxl` reference box: does it name `primary` as the in-file target of an
+/// alpha item? `None` if the reference structure itself is malformed.
+fn isobmff_auxl_reference_targets(
+    reference: &[u8],
+    version: u8,
+    alpha_items: &[u32],
+    primary: u32,
+) -> Option<bool> {
+    let mut p = 0usize;
+    let from = isobmff_item_id(reference, version, &mut p)?;
+    let count = u16::from_be_bytes(reference.get(p..p + 2)?.try_into().ok()?) as usize;
+    p += 2;
+    let mut found = false;
+    for _ in 0..count {
+        let target = isobmff_item_id(reference, version, &mut p)?;
+        found |= alpha_items.contains(&from) && target == primary;
+    }
+    (p == reference.len()).then_some(found)
 }
 
 /// A structurally valid FileTypeBox must lead the file. Its body is major
