@@ -54,22 +54,9 @@ pub(crate) fn text_flyout_layout(
     let nf = PRESET_FONTS.len() as i32;
     let drop_h = if dropdown { nf * opt + inset * 2 } else { 0 };
     let ph = pad + row + drop_h + gap + row + gap + row + gap + row + pad;
-    let mut x = anchor.left;
-    if x + pw > vw {
-        x = vw - pw;
-    }
-    x = x.max(0);
-    let mut y = anchor.top - ph - off;
-    if y < 0 {
-        y = anchor.bottom + off;
-    }
-    y = y.min(vh - ph).max(0);
-    let panel = RECT {
-        left: x,
-        top: y,
-        right: x + pw,
-        bottom: y + ph,
-    };
+    let panel = super::anchor_panel(anchor, vw, vh, pw, ph, off);
+    let x = panel.left;
+    let y = panel.top;
     let ix = x + pad;
     let iw = pw - pad * 2;
     let mut items = Vec::new();
@@ -183,6 +170,27 @@ unsafe fn draw_btn(hdc: HDC, r: RECT, label: &str) {
     );
 }
 
+/// Draw a left-aligned checkbox caption (`[x] Name`) in row `r`.
+unsafe fn draw_checkbox_row(hdc: HDC, r: &RECT, checked: bool, name_key: &str) {
+    SelectObject(hdc, HGDIOBJ(gui_font().0));
+    SetTextColor(hdc, rgb(235, 235, 235));
+    let label = checkbox_label(checked, name_key);
+    let mut tr = RECT {
+        left: r.left + 4,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    };
+    let mut w = wide(&label);
+    let n = w.len().saturating_sub(1);
+    DrawTextW(
+        hdc,
+        &mut w[..n],
+        &mut tr,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+}
+
 /// Paint the text settings flyout for the current `font`. `dpi` scales the design
 /// pixels (identity at 96).
 ///
@@ -197,12 +205,7 @@ pub(crate) unsafe fn draw_text_flyout(
     dpi: i32,
     focus: Option<usize>,
 ) {
-    let bg = CreateSolidBrush(rgb(32, 32, 32));
-    FillRect(hdc, &panel, bg);
-    let _ = DeleteObject(bg.into());
-    let border = CreateSolidBrush(rgb(80, 80, 80));
-    FrameRect(hdc, &panel, border);
-    let _ = DeleteObject(border.into());
+    super::draw_panel_bg(hdc, &panel);
 
     SelectObject(hdc, HGDIOBJ(gui_font().0));
     SetBkMode(hdc, TRANSPARENT);
@@ -298,44 +301,8 @@ pub(crate) unsafe fn draw_text_flyout(
             }
             TextItem::SizeDown => draw_btn(hdc, *r, "-"),
             TextItem::SizeUp => draw_btn(hdc, *r, "+"),
-            TextItem::Bold => {
-                SelectObject(hdc, HGDIOBJ(gui_font().0));
-                SetTextColor(hdc, rgb(235, 235, 235));
-                let label = checkbox_label(bold, "shot_text_bold");
-                let mut tr = RECT {
-                    left: r.left + 4,
-                    top: r.top,
-                    right: r.right,
-                    bottom: r.bottom,
-                };
-                let mut w = wide(&label);
-                let n = w.len().saturating_sub(1);
-                DrawTextW(
-                    hdc,
-                    &mut w[..n],
-                    &mut tr,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
-            TextItem::Underline => {
-                SelectObject(hdc, HGDIOBJ(gui_font().0));
-                SetTextColor(hdc, rgb(235, 235, 235));
-                let label = checkbox_label(underline, "shot_text_underline");
-                let mut tr = RECT {
-                    left: r.left + 4,
-                    top: r.top,
-                    right: r.right,
-                    bottom: r.bottom,
-                };
-                let mut w = wide(&label);
-                let n = w.len().saturating_sub(1);
-                DrawTextW(
-                    hdc,
-                    &mut w[..n],
-                    &mut tr,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
+            TextItem::Bold => draw_checkbox_row(hdc, r, bold, "shot_text_bold"),
+            TextItem::Underline => draw_checkbox_row(hdc, r, underline, "shot_text_underline"),
             TextItem::More => draw_btn(hdc, *r, crate::win::t("shot_text_more_fonts")),
         }
     }

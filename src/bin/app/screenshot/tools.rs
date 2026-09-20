@@ -53,40 +53,14 @@ impl Tool {
     /// (and any external tool reading the title) silently depend on the active UI language.
     /// The user-visible hint strip uses [`Tool::hint_label`] instead.
     pub(super) fn label(self) -> &'static str {
-        match self {
-            Tool::Rect => "Rect",
-            Tool::Ellipse => "Ellipse",
-            Tool::Arrow => "Arrow",
-            Tool::Line => "Line",
-            Tool::Pen => "Pen",
-            Tool::Text => "Text",
-            Tool::Number => "Number",
-            Tool::Highlight => "Highlight",
-            Tool::Pixelate => "Pixelate",
-            Tool::Invert => "Invert",
-            Tool::Eyedropper => "Pick",
-            Tool::Move => "Move",
-        }
+        tool_strings(self).0
     }
 
     /// Localized short label for the on-screen hint strip (audit F29, 2026-09-06). Distinct
     /// from [`Tool::label`], which must stay fixed English for the automation title channel -
     /// this is the one a real user sees, so it goes through the locale table.
     pub(super) fn hint_label(self) -> &'static str {
-        t(match self {
-            Tool::Rect => "shot_tool_short_rect",
-            Tool::Ellipse => "shot_tool_short_ellipse",
-            Tool::Arrow => "shot_tool_short_arrow",
-            Tool::Line => "shot_tool_short_line",
-            Tool::Pen => "shot_tool_short_pen",
-            Tool::Text => "shot_tool_short_text",
-            Tool::Number => "shot_tool_short_number",
-            Tool::Highlight => "shot_tool_short_highlight",
-            Tool::Pixelate => "shot_tool_short_pixelate",
-            Tool::Invert => "shot_tool_short_invert",
-            Tool::Eyedropper => "shot_tool_short_eyedropper",
-            Tool::Move => "shot_tool_short_move",
-        })
+        t(tool_strings(self).1)
     }
 
     /// The tools offered as a STARTING tool, in the order the Settings dropdown lists them.
@@ -115,6 +89,25 @@ impl Tool {
         *Tool::DEFAULTABLE
             .get(index as usize)
             .unwrap_or(&Tool::DEFAULTABLE[0])
+    }
+}
+
+/// The fixed-English identifier and its localized hint-strip key for a [`Tool`], kept side
+/// by side so [`Tool::label`] and [`Tool::hint_label`] can never drift out of step.
+fn tool_strings(tool: Tool) -> (&'static str, &'static str) {
+    match tool {
+        Tool::Rect => ("Rect", "shot_tool_short_rect"),
+        Tool::Ellipse => ("Ellipse", "shot_tool_short_ellipse"),
+        Tool::Arrow => ("Arrow", "shot_tool_short_arrow"),
+        Tool::Line => ("Line", "shot_tool_short_line"),
+        Tool::Pen => ("Pen", "shot_tool_short_pen"),
+        Tool::Text => ("Text", "shot_tool_short_text"),
+        Tool::Number => ("Number", "shot_tool_short_number"),
+        Tool::Highlight => ("Highlight", "shot_tool_short_highlight"),
+        Tool::Pixelate => ("Pixelate", "shot_tool_short_pixelate"),
+        Tool::Invert => ("Invert", "shot_tool_short_invert"),
+        Tool::Eyedropper => ("Pick", "shot_tool_short_eyedropper"),
+        Tool::Move => ("Move", "shot_tool_short_move"),
     }
 }
 
@@ -636,15 +629,23 @@ pub(super) fn text_extent(at: POINT, s: &str, font: &LOGFONTW) -> RECT {
     }
 }
 
+/// The five region-effect [`Shape`] variants that carry a single `r` rect — one alternation
+/// so that [`shape_bbox`] and [`translate_shape`] can't grow out of step.
+macro_rules! rect_shapes {
+    ($r:ident) => {
+        Shape::Rect { r: $r, .. }
+            | Shape::Ellipse { r: $r, .. }
+            | Shape::Highlight { r: $r, .. }
+            | Shape::Pixelate { r: $r }
+            | Shape::Invert { r: $r }
+    };
+}
+
 /// Bounding box of a shape — used to hit-test a click and to draw the selection
 /// frame. (Text is approximate; that's fine for grabbing.)
 pub(super) fn shape_bbox(sh: &Shape) -> RECT {
     match sh {
-        Shape::Rect { r, .. }
-        | Shape::Ellipse { r, .. }
-        | Shape::Highlight { r, .. }
-        | Shape::Pixelate { r }
-        | Shape::Invert { r } => *r,
+        rect_shapes!(r) => *r,
         Shape::Arrow { a, b, .. } | Shape::Line { a, b, .. } => norm(*a, *b),
         Shape::Pen { pts, .. } => {
             let mut r = RECT {
@@ -678,11 +679,7 @@ pub(super) fn shape_bbox(sh: &Shape) -> RECT {
 /// Shift a shape by `(dx, dy)`.
 pub(super) fn translate_shape(sh: &mut Shape, dx: i32, dy: i32) {
     match sh {
-        Shape::Rect { r, .. }
-        | Shape::Ellipse { r, .. }
-        | Shape::Highlight { r, .. }
-        | Shape::Pixelate { r }
-        | Shape::Invert { r } => {
+        rect_shapes!(r) => {
             r.left += dx;
             r.right += dx;
             r.top += dy;

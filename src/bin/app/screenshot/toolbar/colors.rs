@@ -52,22 +52,9 @@ pub(crate) fn color_flyout_layout(
     let rows = (n + COLS - 1) / COLS;
     let pw = COLS * sw + (COLS - 1) * swgap + pad * 2;
     let ph = rows * sw + (rows - 1) * swgap + pad * 2;
-    let mut x = anchor.left;
-    if x + pw > vw {
-        x = vw - pw;
-    }
-    x = x.max(0);
-    let mut y = anchor.top - ph - off; // above the button…
-    if y < 0 {
-        y = anchor.bottom + off; // …or below if there's no room
-    }
-    y = y.min(vh - ph).max(0); // keep the whole panel on-screen
-    let panel = RECT {
-        left: x,
-        top: y,
-        right: x + pw,
-        bottom: y + ph,
-    };
+    let panel = super::anchor_panel(anchor, vw, vh, pw, ph, off);
+    let x = panel.left;
+    let y = panel.top;
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         let (row, col) = (i / COLS, i % COLS);
@@ -106,12 +93,7 @@ pub(crate) unsafe fn draw_color_flyout(
     current: COLORREF,
     focus: Option<usize>,
 ) {
-    let bg = CreateSolidBrush(rgb(32, 32, 32));
-    FillRect(hdc, &panel, bg);
-    let _ = DeleteObject(bg.into());
-    let border = CreateSolidBrush(rgb(80, 80, 80));
-    FrameRect(hdc, &panel, border);
-    let _ = DeleteObject(border.into());
+    super::draw_panel_bg(hdc, &panel);
 
     // Customizable cells (custom slots + the picker) carry a light-blue accent ring;
     // presets get a plain edge. The active colour always wins with a white ring.

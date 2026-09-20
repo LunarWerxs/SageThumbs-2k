@@ -284,6 +284,39 @@ pub(super) unsafe fn draw_focus_ring_outside(hdc: HDC, r: RECT) {
     }
 }
 
+/// Clamp a flyout panel of `pw` x `ph` above the button `anchor`, flipping it below when
+/// there is no room above; `off` is the gap kept between the anchor and the panel. Returns
+/// the on-screen panel rect (its `left`/`top` are the clamped origin the caller lays the
+/// flyout's items out from).
+pub(super) fn anchor_panel(anchor: RECT, vw: i32, vh: i32, pw: i32, ph: i32, off: i32) -> RECT {
+    let mut x = anchor.left;
+    if x + pw > vw {
+        x = vw - pw;
+    }
+    x = x.max(0);
+    let mut y = anchor.top - ph - off; // above the button…
+    if y < 0 {
+        y = anchor.bottom + off; // …or below if there's no room
+    }
+    y = y.min(vh - ph).max(0); // keep the whole panel on-screen
+    RECT {
+        left: x,
+        top: y,
+        right: x + pw,
+        bottom: y + ph,
+    }
+}
+
+/// Fill `r` with the dark flyout panel background and frame it with the lighter flyout border.
+pub(super) unsafe fn draw_panel_bg(hdc: HDC, r: &RECT) {
+    let bg = CreateSolidBrush(rgb(32, 32, 32));
+    FillRect(hdc, r, bg);
+    let _ = DeleteObject(bg.into());
+    let border = CreateSolidBrush(rgb(80, 80, 80));
+    FrameRect(hdc, r, border);
+    let _ = DeleteObject(border.into());
+}
+
 /// One-line description of a button, shown as a hover tooltip. Localized (audit F29,
 /// 2026-09-06): every branch reads its sentence from the locale table; the tool branches carry
 /// a `{key}` slot for the tool's single-letter keyboard shortcut, filled in HERE (never by a
