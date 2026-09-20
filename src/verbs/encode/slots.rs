@@ -118,24 +118,30 @@ fn collision_number(n: u32) -> u32 {
     n + 1
 }
 
-/// Reserve a free `<stem>.<ext>` next to `src` (`<stem> (2).<ext>` if taken, `<stem>
-/// (3).<ext>` after that — see [`collision_number`]), atomically (see [`reserve`]).
-/// Replaces the old existence-check picker.
-pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
+/// Reserve a free file next to `src`, naming it through `name(retry, stem)`: `retry` is
+/// [`reserve`]'s zero-based counter and `stem` is the source file stem (or `"image"`).
+/// Shared by the sibling namers in this module so the stem/dir resolution lives once.
+fn reserve_beside(src: &Path, name: impl Fn(u32, &str) -> String) -> OutSlot {
     let stem = src
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("image")
         .to_string();
     let dir = src.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    reserve(move |n| dir.join(name(n, &stem)))
+}
+
+/// Reserve a free `<stem>.<ext>` next to `src` (`<stem> (2).<ext>` if taken, `<stem>
+/// (3).<ext>` after that — see [`collision_number`]), atomically (see [`reserve`]).
+/// Replaces the old existence-check picker.
+pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
     let ext = ext.to_string();
-    reserve(move |n| {
-        let name = if n == 0 {
+    reserve_beside(src, move |n, stem| {
+        if n == 0 {
             format!("{stem}.{ext}")
         } else {
             format!("{stem} ({}).{ext}", collision_number(n))
-        };
-        dir.join(name)
+        }
     })
 }
 
@@ -187,20 +193,13 @@ pub(crate) fn preserve_src_time(src: &Path, out: &Path) {
 /// (rotate/resize/email) and the DLL's routed resize/email (which pass the reserved
 /// path to `st2k`).
 pub(crate) fn reserve_unique_suffix(src: &Path, suffix: &str, ext: &str) -> OutSlot {
-    let stem = src
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("image")
-        .to_string();
-    let dir = src.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
     let (suffix, ext) = (suffix.to_string(), ext.to_string());
-    reserve(move |n| {
-        let name = if n == 0 {
+    reserve_beside(src, move |n, stem| {
+        if n == 0 {
             format!("{stem} ({suffix}).{ext}")
         } else {
             format!("{stem} ({suffix} {}).{ext}", collision_number(n))
-        };
-        dir.join(name)
+        }
     })
 }
 
