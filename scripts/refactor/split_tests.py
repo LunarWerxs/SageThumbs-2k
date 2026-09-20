@@ -3,7 +3,7 @@ file (`<stem>/x.rs`, or `x.rs` beside a mod.rs), leaving `#[cfg(test)]\nmod x;` 
 Semantics are identical: the module path stays `parent::x`, so `use super::*` and
 `super::super::y` resolve exactly as before. Run it again to take the next block.
 
-Refuses when anything but blank lines or already-extracted test mod declarations follows
+Refuses when anything but blank lines, doc comments or already-extracted test mod declarations follow
 the block, or when the target file already exists.
 
 usage: split_tests.py <repo-root> [--apply] file [file ...]
@@ -16,7 +16,7 @@ import _rs
 
 CFG = re.compile(r"^#\[cfg\(test\)\]\s*$")
 MOD = re.compile(r"^(pub(\(crate\))? )?mod (\w+)\s*\{\s*$")
-TRAIL = re.compile(r"^(#\[cfg\(test\)\]|#\[path = \"[^\"]+\"\]|(pub(\(crate\))? )?mod \w+;|)\s*$")
+TRAIL = re.compile(r"^(#\[cfg\(test\)\]|#\[path = \"[^\"]+\"\]|(pub(\(crate\))? )?mod \w+;|///.*|)\s*$")
 
 
 def last_test_block(lines):

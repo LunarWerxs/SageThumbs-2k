@@ -13,7 +13,9 @@ What it cannot know, and clippy -D warnings will tell you: a child that uses not
 its parent has an unused `use super::*` (delete it), and a hub that uses nothing from a
 child has an unused `use child::*` (`fix_unused_imports.py <clippy.log>` settles those: test-only
 ones get `#[cfg(test)]`, dead ones go). A child named like a SIBLING module or an extern crate
-(`update`, `ole`, `exif`) shadows it for the whole hub - pick another name. Macro invocations (`thread_local!`) are not items and stay
+(`update`, `ole`, `exif`) shadows it for the whole hub - pick another name. A TUPLE struct's
+fields are not widened (`struct NamedTemp(PathBuf)` keeps its private `.0`); a sibling that
+reads one needs `pub(super)` on the field by hand. Macro invocations (`thread_local!`) are not items and stay
 behind - move them by hand. A child named like an extern crate (`exif`) shadows that crate
 for everything under it. Run rustfmt on hub and child afterwards.
 
