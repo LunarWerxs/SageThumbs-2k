@@ -399,13 +399,7 @@ impl BitWriter {
             self.acc = (self.acc << 1) | ((code >> i) & 1);
             self.nbits += 1;
             if self.nbits == 8 {
-                let b = (self.acc & 0xFF) as u8;
-                self.out.push(b);
-                if b == 0xFF {
-                    self.out.push(0x00); // byte-stuff
-                }
-                self.nbits = 0;
-                self.acc = 0;
+                self.emit_byte();
             }
         }
     }
@@ -415,14 +409,19 @@ impl BitWriter {
                 self.acc = (self.acc << 1) | 1; // pad with 1s
                 self.nbits += 1;
             }
-            let b = (self.acc & 0xFF) as u8;
-            self.out.push(b);
-            if b == 0xFF {
-                self.out.push(0x00);
-            }
-            self.nbits = 0;
-            self.acc = 0;
+            self.emit_byte();
         }
+    }
+    /// Pop the 8 buffered bits into `out` (byte-stuffing a 0x00 after 0xFF) and
+    /// reset the accumulator.
+    fn emit_byte(&mut self) {
+        let b = (self.acc & 0xFF) as u8;
+        self.out.push(b);
+        if b == 0xFF {
+            self.out.push(0x00); // byte-stuff
+        }
+        self.nbits = 0;
+        self.acc = 0;
     }
 }
 
@@ -611,9 +610,9 @@ fn parse_sof0(d: &[u8], i: usize) -> Option<(usize, usize, Vec<Comp>, usize)> {
     Some((width, height, comps, i + 2 + len))
 }
 
-/// Parse a DHT segment (may hold several tables) starting at `d[i]`, filling
-/// `huff[class][id]`. Returns the offset just past the segment.
-fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option<usize> {
+/// Validate the 2-byte length of the segment at `d[i]` and return its end
+/// offset plus the start of its payload (just past the length field).
+fn segment_bounds(d: &[u8], i: usize) -> Option<(usize, usize)> {
     let len = be16(d, i + 2);
     if len < 2 {
         return None;
@@ -622,7 +621,13 @@ fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option
     if end > d.len() {
         return None;
     }
-    let mut p = i + 4;
+    Some((end, i + 4))
+}
+
+/// Parse a DHT segment (may hold several tables) starting at `d[i]`, filling
+/// `huff[class][id]`. Returns the offset just past the segment.
+fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option<usize> {
+    let (end, mut p) = segment_bounds(d, i)?;
     while p < end {
         let tc = (d[p] >> 4) as usize;
         let th = (d[p] & 0xf) as usize;
@@ -644,15 +649,7 @@ fn parse_dht(d: &[u8], i: usize, huff: &mut [[Option<HuffDec>; 4]; 2]) -> Option
 /// `dqt`, kept parsed rather than verbatim so a rotate can transpose it.
 /// Returns the offset just past the segment.
 fn parse_dqt(d: &[u8], i: usize, dqt: &mut Vec<(u8, [u8; 64])>) -> Option<usize> {
-    let len = be16(d, i + 2);
-    if len < 2 {
-        return None;
-    }
-    let end = i + 2 + len;
-    if end > d.len() {
-        return None;
-    }
-    let mut p = i + 4;
+    let (end, mut p) = segment_bounds(d, i)?;
     while p + 65 <= end {
         if d[p] >> 4 != 0 {
             return None; // 16-bit quant table — unsupported
@@ -1314,11 +1311,8 @@ mod tests {
         Op::Transverse,
     ];
 
-    fn gray_jpeg() -> Vec<u8> {
-        let mut g = image::GrayImage::new(32, 24); // 8-aligned, single component
-        for (x, y, p) in g.enumerate_pixels_mut() {
-            *p = image::Luma([((x * 9 + y * 17 + (x ^ y)) % 256) as u8]);
-        }
+    /// Encode a gray image as a baseline JPEG in memory.
+    fn encode_gray_jpeg(g: image::GrayImage) -> Vec<u8> {
         let mut jpeg = Vec::new();
         image::DynamicImage::ImageLuma8(g)
             .write_to(
@@ -1327,6 +1321,14 @@ mod tests {
             )
             .unwrap();
         jpeg
+    }
+
+    fn gray_jpeg() -> Vec<u8> {
+        let mut g = image::GrayImage::new(32, 24); // 8-aligned, single component
+        for (x, y, p) in g.enumerate_pixels_mut() {
+            *p = image::Luma([((x * 9 + y * 17 + (x ^ y)) % 256) as u8]);
+        }
+        encode_gray_jpeg(g)
     }
 
     /// Hostile / truncated input must return None, never panic — `panic = "abort"`
@@ -1383,6 +1385,22 @@ mod tests {
         }
     }
 
+    /// Losslessly transform `jpeg`, then decode both the result and the
+    /// pixel-level reference `orig` rotated by `op`, asserting equal sizes.
+    /// `why` is the panic message when `op` is out of scope.
+    fn lossless_and_reference(
+        jpeg: &[u8],
+        orig: &image::DynamicImage,
+        op: Op,
+        why: &str,
+    ) -> (image::DynamicImage, image::DynamicImage) {
+        let out = transform(jpeg, op).expect(why);
+        let got = image::load_from_memory(&out).expect("decodes");
+        let want = img_apply(orig, op);
+        assert_eq!(got.dimensions(), want.dimensions());
+        (got, want)
+    }
+
     /// Transpose ops (rot-90/270) move coefficient positions, and the decoder's
     /// integer IDCT isn't transpose-symmetric — so vs a pixel-rotate it can differ
     /// by ±1 (jpegtran has the same artifact). Require the right DIRECTION and that
@@ -1392,10 +1410,7 @@ mod tests {
         let jpeg = gray_jpeg();
         let orig = image::load_from_memory(&jpeg).unwrap();
         for op in [Op::Rot90, Op::Rot270, Op::Transpose, Op::Transverse] {
-            let out = transform(&jpeg, op).expect("in scope");
-            let got = image::load_from_memory(&out).expect("decodes");
-            let want = img_apply(&orig, op);
-            assert_eq!(got.dimensions(), want.dimensions());
+            let (got, want) = lossless_and_reference(&jpeg, &orig, op, "in scope");
             let (g, w) = (got.to_luma8().into_raw(), want.to_luma8().into_raw());
             let maxd = g
                 .iter()
@@ -1556,10 +1571,8 @@ mod tests {
         let orig = image::load_from_memory(&jpeg).unwrap();
 
         for op in ALL {
-            let out = transform(&jpeg, op).expect("color transform should be in scope");
-            let got = image::load_from_memory(&out).expect("decodes");
-            let want = img_apply(&orig, op);
-            assert_eq!(got.dimensions(), want.dimensions());
+            let (got, want) =
+                lossless_and_reference(&jpeg, &orig, op, "color transform should be in scope");
             let (g, w) = (got.to_rgb8().into_raw(), want.to_rgb8().into_raw());
             let mad: f64 = g
                 .iter()
@@ -1609,13 +1622,7 @@ mod tests {
         for (x, y, p) in g.enumerate_pixels_mut() {
             *p = image::Luma([((x + y) % 256) as u8]);
         }
-        let mut jpeg = Vec::new();
-        image::DynamicImage::ImageLuma8(g)
-            .write_to(
-                &mut std::io::Cursor::new(&mut jpeg),
-                image::ImageFormat::Jpeg,
-            )
-            .unwrap();
+        let jpeg = encode_gray_jpeg(g);
         assert!(
             transform(&jpeg, Op::Rot90).is_none(),
             "non-aligned dims should bail"
