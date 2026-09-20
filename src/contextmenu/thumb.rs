@@ -46,13 +46,9 @@ static MENU_PREVIEW_SLOTS: [AtomicUsize; MAX_MENU_PREVIEW_WORKERS] =
 fn acquire_menu_preview_slot(now_ms: usize) -> Option<usize> {
     let expiry = now_ms.saturating_add(MENU_PREVIEW_LEASE_MS);
     for (i, slot) in MENU_PREVIEW_SLOTS.iter().enumerate() {
-        let held = slot.load(Ordering::Acquire);
         // Free, or the previous holder's lease has run out and we may take it over.
-        if (held == 0 || held <= now_ms)
-            && slot
-                .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        {
+        let claimed = crate::try_claim_slot!(slot, now_ms, expiry);
+        if claimed {
             return Some(i);
         }
     }

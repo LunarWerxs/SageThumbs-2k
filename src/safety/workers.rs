@@ -252,6 +252,30 @@ pub struct Lease {
     pub(super) expiry: u64,
 }
 
+/// Claim one lease slot for the window starting at `$now_ms`: `true` when `$slot` was free, or
+/// its previous holder's lease had expired at `$now_ms`, and this call's single compare-exchange
+/// put `$expiry` in its place; `false` means another holder's unexpired lease is still there.
+///
+/// A macro rather than a `fn` because the two pools it serves hold different atomic integer
+/// types - [`crate::safety::LeasePool`]'s `AtomicU64` and `contextmenu::thumb`'s `AtomicUsize`.
+/// `$slot` must be a plain place expression (`slot`), as it is read both for the load and by
+/// the compare-exchange.
+#[macro_export]
+macro_rules! try_claim_slot {
+    ($slot:expr, $now_ms:expr, $expiry:expr) => {{
+        let held = $slot.load(core::sync::atomic::Ordering::Acquire);
+        (held == 0 || held <= $now_ms)
+            && $slot
+                .compare_exchange(
+                    held,
+                    $expiry,
+                    core::sync::atomic::Ordering::AcqRel,
+                    core::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+    }};
+}
+
 impl<const N: usize> LeasePool<N> {
     /// `lease_ms` must be non-zero, or a slot claimed at time 0 would read as free.
     pub const fn new(lease_ms: u64) -> Self {
@@ -271,13 +295,9 @@ impl<const N: usize> LeasePool<N> {
     pub fn acquire_at(&'static self, now_ms: u64) -> Option<Lease> {
         let expiry = now_ms.saturating_add(self.lease_ms.max(1));
         for slot in &self.slots {
-            let held = slot.load(Ordering::Acquire);
             // Free, or the previous holder's lease has run out and may be taken over.
-            if (held == 0 || held <= now_ms)
-                && slot
-                    .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
+            let claimed = try_claim_slot!(slot, now_ms, expiry);
+            if claimed {
                 return Some(Lease { slot, expiry });
             }
         }
