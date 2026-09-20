@@ -641,14 +641,22 @@ fn is_dim_caption(id: i32) -> bool {
         || id == ID_P2_SUB
 }
 
+/// `WM_CREATE` shared by the small modal windows: resolve this module's `HINSTANCE` and
+/// hand it to `build`, or fail the message if that lookup fails.
+///
+/// # Safety
+/// Calls `build`, which receives and owns raw window handles.
+pub(crate) unsafe fn create_with(hwnd: HWND, build: unsafe fn(HWND, HINSTANCE)) -> LRESULT {
+    let Ok(module) = GetModuleHandleW(None) else {
+        return LRESULT(-1);
+    };
+    build(hwnd, module.into());
+    LRESULT(0)
+}
+
 /// `WM_CREATE`: build the dialog's controls.
 unsafe fn on_first_run_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return LRESULT(-1),
-    };
-    build(hwnd, hinst);
-    LRESULT(0)
+    create_with(hwnd, build)
 }
 
 /// `WM_COMMAND`: the Print-Screen sync checkbox and the OK/Next button.

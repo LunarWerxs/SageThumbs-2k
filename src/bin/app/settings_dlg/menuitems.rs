@@ -15,7 +15,6 @@
 
 use super::*;
 use crate::win::IDOK;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 // The Settings window, so the close path can hand the list back. Set for the popup's
 // lifetime only.
@@ -149,12 +148,7 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 }
 
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return LRESULT(-1),
-    };
-    build(hwnd, hinst);
-    LRESULT(0)
+    crate::first_run::create_with(hwnd, build)
 }
 
 unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
