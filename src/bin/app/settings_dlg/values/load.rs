@@ -49,20 +49,13 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
         ID_PDF_MARGIN,
         !matches!(settings::pdf_page(), sagethumbs2k_core::PdfPage::Tight),
     );
-    if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-        // Rows may be in a custom drag-reorder, so seed each ROW from its own key
-        // (via lParam), not by a fixed toggle index.
-        let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
-        for row in 0..count {
-            if let Some(ti) = menu_row_toggle(mlist, row) {
-                set_check(
-                    mlist,
-                    row,
-                    settings::menu_item_shown(MENU_ITEM_TOGGLES[ti].1),
-                );
-            }
-        }
-    }
+    for_each_menu_row(hwnd, |mlist, row, ti| {
+        set_check(
+            mlist,
+            row,
+            settings::menu_item_shown(MENU_ITEM_TOGGLES[ti].1),
+        )
+    });
     // The screenshot toggle reflects the live service state (an HKCU autostart
     // entry), not a SageThumbs2K DWORD — so it's read separately.
     check(hwnd, ID_SHOT_ENABLE, crate::screenshot::is_enabled());

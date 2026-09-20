@@ -126,20 +126,7 @@ pub(super) unsafe fn add_tooltips(hwnd: HWND, hinst: HINSTANCE) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, tip.0 as isize);
 
     // The fixed-text controls.
-    for &(id, key) in TOOLTIPS {
-        let Ok(ctl) = GetDlgItem(Some(hwnd), id) else {
-            continue;
-        };
-        // comctl32 copies the text on TTM_ADDTOOL, so this buffer can be temporary.
-        let text = wide(t(key));
-        let mut ti = tool_info(hwnd, ctl, &text, TTF_IDISHWND | TTF_SUBCLASS);
-        SendMessageW(
-            tip,
-            TTM_ADDTOOLW,
-            Some(WPARAM(0)),
-            Some(LPARAM(&mut ti as *mut _ as isize)),
-        );
-    }
+    send_fixed_tips(hwnd, tip, TTF_IDISHWND | TTF_SUBCLASS, TTM_ADDTOOLW);
     // The banner's hint rotates with the ad, so it pulls live text via a
     // TTN_GETDISPINFO callback (handled in WM_NOTIFY) instead of fixed text.
     if let Ok(banner) = GetDlgItem(Some(hwnd), ID_BANNER) {
@@ -168,15 +155,22 @@ pub(super) unsafe fn refresh_tooltips(hwnd: HWND) {
     if tip.is_invalid() {
         return;
     }
+    send_fixed_tips(hwnd, tip, TTF_IDISHWND, TTM_UPDATETIPTEXTW);
+}
+
+/// Send `msg` (`TTM_ADDTOOLW` to register, `TTM_UPDATETIPTEXTW` to re-text) to the tooltip
+/// window for every fixed-text control in `TOOLTIPS`, in the active language. comctl32
+/// copies the text on receipt, so the buffer is temporary.
+unsafe fn send_fixed_tips(hwnd: HWND, tip: HWND, flags: TOOLTIP_FLAGS, msg: u32) {
     for &(id, key) in TOOLTIPS {
         let Ok(ctl) = GetDlgItem(Some(hwnd), id) else {
             continue;
         };
         let text = wide(t(key));
-        let mut ti = tool_info(hwnd, ctl, &text, TTF_IDISHWND);
+        let mut ti = tool_info(hwnd, ctl, &text, flags);
         SendMessageW(
             tip,
-            TTM_UPDATETIPTEXTW,
+            msg,
             Some(WPARAM(0)),
             Some(LPARAM(&mut ti as *mut _ as isize)),
         );

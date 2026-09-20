@@ -90,6 +90,22 @@ pub(super) unsafe fn menu_row_toggle(list: HWND, row: i32) -> Option<usize> {
     (ti < MENU_ITEM_TOGGLES.len()).then_some(ti)
 }
 
+/// Call `f(list, row, toggle)` for every item row of the "Menu items" checklist, with the
+/// row's OWN toggle index (from its `lParam`): rows may be in a custom drag-reorder, so
+/// seeding or relabeling by a fixed toggle index would scramble them. Divider rows are
+/// skipped. No-op when the list does not exist.
+pub(super) unsafe fn for_each_menu_row(hwnd: HWND, mut f: impl FnMut(HWND, i32, usize)) {
+    let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) else {
+        return;
+    };
+    let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
+    for row in 0..count {
+        if let Some(ti) = menu_row_toggle(list, row) {
+            f(list, row, ti);
+        }
+    }
+}
+
 /// The raw `lParam` of a menu-list row (a toggle index, or `list::SEP_PARAM` for a
 /// divider row); `isize::MIN` if the row can't be read. Lets save distinguish divider
 /// rows from item rows after a drag-reorder.

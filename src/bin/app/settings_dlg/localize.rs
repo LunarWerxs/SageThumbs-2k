@@ -217,16 +217,9 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     }
     invalidate_control(hwnd, ID_PANE_HEADER);
     // The "Menu items" checklist rows relabel from their own menu keys (single col).
-    // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam —
-    // relabeling by fixed toggle index would scramble the labels after a reorder.
-    if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-        let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
-        for row in 0..count {
-            if let Some(ti) = menu_row_toggle(mlist, row) {
-                set_subitem(mlist, row, 0, t(MENU_ITEM_TOGGLES[ti].1));
-            }
-        }
-    }
+    for_each_menu_row(hwnd, |mlist, row, ti| {
+        set_subitem(mlist, row, 0, t(MENU_ITEM_TOGGLES[ti].1))
+    });
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
         // Columns are Extension | Category | How | Description (matching build_controls).
         // The old code relabeled column 1 with the *description* header (wrong index)
