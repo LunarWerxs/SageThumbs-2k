@@ -5,12 +5,9 @@
 //! `WTSAT_ARGB` the color channels must be premultiplied by alpha. A negative
 //! `biHeight` makes the bitmap top-down (positive would render upside-down).
 
-use core::ffi::c_void;
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
-use windows::Win32::Graphics::Gdi::{
-    CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP,
-};
+use windows::Win32::Graphics::Gdi::HBITMAP;
 
 /// `rgba` is straight (non-premultiplied) RGBA8, row-major, top row first,
 /// `width * height * 4` bytes. Returns an owned `HBITMAP`; on the success path
@@ -32,20 +29,7 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
         return Err(Error::from(E_FAIL));
     }
 
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-    let mut bits: *mut c_void = core::ptr::null_mut();
-    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
-    if bits.is_null() {
-        let _ = DeleteObject(hbmp.into());
-        return Err(Error::from(E_FAIL));
-    }
+    let (hbmp, bits) = crate::safety::create_dib_section(width, height)?;
 
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, total_bytes);
     for i in 0..px {

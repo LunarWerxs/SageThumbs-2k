@@ -121,13 +121,7 @@ unsafe fn make_dib_hinted(
 /// makes the intermediate `StretchBlt` in [`paint_image`] filter correctly, since premultiplied
 /// channels are linearly interpolatable and straight ones are not.
 pub(crate) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<RenderData> {
-    if iw <= 0 || ih <= 0 {
-        return None;
-    }
-    let px = (iw as usize).checked_mul(ih as usize)?;
-    if rgba.len() < px.checked_mul(4)? {
-        return None;
-    }
+    let px = sagethumbs2k_core::safety::checked_pixel_count(iw, ih, rgba)?;
     let has_alpha = !all_opaque(rgba, px);
     if !has_alpha {
         // The opacity question is already answered — hand it down rather than let `make_dib`
@@ -135,20 +129,7 @@ pub(crate) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Opti
         return make_dib_hinted(iw, ih, rgba, bg, Some(true))
             .map(|h| RenderData::opaque(h, iw, ih));
     }
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = iw;
-    bmi.bmiHeader.biHeight = -ih; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-    let mut bits: *mut c_void = core::ptr::null_mut();
-    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    if bits.is_null() {
-        let _ = DeleteObject(hbmp.into());
-        return None;
-    }
+    let (hbmp, bits) = sagethumbs2k_core::safety::create_dib_section(iw, ih).ok()?;
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
     for i in 0..px {
         let a = rgba[i * 4 + 3] as u32;

@@ -192,6 +192,45 @@ pub fn apps_use_dark_theme() -> bool {
         .unwrap_or(false)
 }
 
+/// Validate a straight RGBA buffer for `iw`x`ih` pixels and return its pixel count, or `None`
+/// when a dimension is not positive or `rgba` is shorter than `iw * ih` RGBA pixels.
+pub fn checked_pixel_count(iw: i32, ih: i32, rgba: &[u8]) -> Option<usize> {
+    if iw <= 0 || ih <= 0 {
+        return None;
+    }
+    let px = (iw as usize).checked_mul(ih as usize)?;
+    if rgba.len() < px.checked_mul(4)? {
+        return None;
+    }
+    Some(px)
+}
+
+/// Create the empty top-down 32bpp `BI_RGB` DIB section `iw`x`ih` the DIB builders in this
+/// workspace write their pixels into, returning its bitmap and its (still uninitialised) pixel
+/// bytes. The dimensions are trusted to be positive, so validate them first (see
+/// [`checked_pixel_count`]).
+///
+/// # Safety
+/// Calls into GDI (`CreateDIBSection`), so this must run with a valid GDI/thread context, and
+/// the caller owns the returned `HBITMAP` — it must eventually `DeleteObject` it.
+pub unsafe fn create_dib_section(iw: i32, ih: i32) -> Result<(HBITMAP, *mut c_void)> {
+    let mut bmi = BITMAPINFO::default();
+    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = iw;
+    bmi.bmiHeader.biHeight = -ih; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = 0; // BI_RGB
+
+    let mut bits: *mut c_void = core::ptr::null_mut();
+    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;
+    if bits.is_null() {
+        let _ = DeleteObject(hbmp.into());
+        return Err(Error::from(E_FAIL));
+    }
+    Ok((hbmp, bits))
+}
+
 /// Build a top-down 32bpp DIB of `rgba` (straight, non-premultiplied) composited over the
 /// opaque `bg` (`COLORREF` 0x00BBGGRR), so painting is a plain `StretchBlt`. `None` on a
 /// malformed size / allocation failure — never panics on attacker-controlled dims, which
@@ -222,27 +261,8 @@ pub unsafe fn composite_rgba_over_bg(
     bg: u32,
     opaque: Option<bool>,
 ) -> Option<HBITMAP> {
-    if iw <= 0 || ih <= 0 {
-        return None;
-    }
-    let px = (iw as usize).checked_mul(ih as usize)?;
-    if rgba.len() < px.checked_mul(4)? {
-        return None;
-    }
-    let mut bmi = BITMAPINFO::default();
-    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = iw;
-    bmi.bmiHeader.biHeight = -ih; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-    let mut bits: *mut c_void = core::ptr::null_mut();
-    let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    if bits.is_null() {
-        _ = DeleteObject(hbmp.into());
-        return None;
-    }
+    let px = checked_pixel_count(iw, ih, rgba)?;
+    let (hbmp, bits) = create_dib_section(iw, ih).ok()?;
     let (bg_r, bg_g, bg_b) = (bg & 0xFF, (bg >> 8) & 0xFF, (bg >> 16) & 0xFF);
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
     // "Opaque pixels copy through" was true of the arithmetic and false of the cost: the loop
