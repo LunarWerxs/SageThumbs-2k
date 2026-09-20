@@ -435,3 +435,96 @@ pub(crate) unsafe fn run_shot_preview(
 ) -> bool {
     shot::run_shot(hinst, dark, out, opts)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Below a millisecond the number is shown verbatim, so the calibration line never reads
+    /// "0.0 ms" for a workload that did, in fact, take 300 us.
+    #[test]
+    fn fmt_us_formats_below_a_millisecond_in_microseconds() {
+        assert_eq!(fmt_us(0), "0 us");
+        assert_eq!(fmt_us(999), "999 us");
+    }
+
+    #[test]
+    fn fmt_us_switches_to_milliseconds_at_exactly_one_millisecond() {
+        assert_eq!(fmt_us(1_000), "1.0 ms");
+        // Just under the next cut-off still prints in ms (rounded), never in seconds.
+        assert_eq!(fmt_us(999_999), "1000.0 ms");
+    }
+
+    #[test]
+    fn fmt_us_switches_to_seconds_at_exactly_one_second() {
+        assert_eq!(fmt_us(1_000_000), "1.00 s");
+        assert_eq!(fmt_us(1_500_000), "1.50 s");
+    }
+
+    /// A sender that copies the wide string including its terminator must not leave a stray NUL
+    /// on the path — a path with a NUL in it matches no file, so the viewer would clear itself.
+    #[test]
+    fn parse_command_trims_the_trailing_nul_of_a_payload() {
+        let mut wide: Vec<u16> = "C:\\pic.jpg".encode_utf16().collect();
+        wide.push(0);
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: (wide.len() * 2) as u32,
+            lpData: wide.as_ptr() as *mut c_void,
+        };
+        let (cmd, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(cmd, CMD_SET_PATH);
+        assert_eq!(path.as_deref(), Some("C:\\pic.jpg"));
+    }
+
+    /// `cbData == 0` is a command carrying no path (CMD_CLOSE); reading it as an empty string
+    /// would make a close look like a switch to a blank document.
+    #[test]
+    fn parse_command_treats_an_empty_payload_as_no_path() {
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_CLOSE,
+            cbData: 0,
+            lpData: core::ptr::null_mut(),
+        };
+        let (cmd, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(cmd, CMD_CLOSE);
+        assert_eq!(path, None);
+    }
+
+    /// The size cap is the untrusted-input defence: `WM_COPYDATA` is receivable from any
+    /// same-desktop process, so a bogus/huge `cbData` must be refused rather than drive a giant
+    /// allocation. 64 KiB (inclusive) is the documented ceiling.
+    #[test]
+    fn parse_command_refuses_a_payload_over_the_size_cap() {
+        let wide: Vec<u16> = "C:\\pic.jpg".encode_utf16().collect();
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: 0x10001,
+            lpData: wide.as_ptr() as *mut c_void,
+        };
+        let (_, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn parse_command_refuses_a_null_data_pointer() {
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: 16,
+            lpData: core::ptr::null_mut(),
+        };
+        let (_, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(path, None);
+    }
+
+    /// A malformed sender can hand us a null `LPARAM`; that must read as "no command" rather than
+    /// be dereferenced as a COPYDATASTRUCT.
+    #[test]
+    fn parse_command_reads_a_null_lparam_as_no_command() {
+        assert_eq!(unsafe { parse_command(LPARAM(0)) }, None);
+    }
+}
