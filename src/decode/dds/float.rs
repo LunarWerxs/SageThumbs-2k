@@ -79,26 +79,36 @@ pub(super) fn half_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
-pub(super) fn half_rgb32f(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [f32]) {
+/// Walk an `n`-channel float pixel stream of `bpc` bytes per channel and expand
+/// each pixel to linear RGB32F, decoding one channel's `bpc` bytes with `decode`.
+fn channels_rgb32f(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    channels: u8,
+    bpc: usize,
+    out: &mut [f32],
+    mut decode: impl FnMut(&[u8]) -> f32,
+) {
     let n = channels as usize;
-    each_pixel(src, width as usize * height as usize, n * 2, |i, px| {
+    each_pixel(src, width as usize * height as usize, n * bpc, |i, px| {
         let mut c = [0f32; 3];
         for (k, slot) in c.iter_mut().enumerate().take(n.min(3)) {
-            *slot = half_to_f32(u16::from_le_bytes([px[k * 2], px[k * 2 + 1]]));
+            *slot = decode(&px[k * bpc..k * bpc + bpc]);
         }
         write_rgb(out, i, n, c);
     });
 }
 
+pub(super) fn half_rgb32f(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [f32]) {
+    channels_rgb32f(src, width, height, channels, 2, out, |b| {
+        half_to_f32(u16::from_le_bytes([b[0], b[1]]))
+    });
+}
+
 pub(super) fn float_rgb32f(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [f32]) {
-    let n = channels as usize;
-    each_pixel(src, width as usize * height as usize, n * 4, |i, px| {
-        let mut c = [0f32; 3];
-        for (k, slot) in c.iter_mut().enumerate().take(n.min(3)) {
-            let b = &px[k * 4..k * 4 + 4];
-            *slot = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-        }
-        write_rgb(out, i, n, c);
+    channels_rgb32f(src, width, height, channels, 4, out, |b| {
+        f32::from_le_bytes([b[0], b[1], b[2], b[3]])
     });
 }
 
