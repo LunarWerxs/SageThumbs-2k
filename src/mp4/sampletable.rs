@@ -11,6 +11,19 @@ pub(super) fn stts_target(p: &[u8], fraction: f64) -> Option<(u64, u64)> {
         return None;
     }
     // Pass 1: total running time + total sample count.
+    let (total_time, total_samples) = stts_totals(p, n)?;
+    if total_time == 0 || total_samples == 0 {
+        return None;
+    }
+    let target = (total_time as f64 * fraction.clamp(0.0, 0.95)) as u64;
+
+    // Pass 2: locate the sample whose presentation window contains `target`.
+    stts_locate(p, n, target, total_samples)
+}
+
+/// Pass 1 of `stts_target`: sum the per-run `count*delta` running time and the total sample
+/// count over `n` `stts` runs, or `None` on a truncated run header or arithmetic overflow.
+fn stts_totals(p: &[u8], n: usize) -> Option<(u64, u64)> {
     let mut total_time = 0u64;
     let mut total_samples = 0u64;
     for i in 0..n {
@@ -19,12 +32,12 @@ pub(super) fn stts_target(p: &[u8], fraction: f64) -> Option<(u64, u64)> {
         total_time = total_time.checked_add(count.checked_mul(delta)?)?;
         total_samples = total_samples.checked_add(count)?;
     }
-    if total_time == 0 || total_samples == 0 {
-        return None;
-    }
-    let target = (total_time as f64 * fraction.clamp(0.0, 0.95)) as u64;
+    Some((total_time, total_samples))
+}
 
-    // Pass 2: locate the sample whose presentation window contains `target`.
+/// Pass 2 of `stts_target`: the decoding-order sample whose presentation window contains `target`
+/// as `(sample_index, delta)`, clamping to the last sample when `target` runs past the end.
+fn stts_locate(p: &[u8], n: usize, target: u64, total_samples: u64) -> Option<(u64, u64)> {
     let mut sample = 0u64;
     let mut elapsed = 0u64;
     let mut last_delta = 1u64;
