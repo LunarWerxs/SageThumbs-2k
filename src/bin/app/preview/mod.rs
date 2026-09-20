@@ -292,6 +292,24 @@ fn bench_prepare(
     Some((files, hwnd, out))
 }
 
+/// The mash/nav benches' prologue: the report sink, the viewer and the report buffer, ready to
+/// start driving keys into `hwnd`. `None` means the viewer would not start, and the reason has
+/// already gone to the report file.
+#[allow(
+    clippy::type_complexity,
+    reason = "one setup tuple, destructured once by each of the three benches"
+)]
+fn bench_start(
+    hinst: HINSTANCE,
+    dir: &str,
+    tag: &str,
+    out_name: &str,
+) -> Option<(impl Fn(&str), Vec<std::path::PathBuf>, HWND, String)> {
+    let flush = bench_output(4, out_name);
+    let (files, hwnd, out) = bench_prepare(hinst, dir, tag, &flush)?;
+    Some((flush, files, hwnd, out))
+}
+
 /// `--bench-preview <dir>`: measure what a ←/→ step actually costs.
 ///
 /// Runs the viewer's REAL decode entry point (`content::bench_decode_uncached`, the same
@@ -433,11 +451,11 @@ pub(crate) fn run_bench(dir: &str) {
 ///
 /// Set `ST2K_NO_CANCEL=1` to measure the same binary with abandonment switched off.
 pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
-    let flush = bench_output(4, "st2k-mashbench.txt");
-    let Some(start) = bench_prepare(hinst, dir, "bench-mash", &flush) else {
+    let Some((flush, files, hwnd, mut out)) =
+        bench_start(hinst, dir, "bench-mash", "st2k-mashbench.txt")
+    else {
         return;
     };
-    let (files, hwnd, mut out) = start;
     let _ = writeln!(
         out,
         "cancellation: {}",
@@ -513,11 +531,11 @@ pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
 
 /// so this needs no desktop, steals no focus, and runs unattended.
 pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
-    let flush = bench_output(4, "st2k-navbench.txt");
-    let Some(start) = bench_prepare(hinst, dir, "bench-nav", &flush) else {
+    let Some((flush, files, hwnd, mut out)) =
+        bench_start(hinst, dir, "bench-nav", "st2k-navbench.txt")
+    else {
         return;
     };
-    let (files, hwnd, mut out) = start;
     let _ = writeln!(out, "{}\n", load_snapshot());
     let _ = writeln!(
         out,
