@@ -185,6 +185,40 @@ unsafe fn draw_check_glyph(
     });
 }
 
+/// Track fill + border colours for a toggle switch. Disabled: the pill keeps its SHAPE and
+/// knob position (you can still read what the setting is set to) but loses the accent, so it
+/// stops inviting a click. Until the badge style row landed no switch on this dialog was ever
+/// a dependent, which is why this had never been drawn — a disabled switch was simply
+/// indistinguishable from a live one.
+fn switch_track_colors(on: bool, active: bool, disabled: bool) -> (COLORREF, COLORREF) {
+    if disabled {
+        if on {
+            (BORDER_STRONG(), BORDER_STRONG())
+        } else {
+            (CHECK_BG(), BORDER())
+        }
+    } else if on {
+        (ACCENT(), if active { ACCENT_HOT() } else { ACCENT() })
+    } else {
+        (CHECK_BG(), if active { ACCENT() } else { BORDER_STRONG() })
+    }
+}
+
+/// Knob colour for a toggle switch: dimmed when disabled, else the accent/negation pair.
+fn switch_knob_color(on: bool, disabled: bool) -> COLORREF {
+    if disabled {
+        if on {
+            BTN_FACE()
+        } else {
+            BORDER()
+        }
+    } else if on {
+        ON_ACCENT()
+    } else {
+        BORDER_STRONG()
+    }
+}
+
 /// A Win11-style toggle SWITCH (the v3 look): a pill track at the control's RIGHT
 /// edge — accent fill + knob-right when on, outlined track + knob-left when off —
 /// with the label filling the row to its left. The control stays a BS_AUTOCHECKBOX,
@@ -204,37 +238,13 @@ unsafe fn draw_switch_glyph(
     disabled: bool,
 ) {
     let y = top + (bottom - top - h) / 2;
-    // Disabled: the pill keeps its SHAPE and knob position (you can still read what the
-    // setting is set to) but loses the accent, so it stops inviting a click. Until the badge
-    // style row landed no switch on this dialog was ever a dependent, which is why this had
-    // never been drawn — a disabled switch was simply indistinguishable from a live one.
-    let (track_fill, track_border) = if disabled {
-        if on {
-            (BORDER_STRONG(), BORDER_STRONG())
-        } else {
-            (CHECK_BG(), BORDER())
-        }
-    } else if on {
-        (ACCENT(), if active { ACCENT_HOT() } else { ACCENT() })
-    } else {
-        (CHECK_BG(), if active { ACCENT() } else { BORDER_STRONG() })
-    };
+    let (track_fill, track_border) = switch_track_colors(on, active, disabled);
     // Knob: a filled circle that sits left (off) or right (on).
     let pad = s(hwnd, 3);
     let kd = h - pad * 2;
     let ky = y + pad;
     let kx = if on { x + w - kd - pad } else { x + pad };
-    let knob = if disabled {
-        if on {
-            BTN_FACE()
-        } else {
-            BORDER()
-        }
-    } else if on {
-        ON_ACCENT()
-    } else {
-        BORDER_STRONG()
-    };
+    let knob = switch_knob_color(on, disabled);
     let bw = s(hwnd, 1).max(1);
     gdip::with_aa(hdc, |g| {
         // Pill track: a rounded-rect fill (radius == half-height → full pill) plus a hairline
@@ -307,6 +317,58 @@ unsafe fn draw_checkbox(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     CDRF_SKIPDEFAULT as isize
 }
 
+/// Hover/press shading for a solid-accent button face.
+fn accent_shade(pressed: bool, hot: bool) -> COLORREF {
+    if pressed {
+        ACCENT_PRESS()
+    } else if hot {
+        ACCENT_HOT()
+    } else {
+        ACCENT()
+    }
+}
+
+/// Hover/press shading for a plain (outlined) button face.
+fn btn_face_shade(pressed: bool, hot: bool) -> COLORREF {
+    if pressed {
+        BTN_FACE_PRESS()
+    } else if hot {
+        BTN_FACE_HOT()
+    } else {
+        BTN_FACE()
+    }
+}
+
+/// Face/border/text colours for a push button: greyed when disabled, solid accent for the
+/// primary actions, an outlined dark face for the rest, with hover/press shading.
+fn pushbutton_colors(
+    disabled: bool,
+    accent: bool,
+    pressed: bool,
+    hot: bool,
+    focus: bool,
+) -> (COLORREF, COLORREF, COLORREF) {
+    if disabled {
+        // Greyed (flat face, dim border + text) — e.g. Restart hotkey service while the
+        // hotkey is off. Native Win32 greys disabled buttons; our owner-draw must too.
+        (BTN_FACE(), BORDER(), DISABLED_TEXT())
+    } else if accent {
+        let f = accent_shade(pressed, hot);
+        (f, f, ON_ACCENT())
+    } else {
+        let f = btn_face_shade(pressed, hot);
+        (
+            f,
+            if hot || focus {
+                BORDER_STRONG()
+            } else {
+                BORDER()
+            },
+            DARK_TEXT(),
+        )
+    }
+}
+
 /// A rounded push button: solid accent for the primary actions (Select all /
 /// Save), an outlined dark face for the rest, with hover/press shading.
 unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
@@ -328,37 +390,7 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
 
     fill(hdc, &rc, DARK_BG());
 
-    let (face, border, text) = if disabled {
-        // Greyed (flat face, dim border + text) — e.g. Restart hotkey service while the
-        // hotkey is off. Native Win32 greys disabled buttons; our owner-draw must too.
-        (BTN_FACE(), BORDER(), DISABLED_TEXT())
-    } else if accent {
-        let f = if pressed {
-            ACCENT_PRESS()
-        } else if hot {
-            ACCENT_HOT()
-        } else {
-            ACCENT()
-        };
-        (f, f, ON_ACCENT())
-    } else {
-        let f = if pressed {
-            BTN_FACE_PRESS()
-        } else if hot {
-            BTN_FACE_HOT()
-        } else {
-            BTN_FACE()
-        };
-        (
-            f,
-            if hot || focus {
-                BORDER_STRONG()
-            } else {
-                BORDER()
-            },
-            DARK_TEXT(),
-        )
-    };
+    let (face, border, text) = pushbutton_colors(disabled, accent, pressed, hot, focus);
     let rad = s(hwnd, 8);
     let inset = s(hwnd, 1);
     let bw = s(hwnd, 1).max(1);
@@ -389,81 +421,95 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
     CDRF_SKIPDEFAULT as isize
 }
 
+/// Row background colour for the format list: accent selection, else zebra striping.
+fn list_row_bg(selected: bool, row: i32) -> COLORREF {
+    if selected {
+        SEL_BG()
+    } else if row % 2 == 1 {
+        ZEBRA()
+    } else {
+        SURFACE()
+    }
+}
+
+/// Text colour for a format-list subitem: the extension column in accent, the category
+/// column muted, the description in the default text colour.
+fn list_subitem_text(i_subitem: i32) -> COLORREF {
+    match i_subitem {
+        0 => ACCENT_TEXT(), // extension (.jpg …) in accent
+        1 => HEADER_TEXT(), // category, muted
+        _ => DARK_TEXT(),   // description
+    }
+}
+
+/// Format-list `CDDS_ITEMPREPAINT` for a whole row: zebra/selection background, then ask
+/// for a subitem pass and a post-paint pass (to restyle the row's checkbox).
+unsafe fn list_item_prepaint(lv: &mut NMLVCUSTOMDRAW) -> isize {
+    let row = lv.nmcd.dwItemSpec as i32;
+    let selected = (lv.nmcd.uItemState.0 & CDIS_SELECTED.0) != 0;
+    lv.clrTextBk = list_row_bg(selected, row);
+    lv.clrText = DARK_TEXT();
+    (CDRF_NOTIFYSUBITEMDRAW | CDRF_NOTIFYPOSTPAINT) as isize
+}
+
+/// Format-list `CDDS_ITEMPOSTPAINT`: replace the native square system-accent checkbox with
+/// our rounded accent glyph, so the per-row switch matches the panel checkboxes.
+unsafe fn list_item_postpaint(lv: &mut NMLVCUSTOMDRAW) {
+    let list = lv.nmcd.hdr.hwndFrom;
+    let hdc = lv.nmcd.hdc;
+    let row = lv.nmcd.dwItemSpec as i32;
+    let selected = (lv.nmcd.uItemState.0 & CDIS_SELECTED.0) != 0;
+    let bg = list_row_bg(selected, row);
+    let mut rr = RECT {
+        left: 0, /* LVIR_BOUNDS */
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_GETITEMRECT,
+        Some(WPARAM(row as usize)),
+        Some(LPARAM(&mut rr as *mut _ as isize)),
+    );
+    // Erase the native checkbox gutter, then draw ours centered in it.
+    let gutter = RECT {
+        left: rr.left,
+        top: rr.top,
+        right: rr.left + s(list, 20),
+        bottom: rr.bottom,
+    };
+    fill(hdc, &gutter, bg);
+    let on = is_checked(list, row);
+    draw_check_glyph(
+        list,
+        hdc,
+        rr.left + s(list, 4),
+        rr.top,
+        rr.bottom,
+        s(list, 14),
+        s(list, 4),
+        on,
+        false,
+    );
+}
+
 /// Format-list custom draw: zebra rows, an accent selection, an accent extension
 /// column and a muted category column. (The per-row checkbox glyph is still the
 /// control's — it's the enable/disable switch for each format.)
 pub(super) unsafe fn draw_list_item(p: *mut NMLVCUSTOMDRAW) -> isize {
     let lv = &mut *p;
-    let list = lv.nmcd.hdr.hwndFrom;
     let stage = lv.nmcd.dwDrawStage.0;
     if stage == CDDS_PREPAINT.0 {
         return CDRF_NOTIFYITEMDRAW as isize;
     }
     if stage == CDDS_ITEMPREPAINT.0 {
-        let row = lv.nmcd.dwItemSpec as i32;
-        let selected = (lv.nmcd.uItemState.0 & CDIS_SELECTED.0) != 0;
-        lv.clrTextBk = if selected {
-            SEL_BG()
-        } else if row % 2 == 1 {
-            ZEBRA()
-        } else {
-            SURFACE()
-        };
-        lv.clrText = DARK_TEXT();
-        // Also want a post-paint pass to restyle the row's checkbox.
-        return (CDRF_NOTIFYSUBITEMDRAW | CDRF_NOTIFYPOSTPAINT) as isize;
+        return list_item_prepaint(lv);
     }
     if stage == (CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0) {
-        lv.clrText = match lv.iSubItem {
-            0 => ACCENT_TEXT(), // extension (.jpg …) in accent
-            1 => HEADER_TEXT(), // category, muted
-            _ => DARK_TEXT(),   // description
-        };
+        lv.clrText = list_subitem_text(lv.iSubItem);
         return CDRF_NEWFONT as isize;
     }
     if stage == CDDS_ITEMPOSTPAINT.0 {
-        // Replace the native square system-accent checkbox with our rounded
-        // accent glyph, so the per-row switch matches the panel checkboxes.
-        let hdc = lv.nmcd.hdc;
-        let row = lv.nmcd.dwItemSpec as i32;
-        let selected = (lv.nmcd.uItemState.0 & CDIS_SELECTED.0) != 0;
-        let bg = if selected {
-            SEL_BG()
-        } else if row % 2 == 1 {
-            ZEBRA()
-        } else {
-            SURFACE()
-        };
-        let mut rr = RECT {
-            left: 0, /* LVIR_BOUNDS */
-            ..Default::default()
-        };
-        SendMessageW(
-            list,
-            LVM_GETITEMRECT,
-            Some(WPARAM(row as usize)),
-            Some(LPARAM(&mut rr as *mut _ as isize)),
-        );
-        // Erase the native checkbox gutter, then draw ours centered in it.
-        let gutter = RECT {
-            left: rr.left,
-            top: rr.top,
-            right: rr.left + s(list, 20),
-            bottom: rr.bottom,
-        };
-        fill(hdc, &gutter, bg);
-        let on = is_checked(list, row);
-        draw_check_glyph(
-            list,
-            hdc,
-            rr.left + s(list, 4),
-            rr.top,
-            rr.bottom,
-            s(list, 14),
-            s(list, 4),
-            on,
-            false,
-        );
+        list_item_postpaint(lv);
         return CDRF_DODEFAULT as isize;
     }
     CDRF_DODEFAULT as isize
@@ -523,6 +569,23 @@ pub(super) unsafe fn draw_rounded_panel(
     });
 }
 
+/// Frame each visible control in `ids` with a rounded panel whose top/bottom pads are
+/// `iy_top`/`iy_bottom`: skips hidden controls (a left-column field scrolled out of the
+/// viewport is SW_HIDE'd, and drawing its panel anyway leaks a faint rounded rect below the
+/// clip mask) and follows each control's enabled state for the fill colour.
+unsafe fn frame_visible_fields(hwnd: HWND, hdc: HDC, ids: &[i32], iy_top: i32, iy_bottom: i32) {
+    let enabled =
+        |c: HWND| windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(c).as_bool();
+    for &id in ids {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            if IsWindowVisible(c).as_bool() {
+                let fill_c = crate::dark::field_fill(enabled(c));
+                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, iy_top, iy_bottom);
+            }
+        }
+    }
+}
+
 /// Paint the dialog "chrome": the rounded file-list card + the rounded input /
 /// dropdown fields (behind their controls), then the column + footer hairlines.
 pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
@@ -550,37 +613,14 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     // A frame's fill follows its control's ENABLED state (`field_fill`), the same answer the
     // control gives for its own interior - a white frame round a greyed edit is two colours
     // for one field.
-    let enabled =
-        |c: HWND| windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(c).as_bool();
     let (edit_ids, combo_ids) = navrail::pair_field_ids();
-    for id in edit_ids {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            if IsWindowVisible(c).as_bool() {
-                let fill_c = crate::dark::field_fill(enabled(c));
-                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 6, 2);
-            }
-        }
-    }
+    frame_visible_fields(hwnd, hdc, &edit_ids, 6, 2);
     // The full-width TEXT edits (the format filter, the licence key) are the same 18px edit,
     // but hold a sentence rather than digits — so they want the symmetric-looking 5/3 (ink
     // dead centre in a 26px frame), not the digit bias above. Matches the settings-wide search
     // box in the header. Derived from the rows for the reason the Pair lists are.
-    for id in navrail::wide_edit_ids() {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            if IsWindowVisible(c).as_bool() {
-                let fill_c = crate::dark::field_fill(enabled(c));
-                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 5, 3);
-            }
-        }
-    }
-    for id in combo_ids {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            if IsWindowVisible(c).as_bool() {
-                let fill_c = crate::dark::field_fill(enabled(c));
-                draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, 2, 2);
-            }
-        }
-    }
+    frame_visible_fields(hwnd, hdc, &navrail::wide_edit_ids(), 5, 3);
+    frame_visible_fields(hwnd, hdc, &combo_ids, 2, 2);
     // (The horizontal rule above the banner is drawn by the left mask's owner-draw.)
 }
 
@@ -588,6 +628,77 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
 /// face with the theme-aware palette).
 pub(super) unsafe fn dark_combo_subclass(combo: HWND, id: i32) {
     let _ = SetWindowSubclass(combo, Some(combo_subclass), id as usize, 0);
+}
+
+/// Owner-draw the closed combo face: a flat dark fill (matching the rounded field frame
+/// behind it), the current selection text, and our own chevron.
+unsafe fn combo_paint(h: HWND) -> LRESULT {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(h, &mut ps);
+    let mut rc = RECT::default();
+    let _ = GetClientRect(h, &mut rc);
+    // Dim the fill, text + chevron when the combo is disabled (e.g. the quick-save
+    // picker while "instant screenshot" is off). Native Win32 greys a disabled
+    // combo automatically; our owner-draw must do it explicitly.
+    let enabled = windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(h).as_bool();
+    fill(hdc, &rc, crate::dark::field_fill(enabled));
+    let text_col = if enabled {
+        DARK_TEXT()
+    } else {
+        DISABLED_TEXT()
+    };
+    let chevron_col = if enabled {
+        HEADER_TEXT()
+    } else {
+        DISABLED_TEXT()
+    };
+    let bw = s(h, 18); // reserved chevron column on the right
+
+    // Current selection text, left-aligned.
+    let sel = SendMessageW(h, CB_GETCURSEL, None, None).0;
+    if sel >= 0 {
+        let len = SendMessageW(h, CB_GETLBTEXTLEN, Some(WPARAM(sel as usize)), None).0;
+        if len > 0 {
+            let mut buf = vec![0u16; len as usize + 1];
+            SendMessageW(
+                h,
+                CB_GETLBTEXT,
+                Some(WPARAM(sel as usize)),
+                Some(LPARAM(buf.as_mut_ptr() as isize)),
+            );
+            SelectObject(hdc, HGDIOBJ(gui_font_for(h).0));
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, text_col);
+            let mut tr = RECT {
+                left: rc.left + s(h, 9),
+                top: rc.top,
+                right: rc.right - bw,
+                bottom: rc.bottom,
+            };
+            DrawTextW(
+                hdc,
+                &mut buf[..len as usize],
+                &mut tr,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+        }
+    }
+
+    // Chevron, centered in the reserved column.
+    let cx = rc.right - bw / 2;
+    let cy = (rc.top + rc.bottom) / 2;
+    let d = s(h, 3);
+    gdip::with_aa(hdc, |g| {
+        let p = gdip::pen_round(chevron_col, s(h, 2).max(1));
+        gdip::polyline(
+            g,
+            p,
+            &[(cx - d, cy - d / 2), (cx, cy + d / 2), (cx + d, cy - d / 2)],
+        );
+        gdip::drop_pen(p);
+    });
+    let _ = EndPaint(h, &ps);
+    LRESULT(0)
 }
 
 /// A CBS_DROPDOWNLIST combo's themed dark paint still leaves a light inner edit
@@ -608,72 +719,7 @@ unsafe extern "system" fn combo_subclass(
             let _ = RemoveWindowSubclass(h, Some(combo_subclass), uid);
         }
         WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(h, &mut ps);
-            let mut rc = RECT::default();
-            let _ = GetClientRect(h, &mut rc);
-            // Dim the fill, text + chevron when the combo is disabled (e.g. the quick-save
-            // picker while "instant screenshot" is off). Native Win32 greys a disabled
-            // combo automatically; our owner-draw must do it explicitly.
-            let enabled = windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(h).as_bool();
-            fill(hdc, &rc, crate::dark::field_fill(enabled));
-            let text_col = if enabled {
-                DARK_TEXT()
-            } else {
-                DISABLED_TEXT()
-            };
-            let chevron_col = if enabled {
-                HEADER_TEXT()
-            } else {
-                DISABLED_TEXT()
-            };
-            let bw = s(h, 18); // reserved chevron column on the right
-
-            // Current selection text, left-aligned.
-            let sel = SendMessageW(h, CB_GETCURSEL, None, None).0;
-            if sel >= 0 {
-                let len = SendMessageW(h, CB_GETLBTEXTLEN, Some(WPARAM(sel as usize)), None).0;
-                if len > 0 {
-                    let mut buf = vec![0u16; len as usize + 1];
-                    SendMessageW(
-                        h,
-                        CB_GETLBTEXT,
-                        Some(WPARAM(sel as usize)),
-                        Some(LPARAM(buf.as_mut_ptr() as isize)),
-                    );
-                    SelectObject(hdc, HGDIOBJ(gui_font_for(h).0));
-                    SetBkMode(hdc, TRANSPARENT);
-                    SetTextColor(hdc, text_col);
-                    let mut tr = RECT {
-                        left: rc.left + s(h, 9),
-                        top: rc.top,
-                        right: rc.right - bw,
-                        bottom: rc.bottom,
-                    };
-                    DrawTextW(
-                        hdc,
-                        &mut buf[..len as usize],
-                        &mut tr,
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
-                    );
-                }
-            }
-
-            // Chevron, centered in the reserved column.
-            let cx = rc.right - bw / 2;
-            let cy = (rc.top + rc.bottom) / 2;
-            let d = s(h, 3);
-            gdip::with_aa(hdc, |g| {
-                let p = gdip::pen_round(chevron_col, s(h, 2).max(1));
-                gdip::polyline(
-                    g,
-                    p,
-                    &[(cx - d, cy - d / 2), (cx, cy + d / 2), (cx + d, cy - d / 2)],
-                );
-                gdip::drop_pen(p);
-            });
-            let _ = EndPaint(h, &ps);
-            return LRESULT(0);
+            return combo_paint(h);
         }
         WM_ENABLE => {
             // Repaint with the new enabled/disabled text colour when the combo is

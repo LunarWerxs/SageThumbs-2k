@@ -12,78 +12,90 @@ use super::*;
 /// photos — falling back to a full decode if there's no usable embedded one.
 pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Result<Decoded> {
     let cx = cx.max(1);
+    let img = embedded_or_preview(bytes, cx, use_embedded)?;
+    let box_edge = tile_box_edge(bytes, &img, cx);
+    let mut decoded = fit_to_box(img, box_edge);
+    resolve_transparency(&mut decoded)?;
+    Ok(decoded)
+}
 
-    let img = if use_embedded && cx <= crate::settings::EMBEDDED_MAX_REQUEST {
+/// Pick the decode source for [`decode_thumbnail_opts`]: the embedded (EXIF) thumbnail when the
+/// caller asked for it and the request is small enough, else a full preview decode.
+fn embedded_or_preview(bytes: &[u8], cx: u32, use_embedded: bool) -> Result<DynamicImage> {
+    if use_embedded && cx <= crate::settings::EMBEDDED_MAX_REQUEST {
         match embedded_thumbnail(bytes) {
             Some(t) => {
                 crate::safety::log_debug("decode: used embedded EXIF thumbnail");
-                t
+                Ok(t)
             }
-            None => decode_preview_thumbnail(bytes, cx)?,
+            None => decode_preview_thumbnail(bytes, cx),
         }
     } else {
-        decode_preview_thumbnail(bytes, cx)?
-    };
+        decode_preview_thumbnail(bytes, cx)
+    }
+}
 
-    // A tile is never larger than the picture it shows. `fit_to_box` fills the box from an
-    // undersized source because that source normally STANDS IN for something larger (a
-    // Photoshop file's baked preview, a book's cover, a decode scaled toward the request;
-    // issue #25), and a stand-in drawn at its own size misstates the file. The file's own
-    // picture is no stand-in: Windows draws a 32 px PNG at 32 px in the middle of the cell,
-    // and so does this, since a desktop of small pictures blown up to their tiles is what an
-    // uninstall note of 2026-09-15 called "modified". Icons stay scalable, see
-    // [`is_the_files_own_picture`]. The probe only runs when the decode is smaller than the
-    // request, so a picture that has to shrink pays nothing.
+/// The box edge [`decode_thumbnail_opts`] fits to.
+///
+/// A tile is never larger than the picture it shows. `fit_to_box` fills the box from an
+/// undersized source because that source normally STANDS IN for something larger (a
+/// Photoshop file's baked preview, a book's cover, a decode scaled toward the request;
+/// issue #25), and a stand-in drawn at its own size misstates the file. The file's own
+/// picture is no stand-in: Windows draws a 32 px PNG at 32 px in the middle of the cell,
+/// and so does this, since a desktop of small pictures blown up to their tiles is what an
+/// uninstall note of 2026-09-15 called "modified". Icons stay scalable, see
+/// [`is_the_files_own_picture`]. The probe only runs when the decode is smaller than the
+/// request, so a picture that has to shrink pays nothing.
+fn tile_box_edge(bytes: &[u8], img: &DynamicImage, cx: u32) -> u32 {
     let long = img.width().max(img.height());
-    let box_edge = if long < cx && is_the_files_own_picture(bytes, &img) {
+    if long < cx && is_the_files_own_picture(bytes, img) {
         long
     } else {
         cx
-    };
-    let mut decoded = fit_to_box(img, box_edge);
-    // Watchdog: a fully-transparent thumbnail is invisible. When the RGB planes are
-    // ALSO empty it's a decode that "succeeded" into nothing — fail it so Explorer
-    // shows the file's icon instead of caching a blank tile the user can't clear
-    // without nuking the thumbnail cache. But when real RGB content IS present
-    // (DDS texture maps, render passes — formats whose alpha channel isn't
-    // transparency), show that content opaque instead: every image viewer renders
-    // these files fine, so a default icon would read as "broken".
-    //
-    // This leg is ALSO what issue #17 reported as "transparent PNG thumbnails have a solid
-    // black background": a PNG saved with its alpha zeroed but its colour still stored shows
-    // that hidden colour, and exporters typically leave it black. It is deliberately still
-    // here for every format, because the alternative is worse — gating it to non-PNG was
-    // tried and reverted, since it turned a visible (if ugly) thumbnail into no thumbnail at
-    // all, and a tile you can recognise beats a generic icon even when its backdrop is wrong.
-    // A competing product renders the same files opaque too, which is the same call.
-    //
-    // Known consequence, not a bug to "fix" by rejecting: `ThumbChecker` cannot help these
-    // files. `checkerpx::compose_under` runs after this and early-outs on an all-opaque
-    // buffer — and it could not do better anyway, since compositing a checkerboard under an
-    // image whose every pixel is transparent yields a bare checkerboard with the picture gone.
-    if is_fully_transparent(&decoded.rgba) {
-        if decoded
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
-        {
-            crate::safety::log_debug(
-                "decode: all-transparent but has RGB content — forcing opaque",
-            );
-            let (chunks, _) = decoded.rgba.as_chunks_mut::<4>();
-            for px in chunks {
-                px[3] = 255;
-            }
-        } else {
-            crate::safety::log_debug(
-                "decode: thumbnail was fully transparent — rejecting as blank",
-            );
-            return Err(Error::from(E_FAIL));
-        }
     }
-    Ok(decoded)
+}
+
+/// Watchdog: a fully-transparent thumbnail is invisible. When the RGB planes are
+/// ALSO empty it's a decode that "succeeded" into nothing — fail it so Explorer
+/// shows the file's icon instead of caching a blank tile the user can't clear
+/// without nuking the thumbnail cache. But when real RGB content IS present
+/// (DDS texture maps, render passes — formats whose alpha channel isn't
+/// transparency), show that content opaque instead: every image viewer renders
+/// these files fine, so a default icon would read as "broken".
+///
+/// This leg is ALSO what issue #17 reported as "transparent PNG thumbnails have a solid
+/// black background": a PNG saved with its alpha zeroed but its colour still stored shows
+/// that hidden colour, and exporters typically leave it black. It is deliberately still
+/// here for every format, because the alternative is worse — gating it to non-PNG was
+/// tried and reverted, since it turned a visible (if ugly) thumbnail into no thumbnail at
+/// all, and a tile you can recognise beats a generic icon even when its backdrop is wrong.
+/// A competing product renders the same files opaque too, which is the same call.
+///
+/// Known consequence, not a bug to "fix" by rejecting: `ThumbChecker` cannot help these
+/// files. `checkerpx::compose_under` runs after this and early-outs on an all-opaque
+/// buffer — and it could not do better anyway, since compositing a checkerboard under an
+/// image whose every pixel is transparent yields a bare checkerboard with the picture gone.
+fn resolve_transparency(decoded: &mut Decoded) -> Result<()> {
+    if !is_fully_transparent(&decoded.rgba) {
+        return Ok(());
+    }
+    if decoded
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
+    {
+        crate::safety::log_debug("decode: all-transparent but has RGB content — forcing opaque");
+        let (chunks, _) = decoded.rgba.as_chunks_mut::<4>();
+        for px in chunks {
+            px[3] = 255;
+        }
+        Ok(())
+    } else {
+        crate::safety::log_debug("decode: thumbnail was fully transparent — rejecting as blank");
+        Err(Error::from(E_FAIL))
+    }
 }
 
 /// Preview decode for the thumbnail provider. Unlike [`decode_preview`], this threads the
@@ -443,23 +455,42 @@ fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f
         for ox in 0..nw {
             let x0 = ox * k;
             let x1 = (x0 + k).min(w);
-            let mut acc = [0f32; 4];
-            for y in y0..y1 {
-                let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
-                for px in row.chunks_exact(ch) {
-                    for (a, v) in acc.iter_mut().zip(px) {
-                        *a += *v;
-                    }
-                }
-            }
-            let n = ((x1 - x0) * (y1 - y0)).max(1) as f32;
+            let acc = box_block_mean_f32(src, w, ch, x0, x1, y0, y1);
             let d = (oy * nw + ox) * ch;
             for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
-                *o = a / n;
+                *o = a;
             }
         }
     }
     out
+}
+
+/// Per-channel mean over the source block `x0..x1` x `y0..y1` (inclusive of `x0`/`y0`, exclusive
+/// of `x1`/`y1`), the inner step of [`box_reduce_f32`]. Empty blocks divide by one, matching the
+/// `max(1)` the inlined caller used.
+fn box_block_mean_f32(
+    src: &[f32],
+    w: usize,
+    ch: usize,
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
+) -> [f32; 4] {
+    let mut acc = [0f32; 4];
+    for y in y0..y1 {
+        let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
+        for px in row.chunks_exact(ch) {
+            for (a, v) in acc.iter_mut().zip(px) {
+                *a += *v;
+            }
+        }
+    }
+    let n = ((x1 - x0) * (y1 - y0)).max(1) as f32;
+    for a in &mut acc {
+        *a /= n;
+    }
+    acc
 }
 
 /// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
@@ -631,23 +662,7 @@ pub(super) fn exif_thumbnail_jpeg(bytes: &[u8]) -> Option<&[u8]> {
     }
     let mut i = 2usize;
     loop {
-        // Each marker is 0xFF <marker> <len-hi> <len-lo> ...
-        if *bytes.get(i)? != 0xFF {
-            return None;
-        }
-        let marker = *bytes.get(i + 1)?;
-        if marker == 0xD9 || marker == 0xDA {
-            return None; // EOI / start-of-scan: past the metadata headers
-        }
-        let seg_len = u16::from_be_bytes([*bytes.get(i + 2)?, *bytes.get(i + 3)?]) as usize;
-        if seg_len < 2 {
-            return None;
-        }
-        let body_start = i + 4;
-        let seg_end = i + 2 + seg_len;
-        if seg_end > bytes.len() {
-            return None;
-        }
+        let (marker, body_start, seg_end) = jpeg_segment(bytes, i)?;
         // Match the "Exif\0\0" id ONLY within this segment's own body — never
         // read past seg_end. Confining it here also guarantees body_start+6 <=
         // seg_end whenever it matches, so the slice below can't be start>end
@@ -657,6 +672,31 @@ pub(super) fn exif_thumbnail_jpeg(bytes: &[u8]) -> Option<&[u8]> {
         }
         i = seg_end;
     }
+}
+
+/// Parse one JPEG marker segment starting at `i`, returning `(marker, body_start, seg_end)`.
+/// `None` means the caller is past the metadata headers (truncated input, a byte that is not
+/// a marker, or the EOI / start-of-scan marker) — the point at which no EXIF thumbnail can
+/// follow. The segment length includes its own two length bytes, so `seg_len < 2` is malformed.
+fn jpeg_segment(bytes: &[u8], i: usize) -> Option<(u8, usize, usize)> {
+    // Each marker is 0xFF <marker> <len-hi> <len-lo> ...
+    if *bytes.get(i)? != 0xFF {
+        return None;
+    }
+    let marker = *bytes.get(i + 1)?;
+    if marker == 0xD9 || marker == 0xDA {
+        return None; // EOI / start-of-scan: past the metadata headers
+    }
+    let seg_len = u16::from_be_bytes([*bytes.get(i + 2)?, *bytes.get(i + 3)?]) as usize;
+    if seg_len < 2 {
+        return None;
+    }
+    let body_start = i + 4;
+    let seg_end = i + 2 + seg_len;
+    if seg_end > bytes.len() {
+        return None;
+    }
+    Some((marker, body_start, seg_end))
 }
 
 #[inline]
@@ -683,6 +723,21 @@ pub(super) fn r32(b: &[u8], off: usize, le: bool) -> Option<u32> {
 /// length (0x0202), returning the embedded JPEG slice. All offsets are relative
 /// to the TIFF header (`tiff[0]`). Fully bounds-checked — never panics.
 pub(super) fn tiff_thumbnail(tiff: &[u8]) -> Option<&[u8]> {
+    let (le, ifd0) = tiff_header(tiff)?;
+    let (off, len) = ifd1_thumbnail_range(tiff, le, ifd0)?;
+    let end = off.checked_add(len)?;
+    let thumb = tiff.get(off..end)?;
+    // Sanity: a real embedded thumbnail is itself a JPEG.
+    if thumb.get(0..2)? == [0xFF, 0xD8] {
+        Some(thumb)
+    } else {
+        None
+    }
+}
+
+/// Read a TIFF header's byte order and its IFD0 offset, rejecting anything that is not a
+/// big/little-endian TIFF (the `42` magic) or is too short to hold the header.
+fn tiff_header(tiff: &[u8]) -> Option<(bool, usize)> {
     let le = match tiff.get(0..2)? {
         b"II" => true,
         b"MM" => false,
@@ -692,6 +747,13 @@ pub(super) fn tiff_thumbnail(tiff: &[u8]) -> Option<&[u8]> {
         return None;
     }
     let ifd0 = r32(tiff, 4, le)? as usize;
+    Some((le, ifd0))
+}
+
+/// Walk IFD0's IFD1 pointer and then IFD1's own entry table for the thumbnail offset (0x0201)
+/// and length (0x0202), returning that `(offset, length)` pair. All offsets are relative to the
+/// TIFF header (`tiff[0]`).
+fn ifd1_thumbnail_range(tiff: &[u8], le: bool, ifd0: usize) -> Option<(usize, usize)> {
     // IFD1 pointer follows IFD0's entries.
     let n0 = r16(tiff, ifd0, le)? as usize;
     let ifd1 = r32(tiff, ifd0 + 2 + n0 * 12, le)? as usize;
@@ -709,15 +771,7 @@ pub(super) fn tiff_thumbnail(tiff: &[u8]) -> Option<&[u8]> {
             _ => {}
         }
     }
-    let (off, len) = (off?, len?);
-    let end = off.checked_add(len)?;
-    let thumb = tiff.get(off..end)?;
-    // Sanity: a real embedded thumbnail is itself a JPEG.
-    if thumb.get(0..2)? == [0xFF, 0xD8] {
-        Some(thumb)
-    } else {
-        None
-    }
+    Some((off?, len?))
 }
 
 /// Map the 8 EXIF orientation values onto `image` transforms. Phone JPEGs
@@ -744,15 +798,13 @@ pub(super) fn apply_exif_orientation(img: DynamicImage, bytes: &[u8]) -> Dynamic
 /// from paying that internal cost just to orient a thumbnail. Fully bounds-checked —
 /// never panics on a truncated or hostile IFD.
 fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
-    let le = match tiff.get(0..2)? {
-        b"II" => true,
-        b"MM" => false,
-        _ => return None,
-    };
-    if r16(tiff, 2, le)? != 42 {
-        return None;
-    }
-    let ifd0 = r32(tiff, 4, le)? as usize;
+    let (le, ifd0) = tiff_header(tiff)?;
+    ifd0_orientation(tiff, le, ifd0)
+}
+
+/// Orientation (tag `0x0112`) from IFD0's entry table, walking it with the bounded [`r16`]
+/// helpers. `None` when the table has no Orientation entry or is truncated.
+fn ifd0_orientation(tiff: &[u8], le: bool, ifd0: usize) -> Option<u32> {
     let n0 = r16(tiff, ifd0, le)? as usize;
     for e in 0..n0 {
         let entry = ifd0.checked_add(2)?.checked_add(e.checked_mul(12)?)?;

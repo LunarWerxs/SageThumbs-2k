@@ -161,21 +161,24 @@ const ADVANCED: [Row; 11] = {
 /// laid out but never framed, because nothing forced the two lists to stay in sync with the
 /// row data they were duplicating. Deriving them here means a page can never again add a
 /// Pair row this misses.
+/// Bucket a single row's `Pair` field id into `edits`/`combos` by the `field_h > 40`
+/// convention (numeric edits vs combos); non-`Pair` rows are ignored. Keeps the two
+/// buckets free of duplicates.
+fn collect_pair_field(row: Row, edits: &mut Vec<i32>, combos: &mut Vec<i32>) {
+    if let Row::Pair(_, field, _, field_h) = row {
+        let bucket = if field_h > 40 { combos } else { edits };
+        if !bucket.contains(&field) {
+            bucket.push(field);
+        }
+    }
+}
+
 pub(super) fn pair_field_ids() -> (Vec<i32>, Vec<i32>) {
     let mut edits = Vec::new();
     let mut combos = Vec::new();
     for ci in 0..NCAT {
         for &row in cat_rows(ci) {
-            if let Row::Pair(_, field, _, field_h) = row {
-                let bucket = if field_h > 40 {
-                    &mut combos
-                } else {
-                    &mut edits
-                };
-                if !bucket.contains(&field) {
-                    bucket.push(field);
-                }
-            }
+            collect_pair_field(row, &mut edits, &mut combos);
         }
     }
     (edits, combos)
@@ -967,6 +970,43 @@ fn nav_item_uia_select(h: HWND) {
     unsafe { switch_category(parent, ci) };
 }
 
+/// Enter/Space activate a focused nav row.
+fn nav_key_activates(vk: u16) -> bool {
+    vk == VK_RETURN.0 || vk == VK_SPACE.0
+}
+
+/// Up/Down move focus to the neighbouring nav row and switch to it immediately, matching the
+/// click path. Returns `None` for any other key so the caller can fall through.
+unsafe fn nav_key_arrow(parent: HWND, ci: usize, vk: u16) -> Option<LRESULT> {
+    let next = if vk == VK_UP.0 {
+        (ci + NCAT - 1) % NCAT
+    } else if vk == VK_DOWN.0 {
+        (ci + 1) % NCAT
+    } else {
+        return None;
+    };
+    if let Ok(target) = GetDlgItem(Some(parent), ID_NAV_BASE + next as i32) {
+        let _ = SetFocus(Some(target));
+    }
+    switch_category(parent, next);
+    Some(LRESULT(0))
+}
+
+/// `WM_KEYDOWN` on a nav row: Enter/Space switches to the row's page, Up/Down moves focus and
+/// switches. Returns `None` for keys we don't handle (or a row without a parent).
+unsafe fn nav_item_keydown(h: HWND, w: WPARAM) -> Option<LRESULT> {
+    let vk = w.0 as u16;
+    if let Ok(parent) = GetParent(h) {
+        let ci = (GetDlgCtrlID(h) - ID_NAV_BASE) as usize;
+        if nav_key_activates(vk) {
+            switch_category(parent, ci);
+            return Some(LRESULT(0));
+        }
+        return nav_key_arrow(parent, ci, vk);
+    }
+    None
+}
+
 /// Keyboard access for a nav-rail item (the rail used to be mouse-only: SS_OWNERDRAW|SS_NOTIFY
 /// statics with no WS_TABSTOP and no key handling at all).
 ///
@@ -1007,27 +1047,8 @@ unsafe extern "system" fn nav_item_subclass(
             let _ = InvalidateRect(Some(h), None, false);
         }
         WM_KEYDOWN => {
-            let vk = w.0 as u16;
-            if let Ok(parent) = GetParent(h) {
-                let ci = (GetDlgCtrlID(h) - ID_NAV_BASE) as usize;
-                if vk == VK_RETURN.0 || vk == VK_SPACE.0 {
-                    switch_category(parent, ci);
-                    return LRESULT(0);
-                }
-                if vk == VK_UP.0 || vk == VK_DOWN.0 {
-                    let next = if vk == VK_UP.0 {
-                        (ci + NCAT - 1) % NCAT
-                    } else {
-                        (ci + 1) % NCAT
-                    };
-                    if let Ok(target) = GetDlgItem(Some(parent), ID_NAV_BASE + next as i32) {
-                        let _ = SetFocus(Some(target));
-                    }
-                    // Match the click path: an arrow key switches the page immediately
-                    // instead of only moving focus and waiting for a second Enter/Space.
-                    switch_category(parent, next);
-                    return LRESULT(0);
-                }
+            if let Some(r) = nav_item_keydown(h, w) {
+                return r;
             }
         }
         _ => {}
@@ -1035,11 +1056,8 @@ unsafe extern "system" fn nav_item_subclass(
     DefSubclassProc(h, msg, w, l)
 }
 
-/// Show category `ci`'s controls, hide the others, repaint the nav + pane.
-pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
-    // Visiting a page clears its "you changed something here" dot. Done before the rail
-    // invalidation below, which repaints every item and so picks the change up for free.
-    mark_dot_seen(ci);
+/// Show category `ci`'s controls and hide every other category's.
+unsafe fn set_active_category_controls(ci: usize) {
     NAV.with(|n| {
         let mut n = n.borrow_mut();
         n.active = ci;
@@ -1050,10 +1068,12 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
             }
         }
     });
-    // The blanket show above does not know that some controls hide themselves. Anything
-    // conditionally visible has to re-decide right here, or navigating away and back is all
-    // it takes to reveal a row the page had deliberately hidden.
-    licence_ui::apply_conditional_visibility(hwnd);
+}
+
+/// Repaint every nav row, the pane header and the settings-wide search box, then the dialog
+/// (the header owner-draw fills its whole rect — including the strip the search box floats
+/// over — so the box must repaint with it, or it flashes as a hole in the header).
+unsafe fn invalidate_nav_chrome(hwnd: HWND) {
     for i in 0..NCAT as i32 {
         if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
             let _ = InvalidateRect(Some(nav), None, true);
@@ -1062,12 +1082,23 @@ pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
     if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
         let _ = InvalidateRect(Some(ph), None, true);
     }
-    // The header owner-draw fills its whole rect — including the strip the search box
-    // floats over — so repaint the box with it, or it flashes as a hole in the header.
     if let Ok(sb) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
         let _ = InvalidateRect(Some(sb), None, true);
     }
     let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Show category `ci`'s controls, hide the others, repaint the nav + pane.
+pub(super) unsafe fn switch_category(hwnd: HWND, ci: usize) {
+    // Visiting a page clears its "you changed something here" dot. Done before the rail
+    // invalidation below, which repaints every item and so picks the change up for free.
+    mark_dot_seen(ci);
+    set_active_category_controls(ci);
+    // The blanket show above does not know that some controls hide themselves. Anything
+    // conditionally visible has to re-decide right here, or navigating away and back is all
+    // it takes to reveal a row the page had deliberately hidden.
+    licence_ui::apply_conditional_visibility(hwnd);
+    invalidate_nav_chrome(hwnd);
     // Tell assistive tech the active nav item changed: the owner-draw rail never fires
     // WM_GETOBJECT/selection notifications on its own, so a screen reader has no way to
     // know which page is now current without this. Two events, not one: `NotifyWinEvent`
@@ -1330,13 +1361,70 @@ unsafe fn place_row(
     }
 }
 
-pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
-    // Hide the old scrolling chrome + the headers the nav/page-header now title.
+/// Create the nav-rail rows. WS_TABSTOP + the subclass below give it keyboard access (Tab
+/// into the rail, arrows to move between categories, Enter/Space to switch).
+unsafe fn build_nav_rail(hwnd: HWND, hinst: HINSTANCE) {
+    #[allow(clippy::needless_range_loop)] // i drives both the label index and position/id math
+    for i in 0..NCAT {
+        let nav = ctl(
+            hwnd,
+            STATIC,
+            nav_label(i),
+            WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY) | WS_TABSTOP,
+            NAV_X,
+            NAV_TOP + i as i32 * NAV_ITEM_H,
+            NAV_W,
+            NAV_ITEM_H,
+            ID_NAV_BASE + i as i32,
+            hinst,
+        );
+        let _ = SetWindowSubclass(nav, Some(nav_item_subclass), 0, 0);
+    }
+}
+
+/// Lay out every row of category `ci`, returning the controls it placed.
+unsafe fn build_category_rows(
+    hwnd: HWND,
+    place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
+    ci: usize,
+    content_bottom: i32,
+) -> Vec<HWND> {
+    let mut placed = Vec::new();
+    let mut y = PANE_TOP + PANE_HEAD_H + 8;
+    let mut first = true;
+    for &row in cat_rows(ci) {
+        let fixed_next_y = fixed_row_next_y(row, y, first);
+        let (p, new_y) = place_row(hwnd, place, row, y, first, content_bottom);
+        placed.extend(p);
+        y = new_y;
+        if let Some(next_y) = fixed_next_y {
+            y = next_y;
+        }
+        first = false;
+    }
+    // File Types fills its list to the footer. Every other page is fixed and
+    // must retain visible breathing room above it.
+    if ci != 2 {
+        debug_assert!(
+            y <= content_bottom - 12,
+            "settings category {ci} reaches the footer ({y} > {})",
+            content_bottom - 12
+        );
+    }
+    placed
+}
+
+/// Hide the old scrolling chrome + the headers the nav/page-header now title.
+unsafe fn hide_always_hidden(hwnd: HWND) {
     for &id in V3_ALWAYS_HIDDEN {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
+}
+
+pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
+    hide_always_hidden(hwnd);
 
     let mut cr = RECT::default();
     let _ = GetClientRect(hwnd, &mut cr);
@@ -1374,25 +1462,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
         }
     };
 
-    // Nav rail. WS_TABSTOP + the subclass below give it keyboard access (Tab into the
-    // rail, arrows to move between categories, Enter/Space to switch) — previously these
-    // were plain SS_OWNERDRAW|SS_NOTIFY statics with no keyboard path at all.
-    #[allow(clippy::needless_range_loop)] // i drives both the label index and position/id math
-    for i in 0..NCAT {
-        let nav = ctl(
-            hwnd,
-            STATIC,
-            nav_label(i),
-            WINDOW_STYLE(SS_OWNERDRAW | SS_NOTIFY) | WS_TABSTOP,
-            NAV_X,
-            NAV_TOP + i as i32 * NAV_ITEM_H,
-            NAV_W,
-            NAV_ITEM_H,
-            ID_NAV_BASE + i as i32,
-            hinst,
-        );
-        let _ = SetWindowSubclass(nav, Some(nav_item_subclass), 0, 0);
-    }
+    build_nav_rail(hwnd, hinst);
 
     // Per-pane header (icon chip + bold category title + blurb), redrawn per active
     // category. Always visible; content sits below it.
@@ -1419,27 +1489,7 @@ pub(super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     let mut cats: Vec<Vec<HWND>> = vec![Vec::new(); NCAT];
     #[allow(clippy::needless_range_loop)] // ci indexes cats AND is passed to cat_rows(ci)
     for ci in 0..NCAT {
-        let mut y = PANE_TOP + PANE_HEAD_H + 8;
-        let mut first = true;
-        for &row in cat_rows(ci) {
-            let fixed_next_y = fixed_row_next_y(row, y, first);
-            let (placed, new_y) = place_row(hwnd, &place, row, y, first, content_bottom);
-            cats[ci].extend(placed);
-            y = new_y;
-            if let Some(next_y) = fixed_next_y {
-                y = next_y;
-            }
-            first = false;
-        }
-        // File Types fills its list to the footer. Every other page is fixed and
-        // must retain visible breathing room above it.
-        if ci != 2 {
-            debug_assert!(
-                y <= content_bottom - 12,
-                "settings category {ci} reaches the footer ({y} > {})",
-                content_bottom - 12
-            );
-        }
+        cats[ci] = build_category_rows(hwnd, &place, ci, content_bottom);
     }
 
     // The sign-in banner, in the strip between the pane and the footer. Page-independent chrome

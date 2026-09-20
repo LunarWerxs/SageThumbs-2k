@@ -161,9 +161,17 @@ fn handle_video_tag<R: Read + Seek>(
 pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     let total = r.seek(SeekFrom::End(0)).ok()?;
     let data_offset = read_flv_header(r, total)?;
+    // `walk_avc_tags` returns `None` for a broken walk and `Some(v)` once a keyframe tag was
+    // seen, where `v` is the mux result itself (`None` if muxing failed).
+    walk_avc_tags(r, total, data_offset.checked_add(4)?)?
+}
 
+/// Walk the FLV from `start` (past PreviousTagSize0) for the AVC config + first keyframe.
+/// `Some(v)` once a keyframe tag arrives (`v` is the mux result), `None` when the walk ends
+/// or a cap/read/bound fails.
+fn walk_avc_tags<R: Read + Seek>(r: &mut R, total: u64, start: u64) -> Option<Option<Vec<u8>>> {
     let mut avc_config: Option<Vec<u8>> = None;
-    let mut pos = data_offset.checked_add(4)?; // skip PreviousTagSize0
+    let mut pos = start;
     let mut tags = 0u32;
     // Tag layout: type(1) DataSize(3) Timestamp(3) TimestampExt(1) StreamID(3) then
     // Data[DataSize] then PreviousTagSize(4). The advance is 11 + DataSize + 4 ≥ 15, so the
@@ -174,21 +182,33 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
         if tags > MAX_TAGS || pos > WALK_MAX {
             return None;
         }
-        let mut th = [0u8; 11];
-        read_exact_at(r, pos, &mut th)?;
-        let tag_type = th[0] & 0x1F; // top bits: reserved + encryption filter
-        let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-        let payload_pos = pos.checked_add(11)?;
-        if payload_pos.checked_add(data_size)? > total {
-            return None; // truncated mid-tag
-        }
+        let (tag_type, payload_pos, data_size) = read_stream_tag_header(r, pos, total)?;
         match handle_video_tag(r, tag_type, data_size, payload_pos, &mut avc_config)? {
             TagOutcome::Continue => {}
-            TagOutcome::Return(v) => return v,
+            TagOutcome::Return(v) => return Some(v),
         }
         pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
     }
     None
+}
+
+/// Read one tag's fixed 11-byte header from the stream at `pos`: `(tag_type, payload offset,
+/// payload length)`, or `None` for a read failure or a payload that runs past `total`
+/// (truncated mid-tag).
+fn read_stream_tag_header<R: Read + Seek>(
+    r: &mut R,
+    pos: u64,
+    total: u64,
+) -> Option<(u8, u64, u64)> {
+    let mut th = [0u8; 11];
+    read_exact_at(r, pos, &mut th)?;
+    let tag_type = th[0] & 0x1F; // top bits: reserved + encryption filter
+    let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
+    let payload_pos = pos.checked_add(11)?;
+    if payload_pos.checked_add(data_size)? > total {
+        return None; // truncated mid-tag
+    }
+    Some((tag_type, payload_pos, data_size))
 }
 
 /// Wrap the AVC config + keyframe sample in a mini-MP4. The `stsd` is synthesized (an
@@ -340,16 +360,34 @@ fn slice_walk<'a, T>(
             return None;
         }
         let (tag_type, payload_pos, data_size) = read_tag_header(flv, pos, total)?;
-        if tag_type == 9 && data_size >= 2 {
-            let payload = flv.get(payload_pos as usize..(payload_pos + data_size) as usize)?;
-            let (frame_type, codec_id) = (payload[0] >> 4, payload[0] & 0x0F);
-            if let SliceWalk::Stop(out) = visit(frame_type, codec_id, &payload[1..]) {
-                return Some(out);
-            }
+        // Outer `None` aborts the walk (malformed payload), inner `Some` stops it.
+        if let Some(out) = visit_video_tag(flv, tag_type, payload_pos, data_size, visit)? {
+            return Some(out);
         }
         pos = payload_pos.checked_add(data_size)?.checked_add(4)?;
     }
     None
+}
+
+/// Hand one tag's video payload to `visit`. `Some(None)` for a non-video/too-short tag or a
+/// visitor that kept going, `Some(Some(T))` when the visitor stopped, `None` if the payload
+/// slice is out of range (which aborts the walk).
+fn visit_video_tag<'a, T>(
+    flv: &'a [u8],
+    tag_type: u8,
+    payload_pos: u64,
+    data_size: u64,
+    visit: &mut dyn FnMut(u8, u8, &'a [u8]) -> SliceWalk<T>,
+) -> Option<Option<T>> {
+    if tag_type != 9 || data_size < 2 {
+        return Some(None);
+    }
+    let payload = flv.get(payload_pos as usize..(payload_pos + data_size) as usize)?;
+    let (frame_type, codec_id) = (payload[0] >> 4, payload[0] & 0x0F);
+    if let SliceWalk::Stop(out) = visit(frame_type, codec_id, &payload[1..]) {
+        return Some(Some(out));
+    }
+    Some(None)
 }
 
 /// Validate the FLV header and return the byte offset of the first tag (past
@@ -691,18 +729,25 @@ fn skip_pic_order_cnt_fields(b: &mut Bits) -> Option<()> {
     if pic_order_cnt_type == 0 {
         b.ue()?; // log2_max_pic_order_cnt_lsb_minus4
     } else if pic_order_cnt_type == 1 {
-        b.bit()?; // delta_pic_order_always_zero_flag
-        b.se()?; // offset_for_non_ref_pic
-        b.se()?; // offset_for_top_to_bottom_field
-        let n = b.ue()?;
-        if n > 255 {
-            return None; // spec caps num_ref_frames_in_pic_order_cnt_cycle at 255
-        }
-        for _ in 0..n {
-            b.se()?;
-        }
+        skip_poc_type1_fields(b)?;
     } else if pic_order_cnt_type > 2 {
         return None;
+    }
+    Some(())
+}
+
+/// The `pic_order_cnt_type == 1` fields (§7.3.2.1.1): a flag, two signed offsets, and the
+/// `num_ref_frames_in_pic_order_cnt_cycle`-sized offset run.
+fn skip_poc_type1_fields(b: &mut Bits) -> Option<()> {
+    b.bit()?; // delta_pic_order_always_zero_flag
+    b.se()?; // offset_for_non_ref_pic
+    b.se()?; // offset_for_top_to_bottom_field
+    let n = b.ue()?;
+    if n > 255 {
+        return None; // spec caps num_ref_frames_in_pic_order_cnt_cycle at 255
+    }
+    for _ in 0..n {
+        b.se()?;
     }
     Some(())
 }
@@ -725,16 +770,22 @@ fn parse_frame_geom_fields(b: &mut Bits) -> Option<FrameGeomFields> {
     }
     b.bit()?; // direct_8x8_inference_flag
 
-    let mut crop = (0u32, 0u32, 0u32, 0u32);
-    if b.bit()? == 1 {
-        crop = (b.ue()?, b.ue()?, b.ue()?, b.ue()?);
-    }
+    let crop = parse_frame_crop(b)?;
     Some(FrameGeomFields {
         pic_width_in_mbs_minus1,
         pic_height_in_map_units_minus1,
         frame_mbs_only,
         crop,
     })
+}
+
+/// The optional `frame_cropping_flag` rectangle (§7.3.2.1.1) as `(left, right, top, bottom)`,
+/// all zero when the flag is absent.
+fn parse_frame_crop(b: &mut Bits) -> Option<(u32, u32, u32, u32)> {
+    if b.bit()? == 1 {
+        return Some((b.ue()?, b.ue()?, b.ue()?, b.ue()?));
+    }
+    Some((0, 0, 0, 0))
 }
 
 /// Pixel width/height from the mb-unit fields + crop rectangle (§7.4.2.1.1). Crop units
@@ -752,6 +803,25 @@ fn frame_geom_to_pixels(
         .checked_mul(16)?
         .checked_mul(2u32.checked_sub(g.frame_mbs_only)?)?;
 
+    let (unit_x, unit_y) =
+        chroma_crop_units(chroma_format_idc, separate_colour_planes, g.frame_mbs_only)?;
+
+    let (crop_l, crop_r, crop_t, crop_b) = g.crop;
+    let w = width_px.checked_sub(crop_l.checked_add(crop_r)?.checked_mul(unit_x)?)?;
+    let h = height_px.checked_sub(crop_t.checked_add(crop_b)?.checked_mul(unit_y)?)?;
+    if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
+        return None;
+    }
+    Some((w as u16, h as u16))
+}
+
+/// Crop-unit scale factors `(SubWidthC, SubHeightC)` for the chroma array type, with the
+/// field-height doubling folded in (`unit_y` is doubled when the frame is not frame-only).
+fn chroma_crop_units(
+    chroma_format_idc: u32,
+    separate_colour_planes: bool,
+    frame_mbs_only: u32,
+) -> Option<(u32, u32)> {
     let chroma_array_type = if separate_colour_planes {
         0
     } else {
@@ -762,15 +832,8 @@ fn frame_geom_to_pixels(
         2 => (2, 1),       // 4:2:2
         _ => (1, 1),       // mono / 4:4:4 / separate planes
     };
-    let unit_y = unit_y_base.checked_mul(2u32.checked_sub(g.frame_mbs_only)?)?;
-
-    let (crop_l, crop_r, crop_t, crop_b) = g.crop;
-    let w = width_px.checked_sub(crop_l.checked_add(crop_r)?.checked_mul(unit_x)?)?;
-    let h = height_px.checked_sub(crop_t.checked_add(crop_b)?.checked_mul(unit_y)?)?;
-    if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
-        return None;
-    }
-    Some((w as u16, h as u16))
+    let unit_y = unit_y_base.checked_mul(2u32.checked_sub(frame_mbs_only)?)?;
+    Some((unit_x, unit_y))
 }
 
 /// Frame geometry from an SPS RBSP (ITU-T H.264 §7.3.2.1.1): walk every field ahead of
