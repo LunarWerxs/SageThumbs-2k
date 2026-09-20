@@ -194,64 +194,48 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
         }
         ok
     } else {
-        let mut saved = false;
-        // Drop the overlay's always-on-top so the picker isn't trapped behind the
-        // fullscreen capture window (it pumps its own modal loop while shown).
-        with_modal(hwnd, || {
-            if let Some(path) = crate::win::pick_save_png(
-                hwnd,
-                &crate::screenshot::effective_save_dir(),
-                &output::timestamped_name(),
-            ) {
-                saved = output::save_png_to_path(std::path::Path::new(&path), &buf, w, h);
-                if !saved {
-                    // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
-                    // false) unless we say something — the fixed-folder branch above already
-                    // warns on its own failure; this path had no equivalent.
-                    let dir = std::path::Path::new(&path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    warn_save_failed(hwnd, &dir);
-                }
-            }
-        });
-        saved
+        save_via_dialog(hwnd, &buf, w, h)
     }
+}
+
+/// Prompt for a path via the Save-As dialog and write the composited capture there, warning
+/// (and returning false) when a chosen path fails to save.
+unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32) -> bool {
+    let mut saved = false;
+    // Drop the overlay's always-on-top so the picker isn't trapped behind the
+    // fullscreen capture window (it pumps its own modal loop while shown).
+    with_modal(hwnd, || {
+        if let Some(path) = crate::win::pick_save_png(
+            hwnd,
+            &crate::screenshot::effective_save_dir(),
+            &output::timestamped_name(),
+        ) {
+            saved = output::save_png_to_path(std::path::Path::new(&path), buf, w, h);
+            if !saved {
+                // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
+                // false) unless we say something — the fixed-folder branch above already
+                // warns on its own failure; this path had no equivalent.
+                let dir = std::path::Path::new(&path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                warn_save_failed(hwnd, &dir);
+            }
+        }
+    });
+    saved
 }
 
 /// Handle a toolbar button click. Returns true if it destroyed the window (the
 /// caller must then stop touching `s`/`hwnd`).
 pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> bool {
-    let blocked_status = match btn {
-        Button::Copy => Some("blocked-copy"),
-        Button::Ocr => Some("blocked-ocr"),
-        Button::Save => Some("blocked-save"),
-        Button::Upload => Some("blocked-upload"),
-        _ => None,
-    };
+    let blocked_status = blocked_automation_tag(btn);
     if blocked_status.is_some_and(|status| block_automation_output(s, status)) {
         return false;
     }
 
     match btn {
-        Button::Tool(Tool::Text) => {
-            if s.tool == Tool::Text {
-                // Already active → toggle the text settings flyout.
-                s.text_flyout = !s.text_flyout;
-                if !s.text_flyout {
-                    s.font_dropdown = false;
-                }
-            } else {
-                commit_text(s);
-                s.tool = Tool::Text;
-                s.selected = None;
-                s.move_from = None;
-                s.text_flyout = true; // open settings when the Text tool is picked
-            }
-            s.color_flyout = false;
-            false
-        }
+        Button::Tool(Tool::Text) => toggle_text_tool(s),
         Button::Tool(t) => {
             commit_text(s);
             s.tool = t;
@@ -269,22 +253,8 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
             s.font_dropdown = false;
             false
         }
-        Button::Undo => {
-            if let Some(sh) = s.shapes.pop() {
-                s.redo.push(sh);
-            }
-            s.selected = None;
-            s.move_from = None;
-            false
-        }
-        Button::Redo => {
-            if let Some(sh) = s.redo.pop() {
-                s.shapes.push(sh);
-            }
-            s.selected = None;
-            s.move_from = None;
-            false
-        }
+        Button::Undo => undo_shape(s),
+        Button::Redo => redo_shape(s),
         Button::Copy => {
             commit_text(s);
             if finish_copy(s) {
@@ -321,6 +291,56 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Sep => false, // not clickable (hit() skips separators)
     }
+}
+
+/// Map an output button to the automation status tag that blocks it, if any.
+fn blocked_automation_tag(btn: Button) -> Option<&'static str> {
+    match btn {
+        Button::Copy => Some("blocked-copy"),
+        Button::Ocr => Some("blocked-ocr"),
+        Button::Save => Some("blocked-save"),
+        Button::Upload => Some("blocked-upload"),
+        _ => None,
+    }
+}
+
+/// Pick the Text tool, or toggle its settings flyout when it is already active.
+fn toggle_text_tool(s: &mut Shot) -> bool {
+    if s.tool == Tool::Text {
+        // Already active → toggle the text settings flyout.
+        s.text_flyout = !s.text_flyout;
+        if !s.text_flyout {
+            s.font_dropdown = false;
+        }
+    } else {
+        commit_text(s);
+        s.tool = Tool::Text;
+        s.selected = None;
+        s.move_from = None;
+        s.text_flyout = true; // open settings when the Text tool is picked
+    }
+    s.color_flyout = false;
+    false
+}
+
+/// Pop the last shape off the undo stack onto the redo stack and clear the selection.
+fn undo_shape(s: &mut Shot) -> bool {
+    if let Some(sh) = s.shapes.pop() {
+        s.redo.push(sh);
+    }
+    s.selected = None;
+    s.move_from = None;
+    false
+}
+
+/// Pop the last shape off the redo stack onto the undo stack and clear the selection.
+fn redo_shape(s: &mut Shot) -> bool {
+    if let Some(sh) = s.redo.pop() {
+        s.shapes.push(sh);
+    }
+    s.selected = None;
+    s.move_from = None;
+    false
 }
 
 #[cfg(test)]

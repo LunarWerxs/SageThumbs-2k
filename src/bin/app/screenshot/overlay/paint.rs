@@ -132,32 +132,31 @@ unsafe fn paint_selection_chrome(mem: HDC, s: &Shot, sel: RECT) {
         // Each group paints its own keyboard focus ring, and only one group can hold focus
         // at a time, so the other two are handed `None` and paint exactly as before.
         toolbar::draw(mem, &buttons, s.tool, s.color(), dpi, s.focus_in_toolbar());
-        if s.color_flyout {
-            // The colour palette flyout (takes precedence over a tooltip).
-            if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
-                let (panel, sw) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
-                toolbar::draw_color_flyout(mem, panel, &sw, s.color(), s.focus_in_color_flyout());
-            }
-        } else if s.text_flyout {
-            // The text settings flyout.
-            if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
-                let (panel, its) =
-                    toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
-                toolbar::draw_text_flyout(
-                    mem,
-                    panel,
-                    &its,
-                    &s.text_font,
-                    dpi,
-                    s.focus_in_text_flyout(),
-                );
-            }
-        } else if s.tip_show {
-            // Hover tooltip (after the short delay) over the hovered button.
-            if let Some(btn) = s.hover_btn {
-                if let Some((_, r)) = buttons.iter().find(|(b, _)| *b == btn) {
-                    toolbar::draw_tooltip(mem, *r, &toolbar::button_tip(btn), s.vw, s.vh, dpi);
-                }
+        paint_active_flyout(mem, s, &buttons, dpi);
+    }
+}
+
+/// Paint whichever flyout (colour palette / text settings) or hover tooltip is currently
+/// active over the committed toolbar, in precedence order.
+unsafe fn paint_active_flyout(mem: HDC, s: &Shot, buttons: &[(Button, RECT)], dpi: i32) {
+    if s.color_flyout {
+        // The colour palette flyout (takes precedence over a tooltip).
+        if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
+            let (panel, sw) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
+            toolbar::draw_color_flyout(mem, panel, &sw, s.color(), s.focus_in_color_flyout());
+        }
+    } else if s.text_flyout {
+        // The text settings flyout.
+        if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
+            let (panel, its) =
+                toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
+            toolbar::draw_text_flyout(mem, panel, &its, &s.text_font, dpi, s.focus_in_text_flyout());
+        }
+    } else if s.tip_show {
+        // Hover tooltip (after the short delay) over the hovered button.
+        if let Some(btn) = s.hover_btn {
+            if let Some((_, r)) = buttons.iter().find(|(b, _)| *b == btn) {
+                toolbar::draw_tooltip(mem, *r, &toolbar::button_tip(btn), s.vw, s.vh, dpi);
             }
         }
     }

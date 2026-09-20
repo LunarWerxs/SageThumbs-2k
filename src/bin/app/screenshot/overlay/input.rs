@@ -211,16 +211,23 @@ unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 /// the pointer to what the next click would do. `s.cur` is the last client-space mouse
 /// position (WM_SETCURSOR precedes the move).
 unsafe fn cursor_for_state(s: &mut Shot, ctrl: bool) -> PCWSTR {
+    if s.typing_drag || s.move_from.is_some() {
+        IDC_SIZEALL
+    } else if s.sel_dragging || s.draw_from.is_some() {
+        IDC_CROSS
+    } else {
+        idle_cursor_for_state(s, ctrl)
+    }
+}
+
+/// Choose the cursor shape when no drag/draw gesture is currently in progress.
+unsafe fn idle_cursor_for_state(s: &mut Shot, ctrl: bool) -> PCWSTR {
     let p = s.cur;
     let over_ui = is_over_toolbar_ui(s, p);
     let moving = ctrl || s.tool == Tool::Move;
     let over_shape = moving && tools::hit_shape(&s.shapes, p.x, p.y).is_some();
     let active_typing_move = ctrl && s.tool == Tool::Text && s.typing.is_some();
-    if s.typing_drag || s.move_from.is_some() {
-        IDC_SIZEALL
-    } else if s.sel_dragging || s.draw_from.is_some() {
-        IDC_CROSS
-    } else if over_ui {
+    if over_ui {
         IDC_ARROW
     } else if active_typing_move || over_shape {
         IDC_SIZEALL
