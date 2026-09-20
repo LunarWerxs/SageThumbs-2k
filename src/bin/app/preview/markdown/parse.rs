@@ -150,6 +150,18 @@ impl Builder {
         }
     }
 
+    /// The run buffer currently collecting styled text — HTML table cell / GFM table cell /
+    /// current block. `None` means the text falls between HTML table cells and is dropped.
+    fn run_target(&mut self) -> Option<&mut Vec<Run>> {
+        if let Some(t) = &mut self.h_tbl {
+            t.cur_cell.as_mut()
+        } else if self.in_cell {
+            Some(&mut self.cur_cell)
+        } else {
+            Some(&mut self.runs)
+        }
+    }
+
     /// Append styled text to whatever is currently collecting (image alt / HTML table cell /
     /// markdown table cell / the current block's runs).
     pub(in crate::preview) fn text(&mut self, s: &str) {
@@ -165,15 +177,8 @@ impl Builder {
             self.link.clone(),
         );
         // Pick the destination run buffer (HTML table cell / GFM table cell / current block).
-        let target: &mut Vec<Run> = if let Some(t) = &mut self.h_tbl {
-            match &mut t.cur_cell {
-                Some(cell) => cell,
-                None => return, // whitespace between HTML table cells — drop
-            }
-        } else if self.in_cell {
-            &mut self.cur_cell
-        } else {
-            &mut self.runs
+        let Some(target) = self.run_target() else {
+            return; // whitespace between HTML table cells — drop
         };
         // Autolink bare URLs in plain (non-code, not-already-linked) text — GFM extended
         // autolinking, which pulldown-cmark 0.12 does NOT do on its own.
@@ -328,15 +333,8 @@ impl Builder {
             let label = label.replace(' ', "\u{00A0}");
             let text = format!("\u{00A0}{label}\u{00A0}");
             let (bold, italic) = (self.strong > 0, self.emph > 0);
-            let tgt = if let Some(t) = &mut self.h_tbl {
-                match &mut t.cur_cell {
-                    Some(cell) => cell,
-                    None => return,
-                }
-            } else if self.in_cell {
-                &mut self.cur_cell
-            } else {
-                &mut self.runs
+            let Some(tgt) = self.run_target() else {
+                return;
             };
             tgt.push(Run {
                 text,
