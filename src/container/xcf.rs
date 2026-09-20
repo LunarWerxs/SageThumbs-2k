@@ -871,37 +871,18 @@ fn decode_and_blit_tile<R: Read + Seek>(
     read_at(r, tptr, window, win)?;
     let buf = scratch.get_mut(..need)?;
     decode_tile(win, 0, pro.compression, bpp, tw, th, buf)?;
+    let tile = TileSamples {
+        buf,
+        bpp,
+        bps,
+        ltype: head.ltype,
+        prec: pro.prec,
+        colormap: &pro.colormap,
+    };
     if step > 1 {
-        blit_tile_scaled(
-            acc,
-            rw,
-            rh,
-            buf,
-            tx,
-            ty,
-            tw,
-            th,
-            bpp,
-            bps,
-            head.ltype,
-            pro.prec,
-            &pro.colormap,
-            step,
-        );
+        blit_tile_scaled(acc, rw, rh, &tile, tx, ty, tw, th, step);
     } else {
-        blit_tile(
-            out,
-            buf,
-            tx,
-            ty,
-            tw,
-            th,
-            bpp,
-            bps,
-            head.ltype,
-            pro.prec,
-            &pro.colormap,
-        );
+        blit_tile(out, &tile, tx, ty, tw, th);
     }
     Some(())
 }
@@ -1116,30 +1097,37 @@ fn apply_rle_chunk(
     }
 }
 
-/// Convert a decoded tile's interleaved samples to RGBA8 and paint it into `out`.
-#[allow(clippy::too_many_arguments)]
-fn blit_tile(
-    out: &mut RgbaImage,
-    buf: &[u8],
-    tx: u32,
-    ty: u32,
-    tw: u32,
-    th: u32,
+/// One decoded tile: its interleaved sample bytes plus the sample format they are stored in.
+///
+/// Every per-pixel path below ([`blit_tile`], [`blit_tile_scaled`], [`accumulate_cell`]) needs
+/// exactly these, so they travel as one value instead of being repeated in each parameter list.
+struct TileSamples<'a> {
+    /// Tile bytes, `tw * th * bpp` long.
+    buf: &'a [u8],
+    /// Bytes per pixel (all channels interleaved).
     bpp: u32,
+    /// Bytes per sample.
     bps: u32,
+    /// XCF layer type: 0 RGB, 1 RGBA, 2 GRAY, 3 GRAYA, 4 INDEXED, 5 INDEXEDA.
     ltype: u32,
+    /// Sample precision.
     prec: Precision,
-    colormap: &[[u8; 3]],
-) {
-    let bpp = bpp as usize;
-    let bps = bps as usize;
+    /// Palette entries, used by the indexed layer types.
+    colormap: &'a [[u8; 3]],
+}
+
+/// Convert a decoded tile's interleaved samples to RGBA8 and paint it into `out`.
+fn blit_tile(out: &mut RgbaImage, tile: &TileSamples<'_>, tx: u32, ty: u32, tw: u32, th: u32) {
+    let buf = tile.buf;
+    let bpp = tile.bpp as usize;
+    let bps = tile.bps as usize;
     for row in 0..th {
         for col in 0..tw {
             let pi = (row * tw + col) as usize * bpp;
             let Some(px) = buf.get(pi..pi + bpp) else {
                 continue;
             };
-            let rgba = sample_to_rgba(px, bps, ltype, prec, colormap);
+            let rgba = sample_to_rgba(px, bps, tile.ltype, tile.prec, tile.colormap);
             out.put_pixel(tx + col, ty + row, image::Rgba(rgba));
         }
     }
@@ -1159,26 +1147,19 @@ const MAX_TAPS: u32 = 4;
 /// to the tile's 4096 pixels.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mirrors blit_tile's parameter list"
+    reason = "one per already-threaded caller value"
 )]
 fn blit_tile_scaled(
     acc: &mut [[u32; 5]],
     rw: u32,
     rh: u32,
-    buf: &[u8],
+    tile: &TileSamples<'_>,
     tx: u32,
     ty: u32,
     tw: u32,
     th: u32,
-    bpp: u32,
-    bps: u32,
-    ltype: u32,
-    prec: Precision,
-    colormap: &[[u8; 3]],
     step: u32,
 ) {
-    let bpp = bpp as usize;
-    let bps = bps as usize;
     let (cx0, cx1) = (tx / step, (tx + tw - 1) / step);
     let (cy0, cy1) = (ty / step, (ty + th - 1) / step);
     for cy in cy0..=cy1.min(rh.saturating_sub(1)) {
@@ -1189,9 +1170,7 @@ fn blit_tile_scaled(
             continue;
         }
         for cx in cx0..=cx1.min(rw.saturating_sub(1)) {
-            accumulate_cell(
-                acc, rw, cx, cy, sy0, sy1, buf, tx, ty, tw, bpp, bps, ltype, prec, colormap, step,
-            );
+            accumulate_cell(acc, rw, cx, cy, sy0, sy1, tile, tx, ty, tw, step);
         }
     }
 }
@@ -1206,17 +1185,15 @@ fn accumulate_cell(
     cy: u32,
     sy0: u32,
     sy1: u32,
-    buf: &[u8],
+    tile: &TileSamples<'_>,
     tx: u32,
     ty: u32,
     tw: u32,
-    bpp: usize,
-    bps: usize,
-    ltype: u32,
-    prec: Precision,
-    colormap: &[[u8; 3]],
     step: u32,
 ) {
+    let buf = tile.buf;
+    let bpp = tile.bpp as usize;
+    let bps = tile.bps as usize;
     let span_y = sy1 - sy0;
     let ny = span_y.min(MAX_TAPS);
     let sx0 = (cx * step).max(tx);
@@ -1239,7 +1216,7 @@ fn accumulate_cell(
             let Some(px) = buf.get(pi..pi + bpp) else {
                 continue;
             };
-            let rgba = sample_to_rgba(px, bps, ltype, prec, colormap);
+            let rgba = sample_to_rgba(px, bps, tile.ltype, tile.prec, tile.colormap);
             let a = u32::from(rgba[3]);
             cell[0] += u32::from(rgba[0]) * a;
             cell[1] += u32::from(rgba[1]) * a;
