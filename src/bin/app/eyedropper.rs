@@ -209,6 +209,16 @@ unsafe fn register_eyedropper_class(hinst: HINSTANCE) -> windows::core::PCWSTR {
     class
 }
 
+/// The virtual desktop's origin and size, or `None` if either dimension is non-positive
+/// (no monitors attached is the realistic cause).
+pub(crate) unsafe fn virtual_screen_metrics() -> Option<(i32, i32, i32, i32)> {
+    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    (vw > 0 && vh > 0).then_some((vx, vy, vw, vh))
+}
+
 pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     if let Ok(mut st) = EYE_STASH.lock() {
         st.clear();
@@ -223,13 +233,9 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
         *h = sagethumbs2k_core::settings::eyedropper_history();
     }
     // Snapshot the whole virtual screen into a memory DC.
-    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if vw <= 0 || vh <= 0 {
+    let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
         return;
-    }
+    };
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);

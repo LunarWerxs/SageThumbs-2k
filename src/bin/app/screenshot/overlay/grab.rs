@@ -1,16 +1,7 @@
 //! Taking the picture: freeze the screen into a DC, build the overlay state, run its message loop, flash.
 
 use super::*;
-
-/// The virtual desktop's origin and size, or `None` if either dimension is non-positive
-/// (no monitors attached is the realistic cause).
-pub(super) unsafe fn virtual_screen_metrics() -> Option<(i32, i32, i32, i32)> {
-    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    (vw > 0 && vh > 0).then_some((vx, vy, vw, vh))
-}
+use crate::eyedropper::virtual_screen_metrics;
 
 /// Release the GDI objects of a failed full-screen setup: logs `msg` (the caller's
 /// diagnosable abort message), then deletes the memory DC and bitmap and releases the
@@ -311,13 +302,9 @@ pub(crate) unsafe fn capture_instant() {
     if !countdown_delay() {
         return;
     }
-    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if vw <= 0 || vh <= 0 {
+    let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
         return;
-    }
+    };
     let screen = GetDC(None);
     // Same null-check as run_capture_inner's screen-freeze (A139): a GDI failure must not
     // fall through to SelectObject/BitBlt on a null handle.
