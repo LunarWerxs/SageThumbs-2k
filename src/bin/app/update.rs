@@ -69,6 +69,27 @@ fn parse_ver(s: &str) -> Option<(u32, u32, u32)> {
     Some((maj, min, pat))
 }
 
+/// Assemble a [`LatestRelease`] from a release JSON object. The tag is passed already
+/// stripped of any leading `v`, the publication date is read from `published_field` as
+/// ISO-8601, and `security_field` is handed to `security`, which knows whether that field
+/// holds GitHub's release notes text or the Worker's boolean.
+fn latest_release(
+    tag: String,
+    json: &serde_json::Value,
+    published_field: &str,
+    security_field: &str,
+    security: impl FnOnce(&serde_json::Value) -> bool,
+) -> LatestRelease {
+    LatestRelease {
+        tag,
+        published_unix: json
+            .get(published_field)
+            .and_then(|v| v.as_str())
+            .and_then(crate::license::parse_iso_unix),
+        security: json.get(security_field).is_some_and(security),
+    }
+}
+
 /// Synchronously query GitHub for the latest release and compare to this build. Bounded
 /// by the fetch's own per-phase timeout, so a dead network returns `Failed` quickly.
 pub(crate) fn check() -> UpdateCheck {
@@ -89,17 +110,13 @@ pub(crate) fn check() -> UpdateCheck {
             // GitHub's own release object on this fallback path, so a machine that reaches
             // GitHub but not the Worker still gets an honest window decision instead of a
             // date-less "offer it to everyone".
-            UpdateCheck::Available(LatestRelease {
-                tag: tag.trim_start_matches(['v', 'V']).to_string(),
-                published_unix: json
-                    .get("published_at")
-                    .and_then(|v| v.as_str())
-                    .and_then(crate::license::parse_iso_unix),
-                security: json
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(is_security_body),
-            })
+            UpdateCheck::Available(latest_release(
+                tag.trim_start_matches(['v', 'V']).to_string(),
+                &json,
+                "published_at",
+                "body",
+                |v| v.as_str().is_some_and(is_security_body),
+            ))
         }
         (Some(_), Some(_)) => UpdateCheck::UpToDate,
         _ => UpdateCheck::Failed, // unparseable tag — don't guess
@@ -356,17 +373,13 @@ fn latest_from_worker() -> Option<LatestRelease> {
     if tag.is_empty() {
         return None;
     }
-    Some(LatestRelease {
-        tag: tag.to_string(),
-        published_unix: json
-            .get("latestPublishedAt")
-            .and_then(|v| v.as_str())
-            .and_then(crate::license::parse_iso_unix),
-        security: json
-            .get("latestSecurity")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    })
+    Some(latest_release(
+        tag.to_string(),
+        &json,
+        "latestPublishedAt",
+        "latestSecurity",
+        |v| v.as_bool().unwrap_or(false),
+    ))
 }
 
 /// Has the network-check throttle expired? A cheap disk read, no network — the guard the
