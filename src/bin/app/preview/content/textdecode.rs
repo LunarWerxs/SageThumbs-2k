@@ -245,6 +245,22 @@ fn decode_legacy(bytes: &[u8]) -> String {
     use windows::Win32::Globalization::GetACP;
 
     let acp = unsafe { GetACP() };
+    if let Some(s) = pick_best_dbcs(bytes, acp) {
+        return s;
+    }
+
+    // No double-byte reading held up. Fall back to the system codepage — correct for the
+    // single-byte locales (Cyrillic, Greek, Turkish, Vietnamese, Arabic, Thai) where a user's
+    // own files match their own ACP — and finally to a lossy 1252, which maps every byte and so
+    // always yields something readable instead of U+FFFD soup.
+    decode_codepage(bytes, acp, true)
+        .or_else(|| decode_codepage(bytes, acp, false))
+        .or_else(|| decode_codepage(bytes, 1252, false))
+        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Score candidate double-byte codepages and return the best decode if one stands up.
+fn pick_best_dbcs(bytes: &[u8], acp: u32) -> Option<String> {
     // ACP first when it's double-byte, so it wins ties; then the rest, minus any duplicate.
     let mut candidates: Vec<u32> = Vec::with_capacity(DBCS_CODEPAGES.len() + 1);
     if is_dbcs(acp) {
@@ -266,37 +282,27 @@ fn decode_legacy(bytes: &[u8]) -> String {
             best = Some((score, s));
         }
     }
-    if let Some((score, s)) = best {
-        // A short buffer starves the majority/dominance check of samples: a single accented
-        // Latin-1 byte followed by an ordinary ASCII letter (the shape of "caf\xE9e" or
-        // "Stra\xDFe") can happen to be a validly-assigned DBCS lead/trail pair, and with only
-        // ONE non-ASCII character in the whole buffer, "100% of the non-ASCII content looks
-        // like CJK" is trivially true. That is not evidence at this size. The tell is the
-        // trail byte: a Latin-1 accent only ever pairs with the plain ASCII letter after it,
-        // while the hanzi a short Chinese line is made of pair high byte with high byte. So
-        // below the rescue threshold a non-dominant reading (no kana or hangul carrying it)
-        // that had to swallow an ASCII byte as a trail is treated as inconclusive and the
-        // system code page is preferred; a reading built from high-high pairs stands.
-        let short_and_inconclusive = bytes.len() < SHORT_BUFFER_RESCUE_BYTES
-            && score < CJK_DOMINANT_BONUS
-            && pairs_an_ascii_trail(bytes);
-        if !short_and_inconclusive {
-            return s;
-        }
-        if let Some(acp_s) = decode_codepage(bytes, acp, true) {
-            return acp_s;
-        }
-        return s;
+    let (score, s) = best?;
+    // A short buffer starves the majority/dominance check of samples: a single accented
+    // Latin-1 byte followed by an ordinary ASCII letter (the shape of "caf\xE9e" or
+    // "Stra\xDFe") can happen to be a validly-assigned DBCS lead/trail pair, and with only
+    // ONE non-ASCII character in the whole buffer, "100% of the non-ASCII content looks
+    // like CJK" is trivially true. That is not evidence at this size. The tell is the
+    // trail byte: a Latin-1 accent only ever pairs with the plain ASCII letter after it,
+    // while the hanzi a short Chinese line is made of pair high byte with high byte. So
+    // below the rescue threshold a non-dominant reading (no kana or hangul carrying it)
+    // that had to swallow an ASCII byte as a trail is treated as inconclusive and the
+    // system code page is preferred; a reading built from high-high pairs stands.
+    let short_and_inconclusive = bytes.len() < SHORT_BUFFER_RESCUE_BYTES
+        && score < CJK_DOMINANT_BONUS
+        && pairs_an_ascii_trail(bytes);
+    if !short_and_inconclusive {
+        return Some(s);
     }
-
-    // No double-byte reading held up. Fall back to the system codepage — correct for the
-    // single-byte locales (Cyrillic, Greek, Turkish, Vietnamese, Arabic, Thai) where a user's
-    // own files match their own ACP — and finally to a lossy 1252, which maps every byte and so
-    // always yields something readable instead of U+FFFD soup.
-    decode_codepage(bytes, acp, true)
-        .or_else(|| decode_codepage(bytes, acp, false))
-        .or_else(|| decode_codepage(bytes, 1252, false))
-        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+    if let Some(acp_s) = decode_codepage(bytes, acp, true) {
+        return Some(acp_s);
+    }
+    Some(s)
 }
 
 /// The double-byte codepages worth testing, in preference order. These are the encodings
@@ -361,26 +367,15 @@ fn cjk_score(s: &str) -> i64 {
     // counted as plausible but kept out of the fractions.
     let (mut ideo, mut kana, mut hangul, mut punct, mut bad, mut non_ascii) = (0i64, 0, 0, 0, 0, 0);
     for ch in s.chars().take(20_000) {
-        let c = ch as u32;
-        if c < 0x80 {
-            continue;
-        }
-        non_ascii += 1;
-        match c {
-            0x3040..=0x30FF => kana += 1,
-            0xAC00..=0xD7A3 => hangul += 1,
-            0x4E00..=0x9FFF => ideo += 1,
-            0x3000..=0x303F | 0xFF01..=0xFF60 | 0xFFE0..=0xFFE6 => punct += 1,
-            // Halfwidth katakana is DELIBERATELY not kana: bytes 0xA1–0xDF decode to it under
-            // Shift-JIS unconditionally, so any high-byte run validates as a katakana string and
-            // would otherwise hijack every Chinese and Korean file on the machine.
-            0xFF61..=0xFF9F => bad += 1,
-            // Private use, specials, rare extension and compatibility blocks: what a WRONG
-            // table produces.
-            0xE000..=0xF8FF | 0xFFF0..=0xFFFF => bad += 3,
-            0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x2_0000..=0x3_FFFF => bad += 2,
-            _ => bad += 1,
-        }
+        tally_cjk_char(
+            ch,
+            &mut non_ascii,
+            &mut ideo,
+            &mut kana,
+            &mut hangul,
+            &mut punct,
+            &mut bad,
+        );
     }
     if non_ascii == 0 {
         return 0; // pure ASCII — a double-byte reading adds nothing over plain UTF-8
@@ -399,6 +394,39 @@ fn cjk_score(s: &str) -> i64 {
     let dominant = letters > 0 && ((hangul * 20 >= letters * 13) || (kana * 20 >= letters * 3));
     let bonus = if dominant { CJK_DOMINANT_BONUS } else { 0 };
     (good - bad + bonus).max(1)
+}
+
+/// Tally one character into [`cjk_score`]'s script counters: ASCII is skipped, every other
+/// char bumps `non_ascii` and exactly one script/quality bucket.
+fn tally_cjk_char(
+    ch: char,
+    non_ascii: &mut i64,
+    ideo: &mut i64,
+    kana: &mut i64,
+    hangul: &mut i64,
+    punct: &mut i64,
+    bad: &mut i64,
+) {
+    let c = ch as u32;
+    if c < 0x80 {
+        return;
+    }
+    *non_ascii += 1;
+    match c {
+        0x3040..=0x30FF => *kana += 1,
+        0xAC00..=0xD7A3 => *hangul += 1,
+        0x4E00..=0x9FFF => *ideo += 1,
+        0x3000..=0x303F | 0xFF01..=0xFF60 | 0xFFE0..=0xFFE6 => *punct += 1,
+        // Halfwidth katakana is DELIBERATELY not kana: bytes 0xA1–0xDF decode to it under
+        // Shift-JIS unconditionally, so any high-byte run validates as a katakana string and
+        // would otherwise hijack every Chinese and Korean file on the machine.
+        0xFF61..=0xFF9F => *bad += 1,
+        // Private use, specials, rare extension and compatibility blocks: what a WRONG
+        // table produces.
+        0xE000..=0xF8FF | 0xFFF0..=0xFFFF => *bad += 3,
+        0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x2_0000..=0x3_FFFF => *bad += 2,
+        _ => *bad += 1,
+    }
 }
 
 /// Cap any single line at `max` chars (so one minified/no-newline line can't blow up layout).

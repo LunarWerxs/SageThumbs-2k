@@ -204,6 +204,15 @@ unsafe fn scaled_for(rd: &RenderData, dw: i32, dh: i32) -> Option<HBITMAP> {
     let (sw, sh) = (rd.bw as usize, rd.bh as usize);
     let src = core::slice::from_raw_parts(rd.src, sw * sh * 4);
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, (dw * dh) as usize * 4);
+    box_resample(src, dst, sw, sh, dw, dh);
+    if let Some((_, _, old)) = rd.scaled.borrow_mut().replace((dw, dh, out)) {
+        let _ = DeleteObject(old.into());
+    }
+    Some(out)
+}
+
+/// Box-filter (true area average) the `sw`x`sh` BGRA `src` down into the `dw`x`dh` `dst`.
+fn box_resample(src: &[u8], dst: &mut [u8], sw: usize, sh: usize, dw: i32, dh: i32) {
     // Source span of each destination row/column, precomputed so the inner loop stays tight.
     let xs: Vec<(usize, usize)> = (0..dw as usize)
         .map(|x| {
@@ -235,10 +244,6 @@ unsafe fn scaled_for(rd: &RenderData, dw: i32, dh: i32) -> Option<HBITMAP> {
             dst[o + 3] = (a / n) as u8;
         }
     }
-    if let Some((_, _, old)) = rd.scaled.borrow_mut().replace((dw, dh, out)) {
-        let _ = DeleteObject(old.into());
-    }
-    Some(out)
 }
 
 /// Would drawing `rd` into `rc` at `zoom` magnify its bitmap, i.e. is the render a codec-scaled
