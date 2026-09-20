@@ -108,7 +108,9 @@ def main():
         _rs.die("MISSING: " + ", ".join(sorted(missing)))
     keep, moved, total = carve(lines, found)
     at = insert_point(keep)
-    keep[at:at] = [f"mod {child};", f"use {child}::*;"] + reexports(lines, found, child)
+    stem = os.path.basename(rel)[:-3]
+    decl = [f'#[path = "{stem}/{child}.rs"]'] if _rs.is_named_crate_root(rel) else []
+    keep[at:at] = decl + [f"mod {child};", f"use {child}::*;"] + reexports(lines, found, child)
     target, beside = _rs.child_target(path, child)
     doc = _rs.flag_value(args, "--doc")
     body = ([f"//! {doc}", ""] if doc else []) + ["use super::*;", ""] + _rs.moved_body(moved, beside)

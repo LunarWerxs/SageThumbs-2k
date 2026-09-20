@@ -26,11 +26,18 @@ def write_lines(path, lines, nl):
         fh.write(nl.join(lines))
 
 
+def is_named_crate_root(path):
+    """A `tests/x.rs` or `src/bin/x.rs`: a crate root whose children would land BESIDE it and be
+    taken by Cargo for crates of their own, so they need `#[path = "x/child.rs"]` instead."""
+    parts = os.path.normpath(path).replace("\\", "/").split("/")
+    return len(parts) >= 2 and (parts[-2] == "tests" or (len(parts) >= 3 and parts[-3:-1] == ["src", "bin"]))
+
+
 def child_target(path, name, beside=False):
     """(path of child module `name`, whether it sits BESIDE the parent file).
 
     A `mod.rs` or a crate root owns its directory, so its children sit beside it; any other
-    `foo.rs` keeps its children in `foo/`."""
+    `foo.rs` keeps its children in `foo/` (a named crate root too, declared with `#[path]`)."""
     base, fname = os.path.split(path)
     beside = beside or fname in ROOT_FILES
     if beside:
