@@ -272,6 +272,38 @@ pub(super) unsafe fn paint_lines(
     y - y0
 }
 
+/// Draw one line's already-tokenized `runs`, taking the per-line draw geometry from `ctx` and
+/// `line` — the cached-run fast path and the freshly-lexed path in [`paint_lines`] differ only in
+/// where `runs` came from.
+unsafe fn draw_line_runs(
+    ctx: &PaintCtx,
+    sink: Option<&mut LineSel>,
+    text: &str,
+    line: &LineCtx,
+    runs: &[(Tag, &str)],
+) {
+    draw_visible_line(
+        ctx.hdc,
+        sink,
+        text,
+        line.line_start,
+        ctx.sel,
+        ctx.code_x,
+        ctx.code_right,
+        line.y,
+        ctx.line_h,
+        ctx.char_w,
+        ctx.sel_bg,
+        line.line_no,
+        ctx.x,
+        ctx.gutter_w,
+        ctx.gutter_pad,
+        ctx.gutter_fg,
+        runs,
+        ctx.colors,
+    );
+}
+
 /// Draw line `line.line_no0` purely from the tokenized-run cache, when this call is a cache HIT
 /// and the line is visible. Returns whether it drew — `false` means the caller must fall through
 /// to the real lexer (see [`lex_and_draw_line`]).
@@ -299,26 +331,7 @@ unsafe fn try_draw_cached_line(
     };
     let text = raw.strip_suffix('\r').unwrap_or(raw);
     let runs: Vec<(Tag, &str)> = owned.iter().map(|(t, s)| (*t, s.as_str())).collect();
-    draw_visible_line(
-        ctx.hdc,
-        sink,
-        text,
-        line.line_start,
-        ctx.sel,
-        ctx.code_x,
-        ctx.code_right,
-        line.y,
-        ctx.line_h,
-        ctx.char_w,
-        ctx.sel_bg,
-        line.line_no,
-        ctx.x,
-        ctx.gutter_w,
-        ctx.gutter_pad,
-        ctx.gutter_fg,
-        &runs,
-        ctx.colors,
-    );
+    draw_line_runs(ctx, sink, text, line, &runs);
     true
 }
 
@@ -370,26 +383,7 @@ unsafe fn lex_and_draw_line(
             .push(runs.iter().map(|&(t, s)| (t, s.to_owned())).collect());
     }
     if line.visible {
-        draw_visible_line(
-            ctx.hdc,
-            sink,
-            text,
-            line.line_start,
-            ctx.sel,
-            ctx.code_x,
-            ctx.code_right,
-            line.y,
-            ctx.line_h,
-            ctx.char_w,
-            ctx.sel_bg,
-            line.line_no,
-            ctx.x,
-            ctx.gutter_w,
-            ctx.gutter_pad,
-            ctx.gutter_fg,
-            &runs,
-            ctx.colors,
-        );
+        draw_line_runs(ctx, sink, text, line, &runs);
     }
 }
 
