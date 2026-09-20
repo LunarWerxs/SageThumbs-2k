@@ -60,13 +60,17 @@ $rootBasenames = @('mod.rs', 'lib.rs', 'main.rs')
 $rootParents = @('bin', 'tests', 'benches', 'examples')
 # Package roots: every directory holding a tracked Cargo.toml ('' for the workspace root).
 $packageRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+# The REAL build scripts, repo-relative. A manifest may point `build` anywhere - this repo's own
+# root package says `build = "src/build.rs"` - so "is it named build.rs at a package root" is not
+# the question; "is it the path the manifest names" is.
+$buildScripts = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
 function Test-OwnsOwnDirectory([string]$rel) {
     $leaf = Split-Path $rel -Leaf
     if ($rootBasenames -contains $leaf) { return $true }
     $dir = (Split-Path $rel -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
-    # A Cargo build script, and only a real one: `<pkg>/build.rs`, never a module called `build`.
-    if ($leaf -eq 'build.rs') { return $packageRoots.Contains($dir) }
+    # A Cargo build script, and only a real one - never a module that happens to be called `build`.
+    if ($leaf -eq 'build.rs') { return ($buildScripts.Contains($rel) -or $packageRoots.Contains($dir)) }
     # `<pkg>/src/bin/x.rs`, `<pkg>/tests/x.rs`, `<pkg>/benches/x.rs`, `<pkg>/examples/x.rs`.
     $parent = Split-Path $dir -Leaf
     if ($rootParents -notcontains $parent) { return $false }
@@ -93,8 +97,14 @@ try {
     $trackedSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$tracked, [System.StringComparer]::OrdinalIgnoreCase)
 
     foreach ($t in $tracked) {
-        if ((Split-Path $t -Leaf) -eq 'Cargo.toml') {
-            [void]$packageRoots.Add((Split-Path $t -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/'))
+        if ((Split-Path $t -Leaf) -ne 'Cargo.toml') { continue }
+        $pkgDir = (Split-Path $t -Parent).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+        [void]$packageRoots.Add($pkgDir)
+        foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $root $t))) {
+            if ($line -match '^\s*build\s*=\s*"([^"]+)"') {
+                $p = $Matches[1].Replace([char]92, [char]47).TrimStart('.', '/')
+                [void]$buildScripts.Add($(if ($pkgDir) { "$pkgDir/$p" } else { $p }))
+            }
         }
     }
     if ($packageRoots.Count -eq 0) {
