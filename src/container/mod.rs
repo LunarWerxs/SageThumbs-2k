@@ -105,11 +105,6 @@ pub(crate) fn xcf_from_bytes_scaled(
     xcf::extract_scaled(bytes, target_edge)
 }
 
-/// Cheap magic test for the above, so a caller can route before it commits to a read.
-pub(crate) fn looks_like_xcf(bytes: &[u8]) -> bool {
-    xcf::looks_like_xcf(bytes)
-}
-
 /// Decode a DjVu cover for a caller that knows the longest side it can use.
 ///
 /// Unlike [`xcf_from_bytes_scaled`] this is NOT about doing less work: a DjVu render costs what
@@ -127,13 +122,13 @@ pub(crate) fn djvu_from_bytes_scaled(
     djvu::extract_scaled(bytes, target_edge)
 }
 
-/// Cheap magic test for the above (IFF85 "AT&TFORM"), so a caller can route before it commits.
-pub(crate) fn looks_like_djvu(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"AT&TFORM")
-}
 // Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
+mod magic;
 mod waveform;
 mod zipfmt;
+use magic::*;
+pub(crate) use magic::{is_7z, looks_like_djvu, looks_like_raster, looks_like_xcf};
+pub use magic::{is_generic_archive_magic, looks_like_audio};
 // Synthetic, structurally-valid seeds + direct fuzz entry points for the extractors above.
 // Test-only. Lives inside `container` because the format modules are private to it — see the
 // module docs for why CI needed this at all.
@@ -154,37 +149,6 @@ pub enum CoverOut {
 
 /// Max bytes we'll read for one cover entry (DarkThumbs' CBXMEM cap, 32 MiB).
 pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
-
-/// Do the leading bytes look like a raster image format our tiers can actually
-/// render (JPEG / PNG / GIF / BMP / WebP)? Container extractors use this to reject
-/// embedded previews we can't decode (e.g. EMF/WMF). Shared magic-byte predicate
-/// for `office`, `project`, and `mobi` so the accept set stays in one place.
-pub(crate) fn looks_like_raster(data: &[u8]) -> bool {
-    data.starts_with(&[0xFF, 0xD8, 0xFF]) // JPEG
-        || data.starts_with(&[0x89, b'P', b'N', b'G']) // PNG
-        || data.starts_with(b"GIF8") // GIF
-        || data.starts_with(b"BM") // BMP
-        || (data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP") // WebP
-        // Windows metafiles (EMF / placeable + memory WMF) — decodable via the magick
-        // tier (e.g. Visio docProps/thumbnail.emf). Shares decode::looks_like_metafile
-        // so the magic bytes live in exactly one place.
-        || crate::decode::looks_like_metafile(data)
-}
-
-/// ZIP-family signature (local-file / central-dir / end-of-central-dir headers).
-fn is_zip(b: &[u8]) -> bool {
-    b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06") || b.starts_with(b"PK\x07\x08")
-}
-
-/// 7-Zip signature.
-pub(crate) fn is_7z(b: &[u8]) -> bool {
-    b.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
-}
-
-/// RAR signature (RAR 1.5–4.x `Rar!\x1a\x07\x00` and RAR5 `Rar!\x1a\x07\x01\x00` share this prefix).
-fn is_rar(b: &[u8]) -> bool {
-    b.starts_with(b"Rar!\x1a\x07")
-}
 
 /// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
 /// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
@@ -217,13 +181,6 @@ pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
             .map(|e| (e.name, e.size, e.is_dir))
             .collect(),
     )
-}
-
-/// Does `head` (the first bytes of a file) look like an audio container that may
-/// carry embedded cover art? Lets the thumbnail provider take the memory-light
-/// seek path instead of reading the whole (possibly huge) file.
-pub fn looks_like_audio(head: &[u8]) -> bool {
-    audio::looks_like_audio(head)
 }
 
 /// Album art from a seekable reader (the shell's IStream). lofty seeks to the
@@ -564,14 +521,6 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
         return clip::extract_seek(reader);
     }
     None
-}
-
-/// Is `head` the signature of a generic archive we thumbnail (.zip / .7z / .rar)?
-/// The streamsrc archive branch uses this to decide the probe is worth a
-/// `Stat`-name check at all. RAR is included here even though it can't stream —
-/// its caller takes the bounded in-memory path instead.
-pub fn is_generic_archive_magic(head: &[u8]) -> bool {
-    is_zip(head) || is_7z(head) || is_rar(head)
 }
 
 /// Does streaming this archive need the FULL in-memory buffer? Only RAR: `rars`
