@@ -351,8 +351,10 @@ fn cleanup_failed_dest(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// Tell the shell to refresh `dir` (so a new subfolder / moved files appear).
-fn refresh_dir(dir: &Path) {
+/// Tell the shell to refresh `dir` (so a new subfolder / moved file appears, or a
+/// changed folder icon repaints). Shared with `verbs::actions::foldericon`, hence
+/// `pub(super)`.
+pub(super) fn refresh_dir(dir: &Path) {
     let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(once(0)).collect();
     unsafe {
         SHChangeNotify(

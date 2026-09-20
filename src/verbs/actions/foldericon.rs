@@ -118,15 +118,7 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     add_attrs(dir, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM);
 
     // Nudge the shell to repaint the folder with its new icon.
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(once(0)).collect();
-    unsafe {
-        SHChangeNotify(
-            SHCNE_UPDATEDIR,
-            SHCNF_PATHW,
-            Some(wide.as_ptr() as *const c_void),
-            None,
-        );
-    }
+    crate::verbs::fileops::refresh_dir(dir);
     Ok(())
 }
 

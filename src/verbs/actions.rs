@@ -119,7 +119,6 @@ use windows::Win32::Storage::FileSystem::{
     GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY,
     FILE_ATTRIBUTE_SYSTEM, FILE_FLAGS_AND_ATTRIBUTES,
 };
-use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEDIR, SHCNF_PATHW};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, MessageBoxW, SystemParametersInfoW, MB_ICONWARNING, MB_OK,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE,
