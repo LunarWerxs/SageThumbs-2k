@@ -408,27 +408,27 @@ jobs:
               -TargetDir $target `
               -ArtifactDir (Join-Path $env:RUNNER_TEMP 'arm64-shell-surfaces')
 
-  # Cargo.toml publishes 1.93 as the minimum supported Rust version. The main job
+  # Cargo.toml publishes 1.95 as the minimum supported Rust version. The main job
   # intentionally follows current stable, so exercise the lower bound separately
   # instead of letting source/API drift make the declared MSRV fictional.
   msrv:
-    name: MSRV (Rust 1.93)
+    name: MSRV (Rust 1.95)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Rust 1.93 MSVC
-        run: rustup toolchain install 1.93.0-x86_64-pc-windows-msvc --profile minimal
+      - name: Install Rust 1.95 MSVC
+        run: rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal
       - name: Check workspace at MSRV (no features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked --workspace
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked --workspace
       # A no-features check only proves the FLOOR of the API surface, not what actually ships.
       # build-test always builds with these feature combinations (:90-93 above); an MSRV-
       # incompatible API reachable only behind one of them would pass the bare check above and
-      # only break for a real user building at the 1.93 floor, since build-test itself floats
-      # on whatever `stable` currently resolves to (rust-toolchain.toml) and never pins 1.93.
+      # only break for a real user building at the 1.95 floor, since build-test itself floats
+      # on whatever `stable` currently resolves to (rust-toolchain.toml) and never pins 1.95.
       - name: Check sagethumbs2k at MSRV (shipping features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
       - name: Check sagethumbs2k-dll at MSRV (shipping features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
 
   # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
   # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count

@@ -48,7 +48,15 @@ djvu-rs = { path = "crates/vendor/djvu-rs" }
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
 version = "3.2.0"
-rust-version = "1.93"   # sevenz-rust2 0.21.4 is the highest MSRV in the locked default graph
+rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the note below
+# Raised from 1.93 on 2026-09-20, on the owner's word. The old floor was set by
+# sevenz-rust2 (the comment said 0.21.4; the lock had moved to 0.22.2, which also declares
+# 1.93 - so the number was right and its evidence was stale). What it cost: the entire
+# windows-* 0.100 family declares 1.95, so FIVE majors could not be taken at all. The sweep
+# measured that on 2026-09-20 - cargo check, cargo test and the msrv leg all red together -
+# and recorded the batch in Odin's holds.yaml rather than rediscovering it every run.
+# 1.95 is the lowest floor that admits them. When raising again, change .github/workflows/
+# ci.yml's msrv job in the same commit: it pins the toolchain by exact version four times.
 
 [package]
 name = "sagethumbs2k"
