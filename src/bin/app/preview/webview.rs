@@ -265,6 +265,40 @@ unsafe fn on_web_resource_requested(
     Ok(())
 }
 
+/// Unwrap an event handler's `args` payload and read its requested URI. Returns early from the
+/// enclosing handler with `Ok(())` when the event carries no args; otherwise expands to
+/// `(args, uri)`, the URI read through the shared `read_event_uri` dance. The two guards use it
+/// over their different event-argument types, which share no `Uri` trait in scope.
+macro_rules! event_args_uri {
+    ($args:expr) => {{
+        let Some(args) = $args else {
+            return Ok(());
+        };
+        let mut uri_p = PWSTR::null();
+        let res = args.Uri(&mut uri_p);
+        let uri = read_event_uri(res, uri_p);
+        (args, uri)
+    }};
+}
+
+/// Hand an `http(s)` URI to the OS default browser via `ShellExecuteW` — the allow-and-launch
+/// shape shared by the navigation and new-window guards. Any other URI (an arbitrary protocol
+/// handler, a UNC `file://`) is ignored outright.
+unsafe fn launch_http_in_browser(parent: HWND, uri: &str) {
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let w = HSTRING::from(uri);
+        let _ = ShellExecuteW(
+            Some(parent),
+            w!("open"),
+            PCWSTR(w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
 /// `NavigationStarting` handler body. The resource filter installed alongside this blocks a
 /// clicked link's own navigation too (Document is one of its ALL contexts), which just swaps in
 /// a blank 403, i.e. "does nothing" from the user's seat; intercepting navigation directly is
@@ -278,28 +312,12 @@ unsafe fn on_navigation_starting(
     parent: HWND,
     args: Option<ICoreWebView2NavigationStartingEventArgs>,
 ) -> windows::core::Result<()> {
-    let Some(args) = args else {
-        return Ok(());
-    };
-    let mut uri_p = PWSTR::null();
-    let res = args.Uri(&mut uri_p);
-    let uri = read_event_uri(res, uri_p);
+    let (args, uri) = event_args_uri!(args);
     if is_local_file_uri(&uri) {
         return Ok(()); // the page load itself, or a same-file anchor: unchanged
     }
     let _ = args.SetCancel(true);
-    let lower = uri.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        let w = HSTRING::from(uri.as_str());
-        let _ = ShellExecuteW(
-            Some(parent),
-            w!("open"),
-            PCWSTR(w.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
+    launch_http_in_browser(parent, &uri);
     Ok(())
 }
 
@@ -312,25 +330,9 @@ unsafe fn on_new_window_requested(
     parent: HWND,
     args: Option<ICoreWebView2NewWindowRequestedEventArgs>,
 ) -> windows::core::Result<()> {
-    let Some(args) = args else {
-        return Ok(());
-    };
-    let mut uri_p = PWSTR::null();
-    let res = args.Uri(&mut uri_p);
-    let uri = read_event_uri(res, uri_p);
+    let (args, uri) = event_args_uri!(args);
     let _ = args.SetHandled(true);
-    let lower = uri.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        let w = HSTRING::from(uri.as_str());
-        let _ = ShellExecuteW(
-            Some(parent),
-            w!("open"),
-            PCWSTR(w.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
+    launch_http_in_browser(parent, &uri);
     Ok(())
 }
 
