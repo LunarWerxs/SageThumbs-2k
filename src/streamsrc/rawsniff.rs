@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) const RAW_PREFIX_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) const RAW_SNIFF_BYTES: usize = 1024 * 1024;
