@@ -93,23 +93,33 @@ pub(super) fn escape_raw_rgbe_marker(mut pixel: [u8; 4], first_in_scanline: bool
     pixel
 }
 
+/// Length of the run of identical `component` samples starting at `index`.
+///
+/// Capped at the Radiance RLE limit of 127, so a run byte of `128 + run` still
+/// denotes a run rather than a literal.
+#[inline]
+fn hdr_component_run(scanline: &[[u8; 4]], index: usize, component: usize) -> usize {
+    const MAX_RUN: usize = 127;
+    let value = scanline[index][component];
+    scanline[index..]
+        .iter()
+        .take(MAX_RUN)
+        .take_while(|pixel| pixel[component] == value)
+        .count()
+}
+
 pub(super) fn write_hdr_component_rle<W: Write>(
     writer: &mut W,
     scanline: &[[u8; 4]],
     component: usize,
 ) -> std::io::Result<()> {
-    const MAX_RUN: usize = 127;
     const MAX_LITERAL: usize = 128;
 
     let mut index = 0;
     let mut literal = [0u8; MAX_LITERAL];
     while index < scanline.len() {
         let value = scanline[index][component];
-        let run = scanline[index..]
-            .iter()
-            .take(MAX_RUN)
-            .take_while(|pixel| pixel[component] == value)
-            .count();
+        let run = hdr_component_run(scanline, index, component);
         if run >= 3 {
             writer.write_all(&[128 + run as u8, value])?;
             index += run;
@@ -118,12 +128,7 @@ pub(super) fn write_hdr_component_rle<W: Write>(
 
         let mut literal_len = 0;
         while index < scanline.len() && literal_len < MAX_LITERAL {
-            let value = scanline[index][component];
-            let run = scanline[index..]
-                .iter()
-                .take(MAX_RUN)
-                .take_while(|pixel| pixel[component] == value)
-                .count();
+            let run = hdr_component_run(scanline, index, component);
             if run >= 3 {
                 break;
             }
@@ -223,51 +228,18 @@ pub(super) fn pam_layout(img: &DynamicImage) -> (usize, &'static str, bool) {
     }
 }
 
+/// Narrow canonical RGBA `u16` samples to PAM's native tuple of `depth` channels.
+///
+/// PAM keeps the source's own channel model: grayscale uses channel 0 alone,
+/// grayscale+alpha moves its alpha sample up to channel 1, and RGB(A) keeps the
+/// leading channels; only the first `depth` samples are ever written.
 #[inline]
-pub(super) fn pam_u16_at(img: &DynamicImage, x: u32, y: u32) -> [u16; 4] {
-    #[allow(unreachable_patterns)]
-    match img {
-        DynamicImage::ImageLuma8(pixels) => {
-            let [l] = pixels.get_pixel(x, y).0;
-            [u8_to_u16(l), 0, 0, 0]
-        }
-        DynamicImage::ImageLumaA8(pixels) => {
-            let [l, a] = pixels.get_pixel(x, y).0;
-            [u8_to_u16(l), u8_to_u16(a), 0, 0]
-        }
-        DynamicImage::ImageRgb8(pixels) => {
-            let [r, g, b] = pixels.get_pixel(x, y).0;
-            [u8_to_u16(r), u8_to_u16(g), u8_to_u16(b), 0]
-        }
-        DynamicImage::ImageRgba8(pixels) => {
-            let [r, g, b, a] = pixels.get_pixel(x, y).0;
-            [u8_to_u16(r), u8_to_u16(g), u8_to_u16(b), u8_to_u16(a)]
-        }
-        DynamicImage::ImageLuma16(pixels) => {
-            let [l] = pixels.get_pixel(x, y).0;
-            [l, 0, 0, 0]
-        }
-        DynamicImage::ImageLumaA16(pixels) => {
-            let [l, a] = pixels.get_pixel(x, y).0;
-            [l, a, 0, 0]
-        }
-        DynamicImage::ImageRgb16(pixels) => {
-            let [r, g, b] = pixels.get_pixel(x, y).0;
-            [r, g, b, 0]
-        }
-        DynamicImage::ImageRgba16(pixels) => pixels.get_pixel(x, y).0,
-        DynamicImage::ImageRgb32F(pixels) => {
-            let [r, g, b] = pixels.get_pixel(x, y).0;
-            [f32_to_u16(r), f32_to_u16(g), f32_to_u16(b), 0]
-        }
-        DynamicImage::ImageRgba32F(pixels) => {
-            let [r, g, b, a] = pixels.get_pixel(x, y).0;
-            [f32_to_u16(r), f32_to_u16(g), f32_to_u16(b), f32_to_u16(a)]
-        }
-        _ => {
-            let [r, g, b, a] = image::GenericImageView::get_pixel(img, x, y).0;
-            [u8_to_u16(r), u8_to_u16(g), u8_to_u16(b), u8_to_u16(a)]
-        }
+fn pam_tuple(samples: [u16; 4], depth: usize) -> [u16; 4] {
+    match depth {
+        1 => [samples[0], 0, 0, 0],
+        2 => [samples[0], samples[3], 0, 0],
+        3 => [samples[0], samples[1], samples[2], 0],
+        _ => samples,
     }
 }
 
@@ -304,7 +276,7 @@ fn write_pam_pixels<W: Write>(
 ) -> std::io::Result<()> {
     for y in 0..img.height() {
         for x in 0..img.width() {
-            let samples = pam_u16_at(img, x, y);
+            let samples = pam_tuple(rgba_u16_at(img, x, y), depth);
             for sample in &samples[..depth] {
                 if wide {
                     writer.write_all(&sample.to_be_bytes())?;
