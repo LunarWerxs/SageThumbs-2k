@@ -201,13 +201,12 @@ fn find_entry_ext<R: Read + Seek>(zip: &mut ZipArchive<R>, dot_ext: &str) -> Opt
         .map(str::to_string)
 }
 
-pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry> {
-    // Bounded like `list_bytes` below: this also runs on every plain .zip Explorer
-    // thumbnails now, so a directory declaring millions of entries must not drive
-    // millions of allocations before pick_covers ever filters (the cover pick then
-    // simply chooses among the first entries, same as the viewer's listing).
+/// Collect up to `max` central-directory entries as display [`Entry`]s. The bound is
+/// applied WHILE iterating, so a directory declaring millions of entries can't drive
+/// millions of allocations before `pick_covers` ever filters.
+fn entries_bounded<R: Read + Seek>(zip: &mut ZipArchive<R>, max: usize) -> Vec<Entry> {
     let mut out = Vec::new();
-    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
+    for i in 0..zip.len().min(max) {
         if let Ok(f) = zip.by_index(i) {
             out.push(Entry {
                 name: entry_display_name(&f),
@@ -219,22 +218,20 @@ pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry
     out
 }
 
+pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry> {
+    // Bounded like `list_bytes` below: this also runs on every plain .zip Explorer
+    // thumbnails now, so a directory declaring millions of entries must not drive
+    // millions of allocations before pick_covers ever filters (the cover pick then
+    // simply chooses among the first entries, same as the viewer's listing).
+    entries_bounded(zip, super::MAX_LIST_ENTRIES)
+}
+
 /// Open a ZIP-family archive from bytes and list up to `max` central-directory entries (no
 /// extraction). The `max` bound is applied WHILE collecting, so a crafted archive with millions of
 /// tiny entries can't drive millions of `String` allocations.
 pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
-    let mut out = Vec::new();
-    for i in 0..zip.len().min(max) {
-        if let Ok(f) = zip.by_index(i) {
-            out.push(Entry {
-                name: entry_display_name(&f),
-                is_dir: f.is_dir(),
-                size: f.size(),
-            });
-        }
-    }
-    Some(out)
+    Some(entries_bounded(&mut zip, max))
 }
 
 /// The listing DISPLAY name for an entry. `zip` parses the central directory's general-purpose
