@@ -46,6 +46,29 @@ unsafe fn settings_hwnd() -> Option<HWND> {
     OWNER.with(|o| o.get()).map(|p| HWND(p as *mut _))
 }
 
+/// The popup's client geometry in 96-DPI design px: the checklist fills everything above
+/// the footer, Reset sits at the left margin and Done at the right. Pure so the margin and
+/// footer arithmetic (`M`, the button height, the 10 px gap) is testable without a window.
+struct PopupLayout {
+    /// `(x, y, w, h)` of the re-parented checklist.
+    list: (i32, i32, i32, i32),
+    /// `(x, y, w, h)` of the Reset button.
+    reset: (i32, i32, i32, i32),
+    /// `(x, y, w, h)` of the Done button.
+    done: (i32, i32, i32, i32),
+}
+
+fn popup_layout(cw: i32, ch: i32) -> PopupLayout {
+    let btn_h = 28;
+    let list_h = ch - M * 2 - btn_h - 10;
+    let by = ch - M - btn_h;
+    PopupLayout {
+        list: (M, M, cw - M * 2, list_h),
+        reset: (M, by, 110, btn_h),
+        done: (cw - M - 96, by, 96, btn_h),
+    }
+}
+
 /// Take the checklist from Settings, fill the popup with it, and add Reset/Done.
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     use crate::win::{ctl, dpi_scale, dpi_unscale, BUTTON, IDOK};
@@ -64,15 +87,14 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // thing less directly; this is the actual inverse of `dpi_scale`.
     let cw = dpi_unscale(hwnd, rc.right - rc.left);
     let ch = dpi_unscale(hwnd, rc.bottom - rc.top);
-    let btn_h = 28;
-    let list_h = ch - M * 2 - btn_h - 10;
+    let lo = popup_layout(cw, ch);
     let _ = SetWindowPos(
         list,
         None,
-        dpi_scale(hwnd, M),
-        dpi_scale(hwnd, M),
-        dpi_scale(hwnd, cw - M * 2),
-        dpi_scale(hwnd, list_h),
+        dpi_scale(hwnd, lo.list.0),
+        dpi_scale(hwnd, lo.list.1),
+        dpi_scale(hwnd, lo.list.2),
+        dpi_scale(hwnd, lo.list.3),
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
     // The list arrives with whatever exact-fit height the page gave it; rounded corners
@@ -80,16 +102,15 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     super::restyle::round_corners(hwnd, list, 8);
     let _ = ShowWindow(list, SW_SHOW);
 
-    let by = ch - M - btn_h;
     ctl(
         hwnd,
         BUTTON,
         t("btn_menu_reset"),
         WINDOW_STYLE(0) | WS_TABSTOP,
-        M,
-        by,
-        110,
-        btn_h,
+        lo.reset.0,
+        lo.reset.1,
+        lo.reset.2,
+        lo.reset.3,
         ID_POP_RESET,
         hinst,
     );
@@ -98,10 +119,10 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         BUTTON,
         t("btn_done"),
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        cw - M - 96,
-        by,
-        96,
-        btn_h,
+        lo.done.0,
+        lo.done.1,
+        lo.done.2,
+        lo.done.3,
         IDOK,
         hinst,
     );
@@ -188,17 +209,34 @@ unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> L
     LRESULT(1)
 }
 
+/// What a `WM_COMMAND` id asks the popup to do. Anything other than Reset / Done (a stray
+/// id, the checklist's own forwarded notifications) must fall through untouched.
+#[derive(Debug, PartialEq, Eq)]
+enum PopupCommand {
+    Reset,
+    Close,
+    Ignore,
+}
+
+fn popup_command(id: i32) -> PopupCommand {
+    match id {
+        ID_POP_RESET => PopupCommand::Reset,
+        IDOK => PopupCommand::Close,
+        _ => PopupCommand::Ignore,
+    }
+}
+
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match crate::win::command_id(wparam) {
-        ID_POP_RESET => {
+    match popup_command(crate::win::command_id(wparam)) {
+        PopupCommand::Reset => {
             if let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
                 list::reset_menu_order(list);
             }
         }
-        IDOK => {
+        PopupCommand::Close => {
             let _ = DestroyWindow(hwnd);
         }
-        _ => {}
+        PopupCommand::Ignore => {}
     }
     LRESULT(0)
 }
@@ -213,4 +251,65 @@ unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
         let _ = SetParent(list, Some(settings));
     }
     LRESULT(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_checklist_span_keeps_both_side_margins() {
+        let lo = popup_layout(POP_W, POP_H);
+        assert_eq!(lo.list.0, M);
+        assert_eq!(lo.list.2, POP_W - M * 2);
+    }
+
+    #[test]
+    fn the_checklist_leaves_a_gap_above_the_footer_buttons() {
+        let lo = popup_layout(POP_W, POP_H);
+        let list_bottom = lo.list.1 + lo.list.3;
+        assert_eq!(
+            list_bottom + 10,
+            lo.reset.1,
+            "the footer must clear the list by exactly the 10 px gap"
+        );
+    }
+
+    #[test]
+    fn reset_and_done_share_the_footer_baseline_and_height() {
+        let lo = popup_layout(POP_W, POP_H);
+        assert_eq!(lo.reset.1, lo.done.1);
+        assert_eq!(lo.reset.3, lo.done.3);
+        assert_eq!(lo.reset.3, 28);
+    }
+
+    #[test]
+    fn reset_hugs_the_left_margin_and_done_the_right() {
+        let lo = popup_layout(POP_W, POP_H);
+        assert_eq!(lo.reset.0, M);
+        assert_eq!(lo.done.0 + lo.done.2, POP_W - M);
+    }
+
+    #[test]
+    fn the_checklist_still_fits_at_the_design_popup_height() {
+        let lo = popup_layout(POP_W, POP_H);
+        assert_eq!(lo.list.3, POP_H - M * 2 - 28 - 10);
+        assert!(lo.list.3 > 0);
+    }
+
+    #[test]
+    fn reset_maps_to_the_reset_action() {
+        assert_eq!(popup_command(ID_POP_RESET), PopupCommand::Reset);
+    }
+
+    #[test]
+    fn done_maps_to_the_close_action() {
+        assert_eq!(popup_command(IDOK), PopupCommand::Close);
+    }
+
+    #[test]
+    fn any_other_command_id_is_ignored() {
+        assert_eq!(popup_command(ID_MENU_ITEMS_LIST), PopupCommand::Ignore);
+        assert_eq!(popup_command(0), PopupCommand::Ignore);
+    }
 }
