@@ -84,25 +84,25 @@ pub(super) unsafe fn window_under(
     let mut h = GetTopWindow(None).ok()?;
     loop {
         let next = || GetWindow(h, GW_HWNDNEXT).ok();
-        if !window_is_candidate(h, overlay) {
-            h = next()?;
-            continue;
+        if let Some(r) = candidate_rect_at(h, overlay, screen) {
+            // First HIT in z-order decides — either it's a real window (answer) or the desktop
+            // shell (no hint at all; everything below it is covered by it anyway).
+            if is_desktop_shell(h) {
+                return None;
+            }
+            return clamp_to_overlay(r, vx, vy, vw, vh);
         }
-        let Some(r) = window_visual_bounds(h) else {
-            h = next()?;
-            continue;
-        };
-        if !point_in_rect(screen, r) {
-            h = next()?;
-            continue;
-        }
-        // First HIT in z-order decides — either it's a real window (answer) or the desktop
-        // shell (no hint at all; everything below it is covered by it anyway).
-        if is_desktop_shell(h) {
-            return None;
-        }
-        return clamp_to_overlay(r, vx, vy, vw, vh);
+        h = next()?;
     }
+}
+
+/// `h`'s visual bounds when `h` is a pick candidate whose rect contains `screen`; `None` means "skip `h` and keep looking down the z-order".
+unsafe fn candidate_rect_at(h: HWND, overlay: HWND, screen: POINT) -> Option<RECT> {
+    if !window_is_candidate(h, overlay) {
+        return None;
+    }
+    let r = window_visual_bounds(h)?;
+    point_in_rect(screen, r).then_some(r)
 }
 
 /// Whether `screen` (virtual-screen coordinates) falls inside `r`.
