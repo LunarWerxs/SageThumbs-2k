@@ -1927,6 +1927,21 @@ mod tests {
         hwnd
     }
 
+    /// A `test_window()` whose annotation buffer is already open with `text` — the setup
+    /// every `WM_CHAR` test needs before it can drive `shot_wndproc`.
+    unsafe fn typing_window(text: &str) -> HWND {
+        let hwnd = test_window();
+        let s = &mut *shot_ptr(hwnd);
+        s.typing = Some((POINT::default(), text.to_string()));
+        hwnd
+    }
+
+    /// The annotation buffer currently open in `hwnd`, or `None` if nothing is being typed.
+    unsafe fn typed_text(hwnd: HWND) -> Option<String> {
+        let s = &*shot_ptr(hwnd);
+        s.typing.as_ref().map(|(_, b)| b.clone())
+    }
+
     /// The keyboard focus model may only claim keys this window did nothing with, and it
     /// must claim ALL of them, because a key it does not list can never move focus no matter
     /// what the traversal code says. Every letter, every digit and every bracket has to stay
@@ -1962,16 +1977,9 @@ mod tests {
     #[test]
     fn wm_char_rejects_del_without_inserting_a_tofu_glyph() {
         unsafe {
-            let hwnd = test_window();
-            {
-                let s = &mut *shot_ptr(hwnd);
-                s.typing = Some((POINT::default(), String::new()));
-            }
+            let hwnd = typing_window("");
             shot_wndproc(hwnd, WM_CHAR, WPARAM(0x7F), LPARAM(0));
-            let buf = {
-                let s = &*shot_ptr(hwnd);
-                s.typing.as_ref().map(|(_, b)| b.clone())
-            };
+            let buf = typed_text(hwnd);
             assert_eq!(
                 buf,
                 Some(String::new()),
@@ -1986,16 +1994,9 @@ mod tests {
     #[test]
     fn wm_char_still_accepts_an_ordinary_character() {
         unsafe {
-            let hwnd = test_window();
-            {
-                let s = &mut *shot_ptr(hwnd);
-                s.typing = Some((POINT::default(), String::new()));
-            }
+            let hwnd = typing_window("");
             shot_wndproc(hwnd, WM_CHAR, WPARAM(b'A' as usize), LPARAM(0));
-            let buf = {
-                let s = &*shot_ptr(hwnd);
-                s.typing.as_ref().map(|(_, b)| b.clone())
-            };
+            let buf = typed_text(hwnd);
             assert_eq!(buf.as_deref(), Some("A"));
             let _ = DestroyWindow(hwnd);
         }
@@ -2007,11 +2008,7 @@ mod tests {
     #[test]
     fn enter_while_typing_inserts_a_newline_instead_of_closing_the_capture() {
         unsafe {
-            let hwnd = test_window();
-            {
-                let s = &mut *shot_ptr(hwnd);
-                s.typing = Some((POINT::default(), "line one".to_string()));
-            }
+            let hwnd = typing_window("line one");
             let consumed = handle_key(hwnd, VK_RETURN.0);
             assert!(
                 !consumed,
@@ -2027,10 +2024,7 @@ mod tests {
             }
             // The WM_CHAR(0x0D) a real Enter keypress generates must land the newline.
             shot_wndproc(hwnd, WM_CHAR, WPARAM(0x0D), LPARAM(0));
-            let buf = {
-                let s = &*shot_ptr(hwnd);
-                s.typing.as_ref().map(|(_, b)| b.clone())
-            };
+            let buf = typed_text(hwnd);
             assert_eq!(buf.as_deref(), Some("line one\n"));
             let _ = DestroyWindow(hwnd);
         }
@@ -2208,6 +2202,17 @@ mod tests {
         );
     }
 
+    /// A shot holding a single Number shape at `(x, y)`, ready for an undo test.
+    unsafe fn shot_with_number_at(x: i32, y: i32) -> Box<Shot> {
+        let mut s = test_shot();
+        s.shapes.push(Shape::Number {
+            at: POINT { x, y },
+            n: 1,
+            color: s.cur_color,
+        });
+        s
+    }
+
     /// The bug this replaces: Move-dragging mutated a shape's position with no undo
     /// entry recorded at all, so Ctrl+Z after a move either did nothing useful or
     /// deleted an unrelated shape. `undo_step` must invert the recorded drag in place
@@ -2215,12 +2220,7 @@ mod tests {
     #[test]
     fn undo_step_reverts_a_pending_move_instead_of_deleting_the_shape() {
         unsafe {
-            let mut s = test_shot();
-            s.shapes.push(Shape::Number {
-                at: POINT { x: 50, y: 50 },
-                n: 1,
-                color: s.cur_color,
-            });
+            let mut s = shot_with_number_at(50, 50);
             undo_step(&mut s, Some((0, 10, -4)));
             assert_eq!(s.shapes.len(), 1, "a move-undo must not remove the shape");
             match &s.shapes[0] {
@@ -2241,12 +2241,7 @@ mod tests {
     #[test]
     fn undo_step_falls_back_to_popping_when_no_real_move_happened() {
         unsafe {
-            let mut s = test_shot();
-            s.shapes.push(Shape::Number {
-                at: POINT { x: 1, y: 1 },
-                n: 1,
-                color: s.cur_color,
-            });
+            let mut s = shot_with_number_at(1, 1);
             undo_step(&mut s, Some((0, 0, 0)));
             assert!(
                 s.shapes.is_empty(),
