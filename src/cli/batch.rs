@@ -148,22 +148,33 @@ fn expand_inputs(inputs: &[String], recurse: bool) -> (Vec<String>, usize, Vec<(
     let mut skipped_offline = 0usize;
     let mut unresolved = Vec::new();
     for i in inputs {
-        let p = Path::new(i);
-        if p.is_dir() {
-            expand_inputs_walk(p, recurse, 0, &mut out, &mut skipped_offline);
-        } else if p.is_file() && expand_inputs_is_supported(p) {
-            if crate::prebuild::is_cloud_placeholder(p) {
-                skipped_offline += 1;
-            } else {
-                out.push(i.clone());
-            }
-        } else if p.is_file() {
-            unresolved.push((i.clone(), "not a supported image type".to_string()));
-        } else {
-            unresolved.push((i.clone(), "input not found".to_string()));
-        }
+        expand_single_input(i, recurse, &mut out, &mut skipped_offline, &mut unresolved);
     }
     (out, skipped_offline, unresolved)
+}
+
+/// Classify a single explicit input argument as a directory, supported file, or unresolved.
+fn expand_single_input(
+    i: &str,
+    recurse: bool,
+    out: &mut Vec<String>,
+    skipped_offline: &mut usize,
+    unresolved: &mut Vec<(String, String)>,
+) {
+    let p = Path::new(i);
+    if p.is_dir() {
+        expand_inputs_walk(p, recurse, 0, out, skipped_offline);
+    } else if p.is_file() && expand_inputs_is_supported(p) {
+        if crate::prebuild::is_cloud_placeholder(p) {
+            *skipped_offline += 1;
+        } else {
+            out.push(i.to_string());
+        }
+    } else if p.is_file() {
+        unresolved.push((i.to_string(), "not a supported image type".to_string()));
+    } else {
+        unresolved.push((i.to_string(), "input not found".to_string()));
+    }
 }
 
 /// BULK process many inputs (files and/or folders) in ONE process, fanned out

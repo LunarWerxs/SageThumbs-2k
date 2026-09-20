@@ -54,6 +54,18 @@ pub(super) fn thumbnail_reporting(
         save_atomic(&out, output, format).map_err(|e| (OmitCause::Unencodable, e))?;
         return Ok(output.to_string());
     }
+    let img = decode_thumbnail_image(input, max_dim)?;
+    let out = fit_for_cli(img, max_dim);
+    save_atomic(&out, output, format).map_err(|e| (OmitCause::Unencodable, e))?;
+    Ok(output.to_string())
+}
+
+/// Decode the preview or primary image for thumbnailing, respecting size caps.
+fn decode_thumbnail_image(
+    input: &str,
+    max_dim: u32,
+) -> std::result::Result<image::DynamicImage, (verbs::OmitCause, String)> {
+    use verbs::OmitCause;
     // Cap the read at the shared input budget (metadata-checked before allocating)
     // so a scripted/agent/MCP call can't load a multi-GB file wholesale — the same
     // ceiling Explorer thumbnailing and the path verbs apply. Head-preview
@@ -71,8 +83,8 @@ pub(super) fn thumbnail_reporting(
     } else {
         decode::EXR_PATH_EDGE
     };
-    let img = match decode::decode_preview_streamed(input, edge) {
-        Some(img) => img,
+    match decode::decode_preview_streamed(input, edge) {
+        Some(img) => Ok(img),
         None => {
             // `..._for`: this verb named a size, so a head prefix whose baked preview
             // cannot reach it must not stand in for the real picture (issue #33).
@@ -82,12 +94,9 @@ pub(super) fn thumbnail_reporting(
             // path above already takes `edge`, and rendering ImageMagick's full 4096 first
             // costs seconds on a big scan for pixels this immediately discards.
             decode::decode_preview_capped_for_path(&bytes, edge, input)
-                .map_err(|_| (OmitCause::Undecodable, format!("cannot decode {input}")))?
+                .map_err(|_| (OmitCause::Undecodable, format!("cannot decode {input}")))
         }
-    };
-    let out = fit_for_cli(img, max_dim);
-    save_atomic(&out, output, format).map_err(|e| (OmitCause::Unencodable, e))?;
-    Ok(output.to_string())
+    }
 }
 
 /// Fail before opening or parsing a generic archive when either the user's
@@ -111,6 +120,13 @@ fn reject_oversized_archive(input: &str, configured_max: u64) -> Result<(), Stri
 /// image entries — the CLI then reports "cannot decode", mirroring the shell's
 /// stock-icon fallback). 1024px edge matches the preview pane's compose target.
 fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
+    let covers = archive_covers(input)?;
+    let d = decode::thumbnail_from_covers(&covers, 1024).ok()?;
+    image::RgbaImage::from_raw(d.width, d.height, d.rgba).map(image::DynamicImage::ImageRgba8)
+}
+
+/// Extract candidate cover images from an archive file.
+fn archive_covers(input: &str) -> Option<Vec<Vec<u8>>> {
     use std::io::Read;
     let ext = Path::new(input)
         .extension()
@@ -129,16 +145,14 @@ fn archive_thumbnail(input: &str) -> Option<image::DynamicImage> {
     f.read_exact(&mut head).ok()?;
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
     let prefs = crate::container::select::CoverPrefs::from_settings();
-    let covers = if crate::container::archive_needs_buffer(&head) {
+    if crate::container::archive_needs_buffer(&head) {
         // RAR buffers whole (`rars` accepts no reader) — same bounded read as the
         // normal path, so a multi-GB .rar fails to the normal decode error.
         let bytes = decode::read_preview_capped(input).ok()?;
-        crate::container::archive_covers(&bytes, want, &prefs)?
+        crate::container::archive_covers(&bytes, want, &prefs)
     } else {
-        crate::container::archive_covers_seek(&mut f, &head, want, &prefs)?
-    };
-    let d = decode::thumbnail_from_covers(&covers, 1024).ok()?;
-    image::RgbaImage::from_raw(d.width, d.height, d.rgba).map(image::DynamicImage::ImageRgba8)
+        crate::container::archive_covers_seek(&mut f, &head, want, &prefs)
+    }
 }
 
 /// Convert `input` to the exact `output` path at `quality`, optional `resize`.

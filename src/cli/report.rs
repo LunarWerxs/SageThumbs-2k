@@ -45,27 +45,32 @@ pub fn info(input: &str, json: bool) -> Result<String, String> {
         })
         .to_string())
     } else {
-        let mut s = format!("{} x {} px", i.width, i.height);
-        if i.bit_depth > 0 {
-            s.push_str(&format!("\nbit depth: {}", i.bit_depth));
-        }
-        if i.dpi_x > 0.0 || i.dpi_y > 0.0 {
-            s.push_str(&format!("\ndpi: {:.0} x {:.0}", i.dpi_x, i.dpi_y));
-        }
-        if let Some(m) = &i.make {
-            s.push_str(&format!("\ncamera: {m}"));
-        }
-        if let Some(m) = &i.model {
-            s.push_str(&format!(" {m}"));
-        }
-        if let Some(d) = &i.datetime {
-            s.push_str(&format!("\ntaken: {d}"));
-        }
-        if let Some((la, lo)) = i.gps {
-            s.push_str(&format!("\ngps: {la:.5}, {lo:.5}"));
-        }
-        Ok(s)
+        Ok(image_info_text(&i))
     }
+}
+
+/// Render [`info`]'s non-JSON text: dimensions plus whatever EXIF fields are present.
+fn image_info_text(i: &strip::ImageInfo) -> String {
+    let mut s = format!("{} x {} px", i.width, i.height);
+    if i.bit_depth > 0 {
+        s.push_str(&format!("\nbit depth: {}", i.bit_depth));
+    }
+    if i.dpi_x > 0.0 || i.dpi_y > 0.0 {
+        s.push_str(&format!("\ndpi: {:.0} x {:.0}", i.dpi_x, i.dpi_y));
+    }
+    if let Some(m) = &i.make {
+        s.push_str(&format!("\ncamera: {m}"));
+    }
+    if let Some(m) = &i.model {
+        s.push_str(&format!(" {m}"));
+    }
+    if let Some(d) = &i.datetime {
+        s.push_str(&format!("\ntaken: {d}"));
+    }
+    if let Some((la, lo)) = i.gps {
+        s.push_str(&format!("\ngps: {la:.5}, {lo:.5}"));
+    }
+    s
 }
 
 /// The audio half of [`info`]: tags via `strip::read_audio_tags` (the same `lofty`
@@ -99,36 +104,42 @@ fn info_audio(input: &str, json: bool) -> Result<String, String> {
         })
         .to_string())
     } else {
-        let mut s = String::new();
-        if let Some(v) = &t.artist {
-            s.push_str(&format!("artist: {v}\n"));
-        }
-        if let Some(v) = &t.album {
-            s.push_str(&format!("album: {v}\n"));
-        }
-        if let Some(v) = &t.title {
-            s.push_str(&format!("title: {v}\n"));
-        }
-        if let Some(v) = t.track {
-            s.push_str(&format!("track: {v}\n"));
-        }
-        if let Some(v) = &t.genre {
-            s.push_str(&format!("genre: {v}\n"));
-        }
-        if let Some(v) = t.year {
-            s.push_str(&format!("year: {v}\n"));
-        }
-        if t.duration_ms > 0 {
-            s.push_str(&format!(
-                "duration: {:.1}s\n",
-                t.duration_ms as f64 / 1000.0
-            ));
-        }
-        if t.bitrate_kbps > 0 {
-            s.push_str(&format!("bitrate: {} kbps\n", t.bitrate_kbps));
-        }
-        Ok(s.trim_end().to_string())
+        Ok(audio_info_text(&t))
     }
+}
+
+/// Render [`info_audio`]'s non-JSON text: each present tag on its own `name: value` line,
+/// with duration/bitrate only when non-zero.
+fn audio_info_text(t: &strip::AudioTags) -> String {
+    let mut s = String::new();
+    if let Some(v) = &t.artist {
+        s.push_str(&format!("artist: {v}\n"));
+    }
+    if let Some(v) = &t.album {
+        s.push_str(&format!("album: {v}\n"));
+    }
+    if let Some(v) = &t.title {
+        s.push_str(&format!("title: {v}\n"));
+    }
+    if let Some(v) = t.track {
+        s.push_str(&format!("track: {v}\n"));
+    }
+    if let Some(v) = &t.genre {
+        s.push_str(&format!("genre: {v}\n"));
+    }
+    if let Some(v) = t.year {
+        s.push_str(&format!("year: {v}\n"));
+    }
+    if t.duration_ms > 0 {
+        s.push_str(&format!(
+            "duration: {:.1}s\n",
+            t.duration_ms as f64 / 1000.0
+        ));
+    }
+    if t.bitrate_kbps > 0 {
+        s.push_str(&format!("bitrate: {} kbps\n", t.bitrate_kbps));
+    }
+    s.trim_end().to_string()
 }
 
 /// List every supported input extension (with category + description).
@@ -162,25 +173,7 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
         let mut ok = false;
         for _ in 0..runs {
             let t0 = Instant::now();
-            let decoded = match decode::decode_preview_streamed(input, edge) {
-                Some(img) => Some(img),
-                None => match decode::read_preview_capped_for(input, edge) {
-                    Ok(bytes) => decode::decode_preview_capped_for_path(&bytes, edge, input).ok(),
-                    Err(_) => None,
-                },
-            };
-            // Fit to the target box too, THROUGH THE PROVIDER'S OWN FIT rather than a cheaper
-            // stand-in. That is real per-thumbnail work - on a 12 MP image the reduction costs
-            // about as much as the decode did - and measuring a different one would flatter
-            // exactly the formats that decode huge and shrink hard, which is what this whole
-            // measurement exists to catch.
-            let decoded = decoded.map(|img| {
-                if size > 0 {
-                    decode::thumbnail_from_image(img, size).rgba.len()
-                } else {
-                    (img.width() as usize) * (img.height() as usize)
-                }
-            });
+            let decoded = decode_preview_pixels(input, edge, size);
             let elapsed = t0.elapsed().as_micros();
             if decoded.is_some() {
                 ok = true;
@@ -201,6 +194,31 @@ pub fn bench_decode(inputs: &[String], size: u32, runs: u32) -> Result<String, S
         }
     }
     Ok(out)
+}
+
+/// Decode one preview of `input` and reduce it to a pixel count: the decoded image fitted
+/// through the provider's own fit to `size`, or the raw `width * height` when `size` is 0.
+/// None when the file cannot be decoded.
+fn decode_preview_pixels(input: &str, edge: u32, size: u32) -> Option<usize> {
+    let decoded = match decode::decode_preview_streamed(input, edge) {
+        Some(img) => Some(img),
+        None => match decode::read_preview_capped_for(input, edge) {
+            Ok(bytes) => decode::decode_preview_capped_for_path(&bytes, edge, input).ok(),
+            Err(_) => None,
+        },
+    };
+    // Fit to the target box too, THROUGH THE PROVIDER'S OWN FIT rather than a cheaper
+    // stand-in. That is real per-thumbnail work - on a 12 MP image the reduction costs
+    // about as much as the decode did - and measuring a different one would flatter
+    // exactly the formats that decode huge and shrink hard, which is what this whole
+    // measurement exists to catch.
+    decoded.map(|img| {
+        if size > 0 {
+            decode::thumbnail_from_image(img, size).rgba.len()
+        } else {
+            (img.width() as usize) * (img.height() as usize)
+        }
+    })
 }
 
 /// A short bracketed marker naming the extension's decode route, but ONLY where it differs
