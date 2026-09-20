@@ -371,11 +371,7 @@ impl<R: Read + Seek> Db<R> {
         }
         // The right-most subtree sorts after every cell on this page.
         if interior {
-            match page
-                .get(ptr_base - 4..ptr_base)
-                .and_then(|s| s.try_into().ok())
-                .map(u32::from_be_bytes)
-            {
+            match page.get(ptr_base - 4..ptr_base).and_then(be_u32) {
                 Some(child) if child != 0 => self.walk(child, w, depth + 1),
                 _ => w.truncated = true,
             }
@@ -405,11 +401,7 @@ impl<R: Read + Seek> Db<R> {
         // Interior cells lead with their left-child pointer; that subtree sorts BEFORE this
         // cell, so it is visited first.
         if interior {
-            match page
-                .get(off..off + 4)
-                .and_then(|s| s.try_into().ok())
-                .map(u32::from_be_bytes)
-            {
+            match page.get(off..off + 4).and_then(be_u32) {
                 Some(child) if child != 0 => self.walk(child, w, depth + 1),
                 _ => w.truncated = true,
             }
@@ -460,6 +452,11 @@ impl<R: Read + Seek> Db<R> {
         w.rows.push(vals);
         ControlFlow::Continue(())
     }
+}
+
+/// The big-endian `u32` held in `bytes`, or `None` when it is not exactly four bytes long.
+fn be_u32(bytes: &[u8]) -> Option<u32> {
+    bytes.try_into().ok().map(u32::from_be_bytes)
 }
 
 /// Validate a b-tree page's header and return `(interior, table, ncells, ptr_base)`, or `None`
