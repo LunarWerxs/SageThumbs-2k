@@ -508,6 +508,22 @@ unsafe fn virtual_screen_metrics() -> Option<(i32, i32, i32, i32)> {
     (vw > 0 && vh > 0).then_some((vx, vy, vw, vh))
 }
 
+/// Release the GDI objects of a failed full-screen setup: logs `msg` (the caller's
+/// diagnosable abort message), then deletes the memory DC and bitmap and releases the
+/// screen DC, each only if it was actually created.
+unsafe fn release_gdi_on_fail(screen: HDC, mem: HDC, bmp: HBITMAP, msg: &str) {
+    sagethumbs2k_core::safety::log(msg);
+    if !mem.is_invalid() {
+        let _ = DeleteDC(mem);
+    }
+    if !bmp.is_invalid() {
+        let _ = DeleteObject(bmp.into());
+    }
+    if !screen.is_invalid() {
+        ReleaseDC(None, screen);
+    }
+}
+
 /// Freeze the screen into a memory DC (the normal overlay paints from this, never the
 /// live desktop, so annotations don't fight with what's underneath), or fill it with the
 /// deterministic synthetic automation canvas, since the automation route MUST NOT copy or
@@ -526,18 +542,12 @@ unsafe fn freeze_screen_to_dc(
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);
     if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        sagethumbs2k_core::safety::log(
+        release_gdi_on_fail(
+            screen,
+            mem,
+            bmp,
             "screenshot: full-screen GDI setup failed, aborting capture",
         );
-        if !mem.is_invalid() {
-            let _ = DeleteDC(mem);
-        }
-        if !bmp.is_invalid() {
-            let _ = DeleteObject(bmp.into());
-        }
-        if !screen.is_invalid() {
-            ReleaseDC(None, screen);
-        }
         return None;
     }
     SelectObject(mem, HGDIOBJ(bmp.0));
@@ -795,16 +805,12 @@ pub(crate) unsafe fn capture_instant() {
     // Same null-check as run_capture_inner's screen-freeze (A139): a GDI failure must not
     // fall through to SelectObject/BitBlt on a null handle.
     if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        sagethumbs2k_core::safety::log("instant capture: full-screen GDI setup failed");
-        if !mem.is_invalid() {
-            let _ = DeleteDC(mem);
-        }
-        if !bmp.is_invalid() {
-            let _ = DeleteObject(bmp.into());
-        }
-        if !screen.is_invalid() {
-            ReleaseDC(None, screen);
-        }
+        release_gdi_on_fail(
+            screen,
+            mem,
+            bmp,
+            "instant capture: full-screen GDI setup failed",
+        );
         return;
     }
     let old = SelectObject(mem, HGDIOBJ(bmp.0));
