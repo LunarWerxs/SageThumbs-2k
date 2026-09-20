@@ -18,11 +18,28 @@ pub(super) fn for_each_packet(
     nprec: &[(usize, usize)],
     visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
 ) -> Result<(), Jp2Error> {
+    let mut walk = PacketWalk {
+        layers,
+        walk_levels,
+        ncomp,
+        nprec,
+        visit,
+    };
     match progression {
-        0 => walk_packets_lrcp(layers, walk_levels, ncomp, nprec, visit),
-        1 => walk_packets_rlcp(layers, walk_levels, ncomp, nprec, visit),
-        _ => walk_packets_rpcl(layers, walk_levels, ncomp, nprec, visit),
+        0 => walk_packets_lrcp(&mut walk),
+        1 => walk_packets_rlcp(&mut walk),
+        _ => walk_packets_rpcl(&mut walk),
     }
+}
+
+/// The loop bounds one packet walk iterates and the visitor every address it
+/// reaches is reported to.
+pub(super) struct PacketWalk<'a> {
+    layers: u32,
+    walk_levels: u32,
+    ncomp: usize,
+    nprec: &'a [(usize, usize)],
+    visit: &'a mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
 }
 
 /// Number of precincts (raster-order positions) at resolution `r`.
@@ -31,18 +48,12 @@ pub(super) fn packet_count(nprec: &[(usize, usize)], r: usize) -> usize {
 }
 
 /// LRCP: layer outermost, then resolution, component, position.
-pub(super) fn walk_packets_lrcp(
-    layers: u32,
-    walk_levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
-) -> Result<(), Jp2Error> {
-    for l in 0..layers {
-        for r in 0..=walk_levels as usize {
-            for ci in 0..ncomp {
-                for pi in 0..packet_count(nprec, r) {
-                    visit(l, r, ci, pi)?;
+pub(super) fn walk_packets_lrcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
+    for l in 0..w.layers {
+        for r in 0..=w.walk_levels as usize {
+            for ci in 0..w.ncomp {
+                for pi in 0..packet_count(w.nprec, r) {
+                    (*w.visit)(l, r, ci, pi)?;
                 }
             }
         }
@@ -51,18 +62,12 @@ pub(super) fn walk_packets_lrcp(
 }
 
 /// RLCP: resolution outermost, then layer, component, position.
-pub(super) fn walk_packets_rlcp(
-    layers: u32,
-    walk_levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
-) -> Result<(), Jp2Error> {
-    for r in 0..=walk_levels as usize {
-        for l in 0..layers {
-            for ci in 0..ncomp {
-                for pi in 0..packet_count(nprec, r) {
-                    visit(l, r, ci, pi)?;
+pub(super) fn walk_packets_rlcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
+    for r in 0..=w.walk_levels as usize {
+        for l in 0..w.layers {
+            for ci in 0..w.ncomp {
+                for pi in 0..packet_count(w.nprec, r) {
+                    (*w.visit)(l, r, ci, pi)?;
                 }
             }
         }
@@ -71,18 +76,12 @@ pub(super) fn walk_packets_rlcp(
 }
 
 /// RPCL: resolution outermost, then position, component, layer.
-pub(super) fn walk_packets_rpcl(
-    layers: u32,
-    walk_levels: u32,
-    ncomp: usize,
-    nprec: &[(usize, usize)],
-    visit: &mut dyn FnMut(u32, usize, usize, usize) -> Result<(), Jp2Error>,
-) -> Result<(), Jp2Error> {
-    for r in 0..=walk_levels as usize {
-        for pi in 0..packet_count(nprec, r) {
-            for ci in 0..ncomp {
-                for l in 0..layers {
-                    visit(l, r, ci, pi)?;
+pub(super) fn walk_packets_rpcl(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
+    for r in 0..=w.walk_levels as usize {
+        for pi in 0..packet_count(w.nprec, r) {
+            for ci in 0..w.ncomp {
+                for l in 0..w.layers {
+                    (*w.visit)(l, r, ci, pi)?;
                 }
             }
         }
