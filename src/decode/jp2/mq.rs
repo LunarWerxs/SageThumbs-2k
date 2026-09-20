@@ -277,6 +277,13 @@ fn cblk_fidx(x: usize, y: usize, sw: usize) -> usize {
     (y + 1) * sw + (x + 1)
 }
 
+/// Flag byte of sample (x, y) in the padded flag grid: the SIG / VISIT / REFINED bits every
+/// pass tests before deciding whether the sample still needs a symbol.
+#[inline]
+fn sample_flag(flags: &[u8], x: usize, y: usize, sw: usize) -> u8 {
+    flags[cblk_fidx(x, y, sw)]
+}
+
 /// Neighbour significance counts (horizontal, vertical, diagonal) around (x, y), read from
 /// the padded flag grid.
 #[inline]
@@ -321,7 +328,7 @@ fn significance_pass(
     plane_bit: i32,
 ) {
     for_each_stripe_sample(w, h, |x, y| {
-        let f = flags[cblk_fidx(x, y, sw)];
+        let f = sample_flag(flags, x, y, sw);
         if f & SIG != 0 {
             return;
         }
@@ -349,7 +356,7 @@ fn refinement_pass(
     plane_bit: i32,
 ) {
     for_each_stripe_sample(w, h, |x, y| {
-        let f = flags[cblk_fidx(x, y, sw)];
+        let f = sample_flag(flags, x, y, sw);
         if f & SIG == 0 || f & VISIT != 0 {
             return;
         }
@@ -406,7 +413,7 @@ fn cleanup_run_length_stripe(
 ) -> Option<usize> {
     let mut all_clear = true;
     for yy in y0..stripe_end {
-        let f = flags[cblk_fidx(x, yy, sw)];
+        let f = sample_flag(flags, x, yy, sw);
         let (hc, vc, dc) = neighbour_counts(flags, x, yy, sw);
         if f & (SIG | VISIT) != 0 || hc + vc + dc != 0 {
             all_clear = false;
@@ -461,7 +468,7 @@ fn cleanup_pass(
                 y0
             };
             for yy in y..stripe_end {
-                let f = flags[cblk_fidx(x, yy, sw)];
+                let f = sample_flag(flags, x, yy, sw);
                 if f & (SIG | VISIT) != 0 {
                     flags[cblk_fidx(x, yy, sw)] &= !VISIT;
                     continue;
