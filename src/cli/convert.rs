@@ -263,14 +263,20 @@ fn combined_report(c: &verbs::Combined, opts: CombineOpts) -> String {
     s
 }
 
+/// Shared front door of the [`pdf`] and [`cbz`] combiners: refuse an empty input list,
+/// then an `output` whose extension is not `ext`, both before any combine work.
+fn require_combine_inputs(output: &str, inputs: &[String], ext: &str) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Err("no input images".to_string());
+    }
+    require_output_ext(output, ext)
+}
+
 /// Combine images into one PDF (one page each). The destination must be a `.pdf` and must
 /// not be one of the inputs (2026-09-05 audit, F30); inputs the composer cannot use are
 /// reported per input, or refused outright under `opts.strict` (F31).
 pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
-    if inputs.is_empty() {
-        return Err("no input images".to_string());
-    }
-    require_output_ext(output, "pdf")?;
+    require_combine_inputs(output, inputs, "pdf")?;
     // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
     // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
     let combined = topdf::combine_to_pdf(
@@ -289,10 +295,7 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
 /// just its CLI/MCP front door, which never existed even though the PDF sibling
 /// always had one. Same destination and omission contract as [`pdf`].
 pub fn cbz(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
-    if inputs.is_empty() {
-        return Err("no input images".to_string());
-    }
-    require_output_ext(output, "cbz")?;
+    require_combine_inputs(output, inputs, "cbz")?;
     let combined = verbs::combine_to_cbz(inputs, Path::new(output), opts.on_omit())
         .map_err(|e| format!("cbz build failed: {}", e.message()))?;
     Ok(combined_report(&combined, opts))
