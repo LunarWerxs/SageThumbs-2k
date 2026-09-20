@@ -45,18 +45,26 @@ fn zoom_ceiling(full: f64) -> f64 {
     full.max(8.0)
 }
 
+/// The prologue the zoom/pan handlers share: the size of `st`'s image, the content rect, that
+/// rect's dimensions and the image's aspect-fit scale — `None` when there is no image, in which
+/// case the caller returns immediately.
+unsafe fn zoom_geometry(st: &ViewerState, hwnd: HWND) -> Option<(i32, i32, RECT, i32, i32, f64)> {
+    let (iw, ih) = image_dims(st)?;
+    let c = content_rect(hwnd);
+    let (cw, ch) = (c.right - c.left, c.bottom - c.top);
+    let fit = content::fit_scale(iw, ih, cw, ch);
+    Some((iw, ih, c, cw, ch, fit))
+}
+
 /// Zoom the image in/out by a wheel notch, keeping image point `pt` (CLIENT coords) fixed.
 /// Shared by [`zoom_at_cursor`] (mouse wheel, screen coords converted to client) and
 /// [`zoom_step_at_center`] (the Ctrl+=/Ctrl+- keyboard step, which has no cursor position to
 /// anchor on and uses the content pane's centre instead).
 unsafe fn zoom_step_at(hwnd: HWND, delta: i32, pt: POINT) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else {
+    let Some((iw, ih, c, cw, ch, fit)) = zoom_geometry(st, hwnd) else {
         return;
     };
-    let c = content_rect(hwnd);
-    let (cw, ch) = (c.right - c.left, c.bottom - c.top);
-    let fit = content::fit_scale(iw, ih, cw, ch);
     let old_zoom = st.zoom.get();
     let raw_zoom = old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 };
     let full = true_100_zoom(fit); // true 100% (display scale 1.0), same as toggle_fit_100
@@ -114,6 +122,17 @@ pub(in crate::preview) unsafe fn zoom_step_at_center(hwnd: HWND, delta: i32) {
     zoom_step_at(hwnd, delta, pt);
 }
 
+/// Set `target` as the zoom, or fall back to the aspect-fit baseline (1.0) when the view is
+/// already at fit — then recenter, clamp the pan and repaint. The shared body of the two
+/// fit-mode toggles.
+unsafe fn apply_zoom_toggle(hwnd: HWND, st: &ViewerState, c: RECT, target: f64) {
+    let zoom = if st.zoom.get() <= 1.01 { target } else { 1.0 };
+    st.zoom.set(zoom);
+    st.pan.set((0, 0));
+    clamp_pan(hwnd);
+    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+}
+
 /// Toggle between aspect-fit and 100% (native pixels), recentering.
 pub(in crate::preview) unsafe fn toggle_fit_100(hwnd: HWND) {
     let st = &*state(hwnd);
@@ -123,10 +142,7 @@ pub(in crate::preview) unsafe fn toggle_fit_100(hwnd: HWND) {
     let c = content_rect(hwnd);
     let fit = content::fit_scale(iw, ih, c.right - c.left, c.bottom - c.top);
     let full = true_100_zoom(fit); // 100% == display scale 1.0
-    st.zoom.set(if st.zoom.get() <= 1.01 { full } else { 1.0 });
-    st.pan.set((0, 0));
-    clamp_pan(hwnd);
-    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+    apply_zoom_toggle(hwnd, st, c, full);
 }
 
 /// The zoom multiplier (relative to `fit`) that makes the image exactly as wide as the
@@ -148,31 +164,20 @@ pub(in crate::preview) fn fit_width_zoom(iw: i32, ih: i32, cw: i32, ch: i32) -> 
 /// the third zoom mode alongside aspect-fit/100%).
 pub(in crate::preview) unsafe fn toggle_fit_width(hwnd: HWND) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else {
+    let Some((iw, ih, c, cw, ch, _fit)) = zoom_geometry(st, hwnd) else {
         return;
     };
-    let c = content_rect(hwnd);
-    let (cw, ch) = (c.right - c.left, c.bottom - c.top);
     let width_zoom = fit_width_zoom(iw, ih, cw, ch);
-    st.zoom.set(if st.zoom.get() <= 1.01 {
-        width_zoom
-    } else {
-        1.0
-    });
-    st.pan.set((0, 0));
-    clamp_pan(hwnd);
-    let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+    apply_zoom_toggle(hwnd, st, c, width_zoom);
 }
 
 /// Keep the (zoomed) image covering the content — clamp pan so no empty margin shows.
 pub(in crate::preview) unsafe fn clamp_pan(hwnd: HWND) {
     let st = &*state(hwnd);
-    let Some((iw, ih)) = image_dims(st) else {
+    let Some((iw, ih, _c, cw, ch, fit)) = zoom_geometry(st, hwnd) else {
         return;
     };
-    let c = content_rect(hwnd);
-    let (cw, ch) = (c.right - c.left, c.bottom - c.top);
-    let scale = content::fit_scale(iw, ih, cw, ch) * st.zoom.get();
+    let scale = fit * st.zoom.get();
     let dw = (iw as f64 * scale) as i32;
     let dh = (ih as f64 * scale) as i32;
     let (maxx, maxy) = (((dw - cw) / 2).max(0), ((dh - ch) / 2).max(0));
