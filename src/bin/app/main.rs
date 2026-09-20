@@ -263,64 +263,10 @@ fn main() {
             crate::update::spawn_due_check();
         }
 
-        // Every headless / one-shot CLI mode, checked in the same relative order the
-        // original single if-chain used (a flag's precedence over another matters when an
-        // invocation names more than one), just split into topical dispatchers so each one
-        // stays small. Each returns `true` when it already handled the launch (including
-        // via `std::process::exit`, for the modes that always exit rather than fall
-        // through), meaning this process should return without ever building a window.
-        if dispatch_diagnostic_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_update_modes(&args) {
-            return;
-        }
-        if dispatch_convert_and_shot_modes(hinst, dark, &args) {
-            return;
-        }
-        if dispatch_file_and_capture_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_screenshot_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_folder_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_heal_modes(&args) {
-            return;
-        }
-        // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
-        // drop thumbcache_*.db.
-        //
-        // A fresh install genuinely needs this, which is not obvious. Registering the provider
-        // does not invalidate anything Explorer already cached, and for every one of our
-        // formats it HAS cached something: the generic icon it drew before we existed. Those
-        // entries keep being served, so the user installs a thumbnailer, sees no thumbnails,
-        // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
-        // cache for.
-        //
-        // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
-        // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
-        // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
-        // shell). Never silent-by-default: setup only runs this if the box is ticked.
-        if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
-            // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
-            // taskkill, then polls for the taskbar to come back). This flag is invoked
-            // synchronously from the installer's postinstall [Run] step, which by default
-            // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
-            // with the actual work and return immediately, rather than making the installer
-            // (or whatever else launched us this way) sit through it.
-            detach_rebuild_thumbnail_cache();
-            return;
-        }
-        // The detached half of the above: does the real (blocking) work and exits. Not
-        // reachable from a normal launch — only from the re-spawn just above.
-        if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
-            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-            return;
-        }
-        if dispatch_user_state_modes(&args) {
+        // Every headless / one-shot CLI mode, in the same relative order the original
+        // single if-chain used (a flag's precedence over another matters when an
+        // invocation names more than one) — see `dispatch_cli_launch_modes`.
+        if dispatch_cli_launch_modes(hinst, dark, &args) {
             return;
         }
 
@@ -350,6 +296,67 @@ fn main() {
         let hwnd = create_and_show_settings_window(hinst, dark, want_tab);
         run_message_loop(hwnd);
     }
+}
+
+/// Runs every headless / one-shot CLI mode in the original precedence order, returning
+/// `true` when one already handled the launch (including modes that always exit rather
+/// than fall through), meaning the caller must return without ever building a window.
+unsafe fn dispatch_cli_launch_modes(hinst: HINSTANCE, dark: bool, args: &[String]) -> bool {
+    if dispatch_diagnostic_modes(hinst, args) {
+        return true;
+    }
+    if dispatch_update_modes(args) {
+        return true;
+    }
+    if dispatch_convert_and_shot_modes(hinst, dark, args) {
+        return true;
+    }
+    if dispatch_file_and_capture_modes(hinst, args) {
+        return true;
+    }
+    if dispatch_screenshot_modes(hinst, args) {
+        return true;
+    }
+    if dispatch_folder_modes(hinst, args) {
+        return true;
+    }
+    if dispatch_heal_modes(args) {
+        return true;
+    }
+    // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
+    // drop thumbcache_*.db.
+    //
+    // A fresh install genuinely needs this, which is not obvious. Registering the provider
+    // does not invalidate anything Explorer already cached, and for every one of our
+    // formats it HAS cached something: the generic icon it drew before we existed. Those
+    // entries keep being served, so the user installs a thumbnailer, sees no thumbnails,
+    // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
+    // cache for.
+    //
+    // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
+    // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
+    // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
+    // shell). Never silent-by-default: setup only runs this if the box is ticked.
+    if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
+        // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
+        // taskkill, then polls for the taskbar to come back). This flag is invoked
+        // synchronously from the installer's postinstall [Run] step, which by default
+        // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
+        // with the actual work and return immediately, rather than making the installer
+        // (or whatever else launched us this way) sit through it.
+        detach_rebuild_thumbnail_cache();
+        return true;
+    }
+    // The detached half of the above: does the real (blocking) work and exits. Not
+    // reachable from a normal launch — only from the re-spawn just above.
+    if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
+        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        return true;
+    }
+    if dispatch_user_state_modes(args) {
+        return true;
+    }
+    false
 }
 
 /// Parses a `--<flag> <dir> [<n>]` diagnostic argument: the directory that follows
@@ -517,22 +524,36 @@ unsafe fn create_and_show_settings_window(
 
     // The one-shot licensing notices: the persistent nag banner (Business, unlicensed) is
     // page chrome the window already carries; these are the notices that speak up ONCE, the
-    // moment the window is about to appear. `Silent` (Personal, or a licensed Business
-    // install) says nothing, ever — see `license.rs`'s standing "fail toward Personal/free"
-    // rule.
-    match license_snap.posture {
+    // moment the window is about to appear. See `show_licensing_notices`.
+    show_licensing_notices(hwnd, &license_snap);
+
+    // Land on the requested page before the window is shown, so it never flashes General
+    // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
+    if let Some(tab) = want_tab {
+        settings_dlg::show_category(hwnd, tab);
+    }
+
+    let _ = ShowWindow(hwnd, SW_SHOW);
+    hwnd
+}
+
+/// Shows the one-shot licensing notices for `snap`'s posture (the sign-in/business nag
+/// banners are separate page chrome). `Silent` (Personal, or a licensed Business install)
+/// says nothing, ever — see `license.rs`'s standing "fail toward Personal/free" rule.
+unsafe fn show_licensing_notices(hwnd: HWND, snap: &license::LicenceSnapshot) {
+    match snap.posture {
         license::Posture::Silent => {}
         license::Posture::DowngradeNoticeOnce => {
             // A machine that once redeemed a key names it; one that only ran the evaluation
             // has no key to name and gets the sentence written for that.
-            let key = if license_snap.key_prefix.is_empty() {
+            let key = if snap.key_prefix.is_empty() {
                 "licence_downgrade_notice_nokey"
             } else {
                 "licence_downgrade_notice"
             };
             crate::win::message_box(
                 hwnd,
-                &t(key).replace("{key}", &license_snap.key_prefix),
+                &t(key).replace("{key}", &snap.key_prefix),
                 "SageThumbs 2K",
             );
             license::acknowledge_downgrade();
@@ -545,11 +566,11 @@ unsafe fn create_and_show_settings_window(
             // and the daily one-shot say the same thing, and it ends with where a licence
             // comes from (the 2026-09-04 audit found no surface inside the product ever
             // named the shop).
-            let now = license_snap.now_unix;
+            let now = snap.now_unix;
             if license::nag_due(now, posture) {
                 let body = format!(
                     "{} {}",
-                    settings_dlg::licence_reminder_body(&license_snap),
+                    settings_dlg::licence_reminder_body(snap),
                     t("licence_buy_pointer")
                 );
                 if posture.is_urgent() {
@@ -569,15 +590,6 @@ unsafe fn create_and_show_settings_window(
             }
         }
     }
-
-    // Land on the requested page before the window is shown, so it never flashes General
-    // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
-    if let Some(tab) = want_tab {
-        settings_dlg::show_category(hwnd, tab);
-    }
-
-    let _ = ShowWindow(hwnd, SW_SHOW);
-    hwnd
 }
 
 /// The classic Win32 message pump, run until `WM_QUIT`: the same dialog pump every

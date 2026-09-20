@@ -28,6 +28,13 @@ pub(crate) enum OverBudget {
     KeepPartial,
 }
 
+/// How a terminal per-frame condition ends the drain: either reject the whole animation
+/// (`None`) or stop decoding and keep the frames already collected.
+enum Stop {
+    Reject,
+    KeepPartial,
+}
+
 /// Drain `frames` under a frame-count cap (`max_frames`), a per-frame canvas cap
 /// (`max_dim`), and a cumulative RGBA-byte cap (`max_total_bytes`, counted at each frame's
 /// native decoded size). A frame past `max_dim` (including a degenerate 0×0) always rejects
@@ -44,40 +51,63 @@ pub(crate) fn collect_capped(
     let mut out = Vec::new();
     let mut total: u64 = 0;
     for fr in frames.take(max_frames) {
-        let fr: Frame = match fr {
-            Ok(fr) => fr,
-            Err(_) => {
-                return match over_budget {
-                    OverBudget::RejectAll => None,
-                    OverBudget::KeepPartial => finish(out),
-                };
+        match decode_capped_step(fr, max_dim, total, max_total_bytes, &over_budget) {
+            Ok((frame, new_total)) => {
+                total = new_total;
+                out.push(frame);
             }
-        };
-        let delay = fr.delay();
-        let buf = fr.into_buffer();
-        let (w, h) = (buf.width(), buf.height());
-        if w == 0 || h == 0 || w > max_dim || h > max_dim {
-            return None;
+            Err(Stop::Reject) => return None,
+            Err(Stop::KeepPartial) => return finish(out),
         }
-        let frame_bytes = (w as u64)
-            .checked_mul(h as u64)
-            .and_then(|p| p.checked_mul(4))?;
-        let new_total = total.saturating_add(frame_bytes);
-        if new_total > max_total_bytes {
-            return match over_budget {
-                OverBudget::RejectAll => None,
-                OverBudget::KeepPartial => finish(out),
-            };
+    }
+    finish(out)
+}
+
+/// Decode and validate ONE frame of the drain: enforce the per-frame canvas cap and the
+/// cumulative RGBA-byte cap, returning the frame together with the updated running byte total
+/// on success, or the [`Stop`] policy to apply to the frames collected so far.
+fn decode_capped_step(
+    fr: image::ImageResult<Frame>,
+    max_dim: u32,
+    total: u64,
+    max_total_bytes: u64,
+    over_budget: &OverBudget,
+) -> Result<(RawFrame, u64), Stop> {
+    let fr: Frame = match fr {
+        Ok(fr) => fr,
+        Err(_) => {
+            return Err(match over_budget {
+                OverBudget::RejectAll => Stop::Reject,
+                OverBudget::KeepPartial => Stop::KeepPartial,
+            });
         }
-        total = new_total;
-        out.push(RawFrame {
+    };
+    let delay = fr.delay();
+    let buf = fr.into_buffer();
+    let (w, h) = (buf.width(), buf.height());
+    if w == 0 || h == 0 || w > max_dim || h > max_dim {
+        return Err(Stop::Reject);
+    }
+    let frame_bytes = (w as u64)
+        .checked_mul(h as u64)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or(Stop::Reject)?;
+    let new_total = total.saturating_add(frame_bytes);
+    if new_total > max_total_bytes {
+        return Err(match over_budget {
+            OverBudget::RejectAll => Stop::Reject,
+            OverBudget::KeepPartial => Stop::KeepPartial,
+        });
+    }
+    Ok((
+        RawFrame {
             w,
             h,
             rgba: buf.into_raw(),
             delay,
-        });
-    }
-    finish(out)
+        },
+        new_total,
+    ))
 }
 
 fn finish(out: Vec<RawFrame>) -> Option<Vec<RawFrame>> {

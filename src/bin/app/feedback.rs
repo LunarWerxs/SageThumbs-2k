@@ -360,6 +360,12 @@ fn looks_like_email(s: &str) -> bool {
     if domain.starts_with('-') || domain.ends_with('-') {
         return false;
     }
+    valid_email_host(domain)
+}
+
+/// Checks the host half of an email domain: a dot that is neither first nor last, no
+/// empty labels, and a TLD of two or more letters.
+fn valid_email_host(domain: &str) -> bool {
     // The domain needs a dot that is neither first nor last, no empty labels, and a TLD of
     // two or more letters — which is what rules out `me@localhost` and `me@1`.
     let Some((host, tld)) = domain.rsplit_once('.') else {
@@ -483,15 +489,7 @@ extern "system" fn feedback_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-        // The intro + the "optional" email note read as supporting text, not as
-        // labels — muted BEFORE the generic static coloring claims them.
-        if msg == WM_CTLCOLORSTATIC {
-            let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            if id == ID_HEAD || id == ID_EMAIL_LBL {
-                return dark_ctlcolor_dim(wparam);
-            }
-        }
-        if let Some(r) = dark_ctlcolor(msg, wparam) {
+        if let Some(r) = try_ctlcolor(msg, wparam, lparam) {
             return r;
         }
         match msg {
@@ -517,13 +515,7 @@ extern "system" fn feedback_wndproc(
                 LRESULT(0)
             }
             WM_COMMAND => {
-                match crate::win::command_id(wparam) {
-                    IDOK => on_send(hwnd),
-                    IDCANCEL => {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                    _ => {}
-                }
+                handle_command(hwnd, wparam);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -539,6 +531,31 @@ extern "system" fn feedback_wndproc(
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+/// The colour-message pre-dispatch: dim the supporting-text statics before the generic
+/// dark control colouring claims them, then let the shared dark handler try.
+unsafe fn try_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    // The intro + the "optional" email note read as supporting text, not as
+    // labels — muted BEFORE the generic static coloring claims them.
+    if msg == WM_CTLCOLORSTATIC {
+        let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
+        if id == ID_HEAD || id == ID_EMAIL_LBL {
+            return Some(dark_ctlcolor_dim(wparam));
+        }
+    }
+    dark_ctlcolor(msg, wparam)
+}
+
+/// Routes a WM_COMMAND id: OK sends the form, Cancel closes the dialog.
+unsafe fn handle_command(hwnd: HWND, wparam: WPARAM) {
+    match crate::win::command_id(wparam) {
+        IDOK => on_send(hwnd),
+        IDCANCEL => {
+            let _ = DestroyWindow(hwnd);
+        }
+        _ => {}
     }
 }
 

@@ -81,21 +81,29 @@ fn export_tree(root: Option<&Key>) -> String {
     if let Some(root) = root {
         values = read_values(root);
         values.retain(|name, _| !protected_root_value(name));
-        if let Ok(names) = root.keys() {
-            for name in names {
-                if protected_subkey(&name) {
-                    continue;
-                }
-                if let Ok(sub) = root.open(&name) {
-                    let sv = read_values(&sub);
-                    if !sv.is_empty() {
-                        subkeys.insert(name, Json::Object(sv));
-                    }
+        subkeys = read_subkeys(root);
+    }
+    render_doc(values, subkeys)
+}
+
+/// Read one level of subkeys under `root` into a JSON object, skipping protected subkeys
+/// and subkeys that hold no values.
+fn read_subkeys(root: &Key) -> Map<String, Json> {
+    let mut subkeys = Map::new();
+    if let Ok(names) = root.keys() {
+        for name in names {
+            if protected_subkey(&name) {
+                continue;
+            }
+            if let Ok(sub) = root.open(&name) {
+                let sv = read_values(&sub);
+                if !sv.is_empty() {
+                    subkeys.insert(name, Json::Object(sv));
                 }
             }
         }
     }
-    render_doc(values, subkeys)
+    subkeys
 }
 
 /// The one document shape both backends emit.
@@ -184,18 +192,8 @@ impl Plan {
         }
         if let Some(subs) = doc.get("subkeys").and_then(Json::as_object) {
             for (name, val) in subs {
-                if protected_subkey(name) || (portable && !ini_safe(name)) {
-                    continue;
-                }
-                let Some(obj) = val.as_object() else {
-                    continue;
-                };
-                let section = Self::section(obj, portable, |_| false);
-                // An empty table says "this subkey has no values", which is the same state
-                // as the subkey being absent, so it contributes nothing to write and the
-                // replace pass drops the key.
-                if !section.is_empty() {
-                    plan.subkeys.insert(name.clone(), section);
+                if let Some((name, section)) = Self::subkey_entry(name, val, portable) {
+                    plan.subkeys.insert(name, section);
                 }
             }
         }
@@ -203,6 +201,27 @@ impl Plan {
             return Err("No settings were found in that file.".into());
         }
         Ok(plan)
+    }
+
+    /// Reduce one `subkeys` entry to its name and section, or `None` when it is protected,
+    /// unsafe on a portable copy, not an object, or empty.
+    fn subkey_entry(
+        name: &str,
+        val: &Json,
+        portable: bool,
+    ) -> Option<(String, BTreeMap<String, Json>)> {
+        if protected_subkey(name) || (portable && !ini_safe(name)) {
+            return None;
+        }
+        let obj = val.as_object()?;
+        // An empty table says "this subkey has no values", which is the same state as the
+        // subkey being absent, so it contributes nothing to write and the replace pass
+        // drops the key.
+        let section = Self::section(obj, portable, |_| false);
+        if section.is_empty() {
+            return None;
+        }
+        Some((name.to_string(), section))
     }
 
     /// One table of the document, reduced to what can and may be written.

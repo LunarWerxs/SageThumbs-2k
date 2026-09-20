@@ -216,35 +216,53 @@ unsafe fn foreground_explorer_selection() -> SelectionOutcome {
     let count = shell_windows.Count().unwrap_or(0);
     let mut fallback: Option<SelectionOutcome> = None;
     for i in 0..count {
-        let Ok(disp) = shell_windows.Item(&VARIANT::from(i)) else {
-            continue;
-        };
-        let Ok(wb) = disp.cast::<IWebBrowser2>() else {
-            continue;
-        };
-        // Only the window the user is actually looking at.
-        let Ok(handle) = wb.HWND() else { continue };
-        if HWND(handle.0 as *mut c_void) != fg {
-            continue;
-        }
-        let Ok(doc) = wb.Document() else { continue };
-        let Ok(view) = doc.cast::<IShellFolderViewDual>() else {
-            continue;
-        };
-        let tab_match = match (active_tab, browser_window(&wb)) {
-            (Some(tab), Some(bw)) => bw == tab,
-            _ => true, // can't disambiguate — accept the frame match as before
-        };
-        if tab_match {
-            return paths_from_view(&view);
-        }
-        if fallback.is_none() {
-            fallback = Some(paths_from_view(&view));
+        if let Some(sel) =
+            shell_window_selection_step(&shell_windows, i, fg, active_tab, &mut fallback)
+        {
+            return sel;
         }
     }
     // No item matched the active tab (e.g. GetWindow semantics differ on this build) — use the
     // first frame-matched item rather than returning nothing.
     fallback.unwrap_or(SelectionOutcome::Empty)
+}
+
+/// Walk ONE `IShellWindows` item in [`foreground_explorer_selection`]: `Some` when it matches the
+/// active tab and its selection should be returned at once, `None` otherwise (in which case the
+/// first frame-matched item's selection is stored in `fallback` if it isn't already).
+unsafe fn shell_window_selection_step(
+    shell_windows: &IShellWindows,
+    i: i32,
+    fg: HWND,
+    active_tab: Option<HWND>,
+    fallback: &mut Option<SelectionOutcome>,
+) -> Option<SelectionOutcome> {
+    let Ok(disp) = shell_windows.Item(&VARIANT::from(i)) else {
+        return None;
+    };
+    let Ok(wb) = disp.cast::<IWebBrowser2>() else {
+        return None;
+    };
+    // Only the window the user is actually looking at.
+    let Ok(handle) = wb.HWND() else { return None };
+    if HWND(handle.0 as *mut c_void) != fg {
+        return None;
+    }
+    let Ok(doc) = wb.Document() else { return None };
+    let Ok(view) = doc.cast::<IShellFolderViewDual>() else {
+        return None;
+    };
+    let tab_match = match (active_tab, browser_window(&wb)) {
+        (Some(tab), Some(bw)) => bw == tab,
+        _ => true, // can't disambiguate — accept the frame match as before
+    };
+    if tab_match {
+        return Some(paths_from_view(&view));
+    }
+    if fallback.is_none() {
+        *fallback = Some(paths_from_view(&view));
+    }
+    None
 }
 
 /// The ACTIVE tab of a (possibly tabbed) Explorer frame: its visible `ShellTabWindowClass`

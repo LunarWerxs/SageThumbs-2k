@@ -93,20 +93,21 @@ pub(super) fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOp
         wheel: val("--wheel").and_then(|s| s.parse().ok()),
         wheel_ctrl: args.iter().any(|a| a == "--ctrl"),
         wheel_shift: args.iter().any(|a| a == "--shift"),
-        sel: val("--sel").and_then(|s| {
-            let (a, b) = s.split_once(',')?;
-            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-        }),
+        sel: val("--sel").and_then(|s| parse_arg_pair(s, |c| c == ',')),
         find: val("--find").cloned(),
         wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
         source: args.iter().any(|a| a == "--source"),
         toggle_source: args.iter().any(|a| a == "--toggle-source"),
         toggle_theme: args.iter().any(|a| a == "--toggle-theme"),
-        size: val("--size").and_then(|s| {
-            let (w, h) = s.split_once(['x', 'X'])?;
-            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-        }),
+        size: val("--size").and_then(|s| parse_arg_pair(s, |c| c == 'x' || c == 'X')),
     }
+}
+
+/// Splits an argument value at the first `sep` character and parses both trimmed sides into
+/// a pair, or `None` when either side is missing or unparseable.
+fn parse_arg_pair<T: std::str::FromStr>(s: &str, sep: impl Fn(char) -> bool) -> Option<(T, T)> {
+    let (a, b) = s.split_once(sep)?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
 /// The default (`settings`) window of `--shot`: builds the requested tab (or drives the
@@ -234,21 +235,7 @@ pub(super) unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[S
     // pressed the hotkey and nothing happened" is otherwise unanswerable: it separates "the
     // hotkey never fired" from "the hotkey fired but Explorer reported no selection".
     if args.iter().any(|a| a == "--explorer-selection") {
-        // `--after-ms N` waits first. Necessary, not a convenience: the resolver reads the
-        // FOREGROUND Explorer window, and launching this console tool makes the CONSOLE the
-        // foreground window — so without a delay it always reports "nothing".
-        let wait = args
-            .iter()
-            .position(|a| a == "--after-ms")
-            .and_then(|p| args.get(p + 1))
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        if wait > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
-        }
-        if let explorer_selection::PreviewTarget::Path(p) = explorer_selection::preview_target() {
-            println!("{p}");
-        }
+        run_explorer_selection(args);
         return true;
     }
     // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
@@ -260,21 +247,73 @@ pub(super) unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[S
     // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
     // folder and fills Explorer's thumbnail cache, showing progress.
     if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
-        // The folder verb is a registry entry, not a menu the DLL gates, so the lock is
-        // applied here: a stopped copy would only fill the cache with icons anyway.
-        if refused_by_licence("licence_locked_notice") {
-            return true;
-        }
-        if let Some(dir) = args.get(pos + 1) {
-            // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
-            // why the shell's own quoting does that and why it cannot be fixed in the
-            // registry string. Repairing it here also heals installs that already wrote
-            // the old command.
-            let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
-            prebuild_dlg::run_prebuild(&dir);
-        }
+        run_prebuild_mode(args, pos);
         return true;
     }
+    // Read-only document modes: `--image-info <path>`, `--ocr <png>` and
+    // `--ocr-keep <path> [--page N]` — whichever appears first wins.
+    if run_document_modes(args) {
+        return true;
+    }
+    // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
+    // viewer. A second launch forwards its path to the running viewer and exits.
+    if let Some(pos) = args.iter().position(|a| a == "--preview") {
+        // The business-licence lock reaches the Quick preview too (`licence_state`).
+        if refused_by_licence("licence_preview_locked") {
+            return true;
+        }
+        let path = args
+            .get(pos + 1)
+            .filter(|p| !p.starts_with("--"))
+            .map(String::as_str);
+        crate::preview::run_preview(hinst, path);
+        return true;
+    }
+    false
+}
+
+/// Runs `--explorer-selection`: waits the optional `--after-ms N` delay (the resolver needs
+/// the real foreground window, and a console launch steals it), then prints the selection
+/// path, one per line.
+unsafe fn run_explorer_selection(args: &[String]) {
+    // `--after-ms N` waits first. Necessary, not a convenience: the resolver reads the
+    // FOREGROUND Explorer window, and launching this console tool makes the CONSOLE the
+    // foreground window — so without a delay it always reports "nothing".
+    let wait = args
+        .iter()
+        .position(|a| a == "--after-ms")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    if wait > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
+    }
+    if let explorer_selection::PreviewTarget::Path(p) = explorer_selection::preview_target() {
+        println!("{p}");
+    }
+}
+
+/// Runs `--prebuild <folder>`: applies the folder-verb licence lock, then repairs the
+/// shell-quoted drive root and fills Explorer's thumbnail cache.
+unsafe fn run_prebuild_mode(args: &[String], pos: usize) {
+    // The folder verb is a registry entry, not a menu the DLL gates, so the lock is
+    // applied here: a stopped copy would only fill the cache with icons anyway.
+    if refused_by_licence("licence_locked_notice") {
+        return;
+    }
+    if let Some(dir) = args.get(pos + 1) {
+        // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
+        // why the shell's own quoting does that and why it cannot be fixed in the
+        // registry string. Repairing it here also heals installs that already wrote
+        // the old command.
+        let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
+        prebuild_dlg::run_prebuild(&dir);
+    }
+}
+
+/// Runs whichever of the read-only document modes (`--image-info <path>`, `--ocr <png>`,
+/// `--ocr-keep <path> [--page N]`) is present; `true` when one fired.
+unsafe fn run_document_modes(args: &[String]) -> bool {
     // Image info: `--image-info <path>` (spawned by the DLL's Image info verb) shows
     // a verbose, copyable metadata dump for the file.
     if let Some(pos) = args.iter().position(|a| a == "--image-info") {
@@ -303,20 +342,6 @@ pub(super) unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[S
                 .and_then(|s| s.parse::<u32>().ok());
             ocr_result::run_ocr_keep(path, page);
         }
-        return true;
-    }
-    // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
-    // viewer. A second launch forwards its path to the running viewer and exits.
-    if let Some(pos) = args.iter().position(|a| a == "--preview") {
-        // The business-licence lock reaches the Quick preview too (`licence_state`).
-        if refused_by_licence("licence_preview_locked") {
-            return true;
-        }
-        let path = args
-            .get(pos + 1)
-            .filter(|p| !p.starts_with("--"))
-            .map(String::as_str);
-        crate::preview::run_preview(hinst, path);
         return true;
     }
     false

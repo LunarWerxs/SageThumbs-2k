@@ -316,26 +316,7 @@ pub(crate) fn posture(
     history: Option<&History>,
 ) -> Posture {
     match mode {
-        Mode::Business => {
-            if ent == Entitlement::Licensed {
-                return Posture::Silent;
-            }
-            // Lapsed-because-revoked and never-licensed look identical to the cache; the
-            // breadcrumb's last recorded status is what tells a deauthorised machine
-            // ("your licence was revoked, here is how to fix it") apart from one that
-            // simply never entered a key ("this mode needs a licence").
-            let revoked = history.is_some_and(|h| h.last_status == "revoked");
-            match phase(now_unix, mode, history) {
-                Phase::Locked => Posture::Locked { revoked },
-                Phase::Expiring { locks_unix } if revoked => Posture::DeauthorizedLoud {
-                    locks_unix: Some(locks_unix),
-                },
-                Phase::Expiring { locks_unix } => Posture::TrialExpired { locks_unix },
-                Phase::Trial { ends_unix } => Posture::Trial { ends_unix },
-                Phase::Clear if revoked => Posture::DeauthorizedLoud { locks_unix: None },
-                Phase::Clear => Posture::BusinessNag,
-            }
-        }
+        Mode::Business => business_posture(now_unix, mode, ent, history),
         Mode::Personal => {
             // A key redeemed on this copy outranks the installer's answer while it is
             // within its grace window: the machine holds a live business licence and
@@ -348,6 +329,34 @@ pub(crate) fn posture(
                 Posture::Silent
             }
         }
+    }
+}
+
+/// Business-mode posture: the phase-to-posture mapping, with the revoked breadcrumb from
+/// `history` splitting the lapsed cases.
+fn business_posture(
+    now_unix: u64,
+    mode: Mode,
+    ent: Entitlement,
+    history: Option<&History>,
+) -> Posture {
+    if ent == Entitlement::Licensed {
+        return Posture::Silent;
+    }
+    // Lapsed-because-revoked and never-licensed look identical to the cache; the
+    // breadcrumb's last recorded status is what tells a deauthorised machine
+    // ("your licence was revoked, here is how to fix it") apart from one that
+    // simply never entered a key ("this mode needs a licence").
+    let revoked = history.is_some_and(|h| h.last_status == "revoked");
+    match phase(now_unix, mode, history) {
+        Phase::Locked => Posture::Locked { revoked },
+        Phase::Expiring { locks_unix } if revoked => Posture::DeauthorizedLoud {
+            locks_unix: Some(locks_unix),
+        },
+        Phase::Expiring { locks_unix } => Posture::TrialExpired { locks_unix },
+        Phase::Trial { ends_unix } => Posture::Trial { ends_unix },
+        Phase::Clear if revoked => Posture::DeauthorizedLoud { locks_unix: None },
+        Phase::Clear => Posture::BusinessNag,
     }
 }
 

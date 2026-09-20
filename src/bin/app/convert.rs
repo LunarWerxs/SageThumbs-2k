@@ -554,6 +554,20 @@ unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
         CID_FORMAT if notify == CBN_SELCHANGE => update_settings_enabled(hwnd),
         CID_RESIZE_CHK | CID_RESIZE_ALL => update_resize_enabled(hwnd),
         CID_RESIZE if notify == CBN_SELCHANGE => update_resize_enabled(hwnd),
+        CID_CV_WATERMARK_CHK
+        | CID_CV_WATERMARK_BROWSE
+        | CID_CV_WATERMARK_CORNER
+        | CID_CV_WATERMARK_SCALE
+        | CID_CV_WATERMARK_OPACITY => on_convert_watermark_command(hwnd, id, notify),
+        _ => {}
+    }
+    LRESULT(0)
+}
+
+/// `WM_COMMAND` for the image-overlay (watermark) controls: the master checkbox, the
+/// mark-file browse button and the corner/scale/opacity combos.
+unsafe fn on_convert_watermark_command(hwnd: HWND, id: i32, notify: u32) {
+    match id {
         CID_CV_WATERMARK_CHK => {
             let on = checked(hwnd, CID_CV_WATERMARK_CHK);
             WATERMARK_ON.store(on as i32, Ordering::Relaxed);
@@ -590,7 +604,6 @@ unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
         }
         _ => {}
     }
-    LRESULT(0)
 }
 
 /// `WM_CONVERT_PROGRESS`: advance the progress bar to `wparam` files done.

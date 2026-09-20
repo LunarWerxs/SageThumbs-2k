@@ -187,6 +187,28 @@ pub(crate) fn verify(cert: &str, expected_sub: &str, now_unix: i64) -> Result<Ve
         return Err(CertError::Malformed);
     }
 
+    let claims = decode_and_verify_claims(payload_b64, sig_b64)?;
+
+    if claims.aud != AUDIENCE {
+        return Err(CertError::WrongAudience);
+    }
+    if claims.product != PRODUCT_ID || claims.sub != expected_sub {
+        return Err(CertError::NotThisMachine);
+    }
+    if claims.exp <= now_unix {
+        return Err(CertError::Expired);
+    }
+
+    Ok(Verified {
+        licensed: true,
+        exp_unix: claims.exp,
+        // No `maint` means updates never lapse; the updater treats `None` as "always offer".
+        maint_unix: claims.maint,
+    })
+}
+
+/// Verify the Ed25519 signature over the payload segment and parse the claims out of it.
+fn decode_and_verify_claims(payload_b64: &str, sig_b64: &str) -> Result<Claims, CertError> {
     let sig_raw = URL_SAFE_NO_PAD
         .decode(sig_b64)
         .map_err(|_| CertError::BadEncoding)?;
@@ -207,24 +229,7 @@ pub(crate) fn verify(cert: &str, expected_sub: &str, now_unix: i64) -> Result<Ve
         .decode(payload_b64)
         .map_err(|_| CertError::BadEncoding)?;
     let value: Value = serde_json::from_slice(&json).map_err(|_| CertError::BadPayload)?;
-    let claims = Claims::from_json(&value).ok_or(CertError::BadPayload)?;
-
-    if claims.aud != AUDIENCE {
-        return Err(CertError::WrongAudience);
-    }
-    if claims.product != PRODUCT_ID || claims.sub != expected_sub {
-        return Err(CertError::NotThisMachine);
-    }
-    if claims.exp <= now_unix {
-        return Err(CertError::Expired);
-    }
-
-    Ok(Verified {
-        licensed: true,
-        exp_unix: claims.exp,
-        // No `maint` means updates never lapse; the updater treats `None` as "always offer".
-        maint_unix: claims.maint,
-    })
+    Claims::from_json(&value).ok_or(CertError::BadPayload)
 }
 
 #[cfg(test)]

@@ -320,26 +320,34 @@ unsafe fn on_rn_preview(hwnd: HWND) -> LRESULT {
     if let Ok(err_ctl) = GetDlgItem(Some(hwnd), CID_RN_ERROR) {
         let _ = ShowWindow(err_ctl, if valid { SW_HIDE } else { SW_SHOW });
     }
-    if let Ok(list) = GetDlgItem(Some(hwnd), CID_RN_PREVIEW) {
-        let _ = ShowWindow(list, if valid { SW_SHOW } else { SW_HIDE });
-        if valid {
-            SendMessageW(list, LB_RESETCONTENT, None, None);
-            for row in &rows {
-                let w = wide(row);
-                SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-            }
-            if files.len() > rows.len() {
-                let hidden = (files.len() - rows.len()).to_string();
-                let more = t("rn_preview_more").replace("{n}", &hidden);
-                let w = wide(&more);
-                SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-            }
-        }
-    }
+    apply_preview_list(hwnd, valid, &rows, files.len());
     if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
         let _ = EnableWindow(btn, valid && !RN_RUNNING.load(Ordering::Relaxed));
     }
     LRESULT(0)
+}
+
+/// Show or hide the preview listbox and, when `valid`, fill it with the precomputed
+/// `rows` plus a trailing "…N more" row when `file_total` exceeds them.
+unsafe fn apply_preview_list(hwnd: HWND, valid: bool, rows: &[String], file_total: usize) {
+    let Ok(list) = GetDlgItem(Some(hwnd), CID_RN_PREVIEW) else {
+        return;
+    };
+    let _ = ShowWindow(list, if valid { SW_SHOW } else { SW_HIDE });
+    if !valid {
+        return;
+    }
+    SendMessageW(list, LB_RESETCONTENT, None, None);
+    for row in rows {
+        let w = wide(row);
+        SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    if file_total > rows.len() {
+        let hidden = (file_total - rows.len()).to_string();
+        let more = t("rn_preview_more").replace("{n}", &hidden);
+        let w = wide(&more);
+        SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
 }
 
 /// `IDOK`: persist the pattern, then run the real rename on a worker thread (same

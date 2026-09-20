@@ -117,45 +117,54 @@ pub(crate) unsafe fn dialog_selection(fg: HWND) -> Option<String> {
         return None;
     }
     let request = request_message()?;
-    with_user_only_dacl(|sa| {
-        let _lock = Lock::acquire(sa)?;
-        let mut shared = Shared::create(sa)?;
-        shared.arm(fg);
+    with_user_only_dacl(|sa| run_handshake(sa, fg, tid, request))
+}
 
-        let dll = hook_dll_path()?;
-        let module = Module::load(&dll)?;
-        let proc_addr = GetProcAddress(module.0, s!("st2k_dlg_hook"))?;
-        // SAFETY: the export is declared `extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT`,
-        // which is exactly `HOOKPROC`'s shape.
-        let hook_proc: HOOKPROC = Some(core::mem::transmute::<
-            unsafe extern "system" fn() -> isize,
-            unsafe extern "system" fn(
-                i32,
-                windows::Win32::Foundation::WPARAM,
-                windows::Win32::Foundation::LPARAM,
-            ) -> windows::Win32::Foundation::LRESULT,
-        >(proc_addr));
+/// Arm the section under `sa`, load and install the hook on the dialog's thread, poke the
+/// dialog once, and read the answer back — the whole body run inside the DACL closure.
+unsafe fn run_handshake(
+    sa: &SECURITY_ATTRIBUTES,
+    fg: HWND,
+    tid: u32,
+    request: u32,
+) -> Option<String> {
+    let _lock = Lock::acquire(sa)?;
+    let mut shared = Shared::create(sa)?;
+    shared.arm(fg);
 
-        let hook = Hook::install(hook_proc, module.0, tid)?;
-        // A WH_CALLWNDPROC hook only fires on a message SENT to that thread, and the hook
-        // serves only on this registered message sent to the armed dialog. SMTO_ABORTIFHUNG
-        // keeps a wedged dialog from parking us here.
-        let mut result = 0usize;
-        let _ = SendMessageTimeoutW(
-            fg,
-            request,
-            WPARAM(0),
-            LPARAM(0),
-            SMTO_ABORTIFHUNG,
-            WAIT_MS,
-            Some(&mut result),
-        );
-        let _ = WaitForSingleObject(shared.event, WAIT_MS);
-        drop(hook); // unhook BEFORE reading, so the DLL stops running in the host either way
-        let answer = shared.read();
-        drop(module);
-        answer
-    })
+    let dll = hook_dll_path()?;
+    let module = Module::load(&dll)?;
+    let proc_addr = GetProcAddress(module.0, s!("st2k_dlg_hook"))?;
+    // SAFETY: the export is declared `extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT`,
+    // which is exactly `HOOKPROC`'s shape.
+    let hook_proc: HOOKPROC = Some(core::mem::transmute::<
+        unsafe extern "system" fn() -> isize,
+        unsafe extern "system" fn(
+            i32,
+            windows::Win32::Foundation::WPARAM,
+            windows::Win32::Foundation::LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT,
+    >(proc_addr));
+
+    let hook = Hook::install(hook_proc, module.0, tid)?;
+    // A WH_CALLWNDPROC hook only fires on a message SENT to that thread, and the hook
+    // serves only on this registered message sent to the armed dialog. SMTO_ABORTIFHUNG
+    // keeps a wedged dialog from parking us here.
+    let mut result = 0usize;
+    let _ = SendMessageTimeoutW(
+        fg,
+        request,
+        WPARAM(0),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        WAIT_MS,
+        Some(&mut result),
+    );
+    let _ = WaitForSingleObject(shared.event, WAIT_MS);
+    drop(hook); // unhook BEFORE reading, so the DLL stops running in the host either way
+    let answer = shared.read();
+    drop(module);
+    answer
 }
 
 /// The registered id of the message that makes the hook run, or `None` if user32 refuses

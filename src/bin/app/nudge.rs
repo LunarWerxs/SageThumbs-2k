@@ -144,13 +144,7 @@ fn from_json(v: &Value) -> Option<NudgeState> {
         consecutive_declines: num("consecutive_declines") as u32,
         cadence,
         stopped: None,
-        pending_ask: v.get("pending_ask").and_then(|p| {
-            Some(PendingAsk {
-                at: p.get("at")?.as_u64()?,
-                trigger: p.get("trigger")?.as_str()?.to_string(),
-                campaign: campaign_from(p.get("campaign")?.as_str()?)?,
-            })
-        }),
+        pending_ask: v.get("pending_ask").and_then(pending_ask_from),
         converted: v
             .get("converted")
             .and_then(Value::as_array)
@@ -160,6 +154,15 @@ fn from_json(v: &Value) -> Option<NudgeState> {
                     .collect()
             })
             .unwrap_or_default(),
+    })
+}
+
+/// Build a [`PendingAsk`] from the stored `pending_ask` object, or `None` if it is malformed.
+fn pending_ask_from(p: &Value) -> Option<PendingAsk> {
+    Some(PendingAsk {
+        at: p.get("at")?.as_u64()?,
+        trigger: p.get("trigger")?.as_str()?.to_string(),
+        campaign: campaign_from(p.get("campaign")?.as_str()?)?,
     })
 }
 

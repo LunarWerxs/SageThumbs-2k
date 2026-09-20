@@ -402,14 +402,7 @@ unsafe fn on_ncdestroy(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> 
 
 extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
-        // Muted on-surface colours for the subtitle / license / copyright — handled
-        // BEFORE the generic static colouring so they don't get the default text colour.
-        if msg == WM_CTLCOLORSTATIC {
-            if let Some(r) = muted_static_color(wparam, lparam) {
-                return r;
-            }
-        }
-        if let Some(r) = dark_ctlcolor(msg, wparam) {
+        if let Some(r) = themed_ctlcolor(msg, wparam, lparam) {
             return r;
         }
         match msg {
@@ -432,6 +425,23 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+/// Theme-aware colour queries for the About box's children: answers `WM_CTLCOLORSTATIC`
+/// (muted subtitle / license / copyright first, so they beat the generic colouring) and
+/// the dark-mode control colours, returning `Some` so the window procedure returns it verbatim.
+unsafe fn themed_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    // Muted on-surface colours for the subtitle / license / copyright — handled
+    // BEFORE the generic static colouring so they don't get the default text colour.
+    if msg == WM_CTLCOLORSTATIC {
+        if let Some(r) = muted_static_color(wparam, lparam) {
+            return Some(r);
+        }
+    }
+    if let Some(r) = dark_ctlcolor(msg, wparam) {
+        return Some(r);
+    }
+    None
 }
 
 #[cfg(test)]
