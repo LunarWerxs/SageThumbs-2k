@@ -28,23 +28,8 @@ pub(super) unsafe fn draw_image(
     fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    const MAX_IMAGES: usize = 24; // bound decode/fetch work per document
-    if !imgs.contains_key(&ib.src) {
-        if imgs.len() >= MAX_IMAGES {
-            return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
-        }
-        if is_remote_src(&ib.src) {
-            // Only reachable when the remote-images toggle is ON (Builder pills them
-            // otherwise). Fetch + decode OFF the paint thread; repaint installs the result.
-            imgs.insert(ib.src.clone(), ImgSlot::Pending);
-            crate::preview::content::spawn_md_img(hwnd, ib.src.clone(), gen);
-        } else {
-            let slot = match load_img(&ib.src, doc_dir, c.bg) {
-                Some(rd) => ImgSlot::Ready(rd),
-                None => ImgSlot::Failed,
-            };
-            imgs.insert(ib.src.clone(), slot);
-        }
+    if !ensure_img_cached(hwnd, ib, imgs, doc_dir, gen, c.bg) {
+        return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
     }
     let Some(ImgSlot::Ready(rd)) = imgs.get(&ib.src) else {
         return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
@@ -82,6 +67,38 @@ pub(super) unsafe fn draw_image(
         });
     }
     y + dh + sc(12)
+}
+
+/// Ensure `ib.src` is in the image cache — spawning a fetch or decoding a local file as
+/// needed; `false` when the per-document cap blocks a new entry and the caller must pill.
+unsafe fn ensure_img_cached(
+    hwnd: HWND,
+    ib: &ImgBlock,
+    imgs: &mut ImgCache,
+    doc_dir: Option<&Path>,
+    gen: u64,
+    bg: u32,
+) -> bool {
+    const MAX_IMAGES: usize = 24; // bound decode/fetch work per document
+    if imgs.contains_key(&ib.src) {
+        return true;
+    }
+    if imgs.len() >= MAX_IMAGES {
+        return false;
+    }
+    if is_remote_src(&ib.src) {
+        // Only reachable when the remote-images toggle is ON (Builder pills them
+        // otherwise). Fetch + decode OFF the paint thread; repaint installs the result.
+        imgs.insert(ib.src.clone(), ImgSlot::Pending);
+        crate::preview::content::spawn_md_img(hwnd, ib.src.clone(), gen);
+    } else {
+        let slot = match load_img(&ib.src, doc_dir, bg) {
+            Some(rd) => ImgSlot::Ready(rd),
+            None => ImgSlot::Failed,
+        };
+        imgs.insert(ib.src.clone(), slot);
+    }
+    true
 }
 
 /// Alt-text pill for an image we won't/can't decode (remote, failed, over caps).
@@ -231,6 +248,25 @@ pub(super) fn percent_decode(s: &str) -> String {
 /// never WIC/magick, this runs on the paint path), bounded size, downscaled to a display cap,
 /// composited over the pane bg into a DIB. Returns `None` (-> pill) on any miss.
 pub(super) unsafe fn load_img(src: &str, dir: Option<&Path>, bg: u32) -> Option<RenderData> {
+    let path = local_src_path(src, dir)?;
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "jfif" | "gif" | "webp" | "bmp" | "svg" | "svgz" | "ico" | "apng"
+    ) {
+        return None;
+    }
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    decode_bytes_to_dib(&bytes, bg)
+}
+
+/// Reject a src that is remote, a notebook `attachment:` scheme, or that resolves outside the
+/// document dir or onto a Windows device; returns the confined local path.
+fn local_src_path(src: &str, dir: Option<&Path>) -> Option<PathBuf> {
     // Remote is NEVER fetched (privacy). This includes UNC paths (`\\server\…` / `//server/…`):
     // fs::read on one opens an SMB connection to an attacker-named host — an outbound network
     // hit (and NTLM handshake) triggered by merely previewing a hostile README.
@@ -264,19 +300,7 @@ pub(super) unsafe fn load_img(src: &str, dir: Option<&Path>, bg: u32) -> Option<
     if is_dos_device_stem(&path) {
         return None;
     }
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "jfif" | "gif" | "webp" | "bmp" | "svg" | "svgz" | "ico" | "apng"
-    ) {
-        return None;
-    }
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > 32 * 1024 * 1024 {
-        return None;
-    }
-    let bytes = std::fs::read(&path).ok()?;
-    decode_bytes_to_dib(&bytes, bg)
+    Some(path)
 }
 
 /// Decode already-in-memory image bytes (a notebook attachment / a fetched remote image) to a

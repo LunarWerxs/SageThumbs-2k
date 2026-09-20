@@ -71,83 +71,100 @@ unsafe fn draw_wrapped_lines(
             line_sel(hdc, toks, placed, x0 + xoff, cy, line_h, s);
         }
         for (rx, idx) in placed {
-            let Tok::Word {
-                s,
-                w,
-                pad,
-                font,
-                color,
-                code,
-                strike,
-                link,
-                doc,
-                ..
-            } = &toks[*idx]
-            else {
-                continue;
-            };
             let cx = x0 + xoff + rx;
-            SelectObject(hdc, (*font).into());
-            SetTextColor(hdc, COLORREF(*color));
-            if *code {
-                // Shaded panel behind inline code (opaque ExtTextOut). It would paint OVER the
-                // selection fill, so when the span is selected the panel IS the highlight.
-                let hot = sel_rng
-                    .zip(*doc)
-                    .is_some_and(|((ss, se), (ds, de))| ss < de && se > ds);
-                let r = RECT {
-                    left: cx,
-                    top: cy,
-                    right: cx + *w,
-                    bottom: cy + line_h,
-                };
-                SetBkColor(hdc, COLORREF(if hot { sel_bg } else { ctx.code_bg }));
-                SetBkMode(hdc, OPAQUE);
-                let _ = ExtTextOutW(
-                    hdc,
-                    cx + *pad,
-                    cy,
-                    ETO_OPAQUE,
-                    Some(&r as *const RECT),
-                    PCWSTR(s.as_ptr()),
-                    s.len() as u32,
-                    None,
-                );
-                SetBkMode(hdc, TRANSPARENT);
-            } else {
-                let _ = ExtTextOutW(
-                    hdc,
-                    cx,
-                    cy,
-                    ETO_OPTIONS(0),
-                    None,
-                    PCWSTR(s.as_ptr()),
-                    s.len() as u32,
-                    None,
-                );
-            }
-            if *strike {
-                hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h / 2, *color);
-            }
-            if let Some(url) = link {
-                hline(
-                    hdc,
-                    cx + *pad,
-                    cx + *w - *pad,
-                    cy + line_h - ctx.ul_off,
-                    *color,
-                );
-                links.push(LinkHit {
-                    rect: RECT {
-                        left: cx,
-                        top: cy,
-                        right: cx + *w,
-                        bottom: cy + line_h,
-                    },
-                    url: url.clone(),
-                });
-            }
+            draw_word(hdc, &toks[*idx], cx, cy, line_h, ctx, sel_rng, sel_bg, links);
         }
+    }
+}
+
+/// Draw one placed word token: its glyphs, inline-code panel, strikethrough and link
+/// underline/hit rect (a non-word token is skipped).
+#[allow(clippy::too_many_arguments)] // GDI draw core: hdc + geometry + ctx, no struct gain
+unsafe fn draw_word(
+    hdc: HDC,
+    tok: &Tok,
+    cx: i32,
+    cy: i32,
+    line_h: i32,
+    ctx: &RunCtx,
+    sel_rng: Option<(usize, usize)>,
+    sel_bg: u32,
+    links: &mut Vec<LinkHit>,
+) {
+    let Tok::Word {
+        s,
+        w,
+        pad,
+        font,
+        color,
+        code,
+        strike,
+        link,
+        doc,
+        ..
+    } = tok
+    else {
+        return;
+    };
+    SelectObject(hdc, (*font).into());
+    SetTextColor(hdc, COLORREF(*color));
+    if *code {
+        // Shaded panel behind inline code (opaque ExtTextOut). It would paint OVER the
+        // selection fill, so when the span is selected the panel IS the highlight.
+        let hot = sel_rng
+            .zip(*doc)
+            .is_some_and(|((ss, se), (ds, de))| ss < de && se > ds);
+        let r = RECT {
+            left: cx,
+            top: cy,
+            right: cx + *w,
+            bottom: cy + line_h,
+        };
+        SetBkColor(hdc, COLORREF(if hot { sel_bg } else { ctx.code_bg }));
+        SetBkMode(hdc, OPAQUE);
+        let _ = ExtTextOutW(
+            hdc,
+            cx + *pad,
+            cy,
+            ETO_OPAQUE,
+            Some(&r as *const RECT),
+            PCWSTR(s.as_ptr()),
+            s.len() as u32,
+            None,
+        );
+        SetBkMode(hdc, TRANSPARENT);
+    } else {
+        let _ = ExtTextOutW(
+            hdc,
+            cx,
+            cy,
+            ETO_OPTIONS(0),
+            None,
+            PCWSTR(s.as_ptr()),
+            s.len() as u32,
+            None,
+        );
+    }
+    if *strike {
+        hline(hdc, cx + *pad, cx + *w - *pad, cy + line_h / 2, *color);
+    }
+    if let Some(url) = link {
+        hline(
+            hdc,
+            cx + *pad,
+            cx + *w - *pad,
+            cy + line_h - ctx.ul_off,
+            *color,
+        );
+        links.push(LinkHit {
+            rect: RECT {
+                left: cx,
+                top: cy,
+                right: cx + *w,
+                bottom: cy + line_h,
+            },
+            url: url.clone(),
+        });
     }
 }
 
@@ -207,64 +224,100 @@ pub(super) unsafe fn line_sel(
 ) {
     let mut prev: Option<(usize, i32)> = None; // (doc end, right x) of the previous word
     for (rx, idx) in placed {
-        let Tok::Word {
-            w,
-            pad,
-            font,
-            doc,
-            spec,
-            code,
-            ..
-        } = &toks[*idx]
-        else {
-            continue;
-        };
-        let Some((ds, de)) = *doc else {
-            prev = None;
-            continue;
-        };
-        let cx = xbase + rx;
-        sel.hits.push(SelHit {
-            rect: RECT {
-                left: cx,
-                top: cy,
-                right: cx + *w,
-                bottom: cy + line_h,
-            },
-            start: ds,
-            end: de,
-            font: *spec,
-            text_x: cx + *pad,
-        });
-        if let Some((ss, se)) = sel.range {
-            // The gap holds this line's inter-word spaces: fill it only when the selection
-            // actually spans across it (so a selection ending mid-line doesn't overhang).
-            if let Some((pde, prx)) = prev {
-                if ss <= pde && se >= ds && prx < cx {
-                    fill(hdc, prx, cy, cx, cy + line_h, sel.bg);
-                }
-            }
-            // An inline-code span paints its own opaque panel in the selection colour (see the
-            // draw loop) — filling here too would just be overpainted.
-            if ss < de && se > ds && !*code {
-                let (x1, x2) = if ss <= ds && se >= de {
-                    (cx, cx + *w) // fully selected: the whole token box, padding included
-                } else {
-                    // Partly selected (a selection end lands inside this word): measure it.
-                    let t = sel.doc.get(ds..de).unwrap_or("");
-                    let a = ss.max(ds) - ds;
-                    let b = se.min(de) - ds;
-                    SelectObject(hdc, (*font).into());
-                    let x = cx + *pad;
-                    (
-                        x + highlight::disp_extent(hdc, t, a),
-                        x + highlight::disp_extent(hdc, t, b),
-                    )
-                };
-                fill(hdc, x1, cy, x2, cy + line_h, sel.bg);
+        prev = sel_word(hdc, &toks[*idx], *rx, xbase, cy, line_h, sel, prev);
+    }
+}
+
+/// Record one placed line token's hit rect (skipping non-word tokens and words with no
+/// document span) and fill its selection background, returning the `(doc end, right x)`
+/// pair the next word's inter-word gap fill needs.
+#[allow(clippy::too_many_arguments)] // hdc + geometry + selection state, no struct gain
+unsafe fn sel_word(
+    hdc: HDC,
+    tok: &Tok,
+    rx: i32,
+    xbase: i32,
+    cy: i32,
+    line_h: i32,
+    sel: &mut RunSel,
+    prev: Option<(usize, i32)>,
+) -> Option<(usize, i32)> {
+    let Tok::Word {
+        w,
+        pad,
+        font,
+        doc,
+        spec,
+        code,
+        ..
+    } = tok
+    else {
+        return prev;
+    };
+    let (ds, de) = (*doc)?;
+    let cx = xbase + rx;
+    sel.hits.push(SelHit {
+        rect: RECT {
+            left: cx,
+            top: cy,
+            right: cx + *w,
+            bottom: cy + line_h,
+        },
+        start: ds,
+        end: de,
+        font: *spec,
+        text_x: cx + *pad,
+    });
+    if let Some((ss, se)) = sel.range {
+        // The gap holds this line's inter-word spaces: fill it only when the selection
+        // actually spans across it (so a selection ending mid-line doesn't overhang).
+        if let Some((pde, prx)) = prev {
+            if ss <= pde && se >= ds && prx < cx {
+                fill(hdc, prx, cy, cx, cy + line_h, sel.bg);
             }
         }
-        prev = Some((de, cx + *w));
+        // An inline-code span paints its own opaque panel in the selection colour (see the
+        // draw loop) — filling here too would just be overpainted.
+        fill_word_sel(hdc, sel, cx, *w, *pad, *font, ds, de, ss, se, *code, cy, line_h);
+    }
+    Some((de, cx + *w))
+}
+
+/// Fill the selection background behind one word's selected extent: the whole token box
+/// when the range covers it, otherwise the measured sub-extent. Inline-code spans are
+/// skipped (their own opaque panel is the highlight).
+#[allow(clippy::too_many_arguments)] // geometry + span bounds + GDI handle, no struct gain
+unsafe fn fill_word_sel(
+    hdc: HDC,
+    sel: &RunSel,
+    cx: i32,
+    w: i32,
+    pad: i32,
+    font: HFONT,
+    ds: usize,
+    de: usize,
+    ss: usize,
+    se: usize,
+    code: bool,
+    cy: i32,
+    line_h: i32,
+) {
+    if ss < de && se > ds && !code {
+        let (x1, x2) = if ss <= ds && se >= de {
+            (cx, cx + w) // fully selected: the whole token box, padding included
+        } else {
+            // Partly selected (a selection end lands inside this word): measure it.
+            let t = sel.doc.get(ds..de).unwrap_or("");
+            let a = ss.max(ds) - ds;
+            let b = se.min(de) - ds;
+            SelectObject(hdc, font.into());
+            let x = cx + pad;
+            (
+                x + highlight::disp_extent(hdc, t, a),
+                x + highlight::disp_extent(hdc, t, b),
+            )
+        };
+        fill(hdc, x1, cy, x2, cy + line_h, sel.bg);
     }
 }
 

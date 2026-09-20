@@ -154,48 +154,63 @@ unsafe fn measure_natural_col_widths(
     ctx: &RunCtx,
     scratch: &mut Vec<LinkHit>,
 ) -> Vec<i32> {
-    const WIDTH_SAMPLES: usize = 7;
     let mut nat_text = vec![0i32; ncols];
-    let cell_chars = |cell: &[Run]| -> usize { cell.iter().map(|r| r.text.chars().count()).sum() };
     for (ci, nat) in nat_text.iter_mut().enumerate() {
-        // The header always counts: it is a different (bold) font and it is the row a narrow
-        // column is most visibly wrong for.
-        let mut cands: Vec<(usize, usize)> = Vec::new(); // (chars, index into `all`)
-        for (ri, (row, _)) in all.iter().enumerate() {
-            if let Some(cell) = row.get(ci) {
-                cands.push((cell_chars(cell), ri));
-            }
-        }
-        cands.sort_unstable_by_key(|&(chars, _)| std::cmp::Reverse(chars));
-        let hdr_first = if all.first().map(|(_, h)| *h).unwrap_or(false) {
-            Some(0usize)
-        } else {
-            None
-        };
-        for ri in hdr_first
-            .into_iter()
-            .chain(cands.iter().take(WIDTH_SAMPLES).map(|&(_, ri)| ri))
-        {
-            let (row, is_hdr) = all[ri];
-            let Some(cell) = row.get(ci) else { continue };
-            let f = if is_hdr { hfonts } else { fonts };
-            let (_, w) = run_block(
-                hdc,
-                cell,
-                f,
-                0,
-                0,
-                i32::MAX / 4,
-                0,
-                true,
-                ctx,
-                scratch,
-                None,
-            );
-            *nat = (*nat).max(w);
-        }
+        *nat = natural_width_of_one_column(hdc, all, ci, fonts, hfonts, ctx, scratch);
     }
     nat_text
+}
+
+/// [`measure_natural_col_widths`] for one column `ci`: the widest of that column's sampled cells.
+unsafe fn natural_width_of_one_column(
+    hdc: HDC,
+    all: &[(&[Vec<Run>], bool)],
+    ci: usize,
+    fonts: &Fonts,
+    hfonts: &Fonts,
+    ctx: &RunCtx,
+    scratch: &mut Vec<LinkHit>,
+) -> i32 {
+    const WIDTH_SAMPLES: usize = 7;
+    let cell_chars = |cell: &[Run]| -> usize { cell.iter().map(|r| r.text.chars().count()).sum() };
+    let mut nat = 0i32;
+    // The header always counts: it is a different (bold) font and it is the row a narrow
+    // column is most visibly wrong for.
+    let mut cands: Vec<(usize, usize)> = Vec::new(); // (chars, index into `all`)
+    for (ri, (row, _)) in all.iter().enumerate() {
+        if let Some(cell) = row.get(ci) {
+            cands.push((cell_chars(cell), ri));
+        }
+    }
+    cands.sort_unstable_by_key(|&(chars, _)| std::cmp::Reverse(chars));
+    let hdr_first = if all.first().map(|(_, h)| *h).unwrap_or(false) {
+        Some(0usize)
+    } else {
+        None
+    };
+    for ri in hdr_first
+        .into_iter()
+        .chain(cands.iter().take(WIDTH_SAMPLES).map(|&(_, ri)| ri))
+    {
+        let (row, is_hdr) = all[ri];
+        let Some(cell) = row.get(ci) else { continue };
+        let f = if is_hdr { hfonts } else { fonts };
+        let (_, w) = run_block(
+            hdc,
+            cell,
+            f,
+            0,
+            0,
+            i32::MAX / 4,
+            0,
+            true,
+            ctx,
+            scratch,
+            None,
+        );
+        nat = nat.max(w);
+    }
+    nat
 }
 
 /// [`draw_table`] step 4: every row's height, wrapping each cell at its column width.
@@ -470,6 +485,32 @@ fn fair_widths(nat: &[i32], avail: i32) -> Vec<i32> {
     if n == 0 {
         return Vec::new();
     }
+    let mut out = settle_equal_shares(nat, avail);
+    // Integer division leaves crumbs either way; settle them on the widest column so the row
+    // spans exactly `avail`.
+    let mut sum: i32 = out.iter().sum();
+    while sum > avail {
+        let Some(i) = (0..n).max_by_key(|i| out[*i]) else {
+            break;
+        };
+        if out[i] <= 1 {
+            break;
+        }
+        let cut = (sum - avail).min(out[i] - 1);
+        out[i] -= cut;
+        sum -= cut;
+    }
+    if sum < avail {
+        if let Some(i) = (0..n).max_by_key(|i| out[*i]) {
+            out[i] += avail - sum;
+        }
+    }
+    out
+}
+
+/// [`fair_widths`] first pass: settle every column that fits an equal slice at its natural width.
+fn settle_equal_shares(nat: &[i32], avail: i32) -> Vec<i32> {
+    let n = nat.len();
     let mut out = vec![-1i32; n];
     let mut remaining = avail;
     let mut hungry = n;
@@ -491,25 +532,6 @@ fn fair_widths(nat: &[i32], avail: i32) -> Vec<i32> {
             break;
         }
         hungry -= settled;
-    }
-    // Integer division leaves crumbs either way; settle them on the widest column so the row
-    // spans exactly `avail`.
-    let mut sum: i32 = out.iter().sum();
-    while sum > avail {
-        let Some(i) = (0..n).max_by_key(|i| out[*i]) else {
-            break;
-        };
-        if out[i] <= 1 {
-            break;
-        }
-        let cut = (sum - avail).min(out[i] - 1);
-        out[i] -= cut;
-        sum -= cut;
-    }
-    if sum < avail {
-        if let Some(i) = (0..n).max_by_key(|i| out[*i]) {
-            out[i] += avail - sum;
-        }
     }
     out
 }
