@@ -78,15 +78,22 @@ pub(super) fn walk_packets_rlcp(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> 
     Ok(())
 }
 
+/// Visit every component and layer address of one (resolution,
+/// precinct-position) pair, in component-then-layer order.
+fn walk_res_precinct(w: &mut PacketWalk<'_>, r: usize, pi: usize) -> Result<(), Jp2Error> {
+    for ci in 0..w.ncomp {
+        for l in 0..w.layers {
+            (*w.visit)(l, r, ci, pi)?;
+        }
+    }
+    Ok(())
+}
+
 /// RPCL: resolution outermost, then position, component, layer.
 pub(super) fn walk_packets_rpcl(w: &mut PacketWalk<'_>) -> Result<(), Jp2Error> {
     for r in 0..=w.walk_levels as usize {
         for pi in 0..packet_count(w.nprec, r) {
-            for ci in 0..w.ncomp {
-                for l in 0..w.layers {
-                    (*w.visit)(l, r, ci, pi)?;
-                }
-            }
+            walk_res_precinct(w, r, pi)?;
         }
     }
     Ok(())

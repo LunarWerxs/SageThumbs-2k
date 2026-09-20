@@ -190,26 +190,8 @@ pub(super) fn reconstruct(
     // 2D_INTERLEAVE (F.3.3): even/even from LL, odd/even from HL, even/odd from LH,
     // odd/odd from HH, indexed relative to each band's own origin.
     for y in 0..h {
-        let gy = y0 + y;
-        let by = if gy.is_multiple_of(2) {
-            gy / 2 - y0.div_ceil(2)
-        } else {
-            gy / 2 - y0 / 2
-        };
         for x in 0..w {
-            let gx = x0 + x;
-            let bx = if gx.is_multiple_of(2) {
-                gx / 2 - x0.div_ceil(2)
-            } else {
-                gx / 2 - x0 / 2
-            };
-            let v = match (gx.is_multiple_of(2), gy.is_multiple_of(2)) {
-                (true, true) => ll.get(bx, by),
-                (false, true) => hl.get(bx, by),
-                (true, false) => lh.get(bx, by),
-                (false, false) => hh.get(bx, by),
-            };
-            out.data[y * w + x] = v;
+            out.data[y * w + x] = interleave_sample(ll, hl, lh, hh, x0, y0, x, y);
         }
     }
 
@@ -233,6 +215,38 @@ pub(super) fn reconstruct(
         }
     }
     out
+}
+
+/// Pick the 2D_INTERLEAVE sample for output position `(x, y)` from the four bands (F.3.3).
+#[allow(clippy::too_many_arguments)] // four bands plus the position and the two parities: the spec's own arity
+fn interleave_sample(
+    ll: &SubBand,
+    hl: &SubBand,
+    lh: &SubBand,
+    hh: &SubBand,
+    x0: usize,
+    y0: usize,
+    x: usize,
+    y: usize,
+) -> f32 {
+    let gx = x0 + x;
+    let gy = y0 + y;
+    let bx = if gx.is_multiple_of(2) {
+        gx / 2 - x0.div_ceil(2)
+    } else {
+        gx / 2 - x0 / 2
+    };
+    let by = if gy.is_multiple_of(2) {
+        gy / 2 - y0.div_ceil(2)
+    } else {
+        gy / 2 - y0 / 2
+    };
+    match (gx.is_multiple_of(2), gy.is_multiple_of(2)) {
+        (true, true) => ll.get(bx, by),
+        (false, true) => hl.get(bx, by),
+        (true, false) => lh.get(bx, by),
+        (false, false) => hh.get(bx, by),
+    }
 }
 
 #[cfg(test)]

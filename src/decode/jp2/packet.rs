@@ -116,27 +116,43 @@ impl TagTree {
         // Walk root-down; each level's value is a lower bound for the level below.
         let mut lower = 0u32;
         for li in (0..self.levels.len()).rev() {
-            let (lw, _, ref mut vals, ref mut done) = self.levels[li];
-            let sx = x >> li;
-            let sy = y >> li;
-            let i = sy * lw + sx;
-            if vals[i] < lower {
-                vals[i] = lower;
+            match self.decode_level(br, x, y, threshold, li, lower)? {
+                Some(v) => lower = v,
+                None => return Ok(None),
             }
-            while !done[i] && vals[i] < threshold {
-                if br.bit()? == 1 {
-                    done[i] = true;
-                } else {
-                    vals[i] += 1;
-                }
-            }
-            if !done[i] {
-                // Still only a lower bound at this level, so the leaf is >= threshold.
-                return Ok(None);
-            }
-            lower = vals[i];
         }
         Ok(Some(lower))
+    }
+
+    /// Decode one tag-tree level at (x, y), raising `lower`; `None` when the leaf is still only known to be >= `threshold`.
+    fn decode_level(
+        &mut self,
+        br: &mut BitReader,
+        x: usize,
+        y: usize,
+        threshold: u32,
+        li: usize,
+        lower: u32,
+    ) -> Result<Option<u32>, Jp2Error> {
+        let (lw, _, ref mut vals, ref mut done) = self.levels[li];
+        let sx = x >> li;
+        let sy = y >> li;
+        let i = sy * lw + sx;
+        if vals[i] < lower {
+            vals[i] = lower;
+        }
+        while !done[i] && vals[i] < threshold {
+            if br.bit()? == 1 {
+                done[i] = true;
+            } else {
+                vals[i] += 1;
+            }
+        }
+        if !done[i] {
+            // Still only a lower bound at this level, so the leaf is >= threshold.
+            return Ok(None);
+        }
+        Ok(Some(vals[i]))
     }
 }
 
@@ -261,17 +277,7 @@ fn parse_block_contribution(
         st.zero_bitplanes = decode_zero_bitplanes(br, &mut pb.imsb, bx, by)?;
         st.included = true;
     }
-    let passes = read_pass_count(br)?;
-    grow_lblock(br, &mut st.lblock)?;
-    // Segment length: lblock + floor(log2(passes)) bits. Valid for the styles this decoder
-    // accepts (no TERMALL/BYPASS, which split into per-segment lengths — those styles are
-    // declined before we get here).
-    let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
-    if bits > 32 {
-        return Err(Jp2Error::Malformed("segment length too wide"));
-    }
-    let len = br.bits(bits)? as usize;
-    st.passes_so_far += passes;
+    let (passes, len) = read_segment_header(br, st)?;
     Ok(Some(BlockContribution {
         cblk_x: bx,
         cblk_y: by,
@@ -279,6 +285,19 @@ fn parse_block_contribution(
         len,
         zero_bitplanes: st.zero_bitplanes,
     }))
+}
+
+/// Read a code-block segment's pass count and byte length, updating the block's lasting state.
+fn read_segment_header(br: &mut BitReader, st: &mut BlockState) -> Result<(u32, usize), Jp2Error> {
+    let passes = read_pass_count(br)?;
+    grow_lblock(br, &mut st.lblock)?;
+    let bits = st.lblock + (32 - passes.leading_zeros()).saturating_sub(1);
+    if bits > 32 {
+        return Err(Jp2Error::Malformed("segment length too wide"));
+    }
+    let len = br.bits(bits)? as usize;
+    st.passes_so_far += passes;
+    Ok((passes, len))
 }
 
 /// Parse ONE packet header covering ALL of `bands` (1 band at resolution 0, else 3).
@@ -303,14 +322,26 @@ pub(super) fn parse_packet(
         return Ok(out);
     }
     for (bi, pb) in bands.iter_mut().enumerate() {
-        for by in 0..pb.nby {
-            for bx in 0..pb.nbx {
-                if let Some(c) = parse_block_contribution(br, pb, bx, by, layer)? {
-                    out.push((bi, c));
-                }
-            }
-        }
+        collect_band(br, pb, bi, layer, &mut out)?;
     }
     br.align()?;
     Ok(out)
+}
+
+/// Walk one band's code-block grid, appending its included contributions tagged with the band index.
+fn collect_band(
+    br: &mut BitReader,
+    pb: &mut PrecBand,
+    bi: usize,
+    layer: u32,
+    out: &mut Vec<(usize, BlockContribution)>,
+) -> Result<(), Jp2Error> {
+    for by in 0..pb.nby {
+        for bx in 0..pb.nbx {
+            if let Some(c) = parse_block_contribution(br, pb, bx, by, layer)? {
+                out.push((bi, c));
+            }
+        }
+    }
+    Ok(())
 }

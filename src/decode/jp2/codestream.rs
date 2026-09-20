@@ -181,19 +181,34 @@ pub(super) fn find_codestream_and_palette(
             return Err(Jp2Error::Malformed("box chain too long"));
         }
         let (body_start, end) = box_extent(bytes, p)?;
-        match &bytes[p + 4..p + 8] {
-            b"jp2h" => palette = parse_palette(&bytes[body_start..end])?,
-            b"jp2c" => {
-                return Ok((
-                    bytes.get(body_start..end).ok_or(Jp2Error::Truncated)?,
-                    palette,
-                ));
-            }
-            _ => {}
+        if let Some(ret) = handle_box(bytes, p, body_start, end, &mut palette)? {
+            return Ok(ret);
         }
         p = end;
     }
     Err(Jp2Error::Malformed("no jp2c box"))
+}
+
+/// Inspect a JP2 box: extract palette from jp2h or return the jp2c codestream slice.
+#[allow(clippy::type_complexity)] // the codestream slice with its palette, exactly what the caller returns
+fn handle_box<'a>(
+    bytes: &'a [u8],
+    p: usize,
+    body_start: usize,
+    end: usize,
+    palette: &mut Option<Palette>,
+) -> Result<Option<(&'a [u8], Option<Palette>)>, Jp2Error> {
+    match &bytes[p + 4..p + 8] {
+        b"jp2h" => *palette = parse_palette(&bytes[body_start..end])?,
+        b"jp2c" => {
+            return Ok(Some((
+                bytes.get(body_start..end).ok_or(Jp2Error::Truncated)?,
+                palette.take(),
+            )));
+        }
+        _ => {}
+    }
+    Ok(None)
 }
 
 /// The body start and end offsets of the JP2 box whose header begins at `p`: an 8-byte
