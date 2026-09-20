@@ -65,25 +65,15 @@ pub(super) fn last_resort_tiers(
     // afford a subprocess (≤20s) there — it falls back to the cheap embedded-JPEG slice
     // below, or a caption-only tile.
     let mut last_err = route.magick_error.unwrap_or_else(|| Error::from(E_FAIL));
-    if external {
-        if !magick_attempted {
-            // Ask magick for no more than the caller's target edge. Rendering the fixed
-            // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
-            // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
-            // for a file that decodes perfectly well.
-            match decode_via_magick_capped(bytes, wic_thumbnail_cx, raw_preview.fidelity()) {
-                Ok(img) => return Ok(finish_magick_output(img, bytes, false)),
-                Err(e) => {
-                    crate::safety::log_debugf!("decode tier `magick` failed: {e}");
-                    last_err = e;
-                }
-            }
-        }
-        if raw_preview == RawPreviewOrder::AfterExternal {
-            if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
-                return Ok(img);
-            }
-        }
+    if let Some(img) = try_external_tiers(
+        bytes,
+        wic_thumbnail_cx,
+        raw_preview,
+        external,
+        magick_attempted,
+        &mut last_err,
+    ) {
+        return Ok(img);
     }
     // The reduced-resolution IFD0 held back above. Every real decoder has now failed or is
     // absent, and a small genuine preview beats both the byte-scan carve below and a blank
@@ -102,6 +92,41 @@ pub(super) fn last_resort_tiers(
         return Ok(img);
     }
     Err(last_err)
+}
+
+/// The `external`-only tail of [`last_resort_tiers`]: the capped ImageMagick subprocess and the
+/// after-external camera-RAW preview retry. Returns the first image a tier produced, or `None`
+/// when neither ran or both failed (magick's error is recorded in `last_err`).
+fn try_external_tiers(
+    bytes: &[u8],
+    wic_thumbnail_cx: Option<u32>,
+    raw_preview: RawPreviewOrder,
+    external: bool,
+    magick_attempted: bool,
+    last_err: &mut Error,
+) -> Option<DynamicImage> {
+    if !external {
+        return None;
+    }
+    if !magick_attempted {
+        // Ask magick for no more than the caller's target edge. Rendering the fixed
+        // 4096 cap and then throwing most of it away cost 15.6s on a 76 MP JPEG 2000
+        // (issue #11) — over the preview pane's 12s budget, so the pane showed nothing
+        // for a file that decodes perfectly well.
+        match decode_via_magick_capped(bytes, wic_thumbnail_cx, raw_preview.fidelity()) {
+            Ok(img) => return Some(finish_magick_output(img, bytes, false)),
+            Err(e) => {
+                crate::safety::log_debugf!("decode tier `magick` failed: {e}");
+                *last_err = e;
+            }
+        }
+    }
+    if raw_preview == RawPreviewOrder::AfterExternal {
+        if let Some(img) = try_raw_preview_tier(bytes, wic_thumbnail_cx) {
+            return Some(img);
+        }
+    }
+    None
 }
 
 /// The picture's size as its own header declares it, for the formats the `image` crate can
@@ -389,52 +414,61 @@ pub(super) fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Ima
             );
             ImageTierOutcome::ReducedIfd0(img)
         }
-        Ok((img, icc)) => {
-            // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
-            // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
-            // it to 8-bit sRGB ourselves (native Rust) - no ImageMagick subprocess,
-            // so EXR/HDR also work on the compact (no-magick) install.
-            if matches!(
-                img,
-                DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
-            ) {
-                // REDUCE FIRST, when the caller only wants a tile. A 12 MP Radiance file is
-                // 144 MB of float and the tone map then runs over every one of those pixels
-                // to produce a 256 px thumbnail. Averaging in LINEAR light before the curve
-                // is also the physically correct order, and it is not a new idea here:
-                // `exrscale::decode_scaled` has always box-averaged OpenEXR into the target
-                // grid and handed the caller a small float image to tone-map. This gives the
-                // formats that reach the `image` tier (Radiance .hdr, float PNM, jxl HDR) the
-                // same treatment. Full-fidelity callers pass `None` and are untouched.
-                let img = match wic_thumbnail_cx {
-                    Some(cx) => pre_reduce(img, cx),
-                    None => img,
-                };
-                // A no-op for float variants (apply_icc_to_srgb's match falls through to
-                // `other => other` for them), kept for symmetry with the paths above.
-                let img = apply_icc_to_srgb(img, icc);
-                return ImageTierOutcome::Decoded(tone_map_float(&img));
-            }
-            // The ordinary successful decode: for a thumbnail request, reduce FIRST and
-            // colour-manage the small result, instead of running the CMS transform over
-            // every source pixel only to immediately throw most of them away. For a
-            // non-sRGB profile that averages gamut-encoded values before the transform: a
-            // deviation of the same order as the gamma-space box reduce every thumbnail
-            // already accepts, visible at most as a slight shift on saturated edges, and the
-            // accepted price of not colour-managing a 50-megapixel source for a 256 px tile.
-            // Full-fidelity callers (`wic_thumbnail_cx == None`) are unaffected — no
-            // reduction happens, and the transform runs on every pixel.
-            let img = match wic_thumbnail_cx {
-                Some(cx) => pre_reduce(img, cx),
-                None => img,
-            };
-            ImageTierOutcome::Decoded(apply_icc_to_srgb(img, icc))
-        }
+        Ok((img, icc)) => finish_image_tier(img, icc, wic_thumbnail_cx),
         Err(e) => {
             crate::safety::log_debugf!("decode tier `image` failed: {e}");
             ImageTierOutcome::Failed
         }
     }
+}
+
+/// The successful `image`-tier decode: an HDR float (EXR/Radiance) result is reduced then
+/// tone-mapped to 8-bit sRGB, and an ordinary image is reduced then colour-managed. See
+/// [`try_image_tier`].
+fn finish_image_tier(
+    img: DynamicImage,
+    icc: Option<Vec<u8>>,
+    wic_thumbnail_cx: Option<u32>,
+) -> ImageTierOutcome {
+    // HDR float (EXR/Radiance) decodes to 32-bit linear float, which can't
+    // be saved as PNG/JPEG or turned into an 8-bit DIB directly. Tone-map
+    // it to 8-bit sRGB ourselves (native Rust) - no ImageMagick subprocess,
+    // so EXR/HDR also work on the compact (no-magick) install.
+    if matches!(
+        img,
+        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+    ) {
+        // REDUCE FIRST, when the caller only wants a tile. A 12 MP Radiance file is
+        // 144 MB of float and the tone map then runs over every one of those pixels
+        // to produce a 256 px thumbnail. Averaging in LINEAR light before the curve
+        // is also the physically correct order, and it is not a new idea here:
+        // `exrscale::decode_scaled` has always box-averaged OpenEXR into the target
+        // grid and handed the caller a small float image to tone-map. This gives the
+        // formats that reach the `image` tier (Radiance .hdr, float PNM, jxl HDR) the
+        // same treatment. Full-fidelity callers pass `None` and are untouched.
+        let img = match wic_thumbnail_cx {
+            Some(cx) => pre_reduce(img, cx),
+            None => img,
+        };
+        // A no-op for float variants (apply_icc_to_srgb's match falls through to
+        // `other => other` for them), kept for symmetry with the paths above.
+        let img = apply_icc_to_srgb(img, icc);
+        return ImageTierOutcome::Decoded(tone_map_float(&img));
+    }
+    // The ordinary successful decode: for a thumbnail request, reduce FIRST and
+    // colour-manage the small result, instead of running the CMS transform over
+    // every source pixel only to immediately throw most of them away. For a
+    // non-sRGB profile that averages gamut-encoded values before the transform: a
+    // deviation of the same order as the gamma-space box reduce every thumbnail
+    // already accepts, visible at most as a slight shift on saturated edges, and the
+    // accepted price of not colour-managing a 50-megapixel source for a 256 px tile.
+    // Full-fidelity callers (`wic_thumbnail_cx == None`) are unaffected — no
+    // reduction happens, and the transform runs on every pixel.
+    let img = match wic_thumbnail_cx {
+        Some(cx) => pre_reduce(img, cx),
+        None => img,
+    };
+    ImageTierOutcome::Decoded(apply_icc_to_srgb(img, icc))
 }
 
 /// Cheap magic-byte gate for [`try_raw_preview_tier`]: does `bytes` at least start like a
@@ -464,9 +498,15 @@ pub(super) fn looks_raw_container(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"IIRO")
         || bytes.starts_with(b"MMOR")
         || bytes.starts_with(b"IIU\0")
-        || (bytes.len() >= 12
-            && &bytes[4..8] == b"ftyp"
-            && (&bytes[8..12] == b"crx " || &bytes[8..12] == b"cr3 "))
+        || has_crx_ftyp(bytes)
+}
+
+/// Does `bytes` carry the ISOBMFF `ftyp` box of a Canon CR3/CrX RAW (`crx `/`cr3 `)? The
+/// non-TIFF signature check of [`looks_raw_container`].
+fn has_crx_ftyp(bytes: &[u8]) -> bool {
+    bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && (&bytes[8..12] == b"crx " || &bytes[8..12] == b"cr3 ")
 }
 
 /// Camera-RAW fast path: a RAW file embeds a JPEG the camera already rendered, ~10–30×

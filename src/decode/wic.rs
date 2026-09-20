@@ -425,12 +425,7 @@ pub(super) unsafe fn wic_decode_frame(
     // scaler's contract. On the already-scaled image this second conversion is cheap, and
     // it is a no-op (same object) whenever the source is already 32bppRGBA.
     let source = ensure_rgba32(factory, source)?;
-    source.GetSize(&mut w, &mut h)?;
-    let stride = w.checked_mul(4).ok_or_else(|| Error::from(E_FAIL))?;
-    let mut buf = vec![0u8; (stride as usize) * (h as usize)];
-    source.CopyPixels(std::ptr::null(), stride, &mut buf)?;
-
-    let img = image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))?;
+    let img = rgba8_from_source(&source)?;
     // Color-manage to sRGB: HEIC/AVIF/RAW carry their wide-gamut profile (iPhone photos
     // are Display P3) in a WIC color context. The format converter above is pixel-format
     // only — NOT color-space — so without this the P3 values render mis-saturated (and
@@ -448,6 +443,17 @@ pub(super) unsafe fn wic_decode_frame(
         .or_else(|| jpeg_icc(container_bytes))
         .or_else(|| wic_icc(factory, frame));
     Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
+}
+
+/// Size `source`, copy its pixels out and wrap them as an RGBA8 image (the tail of
+/// [`wic_decode_frame`], which has already normalised `source` through [`ensure_rgba32`]).
+unsafe fn rgba8_from_source(source: &IWICBitmapSource) -> Result<image::RgbaImage> {
+    let (mut w, mut h) = (0u32, 0u32);
+    source.GetSize(&mut w, &mut h)?;
+    let stride = w.checked_mul(4).ok_or_else(|| Error::from(E_FAIL))?;
+    let mut buf = vec![0u8; (stride as usize) * (h as usize)];
+    source.CopyPixels(std::ptr::null(), stride, &mut buf)?;
+    image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))
 }
 
 /// Guarantee `source` really is 32bppRGBA, converting it if it is not.
@@ -563,18 +569,27 @@ pub(super) unsafe fn wic_icc(
     let mut got = count as u32;
     frame.GetColorContexts(&mut ctxs, &mut got).ok()?;
     for ctx in ctxs.into_iter().flatten() {
-        let Ok(kind) = ctx.GetType() else { continue };
-        if kind != WICColorContextProfile {
-            continue; // an Exif color-space FLAG, not an ICC profile — skip
-        }
-        let mut n: u32 = 0;
-        if ctx.GetProfileBytes(&mut [], &mut n).is_err() || n == 0 || n as u64 > 4 * 1024 * 1024 {
-            continue;
-        }
-        let mut buf = vec![0u8; n as usize];
-        if ctx.GetProfileBytes(&mut buf, &mut n).is_ok() {
+        if let Some(buf) = profile_bytes_from_context(&ctx) {
             return Some(buf);
         }
+    }
+    None
+}
+
+/// The ICC profile bytes from one WIC color context, or `None` when it is not a usable
+/// PROFILE-type context (an Exif-flag context, a COM hiccup, or an absurd size).
+unsafe fn profile_bytes_from_context(ctx: &IWICColorContext) -> Option<Vec<u8>> {
+    let Ok(kind) = ctx.GetType() else { return None };
+    if kind != WICColorContextProfile {
+        return None; // an Exif color-space FLAG, not an ICC profile — skip
+    }
+    let mut n: u32 = 0;
+    if ctx.GetProfileBytes(&mut [], &mut n).is_err() || n == 0 || n as u64 > 4 * 1024 * 1024 {
+        return None;
+    }
+    let mut buf = vec![0u8; n as usize];
+    if ctx.GetProfileBytes(&mut buf, &mut n).is_ok() {
+        return Some(buf);
     }
     None
 }

@@ -167,24 +167,53 @@ pub(super) fn nv12_to_srgb(
         let row = dy * step;
         let yrow = y_plane.get(row * stride..row * stride + out_w as usize)?;
         let uvrow_off = (row / 2) * stride;
-        for dx in 0..dst_w as usize {
-            let col = dx * step;
-            let y = i64::from(*yrow.get(col)?) - y_off;
-            let uv = uvrow_off + (col & !1);
-            let cb = i64::from(*uv_plane.get(uv)?) - 128;
-            let cr = i64::from(*uv_plane.get(uv + 1)?) - 128;
-            let clamp = |v: i64| ((v + (1 << 15)) >> 16).clamp(0, 255) as u8;
-            let base = cy * y;
-            let px = image::Rgba([
-                clamp(base + cr_r * cr),
-                clamp(base + cb_g * cb + cr_g * cr),
-                clamp(base + cb_b * cb),
-                255,
-            ]);
-            out.put_pixel(dx as u32, dy as u32, px);
-        }
+        nv12_convert_row(
+            &mut out,
+            yrow,
+            uv_plane,
+            uvrow_off,
+            dst_w as usize,
+            step,
+            y_off,
+            (cy, cr_r, cb_g, cr_g, cb_b),
+            dy,
+        )?;
     }
     Some(DynamicImage::ImageRgba8(out))
+}
+
+/// Convert one sampled NV12 row (`yrow` + the shared chroma plane at `uvrow_off`) into the
+/// RGBA pixels of `out` at row `dy`, applying `coeffs` = (cy, cr_r, cb_g, cr_g, cb_b).
+#[allow(clippy::too_many_arguments)] // one NV12 row: every parameter is a plane, an offset or a coefficient
+fn nv12_convert_row(
+    out: &mut image::RgbaImage,
+    yrow: &[u8],
+    uv_plane: &[u8],
+    uvrow_off: usize,
+    dst_w: usize,
+    step: usize,
+    y_off: i64,
+    coeffs: (i64, i64, i64, i64, i64),
+    dy: usize,
+) -> Option<()> {
+    let (cy, cr_r, cb_g, cr_g, cb_b) = coeffs;
+    for dx in 0..dst_w {
+        let col = dx * step;
+        let y = i64::from(*yrow.get(col)?) - y_off;
+        let uv = uvrow_off + (col & !1);
+        let cb = i64::from(*uv_plane.get(uv)?) - 128;
+        let cr = i64::from(*uv_plane.get(uv + 1)?) - 128;
+        let clamp = |v: i64| ((v + (1 << 15)) >> 16).clamp(0, 255) as u8;
+        let base = cy * y;
+        let px = image::Rgba([
+            clamp(base + cr_r * cr),
+            clamp(base + cb_g * cb + cr_g * cr),
+            clamp(base + cb_b * cb),
+            255,
+        ]);
+        out.put_pixel(dx as u32, dy as u32, px);
+    }
+    Some(())
 }
 
 /// The `ipco`-property boxes `eligible_mf_still` cares about, gathered by `walk_ipco_boxes`.

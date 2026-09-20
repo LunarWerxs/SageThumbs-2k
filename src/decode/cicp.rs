@@ -67,30 +67,49 @@ pub(super) fn png_cicp(bytes: &[u8]) -> Option<PngCicp> {
     let limit = bytes.len().min(MAX_SCAN_BYTES);
     let mut p = SIG.len();
     while p + 8 <= limit {
-        let len = u32::from_be_bytes(bytes[p..p + 4].try_into().ok()?) as usize;
-        let typ = &bytes[p + 4..p + 8];
-        let data_start = p + 8;
-        let data_end = data_start.checked_add(len)?;
-        match typ {
-            b"cICP" => {
-                let d = bytes.get(data_start..data_end)?;
-                if d.len() != 4 {
-                    return None;
-                }
-                return Some(PngCicp {
-                    primaries: d[0],
-                    transfer: d[1],
-                    full_range: d[3] == 1,
-                });
-            }
-            // Pixel data (or the end marker) without a cICP before it: there is none.
-            b"IDAT" | b"IEND" => return None,
-            _ => {}
+        match scan_chunk(bytes, p)? {
+            ChunkStep::Found(c) => return Some(c),
+            ChunkStep::Stop => return None,
+            ChunkStep::Next(next) => p = next,
         }
-        // length + type + data + crc
-        p = data_end.checked_add(4)?;
     }
     None
+}
+
+/// What the chunk whose header starts at `p` means for the `cICP` scan.
+enum ChunkStep {
+    /// A well-formed `cICP` chunk: the scan is over and this is its value.
+    Found(PngCicp),
+    /// `IDAT`/`IEND`, or a `cICP` with the wrong payload size: there is no `cICP`.
+    Stop,
+    /// An unrelated chunk: resume the walk at this offset (past length, type, data, crc).
+    Next(usize),
+}
+
+/// Read the chunk at `p` of the walk; `None` when a length overruns the buffer.
+fn scan_chunk(bytes: &[u8], p: usize) -> Option<ChunkStep> {
+    let len = u32::from_be_bytes(bytes[p..p + 4].try_into().ok()?) as usize;
+    let typ = &bytes[p + 4..p + 8];
+    let data_start = p + 8;
+    let data_end = data_start.checked_add(len)?;
+    match typ {
+        b"cICP" => {
+            let d = bytes.get(data_start..data_end)?;
+            if d.len() != 4 {
+                return Some(ChunkStep::Stop);
+            }
+            return Some(ChunkStep::Found(PngCicp {
+                primaries: d[0],
+                transfer: d[1],
+                full_range: d[3] == 1,
+            }));
+        }
+        // Pixel data (or the end marker) without a cICP before it: there is none.
+        b"IDAT" | b"IEND" => return Some(ChunkStep::Stop),
+        _ => {}
+    }
+    // length + type + data + crc
+    Some(ChunkStep::Next(data_end.checked_add(4)?))
 }
 
 /// Convert a decoded 8/16-bit PNG whose `cICP` says PQ or HLG into display-linear

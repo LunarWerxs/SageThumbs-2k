@@ -215,30 +215,44 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     let mut verts: Vec<[f32; 3]> = Vec::new();
     let mut tris: Vec<[f32; 9]> = Vec::new();
     for line in text.lines() {
-        let l = line.trim_start();
-        if let Some(rest) = l.strip_prefix("v ") {
-            let v = parse_obj_vertex(rest)?;
-            // Push a placeholder for a non-finite vertex rather than dropping it: OBJ face
-            // indices are 1-based positions into the file's FULL `v` line sequence, so
-            // skipping an entry here would silently shift every later face's index off by
-            // one — the same desync `read_ply_ascii`/`read_ply_binary` push `[0.0; 3]` to
-            // avoid.
-            verts.push(if v.iter().all(|c| c.is_finite()) {
-                v
-            } else {
-                [0.0; 3]
-            });
-            if verts.len() > MAX_VERTS {
-                return None;
-            }
-        } else if let Some(rest) = l.strip_prefix("f ") {
-            let idx = parse_obj_face_indices(rest, verts.len());
-            if push_obj_face(&mut tris, &verts, &idx) {
-                return Some(tris);
-            }
+        match parse_obj_line(line.trim_start(), &mut verts, &mut tris) {
+            None => return None,
+            Some(true) => return Some(tris),
+            Some(false) => {}
         }
     }
     Some(tris)
+}
+
+/// Handle one OBJ line: add a `v` vertex or fan an `f` face into `verts`/`tris`;
+/// `None` means the parse failed, `Some(true)` means the triangle cap was hit.
+fn parse_obj_line(
+    l: &str,
+    verts: &mut Vec<[f32; 3]>,
+    tris: &mut Vec<[f32; 9]>,
+) -> Option<bool> {
+    if let Some(rest) = l.strip_prefix("v ") {
+        let v = parse_obj_vertex(rest)?;
+        // Push a placeholder for a non-finite vertex rather than dropping it: OBJ face
+        // indices are 1-based positions into the file's FULL `v` line sequence, so
+        // skipping an entry here would silently shift every later face's index off by
+        // one — the same desync `read_ply_ascii`/`read_ply_binary` push `[0.0; 3]` to
+        // avoid.
+        verts.push(if v.iter().all(|c| c.is_finite()) {
+            v
+        } else {
+            [0.0; 3]
+        });
+        if verts.len() > MAX_VERTS {
+            return None;
+        }
+    } else if let Some(rest) = l.strip_prefix("f ") {
+        let idx = parse_obj_face_indices(rest, verts.len());
+        if push_obj_face(tris, verts, &idx) {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn fan(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) {

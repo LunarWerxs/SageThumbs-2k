@@ -181,6 +181,14 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     // tiny-skia pixels are premultiplied RGBA; un-premultiply so they flow
     // through the same straight-RGBA path as every other decoder.
     let mut buf = pixmap.data().to_vec();
+    unpremultiply_rgba(&mut buf);
+    let img = image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))?;
+    Ok(DynamicImage::ImageRgba8(img))
+}
+
+/// Un-premultiply tiny-skia's premultiplied RGBA `buf` in place, so it flows through the
+/// same straight-RGBA path as every other decoder.
+fn unpremultiply_rgba(buf: &mut [u8]) {
     let (chunks, _) = buf.as_chunks_mut::<4>();
     for px in chunks {
         let a = px[3] as u32;
@@ -191,8 +199,6 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
             px[2] = un(px[2]);
         }
     }
-    let img = image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))?;
-    Ok(DynamicImage::ImageRgba8(img))
 }
 
 #[cfg(test)]

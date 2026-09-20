@@ -229,27 +229,35 @@ fn worst_error(img: &DynamicImage, expect: &[[u8; 3]; 4]) -> Option<f32> {
     let (qw, qh) = (w / 2, h / 2);
     let mut worst = 0.0f32;
     for (i, want) in expect.iter().enumerate() {
-        let (row, col) = (i as u32 / 2, i as u32 % 2);
-        // The middle half of each quadrant: away from every patch edge, so a decoder that
-        // blurs across the boundary is not scored on the blur.
-        let (x0, y0) = (col * qw + qw / 4, row * qh + qh / 4);
-        let (mut sum, mut n) = ([0u32; 3], 0u32);
-        for y in y0..y0 + qh / 2 {
-            for x in x0..x0 + qw / 2 {
-                let px = rgb.get_pixel(x, y).0;
-                for c in 0..3 {
-                    sum[c] += u32::from(px[c]);
-                }
-                n += 1;
+        worst = worst.max(patch_worst(&rgb, qw, qh, i as u32, want)?);
+    }
+    Some(worst)
+}
+
+/// Worst per-channel difference between one `expect` patch and its quadrant of `rgb`, or `None`
+/// when the sampled region contains no pixels.
+fn patch_worst(rgb: &image::RgbImage, qw: u32, qh: u32, i: u32, want: &[u8; 3]) -> Option<f32> {
+    let (row, col) = (i / 2, i % 2);
+    // The middle half of each quadrant: away from every patch edge, so a decoder that
+    // blurs across the boundary is not scored on the blur.
+    let (x0, y0) = (col * qw + qw / 4, row * qh + qh / 4);
+    let (mut sum, mut n) = ([0u32; 3], 0u32);
+    for y in y0..y0 + qh / 2 {
+        for x in x0..x0 + qw / 2 {
+            let px = rgb.get_pixel(x, y).0;
+            for c in 0..3 {
+                sum[c] += u32::from(px[c]);
             }
+            n += 1;
         }
-        if n == 0 {
-            return None;
-        }
-        for c in 0..3 {
-            let mean = sum[c] as f32 / n as f32;
-            worst = worst.max((mean - f32::from(want[c])).abs());
-        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let mut worst = 0.0f32;
+    for c in 0..3 {
+        let mean = sum[c] as f32 / n as f32;
+        worst = worst.max((mean - f32::from(want[c])).abs());
     }
     Some(worst)
 }
