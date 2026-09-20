@@ -366,6 +366,24 @@ fn table_root_from_cell(
     (root > 0).then_some(root as usize)
 }
 
+/// Spend one cell of the shared scan budget and decode the table-leaf cell pointer at
+/// `hdr_off + 8 + c * 2`, returning that cell's offset in the database. `None` when the pointer
+/// bytes are truncated; the caller checks the budget before calling.
+fn spend_cell_offset(
+    db: &[u8],
+    page_off: usize,
+    hdr_off: usize,
+    c: usize,
+    cell_budget: &mut usize,
+) -> Option<usize> {
+    *cell_budget -= 1;
+    let cpo = hdr_off + 8 + c * 2;
+    let (Some(&ph), Some(&pl)) = (db.get(cpo), db.get(cpo + 1)) else {
+        return None;
+    };
+    Some(page_off + u16::from_be_bytes([ph, pl]) as usize)
+}
+
 /// Look up `sqlite_master` (always rooted at page 1) for a table named `name`, returning its
 /// rootpage. Reuses the same cell/payload reconstruction as the PNG scan below — this is a
 /// read-only schema lookup, not a second SQLite engine, and shares that scan's work budgets so
@@ -388,12 +406,9 @@ fn find_table_rootpage(
             if *cell_budget == 0 {
                 return None;
             }
-            *cell_budget -= 1;
-            let cpo = hdr_off + 8 + c * 2;
-            let (Some(&ph), Some(&pl)) = (db.get(cpo), db.get(cpo + 1)) else {
+            let Some(cell_off) = spend_cell_offset(db, page_off, hdr_off, c, cell_budget) else {
                 continue;
             };
-            let cell_off = page_off + u16::from_be_bytes([ph, pl]) as usize;
             if let Some(root) =
                 table_root_from_cell(db, cell_off, page_size, usable, name, alloc_budget)
             {
@@ -429,12 +444,9 @@ fn scan_pages_for_png(
             if *cell_budget == 0 || *alloc_budget == 0 {
                 break 'pages; // scan-wide work budget spent
             }
-            *cell_budget -= 1;
-            let cpo = hdr_off + 8 + c * 2;
-            let (Some(&ph), Some(&pl)) = (db.get(cpo), db.get(cpo + 1)) else {
+            let Some(cell_off) = spend_cell_offset(db, page_off, hdr_off, c, cell_budget) else {
                 break;
             };
-            let cell_off = page_off + u16::from_be_bytes([ph, pl]) as usize;
             if let Some(png) = cell_png(db, cell_off, page_size, usable, alloc_budget) {
                 keep_larger(&mut best, png);
             }
