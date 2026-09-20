@@ -1,11 +1,7 @@
 /// Read a text/code file for preview: cap at 5 MB, reject binaries, decode (BOM-aware, lossy),
 /// truncate absurdly long lines, and mark a capped file. `None` if unreadable or binary.
 pub(crate) fn read_text(path: &str) -> Option<String> {
-    const CAP: usize = 5 * 1024 * 1024;
-    let (bytes, capped) = read_capped(path, CAP)?;
-    if is_binary(&bytes) {
-        return None;
-    }
+    let (bytes, capped) = read_text_bytes(path)?;
     let mut text = truncate_long_lines(&decode_text(&bytes, capped), 10_000);
     if capped {
         text.push_str("\n\n… (file truncated at 5 MB)");
@@ -18,12 +14,19 @@ pub(crate) fn read_text(path: &str) -> Option<String> {
 /// CSV row would otherwise be cut at 10 000 chars, breaking the parse. Same 5 MB cap + binary
 /// reject + BOM-aware decode. `None` if unreadable or binary.
 pub(crate) fn read_doc(path: &str) -> Option<String> {
+    let (bytes, capped) = read_text_bytes(path)?;
+    Some(decode_text(&bytes, capped))
+}
+
+/// Shared head of [`read_text`] and [`read_doc`]: read `path` up to the 5 MB text cap and
+/// reject binaries. The bool is whether the read was capped; `None` if unreadable or binary.
+fn read_text_bytes(path: &str) -> Option<(Vec<u8>, bool)> {
     const CAP: usize = 5 * 1024 * 1024;
     let (bytes, capped) = read_capped(path, CAP)?;
     if is_binary(&bytes) {
         return None;
     }
-    Some(decode_text(&bytes, capped))
+    Some((bytes, capped))
 }
 
 /// Quick "is this a text file" sniff for unknown extensions: read the first 16 KB and treat it
@@ -105,17 +108,17 @@ fn decode_text(bytes: &[u8], capped: bool) -> String {
         return utf32(rest, false);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return utf16_le(rest);
+        return utf16(rest, true);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return utf16_be(rest);
+        return utf16(rest, false);
     }
     // BOM-less UTF-16. Notepad writes a BOM but plenty of tools (and Windows' own older
     // exports) don't; without this such a file decodes as interleaved-NUL garbage. ASCII-range
     // UTF-16 text never trips `is_binary` (it has no two CONSECUTIVE NULs), so it reaches here.
     match sniff_utf16(bytes) {
-        Some(true) => return utf16_le(bytes),
-        Some(false) => return utf16_be(bytes),
+        Some(true) => return utf16(bytes, true),
+        Some(false) => return utf16(bytes, false),
         None => {}
     }
     // Strict, not lossy: valid UTF-8 is the overwhelmingly common case and must win outright,
@@ -161,22 +164,18 @@ fn utf32(bytes: &[u8], le: bool) -> String {
         .collect()
 }
 
-/// Decode `bytes` as UTF-16LE (odd trailing byte dropped).
-fn utf16_le(bytes: &[u8]) -> String {
+/// Decode `bytes` as UTF-16 (`le` picks the byte order); an odd trailing byte is dropped.
+fn utf16(bytes: &[u8], le: bool) -> String {
     let (chunks, _) = bytes.as_chunks::<2>();
     let u: Vec<u16> = chunks
         .iter()
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16_lossy(&u)
-}
-
-/// Decode `bytes` as UTF-16BE (odd trailing byte dropped).
-fn utf16_be(bytes: &[u8]) -> String {
-    let (chunks, _) = bytes.as_chunks::<2>();
-    let u: Vec<u16> = chunks
-        .iter()
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .map(|c| {
+            if le {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
         .collect();
     String::from_utf16_lossy(&u)
 }
