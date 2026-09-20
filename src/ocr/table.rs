@@ -229,26 +229,39 @@ fn assemble_rows(
         if ri > 0 {
             out.push('\n');
         }
-        let mut cell_words = 0usize;
-        for (wi, w) in row.iter().enumerate() {
-            if wi > 0 {
-                if on_column(row[wi - 1], w) {
-                    out.push('\t');
-                    cell_lengths.push(cell_words);
-                    cell_words = 0;
-                } else {
-                    out.push(' ');
-                }
-            }
-            out.push_str(&w.text);
-            cell_words += 1;
-        }
+        let cell_words = emit_row(&mut out, row, &on_column, &mut cell_lengths);
         cell_lengths.push(cell_words);
     }
     if median_usize(&cell_lengths)? > MAX_CELL_WORDS {
         return None;
     }
     Some(out)
+}
+
+/// Renders one visual row into `out`, pushing a tab at every confirmed column (recording the
+/// finished cell's word count on `cell_lengths` and resetting it), a space otherwise; returns
+/// the trailing cell's word count for the caller to record.
+fn emit_row(
+    out: &mut String,
+    row: &[&WordBox],
+    on_column: &dyn Fn(&WordBox, &WordBox) -> bool,
+    cell_lengths: &mut Vec<usize>,
+) -> usize {
+    let mut cell_words = 0usize;
+    for (wi, w) in row.iter().enumerate() {
+        if wi > 0 {
+            if on_column(row[wi - 1], w) {
+                out.push('\t');
+                cell_lengths.push(cell_words);
+                cell_words = 0;
+            } else {
+                out.push(' ');
+            }
+        }
+        out.push_str(&w.text);
+        cell_words += 1;
+    }
+    cell_words
 }
 
 fn median(v: &[f32]) -> Option<f32> {
