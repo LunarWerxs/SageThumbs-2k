@@ -100,6 +100,21 @@ impl<R: Read + Seek> Db<R> {
         if &h[0..16] != b"SQLite format 3\0" {
             return None;
         }
+        let (page_size, usable, enc, file_pages) = Self::header_geometry(&h, len)?;
+        Some(Db {
+            src,
+            page_size,
+            usable,
+            enc,
+            file_pages,
+            cache: HashMap::new(),
+            io_bytes: 0,
+        })
+    }
+
+    /// Derive `(page_size, usable, enc, file_pages)` from a validated 100-byte header, or
+    /// `None` when the geometry is not a usable SQLite page size.
+    fn header_geometry(h: &[u8; 100], len: u64) -> Option<(usize, usize, Enc, u32)> {
         let page_size = match u16::from_be_bytes([h[16], h[17]]) {
             1 => 65536, // the format encodes 65536 as 1 (it does not fit the u16)
             p if p >= 512 && p.is_power_of_two() => p as usize,
@@ -118,15 +133,7 @@ impl<R: Read + Seek> Db<R> {
         if file_pages == 0 {
             return None;
         }
-        Some(Db {
-            src,
-            page_size,
-            usable,
-            enc,
-            file_pages,
-            cache: HashMap::new(),
-            io_bytes: 0,
-        })
+        Some((page_size, usable, enc, file_pages))
     }
 
     /// Read page `n` (1-based). `None` past the end of the file or the I/O budget. A short read
@@ -186,17 +193,29 @@ impl<R: Read + Seek> Db<R> {
         // track visited pages rather than trusting the payload length to end the walk.
         let mut seen = HashSet::new();
         while next != 0 && out.len() < total {
-            if !seen.insert(next) {
-                break;
-            }
-            let p = self.page(next)?;
-            let nxt = u32::from_be_bytes(p.get(0..4)?.try_into().ok()?);
-            let take = (self.usable - 4).min(total - out.len());
-            out.extend_from_slice(p.get(4..4 + take)?);
-            next = nxt;
+            next = overflow_step(self, next, &mut out, total, &mut seen)?;
         }
         Some(out)
     }
+}
+
+/// Append one overflow page's bytes to `out` and return the chain's next link (0 once the
+/// chain ends or a page repeats), or `None` if that page's header is unreadable.
+fn overflow_step<R: Read + Seek>(
+    db: &mut Db<R>,
+    next: u32,
+    out: &mut Vec<u8>,
+    total: usize,
+    seen: &mut HashSet<u32>,
+) -> Option<u32> {
+    if !seen.insert(next) {
+        return Some(0);
+    }
+    let p = db.page(next)?;
+    let nxt = u32::from_be_bytes(p.get(0..4)?.try_into().ok()?);
+    let take = (db.usable - 4).min(total - out.len());
+    out.extend_from_slice(p.get(4..4 + take)?);
+    Some(nxt)
 }
 
 // ---- Record decoding ------------------------------------------------------------------------
@@ -413,11 +432,23 @@ impl<R: Read + Seek> Db<R> {
                 return ControlFlow::Continue(());
             }
         }
+        self.read_cell_row(page, off, table, w)
+    }
+
+    /// Read a leaf/index cell's key and record at `off` and store the decoded row; `Break`
+    /// when the cell key is malformed.
+    fn read_cell_row(
+        &mut self,
+        page: &[u8],
+        off: usize,
+        table: bool,
+        w: &mut Walk,
+    ) -> ControlFlow<()> {
         let Some((plen, n1)) = varint(page, off) else {
             w.truncated = true;
             return ControlFlow::Break(());
         };
-        off += n1;
+        let mut off = off + n1;
         let mut rowid = 0i64;
         if table {
             let Some((rid, n2)) = varint(page, off) else {

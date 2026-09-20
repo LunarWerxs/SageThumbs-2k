@@ -33,15 +33,11 @@ impl<R: Read + Seek> Db<R> {
             human_size(size),
             format!("{lb}{}", plural(tables.len(), "table")),
         ];
-        for (n, word) in [(n_idx, "index"), (n_view, "view"), (n_trig, "trigger")] {
-            if n > 0 {
-                bits.push(if word == "index" {
-                    format!("{lb}{n} {}", if n == 1 { "index" } else { "indexes" })
-                } else {
-                    format!("{lb}{}", plural(n, word))
-                });
-            }
-        }
+        Self::push_count_bits(
+            &mut bits,
+            lb,
+            [(n_idx, "index"), (n_view, "view"), (n_trig, "trigger")],
+        );
         bits.push(format!("{}-byte pages", self.page_size));
         out.push_str(&bits.join(" · "));
         out.push_str("\n\n");
@@ -83,6 +79,19 @@ impl<R: Read + Seek> Db<R> {
             out.push('\n');
         }
         out
+    }
+
+    /// Appends one `lb`-prefixed summary bit per non-zero object count, in order.
+    fn push_count_bits(bits: &mut Vec<String>, lb: &str, counts: [(usize, &str); 3]) {
+        for (n, word) in counts {
+            if n > 0 {
+                bits.push(if word == "index" {
+                    format!("{lb}{n} {}", if n == 1 { "index" } else { "indexes" })
+                } else {
+                    format!("{lb}{}", plural(n, word))
+                });
+            }
+        }
     }
 
     /// One table's section: heading, a GFM row table, and the truncation note.

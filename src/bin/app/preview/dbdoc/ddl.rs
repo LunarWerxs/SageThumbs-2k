@@ -310,14 +310,18 @@ fn find_top_level_open_paren(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        match b[i] {
-            b'\'' | b'"' | b'`' => i = skip_quoted(b, i)?,
-            b'[' => i = skip_bracket(b, i)?,
-            b'-' if b.get(i + 1) == Some(&b'-') => i = skip_line_comment(b, i),
-            b'/' if b.get(i + 1) == Some(&b'*') => i = skip_block_comment(b, i),
-            b'(' => return Some(i),
-            _ => i += 1,
+        match top_level(b, i) {
+            TopLevel::SkipTo(j) => {
+                i = j;
+                continue;
+            }
+            TopLevel::Unterminated => return None,
+            TopLevel::Plain => {}
         }
+        if b[i] == b'(' {
+            return Some(i);
+        }
+        i += 1;
     }
     None
 }
