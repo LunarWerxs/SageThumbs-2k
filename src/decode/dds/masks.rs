@@ -85,6 +85,18 @@ impl Channel {
     }
 }
 
+/// Walk `count` pixels of `step` bytes each, handing `f` the pixel index and its bytes.
+/// A pixel that runs past the end of `src` stops the walk, so a surface that is present
+/// only in part renders what it has instead of failing.
+pub(super) fn each_pixel(src: &[u8], count: usize, step: usize, mut f: impl FnMut(usize, &[u8])) {
+    for i in 0..count {
+        let Some(px) = src.get(i * step..i * step + step) else {
+            return;
+        };
+        f(i, px);
+    }
+}
+
 /// Signed-normalized integer channels, remapped from [-1, 1] to [0, 255] so the
 /// negative half is visible rather than clamped flat.
 pub(super) fn snorm_rgba8(
@@ -96,11 +108,7 @@ pub(super) fn snorm_rgba8(
     out: &mut [u8],
 ) {
     let n = channels as usize;
-    let step = n * size;
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * step..i * step + step) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, n * size, |i, px| {
         let mut c = [0u8; 4];
         for (k, slot) in c.iter_mut().enumerate().take(n) {
             let raw = if size == 1 {
@@ -111,22 +119,18 @@ pub(super) fn snorm_rgba8(
             *slot = ((raw.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0 + 0.5) as u8;
         }
         write_channels(out, i, n, c[0], c[1], c[2], c[3]);
-    }
+    });
 }
 
 pub(super) fn unorm16_rgba8(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [u8]) {
     let n = channels as usize;
-    let step = n * 2;
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * step..i * step + step) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, n * 2, |i, px| {
         let mut c = [0u8; 4];
         for (k, slot) in c.iter_mut().enumerate().take(n) {
             *slot = (u16::from_le_bytes([px[k * 2], px[k * 2 + 1]]) >> 8) as u8;
         }
         write_channels(out, i, n, c[0], c[1], c[2], c[3]);
-    }
+    });
 }
 
 /// Expand an `n`-channel pixel to RGBA: 1 → grey, 2 → R,G,0, 3 → RGB, 4 → RGBA.

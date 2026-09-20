@@ -1,5 +1,6 @@
 //! HDR surfaces (BC6H, half and float channels, R11G11B10, RGB9E5) to linear RGB32F.
 
+use super::masks::each_pixel;
 use super::*;
 
 /// The float layouts decode to linear `Rgb32F`, which the caller tone-maps through
@@ -80,33 +81,25 @@ pub(super) fn half_to_f32(h: u16) -> f32 {
 
 pub(super) fn half_rgb32f(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [f32]) {
     let n = channels as usize;
-    let step = n * 2;
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * step..i * step + step) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, n * 2, |i, px| {
         let mut c = [0f32; 3];
         for (k, slot) in c.iter_mut().enumerate().take(n.min(3)) {
             *slot = half_to_f32(u16::from_le_bytes([px[k * 2], px[k * 2 + 1]]));
         }
         write_rgb(out, i, n, c);
-    }
+    });
 }
 
 pub(super) fn float_rgb32f(src: &[u8], width: u32, height: u32, channels: u8, out: &mut [f32]) {
     let n = channels as usize;
-    let step = n * 4;
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * step..i * step + step) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, n * 4, |i, px| {
         let mut c = [0f32; 3];
         for (k, slot) in c.iter_mut().enumerate().take(n.min(3)) {
             let b = &px[k * 4..k * 4 + 4];
             *slot = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         }
         write_rgb(out, i, n, c);
-    }
+    });
 }
 
 /// 11/11/10 unsigned floats (5-bit exponents, no sign) packed into 32 bits.
@@ -121,10 +114,7 @@ pub(super) fn r11g11b10_rgb32f(src: &[u8], width: u32, height: u32, out: &mut [f
             _ => (1.0 + man as f32 * scale) * (2f32).powi(exp as i32 - 15),
         }
     };
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * 4..i * 4 + 4) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, 4, |i, px| {
         let v = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
         write_rgb(
             out,
@@ -136,15 +126,12 @@ pub(super) fn r11g11b10_rgb32f(src: &[u8], width: u32, height: u32, out: &mut [f
                 unpack((v >> 22) & 0x3FF, 5),
             ],
         );
-    }
+    });
 }
 
 /// Three 9-bit mantissas sharing one 5-bit exponent.
 pub(super) fn rgb9e5_rgb32f(src: &[u8], width: u32, height: u32, out: &mut [f32]) {
-    for i in 0..(width as usize * height as usize) {
-        let Some(px) = src.get(i * 4..i * 4 + 4) else {
-            return;
-        };
+    each_pixel(src, width as usize * height as usize, 4, |i, px| {
         let v = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
         // exponent bias 15, mantissa denominator 2^9
         let scale = (2f32).powi(((v >> 27) & 0x1F) as i32 - 15 - 9);
@@ -158,7 +145,7 @@ pub(super) fn rgb9e5_rgb32f(src: &[u8], width: u32, height: u32, out: &mut [f32]
                 ((v >> 18) & 0x1FF) as f32 * scale,
             ],
         );
-    }
+    });
 }
 
 /// Expand an `n`-channel float pixel to RGB: 1 → grey, 2 → R,G,0, else RGB.
