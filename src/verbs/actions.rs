@@ -190,14 +190,17 @@ pub fn is_image(path: &str) -> bool {
 /// audio-only verbs (rename-by-tag dispatch, Tags→Folders) and the audio-only
 /// menu views on both surfaces (`contextmenu.rs` / `command.rs`).
 pub fn is_audio(path: &str) -> bool {
-    match std::path::Path::new(path)
+    has_category(path, crate::formats::Category::Audio)
+}
+
+/// Does `path`'s extension belong to `category`? The one lookup behind [`is_audio`] and
+/// [`is_video`].
+fn has_category(path: &str, category: crate::formats::Category) -> bool {
+    std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-    {
-        Some(ext) => crate::formats::category(&ext) == crate::formats::Category::Audio,
-        None => false,
-    }
+        .is_some_and(|ext| crate::formats::category(&ext) == category)
 }
 
 /// Does `path` have a video extension (one we grab a frame from via OS Media
@@ -205,14 +208,7 @@ pub fn is_audio(path: &str) -> bool {
 /// `VerbAction::SaveVideoFrame`'s file filter, the same way [`is_audio`] gates the
 /// audio-only surfaces.
 pub fn is_video(path: &str) -> bool {
-    match std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-    {
-        Some(ext) => crate::formats::category(&ext) == crate::formats::Category::Video,
-        None => false,
-    }
+    has_category(path, crate::formats::Category::Video)
 }
 
 /// Outcome of a dispatched verb so the Invoke callers can tell the user what
@@ -721,11 +717,7 @@ fn handle_ocr(paths: &[String]) -> ActionReport {
 fn handle_strip_metadata(paths: &[String]) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
-    let imgs: Vec<String> = paths
-        .iter()
-        .filter(|p| is_image(p.as_str()))
-        .cloned()
-        .collect();
+    let imgs = images_in(paths);
     let oks = crate::parallel::map(&imgs, |_, p| strip_one(exe_ref, p));
     let attempted = imgs.len();
     let done = oks.iter().filter(|&&ok| ok).count();
@@ -742,24 +734,21 @@ fn handle_strip_metadata(paths: &[String]) -> ActionReport {
 fn handle_resize_img(paths: &[String], r: Resize) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
-    let imgs: Vec<String> = paths
+    per_file_action(
+        &images_in(paths),
+        "Resize",
+        "couldn't resize some images",
+        |p| resize_one(exe_ref, p, r),
+    )
+}
+
+/// The images in a selection, the per-image verbs' input.
+fn images_in(paths: &[String]) -> Vec<String> {
+    paths
         .iter()
         .filter(|p| is_image(p.as_str()))
         .cloned()
-        .collect();
-    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| resize_one(exe_ref, p, r))
-        .into_iter()
-        .flatten()
-        .collect();
-    let attempted = imgs.len();
-    let done = outs.len();
-    let first = outs.into_iter().next();
-    let mut rep = ActionReport::applied(attempted, done);
-    if done < attempted {
-        rep.note = Some("couldn't resize some images".into());
-    }
-    rep.output = first;
-    rep
+        .collect()
 }
 
 /// `VerbAction::ShrinkForEmail` - per-image, on the batch pool. Routed per file to
@@ -768,24 +757,12 @@ fn handle_resize_img(paths: &[String], r: Resize) -> ActionReport {
 fn handle_shrink_for_email(paths: &[String], size: EmailSize) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
-    let imgs: Vec<String> = paths
-        .iter()
-        .filter(|p| is_image(p.as_str()))
-        .cloned()
-        .collect();
-    let outs: Vec<PathBuf> = crate::parallel::map(&imgs, |_, p| shrink_one(exe_ref, p, size))
-        .into_iter()
-        .flatten()
-        .collect();
-    let attempted = imgs.len();
-    let done = outs.len();
-    let first = outs.into_iter().next();
-    let mut rep = ActionReport::applied(attempted, done);
-    if done < attempted {
-        rep.note = Some("couldn't shrink some images".into());
-    }
-    rep.output = first;
-    rep
+    per_file_action(
+        &images_in(paths),
+        "Shrink for email",
+        "couldn't shrink some images",
+        |p| shrink_one(exe_ref, p, size),
+    )
 }
 
 /// `VerbAction::SaveVideoFrame` - per-video, on the batch pool. Routed ALWAYS to
@@ -802,35 +779,21 @@ fn handle_save_video_frame(paths: &[String]) -> ActionReport {
         .filter(|p| is_video(p.as_str()))
         .cloned()
         .collect();
-    let outs: Vec<PathBuf> =
-        crate::parallel::map(&vids, |_, p| save_video_frame_one(exe_ref, p).ok())
-            .into_iter()
-            .flatten()
-            .collect();
-    let attempted = vids.len();
-    let done = outs.len();
-    let first = outs.into_iter().next();
-    let mut rep = ActionReport::applied(attempted, done);
-    if done < attempted {
-        rep.note = Some(if exe_ref.is_none() {
-            "the st2k helper is required to save a video frame".into()
-        } else {
-            "couldn't extract a frame from some videos".into()
-        });
-    }
-    rep.output = first;
-    rep
+    let note = if exe_ref.is_none() {
+        "the st2k helper is required to save a video frame"
+    } else {
+        "couldn't extract a frame from some videos"
+    };
+    per_file_action(&vids, "Save video frame", note, |p| {
+        save_video_frame_one(exe_ref, p).ok()
+    })
 }
 
 /// `VerbAction::CompressToSize` - per-image, on the batch pool. Routed per file to
 /// `st2k compress` (helper-if-present, same `compress_to_size` engine), else
 /// in-process `compress_one_to_size`; see the module doc's routing list.
 fn handle_compress_to_size(paths: &[String], size: CompressSize) -> ActionReport {
-    let imgs: Vec<String> = paths
-        .iter()
-        .filter(|p| is_image(p.as_str()))
-        .cloned()
-        .collect();
+    let imgs = images_in(paths);
     let exe = st2k_exe();
     compress_batch_report(exe.as_deref(), &imgs, size.target_bytes())
 }
@@ -989,13 +952,27 @@ fn handle_rename_with_pattern(paths: &[String]) -> ActionReport {
 
 /// `VerbAction::SortByDimensions`.
 fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
-    let (moved, skipped) = sort_by_dimensions(paths);
+    bucket_sort_report(
+        "Sort by dimensions",
+        sort_by_dimensions(paths),
+        "couldn't read size / move",
+        "couldn't be read or moved",
+    )
+}
+
+/// The report both bucket sorts share: a skip is logged with `why_log` and noted in the
+/// report as `{skipped} {why_note}`; a clean run carries no note.
+fn bucket_sort_report(
+    what: &str,
+    (moved, skipped): (usize, usize),
+    why_log: &str,
+    why_note: &str,
+) -> ActionReport {
     if skipped > 0 {
         crate::safety::log(&format!(
-            "Sort by dimensions: {moved} moved, {skipped} skipped (couldn't read size / move)"
+            "{what}: {moved} moved, {skipped} skipped ({why_log})"
         ));
-        ActionReport::applied(moved + skipped, moved)
-            .with_note(format!("{skipped} couldn't be read or moved"))
+        ActionReport::applied(moved + skipped, moved).with_note(format!("{skipped} {why_note}"))
     } else {
         ActionReport::applied(moved + skipped, moved)
     }
@@ -1004,17 +981,12 @@ fn handle_sort_by_dimensions(paths: &[String]) -> ActionReport {
 /// `VerbAction::SortByDateTaken` - same shape as [`handle_sort_by_dimensions`]; a file
 /// with no EXIF capture date is skipped and counted, not treated as an error.
 fn handle_sort_by_date_taken(paths: &[String]) -> ActionReport {
-    let (moved, skipped) = sort_by_date_taken(paths);
-    if skipped > 0 {
-        crate::safety::log(&format!(
-            "Sort by date taken: {moved} moved, {skipped} skipped (no capture date / couldn't move)"
-        ));
-        ActionReport::applied(moved + skipped, moved).with_note(format!(
-            "{skipped} had no capture date or couldn't be moved"
-        ))
-    } else {
-        ActionReport::applied(moved + skipped, moved)
-    }
+    bucket_sort_report(
+        "Sort by date taken",
+        sort_by_date_taken(paths),
+        "no capture date / couldn't move",
+        "had no capture date or couldn't be moved",
+    )
 }
 
 /// `VerbAction::TagsToFolders` - audio-only; the dialog (destination/template/

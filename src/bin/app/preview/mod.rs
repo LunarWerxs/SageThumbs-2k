@@ -218,6 +218,57 @@ fn budgeted<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option
     rx.recv_timeout(std::time::Duration::from_secs(3)).ok()
 }
 
+/// Where a bench writes its report: the argv slot after the bench's own arguments, else a
+/// named file in the temp folder. Results go to a FILE, not stdout: this EXE is a
+/// windows-subsystem binary with no console of its own, so a `println!` here writes to a
+/// closed handle.
+fn bench_output(arg_index: usize, default_name: &str) -> impl Fn(&str) {
+    let dest = std::env::args().nth(arg_index).unwrap_or_else(|| {
+        std::env::temp_dir()
+            .join(default_name)
+            .to_string_lossy()
+            .into_owned()
+    });
+    move |text: &str| {
+        let _ = std::fs::write(&dest, text);
+    }
+}
+
+/// The files in `dir` whose (lower-cased) extension `keep` accepts, or why the folder could
+/// not be read.
+fn bench_files(dir: &str, keep: impl Fn(&str) -> bool) -> Result<Vec<std::path::PathBuf>, String> {
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("cannot read {dir}: {e}"))?;
+    Ok(rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| keep(&x.to_ascii_lowercase()))
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+/// The navigation benches' shared start: the previewable files of `dir` in Explorer's
+/// logical order (the viewer walks the folder that way, so expectations must too, or "where
+/// did it land" compares against the wrong sequence), the viewer opened on the first one and
+/// settled, so the first measured step starts from a painted window rather than from whatever
+/// the constructor left mid-flight. `Err` carries the one line the bench should report.
+fn bench_viewer(hinst: HINSTANCE, dir: &str) -> Result<(Vec<std::path::PathBuf>, HWND), String> {
+    let files = bench_files(dir, window::navigate::is_previewable_ext)?;
+    if files.len() < 2 {
+        return Err(format!("need at least 2 previewable files in {dir}"));
+    }
+    let files = window::navigate::sort_paths_like_explorer(files);
+    let first = files[0].to_string_lossy().into_owned();
+    let hwnd = unsafe { window::create_viewer(hinst, false, Some(first.clone()), None) }
+        .ok_or_else(|| "could not create the viewer window".to_string())?;
+    let _ = wait_until_loaded(hwnd, &first, 15_000);
+    Ok((files, hwnd))
+}
+
 /// `--bench-preview <dir>`: measure what a ←/→ step actually costs.
 ///
 /// Runs the viewer's REAL decode entry point (`content::bench_decode_uncached`, the same
@@ -235,34 +286,18 @@ fn budgeted<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option
 /// worth it for a dev tool. Second argument overrides the path.
 pub(crate) fn run_bench(dir: &str) {
     let mut out = String::new();
-    let dest = std::env::args().nth(3).unwrap_or_else(|| {
-        std::env::temp_dir()
-            .join("st2k-bench.txt")
-            .to_string_lossy()
-            .into_owned()
-    });
-    let flush = |text: &str| {
-        let _ = std::fs::write(&dest, text);
-    };
+    let flush = bench_output(3, "st2k-bench.txt");
     if dir.is_empty() {
         flush("usage: SageThumbs2K.exe --bench-preview <folder> [out.txt]\n");
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        flush(&format!("bench: cannot read folder {dir}\n"));
-        return;
+    let mut files = match bench_files(dir, sagethumbs2k_core::formats::is_known) {
+        Ok(files) => files,
+        Err(e) => {
+            flush(&format!("bench: {e}\n"));
+            return;
+        }
     };
-    let mut files: Vec<std::path::PathBuf> = rd
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|x| x.to_str())
-                .map(|x| sagethumbs2k_core::formats::is_known(&x.to_ascii_lowercase()))
-                .unwrap_or(false)
-        })
-        .collect();
     files.sort();
     if files.is_empty() {
         flush(&format!("bench: no decodable files in {dir}\n"));
@@ -379,47 +414,14 @@ pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
     use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
 
-    let dest = std::env::args().nth(4).unwrap_or_else(|| {
-        std::env::temp_dir()
-            .join("st2k-mashbench.txt")
-            .to_string_lossy()
-            .into_owned()
-    });
-    let flush = |text: &str| {
-        let _ = std::fs::write(&dest, text);
-    };
-
-    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|x| x.to_str())
-                    .map(|x| window::navigate::is_previewable_ext(&x.to_ascii_lowercase()))
-                    .unwrap_or(false)
-            })
-            .collect(),
+    let flush = bench_output(4, "st2k-mashbench.txt");
+    let (files, hwnd) = match bench_viewer(hinst, dir) {
+        Ok(ready) => ready,
         Err(e) => {
-            flush(&format!("bench-mash: cannot read {dir}: {e}\n"));
+            flush(&format!("bench-mash: {e}\n"));
             return;
         }
     };
-    if files.len() < 2 {
-        flush("bench-mash: need at least 2 previewable files\n");
-        return;
-    }
-    files = window::navigate::sort_paths_like_explorer(files);
-    let first = files[0].to_string_lossy().into_owned();
-    let hwnd = match unsafe { window::create_viewer(hinst, false, Some(first.clone()), None) } {
-        Some(h) => h,
-        None => {
-            flush("bench-mash: could not create the viewer window\n");
-            return;
-        }
-    };
-    let _ = wait_until_loaded(hwnd, &first, 15_000);
 
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -503,54 +505,14 @@ pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
     use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN};
 
     let mut out = String::new();
-    let dest = std::env::args().nth(4).unwrap_or_else(|| {
-        std::env::temp_dir()
-            .join("st2k-navbench.txt")
-            .to_string_lossy()
-            .into_owned()
-    });
-    let flush = |text: &str| {
-        let _ = std::fs::write(&dest, text);
-    };
-
-    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|x| x.to_str())
-                    .map(|x| window::navigate::is_previewable_ext(&x.to_ascii_lowercase()))
-                    .unwrap_or(false)
-            })
-            .collect(),
+    let flush = bench_output(4, "st2k-navbench.txt");
+    let (files, hwnd) = match bench_viewer(hinst, dir) {
+        Ok(ready) => ready,
         Err(e) => {
-            flush(&format!("bench-nav: cannot read {dir}: {e}\n"));
+            flush(&format!("bench-nav: {e}\n"));
             return;
         }
     };
-    if files.len() < 2 {
-        flush(&format!(
-            "bench-nav: need at least 2 previewable files in {dir}\n"
-        ));
-        return;
-    }
-    // The viewer walks the folder in Explorer's logical order, so expectations must too —
-    // otherwise "where did it land" would compare against the wrong sequence.
-    files = window::navigate::sort_paths_like_explorer(files);
-    let first = files[0].to_string_lossy().into_owned();
-
-    let hwnd = match unsafe { window::create_viewer(hinst, false, Some(first.clone()), None) } {
-        Some(h) => h,
-        None => {
-            flush("bench-nav: could not create the viewer window\n");
-            return;
-        }
-    };
-    // Settle the initial load so the first measured step starts from a painted window rather
-    // than from whatever the constructor left mid-flight.
-    let _ = wait_until_loaded(hwnd, &first, 15_000);
 
     use std::fmt::Write as _;
     let _ = writeln!(out, "bench-nav: {} files in {dir}", files.len());
