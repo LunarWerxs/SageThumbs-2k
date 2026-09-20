@@ -44,36 +44,13 @@ pub(super) unsafe fn shot_sample(shot: HDC, x: i32, y: i32, vw: i32, vh: i32) ->
     let x = x.clamp(0, (vw - 1).max(0));
     let y = y.clamp(0, (vh - 1).max(0));
     let c = GetPixel(shot, x, y).0; // 0x00BBGGRR, or CLR_INVALID
-    if c == 0xFFFF_FFFF {
-        return (0, 0, 0);
-    }
-    (
-        (c & 0xFF) as u8,
-        ((c >> 8) & 0xFF) as u8,
-        ((c >> 16) & 0xFF) as u8,
-    )
+    crate::eyedropper::colorref_to_rgb(c)
 }
 
 /// The loupe box (magnifier + label strip) for a cursor at `(cx, cy)`, nudged to
 /// stay fully on the virtual screen. `mag`/`lbl`/`gap` are already DPI-scaled.
 pub(super) fn loupe_box(cx: i32, cy: i32, vw: i32, vh: i32, mag: i32, lbl: i32, gap: i32) -> RECT {
-    let (bw, bh) = (mag, mag + lbl);
-    let mut bx = cx + gap;
-    let mut by = cy + gap;
-    if bx + bw > vw {
-        bx = cx - gap - bw;
-    }
-    if by + bh > vh {
-        by = cy - gap - bh;
-    }
-    bx = bx.clamp(0, (vw - bw).max(0));
-    by = by.clamp(0, (vh - bh).max(0));
-    RECT {
-        left: bx,
-        top: by,
-        right: bx + bw,
-        bottom: by + bh,
-    }
+    crate::eyedropper::nudge_box(cx, cy, vw, vh, mag, mag + lbl, gap)
 }
 
 /// The on-screen rect the loupe occupies for a cursor at `(cx, cy)` — used to

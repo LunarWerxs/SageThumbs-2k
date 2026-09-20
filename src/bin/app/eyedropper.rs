@@ -341,6 +341,18 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
     crate::win::capture_and_destroy(hwnd, out)
 }
 
+/// Decode a `COLORREF` (`0x00BBGGRR`) into `(r, g, b)`; `CLR_INVALID` reads as black.
+pub(crate) fn colorref_to_rgb(c: u32) -> (u8, u8, u8) {
+    if c == 0xFFFF_FFFF {
+        return (0, 0, 0);
+    }
+    (
+        (c & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        ((c >> 16) & 0xFF) as u8,
+    )
+}
+
 /// Sample the screen-snapshot pixel at (x, y) as (r, g, b) via GetPixel.
 fn eye_sample(x: i32, y: i32) -> (u8, u8, u8) {
     let Some((dc, _)) = *EYE_SHOT.lock().unwrap() else {
@@ -353,24 +365,12 @@ fn eye_sample(x: i32, y: i32) -> (u8, u8, u8) {
     let x = x.clamp(0, (vw - 1).max(0));
     let y = y.clamp(0, (vh - 1).max(0));
     let c = unsafe { GetPixel(HDC(dc as *mut c_void), x, y) }.0; // 0x00BBGGRR, or CLR_INVALID
-    if c == 0xFFFF_FFFF {
-        return (0, 0, 0);
-    }
-    (
-        (c & 0xFF) as u8,
-        ((c >> 8) & 0xFF) as u8,
-        ((c >> 16) & 0xFF) as u8,
-    )
+    colorref_to_rgb(c)
 }
 
-/// The loupe's box rect for a cursor at (cx, cy), nudged to stay on-screen.
-fn eye_loupe_box(cx: i32, cy: i32) -> RECT {
-    let (vw, vh) = (
-        EYE_VW.load(Ordering::Relaxed),
-        EYE_VH.load(Ordering::Relaxed),
-    );
-    let (bw, bh) = (EYE_MAG, EYE_MAG + EYE_LBL);
-    let gap = 18;
+/// Nudge a `bw`×`bh` box for a cursor at `(cx, cy)` (offset by `gap`, flipped to the
+/// other side when it would overflow) so it stays fully inside the `vw`×`vh` screen.
+pub(crate) fn nudge_box(cx: i32, cy: i32, vw: i32, vh: i32, bw: i32, bh: i32, gap: i32) -> RECT {
     let mut bx = cx + gap;
     let mut by = cy + gap;
     if bx + bw > vw {
@@ -387,6 +387,16 @@ fn eye_loupe_box(cx: i32, cy: i32) -> RECT {
         right: bx + bw,
         bottom: by + bh,
     }
+}
+
+/// The loupe's box rect for a cursor at (cx, cy), nudged to stay on-screen.
+fn eye_loupe_box(cx: i32, cy: i32) -> RECT {
+    let (vw, vh) = (
+        EYE_VW.load(Ordering::Relaxed),
+        EYE_VH.load(Ordering::Relaxed),
+    );
+    let (bw, bh) = (EYE_MAG, EYE_MAG + EYE_LBL);
+    nudge_box(cx, cy, vw, vh, bw, bh, 18)
 }
 
 extern "system" fn eyedropper_wndproc(
