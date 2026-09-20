@@ -231,7 +231,7 @@ pub(super) unsafe fn settings_popup_on_command_ok(hwnd: HWND, kind: i32) {
 /// `WM_COMMAND` for the quality-settings popup: the lossless toggle, OK (commit), and
 /// Cancel (discard).
 pub(super) unsafe fn settings_popup_on_command(hwnd: HWND, wparam: WPARAM, kind: i32) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
+    let id = crate::win::command_id(wparam);
     match id {
         CID_POPUP_LOSSLESS => {
             // Lossless toggles the quality slider on/off.

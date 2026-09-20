@@ -669,7 +669,7 @@ unsafe fn on_first_run_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: the Print-Screen sync checkbox and the OK/Next button.
 unsafe fn on_first_run_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match (wparam.0 & 0xFFFF) as i32 {
+    match crate::win::command_id(wparam) {
         ID_SHOT => sync_prtscn(hwnd),
         IDOK => {
             if ON_PAGE_2.with(|p| p.get()) {

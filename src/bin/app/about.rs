@@ -353,8 +353,7 @@ unsafe fn on_spin_timer(hwnd: HWND) -> LRESULT {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
-    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    let (id, notify) = crate::win::command_parts(wparam);
     match id {
         IDOK | IDCANCEL => {
             let _ = DestroyWindow(hwnd);

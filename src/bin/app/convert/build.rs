@@ -34,31 +34,14 @@ pub(super) fn load_watermark_settings() {
         settings::get_string_opt("CvWatermarkPath").unwrap_or_default();
 }
 
-/// "Choose image…" picker for the watermark mark file. This mirrors the
-/// `IFileOpenDialog` pattern `win::pickers` already uses for the settings-file
-/// pickers (see `pick_open_settings`), filtered for common raster formats
-/// instead of `.json`. Kept here, local to the dialog that needs it, rather
-/// than added to that read-only module.
+/// "Choose image…" picker for the watermark mark file: the shared open-file picker,
+/// filtered for common raster formats.
 pub(super) unsafe fn pick_watermark_image(owner: HWND) -> Option<String> {
-    let _com = ComGuard::sta();
-    let dlg: IFileOpenDialog =
-        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-    if let Ok(opts) = dlg.GetOptions() {
-        let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
-    }
-    let spec_name = wide(t("cv_watermark_filter"));
-    let spec_ext = wide("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff");
-    let specs = [COMDLG_FILTERSPEC {
-        pszName: PCWSTR(spec_name.as_ptr()),
-        pszSpec: PCWSTR(spec_ext.as_ptr()),
-    }];
-    let _ = dlg.SetFileTypes(&specs);
-    dlg.Show(Some(owner)).ok()?;
-    let item: IShellItem = dlg.GetResult().ok()?;
-    let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let s = pw.to_string().ok();
-    CoTaskMemFree(Some(pw.0 as *const c_void));
-    s
+    crate::win::pick_open_file(
+        owner,
+        t("cv_watermark_filter"),
+        "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff",
+    )
 }
 
 /// Show the chosen mark file's name in the watermark row, or the "none chosen"

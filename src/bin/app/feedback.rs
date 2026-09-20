@@ -517,7 +517,7 @@ extern "system" fn feedback_wndproc(
                 LRESULT(0)
             }
             WM_COMMAND => {
-                match (wparam.0 & 0xFFFF) as i32 {
+                match crate::win::command_id(wparam) {
                     IDOK => on_send(hwnd),
                     IDCANCEL => {
                         let _ = DestroyWindow(hwnd);

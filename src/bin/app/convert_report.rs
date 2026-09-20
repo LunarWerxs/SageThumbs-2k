@@ -201,7 +201,7 @@ extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // owner back its input. Everything else (create, Copy, close) is the shared
         // result-dialog behaviour.
         if msg == WM_COMMAND {
-            let choice = match (wparam.0 & 0xFFFF) as i32 {
+            let choice = match crate::win::command_id(wparam) {
                 ID_OPEN_FOLDER => Some(Choice::OpenFolder),
                 ID_RETRY => Some(Choice::Retry),
                 _ => None,

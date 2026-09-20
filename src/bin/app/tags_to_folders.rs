@@ -185,7 +185,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: dispatch by control/menu id.
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
+    let id = crate::win::command_id(wparam);
     match id {
         CID_TTF_BROWSE => {
             if let Some(dir) = pick_folder(hwnd) {

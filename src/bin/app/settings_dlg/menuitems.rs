@@ -189,7 +189,7 @@ unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> L
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match (wparam.0 & 0xFFFF) as i32 {
+    match crate::win::command_id(wparam) {
         ID_POP_RESET => {
             if let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
                 list::reset_menu_order(list);

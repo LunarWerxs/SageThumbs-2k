@@ -21,21 +21,15 @@ pub(crate) use jobs::failure_report;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     PBM_SETPOS, PBM_SETRANGE32, TBM_SETPOS, TBM_SETRANGE, TBS_HORZ,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
-use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-use windows::Win32::UI::Shell::{
-    FileOpenDialog, IFileOpenDialog, IShellItem, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
-};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k_core::parallel::ComGuard;
 use sagethumbs2k_core::{settings, ConvertOpts, Corner, FileOutcome, Resize, Target, Watermark};
 
 use crate::convert_report::ReportAction;
@@ -544,8 +538,7 @@ unsafe fn on_convert_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: every button/combo the dialog owns.
 unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
-    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    let (id, notify) = crate::win::command_parts(wparam);
     match id {
         IDOK => start_convert(hwnd),
         IDCANCEL => request_close(hwnd),

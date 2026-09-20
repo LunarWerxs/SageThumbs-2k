@@ -53,7 +53,7 @@ pub(crate) unsafe fn result_wndproc(
             Some(LRESULT(0))
         }
         WM_COMMAND => {
-            match (wparam.0 & 0xFFFF) as i32 {
+            match super::command_id(wparam) {
                 ID_RESULT_COPY => {
                     let _ = set_clipboard_text(&copy(hwnd));
                 }

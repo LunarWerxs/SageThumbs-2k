@@ -117,13 +117,23 @@ pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<Strin
 /// "Open settings" dialog (a `.json` file) via IFileOpenDialog. Returns the chosen path
 /// or None. Open dialogs default to file-must-exist, so a bad pick can't reach us.
 pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
+    pick_open_file(owner, "SageThumbs 2K settings", "*.json")
+}
+
+/// An IFileOpenDialog with one file-type filter (`filter_name`, `filter_spec` such as
+/// `*.png;*.jpg`), forced to filesystem paths. The chosen path, or None on cancel/failure.
+pub(crate) unsafe fn pick_open_file(
+    owner: HWND,
+    filter_name: &str,
+    filter_spec: &str,
+) -> Option<String> {
     let _com = ComGuard::sta();
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     if let Ok(opts) = dlg.GetOptions() {
         let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
     }
-    set_single_filter(&dlg, "SageThumbs 2K settings", "*.json", None);
+    set_single_filter(&dlg, filter_name, filter_spec, None);
     shown_path(&dlg, owner)
 }
 

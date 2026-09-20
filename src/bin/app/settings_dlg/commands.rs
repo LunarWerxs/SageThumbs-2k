@@ -28,8 +28,7 @@ pub(super) unsafe fn on_command_or_notify_msg(
 }
 
 pub(super) unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
-    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    let (id, notify) = crate::win::command_parts(wparam);
     on_command_dialog(hwnd, id, notify);
     on_command_shot(hwnd, id);
     on_command_sync_nav(hwnd, id, notify);

@@ -153,7 +153,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
+    let id = crate::win::command_id(wparam);
     match id {
         IDOK => start_move(hwnd),
         IDCANCEL => request_close(hwnd),

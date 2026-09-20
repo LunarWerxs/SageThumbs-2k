@@ -38,8 +38,8 @@ pub(crate) use dacl::{create_mutex_user_only, with_user_only_dacl};
 pub(crate) use dialogs::{confirm_verbs, confirm_warning, dialog_tail, message_box, run_dialog};
 pub(crate) use iconfont::icon_font;
 pub(crate) use pickers::{
-    desktop_dir, pick_folder, pick_open_settings, pick_save_png, pick_save_settings,
-    set_clipboard_text,
+    desktop_dir, pick_folder, pick_open_file, pick_open_settings, pick_save_png,
+    pick_save_settings, set_clipboard_text,
 };
 pub(crate) use resultwin::{
     result_buttons, result_edit, result_layout, result_window_proc, result_wndproc, ResultWindow,
@@ -93,6 +93,20 @@ pub(crate) fn top_down_bgra_bmi(w: i32, h: i32) -> BITMAPINFO {
         },
         ..Default::default()
     }
+}
+
+/// The two halves of a `WM_COMMAND` `wParam`: the control/menu id (low word) and the
+/// notification code (high word). Every dialog used to unpack them by hand.
+pub(crate) fn command_parts(wparam: WPARAM) -> (i32, u32) {
+    (
+        (wparam.0 & 0xFFFF) as i32,
+        ((wparam.0 >> 16) & 0xFFFF) as u32,
+    )
+}
+
+/// The control/menu id of a `WM_COMMAND` (`wParam`'s low word).
+pub(crate) fn command_id(wparam: WPARAM) -> i32 {
+    command_parts(wparam).0
 }
 
 pub(crate) fn wide(s: &str) -> Vec<u16> {
