@@ -355,6 +355,21 @@ fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
     unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
 }
 
+/// Split an EXIF-style `"DATE TIME"` stamp (`"YYYY:MM:DD HH:MM:SS"`) into its three date and
+/// at-least-three time components. `:` is the EXIF date separator, but `-`/`/` are tolerated in
+/// case a tool rewrote the stamp; a trailing sub-seconds field keeps `t` at four elements.
+/// Returns `None` unless both halves have that shape. The components themselves are NOT
+/// validated here — digits-only and never-set-clock checks stay in the callers.
+pub(crate) fn split_exif_datetime(s: &str) -> Option<(Vec<&str>, Vec<&str>)> {
+    let (date, time) = s.split_once(' ')?;
+    let d: Vec<&str> = date.split([':', '-', '/']).collect();
+    let t: Vec<&str> = time.split([':', '.']).collect();
+    if d.len() != 3 || t.len() < 3 {
+        return None;
+    }
+    Some((d, t))
+}
+
 /// Build a `VT_FILETIME` PROPVARIANT from an EXIF datetime (`"YYYY:MM:DD HH:MM:SS"`, also
 /// tolerating `-`/`/` date separators and trailing sub-seconds). Returns `None` for a
 /// malformed or never-set (all-zero) stamp.
@@ -365,12 +380,7 @@ fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
 /// zone), or the displayed time would be shifted by the local UTC offset. With the conversion, the
 /// Details pane shows the original wall-clock — matching Windows' own photo property handler.
 fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
-    let (date, time) = s.split_once(' ')?;
-    let d: Vec<&str> = date.split([':', '-', '/']).collect();
-    let t: Vec<&str> = time.split([':', '.']).collect();
-    if d.len() != 3 || t.len() < 3 {
-        return None;
-    }
+    let (d, t) = split_exif_datetime(s)?;
     let num = |x: &str| x.trim().parse::<u16>().ok();
     let local = SYSTEMTIME {
         wYear: num(d[0])?,

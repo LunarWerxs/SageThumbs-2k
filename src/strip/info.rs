@@ -565,13 +565,7 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
 /// `"YYYY-MM-DD HH.MM.SS"`. Returns None for a malformed or all-zero stamp (some
 /// cameras write `"0000:00:00 00:00:00"` when the clock was never set).
 pub(super) fn format_exif_datetime(s: &str) -> Option<String> {
-    let (date, time) = s.split_once(' ')?;
-    // EXIF uses ':' date separators; accept '-'/'/' too in case a tool rewrote it.
-    let d: Vec<&str> = date.split([':', '-', '/']).collect();
-    let t: Vec<&str> = time.split([':', '.']).collect();
-    if d.len() != 3 || t.len() < 3 {
-        return None;
-    }
+    let (d, t) = crate::propstore::split_exif_datetime(s)?;
     // Every component must be all-ASCII-digits and non-empty.
     if !d
         .iter()
