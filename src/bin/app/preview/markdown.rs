@@ -462,120 +462,26 @@ pub(super) unsafe fn render(
                 continue;
             }
         }
-        // The block's run offsets in the selection document (empty for the dry/unselectable ones).
-        let run_bases: &[usize] = match layout.bases.get(bi) {
-            Some(DocBase::Runs(v)) => v,
-            _ => &[],
-        };
-        let mut rsel = RunSel {
-            range: sel.range,
-            doc: &layout.doc,
-            bases: run_bases,
-            hits: &mut *sel.hits,
-            bg: c.sel,
-        };
-        let mut p = PaintCtx {
+        y = paint_block(
             hwnd,
             hdc,
             rc,
+            block,
+            bi,
+            y,
+            first,
+            is_text,
             x0,
             full_w,
             c,
-            links: &mut *links,
-            rsel: &mut rsel,
-            fonts_cache: &mut fonts_cache,
-        };
-        let y_block_start = y;
-        match block {
-            Block::Heading(level, runs, center) => {
-                y = paint_heading(&mut p, *level, runs, *center, first, y);
-            }
-            Block::Para(runs, center) => {
-                y = paint_para(&mut p, runs, *center, y);
-            }
-            Block::Code(text, lang) => {
-                let base = match layout.bases.get(bi) {
-                    Some(DocBase::Code(b)) => *b,
-                    _ => 0,
-                };
-                y = paint_code(&mut p, text, *lang, y, base);
-            }
-            Block::Item(depth, marker, runs, task) => {
-                y = paint_item(&mut p, *depth, marker, runs, *task, y);
-            }
-            Block::Quote(runs) => {
-                y = paint_quote(&mut p, runs, y);
-            }
-            Block::Rule => {
-                // GitHub hr: a short solid bar, not a hairline.
-                let bar = RECT {
-                    left: x0,
-                    top: y + sc(8),
-                    right: x0 + full_w,
-                    bottom: y + sc(8) + sc(3),
-                };
-                let hb = CreateSolidBrush(COLORREF(c.border));
-                FillRect(hdc, &bar, hb);
-                let _ = DeleteObject(hb.into());
-                y += sc(26);
-            }
-            Block::Table {
-                header,
-                rows,
-                aligns,
-            } => {
-                let tbases: &[Vec<Vec<usize>>] = match layout.bases.get(bi) {
-                    Some(DocBase::Table(v)) => v,
-                    _ => &[],
-                };
-                let mut tsel = TblSel {
-                    range: sel.range,
-                    doc: &layout.doc,
-                    bases: tbases,
-                    hits: &mut *sel.hits,
-                    bg: c.sel,
-                };
-                y = draw_table(
-                    hwnd,
-                    hdc,
-                    header,
-                    rows,
-                    aligns,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    &mut tsel,
-                    (rc.top, rc.bottom),
-                    &mut fonts_cache,
-                );
-                y += sc(14);
-            }
-            Block::Image(ib) => {
-                y = draw_image(
-                    hwnd,
-                    hdc,
-                    rc,
-                    ib,
-                    x0,
-                    y,
-                    full_w,
-                    c,
-                    links,
-                    imgs,
-                    doc_dir,
-                    gen,
-                    &mut fonts_cache,
-                );
-            }
-        }
-        // Cache the text block's just-measured height (spacing included) for the skip fast-path.
-        if is_text {
-            if let Some(slot) = layout.heights.get_mut(bi) {
-                *slot = y - y_block_start;
-            }
-        }
+            links,
+            imgs,
+            doc_dir,
+            gen,
+            layout,
+            sel,
+            &mut fonts_cache,
+        );
         first = false;
     }
     if let Some(t0) = bench_t {
@@ -587,6 +493,146 @@ pub(super) unsafe fn render(
         );
     }
     y + scroll - top + margin // total content height
+}
+
+/// Paint one block at `y`, cache its measured height when `is_text`, and return the y after it.
+#[allow(clippy::too_many_arguments)] // GDI layout pass: target + geometry + out-collectors, no struct gain
+unsafe fn paint_block(
+    hwnd: HWND,
+    hdc: HDC,
+    rc: &RECT,
+    block: &Block,
+    bi: usize,
+    mut y: i32,
+    first: bool,
+    is_text: bool,
+    x0: i32,
+    full_w: i32,
+    c: &MdColors,
+    links: &mut Vec<LinkHit>,
+    imgs: &mut ImgCache,
+    doc_dir: Option<&Path>,
+    gen: u64,
+    layout: &mut MdLayout,
+    sel: &mut MdSel,
+    fonts_cache: &mut FontCache,
+) -> i32 {
+    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
+    // The block's run offsets in the selection document (empty for the dry/unselectable ones).
+    let run_bases: &[usize] = match layout.bases.get(bi) {
+        Some(DocBase::Runs(v)) => v,
+        _ => &[],
+    };
+    let mut rsel = RunSel {
+        range: sel.range,
+        doc: &layout.doc,
+        bases: run_bases,
+        hits: &mut *sel.hits,
+        bg: c.sel,
+    };
+    let mut p = PaintCtx {
+        hwnd,
+        hdc,
+        rc,
+        x0,
+        full_w,
+        c,
+        links: &mut *links,
+        rsel: &mut rsel,
+        fonts_cache,
+    };
+    let y_block_start = y;
+    match block {
+        Block::Heading(level, runs, center) => {
+            y = paint_heading(&mut p, *level, runs, *center, first, y);
+        }
+        Block::Para(runs, center) => {
+            y = paint_para(&mut p, runs, *center, y);
+        }
+        Block::Code(text, lang) => {
+            let base = match layout.bases.get(bi) {
+                Some(DocBase::Code(b)) => *b,
+                _ => 0,
+            };
+            y = paint_code(&mut p, text, *lang, y, base);
+        }
+        Block::Item(depth, marker, runs, task) => {
+            y = paint_item(&mut p, *depth, marker, runs, *task, y);
+        }
+        Block::Quote(runs) => {
+            y = paint_quote(&mut p, runs, y);
+        }
+        Block::Rule => {
+            // GitHub hr: a short solid bar, not a hairline.
+            let bar = RECT {
+                left: x0,
+                top: y + sc(8),
+                right: x0 + full_w,
+                bottom: y + sc(8) + sc(3),
+            };
+            let hb = CreateSolidBrush(COLORREF(c.border));
+            FillRect(hdc, &bar, hb);
+            let _ = DeleteObject(hb.into());
+            y += sc(26);
+        }
+        Block::Table {
+            header,
+            rows,
+            aligns,
+        } => {
+            let tbases: &[Vec<Vec<usize>>] = match layout.bases.get(bi) {
+                Some(DocBase::Table(v)) => v,
+                _ => &[],
+            };
+            let mut tsel = TblSel {
+                range: sel.range,
+                doc: &layout.doc,
+                bases: tbases,
+                hits: &mut *sel.hits,
+                bg: c.sel,
+            };
+            y = draw_table(
+                hwnd,
+                hdc,
+                header,
+                rows,
+                aligns,
+                x0,
+                y,
+                full_w,
+                c,
+                links,
+                &mut tsel,
+                (rc.top, rc.bottom),
+                fonts_cache,
+            );
+            y += sc(14);
+        }
+        Block::Image(ib) => {
+            y = draw_image(
+                hwnd,
+                hdc,
+                rc,
+                ib,
+                x0,
+                y,
+                full_w,
+                c,
+                links,
+                imgs,
+                doc_dir,
+                gen,
+                fonts_cache,
+            );
+        }
+    }
+    // Cache the text block's just-measured height (spacing included) for the skip fast-path.
+    if is_text {
+        if let Some(slot) = layout.heights.get_mut(bi) {
+            *slot = y - y_block_start;
+        }
+    }
+    y
 }
 
 mod doc;

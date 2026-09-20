@@ -284,25 +284,17 @@ fn walk_folder_size_bounded(
             continue; // unreadable subdirectory (permissions, or it vanished) — skip it
         };
         for entry in entries.flatten() {
-            if visited >= max_entries {
-                truncated = true;
+            if visit_entry(
+                &entry,
+                depth,
+                max_entries,
+                max_depth,
+                &mut visited,
+                &mut stack,
+                &mut bytes,
+                &mut truncated,
+            ) {
                 break 'walk;
-            }
-            visited += 1;
-            let Ok(meta) = entry.metadata() else {
-                continue; // vanished between the listing and the stat — skip it
-            };
-            if is_reparse_point(meta.file_attributes()) {
-                continue; // a junction/symlink: never sized, never descended into
-            }
-            if meta.is_dir() {
-                if depth + 1 > max_depth {
-                    truncated = true;
-                    continue;
-                }
-                stack.push((entry.path(), depth + 1));
-            } else {
-                bytes += meta.len();
             }
         }
         if start.elapsed() > budget {
@@ -311,6 +303,42 @@ fn walk_folder_size_bounded(
         }
     }
     FolderSize { bytes, truncated }
+}
+
+/// Processes one directory entry of the bounded walk, returning `true` when the entry budget was
+/// hit so the caller must stop the whole walk (`break 'walk`), and `false` to continue.
+#[allow(clippy::too_many_arguments)] // the walk's whole state, threaded through one entry at a time
+fn visit_entry(
+    entry: &std::fs::DirEntry,
+    depth: usize,
+    max_entries: usize,
+    max_depth: usize,
+    visited: &mut usize,
+    stack: &mut Vec<(std::path::PathBuf, usize)>,
+    bytes: &mut u64,
+    truncated: &mut bool,
+) -> bool {
+    if *visited >= max_entries {
+        *truncated = true;
+        return true;
+    }
+    *visited += 1;
+    let Ok(meta) = entry.metadata() else {
+        return false; // vanished between the listing and the stat — skip it
+    };
+    if is_reparse_point(meta.file_attributes()) {
+        return false; // a junction/symlink: never sized, never descended into
+    }
+    if meta.is_dir() {
+        if depth + 1 > max_depth {
+            *truncated = true;
+            return false;
+        }
+        stack.push((entry.path(), depth + 1));
+    } else {
+        *bytes += meta.len();
+    }
+    false
 }
 
 #[cfg(test)]

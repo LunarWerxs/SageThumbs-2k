@@ -499,33 +499,41 @@ fn qp_decode(raw: &[u8], header: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {
-        match raw[i] {
-            b'=' if i + 2 < raw.len() && raw[i + 1] == b'\r' && raw[i + 2] == b'\n' => i += 3,
-            b'=' if i + 1 < raw.len() && raw[i + 1] == b'\n' => i += 2, // soft break
-            b'=' if i + 2 < raw.len() => {
-                let hex = |b: u8| (b as char).to_digit(16);
-                match (hex(raw[i + 1]), hex(raw[i + 2])) {
-                    (Some(h), Some(l)) => {
-                        out.push(((h << 4) | l) as u8);
-                        i += 3;
-                    }
-                    _ => {
-                        out.push(raw[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'_' if header => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
+        i = qp_step(raw, i, header, &mut out);
     }
     out
+}
+
+/// Decode the input at position `i`, pushing its bytes onto `out`; returns the next index.
+fn qp_step(raw: &[u8], i: usize, header: bool, out: &mut Vec<u8>) -> usize {
+    match raw[i] {
+        b'=' if i + 2 < raw.len() && raw[i + 1] == b'\r' && raw[i + 2] == b'\n' => i + 3,
+        b'=' if i + 1 < raw.len() && raw[i + 1] == b'\n' => i + 2, // soft break
+        b'=' if i + 2 < raw.len() => qp_hex_escape(raw, i, out),
+        b'_' if header => {
+            out.push(b' ');
+            i + 1
+        }
+        b => {
+            out.push(b);
+            i + 1
+        }
+    }
+}
+
+/// Decode a `=XX` hex escape at `i` (or emit the literal `=`), returning the next index.
+fn qp_hex_escape(raw: &[u8], i: usize, out: &mut Vec<u8>) -> usize {
+    let hex = |b: u8| (b as char).to_digit(16);
+    match (hex(raw[i + 1]), hex(raw[i + 2])) {
+        (Some(h), Some(l)) => {
+            out.push(((h << 4) | l) as u8);
+            i + 3
+        }
+        _ => {
+            out.push(raw[i]);
+            i + 1
+        }
+    }
 }
 
 /// Standard base64, whitespace-tolerant (mail wraps it at 76 columns).

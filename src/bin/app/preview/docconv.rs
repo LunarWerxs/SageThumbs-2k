@@ -51,6 +51,16 @@ const MAX_COLS: usize = 64;
 /// some tools tab): whichever occurs most in the first non-empty line, outside quotes.
 fn sniff_delim(text: &str) -> u8 {
     let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let counts = count_delims(line);
+    match counts.iter().enumerate().max_by_key(|(_, c)| **c) {
+        Some((1, c)) if *c > 0 => b';',
+        Some((2, c)) if *c > 0 => b'\t',
+        _ => b',',
+    }
+}
+
+/// Tally `,` `;` and tab occurrences in `line`, ignoring any that sit inside a quoted run.
+fn count_delims(line: &str) -> [usize; 3] {
     let mut counts = [0usize; 3]; // , ; \t
     let mut in_q = false;
     for b in line.bytes() {
@@ -62,11 +72,7 @@ fn sniff_delim(text: &str) -> u8 {
             _ => {}
         }
     }
-    match counts.iter().enumerate().max_by_key(|(_, c)| **c) {
-        Some((1, c)) if *c > 0 => b';',
-        Some((2, c)) if *c > 0 => b'\t',
-        _ => b',',
-    }
+    counts
 }
 
 /// RFC-4180-ish parse (quoted fields, `""` escapes, embedded delimiters/newlines) into a GFM
@@ -169,30 +175,18 @@ fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize, usiz
     let b = text.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        let c = b[i];
-        i += if in_q {
-            step_in_quotes(b, i, c, &mut field, &mut in_q)
-        } else if c == b'"' && field.is_empty() {
-            in_q = true;
-            1
-        } else if c == delim {
-            end_field(&mut row, &mut field, &mut field_count);
-            1
-        } else if c == b'\n' || c == b'\r' {
-            step_newline(
-                b,
-                i,
-                c,
-                &mut row,
-                &mut field,
-                &mut rows,
-                &mut total_rows,
-                &mut field_count,
-                &mut max_cols_seen,
-            )
-        } else {
-            push_char_bytes(&mut field, b, i)
-        };
+        i += scan_byte(
+            b,
+            i,
+            delim,
+            &mut field,
+            &mut in_q,
+            &mut row,
+            &mut rows,
+            &mut total_rows,
+            &mut field_count,
+            &mut max_cols_seen,
+        );
     }
     if !field.is_empty() || !row.is_empty() {
         end_field(&mut row, &mut field, &mut field_count);
@@ -203,6 +197,48 @@ fn parse_delimited_rows(text: &str, delim: u8) -> (Vec<Vec<String>>, usize, usiz
         }
     }
     (rows, total_rows, max_cols_seen)
+}
+
+/// Consume one byte of a delimited-text scan (quoted field, opening quote, delimiter, record
+/// break, or ordinary character), updating the caller's parser state in place; returns the
+/// number of bytes consumed so the caller can advance its cursor.
+#[allow(clippy::too_many_arguments)] // one CSV-byte step; every param is load-bearing
+fn scan_byte(
+    b: &[u8],
+    i: usize,
+    delim: u8,
+    field: &mut String,
+    in_q: &mut bool,
+    row: &mut Vec<String>,
+    rows: &mut Vec<Vec<String>>,
+    total_rows: &mut usize,
+    field_count: &mut usize,
+    max_cols_seen: &mut usize,
+) -> usize {
+    let c = b[i];
+    if *in_q {
+        step_in_quotes(b, i, c, field, in_q)
+    } else if c == b'"' && field.is_empty() {
+        *in_q = true;
+        1
+    } else if c == delim {
+        end_field(row, field, field_count);
+        1
+    } else if c == b'\n' || c == b'\r' {
+        step_newline(
+            b,
+            i,
+            c,
+            row,
+            field,
+            rows,
+            total_rows,
+            field_count,
+            max_cols_seen,
+        )
+    } else {
+        push_char_bytes(field, b, i)
+    }
 }
 
 /// Render already-parsed `rows` (first = header) as a GFM pipe table with a leading `#`
@@ -517,20 +553,26 @@ fn strip_ansi(s: &str) -> String {
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                // consume to the terminating letter (inclusive)
-                for t in chars.by_ref() {
-                    if t.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
+            consume_ansi_escape(&mut chars);
             continue;
         }
         out.push(c);
     }
     out
+}
+
+/// Consume the rest of an ANSI escape begun by a just-seen ESC: an optional `[` then everything
+/// up to and including the first ASCII letter (the sequence's terminating byte).
+fn consume_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    if chars.peek() == Some(&'[') {
+        chars.next();
+        // consume to the terminating letter (inclusive)
+        for t in chars.by_ref() {
+            if t.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

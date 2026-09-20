@@ -559,6 +559,19 @@ unsafe fn text_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
         return Some(line_end(t, &starts, li));
     }
     let page = ((c.bottom - c.top) / lh).max(1);
+    text_vertical(hwnd, vk, focus, t, &starts, li, page)
+}
+
+/// The offset an Up/Down/PageUp/PageDown move lands on, keeping the caret's DISPLAY column.
+unsafe fn text_vertical(
+    hwnd: HWND,
+    vk: u16,
+    focus: usize,
+    t: &str,
+    starts: &[usize],
+    li: usize,
+    page: i32,
+) -> Option<usize> {
     let step: i64 = match vk {
         v if v == VK_UP.0 => -1,
         v if v == VK_DOWN.0 => 1,
@@ -572,7 +585,7 @@ unsafe fn text_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
         return Some(if step < 0 {
             starts[li]
         } else {
-            line_end(t, &starts, li)
+            line_end(t, starts, li)
         });
     }
     let hdc = GetDC(Some(hwnd));
@@ -581,8 +594,8 @@ unsafe fn text_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
     }
     let f = mono_font(hwnd);
     let old = SelectObject(hdc, f.into());
-    let x = highlight::disp_extent(hdc, line_at(t, &starts, li), focus - starts[li]);
-    let col = highlight::col_at(hdc, line_at(t, &starts, tl), x);
+    let x = highlight::disp_extent(hdc, line_at(t, starts, li), focus - starts[li]);
+    let col = highlight::col_at(hdc, line_at(t, starts, tl), x);
     SelectObject(hdc, old);
     let _ = DeleteObject(f.into());
     ReleaseDC(Some(hwnd), hdc);
@@ -604,6 +617,18 @@ unsafe fn md_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
             row().map(|o| o.end).max()
         };
     }
+    md_vertical(hwnd, st, &h, vk, focus)
+}
+
+/// The offset an Up/Down/PageUp/PageDown move in the Markdown pane lands on, scrolling an
+/// off-pane target line into view first.
+unsafe fn md_vertical(
+    hwnd: HWND,
+    st: &ViewerState,
+    h: &SelHit,
+    vk: u16,
+    focus: usize,
+) -> Option<usize> {
     let lh = (h.rect.bottom - h.rect.top).max(1);
     let c = content_rect(hwnd);
     let page = (c.bottom - c.top - lh).max(lh);
@@ -614,7 +639,7 @@ unsafe fn md_move(hwnd: HWND, vk: u16, focus: usize) -> Option<usize> {
         v if v == VK_NEXT.0 => page,
         _ => return None,
     };
-    let x = md_caret_x(hwnd, st, &h, focus);
+    let x = md_caret_x(hwnd, st, h, focus);
     let ty = h.rect.top + lh / 2 + dy;
     if ty >= c.top && ty < c.bottom {
         return md_hit(hwnd, x, ty);

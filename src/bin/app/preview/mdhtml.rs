@@ -325,17 +325,7 @@ fn dispatch_inline(b: &mut Builder, t: &HtmlTag) -> bool {
                 b.set_link(attr(t, "href").map(str::to_string));
             }
         }
-        "img" if !closing => {
-            if let Some(src) = attr(t, "src") {
-                if !src.is_empty() {
-                    b.image(
-                        src,
-                        attr(t, "alt").unwrap_or(""),
-                        parse_width(attr(t, "width")),
-                    );
-                }
-            }
-        }
+        "img" if !closing => emit_image(b, t),
         "br" if !closing => b.newline(),
         "hr" if !closing => b.rule(),
         _ => return false,
@@ -343,56 +333,61 @@ fn dispatch_inline(b: &mut Builder, t: &HtmlTag) -> bool {
     true
 }
 
+/// Build an image from `img`'s `src`/`alt`/`width` attributes (a no-op when `src` is missing
+/// or empty).
+fn emit_image(b: &mut Builder, t: &HtmlTag) {
+    if let Some(src) = attr(t, "src") {
+        if !src.is_empty() {
+            b.image(
+                src,
+                attr(t, "alt").unwrap_or(""),
+                parse_width(attr(t, "width")),
+            );
+        }
+    }
+}
+
 /// Paired open/close block tags: paragraphs, headings, containers, `<center>`, `<summary>`,
 /// `<blockquote>`. Returns whether `t.name` matched one of them.
 fn dispatch_block(b: &mut Builder, t: &HtmlTag) -> bool {
     let closing = t.closing;
+    if closing {
+        return close_block(b, t);
+    }
     match t.name.as_str() {
-        "p" | "figcaption" => {
-            if closing {
-                b.close_para();
-            } else {
-                b.open_para();
-            }
-        }
+        "p" | "figcaption" => b.open_para(),
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let level = t.name.as_bytes()[1] - b'0';
-            if closing {
-                b.end_heading();
-            } else {
-                b.start_heading(level);
-            }
+            b.start_heading(level);
         }
         "div" | "section" | "article" | "main" | "figure" | "header" | "footer" | "details" => {
-            if closing {
-                b.close_container(&t.name);
-            } else {
-                b.open_container(&t.name, is_centered(t));
-            }
+            b.open_container(&t.name, is_centered(t));
         }
-        "center" => {
-            if closing {
-                b.close_container("center");
-            } else {
-                b.open_container("center", true);
-            }
-        }
+        "center" => b.open_container("center", true),
         "summary" => {
-            if closing {
-                b.bold(false);
-                b.close_para();
-            } else {
-                b.open_para();
-                b.bold(true);
-            }
+            b.open_para();
+            b.bold(true);
         }
-        "blockquote" => {
-            if closing {
-                b.close_quote();
-            } else {
-                b.open_quote();
-            }
+        "blockquote" => b.open_quote(),
+        _ => return false,
+    }
+    true
+}
+
+/// Closes the paired block tags `dispatch_block` recognises. Returns whether `t.name` matched.
+fn close_block(b: &mut Builder, t: &HtmlTag) -> bool {
+    match t.name.as_str() {
+        "p" | "figcaption" => b.close_para(),
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => b.end_heading(),
+        "div" | "section" | "article" | "main" | "figure" | "header" | "footer" | "details" => {
+            b.close_container(&t.name);
         }
+        "center" => b.close_container("center"),
+        "summary" => {
+            b.bold(false);
+            b.close_para();
+        }
+        "blockquote" => b.close_quote(),
         _ => return false,
     }
     true
@@ -402,52 +397,35 @@ fn dispatch_block(b: &mut Builder, t: &HtmlTag) -> bool {
 /// Returns whether `t.name` matched one of them.
 fn dispatch_list_table(b: &mut Builder, t: &HtmlTag) -> bool {
     let closing = t.closing;
+    if closing {
+        return close_list_table(b, t);
+    }
     match t.name.as_str() {
-        "ul" => {
-            if closing {
-                b.close_list();
-            } else {
-                b.open_list(false, 1);
-            }
-        }
+        "ul" => b.open_list(false, 1),
         "ol" => {
-            if closing {
-                b.close_list();
-            } else {
-                let start = attr(t, "start")
-                    .and_then(|v| v.trim().parse().ok())
-                    .unwrap_or(1);
-                b.open_list(true, start);
-            }
+            let start = attr(t, "start")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(1);
+            b.open_list(true, start);
         }
-        "li" => {
-            if closing {
-                b.close_item();
-            } else {
-                b.open_item();
-            }
-        }
-        "table" => {
-            if closing {
-                b.html_table_close();
-            } else {
-                b.html_table_open();
-            }
-        }
-        "tr" => {
-            if closing {
-                b.html_tr_close();
-            } else {
-                b.html_tr_open();
-            }
-        }
-        "td" | "th" => {
-            if closing {
-                b.html_cell_close();
-            } else {
-                b.html_cell_open(t.name == "th");
-            }
-        }
+        "li" => b.open_item(),
+        "table" => b.html_table_open(),
+        "tr" => b.html_tr_open(),
+        "td" | "th" => b.html_cell_open(t.name == "th"),
+        _ => return false,
+    }
+    true
+}
+
+/// Closes the list/table tags `dispatch_list_table` recognises. Returns whether `t.name` matched.
+fn close_list_table(b: &mut Builder, t: &HtmlTag) -> bool {
+    match t.name.as_str() {
+        "ul" => b.close_list(),
+        "ol" => b.close_list(),
+        "li" => b.close_item(),
+        "table" => b.html_table_close(),
+        "tr" => b.html_tr_close(),
+        "td" | "th" => b.html_cell_close(),
         _ => return false,
     }
     true

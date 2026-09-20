@@ -31,13 +31,7 @@ pub(super) fn decode_animation(bytes: &[u8], ext: &str) -> Option<Vec<(DecodedRg
             let d = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).ok()?;
             to_decoded(d.into_frames())
         }
-        "png" | "apng" => {
-            let d = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
-            if !d.is_apng().ok()? {
-                return None; // ordinary single-frame PNG -> static path
-            }
-            to_decoded(d.apng().ok()?.into_frames())
-        }
+        "png" | "apng" => decode_apng(bytes),
         "webp" => {
             let d = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
             if !d.has_animation() {
@@ -47,6 +41,15 @@ pub(super) fn decode_animation(bytes: &[u8], ext: &str) -> Option<Vec<(DecodedRg
         }
         _ => None,
     }
+}
+
+/// Decode an APNG to `(rgba frame, delay ms)` pairs, or `None` for an ordinary single-frame PNG.
+fn decode_apng(bytes: &[u8]) -> Option<Vec<(DecodedRgba, u32)>> {
+    let d = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
+    if !d.is_apng().ok()? {
+        return None; // ordinary single-frame PNG -> static path
+    }
+    to_decoded(d.apng().ok()?.into_frames())
 }
 
 /// Run the shared, capped decode loop (`gif_frames::collect_capped`) and convert its raw

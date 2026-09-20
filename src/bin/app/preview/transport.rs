@@ -371,33 +371,46 @@ unsafe fn dispatch_scrub_click(
     x: i32,
     p: &Parts,
 ) {
-    if x >= p.play.left && x < p.play.right {
+    if hit_rect(x, &p.play, false) {
         v.toggle_play();
-    } else if x >= p.speed.left && x < p.speed.right {
+    } else if hit_rect(x, &p.speed, false) {
         let s = next_speed(v.speed());
         v.set_speed(s);
         let _ = sagethumbs2k_core::settings::set_preview_speed((s * 100.0).round() as u32);
-    } else if x >= p.arrows.left && x < p.arrows.right {
+    } else if hit_rect(x, &p.arrows, false) {
         // Flip what ←/→ mean, and remember it. Lives on the strip, not in Settings: it only ever
         // matters while this window is open, which is also the only place anyone would look.
         let on = !st.arrow_nav.get();
         st.arrow_nav.set(on);
         let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(on);
-    } else if x >= p.loopb.left && x < p.loopb.right {
+    } else if hit_rect(x, &p.loopb, false) {
         let on = !v.looping();
         v.set_looping(on);
         let _ = sagethumbs2k_core::settings::set_preview_loop(on);
-    } else if x >= p.vol.left && x <= p.vol.right {
+    } else if hit_rect(x, &p.vol, true) {
         st.vol_drag.set(true);
         apply_vol(v, x, &p.vol);
         let _ = SetCapture(hwnd);
-    } else if x >= p.mute.left && x < p.mute.right {
+    } else if hit_rect(x, &p.mute, false) {
         v.set_muted(!v.muted()); // speaker glyph toggles mute
         persist_volume(v); // a click is the whole gesture — remember it now
-    } else if x >= p.track.left && x <= p.track.right {
+    } else if hit_rect(x, &p.track, true) {
         st.scrub_drag.set(true);
         apply_seek(v, x, &p.track);
         let _ = SetCapture(hwnd);
+    }
+}
+
+/// Whether device-x hits rect `r`: from its left edge to its right edge — half-open for the
+/// buttons, closed for the two sliders, which own their outermost pixel.
+fn hit_rect(x: i32, r: &RECT, incl_right: bool) -> bool {
+    if x < r.left {
+        return false;
+    }
+    if incl_right {
+        x <= r.right
+    } else {
+        x < r.right
     }
 }
 

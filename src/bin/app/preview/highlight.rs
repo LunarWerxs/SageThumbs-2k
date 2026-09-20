@@ -617,25 +617,26 @@ fn lang_from_shebang(leading_text: &str) -> Lang {
     if prog == "env" {
         prog = words.next().unwrap_or("");
     }
-    let is_shell = prog == "sh"
-        || prog.starts_with("bash")
-        || prog.starts_with("zsh")
-        || prog.starts_with("dash");
-    if is_shell {
-        Lang::Sh
-    } else if prog.starts_with("python") {
-        Lang::Py
-    } else if prog.starts_with("node") {
-        Lang::Js
-    } else if prog.starts_with("ruby") {
-        Lang::Ruby
-    } else if prog.starts_with("php") {
-        Lang::Php
-    } else if prog.starts_with("perl") {
-        Lang::Perl
-    } else {
-        Lang::Plain
+    match_interpreter_lang(prog)
+}
+
+/// Classifies an interpreter binary name into a syntax-highlighting language.
+fn match_interpreter_lang(prog: &str) -> Lang {
+    match prog {
+        "sh" => Lang::Sh,
+        p if is_shell_interpreter(p) => Lang::Sh,
+        p if p.starts_with("python") => Lang::Py,
+        p if p.starts_with("node") => Lang::Js,
+        p if p.starts_with("ruby") => Lang::Ruby,
+        p if p.starts_with("php") => Lang::Php,
+        p if p.starts_with("perl") => Lang::Perl,
+        _ => Lang::Plain,
     }
+}
+
+/// True for the POSIX-shell interpreter family (`bash`/`zsh`/`dash`) that maps to [`Lang::Sh`].
+fn is_shell_interpreter(prog: &str) -> bool {
+    prog.starts_with("bash") || prog.starts_with("zsh") || prog.starts_with("dash")
 }
 
 #[cfg(test)]

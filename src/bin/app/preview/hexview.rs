@@ -45,33 +45,38 @@ const ROW: usize = 16;
 /// three padding spaces for a missing byte instead of skipping it — that's what keeps the `|`
 /// gutter starting at the same column on a short final row as on every full row above it.
 pub(super) fn format_hex_dump(bytes: &[u8], base_offset: u64) -> String {
-    use std::fmt::Write as _;
     let mut out = String::with_capacity((bytes.len() / ROW + 1) * 78);
     for (row_idx, chunk) in bytes.chunks(ROW).enumerate() {
         let offset = base_offset + (row_idx * ROW) as u64;
-        let _ = write!(out, "{offset:08x}  ");
-        for i in 0..ROW {
-            match chunk.get(i) {
-                Some(b) => {
-                    let _ = write!(out, "{b:02x} ");
-                }
-                None => out.push_str("   "), // pad a missing byte's 3 columns
-            }
-            if i == 7 {
-                out.push(' '); // the classic extra gap halfway through the row
-            }
-        }
-        out.push('|');
-        for &b in chunk {
-            out.push(if (0x20..=0x7e).contains(&b) {
-                b as char
-            } else {
-                '.'
-            });
-        }
-        out.push_str("|\n");
+        format_hex_row(&mut out, offset, chunk);
     }
     out
+}
+
+/// Format a single row of the hex dump into `out`: offset, 16 hex slots, and ASCII gutter.
+fn format_hex_row(out: &mut String, offset: u64, chunk: &[u8]) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "{offset:08x}  ");
+    for i in 0..ROW {
+        match chunk.get(i) {
+            Some(b) => {
+                let _ = write!(out, "{b:02x} ");
+            }
+            None => out.push_str("   "), // pad a missing byte's 3 columns
+        }
+        if i == 7 {
+            out.push(' '); // the classic extra gap halfway through the row
+        }
+    }
+    out.push('|');
+    for &b in chunk {
+        out.push(if (0x20..=0x7e).contains(&b) {
+            b as char
+        } else {
+            '.'
+        });
+    }
+    out.push_str("|\n");
 }
 
 /// The hex-dump view for `path` as markdown, or `None` when there's nothing to show: a

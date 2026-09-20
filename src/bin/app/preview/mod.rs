@@ -96,18 +96,7 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     let mutex = match mutex {
         Ok(m) if last_err != ERROR_ALREADY_EXISTS => m,
         _ => {
-            // Retry the FindWindow briefly in case the (real or presumed) owner is still
-            // mid-create.
-            for _ in 0..25 {
-                if let Ok(existing) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
-                    if let Some(p) = initial_path {
-                        send_command(existing, CMD_SET_PATH, Some(p));
-                    }
-                    crate::win::force_foreground(existing);
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(40));
-            }
+            forward_to_running_viewer(initial_path);
             return; // no window to forward to, and no safe way to become the owner either
         }
     };
@@ -159,6 +148,20 @@ pub(crate) unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
     // Standard modal-less pump; `WM_DESTROY` posts `WM_QUIT` which ends this.
     crate::win::pump_plain();
     // `_mutex` drops here, releasing single-instance ownership as the process exits.
+}
+
+/// Forward `initial_path` to an already-running viewer, retrying `FindWindowW` briefly in case the owner is still mid-create.
+unsafe fn forward_to_running_viewer(initial_path: Option<&str>) {
+    for _ in 0..25 {
+        if let Ok(existing) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
+            if let Some(p) = initial_path {
+                send_command(existing, CMD_SET_PATH, Some(p));
+            }
+            crate::win::force_foreground(existing);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
 }
 
 /// Send a `WM_COPYDATA` command (+ optional path payload) to a viewer window. Blocking, because
