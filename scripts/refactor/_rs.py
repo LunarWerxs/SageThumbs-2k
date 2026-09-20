@@ -43,6 +43,15 @@ def deepen_includes(lines):
     return [INCLUDE.sub(lambda m: m.group(1) + "../", ln) for ln in lines]
 
 
+SUPER = re.compile(r"(?<![\w:])super::(?!super\))")
+
+
+def deepen_supers(lines):
+    """An extracted item sits one module deeper: a `super::x` path in it needs one more `super::`
+    (`pub(super)` and `pub(in super::super)` are visibilities, not paths, and stay)."""
+    return [ln if ln.lstrip().startswith("//") else SUPER.sub("super::super::", ln) for ln in lines]
+
+
 def dedent(lines):
     """Drop one 4-space level; blank lines stay blank, anything shallower is left alone."""
     out = []

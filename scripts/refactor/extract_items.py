@@ -2,6 +2,8 @@
 parent-hub style: the child starts with `use super::*;`, the hub gains
 `mod <child>;` + `use <child>::*;`, and every moved item (and the fields / methods
 inside it) that was private becomes `pub(super)` so hub and siblings still see it.
+A `super::x` path in a moved item gains one more `super::`, because the item sits one
+module deeper (a hub that glob-imports its own parent hides this; one that does not, breaks).
 
 Relies on rustfmt layout: a top-level item starts at column 0 and its closing
 brace is a lone `}` at column 0 (or the item ends with `;` on its own last line).
@@ -9,8 +11,9 @@ Leading `///`, `//`, `#[...]` lines (multi-line attributes included) travel with
 
 What it cannot know, and clippy -D warnings will tell you: a child that uses nothing from
 its parent has an unused `use super::*` (delete it), and a hub that uses nothing from a
-child has an unused `use child::*` (delete it; give the tests a `#[cfg(test)] use` if they
-named something through it). Macro invocations (`thread_local!`) are not items and stay
+child has an unused `use child::*` (`fix_unused_imports.py <clippy.log>` settles those: test-only
+ones get `#[cfg(test)]`, dead ones go). A child named like a SIBLING module or an extern crate
+(`update`, `ole`, `exif`) shadows it for the whole hub - pick another name. Macro invocations (`thread_local!`) are not items and stay
 behind - move them by hand. A child named like an extern crate (`exif`) shadows that crate
 for everything under it. Run rustfmt on hub and child afterwards.
 
@@ -34,9 +37,11 @@ GLOB_USE = re.compile(r"^use \w+::\*;$")
 def carve(lines, found):
     """(hub lines that stay, child lines that move, how many lines moved)."""
     keep, moved, cursor, total = [], [], 0, 0
-    for s, e, _ in found:
+    for s, e, key in found:
         keep.extend(lines[cursor:s])
-        moved.extend(make_pub_super(lines[s:e]))
+        body = make_pub_super(lines[s:e])
+        # an inline `mod x { use super::*; }` travels with its parent; its own paths stay right
+        moved.extend(body if key.startswith("mod ") else _rs.deepen_supers(body))
         moved.append("")
         total += e - s
         # the blank line after the item goes with it
@@ -86,8 +91,9 @@ def main():
     if "--list" in args:
         return list_items(parsed)
     wanted = {s.strip() for s in _rs.flag_value(args, "--items").split(",") if s.strip()}
-    found = [it for it in parsed if it[2] in wanted]
-    missing = wanted - {k for _, _, k in found}
+    # a bare name (`load_values`) matches every item that ends in it, whatever its kind
+    found = [it for it in parsed if it[2] in wanted or it[2].split(" ", 1)[-1] in wanted]
+    missing = wanted - {k for _, _, k in found} - {k.split(" ", 1)[-1] for _, _, k in found}
     if missing:
         _rs.die("MISSING: " + ", ".join(sorted(missing)))
     keep, moved, total = carve(lines, found)
