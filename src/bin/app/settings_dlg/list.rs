@@ -188,12 +188,9 @@ unsafe fn set_insert_mark(list: HWND, row: i32, after: bool) {
     invalidate_mark_band(list, row, after);
 }
 
-/// Invalidate (erase) the ~4px band around a mark line so a stale line there is wiped
-/// and the rows under it repaint cleanly.
-unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
-    if anchor < 0 {
-        return;
-    }
+/// The mark line's y on the anchor row (its top, or its bottom when `after`) plus the
+/// list's client rect whose `left`/`right` the line spans.
+unsafe fn mark_y_and_client(list: HWND, anchor: i32, after: bool) -> (i32, RECT) {
     let mut ir = RECT::default(); // .left = LVIR_BOUNDS (0)
     SendMessageW(
         list,
@@ -204,6 +201,16 @@ unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
     let y = if after { ir.bottom } else { ir.top };
     let mut cr = RECT::default();
     let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
+    (y, cr)
+}
+
+/// Invalidate (erase) the ~4px band around a mark line so a stale line there is wiped
+/// and the rows under it repaint cleanly.
+unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
+    if anchor < 0 {
+        return;
+    }
+    let (y, cr) = mark_y_and_client(list, anchor, after);
     let band = RECT {
         left: cr.left,
         top: y - 2,
@@ -220,21 +227,11 @@ unsafe fn draw_insert_line(list: HWND) {
     use windows::Win32::Graphics::Gdi::{
         CreateSolidBrush, DeleteObject, FillRect, GetDC, ReleaseDC, HGDIOBJ,
     };
-    use windows::Win32::UI::Controls::LVM_GETITEMRECT;
     let (anchor, after) = INSERT_MARK.with(|m| m.get());
     if anchor < 0 {
         return;
     }
-    let mut ir = RECT::default(); // .left = LVIR_BOUNDS (0)
-    SendMessageW(
-        list,
-        LVM_GETITEMRECT,
-        Some(WPARAM(anchor as usize)),
-        Some(LPARAM(&mut ir as *mut _ as isize)),
-    );
-    let y = if after { ir.bottom } else { ir.top };
-    let mut cr = RECT::default();
-    let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
+    let (y, cr) = mark_y_and_client(list, anchor, after);
     let line = RECT {
         left: cr.left + 2,
         top: y - 1,
