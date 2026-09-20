@@ -73,17 +73,21 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     }
 }
 
+/// The folder holding the first selected file, if there is one.
+fn first_file_folder() -> Option<String> {
+    TTF_FILES
+        .get()
+        .and_then(|f| f.first())
+        .and_then(|p| std::path::Path::new(p).parent())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// `WM_CREATE`: lay out the destination/template/missing-token edits, the move/copy radio
 /// pair, and the sort/cancel button row anchored to the real client bottom.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
     // Default destination = the first file's folder.
-    let default_dest = TTF_FILES
-        .get()
-        .and_then(|f| f.first())
-        .and_then(|p| std::path::Path::new(p).parent())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let default_dest = first_file_folder().unwrap_or_default();
 
     label(hwnd, hinst, t("ttf_destination"), 16, 18, 90, 18);
     edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
@@ -229,12 +233,7 @@ unsafe fn on_command_ok(hwnd: HWND) {
     }
     let mut dest = get_edit_text(hwnd, CID_TTF_DEST).trim().to_string();
     if dest.is_empty() {
-        dest = TTF_FILES
-            .get()
-            .and_then(|f| f.first())
-            .and_then(|p| std::path::Path::new(p).parent())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".".to_string());
+        dest = first_file_folder().unwrap_or_else(|| ".".to_string());
     }
     let mut template = get_edit_text(hwnd, CID_TTF_TEMPLATE).trim().to_string();
     if template.is_empty() {
