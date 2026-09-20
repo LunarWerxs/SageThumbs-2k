@@ -872,7 +872,7 @@ Write-Host "[corpus] tiny lossless jp2 exactness fixtures present"
 # (pclr maps index 0 -> white), 2550x3301. It pins the palette path - a decoder that
 # renders raw indices paints this blank white page solid black. It is checked in-tree
 # by hand; nothing regenerates it (and nothing should - its exact box layout is the fixture).
-if (-not (Test-Path "$OutDir	iny-bilevel.jp2")) { Write-Host "  (tiny-bilevel.jp2 missing - restore it from the repo/issue #11 attachment)" -ForegroundColor Yellow }
+if (-not (Test-Path "$OutDir\tiny-bilevel.jp2")) { Write-Host "  (tiny-bilevel.jp2 missing - restore it from the repo/issue #11 attachment)" -ForegroundColor Yellow }
 
 # --- 9z) BIG layered GIMP files, with a KNOWN flattened colour -----------------
 # The corpus had two .xcf samples, 1.8 KB and 206 KB, and that gap shipped a bug: 2.0.0's
