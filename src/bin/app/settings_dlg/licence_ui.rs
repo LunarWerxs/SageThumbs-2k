@@ -73,7 +73,12 @@ pub(super) unsafe fn seed_licence_ui(hwnd: HWND) {
 /// leaves the page showing the SAME thing a fresh open would.
 unsafe fn refresh_licence_status(hwnd: HWND) {
     let snap = crate::license::snapshot();
-    set_licence_line(hwnd, ID_LICENCE_MODE_STATUS, &licence_mode_line(&snap), false);
+    set_licence_line(
+        hwnd,
+        ID_LICENCE_MODE_STATUS,
+        &licence_mode_line(&snap),
+        false,
+    );
     // The colour follows the LICENCE, not the installer's answer: a Personal copy carrying a live
     // business key is green and one whose key was revoked is red, exactly as a Business copy is.
     let tone = if (!snap.key_prefix.is_empty() && snap.last_status == "revoked")
@@ -94,7 +99,12 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
     STATE_TONE.with(|c| c.set(tone));
     BUY_PRIMARY.with(|c| c.set(!snap.entitled));
     invalidate_control(hwnd, ID_LICENCE_BUY);
-    set_licence_line(hwnd, ID_LICENCE_STATE_STATUS, &licence_state_line(&snap), true);
+    set_licence_line(
+        hwnd,
+        ID_LICENCE_STATE_STATUS,
+        &licence_state_line(&snap),
+        true,
+    );
     // The updates window: its own line, and the renewal button that goes with it. Both are
     // driven from the SAME snapshot as everything above, so the page can never show a
     // window end that disagrees with the licence state printed one line up.

@@ -85,7 +85,10 @@ fn resolve_box_size(bytes: &[u8], offset: usize, size32: u32) -> Option<(usize, 
         offset as u64,
         bytes.len() as u64,
     )?;
-    Some((usize::try_from(size).ok()?, usize::try_from(header_len).ok()?))
+    Some((
+        usize::try_from(size).ok()?,
+        usize::try_from(header_len).ok()?,
+    ))
 }
 
 pub(super) fn is_mini_avif(bytes: &[u8]) -> bool {

@@ -237,8 +237,14 @@ unsafe fn on_command_ok(hwnd: HWND) {
         &get_edit_text(hwnd, CID_TTF_DEST),
         &first_file_folder().unwrap_or_else(|| ".".to_string()),
     );
-    let template = ttf_field_or(&get_edit_text(hwnd, CID_TTF_TEMPLATE), t("ttf_template_default"));
-    let missing = ttf_field_or(&get_edit_text(hwnd, CID_TTF_MISSING), t("ttf_missing_default"));
+    let template = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_TEMPLATE),
+        t("ttf_template_default"),
+    );
+    let missing = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_MISSING),
+        t("ttf_missing_default"),
+    );
     let move_files = checked(hwnd, CID_TTF_MOVE);
     let Some(files) = TTF_FILES.get().cloned() else {
         return;
@@ -302,7 +308,11 @@ fn ttf_done_message(prompt: &str, done: usize, skipped: usize) -> String {
 unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
     TTF_RUNNING.store(false, Ordering::Relaxed);
     if let Some((done, skipped, move_files)) = TTF_RESULT.lock().unwrap().take() {
-        let m = wide(&ttf_done_message(t(ttf_done_key(move_files)), done, skipped));
+        let m = wide(&ttf_done_message(
+            t(ttf_done_key(move_files)),
+            done,
+            skipped,
+        ));
         let cap = wide("SageThumbs 2K");
         MessageBoxW(
             Some(hwnd),
@@ -364,7 +374,10 @@ mod tests {
 
     #[test]
     fn parent_folder_keeps_the_folder() {
-        assert_eq!(parent_folder("C:\\media\\song.mp3"), Some("C:\\media".to_string()));
+        assert_eq!(
+            parent_folder("C:\\media\\song.mp3"),
+            Some("C:\\media".to_string())
+        );
     }
 
     #[test]

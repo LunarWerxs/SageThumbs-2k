@@ -555,7 +555,11 @@ mod tests {
         assert_eq!(rects.len(), 3);
         let (action, later, discord) = (rects[0], rects[1], rects[2]);
         assert_eq!(action.0, ID_NUDGE_ACTION);
-        assert_eq!(action.1 + action.3, 10 + 528 - PAD, "action left the right edge");
+        assert_eq!(
+            action.1 + action.3,
+            10 + 528 - PAD,
+            "action left the right edge"
+        );
         assert_eq!(action.1 - (later.1 + later.3), BTN_GAP);
         assert_eq!(later.1 - (discord.1 + discord.3), BTN_GAP);
         let by = 100 + 116 - BTN_H - 12;

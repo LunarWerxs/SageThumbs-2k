@@ -68,7 +68,6 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     t("licence_state_licensed").replace("{date}", &format_unix_date(snap.last_positive_unix))
 }
 
-
 /// Builds the revoked-key state line for [`licence_state_line`]: the plain revocation
 /// sentence, the relay's reason when recorded, then the lock from the current posture.
 fn revoked_state_line(snap: &crate::license::LicenceSnapshot) -> String {

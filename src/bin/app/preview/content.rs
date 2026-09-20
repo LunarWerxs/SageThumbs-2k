@@ -473,7 +473,9 @@ mod tests {
     /// to the info card, which reads as "we can't open this".
     #[test]
     fn magic_is_image_recognises_the_offset_zero_signatures() {
-        assert!(magic_is_image(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])); // PNG/APNG
+        assert!(magic_is_image(&[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A
+        ])); // PNG/APNG
         assert!(magic_is_image(&[0xFF, 0xD8, 0xFF, 0xE0])); // JPEG
         assert!(magic_is_image(b"GIF87a...."));
         assert!(magic_is_image(b"GIF89a...."));
@@ -526,13 +528,30 @@ mod tests {
     #[test]
     fn is_archive_ext_covers_the_zip_in_disguise_tail_only() {
         for ext in [
-            "zip", "7z", "rar", "jar", "war", "xpi", "whl", "nupkg", "vsix", "ipa", "aar",
-            "appx", "msix", "appxbundle", "msixbundle", "oxt",
+            "zip",
+            "7z",
+            "rar",
+            "jar",
+            "war",
+            "xpi",
+            "whl",
+            "nupkg",
+            "vsix",
+            "ipa",
+            "aar",
+            "appx",
+            "msix",
+            "appxbundle",
+            "msixbundle",
+            "oxt",
         ] {
             assert!(is_archive_ext(ext), "{ext} must take the archive listing");
         }
         for ext in ["apk", "apks", "xapk", "apkm", "cbz", "epub", "png", ""] {
-            assert!(!is_archive_ext(ext), "{ext} must not take the archive listing");
+            assert!(
+                !is_archive_ext(ext),
+                "{ext} must not take the archive listing"
+            );
         }
     }
 
@@ -564,16 +583,18 @@ mod tests {
         assert_eq!(lower_ext("archive.tar.gz"), "gz");
         assert_eq!(lower_ext("no_extension"), "");
         assert_eq!(lower_ext(""), "");
-        assert_eq!(lower_ext(".gitignore"), "", "a leading-dot name has no extension");
+        assert_eq!(
+            lower_ext(".gitignore"),
+            "",
+            "a leading-dot name has no extension"
+        );
     }
 
     /// Build a small stored-mode zip so the listing formatter can be exercised on real bytes.
     fn write_sample_zip(tag: &str) -> std::path::PathBuf {
         use std::io::Write;
-        let path = std::env::temp_dir().join(format!(
-            "st2k_contenttest_{tag}_{}.zip",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("st2k_contenttest_{tag}_{}.zip", std::process::id()));
         let opts = || {
             zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored)
@@ -608,7 +629,10 @@ mod tests {
         let beta = listing.find("Beta.txt").expect("Beta.txt listed");
         let zebra = listing.find("zebra.txt").expect("zebra.txt listed");
         assert!(dir < apple, "directories must sort before files");
-        assert!(apple < beta && beta < zebra, "files must sort case-insensitively");
+        assert!(
+            apple < beta && beta < zebra,
+            "files must sort case-insensitively"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

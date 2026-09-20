@@ -72,9 +72,7 @@ fn copy_image_content(st: &ViewerState) {
     // left on the clipboard under the still-held Ctrl+C.
     let gen = st.decode_gen.get();
     std::thread::spawn(move || {
-        use windows::Win32::System::Com::{
-            CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
-        };
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         if !copy_shown_image(&p, pdf_page, anim_frame, gen) {
             // The viewer has no toast/status surface, so a failed copy is otherwise

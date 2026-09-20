@@ -232,8 +232,8 @@ fn write_cbz_archive(
 
     let file = std::fs::File::create(tmp).map_err(|_| Error::from(E_FAIL))?;
     let mut zw = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let opts =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zw.start_file(
         "ComicInfo.xml",
         zip::write::SimpleFileOptions::default()

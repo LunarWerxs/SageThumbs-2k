@@ -124,10 +124,11 @@ fn push_attempt(
         200 => {
             let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
             clear_cache();
-            Ok(Some(json
-                .get("version")
-                .and_then(Value::as_u64)
-                .unwrap_or(*base + 1)))
+            Ok(Some(
+                json.get("version")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(*base + 1),
+            ))
         }
         409 => {
             // E05 follow-up audit, review item 5: checked BEFORE incrementing, so

@@ -110,9 +110,7 @@ unsafe fn poll_once(hwnd: HWND, last: &mut Option<String>) -> bool {
         if last.as_deref() != Some(path.as_str()) {
             *last = Some(path.clone());
             let boxed = Box::into_raw(Box::new(path));
-            if PostMessageW(Some(hwnd), WM_APP_SWITCH, WPARAM(0), LPARAM(boxed as isize))
-                .is_err()
-            {
+            if PostMessageW(Some(hwnd), WM_APP_SWITCH, WPARAM(0), LPARAM(boxed as isize)).is_err() {
                 drop(Box::from_raw(boxed)); // window vanished mid-post — don't leak
                 return false;
             }

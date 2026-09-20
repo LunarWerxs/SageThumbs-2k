@@ -206,7 +206,8 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
         .filter(|s| s.marker() == markers::APP11 && jumbf::is_jumbf_app11(s.contents()))
         .filter_map(|s| app11_identity(s.contents()).map(|(inst, _)| inst))
         .collect();
-    jpeg.segments_mut().retain(|s| !is_stripped_segment(s, &c2pa_instances));
+    jpeg.segments_mut()
+        .retain(|s| !is_stripped_segment(s, &c2pa_instances));
     if let Some(o) = orientation {
         let mut app1 = b"Exif\0\0".to_vec();
         app1.extend(tiff_orientation_only(o));

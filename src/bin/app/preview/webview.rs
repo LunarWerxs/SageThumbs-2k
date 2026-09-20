@@ -516,13 +516,22 @@ mod tests {
 
     #[test]
     fn ephemeral_profile_pid_parses_only_the_prefixed_decimal_names() {
-        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4242")), Some(4242));
-        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-0")), Some(0));
+        assert_eq!(
+            ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4242")),
+            Some(4242)
+        );
+        assert_eq!(
+            ephemeral_profile_pid(OsStr::new("wv2-ephemeral-0")),
+            Some(0)
+        );
         assert_eq!(
             ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4294967295")),
             Some(u32::MAX)
         );
-        assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4294967296")), None); // MAX + 1
+        assert_eq!(
+            ephemeral_profile_pid(OsStr::new("wv2-ephemeral-4294967296")),
+            None
+        ); // MAX + 1
         assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-")), None);
         assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral-12x")), None);
         assert_eq!(ephemeral_profile_pid(OsStr::new("wv2-ephemeral")), None); // prefix needs its '-'

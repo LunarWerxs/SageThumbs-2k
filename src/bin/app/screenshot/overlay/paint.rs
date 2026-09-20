@@ -148,9 +148,15 @@ unsafe fn paint_active_flyout(mem: HDC, s: &Shot, buttons: &[(Button, RECT)], dp
     } else if s.text_flyout {
         // The text settings flyout.
         if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
-            let (panel, its) =
-                toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
-            toolbar::draw_text_flyout(mem, panel, &its, &s.text_font, dpi, s.focus_in_text_flyout());
+            let (panel, its) = toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
+            toolbar::draw_text_flyout(
+                mem,
+                panel,
+                &its,
+                &s.text_font,
+                dpi,
+                s.focus_in_text_flyout(),
+            );
         }
     } else if s.tip_show {
         // Hover tooltip (after the short delay) over the hovered button.

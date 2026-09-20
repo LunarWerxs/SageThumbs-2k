@@ -372,7 +372,11 @@ fn video_pid(ts: &[u8], start: usize, stride: usize) -> Option<u16> {
 
 /// Fold one transport packet into the `video_pid` walk: record a PAT's program map PIDs, return
 /// the video PID of a program map table, or remember the first PID whose packets open a video PES.
-fn scan_video_packet(pkt: &[u8], pmt_pids: &mut Vec<u16>, sniffed: &mut Option<u16>) -> Option<u16> {
+fn scan_video_packet(
+    pkt: &[u8],
+    pmt_pids: &mut Vec<u16>,
+    sniffed: &mut Option<u16>,
+) -> Option<u16> {
     let (pid, pusi, payload) = packet_payload(pkt)?;
     if pid == 0 {
         collect_pat(payload, pusi, pmt_pids);

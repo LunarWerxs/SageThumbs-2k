@@ -432,11 +432,7 @@ fn fill_indexed_rgb(
 }
 
 /// Interleave the RED/GREEN/BLUE channel planes into `rgb`.
-fn fill_planar_rgb(
-    rgb: &mut [u8],
-    px: usize,
-    chan: &[Option<Vec<u8>>; 4],
-) -> Option<()> {
+fn fill_planar_rgb(rgb: &mut [u8], px: usize, chan: &[Option<Vec<u8>>; 4]) -> Option<()> {
     let r = chan[CHAN_RED as usize].as_ref()?;
     let g = chan[CHAN_GREEN as usize].as_ref()?;
     let bl = chan[CHAN_BLUE as usize].as_ref()?;

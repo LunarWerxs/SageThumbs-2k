@@ -388,7 +388,10 @@ mod tests {
     /// high half, which would corrupt the mtime for dates at the edge of the low word.
     #[test]
     fn filetime_low_half_with_high_bit_set_does_not_carry_into_the_high_half() {
-        assert_eq!(filetime_to_u64(0xAAAA_AAAA, 0xFFFF_FFFF), 0xAAAA_AAAA_FFFF_FFFF);
+        assert_eq!(
+            filetime_to_u64(0xAAAA_AAAA, 0xFFFF_FFFF),
+            0xAAAA_AAAA_FFFF_FFFF
+        );
     }
 
     /// A nameless stream reports neither field; the failure log prints `?` for the

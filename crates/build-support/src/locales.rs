@@ -323,7 +323,9 @@ fn to_upper_snake(key: &str) -> String {
 mod tests {
     use super::*;
 
-    fn build_langs(pairs: &[(&str, &[(&str, &str)])]) -> BTreeMap<String, BTreeMap<String, String>> {
+    fn build_langs(
+        pairs: &[(&str, &[(&str, &str)])],
+    ) -> BTreeMap<String, BTreeMap<String, String>> {
         pairs
             .iter()
             .map(|(code, kv)| {
@@ -407,7 +409,8 @@ mod tests {
     /// Two real `.toml` files under a temp dir, parsed and cleaned up.
     #[test]
     fn read_locales_parses_two_toml_files() {
-        let dir = std::env::temp_dir().join(format!("build_support_locales_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("build_support_locales_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("en.toml"), "a = \"1\"\nb = \"2\"\n").unwrap();
         std::fs::write(dir.join("de.toml"), "a = \"eins\"\n").unwrap();

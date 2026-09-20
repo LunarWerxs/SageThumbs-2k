@@ -21,7 +21,11 @@ pub(super) fn apev2_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
 }
 
 /// Try the APEv2 footer `back` bytes before EOF: `Some(img)` on a usable cover, `Some(None)` when this offset has no APEv2 footer (caller tries the next one), `None` to abandon the search.
-fn apev2_cover_from_footer<R: Read + Seek>(r: &mut R, len: u64, back: u64) -> Option<Option<Vec<u8>>> {
+fn apev2_cover_from_footer<R: Read + Seek>(
+    r: &mut R,
+    len: u64,
+    back: u64,
+) -> Option<Option<Vec<u8>>> {
     if len < back {
         return Some(None);
     }

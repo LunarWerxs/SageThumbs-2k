@@ -101,7 +101,13 @@ fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Op
     let mut difat = first_difat;
     let mut difat_hops = 0usize;
     while difat != ENDOFCHAIN && difat != FREESECT && fat_sectors.len() <= MAX_SECTORS {
-        append_difat_sector(bytes, &mut difat, &mut difat_hops, sector_size, &mut fat_sectors)?;
+        append_difat_sector(
+            bytes,
+            &mut difat,
+            &mut difat_hops,
+            sector_size,
+            &mut fat_sectors,
+        )?;
     }
     Some(fat_sectors)
 }

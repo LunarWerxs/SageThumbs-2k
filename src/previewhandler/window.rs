@@ -138,8 +138,7 @@ unsafe fn preview_render(hwnd: HWND, lparam: LPARAM) {
         let (dec, bg) = *Box::from_raw(p);
         // `opaque: None`: nothing upstream has scanned the alpha channel, so the
         // shared compositor works it out itself (the same scan the private copy did).
-        let hbmp =
-            safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
+        let hbmp = safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
         if let Some(hbmp) = hbmp {
             let rd = Box::new(RenderData {
                 hbmp,

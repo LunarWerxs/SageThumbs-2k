@@ -82,12 +82,7 @@ pub(super) unsafe fn special_ctlcolor(
 
 /// The ID-keyed state-driven status-line WM_CTLCOLORSTATIC cases (hotkey-service, settings
 /// sync and the licence work hint); `None` means none did.
-unsafe fn status_ctlcolor(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> Option<LRESULT> {
+unsafe fn status_ctlcolor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
     // The hotkey-service status word: green when running/started, red otherwise.
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_SHOT_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)

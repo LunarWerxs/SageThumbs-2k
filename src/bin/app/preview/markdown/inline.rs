@@ -72,7 +72,17 @@ unsafe fn draw_wrapped_lines(
         }
         for (rx, idx) in placed {
             let cx = x0 + xoff + rx;
-            draw_word(hdc, &toks[*idx], cx, cy, line_h, ctx, sel_rng, sel_bg, links);
+            draw_word(
+                hdc,
+                &toks[*idx],
+                cx,
+                cy,
+                line_h,
+                ctx,
+                sel_rng,
+                sel_bg,
+                links,
+            );
         }
     }
 }
@@ -278,7 +288,9 @@ unsafe fn sel_word(
         }
         // An inline-code span paints its own opaque panel in the selection colour (see the
         // draw loop) — filling here too would just be overpainted.
-        fill_word_sel(hdc, sel, cx, *w, *pad, *font, ds, de, ss, se, *code, cy, line_h);
+        fill_word_sel(
+            hdc, sel, cx, *w, *pad, *font, ds, de, ss, se, *code, cy, line_h,
+        );
     }
     Some((de, cx + *w))
 }

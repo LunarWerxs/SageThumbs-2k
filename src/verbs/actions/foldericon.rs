@@ -75,11 +75,7 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
 
 /// Merge the icon keys into `existing` desktop.ini content (or into a fresh `[.ShellClassInfo]`)
 /// and write it atomically at `ini_path`, keeping UTF-16 LE encoding when the existing file used it.
-fn write_desktop_ini(
-    existing: &Option<Vec<u8>>,
-    ico_name: &str,
-    ini_path: &Path,
-) -> Result<()> {
+fn write_desktop_ini(existing: &Option<Vec<u8>>, ico_name: &str, ini_path: &Path) -> Result<()> {
     // desktop.ini references the icon by a RELATIVE name (so it survives a move).
     // `IconResource` is the modern key; `IconFile`/`IconIndex` keep older Explorer
     // happy. CRLF + a trailing newline, matching what Explorer writes.

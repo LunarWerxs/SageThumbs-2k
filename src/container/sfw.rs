@@ -178,7 +178,10 @@ fn append_segment(body: &[u8], out: &mut Vec<u8>, at: usize) -> Option<Segment> 
     }
     out.extend_from_slice(&[0xFF, marker]);
     out.extend_from_slice(body.get(at + 2..at + 2 + len)?);
-    Some(Segment::More { next: at + 2 + len, own_dht: marker == 0xC4 })
+    Some(Segment::More {
+        next: at + 2 + len,
+        own_dht: marker == 0xC4,
+    })
 }
 
 fn decode_jpeg(jpeg: &[u8]) -> Option<DynamicImage> {

@@ -42,15 +42,12 @@ fn initialize_state(cm: &ContextMenu_Impl, pdtobj: Ref<'_, IDataObject>) -> Resu
     let gate = settings::menu_gate();
     // Also captures the file's `Metadata` so `ensure_preview`/`build_preview`
     // don't stat it a second time later.
-    let meta = if gate.enabled
-        && preview_mode != 0
-        && paths.len() == 1
-        && verbs::is_image(&paths[0])
-    {
-        preview_metadata(&paths[0])
-    } else {
-        None
-    };
+    let meta =
+        if gate.enabled && preview_mode != 0 && paths.len() == 1 && verbs::is_image(&paths[0]) {
+            preview_metadata(&paths[0])
+        } else {
+            None
+        };
     let eligible = meta.is_some();
     cm.preview_eligible.set(eligible);
     *cm.preview_meta.borrow_mut() = meta;

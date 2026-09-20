@@ -380,7 +380,11 @@ fn download_progress_tick(
         }
         let denom = if total != 0 { total } else { done.max(1) };
         let _ = dlg.SetProgress64(done, denom);
-        set_line(dlg, 2, &format!("{} of {}", human_mb(done), human_mb(total)));
+        set_line(
+            dlg,
+            2,
+            &format!("{} of {}", human_mb(done), human_mb(total)),
+        );
         true
     }
 }

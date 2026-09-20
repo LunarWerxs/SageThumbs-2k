@@ -274,10 +274,7 @@ impl PropertyStore_Impl {
 
 /// Push the audio-tag properties (artist, album, title, track, genre, year, duration,
 /// bitrate) onto `out`; empty or non-positive tags contribute nothing.
-fn push_audio_props(
-    out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>,
-    tags: crate::strip::AudioTags,
-) {
+fn push_audio_props(out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>, tags: crate::strip::AudioTags) {
     if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
         out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
     }

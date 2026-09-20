@@ -568,14 +568,7 @@ impl PreviewHandler_Impl {
             // real pane size; the dedicated UI thread PUMPS, so the resulting WM_PAINT is delivered
             // and the (already-attached) image repaints at the new size. No forced UpdateWindow
             // needed any more — that was a workaround for prevhost's non-pumping COM thread.
-            _ = MoveWindow(
-                hwnd,
-                r.left,
-                r.top,
-                w,
-                h,
-                true,
-            );
+            _ = MoveWindow(hwnd, r.left, r.top, w, h, true);
             _ = InvalidateRect(Some(hwnd), None, true);
         }
     }

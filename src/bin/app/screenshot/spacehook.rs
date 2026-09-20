@@ -206,7 +206,10 @@ unsafe fn qualifies() -> bool {
 /// (so Space closes the preview). The other classes still need a child-window / result-list
 /// probe and stay in [`foreground_qualifies`].
 fn class_is_directly_qualified(cls: &str) -> bool {
-    matches!(cls, "CabinetWClass" | "ExploreWClass" | "SageThumbs2KViewer")
+    matches!(
+        cls,
+        "CabinetWClass" | "ExploreWClass" | "SageThumbs2KViewer"
+    )
 }
 
 /// The foreground window class must be an Explorer view, the Desktop, an Everything search
@@ -217,7 +220,7 @@ unsafe fn foreground_qualifies(fg: HWND) -> bool {
         return true;
     }
     match cls.as_str() {
-        "Progman" | "WorkerW" => has_defview(fg),  // the Desktop (has a SHELLDLL_DefView child)
+        "Progman" | "WorkerW" => has_defview(fg), // the Desktop (has a SHELLDLL_DefView child)
         // A common Open/Save dialog. `is_typing` below still holds the file-name box, which
         // has the caret whenever the dialog opens — Space only becomes a preview once the
         // user has clicked into the item view.

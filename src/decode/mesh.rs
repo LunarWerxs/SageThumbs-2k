@@ -226,11 +226,7 @@ pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
 
 /// Handle one OBJ line: add a `v` vertex or fan an `f` face into `verts`/`tris`;
 /// `None` means the parse failed, `Some(true)` means the triangle cap was hit.
-fn parse_obj_line(
-    l: &str,
-    verts: &mut Vec<[f32; 3]>,
-    tris: &mut Vec<[f32; 9]>,
-) -> Option<bool> {
+fn parse_obj_line(l: &str, verts: &mut Vec<[f32; 3]>, tris: &mut Vec<[f32; 9]>) -> Option<bool> {
     if let Some(rest) = l.strip_prefix("v ") {
         let v = parse_obj_vertex(rest)?;
         // Push a placeholder for a non-finite vertex rather than dropping it: OBJ face

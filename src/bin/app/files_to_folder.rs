@@ -213,11 +213,7 @@ unsafe fn on_f2f_done(hwnd: HWND) -> LRESULT {
     let cap = wide("SageThumbs 2K");
     match result {
         Some(Ok((_dir, moved, skipped))) if skipped > 0 => {
-            let m = wide(&f2f_partial_message(
-                t("f2f_done_partial"),
-                moved,
-                skipped,
-            ));
+            let m = wide(&f2f_partial_message(t("f2f_done_partial"), moved, skipped));
             MessageBoxW(
                 Some(hwnd),
                 PCWSTR(m.as_ptr()),
@@ -332,8 +328,7 @@ mod tests {
 
     #[test]
     fn f2f_partial_message_fills_both_placeholders() {
-        let got =
-            f2f_partial_message("Moved {moved} item(s); {skipped} couldn't be moved.", 3, 2);
+        let got = f2f_partial_message("Moved {moved} item(s); {skipped} couldn't be moved.", 3, 2);
         assert_eq!(got, "Moved 3 item(s); 2 couldn't be moved.");
     }
 
