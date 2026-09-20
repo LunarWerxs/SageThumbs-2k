@@ -124,7 +124,8 @@ def make_pub_super(block):
                 ln = "pub(super) " + ln
             if m:
                 in_struct = m.group("kind") == "struct" and ln.rstrip().endswith("{")
-                in_impl = m.group("kind") == "impl"
+                # inherent impls only: a trait impl's methods take no visibility qualifier
+                in_impl = m.group("kind") == "impl" and " for " not in ln
             out.append(ln)
             continue
         if in_struct and re.match(r"^    [a-z_][a-z0-9_]*: ", ln):
