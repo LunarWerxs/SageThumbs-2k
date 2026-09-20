@@ -37,6 +37,8 @@ import sys
 import numpy as np
 from PIL import Image
 
+from hdr_scene import M709_2020, pq_oetf, srgb_eotf, srgb_oetf
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "assets", "wicprobe")
 S = 16
@@ -64,24 +66,9 @@ CASES = [
     ("avif-10bit-nocolr", "yuv444p10le", "bt709",            True),
 ]
 
-# BT.709 linear -> BT.2020 linear, the inverse of `primaries_to_bt709` in src/decode/cicp.rs.
-M709_2020 = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.0880, 0.8956]]
-
-
-def srgb_eotf(v):
-    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
-
-
-def srgb_oetf(l):
-    l = min(max(l, 0.0), 1.0)
-    return 12.92 * l if l <= 0.0031308 else 1.055 * l ** (1 / 2.4) - 0.055
-
-
-def pq_oetf(nits):
-    y = max(nits, 0.0) / 10000.0
-    m1, m2, c1, c2, c3 = 0.1593017578125, 78.84375, 0.8359375, 18.8515625, 18.6875
-    yp = y ** m1
-    return ((c1 + c2 * yp) / (1 + c3 * yp)) ** m2
+# The BT.709 -> BT.2020 matrix and the three transfer functions are `hdr_scene.py`'s, shared
+# with the JPEG XL and HEIC twin generators so a probe and a fixture cannot drift apart on what
+# PQ or sRGB mean. M709_2020 is the inverse of `primaries_to_bt709` in src/decode/cicp.rs.
 
 
 def pq_linear_patches():
