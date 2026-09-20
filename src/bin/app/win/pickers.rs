@@ -56,14 +56,22 @@ unsafe fn set_single_filter(dlg: &IFileDialog, name: &str, spec: &str, default_e
     }
 }
 
+/// The open-dialog options the folder picker adds to whatever the dialog already had:
+/// `FOS_PICKFOLDERS` turns the file dialog into a folder chooser, and `FOS_FORCEFILESYSTEM`
+/// keeps the result a real filesystem path.
+fn folder_pick_options(
+    opts: windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS,
+) -> windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS {
+    opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
+}
+
 /// Folder picker via IFileOpenDialog (FOS_PICKFOLDERS).
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     let _com = ComGuard::sta();
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     let opts = dlg.GetOptions().ok()?;
-    dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
-        .ok()?;
+    dlg.SetOptions(folder_pick_options(opts)).ok()?;
     shown_path(&dlg, owner)
 }
 
@@ -74,6 +82,15 @@ unsafe fn save_dialog() -> Option<(Option<ComGuard>, IFileSaveDialog)> {
     let dlg: IFileSaveDialog =
         CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     Some((com, dlg))
+}
+
+/// The save-dialog options `pick_save_png` forces on top of the dialog's own:
+/// `FOS_STRICTFILETYPES` keeps a typed `shot.jpg` from coming back as-is (2026-09-19 audit
+/// F18), and `FOS_FORCEFILESYSTEM` keeps the result a real filesystem path.
+fn png_save_options(
+    opts: windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS,
+) -> windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS {
+    opts | FOS_STRICTFILETYPES | FOS_FORCEFILESYSTEM
 }
 
 /// PNG "Save as" dialog via IFileSaveDialog. Unlike the classic GetSaveFileNameW — which
@@ -87,7 +104,7 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
     // typed `shot.jpg` came back as-is and the save then had to cope with a name that lied
     // about the format (2026-09-19 audit F18).
     if let Ok(opts) = dlg.GetOptions() {
-        let _ = dlg.SetOptions(opts | FOS_STRICTFILETYPES | FOS_FORCEFILESYSTEM);
+        let _ = dlg.SetOptions(png_save_options(opts));
     }
     let nm = wide(name);
     let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
@@ -120,6 +137,14 @@ pub(crate) unsafe fn pick_open_settings(owner: HWND) -> Option<String> {
     pick_open_file(owner, "SageThumbs 2K settings", "*.json")
 }
 
+/// The open-dialog options `pick_open_file` forces on top of the dialog's own: only
+/// `FOS_FORCEFILESYSTEM`, so the picked item is a real filesystem path.
+fn open_file_options(
+    opts: windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS,
+) -> windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS {
+    opts | FOS_FORCEFILESYSTEM
+}
+
 /// An IFileOpenDialog with one file-type filter (`filter_name`, `filter_spec` such as
 /// `*.png;*.jpg`), forced to filesystem paths. The chosen path, or None on cancel/failure.
 pub(crate) unsafe fn pick_open_file(
@@ -131,7 +156,7 @@ pub(crate) unsafe fn pick_open_file(
     let dlg: IFileOpenDialog =
         CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     if let Ok(opts) = dlg.GetOptions() {
-        let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM);
+        let _ = dlg.SetOptions(open_file_options(opts));
     }
     set_single_filter(&dlg, filter_name, filter_spec, None);
     shown_path(&dlg, owner)
@@ -145,4 +170,59 @@ pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
         sagethumbs2k_core::clipboard::CF_UNICODETEXT,
         &bytes,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Shell::{FILEOPENDIALOGOPTIONS, FOS_ALLNONSTORAGEITEMS};
+
+    /// The folder picker must actually pick folders: without `FOS_PICKFOLDERS` the dialog is
+    /// an ordinary file chooser and the user can never satisfy "choose a folder".
+    #[test]
+    fn folder_pick_options_force_the_folder_chooser_flag() {
+        let got = folder_pick_options(FILEOPENDIALOGOPTIONS(0));
+        assert!(got.contains(FOS_PICKFOLDERS));
+        assert!(got.contains(FOS_FORCEFILESYSTEM));
+    }
+
+    /// A folder pick is meaningless unless it resolves to a real filesystem path, which is
+    /// what `FOS_FORCEFILESYSTEM` guarantees — but the picker must not, like the save dialog,
+    /// start enforcing file types (there is no file type to enforce).
+    #[test]
+    fn folder_pick_options_do_not_impose_strict_file_types() {
+        let got = folder_pick_options(FILEOPENDIALOGOPTIONS(0));
+        assert!(!got.contains(FOS_STRICTFILETYPES));
+    }
+
+    /// 2026-09-19 audit F18: without `FOS_STRICTFILETYPES` a typed `shot.jpg` came back as-is
+    /// on the PNG filter and the save then wrote PNG bytes under a name that lied about the
+    /// format. The flag is the whole fix, so it must stay forced.
+    #[test]
+    fn png_save_options_force_strict_file_types() {
+        let got = png_save_options(FILEOPENDIALOGOPTIONS(0));
+        assert!(got.contains(FOS_STRICTFILETYPES));
+        assert!(got.contains(FOS_FORCEFILESYSTEM));
+    }
+
+    /// The open dialog is a plain file chooser (an open dialog defaults to file-must-exist),
+    /// so it must add only the filesystem bit — turning on the folder chooser here would
+    /// change what the settings picker can return.
+    #[test]
+    fn open_file_options_add_only_the_filesystem_bit() {
+        let got = open_file_options(FILEOPENDIALOGOPTIONS(0));
+        assert_eq!(got, FOS_FORCEFILESYSTEM);
+        assert!(!got.contains(FOS_PICKFOLDERS));
+        assert!(!got.contains(FOS_STRICTFILETYPES));
+    }
+
+    /// These helpers are applied to `GetOptions`' result, so they may only ADD bits: dropping
+    /// a flag the dialog already carried would silently reverse some other caller's choice.
+    #[test]
+    fn every_options_helper_preserves_the_flags_the_dialog_already_had() {
+        let existing = FOS_ALLNONSTORAGEITEMS;
+        assert!(folder_pick_options(existing).contains(existing));
+        assert!(png_save_options(existing).contains(existing));
+        assert!(open_file_options(existing).contains(existing));
+    }
 }
