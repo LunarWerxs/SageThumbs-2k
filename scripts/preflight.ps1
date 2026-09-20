@@ -51,7 +51,7 @@ if (-not $failed) {
 # behind fails the step even when every assertion passed - so a local green means a CI green.
 if (-not $failed) {
     Step 'consistency scripts (mirrors CI)' {
-        foreach ($s in 'check-consistency','test-release-size','test-release-pipeline','test-installer-lint','test-msix-integrity','test-architecture-release-contract','test-dev-architecture','test-magick-dependency-freshness','check-vendored-exr','check-email-rule') {
+        foreach ($s in 'check-consistency','test-release-size','test-release-pipeline','test-installer-lint','test-msix-integrity','test-architecture-release-contract','test-dev-architecture','test-magick-dependency-freshness','check-vendored-exr','check-email-rule','test-script-tests') {
             $null = pwsh -NoProfile -Command "./scripts/$s.ps1 *> `$null; if (Test-Path variable:\LASTEXITCODE) { exit `$LASTEXITCODE }"
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  FAILED: scripts/$s.ps1 (exit $LASTEXITCODE) - run it by hand for the detail" -ForegroundColor Red

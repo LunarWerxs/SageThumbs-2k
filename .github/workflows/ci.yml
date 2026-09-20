@@ -443,6 +443,9 @@ jobs:
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
+      - name: support-script unit tests (scripts/test_*.py, scripts/*.test.mjs)
+        shell: pwsh
+        run: ./scripts/test-script-tests.ps1
       - name: release-size policy tests
         shell: pwsh
         run: ./scripts/test-release-size.ps1

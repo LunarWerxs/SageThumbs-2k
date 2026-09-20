@@ -39,7 +39,7 @@ CLIPPY = [
 CONSISTENCY = [
     "check-consistency", "test-release-size", "test-release-pipeline", "test-installer-lint", "test-msix-integrity",
     "test-architecture-release-contract", "test-dev-architecture", "test-magick-dependency-freshness",
-    "check-vendored-exr", "check-email-rule",
+    "check-vendored-exr", "check-email-rule", "test-script-tests",
 ]
 ERR = re.compile(r"^(?:src|crates|tests)[^ ]*: (?:error|warning)", re.M)
 
