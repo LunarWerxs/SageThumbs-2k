@@ -298,12 +298,18 @@ fn prebuild_sizes(rest: &[String]) -> Result<Vec<u32>, String> {
     sagethumbs2k_core::prebuild::parse_size_list_str("--size", &s)
 }
 
-/// `prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]`
-fn run_prebuild(pos: &[&String], rest: &[String]) -> Result<String, String> {
+/// Owned copy of the positional paths, rejected with `empty_msg` when the verb got none.
+fn input_paths(pos: &[&String], empty_msg: &str) -> Result<Vec<String>, String> {
     let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
     if inputs.is_empty() {
-        return Err("prebuild needs at least one folder or file".to_string());
+        return Err(empty_msg.to_string());
     }
+    Ok(inputs)
+}
+
+/// `prebuild <paths...> [--recurse] [--size N[,N…]] [--rebuild-all] [--jobs N]`
+fn run_prebuild(pos: &[&String], rest: &[String]) -> Result<String, String> {
+    let inputs = input_paths(pos, "prebuild needs at least one folder or file")?;
     let sizes = prebuild_sizes(rest)?;
     cli::prebuild(
         &inputs,
@@ -371,10 +377,7 @@ fn run_clip_pixels(rest: &[String]) -> i32 {
 // the decode of many files inside ONE process, so the numbers carry no per-file
 // process-start noise. Used by scripts\check-decode-speed.ps1.
 fn run_bench_decode(pos: &[&String], rest: &[String]) -> Result<String, String> {
-    let inputs: Vec<String> = pos.iter().map(|s| s.to_string()).collect();
-    if inputs.is_empty() {
-        return Err("bench-decode needs at least one input file".to_string());
-    }
+    let inputs = input_paths(pos, "bench-decode needs at least one input file")?;
     let size = flag_num(rest, "--size", 256u32)?;
     let runs = flag_num(rest, "--runs", 3u32)?;
     cli::bench_decode(&inputs, size, runs)
@@ -505,6 +508,14 @@ fn need<'a>(pos: &'a [&'a String], i: usize) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing argument #{}", i + 1))
 }
 
+/// Exits 1 with the "compiled without" notice for a video-decoder feature this build
+/// does not have (the hidden `flv-frame`/`vp9-frame`/`mpeg-frame` verbs).
+#[cfg(not(all(feature = "flash-video", feature = "vp9-video", feature = "mpeg-video")))]
+fn missing_feature(feature: &str) -> ! {
+    eprintln!("st2k: this build was compiled without the {feature} feature");
+    std::process::exit(1)
+}
+
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
     sagethumbs2k_core::safety::install_panic_hook("st2k");
@@ -531,28 +542,19 @@ fn main() {
         #[cfg(feature = "flash-video")]
         std::process::exit(vdec::run_flv());
         #[cfg(not(feature = "flash-video"))]
-        {
-            eprintln!("st2k: this build was compiled without the flash-video feature");
-            std::process::exit(1);
-        }
+        missing_feature("flash-video");
     }
     if args.first().is_some_and(|a| a == "vp9-frame") {
         #[cfg(feature = "vp9-video")]
         std::process::exit(vdec::run_vp9());
         #[cfg(not(feature = "vp9-video"))]
-        {
-            eprintln!("st2k: this build was compiled without the vp9-video feature");
-            std::process::exit(1);
-        }
+        missing_feature("vp9-video");
     }
     if args.first().is_some_and(|a| a == "mpeg-frame") {
         #[cfg(feature = "mpeg-video")]
         std::process::exit(vdec::run_mpeg());
         #[cfg(not(feature = "mpeg-video"))]
-        {
-            eprintln!("st2k: this build was compiled without the mpeg-video feature");
-            std::process::exit(1);
-        }
+        missing_feature("mpeg-video");
     }
 
     // MCP server mode (`st2k --mcp` or `st2k mcp`): hand off to the stdio
