@@ -127,30 +127,41 @@ fn walk_objects(buf: &[u8], depth: u8, visit: &mut impl FnMut(&[u8], &[u8])) {
     }
     let mut p = 0usize;
     for _ in 0..4096 {
-        if p + 24 > buf.len() {
+        let Some(next) = walk_object(buf, p, depth, &mut *visit) else {
             break;
-        }
-        let size = match le64(buf, p + 16) {
-            Some(s) => s as usize,
-            None => break,
         };
-        let obj_end = match p.checked_add(size) {
-            Some(e) if size >= 24 && e <= buf.len() => e,
-            _ => break,
-        };
-        let guid = &buf[p..p + 16];
-        let payload = &buf[p + 24..obj_end];
-        if guid == ASF_HDR_EXT_GUID {
-            // Header Extension Object payload: reserved GUID(16) + reserved u16(2) +
-            // data-size u32(4), then the nested objects. Recurse into them.
-            if let Some(nested) = payload.get(22..) {
-                walk_objects(nested, depth + 1, visit);
-            }
-        } else {
-            visit(guid, payload);
-        }
-        p = obj_end;
+        p = next;
     }
+}
+
+/// Decode the one object at offset `p`, visiting it — or descending into a Header
+/// Extension Object. `Some(obj_end)` is the next offset; `None` stops the walk.
+fn walk_object(
+    buf: &[u8],
+    p: usize,
+    depth: u8,
+    visit: &mut impl FnMut(&[u8], &[u8]),
+) -> Option<usize> {
+    if p + 24 > buf.len() {
+        return None;
+    }
+    let size = le64(buf, p + 16)? as usize;
+    let obj_end = match p.checked_add(size) {
+        Some(e) if size >= 24 && e <= buf.len() => e,
+        _ => return None,
+    };
+    let guid = &buf[p..p + 16];
+    let payload = &buf[p + 24..obj_end];
+    if guid == ASF_HDR_EXT_GUID {
+        // Header Extension Object payload: reserved GUID(16) + reserved u16(2) +
+        // data-size u32(4), then the nested objects. Recurse into them.
+        if let Some(nested) = payload.get(22..) {
+            walk_objects(nested, depth + 1, &mut *visit);
+        }
+    } else {
+        visit(guid, payload);
+    }
+    Some(obj_end)
 }
 
 /// Collect every `WM/Picture` (byte-array) attribute from an Extended Content
@@ -222,35 +233,43 @@ fn walk_attrs<'b>(
 /// `name-len(u16), name, value-type(u16), value-len(u16), value`. Yields
 /// `(name, value-type, value)` for each. Stops at the first malformed entry.
 fn ecd_attrs(body: &[u8], visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
-    walk_attrs(body, visit, |body, p| {
-        let name_len = le16(body, p)? as usize;
-        let ns = p.checked_add(2)?;
-        let ne = ns.checked_add(name_len)?;
-        let name = body.get(ns..ne)?;
-        let vtype = le16(body, ne)?;
-        let vlen = le16(body, ne.checked_add(2)?)? as usize;
-        let vs = ne.checked_add(4)?;
-        let ve = vs.checked_add(vlen)?;
-        let val = body.get(vs..ve)?;
-        Some((ve, name, vtype, val))
-    })
+    walk_attrs(body, visit, ecd_record)
+}
+
+/// Decode one Extended Content Description descriptor at `p` into
+/// `(next-offset, name, value-type, value)`; `None` on a malformed entry.
+fn ecd_record(body: &[u8], p: usize) -> Option<(usize, &[u8], u16, &[u8])> {
+    let name_len = le16(body, p)? as usize;
+    let ns = p.checked_add(2)?;
+    let ne = ns.checked_add(name_len)?;
+    let name = body.get(ns..ne)?;
+    let vtype = le16(body, ne)?;
+    let vlen = le16(body, ne.checked_add(2)?)? as usize;
+    let vs = ne.checked_add(4)?;
+    let ve = vs.checked_add(vlen)?;
+    let val = body.get(vs..ve)?;
+    Some((ve, name, vtype, val))
 }
 
 /// Metadata / Metadata Library Object body: `count(u16)` then records of `lang(u16),
 /// stream(u16), name-len(u16), data-type(u16), data-len(u32), name, data`. Yields
 /// `(name, data-type, data)` for each (full-size album art + extended tags live here).
 fn mdlib_attrs(body: &[u8], visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> {
-    walk_attrs(body, visit, |body, p| {
-        let name_len = le16(body, p.checked_add(4)?)? as usize;
-        let dtype = le16(body, p.checked_add(6)?)?;
-        let data_len = le32(body, p.checked_add(8)?)? as usize;
-        let ns = p.checked_add(12)?;
-        let ne = ns.checked_add(name_len)?;
-        let name = body.get(ns..ne)?;
-        let de = ne.checked_add(data_len)?;
-        let data = body.get(ne..de)?;
-        Some((de, name, dtype, data))
-    })
+    walk_attrs(body, visit, mdlib_record)
+}
+
+/// Decode one Metadata / Metadata Library record at `p` into
+/// `(next-offset, name, data-type, data)`; `None` on a malformed record.
+fn mdlib_record(body: &[u8], p: usize) -> Option<(usize, &[u8], u16, &[u8])> {
+    let name_len = le16(body, p.checked_add(4)?)? as usize;
+    let dtype = le16(body, p.checked_add(6)?)?;
+    let data_len = le32(body, p.checked_add(8)?)? as usize;
+    let ns = p.checked_add(12)?;
+    let ne = ns.checked_add(name_len)?;
+    let name = body.get(ns..ne)?;
+    let de = ne.checked_add(data_len)?;
+    let data = body.get(ne..de)?;
+    Some((de, name, dtype, data))
 }
 
 /// Content Description Object: `title-len, author-len, copyright-len, description-len,

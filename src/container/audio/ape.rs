@@ -13,26 +13,33 @@ pub(super) fn apev2_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     let len = r.seek(SeekFrom::End(0)).ok()?;
     // Footer is the last 32 bytes — or 32 before an ID3v1 ("TAG", 128 bytes).
     for back in [32u64, 160u64] {
-        if len < back {
-            continue;
+        if let Some(img) = apev2_cover_from_footer(r, len, back)? {
+            return Some(img);
         }
-        r.seek(SeekFrom::Start(len - back)).ok()?;
-        let mut footer = [0u8; 32];
-        if r.read_exact(&mut footer).is_err() || &footer[0..8] != b"APETAGEX" {
-            continue;
-        }
-        let tag_size = le32(&footer, 12)? as u64; // items + this 32-byte footer
-        let count = le32(&footer, 16)? as usize;
-        if !(32..=MAX_APE_TAG).contains(&tag_size) {
-            continue;
-        }
-        let items_start = (len - back).checked_sub(tag_size - 32)?;
-        r.seek(SeekFrom::Start(items_start)).ok()?;
-        let mut buf = vec![0u8; (tag_size - 32) as usize];
-        r.read_exact(&mut buf).ok()?;
-        return parse_apev2_cover(&buf, count);
     }
     None
+}
+
+/// Try the APEv2 footer `back` bytes before EOF: `Some(img)` on a usable cover, `Some(None)` when this offset has no APEv2 footer (caller tries the next one), `None` to abandon the search.
+fn apev2_cover_from_footer<R: Read + Seek>(r: &mut R, len: u64, back: u64) -> Option<Option<Vec<u8>>> {
+    if len < back {
+        return Some(None);
+    }
+    r.seek(SeekFrom::Start(len - back)).ok()?;
+    let mut footer = [0u8; 32];
+    if r.read_exact(&mut footer).is_err() || &footer[0..8] != b"APETAGEX" {
+        return Some(None);
+    }
+    let tag_size = le32(&footer, 12)? as u64; // items + this 32-byte footer
+    let count = le32(&footer, 16)? as usize;
+    if !(32..=MAX_APE_TAG).contains(&tag_size) {
+        return Some(None);
+    }
+    let items_start = (len - back).checked_sub(tag_size - 32)?;
+    r.seek(SeekFrom::Start(items_start)).ok()?;
+    let mut buf = vec![0u8; (tag_size - 32) as usize];
+    r.read_exact(&mut buf).ok()?;
+    parse_apev2_cover(&buf, count).map(Some)
 }
 
 /// Read one `size(4) flags(4) key\0 value[size]` APEv2 item starting at `p`. Returns the item's

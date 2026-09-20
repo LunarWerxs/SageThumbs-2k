@@ -51,27 +51,45 @@ fn id3v2_front_cover(body: &[u8], major: u8) -> Option<Vec<u8>> {
     // keeps the earlier frame exactly as the old first-wins behaviour did.
     let mut best: Option<(u8, Vec<u8>)> = None;
     while pos + 10 <= body.len() {
-        let id = &body[pos..pos + 4];
-        if id == [0, 0, 0, 0] {
-            break; // padding region — no more frames
+        match scan_frame(body, pos, major, &mut best) {
+            // Malformed frame-size field: abort with no cover, exactly as the old `?`s did.
+            None => return None,
+            // Padding or an over-long frame: stop, keeping the best found so far.
+            Some(None) => break,
+            Some(Some(next)) => pos = next,
         }
-        let size = id3_frame_size(&body[pos + 4..pos + 8], major)? as usize;
-        let start = pos + 10;
-        let end = start.checked_add(size)?;
-        if end > body.len() {
-            break;
-        }
-        if id == b"APIC" {
-            if let Some((ptype, img)) = parse_apic(&body[start..end]) {
-                let rank = super::id3_pic_rank(ptype);
-                if beats_best(best.as_ref(), rank, img.len()) {
-                    best = Some((rank, img));
-                }
-            }
-        }
-        pos = end;
     }
     best.map(|(_, img)| img)
+}
+
+/// Read the one ID3v2 frame at `pos`, updating `best` when it holds a better `APIC` cover.
+/// Returns `Some(next_pos)` to keep walking, `Some(None)` on padding or an over-long frame,
+/// and `None` when the frame-size field is malformed (the caller then aborts, as `?` did).
+fn scan_frame(
+    body: &[u8],
+    pos: usize,
+    major: u8,
+    best: &mut Option<(u8, Vec<u8>)>,
+) -> Option<Option<usize>> {
+    let id = &body[pos..pos + 4];
+    if id == [0, 0, 0, 0] {
+        return Some(None); // padding region — no more frames
+    }
+    let size = id3_frame_size(&body[pos + 4..pos + 8], major)? as usize;
+    let start = pos + 10;
+    let end = start.checked_add(size)?;
+    if end > body.len() {
+        return Some(None);
+    }
+    if id == b"APIC" {
+        if let Some((ptype, img)) = parse_apic(&body[start..end]) {
+            let rank = super::id3_pic_rank(ptype);
+            if beats_best(best.as_ref(), rank, img.len()) {
+                *best = Some((rank, img));
+            }
+        }
+    }
+    Some(Some(end))
 }
 
 /// Does a picture of `rank` and `len` bytes replace the best so far? Lower rank always wins;
@@ -88,15 +106,20 @@ fn beats_best(best: Option<&(u8, Vec<u8>)>, rank: u8, len: usize) -> bool {
 /// the trailing bytes are a size-bounded raster we can decode.
 fn parse_apic(d: &[u8]) -> Option<(u8, Vec<u8>)> {
     let enc = *d.first()?;
-    let mut p = 1usize;
-    while *d.get(p)? != 0 {
-        p += 1; // MIME type (latin1, NUL-terminated)
-    }
-    p += 1;
+    let p = skip_nul(d, 1, false)?; // MIME type (latin1, NUL-terminated)
     let ptype = *d.get(p)?;
-    p += 1;
+    let p = p + 1;
     // Description, NUL-terminated. UTF-16 (enc 1/2) uses a 2-byte terminator.
-    if enc == 1 || enc == 2 {
+    let p = skip_nul(d, p, enc == 1 || enc == 2)?;
+    let img = d.get(p..)?;
+    (crate::container::looks_like_raster(img) && img.len() as u64 <= crate::container::MAX_COVER)
+        .then(|| (ptype, img.to_vec()))
+}
+
+/// Advance `p` past the NUL-terminated string starting at `p` in `d`, returning the index
+/// just after its terminator (a 2-byte terminator when `wide`, for UTF-16 text).
+fn skip_nul(d: &[u8], mut p: usize, wide: bool) -> Option<usize> {
+    if wide {
         loop {
             let pair = d.get(p..p + 2)?;
             p += 2;
@@ -110,9 +133,7 @@ fn parse_apic(d: &[u8]) -> Option<(u8, Vec<u8>)> {
         }
         p += 1;
     }
-    let img = d.get(p..)?;
-    (crate::container::looks_like_raster(img) && img.len() as u64 <= crate::container::MAX_COVER)
-        .then(|| (ptype, img.to_vec()))
+    Some(p)
 }
 
 /// An ID3v2 frame's size field: synchsafe in ID3v2.4, plain big-endian in 2.3 (and 2.2 on
