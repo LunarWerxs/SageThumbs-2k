@@ -220,17 +220,21 @@ pub(super) fn tiff_pad_to_even(out: &mut Vec<u8>) -> usize {
     out.len()
 }
 
-pub(super) fn tiff_put16(out: &mut [u8], at: usize, le: bool, v: u16) -> Option<()> {
-    let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
-    out.get_mut(at..at + 2)?.copy_from_slice(&b);
-    Some(())
+/// Define a function writing an integer's fixed-width bytes at `at` in the file's byte
+/// order, or `None` when `out` has no room for them.
+macro_rules! tiff_put_int {
+    ($name:ident, $t:ty, $n:expr) => {
+        pub(super) fn $name(out: &mut [u8], at: usize, le: bool, v: $t) -> Option<()> {
+            let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
+            out.get_mut(at..at + $n)?.copy_from_slice(&b);
+            Some(())
+        }
+    };
 }
 
-pub(super) fn tiff_put32(out: &mut [u8], at: usize, le: bool, v: u32) -> Option<()> {
-    let b = if le { v.to_le_bytes() } else { v.to_be_bytes() };
-    out.get_mut(at..at + 4)?.copy_from_slice(&b);
-    Some(())
-}
+tiff_put_int!(tiff_put16, u16, 2);
+
+tiff_put_int!(tiff_put32, u32, 4);
 
 /// Wrap a raw IPTC-IIM record as the Photoshop image-resource block a JPEG APP13
 /// segment carries: the `Photoshop 3.0` signature, one `8BIM` resource of id 0x0404
