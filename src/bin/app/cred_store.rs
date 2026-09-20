@@ -148,30 +148,38 @@ fn portable_key(suffix: &str) -> String {
     format!("{PORTABLE_PREFIX}{suffix}")
 }
 
-/// DPAPI-encrypt and persist the refresh token. Best-effort → returns whether it stuck.
-pub(crate) fn save_refresh_token(token: &str) -> bool {
-    let Some(enc) = (unsafe { dpapi(token.as_bytes(), true) }) else {
+/// DPAPI-encrypt `plain`, base64 it and persist it under `key_name` in whichever backend
+/// this run uses (portable ini or the `OAuth` subkey). Best-effort → returns whether it
+/// stuck. Shared by every `save_*` in this module.
+fn save_secret(plain: &str, key_name: &str) -> bool {
+    let Some(enc) = (unsafe { dpapi(plain.as_bytes(), true) }) else {
         return false;
     };
     let b64 = base64::engine::general_purpose::STANDARD.encode(enc);
     if settings::portable() {
-        return settings::set_string(&portable_key(V_REFRESH), &b64).is_ok();
+        return settings::set_string(&portable_key(key_name), &b64).is_ok();
     }
     CURRENT_USER
         .create(oauth_key())
-        .and_then(|k| k.set_string(V_REFRESH, &b64))
+        .and_then(|k| k.set_string(key_name, &b64))
         .is_ok()
 }
 
-/// Load + DPAPI-decrypt the refresh token, or `None` if absent/undecryptable (e.g. the
-/// blob was copied from another machine/user — treated as "not signed in").
-pub(crate) fn load_refresh_token() -> Option<String> {
+/// DPAPI-encrypt and persist the refresh token. Best-effort → returns whether it stuck.
+pub(crate) fn save_refresh_token(token: &str) -> bool {
+    save_secret(token, V_REFRESH)
+}
+
+/// Read the base64 blob stored under `key_name`, decode it and DPAPI-decrypt it, or `None`
+/// if it is missing or undecryptable (a blob lifted from another machine/user reads as
+/// `None`). Shared by every `load_*` in this module.
+fn load_secret(key_name: &str) -> Option<String> {
     let b64 = if settings::portable() {
-        settings::get_string_opt(&portable_key(V_REFRESH))?
+        settings::get_string_opt(&portable_key(key_name))?
     } else {
         CURRENT_USER
             .open(oauth_key())
-            .and_then(|k| k.get_string(V_REFRESH))
+            .and_then(|k| k.get_string(key_name))
             .ok()?
     };
     let enc = base64::engine::general_purpose::STANDARD
@@ -179,6 +187,12 @@ pub(crate) fn load_refresh_token() -> Option<String> {
         .ok()?;
     let plain = unsafe { dpapi(&enc, false) }?;
     String::from_utf8(plain).ok()
+}
+
+/// Load + DPAPI-decrypt the refresh token, or `None` if absent/undecryptable (e.g. the
+/// blob was copied from another machine/user — treated as "not signed in").
+pub(crate) fn load_refresh_token() -> Option<String> {
+    load_secret(V_REFRESH)
 }
 
 /// DPAPI-encrypt and persist the offline licence certificate. Best-effort → returns
@@ -190,17 +204,7 @@ pub(crate) fn load_refresh_token() -> Option<String> {
 /// gets the same treatment anyway because it is the artifact a licence rests on, and
 /// DPAPI is already right here — see `licence_cert` for what it is and why it exists.
 pub(crate) fn save_licence_cert(cert: &str) -> bool {
-    let Some(enc) = (unsafe { dpapi(cert.as_bytes(), true) }) else {
-        return false;
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(enc);
-    if settings::portable() {
-        return settings::set_string(&portable_key(V_LICENCE_CERT), &b64).is_ok();
-    }
-    CURRENT_USER
-        .create(oauth_key())
-        .and_then(|k| k.set_string(V_LICENCE_CERT, &b64))
-        .is_ok()
+    save_secret(cert, V_LICENCE_CERT)
 }
 
 /// Load + DPAPI-decrypt the offline licence certificate, or `None` if absent or
@@ -208,19 +212,7 @@ pub(crate) fn save_licence_cert(cert: &str) -> bool {
 /// case it must not license). `None` is never "unlicensed" to the caller - it means "no
 /// certificate", and the relay breadcrumb decides on its own.
 pub(crate) fn load_licence_cert() -> Option<String> {
-    let b64 = if settings::portable() {
-        settings::get_string_opt(&portable_key(V_LICENCE_CERT))?
-    } else {
-        CURRENT_USER
-            .open(oauth_key())
-            .and_then(|k| k.get_string(V_LICENCE_CERT))
-            .ok()?
-    };
-    let enc = base64::engine::general_purpose::STANDARD
-        .decode(b64.trim())
-        .ok()?;
-    let plain = unsafe { dpapi(&enc, false) }?;
-    String::from_utf8(plain).ok()
+    load_secret(V_LICENCE_CERT)
 }
 
 /// DPAPI-encrypt and persist the redeemed licence key. Best-effort → returns whether it
@@ -229,36 +221,14 @@ pub(crate) fn load_licence_cert() -> Option<String> {
 ///
 /// See [`V_LICENCE_KEY`] for why this is the ONLY place a full key is ever written.
 pub(crate) fn save_licence_key(key: &str) -> bool {
-    let Some(enc) = (unsafe { dpapi(key.as_bytes(), true) }) else {
-        return false;
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(enc);
-    if settings::portable() {
-        return settings::set_string(&portable_key(V_LICENCE_KEY), &b64).is_ok();
-    }
-    CURRENT_USER
-        .create(oauth_key())
-        .and_then(|k| k.set_string(V_LICENCE_KEY, &b64))
-        .is_ok()
+    save_secret(key, V_LICENCE_KEY)
 }
 
 /// Load + DPAPI-decrypt the redeemed licence key, or `None` if absent or undecryptable
 /// (another machine, another user). `None` only ever means "we cannot pre-fill the renewal
 /// link", never anything about whether this machine is licensed.
 pub(crate) fn load_licence_key() -> Option<String> {
-    let b64 = if settings::portable() {
-        settings::get_string_opt(&portable_key(V_LICENCE_KEY))?
-    } else {
-        CURRENT_USER
-            .open(oauth_key())
-            .and_then(|k| k.get_string(V_LICENCE_KEY))
-            .ok()?
-    };
-    let enc = base64::engine::general_purpose::STANDARD
-        .decode(b64.trim())
-        .ok()?;
-    let plain = unsafe { dpapi(&enc, false) }?;
-    String::from_utf8(plain).ok()
+    load_secret(V_LICENCE_KEY)
 }
 
 /// Persist the signed-in identity for the UI (plain, non-secret).
