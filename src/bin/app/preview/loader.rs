@@ -631,6 +631,14 @@ pub(super) unsafe fn apply_resolved(hwnd: HWND, st: &ViewerState, resolved: Reso
     super::find::refresh(hwnd); // the new document exists now, so an open search re-runs on IT
 }
 
+/// Off-screen so no flash; realized (SW_SHOWNOACTIVATE) so `PrintWindow` renders it.
+unsafe fn show_offscreen(hwnd: HWND, st: &ViewerState) {
+    let (cw, ch) = client_size(hwnd);
+    place(hwnd, cw, ch, Some((-32000, -32000)));
+    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    st.shown.set(true);
+}
+
 /// Synchronous load for the headless shot: decode on this thread, size, place off-screen,
 /// and show (invisible) so `PrintWindow` can capture it.
 pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::ShotOpts) {
@@ -659,11 +667,7 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
     if let Some(h) = opts.hot {
         st.hot.set(Some(h));
     }
-    let (cw, ch) = client_size(hwnd);
-    // Off-screen so no flash; realized (SW_SHOWNOACTIVATE) so PrintWindow renders it.
-    place(hwnd, cw, ch, Some((-32000, -32000)));
-    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    st.shown.set(true);
+    show_offscreen(hwnd, st);
 }
 
 /// `load_sync`'s `--play` branch: a live video engine so the transport strip renders (the video
@@ -672,10 +676,7 @@ pub(super) unsafe fn load_sync(hwnd: HWND, path: Option<&str>, opts: &super::Sho
 /// to `load_sync`'s common tail) because the video child needs a parented, realized window.
 unsafe fn load_sync_play_video(hwnd: HWND, st: &ViewerState, path: &str, opts: &super::ShotOpts) {
     st.kind.set(ContentKind::Video);
-    let (cw, ch) = client_size(hwnd);
-    place(hwnd, cw, ch, Some((-32000, -32000)));
-    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    st.shown.set(true);
+    show_offscreen(hwnd, st);
     if let Some(p) = super::video::create(
         hwnd,
         hwnd,
