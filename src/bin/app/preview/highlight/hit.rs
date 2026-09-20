@@ -151,10 +151,7 @@ pub(super) fn nearest_char_boundary(
     let mut d0 = 0usize;
     while d0 < w16.len() {
         let e = raw_end[d0];
-        let mut d1 = d0;
-        while d1 + 1 < w16.len() && raw_end[d1 + 1] == e {
-            d1 += 1; // group the units of one raw char (tab's 4 spaces, surrogate pair)
-        }
+        let d1 = char_group_end(w16.len(), raw_end, d0);
         let right = dxs[d1];
         if right >= dx {
             let start = if d0 == 0 { 0 } else { raw_end[d0 - 1] };
@@ -168,6 +165,17 @@ pub(super) fn nearest_char_boundary(
     } else {
         line.len()
     }
+}
+
+/// End display index (inclusive) of the run of display units sharing `raw_end[d0]` — one raw
+/// char's four tab spaces or surrogate pair; `d0` itself when it stands alone.
+fn char_group_end(w16_len: usize, raw_end: &[usize], d0: usize) -> usize {
+    let e = raw_end[d0];
+    let mut d1 = d0;
+    while d1 + 1 < w16_len && raw_end[d1 + 1] == e {
+        d1 += 1; // group the units of one raw char (tab's 4 spaces, surrogate pair)
+    }
+    d1
 }
 
 /// The word range around byte offset `off` (double-click selection): a run of alphanumerics/`_`;

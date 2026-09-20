@@ -421,75 +421,88 @@ pub(in crate::preview) fn tokenize<'a>(
     sp: &Spec,
     in_block: &mut bool,
 ) -> Vec<(Tag, &'a str)> {
-    let b = line.as_bytes();
-    let n = b.len();
+    let n = line.len();
     let mut out: Vec<(Tag, &'a str)> = Vec::new();
     let mut i = 0usize;
     let mut seg = 0usize; // start of the pending Plain segment
 
     while i < n {
-        // carried-over block comment
-        if *in_block {
-            match continue_block_comment(line, sp, i, &mut out) {
-                Some(end) => {
-                    i = end;
-                    seg = end;
-                    *in_block = false;
-                }
-                None => {
-                    i = n;
-                    seg = n;
-                }
-            }
-            continue;
-        }
-        // line comment -> rest of line
-        if try_line_comment(line, sp, i, seg, &mut out) {
-            i = n;
-            seg = n;
-            continue;
-        }
-        // block comment open
-        match try_block_comment_open(line, sp, i, seg, &mut out) {
-            BlockOpen::Closed(end) => {
-                i = end;
-                seg = end;
-                continue;
-            }
-            BlockOpen::ToEol => {
-                i = n;
-                seg = n;
-                *in_block = true;
-                continue;
-            }
-            BlockOpen::NoMatch => {}
-        }
-        // string literal
-        if let Some(end) = try_string_literal(line, sp, i, n, seg, &mut out) {
-            i = end;
-            seg = end;
-            continue;
-        }
-        // number literal
-        if let Some(end) = try_number_literal(line, i, n, seg, &mut out) {
-            i = end;
-            seg = end;
-            continue;
-        }
-        // identifier -> keyword lookup (non-keywords stay in the plain segment)
-        if let Some((end, new_seg)) = try_identifier(line, sp, i, n, seg, &mut out) {
-            i = end;
-            seg = new_seg;
-            continue;
-        }
-        // plain char (advance by full UTF-8 char so slices never split a codepoint)
-        let ch = b[i];
-        i += if ch < 0x80 { 1 } else { utf8_len(ch) };
+        scan_token(line, sp, n, &mut i, &mut seg, in_block, &mut out);
     }
     if n > seg {
         out.push((Tag::Plain, &line[seg..n]));
     }
     out
+}
+
+/// One dispatch step of [`tokenize`]: consumes the single token at `*i` (or the plain char
+/// otherwise), advancing `*i`/`*seg` and `*in_block`; a no-op when `*i >= n`.
+fn scan_token<'a>(
+    line: &'a str,
+    sp: &Spec,
+    n: usize,
+    i: &mut usize,
+    seg: &mut usize,
+    in_block: &mut bool,
+    out: &mut Vec<(Tag, &'a str)>,
+) {
+    // carried-over block comment
+    if *in_block {
+        match continue_block_comment(line, sp, *i, out) {
+            Some(end) => {
+                *i = end;
+                *seg = end;
+                *in_block = false;
+            }
+            None => {
+                *i = n;
+                *seg = n;
+            }
+        }
+        return;
+    }
+    // line comment -> rest of line
+    if try_line_comment(line, sp, *i, *seg, out) {
+        *i = n;
+        *seg = n;
+        return;
+    }
+    // block comment open
+    match try_block_comment_open(line, sp, *i, *seg, out) {
+        BlockOpen::Closed(end) => {
+            *i = end;
+            *seg = end;
+            return;
+        }
+        BlockOpen::ToEol => {
+            *i = n;
+            *seg = n;
+            *in_block = true;
+            return;
+        }
+        BlockOpen::NoMatch => {}
+    }
+    // string literal
+    if let Some(end) = try_string_literal(line, sp, *i, n, *seg, out) {
+        *i = end;
+        *seg = end;
+        return;
+    }
+    // number literal
+    if let Some(end) = try_number_literal(line, *i, n, *seg, out) {
+        *i = end;
+        *seg = end;
+        return;
+    }
+    // identifier -> keyword lookup (non-keywords stay in the plain segment)
+    if let Some((end, new_seg)) = try_identifier(line, sp, *i, n, *seg, out) {
+        *i = end;
+        *seg = new_seg;
+        return;
+    }
+    // plain char (advance by full UTF-8 char so slices never split a codepoint)
+    let ch = line.as_bytes()[*i];
+    *i += if ch < 0x80 { 1 } else { utf8_len(ch) };
 }
 
 #[cfg(test)]
