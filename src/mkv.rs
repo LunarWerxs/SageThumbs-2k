@@ -1136,15 +1136,34 @@ mod tests {
         );
     }
 
+    /// Wrap a Segment `body` in an EBML header plus a definite-size Segment element.
+    fn segment_file(body: &[u8]) -> Vec<u8> {
+        let mut file = elem(ID_EBML, &[0u8; 4]);
+        file.extend_from_slice(&elem(ID_SEGMENT, body));
+        file
+    }
+
+    /// A Tracks element holding one video TrackEntry for `codec`, with an optional track number.
+    fn video_tracks(codec: &[u8], number: Option<u64>) -> Vec<u8> {
+        let mut entry = Vec::new();
+        if let Some(n) = number {
+            entry.extend_from_slice(&elem(ID_TRACK_NUMBER, &[n as u8]));
+        }
+        entry.extend_from_slice(&elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]));
+        entry.extend_from_slice(&elem(ID_CODEC_ID, codec));
+        elem(ID_TRACKS, &elem(ID_TRACK_ENTRY, &entry))
+    }
+
+    /// The codec ID and attached cover `file` must yield, read in that order.
+    fn assert_codec_and_cover(file: &[u8], codec: &str, cover: &[u8]) {
+        let mut cur = Cursor::new(file);
+        assert_eq!(video_codec_id(&mut cur).as_deref(), Some(codec));
+        assert_eq!(attached_cover(&mut cur).as_deref(), Some(cover));
+    }
+
     #[test]
     fn codec_id_and_attached_cover_from_synthetic_mkv() {
-        let track_entry = [
-            elem(ID_TRACK_NUMBER, &[1]),
-            elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-            elem(ID_CODEC_ID, b"V_MPEGH/ISO/HEVC"),
-        ]
-        .concat();
-        let tracks = elem(ID_TRACKS, &elem(ID_TRACK_ENTRY, &track_entry));
+        let tracks = video_tracks(b"V_MPEGH/ISO/HEVC", Some(1));
         // A font attachment FIRST — the cover must still win (fonts are the common company).
         let font = [
             elem(ID_FILE_NAME, b"subs.ttf"),
@@ -1166,18 +1185,9 @@ mod tests {
             ]
             .concat(),
         );
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, attachments].concat()));
+        let file = segment_file(&[tracks, attachments].concat());
 
-        let mut cur = Cursor::new(&file);
-        assert_eq!(
-            video_codec_id(&mut cur).as_deref(),
-            Some("V_MPEGH/ISO/HEVC")
-        );
-        assert_eq!(
-            attached_cover(&mut cur).as_deref(),
-            Some(b"JPEGDATA".as_slice())
-        );
+        assert_codec_and_cover(&file, "V_MPEGH/ISO/HEVC", b"JPEGDATA");
     }
 
     /// Issue #35's Matroska half: the H.264 profile comes out of CodecPrivate byte 1, only
@@ -1195,9 +1205,7 @@ mod tests {
                 entry.extend_from_slice(&elem(ID_CODEC_PRIVATE, p));
             }
             let tracks = elem(ID_TRACKS, &elem(ID_TRACK_ENTRY, &entry));
-            let mut file = elem(ID_EBML, &[0u8; 4]);
-            file.extend_from_slice(&elem(ID_SEGMENT, &tracks));
-            file
+            segment_file(&tracks)
         };
         let avcc_444 = [1u8, 244, 0, 31, 0xFF, 0xE0, 0x00];
         let probe = |file: Vec<u8>| h264_profile_idc(&mut Cursor::new(file));
@@ -1239,17 +1247,7 @@ mod tests {
     /// whose SeekHead is absent or doesn't list Attachments (mkvpropedit-appended covers).
     #[test]
     fn attachments_after_cues_survive_without_a_seekhead() {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_MPEGH/ISO/HEVC"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_MPEGH/ISO/HEVC", None);
         let info = elem(ID_INFO, &elem(ID_TIMECODE_SCALE, &[0x0F, 0x42, 0x40]));
         let cues = elem(ID_CUES, &[]);
         let attachments = elem(
@@ -1266,8 +1264,7 @@ mod tests {
         );
         let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
         let body = [info, tracks, cues, attachments, cluster].concat();
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let file = segment_file(&body);
 
         let mut cur = Cursor::new(&file);
         assert_eq!(
@@ -1280,17 +1277,7 @@ mod tests {
     fn attachments_behind_a_cluster_resolve_via_seekhead() {
         // Layout: SeekHead, Tracks, Cluster, Attachments — the front walk stops at the
         // Cluster, so only the SeekHead can reveal where the Attachments sit.
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_AV1"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_AV1", None);
         let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
         let attachments = elem(
             ID_ATTACHMENTS,
@@ -1321,33 +1308,16 @@ mod tests {
         };
         let attach_pos = (seekhead_for(0).len() + tracks.len() + cluster.len()) as u16;
         let body = [seekhead_for(attach_pos), tracks, cluster, attachments].concat();
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let file = segment_file(&body);
 
-        let mut cur = Cursor::new(&file);
-        assert_eq!(video_codec_id(&mut cur).as_deref(), Some("V_AV1"));
-        assert_eq!(
-            attached_cover(&mut cur).as_deref(),
-            Some(b"PNGDATA".as_slice())
-        );
+        assert_codec_and_cover(&file, "V_AV1", b"PNGDATA");
     }
 
     // --- vp9_keyframe: the raw-block extraction for the out-of-process VP9 decoder -------
 
     /// A minimal VP9 Matroska: Tracks (track 1 = V_VP9 video) + one Cluster of blocks.
     fn vp9_mkv(cluster_children: &[Vec<u8>]) -> Vec<u8> {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_NUMBER, &[1]),
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_VP9"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_VP9", Some(1));
         let cluster = elem(
             ID_CLUSTER,
             &[
@@ -1356,9 +1326,7 @@ mod tests {
             ]
             .concat(),
         );
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, cluster].concat()));
-        file
+        segment_file(&[tracks, cluster].concat())
     }
 
     /// A SimpleBlock for track 1: flags byte as given, then the frame bytes.
@@ -1447,18 +1415,7 @@ mod tests {
     /// being declined outright.
     #[test]
     fn vp9_keyframe_resolves_an_unknown_size_last_cluster() {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_NUMBER, &[1]),
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_VP9"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_VP9", Some(1));
         let cluster_body = [
             elem(ID_CLUSTER_TIMECODE, &[0]),
             simple_block(0x80, &[0x86, 0x00, 0x42, 0x11, 0x22]),
@@ -1469,8 +1426,7 @@ mod tests {
         let mut cluster = vec![0x1F, 0x43, 0xB6, 0x75, 0xFF];
         cluster.extend_from_slice(&cluster_body);
 
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &[tracks, cluster].concat()));
+        let file = segment_file(&[tracks, cluster].concat());
 
         let frame = vp9_keyframe(&mut Cursor::new(&file), 0.30)
             .expect("an unknown-size last Cluster must still be resolved and read");
@@ -1505,24 +1461,50 @@ mod tests {
         assert_eq!(keyframe_mini_mkv(&mut Cursor::new(&file), 0.30), None);
     }
 
+    /// A SeekHead with a single Seek: the Cues element at Segment-relative byte `pos`.
+    fn seekhead_to_cues(pos: u16) -> Vec<u8> {
+        elem(
+            ID_SEEKHEAD,
+            &elem(
+                ID_SEEK,
+                &[
+                    elem(ID_SEEK_ID, &[0x1C, 0x53, 0xBB, 0x6B]), // Cues
+                    elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
+                ]
+                .concat(),
+            ),
+        )
+    }
+
+    /// A Cues element with one CuePoint (time 0) pointing at Segment-relative byte `pos`.
+    fn cues_at(pos: u32) -> Vec<u8> {
+        elem(
+            ID_CUES,
+            &elem(
+                ID_CUE_POINT,
+                &[
+                    elem(ID_CUE_TIME, &[0]),
+                    elem(
+                        ID_CUE_TRACK_POSITIONS,
+                        &[
+                            elem(ID_CUE_TRACK, &[1]),
+                            elem(ID_CUE_CLUSTER_POSITION, &pos.to_be_bytes()),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        )
+    }
+
     /// Build a Segment: SeekHead (pointing at Cues), Info, Tracks, a "good" first Cluster
     /// (a real video keyframe), a "bad" second Cluster (no keyframe — an inter block), then
     /// Cues whose one entry points at the BAD cluster. `good_cluster_has_keyframe` swaps the
     /// good cluster's block for another keyframe-less one, for the decline-path test.
     /// Returns `(file_bytes, bad_cluster_segment_relative_position)`.
     fn mini_mkv_two_clusters(good_cluster_has_keyframe: bool) -> (Vec<u8>, u32) {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_NUMBER, &[1]),
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_VP9"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_VP9", Some(1));
         let info = elem(ID_INFO, &[]);
         let good_block = if good_cluster_has_keyframe {
             simple_block(0x80, &[0x86, 0x00, 0x11, 0x22])
@@ -1541,42 +1523,12 @@ mod tests {
             ]
             .concat(),
         );
-        let seekhead_for = |pos: u16| {
-            elem(
-                ID_SEEKHEAD,
-                &elem(
-                    ID_SEEK,
-                    &[
-                        elem(ID_SEEK_ID, &[0x1C, 0x53, 0xBB, 0x6B]), // Cues
-                        elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
-                    ]
-                    .concat(),
-                ),
-            )
-        };
         let bad_rel =
-            (seekhead_for(0).len() + info.len() + tracks.len() + cluster_good.len()) as u32;
+            (seekhead_to_cues(0).len() + info.len() + tracks.len() + cluster_good.len()) as u32;
         let cues_rel = bad_rel + cluster_bad.len() as u32;
-        let cues = elem(
-            ID_CUES,
-            &elem(
-                ID_CUE_POINT,
-                &[
-                    elem(ID_CUE_TIME, &[0]),
-                    elem(
-                        ID_CUE_TRACK_POSITIONS,
-                        &[
-                            elem(ID_CUE_TRACK, &[1]),
-                            elem(ID_CUE_CLUSTER_POSITION, &bad_rel.to_be_bytes()),
-                        ]
-                        .concat(),
-                    ),
-                ]
-                .concat(),
-            ),
-        );
+        let cues = cues_at(bad_rel);
         let body = [
-            seekhead_for(cues_rel as u16),
+            seekhead_to_cues(cues_rel as u16),
             info,
             tracks,
             cluster_good,
@@ -1584,8 +1536,7 @@ mod tests {
             cues,
         ]
         .concat();
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let file = segment_file(&body);
         (file, bad_rel)
     }
 
@@ -1622,42 +1573,18 @@ mod tests {
             ]
             .concat(),
         );
-        let seekhead_for = |pos: u16| {
-            elem(
-                ID_SEEKHEAD,
-                &elem(
-                    ID_SEEK,
-                    &[
-                        elem(ID_SEEK_ID, &[0x1C, 0x53, 0xBB, 0x6B]), // Cues
-                        elem(ID_SEEK_POSITION, &pos.to_be_bytes()),
-                    ]
-                    .concat(),
-                ),
-            )
-        };
-        let cluster_rel = (seekhead_for(0).len() + info.len() + tracks.len()) as u32;
+        let cluster_rel = (seekhead_to_cues(0).len() + info.len() + tracks.len()) as u32;
         let cues_rel = cluster_rel + cluster.len() as u32;
-        let cues = elem(
-            ID_CUES,
-            &elem(
-                ID_CUE_POINT,
-                &[
-                    elem(ID_CUE_TIME, &[0]),
-                    elem(
-                        ID_CUE_TRACK_POSITIONS,
-                        &[
-                            elem(ID_CUE_TRACK, &[1]),
-                            elem(ID_CUE_CLUSTER_POSITION, &cluster_rel.to_be_bytes()),
-                        ]
-                        .concat(),
-                    ),
-                ]
-                .concat(),
-            ),
-        );
-        let body = [seekhead_for(cues_rel as u16), info, tracks, cluster, cues].concat();
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let cues = cues_at(cluster_rel);
+        let body = [
+            seekhead_to_cues(cues_rel as u16),
+            info,
+            tracks,
+            cluster,
+            cues,
+        ]
+        .concat();
+        let file = segment_file(&body);
 
         let (_mini, rotation) = keyframe_mini_mkv(&mut Cursor::new(&file), 0.30)
             .expect("synthetic Cues-indexed mkv should yield a mini-mkv");
@@ -1706,25 +1633,14 @@ mod tests {
     /// walk there and keep what was already resolved.
     #[test]
     fn malformed_element_after_tracks_does_not_abort_the_whole_walk() {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_AV1"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_AV1", None);
         let mut body = tracks;
         // Two bytes so the loop's `p + 2 > seg_end` pre-check doesn't just break on its own
         // before header_at ever runs — this must exercise header_at returning None, not the
         // ordinary "ran out of room" exit.
         body.push(0x00);
         body.push(0x00);
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let file = segment_file(&body);
 
         let mut cur = Cursor::new(&file);
         assert_eq!(
@@ -1740,17 +1656,7 @@ mod tests {
     /// front-of-segment data the same walk already found directly.
     #[test]
     fn seekhead_position_overflow_is_dropped_not_wrapped() {
-        let tracks = elem(
-            ID_TRACKS,
-            &elem(
-                ID_TRACK_ENTRY,
-                &[
-                    elem(ID_TRACK_TYPE, &[TRACK_TYPE_VIDEO as u8]),
-                    elem(ID_CODEC_ID, b"V_AV1"),
-                ]
-                .concat(),
-            ),
-        );
+        let tracks = video_tracks(b"V_AV1", None);
         let cluster = elem(ID_CLUSTER, &elem(ID_CLUSTER_TIMECODE, &[0]));
         let huge_pos = u64::MAX - 1;
         let seekhead = elem(
@@ -1765,8 +1671,7 @@ mod tests {
             ),
         );
         let body = [seekhead, tracks, cluster].concat();
-        let mut file = elem(ID_EBML, &[0u8; 4]);
-        file.extend_from_slice(&elem(ID_SEGMENT, &body));
+        let file = segment_file(&body);
 
         let mut cur = Cursor::new(&file);
         // Must not panic, and must not resolve Attachments to a bogus wrapped offset.
