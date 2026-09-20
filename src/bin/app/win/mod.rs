@@ -1125,21 +1125,27 @@ pub(crate) unsafe fn pump_plain() {
     }
 }
 
+/// Pull one message for `hwnd`'s dialog pump off the queue and dispatch it, translating first
+/// unless `IsDialogMessageW` consumed it. `false` means `GetMessageW` reported WM_QUIT (0) or a
+/// destroyed queue (-1), which is the caller's cue to stop pumping.
+unsafe fn pump_one(hwnd: HWND, msg: &mut MSG) -> bool {
+    let r = GetMessageW(msg, None, 0, 0).0;
+    if r == 0 || r == -1 {
+        return false;
+    }
+    if !IsDialogMessageW(hwnd, msg).as_bool() {
+        let _ = TranslateMessage(msg);
+        DispatchMessageW(msg);
+    }
+    true
+}
+
 /// Standard top-level pump: dialog-key translation + dispatch until WM_QUIT. Branches on
 /// `GetMessageW`'s raw value: `as_bool()` (`!= 0`) would treat the -1 of a destroyed queue
 /// as "keep going" and then spin on a MSG it never populated.
 pub(crate) unsafe fn pump_until_quit(hwnd: HWND) {
     let mut msg = MSG::default();
-    loop {
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
-            break;
-        }
-        if !IsDialogMessageW(hwnd, &msg).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    while pump_one(hwnd, &mut msg) {}
 }
 
 /// Modal pump: runs until `hwnd` destroys itself (the popup uses no
@@ -1147,13 +1153,8 @@ pub(crate) unsafe fn pump_until_quit(hwnd: HWND) {
 unsafe fn pump_until_closed(hwnd: HWND) {
     let mut msg = MSG::default();
     while IsWindow(Some(hwnd)).as_bool() {
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
+        if !pump_one(hwnd, &mut msg) {
             break;
-        }
-        if !IsDialogMessageW(hwnd, &msg).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
         }
     }
 }
