@@ -11,7 +11,7 @@ warm clippy run. This script runs the whole round trip itself:
   gate.py commit <plan.json>   one commit per hub: [[hub, child-or-dir, ...], ...] with the
                             standard "<hub>: <what> (N lines -> M)" message ("what" = plan[hub]
                             when the plan is {hub: [what, paths...]}).
-  gate.py consistency       CI's ten consistency scripts, the way CI runs them (a non-zero
+  gate.py consistency       CI's eleven consistency scripts, the way CI runs them (a non-zero
                             LASTEXITCODE fails the step even when every assertion passed).
   gate.py tests [filter]    the workspace suite, or only the tests matching `filter` (the
                             tests for what you touched - the pre-push preflight runs the whole

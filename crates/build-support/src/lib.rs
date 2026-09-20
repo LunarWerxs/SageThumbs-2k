@@ -115,7 +115,8 @@ impl std::fmt::Display for RcFailure {
 
 /// Write `rc_text` to `<out_dir>/<stem>.rc` and compile it to something the linker takes:
 /// on ARM64 an SDK `rc.exe` `.res` (GNU windres on an x64 host emits x64 COFF even for ARM
-/// targets), otherwise a windres COFF object. `Ok` is the path for `cargo:rustc-link-arg`.
+/// targets), otherwise a windres COFF object, or the SDK `.res` when no windres runs (see the
+/// note at the end). `Ok` is the path for `cargo:rustc-link-arg`.
 /// `Windres` carries every reason it did not happen, one per line, because "windres
 /// unavailable" as the answer to all of them once sent a session an hour down the wrong road
 /// when windres was installed, on PATH and ran fine by hand. The DLL build scripts each

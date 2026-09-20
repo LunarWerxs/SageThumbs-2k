@@ -478,8 +478,8 @@ mod tests {
         assert_eq!(path.as_deref(), Some("C:\\pic.jpg"));
     }
 
-    /// `cbData == 0` is a command carrying no path (CMD_CLOSE); reading it as an empty string
-    /// would make a close look like a switch to a blank document.
+    /// `cbData == 0` is a command carrying no path (CMD_CLOSE): the parser must report `None`,
+    /// not an empty string, so a command's "no path" stays distinguishable from a blank one.
     #[test]
     fn parse_command_treats_an_empty_payload_as_no_path() {
         let cds = COPYDATASTRUCT {
