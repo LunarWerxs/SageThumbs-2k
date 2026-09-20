@@ -11,6 +11,12 @@ pub(crate) fn ext_needs_magick(ext: &str) -> bool {
     decode::magick_output_supported(ext)
 }
 
+/// Map an intermediate-PNG encode failure to `E_FAIL` with context: the closing error
+/// for `encode_via_magick_carrying`, whose intermediate PNG magick decodes first.
+fn png_encode_error(e: image::ImageError) -> Error {
+    Error::new(E_FAIL, format!("encode intermediate PNG: {e}"))
+}
+
 /// Encode `img` to `out` via ImageMagick, carrying `carried`'s EXIF/XMP/ICC onto
 /// the intermediate PNG handed to magick - the same PNG magick decodes before it
 /// writes the exotic target (PSD/DDS/AVIF/JXL/...), so magick propagates that
@@ -24,9 +30,7 @@ pub(super) fn encode_via_magick_carrying(
     out_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    let mut png = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
-        .map_err(|e| Error::new(E_FAIL, format!("encode intermediate PNG: {e}")))?;
+    let mut png = crate::magick_png_bytes!(img, png_encode_error);
     if let Some(meta) = carried {
         png = carry::apply_to_png_bytes(meta, png);
     }

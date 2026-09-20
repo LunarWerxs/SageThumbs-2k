@@ -327,6 +327,20 @@ pub(super) fn finish_magick_encode(
     }
 }
 
+/// PNG-encode `$img` into a fresh byte buffer, mapping an encoder failure through
+/// `$map_err` so each caller keeps its own error text. `#[macro_export]` rather than a
+/// `fn` because the two magick encode call sites (this module and the `verbs::encode::
+/// magickpath` path) sit behind private modules that cannot name each other's items.
+#[macro_export]
+macro_rules! magick_png_bytes {
+    ($img:expr, $map_err:expr) => {{
+        let mut png = Vec::new();
+        $img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err($map_err)?;
+        png
+    }};
+}
+
 /// ENCODE `img` to `out` via ImageMagick using the explicit `target_ext` coder.
 /// We feed magick a PNG on stdin and let it write the exotic target
 /// (PSD/DDS/JP2/…) to the file — so OUR decode pipeline handles every input
@@ -339,9 +353,7 @@ pub fn encode_via_magick(
     target_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    let mut png = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|_| Error::from(E_FAIL))?;
+    let png = crate::magick_png_bytes!(img, |_| Error::from(E_FAIL));
     encode_via_magick_png(png, out, target_ext, quality)
 }
 
