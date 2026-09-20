@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// Read the embedded cover art through a fresh `IStreamReader` and, on a hit, log `$fmt`
+/// with the cover's byte count and hand it straight back as [`StreamSource::Bytes`].
+/// Both cover-art rescues in this module end that way and differ only in their debug
+/// line; the format string stays a literal at the call site so the two lines read exactly
+/// as they did before. `$stream` must be a simple expression (`clone` is called on it).
+macro_rules! cover_art_source {
+    ($stream:expr, $fmt:literal) => {
+        if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
+            stream: $stream.clone(),
+        }) {
+            safety::log_debugf!($fmt, cover.len());
+            return Some(Ok(StreamSource::Bytes(cover)));
+        }
+    };
+}
+
 /// The video tiers of the [`stream_source_with_caps`] cascade. `None` means "not a
 /// video, or OggS ambiguously falling through" - the caller continues to the
 /// audio-art path below exactly as before; `Some(result)` means the cascade is
@@ -29,15 +45,7 @@ pub(super) unsafe fn try_video_source(
     let mut tried_cover_art = false;
     if cfg.prefer_cover_art {
         tried_cover_art = true;
-        if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-            stream: stream.clone(),
-        }) {
-            safety::log_debugf!(
-                "{who}: cover art preferred over a frame ({} bytes)",
-                cover.len()
-            );
-            return Some(Ok(StreamSource::Bytes(cover)));
-        }
+        cover_art_source!(stream, "{who}: cover art preferred over a frame ({} bytes)");
     }
     // Never stream the multi-GB original through the shell IStream: Media Foundation
     // reading a whole movie that way is catastrophically slow (30 s+, a pegged core, past
@@ -172,15 +180,10 @@ pub(super) unsafe fn video_undecodable_fallback(
         return None;
     }
     if needs_fallback_cover_art(tried_cover_art) {
-        if let Some(cover) = crate::vcodec::cover_art(&mut IStreamReader {
-            stream: stream.clone(),
-        }) {
-            safety::log_debugf!(
-                "{who}: video frame undecodable - using attached cover art ({} bytes)",
-                cover.len()
-            );
-            return Some(Ok(StreamSource::Bytes(cover)));
-        }
+        cover_art_source!(
+            stream,
+            "{who}: video frame undecodable - using attached cover art ({} bytes)"
+        );
     }
     safety::log_debugf!("{who}: video with no decodable frame");
     Some(Err(Error::from(E_FAIL)))
