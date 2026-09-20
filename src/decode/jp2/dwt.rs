@@ -106,13 +106,20 @@ fn lift_reversible(sig: &mut [f32], i0i: isize, scratch: &[f32]) {
     }
 }
 
-/// The 9/7 irreversible lifting branch of `filtr_1d`: undo the K scaling, then the four
-/// lifting steps in reverse, each reading from a fresh `scratch` copy of the prior step.
-fn lift_irreversible(sig: &mut [f32], i0i: isize, scratch: &mut Vec<f32>) {
+/// The 9/7 K scaling (Table F.4), undone in place: a sample on an even absolute index is
+/// multiplied by `K`, one on an odd index divided by it.
+#[inline]
+fn scale_97(sig: &mut [f32], i0i: isize) {
     for (k, s) in sig.iter_mut().enumerate() {
         let i = i0i + k as isize;
         *s = if i % 2 == 0 { *s * K } else { *s / K };
     }
+}
+
+/// The 9/7 irreversible lifting branch of `filtr_1d`: undo the K scaling, then the four
+/// lifting steps in reverse, each reading from a fresh `scratch` copy of the prior step.
+fn lift_irreversible(sig: &mut [f32], i0i: isize, scratch: &mut Vec<f32>) {
+    scale_97(sig, i0i);
     for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
         scratch.clear();
         scratch.extend_from_slice(sig);
@@ -303,10 +310,7 @@ mod tests {
     fn reference_irreversible(sig: &[f32], i0: usize) -> Vec<f32> {
         let i0i = i0 as isize;
         let mut sig = sig.to_vec();
-        for (k, s) in sig.iter_mut().enumerate() {
-            let i = i0i + k as isize;
-            *s = if i % 2 == 0 { *s * K } else { *s / K };
-        }
+        scale_97(&mut sig, i0i);
         for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
             let src = sig.to_vec();
             for (k, s) in sig.iter_mut().enumerate() {
