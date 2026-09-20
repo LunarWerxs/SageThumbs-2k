@@ -296,6 +296,30 @@ fn transform_file_lossless_jpeg(
     Ok(Some(slot.path().to_path_buf()))
 }
 
+/// The native writer for an already-truthful output extension (`edit_output_ext`'s
+/// result), or `None` when that extension has no native encoder and magick has to
+/// write it. A native-but-unknown extension falls back to PNG, the same honest
+/// fallback [`edit_output_ext`] itself makes.
+fn native_writer_for(out_ext: &str) -> Option<ImageFormat> {
+    if ext_needs_magick(out_ext) {
+        None
+    } else {
+        Some(native_output_format(out_ext).unwrap_or(ImageFormat::Png))
+    }
+}
+
+/// What each [`Transform`] means, applied to pixels — the one definition both the
+/// pixel fallback below and the tests that predict its output go through.
+fn apply_transform(img: &DynamicImage, t: Transform) -> DynamicImage {
+    match t {
+        Transform::Right90 => img.rotate90(),
+        Transform::Left90 => img.rotate270(),
+        Transform::Rotate180 => img.rotate180(),
+        Transform::FlipH => img.fliph(),
+        Transform::FlipV => img.flipv(),
+    }
+}
+
 /// The pixel fallback of [`transform_file`]: decode, apply `t`, encode with the native
 /// writer (or magick for exotic targets), carrying the metadata through.
 fn transform_file_pixels(
@@ -309,19 +333,9 @@ fn transform_file_pixels(
     // writable formats go through Magick; decoder-only/unknown inputs get an
     // honest PNG sibling instead of PNG bytes disguised by the source suffix.
     let img = decode::decode_full_for_path(bytes, path)?;
-    let out_img = match t {
-        Transform::Right90 => img.rotate90(),
-        Transform::Left90 => img.rotate270(),
-        Transform::Rotate180 => img.rotate180(),
-        Transform::FlipH => img.fliph(),
-        Transform::FlipV => img.flipv(),
-    };
+    let out_img = apply_transform(&img, t);
     let out_ext = edit_output_ext(ext);
-    let native_format = if ext_needs_magick(out_ext) {
-        None
-    } else {
-        Some(native_output_format(out_ext).unwrap_or(ImageFormat::Png))
-    };
+    let native_format = native_writer_for(out_ext);
     let slot = reserve_unique_suffix(src, "edited", out_ext);
     // A104: this pixel fallback (progressive JPEG / PNG / TIFF / …) decodes-and-re-encodes,
     // which drops every metadata block on its own — `resize_file` below already carries EXIF/
@@ -541,11 +555,7 @@ pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
         .unwrap_or("png")
         .to_ascii_lowercase();
     let out_ext = edit_output_ext(&ext);
-    let native_format = if ext_needs_magick(out_ext) {
-        None
-    } else {
-        Some(native_output_format(out_ext).unwrap_or(ImageFormat::Png))
-    };
+    let native_format = native_writer_for(out_ext);
     let slot = reserve_unique_suffix(src, "resized", out_ext);
     let carried = carry::read(&bytes, &ext);
     write_reencoded(&img, out_ext, native_format, carried.as_ref(), &slot)?;
@@ -1587,21 +1597,29 @@ mod bounded_native_encoder_tests {
         }
     }
 
+    /// A solid-colour RGB PNG input fixture written into `dir` — the "source.png" /
+    /// "source.heic" every convert/transform/resize test below starts from.
+    fn solid_png(dir: &Path, name: &str, w: u32, h: u32, rgb: [u8; 3]) -> PathBuf {
+        let path = dir.join(name);
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(rgb)))
+            .save_with_format(&path, ImageFormat::Png)
+            .unwrap();
+        path
+    }
+
+    /// The output contract shared by the edit/resize tests below: the path carries
+    /// the extension the verb promised, and the file really holds that format's
+    /// magic bytes (an unknown source must not become PNG bytes under a `.heic`
+    /// name, and a `.psd` output must really be a PSD).
+    fn assert_ext_and_magic(path: &Path, ext: &str, magic: &[u8]) {
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some(ext));
+        assert!(std::fs::read(path).unwrap().starts_with(magic));
+    }
+
     #[test]
     fn exact_unknown_conversion_rejects_without_replacing_destination() {
-        let dir = std::env::temp_dir().join(format!(
-            "st2k-exact-unknown-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let input = dir.join("source.png");
-        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3, 2, image::Rgb([20, 80, 160])))
-            .save(&input)
-            .unwrap();
+        let dir = scratch_dir("exact-unknown");
+        let input = solid_png(&dir, "source.png", 3, 2, [20, 80, 160]);
         let output = dir.join("existing.unknown");
         std::fs::write(&output, b"original destination").unwrap();
 
@@ -1613,39 +1631,15 @@ mod bounded_native_encoder_tests {
 
     #[test]
     fn unknown_source_edits_use_png_name_and_signature() {
-        let dir = std::env::temp_dir().join(format!(
-            "st2k-edit-fallback-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let input = dir.join("source.heic");
-        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-            12,
-            8,
-            image::Rgb([20, 80, 160]),
-        ))
-        .save_with_format(&input, ImageFormat::Png)
-        .unwrap();
+        let dir = scratch_dir("edit-fallback");
+        let input = solid_png(&dir, "source.heic", 12, 8, [20, 80, 160]);
 
         let edited = transform_file(input.to_str().unwrap(), Transform::Right90).unwrap();
-        assert_eq!(edited.extension().and_then(|ext| ext.to_str()), Some("png"));
-        assert!(std::fs::read(&edited)
-            .unwrap()
-            .starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_ext_and_magic(&edited, "png", b"\x89PNG\r\n\x1a\n");
         assert_eq!(image::open(&edited).unwrap().dimensions(), (8, 12));
 
         let resized = resize_file(input.to_str().unwrap(), Resize::Fit(6, 4)).unwrap();
-        assert_eq!(
-            resized.extension().and_then(|ext| ext.to_str()),
-            Some("png")
-        );
-        assert!(std::fs::read(&resized)
-            .unwrap()
-            .starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_ext_and_magic(&resized, "png", b"\x89PNG\r\n\x1a\n");
         assert_eq!(image::open(&resized).unwrap().dimensions(), (6, 4));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1656,23 +1650,8 @@ mod bounded_native_encoder_tests {
         if !decode::magick_available() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!(
-            "st2k-magick-routing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let input = dir.join("source.png");
-        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-            40,
-            30,
-            image::Rgb([30, 160, 90]),
-        ))
-        .save(&input)
-        .unwrap();
+        let dir = scratch_dir("magick-routing");
+        let input = solid_png(&dir, "source.png", 40, 30, [30, 160, 90]);
 
         let psd = dir.join("existing.psd");
         std::fs::write(&psd, b"old destination").unwrap();
@@ -1681,8 +1660,7 @@ mod bounded_native_encoder_tests {
         assert!(staging_leftovers(&psd).is_empty());
 
         let edited = transform_file(psd.to_str().unwrap(), Transform::Right90).unwrap();
-        assert_eq!(edited.extension().and_then(|ext| ext.to_str()), Some("psd"));
-        assert!(std::fs::read(&edited).unwrap().starts_with(b"8BPS"));
+        assert_ext_and_magic(&edited, "psd", b"8BPS");
 
         let resized = resize_file(psd.to_str().unwrap(), Resize::Fit(20, 15)).unwrap();
         assert_eq!(
@@ -1810,16 +1788,6 @@ mod bounded_native_encoder_tests {
         }
     }
 
-    fn transform_apply(img: &DynamicImage, t: Transform) -> DynamicImage {
-        match t {
-            Transform::Right90 => img.rotate90(),
-            Transform::Left90 => img.rotate270(),
-            Transform::Rotate180 => img.rotate180(),
-            Transform::FlipH => img.fliph(),
-            Transform::FlipV => img.flipv(),
-        }
-    }
-
     /// `Transform` derives no `Debug`; a name for the assertion messages.
     fn transform_name(t: Transform) -> &'static str {
         match t {
@@ -1860,7 +1828,7 @@ mod bounded_native_encoder_tests {
         for o in 1..=8u32 {
             for t in TRANSFORMS {
                 let name = transform_name(t);
-                let want = transform_apply(&viewer_upright(&stored, o), t).to_rgb8();
+                let want = apply_transform(&viewer_upright(&stored, o), t).to_rgb8();
                 let composed = Dihedral::from_exif_orientation(o).then(Dihedral::from_transform(t));
                 let got = dihedral_apply(&stored, composed).to_rgb8();
                 assert_eq!(
@@ -1944,7 +1912,7 @@ mod bounded_native_encoder_tests {
                 "orientation {o} then {name}: the tag must be reset, or viewers double-rotate"
             );
 
-            let want = transform_apply(&viewer_upright(&stored, u32::from(o)), t);
+            let want = apply_transform(&viewer_upright(&stored, u32::from(o)), t);
             let got = image::load_from_memory(&out_bytes).unwrap();
             assert_eq!(
                 got.dimensions(),
