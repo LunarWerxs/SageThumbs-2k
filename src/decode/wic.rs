@@ -17,6 +17,27 @@ fn wic_factory() -> Result<IWICImagingFactory> {
     unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
 }
 
+/// Wrap `bytes` in a fresh memory stream (which COPIES them - see
+/// [`wic_decode_bytes_if_codec_scales`]) and hand back frame 0 of it.
+///
+/// `OnDemand`, matching the by-path twins: nothing on these paths reads WIC's cached metadata
+/// graph (EXIF comes from `kamadak-exif` over the raw bytes, ICC from `GetColorContexts`, a
+/// frame API), so eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even
+/// runs is pure loss. A by-bytes caller may also decide it cannot help and return without
+/// decoding, so the loss would be paid on top of the normal decode the caller then runs.
+unsafe fn wic_frame_from_bytes(
+    factory: &IWICImagingFactory,
+    bytes: &[u8],
+) -> Result<IWICBitmapFrameDecode> {
+    let stream = SHCreateMemStream(Some(bytes)).ok_or_else(|| Error::from(E_FAIL))?;
+    let decoder = factory.CreateDecoderFromStream(
+        &stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
+    decoder.GetFrame(0)
+}
+
 /// Decode via Windows Imaging Component using whatever codecs the OS has
 /// installed — this is what gives HEIC/HEIF, AVIF, camera RAW (with the
 /// Microsoft Raw Image Extension), and JPEG 2000 without bundling C/LGPL Rust
@@ -53,19 +74,7 @@ pub(super) unsafe fn wic_decode_with_thumbnail(
 ) -> Result<DynamicImage> {
     // The host thread has COM initialized; in unit tests we CoInitialize first.
     let factory: IWICImagingFactory = wic_factory()?;
-
-    let stream = SHCreateMemStream(Some(bytes)).ok_or_else(|| Error::from(E_FAIL))?;
-    // `OnDemand`, matching the by-path/by-stream-if-scales/by-bytes-if-scales twins below:
-    // nothing on this path reads WIC's cached metadata graph (EXIF comes from
-    // `kamadak-exif` over the raw bytes, ICC from `GetColorContexts`, a frame API), so
-    // eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even
-    // runs is pure loss.
-    let decoder = factory.CreateDecoderFromStream(
-        &stream,
-        std::ptr::null(),
-        WICDecodeMetadataCacheOnDemand,
-    )?;
-    let frame = decoder.GetFrame(0)?;
+    let frame = wic_frame_from_bytes(&factory, bytes)?;
     wic_decode_frame(&factory, &frame, thumbnail_cx, bytes)
 }
 
@@ -100,7 +109,7 @@ pub(super) unsafe fn wic_decode_stream(
     head: &[u8],
 ) -> Result<DynamicImage> {
     let factory: IWICImagingFactory = wic_factory()?;
-    // `OnDemand`, matching the by-path/by-bytes twins — see `wic_decode_with_thumbnail`'s
+    // `OnDemand`, matching the by-path/by-bytes twins — see `wic_frame_from_bytes`'s
     // comment: nothing here reads WIC's cached metadata graph, so parsing it eagerly over
     // the shell's own (often LRPC-backed) stream before the dimension guard runs is pure
     // loss, and on this path it is loss paid over IPC rather than local memory.
@@ -113,29 +122,57 @@ pub(super) unsafe fn wic_decode_stream(
     wic_decode_frame(&factory, &frame, thumbnail_cx, head)
 }
 
-pub(super) unsafe fn wic_decode_path(
+/// Open `path` through WIC and hand back frame 0 of it.
+///
+/// `OnDemand`, not `OnLoad`: callers want the pixels, and eagerly slurping every metadata block
+/// is exactly the cost the by-path rescue exists to avoid on a very large file. THE COMMENTS
+/// SAID THIS WHILE THE CODE PASSED `OnLoad` - so the by-path rescue, which exists precisely for
+/// files past the 256 MiB ceiling, was walking and caching the whole metadata graph during
+/// `GetFrame` before the MAX_DIM/MAX_PIXELS guard had even seen the dimensions. It matters most
+/// for [`wic_decode_path_if_codec_scales`], which often decides it cannot help (PNG) and returns
+/// without decoding anything, so any metadata parsed eagerly during `GetFrame` would be pure
+/// loss on top of the full decode the caller then runs. Nothing on these paths reads WIC
+/// metadata (EXIF comes from `kamadak-exif` over the raw bytes, and the ICC profile comes from
+/// `GetColorContexts`, which is a frame API and not the metadata reader), so deferring it costs
+/// nothing.
+unsafe fn wic_frame_from_filename(
+    factory: &IWICImagingFactory,
     path: &str,
-    thumbnail_cx: Option<u32>,
-    head: &[u8],
-) -> Result<DynamicImage> {
-    let factory: IWICImagingFactory = wic_factory()?;
+) -> Result<IWICBitmapFrameDecode> {
     let wide = crate::wide(path);
-    // `OnDemand`, not `OnLoad`: we want the pixels, and eagerly slurping every metadata block
-    // is exactly the cost this path exists to avoid on a very large file. THE COMMENT SAID THIS
-    // WHILE THE CODE PASSED `OnLoad` - so the by-path rescue, which exists precisely for files
-    // past the 256 MiB ceiling, was walking and caching the whole metadata graph during
-    // `GetFrame` before the MAX_DIM/MAX_PIXELS guard below had even seen the dimensions.
-    // Nothing on this path reads WIC metadata (EXIF comes from `kamadak-exif` over the raw
-    // bytes, and the ICC profile comes from `GetColorContexts`, which is a frame API and not
-    // the metadata reader), so deferring it costs nothing.
     let decoder = factory.CreateDecoderFromFilename(
         windows::core::PCWSTR(wide.as_ptr()),
         None,
         windows::Win32::Foundation::GENERIC_READ,
         WICDecodeMetadataCacheOnDemand,
     )?;
-    let frame = decoder.GetFrame(0)?;
+    decoder.GetFrame(0)
+}
+
+pub(super) unsafe fn wic_decode_path(
+    path: &str,
+    thumbnail_cx: Option<u32>,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory = wic_factory()?;
+    let frame = wic_frame_from_filename(&factory, path)?;
     wic_decode_frame(&factory, &frame, thumbnail_cx, head)
+}
+
+/// Decode `frame` at a REDUCED size, but only when the codec can genuinely do it itself;
+/// `E_FAIL` otherwise so the caller falls back to a normal decode. See
+/// [`wic_decode_path_if_codec_scales`] for why asking beats guessing. Split out of the by-path
+/// and by-bytes callers, which differ only in how they opened the frame.
+unsafe fn wic_decode_reduced(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+    target_edge: u32,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    if !codec_scales_natively(frame, target_edge) {
+        return Err(Error::from(E_FAIL));
+    }
+    wic_decode_frame(factory, frame, Some(target_edge), head)
 }
 
 /// The same decode, but ONLY if the codec can genuinely produce a reduced size itself.
@@ -161,21 +198,8 @@ pub(super) unsafe fn wic_decode_path_if_codec_scales(
     head: &[u8],
 ) -> Result<DynamicImage> {
     let factory: IWICImagingFactory = wic_factory()?;
-    let wide = crate::wide(path);
-    // `OnDemand` for the same reason, and it matters more here: this function often decides it
-    // cannot help (PNG) and returns without decoding anything, so any metadata parsed eagerly
-    // during `GetFrame` would be pure loss on top of the full decode the caller then runs.
-    let decoder = factory.CreateDecoderFromFilename(
-        windows::core::PCWSTR(wide.as_ptr()),
-        None,
-        windows::Win32::Foundation::GENERIC_READ,
-        WICDecodeMetadataCacheOnDemand,
-    )?;
-    let frame = decoder.GetFrame(0)?;
-    if !codec_scales_natively(&frame, target_edge) {
-        return Err(Error::from(E_FAIL));
-    }
-    wic_decode_frame(&factory, &frame, Some(target_edge), head)
+    let frame = wic_frame_from_filename(&factory, path)?;
+    wic_decode_reduced(&factory, &frame, target_edge, head)
 }
 
 /// [`wic_decode_path_if_codec_scales`] over BYTES rather than a path.
@@ -196,21 +220,8 @@ pub(super) unsafe fn wic_decode_bytes_if_codec_scales(
     head: &[u8],
 ) -> Result<DynamicImage> {
     let factory: IWICImagingFactory = wic_factory()?;
-    let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes))
-        .ok_or_else(|| Error::from(E_FAIL))?;
-    // `OnDemand` for the same reason as the by-path twin: this often decides it cannot help and
-    // returns without decoding, so eagerly walking the metadata graph would be pure loss on top
-    // of the normal decode the caller then runs.
-    let decoder = factory.CreateDecoderFromStream(
-        &stream,
-        std::ptr::null(),
-        WICDecodeMetadataCacheOnDemand,
-    )?;
-    let frame = decoder.GetFrame(0)?;
-    if !codec_scales_natively(&frame, target_edge) {
-        return Err(Error::from(E_FAIL));
-    }
-    wic_decode_frame(&factory, &frame, Some(target_edge), head)
+    let frame = wic_frame_from_bytes(&factory, bytes)?;
+    wic_decode_reduced(&factory, &frame, target_edge, head)
 }
 
 /// Whether the codec behind `frame` can decode at a REDUCED size natively, rather than
