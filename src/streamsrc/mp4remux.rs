@@ -77,56 +77,89 @@ unsafe fn locate_mdat_and_moov(
     total: u64,
     deadline: Instant,
 ) -> Option<((u64, u64), (u64, u64))> {
-    const WALK_MAX_BOXES: u32 = 100_000;
-
     let mut pos: u64 = 0;
     let mut mdat: Option<(u64, u64)> = None; // (offset, header_len)
     let mut moov: Option<(u64, u64)> = None; // (offset, full_size)
     let mut boxes_walked: u32 = 0;
     while pos.checked_add(8)? <= total {
         boxes_walked = boxes_walked.saturating_add(1);
-        if boxes_walked > WALK_MAX_BOXES || Instant::now() >= deadline {
-            return None;
+        match walk_one_box(
+            stream,
+            pos,
+            total,
+            boxes_walked,
+            deadline,
+            &mut mdat,
+            &mut moov,
+        )? {
+            BoxStep::Continue(next) => pos = next,
+            BoxStep::Stop => break,
         }
-        if stream.Seek(pos as i64, STREAM_SEEK_SET, None).is_err() {
-            return None;
-        }
-        // Loop the header read via `read_full` (retries while filled < len) rather than a
-        // single one-shot `Read`: `IStream::Read` may legitimately hand back fewer bytes than
-        // requested without erroring or being at real EOF, and a one-shot read used to treat
-        // that exactly like true EOF, discarding the moov search. Only the fixed 8-byte
-        // size+type is required up front; the extra 8-byte extended size is read separately
-        // (and only when needed), so a box near true EOF that doesn't need it still parses.
-        let mut hdr8 = [0u8; 8];
-        if read_full(stream, &mut hdr8).is_none() {
-            break; // fewer than 8 bytes remain, genuinely no more boxes
-        }
-        let size32 = u32::from_be_bytes([hdr8[0], hdr8[1], hdr8[2], hdr8[3]]);
-        let extended = if size32 == 1 {
-            let mut ext = [0u8; 8];
-            if read_full(stream, &mut ext).is_none() {
-                break;
-            }
-            Some(u64::from_be_bytes(ext))
-        } else {
-            None
-        };
-        let Some((full, hlen)) =
-            crate::container::boxhdr::decode_box_size(size32, extended, pos, total)
-        else {
-            break;
-        };
-        match &hdr8[4..8] {
-            b"mdat" => mdat = Some((pos, hlen)),
-            b"moov" => {
-                moov = Some((pos, full));
-                break;
-            }
-            _ => {}
-        }
-        pos = pos.checked_add(full)?;
     }
     Some((mdat?, moov?))
+}
+
+/// Outcome of handling one top-level box during the walk in [`locate_mdat_and_moov`].
+enum BoxStep {
+    /// Keep walking from this absolute offset.
+    Continue(u64),
+    /// Stop the walk: a `moov` was recorded or no further box header is readable.
+    Stop,
+}
+
+/// Read and classify the top-level box at `pos`, recording `mdat`/`moov` in place; returns
+/// `None` to abandon the walk (per-box limit, deadline or a seek/overflow failure).
+unsafe fn walk_one_box(
+    stream: &IStream,
+    pos: u64,
+    total: u64,
+    boxes_walked: u32,
+    deadline: Instant,
+    mdat: &mut Option<(u64, u64)>,
+    moov: &mut Option<(u64, u64)>,
+) -> Option<BoxStep> {
+    const WALK_MAX_BOXES: u32 = 100_000;
+
+    if boxes_walked > WALK_MAX_BOXES || Instant::now() >= deadline {
+        return None;
+    }
+    if stream.Seek(pos as i64, STREAM_SEEK_SET, None).is_err() {
+        return None;
+    }
+    // Loop the header read via `read_full` (retries while filled < len) rather than a
+    // single one-shot `Read`: `IStream::Read` may legitimately hand back fewer bytes than
+    // requested without erroring or being at real EOF, and a one-shot read used to treat
+    // that exactly like true EOF, discarding the moov search. Only the fixed 8-byte
+    // size+type is required up front; the extra 8-byte extended size is read separately
+    // (and only when needed), so a box near true EOF that doesn't need it still parses.
+    let mut hdr8 = [0u8; 8];
+    if read_full(stream, &mut hdr8).is_none() {
+        return Some(BoxStep::Stop); // fewer than 8 bytes remain, genuinely no more boxes
+    }
+    let size32 = u32::from_be_bytes([hdr8[0], hdr8[1], hdr8[2], hdr8[3]]);
+    let extended = if size32 == 1 {
+        let mut ext = [0u8; 8];
+        if read_full(stream, &mut ext).is_none() {
+            return Some(BoxStep::Stop);
+        }
+        Some(u64::from_be_bytes(ext))
+    } else {
+        None
+    };
+    let Some((full, hlen)) =
+        crate::container::boxhdr::decode_box_size(size32, extended, pos, total)
+    else {
+        return Some(BoxStep::Stop);
+    };
+    match &hdr8[4..8] {
+        b"mdat" => *mdat = Some((pos, hlen)),
+        b"moov" => {
+            *moov = Some((pos, full));
+            return Some(BoxStep::Stop);
+        }
+        _ => {}
+    }
+    Some(BoxStep::Continue(pos.checked_add(full)?))
 }
 
 /// Retain ftyp + mdat header + early mdat, ending before the moov (capped at

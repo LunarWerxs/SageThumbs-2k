@@ -280,49 +280,57 @@ pub(super) unsafe fn read_all_append(
         out.try_reserve(hint - out.len())
             .map_err(|_| Error::from(E_OUTOFMEMORY))?;
     }
+    loop {
+        if !read_step(stream, &mut out, max)? {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// One bounded read step of `read_all_append`: tops `out` up by at most one 1 MiB chunk,
+/// refusing a stream of more than `max` bytes with `E_FAIL`, and reports whether more bytes
+/// may remain (`true`) or the stream is exhausted (`false`). `out` keeps its prefix on every
+/// error path, exactly as the inlined loop did.
+unsafe fn read_step(stream: &IStream, out: &mut Vec<u8>, max: usize) -> Result<bool> {
     // 1 MiB steps: the stream is marshaled (often cross-process), so per-Read overhead is
     // real — 64 KiB steps cost a 100 MB file ~1,600 round trips. Each step is zeroed and
     // then filled in place; within the reservation that is a memset, never a copy.
     const STEP: usize = 1 << 20;
-    loop {
-        let len = out.len();
-        let room = max.saturating_sub(len);
-        if room == 0 {
-            // At the cap: one probe read tells a stream of exactly `max` bytes from a
-            // longer one, which is refused exactly as it always was.
-            let mut probe = [0u8; 1];
-            let mut got: u32 = 0;
-            stream
-                .Read(probe.as_mut_ptr() as *mut c_void, 1, Some(&mut got))
-                .ok()?;
-            return if got == 0 {
-                Ok(out)
-            } else {
-                Err(Error::from(E_FAIL))
-            };
-        }
-        let want = room.min(STEP);
-        out.try_reserve(want)
-            .map_err(|_| Error::from(E_OUTOFMEMORY))?;
-        out.resize(len.saturating_add(want), 0);
+    let len = out.len();
+    let room = max.saturating_sub(len);
+    if room == 0 {
+        // At the cap: one probe read tells a stream of exactly `max` bytes from a
+        // longer one, which is refused exactly as it always was.
+        let mut probe = [0u8; 1];
         let mut got: u32 = 0;
-        let hr = stream.Read(
-            out[len..].as_mut_ptr() as *mut c_void,
-            want as u32,
-            Some(&mut got),
-        );
-        // S_OK and S_FALSE are both successes; a failing HRESULT is a real transport
-        // error (network/cloud-placeholder stream), NOT end-of-stream — don't mistake
-        // it for EOF and silently feed a truncated buffer to the decoder.
-        if let Err(e) = hr.ok() {
-            out.truncate(len);
-            return Err(e);
-        }
-        let n = (got as usize).min(want); // never trust got > buffer
-        out.truncate(len.saturating_add(n));
-        if n == 0 {
-            break; // success + 0 bytes == genuine EOF
-        }
+        stream
+            .Read(probe.as_mut_ptr() as *mut c_void, 1, Some(&mut got))
+            .ok()?;
+        return if got == 0 {
+            Ok(false)
+        } else {
+            Err(Error::from(E_FAIL))
+        };
     }
-    Ok(out)
+    let want = room.min(STEP);
+    out.try_reserve(want)
+        .map_err(|_| Error::from(E_OUTOFMEMORY))?;
+    out.resize(len.saturating_add(want), 0);
+    let mut got: u32 = 0;
+    let hr = stream.Read(
+        out[len..].as_mut_ptr() as *mut c_void,
+        want as u32,
+        Some(&mut got),
+    );
+    // S_OK and S_FALSE are both successes; a failing HRESULT is a real transport
+    // error (network/cloud-placeholder stream), NOT end-of-stream — don't mistake
+    // it for EOF and silently feed a truncated buffer to the decoder.
+    if let Err(e) = hr.ok() {
+        out.truncate(len);
+        return Err(e);
+    }
+    let n = (got as usize).min(want); // never trust got > buffer
+    out.truncate(len.saturating_add(n));
+    Ok(n != 0) // success + 0 bytes == genuine EOF
 }

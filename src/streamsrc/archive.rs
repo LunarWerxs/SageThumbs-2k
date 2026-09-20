@@ -73,19 +73,40 @@ pub(super) unsafe fn generic_archive(
         return ArchiveProbe::NoCover;
     };
 
-    // Contact sheet (up to 4 images) or classic single cover, per Settings.
-    // `ArchiveCollage` is stored as a DWORD; nonzero means on.
     let want = if cfg.archive_collage != 0 { 4 } else { 1 };
+    let covers = read_archive_covers(stream, first, size, max_file_bytes, want, cfg);
 
-    let covers = if crate::container::archive_needs_buffer(first) {
+    match covers {
+        None => ArchiveProbe::NoCover,
+        Some(covers) if covers.is_empty() => ArchiveProbe::NoCover,
+        Some(mut covers) if covers.len() == 1 => {
+            // One image: the normal aspect-preserving single-cover pipeline.
+            safety::log_debugf!("{who}: generic archive single cover");
+            ArchiveProbe::Found(StreamSource::Bytes(covers.swap_remove(0)))
+        }
+        Some(covers) => {
+            safety::log_debugf!("{who}: generic archive {} covers", covers.len());
+            ArchiveProbe::Found(StreamSource::Covers(covers))
+        }
+    }
+}
+
+/// Reads covers from a generic archive, either buffered in memory (RAR) or seek-streamed (ZIP/7z).
+unsafe fn read_archive_covers(
+    stream: &IStream,
+    first: &[u8],
+    size: u64,
+    max_file_bytes: u64,
+    want: usize,
+    cfg: &ThumbSettings,
+) -> Option<Vec<Vec<u8>>> {
+    if crate::container::archive_needs_buffer(first) {
         // RAR: same bounded whole-file read as the normal path, then the one-pass
         // multi-target extraction over the buffer. Bounded by the effective cap the gate
         // above was computed from, not the hard ceiling: a stream that delivers more than
         // its `Stat` size declared stops at the user's MaxSize.
         let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-        let Ok(bytes) = read_all(stream, rar_buffer_cap(max_file_bytes), Some(size)) else {
-            return ArchiveProbe::NoCover;
-        };
+        let bytes = read_all(stream, rar_buffer_cap(max_file_bytes), Some(size)).ok()?;
         let prefs = crate::container::select::CoverPrefs::from_thumb_settings(cfg);
         crate::container::archive_covers(&bytes, want, &prefs)
     } else {
@@ -104,20 +125,6 @@ pub(super) unsafe fn generic_archive(
             want,
             &prefs,
         )
-    };
-
-    match covers {
-        None => ArchiveProbe::NoCover,
-        Some(covers) if covers.is_empty() => ArchiveProbe::NoCover,
-        Some(mut covers) if covers.len() == 1 => {
-            // One image: the normal aspect-preserving single-cover pipeline.
-            safety::log_debugf!("{who}: generic archive single cover");
-            ArchiveProbe::Found(StreamSource::Bytes(covers.swap_remove(0)))
-        }
-        Some(covers) => {
-            safety::log_debugf!("{who}: generic archive {} covers", covers.len());
-            ArchiveProbe::Found(StreamSource::Covers(covers))
-        }
     }
 }
 
