@@ -20,7 +20,7 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetTextMetricsW, InvalidateRect, ReleaseDC, SelectObject, UpdateWindow,
-    TEXTMETRICW,
+    HDC, TEXTMETRICW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
@@ -252,21 +252,36 @@ unsafe fn md_hit(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     md_col(hwnd, st, &pick, x)
 }
 
-/// The offset inside token `h` nearest client-x `x` (measured with the token's own font).
-unsafe fn md_col(hwnd: HWND, st: &ViewerState, h: &SelHit, x: i32) -> Option<usize> {
+/// Run `f` with token `h`'s document slice and a DC holding the token's own font. `None` when the
+/// pane has no document; `on_no_dc` when the DC couldn't be made (the font is freed and the DC
+/// released either way).
+unsafe fn with_token_font<R>(
+    hwnd: HWND,
+    st: &ViewerState,
+    h: &SelHit,
+    on_no_dc: R,
+    f: impl FnOnce(&str, HDC) -> R,
+) -> Option<R> {
     with_doc(st, |doc| {
         let t = doc.get(h.start..h.end).unwrap_or("");
         let hdc = GetDC(Some(hwnd));
         if hdc.is_invalid() {
-            return h.end;
+            return on_no_dc;
         }
-        let f = super::markdown::font_for(hwnd, h.font);
-        let old = SelectObject(hdc, f.into());
-        let c = highlight::col_at(hdc, t, x - h.text_x);
+        let font = super::markdown::font_for(hwnd, h.font);
+        let old = SelectObject(hdc, font.into());
+        let r = f(t, hdc);
         SelectObject(hdc, old);
-        let _ = DeleteObject(f.into());
+        let _ = DeleteObject(font.into());
         ReleaseDC(Some(hwnd), hdc);
-        h.start + c
+        r
+    })
+}
+
+/// The offset inside token `h` nearest client-x `x` (measured with the token's own font).
+unsafe fn md_col(hwnd: HWND, st: &ViewerState, h: &SelHit, x: i32) -> Option<usize> {
+    with_token_font(hwnd, st, h, h.end, |t, hdc| {
+        h.start + highlight::col_at(hdc, t, x - h.text_x)
     })
 }
 
@@ -288,19 +303,8 @@ unsafe fn md_caret_x(hwnd: HWND, st: &ViewerState, h: &SelHit, off: usize) -> i3
     if off >= h.end {
         return h.rect.right;
     }
-    with_doc(st, |doc| {
-        let t = doc.get(h.start..h.end).unwrap_or("");
-        let hdc = GetDC(Some(hwnd));
-        if hdc.is_invalid() {
-            return h.text_x;
-        }
-        let f = super::markdown::font_for(hwnd, h.font);
-        let old = SelectObject(hdc, f.into());
-        let x = h.text_x + highlight::disp_extent(hdc, t, off - h.start);
-        SelectObject(hdc, old);
-        let _ = DeleteObject(f.into());
-        ReleaseDC(Some(hwnd), hdc);
-        x
+    with_token_font(hwnd, st, h, h.text_x, |t, hdc| {
+        h.text_x + highlight::disp_extent(hdc, t, off - h.start)
     })
     .unwrap_or(h.text_x)
 }
