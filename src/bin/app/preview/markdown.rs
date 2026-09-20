@@ -603,6 +603,44 @@ struct PaintCtx<'a> {
     fonts_cache: &'a mut FontCache,
 }
 
+impl PaintCtx<'_> {
+    /// `v` design pixels at the target window's DPI.
+    fn sc(&self, v: i32) -> i32 {
+        crate::win::dpi_scale(self.hwnd, v)
+    }
+
+    /// One block painter's `run_block` step: the `spec = (px, bold, italic)` font entry, the
+    /// colour `fg` for the shared run context, `indent` px of left inset, and whether the block
+    /// centres its lines. Culls against the clip rect and collects the block's link hits into
+    /// the accumulators. Returns the y after the block.
+    unsafe fn run_block_in(
+        &mut self,
+        runs: &[Run],
+        spec: (i32, bool, bool),
+        y: i32,
+        indent: i32,
+        center: bool,
+        fg: u32,
+    ) -> i32 {
+        let fonts = self.fonts_cache.get(self.hwnd, spec.0, spec.1, spec.2);
+        let ctx = ctx_for(self.hwnd, self.c, fg);
+        let (ny, _) = run_block(
+            self.hdc,
+            runs,
+            fonts,
+            self.x0 + indent,
+            y,
+            self.full_w - indent,
+            if center { 1 } else { 0 },
+            y >= self.rc.bottom,
+            &ctx,
+            &mut *self.links,
+            Some(&mut *self.rsel),
+        );
+        ny
+    }
+}
+
 /// `Block::Heading` paint arm: heading text + the h1/h2 hairline underline.
 unsafe fn paint_heading(
     p: &mut PaintCtx<'_>,
@@ -612,63 +650,23 @@ unsafe fn paint_heading(
     first: bool,
     mut y: i32,
 ) -> i32 {
-    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
-    let links = &mut *p.links;
-    let rsel = &mut *p.rsel;
-    let fonts_cache = &mut *p.fonts_cache;
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
     if !first {
-        y += sc(8); // extra top margin before a heading (GitHub 24px total)
+        y += p.sc(8); // extra top margin before a heading (GitHub 24px total)
     }
-    let px = heading_px(level);
-    let fonts = fonts_cache.get(hwnd, px, true, false);
-    let ctx = ctx_for(hwnd, c, c.fg);
-    let (ny, _) = run_block(
-        hdc,
-        runs,
-        fonts,
-        x0,
-        y,
-        full_w,
-        if center { 1 } else { 0 },
-        y >= rc.bottom,
-        &ctx,
-        links,
-        Some(rsel),
-    );
-    y = ny;
+    y = p.run_block_in(runs, (heading_px(level), true, false), y, 0, center, p.c.fg);
     if level <= 2 {
         // GitHub-style hairline under h1/h2.
-        hline(hdc, x0, x0 + full_w, y + sc(4), c.border);
-        y += sc(8);
+        hline(p.hdc, p.x0, p.x0 + p.full_w, y + p.sc(4), p.c.border);
+        y += p.sc(8);
     }
-    y + sc(10)
+    y + p.sc(10)
 }
 
 /// `Block::Para` paint arm.
 unsafe fn paint_para(p: &mut PaintCtx<'_>, runs: &[Run], center: bool, y: i32) -> i32 {
-    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
-    let links = &mut *p.links;
-    let rsel = &mut *p.rsel;
-    let fonts_cache = &mut *p.fonts_cache;
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let fonts = fonts_cache.get(hwnd, BODY_PX, false, false);
-    let ctx = ctx_for(hwnd, c, c.fg);
-    let (ny, _) = run_block(
-        hdc,
-        runs,
-        fonts,
-        x0,
-        y,
-        full_w,
-        if center { 1 } else { 0 },
-        y >= rc.bottom,
-        &ctx,
-        links,
-        Some(rsel),
-    );
+    let ny = p.run_block_in(runs, (BODY_PX, false, false), y, 0, center, p.c.fg);
     if ny > y {
-        ny + sc(14)
+        ny + p.sc(14)
     } else {
         y
     }
@@ -754,72 +752,33 @@ unsafe fn paint_item(
     task: Option<bool>,
     y: i32,
 ) -> i32 {
-    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
-    let links = &mut *p.links;
-    let rsel = &mut *p.rsel;
-    let fonts_cache = &mut *p.fonts_cache;
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let indent = sc(22) * (depth as i32 + 1);
-    let mx = x0 + indent - sc(18);
+    let indent = p.sc(22) * (depth as i32 + 1);
+    let mx = p.x0 + indent - p.sc(18);
     // Both the marker and the item's runs draw in the plain body style, so one cache lookup
     // covers both (the marker just borrows `.reg` instead of running the wrapper's own layout).
-    let fonts = fonts_cache.get(hwnd, BODY_PX, false, false);
+    let fonts = p.fonts_cache.get(p.hwnd, BODY_PX, false, false);
     match task {
         // GFM task item: a GitHub-style checkbox in place of the bullet.
-        Some(done) => draw_checkbox(hwnd, hdc, mx, y, done, c),
+        Some(done) => draw_checkbox(p.hwnd, p.hdc, mx, y, done, p.c),
         // Ordinary bullet / number in the muted colour.
-        None => draw_at(hdc, marker, mx, y, fonts.reg, c.muted),
+        None => draw_at(p.hdc, marker, mx, y, fonts.reg, p.c.muted),
     }
-    let ctx = ctx_for(hwnd, c, c.fg);
-    let (ny, _) = run_block(
-        hdc,
-        runs,
-        fonts,
-        x0 + indent,
-        y,
-        full_w - indent,
-        0,
-        y >= rc.bottom,
-        &ctx,
-        links,
-        Some(rsel),
-    );
-    ny + sc(4)
+    p.run_block_in(runs, (BODY_PX, false, false), y, indent, false, p.c.fg) + p.sc(4)
 }
 
 /// `Block::Quote` paint arm: the runs, then the GitHub-style gray quote bar.
 unsafe fn paint_quote(p: &mut PaintCtx<'_>, runs: &[Run], y: i32) -> i32 {
-    let (hwnd, hdc, rc, x0, full_w, c) = (p.hwnd, p.hdc, p.rc, p.x0, p.full_w, p.c);
-    let links = &mut *p.links;
-    let rsel = &mut *p.rsel;
-    let fonts_cache = &mut *p.fonts_cache;
-    let sc = |v: i32| crate::win::dpi_scale(hwnd, v);
-    let indent = sc(16);
+    let indent = p.sc(16);
     let y_start = y;
-    let fonts = fonts_cache.get(hwnd, BODY_PX, false, true);
-    let ctx = ctx_for(hwnd, c, c.muted);
-    let (ny, _) = run_block(
-        hdc,
-        runs,
-        fonts,
-        x0 + indent,
-        y,
-        full_w - indent,
-        0,
-        y >= rc.bottom,
-        &ctx,
-        links,
-        Some(rsel),
-    );
-    let y = ny;
+    let y = p.run_block_in(runs, (BODY_PX, false, true), y, indent, false, p.c.muted);
     // GitHub-style gray quote bar spanning the quote's height.
-    let pen = CreatePen(PS_SOLID, sc(4), COLORREF(c.border));
-    let op = SelectObject(hdc, HGDIOBJ(pen.0));
-    let _ = MoveToEx(hdc, x0 + sc(2), y_start, None);
-    let _ = LineTo(hdc, x0 + sc(2), y);
-    SelectObject(hdc, op);
+    let pen = CreatePen(PS_SOLID, p.sc(4), COLORREF(p.c.border));
+    let op = SelectObject(p.hdc, HGDIOBJ(pen.0));
+    let _ = MoveToEx(p.hdc, p.x0 + p.sc(2), y_start, None);
+    let _ = LineTo(p.hdc, p.x0 + p.sc(2), y);
+    SelectObject(p.hdc, op);
     let _ = DeleteObject(HGDIOBJ(pen.0));
-    y + sc(14)
+    y + p.sc(14)
 }
 
 mod doc;
