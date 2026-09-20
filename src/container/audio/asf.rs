@@ -83,18 +83,23 @@ pub(super) fn asf_cover<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
         .map(|(_, img)| img.clone())
 }
 
-/// Artist / album / title / track read from an ASF/WMA file's tag objects.
+/// An audio file's tags for the "Rename/Sort by tag" verbs and the Details pane: the primary
+/// tag's artist/album/title/track/genre/year plus the stream's duration and bitrate. Filled
+/// here from an ASF/WMA file's tag objects, and by `strip::read_audio_tags` (which re-exports
+/// this type) from lofty for every other format. Empty/missing fields stay `None`.
 #[derive(Default)]
-pub(crate) struct AsfTags {
+pub struct AudioTags {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub title: Option<String>,
     pub track: Option<u32>,
     pub genre: Option<String>,
     pub year: Option<u32>,
-    /// Playback length in ms (0 = unknown), from the File Properties Object.
+    /// Playback length in milliseconds (0 = unknown). ASF: the File Properties Object.
+    /// Surfaced as `System.Media.Duration`.
     pub duration_ms: u64,
-    /// Overall bitrate in kbps (0 = unknown), from the File Properties Object's Maximum Bitrate.
+    /// Overall bitrate in kbps (0 = unknown). ASF: the File Properties Object's Maximum
+    /// Bitrate. Surfaced as `System.Audio.EncodingBitrate`.
     pub bitrate_kbps: u32,
 }
 
@@ -102,9 +107,9 @@ pub(crate) struct AsfTags {
 /// Object's fixed fields + the WM/* string attributes). lofty can't read ASF at
 /// all, so without this the "Rename/Sort by audio tag" verbs do nothing for `.wma`.
 /// `None` for non-ASF input → callers fall back to the lofty tag path.
-pub(crate) fn asf_tags<R: Read + Seek>(r: &mut R) -> Option<AsfTags> {
+pub(crate) fn asf_tags<R: Read + Seek>(r: &mut R) -> Option<AudioTags> {
     let buf = asf_header_buf(r)?;
-    let mut tags = AsfTags::default();
+    let mut tags = AudioTags::default();
     walk_objects(&buf, 0, &mut |guid, payload| {
         collect_tags(guid, payload, &mut tags)
     });
@@ -166,7 +171,7 @@ fn collect_pictures(guid: &[u8], payload: &[u8], out: &mut Vec<(u8, Vec<u8>)>) {
 }
 
 /// Collect artist/album/title/track from a tag object into `tags`.
-fn collect_tags(guid: &[u8], payload: &[u8], tags: &mut AsfTags) {
+fn collect_tags(guid: &[u8], payload: &[u8], tags: &mut AudioTags) {
     if guid == ASF_CONTENT_DESC_GUID {
         cd_text(payload, tags);
     } else if guid == ASF_ECD_GUID {
@@ -186,7 +191,7 @@ fn collect_tags(guid: &[u8], payload: &[u8], tags: &mut AsfTags) {
 /// 24-byte object header `walk_objects` already stripped): play_duration u64 @40 (100-ns units,
 /// INCLUDES the preroll), preroll u64 @56 (ms), max_bitrate u32 @76 (bits/sec). Bounds-checked by
 /// `le64`/`le32` (`?` bails on a short body).
-fn file_props(body: &[u8], tags: &mut AsfTags) -> Option<()> {
+fn file_props(body: &[u8], tags: &mut AudioTags) -> Option<()> {
     let play_ms = le64(body, 40)? / 10_000;
     let preroll_ms = le64(body, 56)?;
     tags.duration_ms = play_ms.saturating_sub(preroll_ms);
@@ -250,7 +255,7 @@ fn mdlib_attrs(body: &[u8], visit: impl FnMut(&[u8], u16, &[u8])) -> Option<()> 
 
 /// Content Description Object: `title-len, author-len, copyright-len, description-len,
 /// rating-len` (each u16) then those five UTF-16LE strings. We want title + author.
-fn cd_text(body: &[u8], tags: &mut AsfTags) -> Option<()> {
+fn cd_text(body: &[u8], tags: &mut AudioTags) -> Option<()> {
     let title_len = le16(body, 0)? as usize;
     let author_len = le16(body, 2)? as usize;
     let title_end = 10usize.checked_add(title_len)?;
@@ -269,7 +274,7 @@ fn cd_text(body: &[u8], tags: &mut AsfTags) -> Option<()> {
 /// artist, matching lofty's `artist()` for every other format — NOT `WM/AlbumArtist`
 /// (the album artist), which is a different field and would otherwise win on files
 /// that store the ECD before the Content Description Object (the common layout).
-fn apply_text_attr(name: &[u8], dtype: u16, value: &[u8], tags: &mut AsfTags) {
+fn apply_text_attr(name: &[u8], dtype: u16, value: &[u8], tags: &mut AudioTags) {
     match dtype {
         0 => apply_unicode_attr(name, value, tags),
         // DWORD: WM/Track is a zero-based integer
@@ -281,7 +286,7 @@ fn apply_text_attr(name: &[u8], dtype: u16, value: &[u8], tags: &mut AsfTags) {
 }
 
 /// One dtype-0 (Unicode string) attribute onto the tags we care about, first value wins.
-fn apply_unicode_attr(name: &[u8], value: &[u8], tags: &mut AsfTags) {
+fn apply_unicode_attr(name: &[u8], value: &[u8], tags: &mut AudioTags) {
     let Some(s) = utf16_string(value) else { return };
     if name_eq(name, b"WM/AlbumTitle") {
         tags.album.get_or_insert(s);

@@ -56,6 +56,7 @@ mod mobi;
 // Shared entry-name decoding (Shift-JIS / CP437 fallback for a name with no UTF-8 flag),
 // used by zipfmt and rar so a Japanese or DOS-era archive listing doesn't come back mojibake.
 mod names;
+pub use names::decode_codepage;
 mod office;
 pub mod ole;
 mod pdn;
@@ -190,12 +191,14 @@ pub fn audio_art_from_reader<R: std::io::Read + std::io::Seek>(reader: R) -> Opt
     audio::extract_reader(reader)
 }
 
-pub(crate) use audio::AsfTags;
+pub use audio::AudioTags;
 
 /// Artist/album/title/track from an ASF/WMA file (lofty can't read ASF, so the
 /// `strip::read_audio_tags` lofty path would return nothing). `None` for non-ASF
 /// input → the caller falls back to lofty for every other audio format.
-pub(crate) fn audio_asf_tags<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<AsfTags> {
+pub(crate) fn audio_asf_tags<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+) -> Option<AudioTags> {
     audio::asf_tags(reader)
 }
 

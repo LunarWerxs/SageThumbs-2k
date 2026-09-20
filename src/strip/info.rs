@@ -480,21 +480,9 @@ pub fn read_capture(path: &str) -> CaptureMeta {
     out
 }
 
-/// Audio tags for the "Rename by tag" verb (artist/title/album/track), read via
-/// `lofty` — the same crate (and read path) the album-art extractor uses.
-#[derive(Default)]
-pub struct AudioTags {
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub title: Option<String>,
-    pub track: Option<u32>,
-    pub genre: Option<String>,
-    pub year: Option<u32>,
-    /// Playback length in milliseconds (0 = unknown). Surfaced as `System.Media.Duration`.
-    pub duration_ms: u64,
-    /// Overall bitrate in kbps (0 = unknown). Surfaced as `System.Audio.EncodingBitrate`.
-    pub bitrate_kbps: u32,
-}
+/// The tags `read_audio_tags` returns; defined next to the ASF reader that fills the same
+/// struct directly (one type, not a lofty copy and an ASF copy with the same eight fields).
+pub use crate::container::AudioTags;
 
 /// Read an audio file's primary tag (artist/album/title/track). Empty/missing
 /// fields stay None. Mirrors `container::audio`'s proven `Probe` read path.
@@ -511,15 +499,7 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     // ASF/WMA: lofty has no ASF support, so read the tags ourselves (mirrors the
     // album-art path). Non-ASF returns None → the lofty path below runs unchanged.
     if let Some(t) = crate::container::audio_asf_tags(&mut file) {
-        out.artist = t.artist;
-        out.album = t.album;
-        out.title = t.title;
-        out.track = t.track;
-        out.genre = t.genre;
-        out.year = t.year;
-        out.duration_ms = t.duration_ms;
-        out.bitrate_kbps = t.bitrate_kbps;
-        return out;
+        return t;
     }
     if file.seek(std::io::SeekFrom::Start(0)).is_err() {
         return out;

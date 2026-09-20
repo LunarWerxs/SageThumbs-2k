@@ -230,7 +230,8 @@ use ape::apev2_cover;
 use asf::asf_cover;
 use id3::dsf_cover;
 
-pub(crate) use asf::{asf_tags, AsfTags};
+pub(crate) use asf::asf_tags;
+pub use asf::AudioTags;
 // Test-only re-exports so `container::fuzzseed` can aim at the APEv2 / DSF-ID3v2 cover-art
 // sub-parsers directly. The format modules themselves (`ape`, `id3`) stay private to `audio`.
 #[cfg(test)]
