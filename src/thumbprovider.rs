@@ -146,12 +146,37 @@ unsafe fn stream_identity(stream: &IStream) -> Option<failmemo::Identity> {
     let name = stat.pwcsName.to_string().ok();
     CoTaskMemFree(Some(stat.pwcsName.0 as *const core::ffi::c_void));
     let name = name?;
-    let mtime = ((stat.mtime.dwHighDateTime as u64) << 32) | stat.mtime.dwLowDateTime as u64;
+    let mtime = filetime_to_u64(stat.mtime.dwHighDateTime, stat.mtime.dwLowDateTime);
     Some(failmemo::Identity {
         name,
         size: stat.cbSize,
         mtime,
     })
+}
+
+/// The two 32-bit halves of a `FILETIME` rejoined into the single 64-bit tick count the
+/// failure memory keys on: the high half is the top 32 bits, the low half the bottom.
+/// Split out of `stream_identity` so the positional packing is pinned without a live
+/// `IStream`.
+fn filetime_to_u64(high: u32, low: u32) -> u64 {
+    ((high as u64) << 32) | low as u64
+}
+
+/// The extension and byte-length as the failure log prints them (`?` when the shell gave
+/// us neither). Split out of `ThumbnailProvider_Impl::stream_identity` so the fallback
+/// is testable without a live stream.
+fn log_identity_fields(ext: Option<String>, size: Option<u64>) -> (String, String) {
+    (
+        ext.unwrap_or_else(|| "?".to_string()),
+        size.map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+    )
+}
+
+/// The thumbnail edge actually asked of the decoder: the shell's request capped at the
+/// user's `MaxWidth`/`MaxHeight` so a small request is never upscaled to the limit.
+fn capped_edge(cx: u32, max_thumb: u32) -> u32 {
+    cx.min(max_thumb)
 }
 
 impl ThumbnailProvider_Impl {
@@ -172,11 +197,7 @@ impl ThumbnailProvider_Impl {
                     .map(|s| unsafe { (streamsrc::stream_extension(s), stream_len(s)) })
             })
             .unwrap_or((None, None));
-        (
-            ext.unwrap_or_else(|| "?".to_string()),
-            size.map(|n| n.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-        )
+        log_identity_fields(ext, size)
     }
 
     fn log_failure(&self, e: &Error) {
@@ -282,7 +303,7 @@ impl ThumbnailProvider_Impl {
         // clamped to the legacy [32, 512] range). decode never upscales.
         // Resolved BEFORE the cascade: the streaming EXR tier scales as it reads,
         // so it needs to know the tile size we actually want.
-        let cx = cx.min(cfg.max_thumb);
+        let cx = capped_edge(cx, cfg.max_thumb);
 
         // Acquire the source on THIS thread — the marshaled IStream is
         // apartment-bound. The shared cascade never buffers an unbounded file.
@@ -349,5 +370,69 @@ impl ThumbnailProvider_Impl {
             *pdwalpha = WTSAT_ARGB;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The failure memory keys on one 64-bit tick count; the two `FILETIME` halves must
+    /// land in their fixed positions or a file's identity changes on every call.
+    #[test]
+    fn filetime_joins_the_high_half_into_the_top_32_bits() {
+        assert_eq!(filetime_to_u64(1, 2), 0x0000_0001_0000_0002);
+    }
+
+    /// A low half with its top bit set is still only 32 bits: it must not carry into the
+    /// high half, which would corrupt the mtime for dates at the edge of the low word.
+    #[test]
+    fn filetime_low_half_with_high_bit_set_does_not_carry_into_the_high_half() {
+        assert_eq!(filetime_to_u64(0xAAAA_AAAA, 0xFFFF_FFFF), 0xAAAA_AAAA_FFFF_FFFF);
+    }
+
+    /// A nameless stream reports neither field; the failure log prints `?` for the
+    /// extension rather than an empty string the doctor cannot key on (#37).
+    #[test]
+    fn log_identity_prints_a_question_mark_for_a_missing_extension() {
+        assert_eq!(
+            log_identity_fields(None, Some(4096)),
+            ("?".to_string(), "4096".to_string())
+        );
+    }
+
+    /// The same for an unreported length: `?`, not `0`, so a size-less stream is not
+    /// mistaken for an empty one.
+    #[test]
+    fn log_identity_prints_a_question_mark_for_a_missing_size() {
+        assert_eq!(
+            log_identity_fields(Some("png".to_string()), None),
+            ("png".to_string(), "?".to_string())
+        );
+    }
+
+    /// A reported pair is passed through verbatim - extension lowercased by the caller,
+    /// length in decimal - because the doctor matches these exact strings.
+    #[test]
+    fn log_identity_passes_a_known_pair_through_unchanged() {
+        assert_eq!(
+            log_identity_fields(Some("heic".to_string()), Some(12_345)),
+            ("heic".to_string(), "12345".to_string())
+        );
+    }
+
+    /// The user's `MaxWidth`/`MaxHeight` is a ceiling, not a target: a smaller shell
+    /// request stays small so the decode never upscales to the limit.
+    #[test]
+    fn capped_edge_keeps_a_request_below_the_user_limit() {
+        assert_eq!(capped_edge(64, 256), 64);
+    }
+
+    /// A request above the user's limit is clamped down to it, including the exact
+    /// boundary where request equals limit.
+    #[test]
+    fn capped_edge_clamps_a_request_above_the_user_limit() {
+        assert_eq!(capped_edge(1024, 256), 256);
+        assert_eq!(capped_edge(256, 256), 256);
     }
 }
