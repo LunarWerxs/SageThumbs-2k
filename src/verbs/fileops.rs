@@ -292,12 +292,19 @@ pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<
     })))
 }
 
+/// Reserve a collision-free destination slot for `src` inside `dir`, taking the stem
+/// from `src`'s own file name. `Ok(None)` means `src` already IS the target path, so
+/// the caller has nothing to move or copy.
+fn reserve_src_slot(src: &Path, dir: &Path) -> Result<Option<OutSlot>> {
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    reserve_dest(src, dir, stem)
+}
+
 /// Move `src` into directory `dir`, dodging name collisions. `dir` must exist.
 /// Retries briefly past a transient Explorer lock. (Same-volume move — a
 /// cross-volume source just fails and is skipped by the caller.)
 fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let Some(slot) = reserve_dest(src, dir, stem)? else {
+    let Some(slot) = reserve_src_slot(src, dir)? else {
         return Ok(src.to_path_buf());
     };
     // `rename` overwrites the reserved placeholder atomically; only release the slot
@@ -320,8 +327,7 @@ fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
 
 /// Copy `src` into directory `dir`, dodging name collisions. `dir` must exist.
 fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf> {
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let Some(slot) = reserve_dest(src, dir, stem)? else {
+    let Some(slot) = reserve_src_slot(src, dir)? else {
         return Ok(src.to_path_buf()); // copying onto itself → nothing to do
     };
     if std::fs::copy(src, slot.path()).is_err() {
@@ -474,19 +480,27 @@ fn claim_bucket_dir(dir: &Path) -> (bool, bool) {
     (result.is_ok(), owns_new_dir(&result))
 }
 
+/// The shape every bucket sort shares: keep the image selections, probe each one's bucket
+/// name (`bucket`) IN PARALLEL, then hand the probed names to the serial move pass
+/// [`move_into_buckets`] and return its (moved, skipped).
+///
+/// The probe is parallel because it can fall back to a full decode (up to an ImageMagick
+/// subprocess per exotic RAW/HEIC file), which every other multi-file verb already fans
+/// out via `parallel::map`. The moves stay serial in `move_into_buckets`: they're cheap,
+/// and two files with equal buckets share a target dir (no create/move races).
+fn sort_by_bucket(
+    paths: &[String],
+    bucket: impl Fn(&str) -> Option<String> + Sync,
+) -> (usize, usize) {
+    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
+    let buckets = crate::parallel::map(&images, |_, p| bucket(p.as_str()));
+    move_into_buckets(&images, buckets)
+}
+
 /// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own parent
 /// folder (skwire "Dimensions 2 Folders"). Returns (moved, skipped).
 pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
-    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
-    // Probe dimensions IN PARALLEL first — `dims()` can fall back to a full decode (up
-    // to an ImageMagick subprocess per exotic RAW/HEIC file), and every other multi-file
-    // verb already fans that out via `parallel::map`. The moves stay serial in
-    // `move_into_buckets`: they're cheap, and two files with equal dims share a target dir
-    // (no create/move races).
-    let buckets = crate::parallel::map(&images, |_, p| {
-        dims(p.as_str()).map(|(w, h)| format!("{w}x{h}"))
-    });
-    move_into_buckets(&images, buckets)
+    sort_by_bucket(paths, |p| dims(p).map(|(w, h)| format!("{w}x{h}")))
 }
 
 /// The serial half every bucket sort shares: move each probed image into `<parent>/<bucket>`,
@@ -539,11 +553,7 @@ fn date_taken_folder_name(path: &str) -> Option<String> {
 /// file with no capture date is skipped and counted, same as an unreadable image
 /// there. Returns (moved, skipped).
 pub fn sort_by_date_taken(paths: &[String]) -> (usize, usize) {
-    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
-    // Reading EXIF can fall back to a full decode for formats without a fast header
-    // path, so probe in parallel like `sort_by_dimensions` does; moves stay serial.
-    let buckets = crate::parallel::map(&images, |_, p| date_taken_folder_name(p.as_str()));
-    move_into_buckets(&images, buckets)
+    sort_by_bucket(paths, date_taken_folder_name)
 }
 
 /// Expand a folder-name template against one file's tags. Tokens: `$artist`,
