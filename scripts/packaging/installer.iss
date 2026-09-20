@@ -994,10 +994,15 @@ end;
 
 // The "why are you leaving?" answer collected by the uninstall survey (AskUninstallReason),
 // read by NotifyUninstall. Reason is a short bucket key; Note and Contact are optional text.
+// ResetThumbCache is the survey form's one functional checkbox: whether usPostUninstall may
+// schedule the thumbnail-cache wipe (ScheduleThumbnailCacheReset). It defaults to False and is
+// only ever set by that interactive form or the /RESETTHUMBCACHE=1 switch, so an unattended
+// uninstall keeps the user's cache.
 var
   UninstallReason: String;
   UninstallNote: String;
   UninstallContact: String;
+  ResetThumbCache: Boolean;
 
 // Percent-encode a string for safe use as a URL query value. ASCII only - any non-ASCII
 // char is dropped rather than mis-encoded (the survey note is best-effort, not exact text).
@@ -1104,16 +1109,18 @@ end;
 procedure AskUninstallReason;
 var
   F: TSetupForm;
-  Lbl, NoteLbl, ReadLbl, ContactLbl: TNewStaticText;
+  Lbl, NoteLbl, ReadLbl, ContactLbl, CacheHint: TNewStaticText;
   Radios: array[0..6] of TNewRadioButton;
   Note, Contact: TNewEdit;
+  ResetCache: TNewCheckBox;
   BtnSend, BtnSkip: TNewButton;
   Keys, Texts: array[0..6] of String;
-  i, y: Integer;
+  i, y, R: Integer;
 begin
   UninstallReason := '';
   UninstallNote := '';
   UninstallContact := '';
+  ResetThumbCache := False;
 
   Keys[0] := 'buggy';       Texts[0] := 'It did not work - no thumbnails, errors, or crashes';
   Keys[1] := 'slow';        Texts[1] := 'Too slow or used too much memory / CPU';
@@ -1129,7 +1136,7 @@ begin
   // builds the form via CreateNew (no resource lookup) and works in Setup AND the uninstaller.
   // Client size is a construction arg (read-only afterward since Inno 6.6.0); the two True flags
   // keep both dimensions fixed (no autosize) for this fixed-layout dialog.
-  F := CreateCustomForm(ScaleX(470), ScaleY(420), True, True);
+  F := CreateCustomForm(ScaleX(470), ScaleY(486), True, True);
   try
     F.Caption := 'SageThumbs 2K';
     // Native look: the modern UI font. CreateCustomForm already inits Setup's dialog font;
@@ -1210,6 +1217,30 @@ begin
     SurveyWarn.Font.Color := clRed;
     SurveyWarn.Visible := False;
 
+    // The one functional control on this form: whether to throw away Windows' thumbnail cache
+    // (ScheduleThumbnailCacheReset). UNTICKED by default and read whichever button closes the
+    // form - it is not part of the survey, the survey is just the one dialog an interactive
+    // uninstall shows. The cache holds every thumbnail on the machine, not only ours, so
+    // deleting it is the user's call; issue 9 in docs/ISSUES.md has the reasoning.
+    ResetCache := TNewCheckBox.Create(F);
+    ResetCache.Parent := F;
+    ResetCache.Left := ScaleX(16);
+    ResetCache.Top := y + ScaleY(154);
+    ResetCache.Width := F.ClientWidth - ScaleX(32);
+    ResetCache.Caption := 'Also reset Windows'' thumbnail cache at the next restart';
+    ResetCache.Checked := False;
+
+    CacheHint := TNewStaticText.Create(F);
+    CacheHint.Parent := F;
+    CacheHint.Left := ScaleX(34);
+    CacheHint.Top := y + ScaleY(176);
+    CacheHint.Width := F.ClientWidth - ScaleX(50);
+    CacheHint.AutoSize := False;
+    CacheHint.WordWrap := True;
+    CacheHint.Height := ScaleY(30);
+    CacheHint.Caption := 'Unticked, the thumbnails SageThumbs 2K already drew stay until those ' +
+      'files change. Windows'' Disk Cleanup (Thumbnails) clears them any time later.';
+
     BtnSend := TNewButton.Create(F);
     BtnSend.Parent := F;
     BtnSend.Width := ScaleX(130);
@@ -1236,7 +1267,10 @@ begin
     BtnSkip.ModalResult := mrCancel;
     BtnSkip.Cancel := True;
 
-    if F.ShowModal = mrOk then begin
+    R := F.ShowModal;
+    // Read the checkbox on Send AND Skip: skipping the survey is not "keep my cache".
+    ResetThumbCache := ResetCache.Checked;
+    if R = mrOk then begin
       for i := 0 to 6 do
         if Radios[i].Checked then
           UninstallReason := Keys[i];
@@ -1551,20 +1585,29 @@ end;
 
 // Windows keeps every thumbnail it cached while SageThumbs 2K was installed - each tile we
 // drew, for every file the user browsed - and serves it for as long as the file is unchanged.
-// After an uninstall the desktop and every folder therefore went on showing OUR pictures (a
-// small image enlarged to fill its tile, our colour handling) with nothing left on the machine
-// to explain why; an uninstall survey note of 2026-09-15 ("desktop thumbnails got modified as
-// well") is what that residue looks like from the outside. Setup wipes the cache on install
-// for the mirror-image reason (the --rebuild-thumbnail-cache [Run] entry); this is the same
-// wipe at the moment the shell can no longer reach us.
+// After an uninstall the desktop and every folder therefore go on showing OUR pictures (our
+// colour handling, our rendering of formats Windows cannot draw) with nothing left on the
+// machine to explain why; an uninstall survey note of 2026-09-15 ("desktop thumbnails got
+// modified as well") is what that residue looks like from the outside. Setup wipes the cache
+// on install for the mirror-image reason (the --rebuild-thumbnail-cache [Run] entry).
+//
+// OPT-IN since 2026-09-20 (Michael's call, docs/ISSUES.md issue 9). From 3.0.5 this ran
+// unconditionally, silent uninstalls included, and someone complained: the cache is one
+// opaque structure holding EVERY thumbnail on the machine - the ordinary JPEGs Windows drew
+// itself long before we existed - and there is no supported way to evict only our entries
+// (IThumbnailCache has no per-item delete; the index and the size buckets are one unit). So
+// it is all or nothing, and the install side already treats the smaller version of this
+// action as a checkbox that refuses to run silently. The uninstall now matches: the survey
+// form's checkbox (unticked by default) or /RESETTHUMBCACHE for unattended removals that
+// want the old behaviour; otherwise the cache is kept and Windows' own Disk Cleanup can
+// clear it later.
 //
 // Explorer holds thumbcache_*.db open, so each file is handed to MoveFileEx with
 // MOVEFILE_DELAY_UNTIL_REBOOT: Windows removes it before the shell starts at the next boot and
 // rebuilds the cache from its own handlers. Deliberately NOT an Explorer restart: killing the
-// shell without asking is the one thing setup's own step refuses to do silently, and a
-// reboot-time delete closes nothing, so this runs on silent uninstalls too. Every file goes the
-// same way rather than deleting the unlocked ones now: the index and the size buckets are one
-// structure, and Windows should find either all of it or none of it.
+// shell without asking is the one thing setup's own step refuses to do silently. Every file
+// goes the same way rather than deleting the unlocked ones now: the index and the size buckets
+// are one structure, and Windows should find either all of it or none of it.
 //
 // {localappdata} is the ELEVATED user's profile, the same caveat [UninstallDelete] accepts for
 // SageThumbs2K.log: where a standard user typed a different admin's credentials this clears
@@ -1633,7 +1676,17 @@ begin
     RemoveRunKeyForAllUsers;
   end;
   // After the files are gone and [UninstallRun]'s regsvr32 /u has unhooked every format, so a
-  // cache rebuilt at the next boot can only come from Windows' own handlers.
-  if CurUninstallStep = usPostUninstall then
-    ScheduleThumbnailCacheReset;
+  // cache rebuilt at the next boot can only come from Windows' own handlers. Only when asked:
+  // the survey form's checkbox (AskUninstallReason, interactive only) or the /RESETTHUMBCACHE
+  // switch, the one way an unattended uninstall can opt in. ParamStr, not {param:}, for the
+  // same reason WasSelfUpdate reads /UPDATED that way.
+  if CurUninstallStep = usPostUninstall then begin
+    for TaskR := 1 to ParamCount do
+      if CompareText(ParamStr(TaskR), '/RESETTHUMBCACHE') = 0 then
+        ResetThumbCache := True;
+    if ResetThumbCache then
+      ScheduleThumbnailCacheReset
+    else
+      Log('SageThumbs 2K: keeping the Windows thumbnail cache (reset not requested).');
+  end;
 end;

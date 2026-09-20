@@ -332,9 +332,10 @@ trace behind.
 <summary><b>How do I uninstall?</b></summary>
 
 Normal Windows uninstall (Settings, Apps). It removes the registrations too. Windows keeps the
-thumbnails it cached while SageThumbs was installed, so the uninstaller clears that cache at the
-next restart and Windows draws its own again. For the portable copy, unregister first (Settings,
-Advanced), then delete the folder.
+thumbnails it cached while SageThumbs was installed; the uninstaller asks whether to clear that
+cache at the next restart (unticked keeps everything, and Windows' Disk Cleanup can clear it any
+time later). Unattended uninstalls leave it alone unless the command carries `/RESETTHUMBCACHE`.
+For the portable copy, unregister first (Settings, Advanced), then delete the folder.
 
 ---
 

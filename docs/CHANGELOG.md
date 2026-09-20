@@ -9,6 +9,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Uninstalling keeps Windows' thumbnail cache unless you ask.** Since 3.0.5 the uninstaller
+  cleared the whole cache at the next restart - every thumbnail on the machine, not only the
+  ones SageThumbs drew - and did so without asking, on unattended removals too. It now asks: a
+  box on the uninstall dialog, unticked by default, resets the cache; leaving it unticked keeps
+  everything as it is (thumbnails SageThumbs drew stay until those files change, and Windows'
+  Disk Cleanup can clear them any time). Unattended uninstalls never touch the cache; add
+  `/RESETTHUMBCACHE` to the uninstall command to opt in.
 - **Adobe Illustrator files saved without "Create PDF Compatible File" no longer show a blank
   page.** Such a file's PDF half is only a page of small print saying it was saved without PDF
   content, and that page is what showed as a white tile with unreadable text. Files from
