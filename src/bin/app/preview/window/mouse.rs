@@ -219,6 +219,13 @@ unsafe fn begin_sel_drag(hwnd: HWND, st: &ViewerState, sel: Option<(usize, usize
     }
 }
 
+/// Whether the client-space point starts a text/Markdown selection drag: in the content area
+/// (below `cap`, the scaled `CAPTION_H`), over a selectable pane, and not on the outline
+/// sidebar. The shared guard of [`lbuttondown_pane`] and [`on_lbuttondblclk`].
+unsafe fn sel_drag_target(hwnd: HWND, st: &ViewerState, x: i32, y: i32, cap: i32) -> bool {
+    y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none()
+}
+
 /// A press that landed neither on a toolbar button nor a PDF strip thumbnail: the custom
 /// text scrollbar, the video transport strip, an image pan (when zoomed), or the start of a
 /// text/Markdown selection drag. Split out of `on_lbuttondown`, the original `else` arm was
@@ -248,7 +255,7 @@ unsafe fn lbuttondown_pane(hwnd: HWND, x: i32, y: i32) {
         let (px, py) = st.pan.get();
         st.drag.set(Some((x, y, px, py)));
         let _ = SetCapture(hwnd);
-    } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
+    } else if sel_drag_target(hwnd, st, x, y, cap) {
         // In a text/Markdown pane (not the outline sidebar) → begin a selection
         // drag, anchored at the hit. A drag starting on a Markdown link is fine:
         // the link only opens if the button comes up with nothing selected.
@@ -366,7 +373,7 @@ pub(super) unsafe fn on_lbuttondblclk(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         // A double-click on the scrollbar must not select the document text beneath it.
     } else if y >= cap && st.kind.get() == ContentKind::Image && hit_button(hwnd, x, y).is_none() {
         toggle_fit_100(hwnd); // double-click content → toggle fit / 100%
-    } else if y >= cap && selection::selectable(st.kind.get()) && hit_toc(hwnd, x, y).is_none() {
+    } else if sel_drag_target(hwnd, st, x, y, cap) {
         // Double-click in a text/Markdown pane → select the word under the cursor.
         // Claiming the drag (capture + flag) keeps the button-up that follows from
         // being read as a click — which would open a double-clicked link.
