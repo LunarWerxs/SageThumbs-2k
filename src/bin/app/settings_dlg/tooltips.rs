@@ -3,6 +3,7 @@
 //! tooltip window. Split out of `mod.rs`.
 
 use super::*;
+use windows::Win32::UI::Controls::TOOLTIP_FLAGS;
 
 /// (control id, hint locale key) for every tooltip. Shared by `add_tooltips`
 /// (initial install), `refresh_tooltips` (re-translate on a live language
@@ -94,6 +95,20 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
 /// Edit-text message for the comctl32 tooltip (not in this windows-rs metadata).
 const TTM_UPDATETIPTEXTW: u32 = WM_USER + 57;
 
+/// Build the `TTTOOLINFOW` that names `ctl`'s hint, with `lpszText` pointing at
+/// the caller-owned `text` buffer, which must outlive the `SendMessageW` that
+/// consumes the struct.
+fn tool_info(hwnd: HWND, ctl: HWND, text: &[u16], u_flags: TOOLTIP_FLAGS) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: u_flags,
+        hwnd,
+        uId: ctl.0 as usize,
+        lpszText: PWSTR(text.as_ptr() as *mut u16),
+        ..Default::default()
+    }
+}
+
 /// Attach a hover hint to every interactive Settings control. One tooltip window
 /// owns them all; `TTF_SUBCLASS` lets it relay its own mouse messages, so the
 /// dialog's wndproc needs no extra handling. Hint text is localized with an
@@ -130,14 +145,7 @@ pub(super) unsafe fn add_tooltips(hwnd: HWND, hinst: HINSTANCE) {
         };
         // comctl32 copies the text on TTM_ADDTOOL, so this buffer can be temporary.
         let text = wide(t(key));
-        let mut ti = TTTOOLINFOW {
-            cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
-            uFlags: TTF_IDISHWND | TTF_SUBCLASS,
-            hwnd,
-            uId: ctl.0 as usize,
-            lpszText: PWSTR(text.as_ptr() as *mut u16),
-            ..Default::default()
-        };
+        let mut ti = tool_info(hwnd, ctl, &text, TTF_IDISHWND | TTF_SUBCLASS);
         SendMessageW(
             tip,
             TTM_ADDTOOLW,
@@ -178,14 +186,7 @@ pub(super) unsafe fn refresh_tooltips(hwnd: HWND) {
             continue;
         };
         let text = wide(t(key));
-        let mut ti = TTTOOLINFOW {
-            cbSize: core::mem::size_of::<TTTOOLINFOW>() as u32,
-            uFlags: TTF_IDISHWND,
-            hwnd,
-            uId: ctl.0 as usize,
-            lpszText: PWSTR(text.as_ptr() as *mut u16),
-            ..Default::default()
-        };
+        let mut ti = tool_info(hwnd, ctl, &text, TTF_IDISHWND);
         SendMessageW(
             tip,
             TTM_UPDATETIPTEXTW,
