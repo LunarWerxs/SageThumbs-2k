@@ -6,6 +6,25 @@
 
 use super::*;
 
+/// Arm `WM_MOUSELEAVE` for the window in `$hwnd`: ask `TrackMouseEvent` for one leave
+/// notification. Both hover trackers in this binary want exactly that (the viewer's toolbar /
+/// scrollbar hover here, and the settings search dropdown's row hover in
+/// `settings_dlg::search`). A macro rather than a `fn` because those two callers live in
+/// private sibling modules that cannot name each other's items, and neither module needs to
+/// be widened for a four-field struct literal.
+#[macro_export]
+macro_rules! arm_mouse_leave {
+    ($hwnd:expr) => {{
+        let mut tme = TRACKMOUSEEVENT {
+            cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: $hwnd,
+            dwHoverTime: 0,
+        };
+        let _ = TrackMouseEvent(&mut tme);
+    }};
+}
+
 /// The link URL (if any) under the client-space point, from the last Markdown paint. Only
 /// Markdown content records link rects.
 pub(super) unsafe fn hit_link(hwnd: HWND, x: i32, y: i32) -> Option<String> {
@@ -151,13 +170,7 @@ unsafe fn mousemove_hover(hwnd: HWND, st: &ViewerState, x: i32, y: i32) -> LRESU
     }
     let scroll_changed = set_scroll_hot(hwnd, hit_text_scrollbar(hwnd, x, y).is_some());
     if button_changed || scroll_changed {
-        let mut tme = TRACKMOUSEEVENT {
-            cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-            dwFlags: TME_LEAVE,
-            hwndTrack: hwnd,
-            dwHoverTime: 0,
-        };
-        let _ = TrackMouseEvent(&mut tme);
+        crate::arm_mouse_leave!(hwnd);
     }
     LRESULT(0)
 }
@@ -190,6 +203,20 @@ pub(super) unsafe fn on_lbuttondown(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         lbuttondown_pane(hwnd, x, y);
     }
     LRESULT(0)
+}
+
+/// Begin a text/Markdown selection drag over `sel` — the shared tail of the press start
+/// ([`lbuttondown_pane`], anchored at the hit) and the double-click word start
+/// ([`on_lbuttondblclk`], the word's range): claim the range, arm the drag flag, capture the
+/// mouse, and repaint the content pane. `None` (nothing selectable there) does nothing.
+unsafe fn begin_sel_drag(hwnd: HWND, st: &ViewerState, sel: Option<(usize, usize)>) {
+    if let Some((a, b)) = sel {
+        st.sel.set(Some((a, b)));
+        st.sel_drag.set(true);
+        let _ = SetCapture(hwnd);
+        let cr = content_rect(hwnd);
+        let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
+    }
 }
 
 /// A press that landed neither on a toolbar button nor a PDF strip thumbnail: the custom
@@ -225,13 +252,7 @@ unsafe fn lbuttondown_pane(hwnd: HWND, x: i32, y: i32) {
         // In a text/Markdown pane (not the outline sidebar) → begin a selection
         // drag, anchored at the hit. A drag starting on a Markdown link is fine:
         // the link only opens if the button comes up with nothing selected.
-        if let Some(off) = selection::hit(hwnd, x, y) {
-            st.sel.set(Some((off, off)));
-            st.sel_drag.set(true);
-            let _ = SetCapture(hwnd);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
+        begin_sel_drag(hwnd, st, selection::hit(hwnd, x, y).map(|o| (o, o)));
     }
 }
 
@@ -349,15 +370,11 @@ pub(super) unsafe fn on_lbuttondblclk(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         // Double-click in a text/Markdown pane → select the word under the cursor.
         // Claiming the drag (capture + flag) keeps the button-up that follows from
         // being read as a click — which would open a double-clicked link.
-        if let Some((a, b)) =
-            selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o))
-        {
-            st.sel.set(Some((a, b)));
-            st.sel_drag.set(true);
-            let _ = SetCapture(hwnd);
-            let cr = content_rect(hwnd);
-            let _ = InvalidateRect(Some(hwnd), Some(&cr), false);
-        }
+        begin_sel_drag(
+            hwnd,
+            st,
+            selection::hit(hwnd, x, y).and_then(|o| selection::word_range(hwnd, o)),
+        );
     }
     LRESULT(0)
 }

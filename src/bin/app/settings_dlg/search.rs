@@ -368,13 +368,7 @@ unsafe extern "system" fn hover_proc(
             if prev != idx {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
-            let mut tme = TRACKMOUSEEVENT {
-                cbSize: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                dwFlags: TME_LEAVE,
-                hwndTrack: hwnd,
-                dwHoverTime: 0,
-            };
-            let _ = TrackMouseEvent(&mut tme);
+            crate::arm_mouse_leave!(hwnd);
         }
         WM_MOUSELEAVE if HOT.with(|h| h.replace(-1)) != -1 => {
             let _ = InvalidateRect(Some(hwnd), None, false);
