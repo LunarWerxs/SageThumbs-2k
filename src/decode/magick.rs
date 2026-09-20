@@ -762,6 +762,22 @@ const FULL_FIDELITY_CAPS: DecodeCaps = DecodeCaps {
     png_cap: FULL_FIDELITY_PNG_CAP,
 };
 
+/// Kill a magick child unconditionally, join its stdin-writer/stdout-reader threads and
+/// reap it, returning its exit status and whatever its stderr drain collected.
+fn reap_magick_child(
+    child: &mut std::process::Child,
+    writer: std::thread::JoinHandle<()>,
+    reader: std::thread::JoinHandle<()>,
+    errdrain: Option<std::thread::JoinHandle<Vec<u8>>>,
+) -> (Option<std::process::ExitStatus>, Vec<u8>) {
+    let _ = child.kill();
+    let _ = writer.join();
+    let _ = reader.join();
+    let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
+    let status = child.wait().ok();
+    (status, err)
+}
+
 /// As [`decode_via_magick_spec`], but with explicit memory caps — used by the
 /// full-fidelity paths, whose larger resize edge needs both raised in step.
 // Every parameter is a distinct knob its two callers set differently; bundling them would
@@ -865,11 +881,7 @@ fn decode_via_magick_spec_alloc(
         Ok(buf) => buf,
         Err(why) => {
             // Over budget: kill, drain the threads, reap, fail.
-            let _ = child.kill();
-            let _ = writer.join();
-            let _ = reader.join();
-            let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
-            let status = child.wait().ok();
+            let (status, err) = reap_magick_child(&mut child, writer, reader, errdrain);
             log_magick_failure(why, status, &err);
             return Err(Error::from(E_FAIL));
         }
@@ -879,11 +891,7 @@ fn decode_via_magick_spec_alloc(
     // blocked on a full pipe) can't deadlock writer.join()/wait() forever — the
     // whole reason the external timeout exists. kill() is a harmless no-op if it
     // already exited.
-    let _ = child.kill();
-    let _ = writer.join();
-    let _ = reader.join();
-    let err = errdrain.and_then(|h| h.join().ok()).unwrap_or_default();
-    let status = child.wait().ok();
+    let (status, err) = reap_magick_child(&mut child, writer, reader, errdrain);
     if png.is_empty() {
         log_magick_failure("decode produced no output", status, &err);
         return Err(Error::from(E_FAIL));
