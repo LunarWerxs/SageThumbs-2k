@@ -153,6 +153,24 @@ pub(super) unsafe fn finish_ocr(s: &Shot) {
     compose_and_spawn(s, "--ocr");
 }
 
+/// Show the "couldn't save" warning naming `dir`, the folder whose write failed. A `false`
+/// from a save that got this far is a DISK failure (full/unwritable/missing folder), NOT a
+/// cancel, so it must be told to the user rather than silently treated as "keep editing".
+fn warn_save_failed(hwnd: HWND, dir: &str) {
+    let m = wide(&crate::win::t("shot_save_failed").replace("{dir}", dir));
+    let cap = wide("SageThumbs 2K");
+    // SAFETY: `m`/`cap` are NUL-terminated wide buffers that outlive the call, and `hwnd`
+    // is the overlay window the caller owns.
+    unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(m.as_ptr()),
+            PCWSTR(cap.as_ptr()),
+            MB_OK | MB_ICONWARNING,
+        );
+    }
+}
+
 /// Save the composited capture. With the "fixed save folder" option on, auto-saves a
 /// timestamped PNG into the configured folder (Desktop by default) and returns true.
 /// Otherwise prompts via a Save-As dialog and returns true iff the user picked a path
@@ -172,16 +190,7 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
             // A `false` here is a DISK failure (full/unwritable/missing folder), NOT a cancel
             // (the Save-As path can't run in this branch). Tell the user — otherwise the caller
             // treats false as "keep editing" and the capture silently never lands.
-            with_modal(hwnd, || {
-                let m = wide(&crate::win::t("shot_save_failed").replace("{dir}", &dir));
-                let cap = wide("SageThumbs 2K");
-                MessageBoxW(
-                    Some(hwnd),
-                    PCWSTR(m.as_ptr()),
-                    PCWSTR(cap.as_ptr()),
-                    MB_OK | MB_ICONWARNING,
-                );
-            });
+            with_modal(hwnd, || warn_save_failed(hwnd, &dir));
         }
         ok
     } else {
@@ -203,14 +212,7 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
                         .parent()
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let m = wide(&crate::win::t("shot_save_failed").replace("{dir}", &dir));
-                    let cap = wide("SageThumbs 2K");
-                    MessageBoxW(
-                        Some(hwnd),
-                        PCWSTR(m.as_ptr()),
-                        PCWSTR(cap.as_ptr()),
-                        MB_OK | MB_ICONWARNING,
-                    );
+                    warn_save_failed(hwnd, &dir);
                 }
             }
         });
