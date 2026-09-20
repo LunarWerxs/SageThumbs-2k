@@ -124,18 +124,23 @@ pub fn utf16_nul_bytes(text: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The little-endian UTF-16 code units in `bytes`, ignoring a trailing odd byte.
+pub(crate) fn utf16_le_units(bytes: &[u8]) -> Vec<u16> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn round_trip(text: &str) -> String {
         let bytes = utf16_nul_bytes(text);
-        let units: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let units = utf16_le_units(&bytes);
         assert_eq!(units.last(), Some(&0), "payload must be NUL-terminated");
         String::from_utf16_lossy(&units[..units.len() - 1])
     }
