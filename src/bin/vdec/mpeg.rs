@@ -76,22 +76,8 @@ fn to_rgba(
     frame: &oxideav_mpeg12video::frame_assembly::FrameBuffer,
     hdr: &SeqHeader,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    // The decoder is trusted less than its input: re-check the geometry it reports.
     let (w, h) = (frame.width, frame.height);
-    if w == 0 || h == 0 || w > MPEG_MAX_DIM as usize || h > MPEG_MAX_DIM as usize {
-        return Err(format!(
-            "decoder returned a {w}x{h} frame (cap {MPEG_MAX_DIM})"
-        ));
-    }
-    let (ss_x, ss_y) = match frame.chroma_format {
-        ChromaFormat::Yuv420 => (1usize, 1usize),
-        ChromaFormat::Yuv422 => (1, 0),
-        ChromaFormat::Yuv444 => (0, 0),
-    };
-    let (cw, ch) = frame.visible_chroma_dims();
-    if cw == 0 || ch == 0 || cw < (w + ss_x) >> ss_x || ch < (h + ss_y) >> ss_y {
-        return Err("implausible chroma geometry from the decoder".into());
-    }
+    let (ss_x, ss_y, cw, ch) = check_frame_geometry(frame)?;
     // `packed_rect` clips to the plane, so verify the copies are the size the geometry says
     // before indexing them — an inconsistency would otherwise panic below (panic=abort).
     let y = frame.y.packed_rect(w, h);
@@ -128,6 +114,28 @@ fn to_rgba(
         }
     }
     Ok((w as u32, h as u32, rgba))
+}
+
+/// Re-check the geometry the decoder reports and derive its chroma subsampling and plane dims.
+fn check_frame_geometry(
+    frame: &oxideav_mpeg12video::frame_assembly::FrameBuffer,
+) -> Result<(usize, usize, usize, usize), String> {
+    let (w, h) = (frame.width, frame.height);
+    if w == 0 || h == 0 || w > MPEG_MAX_DIM as usize || h > MPEG_MAX_DIM as usize {
+        return Err(format!(
+            "decoder returned a {w}x{h} frame (cap {MPEG_MAX_DIM})"
+        ));
+    }
+    let (ss_x, ss_y) = match frame.chroma_format {
+        ChromaFormat::Yuv420 => (1usize, 1usize),
+        ChromaFormat::Yuv422 => (1, 0),
+        ChromaFormat::Yuv444 => (0, 0),
+    };
+    let (cw, ch) = frame.visible_chroma_dims();
+    if cw == 0 || ch == 0 || cw < (w + ss_x) >> ss_x || ch < (h + ss_y) >> ss_y {
+        return Err("implausible chroma geometry from the decoder".into());
+    }
+    Ok((ss_x, ss_y, cw, ch))
 }
 
 /// Position of the first `00 00 01 xx` at or after `from` whose `xx` satisfies `want`.
