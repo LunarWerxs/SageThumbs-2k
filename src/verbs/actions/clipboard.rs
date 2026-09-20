@@ -83,6 +83,31 @@ pub fn copy_rgba_to_clipboard(w: i32, h: i32, rgba: &[u8]) -> Result<()> {
     }
 }
 
+/// Serialize the fixed `#[repr(C)]` BITMAPINFOHEADER prologue of a packed CF_DIB (40
+/// bytes, little-endian, no padding) onto the end of the byte vector `$dib`. `$header`
+/// is the caller's already-computed `size_of::<BITMAPINFOHEADER>()`, which it keeps for
+/// its own capacity and length checks. Positive `$h` = bottom-up DIB (CF_DIB convention).
+///
+/// A macro rather than a `fn` because its two callers straddle this library module
+/// (`build_dib`) and the `SageThumbs2K` binary's screenshot path (`screenshot::output`),
+/// which can only name this crate's exported root.
+#[macro_export]
+macro_rules! push_cf_dib_header {
+    ($dib:ident, $w:expr, $h:expr, $header:expr) => {
+        $dib.extend_from_slice(&($header as u32).to_le_bytes()); // biSize
+        $dib.extend_from_slice(&$w.to_le_bytes()); // biWidth
+        $dib.extend_from_slice(&$h.to_le_bytes()); // biHeight (positive = bottom-up)
+        $dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+        $dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+        $dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
+        $dib.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
+        $dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+        $dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+        $dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+        $dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    };
+}
+
 /// Assemble a packed CF_DIB (BITMAPINFOHEADER + bottom-up BGRA pixels) from
 /// top-down RGBA8 pixels. Pure — no clipboard/HGLOBAL access — so it's
 /// unit-testable without a real Windows clipboard. Callers must ensure `w`/`h`
@@ -98,18 +123,7 @@ fn build_dib(w: i32, h: i32, rgba: &[u8]) -> Vec<u8> {
     let total = header + row * h as usize;
 
     let mut dib = Vec::with_capacity(total);
-    // BITMAPINFOHEADER: positive biHeight = bottom-up DIB (CF_DIB convention).
-    dib.extend_from_slice(&(header as u32).to_le_bytes()); // biSize
-    dib.extend_from_slice(&w.to_le_bytes()); // biWidth
-    dib.extend_from_slice(&h.to_le_bytes()); // biHeight (positive = bottom-up)
-    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    push_cf_dib_header!(dib, w, h, header);
     debug_assert_eq!(dib.len(), header);
     // Pixels: bottom-up, RGBA -> BGRA. Walk source rows in reverse (last to
     // first) and swap R/B per pixel.

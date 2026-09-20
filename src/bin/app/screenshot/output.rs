@@ -13,18 +13,9 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
     let row = (w * 4) as usize;
     let total = header + row * h as usize;
     let mut dib = Vec::with_capacity(total);
-    dib.extend_from_slice(&(header as u32).to_le_bytes()); // biSize
-    dib.extend_from_slice(&w.to_le_bytes()); // biWidth
-    dib.extend_from_slice(&h.to_le_bytes()); // biHeight (positive = bottom-up)
-    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
-                                                // Emit rows bottom-up from the top-down source.
+    sagethumbs2k_core::push_cf_dib_header!(dib, w, h, header);
+
+    // Emit rows bottom-up from the top-down source.
     for y in (0..h as usize).rev() {
         dib.extend_from_slice(&top_down_bgra[y * row..y * row + row]);
     }
