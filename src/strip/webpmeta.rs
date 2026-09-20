@@ -87,18 +87,21 @@ fn reinsert_orientation(webp: &mut WebP, orientation: u32) {
 mod tests {
     use super::*;
 
+    /// Append one RIFF chunk: id, little-endian payload length, payload, and a
+    /// pad byte when the payload length is odd (RIFF chunks are word-aligned).
+    fn chunk(out: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
+        out.extend_from_slice(id);
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        if payload.len() % 2 == 1 {
+            out.push(0); // RIFF chunks are word-aligned
+        }
+    }
+
     /// Minimal extended WebP: RIFF/WEBP + VP8X (all four flags set) + ICCP +
     /// EXIF + XMP + a stub VP8L. Enough structure for the chunk rewrite; the
     /// image payload is never decoded by this path.
     fn synth() -> Vec<u8> {
-        fn chunk(out: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
-            out.extend_from_slice(id);
-            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            out.extend_from_slice(payload);
-            if payload.len() % 2 == 1 {
-                out.push(0); // RIFF chunks are word-aligned
-            }
-        }
         let mut body = b"WEBP".to_vec();
         let mut vp8x = vec![0u8; 10];
         vp8x[0] = 0x20 | 0x10 | VP8X_EXIF | VP8X_XMP; // ICC + alpha + EXIF + XMP
@@ -107,6 +110,12 @@ mod tests {
         chunk(&mut body, b"VP8L", b"stub-image-data");
         chunk(&mut body, b"EXIF", b"II*\0secret-camera");
         chunk(&mut body, b"XMP ", b"<x:xmpmeta>gps</x:xmpmeta>");
+        riff(body)
+    }
+
+    /// Wrap a RIFF `body` (which already starts with `WEBP`) in the outer `RIFF`
+    /// header the container needs: four id bytes then a little-endian length.
+    fn riff(body: Vec<u8>) -> Vec<u8> {
         let mut out = b"RIFF".to_vec();
         out.extend_from_slice(&(body.len() as u32).to_le_bytes());
         out.extend_from_slice(&body);
@@ -123,16 +132,20 @@ mod tests {
         assert!(webp.has_chunk(*b"VP8L"), "image data was dropped");
     }
 
+    /// The VP8X feature byte: byte 0 of its 10-byte payload.
+    fn vp8x_flags(webp: &WebP) -> u8 {
+        webp.chunk_by_id(*b"VP8X")
+            .unwrap()
+            .content()
+            .data()
+            .unwrap()[0]
+    }
+
     #[test]
     fn clears_the_vp8x_feature_bits() {
         let out = strip(Bytes::from(synth())).expect("strip");
         let webp = WebP::from_bytes(Bytes::from(out)).expect("re-parse");
-        let flags = webp
-            .chunk_by_id(*b"VP8X")
-            .unwrap()
-            .content()
-            .data()
-            .unwrap()[0];
+        let flags = vp8x_flags(&webp);
         assert_eq!(flags & VP8X_EXIF, 0, "VP8X still advertises EXIF");
         assert_eq!(flags & VP8X_XMP, 0, "VP8X still advertises XMP");
         assert_eq!(flags & 0x20, 0x20, "VP8X lost its ICC bit");
@@ -142,14 +155,6 @@ mod tests {
     /// Like [`synth`], but the EXIF chunk is a real TIFF that carries Orientation `o` and a
     /// camera make, so the reader the product uses (`exif::Reader`) can find the tag.
     fn synth_with_orientation(o: u16) -> Vec<u8> {
-        fn chunk(out: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
-            out.extend_from_slice(id);
-            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            out.extend_from_slice(payload);
-            if payload.len() % 2 == 1 {
-                out.push(0);
-            }
-        }
         // Little-endian TIFF: header, IFD0 with two entries (Make at an offset, Orientation
         // inline), next-IFD 0, then the Make string.
         let mut tiff = vec![b'I', b'I', 0x2A, 0x00, 8, 0, 0, 0, 2, 0];
@@ -171,10 +176,7 @@ mod tests {
         chunk(&mut body, b"VP8L", b"stub-image-data");
         chunk(&mut body, b"EXIF", &tiff);
         chunk(&mut body, b"XMP ", b"<x:xmpmeta>gps</x:xmpmeta>");
-        let mut out = b"RIFF".to_vec();
-        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        out.extend_from_slice(&body);
-        out
+        riff(body)
     }
 
     /// 2026-09-19 audit F04: a WebP tagged Orientation 6 displays portrait; Strip used to drop
@@ -212,12 +214,7 @@ mod tests {
             "the camera make leaked through"
         );
         assert!(!webp.has_chunk(*b"XMP "), "XMP survived");
-        let flags = webp
-            .chunk_by_id(*b"VP8X")
-            .unwrap()
-            .content()
-            .data()
-            .unwrap()[0];
+        let flags = vp8x_flags(&webp);
         assert_eq!(
             flags & VP8X_EXIF,
             VP8X_EXIF,
@@ -241,12 +238,7 @@ mod tests {
             !webp.has_chunk(*b"EXIF"),
             "an identity orientation earns no EXIF chunk"
         );
-        let flags = webp
-            .chunk_by_id(*b"VP8X")
-            .unwrap()
-            .content()
-            .data()
-            .unwrap()[0];
+        let flags = vp8x_flags(&webp);
         assert_eq!(flags & VP8X_EXIF, 0);
     }
 }
