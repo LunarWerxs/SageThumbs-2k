@@ -320,20 +320,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
         &asset.url,
         MAX_INSTALLER_BYTES,
         DOWNLOAD_TIMEOUT_SECS,
-        &mut |done| unsafe {
-            if dlg.HasUserCancelled().as_bool() {
-                cancelled = true;
-                return false;
-            }
-            let denom = if total != 0 { total } else { done.max(1) };
-            let _ = dlg.SetProgress64(done, denom);
-            set_line(
-                &dlg,
-                2,
-                &format!("{} of {}", human_mb(done), human_mb(total)),
-            );
-            true
-        },
+        &mut |done| download_progress_tick(&dlg, total, done, &mut cancelled),
     );
 
     // Everything up to (but NOT including) the elevated launch happens under the dialog.
@@ -374,6 +361,27 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     match launched {
         Ok(()) => Ok(tag),
         Err(e) => Err(e),
+    }
+}
+
+/// One tick of the streaming-download progress callback: abort if the user cancelled the
+/// shell dialog, otherwise drive its bar and sub-line from bytes-so-far; returns whether the
+/// download should keep going.
+fn download_progress_tick(
+    dlg: &IProgressDialog,
+    total: u64,
+    done: u64,
+    cancelled: &mut bool,
+) -> bool {
+    unsafe {
+        if dlg.HasUserCancelled().as_bool() {
+            *cancelled = true;
+            return false;
+        }
+        let denom = if total != 0 { total } else { done.max(1) };
+        let _ = dlg.SetProgress64(done, denom);
+        set_line(dlg, 2, &format!("{} of {}", human_mb(done), human_mb(total)));
+        true
     }
 }
 
