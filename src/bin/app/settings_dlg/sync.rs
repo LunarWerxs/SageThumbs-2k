@@ -420,6 +420,19 @@ pub(super) unsafe fn on_connected_synced(hwnd: HWND) {
     crate::nudge::mark_signed_in();
 }
 
+/// Settle the status line after a failed push/pull: `Offline` when the attempt never
+/// reached the server at all, otherwise `SavedLocally` carrying the server's own `error`
+/// message. Shared by the `Pulled(Err)` and `Pushed(Err)` arms so the two classify an
+/// identical failure identically.
+unsafe fn set_sync_failure_status(hwnd: HWND, error: String) {
+    let state = if crate::sync_client::last_attempt_was_offline() {
+        SyncState::Offline
+    } else {
+        SyncState::SavedLocally { error: Some(error) }
+    };
+    set_sync_status(hwnd, Some(render_sync_state(&state)));
+}
+
 /// Apply a finished sync op to the UI (runs on the message thread).
 pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
@@ -501,12 +514,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
                     // instead of `set_sync_status(hwnd, None)`, which re-derives from the
                     // persisted markers alone and, before this fix, read as caught-up
                     // whenever neither pending marker happened to be set.
-                    let state = if crate::sync_client::last_attempt_was_offline() {
-                        SyncState::Offline
-                    } else {
-                        SyncState::SavedLocally { error: Some(error) }
-                    };
-                    set_sync_status(hwnd, Some(render_sync_state(&state)));
+                    set_sync_failure_status(hwnd, error);
                 }
             }
         }
@@ -519,12 +527,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             // E05 audit: a push that never reached the server at all is `Offline`, not
             // `SavedLocally` with a server-shaped error message, the two used to be the
             // same rendered line no matter which one actually happened.
-            let state = if crate::sync_client::last_attempt_was_offline() {
-                SyncState::Offline
-            } else {
-                SyncState::SavedLocally { error: Some(error) }
-            };
-            set_sync_status(hwnd, Some(render_sync_state(&state)));
+            set_sync_failure_status(hwnd, error);
         }
         SyncEvent::Disconnected(outcome) => {
             refresh_sync_ui(hwnd);
