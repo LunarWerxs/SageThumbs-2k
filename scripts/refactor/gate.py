@@ -107,14 +107,19 @@ def consistency():
 
 
 def tests(filt=None):
+    import time
     cmd = ["cargo", "test", "--workspace"] + ([filt] if filt else [])
+    t0 = time.monotonic()
     code, out = run(cmd)
+    wall = time.monotonic() - t0
     passed = failed = 0
     for l in out.split("\n"):
         m = re.match(r"test result: \w+\. (\d+) passed; (\d+) failed", l)
         if m:
             passed += int(m.group(1)); failed += int(m.group(2))
-    print(f"tests: exit {code}, {passed} passed, {failed} failed")
+        elif l.lstrip().startswith("Finished "):
+            print("  " + l.strip())  # compile + link time: the part the build knobs move
+    print(f"tests: exit {code}, {passed} passed, {failed} failed, {wall:.0f}s wall")
     for l in out.split("\n"):
         if l.startswith("test ") and l.endswith("FAILED") or "panicked at" in l:
             print("  " + l[:200])
