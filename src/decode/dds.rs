@@ -309,41 +309,57 @@ fn select_mip(bytes: &[u8], s: &mut Surface, target: u32) {
 
     let (mut w, mut h, mut off, mut depth) = (s.width, s.height, s.data, s.depth);
     for _ in 1..count {
-        if w.max(h) <= target || (w == 1 && h == 1) {
-            break;
+        match next_mip_level(bytes, s.layout, w, h, off, depth, target) {
+            Some((nw, nh, next_off, nd)) => {
+                w = nw;
+                h = nh;
+                off = next_off;
+                depth = nd;
+            }
+            None => break,
         }
-        // A volume texture's mip level is `depth` full slices, not one — the file lays
-        // them out contiguously, and `depth` itself halves (floor 1) with every mip step.
-        let Some(this_level) =
-            surface_bytes(s.layout, w, h).and_then(|slice| slice.checked_mul(depth as usize))
-        else {
-            break;
-        };
-        let Some(next_off) = off.checked_add(this_level) else {
-            break;
-        };
-        let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
-        let nd = depth.div_ceil(2).max(1);
-        // Only step down when the NEXT level is genuinely there; a file whose chain is
-        // truncated must still render the level we already have.
-        match surface_bytes(s.layout, nw, nh).and_then(|slice| slice.checked_mul(nd as usize)) {
-            Some(n) if next_off.checked_add(n).is_some_and(|e| e <= bytes.len()) => {}
-            _ => break,
-        }
-        // Stepping past the target would give a tile smaller than asked for, which the
-        // caller would have to upscale — worse than decoding one level too big.
-        if nw.max(nh) < target {
-            break;
-        }
-        w = nw;
-        h = nh;
-        off = next_off;
-        depth = nd;
     }
     s.width = w;
     s.height = h;
     s.data = off;
     s.depth = depth;
+}
+
+/// The next mip level's dimensions and data offset, or `None` when the walk should stop
+/// (target reached, 1x1, an overflow, or a truncated chain). Best-effort by design: the
+/// chain is an optimisation and level 0 is always the correct answer.
+fn next_mip_level(
+    bytes: &[u8],
+    layout: Layout,
+    w: u32,
+    h: u32,
+    off: usize,
+    depth: u32,
+    target: u32,
+) -> Option<(u32, u32, usize, u32)> {
+    if w.max(h) <= target || (w == 1 && h == 1) {
+        return None;
+    }
+    // A volume texture's mip level is `depth` full slices, not one — the file lays
+    // them out contiguously, and `depth` itself halves (floor 1) with every mip step.
+    let this_level =
+        surface_bytes(layout, w, h).and_then(|slice| slice.checked_mul(depth as usize))?;
+    let next_off = off.checked_add(this_level)?;
+    let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
+    let nd = depth.div_ceil(2).max(1);
+    // Only step down when the NEXT level is genuinely there; a file whose chain is
+    // truncated must still render the level we already have.
+    let next_level =
+        surface_bytes(layout, nw, nh).and_then(|slice| slice.checked_mul(nd as usize))?;
+    if next_off.checked_add(next_level)? > bytes.len() {
+        return None;
+    }
+    // Stepping past the target would give a tile smaller than asked for, which the
+    // caller would have to upscale — worse than decoding one level too big.
+    if nw.max(nh) < target {
+        return None;
+    }
+    Some((nw, nh, next_off, nd))
 }
 
 fn fail(msg: impl AsRef<str>) -> Error {
@@ -393,22 +409,37 @@ fn resolve_pixel_layout(bytes: &[u8], pf_flags: u32) -> Result<(Layout, usize, u
         .get(OFF_PF_FOURCC..OFF_PF_FOURCC + 4)
         .ok_or_else(|| fail("truncated FourCC"))?;
 
-    let mut data = DATA_OFF;
     let mut alpha_mode = 0;
-    let layout = if pf_flags & DDPF_FOURCC != 0 {
-        if fourcc == b"DX10" {
-            data = DATA_OFF + DXT10_LEN;
-            let dxgi = le32(bytes, OFF_DXGI_FORMAT).ok_or_else(|| fail("truncated DX10 header"))?;
-            alpha_mode = le32(bytes, OFF_MISC_FLAGS2).unwrap_or(0) & ALPHA_MODE_MASK;
-            dxgi_layout(dxgi).ok_or_else(|| fail(format!("unsupported DXGI format {dxgi}")))?
-        } else {
-            fourcc_layout(fourcc, &mut alpha_mode)
-                .ok_or_else(|| fail(format!("unsupported FourCC {}", ascii(fourcc))))?
-        }
+    let (layout, data) = if pf_flags & DDPF_FOURCC != 0 {
+        fourcc_pixel_layout(bytes, fourcc, &mut alpha_mode)?
     } else {
-        Layout::Masks(mask_layout(bytes, pf_flags)?)
+        (Layout::Masks(mask_layout(bytes, pf_flags)?), DATA_OFF)
     };
     Ok((layout, data, alpha_mode))
+}
+
+/// Resolve a `DDPF_FOURCC` pixel format to its layout and data offset: a `DX10` extension
+/// header, or a classic FourCC.
+fn fourcc_pixel_layout(
+    bytes: &[u8],
+    fourcc: &[u8],
+    alpha_mode: &mut u32,
+) -> Result<(Layout, usize)> {
+    if fourcc == b"DX10" {
+        let layout = dx10_pixel_layout(bytes, alpha_mode)?;
+        Ok((layout, DATA_OFF + DXT10_LEN))
+    } else {
+        let layout = fourcc_layout(fourcc, alpha_mode)
+            .ok_or_else(|| fail(format!("unsupported FourCC {}", ascii(fourcc))))?;
+        Ok((layout, DATA_OFF))
+    }
+}
+
+/// Resolve a `DX10` header's `dxgiFormat` to a layout, recording its alpha mode.
+fn dx10_pixel_layout(bytes: &[u8], alpha_mode: &mut u32) -> Result<Layout> {
+    let dxgi = le32(bytes, OFF_DXGI_FORMAT).ok_or_else(|| fail("truncated DX10 header"))?;
+    *alpha_mode = le32(bytes, OFF_MISC_FLAGS2).unwrap_or(0) & ALPHA_MODE_MASK;
+    dxgi_layout(dxgi).ok_or_else(|| fail(format!("unsupported DXGI format {dxgi}")))
 }
 
 fn ascii(fourcc: &[u8]) -> String {
@@ -446,22 +477,25 @@ fn fourcc_layout(fourcc: &[u8], alpha_mode: &mut u32) -> Option<Layout> {
         b"BC5S" => Block::Bc5 { signed: true },
         // A FourCC that is really a small integer is a D3DFORMAT enum value —
         // how DX9-era tools stored the typed (16/32-bit, float) surfaces.
-        _ => {
-            let d3dfmt = u32::from_le_bytes([fourcc[0], fourcc[1], fourcc[2], fourcc[3]]);
-            return match d3dfmt {
-                36 => Some(Layout::Unorm16(4)),  // A16B16G16R16
-                110 => Some(Layout::Snorm16(4)), // Q16W16V16U16
-                111 => Some(Layout::Half(1)),    // R16F
-                112 => Some(Layout::Half(2)),    // G16R16F
-                113 => Some(Layout::Half(4)),    // A16B16G16R16F
-                114 => Some(Layout::Float(1)),   // R32F
-                115 => Some(Layout::Float(2)),   // G32R32F
-                116 => Some(Layout::Float(4)),   // A32B32G32R32F
-                _ => None,
-            };
-        }
+        _ => return d3dfmt_layout(fourcc),
     };
     Some(Layout::Block(block))
+}
+
+/// A D3DFORMAT enum value stored in the FourCC field, as DX9-era tools wrote it.
+fn d3dfmt_layout(fourcc: &[u8]) -> Option<Layout> {
+    let d3dfmt = u32::from_le_bytes([fourcc[0], fourcc[1], fourcc[2], fourcc[3]]);
+    match d3dfmt {
+        36 => Some(Layout::Unorm16(4)),  // A16B16G16R16
+        110 => Some(Layout::Snorm16(4)), // Q16W16V16U16
+        111 => Some(Layout::Half(1)),    // R16F
+        112 => Some(Layout::Half(2)),    // G16R16F
+        113 => Some(Layout::Half(4)),    // A16B16G16R16F
+        114 => Some(Layout::Float(1)),   // R32F
+        115 => Some(Layout::Float(2)),   // G32R32F
+        116 => Some(Layout::Float(4)),   // A32B32G32R32F
+        _ => None,
+    }
 }
 
 /// DXGI format → layout. Every TYPELESS/UNORM/SNORM/SRGB spelling of a layout maps
@@ -507,7 +541,16 @@ fn dxgi_layout_wide_channels(dxgi: u32) -> Option<Layout> {
         26 => Layout::R11G11B10,
         27..=29 => Layout::Masks(RGBA8), // R8G8B8A8_UNORM(_SRGB)
         31 => Layout::Snorm8(4),         // R8G8B8A8_SNORM
-        33..=34 => Layout::Half(2),      // R16G16_FLOAT
+        _ => return dxgi_layout_wide_channels_tail(dxgi),
+    };
+    Some(l)
+}
+
+/// The 16/32-bit single-and-double-channel tail of the wide formats: `DXGI_FORMAT`
+/// 33..=41.
+fn dxgi_layout_wide_channels_tail(dxgi: u32) -> Option<Layout> {
+    let l = match dxgi {
+        33..=34 => Layout::Half(2), // R16G16_FLOAT
         35 => Layout::Masks(Masks {
             // R16G16_UNORM
             bpp: 32,
@@ -563,6 +606,14 @@ fn dxgi_layout_narrow_channels(dxgi: u32) -> Option<Layout> {
         63 => Layout::Snorm8(1), // R8_SNORM
         67 => Layout::Rgb9E5,
         70..=72 => Layout::Block(Block::Bc1),
+        _ => return dxgi_layout_narrow_channels_tail(dxgi),
+    };
+    Some(l)
+}
+
+/// The block-compressed tail of the narrow formats: `DXGI_FORMAT` 73..=84.
+fn dxgi_layout_narrow_channels_tail(dxgi: u32) -> Option<Layout> {
+    let l = match dxgi {
         73..=75 => Layout::Block(Block::Bc2),
         76..=78 => Layout::Block(Block::Bc3),
         79..=80 => Layout::Block(Block::Bc4 { signed: false }),
@@ -633,51 +684,19 @@ fn mask_layout(bytes: &[u8], pf_flags: u32) -> Result<Masks> {
     if !matches!(bpp, 8 | 16 | 24 | 32) {
         return Err(fail(format!("{bpp}-bit uncompressed")));
     }
-    let mut m = [0u32; 4];
-    for (i, slot) in m.iter_mut().enumerate() {
-        *slot = le32(bytes, OFF_PF_MASK_R + i * 4).ok_or_else(|| fail("truncated masks"))?;
-    }
-    let [r, g, b, mut a] = m;
-    // DDPF_ALPHAPIXELS is what says the alpha mask is meaningful; without it the
-    // 4th channel is padding (X8R8G8B8), and honoring it would render the image
-    // fully transparent.
-    if pf_flags & (DDPF_ALPHAPIXELS | DDPF_ALPHA) == 0 {
-        a = 0;
-    }
+    let [r, g, b, a] = read_mask_channels(bytes, pf_flags)?;
     // Alpha-only (A8): show the alpha as luminance — see the R8/A8 note above.
     // Returns BEFORE the contiguity check below on purpose: `Channel` is total for
     // any mask (a sparse one just shifts to the wrong place), so for the one-channel
     // case rendering something beats refusing the file.
-    if pf_flags & DDPF_ALPHA != 0 && r == 0 && g == 0 && b == 0 {
-        return Ok(Masks {
-            bpp,
-            r: a,
-            g: 0,
-            b: 0,
-            a: 0,
-            grey: true,
-        });
+    if let Some(m) = alpha_only_masks(bpp, r, g, b, a, pf_flags) {
+        return Ok(m);
     }
-    if pf_flags & (DDPF_RGB | DDPF_LUMINANCE | DDPF_BUMPDUDV) == 0 {
-        return Err(fail(format!("pixel-format flags {pf_flags:#x}")));
-    }
-    if r == 0 && g == 0 && b == 0 {
-        return Err(fail("no colour mask"));
-    }
+    validate_colour_masks(pf_flags, r, g, b)?;
     // Every mask must be a single contiguous run of bits — the shift/scale in
     // `Channel` assumes it, and a hostile file can otherwise claim a sparse mask.
     for mask in [r, g, b, a] {
-        // An absent channel is mask 0 — and `0.trailing_zeros()` is 32, which is an
-        // overflowing shift (a debug panic, a wrapping no-op in release), so the
-        // zero case has to be skipped BEFORE normalizing. X8R8G8B8 hits this on
-        // every file.
-        if mask == 0 {
-            continue;
-        }
-        let run = mask >> mask.trailing_zeros();
-        if run != u32::MAX && (run + 1) & run != 0 {
-            return Err(fail(format!("non-contiguous mask {mask:#x}")));
-        }
+        check_contiguous_mask(mask)?;
     }
     Ok(Masks {
         bpp,
@@ -687,38 +706,112 @@ fn mask_layout(bytes: &[u8], pf_flags: u32) -> Result<Masks> {
         a,
         // DDPF_LUMINANCE with no green/blue mask means the single channel is
         // brightness, not red.
-        grey: pf_flags & DDPF_LUMINANCE != 0 && g == 0 && b == 0,
+        grey: is_luminance_grey(pf_flags, g, b),
     })
+}
+
+/// Read the four bit masks, zeroing the alpha mask when the header does not declare it
+/// meaningful. DDPF_ALPHAPIXELS is what says the alpha mask is meaningful; without it the
+/// 4th channel is padding (X8R8G8B8), and honoring it would render the image fully
+/// transparent.
+fn read_mask_channels(bytes: &[u8], pf_flags: u32) -> Result<[u32; 4]> {
+    let mut m = [0u32; 4];
+    for (i, slot) in m.iter_mut().enumerate() {
+        *slot = le32(bytes, OFF_PF_MASK_R + i * 4).ok_or_else(|| fail("truncated masks"))?;
+    }
+    if pf_flags & (DDPF_ALPHAPIXELS | DDPF_ALPHA) == 0 {
+        m[3] = 0;
+    }
+    Ok(m)
+}
+
+/// The layout for an alpha-only (A8) file, whose alpha is shown as luminance; `None` when
+/// the file has colour channels.
+fn alpha_only_masks(bpp: u32, r: u32, g: u32, b: u32, a: u32, pf_flags: u32) -> Option<Masks> {
+    if pf_flags & DDPF_ALPHA == 0 || r != 0 || g != 0 || b != 0 {
+        return None;
+    }
+    Some(Masks {
+        bpp,
+        r: a,
+        g: 0,
+        b: 0,
+        a: 0,
+        grey: true,
+    })
+}
+
+/// Refuse a mask-carrying header that declares neither a colour, luminance nor bump format,
+/// or that has no colour channel at all.
+fn validate_colour_masks(pf_flags: u32, r: u32, g: u32, b: u32) -> Result<()> {
+    if pf_flags & (DDPF_RGB | DDPF_LUMINANCE | DDPF_BUMPDUDV) == 0 {
+        return Err(fail(format!("pixel-format flags {pf_flags:#x}")));
+    }
+    if r == 0 && g == 0 && b == 0 {
+        return Err(fail("no colour mask"));
+    }
+    Ok(())
+}
+
+/// Reject a mask that is not one contiguous run of bits. An absent channel is mask 0 — and
+/// `0.trailing_zeros()` is 32, which is an overflowing shift (a debug panic, a wrapping
+/// no-op in release), so the zero case has to be skipped BEFORE normalizing. X8R8G8B8 hits
+/// this on every file.
+fn check_contiguous_mask(mask: u32) -> Result<()> {
+    if mask == 0 {
+        return Ok(());
+    }
+    let run = mask >> mask.trailing_zeros();
+    if run != u32::MAX && (run + 1) & run != 0 {
+        return Err(fail(format!("non-contiguous mask {mask:#x}")));
+    }
+    Ok(())
+}
+
+/// DDPF_LUMINANCE with no green/blue mask means the single channel is brightness, not red.
+fn is_luminance_grey(pf_flags: u32, g: u32, b: u32) -> bool {
+    pf_flags & DDPF_LUMINANCE != 0 && g == 0 && b == 0
 }
 
 /// Bytes one mip-0 surface needs, or `None` on overflow / over budget.
 fn surface_bytes(layout: Layout, width: u32, height: u32) -> Option<usize> {
-    let n = match layout {
-        Layout::Block(b) => {
-            let bw = (width as u64).div_ceil(4);
-            let bh = (height as u64).div_ceil(4);
-            bw.checked_mul(bh)?.checked_mul(b.block_bytes() as u64)?
-        }
-        Layout::Masks(m) => {
-            // Rows are packed at the computed pitch; the header's
-            // dwPitchOrLinearSize is famously unreliable, so it is not consulted.
-            let pitch = (width as u64).checked_mul(m.bpp as u64)?.div_ceil(8);
-            pitch.checked_mul(height as u64)?
-        }
-        Layout::Snorm8(n) => (width as u64)
-            .checked_mul(height as u64)?
-            .checked_mul(n as u64)?,
-        Layout::Unorm16(n) | Layout::Snorm16(n) | Layout::Half(n) => (width as u64)
-            .checked_mul(height as u64)?
-            .checked_mul(n as u64 * 2)?,
-        Layout::Float(n) => (width as u64)
-            .checked_mul(height as u64)?
-            .checked_mul(n as u64 * 4)?,
-        Layout::R11G11B10 | Layout::Rgb9E5 => {
-            (width as u64).checked_mul(height as u64)?.checked_mul(4)?
-        }
-    };
+    let n = surface_bytes_unbudgeted(layout, width, height)?;
     (n <= MAX_ALLOC).then_some(n as usize)
+}
+
+/// Bytes one mip-0 surface needs, or `None` on overflow (before the bomb-budget check).
+fn surface_bytes_unbudgeted(layout: Layout, width: u32, height: u32) -> Option<u64> {
+    match layout {
+        Layout::Block(b) => block_surface_bytes(width, height, b),
+        Layout::Masks(m) => mask_surface_bytes(width, height, m),
+        Layout::Snorm8(n) => pixels_times(width, height, u64::from(n)),
+        Layout::Unorm16(n) | Layout::Snorm16(n) | Layout::Half(n) => {
+            pixels_times(width, height, u64::from(n) * 2)
+        }
+        Layout::Float(n) => pixels_times(width, height, u64::from(n) * 4),
+        Layout::R11G11B10 | Layout::Rgb9E5 => pixels_times(width, height, 4),
+    }
+}
+
+/// `width` * `height` * `per_pixel` bytes, or `None` on overflow.
+fn pixels_times(width: u32, height: u32, per_pixel: u64) -> Option<u64> {
+    (width as u64)
+        .checked_mul(height as u64)?
+        .checked_mul(per_pixel)
+}
+
+/// Bytes of `width` × `height` block-compressed texels.
+fn block_surface_bytes(width: u32, height: u32, b: Block) -> Option<u64> {
+    let bw = (width as u64).div_ceil(4);
+    let bh = (height as u64).div_ceil(4);
+    bw.checked_mul(bh)?.checked_mul(b.block_bytes() as u64)
+}
+
+/// Bytes of a masked surface. Rows are packed at the computed pitch; the header's
+/// dwPitchOrLinearSize is famously unreliable, so it is not consulted.
+fn mask_surface_bytes(width: u32, height: u32, m: Masks) -> Option<u64> {
+    let pitch = (width as u64).checked_mul(m.bpp as u64)?.div_ceil(8);
+    pitch.checked_mul(height as u64)
 }
 
 /// The mip-0 bytes, checked to be actually present.
@@ -754,58 +847,74 @@ const AVG_MIN_PIXELS: u64 = 1 << 20;
 
 fn decode_rgba8(bytes: &[u8], s: &Surface, target: Option<u32>) -> Result<DynamicImage> {
     let src = surface(bytes, s)?;
-    // ONE PIXEL PER 4x4 BLOCK, when the caller's target is small enough that the quarter-
-    // size result still covers it. A block-compressed texture without a mip chain is the
-    // one case `select_mip` cannot help with, and it is the common one: every DDS an
-    // image editor exports has `dwMipMapCount = 1`, so a 12 MP BC1 texture decoded all
-    // 750k blocks into a 48 MB surface and then threw 15/16 of it away in the fit. That
-    // measured 180.5 ms against Windows' 24.8 ms, 7.3x and the worst block-format ratio
-    // in the speed baseline.
-    //
-    // This is NOT sampling: each block is still fully decoded, and the pixel written is
-    // the MEAN of its in-bounds texels, which is exactly the 4x box reduction the later
-    // fit would have performed anyway. So the picture is the same one, reached without
-    // materialising a surface that is 16x larger than any use of it. The saving is the
-    // scattered row writes into that surface and every later pass over it, not the block
-    // decode itself.
-    //
-    // Two gates, both load-bearing. The reduced grid must still COVER the target, so
-    // nothing is ever upscaled: a 4000x3000 texture at a 256 px ask reduces to 1000x750
-    // (fine), the same texture at a 1024 px preview-pane ask does not (1000 < 1024) and
-    // takes the full path below. And the surface must be big enough for materialising it
-    // to cost anything at all: below [`AVG_MIN_PIXELS`] the full decode is a couple of
-    // milliseconds, there is nothing to win, and the level's own dimensions are the
-    // answer mip selection is pinned to return. Full-fidelity callers pass `None` and are
-    // untouched, exactly as with mip selection.
     if let (Layout::Block(b), Some(t)) = (s.layout, target) {
-        let bw = s.width.div_ceil(4);
-        let bh = s.height.div_ceil(4);
-        let px = u64::from(s.width) * u64::from(s.height);
-        if !matches!(b, Block::Bc6h { .. }) && bw.max(bh) >= t.max(1) && px >= AVG_MIN_PIXELS {
-            let len = out_buffer(bw, bh, 4)?;
-            let mut out = vec![0u8; len];
-            blocks_rgba8(src, s.width, s.height, b, true, &mut out);
-            apply_alpha_mode(&mut out, s.alpha_mode);
-            return image::RgbaImage::from_raw(bw, bh, out)
-                .map(DynamicImage::ImageRgba8)
-                .ok_or_else(|| fail("buffer size mismatch"));
+        if let Some(img) = reduced_block_decode(src, s, b, t)? {
+            return Ok(img);
         }
     }
     let len = out_buffer(s.width, s.height, 4)?;
     let mut out = vec![0u8; len];
+    decode_layouts_rgba8(src, s, &mut out)?;
+    apply_alpha_mode(&mut out, s.alpha_mode);
+    rgba8_image(s.width, s.height, out)
+}
+
+/// ONE PIXEL PER 4x4 BLOCK, when the caller's target is small enough that the quarter-
+/// size result still covers it. A block-compressed texture without a mip chain is the
+/// one case `select_mip` cannot help with, and it is the common one: every DDS an
+/// image editor exports has `dwMipMapCount = 1`, so a 12 MP BC1 texture decoded all
+/// 750k blocks into a 48 MB surface and then threw 15/16 of it away in the fit. That
+/// measured 180.5 ms against Windows' 24.8 ms, 7.3x and the worst block-format ratio
+/// in the speed baseline.
+///
+/// This is NOT sampling: each block is still fully decoded, and the pixel written is
+/// the MEAN of its in-bounds texels, which is exactly the 4x box reduction the later
+/// fit would have performed anyway. So the picture is the same one, reached without
+/// materialising a surface that is 16x larger than any use of it. The saving is the
+/// scattered row writes into that surface and every later pass over it, not the block
+/// decode itself.
+///
+/// Two gates, both load-bearing. The reduced grid must still COVER the target, so
+/// nothing is ever upscaled: a 4000x3000 texture at a 256 px ask reduces to 1000x750
+/// (fine), the same texture at a 1024 px preview-pane ask does not (1000 < 1024) and
+/// takes the full path below. And the surface must be big enough for materialising it
+/// to cost anything at all: below [`AVG_MIN_PIXELS`] the full decode is a couple of
+/// milliseconds, there is nothing to win, and the level's own dimensions are the
+/// answer mip selection is pinned to return. Full-fidelity callers pass `None` and are
+/// untouched, exactly as with mip selection. `Ok(None)` when the reduction is not worth it.
+fn reduced_block_decode(src: &[u8], s: &Surface, b: Block, t: u32) -> Result<Option<DynamicImage>> {
+    let bw = s.width.div_ceil(4);
+    let bh = s.height.div_ceil(4);
+    let px = u64::from(s.width) * u64::from(s.height);
+    if matches!(b, Block::Bc6h { .. }) || bw.max(bh) < t.max(1) || px < AVG_MIN_PIXELS {
+        return Ok(None);
+    }
+    let len = out_buffer(bw, bh, 4)?;
+    let mut out = vec![0u8; len];
+    blocks_rgba8(src, s.width, s.height, b, true, &mut out);
+    apply_alpha_mode(&mut out, s.alpha_mode);
+    Ok(Some(rgba8_image(bw, bh, out)?))
+}
+
+/// Run the layout-specific 8-bit decoder into `out`.
+fn decode_layouts_rgba8(src: &[u8], s: &Surface, out: &mut [u8]) -> Result<()> {
     match s.layout {
-        Layout::Block(b) => blocks_rgba8(src, s.width, s.height, b, false, &mut out),
-        Layout::Masks(m) => masks_rgba8(src, s.width, s.height, m, &mut out),
-        Layout::Snorm8(n) => snorm_rgba8(src, s.width, s.height, n, 1, &mut out),
-        Layout::Snorm16(n) => snorm_rgba8(src, s.width, s.height, n, 2, &mut out),
-        Layout::Unorm16(n) => unorm16_rgba8(src, s.width, s.height, n, &mut out),
+        Layout::Block(b) => blocks_rgba8(src, s.width, s.height, b, false, out),
+        Layout::Masks(m) => masks_rgba8(src, s.width, s.height, m, out),
+        Layout::Snorm8(n) => snorm_rgba8(src, s.width, s.height, n, 1, out),
+        Layout::Snorm16(n) => snorm_rgba8(src, s.width, s.height, n, 2, out),
+        Layout::Unorm16(n) => unorm16_rgba8(src, s.width, s.height, n, out),
         // is_float() routed these to decode_float.
         Layout::Half(_) | Layout::Float(_) | Layout::R11G11B10 | Layout::Rgb9E5 => {
             return Err(fail("float layout on the 8-bit path"))
         }
     }
-    apply_alpha_mode(&mut out, s.alpha_mode);
-    image::RgbaImage::from_raw(s.width, s.height, out)
+    Ok(())
+}
+
+/// Wrap an RGBA8 byte buffer as a `DynamicImage`, or fail on a size mismatch.
+fn rgba8_image(width: u32, height: u32, out: Vec<u8>) -> Result<DynamicImage> {
+    image::RgbaImage::from_raw(width, height, out)
         .map(DynamicImage::ImageRgba8)
         .ok_or_else(|| fail("buffer size mismatch"))
 }
@@ -1025,75 +1134,13 @@ fn block_mean_fast(blk: &[u8], block: Block) -> Option<[u8; 4]> {
         _ => return None,
     };
     let pal = color_palette(cb, only_opaque);
-    let mut indices = u32::from_le_bytes([cb[4], cb[5], cb[6], cb[7]]);
-    // HISTOGRAM FIRST, then four weighted adds — not sixteen four-channel accumulations.
-    // The obvious shape (`for each texel { acc += pal[idx] }`) measured THREE TIMES SLOWER
-    // than simply expanding the block through `bcdec_rs`, because sixteen fresh array
-    // iterators per block defeat the vectoriser. Counting into four bins and multiplying
-    // once per palette entry is the same arithmetic with a sixteenth of the loop overhead.
-    let mut hist = [0u32; 4];
-    for _ in 0..16 {
-        hist[(indices & 3) as usize] += 1;
-        indices >>= 2;
-    }
-    let mut acc = [0u32; 4];
-    for (n, colour) in hist.iter().zip(&pal) {
-        acc[0] += n * u32::from(colour[0]);
-        acc[1] += n * u32::from(colour[1]);
-        acc[2] += n * u32::from(colour[2]);
-        acc[3] += n * u32::from(colour[3]);
-    }
+    let mut acc = palette_weighted_sum(&pal, cb);
 
     // BC2/BC3 overwrite alpha per texel, so the palette's 255s are discarded rather than
     // averaged in.
     match block {
-        Block::Bc2 => {
-            acc[3] = (0..4)
-                .map(|i| {
-                    let a = u16::from_le_bytes([blk[i * 2], blk[i * 2 + 1]]);
-                    (0..4)
-                        .map(|j| u32::from((a >> (4 * j)) & 0x0F) * 17)
-                        .sum::<u32>()
-                })
-                .sum();
-        }
-        Block::Bc3 => {
-            let (a0, a1) = (u32::from(blk[0]), u32::from(blk[1]));
-            // Written out rather than derived from a loop counter, transcribed line for line
-            // from `bcdec_rs::smooth_alpha_block`. A first attempt DID compute the weights
-            // from the index and had both branches off by one; the equality test caught it,
-            // but a table that can simply be compared against the source cannot drift at all.
-            let alpha: [u32; 8] = if a0 > a1 {
-                [
-                    a0,
-                    a1,
-                    (6 * a0 + a1 + 1) / 7,
-                    (5 * a0 + 2 * a1 + 1) / 7,
-                    (4 * a0 + 3 * a1 + 1) / 7,
-                    (3 * a0 + 4 * a1 + 1) / 7,
-                    (2 * a0 + 5 * a1 + 1) / 7,
-                    (a0 + 6 * a1 + 1) / 7,
-                ]
-            } else {
-                [
-                    a0,
-                    a1,
-                    (4 * a0 + a1 + 1) / 5,
-                    (3 * a0 + 2 * a1 + 1) / 5,
-                    (2 * a0 + 3 * a1 + 1) / 5,
-                    (a0 + 4 * a1 + 1) / 5,
-                    0x00,
-                    0xFF,
-                ]
-            };
-            let mut bits = u64::from_le_bytes(blk.get(0..8)?.try_into().ok()?) >> 16;
-            let mut sum = 0u32;
-            for _ in 0..16 {
-                sum += alpha[(bits & 0x07) as usize];
-                bits >>= 3;
-            }
-            acc[3] = sum;
-        }
+        Block::Bc2 => acc[3] = bc2_alpha_sum(blk),
+        Block::Bc3 => acc[3] = bc3_alpha_sum(blk)?,
         _ => {}
     }
 
@@ -1104,6 +1151,80 @@ fn block_mean_fast(blk: &[u8], block: Block) -> Option<[u8; 4]> {
         ((acc[2] + 8) / 16) as u8,
         ((acc[3] + 8) / 16) as u8,
     ])
+}
+
+/// HISTOGRAM FIRST, then four weighted adds — not sixteen four-channel accumulations.
+/// The obvious shape (`for each texel { acc += pal[idx] }`) measured THREE TIMES SLOWER
+/// than simply expanding the block through `bcdec_rs`, because sixteen fresh array
+/// iterators per block defeat the vectoriser. Counting into four bins and multiplying
+/// once per palette entry is the same arithmetic with a sixteenth of the loop overhead.
+fn palette_weighted_sum(pal: &[[u8; 4]; 4], cb: &[u8]) -> [u32; 4] {
+    let mut indices = u32::from_le_bytes([cb[4], cb[5], cb[6], cb[7]]);
+    let mut hist = [0u32; 4];
+    for _ in 0..16 {
+        hist[(indices & 3) as usize] += 1;
+        indices >>= 2;
+    }
+    let mut acc = [0u32; 4];
+    for (n, colour) in hist.iter().zip(pal) {
+        acc[0] += n * u32::from(colour[0]);
+        acc[1] += n * u32::from(colour[1]);
+        acc[2] += n * u32::from(colour[2]);
+        acc[3] += n * u32::from(colour[3]);
+    }
+    acc
+}
+
+/// The summed 8-bit alpha of a full BC2 block, each texel's 4-bit alpha replicated ×17.
+fn bc2_alpha_sum(blk: &[u8]) -> u32 {
+    (0..4)
+        .map(|i| {
+            let a = u16::from_le_bytes([blk[i * 2], blk[i * 2 + 1]]);
+            (0..4)
+                .map(|j| u32::from((a >> (4 * j)) & 0x0F) * 17)
+                .sum::<u32>()
+        })
+        .sum()
+}
+
+/// The summed 8-bit alpha of a full BC3 block through its 8-entry interpolated palette.
+///
+/// Written out rather than derived from a loop counter, transcribed line for line
+/// from `bcdec_rs::smooth_alpha_block`. A first attempt DID compute the weights
+/// from the index and had both branches off by one; the equality test caught it,
+/// but a table that can simply be compared against the source cannot drift at all.
+fn bc3_alpha_sum(blk: &[u8]) -> Option<u32> {
+    let (a0, a1) = (u32::from(blk[0]), u32::from(blk[1]));
+    let alpha: [u32; 8] = if a0 > a1 {
+        [
+            a0,
+            a1,
+            (6 * a0 + a1 + 1) / 7,
+            (5 * a0 + 2 * a1 + 1) / 7,
+            (4 * a0 + 3 * a1 + 1) / 7,
+            (3 * a0 + 4 * a1 + 1) / 7,
+            (2 * a0 + 5 * a1 + 1) / 7,
+            (a0 + 6 * a1 + 1) / 7,
+        ]
+    } else {
+        [
+            a0,
+            a1,
+            (4 * a0 + a1 + 1) / 5,
+            (3 * a0 + 2 * a1 + 1) / 5,
+            (2 * a0 + 3 * a1 + 1) / 5,
+            (a0 + 4 * a1 + 1) / 5,
+            0x00,
+            0xFF,
+        ]
+    };
+    let mut bits = u64::from_le_bytes(blk.get(0..8)?.try_into().ok()?) >> 16;
+    let mut sum = 0u32;
+    for _ in 0..16 {
+        sum += alpha[(bits & 0x07) as usize];
+        bits >>= 3;
+    }
+    Some(sum)
 }
 
 /// Reduce one decoded 4x4 tile to a single RGBA pixel: the mean of its `w` by `h`
@@ -1169,23 +1290,29 @@ fn masks_rgba8(src: &[u8], width: u32, height: u32, m: Masks, out: &mut [u8]) {
             let Some(px) = src.get(line + x * step..line + x * step + step) else {
                 return;
             };
-            let mut v = 0u32;
-            for (i, b) in px.iter().enumerate() {
-                v |= (*b as u32) << (8 * i);
-            }
-            let r = ch[0].get(v);
-            let (g, b) = if m.grey {
-                (r, r)
-            } else {
-                (ch[1].get(v), ch[2].get(v))
-            };
-            let a = if m.a == 0 { 255 } else { ch[3].get(v) };
+            let p = mask_pixel(px, &ch, m);
             let dst = (y * width as usize + x) * 4;
             if let Some(d) = out.get_mut(dst..dst + 4) {
-                d.copy_from_slice(&[r, g, b, a]);
+                d.copy_from_slice(&p);
             }
         }
     }
+}
+
+/// Unpack one masked pixel from its little-endian bytes into RGBA.
+fn mask_pixel(px: &[u8], ch: &[Channel; 4], m: Masks) -> [u8; 4] {
+    let mut v = 0u32;
+    for (i, b) in px.iter().enumerate() {
+        v |= (*b as u32) << (8 * i);
+    }
+    let r = ch[0].get(v);
+    let (g, b) = if m.grey {
+        (r, r)
+    } else {
+        (ch[1].get(v), ch[2].get(v))
+    };
+    let a = if m.a == 0 { 255 } else { ch[3].get(v) };
+    [r, g, b, a]
 }
 
 /// One bit-mask channel, pre-resolved to a shift and a scale so the per-pixel loop
@@ -1286,24 +1413,30 @@ fn write_channels(out: &mut [u8], i: usize, n: usize, c0: u8, c1: u8, c2: u8, c3
 /// meaningless (force opaque, or the thumbnail is invisible).
 fn apply_alpha_mode(out: &mut [u8], mode: u32) {
     match mode {
-        ALPHA_MODE_PREMULTIPLIED => {
-            let (chunks, _) = out.as_chunks_mut::<4>();
-            for px in chunks {
-                let a = px[3];
-                if a > 0 && a < 255 {
-                    for c in &mut px[..3] {
-                        *c = ((*c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
-                    }
-                }
-            }
-        }
-        ALPHA_MODE_OPAQUE => {
-            let (chunks, _) = out.as_chunks_mut::<4>();
-            for px in chunks {
-                px[3] = 255;
-            }
-        }
+        ALPHA_MODE_PREMULTIPLIED => unpremultiply_alpha(out),
+        ALPHA_MODE_OPAQUE => force_opaque_alpha(out),
         _ => {}
+    }
+}
+
+/// Undo a declared premultiplied alpha, so semi-transparent pixels are not too dark.
+fn unpremultiply_alpha(out: &mut [u8]) {
+    let (chunks, _) = out.as_chunks_mut::<4>();
+    for px in chunks {
+        let a = px[3];
+        if a > 0 && a < 255 {
+            for c in &mut px[..3] {
+                *c = ((*c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+            }
+        }
+    }
+}
+
+/// Force every pixel opaque when the alpha channel is declared meaningless.
+fn force_opaque_alpha(out: &mut [u8]) {
+    let (chunks, _) = out.as_chunks_mut::<4>();
+    for px in chunks {
+        px[3] = 255;
     }
 }
 

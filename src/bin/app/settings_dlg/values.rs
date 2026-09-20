@@ -1036,16 +1036,23 @@ unsafe fn apply_format_flags(hwnd: HWND) {
 /// (Save or Import) so the checklist reflects the registry state that actually won, not the
 /// attempted state that was just reverted.
 unsafe fn revert_format_list_view(hwnd: HWND) {
+    seed_format_state();
+    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
+        let text = get_edit_text(hwnd, ID_SEARCH);
+        populate_list(list, &text);
+    }
+}
+
+/// Seed the per-format checked model (`FMT_STATE`) from settings: the list view is rebuilt
+/// from this model, never from the registry directly, so a search can redraw it without
+/// losing toggles. The layout builder, the revert and the refresh all start here.
+pub(super) fn seed_format_state() {
     FMT_STATE.with(|s| {
         *s.borrow_mut() = formats::FORMATS
             .iter()
             .map(|&(ext, _)| settings::format_enabled(ext))
             .collect();
     });
-    if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-        let text = get_edit_text(hwnd, ID_SEARCH);
-        populate_list(list, &text);
-    }
 }
 
 /// `SHChangeNotify(SHCNE_ASSOCCHANGED)` — tells Explorer file-type handlers changed,
@@ -1146,12 +1153,7 @@ pub(super) unsafe fn import_settings_from_file(hwnd: HWND) {
 pub(super) unsafe fn refresh_from_settings(hwnd: HWND) {
     load_values(hwnd);
     seed_combo_selections(hwnd);
-    FMT_STATE.with(|s| {
-        *s.borrow_mut() = formats::FORMATS
-            .iter()
-            .map(|&(ext, _)| settings::format_enabled(ext))
-            .collect();
-    });
+    seed_format_state();
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
         // populate_list rebuilds the list UNFILTERED. Without also clearing the search box
         // and its cached needle, retyping the SAME query the box still shows short-circuits

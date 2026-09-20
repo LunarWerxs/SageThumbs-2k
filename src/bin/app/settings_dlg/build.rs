@@ -642,12 +642,7 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     // The per-format checked state lives in a model (FMT_STATE), not the list —
     // so the search can rebuild the list view without losing toggles. Seed it from
     // settings, then populate the (unfiltered) view.
-    FMT_STATE.with(|s| {
-        *s.borrow_mut() = formats::FORMATS
-            .iter()
-            .map(|&(ext, _)| settings::format_enabled(ext))
-            .collect();
-    });
+    super::values::seed_format_state();
     populate_list(list, "");
 
     // ===== Left-column scrollbar + clipping mask =====

@@ -86,8 +86,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         .unwrap_or_default();
 
     label(hwnd, hinst, t("ttf_destination"), 16, 18, 90, 18);
-    let dest = edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
-    let _ = dest;
+    edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
     ctl(
         hwnd,
         BUTTON,
