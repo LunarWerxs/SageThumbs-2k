@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The decode ladder: pure Rust, WIC, and the ImageMagick subprocess.
 //! Each tier has to produce the same pixels in the same channel order and
 //! the same orientation, or a file's thumbnail changes depending on which

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Policy ceilings and how a picture is fitted to the box.
 //! The ImageMagick limits have to agree with policy.xml, the scaler has to leave a file's
 //! own small picture at its size, and it has to keep enlarging a stand-in for a larger one.

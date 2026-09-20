@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Finding the preview already inside a RAW or JPEG.
 //! A camera file carries several JPEGs and only one of them is the picture
 //! a person wants; these pin which one wins and that hostile input cannot

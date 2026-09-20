@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Formats that are drawn or moving rather than a grid of pixels.
 //! SVG (plain and gzip-wrapped), metafiles, and animated GIF, plus the two
 //! surfaces that have to decide whether to render them at all.

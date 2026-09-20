@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The timing sweep, which reports rather than asserts.
 //! It prints a per-format table of how long the scaled pre-pass takes and how
 //! faithful it is. Numbers to read, not a gate.

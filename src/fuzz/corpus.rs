@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The opt-in corpus session: pick real samples from the test corpus and mutate them through the same targets.
 
 use super::*;

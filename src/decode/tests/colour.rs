@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Getting the colour right, which is where thumbnails visibly go wrong.
 //! ICC profiles reassembled out of chunks, the colr box walked out of an
 //! ISOBMFF container, and the high-depth curve that undoes what WIC does.

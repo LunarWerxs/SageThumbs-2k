@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Which files are handed to WIC, and which are kept away from it.
 //! Every bucket here was measured rather than assumed: WIC is right for the
 //! plain cases and wrong in specific, reproducible ones, and the routing

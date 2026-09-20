@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Seeds for the newer surfaces (meshes, EXR, APK) and the sessions that prove each seed reaches its parser.
 
 use super::*;

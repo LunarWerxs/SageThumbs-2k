@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Naming a coder for a format nothing can sniff, without letting an
 //! extension steer the decode of a file that CAN be sniffed.
 

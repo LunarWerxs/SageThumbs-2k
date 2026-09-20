@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Reading only the head of a file that keeps its preview there.
 //! PSD, DWG, G-code and CLIP all put something usable near the front, so a
 //! capped read rescues a file that would otherwise be too big to open.

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The mutation engine: the PRNG, the mutators, the truncation sweep, and the budgets the always-on gate runs under.
 
 use super::*;

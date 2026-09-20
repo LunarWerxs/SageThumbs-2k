@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Structurally valid synthetic seeds - MKV, MP4, FLV, WebM/VP9, WAV, AIFF, ASF - and the format-magic stubs.
 
 // The EBML element encoder + the Matroska ID table below are `crate::mkv`'s own - reused here

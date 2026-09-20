@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Transparency, and refusing to show a thumbnail that is really blank.
 //! A fully transparent result is a failure worth reporting; a zeroed alpha
 //! channel on an opaque image is not, and telling them apart is the whole

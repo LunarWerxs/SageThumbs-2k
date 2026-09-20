@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! The parser entry points the fuzzer hammers: header sniffers and the inner parsers.
 
 use super::*;
