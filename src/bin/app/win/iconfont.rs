@@ -55,15 +55,8 @@ pub(crate) fn icon_font_face() -> &'static str {
         // `ST2K_ICON_FONT="Segoe MDL2 Assets"` forces the fallback and `--shot` captures it.
         // Without this the fix could only be verified by reasoning, which is how the bug got
         // shipped in the first place. Ignored unless the named face actually exists.
-        if let Some(forced) = std::env::var("ST2K_ICON_FONT")
-            .ok()
-            .filter(|f| !f.is_empty())
-        {
-            for known in ["Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI Symbol"] {
-                if forced.eq_ignore_ascii_case(known) && font_face_exists(known) {
-                    return known;
-                }
-            }
+        if let Some(forced) = forced_icon_face() {
+            return forced;
         }
         // The BUNDLED font first, so the toolbars look identical on every Windows version and
         // do not depend on what the OS happens to ship. The OS fonts remain behind it purely as
@@ -81,6 +74,17 @@ pub(crate) fn icon_font_face() -> &'static str {
         }
         "Segoe UI Symbol"
     })
+}
+
+/// The face `ST2K_ICON_FONT` forces, when it names a known face this machine really has;
+/// `None` leaves `icon_font_face` to its normal chain.
+fn forced_icon_face() -> Option<&'static str> {
+    let forced = std::env::var("ST2K_ICON_FONT")
+        .ok()
+        .filter(|f| !f.is_empty())?;
+    ["Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI Symbol"]
+        .into_iter()
+        .find(|&known| forced.eq_ignore_ascii_case(known) && font_face_exists(known))
 }
 
 /// An icon-font handle at `em` device pixels. Both toolbars build theirs through here so the
