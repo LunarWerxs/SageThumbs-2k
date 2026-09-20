@@ -216,11 +216,7 @@ pub(crate) fn spawn_prefetch(path: String) {
     }
     // Still images only. Video, text and archives have their own load paths, and PDF goes
     // through `spawn_decode_pdf` (page-aware), so a plain entry for one would never be read.
-    let ext = std::path::Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let ext = lower_ext(&path);
     if ext == "pdf" || classify(&path) != ContentKind::Image {
         return;
     }

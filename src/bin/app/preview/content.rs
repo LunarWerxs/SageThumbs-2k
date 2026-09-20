@@ -265,6 +265,17 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
+/// `path`'s extension, lowercased and without the dot — `""` when it has none. Every
+/// extension test in this module wants exactly this: Windows names are case-insensitive, and
+/// a missing extension must compare unequal to the empty string, not panic or return `None`.
+fn lower_ext(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
 /// Decide how to present `path`: directory / unsupported → InfoCard; text/markdown (gated on
 /// the settings) → Text; any supported format → Image; an unknown-but-textual
 /// file → Text. Phase 3's text branch shows the file as readable monospace text; rendered
@@ -275,11 +286,7 @@ pub(super) fn classify(path: &str) -> ContentKind {
     if p.is_dir() {
         return ContentKind::InfoCard;
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let ext = lower_ext(path);
     // Markdown (rendered) + text/code, ahead of the image path (a `.md`/`.txt` is never an image).
     if settings::preview_markdown() && formats::is_preview_markdown(&ext) {
         return ContentKind::Markdown;
@@ -569,11 +576,7 @@ pub(super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) {
         if try_post_streamed(hwnd, gen, &path) {
             return;
         }
-        let ext = std::path::Path::new(&path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let ext = lower_ext(&path);
         // The animated extensions are excluded from the quick codec-scaled path rather than
         // ordered around it. They need the bytes for the frame probe below regardless, and
         // none of them is a codec that decodes small, so nothing is given up. That exclusion
