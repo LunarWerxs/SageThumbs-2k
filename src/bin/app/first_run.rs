@@ -240,15 +240,23 @@ unsafe fn place_switch_row(hwnd: HWND, hinst: HINSTANCE, y: i32, row: &SwitchRow
     y
 }
 
+/// `hwnd`'s client area in 96-DPI design px, as `(width, height)`. `GetClientRect` answers in
+/// physical px, so each side is divided back by the window's DPI.
+pub(crate) unsafe fn client_size_px(hwnd: HWND) -> (i32, i32) {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    (
+        (rc.right - rc.left) * 100 / unit,
+        (rc.bottom - rc.top) * 100 / unit,
+    )
+}
+
 /// Where the Next / Get started button belongs, in design px, for the client area as it is
 /// NOW. Shared by the page-1 build (which creates it) and [`reanchor_button`] (which moves
 /// it after the window grows), so the two can never place it differently.
 unsafe fn button_rect(hwnd: HWND) -> (i32, i32) {
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let ch = (rc.bottom - rc.top) * 100 / unit;
+    let (cw, ch) = client_size_px(hwnd);
     (cw - MARGIN - BTN_W, ch - BTN_H - 16)
 }
 

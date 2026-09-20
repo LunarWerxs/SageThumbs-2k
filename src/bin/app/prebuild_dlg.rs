@@ -16,12 +16,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
-use crate::win::{ctl, dpi_scale, run_dialog, set_edit_text, t, wm_dpichanged, BUTTON, STATIC};
+use crate::win::{ctl, run_dialog, set_edit_text, t, wm_dpichanged, BUTTON, STATIC};
 
 const ID_PATH: i32 = 200;
 const ID_BAR: i32 = 201;
@@ -129,11 +129,7 @@ fn elide(path: &str, max: usize) -> String {
 }
 
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE, folder: &str) {
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let ch = (rc.bottom - rc.top) * 100 / unit;
+    let (cw, ch) = crate::first_run::client_size_px(hwnd);
     let m = 20;
     let w = cw - m * 2;
 
