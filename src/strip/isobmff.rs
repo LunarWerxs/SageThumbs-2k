@@ -235,6 +235,22 @@ fn parse_iloc_item(
     p += sizes.bsz;
     let extents = be16(b, p)?;
     p += 2;
+    let (p, only) = parse_iloc_extents(b, p, sizes, base, extents, method)?;
+    let entry = only.filter(|(o, l)| o.checked_add(*l).is_some_and(|end| end <= buf_len));
+    Some((p, entry.map(|e| (id, e))))
+}
+
+/// Walk one `iloc` entry's extent run: advance `p` past every extent and return the new `p`
+/// plus the single plain-file-offset extent, if the run is exactly one such extent. `None`
+/// means an extent field ran off the end of `b`.
+fn parse_iloc_extents(
+    b: &[u8],
+    mut p: usize,
+    sizes: &IlocSizes,
+    base: u64,
+    extents: u16,
+    method: u16,
+) -> Option<(usize, Option<(usize, usize)>)> {
     let mut only: Option<(usize, usize)> = None;
     for e in 0..extents {
         if sizes.ver >= 1 {
@@ -248,8 +264,7 @@ fn parse_iloc_item(
             only = Some(((base + eo) as usize, el as usize));
         }
     }
-    let entry = only.filter(|(o, l)| o.checked_add(*l).is_some_and(|end| end <= buf_len));
-    Some((p, entry.map(|e| (id, e))))
+    Some((p, only))
 }
 
 /// `iloc` → `(item_id, (absolute_offset, length))`, for the single-extent,

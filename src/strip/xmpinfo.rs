@@ -55,24 +55,29 @@ fn property(packet: &str, prop: &str) -> Option<String> {
 fn people(packet: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for form in ["mwg-rs:PersonDisplayName=\"", "<mwg-rs:PersonDisplayName>"] {
-        let mut rest = packet;
-        while let Some(i) = rest.find(form) {
-            rest = &rest[i + form.len()..];
-            let end = if form.ends_with('"') {
-                rest.find('"')
-            } else {
-                rest.find("</")
-            };
-            let Some(end) = end else { break };
-            if let Some(name) = clean(&rest[..end]) {
-                if !out.contains(&name) {
-                    out.push(name);
-                }
-            }
-            rest = &rest[end..];
-        }
+        collect_people_in_form(packet, form, &mut out);
     }
     out
+}
+
+/// Scan a packet for person display names matching a delimiter form and append new names.
+fn collect_people_in_form(packet: &str, form: &str, out: &mut Vec<String>) {
+    let mut rest = packet;
+    while let Some(i) = rest.find(form) {
+        rest = &rest[i + form.len()..];
+        let end = if form.ends_with('"') {
+            rest.find('"')
+        } else {
+            rest.find("</")
+        };
+        let Some(end) = end else { break };
+        if let Some(name) = clean(&rest[..end]) {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        rest = &rest[end..];
+    }
 }
 
 /// Trim, unescape the handful of XML entities that appear in these values, and

@@ -185,6 +185,20 @@ fn element_span(tag: &str, name: &str) -> Option<usize> {
     // comment is stepped over rather than matched (2026-09-19 audit F02).
     let mut p = open_end;
     loop {
+        let next = next_close_tag(tag, p)?;
+        let after = &tag[next..];
+        if element_name(after) == Some(name) {
+            return Some(next + tag_end(after)? + 1);
+        }
+        p = next + 2;
+    }
+}
+
+/// Byte position of the next `</` in `tag` at or after `p`, stepping over any whole CDATA
+/// section or comment so a `</name>` that is merely TEXT inside one is never matched;
+/// `None` if there is no such close tag.
+fn next_close_tag(tag: &str, mut p: usize) -> Option<usize> {
+    loop {
         let close = tag[p..].find("</").map(|i| i + p);
         let cdata = tag[p..].find("<![CDATA[").map(|i| i + p);
         let comment = tag[p..].find("<!--").map(|i| i + p);
@@ -193,11 +207,7 @@ fn element_span(tag: &str, name: &str) -> Option<usize> {
             p = next + opaque_section_end(&tag[next..])?;
             continue;
         }
-        let after = &tag[next..];
-        if element_name(after) == Some(name) {
-            return Some(next + tag_end(after)? + 1);
-        }
-        p = next + 2;
+        return Some(next);
     }
 }
 

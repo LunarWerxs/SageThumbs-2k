@@ -336,26 +336,9 @@ pub(super) fn write_file_section(s: &mut String, path: &str, p: &Path) {
 }
 
 pub(super) fn write_image_section(s: &mut String, path: &str) {
-    use image::ImageDecoder;
     use std::fmt::Write as _;
     let _ = writeln!(s, "── Image ──");
-    let (mut w, mut h) = (0u32, 0u32);
-    if let Ok(rdr) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
-        if let Some(fmt) = rdr.format() {
-            let _ = writeln!(s, "Format: {fmt:?}");
-        }
-        if let Ok(dec) = rdr.into_decoder() {
-            let (dw, dh) = dec.dimensions();
-            (w, h) = (dw, dh);
-            let ct = dec.color_type();
-            let _ = writeln!(
-                s,
-                "Color: {ct:?}  ({}-bit, {} channel(s))",
-                ct.bits_per_pixel(),
-                ct.channel_count()
-            );
-        }
-    }
+    let (mut w, mut h) = decode_image_meta(s, path);
     if w == 0 && h == 0 {
         if let Ok(bytes) = std::fs::read(path) {
             if let Some((cw, ch)) = crate::container::real_or_decoded_dims(&bytes) {
@@ -373,6 +356,29 @@ pub(super) fn write_image_section(s: &mut String, path: &str) {
         let _ = writeln!(s, "Dimensions: unavailable");
     }
     let _ = writeln!(s);
+}
+
+/// Reads image format and decoder metadata, returning the decoded dimensions.
+fn decode_image_meta(s: &mut String, path: &str) -> (u32, u32) {
+    use image::ImageDecoder;
+    use std::fmt::Write as _;
+    let mut dims = (0u32, 0u32);
+    if let Ok(rdr) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
+        if let Some(fmt) = rdr.format() {
+            let _ = writeln!(s, "Format: {fmt:?}");
+        }
+        if let Ok(dec) = rdr.into_decoder() {
+            dims = dec.dimensions();
+            let ct = dec.color_type();
+            let _ = writeln!(
+                s,
+                "Color: {ct:?}  ({}-bit, {} channel(s))",
+                ct.bits_per_pixel(),
+                ct.channel_count()
+            );
+        }
+    }
+    dims
 }
 
 /// Returns whether an EXIF container was actually found and read.
