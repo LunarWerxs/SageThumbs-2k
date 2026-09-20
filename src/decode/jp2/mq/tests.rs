@@ -32,7 +32,7 @@ fn a_patterned_stream_decodes_deterministically_and_keeps_answering_past_its_end
     let b = symbols(&data, 50_000);
     assert_eq!(a, b, "the same bytes must decode to the same symbols");
     assert!(
-        a.iter().any(|&s| s == 1) && a.iter().any(|&s| s == 0),
+        a.contains(&1) && a.contains(&0),
         "a varied stream yields both bits"
     );
 }

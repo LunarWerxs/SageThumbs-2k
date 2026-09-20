@@ -1021,6 +1021,7 @@ pub(crate) unsafe fn label(
 
 /// A single-line text field in a dialog: bordered, tab-stop, scrolling horizontally as the
 /// user types past its width, holding `text` initially.
+#[allow(clippy::too_many_arguments)] // eight of `ctl`'s ten: the rect and the id ARE the call
 pub(crate) unsafe fn edit_field(
     hwnd: HWND,
     hinst: HINSTANCE,

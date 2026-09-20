@@ -151,9 +151,7 @@ fn for_each_jpeg_segment<'b, B>(
         if len < 2 {
             return None;
         }
-        let Some(payload) = b.get(i + 4..i + 2 + len) else {
-            return None;
-        };
+        let payload = b.get(i + 4..i + 2 + len)?;
         if let core::ops::ControlFlow::Break(found) = visit(marker, payload) {
             return Some(found);
         }
