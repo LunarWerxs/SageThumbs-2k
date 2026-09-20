@@ -47,6 +47,19 @@ pub(super) const SVG_MIN_DIM: f32 = 512.0;
 /// filter chains — could otherwise spin a thumbnail-host thread indefinitely.
 pub(super) const SVG_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The sniff window the two cheap SVG probes below scan: an SVG's root element or its
+/// `<style>` block can sit far down the file (see [`looks_like_svg`]).
+const HEAD_SCAN: usize = 64 * 1024;
+
+/// Case-insensitive scan for `needle` within the first [`HEAD_SCAN`] bytes, the shared body
+/// of [`looks_like_svg`] and [`has_css_animation`]. A `needle` longer than the window (or
+/// than the input) simply yields `false`; callers pass non-empty literals.
+fn head_contains_ci(bytes: &[u8], needle: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(HEAD_SCAN)];
+    head.windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
+}
+
 /// Does this look like SVG? A case-insensitive scan for the root element.
 ///
 /// THE WINDOW IS 64 KB, NOT 1 KB, AND THAT IS THE WHOLE POINT (2026-09-17). An SVG's `<svg`
@@ -65,17 +78,14 @@ pub(super) const SVG_TIMEOUT: Duration = Duration::from_secs(10);
 /// buffer the decoder is holding anyway, and a false positive is harmless: resvg simply
 /// fails and the remaining tiers run as before.
 pub(super) fn looks_like_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(64 * 1024)];
-    head.windows(4).any(|w| w.eq_ignore_ascii_case(b"<svg"))
+    head_contains_ci(bytes, b"<svg")
 }
 
 /// Does the SVG define CSS keyframe animations? Cheap case-insensitive `@keyframes` scan of the
 /// first 64 KB (SVGs are small; the `<style>` block is near the top). Used to enable the
 /// reduced-motion render fallback in [`render_svg`] ONLY for animated SVGs.
 pub(super) fn has_css_animation(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(64 * 1024)];
-    head.windows(10)
-        .any(|w| w.eq_ignore_ascii_case(b"@keyframes"))
+    head_contains_ci(bytes, b"@keyframes")
 }
 
 /// Rasterize an SVG to straight (non-premultiplied) RGBA via resvg/tiny-skia.
