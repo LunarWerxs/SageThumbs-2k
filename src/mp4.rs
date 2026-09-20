@@ -356,18 +356,27 @@ fn looks_like_cover_image(b: &[u8]) -> bool {
         || (b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP")
 }
 
-/// The sample-entry fourcc of the video track's first `stsd` entry (`avc1`, `hvc1`, `av01`,
-/// …), for the doctor's codec diagnosis. Reads the `ftyp` gate + `moov` only; `None` for
-/// non-ISO-BMFF sources or video-less files.
-pub fn video_codec_fourcc<R: Read + Seek>(r: &mut R) -> Option<[u8; 4]> {
+/// Walk `moov` ▸ `mdia` ▸ `minf` ▸ `stbl` ▸ `stsd` down to the video track's sample
+/// description table and pass it to `f`. Reads the `ftyp` gate + `moov` only; `None` for a
+/// non-ISO-BMFF source or a video-less file.
+fn with_video_stsd<R: Read + Seek, T>(r: &mut R, f: impl FnOnce(&[u8]) -> Option<T>) -> Option<T> {
     let (_, _, moov) = scan_top_level(r)?;
     let mdia_body = video_mdia(box_body(&moov))?;
     let minf = find(mdia_body, b"minf")?;
     let stbl = box_body(find(box_body(minf), b"stbl")?);
     let stsd = find(stbl, b"stsd")?;
-    // stsd: header(8) version+flags(4) entry_count(4) | entry: size(4) type(4) …
-    let t = stsd.get(20..24)?;
-    Some([t[0], t[1], t[2], t[3]])
+    f(stsd)
+}
+
+/// The sample-entry fourcc of the video track's first `stsd` entry (`avc1`, `hvc1`, `av01`,
+/// …), for the doctor's codec diagnosis. Reads the `ftyp` gate + `moov` only; `None` for
+/// non-ISO-BMFF sources or video-less files.
+pub fn video_codec_fourcc<R: Read + Seek>(r: &mut R) -> Option<[u8; 4]> {
+    with_video_stsd(r, |stsd| {
+        // stsd: header(8) version+flags(4) entry_count(4) | entry: size(4) type(4) …
+        let t = stsd.get(20..24)?;
+        Some([t[0], t[1], t[2], t[3]])
+    })
 }
 
 /// The fixed part of a `VisualSampleEntry`: the 8-byte box header plus 78 bytes of fields
@@ -382,20 +391,17 @@ const VISUAL_SAMPLE_ENTRY_LEN: usize = 8 + 78;
 /// is deliberately a byte read and not a decode: the whole point is answering "can Windows
 /// decode this" without asking Windows to try.
 pub fn h264_profile_idc<R: Read + Seek>(r: &mut R) -> Option<u8> {
-    let (_, _, moov) = scan_top_level(r)?;
-    let mdia_body = video_mdia(box_body(&moov))?;
-    let minf = find(mdia_body, b"minf")?;
-    let stbl = box_body(find(box_body(minf), b"stbl")?);
-    let stsd = find(stbl, b"stsd")?;
-    // stsd: header(8) version+flags(4) entry_count(4) | entries, each a box of its own.
-    let (typ, entry) = boxes(stsd.get(16..)?).next()?;
-    if &typ != b"avc1" && &typ != b"avc3" {
-        return None;
-    }
-    let children = entry.get(VISUAL_SAMPLE_ENTRY_LEN..)?;
-    let avcc = find(children, b"avcC")?;
-    // AVCDecoderConfigurationRecord: configurationVersion, AVCProfileIndication, ...
-    box_body(avcc).get(1).copied()
+    with_video_stsd(r, |stsd| {
+        // stsd: header(8) version+flags(4) entry_count(4) | entries, each a box of its own.
+        let (typ, entry) = boxes(stsd.get(16..)?).next()?;
+        if &typ != b"avc1" && &typ != b"avc3" {
+            return None;
+        }
+        let children = entry.get(VISUAL_SAMPLE_ENTRY_LEN..)?;
+        let avcc = find(children, b"avcC")?;
+        // AVCDecoderConfigurationRecord: configurationVersion, AVCProfileIndication, ...
+        box_body(avcc).get(1).copied()
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
