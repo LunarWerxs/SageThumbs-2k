@@ -144,14 +144,7 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
     let wide = version >= 11;
 
     let mut r = Rd { d: bytes, p: 14 };
-    let width = r.u32()?;
-    let height = r.u32()?;
-    let _base_type = r.u32()?;
-    // XCF 4+ carries an explicit precision word; older files are implicitly 8-bit gamma.
-    let precision = if version >= 4 { r.u32()? } else { 150 };
-    if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
-        return None;
-    }
+    let (width, height, precision) = parse_canvas_header(&mut r, version)?;
 
     let (compression, colormap) = parse_image_properties(&mut r)?;
     let layer_ptrs = parse_layer_ptrs(&mut r, wide)?;
@@ -165,6 +158,20 @@ fn parse_prologue(bytes: &[u8]) -> Option<Prologue> {
         colormap,
         layer_ptrs,
     })
+}
+
+/// Read canvas dimensions and the (v4+) explicit precision word from the header, rejecting a
+/// zero or over-`MAX_DIM` canvas. The base type is read but unused by this decoder.
+fn parse_canvas_header(r: &mut Rd, version: u32) -> Option<(u32, u32, u32)> {
+    let width = r.u32()?;
+    let height = r.u32()?;
+    let _base_type = r.u32()?;
+    // XCF 4+ carries an explicit precision word; older files are implicitly 8-bit gamma.
+    let precision = if version >= 4 { r.u32()? } else { 150 };
+    if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
+        return None;
+    }
+    Some((width, height, precision))
 }
 
 /// The version word out of the 14-byte magic: `"gimp xcf file"` (bytes 9..13 = `"file"`) is
@@ -192,24 +199,36 @@ fn parse_image_properties(r: &mut Rd) -> Option<(u8, Vec<[u8; 3]>)> {
             break; // PROP_END
         }
         let payload = r.take(plen)?;
-        match ptype {
-            17 => compression = *payload.first()?, // PROP_COMPRESSION
-            // PROP_COLORMAP: u32 n, then 3n RGB bytes.
-            1 if payload.len() >= 4 => {
-                let n =
-                    u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
-                let rgb = payload.get(4..4 + n.saturating_mul(3))?;
-                colormap = rgb
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|c| [c[0], c[1], c[2]])
-                    .collect();
-            }
-            _ => {} // resolution, guides, parasites, etc. — irrelevant to the pixels
-        }
+        apply_image_property(ptype, payload, &mut compression, &mut colormap)?;
     }
     Some((compression, colormap))
+}
+
+/// Fold one image property into the running compression/colormap state. Only the tile
+/// compression and, for indexed images, the colormap matter; anything else is irrelevant to
+/// the pixels. A colormap payload too short to hold its count is treated as irrelevant too.
+fn apply_image_property(
+    ptype: u32,
+    payload: &[u8],
+    compression: &mut u8,
+    colormap: &mut Vec<[u8; 3]>,
+) -> Option<()> {
+    match ptype {
+        17 => *compression = *payload.first()?, // PROP_COMPRESSION
+        // PROP_COLORMAP: u32 n, then 3n RGB bytes.
+        1 if payload.len() >= 4 => {
+            let n = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+            let rgb = payload.get(4..4 + n.saturating_mul(3))?;
+            *colormap = rgb
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|c| [c[0], c[1], c[2]])
+                .collect();
+        }
+        _ => {} // resolution, guides, parasites, etc. — irrelevant to the pixels
+    }
+    Some(())
 }
 
 /// The layer pointer list (terminated by a 0 pointer). GIMP writes it TOP-first.
@@ -379,22 +398,7 @@ fn extract_seek_within<R: Read + Seek>(
     let r = &mut src;
     let mut win: Vec<u8> = Vec::new();
 
-    // The prologue — magic, canvas, image properties, layer pointer list — is one contiguous
-    // run at the front of the file, but its LENGTH is not knowable without parsing it: the
-    // property list carries the ICC profile and metadata parasites, which are usually a few KB
-    // and occasionally far more. So read a window and grow it until the parse fits, rather than
-    // guessing one size. Doubling three times covers any real file; past that we decline
-    // instead of reading unboundedly, which is the same answer this decoder has always given a
-    // file it cannot make sense of.
-    let mut pro = None;
-    for window in [256 << 10, 4 << 20, 64 << 20] {
-        read_at(r, 0, window, &mut win)?;
-        pro = parse_prologue(&win);
-        if pro.is_some() || win.len() < window {
-            break; // parsed, or the whole file is already in hand and a bigger read cannot help
-        }
-    }
-    let pro = pro?;
+    let pro = read_prologue(r, &mut win)?;
     let (width, height, wide) = (pro.width, pro.height, pro.wide);
 
     // Read every layer's HEADER first — dimensions, visibility, opacity, placement — without
@@ -409,25 +413,7 @@ fn extract_seek_within<R: Read + Seek>(
     // spent BEFORE every `read_at`, and the window itself shrinks to whatever is left so the
     // final read of the allowance can't overshoot it. A pointer reached once the budget is
     // spent gets no header at all — the same as one whose read failed outright.
-    let mut heads: Vec<Option<LayerHead>> = Vec::with_capacity(pro.layer_ptrs.len());
-    let mut prescan_left = prescan_budget;
-    for &lptr in &pro.layer_ptrs {
-        if prescan_left == 0 {
-            heads.push(None);
-            continue;
-        }
-        let window = LAYER_HEAD_WINDOW.min(prescan_left);
-        heads.push(match read_at(r, lptr, window, &mut win) {
-            Some(()) => {
-                prescan_left = prescan_left.saturating_sub(win.len());
-                read_layer_head(&win, 0, wide)
-            }
-            None => {
-                prescan_left = prescan_left.saturating_sub(window);
-                None
-            }
-        });
-    }
+    let heads = prescan_layer_heads(r, &pro.layer_ptrs, wide, prescan_budget, &mut win);
     let keep = select_layers(layer_budget, &heads, width, height);
 
     // Everything below this point works on a grid reduced by `step`: the canvas, each
@@ -441,18 +427,7 @@ fn extract_seek_within<R: Read + Seek>(
 
     // Chosen top-down, drawn bottom-up: GIMP writes the list top-first, so `.rev()` puts the
     // bottom layer on the canvas first and each one after it lands on top, as it should.
-    for (head, kept) in heads.iter().zip(&keep).rev() {
-        if !*kept {
-            continue;
-        }
-        let Some(head) = head else {
-            continue;
-        };
-        // Best-effort per layer: a single corrupt layer shouldn't lose the whole image.
-        if let Some(layer) = decode_layer(r, head, &pro, &mut win, step) {
-            composite(&mut canvas, &layer);
-        }
-    }
+    composite_kept_layers(r, &pro, &heads, &keep, &mut win, step, &mut canvas);
 
     // Only claim the file if we actually produced visible pixels. A fully-transparent
     // result means we parsed the structure but drew nothing (a degenerate/tile-less test
@@ -463,6 +438,79 @@ fn extract_seek_within<R: Read + Seek>(
         return None;
     }
     Some(DynamicImage::ImageRgba8(canvas))
+}
+
+/// Read and parse the file prologue. The front of the file — magic, canvas, image properties,
+/// layer pointer list — is one contiguous run whose LENGTH is not knowable without parsing it
+/// (the property list carries the ICC profile and metadata parasites). So read a window and grow
+/// it until the parse fits rather than guessing one size; doubling three times covers any real
+/// file, past which we decline instead of reading unboundedly.
+fn read_prologue<R: Read + Seek>(r: &mut R, win: &mut Vec<u8>) -> Option<Prologue> {
+    let mut pro = None;
+    for window in [256 << 10, 4 << 20, 64 << 20] {
+        read_at(r, 0, window, win)?;
+        pro = parse_prologue(win);
+        if pro.is_some() || win.len() < window {
+            break; // parsed, or the whole file is already in hand and a bigger read cannot help
+        }
+    }
+    pro
+}
+
+/// Read every layer's HEADER within the shared prescan budget, shrinking the read window to
+/// whatever `prescan_budget` still allows so the allowance cannot overshoot; a pointer reached
+/// once the budget is spent gets no header, the same as one whose read failed outright.
+fn prescan_layer_heads<R: Read + Seek>(
+    r: &mut R,
+    ptrs: &[u64],
+    wide: bool,
+    prescan_budget: usize,
+    win: &mut Vec<u8>,
+) -> Vec<Option<LayerHead>> {
+    let mut heads: Vec<Option<LayerHead>> = Vec::with_capacity(ptrs.len());
+    let mut prescan_left = prescan_budget;
+    for &lptr in ptrs {
+        if prescan_left == 0 {
+            heads.push(None);
+            continue;
+        }
+        let window = LAYER_HEAD_WINDOW.min(prescan_left);
+        heads.push(match read_at(r, lptr, window, win) {
+            Some(()) => {
+                prescan_left = prescan_left.saturating_sub(win.len());
+                read_layer_head(win, 0, wide)
+            }
+            None => {
+                prescan_left = prescan_left.saturating_sub(window);
+                None
+            }
+        });
+    }
+    heads
+}
+
+/// Composite the kept layers bottom-up onto `canvas`; a single corrupt layer is skipped rather
+/// than losing the whole image.
+fn composite_kept_layers<R: Read + Seek>(
+    r: &mut R,
+    pro: &Prologue,
+    heads: &[Option<LayerHead>],
+    keep: &[bool],
+    win: &mut Vec<u8>,
+    step: u32,
+    canvas: &mut RgbaImage,
+) {
+    for (head, kept) in heads.iter().zip(keep).rev() {
+        if !*kept {
+            continue;
+        }
+        let Some(head) = head else {
+            continue;
+        };
+        if let Some(layer) = decode_layer(r, head, pro, win, step) {
+            composite(canvas, &layer);
+        }
+    }
 }
 
 /// A decoded layer ready to composite: its pixels plus placement/blend state.
@@ -897,32 +945,35 @@ fn decode_tile(
     th: u32,
     dest: &mut [u8],
 ) -> Option<()> {
-    let npix = (tw * th) as usize;
     match compression {
-        0 => {
-            // COMPRESS_NONE
-            let raw = d.get(off..off.checked_add(dest.len())?)?;
-            dest.copy_from_slice(raw);
-            Some(())
-        }
-        1 => decode_rle(d, off, bpp as usize, npix, dest),
-        2 => {
-            // COMPRESS_ZLIB: inflate exactly dest.len() bytes.
-            use std::io::Read;
-            let src = d.get(off..)?;
-            let mut z = flate2::read::ZlibDecoder::new(src);
-            let mut filled = 0usize;
-            while filled < dest.len() {
-                match z.read(&mut dest[filled..]) {
-                    Ok(0) => break,
-                    Ok(n) => filled += n,
-                    Err(_) => break,
-                }
-            }
-            (filled == dest.len()).then_some(())
-        }
+        0 => decode_tile_raw(d, off, dest), // COMPRESS_NONE
+        1 => decode_rle(d, off, bpp as usize, (tw * th) as usize, dest),
+        2 => decode_tile_zlib(d, off, dest), // COMPRESS_ZLIB
         _ => None,
     }
+}
+
+/// Copy a raw (COMPRESS_NONE) tile of exactly `dest.len()` bytes at `off` into `dest`.
+fn decode_tile_raw(d: &[u8], off: usize, dest: &mut [u8]) -> Option<()> {
+    let raw = d.get(off..off.checked_add(dest.len())?)?;
+    dest.copy_from_slice(raw);
+    Some(())
+}
+
+/// Inflate a COMPRESS_ZLIB tile into exactly `dest.len()` bytes; a short inflate declines.
+fn decode_tile_zlib(d: &[u8], off: usize, dest: &mut [u8]) -> Option<()> {
+    use std::io::Read;
+    let src = d.get(off..)?;
+    let mut z = flate2::read::ZlibDecoder::new(src);
+    let mut filled = 0usize;
+    while filled < dest.len() {
+        match z.read(&mut dest[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => break,
+        }
+    }
+    (filled == dest.len()).then_some(())
 }
 
 /// One decoded GIMP-RLE opcode: how many bytes it contributes, and whether they're `len`
@@ -939,32 +990,44 @@ enum RleChunk {
 /// long forms (127/128 with a `u16` length of 0), which the format never produces.
 fn decode_rle_opcode(d: &[u8], p: &mut usize, opcode: u8) -> Option<RleChunk> {
     if opcode <= 126 {
-        // run of (opcode+1) copies of one value
-        let len = opcode as usize + 1;
-        let val = *d.get(*p)?;
-        *p += 1;
-        Some(RleChunk::Run { len, val })
+        rle_short_run(d, p, opcode)
     } else if opcode == 127 {
-        // long run: u16 length, one value
-        let hi = *d.get(*p)? as usize;
-        let lo = *d.get(*p + 1)? as usize;
-        *p += 2;
-        let len = hi * 256 + lo;
-        let val = *d.get(*p)?;
-        *p += 1;
-        (len != 0).then_some(RleChunk::Run { len, val })
+        rle_long_run(d, p)
     } else if opcode == 128 {
-        // long literal: u16 length, then that many raw bytes
-        let hi = *d.get(*p)? as usize;
-        let lo = *d.get(*p + 1)? as usize;
-        *p += 2;
-        (hi * 256 + lo != 0).then_some(RleChunk::Literal { len: hi * 256 + lo })
+        rle_long_literal(d, p)
     } else {
         // 129..=255: (256-opcode) raw literal bytes
         Some(RleChunk::Literal {
             len: 256 - opcode as usize,
         })
     }
+}
+
+/// Short run (opcode ≤ 126): `opcode+1` copies of the next byte.
+fn rle_short_run(d: &[u8], p: &mut usize, opcode: u8) -> Option<RleChunk> {
+    let len = opcode as usize + 1;
+    let val = *d.get(*p)?;
+    *p += 1;
+    Some(RleChunk::Run { len, val })
+}
+
+/// Long run (opcode 127): a `u16` length then one value; a zero length is rejected.
+fn rle_long_run(d: &[u8], p: &mut usize) -> Option<RleChunk> {
+    let hi = *d.get(*p)? as usize;
+    let lo = *d.get(*p + 1)? as usize;
+    *p += 2;
+    let len = hi * 256 + lo;
+    let val = *d.get(*p)?;
+    *p += 1;
+    (len != 0).then_some(RleChunk::Run { len, val })
+}
+
+/// Long literal (opcode 128): a `u16` length then that many raw bytes; a zero length is rejected.
+fn rle_long_literal(d: &[u8], p: &mut usize) -> Option<RleChunk> {
+    let hi = *d.get(*p)? as usize;
+    let lo = *d.get(*p + 1)? as usize;
+    *p += 2;
+    (hi * 256 + lo != 0).then_some(RleChunk::Literal { len: hi * 256 + lo })
 }
 
 /// Writes `len` copies of `val` into `dest` at stride `bpp`, starting at `*slot`.
@@ -999,26 +1062,58 @@ fn scatter_literal(
 fn decode_rle(d: &[u8], off: usize, bpp: usize, npix: usize, dest: &mut [u8]) -> Option<()> {
     let mut p = off;
     for plane in 0..bpp {
-        let mut written = 0usize;
-        let mut slot = plane; // dest index for this plane's next byte
-        while written < npix {
-            let opcode = *d.get(p)?;
-            p += 1;
-            let chunk = decode_rle_opcode(d, &mut p, opcode)?;
-            let len = match chunk {
-                RleChunk::Run { len, .. } | RleChunk::Literal { len } => len,
-            };
-            if written + len > npix {
-                return None;
-            }
-            match chunk {
-                RleChunk::Run { len, val } => scatter_run(dest, &mut slot, bpp, len, val)?,
-                RleChunk::Literal { len } => scatter_literal(d, &mut p, dest, &mut slot, bpp, len)?,
-            }
-            written += len;
-        }
+        decode_rle_plane(d, &mut p, bpp, npix, dest, plane)?;
     }
     Some(())
+}
+
+/// Decode one byte-plane's `npix` bytes, scattering them at stride `bpp` from `plane`, and
+/// advancing the shared cursor `p`; rejects a chunk that would overrun the plane.
+fn decode_rle_plane(
+    d: &[u8],
+    p: &mut usize,
+    bpp: usize,
+    npix: usize,
+    dest: &mut [u8],
+    plane: usize,
+) -> Option<()> {
+    let mut written = 0usize;
+    let mut slot = plane; // dest index for this plane's next byte
+    while written < npix {
+        let opcode = *d.get(*p)?;
+        *p += 1;
+        let chunk = decode_rle_opcode(d, p, opcode)?;
+        let len = rle_chunk_len(&chunk);
+        if written + len > npix {
+            return None;
+        }
+        apply_rle_chunk(d, p, dest, &mut slot, bpp, chunk)?;
+        written += len;
+    }
+    Some(())
+}
+
+/// The number of bytes a decoded chunk contributes to a plane.
+fn rle_chunk_len(chunk: &RleChunk) -> usize {
+    match chunk {
+        RleChunk::Run { len, .. } | RleChunk::Literal { len } => *len,
+    }
+}
+
+/// Write one decoded chunk into `dest` at stride `bpp` from `*slot`, reading a literal's raw
+/// bytes sequentially from `d` starting at `*p`.
+fn apply_rle_chunk(
+    d: &[u8],
+    p: &mut usize,
+    dest: &mut [u8],
+    slot: &mut usize,
+    bpp: usize,
+    chunk: RleChunk,
+) -> Option<()> {
+    match chunk {
+        RleChunk::Run { len, val } => scatter_run(dest, slot, bpp, len, val),
+        RleChunk::Literal { len } => scatter_literal(d, p, dest, slot, bpp, len),
+    }
 }
 
 /// Convert a decoded tile's interleaved samples to RGBA8 and paint it into `out`.
@@ -1093,38 +1188,64 @@ fn blit_tile_scaled(
         if sy0 >= sy1 {
             continue;
         }
-        let span_y = sy1 - sy0;
-        let ny = span_y.min(MAX_TAPS);
         for cx in cx0..=cx1.min(rw.saturating_sub(1)) {
-            let sx0 = (cx * step).max(tx);
-            let sx1 = ((cx + 1) * step).min(tx + tw);
-            if sx0 >= sx1 {
-                continue;
-            }
-            let span_x = sx1 - sx0;
-            let nx = span_x.min(MAX_TAPS);
-            let Some(cell) = acc.get_mut((cy as usize) * (rw as usize) + cx as usize) else {
+            accumulate_cell(
+                acc, rw, cx, cy, sy0, sy1, buf, tx, ty, tw, bpp, bps, ltype, prec, colormap, step,
+            );
+        }
+    }
+}
+
+/// Accumulate one output cell's premultiplied colour sums from evenly spaced taps across the
+/// cell's source span, clipped to the tile we actually hold.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_cell(
+    acc: &mut [[u32; 5]],
+    rw: u32,
+    cx: u32,
+    cy: u32,
+    sy0: u32,
+    sy1: u32,
+    buf: &[u8],
+    tx: u32,
+    ty: u32,
+    tw: u32,
+    bpp: usize,
+    bps: usize,
+    ltype: u32,
+    prec: Precision,
+    colormap: &[[u8; 3]],
+    step: u32,
+) {
+    let span_y = sy1 - sy0;
+    let ny = span_y.min(MAX_TAPS);
+    let sx0 = (cx * step).max(tx);
+    let sx1 = ((cx + 1) * step).min(tx + tw);
+    if sx0 >= sx1 {
+        return;
+    }
+    let span_x = sx1 - sx0;
+    let nx = span_x.min(MAX_TAPS);
+    let Some(cell) = acc.get_mut((cy as usize) * (rw as usize) + cx as usize) else {
+        return;
+    };
+    for j in 0..ny {
+        // Evenly spaced across the span rather than the first N, so a cell that
+        // straddles a tile edge still samples the whole width it covers.
+        let sy = sy0 + span_y * j / ny;
+        for i in 0..nx {
+            let sx = sx0 + span_x * i / nx;
+            let pi = ((sy - ty) as usize * tw as usize + (sx - tx) as usize) * bpp;
+            let Some(px) = buf.get(pi..pi + bpp) else {
                 continue;
             };
-            for j in 0..ny {
-                // Evenly spaced across the span rather than the first N, so a cell that
-                // straddles a tile edge still samples the whole width it covers.
-                let sy = sy0 + span_y * j / ny;
-                for i in 0..nx {
-                    let sx = sx0 + span_x * i / nx;
-                    let pi = ((sy - ty) as usize * tw as usize + (sx - tx) as usize) * bpp;
-                    let Some(px) = buf.get(pi..pi + bpp) else {
-                        continue;
-                    };
-                    let rgba = sample_to_rgba(px, bps, ltype, prec, colormap);
-                    let a = u32::from(rgba[3]);
-                    cell[0] += u32::from(rgba[0]) * a;
-                    cell[1] += u32::from(rgba[1]) * a;
-                    cell[2] += u32::from(rgba[2]) * a;
-                    cell[3] += a;
-                    cell[4] += 1;
-                }
-            }
+            let rgba = sample_to_rgba(px, bps, ltype, prec, colormap);
+            let a = u32::from(rgba[3]);
+            cell[0] += u32::from(rgba[0]) * a;
+            cell[1] += u32::from(rgba[1]) * a;
+            cell[2] += u32::from(rgba[2]) * a;
+            cell[3] += a;
+            cell[4] += 1;
         }
     }
 }
@@ -1208,30 +1329,36 @@ fn composite(canvas: &mut RgbaImage, layer: &Layer) {
             if sa <= 0.0 {
                 continue;
             }
-            let d = canvas.get_pixel(dx as u32, dy as u32).0;
-            let da = d[3] as f32 / 255.0;
-            let oa = sa + da * (1.0 - sa);
-            if oa <= 0.0 {
-                continue;
-            }
-            let mix = |sc: u8, dc: u8| -> u8 {
-                let s = sc as f32 / 255.0;
-                let dd = dc as f32 / 255.0;
-                let o = (s * sa + dd * da * (1.0 - sa)) / oa;
-                (o.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
-            };
-            canvas.put_pixel(
-                dx as u32,
-                dy as u32,
-                image::Rgba([
-                    mix(s[0], d[0]),
-                    mix(s[1], d[1]),
-                    mix(s[2], d[2]),
-                    (oa * 255.0 + 0.5) as u8,
-                ]),
-            );
+            blend_pixel(canvas, dx as u32, dy as u32, s, sa);
         }
     }
+}
+
+/// Blend source pixel `s` with premultiply-alpha `sa` over the existing canvas pixel at
+/// (`dx`, `dy`), writing the straight-alpha result back in place.
+fn blend_pixel(canvas: &mut RgbaImage, dx: u32, dy: u32, s: [u8; 4], sa: f32) {
+    let d = canvas.get_pixel(dx, dy).0;
+    let da = d[3] as f32 / 255.0;
+    let oa = sa + da * (1.0 - sa);
+    if oa <= 0.0 {
+        return;
+    }
+    let mix = |sc: u8, dc: u8| -> u8 {
+        let s = sc as f32 / 255.0;
+        let dd = dc as f32 / 255.0;
+        let o = (s * sa + dd * da * (1.0 - sa)) / oa;
+        (o.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+    };
+    canvas.put_pixel(
+        dx,
+        dy,
+        image::Rgba([
+            mix(s[0], d[0]),
+            mix(s[1], d[1]),
+            mix(s[2], d[2]),
+            (oa * 255.0 + 0.5) as u8,
+        ]),
+    );
 }
 
 /// Precision descriptor: how wide a sample is, whether it's float, and whether the stored

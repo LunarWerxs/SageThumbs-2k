@@ -99,37 +99,16 @@ pub(super) fn jpeg_icc(b: &[u8]) -> Option<Vec<u8>> {
     if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
         return None;
     }
+    use core::ops::ControlFlow;
     let mut chunks: Vec<(u8, &[u8])> = Vec::new();
     let mut declared = 0u8;
-    let mut i = 2usize;
-    while i + 4 <= b.len() {
-        if b[i] != 0xFF {
-            i += 1;
-            continue;
-        }
-        let marker = b[i + 1];
-        // Standalone markers carry no length payload.
-        if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
-            i += 2;
-            continue;
-        }
-        // SOS: the entropy-coded scan starts here and every APP segment is behind us.
-        if marker == 0xDA {
-            break;
-        }
-        let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
-        if len < 2 {
-            break;
-        }
-        let Some(payload) = b.get(i + 4..i + 2 + len) else {
-            break;
-        };
+    for_each_jpeg_segment(b, |marker, payload| {
         if marker == 0xE2 && payload.len() > ID.len() + 2 && payload.starts_with(ID) {
             chunks.push((payload[ID.len()], &payload[ID.len() + 2..]));
             declared = declared.max(payload[ID.len() + 1]);
         }
-        i += 2 + len;
-    }
+        ControlFlow::<()>::Continue(())
+    });
     if chunks.is_empty() || chunks.len() != declared as usize {
         return None;
     }
@@ -145,36 +124,62 @@ pub(super) fn jpeg_icc(b: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Quick check: a JPEG whose frame header declares 4 components (CMYK / YCCK). Walks the
-/// markers only (no pixel decode), so it's cheap to run on every JPEG before the image tier.
-pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {
-    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
-        return false;
-    }
+/// Walk a JPEG's marker segments from just past SOI, handing `visit` each segment's marker
+/// and its payload (the bytes after the two length bytes); `Break` stops the walk with a
+/// value. Standalone markers - 0xFF padding, TEM, RSTn, SOI, EOI - carry no payload and are
+/// stepped over. The walk ends at SOS (the entropy-coded scan starts there and every APP and
+/// SOF segment is behind us), at a length under 2, or at a payload that overruns the buffer.
+fn for_each_jpeg_segment<'b, B>(
+    b: &'b [u8],
+    mut visit: impl FnMut(u8, &'b [u8]) -> core::ops::ControlFlow<B>,
+) -> Option<B> {
     let mut i = 2usize;
-    while i + 9 < b.len() {
+    while i + 4 <= b.len() {
         if b[i] != 0xFF {
             i += 1;
             continue;
         }
         let marker = b[i + 1];
-        // Standalone markers (no length payload): 0xFF padding, SOI, EOI, RSTn, TEM.
         if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
             i += 2;
             continue;
         }
-        // SOFn markers carry the component count — all 0xC0..=0xCF except DHT/JPG/DAC.
-        if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
-            // [FFCn][len:2][precision:1][height:2][width:2][Nf:1] → Nf at offset +9.
-            return b.get(i + 9) == Some(&4);
+        if marker == 0xDA {
+            return None;
         }
         let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
         if len < 2 {
-            return false;
+            return None;
+        }
+        let Some(payload) = b.get(i + 4..i + 2 + len) else {
+            return None;
+        };
+        if let core::ops::ControlFlow::Break(found) = visit(marker, payload) {
+            return Some(found);
         }
         i += 2 + len;
     }
-    false
+    None
+}
+
+/// Quick check: a JPEG whose frame header declares 4 components (CMYK / YCCK). Walks the
+/// markers only (no pixel decode), so it's cheap to run on every JPEG before the image tier.
+pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {
+    use core::ops::ControlFlow;
+    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
+        return false;
+    }
+    // SOFn markers carry the component count — all 0xC0..=0xCF except DHT/JPG/DAC:
+    // [FFCn][len:2][precision:1][height:2][width:2][Nf:1], so Nf is payload byte 5. A frame
+    // header always precedes the scan, so ending the walk at SOS loses nothing.
+    for_each_jpeg_segment(b, |marker, payload| {
+        if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+            ControlFlow::Break(payload.get(5) == Some(&4))
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .unwrap_or(false)
 }
 
 /// Would decoding a `w`×`h` CMYK JPEG through [`decode_cmyk_jpeg`] blow past `max_alloc`?
@@ -926,24 +931,12 @@ fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
 /// when the file carries no `pitm`/`ipma`, names a property index past `ipco`, or does not
 /// parse as a bounded box tree - every one of which hands the caller back to the walk.
 fn avif_primary_item_signals(bytes: &[u8]) -> Option<AvifWicFound> {
-    const MAX_BOXES: usize = 512;
-    if !isobmff_ftyp_is_sane(bytes) {
-        return None;
-    }
-    let mut boxes_left = MAX_BOXES;
-    let top = isobmff_boxes(bytes, &mut boxes_left)?;
-    let meta = isobmff_find_box(&top, b"meta")?;
-    let children = isobmff_boxes(meta.get(4..)?, &mut boxes_left)?;
-    let primary = isobmff_find_box(&children, b"pitm").and_then(isobmff_primary_item_id)?;
-    let iprp = isobmff_find_box(&children, b"iprp")?;
-    let properties = isobmff_boxes(iprp, &mut boxes_left)?;
-    let ipco = isobmff_find_box(&properties, b"ipco")?;
-    let ipco_properties = isobmff_boxes(ipco, &mut boxes_left)?;
-    let ipma = isobmff_find_box(&properties, b"ipma")?;
-    let indices = isobmff_item_property_indices(ipma, ipco_properties.len(), primary)?;
+    let boxes = isobmff_primary_item_boxes(bytes)?;
+    let ipma = isobmff_find_box(&boxes.properties, b"ipma")?;
+    let indices = isobmff_item_property_indices(ipma, boxes.ipco_properties.len(), boxes.primary)?;
     let mut found = AvifWicFound::default();
     for index in indices {
-        let (typ, body) = ipco_properties.get(index.checked_sub(1)?)?;
+        let (typ, body) = boxes.ipco_properties.get(index.checked_sub(1)?)?;
         avif_wic_note_box(typ, body, 0, &mut found);
     }
     Some(found)
@@ -957,17 +950,7 @@ fn isobmff_item_property_indices(
     property_count: usize,
     item: u32,
 ) -> Option<Vec<usize>> {
-    let version = *body.first()?;
-    if version > 1 {
-        return None;
-    }
-    let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
-    let large_indices = flags & 1 != 0;
-    let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
-    let min_entry_len = if version == 0 { 3 } else { 5 };
-    if count > body.len().saturating_sub(8) / min_entry_len {
-        return None;
-    }
+    let (version, large_indices, count) = isobmff_ipma_header(body)?;
     let mut p = 8usize;
     let mut wanted = None;
     for _ in 0..count {
@@ -1188,17 +1171,7 @@ fn isobmff_associated_items(
     property_count: usize,
     alpha_properties: &[usize],
 ) -> Option<Vec<u32>> {
-    let version = *body.first()?;
-    if version > 1 {
-        return None;
-    }
-    let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
-    let large_indices = flags & 1 != 0;
-    let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
-    let min_entry_len = if version == 0 { 3 } else { 5 }; // item ID + association count
-    if count > body.len().saturating_sub(8) / min_entry_len {
-        return None;
-    }
+    let (version, large_indices, count) = isobmff_ipma_header(body)?;
     let mut p = 8usize;
     let mut out = Vec::new();
     for _ in 0..count {
@@ -1264,8 +1237,61 @@ fn isobmff_ftyp_is_sane(bytes: &[u8]) -> bool {
 }
 
 /// First top-level box of type `typ` in an already-parsed box list, if any.
-fn isobmff_find_box<'a>(boxes: &'a [([u8; 4], &'a [u8])], typ: &[u8; 4]) -> Option<&'a [u8]> {
+fn isobmff_find_box<'a>(boxes: &[([u8; 4], &'a [u8])], typ: &[u8; 4]) -> Option<&'a [u8]> {
     boxes.iter().find(|(t, _)| t == typ).map(|(_, b)| *b)
+}
+
+/// The boxes both item-level probes start from: `meta`'s children, the primary item's id from
+/// `pitm`, `iprp`'s children and the `ipco` property list, all under one shared box budget.
+/// `None` when any of them is missing or the tree is not a sane ISOBMFF picture, exactly
+/// where each probe used to stop.
+struct PrimaryItemBoxes<'a> {
+    children: Vec<([u8; 4], &'a [u8])>,
+    primary: u32,
+    properties: Vec<([u8; 4], &'a [u8])>,
+    ipco_properties: Vec<([u8; 4], &'a [u8])>,
+    boxes_left: usize,
+}
+
+fn isobmff_primary_item_boxes(bytes: &[u8]) -> Option<PrimaryItemBoxes<'_>> {
+    const MAX_BOXES: usize = 512;
+    if !isobmff_ftyp_is_sane(bytes) {
+        return None;
+    }
+    let mut boxes_left = MAX_BOXES;
+    let top = isobmff_boxes(bytes, &mut boxes_left)?;
+    let meta = isobmff_find_box(&top, b"meta")?;
+    let children = isobmff_boxes(meta.get(4..)?, &mut boxes_left)?;
+    let primary = isobmff_find_box(&children, b"pitm").and_then(isobmff_primary_item_id)?;
+    let iprp = isobmff_find_box(&children, b"iprp")?;
+    let properties = isobmff_boxes(iprp, &mut boxes_left)?;
+    let ipco = isobmff_find_box(&properties, b"ipco")?;
+    let ipco_properties = isobmff_boxes(ipco, &mut boxes_left)?;
+    Some(PrimaryItemBoxes {
+        children,
+        primary,
+        properties,
+        ipco_properties,
+        boxes_left,
+    })
+}
+
+/// The `ipma` FullBox header both association readers share: (version, large indices, entry
+/// count), the count bounded by the body so a hostile value cannot run the entry loop past it.
+/// `None` for a version this reader does not know.
+fn isobmff_ipma_header(body: &[u8]) -> Option<(u8, bool, usize)> {
+    let version = *body.first()?;
+    if version > 1 {
+        return None;
+    }
+    let flags = u32::from_be_bytes([0, *body.get(1)?, *body.get(2)?, *body.get(3)?]);
+    let large_indices = flags & 1 != 0;
+    let count = u32::from_be_bytes(body.get(4..8)?.try_into().ok()?) as usize;
+    let min_entry_len = if version == 0 { 3 } else { 5 }; // item ID + association count
+    if count > body.len().saturating_sub(8) / min_entry_len {
+        return None;
+    }
+    Some((version, large_indices, count))
 }
 
 /// The primary item id from a `pitm` box's body: version byte (0 or 1), 3
@@ -1302,21 +1328,13 @@ fn isobmff_alpha_property_indices(ipco_properties: &[([u8; 4], &[u8])]) -> Vec<u
 /// The actual walk, `?`-chained through every box lookup; `None` at any step
 /// means "not an HEVC-aux-alpha file", exactly like the old `return false`s.
 fn isobmff_hevc_aux_alpha(bytes: &[u8]) -> Option<bool> {
-    const MAX_BOXES: usize = 512;
-    if !isobmff_ftyp_is_sane(bytes) {
-        return None;
-    }
-
-    let mut boxes_left = MAX_BOXES;
-    let top = isobmff_boxes(bytes, &mut boxes_left)?;
-    let meta = isobmff_find_box(&top, b"meta")?;
-    let children = isobmff_boxes(meta.get(4..)?, &mut boxes_left)?;
-
-    let primary = isobmff_find_box(&children, b"pitm").and_then(isobmff_primary_item_id)?;
-    let iprp = isobmff_find_box(&children, b"iprp")?;
-    let properties = isobmff_boxes(iprp, &mut boxes_left)?;
-    let ipco = isobmff_find_box(&properties, b"ipco")?;
-    let ipco_properties = isobmff_boxes(ipco, &mut boxes_left)?;
+    let PrimaryItemBoxes {
+        children,
+        primary,
+        properties,
+        ipco_properties,
+        mut boxes_left,
+    } = isobmff_primary_item_boxes(bytes)?;
 
     let alpha_properties = isobmff_alpha_property_indices(&ipco_properties);
     if alpha_properties.is_empty() {
