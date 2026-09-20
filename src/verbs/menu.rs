@@ -580,19 +580,28 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
             }
         }
     }
-    for &(it, s) in &pairs {
-        let t = it.title();
-        if reorderable(t) && !seen.contains(&t) {
-            body.push((it, s));
-            seen.push(t);
-        }
-    }
+    append_missing_defaults(&mut body, &mut seen, &pairs);
 
     let mut out = normalize_dividers(body);
     // Tail: one divider, then the always-last Settings entry.
     out.extend(sep);
     out.extend(item("menu_settings"));
     out
+}
+
+/// Appends default menu items that were not present in the saved order.
+fn append_missing_defaults(
+    body: &mut Vec<(&'static MenuItem, u32)>,
+    seen: &mut Vec<&'static str>,
+    pairs: &[(&'static MenuItem, u32)],
+) {
+    for &(it, s) in pairs {
+        let t = it.title();
+        if !t.is_empty() && t != "menu_settings" && !seen.contains(&t) {
+            body.push((it, s));
+            seen.push(t);
+        }
+    }
 }
 
 /// Drop a leading divider, collapse consecutive ones, drop a trailing one (the always-on

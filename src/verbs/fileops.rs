@@ -160,8 +160,6 @@ fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
 /// Refuses an `out` that is one of `imgs` before reading anything (2026-09-05 audit, F30):
 /// the write replaces the destination, so an alias would destroy a source.
 pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Combined> {
-    use std::io::Write;
-
     if let Some(alias) = crate::fsutil::aliased_input(out, imgs.iter().map(String::as_str)) {
         return Err(Error::new(
             E_FAIL,
@@ -216,37 +214,46 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
         .map(|(p, _)| page_dims_from_head(p.as_str()))
         .collect();
 
-    write_atomic(out, |tmp| {
-        let file = std::fs::File::create(tmp).map_err(|_| Error::from(E_FAIL))?;
-        let mut zw = zip::ZipWriter::new(file);
-        let opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        zw.start_file(
-            "ComicInfo.xml",
-            zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated),
-        )
-        .map_err(|_| Error::from(E_FAIL))?;
-        zw.write_all(comic_info_xml(&dims).as_bytes())
-            .map_err(|_| Error::from(E_FAIL))?;
-        for (i, (p, bytes)) in pages.iter().enumerate() {
-            let stem = Path::new(p.as_str())
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("page");
-            // Zero-padded index prefix keeps page order stable in any reader.
-            let name = format!("{:03}_{stem}", i + 1);
-            zw.start_file(name, opts).map_err(|_| Error::from(E_FAIL))?;
-            zw.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
-        }
-        zw.finish().map_err(|_| Error::from(E_FAIL))?;
-        Ok(())
-    })?;
+    write_atomic(out, |tmp| write_cbz_archive(tmp, &pages, &dims))?;
     Ok(Combined {
         output: out.to_path_buf(),
         used: pages.len(),
         omitted,
     })
+}
+
+/// Write the CBZ zip to `tmp`: `ComicInfo.xml` first (deflated), then every page STORED.
+fn write_cbz_archive(
+    tmp: &Path,
+    pages: &[(&String, Vec<u8>)],
+    dims: &[Option<(u32, u32)>],
+) -> Result<()> {
+    use std::io::Write;
+
+    let file = std::fs::File::create(tmp).map_err(|_| Error::from(E_FAIL))?;
+    let mut zw = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    zw.start_file(
+        "ComicInfo.xml",
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .map_err(|_| Error::from(E_FAIL))?;
+    zw.write_all(comic_info_xml(dims).as_bytes())
+        .map_err(|_| Error::from(E_FAIL))?;
+    for (i, (p, bytes)) in pages.iter().enumerate() {
+        let stem = Path::new(p.as_str())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("page");
+        // Zero-padded index prefix keeps page order stable in any reader.
+        let name = format!("{:03}_{stem}", i + 1);
+        zw.start_file(name, opts).map_err(|_| Error::from(E_FAIL))?;
+        zw.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
+    }
+    zw.finish().map_err(|_| Error::from(E_FAIL))?;
+    Ok(())
 }
 
 /// Atomically reserve a collision-free destination for `stem[.ext]` (`src`'s
