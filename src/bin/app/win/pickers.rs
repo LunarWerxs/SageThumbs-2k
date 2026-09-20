@@ -67,14 +67,21 @@ pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     shown_path(&dlg, owner)
 }
 
+/// Create an `IFileSaveDialog` on a freshly entered STA; the returned guard must be kept
+/// alive (bound, not `_`) for as long as the dialog is used.
+unsafe fn save_dialog() -> Option<(Option<ComGuard>, IFileSaveDialog)> {
+    let com = ComGuard::sta();
+    let dlg: IFileSaveDialog =
+        CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    Some((com, dlg))
+}
+
 /// PNG "Save as" dialog via IFileSaveDialog. Unlike the classic GetSaveFileNameW — which
 /// drifts to the top-left / behind a fullscreen owner like the capture overlay — this
 /// centres itself on the owner, so it can't get lost. Seeds the dialog with folder `dir`
 /// and default file `name`. Returns the chosen path (a `.png`), or None if cancelled.
 pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option<String> {
-    let _com = ComGuard::sta();
-    let dlg: IFileSaveDialog =
-        CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let (_com, dlg) = save_dialog()?;
     set_single_filter(&dlg, "PNG image", "*.png", Some("png"));
     // The dialog itself keeps the chosen name on the PNG filter: without FOS_STRICTFILETYPES a
     // typed `shot.jpg` came back as-is and the save then had to cope with a name that lied
@@ -100,9 +107,7 @@ pub(crate) unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option
 /// "Save settings as" dialog (a `.json` file) via IFileSaveDialog — centres on `owner`
 /// like [`pick_save_png`]. Seeds the default file `name`; returns the chosen path or None.
 pub(crate) unsafe fn pick_save_settings(owner: HWND, name: &str) -> Option<String> {
-    let _com = ComGuard::sta();
-    let dlg: IFileSaveDialog =
-        CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let (_com, dlg) = save_dialog()?;
     set_single_filter(&dlg, "SageThumbs 2K settings", "*.json", Some("json"));
     let nm = wide(name);
     let _ = dlg.SetFileName(PCWSTR(nm.as_ptr()));
