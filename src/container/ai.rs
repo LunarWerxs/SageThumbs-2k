@@ -79,69 +79,98 @@ pub(crate) fn looks_like_placeholder_page(bytes: &[u8]) -> bool {
             return false;
         };
         let kw = at + rel;
-        let mut data = kw + 6;
         if head[..kw].ends_with(b"end") {
-            at = data; // the tail of an `endstream`, not a stream start
+            at = kw + 6; // the tail of an `endstream`, not a stream start
             continue;
         }
-        if head[data..].starts_with(b"\r\n") {
-            data += 2;
-        } else if head[data..].starts_with(b"\n") {
-            data += 1;
-        }
-        let Some(end_rel) = find(&head[data..], b"endstream") else {
+        let Some((data, end)) = stream_bounds(head, kw) else {
             return false;
         };
-        let end = data + end_rel;
         at = end + 9;
-        let dict = &head[kw.saturating_sub(600)..kw];
-        let raw = &head[data..end];
-        let inflated;
-        let body: &[u8] = if find(dict, b"FlateDecode").is_some() {
-            use std::io::Read;
-            let mut out = Vec::new();
-            if flate2::read::ZlibDecoder::new(raw)
-                .take(MAX_INFLATED)
-                .read_to_end(&mut out)
-                .is_err()
-            {
-                continue;
-            }
-            inflated = out;
-            &inflated
-        } else {
-            raw
-        };
-        if find(body, b"BT").is_some() && text_names_illustrator_and_pdf(body) {
+        if stream_names_illustrator_and_pdf(&head[kw.saturating_sub(600)..kw], &head[data..end]) {
             return true;
         }
     }
     false
 }
 
+/// After the `stream` keyword ending at `kw`, the byte range `(data, end)` of the stream up
+/// to `endstream`, or `None` when either marker is missing.
+fn stream_bounds(head: &[u8], kw: usize) -> Option<(usize, usize)> {
+    let mut data = kw + 6;
+    if head[data..].starts_with(b"\r\n") {
+        data += 2;
+    } else if head[data..].starts_with(b"\n") {
+        data += 1;
+    }
+    let end = data + find(&head[data..], b"endstream")?;
+    Some((data, end))
+}
+
+/// Does one stream object's content name both "illustrator" and "pdf"? A `FlateDecode` body
+/// is inflated (bounded) first; an invalid zlib stream is simply not a match.
+fn stream_names_illustrator_and_pdf(dict: &[u8], raw: &[u8]) -> bool {
+    let inflated;
+    let body: &[u8] = if find(dict, b"FlateDecode").is_some() {
+        let Some(out) = inflate_bounded(raw) else {
+            return false;
+        };
+        inflated = out;
+        &inflated
+    } else {
+        raw
+    };
+    find(body, b"BT").is_some() && text_names_illustrator_and_pdf(body)
+}
+
+/// `raw` inflated with zlib, bounded to `MAX_INFLATED` bytes; `None` on invalid zlib.
+fn inflate_bounded(raw: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(raw)
+        .take(MAX_INFLATED)
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 /// The text of a content stream's string operands (`(…) Tj`, `[(…) … (…)] TJ`), joined and
 /// lowercased, names both "illustrator" and "pdf".
 fn text_names_illustrator_and_pdf(stream: &[u8]) -> bool {
+    let text = content_stream_text(stream);
+    text.contains("illustrator") && text.contains("pdf")
+}
+
+/// The alphabetic bytes inside every `(…)` literal string of a content stream, lowercased.
+fn content_stream_text(stream: &[u8]) -> String {
     let mut text = String::with_capacity(256);
     let mut i = 0;
     while i < stream.len() {
         if stream[i] == b'(' {
             i += 1;
-            while i < stream.len() && stream[i] != b')' {
-                if stream[i] == b'\\' {
-                    i += 1; // skip the escaped byte (`\)`, `\256`'s first digit, ...)
-                } else if stream[i].is_ascii_alphabetic() {
-                    text.push(stream[i].to_ascii_lowercase() as char);
-                }
-                i += 1;
-            }
+            i = push_literal(stream, i, &mut text);
         }
         i += 1;
         if text.len() > 4096 {
             break;
         }
     }
-    text.contains("illustrator") && text.contains("pdf")
+    text
+}
+
+/// Append the alphabetic bytes of the `(…)` literal starting at `i` (the byte after `(`),
+/// lowercased, and return the index of the closing `)` (or end of input). A backslash skips
+/// the next byte (`\)`, `\256`'s first digit, ...).
+fn push_literal(stream: &[u8], mut i: usize, text: &mut String) -> usize {
+    while i < stream.len() && stream[i] != b')' {
+        if stream[i] == b'\\' {
+            i += 1; // skip the escaped byte
+        } else if stream[i].is_ascii_alphabetic() {
+            text.push(stream[i].to_ascii_lowercase() as char);
+        }
+        i += 1;
+    }
+    i
 }
 
 /// The raster thumbnail Illustrator wrote into its private data, or `None` when there is
@@ -173,26 +202,44 @@ fn parse_size_line(rest: &[u8]) -> Option<(u32, u32, u32, &[u8])> {
 /// single `%` contributes its hex digits; anything else is skipped; `%%EndData` ends it.
 fn hex_block(rest: &[u8]) -> Option<Vec<u8>> {
     let begin = find(&rest[..rest.len().min(4096)], b"%%BeginData")?;
+    let hex = collect_hex_lines(&rest[begin..])?;
+    pack_hex(&hex)
+}
+
+/// The hex digits between `%%BeginData` and `%%EndData`: every line prefixed with a single
+/// `%` contributes, `%%` comments are skipped, `%%EndData` ends it. `None` when the block
+/// never ends, overruns `MAX_HEX`, or holds fewer than two digits.
+fn collect_hex_lines(block: &[u8]) -> Option<Vec<u8>> {
     let mut hex: Vec<u8> = Vec::new();
     let mut seen_end = false;
-    for line in rest[begin..].split(|&b| b == b'\r' || b == b'\n').skip(1) {
+    for line in block.split(|&b| b == b'\r' || b == b'\n').skip(1) {
         if line.starts_with(b"%%EndData") {
             seen_end = true;
             break;
         }
-        if let Some(digits) = line.strip_prefix(b"%") {
-            if digits.starts_with(b"%") {
-                continue; // a `%%` comment inside the block
-            }
-            hex.extend(digits.iter().filter(|b| b.is_ascii_hexdigit()));
-            if hex.len() > MAX_HEX {
-                return None;
-            }
+        push_line_hex(line, &mut hex);
+        if hex.len() > MAX_HEX {
+            return None;
         }
     }
     if !seen_end || hex.len() < 2 {
         return None;
     }
+    Some(hex)
+}
+
+/// Append one block line's hex digits: the bytes after a lone `%`, filtered to hex. A `%%`
+/// comment or a line without a `%` prefix contributes nothing.
+fn push_line_hex(line: &[u8], hex: &mut Vec<u8>) {
+    if let Some(digits) = line.strip_prefix(b"%") {
+        if !digits.starts_with(b"%") {
+            hex.extend(digits.iter().filter(|b| b.is_ascii_hexdigit()));
+        }
+    }
+}
+
+/// Two hex digits per output byte; `None` on a non-hex digit.
+fn pack_hex(hex: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(hex.len() / 2);
     for [hi, lo] in hex.as_chunks::<2>().0 {
         let hi = (*hi as char).to_digit(16)?;
@@ -207,6 +254,21 @@ fn decode_indexed(raw: &[u8], w: u32, h: u32) -> Option<DynamicImage> {
     let palette = raw.get(..PALETTE_BYTES)?;
     let stream = raw.get(PALETTE_BYTES..)?.strip_prefix(b"RLE")?;
     let want = (w as usize).checked_mul(h as usize)?;
+    let idx = decode_rle_indices(stream, want)?;
+    if idx.len() != want {
+        return None;
+    }
+    let mut img = RgbaImage::new(w, h);
+    for (px, &k) in img.pixels_mut().zip(idx.iter()) {
+        let p = &palette[k as usize * 3..k as usize * 3 + 3];
+        *px = image::Rgba([p[0], p[1], p[2], 255]);
+    }
+    Some(DynamicImage::ImageRgba8(img))
+}
+
+/// The colour indices of an `RLE` pixel stream, capped at `want`: a literal byte is one
+/// pixel, the escape `0xFD <count> <index>` is a run. `None` on a truncated escape.
+fn decode_rle_indices(stream: &[u8], want: usize) -> Option<Vec<u8>> {
     let mut idx: Vec<u8> = Vec::with_capacity(want);
     let mut i = 0;
     while i < stream.len() && idx.len() < want {
@@ -222,15 +284,7 @@ fn decode_indexed(raw: &[u8], w: u32, h: u32) -> Option<DynamicImage> {
             i += 1;
         }
     }
-    if idx.len() != want {
-        return None;
-    }
-    let mut img = RgbaImage::new(w, h);
-    for (px, &k) in img.pixels_mut().zip(idx.iter()) {
-        let p = &palette[k as usize * 3..k as usize * 3 + 3];
-        *px = image::Rgba([p[0], p[1], p[2], 255]);
-    }
-    Some(DynamicImage::ImageRgba8(img))
+    Some(idx)
 }
 
 /// Fraction of pixels that are not near-white, on a picture reduced to at most 64 px. The

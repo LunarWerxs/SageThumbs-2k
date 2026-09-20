@@ -139,10 +139,8 @@ pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
         let l = line.trim_start();
         if let Some(rest) = l.strip_prefix("vertex") {
             parse_ascii_stl_vertex(rest, &mut cur)?;
-        } else if l.starts_with("endfacet") {
-            if flush_ascii_stl_facet(&mut tris, &mut cur) {
-                break;
-            }
+        } else if l.starts_with("endfacet") && flush_ascii_stl_facet(&mut tris, &mut cur) {
+            break;
         }
     }
     Some(tris)

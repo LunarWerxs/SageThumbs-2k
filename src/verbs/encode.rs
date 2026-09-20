@@ -177,16 +177,41 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
     // the reserved placeholder only after a clean child exit, exactly like the
     // native encoders below.
     if ext_needs_magick(target.ext) {
-        // The quick "Convert into ▸ AVIF/JXL" verb: magick's default quality (None) — kept
-        // byte-identical to before. The Convert… dialog carries an explicit quality instead.
-        let carried = carry::read(&bytes, &src_ext(path));
-        write_atomic(slot.path(), |tmp| {
-            encode_via_magick_carrying(&img, carried.as_ref(), tmp, target.ext, None)
-        })?;
-        preserve_src_time(Path::new(path), slot.path());
-        return Ok(slot.path().to_path_buf());
+        convert_file_via_magick(path, &bytes, &img, target, &slot)?;
+    } else {
+        convert_file_native(path, &bytes, img, target, &slot)?;
     }
+    Ok(slot.path().to_path_buf())
+}
 
+/// The magick-only branch of [`convert_file`]: carry the source metadata onto the
+/// intermediate PNG and hand it to magick, then stamp the source's time.
+fn convert_file_via_magick(
+    path: &str,
+    bytes: &[u8],
+    img: &DynamicImage,
+    target: Target,
+    slot: &OutSlot,
+) -> Result<()> {
+    // The quick "Convert into ▸ AVIF/JXL" verb: magick's default quality (None) — kept
+    // byte-identical to before. The Convert… dialog carries an explicit quality instead.
+    let carried = carry::read(bytes, &src_ext(path));
+    write_atomic(slot.path(), |tmp| {
+        encode_via_magick_carrying(img, carried.as_ref(), tmp, target.ext, None)
+    })?;
+    preserve_src_time(Path::new(path), slot.path());
+    Ok(())
+}
+
+/// The native-encoder branch of [`convert_file`]: flatten for JPEG, encode, and
+/// graft the carried metadata onto the written file.
+fn convert_file_native(
+    path: &str,
+    bytes: &[u8],
+    img: DynamicImage,
+    target: Target,
+    slot: &OutSlot,
+) -> Result<()> {
     let img = if matches!(target.format, ImageFormat::Jpeg) {
         flatten_onto_white(&img)
     } else {
@@ -195,7 +220,7 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
 
     // Honor the target's WebP-quality (lossy for the quick WebP verb), and the
     // saved JPEG/PNG settings — same as `encode_to`, plus the lossy-WebP selector.
-    let carried = carry::read(&bytes, &src_ext(path));
+    let carried = carry::read(bytes, &src_ext(path));
     write_atomic(slot.path(), |tmp| {
         encode_to_opts(
             &img,
@@ -212,7 +237,7 @@ pub fn convert_file(path: &str, target: Target) -> Result<std::path::PathBuf> {
         Ok(())
     })?;
     preserve_src_time(Path::new(path), slot.path());
-    Ok(slot.path().to_path_buf())
+    Ok(())
 }
 
 /// A path's lowercased extension, the key both the decoder tiers and the
@@ -242,21 +267,48 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     // the lossy re-encode below if the JPEG is outside the supported scope
     // (progressive, non-block-aligned dimensions, a multi-picture index, etc.).
     if matches!(ext.as_str(), "jpg" | "jpeg" | "jpe" | "jfif") {
-        if let Some(out_bytes) = lossless_jpeg_transform(&bytes, t) {
-            let slot = reserve_unique_suffix(src, "edited", &ext);
-            write_atomic(slot.path(), |tmp| {
-                std::fs::write(tmp, &out_bytes)
-                    .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))
-            })?;
-            preserve_src_time(src, slot.path());
-            return Ok(slot.path().to_path_buf());
+        if let Some(out) = transform_file_lossless_jpeg(src, &bytes, t, &ext)? {
+            return Ok(out);
         }
     }
 
+    transform_file_pixels(path, &bytes, t, &ext, src)
+}
+
+/// The lossless jpegtran branch of [`transform_file`]: write the coefficient-rotated
+/// bytes as a new "(edited)" sibling. `Ok(None)` when the file is outside `jpegtran`'s
+/// scope, so the caller takes the pixel path.
+fn transform_file_lossless_jpeg(
+    src: &Path,
+    bytes: &[u8],
+    t: Transform,
+    ext: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(out_bytes) = lossless_jpeg_transform(bytes, t) else {
+        return Ok(None);
+    };
+    let slot = reserve_unique_suffix(src, "edited", ext);
+    write_atomic(slot.path(), |tmp| {
+        std::fs::write(tmp, &out_bytes)
+            .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))
+    })?;
+    preserve_src_time(src, slot.path());
+    Ok(Some(slot.path().to_path_buf()))
+}
+
+/// The pixel fallback of [`transform_file`]: decode, apply `t`, encode with the native
+/// writer (or magick for exotic targets), carrying the metadata through.
+fn transform_file_pixels(
+    path: &str,
+    bytes: &[u8],
+    t: Transform,
+    ext: &str,
+    src: &Path,
+) -> Result<PathBuf> {
     // Pixel fallback: keep the extension only when a real writer exists. Exotic
     // writable formats go through Magick; decoder-only/unknown inputs get an
     // honest PNG sibling instead of PNG bytes disguised by the source suffix.
-    let img = decode::decode_full_for_path(&bytes, path)?;
+    let img = decode::decode_full_for_path(bytes, path)?;
     let out_img = match t {
         Transform::Right90 => img.rotate90(),
         Transform::Left90 => img.rotate270(),
@@ -264,7 +316,7 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
         Transform::FlipH => img.fliph(),
         Transform::FlipV => img.flipv(),
     };
-    let out_ext = edit_output_ext(&ext);
+    let out_ext = edit_output_ext(ext);
     let native_format = if ext_needs_magick(out_ext) {
         None
     } else {
@@ -273,21 +325,44 @@ pub fn transform_file(path: &str, t: Transform) -> Result<PathBuf> {
     let slot = reserve_unique_suffix(src, "edited", out_ext);
     // A104: this pixel fallback (progressive JPEG / PNG / TIFF / …) decodes-and-re-encodes,
     // which drops every metadata block on its own — `resize_file` below already carries EXIF/
-    // XMP/IPTC through the same shape of pipeline; this branch was the one place that didn't.
-    let carried = carry::read(&bytes, &ext);
-    write_atomic(slot.path(), |tmp| {
-        if let Some(format) = native_format {
-            encode_to(&out_img, format, out_ext, tmp)?;
-            if let Some(m) = &carried {
-                carry::apply(m, tmp, out_ext)?;
-            }
-        } else {
-            encode_via_magick_carrying(&out_img, carried.as_ref(), tmp, out_ext, None)?;
-        }
-        Ok(())
-    })?;
+    // XMP/IPTC through the same shape of pipeline; this branch was the one that didn't.
+    let carried = carry::read(bytes, ext);
+    write_reencoded(&out_img, out_ext, native_format, carried.as_ref(), &slot)?;
     preserve_src_time(src, slot.path());
     Ok(slot.path().to_path_buf())
+}
+
+/// Encode `img` with the native writer for `native_format`, grafting the carried
+/// metadata onto the written file, or through magick when there is no native writer.
+fn write_reencoded(
+    img: &DynamicImage,
+    out_ext: &str,
+    native_format: Option<ImageFormat>,
+    carried: Option<&carry::Carried>,
+    slot: &OutSlot,
+) -> Result<()> {
+    write_atomic(slot.path(), |tmp| {
+        write_reencoded_to(img, out_ext, native_format, carried, tmp)
+    })
+}
+
+/// The encoder choice inside [`write_reencoded`]'s staging-file closure.
+fn write_reencoded_to(
+    img: &DynamicImage,
+    out_ext: &str,
+    native_format: Option<ImageFormat>,
+    carried: Option<&carry::Carried>,
+    tmp: &Path,
+) -> Result<()> {
+    if let Some(format) = native_format {
+        encode_to(img, format, out_ext, tmp)?;
+        if let Some(m) = carried {
+            carry::apply(m, tmp, out_ext)?;
+        }
+        Ok(())
+    } else {
+        encode_via_magick_carrying(img, carried, tmp, out_ext, None)
+    }
 }
 
 /// One of the eight symmetries of a rectangle, written as "transpose, then flip
@@ -473,17 +548,7 @@ pub fn resize_file(path: &str, r: Resize) -> Result<PathBuf> {
     };
     let slot = reserve_unique_suffix(src, "resized", out_ext);
     let carried = carry::read(&bytes, &ext);
-    write_atomic(slot.path(), |tmp| {
-        if let Some(format) = native_format {
-            encode_to(&img, format, out_ext, tmp)?;
-            if let Some(m) = &carried {
-                carry::apply(m, tmp, out_ext)?;
-            }
-        } else {
-            encode_via_magick_carrying(&img, carried.as_ref(), tmp, out_ext, None)?;
-        }
-        Ok(())
-    })?;
+    write_reencoded(&img, out_ext, native_format, carried.as_ref(), &slot)?;
     preserve_src_time(src, slot.path());
     Ok(slot.path().to_path_buf())
 }
@@ -516,14 +581,9 @@ fn encode_to_opts(
     target_ext: &str,
     path: &Path,
 ) -> Result<()> {
-    // Only the (optional) lossy-WebP arm consults this; without that feature, WebP
-    // is encoded losslessly via `image` and the quality is irrelevant.
-    #[cfg(not(feature = "webp-lossy"))]
-    let _ = webp_quality;
     let file = std::fs::File::create(path)
         .map_err(|e| Error::new(E_FAIL, format!("create {}: {e}", path.display())))?;
     let mut w = std::io::BufWriter::new(file);
-    let fail = |e: &dyn std::fmt::Display| Error::new(E_FAIL, format!("encode {format:?}: {e}"));
     // ICO frames are at most 256×256; downscale (preserving aspect) to fit.
     let resized;
     let img = if matches!(format, ImageFormat::Ico) && (img.width() > 256 || img.height() > 256) {
@@ -532,10 +592,43 @@ fn encode_to_opts(
     } else {
         img
     };
-    let res = match format {
+    encode_variant(
+        &mut w,
+        img,
+        format,
+        jpeg_quality,
+        png_level,
+        webp_quality,
+        target_ext,
+    )?;
+    // Flush the buffered tail explicitly: BufWriter::drop discards flush errors,
+    // so a disk-full on the final block would otherwise let the caller rename a
+    // TRUNCATED temp file over the destination (breaking the atomic-write promise).
+    w.flush()
+        .map_err(|e| Error::new(E_FAIL, format!("flush {}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// Write `img` in `format` through the encoder each format needs, honoring the
+/// explicit JPEG quality, PNG level and lossy-WebP selector.
+fn encode_variant(
+    w: &mut std::io::BufWriter<std::fs::File>,
+    img: &DynamicImage,
+    format: ImageFormat,
+    jpeg_quality: u8,
+    png_level: u32,
+    webp_quality: Option<u8>,
+    target_ext: &str,
+) -> Result<()> {
+    // Only the (optional) lossy-WebP arm consults this; without that feature, WebP
+    // is encoded losslessly via `image` and the quality is irrelevant.
+    #[cfg(not(feature = "webp-lossy"))]
+    let _ = webp_quality;
+    let fail = |e: &dyn std::fmt::Display| Error::new(E_FAIL, format!("encode {format:?}: {e}"));
+    match format {
         ImageFormat::Jpeg => img
             .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-                &mut w,
+                w,
                 jpeg_quality,
             ))
             .map_err(|e| fail(&e)),
@@ -543,21 +636,14 @@ fn encode_to_opts(
         // files for photos; alpha is preserved. Optional: without `webp-lossy`,
         // WebP falls through to the lossless `other` arm (the `image` encoder).
         #[cfg(feature = "webp-lossy")]
-        ImageFormat::WebP if webp_quality.is_some() => encode_lossy_webp(&mut w, img, webp_quality),
-        ImageFormat::Png => encode_png_variant(&mut w, img, png_level),
-        ImageFormat::OpenExr => encode_exr_bounded(&mut w, img).map_err(|e| fail(&e)),
-        ImageFormat::Hdr => encode_hdr_bounded(&mut w, img).map_err(|e| fail(&e)),
-        ImageFormat::Farbfeld => encode_farbfeld_streaming(&mut w, img).map_err(|e| fail(&e)),
-        ImageFormat::Pnm => encode_pnm_variant(&mut w, img, target_ext),
-        other => img.write_to(&mut w, other).map_err(|e| fail(&e)),
-    };
-    res?;
-    // Flush the buffered tail explicitly: BufWriter::drop discards flush errors,
-    // so a disk-full on the final block would otherwise let the caller rename a
-    // TRUNCATED temp file over the destination (breaking the atomic-write promise).
-    w.flush()
-        .map_err(|e| Error::new(E_FAIL, format!("flush {}: {e}", path.display())))?;
-    Ok(())
+        ImageFormat::WebP if webp_quality.is_some() => encode_lossy_webp(w, img, webp_quality),
+        ImageFormat::Png => encode_png_variant(w, img, png_level),
+        ImageFormat::OpenExr => encode_exr_bounded(w, img).map_err(|e| fail(&e)),
+        ImageFormat::Hdr => encode_hdr_bounded(w, img).map_err(|e| fail(&e)),
+        ImageFormat::Farbfeld => encode_farbfeld_streaming(w, img).map_err(|e| fail(&e)),
+        ImageFormat::Pnm => encode_pnm_variant(w, img, target_ext),
+        other => img.write_to(w, other).map_err(|e| fail(&e)),
+    }
 }
 
 /// Encode lossy WebP via libwebp (`image-webp` only encodes lossless). libwebp rejects
@@ -760,22 +846,44 @@ pub fn convert_file_opts_named(
         .unwrap_or("image")
         .to_string();
     let ext = opts.target.ext.to_string();
-    let dir = out_dir.to_path_buf();
+    let slot = reserve(reserved_name(out_dir.to_path_buf(), stem, tag, ext));
+    // Same metadata carry-through the quick Convert verb does — the dialog is the
+    // path people run on a folder of photos, so it is the one that matters most.
+    let carried = carry::read(&bytes, &src_ext(path));
+    write_converted_named(&img, &opts, carried.as_ref(), &slot)?;
+    preserve_src_time(Path::new(path), slot.path());
+    Ok(slot.path().to_path_buf())
+}
+
+/// The reserved-path closure shared by every convert verb: `<stem><tag>.<ext>`, with
+/// ` (<n>)` inserted before the extension for the nth collision.
+fn reserved_name(
+    dir: PathBuf,
+    stem: String,
+    tag: Option<&str>,
+    ext: String,
+) -> impl Fn(u32) -> PathBuf {
     let tag = tag.map(|t| format!(" ({t})")).unwrap_or_default();
-    let slot = reserve(move |n| {
+    move |n| {
         let name = if n == 0 {
             format!("{stem}{tag}.{ext}")
         } else {
             format!("{stem}{tag} ({n}).{ext}")
         };
         dir.join(name)
-    });
-    // Same metadata carry-through the quick Convert verb does — the dialog is the
-    // path people run on a folder of photos, so it is the one that matters most.
-    let carried = carry::read(&bytes, &src_ext(path));
+    }
+}
+
+/// Encode the converted `img` per `opts` and graft the carried metadata onto it.
+fn write_converted_named(
+    img: &DynamicImage,
+    opts: &ConvertOpts,
+    carried: Option<&carry::Carried>,
+    slot: &OutSlot,
+) -> Result<()> {
     write_atomic(slot.path(), |tmp| {
         encode_to_opts(
-            &img,
+            img,
             opts.target.format,
             opts.jpeg_quality,
             opts.png_level,
@@ -783,13 +891,11 @@ pub fn convert_file_opts_named(
             opts.target.ext,
             tmp,
         )?;
-        if let Some(m) = &carried {
+        if let Some(m) = carried {
             carry::apply(m, tmp, opts.target.ext)?;
         }
         Ok(())
-    })?;
-    preserve_src_time(Path::new(path), slot.path());
-    Ok(slot.path().to_path_buf())
+    })
 }
 
 /// Convert `input` to the EXACT `out` path (format inferred from its extension),
@@ -857,24 +963,11 @@ fn convert_to_reporting_with(
     resize: Resize,
     carry_metadata: bool,
 ) -> std::result::Result<(), (OmitCause, Error)> {
-    let ext = out
-        .extension()
-        .and_then(|e| e.to_str())
-        .filter(|e| !e.is_empty())
-        .ok_or_else(|| {
-            (
-                OmitCause::Unencodable,
-                Error::new(
-                    E_FAIL,
-                    format!("convert: {} has no extension", out.display()),
-                ),
-            )
-        })?
-        .to_ascii_lowercase();
+    let ext = output_ext(out)?;
     // Route every explicitly supported Magick target through its named coder.
     if ext_needs_magick(&ext) {
         // None = magick's default quality, so the quick verb's out-of-process (`st2k convert`)
-        // path stays byte-identical to its in-process twin. The Convert… dialog uses
+        // path stays byte-identical to its in-process twin. The Convert dialog uses
         // `convert_to_magick_in` with an explicit quality instead.
         //
         // One cause for the whole subprocess: magick decodes AND encodes behind one exit
@@ -902,24 +995,62 @@ fn convert_to_reporting_with(
     let carried = carry_metadata
         .then(|| carry::read(&bytes, &src_ext(input)))
         .flatten();
+    write_converted_to(
+        &img,
+        format,
+        &ext,
+        quality,
+        webp_quality,
+        carried.as_ref(),
+        out,
+    )
+    .map_err(|e| (OmitCause::Unencodable, e))?;
+    preserve_src_time(Path::new(input), out);
+    Ok(())
+}
+
+/// The lowercased output extension, or the `Unencodable` "no extension" error.
+fn output_ext(out: &Path) -> std::result::Result<String, (OmitCause, Error)> {
+    out.extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| {
+            (
+                OmitCause::Unencodable,
+                Error::new(
+                    E_FAIL,
+                    format!("convert: {} has no extension", out.display()),
+                ),
+            )
+        })
+        .map(str::to_ascii_lowercase)
+}
+
+/// Encode `img` to `out` per the requested native writer and graft the carried metadata.
+fn write_converted_to(
+    img: &DynamicImage,
+    format: ImageFormat,
+    ext: &str,
+    quality: u8,
+    webp_quality: Option<u8>,
+    carried: Option<&carry::Carried>,
+    out: &Path,
+) -> Result<()> {
     write_atomic(out, |tmp| {
         encode_to_opts(
-            &img,
+            img,
             format,
             quality,
             crate::settings::png_level(),
             webp_quality,
-            &ext,
+            ext,
             tmp,
         )?;
-        if let Some(m) = &carried {
-            carry::apply(m, tmp, &ext)?;
+        if let Some(m) = carried {
+            carry::apply(m, tmp, ext)?;
         }
         Ok(())
     })
-    .map_err(|e| (OmitCause::Unencodable, e))?;
-    preserve_src_time(Path::new(input), out);
-    Ok(())
 }
 
 /// Convert `input` to the EXACT `out` path via the bundled ImageMagick — for the

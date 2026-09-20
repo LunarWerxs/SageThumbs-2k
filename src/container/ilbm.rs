@@ -50,11 +50,13 @@ struct IlbmChunks<'a> {
 /// Walk the IFF chunks (after the 12-byte FORM header), gathering what the decoder needs.
 /// BODY is last in a well-formed file, so the walk stops there.
 fn parse_chunks(bytes: &[u8]) -> Option<IlbmChunks<'_>> {
-    let mut bmhd: Option<Bmhd> = None;
-    let mut cmap: Vec<[u8; 3]> = Vec::new();
-    let mut camg: u32 = 0;
-    let mut sham: Option<&[u8]> = None;
-    let mut body: Option<&[u8]> = None;
+    let mut out = IlbmChunks {
+        bmhd: None,
+        cmap: Vec::new(),
+        camg: 0,
+        sham: None,
+        body: None,
+    };
 
     let mut p = 12usize;
     while p + 8 <= bytes.len() {
@@ -66,49 +68,55 @@ fn parse_chunks(bytes: &[u8]) -> Option<IlbmChunks<'_>> {
             break;
         }
         let data = &bytes[data_start..data_end];
-        match id {
-            b"BMHD" if data.len() >= 20 => {
-                bmhd = Some(Bmhd {
-                    w: u16::from_be_bytes([data[0], data[1]]) as u32,
-                    h: u16::from_be_bytes([data[2], data[3]]) as u32,
-                    planes: data[8],
-                    masking: data[9],
-                    compression: data[10],
-                    transparent: u16::from_be_bytes([data[12], data[13]]),
-                });
-            }
-            b"CMAP" => {
-                cmap = data
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|c| [c[0], c[1], c[2]])
-                    .collect();
-            }
-            b"CAMG" if data.len() >= 4 => {
-                camg = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-            }
-            // Sliced HAM: a 16-colour palette per scanline (the base registers change
-            // down the image). Without it a SHAM picture decodes to colour noise.
-            b"SHAM" => {
-                sham = Some(data);
-            }
-            b"BODY" => {
-                body = Some(data);
-                break; // BODY is last; stop walking
-            }
-            _ => {}
+        if apply_chunk(&mut out, id, data) {
+            out.body = Some(data);
+            break; // BODY is last; stop walking
         }
         // Chunks are word-aligned: skip the pad byte after an odd length.
         p = data_end + (len & 1);
     }
-    Some(IlbmChunks {
-        bmhd,
-        cmap,
-        camg,
-        sham,
-        body,
+    Some(out)
+}
+
+/// Fold one chunk into `out`; returns `true` for `BODY`, when the caller must stop walking.
+fn apply_chunk<'a>(out: &mut IlbmChunks<'a>, id: &[u8], data: &'a [u8]) -> bool {
+    if id == b"BMHD" {
+        out.bmhd = parse_bmhd(data).or_else(|| out.bmhd.take());
+    } else if id == b"CMAP" {
+        out.cmap = parse_cmap(data);
+    } else if id == b"CAMG" && data.len() >= 4 {
+        out.camg = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    } else if id == b"SHAM" {
+        // Sliced HAM: a 16-colour palette per scanline (the base registers change down the
+        // image). Without it a SHAM picture decodes to colour noise.
+        out.sham = Some(data);
+    } else if id == b"BODY" {
+        return true;
+    }
+    false
+}
+
+/// The `BMHD` fields the decoder needs; `None` when the chunk is shorter than its 20-byte
+/// specified layout.
+fn parse_bmhd(data: &[u8]) -> Option<Bmhd> {
+    let d = data.get(..20)?;
+    Some(Bmhd {
+        w: u16::from_be_bytes([d[0], d[1]]) as u32,
+        h: u16::from_be_bytes([d[2], d[3]]) as u32,
+        planes: d[8],
+        masking: d[9],
+        compression: d[10],
+        transparent: u16::from_be_bytes([d[12], d[13]]),
     })
+}
+
+/// The `CMAP` chunk's bytes as RGB triples; a trailing 1-2 bytes are ignored.
+fn parse_cmap(data: &[u8]) -> Vec<[u8; 3]> {
+    data.as_chunks::<3>()
+        .0
+        .iter()
+        .map(|c| [c[0], c[1], c[2]])
+        .collect()
 }
 
 /// Build one scanline's per-pixel colour index (and, for masking mode 1, per-pixel alpha)
@@ -127,12 +135,34 @@ fn decode_row(
     mask_row: &mut [u8],
 ) {
     if is_pbm {
-        let row = &raw[y * row_bytes..];
-        for (x, slot) in idx_row.iter_mut().enumerate() {
-            *slot = *row.get(x).unwrap_or(&0) as u32;
-        }
+        decode_pbm_row(raw, y, row_bytes, idx_row);
         return;
     }
+    let row_base = decode_planar_row(raw, y, w, row_bytes, planes_per_row, planes, idx_row);
+    if masking == 1 {
+        decode_mask_row(raw, row_base, w, row_bytes, planes, mask_row);
+    }
+}
+
+/// A `PBM ` chunky scanline: one byte per pixel, a short row padded with index 0.
+fn decode_pbm_row(raw: &[u8], y: usize, row_bytes: usize, idx_row: &mut [u32]) {
+    let row = &raw[y * row_bytes..];
+    for (x, slot) in idx_row.iter_mut().enumerate() {
+        *slot = *row.get(x).unwrap_or(&0) as u32;
+    }
+}
+
+/// De-interleave one planar scanline into `idx_row`, MSB first, OR-ing each plane in. Returns
+/// the scanline's byte offset in `raw`.
+fn decode_planar_row(
+    raw: &[u8],
+    y: usize,
+    w: usize,
+    row_bytes: usize,
+    planes_per_row: u32,
+    planes: u32,
+    idx_row: &mut [u32],
+) -> usize {
     for v in idx_row.iter_mut() {
         *v = 0;
     }
@@ -147,21 +177,27 @@ fn decode_row(
             idx_row[x] |= (bit as u32) << plane;
         }
     }
-    // Masking mode 1 (mskHasMask): an EXTRA bitplane after the colour planes — bit
-    // set = pixel visible, clear = transparent. The row layout above already skips
-    // over it (`planes_per_row`); actually APPLY it too, or masked/transparent
-    // regions render fully opaque. A truncated/missing mask row degrades to opaque
-    // (the old behavior).
-    if masking == 1 {
-        for m in mask_row.iter_mut() {
-            *m = 255;
-        }
-        let mask_off = row_base + planes as usize * row_bytes;
-        if let Some(mask_bytes) = raw.get(mask_off..mask_off + row_bytes) {
-            for x in 0..w {
-                let bit = (mask_bytes[x >> 3] >> (7 - (x & 7))) & 1;
-                mask_row[x] = if bit == 1 { 255 } else { 0 };
-            }
+    row_base
+}
+
+/// Masking mode 1 (mskHasMask): an EXTRA bitplane after the colour planes — bit set = pixel
+/// visible, clear = transparent. A truncated/missing mask row degrades to fully opaque.
+fn decode_mask_row(
+    raw: &[u8],
+    row_base: usize,
+    w: usize,
+    row_bytes: usize,
+    planes: u32,
+    mask_row: &mut [u8],
+) {
+    for m in mask_row.iter_mut() {
+        *m = 255;
+    }
+    let mask_off = row_base + planes as usize * row_bytes;
+    if let Some(mask_bytes) = raw.get(mask_off..mask_off + row_bytes) {
+        for x in 0..w {
+            let bit = (mask_bytes[x >> 3] >> (7 - (x & 7))) & 1;
+            mask_row[x] = if bit == 1 { 255 } else { 0 };
         }
     }
 }
@@ -297,20 +333,17 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     let mask_plane = u32::from(bmhd.masking == 1);
     let direct_rgb = planes >= 24; // 24-bit RGB (or 25/32 with mask)
     let (row_bytes, planes_per_row) = ilbm_row_layout(w, planes, mask_plane, is_pbm);
-    let expected = row_bytes
-        .checked_mul(planes_per_row as usize)?
-        .checked_mul(h as usize)?;
+    let expected = ilbm_expected_len(row_bytes, planes_per_row, h)?;
     if !ilbm_alloc_within_budget(expected, w, h) {
         return None;
     }
 
     let raw = decode_ilbm_body(body, bmhd.compression, expected, row_bytes)?;
 
-    let ham = camg & CAMG_HAM != 0 && (planes == 6 || planes == 8) && !cmap.is_empty();
+    let ham = is_ham(camg, planes, &cmap);
     // Per-scanline HAM palettes (SHAM), if present. Only meaningful for HAM.
-    let sham_pals = if ham { parse_sham(sham) } else { Vec::new() };
-    // EHB: 6 planes with a 32-entry palette (flag, or the classic heuristic).
-    let ehb = !ham && !direct_rgb && ((camg & CAMG_EHB != 0) || (planes == 6 && cmap.len() == 32));
+    let sham_pals = sham_palettes(ham, sham);
+    let ehb = is_ehb(camg, planes, cmap.len(), ham, direct_rgb);
 
     let mut img = RgbaImage::new(w, h);
     let mut idx_row = vec![0u32; w as usize]; // colour index per pixel for this row
@@ -349,6 +382,33 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
     }
 
     Some(DynamicImage::ImageRgba8(img))
+}
+
+/// The expected uncompressed BODY length, or `None` on `usize` overflow.
+fn ilbm_expected_len(row_bytes: usize, planes_per_row: u32, h: u32) -> Option<usize> {
+    row_bytes
+        .checked_mul(planes_per_row as usize)?
+        .checked_mul(h as usize)
+}
+
+/// Is this a HAM picture: the CAMG hold-and-modify flag on a 6- or 8-plane file with a
+/// non-empty palette?
+fn is_ham(camg: u32, planes: u32, cmap: &[[u8; 3]]) -> bool {
+    camg & CAMG_HAM != 0 && (planes == 6 || planes == 8) && !cmap.is_empty()
+}
+
+/// EHB: 6 planes with a 32-entry palette (flag, or the classic heuristic).
+fn is_ehb(camg: u32, planes: u32, cmap_len: usize, ham: bool, direct_rgb: bool) -> bool {
+    !ham && !direct_rgb && ((camg & CAMG_EHB != 0) || (planes == 6 && cmap_len == 32))
+}
+
+/// Per-scanline HAM palettes (SHAM), parsed only when HAM is actually in use.
+fn sham_palettes(ham: bool, sham: Option<&[u8]>) -> Vec<Vec<[u8; 3]>> {
+    if ham {
+        parse_sham(sham)
+    } else {
+        Vec::new()
+    }
 }
 
 /// EHB: indices 0–31 are the palette; 32–63 are the same colour at half brightness.
@@ -420,23 +480,58 @@ fn byterun1_decode(src: &[u8], expected: usize) -> Option<Vec<u8>> {
     while i < src.len() && out.len() < expected {
         let n = src[i] as i8;
         i += 1;
-        if n >= 0 {
-            let count = n as usize + 1;
-            let end = i.checked_add(count)?;
-            if end > src.len() {
-                out.extend_from_slice(&src[i..]); // tolerate truncation
-                break;
-            }
-            out.extend_from_slice(&src[i..end]);
-            i = end;
-        } else if n != -128 {
-            let count = (1 - n as isize) as usize; // 257 - byte
-            let &b = src.get(i)?;
-            i += 1;
-            out.resize((out.len() + count).min(expected), b);
+        let (next, truncated) = decode_control(src, i, n, expected, &mut out)?;
+        i = next;
+        if truncated {
+            break;
         }
     }
     Some(out)
+}
+
+/// Apply one ByteRun1 control byte `n` (already consumed) with the payload at `src[i..]`.
+/// Returns the next index and whether the source ran out mid-copy, which ends the stream.
+fn decode_control(
+    src: &[u8],
+    i: usize,
+    n: i8,
+    expected: usize,
+    out: &mut Vec<u8>,
+) -> Option<(usize, bool)> {
+    if n >= 0 {
+        copy_literals(src, i, n as usize + 1, out)
+    } else if n == -128 {
+        Some((i, false)) // no-op
+    } else {
+        let next = copy_run(src, i, (1 - n as isize) as usize, expected, out)?;
+        Some((next, false))
+    }
+}
+
+/// Copy `count` literal bytes from `src[i..]`. A short stream copies what is there instead
+/// (tolerating truncation). Returns the next index and whether the copy hit the end.
+fn copy_literals(src: &[u8], i: usize, count: usize, out: &mut Vec<u8>) -> Option<(usize, bool)> {
+    let end = i.checked_add(count)?;
+    if end > src.len() {
+        out.extend_from_slice(&src[i..]); // tolerate truncation
+        return Some((end, true));
+    }
+    out.extend_from_slice(&src[i..end]);
+    Some((end, false))
+}
+
+/// Repeat the byte at `src[i]`, capped at `expected` total; returns the next index, or `None`
+/// when the byte is missing.
+fn copy_run(
+    src: &[u8],
+    i: usize,
+    count: usize,
+    expected: usize,
+    out: &mut Vec<u8>,
+) -> Option<usize> {
+    let &b = src.get(i)?;
+    out.resize((out.len() + count).min(expected), b);
+    Some(i + 1)
 }
 
 #[cfg(test)]

@@ -294,36 +294,46 @@ fn tiff_read_ifd(tiff: &[u8], le: bool, off: usize) -> Option<Vec<TiffEntry>> {
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let entry = off.checked_add(2 + i * 12)?;
-        let tag = tiff_u16(tiff, le, entry)?;
-        let typ = tiff_u16(tiff, le, entry + 2)?;
-        let count = tiff_u32(tiff, le, entry + 4)?;
-        let Some(size) = tiff_type_size(typ) else {
-            continue;
-        };
-        let Some(total) = size.checked_mul(count as usize) else {
-            continue;
-        };
-        if total > TIFF_VALUE_MAX {
-            continue;
+        if let Some(e) = tiff_read_entry(tiff, le, entry)? {
+            out.push(e);
         }
-        let data = if total <= 4 {
-            tiff.get(entry + 8..entry + 8 + total)?.to_vec()
-        } else {
-            let o = tiff_u32(tiff, le, entry + 8)? as usize;
-            match o.checked_add(total).and_then(|end| tiff.get(o..end)) {
-                Some(v) => v.to_vec(),
-                None => continue,
-            }
-        };
-        out.push(TiffEntry {
-            tag,
-            typ,
-            count,
-            data,
-            sub: None,
-        });
     }
     Some(out)
+}
+
+/// Read one directory entry's tag/type/count and value bytes from `tiff`. The outer
+/// `None` when the entry table is cut off (a hard failure the caller propagates);
+/// the inner `None` when the entry is one this walk skips (an unknown type, an
+/// oversized or out-of-range value).
+fn tiff_read_entry(tiff: &[u8], le: bool, entry: usize) -> Option<Option<TiffEntry>> {
+    let tag = tiff_u16(tiff, le, entry)?;
+    let typ = tiff_u16(tiff, le, entry + 2)?;
+    let count = tiff_u32(tiff, le, entry + 4)?;
+    let Some(size) = tiff_type_size(typ) else {
+        return Some(None);
+    };
+    let Some(total) = size.checked_mul(count as usize) else {
+        return Some(None);
+    };
+    if total > TIFF_VALUE_MAX {
+        return Some(None);
+    }
+    let data = if total <= 4 {
+        tiff.get(entry + 8..entry + 8 + total)?.to_vec()
+    } else {
+        let o = tiff_u32(tiff, le, entry + 8)? as usize;
+        match o.checked_add(total).and_then(|end| tiff.get(o..end)) {
+            Some(v) => v.to_vec(),
+            None => return Some(None),
+        }
+    };
+    Some(Some(TiffEntry {
+        tag,
+        typ,
+        count,
+        data,
+        sub: None,
+    }))
 }
 
 /// Follow the Exif, GPS and Interoperability pointers in `entries`, attaching the
@@ -386,6 +396,13 @@ fn tiff_write_entry(out: &mut Vec<u8>, le: bool, at: usize, e: &mut TiffEntry) -
     tiff_put16(out, at, le, e.tag)?;
     tiff_put16(out, at + 2, le, e.typ)?;
     tiff_put32(out, at + 4, le, e.count)?;
+    tiff_write_entry_value(out, le, at, e)
+}
+
+/// Write one entry's value field at `at + 8`: the whole sub-directory when the entry
+/// is a sub-IFD pointer, the bytes inline when they fit the 4-byte slot, or appended
+/// out-of-line with the slot patched to their offset.
+fn tiff_write_entry_value(out: &mut Vec<u8>, le: bool, at: usize, e: &mut TiffEntry) -> Option<()> {
     if let Some(sub) = e.sub.as_mut() {
         let off = tiff_pad_to_even(out);
         tiff_write_ifd(out, le, sub)?;
@@ -456,7 +473,20 @@ fn read_tiff(bytes: &[u8], out: &mut Carried) {
     let Some(mut entries) = tiff_read_ifd(bytes, le, ifd0 as usize) else {
         return;
     };
-    for e in &entries {
+    tiff_take_packets(&entries, out);
+    entries.retain(|e| TIFF_IFD0_KEEP.contains(&e.tag));
+    tiff_attach_sub_ifds(bytes, le, &mut entries, 0);
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(block) = tiff_rebuild_block(le, &mut entries) {
+        out.exif = Some(block);
+    }
+}
+
+/// Lift the XMP, ICC and IPTC packets out of a TIFF file's IFD0 `entries` into `out`.
+fn tiff_take_packets(entries: &[TiffEntry], out: &mut Carried) {
+    for e in entries {
         match e.tag {
             TAG_XMP if matches!(e.typ, 1 | 7) => out.xmp = Some(e.data.clone()),
             TAG_ICC if matches!(e.typ, 1 | 7) => out.icc = Some(e.data.clone()),
@@ -466,11 +496,12 @@ fn read_tiff(bytes: &[u8], out: &mut Carried) {
             _ => {}
         }
     }
-    entries.retain(|e| TIFF_IFD0_KEEP.contains(&e.tag));
-    tiff_attach_sub_ifds(bytes, le, &mut entries, 0);
-    if entries.is_empty() {
-        return;
-    }
+}
+
+/// A fresh TIFF block for the attribute `entries`: the byte-order magic, the IFD0
+/// offset (8) and the directory itself. `None` when the directory could not be
+/// written, so the caller keeps whatever block it had.
+fn tiff_rebuild_block(le: bool, entries: &mut [TiffEntry]) -> Option<Vec<u8>> {
     let mut block = if le {
         b"II*\0".to_vec()
     } else {
@@ -481,9 +512,9 @@ fn read_tiff(bytes: &[u8], out: &mut Carried) {
     } else {
         8u32.to_be_bytes()
     });
-    if tiff_write_ifd(&mut block, le, &mut entries).is_some() {
-        out.exif = Some(block);
-    }
+    tiff_write_ifd(&mut block, le, entries)
+        .is_some()
+        .then_some(block)
 }
 
 /// The EXIF TIFF block and XMP packet of a HEIC/AVIF, from the `Exif` and XMP `mime`
@@ -495,27 +526,35 @@ fn read_isobmff(bytes: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     let mut exif = None;
     let mut xmp = None;
     for item in crate::strip::isobmff::items(bytes) {
-        let Some((off, len)) = item.extent else {
-            continue;
-        };
-        let Some(payload) = off.checked_add(len).and_then(|end| bytes.get(off..end)) else {
+        let Some(payload) = item_bytes(bytes, &item) else {
             continue;
         };
         if &item.kind == b"Exif" && exif.is_none() {
-            let Some(hdr) = payload.first_chunk::<4>() else {
-                continue;
-            };
-            let skip = u32::from_be_bytes(*hdr) as usize;
-            if let Some(tiff) = skip.checked_add(4).and_then(|s| payload.get(s..)) {
-                if tiff.starts_with(b"II") || tiff.starts_with(b"MM") {
-                    exif = Some(tiff.to_vec());
-                }
+            if let Some(block) = heif_exif_block(payload) {
+                exif = Some(block);
             }
         } else if &item.kind == b"mime" && item.is_xmp && xmp.is_none() {
             xmp = Some(payload.to_vec());
         }
     }
     (exif, xmp)
+}
+
+/// The bytes of one `iloc` item's extent, `None` when the item has no known extent
+/// or that extent runs past the file.
+fn item_bytes<'a>(bytes: &'a [u8], item: &crate::strip::isobmff::Item) -> Option<&'a [u8]> {
+    let (off, len) = item.extent?;
+    off.checked_add(len).and_then(|end| bytes.get(off..end))
+}
+
+/// The TIFF block out of a HEIF `Exif` item's payload: a 4-byte big-endian offset
+/// (from the end of that field) to the TIFF header, then the block. `None` when the
+/// offset runs past the payload or the header is neither `II` nor `MM`.
+fn heif_exif_block(payload: &[u8]) -> Option<Vec<u8>> {
+    let hdr = payload.first_chunk::<4>()?;
+    let skip = u32::from_be_bytes(*hdr) as usize;
+    let tiff = skip.checked_add(4).and_then(|s| payload.get(s..))?;
+    (tiff.starts_with(b"II") || tiff.starts_with(b"MM")).then(|| tiff.to_vec())
 }
 
 /// Graft `meta` onto the file at `path`, in place. Best-effort by design: a
@@ -673,24 +712,41 @@ fn apply_webp(meta: &Carried, input: Bytes) -> Option<Vec<u8>> {
         return None; // a header that is not first is a layout this does not touch
     }
     if !leads {
-        // Only a simple (`VP8 `/`VP8L`-first) file gets here, where the parser reads the
-        // size from the frame header itself.
-        let (w, h) = webp.dimensions()?;
-        if w == 0 || h == 0 || w > 1 << 24 || h > 1 << 24 {
-            return None;
-        }
-        let alpha = webp_has_alpha(&webp);
-        let mut d = vec![0u8; 10]; // flags, 3 reserved, canvas width-1, height-1 (24-bit LE)
-        if alpha {
-            d[0] |= VP8X_ALPHA;
-        }
-        d.get_mut(4..7)?
-            .copy_from_slice(&(w - 1).to_le_bytes()[..3]);
-        d.get_mut(7..10)?
-            .copy_from_slice(&(h - 1).to_le_bytes()[..3]);
-        webp.chunks_mut()
-            .insert(0, RiffChunk::new(VP8X, RiffContent::Data(Bytes::from(d))));
+        webp_synthesize_vp8x(&mut webp)?;
     }
+    let flags = webp_attach_chunks(&mut webp, meta);
+    webp_add_vp8x_flags(&mut webp, flags)?;
+    let bytes = webp.encoder().bytes();
+    WebP::from_bytes(bytes.clone()).ok()?;
+    Some(bytes.to_vec())
+}
+
+/// Prefix a simple (`VP8 `/`VP8L`-first) WebP, which carries no `VP8X` header, with a
+/// synthesised one: the canvas size read from the frame header and the alpha feature
+/// bit when the picture has transparency (a decoder may trust the flag and drop alpha).
+fn webp_synthesize_vp8x(webp: &mut WebP) -> Option<()> {
+    const VP8X: [u8; 4] = *b"VP8X";
+    let (w, h) = webp.dimensions()?;
+    if w == 0 || h == 0 || w > 1 << 24 || h > 1 << 24 {
+        return None;
+    }
+    let alpha = webp_has_alpha(webp);
+    let mut d = vec![0u8; 10]; // flags, 3 reserved, canvas width-1, height-1 (24-bit LE)
+    if alpha {
+        d[0] |= VP8X_ALPHA;
+    }
+    d.get_mut(4..7)?
+        .copy_from_slice(&(w - 1).to_le_bytes()[..3]);
+    d.get_mut(7..10)?
+        .copy_from_slice(&(h - 1).to_le_bytes()[..3]);
+    webp.chunks_mut()
+        .insert(0, RiffChunk::new(VP8X, RiffContent::Data(Bytes::from(d))));
+    Some(())
+}
+
+/// Replace a WebP's profile, EXIF and XMP chunks with `meta`'s, returning the `VP8X`
+/// feature bits the written chunks call for. Chunk order follows the container spec.
+fn webp_attach_chunks(webp: &mut WebP, meta: &Carried) -> u8 {
     let chunk = |id: &[u8; 4], body: &[u8]| {
         RiffChunk::new(*id, RiffContent::Data(Bytes::from(body.to_vec())))
     };
@@ -710,6 +766,11 @@ fn apply_webp(meta: &Carried, input: Bytes) -> Option<Vec<u8>> {
         webp.chunks_mut().push(chunk(b"XMP ", x));
         flags |= VP8X_XMP;
     }
+    flags
+}
+
+/// OR `flags` into the leading `VP8X` chunk's feature byte.
+fn webp_add_vp8x_flags(webp: &mut WebP, flags: u8) -> Option<()> {
     let header = webp.chunks_mut().first_mut()?;
     let RiffContent::Data(data) = header.content_mut() else {
         return None;
@@ -717,9 +778,7 @@ fn apply_webp(meta: &Carried, input: Bytes) -> Option<Vec<u8>> {
     let mut d = data.to_vec();
     *d.first_mut()? |= flags;
     *data = Bytes::from(d);
-    let bytes = webp.encoder().bytes();
-    WebP::from_bytes(bytes.clone()).ok()?;
-    Some(bytes.to_vec())
+    Some(())
 }
 
 /// Pull the XMP payload out of a PNG `iTXt` chunk, if that is what it holds.
@@ -895,28 +954,41 @@ fn tiff_ifd_reach(tiff: &[u8], le: bool, ifd: usize, pending: &mut Vec<usize>) -
         .and_then(|e| ifd.checked_add(2 + e + 4))?;
     for i in 0..n as usize {
         let entry = ifd + 2 + i * 12;
-        let (Some(tag), Some(typ), Some(cnt)) = (
-            tiff_u16(tiff, le, entry),
-            tiff_u16(tiff, le, entry + 2),
-            tiff_u32(tiff, le, entry + 4),
-        ) else {
-            return None;
-        };
-        let size = tiff_type_size(typ)?;
-        let total = size.checked_mul(cnt as usize)?;
-        if total > 4 {
-            let off = tiff_u32(tiff, le, entry + 8)? as usize;
-            end = end.max(off.checked_add(total)?);
-        }
-        if SUB_IFD_TAGS.contains(&tag) && typ == 4 && cnt == 1 {
-            if let Some(sub) = tiff_u32(tiff, le, entry + 8) {
-                pending.push(sub as usize);
-            }
-        }
+        end = end.max(tiff_entry_reach(tiff, le, entry, pending)?);
     }
     Some(end)
 }
 
+/// The highest byte one directory entry touches (0 when its value is inline), and the
+/// offset of the Exif/GPS/Interoperability sub-IFD it points at (pushed onto
+/// `pending`). `None` on an entry of a shape this walk does not model.
+fn tiff_entry_reach(
+    tiff: &[u8],
+    le: bool,
+    entry: usize,
+    pending: &mut Vec<usize>,
+) -> Option<usize> {
+    let (Some(tag), Some(typ), Some(cnt)) = (
+        tiff_u16(tiff, le, entry),
+        tiff_u16(tiff, le, entry + 2),
+        tiff_u32(tiff, le, entry + 4),
+    ) else {
+        return None;
+    };
+    let size = tiff_type_size(typ)?;
+    let total = size.checked_mul(cnt as usize)?;
+    let mut end = 0;
+    if total > 4 {
+        let off = tiff_u32(tiff, le, entry + 8)? as usize;
+        end = off.checked_add(total)?;
+    }
+    if SUB_IFD_TAGS.contains(&tag) && typ == 4 && cnt == 1 {
+        if let Some(sub) = tiff_u32(tiff, le, entry + 8) {
+            pending.push(sub as usize);
+        }
+    }
+    Some(end)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
