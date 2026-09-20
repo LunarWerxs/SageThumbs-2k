@@ -199,6 +199,25 @@ pub(super) fn resolve_dims_via_full_decode(path: &str, info: &mut ImageInfo) {
     }
 }
 
+/// The first ASCII string of primary-IFD `tag`, trimmed of surrounding whitespace
+/// and of the trailing NUL padding cameras write. None when the tag is absent,
+/// empty, or not an ASCII field.
+///
+/// Raw ASCII rather than `display_value`: the latter renders an ASCII field wrapped
+/// in literal double quotes, so Explorer's "Camera maker" column showed `"Canon"`
+/// rather than `Canon`.
+fn exif_ascii(exif: &exif::Exif, tag: exif::Tag) -> Option<String> {
+    use exif::{In, Value};
+    match &exif.get_field(tag, In::PRIMARY)?.value {
+        Value::Ascii(v) => {
+            let s = String::from_utf8_lossy(v.first()?);
+            let s = s.trim().trim_end_matches('\0').trim();
+            (!s.is_empty()).then(|| s.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Fill in make/model/capture-time/DPI/GPS from a decoded EXIF container.
 pub(super) fn apply_exif_metadata(info: &mut ImageInfo, exif: &exif::Exif) {
     use exif::{In, Tag, Value};
@@ -206,22 +225,8 @@ pub(super) fn apply_exif_metadata(info: &mut ImageInfo, exif: &exif::Exif) {
         exif.get_field(t, In::PRIMARY)
             .map(|f| f.display_value().with_unit(exif).to_string())
     };
-    // Make/Model must NOT go through `display_value`: it renders an ASCII field
-    // wrapped in literal double quotes, so Explorer's "Camera maker" column showed
-    // `"Canon"` rather than `Canon`. Read the raw ASCII the way `read_capture`
-    // already does, trimmed of the trailing NUL padding cameras write.
-    let ascii = |t: Tag| -> Option<String> {
-        match &exif.get_field(t, In::PRIMARY)?.value {
-            Value::Ascii(v) => {
-                let s = String::from_utf8_lossy(v.first()?);
-                let s = s.trim().trim_end_matches('\0').trim();
-                (!s.is_empty()).then(|| s.to_string())
-            }
-            _ => None,
-        }
-    };
-    info.make = ascii(Tag::Make);
-    info.model = ascii(Tag::Model);
+    info.make = exif_ascii(exif, Tag::Make);
+    info.model = exif_ascii(exif, Tag::Model);
     // CAPTURE time only — NOT a fallback to Tag::DateTime (the file-modified stamp editors
     // write), because this feeds System.Photo.DateTaken. Showing an edit timestamp as "Date
     // taken" is wrong and inconsistent with Windows' own photo handler (which never falls back).
@@ -456,7 +461,7 @@ pub struct CaptureMeta {
 /// the strings are clean enough to put in a filename, and reshapes the EXIF
 /// `"YYYY:MM:DD HH:MM:SS"` into a colon-free form Windows accepts.
 pub fn read_capture(path: &str) -> CaptureMeta {
-    use exif::{In, Reader, Tag, Value};
+    use exif::{Reader, Tag};
     let mut out = CaptureMeta::default();
 
     let Ok(file) = std::fs::File::open(path) else {
@@ -467,23 +472,11 @@ pub fn read_capture(path: &str) -> CaptureMeta {
         return out;
     };
 
-    // Pull the first ASCII string of a tag, trimmed of trailing NULs/space.
-    let ascii = |t: Tag| -> Option<String> {
-        match &exif.get_field(t, In::PRIMARY)?.value {
-            Value::Ascii(v) => {
-                let s = String::from_utf8_lossy(v.first()?);
-                let s = s.trim().trim_end_matches('\0').trim();
-                (!s.is_empty()).then(|| s.to_string())
-            }
-            _ => None,
-        }
-    };
-
-    out.time = ascii(Tag::DateTimeOriginal)
-        .or_else(|| ascii(Tag::DateTime))
+    out.time = exif_ascii(&exif, Tag::DateTimeOriginal)
+        .or_else(|| exif_ascii(&exif, Tag::DateTime))
         .and_then(|s| format_exif_datetime(&s));
     // Model is usually the useful one ("Canon EOS R5"); fall back to Make.
-    out.camera = ascii(Tag::Model).or_else(|| ascii(Tag::Make));
+    out.camera = exif_ascii(&exif, Tag::Model).or_else(|| exif_ascii(&exif, Tag::Make));
     out
 }
 
