@@ -195,6 +195,24 @@ if (-not $SkipBuild) {
     # the whole workspace at once (cargo rejects `--features` across >1 package).
     # `html-preview` links webview2-com into the EXEs only (the slim DLL build never requests it,
     # so the shell-extension cdylib stays free of it — verify with `cargo tree -p sagethumbs2k-dll`).
+    # ⚠ THE LOCKFILE MUST BE THE COMMITTED ONE, AND SOMEBODY ELSE MAY HAVE MOVED IT (2026-09-20).
+    # These trees are shared with other agent sessions. 3.2.0's first release run built x64 clean
+    # and then died on the ARM64 leg with 153 compile errors in COM code nobody had touched,
+    # because `Cargo.lock` was rewritten BETWEEN the two legs and pulled a second `windows-core`
+    # (0.100 beside the pinned 0.62) into the graph - which makes every `#[implement]` expansion
+    # target the wrong trait. `--locked` does not catch that: a rewritten lock is still a VALID
+    # lock. So compare against `git`'s copy and say what happened, rather than spending an hour
+    # reading 153 downstream errors (DEVELOPMENT_GOTCHAS, "A concurrent session can rewrite
+    # Cargo.lock under a release").
+    Push-Location $root
+    try {
+        $lockDrift = @(& git status --porcelain -- Cargo.lock 2>&1) | Where-Object { $_ }
+        if ($lockDrift) {
+            throw "Cargo.lock is modified in the working tree ($($lockDrift -join '; ')). A release must build the COMMITTED lock: another session almost certainly rewrote it. Run ``git checkout -- Cargo.lock`` and start again."
+        }
+    }
+    finally { Pop-Location }
+
     Write-Host "[1/4] cargo build $($exeBuildArgs -join ' ')  (rlib + EXEs)" -ForegroundColor Green
     Push-Location $root
     try { cargo build @exeBuildArgs; if ($LASTEXITCODE) { throw "cargo build failed" } } finally { Pop-Location }
