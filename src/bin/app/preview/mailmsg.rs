@@ -651,13 +651,29 @@ fn collapse_blank_lines(text: &str) -> String {
 // .msg — Outlook's OLE container (MS-OXMSG)
 // ---------------------------------------------------------------------------------------
 
+/// Decode a UTF-16LE stream's bytes, ignoring an odd trailing byte.
+fn utf16le(bytes: &[u8]) -> String {
+    let (chunks, _) = bytes.as_chunks::<2>();
+    let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    String::from_utf16_lossy(&utf16)
+}
+
+/// Every `__substg1.0_<prop>001F` string stream, in directory order: attachment lists repeat
+/// the same stream name once per attachment, so a `read_stream` (first match wins) would
+/// silently list only the first.
+fn msg_utf16_streams(bytes: &[u8], prop: &str) -> Vec<String> {
+    ole::read_streams(bytes, &format!("__substg1.0_{prop}001F"), 64)
+        .unwrap_or_default()
+        .iter()
+        .map(|s| utf16le(s))
+        .collect()
+}
+
 /// MSG property streams are named `__substg1.0_XXXXTTTT`: XXXX = property id, TTTT = type
 /// (001F = UTF-16LE string, 001E = 8-bit string).
 fn msg_string(bytes: &[u8], prop: &str) -> Option<String> {
     if let Some(s) = ole::read_stream(bytes, &format!("__substg1.0_{prop}001F")) {
-        let (chunks, _) = s.as_chunks::<2>();
-        let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        return Some(String::from_utf16_lossy(&utf16));
+        return Some(utf16le(&s));
     }
     ole::read_stream(bytes, &format!("__substg1.0_{prop}001E")).map(|s| cp1252(s.as_slice()))
 }
@@ -671,25 +687,9 @@ fn msg_to_markdown(bytes: &[u8]) -> Option<String> {
 
     // Attachment long filenames: one `__substg1.0_3707001F` per attachment storage (the flat
     // directory scan returns them all); short names (3704) fill in for old writers.
-    let mut attachments: Vec<String> = ole::read_streams(bytes, "__substg1.0_3707001F", 64)
-        .unwrap_or_default()
-        .iter()
-        .map(|s| {
-            let (chunks, _) = s.as_chunks::<2>();
-            let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
-            String::from_utf16_lossy(&utf16)
-        })
-        .collect();
+    let mut attachments: Vec<String> = msg_utf16_streams(bytes, "3707");
     if attachments.is_empty() {
-        attachments = ole::read_streams(bytes, "__substg1.0_3704001F", 64)
-            .unwrap_or_default()
-            .iter()
-            .map(|s| {
-                let (chunks, _) = s.as_chunks::<2>();
-                let utf16: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
-                String::from_utf16_lossy(&utf16)
-            })
-            .collect();
+        attachments = msg_utf16_streams(bytes, "3704");
     }
 
     Some(assemble(&Mail {
