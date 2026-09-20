@@ -77,65 +77,91 @@ pub(super) fn push_snapshot(token: &str) -> Result<u64, String> {
     let mut transient_retries = 0;
     let mut rate_limit_retries = 0;
     loop {
-        let body = serde_json::json!({ "settings": snapshot, "baseVersion": base, "merge": true });
-        let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-        let Some(resp) = sync_http_request(
-            "POST",
-            &store_url(),
-            &auth_headers(token),
-            &bytes,
-            TIMEOUT_SECS,
-            MAX_RESP,
-        ) else {
-            if transient_retries < MAX_PUSH_TRANSIENT_RETRIES {
-                transient_retries += 1;
-                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
-                continue;
-            }
-            mark_offline();
-            return Err("couldn't reach the sync server".to_string());
-        };
-        clear_offline();
-        match resp.status {
-            200 => {
-                let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-                clear_cache();
-                return Ok(json
-                    .get("version")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(base + 1));
-            }
-            409 => {
-                // E05 follow-up audit, review item 5: checked BEFORE incrementing, so
-                // `MAX_PUSH_CONFLICT_RETRIES` really does mean that many RETRIES (this many
-                // 409s get a re-fetch-and-retry) rather than one fewer - the old
-                // post-increment `conflicts >= MAX` gave up after only two retries against a
-                // constant named and documented as three.
-                if conflicts >= MAX_PUSH_CONFLICT_RETRIES {
-                    return Err(
-                        "sync kept conflicting with another device, please try again".to_string(),
-                    );
-                }
-                conflicts += 1;
-                // Stale baseVersion, take the server's current version and retry.
-                let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-                base = json
-                    .get("current")
-                    .and_then(|c| c.get("version"))
-                    .and_then(Value::as_u64)
-                    .or_else(|| store_get(token).ok().map(|(v, _)| v))
-                    .unwrap_or(base);
-            }
-            429 if rate_limit_retries < MAX_PUSH_RATE_LIMIT_RETRIES => {
-                rate_limit_retries += 1;
-                sync_sleep(rate_limit_wait(&resp.body));
-            }
-            status if status >= 500 && transient_retries < MAX_PUSH_TRANSIENT_RETRIES => {
-                transient_retries += 1;
-                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
-            }
-            _ => return Err(store_error(resp.status, &resp.body)),
+        if let Some(version) = push_attempt(
+            token,
+            &snapshot,
+            &mut base,
+            &mut conflicts,
+            &mut transient_retries,
+            &mut rate_limit_retries,
+        )? {
+            return Ok(version);
         }
+    }
+}
+
+/// One attempt of [`push_snapshot`]'s retry loop: POST the snapshot, fold the server's
+/// reply into the retry counters and `base`, and report `Ok(Some(version))` when the loop
+/// is finished or `Ok(None)` when it should try again.
+fn push_attempt(
+    token: &str,
+    snapshot: &Value,
+    base: &mut u64,
+    conflicts: &mut u32,
+    transient_retries: &mut u32,
+    rate_limit_retries: &mut u32,
+) -> Result<Option<u64>, String> {
+    let body = serde_json::json!({ "settings": snapshot, "baseVersion": *base, "merge": true });
+    let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
+    let Some(resp) = sync_http_request(
+        "POST",
+        &store_url(),
+        &auth_headers(token),
+        &bytes,
+        TIMEOUT_SECS,
+        MAX_RESP,
+    ) else {
+        if *transient_retries < MAX_PUSH_TRANSIENT_RETRIES {
+            *transient_retries += 1;
+            sync_sleep(Duration::from_secs(1 << (*transient_retries - 1)));
+            return Ok(None);
+        }
+        mark_offline();
+        return Err("couldn't reach the sync server".to_string());
+    };
+    clear_offline();
+    match resp.status {
+        200 => {
+            let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+            clear_cache();
+            Ok(Some(json
+                .get("version")
+                .and_then(Value::as_u64)
+                .unwrap_or(*base + 1)))
+        }
+        409 => {
+            // E05 follow-up audit, review item 5: checked BEFORE incrementing, so
+            // `MAX_PUSH_CONFLICT_RETRIES` really does mean that many RETRIES (this many
+            // 409s get a re-fetch-and-retry) rather than one fewer - the old
+            // post-increment `conflicts >= MAX` gave up after only two retries against a
+            // constant named and documented as three.
+            if *conflicts >= MAX_PUSH_CONFLICT_RETRIES {
+                return Err(
+                    "sync kept conflicting with another device, please try again".to_string(),
+                );
+            }
+            *conflicts += 1;
+            // Stale baseVersion, take the server's current version and retry.
+            let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+            *base = json
+                .get("current")
+                .and_then(|c| c.get("version"))
+                .and_then(Value::as_u64)
+                .or_else(|| store_get(token).ok().map(|(v, _)| v))
+                .unwrap_or(*base);
+            Ok(None)
+        }
+        429 if *rate_limit_retries < MAX_PUSH_RATE_LIMIT_RETRIES => {
+            *rate_limit_retries += 1;
+            sync_sleep(rate_limit_wait(&resp.body));
+            Ok(None)
+        }
+        status if status >= 500 && *transient_retries < MAX_PUSH_TRANSIENT_RETRIES => {
+            *transient_retries += 1;
+            sync_sleep(Duration::from_secs(1 << (*transient_retries - 1)));
+            Ok(None)
+        }
+        _ => Err(store_error(resp.status, &resp.body)),
     }
 }
 
