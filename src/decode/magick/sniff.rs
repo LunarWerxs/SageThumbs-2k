@@ -67,6 +67,12 @@ pub(super) fn isobmff_box_at(bytes: &[u8], offset: usize) -> Option<([u8; 4], us
     let header = bytes.get(offset..offset.checked_add(8)?)?;
     let size32 = u32::from_be_bytes(header[0..4].try_into().ok()?);
     let typ = header[4..8].try_into().ok()?;
+    let (size, header_len) = resolve_box_size(bytes, offset, size32)?;
+    Some((typ, offset + header_len, offset + size))
+}
+
+/// Resolve a box's total size and header length from its 32-bit size word (reads the 64-bit extended size when `size32 == 1`).
+fn resolve_box_size(bytes: &[u8], offset: usize, size32: u32) -> Option<(usize, usize)> {
     let extended = if size32 == 1 {
         let raw = bytes.get(offset.checked_add(8)?..offset.checked_add(16)?)?;
         Some(u64::from_be_bytes(raw.try_into().ok()?))
@@ -79,9 +85,7 @@ pub(super) fn isobmff_box_at(bytes: &[u8], offset: usize) -> Option<([u8; 4], us
         offset as u64,
         bytes.len() as u64,
     )?;
-    let size = usize::try_from(size).ok()?;
-    let header_len = usize::try_from(header_len).ok()?;
-    Some((typ, offset + header_len, offset + size))
+    Some((usize::try_from(size).ok()?, usize::try_from(header_len).ok()?))
 }
 
 pub(super) fn is_mini_avif(bytes: &[u8]) -> bool {
