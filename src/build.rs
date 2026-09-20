@@ -133,67 +133,31 @@ fn embed_manifest_and_icon() -> bool {
     if has_icon {
         prelude.push_str("1 ICON \"app.ico\"\n");
     }
-    // (cargo bin target, .rc basename, .o basename, FileDescription, OriginalFilename)
+    // (cargo bin target, .rc stem, FileDescription, OriginalFilename)
     let bins = [
         (
             "SageThumbs2K",
-            "app.rc",
-            "app_res.o",
+            "app",
             "SageThumbs 2K (Options)",
             "SageThumbs2K.exe",
         ),
-        (
-            "st2k",
-            "st2k.rc",
-            "st2k_res.o",
-            "SageThumbs 2K (CLI)",
-            "st2k.exe",
-        ),
+        ("st2k", "st2k", "SageThumbs 2K (CLI)", "st2k.exe"),
     ];
-    // Build EVERY per-bin object first; only emit link args once all succeeded.
+    // Build EVERY per-bin object first; only emit link args once all succeeded. The
+    // write-the-.rc / SDK-rc-on-ARM64 / windres-else-SDK-rc flow is `build_support::compile_rc`,
+    // the one copy the DLL build scripts use too (its doc carries the 2026-09-11 lesson: an
+    // MSVC-only box has no windres, and the SDK rc.exe compiles the identical .rc).
     let ver = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
     let mut links: Vec<(&str, String)> = Vec::new();
-    for (bin, rc_name, obj_name, desc, orig) in bins {
+    for (bin, stem, desc, orig) in bins {
         let rc = format!(
             "{prelude}{}",
             build_support::versioninfo_rc(desc, orig, &ver, build_support::FileType::App)
         );
-        if std::fs::write(format!("{out}/{rc_name}"), rc).is_err() {
-            return false;
+        match build_support::compile_rc(&out, stem, &rc) {
+            Ok(obj) => links.push((bin, obj)),
+            Err(_) => return false,
         }
-        let rc_path = format!("{out}/{rc_name}");
-        let (obj, built) = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
-            let res = format!("{out}/{}.res", obj_name.trim_end_matches(".o"));
-            let built = build_support::compile_with_windows_sdk_rc(&rc_path, &res);
-            (res, built)
-        } else {
-            let obj = format!("{out}/{obj_name}");
-            let built = ["windres", "x86_64-w64-mingw32-windres"]
-                .iter()
-                .any(|windres| {
-                    let status = std::process::Command::new(windres)
-                        .args(["-I", &out, &rc_path, "-O", "coff", "-o", &obj])
-                        .status();
-                    matches!(status, Ok(s) if s.success())
-                });
-            if built {
-                (obj, true)
-            } else {
-                // windres is a MinGW tool, absent from a plain MSVC box (rustup + VS Build Tools),
-                // so an x64 developer build silently produced an exe with NO icon and NO VERSIONINFO
-                // - Explorer showed a blank version where the released build shows 3.0.1, and only
-                // the manifest-only fallback ran. The SDK `rc.exe` this repo ALREADY uses for the
-                // aarch64 leg compiles the identical .rc, so fall back to it rather than degrade
-                // (measured 2026-09-11 on a box with the SDK but no MinGW).
-                let res = format!("{out}/{}.res", obj_name.trim_end_matches(".o"));
-                let built = build_support::compile_with_windows_sdk_rc(&rc_path, &res);
-                (res, built)
-            }
-        };
-        if !built {
-            return false;
-        }
-        links.push((bin, obj));
     }
     for (bin, obj) in links {
         println!("cargo:rustc-link-arg-bin={bin}={obj}");

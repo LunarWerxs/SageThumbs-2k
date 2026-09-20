@@ -145,6 +145,16 @@ pub fn compile_rc(out_dir: &str, stem: &str, rc_text: &str) -> Result<String, Rc
             Err(e) => why.push(format!("{windres}: could not run it ({e})")),
         }
     }
+    // windres is a MinGW tool, absent from a plain MSVC box (rustup + VS Build Tools): an x64
+    // developer build of the app once shipped an exe with NO icon and NO VERSIONINFO that way,
+    // Explorer showing a blank version where the release shows 3.0.1 (measured 2026-09-11 on a
+    // box with the SDK but no MinGW). The SDK rc.exe the ARM64 leg uses compiles the identical
+    // .rc, so it is tried before giving up; `link.exe` takes the `.res` on x64 as well.
+    let res = format!("{out_dir}/{stem}.res");
+    if compile_with_windows_sdk_rc(&input, &res) {
+        return Ok(res);
+    }
+    why.push("SDK rc.exe: none found, or it failed".to_string());
     Err(RcFailure::Windres(why.join("\n  ")))
 }
 
