@@ -235,27 +235,57 @@ pub(super) unsafe fn walk_run_chars(
                 toks.push(Tok::Space(sz.cx));
             }
             _ => {
-                if word.is_empty() {
-                    *wstart = ci;
-                }
-                let mut b = [0u16; 2];
-                for u in ch.encode_utf16(&mut b) {
-                    word.push(*u);
-                    unit_at.push(ci);
-                }
-                // Scripts that don't put spaces between words get their break
-                // opportunities here instead. Without this a Chinese/Japanese paragraph is
-                // ONE token, and the greedy line-breaker below places an over-wide token
-                // anyway, so the whole paragraph ran off the pane edge and was clipped.
-                if let Some(&(ni, next)) = chars.peek() {
-                    if can_break_between(ch, next) {
-                        flush_word(hdc, word, unit_at, *wstart, ni, width, toks, rc);
-                    }
-                }
+                push_word_char(
+                    hdc,
+                    width,
+                    ci,
+                    ch,
+                    chars.peek().copied(),
+                    word,
+                    unit_at,
+                    wstart,
+                    toks,
+                    rc,
+                );
             }
         }
     }
     flush_word(hdc, word, unit_at, *wstart, text.len(), width, toks, rc);
+}
+
+/// [`walk_run_chars`]'s word-character arm: append `ch`'s UTF-16 units to the pending `word`
+/// (recording `ci` as each unit's character offset), and flush a word here when `next` starts
+/// a script that carries no spaces to break on.
+#[allow(clippy::too_many_arguments)] // one call site, all genuinely distinct inputs
+unsafe fn push_word_char(
+    hdc: HDC,
+    width: i32,
+    ci: usize,
+    ch: char,
+    next: Option<(usize, char)>,
+    word: &mut Vec<u16>,
+    unit_at: &mut Vec<usize>,
+    wstart: &mut usize,
+    toks: &mut Vec<Tok>,
+    rc: &RunTokCtx,
+) {
+    if word.is_empty() {
+        *wstart = ci;
+    }
+    let mut b = [0u16; 2];
+    for u in ch.encode_utf16(&mut b) {
+        word.push(*u);
+        unit_at.push(ci);
+    }
+    // Scripts that don't put spaces between words get their break
+    // opportunities here instead. Without this a Chinese/Japanese paragraph is
+    // ONE token, and the greedy line-breaker below places an over-wide token
+    // anyway, so the whole paragraph ran off the pane edge and was clipped.
+    if let Some((ni, next)) = next {
+        if can_break_between(ch, next) {
+            flush_word(hdc, word, unit_at, *wstart, ni, width, toks, rc);
+        }
+    }
 }
 
 /// Flattens `runs` into measured tokens (words / spaces / hard breaks), each remembering the
@@ -335,19 +365,16 @@ pub(super) fn break_into_lines(toks: &[Tok], width: i32) -> Vec<(Vec<(i32, usize
                 }
             }
             Tok::Word { w, .. } => {
-                if !line_start && cx + pending_space + *w > width {
-                    lines.push((core::mem::take(&mut cur), cx));
-                    cx = 0;
-                    pending_space = 0;
-                    line_start = true;
-                }
-                if !line_start {
-                    cx += pending_space;
-                }
-                pending_space = 0;
-                cur.push((cx, idx));
-                cx += *w;
-                line_start = false;
+                place_word(
+                    &mut lines,
+                    &mut cur,
+                    &mut cx,
+                    &mut pending_space,
+                    &mut line_start,
+                    *w,
+                    idx,
+                    width,
+                );
             }
         }
     }
@@ -355,4 +382,33 @@ pub(super) fn break_into_lines(toks: &[Tok], width: i32) -> Vec<(Vec<(i32, usize
         lines.push((cur, cx));
     }
     lines
+}
+
+/// [`break_into_lines`]'s word arm: start a fresh line when this word would overflow the
+/// current one (with the pending inter-word space), add that pending space, then record the
+/// word's line-relative x and advance `cx` past it.
+#[allow(clippy::too_many_arguments)] // one call site, all genuinely distinct inputs
+fn place_word(
+    lines: &mut Vec<(Vec<(i32, usize)>, i32)>,
+    cur: &mut Vec<(i32, usize)>,
+    cx: &mut i32,
+    pending_space: &mut i32,
+    line_start: &mut bool,
+    w: i32,
+    idx: usize,
+    width: i32,
+) {
+    if !*line_start && *cx + *pending_space + w > width {
+        lines.push((core::mem::take(cur), *cx));
+        *cx = 0;
+        *pending_space = 0;
+        *line_start = true;
+    }
+    if !*line_start {
+        *cx += *pending_space;
+    }
+    *pending_space = 0;
+    cur.push((*cx, idx));
+    *cx += w;
+    *line_start = false;
 }
