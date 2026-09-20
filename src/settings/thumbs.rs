@@ -187,6 +187,27 @@ pub struct ThumbSettings {
     pub container_skip_scanlation: bool,
 }
 
+/// A getter over ONE snapshot of whichever backing store is live: the portable ini root
+/// section read once into a map, or a single read-only HKCU key open. Collapsing N opens
+/// into one is the whole point of [`thumb_settings`] and [`menu_gate`], which each read a
+/// dozen values out of it. The getter answers `None` for an absent value, so a caller that
+/// has to tell ABSENT from 0 (e.g. `CornerMark`) can, while `unwrap_or` gives the rest their
+/// defaults.
+fn snapshot_u32_getter() -> impl Fn(&str) -> Option<u32> {
+    let ini: Option<std::collections::HashMap<String, String>> =
+        store::portable().then(|| store::section_values(None).into_iter().collect());
+    let key = match ini {
+        Some(_) => None,
+        None => CURRENT_USER.open(hkcu_root()).ok(),
+    };
+    move |name: &str| {
+        if let Some(ini) = ini.as_ref() {
+            return ini.get(name).and_then(|v| v.parse().ok());
+        }
+        key.as_ref().and_then(|k| k.get_u32(name).ok())
+    }
+}
+
 /// Read the per-`GetThumbnail` settings in one HKCU key open. Missing values fall
 /// back to the same defaults the individual getters use, so the result is identical
 /// to calling them one by one — just without the repeated opens.
@@ -194,22 +215,11 @@ pub fn thumb_settings() -> ThumbSettings {
     // ONE snapshot of whichever backing store is live, then every value is read out of it.
     // Collapsing N opens into one is the entire point of this function, so the portable
     // path takes the same shape: one section snapshot, not one file read per value.
-    let ini: Option<std::collections::HashMap<String, String>> =
-        store::portable().then(|| store::section_values(None).into_iter().collect());
-    let key = match ini {
-        Some(_) => None,
-        None => CURRENT_USER.open(hkcu_root()).ok(),
-    };
+    let gopt = snapshot_u32_getter();
     // `gopt` is the primitive; `g` is it with a default applied. Both are needed because
     // `CornerMark` has to tell ABSENT from 0 to know whether to fall back to the legacy pair,
     // and doing that with a sentinel default would make 0 (the real "system icon" value)
     // indistinguishable from "never set".
-    let gopt = |name: &str| -> Option<u32> {
-        if let Some(ini) = ini.as_ref() {
-            return ini.get(name).and_then(|v| v.parse().ok());
-        }
-        key.as_ref().and_then(|k| k.get_u32(name).ok())
-    };
     let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
     // Same derivation as `corner_mark()`, off this one snapshot rather than re-opening the key.
     // It has to agree with that function exactly, which is what
@@ -614,18 +624,7 @@ pub struct MenuGate {
 /// [`menu_enabled`]/[`menu_all_file_types`]/[`menu_quick_verbs`] separately — just without the
 /// repeated opens.
 pub fn menu_gate() -> MenuGate {
-    let ini: Option<std::collections::HashMap<String, String>> =
-        store::portable().then(|| store::section_values(None).into_iter().collect());
-    let key = match ini {
-        Some(_) => None,
-        None => CURRENT_USER.open(hkcu_root()).ok(),
-    };
-    let gopt = |name: &str| -> Option<u32> {
-        if let Some(ini) = ini.as_ref() {
-            return ini.get(name).and_then(|v| v.parse().ok());
-        }
-        key.as_ref().and_then(|k| k.get_u32(name).ok())
-    };
+    let gopt = snapshot_u32_getter();
     let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
     MenuGate {
         enabled: g("EnableMenu", 1) != 0 && !crate::licence_state::shell_locked(),
