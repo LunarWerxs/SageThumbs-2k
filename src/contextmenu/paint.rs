@@ -98,12 +98,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
             None => menu_theme_colors(),
         };
 
-        let mut bmi = BITMAPINFO::default();
-        bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = iw;
-        bmi.bmiHeader.biHeight = -ih; // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
+        let bmi = crate::safety::top_down_bmi!(BITMAPINFO, BITMAPINFOHEADER, iw, ih);
         let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
         let Ok(dib) = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
             return false;

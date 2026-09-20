@@ -75,7 +75,7 @@ mod sfw;
 mod skp;
 mod spla;
 mod tarfmt;
-mod util;
+pub(crate) mod util;
 // GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
 mod xcf;
 

@@ -18,7 +18,7 @@ pub(super) fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
 
 /// First index of `needle` in `hay`, or None. Guards an empty needle (which would
 /// make `windows(0)` panic) and a needle longer than the haystack.
-pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+pub fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }

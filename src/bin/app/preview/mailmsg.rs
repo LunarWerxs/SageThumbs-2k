@@ -16,6 +16,7 @@
 
 use super::content::read_capped;
 use super::docconv::md_cell;
+use sagethumbs2k_core::find;
 use sagethumbs2k_core::ole;
 
 /// Extensions this module answers for.
@@ -412,13 +413,6 @@ fn split_multipart<'a>(raw: &'a [u8], boundary: &str) -> Vec<&'a [u8]> {
         }
     }
     out
-}
-
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return None;
-    }
-    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// A leaf text part: undo the transfer encoding, then the charset.

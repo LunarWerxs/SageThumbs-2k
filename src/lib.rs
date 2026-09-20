@@ -35,6 +35,10 @@ pub use container::ole;
 /// preview (PSD/PSB). The Quick preview uses it to decide whether the fast preview it just
 /// painted is worth replacing with the real composite — see `preview::content`.
 pub use container::real_dims;
+/// First index of `needle` in `hay` — the guarded byte search shared with the app EXE's mail
+/// preview (`preview::mailmsg`), hidden like `ole`: an internal helper, not API.
+#[doc(hidden)]
+pub use container::util::find;
 pub mod cli;
 mod contextmenu;
 pub mod decode;
