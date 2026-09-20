@@ -7,6 +7,23 @@
 
 use super::*;
 
+/// Write every pixel of an RGBA-float source into `out` through `map`, narrowing alpha to
+/// 8 bits and OR-ing into `any_alpha` whether any pixel was non-opaque (the all-transparent
+/// RGB fix in `tone_map_float` depends on that flag).
+fn tone_map_rgba32f(
+    out: &mut image::RgbaImage,
+    src: &image::Rgba32FImage,
+    map: impl Fn(f32) -> u8,
+    any_alpha: &mut bool,
+) {
+    for (o, s) in out.pixels_mut().zip(src.pixels()) {
+        let [r, g, b, a] = s.0;
+        let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        *any_alpha |= alpha != 0;
+        *o = image::Rgba([map(r), map(g), map(b), alpha]);
+    }
+}
+
 /// Tone-map a 32-bit linear-float HDR image (EXR/Radiance) to 8-bit sRGB, in pure
 /// Rust: the Reinhard global operator `x/(1+x)` compresses the unbounded range,
 /// then a linear→sRGB transfer encodes it for display. Replaces an ImageMagick
@@ -43,24 +60,12 @@ pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
             }
             any_alpha = true;
         }
-        DynamicImage::ImageRgba32F(buf) => {
-            for (o, s) in out.pixels_mut().zip(buf.pixels()) {
-                let [r, g, b, a] = s.0;
-                let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                any_alpha |= alpha != 0;
-                *o = image::Rgba([map(r), map(g), map(b), alpha]);
-            }
-        }
+        DynamicImage::ImageRgba32F(buf) => tone_map_rgba32f(&mut out, buf, map, &mut any_alpha),
         // Not reached by any current call site (all gate on the two variants above), but
         // kept total rather than panicking under panic=abort if one ever calls in unguarded.
         other => {
             let src = other.to_rgba32f();
-            for (o, s) in out.pixels_mut().zip(src.pixels()) {
-                let [r, g, b, a] = s.0;
-                let alpha = (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                any_alpha |= alpha != 0;
-                *o = image::Rgba([map(r), map(g), map(b), alpha]);
-            }
+            tone_map_rgba32f(&mut out, &src, map, &mut any_alpha);
         }
     }
     // VFX render passes (emission/environment/AOV EXRs) legitimately carry RGB with
@@ -365,6 +370,30 @@ pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::Pn
     None
 }
 
+/// Run `cms` over an 8-bit RGB buffer and rebuild the image from what it returns, so a
+/// colour-managed `DynamicImage` never comes back blank: `cms` itself already keeps the
+/// original pixels on a transform error, so only a length mismatch can reach the fallback.
+fn cms_rgb8(
+    buf: image::RgbImage,
+    cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
+) -> DynamicImage {
+    let (w, h) = buf.dimensions();
+    image::RgbImage::from_raw(w, h, cms(moxcms::Layout::Rgb, buf.into_raw()))
+        .map(DynamicImage::ImageRgb8)
+        .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
+}
+
+/// [`cms_rgb8`] for an 8-bit RGBA buffer.
+fn cms_rgba8(
+    buf: image::RgbaImage,
+    cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
+) -> DynamicImage {
+    let (w, h) = buf.dimensions();
+    image::RgbaImage::from_raw(w, h, cms(moxcms::Layout::Rgba, buf.into_raw()))
+        .map(DynamicImage::ImageRgba8)
+        .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+}
+
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
 /// …) thumbnails match a color-managed viewer instead of rendering over-saturated — and
 /// then having Explorer cache the wrong colors. Uses the pure-Rust `moxcms` we ALREADY
@@ -428,37 +457,15 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
     };
 
     match img {
-        DynamicImage::ImageRgb8(buf) => {
-            let (w, h) = buf.dimensions();
-            let out = cms(Layout::Rgb, buf.into_raw());
-            image::RgbImage::from_raw(w, h, out)
-                .map(DynamicImage::ImageRgb8)
-                .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
-        }
-        DynamicImage::ImageRgba8(buf) => {
-            let (w, h) = buf.dimensions();
-            let out = cms(Layout::Rgba, buf.into_raw());
-            image::RgbaImage::from_raw(w, h, out)
-                .map(DynamicImage::ImageRgba8)
-                .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
-        }
+        DynamicImage::ImageRgb8(buf) => cms_rgb8(buf, cms),
+        DynamicImage::ImageRgba8(buf) => cms_rgba8(buf, cms),
         // Narrow to 8-bit first (see the note above) rather than skip management entirely.
         img @ (DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_)) => {
             let has_alpha = matches!(img, DynamicImage::ImageRgba16(_));
             if has_alpha {
-                let buf = img.to_rgba8();
-                let (w, h) = buf.dimensions();
-                let out = cms(Layout::Rgba, buf.into_raw());
-                image::RgbaImage::from_raw(w, h, out)
-                    .map(DynamicImage::ImageRgba8)
-                    .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+                cms_rgba8(img.to_rgba8(), cms)
             } else {
-                let buf = img.to_rgb8();
-                let (w, h) = buf.dimensions();
-                let out = cms(Layout::Rgb, buf.into_raw());
-                image::RgbImage::from_raw(w, h, out)
-                    .map(DynamicImage::ImageRgb8)
-                    .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
+                cms_rgb8(img.to_rgb8(), cms)
             }
         }
         other => other,
