@@ -11,23 +11,8 @@ pub(in super::super) unsafe fn load_sync(
 ) {
     let st = &*state(hwnd);
     if let Some(path) = path {
-        *st.path.borrow_mut() = Some(path.to_string());
-        let cls = content::classify(path);
-
-        if opts.play && matches!(cls, ContentKind::Video) {
-            load_sync_play_video(hwnd, st, path, opts);
-            return; // already sized/shown
-        } else if is_pdf(path) {
-            load_sync_pdf(hwnd, st, path, opts);
-        } else if let (Some(fr), true) = (opts.frame, is_animatable(path)) {
-            load_sync_frame(st, path, fr);
-        } else {
-            // Video (no --play) falls back to its still frame-grab (the Image path).
-            let kind = match cls {
-                ContentKind::Video => ContentKind::Image,
-                k => k,
-            };
-            load_static(st, path, kind);
+        if dispatch_sync_path(hwnd, st, path, opts) {
+            return;
         }
     }
     set_title(hwnd);
@@ -35,6 +20,34 @@ pub(in super::super) unsafe fn load_sync(
         st.hot.set(Some(h));
     }
     show_offscreen(hwnd, st);
+}
+
+/// Load path content synchronously into viewer state; returns true if already sized/shown.
+unsafe fn dispatch_sync_path(
+    hwnd: HWND,
+    st: &ViewerState,
+    path: &str,
+    opts: &super::super::ShotOpts,
+) -> bool {
+    *st.path.borrow_mut() = Some(path.to_string());
+    let cls = content::classify(path);
+
+    if opts.play && matches!(cls, ContentKind::Video) {
+        load_sync_play_video(hwnd, st, path, opts);
+        return true; // already sized/shown
+    } else if is_pdf(path) {
+        load_sync_pdf(hwnd, st, path, opts);
+    } else if let (Some(fr), true) = (opts.frame, is_animatable(path)) {
+        load_sync_frame(st, path, fr);
+    } else {
+        // Video (no --play) falls back to its still frame-grab (the Image path).
+        let kind = match cls {
+            ContentKind::Video => ContentKind::Image,
+            k => k,
+        };
+        load_static(st, path, kind);
+    }
+    false
 }
 
 /// `load_sync`'s `--play` branch: a live video engine so the transport strip renders (the video

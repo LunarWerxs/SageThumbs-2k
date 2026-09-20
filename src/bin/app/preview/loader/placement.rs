@@ -91,30 +91,34 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
 pub(in super::super) fn start_poll(hwnd: HWND) {
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || unsafe {
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
         let mut last: Option<String> = None;
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
-            if !IsWindow(Some(hwnd)).as_bool() {
-                break; // viewer closed — stop polling
-            }
-            if let crate::explorer_selection::PreviewTarget::Path(path) =
-                crate::explorer_selection::preview_target()
+        while poll_once(hwnd, &mut last) {}
+    });
+}
+
+/// Run one 500 ms follow-poll tick: sleep, then post a switch when the selection changed; returns false when polling must stop (viewer closed, or window vanished mid-post).
+unsafe fn poll_once(hwnd: HWND, last: &mut Option<String>) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if !IsWindow(Some(hwnd)).as_bool() {
+        return false; // viewer closed — stop polling
+    }
+    if let crate::explorer_selection::PreviewTarget::Path(path) =
+        crate::explorer_selection::preview_target()
+    {
+        // inits its own COM STA; post only when the selection actually changed
+        if last.as_deref() != Some(path.as_str()) {
+            *last = Some(path.clone());
+            let boxed = Box::into_raw(Box::new(path));
+            if PostMessageW(Some(hwnd), WM_APP_SWITCH, WPARAM(0), LPARAM(boxed as isize))
+                .is_err()
             {
-                // inits its own COM STA; post only when the selection actually changed
-                if last.as_deref() != Some(path.as_str()) {
-                    last = Some(path.clone());
-                    let boxed = Box::into_raw(Box::new(path));
-                    if PostMessageW(Some(hwnd), WM_APP_SWITCH, WPARAM(0), LPARAM(boxed as isize))
-                        .is_err()
-                    {
-                        drop(Box::from_raw(boxed)); // window vanished mid-post — don't leak
-                        break;
-                    }
-                }
+                drop(Box::from_raw(boxed)); // window vanished mid-post — don't leak
+                return false;
             }
         }
-    });
+    }
+    true
 }
 
 /// Clamp a REMEMBERED client size to something that actually fits: never below the window's
