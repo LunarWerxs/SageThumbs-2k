@@ -257,6 +257,14 @@ unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
         ID_NUDGE_DISCORD,
         btn_w(hwnd, discord_label(), BTN_W_DISCORD),
     ));
+    clamp_row(&mut row, pane_w);
+    row
+}
+
+/// Scale a row of button widths back so that the row plus its gaps fits inside `pane_w`, keeping
+/// the widths in proportion. A no-op when the row already fits, which is the ordinary case for
+/// English; the clamp is a backstop for a translation nobody has looked at.
+fn clamp_row(row: &mut [(i32, i32)], pane_w: i32) {
     let gaps = (row.len().saturating_sub(1)) as i32 * BTN_GAP;
     let avail = pane_w - 2 * PAD - gaps;
     let total: i32 = row.iter().map(|(_, w)| *w).sum();
@@ -265,7 +273,27 @@ unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
             *w = (*w * avail) / total;
         }
     }
-    row
+}
+
+/// Where each button in the row lands, in design px: `(id, x, y, w, h)`, right-aligned inside the
+/// card and sharing its bottom row. Laid out right-to-left from the card's inner edge so the
+/// primary action is the one nearest the corner the eye lands on.
+fn button_rects(
+    strip_top: i32,
+    pane_x: i32,
+    pane_w: i32,
+    card_h: i32,
+    row: &[(i32, i32)],
+) -> Vec<(i32, i32, i32, i32, i32)> {
+    let by = strip_top + card_h - BTN_H - 12;
+    let mut right = pane_x + pane_w - PAD;
+    let mut out = Vec::with_capacity(row.len());
+    for (id, w) in row {
+        right -= *w;
+        out.push((*id, right, by, *w, BTN_H));
+        right -= BTN_GAP;
+    }
+    out
 }
 
 /// Position the card and its three buttons. `strip_top` is the top of the reserved strip in design
@@ -288,12 +316,9 @@ pub(super) unsafe fn place(
 
     // Right-aligned inside the card, bottom row, laid out right-to-left from the card's inner edge
     // so the primary action is the one nearest the corner the eye lands on.
-    let by = strip_top + card_h - BTN_H - 12;
-    let mut right = pane_x + pane_w - PAD;
-    for (id, w) in button_row(hwnd, pane_w) {
-        right -= w;
-        put(id, right, by, w, BTN_H);
-        right -= BTN_GAP;
+    let row = button_row(hwnd, pane_w);
+    for (id, x, y, w, h) in button_rects(strip_top, pane_x, pane_w, card_h, &row) {
+        put(id, x, y, w, h);
 
         // Raise each button above the card EXPLICITLY. The buttons overlap an owner-draw STATIC
         // and the layout pass positions everything with SWP_NOZORDER, so whichever way the shell
@@ -473,4 +498,123 @@ pub(super) unsafe fn on_command(hwnd: HWND, id: i32) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nudge_engine::Campaign;
+
+    /// A minimal ask. The copy is irrelevant here; only [`Ask::can_snooze_month`] and the mere
+    /// presence of an ask are read by this file.
+    fn ask_with(can_snooze_month: bool) -> Ask {
+        Ask {
+            campaign: Campaign::SignIn,
+            trigger: "settings-changed".to_string(),
+            ordinal: 1,
+            headline: "HEADLINE".into(),
+            body: "BODY".into(),
+            action_label: "ACTION".into(),
+            can_snooze_month,
+            url: String::new(),
+        }
+    }
+
+    /// The ordinary case: an English row is already inside the card, so the clamp must leave every
+    /// width exactly as measured. A clamp that nudged them would shrink a row nobody complained
+    /// about.
+    #[test]
+    fn a_row_that_already_fits_is_left_untouched() {
+        let mut row = [(ID_NUDGE_ACTION, 92), (ID_NUDGE_LATER, 80)];
+        clamp_row(&mut row, 528);
+        assert_eq!(row, [(ID_NUDGE_ACTION, 92), (ID_NUDGE_LATER, 80)]);
+    }
+
+    /// The backstop: four translated labels that overrun the card are scaled back so the row - not
+    /// just the widest button - fits in the space left after the padding and the gaps.
+    #[test]
+    fn an_overlong_row_is_scaled_back_to_fit() {
+        let mut row = [(ID_NUDGE_ACTION, 200), (ID_NUDGE_LATER, 100)];
+        clamp_row(&mut row, 100);
+        // avail = 100 - 2*14 - 8 = 64; widths become 200*64/300 and 100*64/300.
+        assert_eq!(row, [(ID_NUDGE_ACTION, 42), (ID_NUDGE_LATER, 21)]);
+    }
+
+    /// The row is right-aligned from the card's inner edge, sharing one baseline-height and one
+    /// gap. If the sign of any of those minus signs flipped, the buttons would leave the card or
+    /// overlap, and the layout pass would not complain.
+    #[test]
+    fn the_primary_action_keeps_the_cards_right_edge() {
+        let row = [
+            (ID_NUDGE_ACTION, 92),
+            (ID_NUDGE_LATER, 80),
+            (ID_NUDGE_DISCORD, 104),
+        ];
+        let rects = button_rects(100, 10, 528, 116, &row);
+
+        assert_eq!(rects.len(), 3);
+        let (action, later, discord) = (rects[0], rects[1], rects[2]);
+        assert_eq!(action.0, ID_NUDGE_ACTION);
+        assert_eq!(action.1 + action.3, 10 + 528 - PAD, "action left the right edge");
+        assert_eq!(action.1 - (later.1 + later.3), BTN_GAP);
+        assert_eq!(later.1 - (discord.1 + discord.3), BTN_GAP);
+        let by = 100 + 116 - BTN_H - 12;
+        for (_, _, y, _, h) in rects {
+            assert_eq!(y, by);
+            assert_eq!(h, BTN_H);
+        }
+    }
+
+    /// Clamp then lay out: however long the labels, the composed result stays inside the card.
+    /// This is what the clamp is FOR - without it the leftmost button slides off the padded edge.
+    #[test]
+    fn a_clamped_row_stays_inside_the_card() {
+        let pane_w = 528;
+        let mut row = [
+            (ID_NUDGE_ACTION, 400),
+            (ID_NUDGE_LATER, 350),
+            (ID_NUDGE_MONTH, 380),
+            (ID_NUDGE_DISCORD, 360),
+        ];
+        clamp_row(&mut row, pane_w);
+        let rects = button_rects(100, 0, pane_w, 116, &row);
+
+        let rightmost = rects[0];
+        let leftmost = *rects.last().unwrap();
+        assert_eq!(rightmost.1 + rightmost.3, pane_w - PAD);
+        assert!(leftmost.1 >= PAD, "leftmost button slid past the padding");
+    }
+
+    /// The measured card can grow with a long translation but must never shrink below the design
+    /// size the English copy needs, or the body would clip - in one locale, on screen, with nothing
+    /// in the code to show it.
+    #[test]
+    fn card_height_never_falls_below_the_design_floor() {
+        ASK.with(|a| *a.borrow_mut() = None);
+        CARD_H_MEMO.with(|c| c.set(0));
+        assert_eq!(card_h(), BODY_TOP + BODY_H_MIN + BTN_H + 18);
+        assert_eq!(strip_h(), card_h() + 16);
+    }
+
+    /// With no ask on screen the banner costs the window nothing. A non-zero answer here would
+    /// create the Settings window taller than its content for a card that never gets drawn.
+    #[test]
+    fn extra_height_is_zero_without_a_banner() {
+        ASK.with(|a| *a.borrow_mut() = None);
+        assert!(!showing());
+        assert_eq!(extra_height(), 0);
+    }
+
+    /// Whether the third button exists is the engine's answer, carried verbatim. Re-deriving "is
+    /// this the fourth ask" here would let the UI and the engine disagree, and a wrong answer still
+    /// renders a perfectly valid-looking banner.
+    #[test]
+    fn showing_month_reports_the_engines_answer() {
+        ASK.with(|a| *a.borrow_mut() = Some(ask_with(false)));
+        assert!(showing());
+        assert!(!showing_month());
+        ASK.with(|a| *a.borrow_mut() = Some(ask_with(true)));
+        assert!(showing_month());
+        ASK.with(|a| *a.borrow_mut() = None);
+    }
 }
