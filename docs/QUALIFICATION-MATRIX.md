@@ -60,8 +60,8 @@ collapses are deliberate:
 | 6 | The sync-pending marker actually clears after a successful push, so Settings does not silently re-push forever (F06) | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client/tests.rs::finish_push_worker_only_clears_the_marker_on_a_successful_last_finish` |
 | 7 | Every registry setting is classified as syncing or never-syncing, so a newly added setting cannot silently stop syncing | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client/tests.rs::every_setting_is_classified` |
 | 8 | The diagnostics report warns that an elevated process's HKCU checks read the administrator's hive, not the interactive user's | installed | admin | same | one | MANUAL | Manual procedure 2 |
-| 9 | Two racing writers each writing the shared licence history preserve their own change instead of the second silently discarding the first (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license.rs::tests::two_concurrent_sessions_through_the_lock_both_preserve_their_change` |
-| 10 | A licence-history lock that times out writes nothing, rather than clobbering the newer history the other writer wrote (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license.rs::tests::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history` |
+| 9 | Two racing writers each writing the shared licence history preserve their own change instead of the second silently discarding the first (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license/tests/history.rs::two_concurrent_sessions_through_the_lock_both_preserve_their_change` |
+| 10 | A licence-history lock that times out writes nothing, rather than clobbering the newer history the other writer wrote (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license/tests/history.rs::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history` |
 | 11 | A second interactive user (RDP session) sees their own independent settings, unaffected by the console user's changes | installed | standard | alternate admin | two | MANUAL | Manual procedure 3 |
 | 12 | The modern (Win11) context-menu package registers as the original signed-in user during an elevated install, never SYSTEM or the administrator (F08) | installed | admin | same | one | AUTOMATED | `scripts/test-installer-lint.ps1::Test-ModernMenuRegistersAsOriginalUser` |
 | 13 | Uninstall/upgrade removes only the exact certificate thumbprint that was installed, never a wildcard-subject sweep of `TrustedPeople` (F09) | installed | admin | same | one | AUTOMATED | `scripts/test-installer-lint.ps1::Test-ExactThumbprintCertRemoval` |
@@ -152,8 +152,8 @@ real ARM64 hardware, since nothing in CI installs the packaged app there.
 
 ### Procedure 6: two real logon sessions share the licence history lock (row 20)
 
-Guards: the automated tests at `license.rs::tests::two_concurrent_sessions_through_the_lock_both_preserve_their_change`
-and `license.rs::tests::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history`
+Guards: the automated tests at `license/tests/history.rs::two_concurrent_sessions_through_the_lock_both_preserve_their_change`
+and `license/tests/history.rs::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history`
 only spawn two threads inside one process under one logon session (the code's own comment
 above those tests explains that a real second logon session cannot be created in a test).
 This procedure exercises the case those tests cannot: two genuinely separate Windows
