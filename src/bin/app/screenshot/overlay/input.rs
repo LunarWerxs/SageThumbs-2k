@@ -116,9 +116,7 @@ unsafe fn window_under(
     vh: i32,
     p: POINT,
 ) -> Option<RECT> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetTopWindow, GetWindow, GW_HWNDNEXT,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetTopWindow, GetWindow, GW_HWNDNEXT};
     let screen = POINT {
         x: p.x + vx,
         y: p.y + vy,
@@ -134,20 +132,31 @@ unsafe fn window_under(
             h = next()?;
             continue;
         };
-        if screen.x < r.left || screen.x >= r.right || screen.y < r.top || screen.y >= r.bottom {
+        if !point_in_rect(screen, r) {
             h = next()?;
             continue;
         }
         // First HIT in z-order decides — either it's a real window (answer) or the desktop
         // shell (no hint at all; everything below it is covered by it anyway).
-        let mut cls = [0u16; 16];
-        let n = GetClassNameW(h, &mut cls) as usize;
-        let name = String::from_utf16_lossy(&cls[..n.min(cls.len())]);
-        if name == "Progman" || name == "WorkerW" {
+        if is_desktop_shell(h) {
             return None;
         }
         return clamp_to_overlay(r, vx, vy, vw, vh);
     }
+}
+
+/// Whether `screen` (virtual-screen coordinates) falls inside `r`.
+fn point_in_rect(screen: POINT, r: RECT) -> bool {
+    screen.x >= r.left && screen.x < r.right && screen.y >= r.top && screen.y < r.bottom
+}
+
+/// Whether `h` is the desktop shell (Progman/WorkerW): "the desktop" is not a window pick.
+unsafe fn is_desktop_shell(h: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let mut cls = [0u16; 16];
+    let n = GetClassNameW(h, &mut cls) as usize;
+    let name = String::from_utf16_lossy(&cls[..n.min(cls.len())]);
+    name == "Progman" || name == "WorkerW"
 }
 
 pub(super) extern "system" fn shot_wndproc(
@@ -202,8 +211,26 @@ unsafe fn shot_dispatch(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
     // UIA message arriving during that pump sees a depth above one and declines rather than
     // handing out a second `&mut` to the same state.
     let _borrow = uia::DispatchGuard::enter();
+    shot_dispatch_msg(hwnd, msg, wparam, lparam)
+}
+
+/// The message table proper, reached only once a `Shot` exists and the borrow guard is held.
+/// Split into two groups so neither match carries every arm.
+unsafe fn shot_dispatch_msg(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1), // the snapshot covers every pixel
+        WM_PAINT => {
+            shot_paint(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => on_destroy(hwnd),
+        _ => shot_dispatch_input(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// The mouse, keyboard and UI Automation message arms (plus the default fall-through).
+unsafe fn shot_dispatch_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
         WM_LBUTTONDOWN => on_lbuttondown(hwnd, lparam),
         WM_MOUSEMOVE => on_mousemove(hwnd, lparam),
         WM_LBUTTONUP => on_lbuttonup(hwnd, lparam),
@@ -212,11 +239,6 @@ unsafe fn shot_dispatch(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         WM_KEYUP => on_keyup(hwnd, wparam),
         WM_TIMER => on_timer(hwnd, wparam),
         WM_SETCURSOR => on_setcursor(hwnd, wparam, lparam),
-        WM_PAINT => {
-            shot_paint(hwnd);
-            LRESULT(0)
-        }
-        WM_DESTROY => on_destroy(hwnd),
         // The three private messages the UI Automation provider marshals its work through.
         // Nothing outside this process can produce them: they are plain WM_APP ids on a
         // window class only this module registers.
@@ -411,38 +433,55 @@ unsafe fn apply_selection_click(s: &mut Shot, p: POINT) {
         s.typing_drag = true;
         s.move_from = Some(p);
     } else if ctrl || s.tool == Tool::Move {
-        // Move tool — or Ctrl-drag with any tool — grabs the topmost shape under the
-        // cursor (if any).
-        s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
-        s.move_from = s.selected.map(|_| p);
-        // A fresh grab starts a fresh undo record — any total left over from a
-        // PREVIOUS drag must not apply to this one.
-        MOVE_UNDO.with(|c| c.set(None));
+        begin_move_grab(s, p);
     } else if s.tool == Tool::Eyedropper {
         sample_pixel(s, p); // grab the pixel's colour; never draws
     } else if s.tool == Tool::Text {
-        // Click while typing = finish & deselect (no new box on this click); a click
-        // when idle starts a fresh box. Predictable "click away to commit" instead of
-        // spawning an empty box you then have to Esc out of.
-        if s.typing.is_some() {
-            commit_text(s);
-        } else {
-            s.typing = Some((p, String::new()));
-            s.pending_hi = None; // fresh buffer, no half-typed surrogate
-        }
+        apply_text_click(s, p);
     } else if s.tool == Tool::Number {
-        let n = s.number_next;
-        s.number_next += 1;
-        let color = s.color();
-        s.shapes.push(Shape::Number { at: p, n, color });
-        s.redo.clear();
-        MOVE_UNDO.with(|c| c.set(None)); // a new shape is the new "last action"
+        apply_number_click(s, p);
     } else {
-        s.draw_from = Some(p);
-        s.pen_pts.clear();
-        s.pen_pts.push(p);
-        s.cur = p;
+        begin_draw(s, p);
     }
+}
+
+/// Move tool — or Ctrl-drag with any tool — grabs the topmost shape under the cursor (if
+/// any) and starts a fresh undo record (a total left over from a PREVIOUS drag must not
+/// apply to this one).
+unsafe fn begin_move_grab(s: &mut Shot, p: POINT) {
+    s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
+    s.move_from = s.selected.map(|_| p);
+    MOVE_UNDO.with(|c| c.set(None));
+}
+
+/// Text-tool click: while typing, finish & deselect (no new box on this click); when idle,
+/// start a fresh box. Predictable "click away to commit" instead of spawning an empty box
+/// you then have to Esc out of.
+unsafe fn apply_text_click(s: &mut Shot, p: POINT) {
+    if s.typing.is_some() {
+        commit_text(s);
+    } else {
+        s.typing = Some((p, String::new()));
+        s.pending_hi = None; // fresh buffer, no half-typed surrogate
+    }
+}
+
+/// Number-tool click: stamp the next number as a new shape (the new "last action").
+unsafe fn apply_number_click(s: &mut Shot, p: POINT) {
+    let n = s.number_next;
+    s.number_next += 1;
+    let color = s.color();
+    s.shapes.push(Shape::Number { at: p, n, color });
+    s.redo.clear();
+    MOVE_UNDO.with(|c| c.set(None));
+}
+
+/// Start a freehand/shape draw at `p` (any other tool).
+unsafe fn begin_draw(s: &mut Shot, p: POINT) {
+    s.draw_from = Some(p);
+    s.pen_pts.clear();
+    s.pen_pts.push(p);
+    s.cur = p;
 }
 
 /// `WM_MOUSEMOVE`: the loupe, the active drag (if any), the click-a-window hint, and the
@@ -508,48 +547,69 @@ unsafe fn invalidate_drag_span(hwnd: HWND, old: RECT, new: RECT) {
 /// drag's before/after dirty rect.
 unsafe fn update_active_drag(hwnd: HWND, s: &mut Shot, p: POINT, old_cur: POINT) {
     if s.sel_dragging {
-        let old = tools::norm(s.sel_anchor, old_cur);
-        let new = tools::norm(s.sel_anchor, p);
-        invalidate_drag_span(hwnd, old, new);
+        drag_selection_region(hwnd, s, p, old_cur);
     } else if s.typing_drag {
-        // Reposition the active text box by the cursor delta (still editing).
-        if let Some(from) = s.move_from {
-            if let Some((at, buf)) = s.typing.as_mut() {
-                let old_r = tools::text_extent(*at, buf, &s.text_font);
-                at.x += p.x - from.x;
-                at.y += p.y - from.y;
-                let new_r = tools::text_extent(*at, buf, &s.text_font);
-                invalidate_drag_span(hwnd, old_r, new_r);
-            }
-            s.move_from = Some(p);
-        }
-    } else if let (Some(from), Some(idx)) = (s.move_from, s.selected) {
-        // Drag the grabbed shape by the cursor delta.
-        let (dx, dy) = (p.x - from.x, p.y - from.y);
-        if idx < s.shapes.len() {
-            let old_bb = tools::shape_bbox(&s.shapes[idx]);
-            tools::translate_shape(&mut s.shapes[idx], dx, dy);
-            // Fold this tick's delta into the drag's running total, so Ctrl+Z can undo
-            // the WHOLE drag (not just the last tick) by inverting it.
-            MOVE_UNDO.with(|c| c.set(Some(accumulate_move_undo(c.get(), idx, dx, dy))));
-            let new_bb = tools::shape_bbox(&s.shapes[idx]);
-            invalidate_drag_span(hwnd, old_bb, new_bb);
+        drag_active_text(hwnd, s, p);
+    } else if s.move_from.is_some() && s.selected.is_some() {
+        drag_selected_shape(hwnd, s, p);
+    } else if s.draw_from.is_some() {
+        drag_draw(hwnd, s, p, old_cur);
+    }
+}
+
+/// Advance the region drag to this tick and dirty the old+new bounding rects.
+unsafe fn drag_selection_region(hwnd: HWND, s: &mut Shot, p: POINT, old_cur: POINT) {
+    let old = tools::norm(s.sel_anchor, old_cur);
+    let new = tools::norm(s.sel_anchor, p);
+    invalidate_drag_span(hwnd, old, new);
+}
+
+/// Reposition the active text box by the cursor delta (still editing).
+unsafe fn drag_active_text(hwnd: HWND, s: &mut Shot, p: POINT) {
+    if let Some(from) = s.move_from {
+        if let Some((at, buf)) = s.typing.as_mut() {
+            let old_r = tools::text_extent(*at, buf, &s.text_font);
+            at.x += p.x - from.x;
+            at.y += p.y - from.y;
+            let new_r = tools::text_extent(*at, buf, &s.text_font);
+            invalidate_drag_span(hwnd, old_r, new_r);
         }
         s.move_from = Some(p);
-    } else if let Some(a) = s.draw_from {
-        if s.tool == Tool::Pen {
-            // Only the newest segment is new geometry — everything before it was
-            // already painted correctly on the last tick.
-            let seg_from = s.pen_pts.last().copied().unwrap_or(old_cur);
-            s.pen_pts.push(p);
-            let seg = tools::norm(seg_from, p);
-            let _ = InvalidateRect(Some(hwnd), Some(&inflate(seg, DRAG_DIRTY_MARGIN)), false);
-        } else {
-            let shift = shift_active(s);
-            let old_b = tools::drag_endpoint(s.tool, a, old_cur, shift);
-            let new_b = tools::drag_endpoint(s.tool, a, p, shift);
-            invalidate_drag_span(hwnd, tools::norm(a, old_b), tools::norm(a, new_b));
-        }
+    }
+}
+
+/// Drag the grabbed shape by the cursor delta, folding this tick's delta into the drag's
+/// running total so Ctrl+Z can undo the WHOLE drag (not just the last tick) by inverting it.
+unsafe fn drag_selected_shape(hwnd: HWND, s: &mut Shot, p: POINT) {
+    let (Some(from), Some(idx)) = (s.move_from, s.selected) else {
+        return;
+    };
+    let (dx, dy) = (p.x - from.x, p.y - from.y);
+    if idx < s.shapes.len() {
+        let old_bb = tools::shape_bbox(&s.shapes[idx]);
+        tools::translate_shape(&mut s.shapes[idx], dx, dy);
+        MOVE_UNDO.with(|c| c.set(Some(accumulate_move_undo(c.get(), idx, dx, dy))));
+        let new_bb = tools::shape_bbox(&s.shapes[idx]);
+        invalidate_drag_span(hwnd, old_bb, new_bb);
+    }
+    s.move_from = Some(p);
+}
+
+/// Advance the active draw gesture to this tick: for the Pen only the newest segment is new
+/// geometry (everything before it was already painted correctly on the last tick); for every
+/// other tool, dirty the old and new endpoint bounding rects.
+unsafe fn drag_draw(hwnd: HWND, s: &mut Shot, p: POINT, old_cur: POINT) {
+    let Some(a) = s.draw_from else { return };
+    if s.tool == Tool::Pen {
+        let seg_from = s.pen_pts.last().copied().unwrap_or(old_cur);
+        s.pen_pts.push(p);
+        let seg = tools::norm(seg_from, p);
+        let _ = InvalidateRect(Some(hwnd), Some(&inflate(seg, DRAG_DIRTY_MARGIN)), false);
+    } else {
+        let shift = shift_active(s);
+        let old_b = tools::drag_endpoint(s.tool, a, old_cur, shift);
+        let new_b = tools::drag_endpoint(s.tool, a, p, shift);
+        invalidate_drag_span(hwnd, tools::norm(a, old_b), tools::norm(a, new_b));
     }
 }
 
@@ -732,11 +792,7 @@ fn push_typed_char(s: &mut Shot, u: u16) {
     if let Some(hi) = s.pending_hi.take() {
         // Expecting the low half of a surrogate pair.
         if (0xDC00..=0xDFFF).contains(&u) {
-            if let Some(ch) = char::decode_utf16([hi, u]).next().and_then(|r| r.ok()) {
-                if let Some((_, buf)) = s.typing.as_mut() {
-                    buf.push(ch);
-                }
-            }
+            push_surrogate_pair(s, hi, u);
             return;
         }
         // Stray high surrogate without a matching low half — drop it and fall through
@@ -745,24 +801,46 @@ fn push_typed_char(s: &mut Shot, u: u16) {
     if (0xD800..=0xDBFF).contains(&u) {
         s.pending_hi = Some(u); // high surrogate — wait for its low half
     } else if u == 0x08 {
-        if let Some((_, buf)) = s.typing.as_mut() {
-            buf.pop();
-        }
+        pop_typed_char(s);
     } else if u == 0x0D {
         // Enter mid-annotation: handle_key's VK_RETURN branch defers to here instead of
         // committing/closing while typing (see there), so this is where the literal
         // newline actually lands.
-        if let Some((_, buf)) = s.typing.as_mut() {
-            buf.push('\n');
-        }
+        push_char_into_typing(s, '\n');
     } else if u >= 0x20 && u != 0x7F {
         // A BMP character (lone surrogates were handled above), excluding DEL (0x7F,
         // sent by Ctrl+Backspace on some layouts) — it renders as a tofu glyph instead
         // of doing anything useful, so drop it rather than insert it. Lossy path so an
         // unexpected unpaired surrogate can't panic.
-        if let Some((_, buf)) = s.typing.as_mut() {
-            buf.push_str(&String::from_utf16_lossy(&[u]));
-        }
+        push_str_into_typing(s, &String::from_utf16_lossy(&[u]));
+    }
+}
+
+/// Decode a buffered high surrogate plus its low half and append the resulting char.
+fn push_surrogate_pair(s: &mut Shot, hi: u16, lo: u16) {
+    if let Some(ch) = char::decode_utf16([hi, lo]).next().and_then(|r| r.ok()) {
+        push_char_into_typing(s, ch);
+    }
+}
+
+/// Backspace: drop the last char of the active text buffer.
+fn pop_typed_char(s: &mut Shot) {
+    if let Some((_, buf)) = s.typing.as_mut() {
+        buf.pop();
+    }
+}
+
+/// Append `ch` to the active text buffer (if any).
+fn push_char_into_typing(s: &mut Shot, ch: char) {
+    if let Some((_, buf)) = s.typing.as_mut() {
+        buf.push(ch);
+    }
+}
+
+/// Append `text` to the active text buffer (if any).
+fn push_str_into_typing(s: &mut Shot, text: &str) {
+    if let Some((_, buf)) = s.typing.as_mut() {
+        buf.push_str(text);
     }
 }
 
@@ -818,15 +896,25 @@ unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         return DefWindowProcW(hwnd, WM_SETCURSOR, wparam, lparam);
     }
     let s = &mut *shot_ptr(hwnd);
-    let p = s.cur; // last client-space mouse pos (WM_SETCURSOR precedes the move)
     let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
+    let id = cursor_for_state(s, ctrl);
+    if let Ok(cur) = LoadCursorW(None, id) {
+        SetCursor(Some(cur));
+    }
+    LRESULT(1)
+}
+
+/// Pick the cursor shape for whatever gesture/tool is active over the client area. An
+/// already-active gesture wins over modifier changes and toolbar hover; when idle, match
+/// the pointer to what the next click would do. `s.cur` is the last client-space mouse
+/// position (WM_SETCURSOR precedes the move).
+unsafe fn cursor_for_state(s: &mut Shot, ctrl: bool) -> PCWSTR {
+    let p = s.cur;
     let over_ui = is_over_toolbar_ui(s, p);
     let moving = ctrl || s.tool == Tool::Move;
     let over_shape = moving && tools::hit_shape(&s.shapes, p.x, p.y).is_some();
     let active_typing_move = ctrl && s.tool == Tool::Text && s.typing.is_some();
-    // An already-active gesture wins over modifier changes and toolbar hover. When
-    // idle, match the pointer to what the next click would do.
-    let id = if s.typing_drag || s.move_from.is_some() {
+    if s.typing_drag || s.move_from.is_some() {
         IDC_SIZEALL
     } else if s.sel_dragging || s.draw_from.is_some() {
         IDC_CROSS
@@ -840,11 +928,7 @@ unsafe fn on_setcursor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         IDC_IBEAM
     } else {
         IDC_CROSS
-    };
-    if let Ok(cur) = LoadCursorW(None, id) {
-        SetCursor(Some(cur));
     }
-    LRESULT(1)
 }
 
 /// Whether client point `p` is over the toolbar itself or an open flyout panel: the
@@ -1063,22 +1147,28 @@ unsafe fn on_key_clipboard_action(hwnd: HWND, s: &mut Shot, ctrl: bool, vk: u16)
 /// The plain-letter tool shortcut `vk` names, or `None` if it names no tool. Callers gate
 /// out Ctrl/Alt combinations first — this is purely the letter -> `Tool` table.
 fn tool_shortcut_for(vk: u16) -> Option<Tool> {
-    match vk {
-        x if x == b'R' as u16 => Some(Tool::Rect),
-        x if x == b'O' as u16 || x == b'C' as u16 => Some(Tool::Ellipse),
-        x if x == b'A' as u16 => Some(Tool::Arrow),
-        x if x == b'L' as u16 => Some(Tool::Line),
-        x if x == b'P' as u16 => Some(Tool::Pen),
-        x if x == b'T' as u16 => Some(Tool::Text),
-        x if x == b'N' as u16 => Some(Tool::Number),
-        x if x == b'H' as u16 => Some(Tool::Highlight),
-        x if x == b'B' as u16 => Some(Tool::Pixelate), // B = blur/blockify
-        x if x == b'I' as u16 => Some(Tool::Invert),
-        x if x == b'E' as u16 => Some(Tool::Eyedropper),
-        x if x == b'M' as u16 => Some(Tool::Move),
-        _ => None,
-    }
+    TOOL_SHORTCUTS
+        .iter()
+        .find(|(k, _)| *k == vk)
+        .map(|(_, t)| *t)
 }
+
+/// The plain-letter tool shortcuts as a flat `(key, tool)` table, searched in order.
+const TOOL_SHORTCUTS: &[(u16, Tool)] = &[
+    (b'R' as u16, Tool::Rect),
+    (b'O' as u16, Tool::Ellipse),
+    (b'C' as u16, Tool::Ellipse),
+    (b'A' as u16, Tool::Arrow),
+    (b'L' as u16, Tool::Line),
+    (b'P' as u16, Tool::Pen),
+    (b'T' as u16, Tool::Text),
+    (b'N' as u16, Tool::Number),
+    (b'H' as u16, Tool::Highlight),
+    (b'B' as u16, Tool::Pixelate), // B = blur/blockify
+    (b'I' as u16, Tool::Invert),
+    (b'E' as u16, Tool::Eyedropper),
+    (b'M' as u16, Tool::Move),
+];
 
 /// VK_OEM_4 '[' / VK_OEM_6 ']': text size while the Text tool is active, else line
 /// thickness. Returns `false` if `vk` is neither key. Text size shares
@@ -1172,23 +1262,50 @@ pub(super) fn button_index(buttons: &[(Button, RECT)], btn: Button) -> Option<us
 fn repair_focus(s: &mut Shot, buttons: &[(Button, RECT)], dpi: i32) {
     let Some(focus) = s.focus else { return };
     let repaired = match focus {
-        FocusTarget::Toolbar(i) => match buttons.get(i) {
-            // The bar's item table is fixed, so a bad index here is defensive only.
-            Some((b, _)) if !matches!(b, Button::Sep) => Some(FocusTarget::Toolbar(i)),
-            _ => toolbar::first_focusable(buttons).map(FocusTarget::Toolbar),
-        },
-        FocusTarget::ColorFlyout(i) => match color_flyout_items(s, buttons, dpi) {
-            Some(items) if i < items.len() => Some(FocusTarget::ColorFlyout(i)),
-            Some(_) => Some(FocusTarget::ColorFlyout(0)),
-            None => button_index(buttons, Button::Color).map(FocusTarget::Toolbar),
-        },
-        FocusTarget::TextFlyout(i) => match text_flyout_items(s, buttons, dpi) {
-            Some(items) if i < items.len() => Some(FocusTarget::TextFlyout(i)),
-            Some(_) => Some(FocusTarget::TextFlyout(0)),
-            None => button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar),
-        },
+        FocusTarget::Toolbar(i) => repair_toolbar_focus(buttons, i),
+        FocusTarget::ColorFlyout(i) => repair_color_focus(s, buttons, dpi, i),
+        FocusTarget::TextFlyout(i) => repair_text_focus(s, buttons, dpi, i),
     };
     s.focus = repaired;
+}
+
+/// A toolbar focus index is valid unless it names a separator; otherwise fall back to the
+/// bar's first focusable button. The bar's item table is fixed, so a bad index here is
+/// defensive only.
+fn repair_toolbar_focus(buttons: &[(Button, RECT)], i: usize) -> Option<FocusTarget> {
+    match buttons.get(i) {
+        Some((b, _)) if !matches!(b, Button::Sep) => Some(FocusTarget::Toolbar(i)),
+        _ => toolbar::first_focusable(buttons).map(FocusTarget::Toolbar),
+    }
+}
+
+/// A palette focus index is kept when in range, pulled to the first cell when past the end,
+/// or handed back to the button that owns the palette once it has closed.
+fn repair_color_focus(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    i: usize,
+) -> Option<FocusTarget> {
+    match color_flyout_items(s, buttons, dpi) {
+        Some(items) if i < items.len() => Some(FocusTarget::ColorFlyout(i)),
+        Some(_) => Some(FocusTarget::ColorFlyout(0)),
+        None => button_index(buttons, Button::Color).map(FocusTarget::Toolbar),
+    }
+}
+
+/// Same as [`repair_color_focus`], for the text-settings flyout.
+fn repair_text_focus(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    i: usize,
+) -> Option<FocusTarget> {
+    match text_flyout_items(s, buttons, dpi) {
+        Some(items) if i < items.len() => Some(FocusTarget::TextFlyout(i)),
+        Some(_) => Some(FocusTarget::TextFlyout(0)),
+        None => button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar),
+    }
 }
 
 /// Follow the invoke: a flyout that just OPENED takes focus.
@@ -1218,55 +1335,86 @@ pub(super) unsafe fn invoke_focus(
     dpi: i32,
 ) -> bool {
     match s.focus {
-        Some(FocusTarget::Toolbar(i)) => {
-            let Some((btn, _)) = buttons.get(i).copied() else {
-                return false;
-            };
-            if handle_button(hwnd, s, btn) {
-                return false; // window destroyed, `s` and `hwnd` are both dangling now
-            }
-            focus_into_open_flyout(s);
-            true
-        }
-        Some(FocusTarget::ColorFlyout(i)) => {
-            let Some(items) = color_flyout_items(s, buttons, dpi) else {
-                return false;
-            };
-            let Some((swatch, _)) = items.get(i).copied() else {
-                return false;
-            };
-            apply_swatch(hwnd, s, swatch);
-            // Any pick closes the palette, so focus returns to the button that opened it
-            // instead of pointing into a panel that is no longer painted.
-            s.focus = button_index(buttons, Button::Color).map(FocusTarget::Toolbar);
-            true
-        }
-        Some(FocusTarget::TextFlyout(i)) => {
-            let Some(items) = text_flyout_items(s, buttons, dpi) else {
-                return false;
-            };
-            let Some((item, _)) = items.get(i).copied() else {
-                return false;
-            };
-            let was_open = s.font_dropdown;
-            apply_text_item(hwnd, s, item);
-            if !s.text_flyout {
-                // "Font... (more)" hands over to the native dialog and closes the flyout.
-                s.focus = button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar);
-            } else if matches!(item, TextItem::FontField) && s.font_dropdown && !was_open {
-                // The font list is the second control with no keyboard route at all before
-                // this, so opening it from the keyboard has to land INSIDE it. Index 1 is
-                // the first option row: the field itself is always index 0, and the options
-                // follow it directly (see `toolbar::text_flyout_layout`).
-                s.focus = Some(FocusTarget::TextFlyout(1));
-            } else if matches!(item, TextItem::FontOption(_)) {
-                // Picking a font collapses the list, which shortens it back to the field.
-                s.focus = Some(FocusTarget::TextFlyout(0));
-            }
-            true
-        }
+        Some(FocusTarget::Toolbar(i)) => invoke_toolbar_focus(hwnd, s, buttons, i),
+        Some(FocusTarget::ColorFlyout(i)) => invoke_color_focus(hwnd, s, buttons, dpi, i),
+        Some(FocusTarget::TextFlyout(i)) => invoke_text_focus(hwnd, s, buttons, dpi, i),
         None => false,
     }
+}
+
+/// Space/Enter on a focused toolbar button: run its action through the shared
+/// `actions::handle_button` seam, INCLUDING its "true means the window is gone" contract: when
+/// it returns true this returns immediately and touches neither `s` nor `hwnd` again, because
+/// `DestroyWindow` delivers `WM_DESTROY` synchronously and frees the boxed `Shot`.
+unsafe fn invoke_toolbar_focus(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    i: usize,
+) -> bool {
+    let Some((btn, _)) = buttons.get(i).copied() else {
+        return false;
+    };
+    if handle_button(hwnd, s, btn) {
+        return false; // window destroyed, `s` and `hwnd` are both dangling now
+    }
+    focus_into_open_flyout(s);
+    true
+}
+
+/// Space/Enter on a focused palette cell: pick the swatch, then hand focus back to the button
+/// that opened the palette (any pick closes it).
+unsafe fn invoke_color_focus(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    i: usize,
+) -> bool {
+    let Some(items) = color_flyout_items(s, buttons, dpi) else {
+        return false;
+    };
+    let Some((swatch, _)) = items.get(i).copied() else {
+        return false;
+    };
+    apply_swatch(hwnd, s, swatch);
+    // Any pick closes the palette, so focus returns to the button that opened it instead
+    // of pointing into a panel that is no longer painted.
+    s.focus = button_index(buttons, Button::Color).map(FocusTarget::Toolbar);
+    true
+}
+
+/// Space/Enter on a focused text-settings item: apply it, then reconcile focus with whatever
+/// the item did to the flyout (closing it, opening the font dropdown, or collapsing it).
+unsafe fn invoke_text_focus(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    i: usize,
+) -> bool {
+    let Some(items) = text_flyout_items(s, buttons, dpi) else {
+        return false;
+    };
+    let Some((item, _)) = items.get(i).copied() else {
+        return false;
+    };
+    let was_open = s.font_dropdown;
+    apply_text_item(hwnd, s, item);
+    if !s.text_flyout {
+        // "Font... (more)" hands over to the native dialog and closes the flyout.
+        s.focus = button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar);
+    } else if matches!(item, TextItem::FontField) && s.font_dropdown && !was_open {
+        // The font list is the second control with no keyboard route at all before
+        // this, so opening it from the keyboard has to land INSIDE it. Index 1 is
+        // the first option row: the field itself is always index 0, and the options
+        // follow it directly (see `toolbar::text_flyout_layout`).
+        s.focus = Some(FocusTarget::TextFlyout(1));
+    } else if matches!(item, TextItem::FontOption(_)) {
+        // Picking a font collapses the list, which shortens it back to the field.
+        s.focus = Some(FocusTarget::TextFlyout(0));
+    }
+    true
 }
 
 /// Move focus one place with Tab / Shift+Tab, WITHIN the current group.
@@ -1287,17 +1435,33 @@ fn step_focus_target(
         Some(FocusTarget::Toolbar(i)) => {
             toolbar::step_focus(buttons, i, forward).map(FocusTarget::Toolbar)
         }
-        Some(FocusTarget::ColorFlyout(i)) => {
-            let items = color_flyout_items(s, buttons, dpi)?;
-            toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 })
-                .map(FocusTarget::ColorFlyout)
-        }
-        Some(FocusTarget::TextFlyout(i)) => {
-            let items = text_flyout_items(s, buttons, dpi)?;
-            toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 })
-                .map(FocusTarget::TextFlyout)
-        }
+        Some(FocusTarget::ColorFlyout(i)) => step_color_focus(s, buttons, dpi, forward, i),
+        Some(FocusTarget::TextFlyout(i)) => step_text_focus(s, buttons, dpi, forward, i),
     }
+}
+
+/// Tab inside the palette: step its focus index by ±1, wrapping within the laid-out cells.
+fn step_color_focus(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+    i: usize,
+) -> Option<FocusTarget> {
+    let items = color_flyout_items(s, buttons, dpi)?;
+    toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 }).map(FocusTarget::ColorFlyout)
+}
+
+/// Tab inside the text flyout: step its focus index by ±1, wrapping within the laid-out items.
+fn step_text_focus(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+    i: usize,
+) -> Option<FocusTarget> {
+    let items = text_flyout_items(s, buttons, dpi)?;
+    toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 }).map(FocusTarget::TextFlyout)
 }
 
 /// Move focus with an arrow key. `vertical` steps by the group's measured column count, so
@@ -1315,29 +1479,53 @@ fn arrow_focus_target(
             toolbar::step_focus(buttons, i, forward).map(FocusTarget::Toolbar)
         }
         Some(FocusTarget::ColorFlyout(i)) => {
-            let items = color_flyout_items(s, buttons, dpi)?;
-            let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
-            let mag = if vertical {
-                toolbar::grid_cols(&rects).max(1) as isize
-            } else {
-                1
-            };
-            toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
-                .map(FocusTarget::ColorFlyout)
+            arrow_step_color(s, buttons, dpi, forward, vertical, i)
         }
-        Some(FocusTarget::TextFlyout(i)) => {
-            let items = text_flyout_items(s, buttons, dpi)?;
-            let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
-            let mag = if vertical {
-                toolbar::grid_cols(&rects).max(1) as isize
-            } else {
-                1
-            };
-            toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
-                .map(FocusTarget::TextFlyout)
-        }
+        Some(FocusTarget::TextFlyout(i)) => arrow_step_text(s, buttons, dpi, forward, vertical, i),
         None => None,
     }
+}
+
+/// The arrow step magnitude for a group's laid-out rects: its measured column count when
+/// moving vertically, else 1.
+fn arrow_step_magnitude(rects: &[RECT], vertical: bool) -> isize {
+    if vertical {
+        toolbar::grid_cols(rects).max(1) as isize
+    } else {
+        1
+    }
+}
+
+/// Arrow-step the palette focus index within its grid.
+fn arrow_step_color(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+    vertical: bool,
+    i: usize,
+) -> Option<FocusTarget> {
+    let items = color_flyout_items(s, buttons, dpi)?;
+    let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+    let mag = arrow_step_magnitude(&rects, vertical);
+    toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
+        .map(FocusTarget::ColorFlyout)
+}
+
+/// Arrow-step the text-flyout focus index within its grid.
+fn arrow_step_text(
+    s: &Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    forward: bool,
+    vertical: bool,
+    i: usize,
+) -> Option<FocusTarget> {
+    let items = text_flyout_items(s, buttons, dpi)?;
+    let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+    let mag = arrow_step_magnitude(&rects, vertical);
+    toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
+        .map(FocusTarget::TextFlyout)
 }
 
 /// The keyboard focus model's key handling, and the ONLY place `s.focus` is ever set from
@@ -1387,24 +1575,32 @@ unsafe fn on_key_focus(hwnd: HWND, s: &mut Shot, vk: u16, shift: bool) -> Option
         return Some(invoke_focus(hwnd, s, &buttons, dpi));
     }
 
-    let arrow = match vk {
-        x if x == VK_LEFT.0 => Some((false, false)),
-        x if x == VK_RIGHT.0 => Some((true, false)),
-        x if x == VK_UP.0 => Some((false, true)),
-        x if x == VK_DOWN.0 => Some((true, true)),
-        _ => None,
+    on_key_focus_arrow(s, &buttons, dpi, vk)
+}
+
+/// The four arrow keys under the focus model: step focus within the group, or report
+/// `None` for a key the model does not own.
+unsafe fn on_key_focus_arrow(
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    dpi: i32,
+    vk: u16,
+) -> Option<bool> {
+    let (forward, vertical) = match vk {
+        x if x == VK_LEFT.0 => (false, false),
+        x if x == VK_RIGHT.0 => (true, false),
+        x if x == VK_UP.0 => (false, true),
+        x if x == VK_DOWN.0 => (true, true),
+        _ => return None,
     };
-    if let Some((forward, vertical)) = arrow {
-        if vertical && matches!(s.focus, Some(FocusTarget::Toolbar(_))) {
-            return None; // the bar is one row, so Up/Down stay the no-ops they were
-        }
-        if let Some(next) = arrow_focus_target(s, &buttons, dpi, forward, vertical) {
-            s.focus = Some(next);
-            return Some(true);
-        }
-        return Some(false);
+    if vertical && matches!(s.focus, Some(FocusTarget::Toolbar(_))) {
+        return None; // the bar is one row, so Up/Down stay the no-ops they were
     }
-    None
+    if let Some(next) = arrow_focus_target(s, buttons, dpi, forward, vertical) {
+        s.focus = Some(next);
+        return Some(true);
+    }
+    Some(false)
 }
 
 /// Keyboard: tool shortcuts, colour/thickness, undo/redo, accept (Enter → copy),
@@ -1418,12 +1614,8 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
     // Windows automation can send a drag or a key chord, but cannot hold a
     // modifier across a drag. This automation-only latch lets a real mouse-message
     // drag exercise the exact same Shift-snap preview/commit path.
-    if vk == VK_F8.0 {
-        if let Some(state) = s.automation.as_mut() {
-            state.forced_shift = !state.forced_shift;
-            state.status = "ready";
-            return true;
-        }
+    if handle_key_automation(s, vk) {
+        return true;
     }
 
     // Ignore the close keys for a moment after the overlay opens, so the keystroke
@@ -1478,9 +1670,28 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         return false;
     }
 
-    // Ctrl/Alt+letter must never fall through to a plain-letter tool shortcut — Ctrl+Z/Y/C/T/S
-    // are already intercepted explicitly above, but anything else (Ctrl+A, Alt+R, …) used to
-    // reach this match unfiltered and silently switch tools instead of doing nothing.
+    apply_tool_or_adjust_key(s, ctrl, alt, vk)
+}
+
+/// The F8 automation latch: toggle forced Shift on the attached automation state. Returns
+/// whether it was handled (false when there is no automation state, so the key falls through).
+fn handle_key_automation(s: &mut Shot, vk: u16) -> bool {
+    if vk != VK_F8.0 {
+        return false;
+    }
+    if let Some(state) = s.automation.as_mut() {
+        state.forced_shift = !state.forced_shift;
+        state.status = "ready";
+        return true;
+    }
+    false
+}
+
+/// The tool-letter / colour-cycle / size-or-thickness shortcuts, reached once every earlier
+/// key group has declined. Ctrl/Alt+letter must never fall through to a plain-letter tool
+/// shortcut — Ctrl+Z/Y/C/T/S are already intercepted explicitly by `handle_key`, but anything
+/// else (Ctrl+A, Alt+R, …) used to silently switch tools instead of doing nothing.
+fn apply_tool_or_adjust_key(s: &mut Shot, ctrl: bool, alt: bool, vk: u16) -> bool {
     let new_tool = if ctrl || alt {
         None
     } else {
@@ -1498,10 +1709,7 @@ pub(super) unsafe fn handle_key(hwnd: HWND, vk: u16) -> bool {
         s.cycle_color();
         return true;
     }
-    if on_key_size_or_thickness(s, vk) {
-        return true;
-    }
-    false
+    on_key_size_or_thickness(s, vk)
 }
 
 /// Fold one `WM_MOUSEMOVE` tick's `(dx, dy)` into a Move drag's running total. Restarts
