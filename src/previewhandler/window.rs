@@ -113,38 +113,44 @@ pub(super) unsafe extern "system" fn wndproc(
         // Build the composited DIB + swap the RenderData HERE (this thread owns the window), then
         // invalidate — the loop pumps WM_PAINT next, so it actually paints (no cross-thread race).
         WM_PREVIEW_RENDER => {
-            // Drop what we are showing FIRST, unconditionally. A NULL lparam means the new
-            // selection produced no image, and the pane must then go EMPTY: keeping the previous
-            // file's pixels up is exactly what "the preview stopped refreshing" looks like when
-            // the host reuses one handler across selections (issue #11).
-            let old = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
-            if !old.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                let rd = Box::from_raw(old);
-                _ = DeleteObject(rd.hbmp.into());
-            }
-            let p = lparam.0 as *mut (DecodedRgba, u32);
-            if !p.is_null() {
-                let (dec, bg) = *Box::from_raw(p);
-                // `opaque: None`: nothing upstream has scanned the alpha channel, so the
-                // shared compositor works it out itself (the same scan the private copy did).
-                let hbmp =
-                    safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
-                if let Some(hbmp) = hbmp {
-                    let rd = Box::new(RenderData {
-                        hbmp,
-                        iw: dec.w as i32,
-                        ih: dec.h as i32,
-                        bg,
-                    });
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(rd) as isize);
-                }
-            }
-            _ = InvalidateRect(Some(hwnd), None, true);
+            preview_render(hwnd, lparam);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// Handles the `WM_PREVIEW_RENDER` arm: drop the previous RenderData, composite the
+/// handed-over image into a DIB and install it on `hwnd`, then invalidate.
+unsafe fn preview_render(hwnd: HWND, lparam: LPARAM) {
+    // Drop what we are showing FIRST, unconditionally. A NULL lparam means the new
+    // selection produced no image, and the pane must then go EMPTY: keeping the previous
+    // file's pixels up is exactly what "the preview stopped refreshing" looks like when
+    // the host reuses one handler across selections (issue #11).
+    let old = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
+    if !old.is_null() {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        let rd = Box::from_raw(old);
+        _ = DeleteObject(rd.hbmp.into());
+    }
+    let p = lparam.0 as *mut (DecodedRgba, u32);
+    if !p.is_null() {
+        let (dec, bg) = *Box::from_raw(p);
+        // `opaque: None`: nothing upstream has scanned the alpha channel, so the
+        // shared compositor works it out itself (the same scan the private copy did).
+        let hbmp =
+            safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
+        if let Some(hbmp) = hbmp {
+            let rd = Box::new(RenderData {
+                hbmp,
+                iw: dec.w as i32,
+                ih: dec.h as i32,
+                bg,
+            });
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(rd) as isize);
+        }
+    }
+    _ = InvalidateRect(Some(hwnd), None, true);
 }
 
 pub(super) unsafe fn paint(hwnd: HWND) {
