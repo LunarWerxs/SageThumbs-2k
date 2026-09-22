@@ -3,15 +3,13 @@
 //! folder-name template, and copy-vs-move. The sort engine is in the lib
 //! (`sagethumbs2k_core::tags_to_folders`).
 
-use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
+use windows::Win32::UI::Controls::PBS_MARQUEE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dark::dark_ctlcolor;
@@ -250,42 +248,31 @@ unsafe fn on_command_ok(hwnd: HWND) {
         return;
     };
 
-    for id in [
-        CID_TTF_DEST,
-        CID_TTF_BROWSE,
-        CID_TTF_TEMPLATE,
-        CID_TTF_MISSING,
-        CID_TTF_MOVE,
-        CID_TTF_COPY,
-        IDOK,
-    ] {
-        if let Ok(ctrl) = GetDlgItem(Some(hwnd), id) {
-            let _ = EnableWindow(ctrl, false);
-        }
-    }
-    if let Ok(prog) = GetDlgItem(Some(hwnd), CID_TTF_PROGRESS) {
-        let _ = ShowWindow(prog, SW_SHOW);
-        SendMessageW(prog, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
-    }
-    TTF_RUNNING.store(true, Ordering::Relaxed);
-
-    let raw = hwnd.0 as usize;
-    std::thread::spawn(move || {
-        let (done, skipped) = sagethumbs2k_core::tags_to_folders(
-            &files,
-            std::path::Path::new(&dest),
-            &template,
-            &missing,
-            move_files,
-        );
-        *TTF_RESULT.lock().unwrap() = Some((done, skipped, move_files));
-        let _ = PostMessageW(
-            Some(HWND(raw as *mut c_void)),
-            WM_TTF_DONE,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    });
+    crate::files_to_folder::start_batch(
+        hwnd,
+        &TTF_RUNNING,
+        &[
+            CID_TTF_DEST,
+            CID_TTF_BROWSE,
+            CID_TTF_TEMPLATE,
+            CID_TTF_MISSING,
+            CID_TTF_MOVE,
+            CID_TTF_COPY,
+            IDOK,
+        ],
+        CID_TTF_PROGRESS,
+        WM_TTF_DONE,
+        move || {
+            let (done, skipped) = sagethumbs2k_core::tags_to_folders(
+                &files,
+                std::path::Path::new(&dest),
+                &template,
+                &missing,
+                move_files,
+            );
+            *TTF_RESULT.lock().unwrap() = Some((done, skipped, move_files));
+        },
+    );
 }
 
 /// The locale key of the finished-sort prompt, chosen by whether the batch moved or copied.

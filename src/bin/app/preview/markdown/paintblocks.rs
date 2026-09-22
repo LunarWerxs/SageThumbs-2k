@@ -113,16 +113,19 @@ pub(super) unsafe fn paint_code(
     // either way and the scroll height stays correct.
     if y < rc.bottom && y + h > rc.top {
         // GitHub 6px-radius code panel.
-        let cb = CreateSolidBrush(COLORREF(c.code_bg));
-        let cp = CreatePen(PS_SOLID, 1, COLORREF(c.code_bg));
-        let ob = SelectObject(hdc, cb.into());
-        let op = SelectObject(hdc, HGDIOBJ(cp.0));
-        let r6 = sc(6);
-        let _ = RoundRect(hdc, x0, y, x0 + full_w, y + h, r6, r6);
-        SelectObject(hdc, ob);
-        SelectObject(hdc, op);
-        let _ = DeleteObject(cb.into());
-        let _ = DeleteObject(HGDIOBJ(cp.0));
+        rounded_box(
+            hdc,
+            RECT {
+                left: x0,
+                top: y,
+                right: x0 + full_w,
+                bottom: y + h,
+            },
+            sc(6),
+            1,
+            c.code_bg,
+            c.code_bg,
+        );
         // The code text is its own slice of the selection document: translate the
         // range into it (a selection reaching past either end just clamps, which is
         // exactly the "selection continues outside this block" case).

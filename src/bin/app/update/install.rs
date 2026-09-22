@@ -203,9 +203,9 @@ pub(super) fn human_mb(bytes: u64) -> String {
 }
 
 /// The shell progress dialog for the download, already showing "Downloading update" under
-/// `parent`. It needs COM on this thread; leaving that initialized afterward is benign (one
-/// extra init on the UI thread), and the matching uninit never runs, because the success path
-/// exits the process and the failure path keeps the app running.
+/// `parent`. It needs COM on this thread; the caller always runs this on the updater's spawned
+/// worker thread, so leaving COM initialized afterward is benign — the apartment is torn down
+/// when that thread exits, and no matching uninit is ever needed here.
 fn open_progress_dialog(parent: HWND) -> Result<IProgressDialog, UpdateError> {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -222,6 +222,8 @@ fn open_progress_dialog(parent: HWND) -> Result<IProgressDialog, UpdateError> {
     let title = crate::win::wide("Updating SageThumbs 2K");
     unsafe {
         let _ = dlg.SetTitle(PCWSTR(title.as_ptr()));
+        // A dialog that fails to open only costs the progress display: the download and the
+        // cancel check both still work, so it is no reason to refuse the update.
         let _ =
             dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
         set_line(&dlg, 1, "Downloading update\u{2026}");

@@ -320,7 +320,7 @@ pub(super) fn classify(path: &str) -> ContentKind {
         }
     }
     if settings::preview_text() && formats::is_preview_text(&ext) {
-        return ContentKind::Text;
+        return text_ext_kind(path, &ext);
     }
     if formats::is_known(&ext) {
         // Video AND audio play in-viewer via the shared Media-Foundation engine + transport strip
@@ -346,6 +346,22 @@ pub(super) fn classify(path: &str) -> ContentKind {
         return ContentKind::Image;
     }
     ContentKind::InfoCard
+}
+
+/// What a file with a listed text/code extension (Text preview on) shows as. Text, except
+/// where the extension is ALSO a registered video container: `.ts` is TypeScript and MPEG
+/// Transport Stream alike, and sending every .ts stream to the monospace reader lost its
+/// frame. The head is sniffed so a binary stream gets its frame while a textual TypeScript
+/// file keeps its text view; only an extension on BOTH lists pays for the extra read.
+fn text_ext_kind(path: &str, ext: &str) -> ContentKind {
+    use sagethumbs2k_core::formats;
+    let video =
+        formats::is_known(ext) && matches!(formats::category(ext), formats::Category::Video);
+    if video && !looks_like_text(path) {
+        ContentKind::Video
+    } else {
+        ContentKind::Text
+    }
 }
 
 /// Magic-number sniff for the common raster containers, used ONLY as the last resort in

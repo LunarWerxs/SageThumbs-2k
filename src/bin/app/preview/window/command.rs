@@ -146,6 +146,21 @@ unsafe fn on_btn_copy(path: Option<String>) {
     }
 }
 
+/// Derive the `pick_save_png` destination directory and filename stem from a source path: the
+/// containing directory (empty string when there is none) and the file stem, with `fallback` used
+/// when the path has no stem. Shared by the PDF/animation page save and the video-frame save.
+fn save_dir_stem(p: &str, fallback: &str) -> (String, String) {
+    let dir = std::path::Path::new(p)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = std::path::Path::new(p)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| fallback.to_string());
+    (dir, stem)
+}
+
 /// Save the currently-shown PDF page / animation frame as a standalone PNG (`Btn::SavePage` /
 /// Ctrl+S). Self-guarding: returns immediately when the file isn't navigated to a page or frame
 /// (i.e. `btn_visible` would hide the button), so the Ctrl+S accelerator is safe to wire
@@ -162,14 +177,7 @@ unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
     if pdf_page.is_none() && anim_frame.is_none() {
         return;
     }
-    let dir = std::path::Path::new(&p)
-        .parent()
-        .map(|d| d.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stem = std::path::Path::new(&p)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "page".to_string());
+    let (dir, stem) = save_dir_stem(&p, "page");
     let suggested = match (pdf_page, anim_frame) {
         (Some(pg), _) => format!("{stem}_page{}.png", pg + 1),
         (_, Some(fr)) => format!("{stem}_frame{}.png", fr + 1),
@@ -203,14 +211,7 @@ unsafe fn on_btn_save_video_frame(hwnd: HWND, st: &ViewerState, p: &str) {
         }
     };
     let frac = crate::preview::video::position_frac(current, duration);
-    let dir = std::path::Path::new(p)
-        .parent()
-        .map(|d| d.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stem = std::path::Path::new(p)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "frame".to_string());
+    let (dir, stem) = save_dir_stem(p, "frame");
     let suggested = crate::preview::video::frame_save_filename(&stem, current);
     let Some(dest) = crate::win::pick_save_png(hwnd, &dir, &suggested) else {
         return; // user cancelled the picker

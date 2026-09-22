@@ -359,6 +359,27 @@ pub(super) unsafe fn hline(hdc: HDC, x1: i32, x2: i32, y: i32, color: u32) {
     let _ = DeleteObject(HGDIOBJ(pen.0));
 }
 
+/// A rounded box: `brush_color` fill inside a `pen_w`-wide `pen_color` outline, with
+/// `radius`-px corners. Creates and tears down its own pen and brush.
+pub(super) unsafe fn rounded_box(
+    hdc: HDC,
+    r: RECT,
+    radius: i32,
+    pen_w: i32,
+    pen_color: u32,
+    brush_color: u32,
+) {
+    let pen = CreatePen(PS_SOLID, pen_w, COLORREF(pen_color));
+    let brush = CreateSolidBrush(COLORREF(brush_color));
+    let op = SelectObject(hdc, HGDIOBJ(pen.0));
+    let ob = SelectObject(hdc, HGDIOBJ(brush.0));
+    let _ = RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius, radius);
+    SelectObject(hdc, op);
+    SelectObject(hdc, ob);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+}
+
 /// Draw a short single-line string at `(x, y)` (list markers).
 pub(super) unsafe fn draw_at(hdc: HDC, text: &str, x: i32, y: i32, font: HFONT, color: u32) {
     let old = SelectObject(hdc, font.into());
@@ -383,19 +404,19 @@ pub(super) unsafe fn draw_checkbox(hwnd: HWND, hdc: HDC, x: i32, y: i32, done: b
     let (l, t) = (x, y + sc(2)); // nudge down to sit on the 16px text line
     let (r, b) = (l + sz, t + sz);
     let rad = sc(4);
-    let pen = CreatePen(
-        PS_SOLID,
+    rounded_box(
+        hdc,
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        },
+        rad,
         sc(1).max(1),
-        COLORREF(if done { c.accent } else { c.border }),
+        if done { c.accent } else { c.border },
+        if done { c.accent } else { c.bg },
     );
-    let brush = CreateSolidBrush(COLORREF(if done { c.accent } else { c.bg }));
-    let op = SelectObject(hdc, HGDIOBJ(pen.0));
-    let ob = SelectObject(hdc, HGDIOBJ(brush.0));
-    let _ = RoundRect(hdc, l, t, r, b, rad, rad);
-    SelectObject(hdc, op);
-    SelectObject(hdc, ob);
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    let _ = DeleteObject(HGDIOBJ(brush.0));
     if done {
         // A white tick reads on the accent fill in both light and dark themes.
         let cw = CreatePen(PS_SOLID, sc(2).max(2), COLORREF(0x00FF_FFFF));

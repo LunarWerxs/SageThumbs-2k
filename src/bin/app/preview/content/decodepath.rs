@@ -26,17 +26,7 @@ pub(in super::super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
                     rgba8_full(img)
                 });
         let payload: Box<(u64, String, Option<DecodedRgba>)> = Box::new((gen, src, decoded));
-        let raw = Box::into_raw(payload);
-        if PostMessageW(
-            Some(hwnd),
-            super::super::window::WM_APP_MDIMG,
-            WPARAM(gen as usize),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(raw)); // window died before the post — reclaim
-        }
+        post_boxed(hwnd, super::super::window::WM_APP_MDIMG, gen, payload);
     });
 }
 
@@ -62,18 +52,7 @@ pub(in super::super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: 
             None => (None, None),
         };
         if let Some(c) = count {
-            let cb: Box<(u64, u32)> = Box::new((gen, c));
-            let raw = Box::into_raw(cb);
-            if PostMessageW(
-                Some(hwnd),
-                WM_APP_PDFINFO,
-                WPARAM(gen as usize),
-                LPARAM(raw as isize),
-            )
-            .is_err()
-            {
-                drop(Box::from_raw(raw));
-            }
+            post_boxed(hwnd, WM_APP_PDFINFO, gen, Box::new((gen, c)));
         }
         // Same post-and-reclaim as every other decode result: the box is handed to the UI
         // thread, or freed here if the window died before the post.

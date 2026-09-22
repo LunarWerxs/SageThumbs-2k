@@ -174,25 +174,51 @@ unsafe fn start_move(hwnd: HWND) {
         return;
     };
 
-    if let Ok(edit) = GetDlgItem(Some(hwnd), CID_F2F_NAME) {
-        let _ = EnableWindow(edit, false);
+    start_batch(
+        hwnd,
+        &F2F_RUNNING,
+        &[CID_F2F_NAME, IDOK],
+        CID_F2F_PROGRESS,
+        WM_F2F_DONE,
+        move || {
+            let result = sagethumbs2k_core::files_to_folder(&files, &name);
+            *F2F_RESULT.lock().unwrap() = Some(result);
+        },
+    );
+}
+
+/// Latch `running`, disable `disable_ids`, show `progress_id` as an active marquee,
+/// then spawn a worker that runs `work` and posts `done_msg` back to `hwnd` for its
+/// done handler to pick the result up on the UI thread (issue #29). `work` publishes
+/// whatever that handler reads (a static `*_RESULT` slot). Shared by this file and
+/// `tags_to_folders`; the callers keep their own `running` re-entrancy guard.
+pub(crate) unsafe fn start_batch<F>(
+    hwnd: HWND,
+    running: &AtomicBool,
+    disable_ids: &[i32],
+    progress_id: i32,
+    done_msg: u32,
+    work: F,
+) where
+    F: FnOnce() + Send + 'static,
+{
+    for &id in disable_ids {
+        if let Ok(ctrl) = GetDlgItem(Some(hwnd), id) {
+            let _ = EnableWindow(ctrl, false);
+        }
     }
-    if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
-        let _ = EnableWindow(btn, false);
-    }
-    if let Ok(prog) = GetDlgItem(Some(hwnd), CID_F2F_PROGRESS) {
+    if let Ok(prog) = GetDlgItem(Some(hwnd), progress_id) {
         let _ = ShowWindow(prog, SW_SHOW);
         SendMessageW(prog, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
     }
-    F2F_RUNNING.store(true, Ordering::Relaxed);
+    running.store(true, Ordering::Relaxed);
 
     let raw = hwnd.0 as usize;
     std::thread::spawn(move || {
-        let result = sagethumbs2k_core::files_to_folder(&files, &name);
-        *F2F_RESULT.lock().unwrap() = Some(result);
+        work();
         let _ = PostMessageW(
             Some(HWND(raw as *mut c_void)),
-            WM_F2F_DONE,
+            done_msg,
             WPARAM(0),
             LPARAM(0),
         );

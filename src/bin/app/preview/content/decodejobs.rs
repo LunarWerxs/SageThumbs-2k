@@ -38,7 +38,7 @@ pub(super) unsafe fn try_post_quick_first_paint(hwnd: HWND, gen: u64, path: &str
 }
 
 /// Box `payload` into the message's `LPARAM`, reclaiming it if the window has already gone.
-unsafe fn post_boxed<T>(hwnd: HWND, msg: u32, gen: u64, payload: Box<T>) {
+pub(super) unsafe fn post_boxed<T>(hwnd: HWND, msg: u32, gen: u64, payload: Box<T>) {
     let raw = Box::into_raw(payload);
     if PostMessageW(Some(hwnd), msg, WPARAM(gen as usize), LPARAM(raw as isize)).is_err() {
         drop(Box::from_raw(raw));

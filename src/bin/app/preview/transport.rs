@@ -130,6 +130,16 @@ pub(super) unsafe fn activate(hwnd: HWND, tb: TBtn) {
     let st = &*state(hwnd);
     let vb = st.video.borrow();
     let Some(v) = vb.as_ref() else { return };
+    do_transport_action(st, v, tb);
+}
+
+/// Perform one transport control's action — the shared implementation behind [`activate`]'s
+/// keyboard activation and [`dispatch_scrub_click`]'s mouse click, so the two cannot diverge.
+unsafe fn do_transport_action(
+    st: &super::window::ViewerState,
+    v: &super::video::VideoPlayer,
+    tb: TBtn,
+) {
     match tb {
         TBtn::Play => v.toggle_play(),
         TBtn::Mute => {
@@ -137,21 +147,21 @@ pub(super) unsafe fn activate(hwnd: HWND, tb: TBtn) {
             persist_volume(v); // a press is the whole gesture — remember it now
         }
         TBtn::Loop => {
-            let on = !v.looping();
-            v.set_looping(on);
-            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+            let loop_on = !v.looping();
+            v.set_looping(loop_on);
+            let _ = sagethumbs2k_core::settings::set_preview_loop(loop_on);
         }
         TBtn::Arrows => {
-            let on = !st.arrow_nav.get();
-            st.arrow_nav.set(on);
-            let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(on);
+            let arr_on = !st.arrow_nav.get();
+            st.arrow_nav.set(arr_on);
+            let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(arr_on);
         }
         TBtn::Speed => {
-            let s = next_speed(v.speed());
-            v.set_speed(s);
-            let _ = sagethumbs2k_core::settings::set_preview_speed((s * 100.0).round() as u32);
+            let sp = next_speed(v.speed());
+            v.set_speed(sp);
+            let _ = sagethumbs2k_core::settings::set_preview_speed((sp * 100.0).round() as u32);
         }
-        TBtn::Prev | TBtn::Next => unreachable!("handled above, before the video borrow"),
+        TBtn::Prev | TBtn::Next => unreachable!("Prev/Next are handled by the callers"),
     }
 }
 
@@ -372,28 +382,21 @@ unsafe fn dispatch_scrub_click(
     p: &Parts,
 ) {
     if hit_rect(x, &p.play, false) {
-        v.toggle_play();
+        do_transport_action(st, v, TBtn::Play);
     } else if hit_rect(x, &p.speed, false) {
-        let s = next_speed(v.speed());
-        v.set_speed(s);
-        let _ = sagethumbs2k_core::settings::set_preview_speed((s * 100.0).round() as u32);
+        do_transport_action(st, v, TBtn::Speed);
     } else if hit_rect(x, &p.arrows, false) {
         // Flip what ←/→ mean, and remember it. Lives on the strip, not in Settings: it only ever
         // matters while this window is open, which is also the only place anyone would look.
-        let on = !st.arrow_nav.get();
-        st.arrow_nav.set(on);
-        let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(on);
+        do_transport_action(st, v, TBtn::Arrows);
     } else if hit_rect(x, &p.loopb, false) {
-        let on = !v.looping();
-        v.set_looping(on);
-        let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+        do_transport_action(st, v, TBtn::Loop);
     } else if hit_rect(x, &p.vol, true) {
         st.vol_drag.set(true);
         apply_vol(v, x, &p.vol);
         let _ = SetCapture(hwnd);
     } else if hit_rect(x, &p.mute, false) {
-        v.set_muted(!v.muted()); // speaker glyph toggles mute
-        persist_volume(v); // a click is the whole gesture — remember it now
+        do_transport_action(st, v, TBtn::Mute); // speaker glyph toggles mute
     } else if hit_rect(x, &p.track, true) {
         st.scrub_drag.set(true);
         apply_seek(v, x, &p.track);
