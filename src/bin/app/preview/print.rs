@@ -85,8 +85,9 @@ unsafe fn set_topmost(hwnd: HWND, topmost: bool) {
 
 /// Run the standard Print dialog and return the printer HDC ([`PD_RETURNDC`]) it built. `None`
 /// for a cancelled dialog -- `PrintDlgW` returning `FALSE` covers both a real cancel and a
-/// dialog failure alike, and neither leaves anything to clean up beyond the two global handles
-/// freed below. Page-range and selection controls are turned off: this always prints the one
+/// dialog failure alike. Either way the two global handles are freed below: the dialog can
+/// allocate them before the user cancels, so freeing them only on success leaked both on
+/// every Cancel. Page-range and selection controls are turned off: this always prints the one
 /// page of shown content, and there is no selection to restrict it to.
 unsafe fn run_print_dialog(hwnd: HWND) -> Option<HDC> {
     let mut pd = PRINTDLGW {
@@ -95,9 +96,7 @@ unsafe fn run_print_dialog(hwnd: HWND) -> Option<HDC> {
         Flags: PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION,
         ..Default::default()
     };
-    if !PrintDlgW(&mut pd).as_bool() {
-        return None;
-    }
+    let chosen = PrintDlgW(&mut pd).as_bool();
     // Neither is read past this call -- only the HDC `PD_RETURNDC` already built from them.
     if !pd.hDevMode.is_invalid() {
         let _ = GlobalFree(Some(pd.hDevMode));
@@ -105,7 +104,7 @@ unsafe fn run_print_dialog(hwnd: HWND) -> Option<HDC> {
     if !pd.hDevNames.is_invalid() {
         let _ = GlobalFree(Some(pd.hDevNames));
     }
-    (!pd.hDC.is_invalid()).then_some(pd.hDC)
+    (chosen && !pd.hDC.is_invalid()).then_some(pd.hDC)
 }
 
 /// Decode the shown content and run it through one printed page: `StartDocW` / `StartPage` /

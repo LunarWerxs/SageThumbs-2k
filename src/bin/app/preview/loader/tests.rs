@@ -193,7 +193,23 @@ fn parse_url_shortcut_reads_a_utf16_le_target_with_bom() {
     let got = parse_url_shortcut(path.to_str().unwrap());
     assert_eq!(got.as_deref(), Some("https://example.com/caf\u{e9}"));
 
+    // Past the size cap it is not a shortcut, whatever its text says.
+    let big = dir.join("big.url");
+    let mut text = String::from("[InternetShortcut]\r\nURL=https://example.com/\r\n");
+    text.push_str(&" ".repeat(2 << 20));
+    std::fs::write(&big, text).unwrap();
+    assert_eq!(parse_url_shortcut(big.to_str().unwrap()), None);
+
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A literal `%` in a file name is escaped, or WebView2 decodes `a%2Fb.html` to `a/b.html`.
+#[cfg(feature = "html-preview")]
+#[test]
+fn file_uri_escapes_a_percent_before_anything_else() {
+    use super::web::file_uri;
+    assert_eq!(file_uri(r"C:\pages\a%2Fb.html"), "file:///C:/pages/a%252Fb.html");
+    assert_eq!(file_uri(r"C:\my pages\x#1?.html"), "file:///C:/my%20pages/x%231%3F.html");
 }
 
 #[test]

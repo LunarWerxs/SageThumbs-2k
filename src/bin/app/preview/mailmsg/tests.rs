@@ -517,6 +517,20 @@ fn html_script_and_style_content_never_reaches_the_body() {
     }
 }
 
+/// `<header>` is an ordinary element, not `<head>`: matching it by prefix went looking for a
+/// `</head>` that never comes and dropped everything after it.
+#[test]
+fn an_html_header_element_is_not_mistaken_for_head() {
+    let eml = b"Subject: Newsletter\r\n\
+                Content-Type: text/html\r\n\
+                \r\n\
+                <html><body><header>Masthead</header>\
+                <p>Everything after the header.</p></body></html>\r\n";
+    let md = eml_to_markdown(eml).expect("html mail parses");
+    assert!(md.contains("Masthead"), "header text lost: {md}");
+    assert!(md.contains("Everything after the header."), "body lost: {md}");
+}
+
 /// A multipart message with more than [`MAX_EML_ATTACHMENTS`] filenamed parts must cap the
 /// rendered list (not grow `Mail.attachments` unbounded) and note how many were dropped —
 /// before this fix the list had no cap at all, unlike every sibling list in this module

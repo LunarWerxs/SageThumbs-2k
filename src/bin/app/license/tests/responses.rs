@@ -244,6 +244,9 @@ fn iso_instants_parse_and_ambiguous_ones_are_refused() {
     // answering "no window on record".
     assert_eq!(parse_iso_unix("2026-09-10T12:34:56+02:00"), None);
     assert_eq!(parse_iso_unix("2026-09-10T12:34:56-05:00"), None);
+    // ...including after a fraction, which used to be cut off WITH the offset behind it.
+    assert_eq!(parse_iso_unix("2026-09-10T12:34:56.789+02:00"), None);
+    assert_eq!(parse_iso_unix("2026-09-10T12:34:56.5-05:00"), None);
 
     assert_eq!(parse_iso_unix(""), None);
     assert_eq!(parse_iso_unix("whenever"), None);

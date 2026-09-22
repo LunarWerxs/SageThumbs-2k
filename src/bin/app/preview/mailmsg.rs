@@ -594,9 +594,12 @@ fn strip_tags_to_text(html: &str) -> String {
         cleaned.push_str(&html[pos..pos + r]);
         let tag_start = pos + r;
         let lower_tail = &lower_all[tag_start..];
+        // The tag NAME must end where the element name does: `<header>` is not `<head>`,
+        // and treating it as one searched for a `</head>` that never comes and dropped the
+        // rest of the body.
         let skip = ["script", "style", "head"].iter().find_map(|t| {
-            lower_tail
-                .starts_with(&format!("<{t}"))
+            let after = lower_tail.strip_prefix('<')?.strip_prefix(*t)?;
+            (after.is_empty() || after.starts_with(['>', '/', ' ', '\t', '\r', '\n']))
                 .then(|| format!("</{t}>"))
         });
         if let Some(close) = skip {

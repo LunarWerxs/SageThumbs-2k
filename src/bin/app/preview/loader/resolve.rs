@@ -232,7 +232,12 @@ pub(super) unsafe fn spawn_prepare_load(
         });
     if spawned.is_err() {
         // `Builder::spawn` refused to create the OS thread: nothing was started (and the
-        // closure, with it the ticket, was dropped unstarted).
+        // closure, with it the ticket, was dropped unstarted). Clear the slot too: a ticket
+        // left RUNNING with no worker would be counted as an abandoned worker by every
+        // later load's `abandon_pending_prepare`.
+        *PENDING_PREPARE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         sagethumbs2k_core::safety::log_debug("preview load: failed to start the prepare worker");
         show_load_refused(hwnd, &path);
     }

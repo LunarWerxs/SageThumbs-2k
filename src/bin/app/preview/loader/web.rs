@@ -102,9 +102,12 @@ pub(super) unsafe fn create_web(hwnd: HWND, url: &str, mode: super::super::webvi
     true
 }
 
-/// Turn a local path into a `file:///` URI (forward slashes, minimal escaping of space/#/?).
+/// Turn a local path into a `file:///` URI (forward slashes, minimal escaping of %/space/#/?).
+/// `%` goes first and must be escaped at all: `a%2Fb.html` is a legal file name, and WebView2
+/// decodes the URI it is handed, so an unescaped one opened `a/b.html`.
 pub(super) fn file_uri(path: &str) -> String {
     let esc = path
+        .replace('%', "%25")
         .replace('\\', "/")
         .replace(' ', "%20")
         .replace('#', "%23")
@@ -139,8 +142,21 @@ pub(super) fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(bytes).ok().map(str::to_string)
 }
 
+/// A real `.url` / `.webloc` is a few hundred bytes; anything past this is not a shortcut, and
+/// this runs on the UI thread before any capped read.
+const MAX_SHORTCUT_BYTES: u64 = 1 << 20;
+
 pub(super) fn parse_url_shortcut(path: &str) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_SHORTCUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_SHORTCUT_BYTES {
+        return None;
+    }
     let text = decode_shortcut_text(&bytes)?;
     let url = if path.to_ascii_lowercase().ends_with(".webloc") {
         let a = text.find("<string>")? + 8;

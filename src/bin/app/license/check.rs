@@ -84,10 +84,11 @@ pub(super) fn parse_iso_time(rest: &str) -> Option<(i64, i64, i64)> {
         .or_else(|| rest.strip_prefix('t'))
         .or_else(|| rest.strip_prefix(' '))?;
     let time = time.trim_end_matches(['Z', 'z']);
-    let time = time.split('.').next().unwrap_or(time);
+    // Before the fraction is cut: in `12:34:56.789+02:00` the offset follows the fraction.
     if time.contains('+') || time.contains('-') {
         return None;
     }
+    let time = time.split('.').next().unwrap_or(time);
     let mut hms = time.split(':');
     let h: i64 = hms.next()?.parse().ok()?;
     let mi: i64 = hms.next()?.parse().ok()?;

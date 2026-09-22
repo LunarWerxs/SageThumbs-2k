@@ -151,7 +151,9 @@ impl<R: Read + Seek> Db<R> {
                 data.rows.len(),
                 data.total
             ));
-        } else if cols.cols.len() > MAX_COLS {
+        }
+        // Independent of the row cap: a long AND wide table needs both notes.
+        if cols.cols.len() > MAX_COLS {
             out.push_str(&format!(
                 "\n*Showing the first {MAX_COLS} of {} columns.*\n",
                 cols.cols.len()
