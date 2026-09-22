@@ -102,7 +102,21 @@ const BALLOON_ELEVATED: u32 = 2;
 const BALLOON_LICENCE: u32 = 3;
 /// A licence reminder is due: posted from `kick_licence_tick`'s worker. Carries nothing;
 /// the daemon thread re-reads the breadcrumb, same forgery reasoning as `WM_UPDATE_FOUND`.
-const WM_LICENCE_DUE: u32 = WM_APP + 4;
+/// NOT `WM_APP + 4`: that is `spacehook::WM_APP_PREVIEW`, whose arm comes first in
+/// `daemon_wndproc`, so a due reminder toggled Quick preview and the balloon never showed.
+/// Every id this window receives is listed in [`DAEMON_MESSAGES`], which a test keeps unique.
+const WM_LICENCE_DUE: u32 = WM_APP + 10;
+/// Every private message the daemon window receives, from this file and its siblings.
+#[cfg(test)]
+const DAEMON_MESSAGES: [(&str, u32); 7] = [
+    ("WM_TRAY", WM_TRAY),
+    ("WM_RELOAD", WM_RELOAD),
+    ("WM_UPDATE_FOUND", WM_UPDATE_FOUND),
+    ("WM_LICENCE_DUE", WM_LICENCE_DUE),
+    ("WM_APP_PREVIEW", super::spacehook::WM_APP_PREVIEW),
+    ("WM_APP_PREVIEW_CLOSE", super::spacehook::WM_APP_PREVIEW_CLOSE),
+    ("WM_APP_CHECK_ELEVATED", super::elevwarn::WM_APP_CHECK_ELEVATED),
+];
 /// The licence tick's own 6-hour timer, separate from the update timer because that one is
 /// only armed when update checks are on and a licence is not an update.
 const LICENCE_TIMER_ID: usize = 13;
@@ -605,5 +619,18 @@ mod tests {
         // computed 0 — a brand-new daemon must not immediately write a redundant 0.
         assert!(!hotkey_bind_failed_changed(None, 0));
         assert!(hotkey_bind_failed_changed(None, 1));
+    }
+
+    /// `daemon_wndproc` matches its private messages in one `match`, so two of them sharing an
+    /// id means the first arm silently eats the other: `WM_LICENCE_DUE` once shared
+    /// `WM_APP + 4` with the Quick-preview toggle, and a due licence reminder opened the
+    /// preview instead of the balloon.
+    #[test]
+    fn every_message_the_daemon_window_receives_has_its_own_id() {
+        for (i, (a, x)) in DAEMON_MESSAGES.iter().enumerate() {
+            for (b, y) in &DAEMON_MESSAGES[i + 1..] {
+                assert_ne!(x, y, "{a} and {b} share the id {x:#x}");
+            }
+        }
     }
 }
