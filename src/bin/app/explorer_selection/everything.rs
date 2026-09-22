@@ -121,11 +121,12 @@ pub(crate) fn is_everything_exe_name(file_name: &str) -> bool {
 /// The focused result as Everything 1.5+ publishes it: the window TEXT of its hidden focus child.
 pub(super) unsafe fn everything_focus_path(fg: HWND) -> Option<String> {
     let hidden = everything_focus_window(fg)?;
-    let n = GetWindowTextLengthW(hidden);
+    let n = GetWindowTextLengthW(hidden).min(LV_TEXT_CCH as i32);
     if n <= 0 {
         return None;
     }
-    // Cross-process, `GetWindowTextLengthW` may over-report; the copy's return value is exact.
+    // Cross-process, `GetWindowTextLengthW` may over-report, so cap it before allocating;
+    // the copy's return value is the exact count.
     let mut buf = vec![0u16; n as usize + 1];
     let got = GetWindowTextW(hidden, &mut buf);
     if got <= 0 {

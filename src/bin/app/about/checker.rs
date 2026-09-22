@@ -2,17 +2,13 @@
 
 use super::*;
 
-/// Whether the boxed update-check tag must be reclaimed right here, on the worker thread,
-/// rather than waiting for [`WM_ABOUT_CHECKED`]'s own reclaim (below) to run.
-///
-/// That handler already frees the tag when the window was torn down between post and
-/// dispatch (its `st.is_null()` check) — but only for a message that actually made it into
-/// the queue. When `PostMessageW` itself fails (an invalid or already-destroyed HWND), no
-/// message is ever queued, so that reclaim path never fires and the box would otherwise leak.
-/// Pure so the decision is unit-testable without a real HWND or a real post.
-pub(super) fn post_failed_leaks_tag(posted_ok: bool, lp: isize) -> bool {
-    !posted_ok && lp != 0
-}
+/// The release the last check found, for [`WM_ABOUT_CHECKED`]'s handler to take. Kept
+/// process-local rather than boxed into the LPARAM: `WM_ABOUT_CHECKED` is a plain `WM_APP`
+/// id on a `FindWindowW`-discoverable class, so a pointer in the message would let any
+/// same-desktop process post one of its own and make us free memory it chose (the daemon's
+/// `UPDATE_TAG` has the same shape for the same reason). A forged message finds nothing here.
+pub(super) static FOUND_RELEASE: std::sync::Mutex<Option<update::LatestRelease>> =
+    std::sync::Mutex::new(None);
 
 /// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
 /// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
@@ -20,22 +16,24 @@ pub(super) fn post_failed_leaks_tag(posted_ok: bool, lp: isize) -> bool {
 pub(super) unsafe fn start_check(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let (code, lp) = match update::check() {
-            update::UpdateCheck::UpToDate => (0usize, 0isize),
+        let code = match update::check() {
+            update::UpdateCheck::UpToDate => 0usize,
             update::UpdateCheck::Available(latest) => {
-                (1usize, Box::into_raw(Box::new(latest)) as isize)
+                *FOUND_RELEASE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
+                1usize
             }
-            update::UpdateCheck::Failed => (2usize, 0isize),
+            update::UpdateCheck::Failed => 2usize,
         };
-        let posted = PostMessageW(
+        // Nothing to reclaim if the post fails: the release sits in `FOUND_RELEASE` until
+        // the next check overwrites it.
+        let _ = PostMessageW(
             Some(HWND(raw as *mut c_void)),
             WM_ABOUT_CHECKED,
             WPARAM(code),
-            LPARAM(lp),
+            LPARAM(0),
         );
-        if post_failed_leaks_tag(posted.is_ok(), lp) {
-            drop(Box::from_raw(lp as *mut update::LatestRelease));
-        }
     });
 }
 
@@ -175,7 +173,7 @@ pub(super) unsafe fn start_install(hwnd: HWND) {
         let posted = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(lp));
         if posted.is_err() {
             // Window torn down between spawn and post — nobody will ever reclaim this box,
-            // so reclaim it right here (mirrors `post_failed_leaks_tag` for the check path).
+            // so reclaim it right here.
             drop(Box::from_raw(
                 lp as *mut Result<String, update::UpdateError>,
             ));

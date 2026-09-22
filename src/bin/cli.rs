@@ -409,6 +409,17 @@ fn run(args: &[String]) -> Result<String, String> {
     let pos = positionals(rest);
     check_arity(verb, &pos)?;
 
+    // `flag` returns `None` for a value-taking flag that is present but unfinished (`--out`
+    // as the last token, or `--out --json`) exactly as for an absent one, so every caller
+    // that substitutes a default would silently ignore the request — `batch ... --out` used
+    // to write next to each source. Refuse once, here, before any verb runs. `--retry-from`
+    // is left to `retry_inputs`, which names the report's path in its own refusal.
+    for f in VALUE_FLAGS {
+        if *f != "--retry-from" && has_flag(rest, f) && flag(rest, f).is_none() {
+            return Err(format!("{f} needs a value"));
+        }
+    }
+
     if let Some(r) = dispatch_file_verb(verb, &pos, rest) {
         return r;
     }

@@ -117,8 +117,8 @@ pub(crate) fn wide(s: &str) -> Vec<u16> {
 }
 
 /// Read a WinInet request handle to EOF, capped at `max_bytes`. Returns the FULL
-/// body, or `None` on a read error, an over-cap response, an expired `deadline`, or a
-/// `false` from `on_progress` — never a truncated body. Both remote clients (the sponsor
+/// body, or `None` on a read error, an over-cap response, or an expired `deadline` — never a
+/// truncated body. Both remote clients (the sponsor
 /// GET in `sponsors.rs` and the screenshot POST in `screenshot/upload.rs`) parse/decode the
 /// result, so partial bytes must not be handed back looking like success. Shared so the
 /// read loop and the over-cap policy live in exactly one place (the POST path used to
@@ -616,11 +616,12 @@ pub(crate) unsafe fn app_icon() -> Option<HICON> {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("app.ico")))
             .filter(|p| p.exists());
+        let from_temp = beside.is_none();
         let Some(path) = beside.or_else(claim_icon_temp_file) else {
             return 0;
         };
         let w = wide(&path.to_string_lossy());
-        match LoadImageW(
+        let hicon = match LoadImageW(
             None,
             PCWSTR(w.as_ptr()),
             IMAGE_ICON,
@@ -630,7 +631,13 @@ pub(crate) unsafe fn app_icon() -> Option<HICON> {
         ) {
             Ok(h) => h.0 as usize,
             Err(_) => 0,
+        };
+        if from_temp {
+            // LoadImageW read the file synchronously above, so the temp copy has done its
+            // job and can go now instead of lingering in %TEMP% for the session.
+            let _ = std::fs::remove_file(&path);
         }
+        hicon
     });
     (p != 0).then_some(HICON(p as *mut c_void))
 }

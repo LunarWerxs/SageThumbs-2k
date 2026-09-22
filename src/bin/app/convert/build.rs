@@ -18,16 +18,38 @@ pub(super) fn load_watermark_settings() {
             .min(corner_max) as i32,
         Ordering::Relaxed,
     );
+    let scale = settings::get_dword_opt("CvWatermarkScale")
+        .unwrap_or(CV_WM_SCALE_DEFAULT as u32)
+        .clamp(1, 100);
     WATERMARK_SCALE.store(
-        settings::get_dword_opt("CvWatermarkScale")
-            .unwrap_or(CV_WM_SCALE_DEFAULT as u32)
-            .clamp(1, 100) as i32,
+        CV_WM_SCALES
+            .iter()
+            .copied()
+            .find(|&p| p as u32 == scale)
+            .or_else(|| {
+                CV_WM_SCALES
+                    .iter()
+                    .copied()
+                    .min_by_key(|p| p.abs_diff(scale as u8))
+            })
+            .unwrap_or(CV_WM_SCALE_DEFAULT) as i32,
         Ordering::Relaxed,
     );
+    let opacity = settings::get_dword_opt("CvWatermarkOpacity")
+        .unwrap_or(CV_WM_OPACITY_DEFAULT as u32)
+        .clamp(0, 100);
     WATERMARK_OPACITY.store(
-        settings::get_dword_opt("CvWatermarkOpacity")
-            .unwrap_or(CV_WM_OPACITY_DEFAULT as u32)
-            .clamp(0, 100) as i32,
+        CV_WM_OPACITIES
+            .iter()
+            .copied()
+            .find(|&p| p as u32 == opacity)
+            .or_else(|| {
+                CV_WM_OPACITIES
+                    .iter()
+                    .copied()
+                    .min_by_key(|p| p.abs_diff(opacity as u8))
+            })
+            .unwrap_or(CV_WM_OPACITY_DEFAULT) as i32,
         Ordering::Relaxed,
     );
     *WATERMARK_PATH.lock().unwrap() =
@@ -73,6 +95,17 @@ pub(super) unsafe fn update_watermark_enabled(hwnd: HWND) {
             let _ = EnableWindow(c, on);
         }
     }
+}
+
+/// Add `items` to a drop-down list, then give it the dark theme. Shared by the
+/// combos whose entries all come from one source, so their build blocks stay one
+/// call each.
+unsafe fn fill_combo(combo: HWND, items: impl Iterator<Item = String>) {
+    for text in items {
+        let w = wide(&text);
+        SendMessageW(combo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    dark_theme_combo(combo);
 }
 
 pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
@@ -172,17 +205,8 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         CID_RESIZE,
         hinst,
     );
-    for (key, _) in CV_RESIZE {
-        let w = wide(t(key));
-        SendMessageW(
-            rcombo,
-            CB_ADDSTRING,
-            None,
-            Some(LPARAM(w.as_ptr() as isize)),
-        );
-    }
+    fill_combo(rcombo, CV_RESIZE.iter().map(|(key, _)| t(key).to_string()));
     SendMessageW(rcombo, CB_SETCURSEL, Some(WPARAM(0)), None);
-    dark_theme_combo(rcombo);
 
     // Row 3, custom W × H (only used when Resize is on + mode is "Defined size").
     // Numeric fields plus a one-character "×" separator, so no translation risk here.
@@ -332,16 +356,10 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         CID_CV_WATERMARK_CORNER,
         hinst,
     );
-    for (key, _) in CV_WM_CORNERS {
-        let w = wide(t(key));
-        SendMessageW(
-            ccombo,
-            CB_ADDSTRING,
-            None,
-            Some(LPARAM(w.as_ptr() as isize)),
-        );
-    }
-    dark_theme_combo(ccombo);
+    fill_combo(
+        ccombo,
+        CV_WM_CORNERS.iter().map(|(key, _)| t(key).to_string()),
+    );
 
     ctl(
         hwnd,
@@ -367,16 +385,7 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         CID_CV_WATERMARK_SCALE,
         hinst,
     );
-    for pct in CV_WM_SCALES {
-        let w = wide(&format!("{pct}%"));
-        SendMessageW(
-            scombo,
-            CB_ADDSTRING,
-            None,
-            Some(LPARAM(w.as_ptr() as isize)),
-        );
-    }
-    dark_theme_combo(scombo);
+    fill_combo(scombo, CV_WM_SCALES.iter().map(|pct| format!("{pct}%")));
 
     ctl(
         hwnd,
@@ -402,16 +411,7 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         CID_CV_WATERMARK_OPACITY,
         hinst,
     );
-    for pct in CV_WM_OPACITIES {
-        let w = wide(&format!("{pct}%"));
-        SendMessageW(
-            ocombo,
-            CB_ADDSTRING,
-            None,
-            Some(LPARAM(w.as_ptr() as isize)),
-        );
-    }
-    dark_theme_combo(ocombo);
+    fill_combo(ocombo, CV_WM_OPACITIES.iter().map(|pct| format!("{pct}%")));
 
     // Seed the four watermark controls from the persisted statics (loaded by
     // `load_watermark_settings` before this dialog was created).

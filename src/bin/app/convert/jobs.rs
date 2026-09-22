@@ -25,13 +25,13 @@ pub(super) unsafe fn read_resize_jobs(hwnd: HWND) -> Vec<(Resize, Option<String>
     vec![(read_resize(hwnd), None)]
 }
 
-/// Mirrors `decode::limits::MAX_DIM` (16384): that constant is `pub(crate)` to the
-/// core lib, so it isn't reachable from this EXE crate, but the ceiling it
-/// enforces is the same one that matters here. Without a cap, a typed dimension
-/// like 30000x30000 reaches `apply_resize`'s `FitUp` arm (which only floors with
-/// `.max(1)`, no ceiling) and attempts a multi-GB allocation; release runs
-/// panic="abort", so an allocation failure aborts the WHOLE process mid-batch.
-pub(super) const MAX_TYPED_RESIZE_DIM: u32 = 16_384;
+/// `decode::limits::MAX_DIM`, the core lib's decode ceiling, referenced directly
+/// instead of copied so a change there cannot leave this clamp behind. Without a
+/// cap, a typed dimension like 30000x30000 reaches `apply_resize`'s `FitUp` arm
+/// (which only floors with `.max(1)`, no ceiling) and attempts a multi-GB
+/// allocation; release runs panic="abort", so an allocation failure aborts the
+/// WHOLE process mid-batch.
+pub(super) const MAX_TYPED_RESIZE_DIM: u32 = sagethumbs2k_core::decode::limits::MAX_DIM;
 
 /// Parse one typed resize-dimension field, clamped to [`MAX_TYPED_RESIZE_DIM`].
 /// Pulled out of `read_resize` as a plain function (no `HWND`) so the clamp is
@@ -154,14 +154,6 @@ pub(super) fn produce_convert_job(
     }
 }
 
-/// One source file's whole job list (normally one job; three when "write every
-/// preset size" is on). Each source runs its whole size list here rather than the
-/// list being flattened into the work items, so one file's outputs stay on one
-/// worker and cannot interleave with another file's. Note the decode still
-/// happens once per OUTPUT, not once per file - each `convert_file_opts_named`
-/// reads and decodes the source itself. Sharing one decode across the sizes would
-/// mean holding a full-resolution image while three encodes run, which is the
-/// trade this deliberately does not make.
 /// Reduces one file's per-job outputs (in job order) into the first produced output
 /// (for the "open folder" reveal) and the first REASON a job did not produce one, or
 /// `None` when every job succeeded (issue #28: a file used to count as fully converted
@@ -216,6 +208,14 @@ fn fold_job_output(
     }
 }
 
+/// One source file's whole job list (normally one job; three when "write every
+/// preset size" is on). Each source runs its whole size list here rather than the
+/// list being flattened into the work items, so one file's outputs stay on one
+/// worker and cannot interleave with another file's. Note the decode still
+/// happens once per OUTPUT, not once per file - each `convert_file_opts_named`
+/// reads and decodes the source itself. Sharing one decode across the sizes would
+/// mean holding a full-resolution image while three encodes run, which is the
+/// trade this deliberately does not make.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn convert_one_file(
     f: &str,

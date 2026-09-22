@@ -335,8 +335,8 @@ unsafe fn run_document_modes(args: &[String]) -> bool {
         return true;
     }
     // Screen OCR on a file the user owns: `--ocr-keep <path> [--page N]` (the Quick
-    // preview's OCR toolbar button). Unlike `--ocr` it does NOT delete its input. Checked
-    // before `--ocr` (exact match, so they don't overlap).
+    // preview's OCR toolbar button). Unlike `--ocr` it does NOT delete its input. Tested
+    // after `--ocr` above (exact match, so they don't overlap).
     if let Some(pos) = args.iter().position(|a| a == "--ocr-keep") {
         if let Some(path) = args.get(pos + 1) {
             let page = args
@@ -368,7 +368,7 @@ pub(super) unsafe fn refused_by_licence(notice_key: &str) -> bool {
 
 /// The screenshot-related CLI flags: `--screenshot-instant`, `--screenshot-ocr`,
 /// `--screenshot`, `--screenshot-daemon`, `--hotkey-action`, `--upload <png>`,
-/// `--upload-keep <listfile>` and `--screenshot-toggle`. Returns `true` if a flag fired
+/// `--upload-keep <listfile>`, `--upload-history` and `--screenshot-toggle`. Returns `true` if a flag fired
 /// (caller should return).
 pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     // Instant capture: grabs the whole screen straight to the clipboard + a PNG, no
@@ -623,5 +623,16 @@ pub(super) unsafe fn remove_user_state() {
     const RUN_NAME: &str = "SageThumbs2KScreenshot";
     if let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) {
         let _ = k.remove_value(RUN_NAME);
+    }
+
+    // This user's runtime files: the diagnostics log (and its one rotated backup) and the
+    // update-check cache. The installer's [UninstallDelete] rows expand {localappdata} in the
+    // ELEVATED account's profile, so for this user only this pass can reach them.
+    if let Some(log) = sagethumbs2k_core::safety::log_file() {
+        let _ = std::fs::remove_file(log.with_extension("log.old"));
+        let _ = std::fs::remove_file(log);
+    }
+    if let Some(cache) = crate::update::cache_path() {
+        let _ = std::fs::remove_file(cache);
     }
 }

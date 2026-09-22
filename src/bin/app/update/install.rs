@@ -300,6 +300,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
              and replace the old files with the new ones."
         )));
     }
+    sweep_stale_installers();
 
     let (tag, asset) = latest_installer_asset().ok_or_else(|| {
         UpdateError::Failed(
@@ -349,14 +350,11 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     let (path, installer_lock) = prepared?;
     let launched = launch_installer_silent(&path, parent);
     drop(installer_lock); // the elevated process has opened the image (or the launch failed)
-                          // `path` is disposable either way once we get here — on failure nothing will ever run
-                          // it, and on success the elevated child has its OWN open handle on it by now
-                          // (ShellExecuteW has returned, meaning the child process started), which is what
-                          // makes deleting it safe: the same way a running .exe on Windows can be deleted from
-                          // its directory while it keeps executing from the handle it already holds. If the
-                          // child somehow opened it without FILE_SHARE_DELETE, this silently no-ops rather than
-                          // failing the update; the goal is just to not leave a 10-15 MB setup .exe behind in
-                          // %TEMP% on the (common) successful path, which the old success arm never did.
+                          // On failure nothing will ever run `path`, so this removes it. On success it is a no-op:
+                          // the running setup has the file mapped as its image, and Windows refuses to delete a
+                          // mapped image (the same rule `SwapAsideInUseDll` works around by renaming). Which is also
+                          // what makes the call harmless, since Inno's Setup.tmp re-opens setup.exe by path for its
+                          // payload. The file left behind is removed by `sweep_stale_installers` next time.
     cleanup_installer_payload(&path);
     match launched {
         Ok(()) => Ok(tag),
@@ -393,4 +391,53 @@ fn download_progress_tick(
 /// returns regardless of outcome. See the call site for why this is safe even on success.
 pub(super) fn cleanup_installer_payload(path: &Path) {
     let _ = std::fs::remove_file(path);
+}
+
+/// Remove the setup payloads earlier updates staged in %TEMP% (`write_locked_installer`'s
+/// `SageThumbs2K-Setup-*.exe`), which [`cleanup_installer_payload`] cannot delete while their
+/// setup runs. Only files over an hour old: a setup still running is refused by Windows anyway,
+/// and one staged by a concurrent update a moment ago is left alone.
+fn sweep_stale_installers() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let Some(cutoff) = SystemTime::now().checked_sub(std::time::Duration::from_secs(3600)) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if is_staged_installer_name(&e.file_name().to_string_lossy())
+            && e.metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t < cutoff)
+        {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// `write_locked_installer`'s naming: `SageThumbs2K-Setup-<tag>-<pid>-<nonce>-<attempt>.exe`.
+fn is_staged_installer_name(name: &str) -> bool {
+    name.strip_prefix("SageThumbs2K-Setup-")
+        .and_then(|rest| rest.strip_suffix(".exe"))
+        .is_some_and(|mid| mid.matches('-').count() >= 3)
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::is_staged_installer_name;
+
+    /// Only the updater's own staged payloads are swept: a setup the USER downloaded into
+    /// %TEMP% (release name, with or without the arch suffix) is never touched.
+    #[test]
+    fn only_the_updaters_own_staged_names_are_swept() {
+        assert!(is_staged_installer_name(
+            "SageThumbs2K-Setup-3.2.0-1234-1789043696000000000-0.exe"
+        ));
+        assert!(!is_staged_installer_name("SageThumbs2K-Setup-3.2.0.exe"));
+        assert!(!is_staged_installer_name(
+            "SageThumbs2K-Setup-3.2.0-arm64.exe"
+        ));
+        assert!(!is_staged_installer_name("SageThumbs2K-Portable-3.2.0.zip"));
+        assert!(!is_staged_installer_name("other-1-2-3.exe"));
+    }
 }

@@ -40,10 +40,13 @@
 //! This block used to claim the opposite: that re-presenting the redemption code to
 //! `/license/redeem` mints a fresh certificate "which is why [`crate::cred_store`] keeps the
 //! code". The first half is true of the SERVER (a replay is expected and answers
-//! `replayed: true`), but the second half was never true of us: `cred_store` stores the
-//! refresh token, the certificate and the identity, and has no save/load pair for a
-//! redemption code at all. So the comment described a feature that does not exist, which is
-//! worse than not describing it, because the next reader plans around it.
+//! `replayed: true`); the second half was not true of us when this was written, since
+//! `cred_store` then stored only the refresh token, the certificate and the identity, with no
+//! save/load pair for a redemption code at all. So the comment described a feature that does
+//! not exist, which is worse than not describing it, because the next reader plans around it.
+//! Since 2026-09-10 `cred_store` DOES keep the redeemed key (`V_LICENCE_KEY`, DPAPI,
+//! per-user), but only so the Renew button can pre-fill the checkout - nothing re-presents it
+//! on its own, so the certificate still never renews itself.
 //!
 //! What actually happens on day 31 is the FAIL DIRECTION above: the certificate stops
 //! verifying, that is read as "no certificate" rather than "not licensed", and standing
@@ -52,10 +55,10 @@
 //! offline resilience the certificate exists to provide, for a machine that stays offline
 //! past the expiry.
 //!
-//! Do not "fix" this by persisting the raw purchase key on disk to match the old sentence.
-//! That trades a documentation bug for a credential-storage liability. If offline renewal is
-//! ever wanted, it needs a renewal credential designed for it, or an explicit user-visible
-//! refresh action.
+//! The redeemed key now IS persisted, but per-user under DPAPI in `cred_store` rather than as
+//! a plaintext file: a redeemable serial belongs in a per-user encrypted store, not written
+//! to disk in the clear. If offline renewal is ever wanted, it still needs a renewal
+//! credential designed for it, or an explicit user-visible refresh action.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};

@@ -564,8 +564,7 @@ pub(crate) enum DisconnectOutcome {
     CloudCopyDeleted,
     /// Nothing to delete, this machine had no usable credential to delete with.
     WasNotSignedIn,
-    /// The delete request reached the server and it refused, or never reached the server
-    /// at all, [`last_attempt_was_offline`] tells the two apart if a caller needs to.
+    /// The delete request reached the server and it refused, or never reached the server at all.
     CloudCopyKept,
 }
 

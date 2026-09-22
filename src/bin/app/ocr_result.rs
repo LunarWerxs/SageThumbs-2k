@@ -18,7 +18,7 @@ use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::win::{
-    ctl, result_buttons, result_edit, result_layout, result_window_proc, run_dialog,
+    ctl, get_edit_text, result_buttons, result_edit, result_layout, result_window_proc, run_dialog,
     set_clipboard_text, t, wide, ResultWindow, STATIC,
 };
 
@@ -188,18 +188,6 @@ unsafe fn notify(msg: &str) {
     );
 }
 
-/// The edit's CURRENT contents (the user may have corrected a misread character).
-unsafe fn edit_text(hwnd: HWND) -> String {
-    let edit = GetDlgItem(Some(hwnd), ID_EDIT).unwrap_or_default();
-    let len = GetWindowTextLengthW(edit);
-    if len <= 0 {
-        return String::new();
-    }
-    let mut buf = vec![0u16; len as usize + 1];
-    let got = GetWindowTextW(edit, &mut buf);
-    String::from_utf16_lossy(&buf[..got.max(0) as usize])
-}
-
 /// The result-window shape with two differences from Image info: a two-line "it's on your
 /// clipboard" note above an EDITABLE edit, and Copy reading the edit's CURRENT contents (not
 /// the stored text) so a correction the user typed over a misread character is what lands on
@@ -232,6 +220,6 @@ impl ResultWindow for OcrResult {
     }
 
     unsafe fn copy_source(hwnd: HWND) -> String {
-        edit_text(hwnd)
+        get_edit_text(hwnd, ID_EDIT)
     }
 }

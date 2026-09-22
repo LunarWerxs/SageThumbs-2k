@@ -87,6 +87,28 @@ fn forced_icon_face() -> Option<&'static str> {
         .find(|&known| forced.eq_ignore_ascii_case(known) && font_face_exists(known))
 }
 
+/// A `LOGFONTW` naming `face` at `lfHeight`, with the NUL-terminated wide name copied into
+/// `lfFaceName`. Shared so the truncation to `LF_FACESIZE - 1` lives in exactly one place.
+fn logfont_for(
+    face: &str,
+    lfHeight: i32,
+    lfQuality: windows::Win32::Graphics::Gdi::FONT_QUALITY,
+    lfWeight: i32,
+) -> windows::Win32::Graphics::Gdi::LOGFONTW {
+    use windows::Win32::Graphics::Gdi::{DEFAULT_CHARSET, LOGFONTW};
+    let mut lf = LOGFONTW {
+        lfHeight,
+        lfWeight,
+        lfQuality,
+        lfCharSet: DEFAULT_CHARSET,
+        ..Default::default()
+    };
+    for (i, c) in wide(face).iter().take(lf.lfFaceName.len() - 1).enumerate() {
+        lf.lfFaceName[i] = *c;
+    }
+    lf
+}
+
 /// An icon-font handle at `em` device pixels. Both toolbars build theirs through here so the
 /// face AND the rendering mode are decided once. Caller owns and deletes it.
 ///
@@ -105,20 +127,8 @@ fn forced_icon_face() -> Option<&'static str> {
 /// (This is also the fringing CLAUDE.md warns about when sampling rendered pixels - it is why a
 /// colour sampler can read grey anti-aliased text as syntax highlighting.)
 pub(crate) unsafe fn icon_font(em: i32) -> windows::Win32::Graphics::Gdi::HFONT {
-    use windows::Win32::Graphics::Gdi::{
-        CreateFontIndirectW, ANTIALIASED_QUALITY, DEFAULT_CHARSET, LOGFONTW,
-    };
-    let mut lf = LOGFONTW {
-        lfHeight: -em,
-        lfWeight: 400,
-        lfQuality: ANTIALIASED_QUALITY,
-        lfCharSet: DEFAULT_CHARSET,
-        ..Default::default()
-    };
-    let face = wide(icon_font_face());
-    for (i, c) in face.iter().take(lf.lfFaceName.len() - 1).enumerate() {
-        lf.lfFaceName[i] = *c;
-    }
+    use windows::Win32::Graphics::Gdi::{CreateFontIndirectW, ANTIALIASED_QUALITY};
+    let lf = logfont_for(icon_font_face(), -em, ANTIALIASED_QUALITY, 400);
     CreateFontIndirectW(&lf)
 }
 
@@ -129,19 +139,10 @@ pub(crate) unsafe fn icon_font(em: i32) -> windows::Win32::Graphics::Gdi::HFONT 
 /// actually got is the check that cannot be fooled.
 pub(super) fn font_face_exists(face: &str) -> bool {
     use windows::Win32::Graphics::Gdi::{
-        CreateFontIndirectW, DeleteDC, DeleteObject, GetTextFaceW, SelectObject, DEFAULT_CHARSET,
-        LOGFONTW,
+        CreateFontIndirectW, DeleteDC, DeleteObject, GetTextFaceW, SelectObject, DEFAULT_QUALITY,
     };
     unsafe {
-        let mut lf = LOGFONTW {
-            lfHeight: -12,
-            lfCharSet: DEFAULT_CHARSET,
-            ..Default::default()
-        };
-        let w = wide(face);
-        for (i, c) in w.iter().take(lf.lfFaceName.len() - 1).enumerate() {
-            lf.lfFaceName[i] = *c;
-        }
+        let lf = logfont_for(face, -12, DEFAULT_QUALITY, 0);
         let font = CreateFontIndirectW(&lf);
         if font.is_invalid() {
             return false;
@@ -174,17 +175,10 @@ pub(super) fn font_face_exists(face: &str) -> bool {
 pub(super) fn missing_glyphs(face: &str, codes: &[u16]) -> Vec<u16> {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateFontIndirectW, DeleteDC, DeleteObject, GetGlyphIndicesW,
-        SelectObject, DEFAULT_CHARSET, GGI_MARK_NONEXISTING_GLYPHS, LOGFONTW,
+        SelectObject, DEFAULT_QUALITY, GGI_MARK_NONEXISTING_GLYPHS,
     };
     unsafe {
-        let mut lf = LOGFONTW {
-            lfHeight: -16,
-            lfCharSet: DEFAULT_CHARSET,
-            ..Default::default()
-        };
-        for (i, c) in wide(face).iter().take(lf.lfFaceName.len() - 1).enumerate() {
-            lf.lfFaceName[i] = *c;
-        }
+        let lf = logfont_for(face, -16, DEFAULT_QUALITY, 0);
         let font = CreateFontIndirectW(&lf);
         let dc = CreateCompatibleDC(None);
         let old = SelectObject(dc, font.into());
@@ -287,16 +281,22 @@ pub(super) mod icon_font_tests {
     }
 
     /// Windows 10's icon font is the whole point of the fallback. This machine is Windows 11,
-    /// which ships BOTH, so the assertion is meaningful here; on a host that genuinely lacks it
-    /// the picker still has `Segoe UI Symbol` beneath, so this stays a report rather than a
-    /// failure.
+    /// which ships BOTH, so it is present here; on a host that genuinely lacks it the picker
+    /// still has `Segoe UI Symbol` beneath, so this stays a report rather than a failure.
+    ///
+    /// The BUNDLED face wins on Windows 11, so the picker cannot be asserted to RETURN MDL2.
+    /// What is asserted is that the face is RECOGNISED - forcing it through `ST2K_ICON_FONT`
+    /// resolves back to it - so a name the picker stopped knowing fails here.
     #[test]
     fn the_windows_10_fallback_face_is_recognised_when_present() {
         if font_face_exists("Segoe MDL2 Assets") {
+            std::env::set_var("ST2K_ICON_FONT", "Segoe MDL2 Assets");
+            let forced = forced_icon_face();
+            std::env::remove_var("ST2K_ICON_FONT");
             assert_eq!(
-                std::env::var("ST2K_ICON_FONT").ok().as_deref(),
-                None,
-                "this test assumes no forced override"
+                forced,
+                Some("Segoe MDL2 Assets"),
+                "a present Windows 10 icon font must be recognised by the picker"
             );
         } else {
             eprintln!("Segoe MDL2 Assets absent on this host - fallback untested here");

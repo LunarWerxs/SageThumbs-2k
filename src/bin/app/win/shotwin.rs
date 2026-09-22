@@ -15,9 +15,6 @@ pub(crate) unsafe fn pump_msgs(frames: usize) {
     }
 }
 
-/// Force a SYNCHRONOUS paint of `hwnd` AND every child (RDW_UPDATENOW). Owner-drawn statics
-/// (nav rail, pane header, toggle switches) only paint on a real WM_PAINT, so without this a
-/// headless capture races them and leaves blank gaps.
 /// Take the foreground and the keyboard focus, even when Windows says no.
 ///
 /// Our full-screen overlays (the screenshot capture, the eyedropper) are
@@ -56,6 +53,9 @@ pub(crate) unsafe fn force_foreground(hwnd: HWND) {
     let _ = windows::Win32::System::Threading::AttachThreadInput(fg_tid, me, false);
 }
 
+/// Force a SYNCHRONOUS paint of `hwnd` AND every child (RDW_UPDATENOW). Owner-drawn statics
+/// (nav rail, pane header, toggle switches) only paint on a real WM_PAINT, so without this a
+/// headless capture races them and leaves blank gaps.
 pub(crate) unsafe fn force_repaint(hwnd: HWND) {
     use windows::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW,
@@ -68,11 +68,13 @@ pub(crate) unsafe fn force_repaint(hwnd: HWND) {
     );
 }
 
-/// Create a top-level dialog window OFF-SCREEN + non-activated — a real window that never
-/// appears on screen and steals no focus — for headless `PrintWindow` capture. Same class
+/// Create a top-level dialog window ON-SCREEN but fully transparent (WS_EX_LAYERED alpha 0)
+/// and non-activated — a real window that is invisible and steals no focus — for headless
+/// `PrintWindow` capture. Same class
 /// registration + dark styling as [`run_dialog`], but returns the HWND WITHOUT a message
 /// loop: the caller pumps ([`pump_msgs`]), captures, and `DestroyWindow`s it. `design_w/h`
-/// are 96-dpi design pixels (scaled to the primary DPI here).
+/// are 96-dpi design pixels (scaled to the DPI of the monitor under the cursor, or the
+/// `--dpi` override, here).
 pub(crate) unsafe fn create_shot_window(
     hinst: HINSTANCE,
     dark: bool,
@@ -143,7 +145,7 @@ pub(crate) struct ShotWindowSpec<'a> {
 
 /// The ritual eight `run_shot_*` functions (About, Convert, the Convert failure report,
 /// Doctor, Send-feedback, both first-run pages, the OCR result window) used to hand-repeat:
-/// resolve this process's own module handle, build `spec`'s window off-screen via
+/// resolve this process's own module handle, build `spec`'s window on-screen (transparent) via
 /// [`create_shot_window`], run `after_create` for whatever that one dialog needs done to the
 /// fresh window before it settles (About grows the frame back to its design client size,
 /// first-run page 2 flips itself to page 2, most pass a no-op), settle with [`settle_pump`],

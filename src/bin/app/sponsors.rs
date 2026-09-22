@@ -43,8 +43,7 @@ pub(crate) const BANNER_URL: &str = "https://st2k.lunarwerx.com/sponsor";
 
 /// Banner default artwork, embedded so the reserved banner area shows *something*
 /// while the real sponsor images download (only ever displayed once the feed has
-/// already confirmed sponsors exist — see [`sponsors_enabled`]). A `banner.png`
-/// dropped next to the EXE overrides at runtime (user-swappable).
+/// already confirmed sponsors exist — see [`sponsors_enabled`]).
 ///
 /// Currently unused: the Settings dialog's v3 nav-rail layout permanently hides
 /// the banner control (see `settings_dlg/build.rs`'s sponsor-promotion comment;

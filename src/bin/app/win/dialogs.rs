@@ -183,8 +183,8 @@ pub(crate) unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
 
 /// A modal two-choice prompt whose BUTTONS CARRY THE VERBS ("Renew" / "Not now"), rather
 /// than a `MessageBox`'s fixed Yes/No. Returns true when the first (affirmative) button was
-/// chosen; anything else - the second button, Escape, the close box, or the API failing
-/// outright - is false, which every caller must treat as "do nothing".
+/// chosen; anything else - the second button, Escape, or the close box - is false, which
+/// every caller must treat as "do nothing".
 ///
 /// `TaskDialogIndirect` rather than `MessageBoxW` because a Yes/No pair makes the reader
 /// reconstruct which verb "Yes" meant from the sentence above it, and a dialog offering to
@@ -249,12 +249,10 @@ pub(crate) unsafe fn confirm_verbs(
 
     // comctl32 refused (no v6 activation context in some embedding we do not control):
     // still ask, just with the generic buttons.
-    let w_fallback_title = wide(title);
-    let w_fallback_body = wide(body);
     MessageBoxW(
         Some(parent),
-        PCWSTR(w_fallback_body.as_ptr()),
-        PCWSTR(w_fallback_title.as_ptr()),
+        PCWSTR(w_body.as_ptr()),
+        PCWSTR(w_title.as_ptr()),
         MB_YESNO | MB_ICONINFORMATION,
     ) == IDYES
 }

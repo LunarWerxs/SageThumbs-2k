@@ -258,30 +258,14 @@ pub(crate) fn save_identity(sub: &str, email: &str, name: &str, picture: &str) {
     }
 }
 
-/// The stored identity for the "Synced as …" row, if any. `Name`/`Picture` are missing on
-/// identities saved before this app captured them — they simply read back empty, so old
-/// stored values keep loading fine.
-pub(crate) fn load_identity() -> Option<Identity> {
-    if settings::portable() {
-        let sub = settings::get_string_opt(&portable_key(V_SUB)).unwrap_or_default();
-        let email = settings::get_string_opt(&portable_key(V_EMAIL)).unwrap_or_default();
-        let name = settings::get_string_opt(&portable_key(V_NAME)).unwrap_or_default();
-        let picture = settings::get_string_opt(&portable_key(V_PICTURE)).unwrap_or_default();
-        if sub.is_empty() && email.is_empty() {
-            return None;
-        }
-        return Some(Identity {
-            sub,
-            email,
-            name,
-            picture,
-        });
-    }
-    let k = CURRENT_USER.open(oauth_key()).ok()?;
-    let sub = k.get_string(V_SUB).unwrap_or_default();
-    let email = k.get_string(V_EMAIL).unwrap_or_default();
-    let name = k.get_string(V_NAME).unwrap_or_default();
-    let picture = k.get_string(V_PICTURE).unwrap_or_default();
+/// Build the identity from its four stored parts, or `None` when neither key that identifies
+/// a sign-in was captured.
+fn identity_from_parts(
+    sub: String,
+    email: String,
+    name: String,
+    picture: String,
+) -> Option<Identity> {
     if sub.is_empty() && email.is_empty() {
         return None;
     }
@@ -291,6 +275,25 @@ pub(crate) fn load_identity() -> Option<Identity> {
         name,
         picture,
     })
+}
+
+/// The stored identity for the "Synced as …" row, if any. `Name`/`Picture` are missing on
+/// identities saved before this app captured them — they simply read back empty, so old
+/// stored values keep loading fine.
+pub(crate) fn load_identity() -> Option<Identity> {
+    if settings::portable() {
+        let sub = settings::get_string_opt(&portable_key(V_SUB)).unwrap_or_default();
+        let email = settings::get_string_opt(&portable_key(V_EMAIL)).unwrap_or_default();
+        let name = settings::get_string_opt(&portable_key(V_NAME)).unwrap_or_default();
+        let picture = settings::get_string_opt(&portable_key(V_PICTURE)).unwrap_or_default();
+        return identity_from_parts(sub, email, name, picture);
+    }
+    let k = CURRENT_USER.open(oauth_key()).ok()?;
+    let sub = k.get_string(V_SUB).unwrap_or_default();
+    let email = k.get_string(V_EMAIL).unwrap_or_default();
+    let name = k.get_string(V_NAME).unwrap_or_default();
+    let picture = k.get_string(V_PICTURE).unwrap_or_default();
+    identity_from_parts(sub, email, name, picture)
 }
 
 /// Whether a refresh token is present (a decryptable one — a foreign blob reads as no).

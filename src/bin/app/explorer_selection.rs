@@ -57,10 +57,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::win::wide;
 
-/// Target files for a hotkey verb: the foreground Explorer selection, or — when that's empty
-/// — a multi-select file picker. `images_only` filters the picker to image extensions (for the
-/// verbs that only make sense on images). See [`SelectionOutcome`] for what each outcome means;
-/// `Empty` covers both "nothing selected" and "the picker was cancelled".
 /// Outcome of resolving the file(s) a hotkey/verb action should act on. Collapsing "nothing was
 /// selected" and "what was selected has no filesystem path behind it" into the same empty `Vec`
 /// is the exact defect this exists to close: a Recycle Bin / This PC / other virtual-namespace
@@ -76,6 +72,10 @@ pub(crate) enum SelectionOutcome {
     Paths(Vec<String>),
 }
 
+/// Target files for a hotkey verb: the foreground Explorer selection, or — when that's empty
+/// — a multi-select file picker. `images_only` filters the picker to image extensions (for the
+/// verbs that only make sense on images). See [`SelectionOutcome`] for what each outcome means;
+/// `Empty` covers both "nothing selected" and "the picker was cancelled".
 pub(crate) unsafe fn selection_or_pick(images_only: bool) -> SelectionOutcome {
     // Apartment-threaded COM for the shell automation interfaces below. `sta()` is
     // `None` (rather than a guard that no-ops on drop) when `CoInitializeEx` itself

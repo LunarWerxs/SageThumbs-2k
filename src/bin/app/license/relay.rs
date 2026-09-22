@@ -25,8 +25,8 @@ pub(crate) const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 pub(crate) const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
 
 /// Where another 12 months of updates is bought (US$29), for a licence that is already
-/// held. Unlike [`BUY_URL`] this is the checkout's own address rather than a relay
-/// redirect on the relay (`/renew`, the twin of `/buy`), which forwards the query string, so a
+/// held. Like [`BUY_URL`] this is a relay redirect on the relay rather than the checkout's
+/// own address (`/renew`, the twin of `/buy`), which forwards the query string, so a
 /// repricing or a new checkout page moves the link without a release. The relay's default
 /// target is the checkout page for [`crate::licence_cert::PRODUCT_ID`].
 pub(super) const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";

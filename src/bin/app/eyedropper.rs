@@ -239,6 +239,22 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, vw, vh);
+    // GDI failure here (object-quota exhaustion is the realistic cause) must not fall through
+    // to SelectObject/BitBlt on a null handle, which stores a NULL snapshot that samples as
+    // #000000 with no error shown (A139), so log, release everything already allocated, and bail.
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+        }
+        if !screen.is_invalid() {
+            ReleaseDC(None, screen);
+        }
+        return;
+    }
     SelectObject(mem, HGDIOBJ(bmp.0)); // keep selected → mem is a readable copy of the screen
     let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     ReleaseDC(None, screen);
@@ -303,6 +319,21 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, pw, ph);
+    // Same GDI-failure guard as run_eyedropper (A139): a NULL mem/bmp must not be blitted into
+    // or stored, which would render/write an all-black PNG with no diagnostic.
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+        }
+        if !screen.is_invalid() {
+            ReleaseDC(None, screen);
+        }
+        return false;
+    }
     SelectObject(mem, HGDIOBJ(bmp.0));
     let _ = BitBlt(mem, 0, 0, pw, ph, Some(screen), 0, 0, SRCCOPY);
     ReleaseDC(None, screen);

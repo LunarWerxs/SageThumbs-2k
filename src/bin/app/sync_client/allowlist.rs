@@ -8,15 +8,17 @@ pub(super) enum Kind {
 
 /// The syncable-key allowlist — portable preferences ONLY.
 ///
-/// Widened 2026-08-25 from 33 keys to 60. Everything the Quick preview viewer learned since this
-/// list was written — every playback, layout and rendering preference it has — was silently
-/// stranded on one machine, along with the PDF layout, the screenshot tool defaults, the convert
+/// Widened 2026-08-25 from 35 keys to 62 (Lang and MenuOrder were already `Str` entries).
+/// Everything the Quick preview viewer learned since this list was written — every playback,
+/// layout and rendering preference it has — was silently stranded on one machine, along with
+/// the PDF layout, the screenshot tool defaults, the convert
 /// metadata switch and half a dozen others. None of them was excluded on purpose; they simply
 /// arrived after the list did, and "not synced" is what a missing entry means.
 ///
-/// [`NEVER_SYNCED`] now names every key that stays behind, with the reason, and the test at the
-/// bottom of this file reads `settings.rs` and fails on any key that is on neither list. That
-/// check is the durable half of this change: widening once only helps until the next setting.
+/// [`NEVER_SYNCED`] now names every key that stays behind, with the reason, and the test in
+/// `tests.rs` (`every_setting_is_classified`) reads `settings.rs` and fails on any key that is
+/// on neither list. That check is the durable half of this change: widening once only helps
+/// until the next setting.
 pub(super) const ALLOW: &[(&str, Kind)] = &[
     ("EnableThumbs", Kind::Dword),
     ("MaxSize", Kind::Dword),
@@ -99,9 +101,9 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
 
 /// Every setting that deliberately does NOT sync, with the reason it doesn't.
 ///
-/// Read by `every_setting_is_classified` below, which is the only thing that consumes it at
-/// runtime. Its real job is to be the written-down decision, and to fail the build's test run
-/// when a new setting has no decision yet.
+/// Its only consumer is `every_setting_is_classified` in `tests.rs`, so it is compiled out of
+/// non-test builds. Its real job is to be the written-down decision, and to fail the build's
+/// test run when a new setting has no decision yet.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) const NEVER_SYNCED: &[&str] = &[
     // An absolute path on THIS PC.

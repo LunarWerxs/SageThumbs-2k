@@ -6,10 +6,11 @@
 //! arrives on stdin is exactly what an encoder wrote for one frame (possibly a VP9
 //! superframe, which `vp9dec` unpacks itself). This module:
 //!
-//! 1. pre-parses the VP9 uncompressed keyframe header WITH ITS OWN ~60-line bit reader —
-//!    dimensions are refused against `decode::limits::MAX_DIM` BEFORE the decoder
-//!    allocates anything, and the header's own `color_space`/`color_range` drive the
-//!    YUV→RGB conversion (the `vp9dec::Frame` struct doesn't carry them);
+//! 1. pre-parses the VP9 uncompressed keyframe header with the shared bounds-checked
+//!    `flv::Bits` MSB-first reader — dimensions are refused against
+//!    `decode::limits::MAX_DIM` BEFORE the decoder allocates anything, and the
+//!    header's own `color_space`/`color_range` drive the YUV→RGB conversion (the
+//!    `vp9dec::Frame` struct doesn't carry them);
 //! 2. decodes via `vp9dec` (pure Rust, all four profiles, verified upstream against the
 //!    official conformance corpus — and here against FFmpeg FATE vectors + 20k fuzz
 //!    mutations before it was adopted);

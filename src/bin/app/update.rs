@@ -152,8 +152,9 @@ pub(crate) struct LatestRelease {
 }
 
 impl LatestRelease {
-    /// A tag with nothing else known - what the direct-GitHub fallback [`check`] and every
-    /// pre-2026-09-10 cache file can say. Deliberately the "offer it to everyone" shape.
+    /// A tag with nothing else known - the up-to-date cache sentinel and the pre-2026-09-10
+    /// two-line cache shape; NOT what [`check`]'s Available arm returns. Deliberately the
+    /// "offer it to everyone" shape.
     fn bare(tag: String) -> Self {
         Self {
             tag,
@@ -245,11 +246,12 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n`"). Beside the portable ini
+/// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n<published_unix_or_0>\n<security_0_or_1>\n`";
+/// lines 3 and 4 are optional, omitted by pre-2026-09-10 builds). Beside the portable ini
 /// when running portable (issue #118/G118 — a portable copy must not leave anything in the
 /// host's `%LOCALAPPDATA%`, the same split `settings.rs`/`sync_client.rs` already apply to
 /// every other setting); next to the diagnostics log in `%LOCALAPPDATA%` otherwise.
-fn cache_path() -> Option<PathBuf> {
+pub(crate) fn cache_path() -> Option<PathBuf> {
     if let Some(ini) = sagethumbs2k_core::settings::ini_path() {
         return ini.parent().map(|d| d.join("SageThumbs2K-update.txt"));
     }

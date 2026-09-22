@@ -43,9 +43,8 @@ use windows::Win32::System::Threading::{
     WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, FindWindowExW, GetWindowThreadProcessId, RegisterWindowMessageW,
-    SendMessageTimeoutW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, HOOKPROC, SMTO_ABORTIFHUNG,
-    WH_CALLWNDPROC,
+    FindWindowExW, GetWindowThreadProcessId, RegisterWindowMessageW, SendMessageTimeoutW,
+    SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, HOOKPROC, SMTO_ABORTIFHUNG, WH_CALLWNDPROC,
 };
 
 use crate::explorer_selection::class_name;
@@ -408,12 +407,6 @@ impl Drop for Hook {
             let _ = UnhookWindowsHookEx(self.0);
         }
     }
-}
-
-/// Silences an unused-import warning in builds where the hook type alias resolves without it.
-#[allow(dead_code)]
-unsafe fn _keep_callnexthookex_linked() {
-    let _ = CallNextHookEx;
 }
 
 #[cfg(test)]

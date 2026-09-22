@@ -6,8 +6,10 @@
 //! walks that tree (root values + one level of subkeys) into pretty JSON;
 //! [`import_settings`] writes it back. It is generic over whatever happens to be present,
 //! so new settings need no changes here. JSON numbers map to registry DWORDs and quoted
-//! strings to text values, so the file round-trips with full fidelity and is safe to
-//! hand-edit. We reuse `serde_json` (already a dependency for the MCP server / sponsor
+//! strings to text values, so registry DWORDs and text round-trip with full fidelity; a
+//! portable value whose text parses as a `u32` is emitted as a number instead, so
+//! numeric-looking text is canonicalised to decimal rather than preserved byte-for-byte.
+//! We reuse `serde_json` (already a dependency for the MCP server / sponsor
 //! manifest) rather than add a TOML runtime crate.
 //!
 //! Two rules hold on every path, in both storage backends (2026-09-05 audit, F04/F05):
@@ -117,8 +119,9 @@ fn render_doc(values: Map<String, Json>, subkeys: Map<String, Json>) -> String {
 
 /// One portable-ini section as a JSON object. Everything is text on disk, so a value that
 /// parses as a `u32` is emitted as a JSON number and anything else as a string - giving the
-/// exact same document shape the registry path produces. That's deliberate: a settings file
-/// exported from an installed copy imports cleanly into a portable one and back again.
+/// same document shape the registry path produces. That's deliberate: a settings file
+/// exported from an installed copy imports cleanly into a portable one and back again,
+/// though a numeric-looking text value is canonicalised to decimal by the round-trip.
 fn read_section(sub: Option<&str>) -> Map<String, Json> {
     settings::portable_values(sub)
         .into_iter()
@@ -210,7 +213,10 @@ impl Plan {
         val: &Json,
         portable: bool,
     ) -> Option<(String, BTreeMap<String, Json>)> {
-        if protected_subkey(name) || (portable && !ini_safe(name)) {
+        if protected_subkey(name)
+            || (portable
+                && (!ini_safe(name) || name.eq_ignore_ascii_case(settings::PORTABLE_ROOT_SECTION)))
+        {
             return None;
         }
         let obj = val.as_object()?;

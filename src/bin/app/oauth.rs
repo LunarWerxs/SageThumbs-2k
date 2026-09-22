@@ -293,7 +293,7 @@ fn catch_code(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(result) = handle_conn(&mut stream, expected_state) {
+                if let Some(result) = handle_conn(&mut stream, expected_state, deadline) {
                     return result;
                 }
                 // Not our callback → already 404'd inside; keep waiting.
@@ -316,17 +316,24 @@ const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
 /// provider error, or a correlated response with no code), or `None` for anything else
 /// (which was answered with 404) so the caller keeps waiting. See [`route_callback`] for
 /// what counts as ours and why.
-fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<String, String>> {
+fn handle_conn(
+    stream: &mut TcpStream,
+    expected_state: &str,
+    deadline: Instant,
+) -> Option<Result<String, String>> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     // Issue #94/G98: a single `read()` only sees whatever arrived in the first TCP segment —
     // a request split across reads (the callback's query string is long enough to straddle a
     // packet boundary on some networks) 404s here instead of completing sign-in. Loop reads
     // until the header terminator `\r\n\r\n` shows up, the byte cap is hit, the peer closes,
-    // or the read times out (the existing 5s timeout above bounds the whole loop, since a
-    // timed-out `read()` returns an error and the loop just works with what arrived so far).
+    // the overall sign-in deadline passes, or a read times out (the 5s timeout above bounds
+    // each read, while `deadline` bounds the whole loop so a trickle can't starve it).
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
+        if Instant::now() >= deadline {
+            break;
+        }
         match stream.read(&mut chunk) {
             Ok(0) => break, // peer closed
             Ok(n) => {
@@ -687,7 +694,7 @@ mod tests {
             reply
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let routed = handle_conn(&mut stream, "xyz");
+        let routed = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         // The client is blocked in `read_to_string` until this end closes, so let it go
         // before joining, or the test deadlocks on its own reply.
         drop(stream);
@@ -718,7 +725,7 @@ mod tests {
                 .unwrap();
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let routed = handle_conn(&mut stream, "xyz");
+        let routed = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         writer.join().unwrap();
         match routed {
             Some(Err(msg)) => assert!(msg.contains("canceled"), "got {msg}"),
@@ -744,7 +751,7 @@ mod tests {
             client.write_all(b"\r\n").unwrap();
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let result = handle_conn(&mut stream, "xyz");
+        let result = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         writer.join().unwrap();
         assert_eq!(
             result,

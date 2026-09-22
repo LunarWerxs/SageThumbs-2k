@@ -207,7 +207,7 @@ unsafe fn gui_font_variant(hwnd: HWND, variant: FontVariant) -> HFONT {
     hf
 }
 
-/// A slightly smaller, semibold variant of the GUI font for the owner-drawn
+/// A slightly smaller, same-weight variant of the GUI font for the owner-drawn
 /// section headers — gives them a typographic step-down from the body labels.
 /// Cached per DPI; falls back to [`gui_font_for`] if the metrics query fails.
 pub(crate) unsafe fn gui_font_header(hwnd: HWND) -> HFONT {

@@ -61,8 +61,8 @@ const ID_FEEDBACK_PILL: i32 = 1206;
 const ID_LICENCE_STATE: i32 = 1207;
 
 /// Posted from the update-check worker thread back to the About window: the check
-/// finished. `WPARAM` = outcome (0 up-to-date, 1 update available, 2 failed);
-/// `LPARAM` = a `Box<String>` (the newer tag) when WPARAM==1 — the handler reclaims it.
+/// finished. `WPARAM` = outcome (0 up-to-date, 1 update available, 2 failed); `LPARAM` is
+/// unused. The found release travels in [`checker::FOUND_RELEASE`], never in the message.
 const WM_ABOUT_CHECKED: u32 = WM_APP + 1;
 
 /// Posted from the download+install worker thread back to the About window: the
@@ -306,22 +306,18 @@ unsafe fn on_drawitem(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     LRESULT(1)
 }
 
-unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     let st = about_state(hwnd);
     if st.is_null() {
-        if lparam.0 != 0 {
-            // Window torn down between post and dispatch — reclaim the release.
-            drop(Box::from_raw(lparam.0 as *mut update::LatestRelease));
-        }
         return LRESULT(0);
     }
     let result = match wparam.0 {
         1 => {
-            let latest = if lparam.0 != 0 {
-                *Box::from_raw(lparam.0 as *mut update::LatestRelease)
-            } else {
-                update::LatestRelease::unknown()
-            };
+            let latest = FOUND_RELEASE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .unwrap_or_else(update::LatestRelease::unknown);
             Status::Available(latest)
         }
         2 => Status::Failed,
@@ -408,7 +404,7 @@ extern "system" fn about_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         match msg {
             WM_CREATE => on_create(hwnd),
             WM_DRAWITEM => on_drawitem(hwnd, lparam),
-            WM_ABOUT_CHECKED => on_about_checked(hwnd, wparam, lparam),
+            WM_ABOUT_CHECKED => on_about_checked(hwnd, wparam),
             WM_ABOUT_INSTALLED => on_about_installed(hwnd, lparam),
             WM_TIMER if wparam.0 == SPIN_TIMER_ID => on_spin_timer(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
@@ -443,6 +439,3 @@ unsafe fn themed_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LR
     }
     None
 }
-
-#[cfg(test)]
-mod update_check_tests;

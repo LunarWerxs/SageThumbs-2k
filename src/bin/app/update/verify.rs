@@ -7,19 +7,18 @@ use super::*;
 /// pair). Every release asset's bytes must carry a valid detached signature against this key
 /// before the installer is ever launched - see [`verify_signature`] and [`download_and_install`].
 ///
-/// PLACEHOLDER: all zeros until the integrator runs `examples/update-keygen.rs` and pastes its
-/// printed array literal here. An all-zero key is not a parse error for `ed25519-dalek` - it
-/// decodes to a (weak, useless) point on the curve - so nothing verifies against it, and every
-/// self-update correctly refuses rather than silently accepting an unsigned release. The
-/// `the_compiled_in_key_is_not_the_placeholder` test below fails until this is a real key; that
-/// is the point of the test, not a bug in it.
+/// A real key, minted by `examples/update-keygen.rs`: self-update verification is live, so
+/// releases signed with its private half pass and anything else is correctly refused. The
+/// `the_compiled_in_key_is_not_the_placeholder` test below guards against this ever being
+/// swapped back for the all-zero placeholder.
 pub const UPDATE_PUBLIC_KEY: [u8; 32] = [
     0x16, 0x9f, 0xce, 0x0a, 0xde, 0x4a, 0xec, 0xed, 0x2d, 0xcb, 0x36, 0xa3, 0x76, 0xc1, 0x27, 0x74,
     0x38, 0x44, 0x77, 0x91, 0x84, 0xf5, 0x10, 0x9b, 0xc3, 0x8c, 0x00, 0x60, 0x3f, 0xa8, 0x32, 0x5b,
 ];
 
-/// One published installer asset: where to fetch it, its exact byte size, and (when GitHub
-/// supplies it) the sha256 digest we verify the bytes against before running it elevated.
+/// One published installer asset: where to fetch it, its exact byte size, and the mandatory
+/// 64-hex `sha256:` digest we verify the bytes against before running it elevated - an asset
+/// without a valid digest is rejected outright.
 pub(super) struct InstallerAsset {
     pub(super) url: String,
     pub(super) size: u64,
@@ -250,7 +249,7 @@ pub(super) fn stamped_version_is_the_advertised_upgrade(
 }
 
 /// Validate downloaded installer bytes before we ever run them elevated: a real PE, the
-/// exact advertised size, and (when GitHub supplied a digest) a matching sha256. False =
+/// exact advertised size (0 skips the length check), and a mandatory matching sha256. False =
 /// refuse — we'd rather fall back to the manual page than run an unverified installer. We
 /// write the bytes ourselves (no Mark-of-the-Web), so the silent launch won't trip SmartScreen.
 pub(super) fn verify_installer_bytes(bytes: &[u8], asset: &InstallerAsset) -> bool {

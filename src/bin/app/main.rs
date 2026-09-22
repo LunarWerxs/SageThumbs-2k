@@ -120,8 +120,8 @@ unsafe fn is_elevated() -> bool {
 /// `heal_if_wanted` path below. A scheduled task needs no running Explorer — which is
 /// down at this exact moment (Restart Manager only restarts it AFTER the [Run] section) —
 /// so the shell-token de-elevation trick would not work here. Best-effort with logging;
-/// on any schtasks failure fall back to healing elevated (worse than a clean heal, but
-/// far better than leaving the hotkeys dead until next logon).
+/// if the task cannot be created, or schtasks is unavailable, fall back to healing elevated
+/// (worse than a clean heal, but far better than leaving the hotkeys dead until next logon).
 fn schedule_unelevated_heal() {
     use std::os::windows::process::CommandExt;
     const TASK: &str = "SageThumbs2K_HealHotkeys";

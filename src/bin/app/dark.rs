@@ -381,34 +381,39 @@ pub(crate) unsafe fn titlebar_theme(h: HWND, dark: bool) {
     );
 }
 
-/// Brushes are cached PER THEME, not once: [`is_dark`] can be overridden at runtime for a
-/// thread, and a single-slot cache would hand a dark brush to a light window (or the reverse)
-/// for the rest of the process. Two slots is the whole fix; the theme is a bool.
-unsafe fn cached_brush(color: COLORREF, slots: &'static [OnceLock<usize>; 2]) -> HBRUSH {
-    let slot = &slots[usize::from(is_dark())];
+/// Brushes are cached PER THEME AND HIGH-CONTRAST STATE, not once: [`is_dark`] can be overridden
+/// at runtime for a thread, and these accessors' colours are High Contrast-aware ([`tchc`]) — a
+/// theme-only cache would freeze a stale brush once a flag flips. Four slots is the whole fix.
+unsafe fn cached_brush(color: COLORREF, slots: &'static [OnceLock<usize>; 4]) -> HBRUSH {
+    let slot = &slots[usize::from(is_dark()) * 2 + usize::from(high_contrast())];
     HBRUSH(*slot.get_or_init(|| CreateSolidBrush(color).0 as usize) as *mut c_void)
 }
-/// A fresh pair of empty brush slots (light, dark).
-const fn brush_slots() -> [OnceLock<usize>; 2] {
-    [OnceLock::new(), OnceLock::new()]
+/// A fresh set of empty brush slots (theme × High Contrast state).
+const fn brush_slots() -> [OnceLock<usize>; 4] {
+    [
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+    ]
 }
 /// Window-background brush for the current theme.
 pub(crate) unsafe fn dark_bg_brush() -> HBRUSH {
-    static B: [OnceLock<usize>; 2] = brush_slots();
+    static B: [OnceLock<usize>; 4] = brush_slots();
     cached_brush(DARK_BG(), &B)
 }
 /// Edit/listbox-fill brush for the current theme.
 pub(crate) unsafe fn dark_ctl_brush() -> HBRUSH {
-    static B: [OnceLock<usize>; 2] = brush_slots();
+    static B: [OnceLock<usize>; 4] = brush_slots();
     cached_brush(DARK_CTL_BG(), &B)
 }
 pub(crate) unsafe fn dark_menu_brush() -> HBRUSH {
-    static B: [OnceLock<usize>; 2] = brush_slots();
-    cached_brush(tc(rgb(43, 43, 43), rgb(249, 249, 249)), &B)
+    static B: [OnceLock<usize>; 4] = brush_slots();
+    cached_brush(tchc(rgb(43, 43, 43), rgb(249, 249, 249), COLOR_WINDOW), &B)
 }
 pub(crate) unsafe fn dark_menu_sel_brush() -> HBRUSH {
-    static B: [OnceLock<usize>; 2] = brush_slots();
-    cached_brush(tc(rgb(62, 62, 66), rgb(0, 120, 215)), &B)
+    static B: [OnceLock<usize>; 4] = brush_slots();
+    cached_brush(tchc(rgb(62, 62, 66), rgb(0, 120, 215), COLOR_HIGHLIGHT), &B)
 }
 
 /// Dark-theme a CBS_DROPDOWNLIST combo's *native* popup list. Dark-only — in light
@@ -492,7 +497,7 @@ pub(crate) unsafe fn dark_ctlcolor_tinted(wparam: WPARAM, colour: COLORREF) -> L
 /// hand it the WINDOW tone - a grey slab inside the rounded field frame the dialog paints
 /// behind it. This keeps it a field: the disabled field fill, greyed text.
 pub(crate) unsafe fn dark_ctlcolor_field_disabled(wparam: WPARAM) -> LRESULT {
-    static B: [OnceLock<usize>; 2] = brush_slots();
+    static B: [OnceLock<usize>; 4] = brush_slots();
     let hdc = HDC(wparam.0 as *mut c_void);
     SetTextColor(hdc, DISABLED_TEXT());
     SetBkColor(hdc, INPUT_BG_DISABLED());
