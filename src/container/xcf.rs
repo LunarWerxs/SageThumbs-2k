@@ -349,7 +349,7 @@ pub fn extract_scaled(bytes: &[u8], target_edge: Option<u32>) -> Option<DynamicI
 /// How many source pixels collapse into one output pixel, per axis.
 ///
 /// Chosen so the reduced canvas still covers `target_edge` on its long side (integer floor,
-/// so 6000 -> 256 gives step 23 and a 260 px canvas), which leaves the caller's own resampler
+/// so 6000 -> 256 gives step 23 and a 261 px canvas), which leaves the caller's own resampler
 /// something to work with rather than handing it an already-undersized image. A target of 0,
 /// a target at least as big as the canvas, or no target at all all mean "step 1", i.e. the
 /// exact path this decoder has always taken.
@@ -451,8 +451,9 @@ fn extract_seek_within<R: Read + Seek>(
 /// Read and parse the file prologue. The front of the file — magic, canvas, image properties,
 /// layer pointer list — is one contiguous run whose LENGTH is not knowable without parsing it
 /// (the property list carries the ICC profile and metadata parasites). So read a window and grow
-/// it until the parse fits rather than guessing one size; doubling three times covers any real
-/// file, past which we decline instead of reading unboundedly.
+/// it until the parse fits rather than guessing one size; three windows, each 16x the last
+/// (256 KiB -> 4 MiB -> 64 MiB), cover any real file, past which we decline instead of reading
+/// unboundedly.
 fn read_prologue<R: Read + Seek>(r: &mut R, win: &mut Vec<u8>) -> Option<Prologue> {
     let mut pro = None;
     for window in [256 << 10, 4 << 20, 64 << 20] {

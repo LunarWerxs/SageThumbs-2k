@@ -52,9 +52,10 @@ pub(crate) fn extract_scaled(bytes: &[u8], target_edge: Option<u32>) -> Option<D
 
     let (dw, dh) = (page.display_width().max(1), page.display_height().max(1));
     let long = dw.max(dh);
-    // The size a render would actually come back at. That is the bar the baked thumbnail has
-    // to clear, and it is bounded by the page as well as by the caller: for a page smaller than
-    // the request, a thumbnail the size of the page IS the whole picture.
+    // The caller's usable size, clamped by the page long edge and by RENDER_CAP - not the size
+    // a render comes back at. That is the bar the baked thumbnail has to clear, and it is bounded
+    // by the page as well as by the caller: for a page smaller than the request, a thumbnail the
+    // size of the page IS the whole picture.
     let want = target_edge
         .filter(|t| *t > 0)
         .unwrap_or(RENDER_CAP)

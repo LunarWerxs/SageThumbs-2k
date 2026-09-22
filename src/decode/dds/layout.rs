@@ -71,7 +71,8 @@ pub(super) fn dxgi_layout(dxgi: u32) -> Option<Layout> {
         .or_else(|| dxgi_layout_bgra_and_block(dxgi))
 }
 
-/// The 32/64-bit-per-channel and two/four-channel formats: `DXGI_FORMAT` 1..=41.
+/// The 32/64-bit-per-channel and two/four-channel formats: `DXGI_FORMAT` 1..=41
+/// plus 89 (R10G10B10_XR_BIAS_A2_UNORM).
 pub(super) fn dxgi_layout_wide_channels(dxgi: u32) -> Option<Layout> {
     /// `R8G8B8A8` and friends: channel N occupies byte N.
     const RGBA8: Masks = Masks {

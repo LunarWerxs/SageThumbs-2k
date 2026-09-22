@@ -312,7 +312,7 @@ const WORST_DELTA_CEILING: u32 = 16;
 ///
 /// So the integer part is done first, in one cheap pass: each output pixel is the exact mean
 /// of the k-by-k source block it covers, which IS the correct prefilter for a k-times
-/// reduction. Lanczos then finishes the remaining (at least [`PRE_REDUCE_GAP`]-times)
+/// reduction. Lanczos then finishes the remaining (at least 1.5x, per [`PRE_REDUCE_GAP_HALVES`])
 /// reduction over a fraction of the data. This is the standard shrink-then-resample used by
 /// Pillow (`reducing_gap`), libvips and JPEG's own DCT scaling, and the reason the gap is left
 /// at all is that the box filter's stopband is poor: finishing with a real filter is what
@@ -326,7 +326,7 @@ const WORST_DELTA_CEILING: u32 = 16;
 /// Every integer sample type is handled, 8-bit and 16-bit alike. 16-bit is not an exotic
 /// corner here: ImageMagick, scanners and most PNG/TIFF writers produce it by default, and it
 /// is the WORST case, because the single-pass filter then does all that work on twice the
-/// data. Float buffers are left alone; they reach this point already tone-mapped.
+/// data.
 pub(super) fn pre_reduce(img: DynamicImage, cx: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     // The largest whole-number step that still leaves the filter its gap. Truncated, so
@@ -518,37 +518,6 @@ fn box_block_mean_f32(
     acc
 }
 
-/// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
-/// Lanczos3; tiny pixel-art / icons are integer-upscaled with Nearest so they render
-/// crisp instead of bilinear-smeared; mid-size images are enlarged to FILL the box with
-/// Lanczos3, up to [`MAX_UPSCALE_FACTOR`].
-///
-/// # Why mid-size images are no longer left native (issue #25)
-///
-/// This used to return anything already inside the box untouched, on the assumption that
-/// "Explorer scales". Explorer does not enlarge a thumbnail — it centres the bitmap it was
-/// given inside the icon cell. So a source smaller than the requested `cx` drew as a SMALLER
-/// TILE than its neighbours, in the same view, at the same icon size.
-///
-/// That is exactly what the issue reported, and Photoshop files are where it shows worst:
-/// `container::psd` returns the preview resource Photoshop baked into the file, whose size
-/// depends on the writing application, the file's version, and whether "Maximize
-/// Compatibility" was on. So one PSD yielded a full-size tile and the PSD beside it yielded a
-/// half-size one, with nothing about the two files explaining the difference to the user.
-///
-/// It is also the same failure the file-size cap was raised to avoid (see
-/// `settings::DEFAULT_MAX_FILE_MB`): an undersized bitmap is one the shell can neither draw
-/// crisply nor durably cache, so it re-extracts on every refresh.
-///
-/// # Why the file's own picture is still left native (2026-09-15)
-///
-/// The #25 reasoning is about STAND-INS: a baked preview, a cover, a scaled decode, all of
-/// which are smaller than the thing they represent. A picture that simply IS small is not
-/// misstated by a small tile; Windows draws it at its real size in the middle of the cell,
-/// and enlarging it turned a desktop of small PNGs into blocky or soft tiles (an uninstall
-/// note called them "modified"). [`decode_thumbnail_opts`] tells the two apart by size
-/// ([`is_the_files_own_picture`]) and caps `cx` at the picture's own edge for the file's own
-/// picture, so this function's enlargement only ever runs for a stand-in or an icon.
 /// Shrink to fit inside `nw` x `nh`, preserving aspect ratio, and NEVER enlarge.
 ///
 /// **This is the one reduction in the product.** It used to be two: the shell extension came
@@ -583,6 +552,37 @@ pub fn reduce_to_fit(img: DynamicImage, nw: u32, nh: u32) -> DynamicImage {
     pre_reduce(img, ow.max(oh)).resize(nw, nh, FilterType::Lanczos3)
 }
 
+/// Fit within a `cx`-by-`cx` box, preserving aspect ratio. Large images shrink with
+/// Lanczos3; tiny pixel-art / icons are integer-upscaled with Nearest so they render
+/// crisp instead of bilinear-smeared; mid-size images are enlarged to FILL the box with
+/// Lanczos3, up to [`MAX_UPSCALE_FACTOR`].
+///
+/// # Why mid-size images are no longer left native (issue #25)
+///
+/// This used to return anything already inside the box untouched, on the assumption that
+/// "Explorer scales". Explorer does not enlarge a thumbnail — it centres the bitmap it was
+/// given inside the icon cell. So a source smaller than the requested `cx` drew as a SMALLER
+/// TILE than its neighbours, in the same view, at the same icon size.
+///
+/// That is exactly what the issue reported, and Photoshop files are where it shows worst:
+/// `container::psd` returns the preview resource Photoshop baked into the file, whose size
+/// depends on the writing application, the file's version, and whether "Maximize
+/// Compatibility" was on. So one PSD yielded a full-size tile and the PSD beside it yielded a
+/// half-size one, with nothing about the two files explaining the difference to the user.
+///
+/// It is also the same failure the file-size cap was raised to avoid (see
+/// `settings::DEFAULT_MAX_FILE_MB`): an undersized bitmap is one the shell can neither draw
+/// crisply nor durably cache, so it re-extracts on every refresh.
+///
+/// # Why the file's own picture is still left native (2026-09-15)
+///
+/// The #25 reasoning is about STAND-INS: a baked preview, a cover, a scaled decode, all of
+/// which are smaller than the thing they represent. A picture that simply IS small is not
+/// misstated by a small tile; Windows draws it at its real size in the middle of the cell,
+/// and enlarging it turned a desktop of small PNGs into blocky or soft tiles (an uninstall
+/// note called them "modified"). [`decode_thumbnail_opts`] tells the two apart by size
+/// ([`is_the_files_own_picture`]) and caps `cx` at the picture's own edge for the file's own
+/// picture, so this function's enlargement only ever runs for a stand-in or an icon.
 pub(super) fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
     let (w, h) = (img.width(), img.height());
     let long = w.max(h);

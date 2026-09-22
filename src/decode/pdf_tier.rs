@@ -7,7 +7,8 @@
 
 use super::*;
 
-/// Longest edge to rasterize a PDF's first page at, for a request whose target is `cx`.
+/// Longest edge to rasterize a PDF's first page at, for a request whose target is `cx` — on
+/// the ordinary path. The Illustrator path takes it as the exact WIDTH instead (see below).
 ///
 /// Pure, so the rule is testable without the OS PDF engine. It exists as a named function
 /// because the obvious one-liner has been wrong twice: a fixed 1024 upscales once the user's
@@ -18,7 +19,9 @@ pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
     // guarantees the change can never render a PDF at LOWER quality than it used to.
     // ...and a ceiling at the crate-wide raster cap: an MCP/CLI caller can pass any `size`,
     // and `pdf::scaled_page_dims` clamps the page to exactly this number before asking WinRT
-    // to rasterize it.
+    // to rasterize it. The Illustrator paths instead call `PdfSession::render_to_width`, which
+    // uses this as the exact WIDTH and derives the height from the page's aspect ratio, with
+    // no clamp and without consulting `scaled_page_dims`.
     wic_thumbnail_cx
         .unwrap_or(1024)
         .clamp(1024, limits::MAX_DIM)

@@ -48,6 +48,20 @@ const KEYFRAME_MAX: usize = 16 * 1024 * 1024;
 /// Largest plausible FLV header DataOffset (spec value is 9; some writers pad slightly).
 const HEADER_MAX: u64 = 4096;
 
+/// Validate a 9-byte FLV header's signature and parse its 24-bit `DataOffset`: `None` for a
+/// bad signature or a `DataOffset` outside `9..=HEADER_MAX`. Shared by the Read+Seek and
+/// slice entry points so the two can't drift on what counts as a well-formed FLV header.
+fn flv_data_offset(hdr: &[u8; 9]) -> Option<u64> {
+    if &hdr[0..3] != b"FLV" {
+        return None;
+    }
+    let data_offset = u32::from_be_bytes([hdr[5], hdr[6], hdr[7], hdr[8]]) as u64;
+    if !(9..=HEADER_MAX).contains(&data_offset) {
+        return None;
+    }
+    Some(data_offset)
+}
+
 /// Validates the FLV signature and reads `DataOffset`. `None` for anything that isn't a
 /// well-formed FLV header, or a file too small to hold one plus a tag.
 fn read_flv_header<R: Read + Seek>(r: &mut R, total: u64) -> Option<u64> {
@@ -57,14 +71,7 @@ fn read_flv_header<R: Read + Seek>(r: &mut R, total: u64) -> Option<u64> {
     }
     let mut hdr = [0u8; 9];
     read_exact_at(r, 0, &mut hdr)?;
-    if &hdr[0..3] != b"FLV" {
-        return None;
-    }
-    let data_offset = u32::from_be_bytes([hdr[5], hdr[6], hdr[7], hdr[8]]) as u64;
-    if !(9..=HEADER_MAX).contains(&data_offset) {
-        return None;
-    }
-    Some(data_offset)
+    flv_data_offset(&hdr)
 }
 
 /// What processing one tag inside [`keyframe_mini_mp4`]'s walk should do next.
@@ -214,6 +221,16 @@ fn tag_payload_pos(pos: u64, data_size: u64, total: u64) -> Option<u64> {
     Some(payload_pos)
 }
 
+/// Decode one tag's fixed 11-byte header given its bytes and the absolute `pos` it sits at:
+/// `(tag_type, payload offset, payload length)`, or `None` when the payload runs past
+/// `total` (truncated mid-tag). Shared by both walks so tag framing can't drift between them.
+fn decode_tag_header(th: &[u8; 11], pos: u64, total: u64) -> Option<(u8, u64, u64)> {
+    let tag_type = th[0] & 0x1F; // top bits: reserved + encryption filter
+    let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
+    let payload_pos = tag_payload_pos(pos, data_size, total)?;
+    Some((tag_type, payload_pos, data_size))
+}
+
 /// Read one tag's fixed 11-byte header from the stream at `pos`: `(tag_type, payload offset,
 /// payload length)`, or `None` for a read failure or a payload that runs past `total`
 /// (truncated mid-tag).
@@ -224,10 +241,7 @@ fn read_stream_tag_header<R: Read + Seek>(
 ) -> Option<(u8, u64, u64)> {
     let mut th = [0u8; 11];
     read_exact_at(r, pos, &mut th)?;
-    let tag_type = th[0] & 0x1F; // top bits: reserved + encryption filter
-    let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-    let payload_pos = tag_payload_pos(pos, data_size, total)?;
-    Some((tag_type, payload_pos, data_size))
+    decode_tag_header(&th, pos, total)
 }
 
 /// Wrap the AVC config + keyframe sample in a mini-MP4. The `stsd` is synthesized (an
@@ -409,25 +423,19 @@ fn visit_video_tag<'a, T>(
 /// Validate the FLV header and return the byte offset of the first tag (past
 /// PreviousTagSize0), or None for a non-FLV / malformed header.
 fn flv_first_tag_pos(flv: &[u8]) -> Option<u64> {
-    if flv.len() < 24 || &flv[0..3] != b"FLV" {
+    if flv.len() < 24 {
         return None;
     }
-    let data_offset = u32::from_be_bytes([flv[5], flv[6], flv[7], flv[8]]) as u64;
-    if !(9..=HEADER_MAX).contains(&data_offset) {
-        return None;
-    }
-    data_offset.checked_add(4)
+    let hdr: &[u8; 9] = flv.get(..9)?.try_into().ok()?;
+    flv_data_offset(hdr)?.checked_add(4)
 }
 
 /// Read one tag's fixed 11-byte header at `pos`: `(tag_type, payload offset, payload
 /// length)`, or None for an out-of-range read or a payload that runs past `total`
 /// (truncated mid-tag).
 fn read_tag_header(flv: &[u8], pos: u64, total: u64) -> Option<(u8, u64, u64)> {
-    let th = flv.get(pos as usize..pos as usize + 11)?;
-    let tag_type = th[0] & 0x1F;
-    let data_size = u32::from_be_bytes([0, th[1], th[2], th[3]]) as u64;
-    let payload_pos = tag_payload_pos(pos, data_size, total)?;
-    Some((tag_type, payload_pos, data_size))
+    let th: &[u8; 11] = flv.get(pos as usize..pos as usize + 11)?.try_into().ok()?;
+    decode_tag_header(th, pos, total)
 }
 
 /// Decode the first VP6/Sorenson keyframe of an FLV to a frame — OUT OF PROCESS.
@@ -509,17 +517,26 @@ pub(crate) fn child_frame_png(
     // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
     let mut stdin = child.stdin.take()?;
     let input = input.to_vec();
-    let writer = std::thread::spawn(move || {
+    let Some(writer) = crate::safety::try_spawn("st2k-helper-stdin", move || {
         let _ = stdin.write_all(&input);
         // drop(stdin) closes the pipe so the child sees EOF
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
+    let Some(reader) = crate::safety::try_spawn("st2k-helper-stdout", move || {
         let mut buf = Vec::new();
         let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
         let _ = tx.send(buf);
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = writer.join();
+        let _ = child.wait();
+        return None;
+    };
 
     let png = crate::decode::await_child_output(&mut child, &rx, cpu_budget, wall_ceiling);
     // Kill unconditionally (no-op if exited): a child that closed stdout but stopped

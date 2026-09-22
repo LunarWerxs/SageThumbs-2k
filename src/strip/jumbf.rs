@@ -1,4 +1,5 @@
-//! C2PA "Content Credentials" detection, and the filter that removes them.
+//! C2PA "Content Credentials" detection predicates; the filter that removes
+//! them lives in the parent strip.rs.
 //!
 //! A C2PA manifest is a JUMBF box, and it is neither EXIF, IPTC nor XMP - which
 //! is why every EXIF-only stripper (ours included, until now) left it in the

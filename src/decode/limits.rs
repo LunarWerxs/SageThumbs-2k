@@ -35,10 +35,12 @@ pub const MAX_PIXELS: u64 = (MAX_DIM as u64) * (MAX_DIM as u64);
 /// **This ceiling is reachable ONLY from the isolated hosts.** It applies when a target edge
 /// is supplied, and the in-process path that runs inside `explorer.exe` — the classic
 /// context menu's preview tile, via `decode_menu_preview` -> `decode_cheap` -> `decode_any_with_wic_target` —
-/// passes `None`, so it keeps the strict [`MAX_PIXELS`]/[`MAX_DIM`] guard and refuses these
-/// files at the header. That is the property that makes 4 s acceptable at all, and it is
-/// pinned by `tests::the_in_process_menu_path_never_gets_the_widened_ceiling` rather than
-/// left to the call graph's good behaviour.
+/// keeps the strict [`MAX_PIXELS`]/[`MAX_DIM`] guard and refuses these files at the header.
+/// What withholds it is the `external` isolation flag, which decides the WIC target edge in
+/// `cascade.rs` (`wic_cx = if external { wic_thumbnail_cx } else { None }`) and which
+/// `decode_cheap` passes as `false`. That is the property that makes 4 s acceptable at all,
+/// and it is pinned by `tests::the_in_process_menu_path_never_gets_the_widened_ceiling` rather
+/// than left to the call graph's good behaviour.
 pub const MAX_SCALED_SOURCE_PIXELS: u64 = 4 * MAX_PIXELS;
 
 /// Per-decode allocation cap handed to the `image` crate's `Limits`. 512 MiB
@@ -110,7 +112,8 @@ pub const MAX_FULL_FIDELITY_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// ImageMagick subprocess resource caps. These are the SINGLE source for the
 /// child's `-limit` CLI flags, the external kill-timeout ([`super::MAGICK_TIMEOUT`]),
 /// and the shipped `scripts/packaging/imagemagick-policy.xml` (pinned by the
-/// `magick_limits_agree*` tests). Tune here and all three stay in agreement.
+/// `magick_limits_match_policy_xml` test for policy.xml and `magick_time_limits_agree`
+/// for the external timeout vs wall backstop). Tune here and all three stay in agreement.
 /// CPU-TIME budget for one ImageMagick child — the real containment number. A decoder
 /// stuck in a loop or grinding a decompression bomb burns CPU and is killed here.
 ///

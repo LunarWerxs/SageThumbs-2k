@@ -24,8 +24,10 @@ fn every_dds_fuzz_seed_really_decodes() {
             "the {label} fuzz seed does not decode, so mutating it tests nothing"
         );
     }
-    // The mip-chain seed, which exists to reach `select_mip`'s offset arithmetic.
-    let chain = fuzzapi::seed(b"DXT1", 0, 128, 128, 5);
+    // The mip-chain seed, which exists to reach `select_mip`'s offset arithmetic: the long
+    // edge must exceed the target `seed_decodes` uses (256), or `next_mip_level` bails on its
+    // first check and no chain walk ever happens.
+    let chain = fuzzapi::seed(b"DXT1", 0, 512, 512, 5);
     assert!(
         fuzzapi::seed_decodes(&chain),
         "the mip-chain seed must decode"
@@ -33,7 +35,7 @@ fn every_dds_fuzz_seed_really_decodes() {
 
     // And it must really CARRY a chain: a header claiming 5 mips with only level 0 behind
     // it would decode fine and never exercise the walk.
-    let one = fuzzapi::seed(b"DXT1", 0, 128, 128, 1);
+    let one = fuzzapi::seed(b"DXT1", 0, 512, 512, 1);
     assert!(
         chain.len() > one.len(),
         "the mip-chain seed must actually contain more levels than a single-level one"

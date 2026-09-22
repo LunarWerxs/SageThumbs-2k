@@ -250,7 +250,7 @@ pub(super) fn blend_pixel(canvas: &mut RgbaImage, dx: u32, dy: u32, s: [u8; 4], 
     );
 }
 
-/// Precision descriptor: how wide a sample is, whether it's float, and whether the stored
+/// Precision descriptor: whether it's float, and whether the stored
 /// values are linear-light (needing sRGB encoding for display) or already perceptual.
 #[derive(Clone, Copy)]
 pub(super) struct Precision {

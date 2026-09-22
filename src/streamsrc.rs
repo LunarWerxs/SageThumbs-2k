@@ -94,8 +94,9 @@ pub enum StreamSource {
 ///    first bytes); otherwise skip.
 /// 5. Everything else: bounded whole-file read.
 ///
-/// `target_edge` is the caller's requested output edge; only the streaming EXR
-/// tier consumes it (a smaller target lets it skip more of the file).
+/// `target_edge` is the caller's requested output edge; the streaming EXR tier
+/// consumes it, as do the head-preview fast path, the streamed XCF flatten and
+/// the oversized WIC rescue (a smaller target lets each skip more of the file).
 pub unsafe fn stream_source(
     stream: &IStream,
     cfg: &ThumbSettings,
@@ -574,8 +575,9 @@ unsafe fn oversized_rescue(
     Err(Error::from(E_FAIL))
 }
 
-/// Does the post-frame-tiers cover-art rescue in [`stream_source_with_caps`] need
-/// to call `vcodec::cover_art` at all, or did the prefer-cover-art pass already
+/// Does the post-frame-tiers cover-art rescue in
+/// [`video_undecodable_fallback`] (streamsrc/videosrc.rs) need to call
+/// `vcodec::cover_art` at all, or did the prefer-cover-art pass already
 /// call it (and find nothing) for this exact stream? A second call on an
 /// untouched stream can only repeat the same answer — a redundant full moov
 /// scan this predicate exists to skip. Kept as a standalone, argument-driven

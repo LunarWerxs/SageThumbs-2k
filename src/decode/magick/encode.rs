@@ -161,9 +161,9 @@ pub(super) fn spawn_magick_child(
     args: &[String],
 ) -> Result<(std::process::Child, Option<magick_gate::Permit>)> {
     let mut cmd = Command::new(exe);
-    // The ENCODE path's own watchdog is `MAGICK_TIMEOUT` (see `await_encode_exit`), so the
-    // child's self-limit is derived from the same figure.
-    add_magick_limits(&mut cmd, MAGICK_TIMEOUT);
+    // The ENCODE path's own watchdog is `FULL_FIDELITY_MAGICK_TIMEOUT` (see
+    // `wait_for_magick_child`), so the child's self-limit is derived from the same figure.
+    add_magick_limits(&mut cmd, FULL_FIDELITY_MAGICK_TIMEOUT);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -197,20 +197,30 @@ pub(super) fn pipe_magick_encode(
     use std::io::Write;
 
     let mut stdin = child.stdin.take().ok_or_else(|| Error::from(E_FAIL))?;
-    let writer = std::thread::spawn(move || {
+    let Some(writer) = crate::safety::try_spawn("st2k-magick-stdin", move || {
         let _ = stdin.write_all(&png); // drop closes the pipe → magick sees EOF
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
 
     let stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
+    let Some(reader) = crate::safety::try_spawn("st2k-magick-stdout", move || {
         let _ = drain_capped(stdout);
         let _ = tx.send(());
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = writer.join();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
 
     // Drain stderr (capped) so we can log it on failure and it can't stall magick.
     let stderr = child.stderr.take();
-    let errdrain = stderr.map(|s| std::thread::spawn(move || drain_capped(s)));
+    let errdrain = stderr
+        .and_then(|s| crate::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
 
     Ok((writer, reader, rx, errdrain))
 }
@@ -225,7 +235,7 @@ pub(super) fn wait_for_magick_child(
     rx: std::sync::mpsc::Receiver<()>,
 ) -> (bool, bool, bool, Option<std::process::ExitStatus>) {
     use std::sync::mpsc::RecvTimeoutError;
-    let deadline = std::time::Instant::now() + MAGICK_TIMEOUT;
+    let deadline = std::time::Instant::now() + FULL_FIDELITY_MAGICK_TIMEOUT;
     let mut timed_out = false;
     let mut cpu_exceeded = false;
     let mut wait_failed = false;
@@ -248,8 +258,12 @@ pub(super) fn wait_for_magick_child(
             Ok(Some(value)) => status = Some(value),
             Ok(None) => {
                 let now = std::time::Instant::now();
-                match encode_wait_decision(child_cpu_time(child), MAGICK_CPU_BUDGET, now, deadline)
-                {
+                match encode_wait_decision(
+                    child_cpu_time(child),
+                    FULL_FIDELITY_MAGICK_CPU_BUDGET,
+                    now,
+                    deadline,
+                ) {
                     EncodeWait::CpuExceeded => cpu_exceeded = true,
                     EncodeWait::TimedOut => timed_out = true,
                     EncodeWait::Continue => {

@@ -23,16 +23,29 @@ pub(super) fn find_pclr_cmap(jp2h: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
         let Some(len_be) = jp2h.get(p..p + 4).and_then(|b| b.first_chunk::<4>()) else {
             break;
         };
-        let len = u32::from_be_bytes(*len_be) as usize;
-        if len < 8 || p + len > jp2h.len() {
+        let (hdr, len) = match u32::from_be_bytes(*len_be) as u64 {
+            0 => (8usize, jp2h.len() - p),
+            1 => {
+                let Some(s) = jp2h.get(p + 8..p + 16).and_then(|b| b.first_chunk::<8>()) else {
+                    break;
+                };
+                (16usize, u64::from_be_bytes(*s) as usize)
+            }
+            n if n >= 8 => (8usize, n as usize),
+            _ => break,
+        };
+        let Some(end) = p.checked_add(len) else {
+            break;
+        };
+        if len < hdr || end > jp2h.len() {
             break;
         }
         match &jp2h[p + 4..p + 8] {
-            b"pclr" => pclr = Some(&jp2h[p + 8..p + len]),
-            b"cmap" => cmap = Some(&jp2h[p + 8..p + len]),
+            b"pclr" => pclr = Some(&jp2h[p + hdr..end]),
+            b"cmap" => cmap = Some(&jp2h[p + hdr..end]),
             _ => {}
         }
-        p += len;
+        p = end;
     }
     (pclr, cmap)
 }
@@ -86,7 +99,7 @@ fn parse_entry(
         for &b in raw {
             v = (v << 8) | b as u32;
         }
-        let v8 = ((v * 255) / maxes[c].max(1)) as u8;
+        let v8 = (((v & maxes[c]) * 255) / maxes[c].max(1)) as u8;
         if npc == 1 {
             rgb = [v8, v8, v8];
         } else {

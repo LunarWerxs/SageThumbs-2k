@@ -74,7 +74,11 @@ pub(super) fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
         0
     };
     let palette_bytes = ncol.checked_mul(4)?;
-    let mask_bytes = if compression == 3 { 12 } else { 0 }; // BI_BITFIELDS masks
+    let mask_bytes = if compression == 3 && bi_size == 40 {
+        12
+    } else {
+        0
+    }; // BI_BITFIELDS masks
     let bf_off_bits = 14u32
         .checked_add(bi_size)?
         .checked_add(palette_bytes)?
@@ -258,6 +262,14 @@ fn advance_span_marker(
     }
 }
 
+/// [`jpeg_span_len`] plus the frame's SOF marker, so a caller can tell a picture from a
+/// pile of sensor readings. Returns `(span length, SOF marker)`.
+///
+/// The SOF is an `Option` and deliberately does NOT gate the span: `jpeg_span_len` predates
+/// this and several callers (`c4d`, `psp`) rely on its exact acceptance, so a stream whose
+/// markers parse to a clean EOI without a frame header keeps measuring the same length it
+/// always did. Only a caller that CARES what kind of frame it found consults the marker, and
+/// then absence means "unknown", not "reject".
 pub(crate) fn jpeg_span(data: &[u8], off: usize) -> Option<(usize, Option<u8>)> {
     jpeg_span_frame(data, off).map(|(len, frame)| (len, frame.map(|f| f.sof)))
 }

@@ -173,10 +173,12 @@ pub fn compose_prepared(images: &[PreparedSheetImage], edge: u32) -> Option<Rgba
         Some(match img.mode {
             PreparedMode::Cover => fit_cover(&img.image, w, h),
             PreparedMode::Letterbox => fit_letterbox_prepared(&img.image, img.original, w, h),
-            PreparedMode::Mixed if h > w => fit_letterbox_prepared(&img.image, img.original, w, h),
+            PreparedMode::Mixed if !can_cover(img.original.0, img.original.1, w, h) => {
+                fit_letterbox_prepared(&img.image, img.original, w, h)
+            }
             PreparedMode::Mixed => {
                 let square = img.alternate_square.as_ref()?;
-                image::imageops::resize(square, w, h, FilterType::Triangle)
+                fit_cover(square, w, h)
             }
         })
     })

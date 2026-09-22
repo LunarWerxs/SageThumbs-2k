@@ -8,8 +8,8 @@ use super::*;
 
 /// The SVG/EMF gzip inflate cap this module's own callers use: an SVG/EMF that large is
 /// already pathological for a thumbnail, and it bounds a hostile highly-compressible
-/// payload. [`strip`](crate::strip)'s copy of [`gunzip_bounded`] passes its own, larger
-/// cap instead (C5) — see that function's doc comment.
+/// payload. [`strip::gunzip_bounded`](crate::strip) is a thin wrapper over this
+/// function that passes `MAX_INPUT_BYTES` as `cap` (C5) — see that function's doc comment.
 pub(crate) const GUNZIP_MAX: u64 = 64 * 1024 * 1024;
 
 /// Inflate a gzip stream with a hard output cap `cap` (decompression-bomb guard),

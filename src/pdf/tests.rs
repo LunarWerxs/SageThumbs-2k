@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::render_page_counted;
+use super::width_fitted_dims;
 
 /// Build a minimal, valid multi-page PDF where page `i` is a solid `colours[i]`.
 ///
@@ -482,4 +483,17 @@ fn write_pdf_corpus_fixture() {
         pdf.len(),
         PAGES.len()
     );
+}
+
+/// The continuous view renders a page at a fixed WIDTH, and the page's aspect comes from the
+/// file: a legal 1 x 14400 pt strip asked for at 1000 px wide wanted a 14.4-million-row bitmap.
+/// Both edges are capped at `MAX_DIM`, and an ordinary page is drawn exactly as asked.
+#[test]
+fn a_width_fitted_page_never_passes_max_dim() {
+    let cap = crate::decode::limits::MAX_DIM;
+    let (w, h) = width_fitted_dims(1.0, 14_400.0, 1000);
+    assert!(w >= 1 && h == cap, "{w} x {h}");
+    assert_eq!(width_fitted_dims(612.0, 792.0, 1000), (1000, 1294));
+    let (w, h) = width_fitted_dims(612.0, 792.0, 100_000);
+    assert!(w <= cap && h <= cap, "{w} x {h}");
 }

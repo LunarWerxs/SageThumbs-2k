@@ -249,7 +249,7 @@ impl Rig {
         if frame.is_empty() {
             return None;
         }
-        frame.sort_by_key(|p| self.parts[p.part].draw_order + p.z_offset);
+        frame.sort_by_key(|p| self.parts[p.part].draw_order.saturating_add(p.z_offset));
         Some(frame)
     }
 }

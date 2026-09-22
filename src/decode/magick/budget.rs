@@ -65,7 +65,8 @@ pub(super) const RASTER_BUDGET: MagickBudget = MagickBudget {
     wall: MAGICK_TIMEOUT,
 };
 
-/// Metafiles, which get a much tighter CPU budget (see [`add_metafile_magick_limits`]).
+/// Metafiles, which get a much tighter CPU budget (see [`METAFILE_MAGICK_CPU_BUDGET`]);
+/// [`add_metafile_magick_limits`] sets their memory/map/elapsed caps.
 pub(super) const METAFILE_BUDGET: MagickBudget = MagickBudget {
     cpu: METAFILE_MAGICK_CPU_BUDGET,
     wall: METAFILE_MAGICK_TIMEOUT,
@@ -110,7 +111,8 @@ pub(super) const FULL_FIDELITY_MAGICK_CPU_BUDGET: Duration = Duration::from_secs
 /// above the wall time that budget can legitimately take (144 MP measured at 67.8 s of wall
 /// here, and a slow disk reading a 750 MB document adds to it), or the backstop would kill
 /// exactly the decode the CPU budget was raised to allow.
-pub(super) const FULL_FIDELITY_MAGICK_TIMEOUT: Duration = Duration::from_secs(600);
+pub(super) const FULL_FIDELITY_MAGICK_TIMEOUT: Duration =
+    Duration::from_secs(limits::MAGICK_FULL_FIDELITY_WALL_SECS);
 
 /// The full-fidelity pairing (see [`Fidelity`]).
 pub(super) const FULL_FIDELITY_BUDGET: MagickBudget = MagickBudget {

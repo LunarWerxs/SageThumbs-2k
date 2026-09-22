@@ -31,6 +31,21 @@ fn corpus() -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// The window+flip mutant shared by the two mutated-real-file fuzz tests.
+fn one_mutant(base: &[u8], rng: &mut Rng) -> Vec<u8> {
+    let window = base.len().min(64 * 1024);
+    let mut v = base[..window].to_vec();
+    if v.is_empty() {
+        return v;
+    }
+    let flips = 1 + (rng.next() % 16) as usize;
+    for _ in 0..flips {
+        let i = (rng.next() as usize) % v.len();
+        v[i] = rng.byte();
+    }
+    v
+}
+
 #[test]
 fn never_panics_on_random_bytes() {
     let mut rng = Rng(0x5EED_1234_ABCD_0001);
@@ -59,14 +74,8 @@ fn never_panics_on_mutated_real_files() {
     for base in &files {
         // Cap the mutation window: the point is to batter the HEADER, which is where all
         // the length and count fields that drive allocation live.
-        let window = base.len().min(64 * 1024);
         for _ in 0..300 {
-            let mut v = base[..window].to_vec();
-            let flips = 1 + (rng.next() % 16) as usize;
-            for _ in 0..flips {
-                let i = (rng.next() as usize) % v.len();
-                v[i] = rng.byte();
-            }
+            let v = one_mutant(base, &mut rng);
             tried += 1;
             if dimensions(&v).is_some() {
                 parsed += 1;
@@ -96,9 +105,6 @@ fn never_panics_on_truncation() {
     }
 }
 
-/// A `Psot` that does not clear its own SOT segment used to send the cursor backwards,
-/// and the marker loop re-read the same SOT forever. Hand-built because no fuzz seed
-/// reliably produces a valid SIZ plus a hostile SOT.
 /// Same mutation strategy as `never_panics_on_mutated_real_files`, but exercises the
 /// actual PIXEL decode (`decode_reduced`), not just header parsing. `dimensions` and
 /// `is_jp2` never reach the tile / packet / tier-1 code the A005 (QCD guard/exp
@@ -116,19 +122,16 @@ fn never_panics_decoding_mutated_real_files() {
     }
     let mut rng = Rng(0xFEED_C0DE_5A55_0002);
     for base in &files {
-        let window = base.len().min(64 * 1024);
         for _ in 0..60 {
-            let mut v = base[..window].to_vec();
-            let flips = 1 + (rng.next() % 16) as usize;
-            for _ in 0..flips {
-                let i = (rng.next() as usize) % v.len();
-                v[i] = rng.byte();
-            }
+            let v = one_mutant(base, &mut rng);
             let _ = decode_reduced(&v, 64);
         }
     }
 }
 
+/// A `Psot` that does not clear its own SOT segment used to send the cursor backwards,
+/// and the marker loop re-read the same SOT forever. Hand-built because no fuzz seed
+/// reliably produces a valid SIZ plus a hostile SOT.
 #[test]
 fn hostile_psot_terminates() {
     let mut cs: Vec<u8> = vec![0xFF, 0x4F]; // SOC

@@ -79,8 +79,8 @@ pub(super) struct AvifWicFound {
     pub(super) is_av1: bool,
     /// The AV1 sequence header's own `color_config`, read from `av1C`'s configOBUs. Consulted
     /// only when the file has no `colr` box: it then supplies the transfer, primaries and range
-    /// (what the HDR read needs), never the routing class, which stays keyed on the `colr`
-    /// box's absence because that is the shape the WIC probes measure.
+    /// (what the HDR read needs), and its transfer alone selects the HDR class; only the
+    /// non-HDR class stays keyed on the `colr` box's absence, the shape the WIC probes measure.
     pub(super) obu: Option<Av1ColorConfig>,
 }
 
@@ -275,9 +275,6 @@ pub(super) fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut Avif
     match typ {
         // ColourInformationBox: `nclx` carries CICP as 3 × u16 then a full-range bit.
         b"colr" if body.get(..4) == Some(b"nclx") => {
-            if let Some(raw) = body.get(8..10).and_then(|b| b.try_into().ok()) {
-                f.matrix = Some(u16::from_be_bytes(raw));
-            }
             if f.transfer.is_none() {
                 let be16 = |at: usize| {
                     body.get(at..at + 2)
@@ -286,6 +283,7 @@ pub(super) fn avif_wic_note_box(typ: &[u8], body: &[u8], depth: u8, f: &mut Avif
                 };
                 f.primaries = be16(4);
                 f.transfer = be16(6);
+                f.matrix = be16(8);
                 f.full_range = body.get(10).is_some_and(|b| b >> 7 == 1);
             }
         }
@@ -410,8 +408,8 @@ pub(super) fn avif_wic_signals(bytes: &[u8]) -> AvifWicFound {
     // No `colr` box: the sequence header's own colour description is what every decoder
     // falls back to, so the HDR read takes it too. libavif carries that header in `av1C`;
     // ffmpeg's muxer leaves it at the start of the item's data, so that is read when the box
-    // had none. The matrix stays unset on purpose - the routing class is keyed on the box's
-    // absence, the shape the probes measure.
+    // had none. The matrix stays unset on purpose - only the non-HDR class is keyed on the
+    // box's absence, the shape the probes measure, while the transfer set here picks HighHdr.
     if found.transfer.is_none() && found.is_av1 {
         let header = found.obu.or_else(|| {
             super::super::avifmf::primary_av1_payload(bytes).and_then(av1_obus_color_config)

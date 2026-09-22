@@ -250,7 +250,7 @@ fn the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does() {
         (4000u32, 3000u32, 256u32), // a 12 MP camera photo at Explorer's largest tile
         (4000, 3000, 96),           // ...and at Medium icons, a 41x reduction
         (1600, 1200, 256),          // a phone photo
-        (800, 600, 256),            // barely over the box, so nothing pre-reduces
+        (800, 600, 256),            // just past the 768 threshold, so it reduces by 2x
         (512, 384, 256),            // the corpus's own size — all the parity gate ever sees
         (513, 385, 256),            // odd edges, where the two filters' rounding differed
     ] {

@@ -55,7 +55,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 /// the needle small regardless of how large the crafted href was.
 const MAX_ID_LEN: usize = 256;
 
-/// The binary id referenced by `<coverpage>`'s image href (leading '#'s stripped).
+/// The binary id in the first `href="` after the `<coverpage` token (leading '#'s stripped).
 fn coverpage_id(bytes: &[u8]) -> Option<Vec<u8>> {
     let cp = find(bytes, b"<coverpage")?;
     let rest = bytes.get(cp..)?;
@@ -80,13 +80,21 @@ fn binary_by_id<'a>(bytes: &'a [u8], id: &[u8]) -> Option<&'a [u8]> {
     needle.extend_from_slice(id);
     needle.push(b'"');
     let mut from = 0usize;
+    let mut last_lt: Option<usize> = None;
     loop {
         let p = find(bytes.get(from..)?, &needle)? + from;
-        let lt = rfind_byte(bytes.get(..p)?, b'<')?;
+        // The nearest '<' before `p` is either in the newly-scanned range
+        // `[from..p)` or is the one carried over from before `from`; rescanning
+        // from the start of the buffer on every match would be O(n^2).
+        let lt = match rfind_byte(bytes.get(from..p)?, b'<') {
+            Some(i) => Some(i + from),
+            None => last_lt,
+        }?;
         if bytes.get(lt..)?.starts_with(b"<binary") {
             return binary_payload_at(bytes, p);
         }
         from = p + needle.len();
+        last_lt = rfind_byte(bytes.get(lt..from)?, b'<').map(|i| i + lt);
     }
 }
 

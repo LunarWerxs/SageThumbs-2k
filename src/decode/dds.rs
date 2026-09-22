@@ -347,7 +347,7 @@ fn next_mip_level(
     depth: u32,
     target: u32,
 ) -> Option<(u32, u32, usize, u32)> {
-    if w.max(h) <= target || (w == 1 && h == 1) {
+    if w.max(h) <= target {
         return None;
     }
     // A volume texture's mip level is `depth` full slices, not one — the file lays
@@ -355,8 +355,8 @@ fn next_mip_level(
     let this_level =
         surface_bytes(layout, w, h).and_then(|slice| slice.checked_mul(depth as usize))?;
     let next_off = off.checked_add(this_level)?;
-    let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
-    let nd = depth.div_ceil(2).max(1);
+    let (nw, nh) = ((w >> 1).max(1), (h >> 1).max(1));
+    let nd = (depth >> 1).max(1);
     // Only step down when the NEXT level is genuinely there; a file whose chain is
     // truncated must still render the level we already have.
     let next_level =

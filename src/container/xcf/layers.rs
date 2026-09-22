@@ -76,8 +76,8 @@ pub(super) fn apply_layer_property(ptype: u32, payload: &[u8], props: &mut Layer
         }
         33 if payload.len() >= 4 => {
             // PROP_FLOAT_OPACITY: 0.0..=1.0 (overrides the integer opacity when present)
-            props.opacity = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]])
-                .clamp(0.0, 1.0);
+            let o = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            props.opacity = if o.is_nan() { 1.0 } else { o.clamp(0.0, 1.0) };
         }
         8 if payload.len() >= 4 => {
             props.visible = payload[3] != 0; // PROP_VISIBLE
@@ -233,6 +233,13 @@ pub(super) fn decode_level<R: Read + Seek>(
     // sums plus a tap count, resolved once at the end. Only allocated when it is used; at
     // step 1 there is nothing to merge and the original per-pixel blit runs untouched.
     let mut acc: Vec<[u32; 5]> = if step > 1 {
+        // 20 B/cell (4 premultiplied u32 channels + a tap count). rw,rh come from the layer
+        // dims, which the layer budget can permit well past the canvas, so this accumulator is
+        // charged to the same MAX_ALLOC ceiling as every other single allocation: over it the
+        // decode is refused rather than risking an abort-on-panic OOM in explorer.exe.
+        if u64::from(rw) * u64::from(rh) * 20 > crate::decode::limits::MAX_ALLOC {
+            return None;
+        }
         vec![[0; 5]; (rw as usize).checked_mul(rh as usize)?]
     } else {
         Vec::new()

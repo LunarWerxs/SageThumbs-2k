@@ -156,16 +156,6 @@ fn lofty_pic_rank(t: PictureType) -> u8 {
     }
 }
 
-/// Best album art via lofty's tag reader — the front cover, and the LARGEST one when a
-/// file carries several. `None` if the format is unidentified, untagged, or has no
-/// picture.
-///
-/// **Taking the first picture is a real bug, not a tidiness point** (found 2026-08-21).
-/// A tag can hold any number of them, and the corpus `.flac`/`.wav` both carry a 1x1
-/// white PNG ahead of the real 512x384 sleeve, so "first" rendered every such file as a
-/// blank white tile. Real-world files hit this constantly: ID3 type 1 is a 32x32 file
-/// icon and plenty of taggers write one alongside the cover. So: rank by picture type,
-/// then take the biggest inside the winning rank.
 /// The `covr` artwork of MP4-family audio (.m4a/.m4b/.m4p and Apple Lossless), read by the
 /// same atom walk the video side already uses ([`crate::mp4::cover_art`]) rather than a
 /// second parser of the same container.
@@ -189,6 +179,16 @@ fn mp4_cover<R: Read + Seek>(reader: &mut R) -> Option<Vec<u8>> {
     crate::mp4::cover_art(reader)
 }
 
+/// Best album art via lofty's tag reader — the front cover, and the LARGEST one when a
+/// file carries several. `None` if the format is unidentified, untagged, or has no
+/// picture.
+///
+/// **Taking the first picture is a real bug, not a tidiness point** (found 2026-08-21).
+/// A tag can hold any number of them, and the corpus `.flac`/`.wav` both carry a 1x1
+/// white PNG ahead of the real 512x384 sleeve, so "first" rendered every such file as a
+/// blank white tile. Real-world files hit this constantly: ID3 type 1 is a 32x32 file
+/// icon and plenty of taggers write one alongside the cover. So: rank by picture type,
+/// then take the biggest inside the winning rank.
 fn lofty_cover(reader: &mut dyn super::ReadSeek) -> Option<Vec<u8>> {
     reader.seek(SeekFrom::Start(0)).ok()?;
     let bounded = BudgetedReader {

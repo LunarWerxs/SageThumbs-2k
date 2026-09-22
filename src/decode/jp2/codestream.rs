@@ -435,6 +435,7 @@ fn validate_coc_matches_cod(cod_comp: &[Option<Cod>], cod: &Cod) -> Result<(), J
         if comp.levels != cod.levels
             || comp.cblk_w != cod.cblk_w
             || comp.cblk_h != cod.cblk_h
+            || comp.cblk_style != cod.cblk_style
             || comp.reversible != cod.reversible
             || comp.precincts != cod.precincts
         {

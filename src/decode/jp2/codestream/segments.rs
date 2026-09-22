@@ -3,9 +3,9 @@
 use super::*;
 
 /// Validate the SIZ image/tile grid: a sane component count, non-empty image and tile
-/// grids, tile origin inside the image origin, and a total pixel count the decode's
-/// width*height*components allocation can afford (bound here rather than discovering it
-/// as an OOM inside a shell host).
+/// grids, tile origin inside the image origin, and a bound on the declared area
+/// (width*height), checked here rather than discovered as an OOM inside a shell host. The
+/// width*height*components plane allocation is bounded separately, by check_reduced_alloc_budget.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_siz_grid(
     xsiz: u32,
@@ -166,14 +166,10 @@ pub(super) fn parse_cod(r: &mut Reader, seg_end: usize) -> Result<Cod, Jp2Error>
 pub(super) fn parse_coc(
     r: &mut Reader,
     seg_end: usize,
-    ncomp: usize,
+    _ncomp: usize,
     base: Option<&Cod>,
 ) -> Result<(usize, Cod), Jp2Error> {
-    let idx = if ncomp < 257 {
-        r.u8()? as usize
-    } else {
-        r.u16()? as usize
-    };
+    let idx = r.u8()? as usize;
     let scoc = r.u8()?;
     let mut c = parse_coding_params(r, seg_end, scoc & 1 != 0)?;
     // COC overrides only the coding params; progression/layers/MCT stay from COD.
@@ -234,12 +230,8 @@ pub(super) fn parse_qcd(r: &mut Reader, seg_end: usize) -> Result<Qcd, Jp2Error>
 pub(super) fn parse_qcc(
     r: &mut Reader,
     seg_end: usize,
-    ncomp: usize,
+    _ncomp: usize,
 ) -> Result<(usize, Qcd), Jp2Error> {
-    let idx = if ncomp < 257 {
-        r.u8()? as usize
-    } else {
-        r.u16()? as usize
-    };
+    let idx = r.u8()? as usize;
     Ok((idx, parse_quant(r, seg_end)?))
 }

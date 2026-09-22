@@ -11,10 +11,11 @@
 //!   * 24-/32-bit direct-RGB ILBM;
 //!   * the DOS `FORM PBM ` chunky variant (Deluxe Paint II PC).
 //!
-//! Compression 0 (none) and 1 (ByteRun1) are handled. Per-scanline palette modes
-//! (SHAM/PCHG) decode approximately (single base `CMAP`) — rare, and still a
-//! recognizable thumbnail. Everything is bounds-checked under `panic = "abort"`:
-//! malformed input yields `None` and the shell shows the default icon.
+//! Compression 0 (none) and 1 (ByteRun1) are handled. Per-scanline palette modes:
+//! SHAM is decoded with its per-scanline 16-colour palettes; PCHG is unsupported and
+//! falls back to the single base `CMAP` — rare, and still a recognizable thumbnail.
+//! Everything is bounds-checked under `panic = "abort"`: malformed input yields `None`
+//! and the shell shows the default icon.
 
 use image::{DynamicImage, RgbaImage};
 
@@ -139,7 +140,7 @@ fn decode_row(
         return;
     }
     let row_base = decode_planar_row(raw, y, w, row_bytes, planes_per_row, planes, idx_row);
-    if masking == 1 {
+    if masking & 1 != 0 {
         decode_mask_row(raw, row_base, w, row_bytes, planes, mask_row);
     }
 }
@@ -234,7 +235,7 @@ fn paint_row(
         } else {
             cmap.get(v as usize).copied().unwrap_or([0, 0, 0])
         };
-        let a = if masking == 2 && v == transparent {
+        let a = if masking & 2 != 0 && v == transparent {
             0
         } else {
             mask_row[x] // 255 unless masking mode 1 cleared this pixel's mask bit
@@ -330,7 +331,7 @@ pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
         return None;
     }
 
-    let mask_plane = u32::from(bmhd.masking == 1);
+    let mask_plane = u32::from(bmhd.masking & 1 != 0);
     let direct_rgb = planes >= 24; // 24-bit RGB (or 25/32 with mask)
     let (row_bytes, planes_per_row) = ilbm_row_layout(w, planes, mask_plane, is_pbm);
     let expected = ilbm_expected_len(row_bytes, planes_per_row, h)?;

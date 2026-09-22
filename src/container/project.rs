@@ -126,21 +126,22 @@ fn try_paths<R: Read + Seek>(zip: &mut ZipArchive<R>, paths: &[&str]) -> Option<
 /// `FusionAssetName[Active]/Previews/small.png` has a varying folder prefix.
 ///
 /// Fusion compresses that PNG with **zstd**, which the `zip` crate can't inflate without
-/// a C lib — so we locate the entry via the RAW reader (a zstd member is invisible to the
+/// a C lib — so we read the entry via the RAW reader (a zstd member is invisible to the
 /// normal `by_index`) and, when it's zstd, inflate it ourselves with the pure-Rust
 /// `ruzstd`. Store/deflate members go back through the crate's normal decompressing read.
 fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Option<Vec<u8>> {
-    // Locate the entry via the RAW reader — a zstd member errors out of the normal
-    // `by_index`, so it'd otherwise be invisible.
+    // Locate the entry off the already-parsed central directory, not the RAW reader:
+    // `by_index_raw` would seek to and read every entry's local header just to read a
+    // name — a zstd member errors out of the normal `by_index`, but it only has to be
+    // READ via the raw reader (below), not located by it.
     // Capped like every other central-directory walk in `container/` — a crafted zip can declare
     // millions of near-empty entries, and each iteration here allocates a lowercased name. This
     // runs in-process for the classic-menu preview, where the caller's budget only bounds how long
     // it WAITS: the worker keeps burning CPU in the shell after the caller has given up.
     let mut hit = None;
-    for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
-        let Ok(f) = zip.by_index_raw(i) else { continue };
-        if f.name().to_ascii_lowercase().ends_with(suffix_lc) {
-            hit = Some((i, f.name().to_string()));
+    for (i, n) in zip.file_names().take(super::MAX_LIST_ENTRIES).enumerate() {
+        if n.to_ascii_lowercase().ends_with(suffix_lc) {
+            hit = Some((i, n.to_string()));
             break;
         }
     }

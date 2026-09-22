@@ -130,7 +130,7 @@ fn opaque_section_end(tail: &str) -> Option<usize> {
     None
 }
 
-/// The local name of the element a `<...` slice opens, lowercased and without any
+/// The local name of the element a `<...` slice opens, without any
 /// namespace prefix. `None` for comments, CDATA and processing instructions.
 fn element_name(tag: &str) -> Option<&str> {
     let b = tag.strip_prefix('<')?;

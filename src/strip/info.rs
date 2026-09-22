@@ -84,9 +84,7 @@ impl<R: std::io::Read> std::io::Read for CappedReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let room = self.cap.saturating_sub(self.pos);
         let want = (buf.len() as u64).min(room) as usize;
-        let Some(window) = buf.get_mut(..want) else {
-            return Ok(0);
-        };
+        let window = &mut buf[..want];
         if window.is_empty() {
             return Ok(0);
         }

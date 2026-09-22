@@ -332,8 +332,8 @@ pub(super) fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Optio
     }
 }
 
-/// Two formats prefer the OS codec for a bounded thumbnail ask, for the same
-/// underlying reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot - it
+/// Three formats (BMP, GIF, WebP) prefer the OS codec for a bounded thumbnail ask, for the
+/// same underlying reason: WIC SCALES WHILE IT DECODES, and the pure-Rust tier cannot - it
 /// materialises the whole image and then shrinks it. That costs nothing on a small
 /// file and a great deal on a large one, which is exactly what the size-tiered speed
 /// baseline exists to show: BMP measured 2.3 ms at 0.08 MP but 258.6 ms at 12 MP
@@ -348,7 +348,10 @@ pub(super) fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Optio
 /// machines exactly as they were. Animated WebP is excluded because FRAME CHOICE is a
 /// decoder decision (`sample-decoy-frames.webp` pins first-frame selection to the verified
 /// path), and ICC-tagged WebP is excluded so colour management stays where it is verified
-/// today. Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
+/// today. GIF is admitted for that same scaling reason, but only as a single full-canvas
+/// frame: an animation's frame choice belongs to the decoder, and the `image` tier composites
+/// a partial frame onto the full canvas while WIC returns the frame at its own size.
+/// Full-fidelity callers (`wic_thumbnail_cx == None`, e.g. Convert) are excluded on
 /// purpose: their output bytes must not change decoder mid-release for a speed win the
 /// non-interactive path doesn't need.
 pub(super) fn try_wic_thumbnail_fastpath(

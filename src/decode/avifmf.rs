@@ -256,9 +256,9 @@ fn walk_ipco_boxes(buf: &[u8], depth: u8, f: &mut FoundIpcoBoxes) {
     });
 }
 
-/// Apply the BT.601-eligibility gates documented at module level to one already-located
+/// Apply the BT.601/BT.709 eligibility gates documented at module level to one already-located
 /// `av1C`/`colr` pair, given the single `ispe` width/height already resolved.
-fn validate_bt601_eligibility(av1c: &[u8], colr: &[u8], w: u32, h: u32) -> Option<Av1Still> {
+fn validate_mf_eligibility(av1c: &[u8], colr: &[u8], w: u32, h: u32) -> Option<Av1Still> {
     // nclx payload: "nclx", then primaries/transfer/matrix as u16 each. The box slice still
     // carries its 8-byte header + the 4-byte type, so the CICP words start at 12.
     let primaries = be16(colr, 12)?;
@@ -322,7 +322,7 @@ pub(super) fn eligible_mf_still(bytes: &[u8]) -> Option<Av1Still> {
         return None;
     };
 
-    validate_bt601_eligibility(av1c, colr, *w, *h)
+    validate_mf_eligibility(av1c, colr, *w, *h)
 }
 
 /// The primary item's bytes: `pitm` names it, `iinf`+`iloc` (the strip module's hardened

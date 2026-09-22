@@ -40,8 +40,8 @@ pub fn ocr_to_clipboard(path: &str) -> Result<()> {
 /// is self-contained, not reliant on the caller's structure.
 const OCR_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The error [`recognize_bytes`] returns when the image is bigger than the recognizer's own
-/// `OcrEngine::MaxImageDimension()` — i.e. "this picture is too large", NOT "the engine is
+/// The error [`recognize_bytes`] returns when the image exceeds this repo's MAX_DIM (16384,
+/// tighter than `OcrEngine::MaxImageDimension()`) or the Bgra8 MAX_ALLOC (512 MiB) byte budget — i.e. "this picture is too large", NOT "the engine is
 /// broken". It is a DISTINCT code (WIC's `WINCODEC_ERR_IMAGESIZEOUTOFRANGE`, which says exactly
 /// that) rather than the blanket `E_FAIL` every other failure returns, so a UI caller can tell
 /// the two apart: the screen-OCR window otherwise told the user to go install a language pack,

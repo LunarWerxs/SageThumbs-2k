@@ -2,9 +2,9 @@
 
 use super::*;
 
-/// Issue #41's arithmetic: a preview under a quarter of the declared picture on its
-/// longer edge is refused for a full-fidelity caller; at or above it (the 4096-edge
-/// ImageMagick cap on a 16000 px file), or with no header to compare against, it is
+/// Issue #41's arithmetic: a preview at or under a quarter of the declared picture on its
+/// longer edge is refused for a full-fidelity caller; over it (the 4096-edge ImageMagick
+/// cap on a 16000 px file), or with no header to compare against, it is
 /// returned as before.
 #[test]
 fn a_preview_a_fraction_of_the_declared_picture_is_refused_with_both_sizes_named() {
@@ -20,7 +20,8 @@ fn a_preview_a_fraction_of_the_declared_picture_is_refused_with_both_sizes_named
     // A RAW whose IFD0 declares only its thumbnail: the preview is BIGGER than declared.
     assert!(judge(preview(1632, 1080), Some((160, 120))).is_ok());
     // The ImageMagick 4096 cap on a 16000 px picture is a real decode that hit a guard we
-    // set, not a stand-in - even though it is far under a quarter.
+    // set, not a stand-in - its edge is over the quarter of 16000 (4096*4 > 16000) and over
+    // the stand-in floor, so the rule does not apply.
     assert!(judge(preview(4096, 3072), Some((16000, 12000))).is_ok());
     // A Hasselblad .fff's 1217x913 preview of a 40 MP sensor: under a quarter, and still a
     // picture. This is the case the absolute floor exists for.

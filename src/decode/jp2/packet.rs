@@ -172,7 +172,6 @@ pub(super) struct BlockContribution {
 pub(super) struct BlockState {
     pub included: bool,
     pub lblock: u32,
-    pub passes_so_far: u32,
     pub zero_bitplanes: u32,
 }
 
@@ -181,7 +180,6 @@ impl Default for BlockState {
         BlockState {
             included: false,
             lblock: 3,
-            passes_so_far: 0,
             zero_bitplanes: 0,
         }
     }
@@ -296,7 +294,6 @@ fn read_segment_header(br: &mut BitReader, st: &mut BlockState) -> Result<(u32, 
         return Err(Jp2Error::Malformed("segment length too wide"));
     }
     let len = br.bits(bits)? as usize;
-    st.passes_so_far += passes;
     Ok((passes, len))
 }
 
@@ -304,7 +301,7 @@ fn read_segment_header(br: &mut BitReader, st: &mut BlockState) -> Result<(u32, 
 ///
 /// The shape openjpeg's `opj_t2_read_packet_header` makes explicit, and the shape our first
 /// version got wrong by calling a per-band parser three times: a packet has exactly ONE
-/// leading "non-empty" bit and exactly ONE trailing byte-alignment, with every band's
+/// leading "non-empty" bit and exactly one trailing byte-alignment, with every band's
 /// inclusion/length data in a single continuous bit stream in between. Reading the bit and
 /// aligning per band desynchronizes the stream on the first multi-band packet — which is
 /// every packet above resolution 0 — and shows up downstream as bogus truncation errors.

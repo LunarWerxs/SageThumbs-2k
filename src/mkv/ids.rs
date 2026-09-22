@@ -2,8 +2,8 @@
 
 // EBML / Matroska element IDs (full IDs incl. the length-marker, as a big-endian integer).
 // `pub(crate)`: `crate::fuzz`'s synthetic_mkv seed builds the same element tree these parsers
-// walk, and used to keep its own drifting copy of this table (see `encode_vint`/`elem` below
-// for the rest of that consolidation).
+// walk, and used to keep its own drifting copy of this table (see `ebml::encode_vint`/`ebml::elem`
+// in the sibling module for the rest of that consolidation).
 pub(crate) const ID_EBML: u64 = 0x1A45_DFA3;
 
 pub(crate) const ID_SEGMENT: u64 = 0x1853_8067;

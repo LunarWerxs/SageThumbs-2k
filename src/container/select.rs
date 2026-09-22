@@ -158,7 +158,7 @@ pub(crate) fn cmp_logical_keys(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
 /// Natural-sort candidate indices by entry name via `StrCmpLogicalW` (page2 before
 /// page10, matching Explorer). Precomputes each candidate's UTF-16 sort key ONCE
 /// (demote brackets, then encode), so the O(n log n) sort doesn't re-allocate two
-/// wide buffers per comparison (mirrors verbs::fileops::natural_sort_key). Matters
+/// wide buffers per comparison (mirrors verbs::fileops::natural_key_cmp). Matters
 /// on large comic archives with many image entries.
 fn natural_sort(pool: &mut Vec<usize>, entries: &[Entry]) {
     let mut keyed: Vec<(Vec<u16>, usize)> = pool

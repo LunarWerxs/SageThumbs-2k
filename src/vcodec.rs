@@ -32,7 +32,7 @@ pub struct CodecInfo {
     /// Human name ("HEVC (H.265)"), or the raw id again for codecs we don't map.
     pub name: String,
     /// The MF subtype to probe with [`decoder_installed`]. `None` when the codec has no
-    /// standard MF mapping (Theora, ProRes, VfW passthrough) — no Windows decoder exists,
+    /// standard MF mapping (ProRes, VfW passthrough) — no Windows decoder exists,
     /// so there is nothing to probe and nothing to install.
     pub subtype: Option<GUID>,
     /// Whether the id is one we recognize. Distinguishes "known codec with no Windows
@@ -66,8 +66,8 @@ const HINT_MPEG2: &str = "install the free 'MPEG-2 Video Extension' from the Mic
 const HINT_THEORA: &str = "install the free 'Web Media Extensions' from the Microsoft Store";
 
 /// Identify the video codec of `r` — a Matroska/WebM, ISO-BMFF (MP4/MOV), FLV, or MPEG-1/2
-/// program / elementary stream source. Each container parser self-gates on its magic, so
-/// trying them in turn is cheap. `None`: some other container (AVI/WMV/TS/…) or no video
+/// program / elementary / transport stream source. Each container parser self-gates on its magic, so
+/// trying them in turn is cheap. `None`: some other container (AVI/WMV/…) or no video
 /// track found.
 pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     let mut info = crate::mkv::video_codec_id(r)
@@ -137,6 +137,20 @@ pub fn cover_art<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     crate::mkv::attached_cover(r).or_else(|| crate::mp4::cover_art(r))
 }
 
+/// The CodecInfo for an id we don't recognize: raw and name as given, nothing we can probe
+/// or prescribe.
+fn unknown(raw: String, name: String) -> CodecInfo {
+    CodecInfo {
+        raw,
+        name,
+        subtype: None,
+        known: false,
+        install_hint: None,
+        self_decoded: false,
+        mf_profile_block: None,
+    }
+}
+
 /// Map a Matroska CodecID to a display name + MF subtype + install hint.
 fn from_mkv_codec_id(id: &str) -> CodecInfo {
     let (name, subtype, hint): (&str, Option<GUID>, Option<&'static str>) = match id {
@@ -153,17 +167,7 @@ fn from_mkv_codec_id(id: &str) -> CodecInfo {
         "V_MS/VFW/FOURCC" => ("VfW-compatibility codec", None, None),
         "V_THEORA" => ("Theora", Some(MFVideoFormat_Theora), Some(HINT_THEORA)),
         "V_PRORES" => ("ProRes", None, None),
-        other => {
-            return CodecInfo {
-                raw: other.to_string(),
-                name: other.to_string(),
-                subtype: None,
-                known: false,
-                install_hint: None,
-                self_decoded: false,
-                mf_profile_block: None,
-            }
-        }
+        other => return unknown(other.to_string(), other.to_string()),
     };
     CodecInfo {
         raw: id.to_string(),
@@ -192,17 +196,7 @@ fn from_mp4_fourcc(fourcc: [u8; 4]) -> CodecInfo {
         b"mjpa" | b"mjpb" | b"jpeg" => ("Motion JPEG", Some(MFVideoFormat_MJPG), None),
         b"wmv3" => ("WMV 9", Some(MFVideoFormat_WMV3), None),
         b"apch" | b"apcn" | b"apcs" | b"apco" | b"ap4h" | b"ap4x" => ("ProRes", None, None),
-        _ => {
-            return CodecInfo {
-                raw: raw.clone(),
-                name: raw,
-                subtype: None,
-                known: false,
-                install_hint: None,
-                self_decoded: false,
-                mf_profile_block: None,
-            }
-        }
+        _ => return unknown(raw.clone(), raw),
     };
     CodecInfo {
         raw,
@@ -232,15 +226,10 @@ fn from_flv_codec_id(id: u8) -> CodecInfo {
         6 => ("Screen Video 2", None, false),
         7 => ("H.264 (AVC)", Some(MFVideoFormat_H264), false),
         other => {
-            return CodecInfo {
-                raw: format!("FLV codec id {other}"),
-                name: format!("FLV codec id {other}"),
-                subtype: None,
-                known: false,
-                install_hint: None,
-                self_decoded: false,
-                mf_profile_block: None,
-            }
+            return unknown(
+                format!("FLV codec id {other}"),
+                format!("FLV codec id {other}"),
+            )
         }
     };
     CodecInfo {

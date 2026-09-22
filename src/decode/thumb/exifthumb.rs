@@ -44,6 +44,13 @@ pub(super) fn jpeg_segment(bytes: &[u8], i: usize) -> Option<(u8, usize, usize)>
     if marker == 0xD9 || marker == 0xDA {
         return None; // EOI / start-of-scan: past the metadata headers
     }
+    // Standalone markers — 0xFF fill padding, TEM, RSTn, SOI — have no length
+    // bytes to read. Step over just the marker (an empty body) so the next
+    // iteration lands on the real marker instead of treating two of its bytes
+    // as a segment length.
+    if marker == 0xFF || marker == 0x01 || (0xD0..=0xD8).contains(&marker) {
+        return Some((marker, i + 2, i + 2));
+    }
     let seg_len = u16::from_be_bytes([*bytes.get(i + 2)?, *bytes.get(i + 3)?]) as usize;
     if seg_len < 2 {
         return None;

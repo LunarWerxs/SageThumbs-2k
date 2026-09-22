@@ -28,7 +28,7 @@ pub fn varint(b: &[u8], off: usize) -> Option<(u64, usize)> {
             return Some((result, i + 1));
         }
     }
-    Some((result, 9))
+    unreachable!("the i == 8 branch above always returns on the loop's last iteration")
 }
 
 /// Byte length of a SQLite serial type's column data.
@@ -60,7 +60,7 @@ pub fn local_size(total: usize, usable: usize, table_leaf: bool) -> usize {
     // (`container::clip`, `preview::dbdoc`) parse, so the precondition belongs HERE, once,
     // rather than being re-derived and enforced at every call site. A real SQLite page's
     // usable size is never anywhere near this small (the format's own minimum page size is
-    // 512, less at most 132 reserved bytes), so this only ever fires on corrupt/hostile
+    // 512, and SQLite rejects a usable size below 480), so this only ever fires on corrupt/hostile
     // input, and `total.min(usable)` — a payload can never exceed a whole page anyway — is
     // a safe, conservative "everything is local" answer for that case.
     // 196 is where `min_local` below stops underflowing: `(usable - 12) * 32 / 255` must

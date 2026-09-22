@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// Build the bare 124-byte DDS header for a DXT1 surface. `depth` and `caps2` stay zero for
+/// a plain 2D texture; a volume texture passes its slice count and `DDSCAPS2_VOLUME`.
+fn dds_header(w: u32, h: u32, mip_count: u32, depth: u32, caps2: u32) -> [u8; HEADER_LEN] {
+    let mut hdr = [0u8; HEADER_LEN];
+    hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes()); // dwSize
+    hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes()); // flags incl. MIPMAPCOUNT
+    hdr[8..12].copy_from_slice(&h.to_le_bytes());
+    hdr[12..16].copy_from_slice(&w.to_le_bytes());
+    hdr[20..24].copy_from_slice(&depth.to_le_bytes()); // dwDepth
+    hdr[24..28].copy_from_slice(&mip_count.to_le_bytes()); // dwMipMapCount
+    hdr[72..76].copy_from_slice(&32u32.to_le_bytes()); // pixel format dwSize
+    hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+    hdr[80..84].copy_from_slice(b"DXT1");
+    hdr[108..112].copy_from_slice(&caps2.to_le_bytes()); // dwCaps2
+    hdr
+}
+
 /// Build a BC1 DDS whose mip chain is deliberately DIFFERENT per level: level 0 is red,
 /// level 1 green, level 2 blue. A decoder that ignores mips returns red; one that picks
 /// the right level returns the colour that belongs to it. Colour, not size, is the
@@ -15,16 +32,7 @@ fn bc1_mip_chain(w: u32, h: u32, colours: &[[u8; 3]]) -> Vec<u8> {
     }
     let mut v = Vec::new();
     v.extend_from_slice(b"DDS ");
-    let mut hdr = [0u8; HEADER_LEN];
-    hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes()); // dwSize
-    hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes()); // flags incl. MIPMAPCOUNT
-    hdr[8..12].copy_from_slice(&h.to_le_bytes());
-    hdr[12..16].copy_from_slice(&w.to_le_bytes());
-    hdr[24..28].copy_from_slice(&(colours.len() as u32).to_le_bytes()); // dwMipMapCount
-    hdr[72..76].copy_from_slice(&32u32.to_le_bytes()); // pixel format dwSize
-    hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
-    hdr[80..84].copy_from_slice(b"DXT1");
-    v.extend_from_slice(&hdr);
+    v.extend_from_slice(&dds_header(w, h, colours.len() as u32, 0, 0));
     let (mut lw, mut lh) = (w, h);
     for c in colours {
         let blocks = (lw.div_ceil(4) as usize) * (lh.div_ceil(4) as usize);
@@ -94,16 +102,7 @@ fn the_block_average_is_exactly_a_4x_box_reduction_of_the_full_decode() {
     // deterministic sequence so the picture has content in every block.
     let mut v = Vec::new();
     v.extend_from_slice(b"DDS ");
-    let mut hdr = [0u8; HEADER_LEN];
-    hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
-    hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes());
-    hdr[8..12].copy_from_slice(&H.to_le_bytes());
-    hdr[12..16].copy_from_slice(&W.to_le_bytes());
-    hdr[24..28].copy_from_slice(&1u32.to_le_bytes()); // no mip chain
-    hdr[72..76].copy_from_slice(&32u32.to_le_bytes());
-    hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes());
-    hdr[80..84].copy_from_slice(b"DXT1");
-    v.extend_from_slice(&hdr);
+    v.extend_from_slice(&dds_header(W, H, 1, 0, 0)); // 1 == no mip chain
     let blocks = (W.div_ceil(4) as usize) * (H.div_ceil(4) as usize);
     let mut state = 0x1234_5678u32;
     for _ in 0..blocks {
@@ -234,18 +233,7 @@ fn volume_texture_mip_offsets_account_for_depth() {
 
     let mut v = Vec::new();
     v.extend_from_slice(b"DDS ");
-    let mut hdr = [0u8; HEADER_LEN];
-    hdr[0..4].copy_from_slice(&(HEADER_LEN as u32).to_le_bytes());
-    hdr[4..8].copy_from_slice(&0x0002_1007u32.to_le_bytes()); // incl. MIPMAPCOUNT
-    hdr[8..12].copy_from_slice(&H.to_le_bytes());
-    hdr[12..16].copy_from_slice(&W.to_le_bytes());
-    hdr[20..24].copy_from_slice(&DEPTH.to_le_bytes()); // dwDepth
-    hdr[24..28].copy_from_slice(&2u32.to_le_bytes()); // dwMipMapCount
-    hdr[72..76].copy_from_slice(&32u32.to_le_bytes());
-    hdr[76..80].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
-    hdr[80..84].copy_from_slice(b"DXT1");
-    hdr[108..112].copy_from_slice(&DDSCAPS2_VOLUME.to_le_bytes()); // dwCaps2
-    v.extend_from_slice(&hdr);
+    v.extend_from_slice(&dds_header(W, H, 2, DEPTH, DDSCAPS2_VOLUME));
 
     // Mip 0: 4 depth slices of 8x8 (2x2 blocks each, 8 bytes/block = 32 bytes/slice).
     v.extend(slice(red, 4)); // slice 0: what an untargeted decode must show

@@ -3,8 +3,8 @@
 //! The tier-1 debugging harness. The tiny corpus files are LOSSLESS (5/3, no
 //! quantization, verified `magick compare` AE = 0 against their source PNGs), so a
 //! correct decoder must reproduce them BIT-EXACTLY at full resolution. Any mismatch is
-//! proof of a bug, and 8x8 means a single code-block to trace. Reports rather than
-//! asserts while tier-1 is under repair.
+//! proof of a bug, and 8x8 means a single code-block to trace. Mismatches and decode
+//! errors are asserted, so a failure hard-fails this test.
 
 #[test]
 fn lossless_tiny_files_decode_bit_exactly() {

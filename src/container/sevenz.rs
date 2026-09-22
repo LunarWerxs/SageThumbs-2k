@@ -310,7 +310,7 @@ fn solid_covers<R: Read + Seek>(
     max_blocks: usize,
     prefs: &CoverPrefs,
 ) -> Vec<Vec<u8>> {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     // Pathological-shape gate, from metadata only (no decode): a solid archive that
     // declares far more blocks than any real cover archive needs would make the walk
@@ -324,7 +324,12 @@ fn solid_covers<R: Read + Seek>(
     if targets.is_empty() {
         return Vec::new();
     }
-    let target_names: HashSet<&str> = targets.iter().map(|&i| entries[i].name.as_str()).collect();
+    // Target name -> its position in `targets`, so the physical-order walk can stamp
+    // every capture with the rank `solid_targets` gave it (cover-named first).
+    let mut target_ranks: HashMap<&str, usize> = HashMap::new();
+    for (rank, &i) in targets.iter().enumerate() {
+        target_ranks.entry(entries[i].name.as_str()).or_insert(rank);
+    }
     // The walk is sequential, so the cost to reach ANY chosen target is the sum of
     // every entry (eligible or not) before it — the smallest physical index among
     // the chosen targets is therefore the one the budget precheck must cover first.
@@ -346,7 +351,7 @@ fn solid_covers<R: Read + Seek>(
         return Vec::new();
     }
 
-    let mut found: Vec<Vec<u8>> = Vec::with_capacity(want);
+    let mut found: Vec<(usize, Vec<u8>)> = Vec::with_capacity(want);
     let mut captured: HashSet<String> = HashSet::new();
     let mut drained: u64 = 0;
     let mut each = |entry: &sevenz_rust2::ArchiveEntry,
@@ -359,7 +364,7 @@ fn solid_covers<R: Read + Seek>(
             &mut captured,
             &mut drained,
             want,
-            &target_names,
+            &target_ranks,
         )
     };
 
@@ -373,7 +378,11 @@ fn solid_covers<R: Read + Seek>(
             Ok(false) | Err(_) => break,
         }
     }
-    found
+    // The walk captured in PHYSICAL order; return the images in `targets` order so a
+    // cover-named entry leads the result exactly as `solid_targets` (and the doc above)
+    // promises. Rank is unique per name, so this sort is a stable reordering.
+    found.sort_by_key(|&(rank, _)| rank);
+    found.into_iter().map(|(_, buf)| buf).collect()
 }
 
 /// One step of the solid-cover walk: capture the entry `rd` is streaming when it
@@ -382,11 +391,11 @@ fn solid_covers<R: Read + Seek>(
 fn solid_step(
     entry: &sevenz_rust2::ArchiveEntry,
     rd: &mut dyn Read,
-    found: &mut Vec<Vec<u8>>,
+    found: &mut Vec<(usize, Vec<u8>)>,
     captured: &mut std::collections::HashSet<String>,
     drained: &mut u64,
     want: usize,
-    target_names: &std::collections::HashSet<&str>,
+    target_ranks: &std::collections::HashMap<&str, usize>,
 ) -> Result<bool, sevenz_rust2::Error> {
     // Done — enough images, or the peek budget is spent. Bail at the TOP,
     // BEFORE reading `rd`.
@@ -394,7 +403,13 @@ fn solid_step(
         return Ok(false);
     }
     let name = entry.name();
-    if target_names.contains(name) && !captured.contains(name) {
+    // An unclaimed target: the rank is its position in `solid_targets` order, not the
+    // physical order this walk reaches it in.
+    let unclaimed_rank = target_ranks
+        .get(name)
+        .copied()
+        .filter(|_| !captured.contains(name));
+    if let Some(rank) = unclaimed_rank {
         let room = SOLID_SCAN_BUDGET.saturating_sub(*drained);
         if entry.size() > room {
             // A partial image is useless and would violate the advertised hard
@@ -413,7 +428,7 @@ fn solid_step(
         }
         if !buf.is_empty() {
             captured.insert(name.to_string());
-            found.push(buf);
+            found.push((rank, buf));
         }
     } else {
         // A non-target neighbor must be decoded to advance the solid stream to

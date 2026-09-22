@@ -34,6 +34,7 @@ pub fn frame_from_block_stream(shell: &IStream, size: u64, frac: f64) -> Option<
     // and revokes the entry itself, so the cookie never outlives the grab.
     let git = unsafe { global_interface_table() }?;
     let cookie = unsafe { git.RegisterInterfaceInGlobal(shell, &IStream::IID) }.ok()?;
+    let mut cookie = GitCookie(Some(cookie));
     let seek = Seek {
         frac,
         cap_hns: None,
@@ -42,12 +43,14 @@ pub fn frame_from_block_stream(shell: &IStream, size: u64, frac: f64) -> Option<
         VIDEO_TIMEOUT,
         "the block-stream frame grab",
         move || unsafe {
+            let entry = cookie.0?;
+            // A `?` here drops `cookie`, whose Drop revokes the entry.
             let git = global_interface_table()?;
             let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
             let fetched = git
-                .GetInterfaceFromGlobal(cookie, &IStream::IID, &mut raw)
+                .GetInterfaceFromGlobal(entry, &IStream::IID, &mut raw)
                 .is_ok();
-            let _ = git.RevokeInterfaceFromGlobal(cookie);
+            cookie.revoke();
             if !fetched || raw.is_null() {
                 return None;
             }
@@ -74,6 +77,31 @@ pub(crate) unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
     .ok()
 }
 
+/// RAII owner of a [`frame_from_block_stream`] GIT cookie. It revokes the table entry on drop
+/// unless [`GitCookie::revoke`] already did, so a cookie whose worker never starts (the
+/// `spawn` in `run_bounded_pumping` failed, dropping the closure) is still revoked instead of
+/// pinning the shell `IStream` for the host's lifetime.
+struct GitCookie(Option<u32>);
+
+impl GitCookie {
+    /// Revoke the entry now (whatever happens next) and disarm the drop.
+    fn revoke(&mut self) {
+        if let Some(cookie) = self.0.take() {
+            unsafe {
+                if let Some(git) = global_interface_table() {
+                    let _ = git.RevokeInterfaceFromGlobal(cookie);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for GitCookie {
+    fn drop(&mut self) {
+        self.revoke();
+    }
+}
+
 /// Run `f` on a detached worker and wait for it at most `timeout`, dispatching this
 /// apartment's incoming COM calls meanwhile ([`wait_pumping`]) so a worker whose reads
 /// marshal back to an STA caller is serviced rather than deadlocked. `f` runs under its own
@@ -94,10 +122,15 @@ where
     let slot: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
     let done = Arc::new(AtomicBool::new(false));
     let (w_event, w_slot, w_done) = (event.clone(), slot.clone(), done.clone());
+    // Pin the DLL for this detached worker's whole lifetime (see `grab_budgeted`): taken
+    // BEFORE `spawn` and moved in, so it covers the slot store and `SetEvent` after
+    // `with_mta_apartment` has dropped its own pin, and is released if `spawn` fails.
+    #[allow(clippy::default_constructed_unit_structs)]
+    let module = crate::ModuleRef::default();
     let spawned = std::thread::Builder::new()
         .name("st2k-video-worker".into())
         .spawn(move || {
-            // Pin the DLL for this detached worker's whole lifetime (see `grab_budgeted`).
+            let _module = module;
             let r = crate::pdf::with_mta_apartment(f);
             *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
             // Last act, after the apartment is gone: "done" means done with Media Foundation.

@@ -28,28 +28,7 @@ pub(super) fn header_at<R: Read + Seek>(r: &mut R, pos: u64) -> Option<(u64, u64
     }
 
     // Size: 1–8 bytes, value strips the marker bit; all-ones data = unknown size.
-    let sb0 = *buf.get(id_len)?;
-    if sb0 == 0 {
-        return None;
-    }
-    let sz_len = sb0.leading_zeros() as usize + 1;
-    if sz_len > 8 || id_len + sz_len > have {
-        return None;
-    }
-    // Widen before shifting: an 8-byte size vint (first byte 0x01 — ffmpeg writes the
-    // Segment size this way routinely) needs `0xFF >> 8`, which overflows a u8 shift.
-    // The u8 version panicked in debug and, worse, silently produced mask 0xFF in release —
-    // a phantom 2^56 in every 8-byte size and unknown-size never detected.
-    let mask = (0xFFu16 >> sz_len) as u8;
-    let size_bytes = &buf[id_len..id_len + sz_len];
-    let mut size = (size_bytes[0] & mask) as u64;
-    let mut all_ones = (size_bytes[0] & mask) == mask;
-    for &b in &size_bytes[1..] {
-        size = (size << 8) | b as u64;
-        if b != 0xFF {
-            all_ones = false;
-        }
-    }
+    let (size, sz_len, all_ones) = vint_size(buf, id_len)?;
     Some((id, size, (id_len + sz_len) as u64, all_ones))
 }
 

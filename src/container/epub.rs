@@ -97,7 +97,7 @@ fn is_html_path(p: &str) -> bool {
 /// Deprecated EPUB2 cover declaration: `<guide><reference type="cover" href="...">`.
 /// The href is OPF-relative (usually a cover.xhtml page, occasionally an image).
 fn guide_cover(opf: &str, rootdir: &str) -> Option<String> {
-    let pos = opf.find("type=\"cover\"")?;
+    let pos = find_attr_eq(opf, "type", "cover")?;
     let tag = tag_around(opf, pos)?;
     if !tag.contains("reference") {
         return None;
@@ -134,12 +134,29 @@ fn resolve_html_cover<R: Read + Seek>(zip: &mut ZipArchive<R>, html_path: &str) 
 /// string on every tag when the page held no `<image`, giving O(n^2) on a page
 /// with many `<img>` tags.
 fn first_html_image(html: &str) -> Option<String> {
+    // Candidates whose `<` falls inside a tag already consumed are skipped, and the
+    // scan stops advancing once no `>` follows (no later candidate can have one), so
+    // each byte is visited O(1) times: a page crafted from unclosed `<img` prefixes
+    // stays one linear pass, not an O(n^2) rescan per candidate.
+    let mut close: Option<usize> = None;
+    let mut consume_to = 0;
     for (pos, _) in html.match_indices('<') {
-        let rest = &html[pos..];
-        if !(rest.starts_with("<img") || rest.starts_with("<image")) {
+        if pos < consume_to {
             continue;
         }
-        if let Some(tag) = tag_from(html, pos) {
+        let rest = &html[pos..];
+        let head = rest.as_bytes();
+        if !(head
+            .get(..4)
+            .is_some_and(|h| h.eq_ignore_ascii_case(b"<img"))
+            || head
+                .get(..6)
+                .is_some_and(|h| h.eq_ignore_ascii_case(b"<image")))
+        {
+            continue;
+        }
+        if let Some(tag) = tag_from(html, pos, &mut close) {
+            consume_to = pos + tag.len();
             if let Some(src) = tag_image_src(tag) {
                 return Some(src);
             }
@@ -150,9 +167,9 @@ fn first_html_image(html: &str) -> Option<String> {
 
 /// Extracts the image source attribute (`src`, `xlink:href`, or `href`) from an image tag.
 fn tag_image_src(tag: &str) -> Option<String> {
-    let href = tag_attr(tag, "src")
-        .or_else(|| tag_attr(tag, "xlink:href"))
-        .or_else(|| tag_attr(tag, "href"));
+    let href = tag_attr_ci(tag, "src")
+        .or_else(|| tag_attr_ci(tag, "xlink:href"))
+        .or_else(|| tag_attr_ci(tag, "href"));
     if let Some(v) = href {
         if !v.is_empty() {
             return Some(v);
@@ -161,10 +178,28 @@ fn tag_image_src(tag: &str) -> Option<String> {
     None
 }
 
-/// The `<...>` tag that STARTS at byte position `start` (the '<').
-fn tag_from(s: &str, start: usize) -> Option<&str> {
-    let rel_end = s.get(start..)?.find('>')?;
-    s.get(start..start + rel_end + 1)
+/// The `<...>` tag that STARTS at byte position `start` (the '<'). `close` carries the
+/// `>` of the tag returned for the previous start: while a later start still falls
+/// inside that same tag, that `>` is reused, so the forward scan never restarts behind
+/// the cursor (a run of unclosed `<img` prefixes is O(n), not O(n^2)). `None` when no
+/// `>` follows `start` — no later start can have one either.
+fn tag_from<'a>(s: &'a str, start: usize, close: &mut Option<usize>) -> Option<&'a str> {
+    let end = match *close {
+        Some(e) if e > start => e,
+        _ => {
+            let Some(rel) = s.get(start..)?.find('>') else {
+                // No '>' anywhere after `start`, so no later start can have one
+                // either. Remember that so every remaining candidate is rejected in
+                // O(1) rather than rescanning to the end (the O(n^2) hang).
+                *close = Some(s.len());
+                return None;
+            };
+            let e = start + rel;
+            *close = Some(e);
+            e
+        }
+    };
+    s.get(start..end + 1)
 }
 
 /// Resolve `href` (may contain `./`, `../`, a leading `/`, or a `#fragment`)
@@ -196,6 +231,24 @@ fn tag_around(s: &str, pos: usize) -> Option<&str> {
     let start = s.get(..pos)?.rfind('<')?;
     let rel_end = s.get(pos..)?.find('>')?;
     s.get(start..pos + rel_end + 1)
+}
+
+/// `tag_attr` with a case-insensitive attribute NAME: HTML element/attribute names are
+/// case-insensitive, so `<IMG SRC=...>` / `HREF` must not be missed. The tag is
+/// lowercased only to LOCATE the key — ASCII case folding preserves byte offsets, so
+/// the VALUE is sliced out of the original tag and its own case is preserved.
+fn tag_attr_ci(tag: &str, attr: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    for quote in ['"', '\''] {
+        let pat = format!("{attr}={quote}");
+        if let Some(at) = lower.find(&pat) {
+            let start = at + pat.len();
+            if let Some(rel_end) = tag[start..].find(quote) {
+                return Some(tag[start..start + rel_end].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Value of `attr="..."` or `attr='...'` within `tag`. Single-quoted OPF/OCF

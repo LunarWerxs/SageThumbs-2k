@@ -248,7 +248,8 @@ pub(crate) fn refuse(headline: String, omitted: &[Omitted]) -> Error {
 /// registry happens to say.
 ///
 /// Returns the [`Combined`] result: `omitted` names every input that never made it into the
-/// PDF (unreadable file, or a format `decode::decode_full`/the JPEG re-encode couldn't handle)
+/// PDF (unreadable file, or a format `decode::decode_full_for_output`, including its refusal of a
+/// stand-in preview (issue #41), or the JPEG re-encode couldn't handle)
 /// with its cause. Silently excluding them used to be invisible to the caller, and a bare count
 /// was invisible past the Explorer verb (2026-09-05 audit, F31), so the list is threaded back
 /// out here for every front end to surface. `OnOmit::Fail` writes nothing when the list would

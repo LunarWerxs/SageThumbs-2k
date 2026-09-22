@@ -186,7 +186,10 @@ fn binary_ply_declines_double_xyz_type() {
 fn binary_ply_strides_by_the_declared_property_sizes() {
     let tetra = [[0f32, 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 0.5, 1.]];
     for (extra_props, extra_bytes) in [
-        ("property uchar red\nproperty uchar green\nproperty uchar blue\n", 3usize),
+        (
+            "property uchar red\nproperty uchar green\nproperty uchar blue\n",
+            3usize,
+        ),
         ("property double quality\n", 8),
     ] {
         let mut out = Vec::new();

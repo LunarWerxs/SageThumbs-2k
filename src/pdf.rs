@@ -61,22 +61,20 @@ pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
 /// page-0 [`render_first_page`] wrapper (whose behaviour is UNCHANGED). `None` on any failure.
 pub fn render_page_counted(bytes: &[u8], page_index: u32, max_dim: u32) -> Option<(Vec<u8>, u32)> {
     let owned = bytes.to_vec();
-    let (tx, rx) = std::sync::mpsc::channel();
-    // Dedicated MTA thread (see module docs). We `recv_timeout` instead of `join()` so a
-    // malformed/encrypted PDF can never park the in-process shell thumbnail thread past
-    // PDF_TIMEOUT. The worker holds a ModuleRef so that, if it outlives the budget, the
-    // in-process host can't unload the DLL mid-render and access-violate (mirrors decode_svg).
-    std::thread::spawn(move || {
-        let out = with_mta_apartment(|| render(&owned, page_index, max_dim).ok());
-        let _ = tx.send(out);
+    // Dedicated MTA thread (see module docs), waited on for at most PDF_TIMEOUT so a
+    // malformed/encrypted PDF can never park the in-process shell thumbnail thread. A
+    // budgeted worker: it holds a ModuleRef from before `spawn` until it has sent its result,
+    // so a render that outlives the budget cannot have the DLL unloaded under it; a refused
+    // thread is a `None`, never a panic; and abandoned renders count toward the process cap.
+    let out = crate::safety::spawn_budgeted("st2k-pdf-render", PDF_TIMEOUT, move || {
+        with_mta_apartment(|| render(&owned, page_index, max_dim).ok())
     });
-    match rx.recv_timeout(PDF_TIMEOUT) {
-        Ok(out) => out,
-        Err(_) => {
-            crate::safety::log_debug("pdf: render exceeded the wall-clock deadline");
-            None
-        }
+    if out.is_none() {
+        crate::safety::log_debug(
+            "pdf: render exceeded the wall-clock deadline (or found no worker)",
+        );
     }
+    out.flatten()
 }
 
 /// One page's declared size in DIPs (1/96 inch), which is what `PdfPage::Size` reports.
@@ -163,7 +161,7 @@ impl PdfSession {
         let owned = bytes.to_vec();
         let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<Vec<PageSize>>>();
-        std::thread::spawn(move || {
+        crate::safety::try_spawn("st2k-pdf-session", move || {
             with_mta_apartment(|| match open_document(&owned) {
                 Ok((doc, sizes)) => {
                     // Announce success BEFORE serving, so `open` returns as soon as the layout
@@ -197,7 +195,12 @@ impl PdfSession {
         self.sizes
             .get(i.min(self.sizes.len().saturating_sub(1)))
             .copied()
-            .unwrap_or(PageSize { w: 612.0, h: 792.0 })
+            // Unreachable today (`open_document` refuses a document with no pages), and in
+            // DIPs like every `PageSize`: US Letter is 816 x 1056 DIPs (612 x 792 points).
+            .unwrap_or(PageSize {
+                w: 816.0,
+                h: 1056.0,
+            })
     }
 
     pub fn sizes(&self) -> &[PageSize] {
@@ -249,7 +252,9 @@ fn open_document(bytes: &[u8]) -> Result<(PdfDocument, Vec<PageSize>)> {
     Ok((doc, sizes))
 }
 
-/// Rasterize one page of an already-open document to an exact pixel WIDTH.
+/// Rasterize one page of an already-open document to an exact pixel WIDTH, unless the page is
+/// so tall for its width that the height would pass `MAX_DIM`: the page size comes from the
+/// file (a 1 x 14400 pt strip is a legal page), so both edges are then scaled down together.
 fn render_page_of(doc: &PdfDocument, page_index: u32, width: u32) -> Result<Vec<u8>> {
     let count = doc.PageCount()?;
     if count == 0 {
@@ -257,10 +262,22 @@ fn render_page_of(doc: &PdfDocument, page_index: u32, width: u32) -> Result<Vec<
     }
     let page = doc.GetPage(page_index.min(count - 1))?;
     let size = page.Size()?;
-    let (pw, ph) = (size.Width.max(1.0), size.Height.max(1.0));
-    let dw = width.max(1);
-    let dh = ((ph / pw) * dw as f32).round().max(1.0) as u32;
+    let (dw, dh) = width_fitted_dims(size.Width, size.Height, width);
     rasterize_page_to_png(&page, dw, dh)
+}
+
+/// The pixel size of a `pw` x `ph` page drawn `width` pixels wide, both edges capped at
+/// `MAX_DIM` with the aspect kept.
+fn width_fitted_dims(pw: f32, ph: f32, width: u32) -> (u32, u32) {
+    let cap = crate::decode::limits::MAX_DIM as f32;
+    let (pw, ph) = (pw.max(1.0), ph.max(1.0));
+    let dw = (width.max(1) as f32).min(cap);
+    let dh = (ph / pw) * dw;
+    let shrink = if dh > cap { cap / dh } else { 1.0 };
+    (
+        (dw * shrink).round().clamp(1.0, cap) as u32,
+        (dh * shrink).round().clamp(1.0, cap) as u32,
+    )
 }
 
 fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {

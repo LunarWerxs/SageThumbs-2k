@@ -308,19 +308,6 @@ pub fn extract_best(bytes: &[u8]) -> Option<crate::container::CoverOut> {
     }
 }
 
-/// Decode one Composite Image Block's channel planes into an RGB image.
-///
-/// Handles the two layouts these files actually use: 8-bit PALETTED (a single `COMPOSITE`
-/// channel indexing the sibling `COLOR` block's table) and 24-bit RGB (separate `RED`/`GREEN`/
-/// `BLUE` planes). Compression is LZ77 (zlib) or none. RLE is deliberately unhandled — no
-/// sample exercising it exists, and guessing at a codec that nothing verifies is worse than
-/// falling through to the JPEG carve.
-/// Walk the composite block's sub-blocks and collect its palette (8-bit paletted composites)
-/// and its up-to-4 decoded channel planes (`CHAN_COMPOSITE`/`RED`/`GREEN`/`BLUE`, indexed by
-/// channel type). A channel simply absent from the file is left `None` in the returned array
-/// — [`render_rgb`]'s depth-specific match decides whether that's fatal. `None` only for a
-/// hard parse failure: a truncated/oversized plane, or an RLE/unknown-compression channel
-/// this decoder doesn't attempt (the caller falls back to the JPEG carve for those).
 /// Read one `CHANNEL_BLOCK` sub-block's header (`chunk(4) compressedLen(4) uncompressedLen(4)
 /// bitmapType(2) channelType(2)`) and decode/copy its `px` bytes of plane data per
 /// `a.compression`. Returns `(channel type, decoded plane)`. `None` aborts the WHOLE walk in
@@ -342,6 +329,12 @@ fn read_channel_plane(b: &[u8], c: usize, a: &Attrs, px: usize) -> Option<(u16, 
     Some((ctype, raw))
 }
 
+/// Walk the composite block's sub-blocks and collect its palette (8-bit paletted composites)
+/// and its up-to-4 decoded channel planes (`CHAN_COMPOSITE`/`RED`/`GREEN`/`BLUE`, indexed by
+/// channel type). A channel simply absent from the file is left `None` in the returned array
+/// — [`render_rgb`]'s depth-specific match decides whether that's fatal. `None` only for a
+/// hard parse failure: a truncated/oversized plane, or an RLE/unknown-compression channel
+/// this decoder doesn't attempt (the caller falls back to the JPEG carve for those).
 fn collect_channel_planes<'a>(
     b: &'a [u8],
     content: usize,
@@ -444,6 +437,13 @@ fn fill_planar_rgb(rgb: &mut [u8], px: usize, chan: &[Option<Vec<u8>>; 4]) -> Op
     Some(())
 }
 
+/// Decode one Composite Image Block's channel planes into an RGB image.
+///
+/// Handles the two layouts these files actually use: 8-bit PALETTED (a single `COMPOSITE`
+/// channel indexing the sibling `COLOR` block's table) and 24-bit RGB (separate `RED`/`GREEN`/
+/// `BLUE` planes). Compression is LZ77 (zlib) or none. RLE is deliberately unhandled — no
+/// sample exercising it exists, and guessing at a codec that nothing verifies is worse than
+/// falling through to the JPEG carve.
 fn decode_channels(b: &[u8], content: usize, len: usize, a: &Attrs) -> Option<image::DynamicImage> {
     let px = (a.w as usize).checked_mul(a.h as usize)?;
     if px == 0 || px > MAX_PIXELS {

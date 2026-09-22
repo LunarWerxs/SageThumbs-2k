@@ -42,14 +42,6 @@ pub(in super::super) fn isobmff_color_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     walk_isobmff_colr(bytes, 0)
 }
 
-/// Does this ISOBMFF image advertise an HEVC auxiliary alpha item?
-///
-/// Microsoft's HEIC WIC codec can decode these files while silently flattening
-/// the auxiliary alpha plane. Decode paths that allow the Full install's external
-/// tier therefore use this cheap predicate to prefer ImageMagick before WIC.
-/// This is deliberately a bounded, association-aware box walk rather than a
-/// byte search: an exact `auxC` property must be assigned to an item by `ipma`,
-/// and that item must be an `auxl` auxiliary of the primary (`pitm`) item.
 /// Parse a complete ISOBMFF box sequence, retaining at most the small, bounded
 /// metadata tree `isobmff_has_hevc_aux_alpha` needs. A malformed sibling makes
 /// the whole predicate decline rather than attempting to recover into media
@@ -350,6 +342,14 @@ pub(super) fn isobmff_hevc_aux_alpha(bytes: &[u8]) -> Option<bool> {
     )
 }
 
+/// Does this ISOBMFF image advertise an HEVC auxiliary alpha item?
+///
+/// Microsoft's HEIC WIC codec can decode these files while silently flattening
+/// the auxiliary alpha plane. Decode paths that allow the Full install's external
+/// tier therefore use this cheap predicate to prefer ImageMagick before WIC.
+/// This is deliberately a bounded, association-aware box walk rather than a
+/// byte search: an exact `auxC` property must be assigned to an item by `ipma`,
+/// and that item must be an `auxl` auxiliary of the primary (`pitm`) item.
 pub(in super::super) fn isobmff_has_hevc_aux_alpha(bytes: &[u8]) -> bool {
     isobmff_hevc_aux_alpha(bytes).unwrap_or(false)
 }

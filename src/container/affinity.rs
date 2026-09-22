@@ -14,11 +14,10 @@ const PNG_SIG: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 const IEND: [u8; 8] = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 
 /// Cap the O(n·m) byte scan so a huge/hostile `.af` (often hundreds of MB)
-/// can't run away. The embedded preview sits near the start or end of a valid
-/// file, so 64 MiB comfortably covers real inputs while bounding pathological
-/// ones — both the signature search and each IEND search span stay within it.
-/// Derived from the canonical cover budget rather than a separately picked
-/// magic number.
+/// can't run away. Only the first 64 MiB are searched for the PNG signature,
+/// and each IEND search span extends at most a further 64 MiB, bounding
+/// pathological inputs. Derived from the canonical cover budget rather than a
+/// separately picked magic number.
 const MAX_SCAN: usize = super::MAX_COVER as usize * 2;
 
 /// True if `head` looks like an Affinity container.
@@ -32,8 +31,8 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut last_any: Option<&[u8]> = None; // fallback: last valid PNG
 
     // Bound the signature search to the first MAX_SCAN bytes so we can't walk
-    // an arbitrarily large file. The preview lives near the start; the end is
-    // still reachable because each IEND search below scans a MAX_SCAN window.
+    // an arbitrarily large file; a signature past that bound is never found,
+    // though each IEND search below still scans a MAX_SCAN window.
     let sig_limit = bytes.len().min(MAX_SCAN);
 
     let mut i = 0usize;

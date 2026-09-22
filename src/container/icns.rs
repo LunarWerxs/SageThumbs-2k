@@ -36,8 +36,8 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     // approaches the whole-file input ceiling (256 MiB) is handed straight to the decode tier,
     // well past the budget the rest of the family uses to bound decode CPU/memory up front.
     best_png
-        .or(best_jp2)
         .filter(|d| d.len() as u64 <= crate::container::MAX_COVER)
+        .or_else(|| best_jp2.filter(|d| d.len() as u64 <= crate::container::MAX_COVER))
         .map(|d| d.to_vec())
 }
 

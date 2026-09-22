@@ -127,7 +127,7 @@ fn append_difat_sector(
     sector_size: usize,
     fat_sectors: &mut Vec<u32>,
 ) -> Option<()> {
-    if *difat_hops >= MAX_SECTORS {
+    if *difat_hops >= MAX_SECTORS.min(bytes.len() / sector_size) {
         return None; // DIFAT chain longer than any real file could need: a cycle.
     }
     *difat_hops += 1;
@@ -143,19 +143,28 @@ fn append_difat_sector(
     Some(())
 }
 
-/// Read the FAT itself (concatenated u32 entries) from its sector list.
-fn read_fat(bytes: &[u8], fat_sectors: &[u32], sector_size: usize) -> Option<Vec<u32>> {
-    let mut fat: Vec<u32> = Vec::new();
-    for &fs in fat_sectors {
-        let sec = read_sector(bytes, fs, sector_size)?;
+/// Read a concatenated u32 table (the FAT or the mini-FAT) from a sector list.
+fn read_u32_table(
+    bytes: &[u8],
+    sectors: impl IntoIterator<Item = u32>,
+    sector_size: usize,
+) -> Option<Vec<u32>> {
+    let mut table: Vec<u32> = Vec::new();
+    for s in sectors {
+        let sec = read_sector(bytes, s, sector_size)?;
         for i in 0..sector_size / 4 {
-            fat.push(le32(sec, i * 4)?);
+            table.push(le32(sec, i * 4)?);
         }
-        if fat.len() > MAX_SECTORS {
+        if table.len() > MAX_SECTORS {
             return None;
         }
     }
-    Some(fat)
+    Some(table)
+}
+
+/// Read the FAT itself (concatenated u32 entries) from its sector list.
+fn read_fat(bytes: &[u8], fat_sectors: &[u32], sector_size: usize) -> Option<Vec<u32>> {
+    read_u32_table(bytes, fat_sectors.iter().copied(), sector_size)
 }
 
 /// A directory entry's (chain start sector, declared byte size).
@@ -271,18 +280,8 @@ fn build_minifat(
     sector_size: usize,
     first_minifat: u32,
 ) -> Option<Vec<u32>> {
-    let mut minifat: Vec<u32> = Vec::new();
     // The mini-FAT's own sector count isn't known ahead of the walk either.
-    for s in follow(first_minifat, fat, MAX_SECTORS)? {
-        let sec = read_sector(bytes, s, sector_size)?;
-        for i in 0..sector_size / 4 {
-            minifat.push(le32(sec, i * 4)?);
-        }
-        if minifat.len() > MAX_SECTORS {
-            return None;
-        }
-    }
-    Some(minifat)
+    read_u32_table(bytes, follow(first_minifat, fat, MAX_SECTORS)?, sector_size)
 }
 
 /// Read a stream whose declared size is below the mini-stream cutoff, via the

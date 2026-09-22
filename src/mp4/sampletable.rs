@@ -153,9 +153,6 @@ pub(super) fn stz2_size_of(full: &[u8], idx: usize) -> Option<u64> {
     }
 }
 
-/// Resolve sample `target` (0-based) to its absolute file byte offset via `stsc`
-/// (sample→chunk) + `stco`/`co64` (chunk→offset), summing the sizes of earlier samples sharing
-/// its chunk. Returns `(byte_offset, sample_description_index)`.
 /// Walk `stsc` (sample→chunk) run-length entries to find the 1-based chunk holding `target`,
 /// plus that chunk's `sample_description_index` and the index of its first sample. Returns
 /// `(chunk1, first_sample_of_chunk, desc)`.
@@ -273,6 +270,9 @@ pub(super) fn walk_to_sample_offset(
     Some(offset)
 }
 
+/// Resolve sample `target` (0-based) to its absolute file byte offset via `stsc`
+/// (sample→chunk) + `stco`/`co64` (chunk→offset), summing the sizes of earlier samples sharing
+/// its chunk. Returns `(byte_offset, sample_description_index)`.
 pub(super) fn sample_location(
     stsc: &[u8],
     (chunks, is64): (&[u8], bool),

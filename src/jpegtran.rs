@@ -266,14 +266,30 @@ fn apply_transform(comps: &mut [Comp], op: Op, width: usize, height: usize) -> (
     for c in comps.iter_mut() {
         let (gw, gh) = (c.grid_w, c.grid_h);
         let (ngw, ngh) = if transpose { (gh, gw) } else { (gw, gh) };
-        let mut nb = vec![[0i32; 64]; ngw * ngh];
-        for r in 0..gh {
-            for col in 0..gw {
-                let (nc, nr) = dst_pos(op, gw, gh, col, r);
-                nb[nr * ngw + nc] = xform_block(&c.blocks[r * gw + col], op);
+        // Permute and transform the blocks in place, following each destination
+        // cycle, so a second full-size grid is never live.
+        let n = gw * gh;
+        let mut done = vec![false; n];
+        for i in 0..n {
+            if done[i] {
+                continue;
+            }
+            let mut cur = i;
+            let mut carry = xform_block(&c.blocks[cur], op); // belongs at cur's dst
+            loop {
+                done[cur] = true;
+                let (nc, nr) = dst_pos(op, gw, gh, cur % gw, cur / gw);
+                let dst = nr * ngw + nc;
+                if dst == i {
+                    c.blocks[i] = carry;
+                    break;
+                }
+                let saved = c.blocks[dst];
+                c.blocks[dst] = carry;
+                carry = xform_block(&saved, op);
+                cur = dst;
             }
         }
-        c.blocks = nb;
         c.grid_w = ngw;
         c.grid_h = ngh;
         if transpose {

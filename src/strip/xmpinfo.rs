@@ -85,11 +85,11 @@ fn collect_people_in_form(packet: &str, form: &str, out: &mut Vec<String>) {
 fn clean(raw: &str) -> Option<String> {
     let s = raw
         .trim()
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
-        .replace("&apos;", "'");
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -104,7 +104,7 @@ fn clean(raw: &str) -> Option<String> {
 
 /// Pull the XMP packet out of whatever container `bytes` is, as text.
 ///
-/// Uses the `<?xpacket` / `x:xmpmeta` markers rather than per-format box walking:
+/// Uses the `x:xmpmeta` open/close markers rather than per-format box walking:
 /// XMP is stored as a literal XML packet in every one of these containers, so one
 /// scan covers JPEG APP1, PNG `iTXt`, WebP `XMP `, and the HEIC/AVIF `mime` item
 /// without four parsers that can each be wrong.

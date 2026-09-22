@@ -255,8 +255,8 @@ fn mr_context(first_refine: bool, neighbours: u32) -> usize {
     }
 }
 
-/// A decoded code-block: signed magnitudes on a `w` x `h` grid, plus how many magnitude
-/// bits were actually coded (the caller needs it to place the binary point).
+/// A decoded code-block: signed magnitudes on a `w` x `h` grid, plus the count of compressed
+/// bytes the MQ decoder consumed (diagnostic).
 pub(super) struct CodeBlockOut {
     pub coeffs: Vec<i32>,
     /// Compressed bytes the MQ decoder actually consumed. Diagnostic: a correct lossless
@@ -529,7 +529,6 @@ pub(super) fn decode_code_block(
 
     let mut mq = MqDecoder::new(data);
     let segsym = cblk_style & 0x20 != 0;
-    let vertical_causal = cblk_style & 0x08 != 0;
     let reset_ctx = cblk_style & 0x02 != 0;
 
     let total_planes = max_bitplanes - zero_bitplanes;
@@ -569,11 +568,6 @@ pub(super) fn decode_code_block(
             ),
         }
 
-        if vertical_causal {
-            // Stripe-causal context formation only changes which neighbours are visible.
-            // Our neighbour reads already stay inside the block, so nothing extra is needed
-            // for correctness of the common case.
-        }
         if reset_ctx {
             mq.reset_contexts();
         }

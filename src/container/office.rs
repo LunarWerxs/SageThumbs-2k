@@ -98,24 +98,17 @@ fn ooxml_thumbnail<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
 fn thumbnail_target(rels_xml: &[u8]) -> Option<String> {
     let xml = std::str::from_utf8(rels_xml).ok()?;
     for rel in xml.split("<Relationship") {
-        let is_thumb = attr(rel, "Type").is_some_and(|t| {
+        let is_thumb = xml_attr(rel, "Type").is_some_and(|t| {
             let t = t.trim_end_matches('/');
             t.ends_with("/thumbnail")
         });
         if is_thumb {
-            if let Some(t) = attr(rel, "Target") {
+            if let Some(t) = xml_attr(rel, "Target") {
                 return Some(t);
             }
         }
     }
     None
-}
-
-/// Read one XML attribute's value out of a tag's text. Accepts either quote style — XML
-/// permits both, and the thumbnail-relationship match previously tested for `'` as well,
-/// so honoring only `"` here would have quietly dropped support for single-quoted rels.
-fn attr(s: &str, key: &str) -> Option<String> {
-    xml_attr(s, key)
 }
 
 #[cfg(test)]

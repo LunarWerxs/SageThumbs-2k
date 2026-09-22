@@ -49,17 +49,21 @@ pub(super) fn decode_mesh_sniffed(bytes: &[u8]) -> Option<DynamicImage> {
 }
 
 /// Parse whichever mesh format the bytes are, or `None` when they're none of them.
-/// Order: PLY (magic) → ASCII STL ("solid"+"facet") → binary STL (its length equation)
+/// Order: PLY (magic) → binary STL (its length equation) → ASCII STL ("solid"+"facet")
 /// → OBJ (v/f line sniff). Public-in-crate so the fuzz harness can hit each branch.
 pub(crate) fn parse_mesh_sniffed(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     if bytes.starts_with(b"ply") {
         return parse_ply(bytes);
     }
-    if looks_like_ascii_stl(bytes) {
-        return parse_ascii_stl(bytes);
-    }
+    // Binary first: its exact-length equation is the stronger signal, and an ASCII STL
+    // fails it and falls through, whereas a binary STL whose 80-byte comment header
+    // happens to start with "solid" and contain "facet" would be misrouted if the ASCII
+    // probe ran first.
     if looks_like_binary_stl(bytes) {
         return parse_binary_stl(bytes);
+    }
+    if looks_like_ascii_stl(bytes) {
+        return parse_ascii_stl(bytes);
     }
     if looks_like_obj(bytes) {
         return parse_obj(bytes);
@@ -148,8 +152,8 @@ pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     Some(tris)
 }
 
-/// Push the three x/y/z tokens after a `vertex` keyword onto `cur`. `None` when a token
-/// is missing, unparseable or non-finite, matching the original `?`-chained behaviour.
+/// Push the up-to-three x/y/z tokens after a `vertex` keyword onto `cur`. `None` when a
+/// token is unparseable or non-finite; a short line pushes fewer than three values.
 fn parse_ascii_stl_vertex(rest: &str, cur: &mut Vec<f32>) -> Option<()> {
     for tok in rest.split_ascii_whitespace().take(3) {
         cur.push(tok.parse::<f32>().ok().filter(|v| v.is_finite())?);
@@ -186,6 +190,7 @@ fn parse_obj_vertex(rest: &str) -> Option<[f32; 3]> {
 /// 1-based, negative indices count from the end. Out-of-range/unparseable tokens drop.
 fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
     rest.split_ascii_whitespace()
+        .take(MAX_TRIS)
         .filter_map(|tok| {
             let first = tok.split('/').next()?;
             let i = first.parse::<i64>().ok()?;

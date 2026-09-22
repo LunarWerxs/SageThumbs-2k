@@ -52,8 +52,8 @@ mod tests {
     /// A seed that fails its own format's magic/entry check is worthless decoration (see
     /// `container::fuzzseed`'s doc for why this matters) — these targets take raw bytes with no
     /// magic gate at all, so the thing actually worth proving is that every target runs without
-    /// panicking on a starter set of inputs (empty, all-zero, all-0xFF, and a real element from
-    /// this file's own tests), i.e. that `targets()` is wired up and callable at all.
+    /// panicking on a starter set of inputs (empty, all-zero, all-0xFF), i.e. that `targets()` is
+    /// wired up and callable at all.
     #[test]
     fn every_target_survives_a_handful_of_degenerate_inputs() {
         for (name, f) in targets() {

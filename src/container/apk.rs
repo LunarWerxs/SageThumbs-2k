@@ -247,7 +247,7 @@ fn pick_wrapper_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<usize> {
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         let Ok(f) = zip.by_index(i) else { continue };
         let name = f.name();
-        if !ends_with_ci(name, ".apk") {
+        if !ends_with_ci(name, ".apk") || !is_shallow(name) {
             continue;
         }
         let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");

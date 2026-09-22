@@ -152,14 +152,6 @@ fn strip_by_extension(ext: &str, input: Bytes) -> Result<Vec<u8>> {
 /// The APP2 payload prefix of a Multi-Picture Format index (CIPA DC-007).
 const MPF_PREFIX: &[u8] = b"MPF\0";
 
-/// JPEG arm of [`strip_metadata`]: drop EXIF/IPTC/XMP/COM (APP1/APP13/COM), plus any C2PA
-/// "Content Credentials" JUMBF box (APP11), see [`jumbf`]. ICC (APP2) is deliberately kept.
-///
-/// A Multi-Picture Format file (an APP2 `MPF\0` index: iPhone HDR/Portrait, Pixel and
-/// Samsung Ultra HDR) is refused whole. The index records this image's byte length and
-/// the offsets of the pictures stored after its EOI; removing segments ahead of the scan
-/// moves every byte it points at while the index itself would be kept verbatim, and the
-/// result is written over the original. Same all-or-nothing rule as [`isobmff::strip`].
 /// The smallest EXIF that carries Orientation and nothing else: a little-endian TIFF header
 /// and one IFD0 entry (tag 0x0112, SHORT, count 1, value left-justified), 26 bytes.
 fn tiff_orientation_only(orientation: u32) -> Vec<u8> {
@@ -179,6 +171,14 @@ fn kept_orientation(bytes: &[u8]) -> Option<u32> {
     crate::decode::exif_orientation(bytes).filter(|o| (2..=8).contains(o))
 }
 
+/// JPEG arm of [`strip_metadata`]: drop EXIF/IPTC/XMP/COM (APP1/APP13/COM), plus any C2PA
+/// "Content Credentials" JUMBF box (APP11), see [`jumbf`]. ICC (APP2) is deliberately kept.
+///
+/// A Multi-Picture Format file (an APP2 `MPF\0` index: iPhone HDR/Portrait, Pixel and
+/// Samsung Ultra HDR) is refused whole. The index records this image's byte length and
+/// the offsets of the pictures stored after its EOI; removing segments ahead of the scan
+/// moves every byte it points at while the index itself would be kept verbatim, and the
+/// result is written over the original. Same all-or-nothing rule as [`isobmff::strip`].
 fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
     let orientation = kept_orientation(&input);
     let mut jpeg =

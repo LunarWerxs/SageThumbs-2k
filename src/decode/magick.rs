@@ -268,11 +268,12 @@ fn decode_via_magick_spec(
 
 /// Worst-case bytes the decode path's stdout can legitimately carry: every call site
 /// caps geometry at [`MAGICK_MAX_EDGE_PX`] (4096) before asking magick to write a PNG,
-/// so 4096x4096 raw RGBA is the ceiling with only framing overhead on top. Same value
-/// and reasoning as `flv.rs`'s `FLASH_PNG_CAP` for its sibling out-of-process harness.
-/// Without this, a starved-but-alive magick child could stream unbounded bytes into
-/// this process for the whole CPU/wall budget window below.
-const MAGICK_PNG_CAP: usize = 64 * 1024 * 1024;
+/// and the bundled build is Q16 and writes 16-BIT PNGs, so 4096x4096 16-bit RGBA
+/// (134 MiB) is the ceiling with framing overhead on top. Without this, a starved-but-
+/// alive magick child could stream unbounded bytes into this process for the whole
+/// CPU/wall budget window below.
+const MAGICK_PNG_CAP: usize =
+    (MAGICK_MAX_EDGE_PX * MAGICK_MAX_EDGE_PX * 4 * 2 + 16 * 1024 * 1024) as usize;
 
 /// Child-output cap for the FULL-FIDELITY paths (the PSD composite and the native RAW
 /// re-read), whose resize edge is MAX_DIM rather than 4096.
@@ -386,10 +387,14 @@ fn decode_via_magick_spec_alloc(
         return Err(Error::from(E_FAIL));
     };
     let input = bytes.to_vec();
-    let writer = std::thread::spawn(move || {
+    let Some(writer) = crate::safety::try_spawn("st2k-magick-stdin", move || {
         let _ = stdin.write_all(&input);
         // drop(stdin) here closes the pipe so ImageMagick sees EOF
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
 
     // Read stdout on its own thread; the main thread enforces the budget.
     let Some(stdout) = child.stdout.take() else {
@@ -400,18 +405,25 @@ fn decode_via_magick_spec_alloc(
         return Err(Error::from(E_FAIL));
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
+    let Some(reader) = crate::safety::try_spawn("st2k-magick-stdout", move || {
         let mut buf = Vec::new();
         // Capped so a hostile/misbehaving child can't balloon our memory before the
         // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
         let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
         let _ = tx.send(buf);
-    });
+    }) else {
+        let _ = child.kill();
+        let _ = writer.join();
+        let _ = child.wait();
+        return Err(Error::from(E_FAIL));
+    };
 
     // Drain stderr on its own thread too (capped) so a chatty/failing magick
     // can't fill the pipe and stall, and so we have its diagnostics on failure.
     let stderr = child.stderr.take();
-    let errdrain = stderr.map(|s| std::thread::spawn(move || drain_capped(s)));
+    // Without the thread there are no diagnostics; the budget still bounds the child.
+    let errdrain = stderr
+        .and_then(|s| crate::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
 
     let png = match await_magick_output(&mut child, &rx, budget.cpu, budget.wall) {
         Ok(buf) => buf,

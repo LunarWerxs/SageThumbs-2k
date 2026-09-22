@@ -131,30 +131,8 @@ pub(super) fn looks_like_raw_container(head: &[u8], raw_extension: bool) -> bool
             && (&head[8..12] == b"crx " || &head[8..12] == b"cr3 "))
 }
 
-/// Does this TIFF's IFD0 declare itself a REDUCED-RESOLUTION copy of another image in
-/// the file (`NewSubfileType` bit 0, tag 0xFE = 1)?
-///
-/// **This is the TIFF spec saying "I am not the main picture", and the `image` crate
-/// always decodes IFD0.** Camera RAW is where it bites: a Hasselblad `.3fr`, Kodak
-/// `.dcr`/`.kdc`, Epson `.erf`, Phase One `.fff` and Nikon `.nef` all put a small
-/// preview in IFD0 and the sensor data in SubIFDs. `image` decodes IFD0 happily, and
-/// because it is the FIRST tier nothing better ever ran: a 768x512 Kodak KDC
-/// thumbnailed from a 96x64 stamp, and a Kodak DCS760C `.dcr` from a 380x252
-/// placeholder that is **essentially black** — a black tile for a perfectly good photo,
-/// with every gate in the repo green (found 2026-08-21 by cross-checking the corpus
-/// against an independent decoder).
-///
-/// Deliberately NOT the same question as [`tiff_has_raw_ifd_marker`]: that one looks for
-/// CFA/DNG tags in IFD0 to recognise a RAW from a nameless shell stream, and these files
-/// keep their CFA tags in the SubIFDs, which is exactly why it did not catch them.
-///
-/// Value 2 (a page of a multi-page document) and 4 (transparency mask) are NOT reduced
-/// copies and must not match, or a normal multi-page TIFF would lose its fast tier.
-/// It walks IFD0 the same shape as its sibling below rather than sharing a helper: that
-/// one is fuzzed, load-bearing for the shell's nameless-stream routing, and asks a
-/// different question. Twenty checked lines cost less than restructuring it.
 /// Check one IFD0 entry for `tiff_ifd0_is_reduced`'s NewSubfileType marker. `Break(v)` means
-/// the tag was found and its reduced-resolution bit is `v`; `Continue` means keep scanning
+/// the scan ended with the reduced-resolution answer `v`; `Continue` means keep scanning
 /// the next entry (either this wasn't the tag, or its value was malformed/unreadable, which
 /// the original treated as "not this entry" via `continue` rather than aborting the scan).
 fn reduced_subfile_entry(
@@ -190,6 +168,28 @@ fn reduced_subfile_entry(
     }
 }
 
+/// Does this TIFF's IFD0 declare itself a REDUCED-RESOLUTION copy of another image in
+/// the file (`NewSubfileType` bit 0, tag 0xFE = 1)?
+///
+/// **This is the TIFF spec saying "I am not the main picture", and the `image` crate
+/// always decodes IFD0.** Camera RAW is where it bites: a Hasselblad `.3fr`, Kodak
+/// `.dcr`/`.kdc`, Epson `.erf`, Phase One `.fff` and Nikon `.nef` all put a small
+/// preview in IFD0 and the sensor data in SubIFDs. `image` decodes IFD0 happily, and
+/// because it is the FIRST tier nothing better ever ran: a 768x512 Kodak KDC
+/// thumbnailed from a 96x64 stamp, and a Kodak DCS760C `.dcr` from a 380x252
+/// placeholder that is **essentially black** — a black tile for a perfectly good photo,
+/// with every gate in the repo green (found 2026-08-21 by cross-checking the corpus
+/// against an independent decoder).
+///
+/// Deliberately NOT the same question as [`tiff_has_raw_ifd_marker`]: that one looks for
+/// CFA/DNG tags in IFD0 to recognise a RAW from a nameless shell stream, and these files
+/// keep their CFA tags in the SubIFDs, which is exactly why it did not catch them.
+///
+/// Value 2 (a page of a multi-page document) and 4 (transparency mask) are NOT reduced
+/// copies and must not match, or a normal multi-page TIFF would lose its fast tier.
+/// It walks IFD0 the same shape as its sibling above rather than sharing a helper: that
+/// one is fuzzed, load-bearing for the shell's nameless-stream routing, and asks a
+/// different question. Twenty checked lines cost less than restructuring it.
 pub(crate) fn tiff_ifd0_is_reduced(head: &[u8]) -> bool {
     // NOT extended to Phase One `.iiq` (TIFF + `IIII` at offset 8) or to a `SubIFDs` tag,
     // though both would be easy and both look right on paper. Measured A/B on 2026-08-21:

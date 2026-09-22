@@ -78,20 +78,6 @@ pub(super) unsafe fn wic_decode_with_thumbnail(
     wic_decode_frame(&factory, &frame, thumbnail_cx, bytes)
 }
 
-/// Decode straight off the FILE — WIC opens it itself, so nothing buffers the document.
-///
-/// Everything downstream is shared with [`wic_decode_with_thumbnail`]: the same frame path,
-/// the same `IWICBitmapScaler` (which already produces only the requested thumbnail pixels
-/// rather than a full-resolution copy), the same bomb guards and colour management. The ONLY
-/// difference is where the bytes come from, and that is the whole point: a document past
-/// [`super::limits::MAX_INPUT_BYTES`] is refused before any decoder sees it on the buffered
-/// path, so a 500 MB scan or panorama got the stock icon no matter what the OS could do
-/// with it.
-///
-/// `head` is a bounded PREFIX of the file, not the file: `wic_decode_frame` uses those bytes
-/// only to look for an ISOBMFF `colr` box (AVIF/HEIC wide-gamut), which lives near the start.
-/// A short read there just means we fall back to WIC's own colour context, exactly as the
-/// non-ISOBMFF formats already do.
 /// Decode straight off an EXISTING `IStream` -- the one the shell handed the provider.
 ///
 /// This is what makes the oversized rescue work in Explorer. A thumbnail provider is
@@ -101,8 +87,8 @@ pub(super) unsafe fn wic_decode_with_thumbnail(
 /// behaviour without knowing where the document lives. Combined with the scale-first ordering
 /// in [`wic_decode_frame`], the codec also decodes at reduced size.
 ///
-/// `head` is a bounded prefix for the ISOBMFF colour box, exactly as in [`wic_decode_path`];
-/// the caller reads it off the same stream and rewinds.
+/// `head` is a bounded prefix used for the ISOBMFF `colr` box and the JPEG APP2 ICC chain,
+/// exactly as in [`wic_decode_path`]; the caller reads it off the same stream and rewinds.
 pub(super) unsafe fn wic_decode_stream(
     stream: &windows::Win32::System::Com::IStream,
     thumbnail_cx: Option<u32>,
@@ -149,6 +135,20 @@ unsafe fn wic_frame_from_filename(
     decoder.GetFrame(0)
 }
 
+/// Decode straight off the FILE — WIC opens it itself, so nothing buffers the document.
+///
+/// Everything downstream is shared with [`wic_decode_with_thumbnail`]: the same frame path,
+/// the same `IWICBitmapScaler` (which already produces only the requested thumbnail pixels
+/// rather than a full-resolution copy), the same bomb guards and colour management. The ONLY
+/// difference is where the bytes come from, and that is the whole point: a document past
+/// [`super::limits::MAX_INPUT_BYTES`] is refused before any decoder sees it on the buffered
+/// path, so a 500 MB scan or panorama got the stock icon no matter what the OS could do
+/// with it.
+///
+/// `head` is a bounded PREFIX of the file, not the file: `wic_decode_frame` uses those bytes
+/// for the ISOBMFF `colr` box (AVIF/HEIC wide-gamut) and the JPEG APP2 ICC chain, both of
+/// which live near the start. A short read there just means we fall back to WIC's own colour
+/// context, exactly as the non-ISOBMFF formats already do.
 pub(super) unsafe fn wic_decode_path(
     path: &str,
     thumbnail_cx: Option<u32>,
@@ -421,10 +421,9 @@ pub(super) unsafe fn wic_decode_frame(
     // scaler in the chain), which is exactly why it survived: the full-fidelity paths pass
     // `thumbnail_cx = None` and stayed correct while the thumbnail path did not.
     //
-    // Re-assert the format on whatever we actually ended up with instead of trusting the
-    // scaler's contract. On the already-scaled image this second conversion is cheap, and
-    // it is a no-op (same object) whenever the source is already 32bppRGBA.
-    let source = ensure_rgba32(factory, source)?;
+    // The converter above has already normalised the scaler's output to 32bppRGBA, so
+    // `ensure_rgba32` only asserts that contract (in debug builds) rather than converting.
+    let source = ensure_rgba32(source)?;
     let img = rgba8_from_source(&source)?;
     // Color-manage to sRGB: HEIC/AVIF/RAW carry their wide-gamut profile (iPhone photos
     // are Display P3) in a WIC color context. The format converter above is pixel-format
@@ -446,7 +445,8 @@ pub(super) unsafe fn wic_decode_frame(
 }
 
 /// Size `source`, copy its pixels out and wrap them as an RGBA8 image (the tail of
-/// [`wic_decode_frame`], which has already normalised `source` through [`ensure_rgba32`]).
+/// [`wic_decode_frame`], which has already converted `source` to 32bppRGBA — [`ensure_rgba32`]
+/// just asserts that).
 unsafe fn rgba8_from_source(source: &IWICBitmapSource) -> Result<image::RgbaImage> {
     let (mut w, mut h) = (0u32, 0u32);
     source.GetSize(&mut w, &mut h)?;
@@ -456,31 +456,16 @@ unsafe fn rgba8_from_source(source: &IWICBitmapSource) -> Result<image::RgbaImag
     image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))
 }
 
-/// Guarantee `source` really is 32bppRGBA, converting it if it is not.
+/// Assert `source` really is 32bppRGBA.
 ///
-/// The one caller is the tail of [`wic_decode_frame`], which copies raw bytes out and hands
-/// them to `RgbaImage::from_raw` — a step that silently mis-orders channels for any other
-/// 32bpp layout. WIC components are free to return a different pixel format than the one
-/// they were given (the Fant scaler returns BGRA), so the format is checked here rather
-/// than assumed from whatever produced `source`.
-unsafe fn ensure_rgba32(
-    factory: &IWICImagingFactory,
-    source: IWICBitmapSource,
-) -> Result<IWICBitmapSource> {
-    if source.GetPixelFormat()? == GUID_WICPixelFormat32bppRGBA {
-        return Ok(source);
-    }
-    crate::safety::log_debug("decode: WIC source was not 32bppRGBA — converting");
-    let converter = factory.CreateFormatConverter()?;
-    converter.Initialize(
-        &source,
-        &GUID_WICPixelFormat32bppRGBA,
-        WICBitmapDitherTypeNone,
-        None,
-        0.0,
-        WICBitmapPaletteTypeCustom,
-    )?;
-    converter.cast()
+/// The one caller is the tail of [`wic_decode_frame`], whose converter has already produced
+/// 32bppRGBA for a buffer that is handed to `RgbaImage::from_raw` — a step that silently
+/// mis-orders channels for any other 32bpp layout. WIC components are free to return a
+/// different pixel format than the one they were given (the Fant scaler returns BGRA), so
+/// the converter's contract is asserted here in debug builds rather than assumed.
+unsafe fn ensure_rgba32(source: IWICBitmapSource) -> Result<IWICBitmapSource> {
+    debug_assert_eq!(source.GetPixelFormat()?, GUID_WICPixelFormat32bppRGBA);
+    Ok(source)
 }
 
 /// Is this a WIC pixel format that carries linear floats or halfs - i.e. the codec has handed

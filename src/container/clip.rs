@@ -5,7 +5,8 @@
 //! must actually read the database. Rather than add a SQLite dependency to this
 //! lean crate, we hand-roll a tiny READ-ONLY reader: walk the table b-tree leaf
 //! pages, reconstruct each cell's payload across the overflow chain, and return
-//! the largest PNG blob. No new deps. (Clip Studio writes PNGs the strict Rust
+//! the `CanvasPreview` preview PNG when its table resolves, falling back to the
+//! largest PNG blob only then. No new deps. (Clip Studio writes PNGs the strict Rust
 //! `png` decoder rejects but WIC accepts, so we return the bytes for the normal
 //! decoder tiers, not a trial decode.)
 //!
@@ -117,8 +118,6 @@ fn chnk_walk_fallback<R: Read + Seek>(r: &mut R, first: u64) -> Option<(u64, u64
     None
 }
 
-/// Read a chunk header at `pos`: 8-byte name + BE u64 data length. Leaves the
-/// reader positioned at the chunk's data.
 /// Test-only: does the `CSFCHUNK` wrapper resolve to a real SQLite payload?
 ///
 /// `container::fuzzseed` needs this to prove its seed reaches [`read_sqlite_preview`] instead of
@@ -144,6 +143,8 @@ pub(crate) fn locates_sqlite(bytes: &[u8]) -> bool {
             .is_some_and(|m| m == b"SQLite format 3\0")
 }
 
+/// Read a chunk header at `pos`: 8-byte name + BE u64 data length. Leaves the
+/// reader positioned at the chunk's data.
 fn chunk_header<R: Read + Seek>(r: &mut R, pos: u64) -> Option<([u8; 8], u64)> {
     r.seek(SeekFrom::Start(pos)).ok()?;
     let mut h = [0u8; 16];
@@ -254,30 +255,47 @@ fn collect_leaf_pages(db: &[u8], page_size: usize, root: usize, out: &mut Vec<us
     }
 }
 
+/// Walk a record's serial-type header from offset `o`, handing each column's
+/// serial type and data byte range in order to `pick`. Column data begins at
+/// `hdr_len`; stops early the first time `pick` returns `Some`.
+fn scan_columns<T>(
+    rec: &[u8],
+    hdr_len: usize,
+    mut o: usize,
+    mut pick: impl FnMut(u64, std::ops::Range<usize>) -> Option<T>,
+) -> Option<T> {
+    let mut data_off = hdr_len;
+    while o < hdr_len {
+        let (serial, sn) = varint(rec, o)?;
+        o += sn;
+        let size = serial_size(serial);
+        let end = data_off.checked_add(size)?;
+        if let Some(t) = pick(serial, data_off..end) {
+            return Some(t);
+        }
+        data_off = end;
+    }
+    None
+}
+
 /// The Nth column (0-based) of a decoded record: its serial type and data slice. Shared by
-/// [`find_png_blob`] (which wants the first PNG-shaped BLOB, at any index) and
-/// [`find_table_rootpage`] (which wants specific `sqlite_master` columns by position).
+/// [`find_table_rootpage`], which wants specific `sqlite_master` columns by position.
 fn nth_column(rec: &[u8], target: usize) -> Option<(u64, &[u8])> {
     let (hdr_len, n) = varint(rec, 0)?;
     let hdr_len = hdr_len as usize;
     if hdr_len > rec.len() {
         return None;
     }
-    let mut data_off = hdr_len;
-    let mut o = n;
     let mut idx = 0usize;
-    while o < hdr_len {
-        let (serial, sn) = varint(rec, o)?;
-        o += sn;
-        let size = serial_size(serial);
-        let end = data_off.checked_add(size)?;
-        if idx == target {
-            return Some((serial, rec.get(data_off..end)?));
-        }
-        data_off = end;
+    scan_columns(rec, hdr_len, n, |serial, range| {
+        let i = idx;
         idx += 1;
-    }
-    None
+        if i == target {
+            rec.get(range).map(|d| (serial, d))
+        } else {
+            None
+        }
+    })
 }
 
 /// SQLite TEXT columns use odd serial types >= 13.
@@ -585,23 +603,17 @@ fn cell_png(
 
 /// Walk a record's column serial types from header offset `o`, returning the first BLOB
 /// column that starts with the PNG magic. Column data begins at `hdr_len`.
-fn first_png_column(rec: &[u8], hdr_len: usize, mut o: usize) -> Option<Vec<u8>> {
-    let mut data_off = hdr_len;
-    while o < hdr_len {
-        let (serial, sn) = varint(rec, o)?;
-        o += sn;
-        let size = serial_size(serial);
-        let end = data_off.checked_add(size)?;
+fn first_png_column(rec: &[u8], hdr_len: usize, o: usize) -> Option<Vec<u8>> {
+    scan_columns(rec, hdr_len, o, |serial, range| {
         if serial >= 12 && serial % 2 == 0 {
             // BLOB column.
-            let blob = rec.get(data_off..end)?;
+            let blob = rec.get(range)?;
             if blob.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
                 return Some(blob.to_vec());
             }
         }
-        data_off = end;
-    }
-    None
+        None
+    })
 }
 
 /// Walk a record's serial types and return the first BLOB column that's a PNG.

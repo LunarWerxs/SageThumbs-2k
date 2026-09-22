@@ -131,6 +131,13 @@ pub(super) fn jpeg_icc(b: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     chunks.sort_by_key(|(seq, _)| *seq);
+    if !chunks
+        .iter()
+        .enumerate()
+        .all(|(i, (s, _))| *s as usize == i + 1)
+    {
+        return None;
+    }
     let total: usize = chunks.iter().map(|(_, d)| d.len()).sum();
     if total == 0 || total > MAX_ICC {
         return None;
@@ -391,9 +398,13 @@ fn cms_rgb8(
     cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
 ) -> DynamicImage {
     let (w, h) = buf.dimensions();
-    image::RgbImage::from_raw(w, h, cms(moxcms::Layout::Rgb, buf.into_raw()))
-        .map(DynamicImage::ImageRgb8)
-        .unwrap_or_else(|| DynamicImage::new_rgb8(w, h))
+    cms_rebuild(
+        w,
+        h,
+        cms(moxcms::Layout::Rgb, buf.into_raw()),
+        |w, h, raw| image::RgbImage::from_raw(w, h, raw).map(DynamicImage::ImageRgb8),
+        DynamicImage::new_rgb8,
+    )
 }
 
 /// [`cms_rgb8`] for an 8-bit RGBA buffer.
@@ -402,9 +413,25 @@ fn cms_rgba8(
     cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
 ) -> DynamicImage {
     let (w, h) = buf.dimensions();
-    image::RgbaImage::from_raw(w, h, cms(moxcms::Layout::Rgba, buf.into_raw()))
-        .map(DynamicImage::ImageRgba8)
-        .unwrap_or_else(|| DynamicImage::new_rgba8(w, h))
+    cms_rebuild(
+        w,
+        h,
+        cms(moxcms::Layout::Rgba, buf.into_raw()),
+        |w, h, raw| image::RgbaImage::from_raw(w, h, raw).map(DynamicImage::ImageRgba8),
+        DynamicImage::new_rgba8,
+    )
+}
+
+/// Rebuild a `DynamicImage` from `cms`' output, falling back to a blank image only when the
+/// constructor rejects the buffer — a length mismatch.
+fn cms_rebuild(
+    w: u32,
+    h: u32,
+    raw: Vec<u8>,
+    from_raw: impl Fn(u32, u32, Vec<u8>) -> Option<DynamicImage>,
+    fallback: impl Fn(u32, u32) -> DynamicImage,
+) -> DynamicImage {
+    from_raw(w, h, raw).unwrap_or_else(|| fallback(w, h))
 }
 
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /

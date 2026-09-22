@@ -3,9 +3,10 @@
 //! `.max` is an OLE2 compound file. The viewport thumbnail lives in the
 //! `\x05SummaryInformation` property set, property `PIDSI_THUMBNAIL` (PID `0x11`,
 //! type `VT_CF`). 3ds Max writes a CUSTOM payload (clipboard tag `0xFFFFFFFF`):
-//! a small header then top-down 24-bit RGB pixels at offset 98. Legacy Office /
-//! Visio / Publisher instead write a standard `CF_DIB` (tag `8`) — we handle that
-//! too, so this one extractor covers the whole OLE family. No SDK; uses the
+//! a small header then top-down 24-bit RGB pixels at offset 98. Legacy Office
+//! instead writes a standard `CF_DIB` (tag `8`), while Visio / Publisher wrap an
+//! EMF / WMF inside the same `0xFFFFFFFF` sentinel — we handle those too, so this
+//! one extractor covers the whole OLE family. No SDK; uses the
 //! pure-Rust [`super::ole`] reader. Verified against a real 3ds Max scene.
 
 use image::{DynamicImage, RgbImage};

@@ -143,11 +143,3 @@ pub(crate) mod fuzzapi {
         parse_apev2_cover(buf, count)
     }
 }
-
-// ── ASF / WMA album art ──────────────────────────────────────────────────────
-// A `.wma` stores cover art as a `WM/Picture` attribute inside the ASF Header
-// Object — in the Extended Content Description Object (value length is u16, so
-// only small covers) or the Metadata Library Object (data length is u32, the
-// usual home for full-size art). Both carry the same `WM/Picture` byte-array
-// struct. lofty can't even identify ASF, so we read just the (bounded) header
-// object and pull the picture ourselves. Mirrors the APEv2 hand-roll above.

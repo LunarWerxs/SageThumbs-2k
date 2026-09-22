@@ -4,6 +4,26 @@
 
 use super::*;
 
+/// Writes one 128-byte CFB directory entry: name@0, name length@64, type@66, colour@67,
+/// left/right/child siblings@68/72/76, start sector@116 and size@120.
+fn put_dir_entry(dir: &mut [u8], slot: usize, name: &str, kind: u8, start: u32, size: u64) {
+    const FREESECT: u32 = 0xFFFF_FFFF;
+    let base = slot * 128;
+    let utf16: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    for (i, c) in utf16.iter().enumerate() {
+        dir[base + i * 2..base + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
+    }
+    let name_len = (utf16.len() * 2) as u16;
+    dir[base + 64..base + 66].copy_from_slice(&name_len.to_le_bytes());
+    dir[base + 66] = kind; // 5 = root storage, 2 = stream
+    dir[base + 67] = 1; // colour: black
+    dir[base + 68..base + 72].copy_from_slice(&FREESECT.to_le_bytes()); // left sibling
+    dir[base + 72..base + 76].copy_from_slice(&FREESECT.to_le_bytes()); // right sibling
+    dir[base + 76..base + 80].copy_from_slice(&FREESECT.to_le_bytes()); // child
+    dir[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
+    dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
+}
+
 /// A minimal but real OLE/CFB compound file: 512-byte header, one FAT sector, one directory
 /// sector holding a Root Entry plus one named stream whose contents live in a third sector.
 ///
@@ -81,24 +101,8 @@ pub(super) fn synthetic_ole_named(stream_name: &str, payload: &[u8]) -> Vec<u8> 
 
     // Sector 1: the directory — four 128-byte entries, two of them used.
     let mut dir = vec![0u8; SECTOR];
-    let mut entry = |slot: usize, name: &str, kind: u8, start: u32, size: u64| {
-        let base = slot * 128;
-        let utf16: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        for (i, c) in utf16.iter().enumerate() {
-            dir[base + i * 2..base + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
-        }
-        let name_len = (utf16.len() * 2) as u16;
-        dir[base + 64..base + 66].copy_from_slice(&name_len.to_le_bytes());
-        dir[base + 66] = kind; // 5 = root storage, 2 = stream
-        dir[base + 67] = 1; // colour: black
-        dir[base + 68..base + 72].copy_from_slice(&FREESECT.to_le_bytes()); // left sibling
-        dir[base + 72..base + 76].copy_from_slice(&FREESECT.to_le_bytes()); // right sibling
-        dir[base + 76..base + 80].copy_from_slice(&FREESECT.to_le_bytes()); // child
-        dir[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
-        dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
-    };
-    entry(0, "Root Entry", 5, ENDOFCHAIN, 0);
-    entry(1, stream_name, 2, FIRST_DATA, stream_len as u64);
+    put_dir_entry(&mut dir, 0, "Root Entry", 5, ENDOFCHAIN, 0);
+    put_dir_entry(&mut dir, 1, stream_name, 2, FIRST_DATA, stream_len as u64);
     // Root's child points at the stream entry, which is how the walk finds it.
     dir[76..80].copy_from_slice(&1u32.to_le_bytes());
     for slot in 2..4usize {
@@ -187,27 +191,40 @@ pub(super) fn synthetic_msg() -> Vec<u8> {
     // Sector 1: the directory. Slots 1 and 2 deliberately share ATTACH_NAME — that duplicate
     // is what `read_streams` exists for and what `read_stream` would stop at.
     let mut dir = vec![0u8; SECTOR];
-    let mut entry = |slot: usize, name: &str, kind: u8, start: u32, size: u64| {
-        let base = slot * 128;
-        let utf16: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        for (i, c) in utf16.iter().enumerate() {
-            dir[base + i * 2..base + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
-        }
-        dir[base + 64..base + 66].copy_from_slice(&((utf16.len() * 2) as u16).to_le_bytes());
-        dir[base + 66] = kind; // 5 = root storage, 2 = stream
-        dir[base + 67] = 1; // colour: black
-        for off in [68, 72, 76] {
-            dir[base + off..base + off + 4].copy_from_slice(&FREESECT.to_le_bytes());
-        }
-        dir[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
-        dir[base + 120..base + 128].copy_from_slice(&size.to_le_bytes());
-    };
     // The root's start sector IS the ministream, and its size is how far into it a mini
     // sector may be read from — both are file-supplied numbers the slicing trusts.
-    entry(0, "Root Entry", 5, MINISTREAM_SECTOR, SECTOR as u64);
-    entry(1, ATTACH_NAME, 2, 0, (mini_payloads[0].len() * 2) as u64);
-    entry(2, ATTACH_NAME, 2, 1, (mini_payloads[1].len() * 2) as u64);
-    entry(3, SUBJECT_NAME, 2, 2, (mini_payloads[2].len() * 2) as u64);
+    put_dir_entry(
+        &mut dir,
+        0,
+        "Root Entry",
+        5,
+        MINISTREAM_SECTOR,
+        SECTOR as u64,
+    );
+    put_dir_entry(
+        &mut dir,
+        1,
+        ATTACH_NAME,
+        2,
+        0,
+        (mini_payloads[0].len() * 2) as u64,
+    );
+    put_dir_entry(
+        &mut dir,
+        2,
+        ATTACH_NAME,
+        2,
+        1,
+        (mini_payloads[1].len() * 2) as u64,
+    );
+    put_dir_entry(
+        &mut dir,
+        3,
+        SUBJECT_NAME,
+        2,
+        2,
+        (mini_payloads[2].len() * 2) as u64,
+    );
     dir[76..80].copy_from_slice(&1u32.to_le_bytes()); // root's child -> slot 1
 
     // Order IS the sector numbering the header and the entries above point at:

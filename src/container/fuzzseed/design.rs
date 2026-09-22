@@ -147,9 +147,9 @@ pub(super) fn synthetic_c4d(gap: usize, preview: &[u8], swatch: &[u8]) -> Vec<u8
 }
 
 /// Deflate `data` and return the compressed bytes, or an empty `Vec` on the (practically
-/// unreachable) encoder-write failure — avoids `unwrap` in non-test code the way every other
-/// builder in this file does (`write_to(...)` ignored, `unwrap_or_default()`), since this
-/// function itself is NOT `#[cfg(test)]` and the crate warns on `unwrap_used`.
+/// unreachable) encoder-write failure — avoids `unwrap` the way every other builder in this
+/// file does (`write_to(...)` ignored, `unwrap_or_default()`), keeping the `unwrap_used` lint
+/// happy even though this `#![cfg(test)]` module would not require it.
 pub(super) fn zlib_compress(data: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
     let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
