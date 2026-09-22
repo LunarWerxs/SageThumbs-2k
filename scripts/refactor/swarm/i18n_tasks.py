@@ -36,6 +36,9 @@ pass them to `apply` as an overrides file.
 every locale has every key, the same {placeholders} as English, the ellipsis / blank lines /
 "SageThumbs 2K" the English has, no key already in the file, and no BOM. Then run
 `pwsh scripts/check-locale-keys.ps1`. Stdlib only; a workdir under `tmp/` is gitignored.
+
+The three worker prompts are str.format templates in `i18n_prompts.md` beside this script,
+one `<!-- prompt: NAME -->` section each.
 """
 
 import json
@@ -47,6 +50,15 @@ import tomllib
 REPO = pathlib.Path(__file__).resolve().parents[3]
 LOC = REPO / "assets" / "locales"
 PH = re.compile(r"\{[a-z_:0-9]+\}")
+_SECTIONS = re.split(
+    r"^<!-- prompt: (\w+) -->\n",
+    (pathlib.Path(__file__).with_name("i18n_prompts.md")).read_text(encoding="utf-8"),
+    flags=re.M,
+)
+# Each section minus the one line break that separates it from the next marker.
+PROMPTS = {name: text[:-1] for name, text in zip(_SECTIONS[1::2], _SECTIONS[2::2])}
+# TOML basic-string escapes; any other control character becomes \uXXXX.
+TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t"}
 REFERENCE = [
     "menu_upload", "btn_copy", "btn_close", "btn_edit_upload_hosts", "tip_edit_upload_hosts",
     "up_caption_file", "up_done_one", "up_busy_many", "tray_settings", "licence_state_trial",
@@ -91,22 +103,12 @@ def cmd_build(keys_file: str, workdir: str) -> None:
             f"- {k}: {loc[k]!r} / {en[k]!r}" for k in REFERENCE if k in loc and k in en
         )
         items = [{"key": k, "english": en[k], "what_it_is": context[k]} for k in keys]
-        prompt = (
-            f"Translate UI strings for SageThumbs 2K, a free Windows image-thumbnail and "
-            f"screenshot tool, into {name} (locale code {code}).\n\n"
-            "Rules:\n"
-            "- Keep every {placeholder} EXACTLY, same spelling, each exactly once; you may move "
-            "them to fit the grammar.\n"
-            "- Match the wording this locale ALREADY uses (examples below) for the app's terms "
-            "and for punctuation such as the ellipsis and em dash.\n"
-            "- Plain, friendly, short UI language; no marketing tone.\n"
-            "- Keep any line breaks (including blank lines) where the English has them.\n"
-            "- Return the text only, no surrounding quotes.\n\n"
-            f"Existing {name} strings in this app (key: {name} / English):\n{ref}\n\n"
-            "Strings to translate (JSON):\n"
-            + json.dumps(items, ensure_ascii=False, indent=1)
-            + f"\n\nSubmit an object with exactly these {len(keys)} keys, each mapped to its "
-            "translation."
+        prompt = PROMPTS["build"].format(
+            name=name,
+            code=code,
+            ref=ref,
+            items=json.dumps(items, ensure_ascii=False, indent=1),
+            count=len(keys),
         )
         schema = {
             "type": "object",
@@ -126,15 +128,9 @@ def cmd_review(workdir: str) -> None:
     out = []
     for t in tasks:
         keys = t["schema"]["required"]
-        prompt = (
-            "You are reviewing a translation of UI strings. Below is the translation brief, then "
-            "the translation produced. Judge ONLY real problems: a wrong or misleading meaning, "
-            "a grammatical error, a lost or altered {placeholder}, an abbreviation a native "
-            "speaker would not recognise, or wording that contradicts the app's existing terms "
-            "shown in the brief. Do NOT rewrite for taste. For each real problem give the full "
-            "corrected string. If everything is fine, return an empty fixes list.\n\n"
-            "=== BRIEF ===\n" + t["prompt"] + "\n\n=== TRANSLATION PRODUCED ===\n"
-            + json.dumps(first[t["id"]]["data"], ensure_ascii=False, indent=1)
+        prompt = PROMPTS["review"].format(
+            brief=t["prompt"],
+            translation=json.dumps(first[t["id"]]["data"], ensure_ascii=False, indent=1),
         )
         fix = {
             "type": "object",
@@ -174,17 +170,13 @@ def cmd_judge(workdir: str) -> None:
     brief = {t["id"]: t["prompt"] for t in read_json(work / "tasks.json")}
     out = []
     for (code, key), (original, f) in proposed_fixes(work).items():
-        prompt = (
-            "A UI string was translated, then a reviewer proposed a correction. Decide whether "
-            "the ORIGINAL translation contains a real error a native speaker would object to "
-            "(wrong meaning, grammar error, lost placeholder, unrecognisable abbreviation, or a "
-            "term that contradicts the app's existing wording in the brief). Stylistic "
-            "preference is NOT an error. The correction must itself be correct, keep every "
-            "{placeholder}, and not duplicate words. Answer use_correction ONLY if the original "
-            "is really wrong AND the correction is right; otherwise keep_original.\n\n"
-            f"=== BRIEF ===\n{brief[code]}\n\n=== THE STRING ===\nkey: {key}\n"
-            f"English: {en[key]!r}\nORIGINAL: {original!r}\n"
-            f"Claimed problem: {f['problem']}\nCorrection: {f['corrected']!r}\n"
+        prompt = PROMPTS["judge"].format(
+            brief=brief[code],
+            key=key,
+            english=en[key],
+            original=original,
+            problem=f["problem"],
+            corrected=f["corrected"],
         )
         schema = {
             "type": "object",
@@ -217,22 +209,14 @@ def cmd_confirmed(workdir: str) -> None:
         print(f"{code} {key}\n  was: {original}\n  fix: {f['corrected']}\n  why: {d['reason']}")
 
 
+def toml_escape(c: str) -> str:
+    if c in TOML_ESCAPES:
+        return TOML_ESCAPES[c]
+    return f"\\u{ord(c):04X}" if ord(c) < 0x20 or ord(c) == 0x7F else c
+
+
 def toml_basic(s: str) -> str:
-    out = []
-    for c in s:
-        if c == "\\":
-            out.append("\\\\")
-        elif c == '"':
-            out.append('\\"')
-        elif c == "\n":
-            out.append("\\n")
-        elif c == "\t":
-            out.append("\\t")
-        elif ord(c) < 0x20 or ord(c) == 0x7F:
-            out.append(f"\\u{ord(c):04X}")
-        else:
-            out.append(c)
-    return '"' + "".join(out) + '"'
+    return '"' + "".join(map(toml_escape, s)) + '"'
 
 
 def problems(data: dict, en: dict, existing: dict) -> list[str]:
