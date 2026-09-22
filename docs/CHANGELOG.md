@@ -11,7 +11,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **Uploaded links now say when they expire.** The free upload hosts delete files on their own
   schedule, from 3 hours (uguu.se) and 72 hours (litterbox) to 3-100 days depending on size
-  (x0.at) or never (catbox.moe), and a link never says which. The upload window now shows under
+  (x0.at), while catbox.moe sets no date and only removes files nobody has opened for 2 years.
+  A link never says which. The upload window now shows under
   each link when its host deletes it, and a new **Recent uploads** list keeps every link you
   uploaded with the time it has left, or when it expired. Open it from the upload window,
   Settings > Screenshots, or the tray menu. `st2k upload` prints the expiry too, and

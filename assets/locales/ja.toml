@@ -739,13 +739,11 @@ licence_check_none = "このパソコンにビジネスライセンスがあり�
 
 # Upload expiry and the Recent uploads list (2026-09-21).
 up_expires = "{date} に期限切れ（残り {left}）"
-up_permanent = "有効期限なし（このホストはファイルを永久に保存します）"
 up_hist_caption = "SageThumbs 2K — 最近のアップロード"
 up_hist_heading = "アップロードしたリンク（新しい順）。コピーは、期限切れになっていないすべてのリンクをコピーします。"
 up_hist_empty = "まだ何もアップロードされていません。\n\nSageThumbs 2K でアップロードしたリンクはすべてここに表示され、ホストがファイルを削除するまでの残り時間もわかります。"
 up_hist_left = "残り {left}（{date} まで）"
 up_hist_expired = "{date} に期限切れ"
-up_hist_permanent = "有効期限なし"
 up_hist_unknown = "有効期限不明（自分のアップロード先ホスト）"
 up_hist_uploaded = "{date} にアップロード"
 btn_recent_uploads = "最近のアップロード…"
@@ -756,3 +754,6 @@ dur_dh = "{d} 日 {h} 時間"
 dur_h = "{h} 時間"
 dur_hm = "{h} 時間 {m} 分"
 dur_m = "{m} 分"
+
+up_no_expiry = "有効期限なし（2年間誰も開かない場合のみ削除されます）"
+up_hist_no_expiry = "有効期限なし（2年間未開封で削除）"

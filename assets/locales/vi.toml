@@ -736,13 +736,11 @@ licence_check_none = "Không có giấy phép doanh nghiệp nào trên máy tí
 
 # Upload expiry and the Recent uploads list (2026-09-21).
 up_expires = "Hết hạn {date} (còn {left})"
-up_permanent = "Không có ngày hết hạn (máy chủ này giữ tệp vĩnh viễn)"
 up_hist_caption = "SageThumbs 2K — Tải lên gần đây"
 up_hist_heading = "Các liên kết bạn đã tải lên, mới nhất trước. Sao chép sẽ sao chép mọi liên kết chưa hết hạn."
 up_hist_empty = "Chưa tải lên gì.\n\nMọi liên kết bạn tải lên bằng SageThumbs 2K đều được liệt kê ở đây, kèm thời gian còn lại trước khi máy chủ xóa tệp."
 up_hist_left = "Còn {left}, đến {date}"
 up_hist_expired = "Đã hết hạn {date}"
-up_hist_permanent = "Không có ngày hết hạn"
 up_hist_unknown = "Không rõ ngày hết hạn (máy chủ tải lên của riêng bạn)"
 up_hist_uploaded = "đã tải lên {date}"
 btn_recent_uploads = "Tải lên gần đây…"
@@ -753,3 +751,6 @@ dur_dh = "{d} ngày {h} giờ"
 dur_h = "{h} giờ"
 dur_hm = "{h} giờ {m} phút"
 dur_m = "{m} phút"
+
+up_no_expiry = "Không có ngày hết hạn (chỉ bị xóa nếu không ai mở trong 2 năm)"
+up_hist_no_expiry = "Không có ngày hết hạn (bị xóa sau 2 năm không mở)"

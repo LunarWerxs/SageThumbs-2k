@@ -247,7 +247,7 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   and copies all the links. A small **"Uploading…" indicator** shows while the transfer
   runs, so a multi-second upload never looks like a dead click.
   **Every link says when it expires.** Hosts keep files for anything from a few hours to
-  forever, so the result window shows under each link when its host deletes it, and
+  years, so the result window shows under each link when its host deletes it, and
   **Recent uploads** (the button in that window, Settings ▸ Screenshots, the tray menu, or
   `st2k upload-history`) lists every link you uploaded with the time it has left, or when it
   expired. The expiry comes from each host's published policy at the moment of upload; a

@@ -738,13 +738,11 @@ licence_check_none = "इस कंप्यूटर के लिए कोई
 
 # Upload expiry and the Recent uploads list (2026-09-21).
 up_expires = "{date} को समाप्त होगा ({left} में)"
-up_permanent = "कोई समाप्ति तिथि नहीं (यह होस्ट फ़ाइलें स्थायी रूप से रखता है)"
 up_hist_caption = "SageThumbs 2K — हाल के अपलोड"
 up_hist_heading = "आपके अपलोड किए लिंक, नवीनतम पहले। \"कॉपी करें\" वे सभी लिंक कॉपी करता है जो समाप्त नहीं हुए।"
 up_hist_empty = "अभी तक कुछ अपलोड नहीं हुआ।\n\nSageThumbs 2K से आप जो भी लिंक अपलोड करते हैं, वह यहाँ दिखता है — साथ में यह भी कि होस्ट फ़ाइल हटाने से पहले कितना समय बचा है।"
 up_hist_left = "{left} शेष, {date} तक"
 up_hist_expired = "{date} को समाप्त"
-up_hist_permanent = "कोई समाप्ति तिथि नहीं"
 up_hist_unknown = "समाप्ति अज्ञात (आपका अपना अपलोड होस्ट)"
 up_hist_uploaded = "अपलोड किया {date}"
 btn_recent_uploads = "हाल के अपलोड…"
@@ -755,3 +753,6 @@ dur_dh = "{d} दिन {h} घं"
 dur_h = "{h} घं"
 dur_hm = "{h} घं {m} मि"
 dur_m = "{m} मि"
+
+up_no_expiry = "कोई समाप्ति तिथि नहीं (केवल तभी हटाई जाएगी जब कोई इसे 2 वर्ष तक न खोले)"
+up_hist_no_expiry = "कोई समाप्ति तिथि नहीं (2 वर्ष तक न खोलने पर हटाई जाएगी)"

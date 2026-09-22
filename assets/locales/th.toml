@@ -733,13 +733,11 @@ licence_check_none = "ไม่มีใบอนุญาตทางธุร�
 
 # Upload expiry and the Recent uploads list (2026-09-21).
 up_expires = "หมดอายุ {date} (อีก {left})"
-up_permanent = "ไม่มีวันหมดอายุ (โฮสต์นี้เก็บไฟล์ถาวร)"
 up_hist_caption = "SageThumbs 2K — การอัปโหลดล่าสุด"
 up_hist_heading = "ลิงก์ที่คุณอัปโหลด เรียงใหม่สุดก่อน คัดลอกจะคัดลอกทุกลิงก์ที่ยังไม่หมดอายุ"
 up_hist_empty = "ยังไม่มีการอัปโหลด\n\nทุกลิงก์ที่คุณอัปโหลดด้วย SageThumbs 2K จะแสดงที่นี่ พร้อมเวลาที่เหลือก่อนที่โฮสต์จะลบไฟล์"
 up_hist_left = "เหลืออีก {left} ถึง {date}"
 up_hist_expired = "หมดอายุแล้ว {date}"
-up_hist_permanent = "ไม่มีวันหมดอายุ"
 up_hist_unknown = "ไม่ทราบวันหมดอายุ (โฮสต์อัปโหลดของคุณเอง)"
 up_hist_uploaded = "อัปโหลดเมื่อ {date}"
 btn_recent_uploads = "การอัปโหลดล่าสุด…"
@@ -750,3 +748,6 @@ dur_dh = "{d} วัน {h} ชม."
 dur_h = "{h} ชม."
 dur_hm = "{h} ชม. {m} นาที"
 dur_m = "{m} นาที"
+
+up_no_expiry = "ไม่มีวันหมดอายุ (จะถูกลบก็ต่อเมื่อไม่มีใครเปิดดูเป็นเวลา 2 ปี)"
+up_hist_no_expiry = "ไม่มีวันหมดอายุ (ลบหลังไม่ได้เปิดดู 2 ปี)"

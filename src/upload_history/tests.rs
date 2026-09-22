@@ -24,7 +24,7 @@ fn scratch(tag: &str) -> PathBuf {
 
 #[test]
 fn a_line_round_trips_every_expiry_kind() {
-    for expires in [Expiry::Never, Expiry::Unknown, Expiry::At(1_758_000_000)] {
+    for expires in [Expiry::NoDate, Expiry::Unknown, Expiry::At(1_758_000_000)] {
         let e = entry(1_757_000_000, expires, "https://litter.catbox.moe/abc.png");
         assert_eq!(parse_line(&format_line(&e)), Some(e));
     }
@@ -32,7 +32,7 @@ fn a_line_round_trips_every_expiry_kind() {
 
 #[test]
 fn control_characters_cannot_split_a_line_or_shift_its_columns() {
-    let mut e = entry(1, Expiry::Never, "https://x0.at/a.png");
+    let mut e = entry(1, Expiry::NoDate, "https://x0.at/a.png");
     e.name = "evil\tname\r\nwith breaks.png".to_string();
     let line = format_line(&e);
     assert!(!line.contains(['\r', '\n']));
@@ -54,7 +54,7 @@ fn malformed_lines_are_skipped_not_fatal() {
                 1\t2\thost\tjavascript:alert(1)\tn\n\
                 1\t2\thost\n\
                 \n\
-                5\tnever\tcatbox.moe\thttps://files.catbox.moe/x.png\tx.png\r\n";
+                5\tnodate\tcatbox.moe\thttps://files.catbox.moe/x.png\tx.png\r\n";
     let got = parse(text);
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0].url, "https://files.catbox.moe/x.png");
@@ -75,7 +75,7 @@ fn a_line_without_a_name_still_parses() {
 fn parse_reads_newest_first_and_keeps_at_most_keep() {
     let mut text = String::new();
     for i in 0..(KEEP as u64 + 7) {
-        let e = entry(i, Expiry::Never, &format!("https://x0.at/{i}.png"));
+        let e = entry(i, Expiry::NoDate, &format!("https://x0.at/{i}.png"));
         text.push_str(&format_line(&e));
         text.push('\n');
     }
@@ -89,7 +89,7 @@ fn parse_reads_newest_first_and_keeps_at_most_keep() {
 fn record_appends_behind_a_header_and_load_reads_it_back() {
     let path = scratch("record");
     let a = entry(10, Expiry::At(20), "https://litter.catbox.moe/a.png");
-    let b = entry(11, Expiry::Never, "https://files.catbox.moe/b.png");
+    let b = entry(11, Expiry::NoDate, "https://files.catbox.moe/b.png");
     assert!(record_at(&path, &a));
     assert!(record_at(&path, &b));
     let text = std::fs::read_to_string(&path).expect("written");
@@ -105,7 +105,7 @@ fn record_trims_to_the_newest_keep_once_the_file_doubles() {
     for i in 0..(2 * KEEP as u64 + 1) {
         assert!(record_at(
             &path,
-            &entry(i, Expiry::Never, &format!("https://x0.at/{i}.png"))
+            &entry(i, Expiry::NoDate, &format!("https://x0.at/{i}.png"))
         ));
     }
     let text = std::fs::read_to_string(&path).expect("written");
@@ -131,8 +131,8 @@ fn status_counts_down_then_expires() {
     assert_eq!(e.status(200), Status::Expired(200));
     assert!(!e.is_live(200));
     assert_eq!(
-        entry(1, Expiry::Never, "https://a.b/c").status(u64::MAX),
-        Status::Permanent
+        entry(1, Expiry::NoDate, "https://a.b/c").status(u64::MAX),
+        Status::NoExpiry
     );
     assert!(entry(1, Expiry::Unknown, "https://a.b/c").is_live(u64::MAX));
 }
@@ -144,8 +144,8 @@ fn expiry_follows_the_hosts_retention() {
         Expiry::At(4600)
     );
     assert_eq!(
-        Expiry::from_retention(Retention::Permanent, 1000),
-        Expiry::Never
+        Expiry::from_retention(Retention::NoExpiry, 1000),
+        Expiry::NoDate
     );
     assert_eq!(
         Expiry::from_retention(Retention::Unknown, 1000),
@@ -204,8 +204,8 @@ fn status_text_en_says_each_state() {
     );
     assert!(status_text_en(&live, now + 4 * 3600).starts_with("expired "));
     assert_eq!(
-        status_text_en(&entry(1, Expiry::Never, "https://a.b/c"), now),
-        "no expiry date"
+        status_text_en(&entry(1, Expiry::NoDate, "https://a.b/c"), now),
+        "no expiry date (removed after 2 years unopened)"
     );
     assert!(status_text_en(&entry(1, Expiry::Unknown, "https://a.b/c"), now).contains("unknown"));
 }

@@ -2,7 +2,8 @@
 //! each one has left before its host deletes it.
 //!
 //! Upload hosts range from three hours (uguu.se) through 72 hours (litterbox) and ~100 days
-//! (x0.at, by size) to permanent (catbox.moe), and the link carries no hint of which, so a
+//! (x0.at, by size) to no expiry date (catbox.moe, which removes a file only after 2 years
+//! without a view), and the link carries no hint of which, so a
 //! link shared last week could be dead or good for months with nothing to tell them apart. A
 //! user asked for a countdown on the link's page (2026-09-21); that page is the host's, so the
 //! countdown lives here instead, fed by the list every upload writes
@@ -43,13 +44,13 @@ pub(crate) struct ExpiryWords<'a> {
     /// Under a fresh link: "Expires {date} (in {left})".
     pub(crate) expires: &'a str,
     /// Under a fresh link to a host with no expiry.
-    pub(crate) permanent: &'a str,
+    pub(crate) no_expiry: &'a str,
     /// In the list: "{left} left, until {date}".
     pub(crate) left: &'a str,
     /// In the list: "Expired {date}".
     pub(crate) expired: &'a str,
     /// In the list: a host with no expiry.
-    pub(crate) no_expiry: &'a str,
+    pub(crate) list_no_expiry: &'a str,
     /// In the list: a custom host whose policy we don't know.
     pub(crate) unknown: &'a str,
     /// In the list: "uploaded {date}".
@@ -68,10 +69,10 @@ impl ExpiryWords<'static> {
                 minutes: t("dur_m"),
             },
             expires: t("up_expires"),
-            permanent: t("up_permanent"),
+            no_expiry: t("up_no_expiry"),
             left: t("up_hist_left"),
             expired: t("up_hist_expired"),
-            no_expiry: t("up_hist_permanent"),
+            list_no_expiry: t("up_hist_no_expiry"),
             unknown: t("up_hist_unknown"),
             uploaded: t("up_hist_uploaded"),
         }
@@ -86,7 +87,7 @@ fn status_words(e: &Entry, now: u64, w: &ExpiryWords) -> String {
             .replace("{left}", &duration_text(left, &w.dur))
             .replace("{date}", &local_datetime(now.saturating_add(left))),
         Status::Expired(at) => w.expired.replace("{date}", &local_datetime(at)),
-        Status::Permanent => w.no_expiry.to_string(),
+        Status::NoExpiry => w.list_no_expiry.to_string(),
         Status::Unknown => w.unknown.to_string(),
     }
 }
@@ -185,7 +186,7 @@ pub(crate) fn sample_entries(now: u64) -> Vec<Entry> {
         ),
         e(
             86_400,
-            Expiry::Never,
+            Expiry::NoDate,
             "catbox.moe",
             "https://files.catbox.moe/9f2kqe.png",
             "logo-final.png",
@@ -246,10 +247,10 @@ mod tests {
         ExpiryWords {
             dur: ENGLISH,
             expires: "Expires {date} (in {left})",
-            permanent: "No expiry date",
+            no_expiry: "No expiry date",
             left: "{left} left, until {date}",
             expired: "Expired {date}",
-            no_expiry: "No expiry date",
+            list_no_expiry: "No expiry date",
             unknown: "Expiry unknown",
             uploaded: "uploaded {date}",
         }
@@ -319,6 +320,6 @@ mod tests {
                 assert!(phrase.contains(hole), "{phrase:?} lost {hole}");
             }
         }
-        assert!(!w.permanent.is_empty() && !w.no_expiry.is_empty() && !w.unknown.is_empty());
+        assert!(!w.no_expiry.is_empty() && !w.list_no_expiry.is_empty() && !w.unknown.is_empty());
     }
 }

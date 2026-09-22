@@ -10,7 +10,7 @@
 //!
 //! One tab-separated line per upload, oldest first, in `upload-history.tsv` beside
 //! `upload-hosts.conf` (so a portable copy keeps it in its own folder):
-//! `<uploaded>\t<expires | never | unknown>\t<host>\t<url>\t<file name>`, times in Unix
+//! `<uploaded>\t<expires | nodate | unknown>\t<host>\t<url>\t<file name>`, times in Unix
 //! seconds. Appended in normal use; once the file passes twice [`KEEP`] lines it is rewritten
 //! atomically with only the newest [`KEEP`].
 
@@ -25,13 +25,13 @@ pub const KEEP: usize = 100;
 
 const FILE_NAME: &str = "upload-history.tsv";
 const HEADER: &str = "# SageThumbs 2K upload history, oldest first. Columns: uploaded, expires \
-(never / unknown / a time), host, link, file. Times are Unix seconds.\n";
+(nodate / unknown / a time), host, link, file. Times are Unix seconds.\n";
 
 /// When an uploaded file stops being available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expiry {
-    /// The host keeps it with no expiry date.
-    Never,
+    /// No expiry date (catbox.moe: removed only after 2 years without a view).
+    NoDate,
     /// The host deletes it at this Unix time.
     At(u64),
     /// The host's policy is not known (a custom upload host).
@@ -42,7 +42,7 @@ impl Expiry {
     /// The expiry of a file uploaded at `uploaded` to a host with retention `r`.
     pub fn from_retention(r: Retention, uploaded: u64) -> Self {
         match r {
-            Retention::Permanent => Expiry::Never,
+            Retention::NoExpiry => Expiry::NoDate,
             Retention::Secs(s) => Expiry::At(uploaded.saturating_add(s)),
             Retention::Unknown => Expiry::Unknown,
         }
@@ -70,7 +70,7 @@ pub enum Status {
     /// Deleted by the host at this Unix time.
     Expired(u64),
     /// No expiry date.
-    Permanent,
+    NoExpiry,
     /// Policy unknown.
     Unknown,
 }
@@ -78,7 +78,7 @@ pub enum Status {
 impl Entry {
     pub fn status(&self, now: u64) -> Status {
         match self.expires {
-            Expiry::Never => Status::Permanent,
+            Expiry::NoDate => Status::NoExpiry,
             Expiry::Unknown => Status::Unknown,
             Expiry::At(t) if t > now => Status::Left(t - now),
             Expiry::At(t) => Status::Expired(t),
@@ -111,7 +111,7 @@ fn clean(s: &str) -> String {
 /// One history line for `e`, without its line break.
 pub fn format_line(e: &Entry) -> String {
     let expires = match e.expires {
-        Expiry::Never => "never".to_string(),
+        Expiry::NoDate => "nodate".to_string(),
         Expiry::Unknown => "unknown".to_string(),
         Expiry::At(t) => t.to_string(),
     };
@@ -134,7 +134,7 @@ pub fn parse_line(line: &str) -> Option<Entry> {
     let mut fields = line.splitn(5, '\t');
     let uploaded = fields.next()?.parse().ok()?;
     let expires = match fields.next()? {
-        "never" => Expiry::Never,
+        "nodate" => Expiry::NoDate,
         "unknown" => Expiry::Unknown,
         t => Expiry::At(t.parse().ok()?),
     };
@@ -298,7 +298,7 @@ pub fn local_datetime(unix_secs: u64) -> String {
 }
 
 /// One English line for `st2k`: "expires 2026-09-24 23:50 (in 3 d)", "expired ...",
-/// "no expiry date" or "expiry unknown".
+/// "no expiry date (...)" or "expiry unknown".
 pub fn status_text_en(e: &Entry, now: u64) -> String {
     match e.status(now) {
         Status::Left(left) => format!(
@@ -307,7 +307,7 @@ pub fn status_text_en(e: &Entry, now: u64) -> String {
             duration_text(left, &ENGLISH)
         ),
         Status::Expired(at) => format!("expired {}", local_datetime(at)),
-        Status::Permanent => "no expiry date".to_string(),
+        Status::NoExpiry => "no expiry date (removed after 2 years unopened)".to_string(),
         Status::Unknown => "expiry unknown (custom host)".to_string(),
     }
 }

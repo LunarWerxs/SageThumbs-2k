@@ -61,7 +61,8 @@ pub const BUILTIN_HOSTS: &[BuiltinHost] = &[
     // x0.at — 0x0-style keyless host; plain-text URL, field `file`, no extra fields.
     // Retention scales with size (small screenshots are effectively long-lived).
     ("x0.at", "/", "file", &[], false),
-    // catbox.moe — keyless & PERMANENT. Kept in the chain so uploads return to it
+    // catbox.moe — keyless, no expiry date (its FAQ: an anonymous upload is removed only after
+    // 2 years without a view). Kept in the chain so uploads return to it
     // automatically once its storage issue is resolved; it's simply skipped (its "paused"
     // reply isn't a URL) while it's down.
     (
@@ -87,11 +88,12 @@ pub const BUILTIN_HOSTS: &[BuiltinHost] = &[
 
 /// How long a host keeps an uploaded file, according to the host's own published policy.
 /// The link itself says nothing about this, so without it a user has no way to tell a
-/// 3-hour link from a permanent one (a user asked for exactly this, 2026-09-21).
+/// 3-hour link from one with no expiry date (a user asked for exactly this, 2026-09-21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retention {
-    /// No expiry date: the host keeps files unless they break its rules (catbox.moe).
-    Permanent,
+    /// No expiry date. The one host with it, catbox.moe, removes an anonymous upload only after
+    /// it goes 2 years without a single view (its FAQ, read 2026-09-21), and the strings say so.
+    NoExpiry,
     /// The host deletes the file this many seconds after the upload.
     Secs(u64),
     /// A host whose policy we don't know - a custom line in the config file.
@@ -132,14 +134,14 @@ fn parse_time_field(value: &str) -> Option<u64> {
 /// (say litterbox with `time=24h`) reports its real expiry too. Each policy is the host's own
 /// published one, checked 2026-09-21: litterbox deletes at the `time` it was asked for, uguu.se
 /// after 3 hours ("files expire after 3 hours"), x0.at by size ([`x0_retention_secs`]), and
-/// catbox.moe keeps files with no expiry.
+/// catbox.moe has no expiry date (it removes an anonymous upload after 2 years without a view).
 pub fn retention_for<K: AsRef<str>, V: AsRef<str>>(
     host: &str,
     extra: &[(K, V)],
     size: u64,
 ) -> Retention {
     match host.to_ascii_lowercase().as_str() {
-        "catbox.moe" => Retention::Permanent,
+        "catbox.moe" => Retention::NoExpiry,
         "litterbox.catbox.moe" => extra
             .iter()
             .find(|(k, _)| k.as_ref().eq_ignore_ascii_case("time"))
@@ -317,10 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn the_other_hosts_are_permanent_three_hours_or_unknown() {
+    fn the_other_hosts_have_no_expiry_three_hours_or_unknown() {
         let none: &[(&str, &str)] = &[];
-        assert_eq!(retention_for("catbox.moe", none, 5), Retention::Permanent);
-        assert_eq!(retention_for("CATBOX.MOE", none, 5), Retention::Permanent);
+        assert_eq!(retention_for("catbox.moe", none, 5), Retention::NoExpiry);
+        assert_eq!(retention_for("CATBOX.MOE", none, 5), Retention::NoExpiry);
         assert_eq!(retention_for("uguu.se", none, 5), Retention::Secs(3 * HOUR));
         assert_eq!(retention_for("your.host", none, 5), Retention::Unknown);
     }

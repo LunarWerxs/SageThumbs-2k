@@ -244,12 +244,12 @@ fn upload_history_json(entries: &[crate::upload_history::Entry], now: u64) -> se
             let (state, left) = match e.status(now) {
                 Status::Left(s) => ("live", Some(s)),
                 Status::Expired(_) => ("expired", None),
-                Status::Permanent => ("permanent", None),
+                Status::NoExpiry => ("no_expiry", None),
                 Status::Unknown => ("unknown", None),
             };
             let expires = match e.expires {
                 Expiry::At(t) => Some(t),
-                Expiry::Never | Expiry::Unknown => None,
+                Expiry::NoDate | Expiry::Unknown => None,
             };
             serde_json::json!({
                 "url": e.url,
@@ -337,7 +337,7 @@ mod tests {
             &[
                 e(Expiry::At(1_000), "https://litter.catbox.moe/a.png"),
                 e(Expiry::At(400), "https://litter.catbox.moe/b.png"),
-                e(Expiry::Never, "https://files.catbox.moe/c.png"),
+                e(Expiry::NoDate, "https://files.catbox.moe/c.png"),
                 e(Expiry::Unknown, "https://my.host/d.png"),
             ],
             500,
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(field(0, "expires"), 1_000);
         assert_eq!(field(1, "state"), "expired");
         assert!(field(1, "seconds_left").is_null());
-        assert_eq!(field(2, "state"), "permanent");
+        assert_eq!(field(2, "state"), "no_expiry");
         assert!(field(2, "expires").is_null());
         assert_eq!(field(3, "state"), "unknown");
         assert_eq!(field(3, "url"), "https://my.host/d.png");

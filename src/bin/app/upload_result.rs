@@ -8,7 +8,7 @@
 //! Under each link sits when its host deletes it ("Expires 2026-09-24 23:50 (in 3 d)"), and a
 //! **Recent uploads…** button opens the list of every earlier link with the time each has
 //! left (`upload_history_dlg`). The link itself carries no hint of either, and the hosts range
-//! from three hours to permanent.
+//! from three hours to no expiry date.
 
 use core::cell::RefCell;
 
@@ -52,7 +52,7 @@ pub(crate) fn expiry_line(e: &Entry, now: u64, w: &ExpiryWords) -> Option<String
                 .replace("{date}", &local_datetime(now.saturating_add(left)))
                 .replace("{left}", &duration_text(left, &w.dur)),
         ),
-        Status::Permanent => Some(w.permanent.to_string()),
+        Status::NoExpiry => Some(w.no_expiry.to_string()),
         Status::Expired(_) | Status::Unknown => None,
     }
 }
@@ -177,10 +177,10 @@ mod tests {
         ExpiryWords {
             dur: ENGLISH,
             expires: "Expires {date} (in {left})",
-            permanent: "No expiry date",
+            no_expiry: "No expiry date",
             left: "{left} left, until {date}",
             expired: "Expired {date}",
-            no_expiry: "No expiry date",
+            list_no_expiry: "No expiry date",
             unknown: "Expiry unknown",
             uploaded: "uploaded {date}",
         }
@@ -204,7 +204,7 @@ mod tests {
                 "https://litter.catbox.moe/a.png",
                 Expiry::At(now + 72 * 3600),
             ),
-            at("https://files.catbox.moe/b.png", Expiry::Never),
+            at("https://files.catbox.moe/b.png", Expiry::NoDate),
             at("https://my.host/c.png", Expiry::Unknown),
         ];
         let text = result_text("Uploaded all 3", &done, now, &words());
