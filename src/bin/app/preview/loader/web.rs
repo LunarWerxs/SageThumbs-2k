@@ -119,9 +119,6 @@ pub(super) fn file_uri(path: &str) -> String {
     }
 }
 
-/// Parse a `.url`/`.webloc` shortcut for its target. `.url` is an INI (`URL=` under
-/// `[InternetShortcut]`); `.webloc` is a plist with a `<string>` URL. `None` unless the scheme is
-/// http(s) — so WebView2 never gets a `file:`/`javascript:` target from a shortcut.
 /// Decode a `.url`/`.webloc` shortcut's raw bytes as text. Windows commonly writes `.url`
 /// files with a non-ASCII target as UTF-16 (LE, with BOM) — a plain `read_to_string`
 /// (UTF-8 only) silently failed on those, so the live-preview feature never engaged for
@@ -146,6 +143,9 @@ pub(super) fn decode_shortcut_text(bytes: &[u8]) -> Option<String> {
 /// this runs on the UI thread before any capped read.
 const MAX_SHORTCUT_BYTES: u64 = 1 << 20;
 
+/// Parse a `.url`/`.webloc` shortcut for its target. `.url` is an INI (`URL=` under
+/// `[InternetShortcut]`); `.webloc` is a plist with a `<string>` URL. `None` unless the scheme is
+/// http(s) — so WebView2 never gets a `file:`/`javascript:` target from a shortcut.
 pub(super) fn parse_url_shortcut(path: &str) -> Option<String> {
     use std::io::Read;
     let mut bytes = Vec::new();

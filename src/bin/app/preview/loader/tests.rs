@@ -208,8 +208,14 @@ fn parse_url_shortcut_reads_a_utf16_le_target_with_bom() {
 #[test]
 fn file_uri_escapes_a_percent_before_anything_else() {
     use super::web::file_uri;
-    assert_eq!(file_uri(r"C:\pages\a%2Fb.html"), "file:///C:/pages/a%252Fb.html");
-    assert_eq!(file_uri(r"C:\my pages\x#1?.html"), "file:///C:/my%20pages/x%231%3F.html");
+    assert_eq!(
+        file_uri(r"C:\pages\a%2Fb.html"),
+        "file:///C:/pages/a%252Fb.html"
+    );
+    assert_eq!(
+        file_uri(r"C:\my pages\x#1?.html"),
+        "file:///C:/my%20pages/x%231%3F.html"
+    );
 }
 
 #[test]

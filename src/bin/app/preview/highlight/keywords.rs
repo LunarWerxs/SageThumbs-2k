@@ -199,12 +199,11 @@ pub(in crate::preview) const CS_KW: &[&str] = &[
     "virtual",
     "void",
     "while",
-    "var",
 ];
 pub(in crate::preview) const SH_KW: &[&str] = &[
     "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "until", "case",
     "esac", "function", "return", "exit", "echo", "export", "local", "set", "source", "sudo", "cd",
-    "param", "function", "foreach", "begin", "process", "end", "true", "false",
+    "param", "foreach", "begin", "process", "end", "true", "false",
 ];
 pub(in crate::preview) const SQL_KW: &[&str] = &[
     "SELECT", "select", "FROM", "from", "WHERE", "where", "INSERT", "insert", "UPDATE", "update",
@@ -216,7 +215,7 @@ pub(in crate::preview) const SQL_KW: &[&str] = &[
     "distinct",
 ];
 
-// The seven tables below are distilled from Monaco Editor's Monarch grammars
+// The nine tables below are distilled from Monaco Editor's Monarch grammars
 // (monaco-editor/src/basic-languages/<lang>, MIT) — the `keywords` + `typeKeywords`
 // arrays, trimmed to the ~most-seen subset. Same "look colourized, not a grammar"
 // stance as the tables above.

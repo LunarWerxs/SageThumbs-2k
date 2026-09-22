@@ -62,17 +62,13 @@ impl Colors {
 /// draw the handful of lines actually visible.
 struct BlockCache {
     /// Cheap "is this still the same document" fingerprint: the text buffer's address, length,
-    /// and language. The viewer keeps the loaded document in one stable buffer across repaints
-    /// and only replaces it (a fresh allocation → a new pointer) on an actual reload, so this is
-    /// good enough without hashing megabytes of text on every paint. A false MISS just costs one
-    /// extra full-file lex — today's behaviour, never wrong. A coincidental false HIT (freed
-    /// memory reused at the exact same address+length+language for a genuinely different buffer)
-    /// could only ever mis-seed `in_block` for one paint of a syntax-highlighted VIEW — a
-    /// cosmetic miscolour, not a correctness or safety issue; this window renders, it never lets
-    /// the user edit, so there is no "flush stale colours before a write" concern either.
-    /// Buffer address, length, language, and the load generation the buffer belongs to: a
-    /// later file of the same length can land at the same address once the old `String`
-    /// is freed, and without the generation a hit would paint the previous file's tokens.
+    /// language, and the load generation the buffer belongs to. The viewer keeps the loaded
+    /// document in one stable buffer across repaints and only replaces it (a fresh allocation → a
+    /// new pointer) on an actual reload, so this is good enough without hashing megabytes of text
+    /// on every paint. A false MISS just costs one extra full-file lex — today's behaviour, never
+    /// wrong. The generation is needed because a later file of the same length can land at the
+    /// same address once the old `String` is freed — a false HIT paints the previous file's
+    /// tokens for one paint of the view.
     key: (usize, usize, u8, u64),
     /// `in_block` at the START of each line (index = 0-based line number), one entry per line.
     before: Vec<bool>,

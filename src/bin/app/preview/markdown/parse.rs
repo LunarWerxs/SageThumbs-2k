@@ -57,7 +57,6 @@ pub(in crate::preview) struct Builder {
     pub(in crate::preview) out: Vec<Block>,
     runs: Vec<Run>,
     heading: Option<u8>,
-    in_para: bool,
     in_quote: u32,
     in_item: bool,
     /// A GFM task-list marker (`- [ ]` / `- [x]`) seen for the item currently open: the
@@ -128,7 +127,6 @@ impl Builder {
             out: Vec::new(),
             runs: Vec::new(),
             heading: None,
-            in_para: false,
             in_quote: 0,
             in_item: false,
             task: None,
@@ -243,11 +241,9 @@ impl Builder {
     }
     pub(in crate::preview) fn open_para(&mut self) {
         self.flush();
-        self.in_para = true;
     }
     pub(in crate::preview) fn close_para(&mut self) {
         self.flush();
-        self.in_para = false;
     }
     pub(in crate::preview) fn rule(&mut self) {
         self.flush();
@@ -303,6 +299,7 @@ impl Builder {
     }
     pub(in crate::preview) fn open_item(&mut self) {
         self.flush();
+        self.task = None;
         self.in_item = true;
     }
     pub(in crate::preview) fn close_item(&mut self) {

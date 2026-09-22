@@ -22,8 +22,8 @@ const CACHE_MAX_ENTRIES: usize = 16;
 /// Cap on read-ahead workers, so holding down → cannot fan out a thread per keypress.
 const MAX_PREFETCH_IN_FLIGHT: usize = 2;
 
-/// Identity of a cached decode. Carries size + mtime, not just the path: a file edited or
-/// replaced under the same name MUST miss, or the viewer would confidently show stale pixels.
+/// Identity of a cached decode. Carries size + whole-second mtime, not just the path, so an
+/// edited or replaced file misses — unless it keeps its length within the same second, which hits.
 type CacheKey = (String, u64, i64);
 
 static CACHE: std::sync::Mutex<Vec<(CacheKey, std::sync::Arc<DecodedRgba>)>> =
@@ -92,18 +92,18 @@ pub(super) fn abandoned_logged(gen: u64, worker: &str) -> bool {
     gave_up
 }
 
-/// Same `LIVE_GEN` counter [`abandoned`] reads, for a CORRECTNESS fence rather than a decode
-/// worker's optional early-exit — the Ctrl+C image-copy worker uses this to drop a stale copy
-/// instead of landing the wrong image on the clipboard. Unlike `abandoned`, this is
-/// never suppressed by `ST2K_NO_CANCEL` (the fix must hold even while that dev switch is set)
-/// and never touches `ABANDONED` (a dropped clipboard write is not a cancelled decode worker,
-/// and must not skew `--bench-mash`'s count of those).
 /// The current load generation, for cache keys that must not outlive the file they were
 /// built for.
 pub(crate) fn live_generation() -> u64 {
     LIVE_GEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Same `LIVE_GEN` counter [`abandoned`] reads, for a CORRECTNESS fence rather than a decode
+/// worker's optional early-exit — the Ctrl+C image-copy worker uses this to drop a stale copy
+/// instead of landing the wrong image on the clipboard. Unlike `abandoned`, this is
+/// never suppressed by `ST2K_NO_CANCEL` (the fix must hold even while that dev switch is set)
+/// and never touches `ABANDONED` (a dropped clipboard write is not a cancelled decode worker,
+/// and must not skew `--bench-mash`'s count of those).
 pub(crate) fn generation_current(gen: u64) -> bool {
     LIVE_GEN.load(std::sync::atomic::Ordering::SeqCst) <= gen
 }
@@ -201,9 +201,13 @@ pub(super) fn cache_put(path: &str, img: std::sync::Arc<DecodedRgba>) {
     // dropped immediately, which is intended: caching it would blow the bound on its own.
     let (mut total, mut kept) = (0usize, 0usize);
     c.retain(|(_, v)| {
-        total += v.rgba.len();
+        let sz = v.rgba.len();
+        if kept >= CACHE_MAX_ENTRIES || total + sz > CACHE_MAX_BYTES {
+            return false;
+        }
+        total += sz;
         kept += 1;
-        kept <= CACHE_MAX_ENTRIES && total <= CACHE_MAX_BYTES
+        true
     });
 }
 

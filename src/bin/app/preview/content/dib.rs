@@ -271,9 +271,6 @@ pub(crate) fn fit_scale(iw: i32, ih: i32, cw: i32, ch: i32) -> f64 {
     f64::min(cw as f64 / iw as f64, ch as f64 / ih as f64)
 }
 
-/// Paint the image `rd` into `rc`, letterboxed with `bg`, at `zoom`x the aspect-fit scale and
-/// offset by `pan` (device px). `zoom == 1.0`, `pan == (0,0)` is the plain aspect-fit centered
-/// draw. Ported from `previewhandler::draw` (fill = letterbox, then `HALFTONE` `StretchBlt`).
 /// Blit `rd` into EXACTLY `rc`, no fit, no zoom, no centring.
 ///
 /// The continuous PDF view has already decided where every page goes and how big it is, so
@@ -286,13 +283,19 @@ pub(crate) unsafe fn blit_exact(hdc: HDC, rc: &RECT, rd: &RenderData) {
     if dw <= 0 || dh <= 0 || rd.bw <= 0 || rd.bh <= 0 {
         return;
     }
+    stretch_blit(hdc, rc.left, rc.top, dw, dh, rd);
+}
+
+/// `HALFTONE`-scaled `SRCCOPY` blit of `rd` at `(dx, dy)` sized `dw`x`dh`, through a scratch
+/// memory DC selected back out and deleted afterwards.
+unsafe fn stretch_blit(hdc: HDC, dx: i32, dy: i32, dw: i32, dh: i32, rd: &RenderData) {
     let memdc = CreateCompatibleDC(Some(hdc));
     let old = SelectObject(memdc, rd.hbmp.into());
     SetStretchBltMode(hdc, HALFTONE);
     let _ = StretchBlt(
         hdc,
-        rc.left,
-        rc.top,
+        dx,
+        dy,
         dw,
         dh,
         Some(memdc),
@@ -306,6 +309,9 @@ pub(crate) unsafe fn blit_exact(hdc: HDC, rc: &RECT, rd: &RenderData) {
     let _ = DeleteDC(memdc);
 }
 
+/// Paint the image `rd` into `rc`, letterboxed with `bg`, at `zoom`x the aspect-fit scale and
+/// offset by `pan` (device px). `zoom == 1.0`, `pan == (0,0)` is the plain aspect-fit centered
+/// draw. Ported from `previewhandler::draw` (fill = letterbox, then `HALFTONE` `StretchBlt`).
 pub(crate) unsafe fn paint_image(
     hdc: HDC,
     rc: &RECT,
@@ -330,8 +336,6 @@ pub(crate) unsafe fn paint_image(
     let dx = rc.left + (cw - dw) / 2 + pan.0;
     let dy = rc.top + (ch - dh) / 2 + pan.1;
 
-    let memdc = CreateCompatibleDC(Some(hdc));
-    let old = SelectObject(memdc, rd.hbmp.into());
     SetStretchBltMode(hdc, HALFTONE);
     // The branch MUST key on `rd.alpha`, never on the checkerboard setting. A translucent bitmap
     // holds PREMULTIPLIED, un-composited pixels (see `make_render`), and `StretchBlt` ignores the
@@ -376,30 +380,20 @@ pub(crate) unsafe fn paint_image(
                     let _ = DeleteDC(sdc);
                 }
                 None => {
+                    let memdc = CreateCompatibleDC(Some(hdc));
+                    let old = SelectObject(memdc, rd.hbmp.into());
                     let _ = AlphaBlend(hdc, dx, dy, dw, dh, memdc, 0, 0, rd.bw, rd.bh, bf);
+                    SelectObject(memdc, old);
+                    let _ = DeleteDC(memdc);
                 }
             }
         }
         // Opaque: unchanged from before any of this existed. `make_render` produced byte-identical
         // output to the old `make_dib` for these, so photos take exactly the old HALFTONE path.
         false => {
-            let _ = StretchBlt(
-                hdc,
-                dx,
-                dy,
-                dw,
-                dh,
-                Some(memdc),
-                0,
-                0,
-                rd.bw,
-                rd.bh,
-                SRCCOPY,
-            );
+            stretch_blit(hdc, dx, dy, dw, dh, rd);
         }
     }
-    SelectObject(memdc, old);
-    let _ = DeleteDC(memdc);
 }
 
 #[cfg(test)]

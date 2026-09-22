@@ -454,6 +454,10 @@ pub(in crate::preview) unsafe fn refresh(hwnd: HWND) {
         close(hwnd);
         return;
     }
+    // Rebuild the haystack from the document that now exists. A keystroke between the load's
+    // start and here re-searched the OUTGOING document and primed the cache under the new
+    // generation (`decode_gen` advances when a load starts), which would otherwise stick.
+    st.find.borrow_mut().primed = false;
     research(hwnd);
 }
 

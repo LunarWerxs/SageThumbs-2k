@@ -134,7 +134,7 @@ pub(super) fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgb
 /// **Holds a [`safety::AbandonTicket`] for the whole worker lifetime (audit E02, 2026-09-07):**
 /// before this fix, a worker that outlived `PREVIEW_DECODE_BUDGET` was simply forgotten by this
 /// function on timeout: it kept running and pinning a thread, but never counted against
-/// `safety::abandoned_workers()`/`MAX_ABANDONED_WORKERS`, unlike every other detached-worker path
+/// `safety::abandoned_workers()`/`MAX_ABANDONED_WORKERS`, unlike the budgeted detached-worker paths
 /// in the process (`spawn_budgeted`, the menu-preview decode). `decode_preview(&bytes)` is
 /// in-memory and CPU-bound, not I/O, so what can outlive the budget here is a decode that never
 /// returns; repeated cases of that could grow the viewer's thread count past the documented cap
@@ -145,6 +145,11 @@ pub(super) fn decode_preview_budgeted(
     bytes: std::sync::Arc<Vec<u8>>,
 ) -> Option<image::DynamicImage> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    // The same pre-spawn gate `spawn_budgeted` consults: past the process-wide abandoned budget
+    // this must not start one more worker, or the count it maintains could never throttle it.
+    if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
+        return None;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
     let worker_ticket = ticket.clone();

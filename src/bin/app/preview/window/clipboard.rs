@@ -179,7 +179,6 @@ pub(in crate::preview) fn save_shown_image(
 
 // ===== Phase 4: zoom / pan / scroll =====
 
-/// The content rectangle (below the caption), in client coords.
 /// Whether `path` is a PDF (by extension).
 pub(in crate::preview) fn is_pdf(path: &str) -> bool {
     std::path::Path::new(path)

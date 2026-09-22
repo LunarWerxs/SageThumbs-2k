@@ -80,37 +80,31 @@ pub(super) unsafe fn paint_content_image(
     let frames = st.frames.borrow();
     if scrolled_pdf {
         // already drawn
-    } else if let Some(rd) = frames.get(st.cur_frame.get()) {
-        content::paint_image(
-            hdc,
-            content_rc,
-            rd,
-            content_bg,
-            st.zoom.get(),
-            st.pan.get(),
-            checker,
-        );
-    } else if let Some(rd) = st.render.borrow().as_ref() {
-        content::paint_image(
-            hdc,
-            content_rc,
-            rd,
-            content_bg,
-            st.zoom.get(),
-            st.pan.get(),
-            checker,
-        );
     } else {
-        // Same localized placeholder as the `ContentKind::Loading` arm above: this is the
-        // still-decoding branch of the image path, and it must not disagree with it.
-        paint_message(
-            hwnd,
-            hdc,
-            content_rc,
-            content_bg,
-            subtle,
-            crate::win::t("preview_loading"),
-        );
+        let render = st.render.borrow();
+        let rd = frames.get(st.cur_frame.get()).or(render.as_ref());
+        if let Some(rd) = rd {
+            content::paint_image(
+                hdc,
+                content_rc,
+                rd,
+                content_bg,
+                st.zoom.get(),
+                st.pan.get(),
+                checker,
+            );
+        } else {
+            // Same localized placeholder as the `ContentKind::Loading` arm above: this is the
+            // still-decoding branch of the image path, and it must not disagree with it.
+            paint_message(
+                hwnd,
+                hdc,
+                content_rc,
+                content_bg,
+                subtle,
+                crate::win::t("preview_loading"),
+            );
+        }
     }
 }
 

@@ -292,21 +292,8 @@ unsafe fn show_info_card(st: &ViewerState, path: &str) {
 /// everywhere else, rather than a special-cased empty window (2026-09-08 QuickLook-parity
 /// audit) — a real Recycle Bin/This PC browsable panel was rejected by the owner on 2026-08-07
 /// and stays rejected; this is one card, not a panel.
-///
-/// OUT OF SCOPE (this file cannot construct an `InfoCard`; its fields are private to
-/// `infocard.rs`, which is owned by another agent this session): `infocard.rs` needs a
-/// `pub(super) fn virtual_item() -> InfoCard` that builds a card with no shell icon (there is
-/// no real file to ask `SHGetFileInfoW` about) and locale-driven text — see the integrator
-/// note left at this call site below.
 pub(super) unsafe fn show_virtual_card(hwnd: HWND) {
     let st = &*state(hwnd);
-    // NOTE for the integrator: replace this call once `infocard::virtual_item()` exists (see
-    // the doc comment above). Suggested body:
-    //     InfoCard {
-    //         name: crate::i18n::t("ic_virtual_title"),
-    //         detail: crate::i18n::t("ic_virtual_detail"),
-    //         icon: None,
-    //     }
     *st.card.borrow_mut() = Some(infocard::virtual_item());
     st.kind.set(ContentKind::InfoCard);
     ensure_shown(hwnd);

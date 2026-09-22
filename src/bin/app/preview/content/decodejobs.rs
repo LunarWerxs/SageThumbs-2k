@@ -37,20 +37,17 @@ pub(super) unsafe fn try_post_quick_first_paint(hwnd: HWND, gen: u64, path: &str
     true
 }
 
-/// Post an animated frame list as `WM_APP_ANIM`.
-pub(super) unsafe fn post_anim(hwnd: HWND, gen: u64, frames: Vec<(DecodedRgba, u32)>) {
-    let payload: Box<(u64, Vec<(DecodedRgba, u32)>)> = Box::new((gen, frames));
+/// Box `payload` into the message's `LPARAM`, reclaiming it if the window has already gone.
+unsafe fn post_boxed<T>(hwnd: HWND, msg: u32, gen: u64, payload: Box<T>) {
     let raw = Box::into_raw(payload);
-    if PostMessageW(
-        Some(hwnd),
-        WM_APP_ANIM,
-        WPARAM(gen as usize),
-        LPARAM(raw as isize),
-    )
-    .is_err()
-    {
+    if PostMessageW(Some(hwnd), msg, WPARAM(gen as usize), LPARAM(raw as isize)).is_err() {
         drop(Box::from_raw(raw));
     }
+}
+
+/// Post an animated frame list as `WM_APP_ANIM`.
+pub(super) unsafe fn post_anim(hwnd: HWND, gen: u64, frames: Vec<(DecodedRgba, u32)>) {
+    post_boxed(hwnd, WM_APP_ANIM, gen, Box::new((gen, frames)));
 }
 
 /// Animated GIF/APNG/animated-WebP → post the whole frame list. A static file of the same
@@ -185,6 +182,9 @@ pub(in super::super) unsafe fn spawn_decode_full(hwnd: HWND, path: String, gen: 
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut c_void);
+        // Same apartment as `spawn_decode`: `read_and_decode` reaches WIC by path for a file
+        // past the thumbnail ceiling, and those calls need COM on this thread.
+        let _com = sagethumbs2k_core::parallel::ComGuard::mta();
         if abandoned_logged(gen, "full-resolution decode") {
             return; // zoomed, then navigated away before this got a slice of CPU
         }
@@ -200,19 +200,7 @@ pub(in super::super) unsafe fn spawn_decode_full(hwnd: HWND, path: String, gen: 
 
 /// Post a finished decode to the UI thread, reclaiming the box if the window has already gone.
 pub(super) unsafe fn post_render(hwnd: HWND, gen: u64, decoded: Option<SharedRgba>) {
-    let payload: Box<(u64, Option<SharedRgba>)> = Box::new((gen, decoded));
-    let raw = Box::into_raw(payload);
-    if PostMessageW(
-        Some(hwnd),
-        WM_APP_RENDER,
-        WPARAM(gen as usize),
-        LPARAM(raw as isize),
-    )
-    .is_err()
-    {
-        // Window died between the decode and the post — reclaim the box so it can't leak.
-        drop(Box::from_raw(raw));
-    }
+    post_boxed(hwnd, WM_APP_RENDER, gen, Box::new((gen, decoded)));
 }
 
 /// Decode the full composite on its own worker and post it as a second `WM_APP_RENDER`.

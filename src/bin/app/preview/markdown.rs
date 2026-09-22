@@ -9,11 +9,12 @@
 //!   `<a>`, `<b>/<i>`, `<br>`, `<table>`, lists, `<details>`) via the zero-dep tag feeder in
 //!   [`super::mdhtml`] driving the same [`Builder`];
 //! - **images**: local files decode through our own pipeline into cached DIBs and draw inline
-//!   (aspect-scaled, `width`/`%` attrs honored, clickable when link-wrapped); remote (http/data)
-//!   sources are NEVER fetched — they render as alt-text pills (privacy: a previewed README
-//!   must not phone home).
+//!   (aspect-scaled, `width`/`%` attrs honored, clickable when link-wrapped); remote `https://`
+//!   sources are fetched only via the opt-in "load web images" toggle, while `data:`,
+//!   protocol-relative `//` and plain-`http://` sources are NEVER fetched — they render as
+//!   alt-text pills (privacy: a previewed README must not phone home by default).
 //!
-//! The content column is capped at a GitHub-like max width and centered in the pane.
+//! The content column fills the pane minus margins and re-wraps as the window resizes.
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::path::{Path, PathBuf};
@@ -119,11 +120,11 @@ pub(super) fn is_remote_src(src: &str) -> bool {
 
 /// Is this image src ever pilled instead of rendered inline, i.e. does the "load web images"
 /// toolbar button need to exist for this document at all? Matches exactly what `Builder::image`
-/// treats as remote: `http(s)://` (unlockable via the toggle) plus protocol-relative `//` and
-/// embedded `data:` (never unlockable — `Builder::image` pills those unconditionally). One
-/// shared predicate for `has_remote_images`, `html_has_remote_img`, and `Builder::image` itself,
-/// so a document whose only images are protocol-relative can never silently fail to show the
-/// button that explains why they are pills.
+/// treats as remote: `https://` (unlockable via the toggle) plus plain `http://`,
+/// protocol-relative `//` and embedded `data:` (never unlockable — `Builder::image` pills those
+/// unconditionally). One shared predicate for `has_remote_images`, `html_has_remote_img`, and
+/// `Builder::image` itself, so a document whose only images are protocol-relative can never
+/// silently fail to show the button that explains why they are pills.
 pub(super) fn is_gated_image_src(src: &str) -> bool {
     is_remote_src(src) || src.starts_with("//") || src.starts_with("data:")
 }
@@ -153,7 +154,6 @@ pub(super) fn has_headings(md: &str) -> bool {
     })
 }
 
-/// Cheap scan for `<h1`..`<h6` (case-insensitive) in a raw-HTML fragment.
 /// Whether the document references any WEB-HOSTED image, i.e. whether the "load web images"
 /// toolbar button has anything to act on. Same streaming parse as [`has_headings`] (no layout, no
 /// allocation of the rendered document), run once per load.
@@ -195,6 +195,7 @@ fn html_has_remote_img(s: &str) -> bool {
     GATED_IMG_SRC_NEEDLES.iter().any(|n| low.contains(n))
 }
 
+/// Cheap scan for `<h1`..`<h6` (case-insensitive) in a raw-HTML fragment.
 fn html_has_heading(s: &str) -> bool {
     let b = s.as_bytes();
     b.windows(3)

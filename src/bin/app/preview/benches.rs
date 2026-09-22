@@ -219,21 +219,9 @@ pub(crate) fn run_bench(dir: &str) {
     flush(&out);
 }
 
-/// `--bench-nav <dir> <steps> [out.txt]`: what a RIGHT-ARROW press actually costs, end to end.
-///
-/// Unlike [`run_bench`], which times the decode in isolation, this drives the real thing: it
-/// builds the real viewer window, posts real `WM_KEYDOWN VK_RIGHT` messages into its real
-/// wndproc, and pumps the real message loop until the next file is genuinely installed and
-/// painted. That covers the folder listing, the sort, the prefetch, the cache, the worker
-/// hand-off and the repaint — everything between the key going down and the picture being up,
-/// which is the only number a user experiences.
-///
-/// The window is created off-screen and hidden (same construction the headless `--shot` uses),
 /// `--bench-mash <dir> <keys>`: hold the arrow key down, then time the catch-up.
 ///
-/// `--bench-nav` waits for each step to paint before pressing again, so it never has two
-/// decodes in flight and cannot see the cost of work the user has already scrolled past. This
-/// posts every keypress at a real key-repeat cadence WITHOUT waiting, then measures from the
+/// This posts every keypress at a real key-repeat cadence WITHOUT waiting, then measures from the
 /// first press to the moment the LAST file is on screen. That is the number a user feels when
 /// they lean on the key, and the only one that shows whether abandoning superseded work helps.
 ///
@@ -317,7 +305,20 @@ pub(crate) fn run_mash_bench(hinst: HINSTANCE, dir: &str, keys: usize) {
     flush(&out);
 }
 
+/// `--bench-nav <dir> <steps> [out.txt]`: what a RIGHT-ARROW press actually costs, end to end.
+///
+/// Unlike [`run_bench`], which times the decode in isolation, this drives the real thing: it
+/// builds the real viewer window, posts real `WM_KEYDOWN VK_RIGHT` messages into its real
+/// wndproc, and pumps the real message loop until the next file is genuinely installed and
+/// painted. That covers the folder listing, the sort, the prefetch, the cache, the worker
+/// hand-off and the repaint — everything between the key going down and the picture being up,
+/// which is the only number a user experiences.
+///
+/// The window is created off-screen and hidden (same construction the headless `--shot` uses),
 /// so this needs no desktop, steals no focus, and runs unattended.
+///
+/// `--bench-nav` waits for each step to paint before pressing again, so it never has two
+/// decodes in flight and cannot see the cost of work the user has already scrolled past.
 pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
     let Some((flush, files, hwnd, mut out)) =
         bench_start(hinst, dir, "bench-nav", "st2k-navbench.txt")

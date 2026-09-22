@@ -105,8 +105,8 @@ pub(super) unsafe fn paint_caption_title(
 
 /// Toolbar glyphs. `buttons` is laid out right-to-left, but `st.hot` is a BTNS index (what
 /// `hit_button` returns), so resolve each drawn button back to its BTNS index to match — else
-/// the highlight mirrors (hover right, light left). One shared Segoe Fluent Icons font for the
-/// whole toolbar (crisp ClearType native glyphs, like the screenshot tool).
+/// the highlight mirrors (hover right, light left). One shared icon-font handle for the whole
+/// toolbar (grayscale-antialiased, face chosen by `icon_font_face`, like the screenshot tool).
 pub(super) unsafe fn paint_caption_toolbar(
     hwnd: HWND,
     hdc: HDC,

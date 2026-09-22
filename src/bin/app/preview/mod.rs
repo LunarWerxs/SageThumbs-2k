@@ -1,11 +1,10 @@
 //! Quick preview viewer — the QuickLook-style "press Space, see the file" popup
 //! window, dispatched from `main.rs` for `--preview [path]`.
 //!
-//! This is Phase 1 of the Quick preview plan (`to-do/quick-preview-plan.md`): the
-//! standalone viewer, launched by hand. There is NO keyboard hook yet (Phase 2) — the
-//! window is driven by `--preview <path>` on the command line and by `WM_COPYDATA`
-//! commands (which the Phase 2 daemon hook, and the single-instance forwarder here,
-//! use to switch/close a running viewer).
+//! The viewer is launched by the Phase 2 Space/Esc `WH_KEYBOARD_LL` hook the daemon
+//! installs, or by hand. It is driven by `--preview <path>` on the command line and by
+//! `WM_COPYDATA` commands (which the hook's `request_toggle`/`request_close`, and the
+//! single-instance forwarder here, use to switch/close a running viewer).
 //!
 //! Process model (plan §3): a SEPARATE single-instance process, not a window inside the
 //! daemon — matches the codebase's "daemon spawns single-purpose helpers" pattern

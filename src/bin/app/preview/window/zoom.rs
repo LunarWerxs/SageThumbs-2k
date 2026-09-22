@@ -66,7 +66,7 @@ unsafe fn zoom_step_at(hwnd: HWND, delta: i32, pt: POINT) {
         return;
     };
     let old_zoom = st.zoom.get();
-    let raw_zoom = old_zoom * if delta > 0 { 1.2 } else { 1.0 / 1.2 };
+    let raw_zoom = old_zoom * 1.2f64.powi(delta);
     let full = true_100_zoom(fit); // true 100% (display scale 1.0), same as toggle_fit_100
     let fit_snap = snap_zoom_step(old_zoom, raw_zoom, 1.0, ZOOM_SNAP_TOLERANCE);
     let snapped = if (fit_snap - raw_zoom).abs() > f64::EPSILON {
@@ -107,7 +107,16 @@ pub(in crate::preview) unsafe fn zoom_at_cursor(hwnd: HWND, delta: i32, lparam: 
     let (sx, sy) = lparam_xy(lparam);
     let mut pt = POINT { x: sx, y: sy };
     let _ = ScreenToClient(hwnd, &mut pt);
-    zoom_step_at(hwnd, delta, pt);
+    // Accumulate sub-notch deltas (a precision touchpad emits many tiny ones) into whole
+    // notches, the same way text scrolling and video volume do, so a sub-notch tick does not
+    // zoom at all and a multi-detent flick zooms by as many notches as it carried.
+    let st = &*state(hwnd);
+    let (notches, remainder) = wheel_notches(st.wheel_remainder.get(), delta);
+    st.wheel_remainder.set(remainder);
+    if notches == 0 {
+        return;
+    }
+    zoom_step_at(hwnd, notches, pt);
 }
 
 /// Ctrl+=/Ctrl+- keyboard zoom (G22 — the viewer had wheel/double-click zoom only, no keyboard

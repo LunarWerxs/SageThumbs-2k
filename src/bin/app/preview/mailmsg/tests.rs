@@ -528,7 +528,10 @@ fn an_html_header_element_is_not_mistaken_for_head() {
                 <p>Everything after the header.</p></body></html>\r\n";
     let md = eml_to_markdown(eml).expect("html mail parses");
     assert!(md.contains("Masthead"), "header text lost: {md}");
-    assert!(md.contains("Everything after the header."), "body lost: {md}");
+    assert!(
+        md.contains("Everything after the header."),
+        "body lost: {md}"
+    );
 }
 
 /// A multipart message with more than [`MAX_EML_ATTACHMENTS`] filenamed parts must cap the

@@ -38,7 +38,7 @@ pub(in super::super) fn linkify_into(
 
 /// If a bare URL starts at byte `i` in `s`, return its `(byte length, resolved destination)`.
 /// Follows the GFM extended-autolink rules closely enough for prose: valid left boundary, a
-/// `http(s)://` or `www.` prefix, a host containing a dot, and trailing-punctuation trimming
+/// `http(s)://` or `www.` prefix, a dot somewhere after the scheme, and trailing-punctuation trimming
 /// (with balanced-paren handling so `…/Foo_(bar)` keeps its `)`).
 pub(in super::super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
     let b = s.as_bytes();
@@ -50,7 +50,7 @@ pub(in super::super) fn url_at(s: &str, i: usize) -> Option<(usize, String)> {
     let end = scan_url_bytes(rest, scheme_len)?;
     let e = trim_trailing_punct(&rest.as_bytes()[..end], scheme_len)?;
     let url = &s[i..i + e];
-    // Require a dot in the host portion (rejects `https://localhost`-only noise and bare schemes).
+    // Require a dot somewhere after the scheme (rejects `https://localhost`-only noise and bare schemes).
     if !url[scheme_len..].contains('.') {
         return None;
     }

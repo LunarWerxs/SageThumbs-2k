@@ -19,11 +19,6 @@ pub(in super::super) fn bench_decode_cached(path: &str) -> Option<(i32, i32)> {
     cache_get(path).map(|d| (d.w, d.h))
 }
 
-/// `--bench-preview` hook: the DISPLAY cost — turning decoded pixels into the premultiplied DIB
-/// the window blits. Measured separately because on a cache hit it is the ONLY work left, and
-/// the end-to-end arrow bench says a prefetched 12 MP photo still costs ~100 ms per step. If
-/// that time is here, no decoder change can help it.
-///
 /// `--bench-preview` hook: what the codec-scaled decode costs, against the full decode in the
 /// `cold` column.
 ///
@@ -40,6 +35,10 @@ pub(in super::super) fn bench_scaled_decode(path: &str) -> Option<u128> {
     Some(us)
 }
 
+/// `--bench-preview` hook: the DISPLAY cost — turning decoded pixels into the premultiplied DIB
+/// the window blits. Measured separately because on a cache hit it is the ONLY work left, and
+/// the end-to-end arrow bench says a prefetched 12 MP photo still costs ~100 ms per step. If
+/// that time is here, no decoder change can help it.
 pub(in super::super) fn bench_make_render(path: &str) -> Option<u128> {
     let d = cache_get(path)?;
     let t = std::time::Instant::now();

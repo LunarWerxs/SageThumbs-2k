@@ -421,7 +421,7 @@ pub(super) unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -
         // scroll function directly) all passed. Test the INPUT PATH, not the thing
         // it calls.
         ContentKind::Image if crate::preview::pdfview::active(hwnd) => {
-            // Three lines a notch, the same step the text pane uses.
+            // Three lines a notch.
             let step = -delta * crate::win::dpi_scale(hwnd, 54) / 120;
             match pdf_wheel_action(
                 GetKeyState(VK_CONTROL.0 as i32) < 0,

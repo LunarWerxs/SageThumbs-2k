@@ -16,6 +16,7 @@ fn same_file(a: Option<&str>, b: Option<&str>) -> bool {
 /// True for a UNC path — `\\server\share\...` or its extended form `\\?\UNC\server\share\...`
 /// — but NOT `\\?\C:\...`, the extended-length prefix for an ordinary local drive path.
 fn is_unc_path(path: &str) -> bool {
+    let path = path.trim_start().replace('/', "\\");
     let upper = path.to_ascii_uppercase();
     upper.starts_with(r"\\?\UNC\") || (path.starts_with(r"\\") && !path.starts_with(r"\\?\"))
 }

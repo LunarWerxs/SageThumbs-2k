@@ -65,7 +65,7 @@ pub(super) unsafe fn units_fitting(hdc: HDC, w16: &[u16], max_w: i32, at: &[usiz
     // Back off any boundary that would cut a character apart. Two units sharing a source byte
     // offset are the halves of one surrogate pair; a combining mark or a ZWJ joiner belongs to
     // the character before it, so splitting there detaches an accent or shears an emoji cluster.
-    while n > 0 && n < probe.len() && splits_a_cluster(probe, at, n) {
+    while n > 0 && n < w16.len() && splits_a_cluster(w16, at, n) {
         n -= 1;
     }
     if n == 0 {

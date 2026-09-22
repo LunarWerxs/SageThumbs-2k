@@ -56,10 +56,10 @@ fn is_selection_extend_key(vk: u16) -> bool {
         || v == VK_PRIOR.0 || v == VK_NEXT.0)
 }
 
-/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S: the content-editing quartet — select all, copy,
-/// toggle source view, save the shown page/frame. Split out of `keydown_copy_select`
-/// purely to keep that dispatcher's own weight under the complexity gate; the four
-/// checks are independent early returns, same as they were inline.
+/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / Ctrl+P: the content-editing and print keys — select
+/// all, copy, toggle source view, save the shown page/frame, print. Split out of
+/// `keydown_copy_select` purely to keep that dispatcher's own weight under the complexity
+/// gate; the five checks are independent early returns, same as they were inline.
 unsafe fn keydown_edit_actions(
     hwnd: HWND,
     st: &ViewerState,
@@ -175,7 +175,7 @@ unsafe fn keydown_find_and_extend(hwnd: HWND, vk: u16, ctrl: bool, shift: bool) 
     None
 }
 
-/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
+/// Ctrl+A / Ctrl+C / Ctrl+U / Ctrl+S / Ctrl+P / bare W / Ctrl+=/Ctrl+-/Ctrl+0 (image zoom) / Shift+nav /
 /// Ctrl+F / an already-open find bar: the "editing and search" cluster of `WM_KEYDOWN`.
 /// `Some` means the key was consumed. A thin dispatcher over the three helpers above, tried
 /// in the same order this cluster always checked them in.

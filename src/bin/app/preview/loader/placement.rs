@@ -43,7 +43,7 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
                                                      //     which forces us above everything even from the background — then immediately drop back
                                                      //     to non-topmost so the window can still be covered when you click elsewhere.
                                                      //   * both off: leave it wherever it naturally landed.
-        if st.pinned.get() {
+        if st.pinned.get() || st.open_front.get() {
             let _ = SetWindowPos(
                 hwnd,
                 Some(HWND_TOPMOST),
@@ -53,25 +53,17 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
-        } else if st.open_front.get() {
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_NOTOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+            if !st.pinned.get() {
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
         st.shown.set(true);
         // Follow the Explorer selection (arrows / clicks) — daemon mode only. A manual

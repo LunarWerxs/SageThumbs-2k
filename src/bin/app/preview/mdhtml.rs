@@ -19,10 +19,17 @@ use super::markdown::{Builder, ImgW};
 /// `Break(())` means the comment is still open at the end of this fragment; the wait carries
 /// over to the next `feed` call via `b.in_comment`.
 fn advance_in_comment(b: &mut Builder, s: &str, i: usize) -> ControlFlow<(), usize> {
-    match s[i..].find("-->") {
+    let rest = &s[i..];
+    let close = match (rest.find("-->"), rest.find("--!>")) {
+        (Some(p), Some(q)) => Some(p.min(q)),
+        (Some(p), None) | (None, Some(p)) => Some(p),
+        (None, None) => None,
+    };
+    match close {
         Some(p) => {
             b.in_comment = false;
-            ControlFlow::Continue(i + p + 3)
+            let len = if rest[p..].starts_with("--!>") { 4 } else { 3 };
+            ControlFlow::Continue(i + p + len)
         }
         None => ControlFlow::Break(()),
     }
@@ -71,6 +78,13 @@ fn advance_in_skip_tag(
 /// `feed`'s step when the next byte is `<`: a comment/doctype opener, a real tag (dispatched),
 /// or a stray `<` emitted literally as text.
 fn advance_at_lt(b: &mut Builder, s: &str, i: usize, bytes: &[u8]) -> ControlFlow<(), usize> {
+    if s[i..].starts_with("<!--->") {
+        // Abruptly-closed comment: complete on its own, nothing stays open.
+        return ControlFlow::Continue(i + 6);
+    }
+    if s[i..].starts_with("<!-->") {
+        return ControlFlow::Continue(i + 5);
+    }
     if s[i..].starts_with("<!--") {
         b.in_comment = true;
         return ControlFlow::Continue(i + 4);

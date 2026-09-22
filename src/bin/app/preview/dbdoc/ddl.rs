@@ -113,17 +113,9 @@ pub(super) fn declared_type(after_name: &str) -> String {
     out.join(" ")
 }
 
-/// Parse the column list out of a `CREATE TABLE` statement.
-///
-/// Records carry no column names, so the DDL is the only source. This is a bracket-matching
-/// scan, not an SQL parser: take the top-level parenthesised list, split it on depth-0 commas,
-/// drop the entries that are table CONSTRAINTS, and read the identifier each column def starts
-/// with (`"quoted"`, `[bracketed]`, `` `ticked` `` or bare).
-///
-/// `WITHOUT ROWID` tables store the PRIMARY KEY columns FIRST and the rest after (verified
-/// against real files), so the returned order is reordered to match the record, not the DDL.
 /// Whether the DDL past the column list's closing paren carries a `WITHOUT ROWID`
-/// clause (case/whitespace-insensitive).
+/// clause (case-insensitive; a run of two or more whitespace characters between the
+/// words prevents a match).
 fn table_is_without_rowid(sql: &str, close: usize) -> bool {
     sql[close..]
         .to_ascii_uppercase()
@@ -243,6 +235,15 @@ fn reorder_without_rowid(
     order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
+/// Parse the column list out of a `CREATE TABLE` statement.
+///
+/// Records carry no column names, so the DDL is the only source. This is a bracket-matching
+/// scan, not an SQL parser: take the top-level parenthesised list, split it on depth-0 commas,
+/// drop the entries that are table CONSTRAINTS, and read the identifier each column def starts
+/// with (`"quoted"`, `[bracketed]`, `` `ticked` `` or bare).
+///
+/// `WITHOUT ROWID` tables store the PRIMARY KEY columns FIRST and the rest after (verified
+/// against real files), so the returned order is reordered to match the record, not the DDL.
 pub(super) fn parse_columns(sql: &str) -> Cols {
     let empty = Cols {
         cols: Vec::new(),

@@ -280,8 +280,8 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
 /// extension test in this module wants exactly this: Windows names are case-insensitive, and
 /// a missing extension must compare unequal to the empty string, not panic or return `None`.
 ///
-/// The one implementation: [`super::loader::ext_of`] delegates here, so the loader's many
-/// extension tests and this module's `classify` cannot drift apart.
+/// [`super::loader::ext_of`] delegates here, so the loader's many extension tests and this
+/// module's `classify` cannot drift apart.
 pub(super) fn lower_ext(path: &str) -> String {
     std::path::Path::new(path)
         .extension()
@@ -424,7 +424,7 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
             .then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()))
     });
     let files = entries.iter().filter(|e| !e.2).count();
-    let total: u64 = entries.iter().map(|e| e.1).sum();
+    let total: u64 = entries.iter().fold(0u64, |a, e| a.saturating_add(e.1));
     let name = std::path::Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

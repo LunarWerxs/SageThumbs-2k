@@ -69,11 +69,21 @@ pub(super) unsafe fn gather(path: &str) -> InfoCard {
         .to_string();
     let icon = shell_icon(path);
     let detail = if p.is_dir() {
-        let count = std::fs::read_dir(p).map(|it| it.count()).unwrap_or(0);
+        // This runs on the UI thread: count at most one past the walk's own entry cap, so a
+        // folder of a million entries costs what the size walk below is allowed to cost.
+        let count = std::fs::read_dir(p)
+            .map(|it| it.take(FOLDER_WALK_MAX_ENTRIES + 1).count())
+            .unwrap_or(0);
+        let count = if count > FOLDER_WALK_MAX_ENTRIES {
+            format!(
+                "{} {FOLDER_WALK_MAX_ENTRIES}",
+                crate::i18n::t("ic_size_more_than")
+            )
+        } else {
+            count.to_string()
+        };
         let items = crate::i18n::t("ic_items");
-        // Recursive total, bounded (see `walk_folder_size`) — `ic_size_more_than` is a NEW
-        // locale key (English "more than"), reported to the integrator; it is not yet in
-        // en.toml, so it shows the missing-key marker until that lands.
+        // Recursive total, bounded (see `walk_folder_size`); a truncated walk says "more than".
         let walk = walk_folder_size(p);
         let size = if walk.truncated {
             format!(
@@ -284,22 +294,24 @@ fn walk_folder_size_bounded(
             continue; // unreadable subdirectory (permissions, or it vanished) — skip it
         };
         for entry in entries.flatten() {
-            if visit_entry(
-                &entry,
-                depth,
-                max_entries,
-                max_depth,
-                &mut visited,
-                &mut stack,
-                &mut bytes,
-                &mut truncated,
-            ) {
+            // Per entry, not per directory: each stat is a syscall, and one directory can hold
+            // the whole entry cap, which on a slow share is far past the budget.
+            let over_budget = start.elapsed() > budget;
+            truncated |= over_budget;
+            if over_budget
+                || visit_entry(
+                    &entry,
+                    depth,
+                    max_entries,
+                    max_depth,
+                    &mut visited,
+                    &mut stack,
+                    &mut bytes,
+                    &mut truncated,
+                )
+            {
                 break 'walk;
             }
-        }
-        if start.elapsed() > budget {
-            truncated = true;
-            break;
         }
     }
     FolderSize { bytes, truncated }

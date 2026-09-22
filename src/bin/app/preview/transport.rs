@@ -117,7 +117,7 @@ pub(super) unsafe fn transport_showing(hwnd: HWND) -> bool {
 
 /// Perform a transport control's action directly — the keyboard-focus counterpart of
 /// [`scrub_mouse_down`]'s click dispatch, called on Enter/Space when [`TBtn`] `tb` has focus.
-/// Only these six controls are reachable here; the seek track and volume slider are excluded
+/// All seven [`TBTNS`] controls are reachable here; the seek track and volume slider are excluded
 /// from [`TBTNS`] entirely (see its doc comment) because a discrete keypress has nothing
 /// sensible to do to a drag surface.
 pub(super) unsafe fn activate(hwnd: HWND, tb: TBtn) {
@@ -338,7 +338,7 @@ pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
     let vb = st.video.borrow();
     let Some(v) = vb.as_ref() else { return };
     let p = scrub_parts(hwnd, &sr);
-    let spk = crate::win::dpi_scale(hwnd, 22);
+
     // File switching must not run while `st.video` is borrowed: `nav_sibling` reloads, which tears
     // the player down. Note which way was clicked, drop the borrow, then act.
     if let Some(delta) = nav_arrow_hit(x, &p) {
@@ -346,7 +346,7 @@ pub(super) unsafe fn scrub_mouse_down(hwnd: HWND, x: i32, y: i32) {
         super::window::nav_sibling(hwnd, delta);
         return;
     }
-    let _ = spk;
+
     dispatch_scrub_click(hwnd, st, v, x, &p);
     let _ = InvalidateRect(Some(hwnd), Some(&sr), false);
 }

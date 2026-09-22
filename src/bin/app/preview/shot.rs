@@ -237,10 +237,10 @@ unsafe fn apply_sel(hwnd: HWND, sel: Option<(usize, usize)>) {
     }
 }
 
-/// `--find TEXT`: open the find bar on `q` and land on its first match. Driven through the
-/// REAL key path (Ctrl+F then a `WM_CHAR` per character) rather than by poking the state,
-/// so the shot proves the whole chain: the bar opening, the pane shrinking around it, and
-/// the match highlight.
+/// `--find TEXT`: open the find bar on `q` and land on its first match. Calls the REAL Ctrl+F
+/// and `WM_CHAR` handler bodies (`find::toggle`, then `find::on_char` per character) directly
+/// rather than poking the state, so the shot proves the whole chain: the bar opening, the pane
+/// shrinking around it, and the match highlight.
 unsafe fn apply_find(hwnd: HWND, find: Option<&str>) {
     let Some(q) = find else {
         return;

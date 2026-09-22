@@ -4,6 +4,15 @@
 
 use super::*;
 use std::cell::RefCell;
+use std::rc::Rc;
+
+/// One folder's sorted previewable files, with the folder and the mtime they were read at.
+/// Shared (`Rc`) so a cache hit hands out the list without copying every path in it.
+type SiblingListing = (
+    std::path::PathBuf,
+    std::time::SystemTime,
+    Rc<Vec<std::path::PathBuf>>,
+);
 
 /// True if `ext` (lowercase, no dot) is something the viewer can render — used to filter the
 /// folder listing for ←/→ navigation so arrows skip files nothing can preview. Must stay in sync
@@ -87,21 +96,21 @@ thread_local! {
     /// re-enumerates AND re-sorts up to 20,000 entries on the UI thread on every single step.
     /// Keyed on the directory's own mtime (which NTFS/Explorer bump on any create, delete, or
     /// rename inside it), so a stale listing can never outlive the folder it describes.
-    static SIBLING_CACHE: RefCell<Option<(std::path::PathBuf, std::time::SystemTime, Vec<std::path::PathBuf>)>> =
+    static SIBLING_CACHE: RefCell<Option<SiblingListing>> =
         const { RefCell::new(None) };
 }
 
 /// Sorted previewable siblings of `dir`, served from the cache when it's still fresh.
-fn cached_sorted_siblings(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn cached_sorted_siblings(dir: &std::path::Path) -> Rc<Vec<std::path::PathBuf>> {
     let mtime = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
     SIBLING_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
         if let (Some((cdir, cmtime, files)), Some(mtime)) = (cache.as_ref(), mtime) {
             if cdir == dir && *cmtime == mtime {
-                return files.clone();
+                return Rc::clone(files);
             }
         }
-        let sorted = sort_paths_like_explorer(scan_previewable_files(dir));
+        let sorted = Rc::new(sort_paths_like_explorer(scan_previewable_files(dir)));
         // Only cache when the mtime actually resolved — an unreadable directory (permissions,
         // a dropped network share) should be retried next time, not remembered as empty.
         *cache = mtime.map(|m| (dir.to_path_buf(), m, sorted.clone()));

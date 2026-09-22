@@ -191,7 +191,8 @@ pub(super) unsafe fn post_resolved(hwnd: HWND, gen: u64, resolved: Resolved) {
 /// (`safety::abandoned_budget_exhausted`): a worker that never returns (a hung network share)
 /// is tracked with an `AbandonTicket` so repeatedly opening files on the same dead share cannot
 /// grow the viewer's thread count without limit. Past the budget this refuses to start another
-/// worker and leaves the window in its Loading state instead of adding one more blocked thread.
+/// worker and falls through to [`show_load_refused`]'s fallback info card instead of adding one
+/// more blocked thread.
 pub(super) unsafe fn spawn_prepare_load(
     hwnd: HWND,
     path: String,
@@ -200,8 +201,8 @@ pub(super) unsafe fn spawn_prepare_load(
 ) {
     if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
         sagethumbs2k_core::safety::log_debugf!(
-            "preview load: too many workers still running past their budget; leaving {path} \
-             in its Loading state"
+            "preview load: too many workers still running past their budget; showing {path} \
+             the fallback card"
         );
         show_load_refused(hwnd, &path);
         return;
