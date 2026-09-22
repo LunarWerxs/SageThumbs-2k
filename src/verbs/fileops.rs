@@ -15,13 +15,6 @@ use super::actions::is_image;
 use super::encode::{read_full_fidelity_capped, reserve, write_atomic, OutSlot};
 use super::outcome::{Combined, OmitCause, Omitted, OnOmit};
 
-/// Case-insensitive whole-path comparison (Windows file names are case-folding,
-/// so `Photo.JPG` and `photo.jpg` are the same file — don't bump the counter or
-/// rename onto self).
-pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
-    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
-}
-
 /// Windows reserved device names — invalid as a full component AND as the part before
 /// the first `.` (`CON.txt` is exactly as blocked as bare `CON`), case-insensitively.
 const RESERVED_NAMES: &[&str] = &[
@@ -272,7 +265,7 @@ pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<
         Some(e) => dir.join(format!("{stem}.{e}")),
         None => dir.join(stem),
     };
-    if same_path(&natural, src) {
+    if crate::fsutil::same_file(&natural, src) {
         return Ok(None); // already in place, no rename/move needed
     }
     let (stem, dir) = (stem.to_string(), dir.to_path_buf());
@@ -299,8 +292,7 @@ fn reserve_src_slot(src: &Path, dir: &Path) -> Result<Option<OutSlot>> {
 }
 
 /// Move `src` into directory `dir`, dodging name collisions. `dir` must exist.
-/// Retries briefly past a transient Explorer lock. (Same-volume move — a
-/// cross-volume source just fails and is skipped by the caller.)
+/// Retries briefly past a transient Explorer lock. Cross-volume is a copy-then-delete.
 fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
     let Some(slot) = reserve_src_slot(src, dir)? else {
         return Ok(src.to_path_buf());
@@ -632,6 +624,7 @@ pub fn tags_to_folders(
     let mut done = 0usize;
     let mut skipped = 0usize;
     let mut touched = false;
+    let mut moved_from: Vec<PathBuf> = Vec::new();
     for p in files {
         let tags = crate::strip::read_audio_tags(p);
         let Some(rel) = template_relpath(&expand_template(template, &tags, missing)) else {
@@ -652,6 +645,7 @@ pub fn tags_to_folders(
         if ok {
             done += 1;
             touched = true;
+            note_parent(&mut moved_from, src);
         } else {
             skipped += 1;
         }
@@ -659,7 +653,19 @@ pub fn tags_to_folders(
     if touched {
         refresh_dir(dest);
     }
+    // A move also changed the folders the files left, so Explorer is told about those too.
+    if move_files {
+        moved_from.iter().for_each(|dir| refresh_dir(dir));
+    }
     (done, skipped)
+}
+
+/// Remember `src`'s folder, once.
+fn note_parent(dirs: &mut Vec<PathBuf>, src: &Path) {
+    let parent = src.parent().unwrap_or_else(|| Path::new("."));
+    if !dirs.iter().any(|d| d == parent) {
+        dirs.push(parent.to_path_buf());
+    }
 }
 
 #[cfg(test)]

@@ -29,19 +29,22 @@ pub(super) fn compress_batch_report(
     let results = crate::parallel::map(imgs, |_, p| compress_one(exe, p, target));
     let attempted = imgs.len();
     let mut outs = Vec::with_capacity(results.len());
-    // The largest per-image failure number: the parsed "smallest reachable" size, or the
-    // requested target when the error text doesn't match (a decode/write failure), so asking
-    // for at least that many bytes is not guaranteed to let every failing image succeed.
+    // The largest per-image "smallest reachable" size across the failures that were a size
+    // refusal (the error text carries the marker). A failure that was NOT a size refusal
+    // (decode/write error, `None`) leaves this untouched and only sets `generic_failure`,
+    // so a shortfall note is only built when at least one failure really was about size.
     let mut worst_achievable: Option<u64> = None;
+    let mut generic_failure = false;
     for r in results {
         match r {
             Ok(p) => outs.push(p),
-            Err(achievable) => {
+            Err(Some(achievable)) => {
                 worst_achievable = Some(match worst_achievable {
                     Some(w) => w.max(achievable),
                     None => achievable,
                 });
             }
+            Err(None) => generic_failure = true,
         }
     }
     let done = outs.len();
@@ -53,30 +56,35 @@ pub(super) fn compress_batch_report(
             achievable,
             attempted - done,
         ));
+    } else if generic_failure {
+        rep.note = Some("couldn't compress some images".into());
     }
     rep.output = first;
     rep
 }
 
 /// One image's compress attempt for [`compress_batch_report`]'s batch map. `Ok` carries the
-/// written "(compressed)" sibling's path; `Err` carries the smallest byte count THIS image
-/// could reach, parsed out of [`compress_to_size`]'s error text via
-/// [`parse_smallest_achievable`] and falling back to `target` when the text doesn't match
-/// the expected "cannot fit" shape (e.g. a decode failure instead of an unmeetable target) -
-/// so the batch still reports a real number rather than losing the failure silently.
-pub(super) fn compress_one_to_size(path: &str, target: u64) -> std::result::Result<PathBuf, u64> {
+/// written "(compressed)" sibling's path; `Err(Some(n))` carries the smallest byte count THIS
+/// image could reach, parsed out of [`compress_to_size`]'s error text via
+/// [`parse_smallest_achievable`]; `Err(None)` is a failure that was NOT a size refusal (a
+/// decode/write error, or error text of an unexpected shape) - the batch then does not
+/// attribute the failure to size.
+pub(super) fn compress_one_to_size(
+    path: &str,
+    target: u64,
+) -> std::result::Result<PathBuf, Option<u64>> {
     compress_to_size(path, target).map_err(|e| {
         let msg = e.to_string();
         crate::safety::log(&format!("Compress to size failed for {path}: {msg}"));
-        parse_smallest_achievable(&msg).unwrap_or(target)
+        parse_smallest_achievable(&msg)
     })
 }
 
 /// Pull the "the smallest JPEG this can make is N bytes" number out of
 /// [`compress_to_size`]'s unmeetable-target error text (see its doc comment for the exact
 /// wording). `None` for any other failure (decode error, write failure, ...) or if the text
-/// doesn't match - callers fall back to a sane default rather than treating `None` as fatal.
-/// Pure and panic-free: worst case on malformed input is `None`.
+/// doesn't match - callers treat `None` as "this failure was not a size refusal", not as a
+/// size number. Pure and panic-free: worst case on malformed input is `None`.
 pub(super) fn parse_smallest_achievable(message: &str) -> Option<u64> {
     const MARKER: &str = "the smallest JPEG this can make is ";
     let after = message.split_once(MARKER)?.1;

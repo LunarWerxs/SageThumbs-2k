@@ -199,9 +199,9 @@ pub fn register(dll_path: &str) -> Result<()> {
     // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
     // so this never unhooks a live format. Best-effort, one pass per (re-)register.
     for ext in REMOVED_EXTENSIONS {
+        unhook_ext_propstore(&classes, ext);
         unhook_ext_and_prune(&classes, ext);
         unhook_ext_preview_and_prune(&classes, ext);
-        unhook_ext_propstore(&classes, ext);
     }
 
     // The classic IContextMenu handler's COM server (for classic-menu machines:
@@ -463,12 +463,23 @@ fn prune_empty_parents(classes: &Key, path: &str) {
 /// CLSID, then hand the slot back to whoever we took it from. A foreign handler
 /// in that slot is left untouched.
 fn remove_if_ours(classes: &Key, path: &str) {
+    if remove_if_ours_leaf(classes, path) {
+        restore_displaced(classes, path);
+    }
+}
+
+/// Remove the `shellex` leaf at `path` when its default value is OUR CLSID, and nothing
+/// otherwise. Returns whether we owned (and therefore removed) the slot, so each caller can
+/// restore it through its OWN records hive — machine-wide via [`restore_displaced`], per-user
+/// via [`restore_displaced_in`] — and the per-user path can gate its parent-chain prune on it.
+fn remove_if_ours_leaf(classes: &Key, path: &str) -> bool {
     if let Ok(key) = classes.open(path) {
         if key.get_string("").ok().as_deref() == Some(CLSID_THUMBNAIL_PROVIDER_STR) {
             let _ = classes.remove_tree(path);
-            restore_displaced(classes, path);
+            return true;
         }
     }
+    false
 }
 
 /// Undo [`register`] machine-wide. The per-user pieces of THIS (elevated) account are also

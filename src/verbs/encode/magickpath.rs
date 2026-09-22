@@ -112,20 +112,8 @@ pub(super) fn convert_to_magick_watermarked(
 }
 
 /// Convert `input` into `out_dir` via the bundled ImageMagick at extension `ext`,
-/// picking a collision-free reserved name (race-safe under parallel batches).
-/// Wraps [`convert_to_magick`] so the Convert… dialog's exotic targets carry no
-/// naming logic. Returns the output path.
-pub fn convert_to_magick_in(
-    input: &str,
-    out_dir: &Path,
-    ext: &str,
-    resize: Resize,
-    quality: Option<u8>,
-) -> Result<PathBuf> {
-    convert_to_magick_in_named(input, out_dir, ext, resize, quality, None, None)
-}
-
-/// [`convert_to_magick_in`] with the same name tag [`convert_file_opts_named`]
+/// picking a collision-free reserved name (race-safe under parallel batches), with
+/// the same name tag [`convert_file_opts_named`]
 /// takes, so the dialog's "write every preset size" mode names its AVIF/JXL/PSD
 /// outputs the same way it names the native ones. Without it three sizes would
 /// land as `photo.avif`, `photo (2).avif`, `photo (3).avif` with nothing to say

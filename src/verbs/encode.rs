@@ -49,9 +49,7 @@ mod magickpath;
 use magickpath::*;
 mod variants;
 pub(crate) use magickpath::ext_needs_magick;
-pub use magickpath::{
-    convert_image_to_pdf_in, convert_to_magick, convert_to_magick_in, convert_to_magick_in_named,
-};
+pub use magickpath::{convert_image_to_pdf_in, convert_to_magick, convert_to_magick_in_named};
 pub use transform::transform_file;
 use variants::*;
 
@@ -500,7 +498,7 @@ fn convert_to_reporting_with(
     if ext_needs_magick(&ext) {
         // None = magick's default quality, so the quick verb's out-of-process (`st2k convert`)
         // path stays byte-identical to its in-process twin. The Convert dialog uses
-        // `convert_to_magick_in` with an explicit quality instead.
+        // `convert_to_magick_in_named` with an explicit quality instead.
         //
         // One cause for the whole subprocess: magick decodes AND encodes behind one exit
         // code, so splitting the two here would be a guess. The message it carries names

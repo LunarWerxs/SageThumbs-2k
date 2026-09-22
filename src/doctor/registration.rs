@@ -113,9 +113,9 @@ fn check_legacy_install(r: &mut Report) {
 }
 
 /// Check one COM handler's registration/load status, writing to the report as it goes.
-/// Returns `false` only when this handler is BOTH critical and broken (unregistered, missing
-/// DLL, or fails to load); a non-critical handler always returns `true` regardless of state.
-fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) -> bool {
+/// A broken critical handler is reported via `fail_with_fix`; a non-critical one with
+/// `S::Warn` only.
+fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) {
     match inproc_path(clsid) {
         None => {
             if critical {
@@ -125,10 +125,8 @@ fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) ->
                     "Reinstall, or run an elevated: \
                      regsvr32 \"C:\\Program Files\\SageThumbs2K\\sagethumbs2k.dll\"",
                 );
-                false
             } else {
                 r.line(S::Warn, name, "not registered");
-                true
             }
         }
         Some(p) => {
@@ -139,7 +137,6 @@ fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) ->
                     &format!("registered -> {p} (FILE MISSING)"),
                     "The registration points at a DLL that is not there — reinstall.",
                 );
-                !critical
             } else if let Err(e) = can_load(&path) {
                 r.fail_with_fix(
                     name,
@@ -148,10 +145,8 @@ fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) ->
                      plain icons. Usually a missing Microsoft Visual C++ Redistributable \
                      (x64) — install it and retry.",
                 );
-                !critical
             } else {
                 r.line(S::Ok, name, &format!("registered, loads OK -> {p}"));
-                true
             }
         }
     }
@@ -180,11 +175,10 @@ fn check_approved_list(r: &mut Report) {
 }
 
 /// The COM half: is each coclass registered, does its DLL exist, and will it load.
-pub(super) fn check_registration(r: &mut Report) -> bool {
+pub(super) fn check_registration(r: &mut Report) {
     r.head("COM registration");
     check_legacy_install(r);
 
-    let mut thumb_ok = true;
     let handlers = [
         ("Thumbnail provider", CLSID_THUMBNAIL_PROVIDER_STR, true),
         ("Context menu (classic)", CLSID_CONTEXT_MENU_STR, false),
@@ -193,14 +187,12 @@ pub(super) fn check_registration(r: &mut Report) -> bool {
     ];
 
     for (name, clsid, critical) in handlers {
-        if !check_one_handler(r, name, clsid, critical) {
-            thumb_ok = false;
+        {
+            check_one_handler(r, name, clsid, critical);
         }
     }
 
     check_approved_list(r);
-
-    thumb_ok
 }
 
 /// The formats whose thumbnail slot WE took from another program — the mirror image of the

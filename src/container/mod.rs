@@ -151,10 +151,10 @@ pub enum CoverOut {
 /// Max bytes we'll read for one cover entry (DarkThumbs' CBXMEM cap, 32 MiB).
 pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
 
-/// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
-/// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
-/// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
-/// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
+/// Upper bound on the entries any single archive listing may return. It is passed
+/// INTO each format reader, so the reader itself stops collecting at the cap — the
+/// viewer's UI thread and the thumbnail host's cover pick therefore never see a
+/// directory that declares millions of entries turn into millions of allocations.
 /// Cap on how many archive entries any listing/selection path will materialize —
 /// a crafted archive whose directory declares millions of entries must never
 /// drive millions of `String` allocations (in the viewer's UI thread OR the
@@ -162,6 +162,10 @@ pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
 /// `pick_covers` listing (zip/7z/rar).
 pub(crate) const MAX_LIST_ENTRIES: usize = 50_000;
 
+/// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
+/// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
+/// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
+/// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
 pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
     const MAX_ENTRIES: usize = MAX_LIST_ENTRIES;
     // The cap is passed INTO each reader so it bounds the collection itself — a crafted archive
@@ -380,8 +384,7 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
         // uses a compression we deliberately don't guess at (RLE) or the bank is malformed.
         return psp::extract_best(bytes).or_else(|| psp::extract(bytes).map(CoverOut::Bytes));
     }
-    // Amiga / Deluxe Paint IFF ILBM (and DOS PBM): real planar-bitmap decode to
-    // pixels. The `ILBM`/`PBM ` FORM type keeps this off AIFF audio (`FORM…AIFF`).
+
     // Aseprite sprites: rendered from their own layers. Keyed on the magic word at offset 4,
     // never the extension - `.ase` is also 3DS ASCII scenes, Adobe swatches and GAP data.
     if aseprite::looks_like_aseprite(bytes) {
@@ -392,6 +395,8 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     if sfw::looks_like_sfw(bytes) {
         return sfw::extract(bytes).map(CoverOut::Image);
     }
+    // Amiga / Deluxe Paint IFF ILBM (and DOS PBM): real planar-bitmap decode to
+    // pixels. The `ILBM`/`PBM ` FORM type keeps this off AIFF audio (`FORM…AIFF`).
     if ilbm::looks_like_ilbm(bytes) {
         return ilbm::extract(bytes).map(CoverOut::Image);
     }
@@ -692,6 +697,52 @@ pub fn head_preview_len<R: std::io::Read + std::io::Seek>(
         return Some(gcode::SCAN_LIMIT as u64);
     }
     None
+}
+
+/// The ordered decide-and-commit shared by BOTH head-preview fast paths:
+/// [`crate::decode`]'s `head_preview_file_fast` (by path) and [`crate::streamsrc`]'s
+/// `head_preview_fast` (by `IStream`). Sizes the bounded prefix ([`head_preview_len`],
+/// clamped to `blanket`), refuses one that would be the whole file, then commits only
+/// when the caller's mech-specific `read_prefix` yields bytes that [`extract_cover`]
+/// finds a preview in AND that preview can serve `target_edge` (via
+/// [`crate::decode::embedded_preview_serves`]; `ANY_PREVIEW` means every preview
+/// qualifies). Keeping the ordering in one place is what stops the two front ends
+/// drawing different pictures of the same file.
+///
+/// `read_prefix` performs the actual prefix read — a `File` handle here, a shell
+/// stream there — and is handed the (already rewound) reader and the byte count.
+/// The reader is parked back at 0 before any return, because [`head_preview_len`]
+/// seeks the shared stream around and a caller may reuse it afterwards.
+pub(crate) fn head_preview_prefix<R, F>(
+    head: &[u8],
+    ext: Option<&str>,
+    r: &mut R,
+    size: u64,
+    blanket: u64,
+    target_edge: u32,
+    read_prefix: F,
+) -> Option<Vec<u8>>
+where
+    R: std::io::Read + std::io::Seek,
+    F: FnOnce(&mut R, u64) -> Option<Vec<u8>>,
+{
+    let wanted = head_preview_len(head, ext, r, blanket);
+    // The length probe seeks the SHARED stream around; park it back at 0 before any
+    // return. Every downstream consumer re-seeks anyway — this is insurance for
+    // future ones that might not.
+    let _ = r.seek(std::io::SeekFrom::Start(0));
+    let wanted = wanted?.min(blanket);
+    if wanted >= size {
+        return None; // prefix would be the whole file — the normal read is equivalent
+    }
+    let prefix = read_prefix(r, wanted)?;
+    extract_cover(&prefix)?;
+    if let Some(edge) = upgradable_head_preview_edge(&prefix) {
+        if !crate::decode::embedded_preview_serves(edge, target_edge) {
+            return None;
+        }
+    }
+    Some(prefix)
 }
 
 /// Raster-image extensions we accept as an archive cover. A curated subset of the

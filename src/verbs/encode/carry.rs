@@ -269,9 +269,11 @@ fn heif_exif_block(payload: &[u8]) -> Option<Vec<u8>> {
     (tiff.starts_with(b"II") || tiff.starts_with(b"MM")).then(|| tiff.to_vec())
 }
 
-/// Graft `meta` onto the file at `path`, in place. Best-effort by design: a
-/// failure here must never fail the conversion the user actually asked for, so
-/// every error path leaves the already-written image untouched and returns `Ok`.
+/// Graft `meta` onto the file at `path`, in place. Best-effort by design: a read
+/// or parse failure returns `Ok`, leaving the already-written image untouched,
+/// because that must never fail the conversion the user actually asked for. The
+/// final in-place rewrite is the exception — its write error propagates so a
+/// partial write fails the operation rather than publishing a truncated image.
 pub(super) fn apply(meta: &Carried, path: &Path, out_ext: &str) -> Result<()> {
     let Ok(bytes) = std::fs::read(path) else {
         return Ok(());

@@ -95,27 +95,7 @@ impl BlockCacheStream {
     /// One big sequential read from the source at absolute `off`, looping over short reads.
     unsafe fn read_inner_at(&self, off: u64, buf: &mut [u8]) -> Option<()> {
         self.inner.Seek(off as i64, STREAM_SEEK_SET, None).ok()?;
-        let mut filled = 0;
-        while filled < buf.len() {
-            let mut got: u32 = 0;
-            let want = (buf.len() - filled).min(u32::MAX as usize) as u32;
-            if self
-                .inner
-                .Read(
-                    buf[filled..].as_mut_ptr() as *mut c_void,
-                    want,
-                    Some(&mut got),
-                )
-                .is_err()
-            {
-                return None;
-            }
-            if got == 0 {
-                break;
-            }
-            filled += (got as usize).min(buf.len() - filled);
-        }
-        (filled == buf.len()).then_some(())
+        crate::streamsrc::read_full(&self.inner, buf)
     }
 }
 

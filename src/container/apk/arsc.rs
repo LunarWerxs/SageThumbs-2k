@@ -12,15 +12,7 @@ pub(super) struct Arsc<'a> {
 /// Validate the RES_TABLE header (`headerSize`/`size` bounds included) and return the
 /// chunk body that follows it.
 pub(super) fn arsc_body(arsc: &[u8]) -> Option<&[u8]> {
-    if le16(arsc, 0)? != RES_TABLE {
-        return None;
-    }
-    let hs = le16(arsc, 2)? as usize;
-    let size = le32(arsc, 4)? as usize;
-    if hs < 12 || size < hs || size > arsc.len() {
-        return None;
-    }
-    arsc.get(hs..size)
+    chunk_body(arsc, RES_TABLE, 12)
 }
 
 /// Append one RES_TABLE_PACKAGE chunk to the package list, bounded by `MAX_PACKAGES`.

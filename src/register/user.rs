@@ -107,32 +107,16 @@ pub(super) fn unregister_user_classes() -> Result<()> {
 /// that looks like a half-removed handler to anyone who goes looking.
 pub(super) fn remove_user_if_ours(classes: &Key, ext: &str) {
     for path in thumb_keys(ext) {
-        let ours = classes
-            .open(&path)
-            .ok()
-            .and_then(|k| k.get_string("").ok())
-            .as_deref()
-            == Some(CLSID_THUMBNAIL_PROVIDER_STR);
-        if !ours {
-            continue;
-        }
-        let _ = classes.remove_tree(&path);
-        // Hand the slot back to whoever we took it from. This also leaves the key non-empty,
-        // which is what stops the prune below from deleting the chain out from under it.
-        restore_displaced_in(classes, CURRENT_USER, &path);
-        // Walk back up: `<assoc>\shellex`, then `<assoc>`. Stop at the first parent that
-        // still holds something, so a foreign handler or a populated key is never collateral.
-        let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
-            continue;
-        };
-        if !is_empty_key(classes, shellex) {
-            continue;
-        }
-        let _ = classes.remove_tree(shellex);
-        if let Some(assoc) = shellex.rsplit_once('\\').map(|(parent, _)| parent) {
-            if is_empty_key(classes, assoc) {
-                let _ = classes.remove_tree(assoc);
-            }
+        // Only a slot WE own is removed (the shared body also hands it back to whoever we took
+        // it from), and only then is the parent chain walked back and pruned — a foreign
+        // handler's chain must not be swept. The machine-wide unregister path prunes
+        // unconditionally; here the guard preserves this path's stricter behaviour.
+        if remove_if_ours_leaf(classes, &path) {
+            // Hand the slot back to whoever we took it from, through the per-user records
+            // hive. This also leaves the key non-empty, which is what stops the prune below
+            // from deleting the chain out from under it.
+            restore_displaced_in(classes, CURRENT_USER, &path);
+            prune_empty_parents(classes, &path);
         }
     }
 }

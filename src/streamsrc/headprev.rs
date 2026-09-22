@@ -37,37 +37,25 @@ pub(super) unsafe fn head_preview_fast(
     // refuses a name it cannot resolve to a real file (by design — a relative name would
     // resolve against OUR working directory), so routing this through it meant G-code
     // never matched for anything Explorer handed over.
-    let wanted = crate::container::head_preview_len(
+    //
+    // The decide-and-commit order (length probe, whole-file refusal, a preview in the prefix,
+    // and ISSUE #33's size question) is shared with the by-path fast path, so the two front
+    // ends cannot draw different pictures of the same file. Committing to the prefix decides
+    // what BYTES exist downstream: once we hand back 29 KB of PSD head, the merged composite is
+    // gone, so a container with a better picture behind its baked preview is asked the size
+    // question with the same predicate the decode side uses.
+    crate::container::head_preview_prefix(
         first,
         head.ext.as_deref(),
         &mut IStreamReader {
             stream: stream.clone(),
         },
+        size,
         decode::HEAD_PREVIEW_BYTES as u64,
-    );
-    // The length probe seeks the SHARED stream around; park it back at 0 before
-    // any return. Every downstream consumer re-seeks anyway — this is insurance
-    // for future ones that might not.
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let wanted = wanted?.min(decode::HEAD_PREVIEW_BYTES as u64);
-    if wanted >= size {
-        return None; // prefix would be the whole file — the normal read is equivalent
-    }
-    let prefix = stream_prefix(stream, Some(size), wanted as usize)?;
-    crate::container::extract_cover(&prefix)?;
-    // ISSUE #33. Committing to the prefix here is not just a choice of decoder, it decides
-    // what BYTES exist downstream: once we hand back 29 KB of PSD head, the merged composite
-    // is not merely slower to reach, it is gone. So a container that has a better picture
-    // behind its baked preview gets the size question asked HERE, with the same predicate the
-    // decode side uses, or the two would disagree and one of them would do wasted work.
-    // Anything else (a `.blend`, a `.dwg`, an unmeasurable preview) answers None and keeps the
-    // fast path unconditionally — reading their whole document would buy the same image.
-    if let Some(edge) = crate::container::upgradable_head_preview_edge(&prefix) {
-        if !decode::embedded_preview_serves(edge, target_edge) {
-            return None;
-        }
-    }
-    Some(prefix)
+        target_edge,
+        // SAFETY: the same shell stream this function was handed, read on this thread.
+        |_, wanted| unsafe { stream_prefix(stream, Some(size), wanted as usize) },
+    )
 }
 
 /// For an OVERSIZED file (past the in-memory cap): if its magic marks a container

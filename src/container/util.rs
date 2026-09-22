@@ -34,14 +34,29 @@ pub(super) fn decodable_image(data: Vec<u8>) -> Option<Vec<u8>> {
 /// Value of `key="..."` or `key='...'` within `s` (the first occurrence). XML
 /// permits either quote style, so both are tried — a reader that only checked `"`
 /// would silently miss an attribute a producer wrote with `'`.
+///
+/// A match must start on an attribute boundary: a hit whose preceding byte is an XML
+/// name character belongs to a LONGER attribute name (e.g. `ContentType="…"` contains
+/// `Type="…"`), so it is rejected and the search continues. Without this, any attribute
+/// whose name merely ENDS in `key` would satisfy the lookup.
 pub(super) fn xml_attr(s: &str, key: &str) -> Option<String> {
     for quote in ['"', '\''] {
         let pat = format!("{key}={quote}");
-        if let Some(at) = s.find(&pat) {
-            let start = at + pat.len();
-            if let Some(rel_end) = s[start..].find(quote) {
-                return Some(s[start..start + rel_end].to_string());
+        let mut from = 0;
+        while let Some(rel) = s[from..].find(&pat) {
+            let at = from + rel;
+            let boundary = at == 0
+                || !matches!(
+                    s.as_bytes()[at - 1],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b':'
+                );
+            if boundary {
+                let start = at + pat.len();
+                if let Some(rel_end) = s[start..].find(quote) {
+                    return Some(s[start..start + rel_end].to_string());
+                }
             }
+            from = at + 1;
         }
     }
     None
@@ -157,14 +172,6 @@ pub(crate) fn jpeg_sof_is_decodable(sof: u8) -> bool {
     matches!(sof, 0xC0..=0xC2)
 }
 
-/// [`jpeg_span_len`] plus the frame's SOF marker, so a caller can tell a picture from a
-/// pile of sensor readings. Returns `(span length, SOF marker)`.
-///
-/// The SOF is an `Option` and deliberately does NOT gate the span: `jpeg_span_len` predates
-/// this and several callers (`c4d`, `psp`) rely on its exact acceptance, so a stream whose
-/// markers parse to a clean EOI without a frame header keeps measuring the same length it
-/// always did. Only a caller that CARES what kind of frame it found consults the marker, and
-/// then absence means "unknown", not "reject".
 /// Skip a length-prefixed marker segment: reads its big-endian length (the field covers
 /// its own 2 bytes) and returns the position right after the segment. `None` if the length
 /// field is unreadable or claims less than its own 2 bytes.

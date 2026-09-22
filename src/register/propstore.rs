@@ -129,8 +129,11 @@ pub(super) fn hook_ext_propstore(classes: &Key, ext: &str) -> Result<()> {
 /// Write `name` on `key` only when it's currently absent/empty — mirrors [`set_perceived_type`]'s
 /// "fill an empty slot, never overwrite" rule for the property-list values written above.
 pub(super) fn set_assoc_value_if_empty(key: &Key, name: &str, value: &str) {
-    let already = key.get_string(name).ok();
-    if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
+    let filled = key.get_string(name).map_or_else(
+        |_| key.values().is_ok_and(|mut v| v.any(|(n, _)| n == name)),
+        |s| !s.is_empty(),
+    ); // a present non-string value counts as filled
+    if filled {
         return; // a value is already present (Windows or another app) — leave it
     }
     let _ = key.set_string(name, value);
@@ -153,17 +156,22 @@ pub(super) fn perceived_type_for(ext: &str) -> Option<&'static str> {
 }
 
 /// Set `.<ext>`'s `PerceivedType` so `kind:` search + library grouping can classify the
-/// formats Windows otherwise doesn't know (kra/ora/blend/epub/djvu/svg/xcf/…). Written ONLY when
-/// absent — we never overwrite a value Windows or another app already set — and marked with
-/// [`PERCEIVED_TYPE_MARK`] so [`unhook_perceived_type`] removes exactly the values we wrote
-/// (on every disable and uninstall) and nothing another app set later.
+/// formats Windows otherwise doesn't know (epub/djvu documents, audio/video, camera RAW, and
+/// the WIC-openable images). Written ONLY when absent — we never overwrite a value Windows or
+/// another app already set — and marked with [`PERCEIVED_TYPE_MARK`] so [`unhook_perceived_type`]
+/// removes exactly the values we wrote (on every disable and uninstall) and nothing another app set later.
 pub(super) fn set_perceived_type(classes: &Key, ext: &str) {
     let key = format!(".{ext}");
-    let already = classes
-        .open(&key)
-        .ok()
-        .and_then(|k| k.get_string("PerceivedType").ok());
-    if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
+    let filled = classes.open(&key).ok().is_some_and(|k| {
+        k.get_string("PerceivedType").map_or_else(
+            |_| {
+                k.values()
+                    .is_ok_and(|mut v| v.any(|(n, _)| n == "PerceivedType"))
+            },
+            |s| !s.is_empty(),
+        )
+    });
+    if filled {
         return; // a value is already present (Windows or another app) — leave it
     }
     let Some(pt) = perceived_type_for(ext) else {

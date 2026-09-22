@@ -395,7 +395,7 @@ pub(super) fn compress_one(
     exe: Option<&Path>,
     p: &str,
     target: u64,
-) -> std::result::Result<PathBuf, u64> {
+) -> std::result::Result<PathBuf, Option<u64>> {
     match exe {
         Some(exe) => {
             let target_s = target.to_string();
@@ -403,7 +403,7 @@ pub(super) fn compress_one(
                 TextOutcome::Ok(path) => Ok(path),
                 TextOutcome::Failed(stderr) => {
                     crate::safety::log(&format!("Compress (st2k) failed for {p}"));
-                    Err(parse_smallest_achievable(&stderr).unwrap_or(target))
+                    Err(parse_smallest_achievable(&stderr))
                 }
                 TextOutcome::SpawnFailed => compress_one(None, p, target),
             }

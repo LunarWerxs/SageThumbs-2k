@@ -526,7 +526,7 @@ pub(super) fn head_preview_file_fast(
     prefix_cap: usize,
     target_edge: u32,
 ) -> Option<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::Read;
     let mut f = std::fs::File::open(path).ok()?;
     let mut magic = [0u8; 8];
     f.read_exact(&mut magic).ok()?;
@@ -535,22 +535,19 @@ pub(super) fn head_preview_file_fast(
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
-    let wanted =
-        crate::container::head_preview_len(&magic, ext.as_deref(), &mut f, prefix_cap as u64)?
-            .min(prefix_cap as u64);
-    if wanted >= len {
-        return None; // prefix would be the whole file — the normal read is equivalent
-    }
-    f.seek(SeekFrom::Start(0)).ok()?;
-    let mut buf = vec![0u8; wanted as usize];
-    f.read_exact(&mut buf).ok()?;
-    crate::container::extract_cover(&buf)?;
-    if let Some(edge) = crate::container::upgradable_head_preview_edge(&buf) {
-        if !embedded_preview_serves(edge, target_edge) {
-            return None;
-        }
-    }
-    Some(buf)
+    crate::container::head_preview_prefix(
+        &magic,
+        ext.as_deref(),
+        &mut f,
+        len,
+        prefix_cap as u64,
+        target_edge,
+        |f, wanted| {
+            let mut buf = vec![0u8; wanted as usize];
+            f.read_exact(&mut buf).ok()?;
+            Some(buf)
+        },
+    )
 }
 
 #[cfg(test)]

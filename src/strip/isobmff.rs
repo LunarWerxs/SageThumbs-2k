@@ -114,9 +114,17 @@ pub(crate) fn items(bytes: &[u8]) -> Vec<Item> {
         out = parse_iinf(bytes, o, l);
     }
     if let Some((o, l)) = find_box(&kids, b"iloc") {
-        let locs = parse_iloc(bytes, o, l);
+        // Index the locations by item id once. A linear scan per item is
+        // O(items x locations) - two ~100k-entry `iinf`/`iloc` boxes in a crafted
+        // file would mean billions of comparisons and hang the shell.
+        let mut by_id: std::collections::HashMap<u32, (usize, usize)> =
+            std::collections::HashMap::with_capacity(out.len());
+        for (id, e) in parse_iloc(bytes, o, l) {
+            // First occurrence wins, matching the previous linear `find`.
+            by_id.entry(id).or_insert(e);
+        }
         for it in out.iter_mut() {
-            it.extent = locs.iter().find(|(id, _)| *id == it.id).map(|(_, e)| *e);
+            it.extent = by_id.get(&it.id).copied();
         }
     }
     out
@@ -387,10 +395,19 @@ fn targets_replaceable(targets: &[&Item]) -> bool {
 /// image item from the comparison too, and the overwrite would land on the picture. A
 /// target with no extent answers false (`targets_replaceable` already refused it).
 fn targets_disjoint(bytes: &[u8], found: &[Item]) -> bool {
-    let meta_span = boxes(bytes, 0)
+    // Every non-`mdat` top-level box, HEADER INCLUDED: pointing a target at any of
+    // them (ftyp, the meta box itself, ...) would overwrite the box structure.
+    // Spans are reconstructed from the body offsets `boxes` returns plus box
+    // contiguity; `mdat` (where real payloads legitimately live) is exempt.
+    let mut prev_end = 0usize;
+    let structural: Vec<(usize, usize)> = boxes(bytes, 0)
         .into_iter()
-        .find(|(t, _, _)| t == b"meta")
-        .map(|(_, o, l)| (o, l));
+        .filter_map(|(typ, o, l)| {
+            let start = prev_end;
+            prev_end = o + l;
+            (&typ != b"mdat").then_some((start, (o + l).saturating_sub(start)))
+        })
+        .collect();
     let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 < b.0 + b.1 && b.0 < a.0 + a.1;
     found
         .iter()
@@ -406,7 +423,7 @@ fn targets_disjoint(bytes: &[u8], found: &[Item]) -> bool {
                 .filter(|&(oi, _)| oi != ti)
                 .filter_map(|(_, o)| o.extent)
                 .any(|e| overlaps(te, e));
-            clear_of_items && !meta_span.is_some_and(|m| overlaps(te, m))
+            clear_of_items && !structural.iter().any(|&s| overlaps(te, s))
         })
 }
 

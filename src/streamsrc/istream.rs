@@ -183,7 +183,7 @@ pub(super) unsafe fn stream_prefix_from(
 
 /// Read exactly `buf.len()` bytes starting at the stream's current position (looping over
 /// short reads). None if the stream ends early or a read fails.
-pub(super) unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
+pub(crate) unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
     (fill_from_current(stream, buf)? == buf.len()).then_some(())
 }
 

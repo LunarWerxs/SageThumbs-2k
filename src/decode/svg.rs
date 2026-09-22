@@ -186,9 +186,12 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     Ok(DynamicImage::ImageRgba8(img))
 }
 
-/// Un-premultiply tiny-skia's premultiplied RGBA `buf` in place, so it flows through the
-/// same straight-RGBA path as every other decoder.
-fn unpremultiply_rgba(buf: &mut [u8]) {
+/// Un-premultiply RGBA8 `buf` in place: 4-byte chunks, leaving fully opaque and fully
+/// transparent pixels untouched. The single shared copy — the DDS alpha-mode fix-up in
+/// `decode::dds::masks` calls this too. It lives here because `decode::svg` is
+/// `pub(crate)` while the `decode::dds::masks` module is private to `decode::dds`, so
+/// this is the only location both call sites can reach.
+pub(crate) fn unpremultiply_rgba(buf: &mut [u8]) {
     let (chunks, _) = buf.as_chunks_mut::<4>();
     for px in chunks {
         let a = px[3] as u32;

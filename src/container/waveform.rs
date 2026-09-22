@@ -192,8 +192,6 @@ fn parse_wav_fmt_chunk<R: Read>(r: &mut R, size: u64) -> Option<WavFmt> {
     Some((real_tag, channels, bits))
 }
 
-/// Walk AIFF/AIFC chunks (REMOVED)
-/// and `SSND`. Cursor is just past the 12-byte FORM header.
 /// Parse one AIFF `COMM` chunk body already read into `buf`: channels, bit depth, and PCM
 /// endianness/sign. `None` for a real (lossy) AIFC codec, which the caller can't read as PCM
 /// — same as any other malformed/unreadable COMM, since a missing `comm` result at the end

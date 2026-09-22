@@ -37,7 +37,7 @@ use rawsniff::*;
 mod istream;
 use istream::*;
 mod videosrc;
-pub(crate) use istream::{stream_extension, StreamHead};
+pub(crate) use istream::{read_full, stream_extension, StreamHead};
 use videosrc::*;
 // The decode hub needs one of the sniffs directly: a TIFF whose IFD0 is only a
 // reduced-resolution copy must not be answered by the `image` tier. See its doc comment.

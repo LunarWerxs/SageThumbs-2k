@@ -507,18 +507,25 @@ enum IconAttr {
     Reference(u32),
 }
 
+/// Validate a chunk header (`headerSize`/`size` bounds included) against its expected
+/// type and return the chunk body that follows it. `min_hs` is the format's minimum
+/// header size (8 for RES_XML, 12 for RES_TABLE).
+pub(super) fn chunk_body(data: &[u8], expect_type: u16, min_hs: usize) -> Option<&[u8]> {
+    if le16(data, 0)? != expect_type {
+        return None;
+    }
+    let hs = le16(data, 2)? as usize;
+    let size = le32(data, 4)? as usize;
+    if hs < min_hs || size < hs || size > data.len() {
+        return None;
+    }
+    data.get(hs..size)
+}
+
 /// Validate the RES_XML header (`headerSize`/`size` bounds included) and return the
 /// chunk body that follows it.
 fn axml_body(axml: &[u8]) -> Option<&[u8]> {
-    if le16(axml, 0)? != RES_XML {
-        return None;
-    }
-    let hs = le16(axml, 2)? as usize;
-    let size = le32(axml, 4)? as usize;
-    if hs < 8 || size < hs || size > axml.len() {
-        return None;
-    }
-    axml.get(hs..size)
+    chunk_body(axml, RES_XML, 8)
 }
 
 /// Handle one START_ELEMENT chunk in the manifest walk: returns an icon to stop on,

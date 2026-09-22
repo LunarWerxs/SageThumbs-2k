@@ -151,22 +151,9 @@ pub(super) fn write_channels(out: &mut [u8], i: usize, n: usize, c0: u8, c1: u8,
 /// meaningless (force opaque, or the thumbnail is invisible).
 pub(super) fn apply_alpha_mode(out: &mut [u8], mode: u32) {
     match mode {
-        ALPHA_MODE_PREMULTIPLIED => unpremultiply_alpha(out),
+        ALPHA_MODE_PREMULTIPLIED => crate::decode::svg::unpremultiply_rgba(out),
         ALPHA_MODE_OPAQUE => force_opaque_alpha(out),
         _ => {}
-    }
-}
-
-/// Undo a declared premultiplied alpha, so semi-transparent pixels are not too dark.
-pub(super) fn unpremultiply_alpha(out: &mut [u8]) {
-    let (chunks, _) = out.as_chunks_mut::<4>();
-    for px in chunks {
-        let a = px[3];
-        if a > 0 && a < 255 {
-            for c in &mut px[..3] {
-                *c = ((*c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
-            }
-        }
     }
 }
 

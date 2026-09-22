@@ -140,7 +140,7 @@ pub use strip::read_info_verbose;
 /// Conversion API surfaced for the companion app's Convert… dialog.
 pub use topdf::{combine_to_pdf, combine_to_pdf_paged, PdfPage};
 pub use verbs::{
-    convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in, convert_to_magick_in,
+    convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in,
     convert_to_magick_in_named, copy_rgba_to_clipboard, copy_to_clipboard, default_menu_tokens,
     files_to_folder, rename_by_pattern, rename_pattern_preview, resize_file, run_action,
     tags_to_folders, BatchReport, Combined, ConvertOpts, Corner, FileOutcome, FileStatus,
