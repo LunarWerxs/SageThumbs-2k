@@ -179,6 +179,64 @@ fn binary_ply_declines_double_xyz_type() {
     );
 }
 
+/// Properties AFTER x/y/z set the stride by their declared size: a scanner's
+/// `uchar red/green/blue` (15-byte records) and a trailing `double` (20 bytes) both used to be
+/// read at 4 bytes per property, which desynced every vertex after the first into garbage.
+#[test]
+fn binary_ply_strides_by_the_declared_property_sizes() {
+    let tetra = [[0f32, 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 0.5, 1.]];
+    for (extra_props, extra_bytes) in [
+        ("property uchar red\nproperty uchar green\nproperty uchar blue\n", 3usize),
+        ("property double quality\n", 8),
+    ] {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            format!(
+                "ply\nformat binary_little_endian 1.0\nelement vertex 4\n\
+                 property float x\nproperty float y\nproperty float z\n{extra_props}\
+                 element face 4\nproperty list uchar int vertex_indices\nend_header\n"
+            )
+            .as_bytes(),
+        );
+        for v in tetra {
+            for c in v {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+            out.extend(std::iter::repeat_n(0xAB, extra_bytes));
+        }
+        for f in [[0u32, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
+            out.push(3);
+            for i in f {
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+        let tris = parse_ply(&out).expect("parses");
+        assert_eq!(tris.len(), 4, "{extra_props}");
+        // The second vertex of the first face is (1, 0, 0), read from its real offset.
+        assert_eq!(&tris[0][3..6], &[1.0, 0.0, 0.0], "{extra_props}");
+    }
+}
+
+/// A vertex `list` property has no fixed size, so the binary body is refused, never guessed.
+#[test]
+fn binary_ply_declines_a_vertex_list_property() {
+    let out = b"ply\nformat binary_little_endian 1.0\nelement vertex 1\n\
+                property float x\nproperty float y\nproperty float z\n\
+                property list uchar int extra\nend_header\n\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    assert!(parse_ply(out).is_none());
+}
+
+/// A malformed ASCII face count line ends the faces like a short one does; the faces read
+/// before it still render.
+#[test]
+fn ascii_ply_keeps_faces_before_a_malformed_count_line() {
+    let ply = b"ply\nformat ascii 1.0\nelement vertex 4\n\
+                property float x\nproperty float y\nproperty float z\n\
+                element face 3\nproperty list uchar int vertex_indices\nend_header\n\
+                0 0 0\n1 0 0\n0.5 1 0\n0.5 0.5 1\n3 0 1 2\n3 0 1 3\nbogus 1 2 3\n";
+    assert_eq!(parse_ply(ply).expect("parses").len(), 2);
+}
+
 /// A binary PLY truncated partway through its FACE block must still render the
 /// faces that fully parsed before the cut, the same way `parse_binary_stl` renders
 /// whatever triangles are fully present — not lose every triangle to a single `?`

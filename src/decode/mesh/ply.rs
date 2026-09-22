@@ -6,8 +6,9 @@ pub(super) struct PlyHeader {
     pub(super) ascii: bool,
     pub(super) n_verts: usize,
     pub(super) n_faces: usize,
-    /// Properties per vertex (x,y,z must be the first three).
-    pub(super) vert_props: usize,
+    /// Bytes per binary vertex record, summed from every declared vertex property's type;
+    /// `None` when a vertex property has no fixed size (a `list`, an unknown type).
+    pub(super) vert_stride: Option<usize>,
     /// Byte offset of `end_header`'s own line ending, i.e. where the body starts.
     pub(super) head_end: usize,
 }
@@ -18,6 +19,7 @@ pub(super) struct PlyHeaderState {
     pub(super) n_verts: usize,
     pub(super) n_faces: usize,
     pub(super) vert_props: usize,
+    pub(super) vert_stride: Option<usize>,
     pub(super) in_vertex: bool,
     pub(super) xyz_lead: usize,
 }
@@ -29,6 +31,7 @@ impl PlyHeaderState {
             n_verts: 0,
             n_faces: 0,
             vert_props: 0,
+            vert_stride: Some(0),
             in_vertex: false,
             xyz_lead: 0,
         }
@@ -85,21 +88,37 @@ pub(super) fn handle_element_line(state: &mut PlyHeaderState, l: &str) -> Option
     Some(())
 }
 
-/// Fold one in-vertex `property ` header line into `state`, counting it and leading x/y/z
-/// when its declared type is a 4-byte float. The NAME alone (`x`/`y`/`z`) is not enough:
-/// `read_ply_binary` always reads a 4-byte `f32` per property, so a declared type other
-/// than `float`/`float32` — `double` (CloudCompare, Open3D, PCL all write it), a `short`,
-/// whatever — would be read at the wrong stride, producing garbage rather than a decode
-/// error. Requiring the type here means such a file simply never reaches `xyz_lead >= 3`
-/// and the whole parse declines instead of misreading.
+/// Fold one in-vertex `property ` header line into `state`: count it, add its declared
+/// size to the binary vertex stride, and count it toward the leading x/y/z when it is a
+/// 4-byte float. The NAME alone (`x`/`y`/`z`) is not enough: `read_ply_binary_vertex` reads
+/// x/y/z as `f32`, so `double` coordinates (CloudCompare, Open3D, PCL all write them) never
+/// reach `xyz_lead >= 3` and the whole parse declines instead of misreading. Properties
+/// AFTER x/y/z may be any scalar type (`uchar red`, `float nx`, `double quality`...): the
+/// stride is the sum of their sizes, so the next vertex is read where it really starts.
 pub(super) fn handle_property_line(state: &mut PlyHeaderState, l: &str) {
     state.vert_props += 1;
     let ty = l.split_ascii_whitespace().nth(1).unwrap_or("");
+    state.vert_stride = state
+        .vert_stride
+        .zip(scalar_size(ty))
+        .and_then(|(s, z)| s.checked_add(z));
     let is_float_xyz = matches!(ty, "float" | "float32")
         && (l.ends_with(" x") || l.ends_with(" y") || l.ends_with(" z"));
     if is_float_xyz && state.vert_props == state.xyz_lead + 1 && state.vert_props <= 3 {
         state.xyz_lead += 1;
     }
+}
+
+/// Bytes in one binary value of PLY scalar type `ty` (both the classic and the sized names);
+/// `None` for `list` and anything unknown.
+pub(super) fn scalar_size(ty: &str) -> Option<usize> {
+    Some(match ty {
+        "char" | "uchar" | "int8" | "uint8" => 1,
+        "short" | "ushort" | "int16" | "uint16" => 2,
+        "int" | "uint" | "int32" | "uint32" | "float" | "float32" => 4,
+        "double" | "float64" => 8,
+        _ => return None,
+    })
 }
 
 /// Parse a PLY header (up to and including `end_header`). Vertices must lead with float
@@ -118,7 +137,7 @@ pub(super) fn parse_ply_header(bytes: &[u8]) -> Option<PlyHeader> {
         ascii: state.ascii,
         n_verts: state.n_verts,
         n_faces: state.n_faces,
-        vert_props: state.vert_props,
+        vert_stride: state.vert_stride,
         head_end,
     })
 }
@@ -180,7 +199,9 @@ pub(super) fn read_ply_ascii_faces(
     for _ in 0..n_faces {
         let Some(line) = lines.next() else { break };
         let mut it = line.split_ascii_whitespace();
-        let cnt: usize = it.next().and_then(|t| t.parse().ok())?;
+        let Some(cnt) = it.next().and_then(|t| t.parse::<usize>().ok()) else {
+            break; // a malformed count line ends the faces, like a short one
+        };
         let idx: Vec<usize> = it
             .take(cnt.min(64))
             .filter_map(|t| t.parse::<usize>().ok())
@@ -195,8 +216,9 @@ pub(super) fn read_ply_ascii_faces(
 }
 
 /// Read binary-little-endian PLY vertex/face data (the body after `end_header`) into
-/// triangles. Only all-float32 vertex properties are supported (the overwhelmingly common
-/// layout); anything else refuses rather than mis-striding. Faces assume `list uchar int`
+/// triangles. The vertex stride comes from the declared property types
+/// ([`handle_property_line`]); a vertex element with no fixed size (a `list` property)
+/// refuses rather than mis-striding. Faces assume `list uchar int`
 /// / `list uchar uint` (the standard); a first count byte outside 3..=64 refuses the rest
 /// of the face block rather than guessing a stride.
 ///
@@ -208,9 +230,9 @@ pub(super) fn read_ply_binary(
     body: &[u8],
     n_verts: usize,
     n_faces: usize,
-    vert_props: usize,
+    vert_stride: Option<usize>,
 ) -> Option<Vec<[f32; 9]>> {
-    let stride = vert_props.checked_mul(4)?;
+    let stride = vert_stride?;
     let (verts, o) = read_ply_binary_verts(body, n_verts, stride);
     Some(read_ply_binary_faces(body, o, n_faces, &verts))
 }
@@ -309,7 +331,7 @@ pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
         ascii,
         n_verts,
         n_faces,
-        vert_props,
+        vert_stride,
         head_end,
     } = parse_ply_header(bytes)?;
     // Body starts after end_header's own line ending.
@@ -322,6 +344,6 @@ pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     if ascii {
         read_ply_ascii(body, n_verts, n_faces)
     } else {
-        read_ply_binary(body, n_verts, n_faces, vert_props)
+        read_ply_binary(body, n_verts, n_faces, vert_stride)
     }
 }
