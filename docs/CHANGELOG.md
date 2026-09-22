@@ -19,6 +19,31 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   `st2k upload-history` lists every link. Suggested by a user.
 - **Closing the "Check for problems" window no longer closes Settings with it**, along with any
   change you had not saved yet.
+- **3D scans in PLY format thumbnail correctly.** Binary PLY files that store a colour or a
+  normal beside each point, which is what most 3D scanners and photogrammetry tools write, drew
+  as a jumble of triangles; they now draw as the model.
+- **Screenshot editor: Delete, then Undo, brings the shape back.** Undo after deleting an
+  annotation used to remove a second, different annotation instead. The toolbar's Undo and
+  Ctrl+Z now do exactly the same thing, and the editor stays open if handing the capture to
+  Upload or text recognition fails, so the annotated capture is not lost.
+- **Shortcuts imported from another PC, or brought in by settings sync, survive Save.** A
+  shortcut that is not in the built-in list was replaced by the first one in the list the next
+  time you pressed Save.
+- **Quick preview fixes.** An email whose HTML contains a `<header>` no longer loses everything
+  after it. An HTML file with `%` in its name opens that file. A folder with a huge number of
+  files no longer stalls its info card. A precision touchpad zooms an image one step per notch
+  instead of racing through the zoom levels. Find no longer keeps the previous file's results
+  when you type while the next file loads. A database table that is both long and wide now
+  says both. A very tall PDF page no longer asks for a gigantic picture.
+- **DDS textures whose sides are not powers of two** now take their smaller mip levels from
+  the right place in the file.
+- **Closing Settings while a sync upload is finishing** hides the window at once instead of
+  leaving it frozen for a few seconds, and the welcome window's "Get started" no longer freezes
+  while Explorer restarts to show file-type badges.
+- **Uninstalling also removes the log and the update-check file** from your own profile, and
+  no longer leaves a re-register entry behind when it runs before a pending restart.
+- For the few installations on a business licence: the reminder before the evaluation ends
+  shows again (it opened Quick preview instead).
 
 ## 3.2.0
 
