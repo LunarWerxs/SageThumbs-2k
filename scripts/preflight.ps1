@@ -103,6 +103,10 @@ if (-not $failed) {
     }
 }
 
+# Clippy is minutes (check mode, no codegen); everything below it is a release build or a
+# test pass. A lint is the likeliest failure after formatting, so it blocks before any of them.
+if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
+
 # Mirror .github/workflows/ci.yml -> build-test job, in order. A bare default-feature
 # `cargo build --release` (no -p split) used to stand in for this and NEVER built the
 # dll/dlghook packages or the webp-lossy/html-preview/hdr-capture/dll-i18n-subset feature
@@ -239,7 +243,9 @@ if (-not $failed) {
 # The release BUILD steps above stay here, because a release-only link failure (panic="abort"
 # + LTO, "unresolved external symbol") is worth catching before the push and costs seconds on
 # a warm cache rather than minutes.
-if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
+# Clippy used to run HERE, last, behind three LTO release builds and two test passes, so a lint
+# a fresh edit trips reported only after the whole ~25-minute gate. It now runs right after
+# the cheap text checks, before the first build: see the ordering note at the top.
 # Rustfmt used to run HERE, and was missing entirely until 2026-08-05 (this gate printed
 # "safe to push" on a commit CI then failed on formatting alone). It now runs FIRST, before
 # any build — see the ordering note at the top for why, and what it cost to learn.

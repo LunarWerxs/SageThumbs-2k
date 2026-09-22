@@ -59,6 +59,9 @@ rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the
 # ci.yml's msrv job in the same commit: it pins the toolchain by exact version four times.
 
 [package]
+# Integration tests share ONE executable (tests/integration.rs, see its header).
+# Those that need a process to themselves are [[test]]s at the end of this file.
+autotests = false
 name = "sagethumbs2k"
 version.workspace = true
 edition = "2021"
@@ -499,3 +502,100 @@ codegen-units = 1
 # an in-process shell extension. There's no scripted enforcement of the convention beyond
 # clippy's arithmetic lints + code review; a real audit tool for "unchecked arithmetic on
 # attacker-influenced values" is a static-analysis project of its own, not a Cargo.toml key.
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# These keep an executable of their own, because each needs a process or a crate root to
+# itself: process-global state (a loaded DLL, settings, locale), a timing bound or startup
+# race that failed under the merged suite's parallelism, or src/ files compiled in with
+# #[path]. Everything else is in tests/integration.rs.
+
+[[test]]
+name = "batch_stress"
+path = "tests/batch_stress.rs"
+
+[[test]]
+name = "com_roundtrip"
+path = "tests/com_roundtrip.rs"
+
+[[test]]
+name = "context_menu_latency"
+path = "tests/context_menu_latency.rs"
+
+[[test]]
+name = "convert_shot"
+path = "tests/convert_shot.rs"
+
+[[test]]
+name = "doctor_bundle_scrub_portable"
+path = "tests/doctor_bundle_scrub_portable.rs"
+
+[[test]]
+name = "doctor_bundle_scrub_registry"
+path = "tests/doctor_bundle_scrub_registry.rs"
+
+[[test]]
+name = "explorer_command"
+path = "tests/explorer_command.rs"
+
+[[test]]
+name = "f29_screenshot_i18n_contract"
+path = "tests/f29_screenshot_i18n_contract.rs"
+
+[[test]]
+name = "first_run_shot"
+path = "tests/first_run_shot.rs"
+
+[[test]]
+name = "packaged_load"
+path = "tests/packaged_load.rs"
+
+[[test]]
+name = "portable_settings"
+path = "tests/portable_settings.rs"
+
+[[test]]
+name = "preview_async_load"
+path = "tests/preview_async_load.rs"
+
+[[test]]
+name = "preview_handler"
+path = "tests/preview_handler.rs"
+
+[[test]]
+name = "preview_outline_locale_shot"
+path = "tests/preview_outline_locale_shot.rs"
+
+[[test]]
+name = "preview_theme_toggle"
+path = "tests/preview_theme_toggle.rs"
+
+[[test]]
+name = "preview_wndproc_drive"
+path = "tests/preview_wndproc_drive.rs"
+
+[[test]]
+name = "property_store"
+path = "tests/property_store.rs"
+
+[[test]]
+name = "screenshot_automation"
+path = "tests/screenshot_automation.rs"
+
+[[test]]
+name = "settings_gate"
+path = "tests/settings_gate.rs"
+
+[[test]]
+name = "settings_io_portable"
+path = "tests/settings_io_portable.rs"
+
+[[test]]
+name = "shell_thumbnail_api"
+path = "tests/shell_thumbnail_api.rs"
+
+[[test]]
+name = "video_profile_gate"
+path = "tests/video_profile_gate.rs"
