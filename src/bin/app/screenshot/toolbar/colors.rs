@@ -1,5 +1,5 @@
 //! The colour-palette flyout: the preset swatch grid, the user's recent customs,
-//! and the eyedropper cell that opens the system picker.
+//! and the four-quadrant tile that opens the system picker.
 
 use super::*;
 

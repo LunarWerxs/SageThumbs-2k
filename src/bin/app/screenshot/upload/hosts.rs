@@ -195,7 +195,7 @@ pub(super) fn parse_hosts_config(text: &str) -> (Vec<UploadHost>, Vec<String>) {
             continue;
         }
         let mut parts = line.split('|').map(str::trim);
-        let Some(url) = parts.next() else { continue };
+        let url = parts.next().unwrap_or("");
         let Some((host, path)) = crate::http::split_https(url) else {
             rejected.push(line.to_string());
             continue;

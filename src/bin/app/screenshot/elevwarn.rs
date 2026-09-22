@@ -42,9 +42,9 @@ pub(super) const WM_APP_CHECK_ELEVATED: u32 = WM_APP + 6;
 static HOOK: AtomicIsize = AtomicIsize::new(0);
 static DAEMON_HWND: AtomicIsize = AtomicIsize::new(0);
 
-/// How long after a warning before the same program may warn again, the FIRST time. Short,
-/// because someone who just got the warning and is still switching between windows is someone
-/// still trying to make it work.
+/// The base of the reminder backoff, which [`gap_for`] doubles once per warning already delivered,
+/// so the first warning's reminder arrives twice this long. Short, because someone who just got
+/// the warning and is still switching between windows is someone still trying to make it work.
 const WARN_FIRST_GAP_MS: u64 = 30_000;
 /// The ceiling the backoff eases out to. Long enough to stop being noise for someone who has
 /// decided to live with it, short enough that it is still a standing reminder rather than a
@@ -240,7 +240,7 @@ mod tests {
     /// together and only gradually spread out.
     #[test]
     fn the_backoff_starts_prompt_and_eases_off() {
-        assert_eq!(gap_for(0), WARN_FIRST_GAP_MS); // 30 s to the second warning
+        assert_eq!(gap_for(0), WARN_FIRST_GAP_MS); // the base unit; due() never passes 0
         assert_eq!(gap_for(1), WARN_FIRST_GAP_MS * 2); // then a minute
         assert_eq!(gap_for(2), WARN_FIRST_GAP_MS * 4);
         assert!(gap_for(3) < gap_for(4), "it should keep spreading out");

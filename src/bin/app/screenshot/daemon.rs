@@ -60,8 +60,8 @@ const IDM_UPLOADS: usize = 106;
 const UPDATE_TIMER_ID: usize = 9;
 /// Re-attempt every 6h; `update::lazy_check_worker` throttles the actual network hit to 1/day.
 /// That same worker thread is also where the licence entitlement re-check piggybacks (see
-/// the call to `license::refresh_entitlement` inside `lazy_check_worker`) — this timer is
-/// the only cadence either one needs.
+/// the call to `license::refresh_entitlement` inside `lazy_check_worker`), which also has its
+/// own unconditional `LICENCE_TIMER_ID` cadence.
 const UPDATE_TIMER_MS: u32 = 6 * 60 * 60 * 1000;
 /// Periodic re-assertion of the global hotkey registrations. A `RegisterHotKey` binding can be
 /// silently dropped while THIS process keeps running — most notably across sleep/resume, session
@@ -114,8 +114,14 @@ const DAEMON_MESSAGES: [(&str, u32); 7] = [
     ("WM_UPDATE_FOUND", WM_UPDATE_FOUND),
     ("WM_LICENCE_DUE", WM_LICENCE_DUE),
     ("WM_APP_PREVIEW", super::spacehook::WM_APP_PREVIEW),
-    ("WM_APP_PREVIEW_CLOSE", super::spacehook::WM_APP_PREVIEW_CLOSE),
-    ("WM_APP_CHECK_ELEVATED", super::elevwarn::WM_APP_CHECK_ELEVATED),
+    (
+        "WM_APP_PREVIEW_CLOSE",
+        super::spacehook::WM_APP_PREVIEW_CLOSE,
+    ),
+    (
+        "WM_APP_CHECK_ELEVATED",
+        super::elevwarn::WM_APP_CHECK_ELEVATED,
+    ),
 ];
 /// The licence tick's own 6-hour timer, separate from the update timer because that one is
 /// only armed when update checks are on and a licence is not an update.
@@ -341,8 +347,7 @@ unsafe fn kick_licence_tick(hwnd: HWND) {
 
 /// `WM_LICENCE_DUE`: re-read the breadcrumb on this thread and pop the reminder balloon
 /// (a click opens Settings on the Licence page). Records the nag so the Settings window
-/// and the daily one-shot, which share the cadence, do not repeat it the same day. A
-/// no-op if the tray icon is hidden, in which case the next Settings open still says it.
+/// and the daily one-shot, which share the cadence, do not repeat it the same day.
 unsafe fn on_licence_due(hwnd: HWND) {
     let snap = crate::license::snapshot();
     if !snap.posture.wants_reminder() {

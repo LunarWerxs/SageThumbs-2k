@@ -113,25 +113,18 @@ pub(super) unsafe fn try_color_flyout_click(
     p: POINT,
     dpi: i32,
 ) -> Option<LRESULT> {
-    if !s.color_flyout {
-        return None;
-    }
-    if let Some((_, cbr)) = buttons.iter().find(|(b, _)| *b == Button::Color) {
-        let (_, sw) = toolbar::color_flyout_layout(*cbr, s.vw, s.vh, &s.customs, dpi);
-        if let Some((swatch, _)) = sw.iter().find(|(_, r)| pt_in(*r, p)) {
-            apply_swatch(hwnd, s, *swatch);
-            let _ = InvalidateRect(Some(hwnd), None, false);
-            return Some(LRESULT(0));
-        }
-    }
-    // Clicked off the palette → close it; consume if that click was the Colour button
-    // itself (else fall through).
-    s.color_flyout = false;
-    let _ = InvalidateRect(Some(hwnd), None, false);
-    if toolbar::hit(buttons, p.x, p.y) == Some(Button::Color) {
-        return Some(LRESULT(0));
-    }
-    None
+    let open = s.color_flyout;
+    flyout_dispatch(
+        hwnd,
+        s,
+        buttons,
+        p,
+        open,
+        Button::Color,
+        |s, cbr| toolbar::color_flyout_layout(cbr, s.vw, s.vh, &s.customs, dpi).1,
+        |s, swatch| unsafe { apply_swatch(hwnd, s, swatch) },
+        |s| s.color_flyout = false,
+    )
 }
 
 /// Click routing for the open text-settings flyout, same shape as
@@ -143,23 +136,55 @@ pub(super) unsafe fn try_text_flyout_click(
     p: POINT,
     dpi: i32,
 ) -> Option<LRESULT> {
-    if !s.text_flyout {
+    let open = s.text_flyout;
+    flyout_dispatch(
+        hwnd,
+        s,
+        buttons,
+        p,
+        open,
+        Button::Tool(Tool::Text),
+        |s, tbr| toolbar::text_flyout_layout(tbr, s.vw, s.vh, s.font_dropdown, dpi).1,
+        |s, item| unsafe { apply_text_item(hwnd, s, item) },
+        |s| {
+            s.text_flyout = false;
+            s.font_dropdown = false;
+        },
+    )
+}
+
+/// The skeleton both flyout click routers share, so the close-and-fall-through logic
+/// exists once: while `open`, find the `anchor` button, lay its flyout out, and apply the
+/// item under `p`; a click off the flyout closes it and is consumed only if that click was
+/// the anchor button itself. `Some(_)` = consumed; `None` = fall through.
+#[allow(clippy::too_many_arguments)]
+unsafe fn flyout_dispatch<T: Copy>(
+    hwnd: HWND,
+    s: &mut Shot,
+    buttons: &[(Button, RECT)],
+    p: POINT,
+    open: bool,
+    anchor: Button,
+    layout: impl FnOnce(&Shot, RECT) -> Vec<(T, RECT)>,
+    apply: impl FnOnce(&mut Shot, T),
+    close: impl FnOnce(&mut Shot),
+) -> Option<LRESULT> {
+    if !open {
         return None;
     }
-    if let Some((_, tbr)) = buttons.iter().find(|(b, _)| *b == Button::Tool(Tool::Text)) {
-        let (_, its) = toolbar::text_flyout_layout(*tbr, s.vw, s.vh, s.font_dropdown, dpi);
-        if let Some((item, _)) = its.iter().find(|(_, r)| pt_in(*r, p)) {
-            apply_text_item(hwnd, s, *item);
+    if let Some((_, br)) = buttons.iter().find(|(b, _)| *b == anchor) {
+        let items = layout(s, *br);
+        if let Some((item, _)) = items.iter().find(|(_, r)| pt_in(*r, p)) {
+            apply(s, *item);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return Some(LRESULT(0));
         }
     }
-    // Clicked off the flyout → close it. Consume if it was the Text button itself; else
-    // fall through (a canvas click then drops the text caret and starts typing).
-    s.text_flyout = false;
-    s.font_dropdown = false;
+    // Clicked off the flyout → close it; consume if that click was the anchor button
+    // itself (else fall through).
+    close(s);
     let _ = InvalidateRect(Some(hwnd), None, false);
-    if toolbar::hit(buttons, p.x, p.y) == Some(Button::Tool(Tool::Text)) {
+    if toolbar::hit(buttons, p.x, p.y) == Some(anchor) {
         return Some(LRESULT(0));
     }
     None
@@ -209,7 +234,7 @@ pub(super) unsafe fn apply_selection_click(s: &mut Shot, p: POINT) {
 pub(super) unsafe fn begin_move_grab(s: &mut Shot, p: POINT) {
     s.selected = tools::hit_shape(&s.shapes, p.x, p.y);
     s.move_from = s.selected.map(|_| p);
-    MOVE_UNDO.with(|c| c.set(None));
+    forget_pending_undo();
 }
 
 /// Text-tool click: while typing, finish & deselect (no new box on this click); when idle,
@@ -231,7 +256,7 @@ pub(super) unsafe fn apply_number_click(s: &mut Shot, p: POINT) {
     let color = s.color();
     s.shapes.push(Shape::Number { at: p, n, color });
     s.redo.clear();
-    MOVE_UNDO.with(|c| c.set(None));
+    forget_pending_undo();
 }
 
 /// Start a freehand/shape draw at `p` (any other tool).
@@ -485,7 +510,7 @@ pub(super) unsafe fn finish_selection_drag(hwnd: HWND, s: &mut Shot, p: POINT) -
         // selection, so the overlay stays up for a second try rather than closing on a
         // mis-click.
         if s.ocr_mode {
-            finish_ocr(s);
+            let _ = finish_ocr(s); // OCR mode closes either way: no edits to lose
             let _ = DestroyWindow(hwnd);
             return Some(LRESULT(0));
         }
@@ -495,7 +520,7 @@ pub(super) unsafe fn finish_selection_drag(hwnd: HWND, s: &mut Shot, p: POINT) -
         // clicking a dialog reads the text out of it.
         s.sel = Some(w);
         if s.ocr_mode {
-            finish_ocr(s);
+            let _ = finish_ocr(s); // OCR mode closes either way: no edits to lose
             let _ = DestroyWindow(hwnd);
             return Some(LRESULT(0));
         }

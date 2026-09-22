@@ -377,7 +377,8 @@ unsafe fn staged_copy(
 ///
 /// scRGB is LINEAR light with `1.0` = SDR white, so values above 1.0 are the
 /// highlights an SDR screenshot has to give up. Rolling them off with Reinhard
-/// (`x / (1 + x)`) keeps them as visible detail instead of a clipped white blob,
+/// (`x / (1 + x)`, rescaled so SDR white stays white) reaches white smoothly, but
+/// everything at or above 1.0 still saturates to white in this 8-bit target;
 /// then the sRGB transfer curve puts the result back in display space. Without
 /// that curve the image comes out exactly as the naive path does: washed out.
 ///
@@ -428,7 +429,7 @@ fn f16(h: u16) -> f32 {
             } else {
                 // Subnormal: renormalize into a f32 exponent.
                 let mut m = man;
-                let mut e: i32 = -1;
+                let mut e: i32 = 0;
                 while m & 0x400 == 0 {
                     m <<= 1;
                     e -= 1;

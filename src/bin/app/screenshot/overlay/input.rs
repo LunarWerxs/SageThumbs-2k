@@ -22,7 +22,7 @@ use keys::*;
 pub(super) use mouse::{apply_swatch, apply_text_item, toolbar_layout_cached};
 // Not in overlay.rs's own `KeyboardAndMouse` import list (nothing there needed Alt before
 // this file's ctrl/alt gate on the tool-letter shortcuts), so pulled in directly here.
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 // VK_MENU: the ctrl/alt gate on the tool-letter shortcuts. The rest are the keyboard focus
 // model's own keys (`on_key_focus`); none of them were read by this window before it existed,
 // which is exactly why they were free to take.
@@ -47,6 +47,46 @@ thread_local! {
     /// (a new shape, a delete, a redo) — see the `set(None)` beside each — so a stale
     /// entry, with an index that may no longer point at the same shape, can never apply.
     static MOVE_UNDO: Cell<Option<(usize, i32, i32)>> = const { Cell::new(None) };
+    /// A Delete under the Move tool: the removed shape and the index it came from, so the
+    /// next undo puts it back where it was. Same lifetime rules as `MOVE_UNDO`, and at most
+    /// one of the two is pending: every action that records one clears the other.
+    static DELETE_UNDO: RefCell<Option<(usize, Shape)>> = const { RefCell::new(None) };
+}
+
+/// Forget any pending move or delete record. Called by every action that becomes the new
+/// "last action" (a new shape, a new grab, a redo), so an index recorded before it can never
+/// be applied to a different shape.
+pub(super) fn forget_pending_undo() {
+    MOVE_UNDO.with(|c| c.set(None));
+    DELETE_UNDO.with(|d| d.borrow_mut().take());
+}
+
+/// Record a Delete so the next undo re-inserts `shape` at `idx`.
+fn remember_delete(idx: usize, shape: Shape) {
+    MOVE_UNDO.with(|c| c.set(None));
+    DELETE_UNDO.with(|d| *d.borrow_mut() = Some((idx, shape)));
+}
+
+/// One step back, for Ctrl+Z and the toolbar's Undo alike: restore a just-deleted shape
+/// where it was, revert a just-finished move, or pop the newest shape onto `redo`.
+pub(super) fn undo_last(s: &mut Shot) {
+    if let Some((idx, shape)) = DELETE_UNDO.with(|d| d.borrow_mut().take()) {
+        s.shapes.insert(idx.min(s.shapes.len()), shape);
+        s.selected = None;
+        s.move_from = None;
+        return;
+    }
+    undo_step(s, MOVE_UNDO.with(|c| c.take()));
+}
+
+/// One step forward, for Ctrl+Y / Ctrl+Shift+Z and the toolbar's Redo alike.
+pub(super) fn redo_last(s: &mut Shot) {
+    if let Some(sh) = s.redo.pop() {
+        s.shapes.push(sh);
+    }
+    s.selected = None;
+    s.move_from = None;
+    forget_pending_undo(); // a redo is a new "last action"
 }
 
 pub(super) fn pt(lparam: LPARAM) -> POINT {
@@ -369,7 +409,7 @@ pub(super) fn finish_shape(s: &mut Shot, a: POINT, b: POINT) -> bool {
     }
     s.shapes.push(shape);
     s.redo.clear();
-    MOVE_UNDO.with(|c| c.set(None)); // a new shape is the new "last action"
+    forget_pending_undo(); // a new shape is the new "last action"
     true
 }
 
@@ -387,7 +427,7 @@ pub(super) fn commit_text(s: &mut Shot) {
                 font,
             });
             s.redo.clear();
-            MOVE_UNDO.with(|c| c.set(None)); // a new shape is the new "last action"
+            forget_pending_undo(); // a new shape is the new "last action"
         }
     }
 }

@@ -388,6 +388,27 @@ pub(super) unsafe fn apply_dim(dc: HDC, w: i32, h: i32) {
     let _ = DeleteDC(tmp);
 }
 
+/// The shared chip-anchor rule for `draw_dim_badge` and `draw_hint`: left edge clamped into
+/// the virtual screen, then `gap` above the selection when it fits, else `inset` inside its
+/// top. Factored out so the two callers' anchor math can't drift apart.
+fn anchor_chip(
+    sel: RECT,
+    chip_w: i32,
+    chip_h: i32,
+    gap: i32,
+    inset: i32,
+    vw: i32,
+    vh: i32,
+) -> (i32, i32) {
+    let x = sel.left.min(vw - chip_w).max(0);
+    let y = if sel.top - chip_h - gap >= 0 {
+        sel.top - chip_h - gap // just above the selection
+    } else {
+        (sel.top + inset).min(vh - chip_h).max(0) // no room above → just inside the top
+    };
+    (x, y)
+}
+
 /// A small "W × H" pixel-size readout drawn while the region is being dragged, so the
 /// user can gauge the exact size of what they're capturing. The overlay maps 1:1 to the
 /// virtual screen, so `sel`'s width/height ARE the true output pixel dimensions — no DPI
@@ -415,12 +436,7 @@ pub(super) unsafe fn draw_dim_badge(hdc: HDC, s: &Shot, sel: RECT) {
     let gap = crate::win::dpi_scale_dpi(6, dpi);
     let bw = (calc.right - calc.left) + padx * 2;
     let bh = (calc.bottom - calc.top) + pady * 2;
-    let bx = sel.left.min(s.vw - bw).max(0);
-    let by = if sel.top - bh - gap >= 0 {
-        sel.top - bh - gap // just above the selection
-    } else {
-        (sel.top + gap).min(s.vh - bh).max(0) // no room above → just inside the top
-    };
+    let (bx, by) = anchor_chip(sel, bw, bh, gap, gap, s.vw, s.vh);
     let bar = RECT {
         left: bx,
         top: by,
@@ -530,15 +546,7 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
     let inset = crate::win::dpi_scale_dpi(4, dpi); // inset when there's no room above
                                                    // Anchor to the selection's top-left if committed; else the screen corner.
     let (bx, by) = match s.sel {
-        Some(sel) => {
-            let x = sel.left.min(s.vw - bar_w).max(0);
-            let y = if sel.top - bar_h - gap >= 0 {
-                sel.top - bar_h - gap // just above the selection
-            } else {
-                (sel.top + inset).min(s.vh - bar_h) // no room above → just inside the top
-            };
-            (x, y)
-        }
+        Some(sel) => anchor_chip(sel, bar_w, bar_h, gap, inset, s.vw, s.vh),
         None => (0, 0),
     };
     let bg = CreateSolidBrush(rgb(20, 20, 20));

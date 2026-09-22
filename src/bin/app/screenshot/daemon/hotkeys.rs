@@ -2,8 +2,6 @@
 
 use super::*;
 
-/// (Re-)register the global capture hotkey from the persisted setting, converting
-/// the stored HOTKEYF_* modifiers to RegisterHotKey's MOD_* flags. Best-effort.
 /// Convert stored HOTKEYF_* modifier bits (SHIFT 0x01, CONTROL 0x02, ALT 0x04) to
 /// RegisterHotKey's MOD_* flags, always with MOD_NOREPEAT so a held chord fires once.
 pub(super) fn hkf_to_mods(hkf: u32) -> HOT_KEY_MODIFIERS {

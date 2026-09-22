@@ -3,9 +3,10 @@
 //! about the screenshot feature has to live in `settings_dlg.rs`.
 //!
 //! The resident tray daemon is wanted whenever EITHER the screenshot feature is on
-//! OR a custom action hotkey is bound (see [`crate::hotkey`]) — so a colour-picker
-//! hotkey works without forcing the user to enable screenshots. The autostart entry
-//! (`…\Run`) therefore means "the daemon should run", and the screenshot feature's
+//! OR a custom action hotkey is bound (see [`crate::hotkey`]) OR Quick preview is
+//! enabled — so a colour-picker hotkey works without forcing the user to enable
+//! screenshots. The autostart entry (`…\Run`) therefore means
+//! "the daemon should run", and the screenshot feature's
 //! own on/off lives in its own `ScreenshotEnabled` DWORD (migrated from the old
 //! "autostart-present == enabled" meaning). [`reconcile`] aligns the autostart entry
 //! and the running daemon with whatever wants it. Default (nothing bound) = nothing
@@ -153,9 +154,10 @@ pub(crate) fn is_daemon_running() -> bool {
 }
 
 /// Self-heal on app launch: if the daemon is wanted (screenshots on OR a custom hotkey
-/// bound) but nothing is running, bring it back — e.g. after a crash/kill, or a logon
-/// where it never came up. Merely opening the app then restarts the helper, matching
-/// the user's "if it's on, it should be running" expectation. A no-op when already
+/// bound OR Quick preview enabled) but nothing is running, bring it back — e.g. after
+/// a crash/kill, or a logon where it never came up. Merely opening the app then
+/// restarts the helper, matching the user's "if it's on, it should be running"
+/// expectation. A no-op when already
 /// running or not wanted.
 pub(crate) fn heal_if_wanted() {
     if !daemon_wanted() {
@@ -227,9 +229,10 @@ pub(crate) fn set_enabled(on: bool) {
 }
 
 /// Align the autostart entry + the running daemon with whether ANYTHING wants the daemon
-/// (the screenshot feature OR a bound custom hotkey). Call after any change to those
-/// settings: it adds/removes the autostart entry, starts a fresh daemon (which reads the
-/// new settings on startup), or nudges an already-running one to re-register. Safe to call
+/// (the screenshot feature OR a bound custom hotkey OR Quick preview enabled). Call after
+/// any change to those settings: it adds/removes the autostart entry, starts a fresh daemon
+/// (which reads the new settings on startup), or nudges an already-running one to
+/// re-register. Safe to call
 /// repeatedly.
 pub(crate) fn reconcile() {
     if daemon_wanted() {

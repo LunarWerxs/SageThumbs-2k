@@ -263,10 +263,11 @@ fn enter_while_not_typing_still_closes_the_capture() {
     }
 }
 
-/// Deleting a shape must leave it restorable via Ctrl+Y, not discard it outright —
-/// the bug this replaces cleared `redo` instead of pushing the removed shape onto it.
+/// Deleting a shape must leave it restorable, not discard it outright (the first bug here
+/// cleared `redo`). It is restored by UNDO, at its place: parking it on `redo` meant Ctrl+Z
+/// popped a different, newer shape (see `undo_after_delete_restores_that_shape_...`).
 #[test]
-fn deleting_a_shape_pushes_it_onto_redo_instead_of_discarding_it() {
+fn deleting_a_shape_keeps_it_restorable_by_undo() {
     unsafe {
         let hwnd = test_window();
         {
@@ -286,14 +287,14 @@ fn deleting_a_shape_pushes_it_onto_redo_instead_of_discarding_it() {
                 s.shapes.is_empty(),
                 "the shape must be removed from the live list"
             );
-            assert_eq!(
-                s.redo.len(),
-                1,
-                "the deleted shape must be preserved for Ctrl+Y, not discarded"
-            );
-            match &s.redo[0] {
-                Shape::Number { n, .. } => assert_eq!(*n, 7, "wrong shape landed in redo"),
-                _ => panic!("expected the deleted Number shape in redo, got a different kind"),
+            assert!(s.redo.is_empty(), "a delete is undone, not redone");
+        }
+        {
+            let s = &mut *shot_ptr(hwnd);
+            undo_last(s);
+            match s.shapes.as_slice() {
+                [Shape::Number { n, .. }] => assert_eq!(*n, 7, "wrong shape restored"),
+                _ => panic!("undo must restore exactly the deleted Number shape"),
             }
         }
         let _ = DestroyWindow(hwnd);
@@ -426,5 +427,60 @@ fn undo_step_falls_back_to_popping_when_no_real_move_happened() {
             "a zero-delta grab must fall through to popping the shape"
         );
         assert_eq!(s.redo.len(), 1);
+    }
+}
+
+/// Delete then Ctrl+Z puts the deleted shape back AT ITS PLACE and removes nothing else. It
+/// used to push the shape onto `redo` while Ctrl+Z popped the newest shape, so one Delete and
+/// one undo lost two annotations.
+#[test]
+fn undo_after_delete_restores_that_shape_and_keeps_the_others() {
+    unsafe {
+        let mut s = shot_with_number_at(10, 10);
+        s.shapes.push(Shape::Number {
+            at: POINT { x: 20, y: 20 },
+            n: 2,
+            color: rgb(0, 0, 0),
+        });
+        forget_pending_undo();
+        s.selected = Some(0);
+        assert!(on_key_delete(&mut s));
+        assert_eq!(s.shapes.len(), 1);
+        undo_last(&mut s);
+        assert_eq!(
+            s.shapes.len(),
+            2,
+            "undo must restore, never remove another shape"
+        );
+        match &s.shapes[0] {
+            Shape::Number { at, .. } => assert_eq!((at.x, at.y), (10, 10), "back in place"),
+            _ => panic!("expected the deleted Number back at index 0"),
+        }
+        // Nothing else is pending: the next undo is the ordinary pop of the newest shape.
+        undo_last(&mut s);
+        assert_eq!(s.shapes.len(), 1);
+        assert_eq!(s.redo.len(), 1);
+    }
+}
+
+/// A new action after a Delete makes the delete record stale: undo then undoes the new action.
+#[test]
+fn a_new_shape_after_a_delete_is_what_undo_takes_back() {
+    unsafe {
+        let mut s = shot_with_number_at(10, 10);
+        forget_pending_undo();
+        s.selected = Some(0);
+        assert!(on_key_delete(&mut s));
+        s.shapes.push(Shape::Number {
+            at: POINT { x: 30, y: 30 },
+            n: 1,
+            color: rgb(0, 0, 0),
+        });
+        forget_pending_undo(); // what every shape-creating path does
+        undo_last(&mut s);
+        assert!(
+            s.shapes.is_empty(),
+            "the new shape is undone, the deleted one stays deleted"
+        );
     }
 }

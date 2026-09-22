@@ -128,9 +128,9 @@ pub(crate) unsafe fn with_busy_pill<T: Send + 'static>(
     result
 }
 
-/// Upload `path` (a throwaway capture PNG), copy the resulting URL to the clipboard,
-/// tell the user, then DELETE the temp file. Spawned by the capture overlay's Upload
-/// button via `--upload <png>`.
+/// Upload `path` (a throwaway capture PNG): read the temp capture, delete it immediately
+/// (so no other process races the path), upload the bytes, copy the resulting URL to the
+/// clipboard, and report. Spawned by the capture overlay's Upload button via `--upload <png>`.
 pub(crate) unsafe fn run_upload(path: &str) {
     // Resolve (and validate) the endpoint(s) first, so a misconfigured custom host
     // gives a specific message instead of a generic "couldn't upload".
@@ -217,7 +217,18 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
         Some(h) => h,
         None => return,
     };
-    let files = load_file_list(list_path);
+    let files = match load_file_list(list_path) {
+        Ok(files) => files,
+        Err(e) => {
+            let msg = format!("couldn't read the file list — {e}");
+            if url_to.is_some() {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+            notify(&msg, file_caption(), true);
+            return;
+        }
+    };
     if files.is_empty() {
         if url_to.is_some() {
             eprintln!("no file to upload");
@@ -242,17 +253,17 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
 }
 
 /// The DLL writes the selection CRLF-joined; tolerate either ending, drop blanks. Removes
-/// `list_path` either way — the list is ours; the images are NOT.
-fn load_file_list(list_path: &str) -> Vec<String> {
-    let files = std::fs::read_to_string(list_path)
-        .unwrap_or_default()
+/// `list_path` either way — the list is ours; the images are NOT. Propagates the read error
+/// so the caller can tell an unreadable list apart from an empty selection.
+fn load_file_list(list_path: &str) -> std::io::Result<Vec<String>> {
+    let read = std::fs::read_to_string(list_path);
+    let _ = std::fs::remove_file(list_path);
+    Ok(read?
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
-        .collect();
-    let _ = std::fs::remove_file(list_path);
-    files
+        .collect())
 }
 
 /// The "Uploading…" pill's text — singular for one file, a `{n}`-filled count otherwise.

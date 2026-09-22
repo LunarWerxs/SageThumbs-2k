@@ -62,16 +62,15 @@ pub(super) unsafe fn on_key_enter(hwnd: HWND, s: &mut Shot) -> bool {
     false
 }
 
-/// `VK_DELETE` under the Move tool: removes the grabbed shape, pushed onto `redo` (not
-/// cleared) so Ctrl+Y restores it, same as any other undo entry.
+/// `VK_DELETE` under the Move tool: removes the grabbed shape and records it, so the next
+/// Ctrl+Z (or the toolbar's Undo) puts it back at the same place in the stack. It used to
+/// be pushed onto `redo`, while Ctrl+Z popped the NEWEST shape: one Delete and one Ctrl+Z
+/// then removed two annotations.
 pub(super) fn on_key_delete(s: &mut Shot) -> bool {
     if let Some(idx) = s.selected.take() {
         if idx < s.shapes.len() {
             let sh = s.shapes.remove(idx);
-            s.redo.push(sh);
-            // Indices shift on a remove; a leftover move-undo could now point at the
-            // wrong shape (or the one just deleted).
-            MOVE_UNDO.with(|c| c.set(None));
+            remember_delete(idx, sh);
         }
     }
     s.move_from = None;
@@ -81,17 +80,11 @@ pub(super) fn on_key_delete(s: &mut Shot) -> bool {
 /// Ctrl+Z (undo) / Ctrl+Y or Ctrl+Shift+Z (redo). `None` if `vk` is neither.
 pub(super) fn on_key_undo_redo(s: &mut Shot, ctrl: bool, shift: bool, vk: u16) -> Option<bool> {
     if ctrl && !shift && vk == b'Z' as u16 {
-        undo_step(s, MOVE_UNDO.with(|c| c.take()));
+        undo_last(s);
         return Some(true);
     }
     if ctrl && (vk == b'Y' as u16 || (shift && vk == b'Z' as u16)) {
-        if let Some(sh) = s.redo.pop() {
-            s.shapes.push(sh);
-        }
-        s.selected = None;
-        s.move_from = None;
-        // A redo is a new "last action" — an old move-undo record no longer applies.
-        MOVE_UNDO.with(|c| c.set(None));
+        redo_last(s);
         return Some(true);
     }
     None
@@ -120,8 +113,9 @@ pub(super) unsafe fn on_ctrl_t(hwnd: HWND, s: &mut Shot) -> bool {
     }
     if s.sel.is_some() {
         commit_text(s);
-        finish_ocr(s);
-        let _ = DestroyWindow(hwnd);
+        if finish_ocr(s) {
+            let _ = DestroyWindow(hwnd);
+        }
     }
     false
 }
@@ -149,8 +143,9 @@ pub(super) unsafe fn on_ctrl_u(hwnd: HWND, s: &mut Shot) -> bool {
     }
     if s.sel.is_some() {
         commit_text(s);
-        compose_and_spawn(s, "--upload");
-        let _ = DestroyWindow(hwnd);
+        if compose_and_spawn(s, "--upload") {
+            let _ = DestroyWindow(hwnd);
+        }
     }
     false
 }

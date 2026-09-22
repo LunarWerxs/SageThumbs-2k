@@ -364,12 +364,23 @@ fn key_of(id: FocusTarget) -> u64 {
     (tag << 32) | (index as u64 & 0xffff_ffff)
 }
 
-/// The provider object for `key`, created by `make` the first time it is asked for.
+/// The provider object for `key` under the overlay `hwnd_raw`, created by `make` the first time
+/// it is asked for.
+///
+/// Liveness is re-checked HERE, under the registry lock, not only by the caller's [`live`]: a
+/// thread that passed `live` and was then descheduled while `WM_DESTROY` cleared the handle and
+/// drained the table would otherwise take the lock afterwards and push an object nobody will
+/// ever retire. `on_destroy` clears `LIVE_OVERLAY` before it takes this lock, so any push that
+/// passes this check is drained by that same `disconnect_all`.
 fn cached(
+    hwnd_raw: isize,
     key: u64,
     make: impl FnOnce() -> IRawElementProviderFragment,
 ) -> Option<IRawElementProviderFragment> {
     let mut live = HANDED_OUT.lock().ok()?;
+    if LIVE_OVERLAY.load(Ordering::Acquire) != hwnd_raw {
+        return None;
+    }
     if let Some((_, raw)) = live.iter().find(|(k, _)| *k == key) {
         let raw = *raw as *mut c_void;
         // SAFETY: the registry owns one reference to this pointer until `disconnect_all`
@@ -382,11 +393,9 @@ fn cached(
     Some(made)
 }
 
-/// Is `hwnd` still the overlay whose tree we are allowed to build objects for?
-///
-/// Checked before every creation so that a call which was waiting on the registry lock while
-/// `WM_DESTROY` drained it cannot slip a fresh entry in behind the disconnect and leave one
-/// object that nobody will ever retire.
+/// Is `hwnd` still the overlay whose tree we are allowed to build objects for? The cheap early
+/// answer; [`cached`] repeats the check under the registry lock, which is what actually keeps
+/// a fresh entry from slipping in behind `WM_DESTROY`'s disconnect.
 fn live(hwnd: HWND) -> Option<isize> {
     let raw = hwnd.0 as isize;
     (raw != 0 && LIVE_OVERLAY.load(Ordering::Acquire) == raw).then_some(raw)
@@ -395,13 +404,13 @@ fn live(hwnd: HWND) -> Option<isize> {
 /// The fragment root for `hwnd`.
 fn root_provider(hwnd: HWND) -> Option<IRawElementProviderFragment> {
     let raw = live(hwnd)?;
-    cached(ROOT_KEY, || ShotRoot { hwnd: raw }.into())
+    cached(raw, ROOT_KEY, || ShotRoot { hwnd: raw }.into())
 }
 
 /// The element provider for `id` under `hwnd`.
 fn element_provider(hwnd: HWND, id: FocusTarget) -> Option<IRawElementProviderFragment> {
     let raw = live(hwnd)?;
-    cached(key_of(id), || ShotElement { hwnd: raw, id }.into())
+    cached(raw, key_of(id), || ShotElement { hwnd: raw, id }.into())
 }
 
 /// Tell UIA that every provider this overlay handed out is finished with.

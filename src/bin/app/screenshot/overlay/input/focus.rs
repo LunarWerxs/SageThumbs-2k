@@ -84,6 +84,22 @@ pub(super) fn repair_toolbar_focus(buttons: &[(Button, RECT)], i: usize) -> Opti
     }
 }
 
+/// The shared repair rule for a flyout focus index: kept when in range, pulled to the first
+/// item when past the end, or handed back to the button that owns the flyout once it has closed.
+fn repair_flyout_focus<I>(
+    items: Option<Vec<(I, RECT)>>,
+    owner: Button,
+    buttons: &[(Button, RECT)],
+    i: usize,
+    to_focus: fn(usize) -> FocusTarget,
+) -> Option<FocusTarget> {
+    match items {
+        Some(items) if i < items.len() => Some(to_focus(i)),
+        Some(_) => Some(to_focus(0)),
+        None => button_index(buttons, owner).map(FocusTarget::Toolbar),
+    }
+}
+
 /// A palette focus index is kept when in range, pulled to the first cell when past the end,
 /// or handed back to the button that owns the palette once it has closed.
 pub(super) fn repair_color_focus(
@@ -92,11 +108,13 @@ pub(super) fn repair_color_focus(
     dpi: i32,
     i: usize,
 ) -> Option<FocusTarget> {
-    match color_flyout_items(s, buttons, dpi) {
-        Some(items) if i < items.len() => Some(FocusTarget::ColorFlyout(i)),
-        Some(_) => Some(FocusTarget::ColorFlyout(0)),
-        None => button_index(buttons, Button::Color).map(FocusTarget::Toolbar),
-    }
+    repair_flyout_focus(
+        color_flyout_items(s, buttons, dpi),
+        Button::Color,
+        buttons,
+        i,
+        FocusTarget::ColorFlyout,
+    )
 }
 
 /// Same as [`repair_color_focus`], for the text-settings flyout.
@@ -106,11 +124,13 @@ pub(super) fn repair_text_focus(
     dpi: i32,
     i: usize,
 ) -> Option<FocusTarget> {
-    match text_flyout_items(s, buttons, dpi) {
-        Some(items) if i < items.len() => Some(FocusTarget::TextFlyout(i)),
-        Some(_) => Some(FocusTarget::TextFlyout(0)),
-        None => button_index(buttons, Button::Tool(Tool::Text)).map(FocusTarget::Toolbar),
-    }
+    repair_flyout_focus(
+        text_flyout_items(s, buttons, dpi),
+        Button::Tool(Tool::Text),
+        buttons,
+        i,
+        FocusTarget::TextFlyout,
+    )
 }
 
 /// Follow the invoke: a flyout that just OPENED takes focus.
@@ -245,6 +265,16 @@ pub(super) fn step_focus_target(
     }
 }
 
+/// The shared Tab step for a flyout: move the index by ±1, wrapping within its laid-out items.
+fn step_flyout_focus(
+    len: usize,
+    i: usize,
+    forward: bool,
+    to_focus: fn(usize) -> FocusTarget,
+) -> Option<FocusTarget> {
+    toolbar::wrap_step(len, i, if forward { 1 } else { -1 }).map(to_focus)
+}
+
 /// Tab inside the palette: step its focus index by ±1, wrapping within the laid-out cells.
 pub(super) fn step_color_focus(
     s: &Shot,
@@ -254,7 +284,7 @@ pub(super) fn step_color_focus(
     i: usize,
 ) -> Option<FocusTarget> {
     let items = color_flyout_items(s, buttons, dpi)?;
-    toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 }).map(FocusTarget::ColorFlyout)
+    step_flyout_focus(items.len(), i, forward, FocusTarget::ColorFlyout)
 }
 
 /// Tab inside the text flyout: step its focus index by ±1, wrapping within the laid-out items.
@@ -266,12 +296,13 @@ pub(super) fn step_text_focus(
     i: usize,
 ) -> Option<FocusTarget> {
     let items = text_flyout_items(s, buttons, dpi)?;
-    toolbar::wrap_step(items.len(), i, if forward { 1 } else { -1 }).map(FocusTarget::TextFlyout)
+    step_flyout_focus(items.len(), i, forward, FocusTarget::TextFlyout)
 }
 
 /// Move focus with an arrow key. `vertical` steps by the group's measured column count, so
-/// the palette behaves as the grid it is and the text flyout (one item per row) behaves as
-/// the stack it is. The toolbar is a single row and is handled by the caller.
+/// the palette behaves as the grid it is and the text flyout, whose first row is a single
+/// field and so measures one column, behaves as the stack it is. The toolbar is a single row
+/// and is handled by the caller.
 pub(super) fn arrow_focus_target(
     s: &Shot,
     buttons: &[(Button, RECT)],
@@ -301,6 +332,20 @@ pub(super) fn arrow_step_magnitude(rects: &[RECT], vertical: bool) -> isize {
     }
 }
 
+/// The shared arrow step for a flyout: step by the group's measured column count when moving
+/// vertically, else by one, wrapping within its laid-out items.
+fn arrow_step_flyout<I>(
+    items: Vec<(I, RECT)>,
+    forward: bool,
+    vertical: bool,
+    i: usize,
+    to_focus: fn(usize) -> FocusTarget,
+) -> Option<FocusTarget> {
+    let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
+    let mag = arrow_step_magnitude(&rects, vertical);
+    toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag }).map(to_focus)
+}
+
 /// Arrow-step the palette focus index within its grid.
 pub(super) fn arrow_step_color(
     s: &Shot,
@@ -310,11 +355,13 @@ pub(super) fn arrow_step_color(
     vertical: bool,
     i: usize,
 ) -> Option<FocusTarget> {
-    let items = color_flyout_items(s, buttons, dpi)?;
-    let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
-    let mag = arrow_step_magnitude(&rects, vertical);
-    toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
-        .map(FocusTarget::ColorFlyout)
+    arrow_step_flyout(
+        color_flyout_items(s, buttons, dpi)?,
+        forward,
+        vertical,
+        i,
+        FocusTarget::ColorFlyout,
+    )
 }
 
 /// Arrow-step the text-flyout focus index within its grid.
@@ -326,21 +373,23 @@ pub(super) fn arrow_step_text(
     vertical: bool,
     i: usize,
 ) -> Option<FocusTarget> {
-    let items = text_flyout_items(s, buttons, dpi)?;
-    let rects: Vec<RECT> = items.iter().map(|(_, r)| *r).collect();
-    let mag = arrow_step_magnitude(&rects, vertical);
-    toolbar::wrap_step(items.len(), i, if forward { mag } else { -mag })
-        .map(FocusTarget::TextFlyout)
+    arrow_step_flyout(
+        text_flyout_items(s, buttons, dpi)?,
+        forward,
+        vertical,
+        i,
+        FocusTarget::TextFlyout,
+    )
 }
 
-/// The keyboard focus model's key handling, and the ONLY place `s.focus` is ever set from
-/// nothing.
+/// The keyboard focus model's key handling, and the ONLY place the keyboard model sets
+/// `s.focus` from nothing.
 ///
 /// `None` means "this key is not mine here" and the caller must carry on exactly as it did
 /// before this model existed. That gate is the entire compatibility contract of this change:
-/// everything below the Tab branch is reached only when focus is ALREADY set, focus starts
-/// `None`, and only Tab can set it, so a user who never presses Tab cannot observe any of
-/// this, not even a swallowed keystroke.
+/// everything below the Tab branch is reached only when focus is ALREADY set, the keyboard
+/// model starts `None`, and only Tab sets it, so a user who never presses Tab cannot observe
+/// any of this, not even a swallowed keystroke.
 pub(super) unsafe fn on_key_focus(hwnd: HWND, s: &mut Shot, vk: u16, shift: bool) -> Option<bool> {
     // Cheap gates first: this runs on EVERY key-down, so laying the toolbar out for a key
     // that could not be a focus key, or for a user who has never pressed Tab, is pure waste.

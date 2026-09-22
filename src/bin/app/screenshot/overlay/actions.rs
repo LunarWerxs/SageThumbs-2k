@@ -133,24 +133,31 @@ pub(super) unsafe fn finish_copy(s: &Shot) -> bool {
 /// spinning up) and the overlay is about to be destroyed — doing either here would freeze a
 /// fullscreen topmost window while it worked. If the helper never starts we delete the PNG
 /// ourselves: it is a picture of the user's screen, and nothing else would ever clean it up.
-pub(super) unsafe fn compose_and_spawn(s: &Shot, mode: &str) {
-    if let Some((buf, w, h)) = compose(s) {
-        if let Some(path) = output::save_temp_png(&buf, w, h) {
-            if !crate::screenshot::spawn_self(&[mode, &path]) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+/// `true` once the helper has the file; on `false` the caller keeps the overlay open, so a
+/// failed compose, temp write or launch does not throw the user's annotated capture away.
+pub(super) unsafe fn compose_and_spawn(s: &Shot, mode: &str) -> bool {
+    let Some((buf, w, h)) = compose(s) else {
+        return false;
+    };
+    let Some(path) = output::save_temp_png(&buf, w, h) else {
+        return false;
+    };
+    let spawned = crate::screenshot::spawn_self(&[mode, &path]);
+    if !spawned {
+        let _ = std::fs::remove_file(&path);
     }
+    spawned
 }
 
 /// Hand the composited capture to the OCR helper process (`--ocr <png>`), which reads
 /// the text out of it, puts it on the clipboard, and shows the result window.
 /// (Caller commits in-progress text first.)
-pub(super) unsafe fn finish_ocr(s: &Shot) {
+/// `false` only when the helper could not be handed the capture (see [`compose_and_spawn`]).
+pub(super) unsafe fn finish_ocr(s: &Shot) -> bool {
     if s.automation.is_some() {
-        return;
+        return true;
     }
-    compose_and_spawn(s, "--ocr");
+    compose_and_spawn(s, "--ocr")
 }
 
 /// Show the "couldn't save" warning naming `dir`, the folder whose write failed. A `false`
@@ -266,8 +273,9 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Ocr => {
             commit_text(s);
-            finish_ocr(s);
-            let _ = DestroyWindow(hwnd);
+            if finish_ocr(s) {
+                let _ = DestroyWindow(hwnd);
+            }
             true
         }
         Button::Save => {
@@ -281,8 +289,9 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Upload => {
             commit_text(s);
-            compose_and_spawn(s, "--upload");
-            let _ = DestroyWindow(hwnd);
+            if compose_and_spawn(s, "--upload") {
+                let _ = DestroyWindow(hwnd);
+            }
             true
         }
         Button::Close => {
@@ -323,23 +332,15 @@ fn toggle_text_tool(s: &mut Shot) -> bool {
     false
 }
 
-/// Pop the last shape off the undo stack onto the redo stack and clear the selection.
+/// The toolbar's Undo: exactly Ctrl+Z's step ([`undo_last`]).
 fn undo_shape(s: &mut Shot) -> bool {
-    if let Some(sh) = s.shapes.pop() {
-        s.redo.push(sh);
-    }
-    s.selected = None;
-    s.move_from = None;
+    undo_last(s); // the same step Ctrl+Z takes, pending move or delete included
     false
 }
 
-/// Pop the last shape off the redo stack onto the undo stack and clear the selection.
+/// The toolbar's Redo: exactly Ctrl+Y's step ([`redo_last`]).
 fn redo_shape(s: &mut Shot) -> bool {
-    if let Some(sh) = s.redo.pop() {
-        s.shapes.push(sh);
-    }
-    s.selected = None;
-    s.move_from = None;
+    redo_last(s);
     false
 }
 
