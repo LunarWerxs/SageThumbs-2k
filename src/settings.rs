@@ -28,7 +28,9 @@ use windows_registry::CURRENT_USER;
 /// HKCU root for all our settings (and the per-extension subkeys).
 pub const ROOT: &str = r"Software\SageThumbs2K";
 
-pub use store::{ini_path, portable, INI_NAME, ROOT_SECTION as PORTABLE_ROOT_SECTION};
+pub use store::{
+    acquire_named_mutex, ini_path, portable, INI_NAME, ROOT_SECTION as PORTABLE_ROOT_SECTION,
+};
 
 /// The subkey (registry) / section (portable ini) holding per-menu-item visibility.
 const MENU_ITEMS: &str = "MenuItems";

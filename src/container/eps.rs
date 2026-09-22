@@ -16,7 +16,11 @@ const MAGIC: [u8; 4] = [0xC5, 0xD0, 0xD3, 0xC6];
 
 use image::{DynamicImage, GrayImage};
 
-use super::{psd, util::le32, CoverOut, MAX_COVER};
+use super::{
+    psd,
+    util::{le32, tiff_u16, tiff_u32},
+    CoverOut, MAX_COVER,
+};
 
 /// EPS previews conventionally live at the head; never scan an arbitrary huge EPS.
 const ASCII_SCAN_MAX: usize = 1 << 20;
@@ -103,26 +107,6 @@ fn tiff_is_paletted(tiff: &[u8]) -> bool {
         }
     }
     false
-}
-
-/// Read a little- or big-endian `u16` at offset `o`, or `None` when the bytes run short.
-fn tiff_u16(tiff: &[u8], le: bool, o: usize) -> Option<u16> {
-    let b = tiff.get(o..o + 2)?;
-    Some(if le {
-        u16::from_le_bytes([b[0], b[1]])
-    } else {
-        u16::from_be_bytes([b[0], b[1]])
-    })
-}
-
-/// Read a little- or big-endian `u32` at offset `o`, or `None` when the bytes run short.
-fn tiff_u32(tiff: &[u8], le: bool, o: usize) -> Option<u32> {
-    let b = tiff.get(o..o + 4)?;
-    Some(if le {
-        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-    } else {
-        u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-    })
 }
 
 /// Extract an embedded preview from a plain-text EPS, without rendering PostScript.

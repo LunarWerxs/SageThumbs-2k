@@ -122,22 +122,16 @@ where
     let slot: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
     let done = Arc::new(AtomicBool::new(false));
     let (w_event, w_slot, w_done) = (event.clone(), slot.clone(), done.clone());
-    // Pin the DLL for this detached worker's whole lifetime (see `grab_budgeted`): taken
-    // BEFORE `spawn` and moved in, so it covers the slot store and `SetEvent` after
-    // `with_mta_apartment` has dropped its own pin, and is released if `spawn` fails.
-    #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
-    let spawned = std::thread::Builder::new()
-        .name("st2k-video-worker".into())
-        .spawn(move || {
-            let _module = module;
-            let r = crate::pdf::with_mta_apartment(f);
-            *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
-            // Last act, after the apartment is gone: "done" means done with Media Foundation.
-            w_done.store(true, Ordering::SeqCst);
-            let _ = unsafe { SetEvent(HANDLE(w_event.as_raw_handle())) };
-        });
-    if spawned.is_err() {
+    // Pinned for the worker's whole life (see `safety::spawn_pinned`): the slot store and
+    // `SetEvent` run after `with_mta_apartment` has dropped its own pin.
+    let started = crate::safety::spawn_pinned("st2k-video-worker", move || {
+        let r = crate::pdf::with_mta_apartment(f);
+        *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
+        // Last act, after the apartment is gone: "done" means done with Media Foundation.
+        w_done.store(true, Ordering::SeqCst);
+        let _ = unsafe { SetEvent(HANDLE(w_event.as_raw_handle())) };
+    });
+    if started.is_err() {
         return None;
     }
     if wait_pumping(HANDLE(event.as_raw_handle()), timeout) {

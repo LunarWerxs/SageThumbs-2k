@@ -309,25 +309,15 @@ where
     let (tx, rx) = std::sync::mpsc::channel();
     let done = Arc::new(AtomicBool::new(false));
     let finished = done.clone();
-    // Pin the DLL for this detached worker's whole lifetime: on timeout we return but leave
-    // it running, and the thumbnail host could otherwise unload the DLL mid-grab and crash.
-    // Taken BEFORE `spawn` and moved in (the `contextmenu::thumb` form), so the pin still
-    // covers `tx.send` and the `finished` store after `with_mta_apartment` has dropped its
-    // own, and goes away with the closure if `spawn` fails.
-    #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
-    let spawned = std::thread::Builder::new()
-        .name("st2k-video-grab".into())
-        .spawn(move || {
-            let _module = module;
-            let r = crate::pdf::with_mta_apartment(f);
-            let _ = tx.send(r);
-            // Last act, after the apartment is gone: "done" means done with Media Foundation.
-            finished.store(true, Ordering::SeqCst);
-        });
-    if spawned.is_err() {
-        // The OS refused the thread: no frame. `std::thread::spawn` panics here instead,
-        // which `panic = "abort"` turns into a dead Explorer.
+    // Pinned for the worker's whole life (on timeout we return and leave it running), and no
+    // frame rather than a panic in Explorer when the OS refuses the thread.
+    let started = crate::safety::spawn_pinned("st2k-video-grab", move || {
+        let r = crate::pdf::with_mta_apartment(f);
+        let _ = tx.send(r);
+        // Last act, after the apartment is gone: "done" means done with Media Foundation.
+        finished.store(true, Ordering::SeqCst);
+    });
+    if started.is_err() {
         return None;
     }
     match rx.recv_timeout(VIDEO_TIMEOUT) {

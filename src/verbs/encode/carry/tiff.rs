@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::container::util::{tiff_u16, tiff_u32};
+
 /// TIFF tags with a home of their own in [`Carried`]: the XMP packet, the IPTC record
 /// and the ICC profile.
 pub(super) const TAG_XMP: u16 = 0x02BC;
@@ -322,24 +324,6 @@ pub(super) fn tiff_is_le(tiff: &[u8]) -> Option<bool> {
         Some(b"MM") => Some(false),
         _ => None,
     }
-}
-
-pub(super) fn tiff_u16(tiff: &[u8], le: bool, o: usize) -> Option<u16> {
-    let v = tiff.get(o..o.checked_add(2)?)?.first_chunk::<2>()?;
-    Some(if le {
-        u16::from_le_bytes(*v)
-    } else {
-        u16::from_be_bytes(*v)
-    })
-}
-
-pub(super) fn tiff_u32(tiff: &[u8], le: bool, o: usize) -> Option<u32> {
-    let v = tiff.get(o..o.checked_add(4)?)?.first_chunk::<4>()?;
-    Some(if le {
-        u32::from_le_bytes(*v)
-    } else {
-        u32::from_be_bytes(*v)
-    })
 }
 
 /// Rewrite IFD0's Orientation entry (tag 0x0112) to 1 ("normal"), in place.

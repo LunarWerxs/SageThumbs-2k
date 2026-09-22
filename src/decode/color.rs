@@ -390,48 +390,24 @@ pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::Pn
     None
 }
 
-/// Run `cms` over an 8-bit RGB buffer and rebuild the image from what it returns, so a
-/// colour-managed `DynamicImage` never comes back blank: `cms` itself already keeps the
-/// original pixels on a transform error, so only a length mismatch can reach the fallback.
-fn cms_rgb8(
-    buf: image::RgbImage,
+/// Run `cms` over an 8-bit RGB or RGBA buffer (`layout` says which) and rebuild the image
+/// from what it returns, so a colour-managed `DynamicImage` never comes back blank: `cms`
+/// itself already keeps the original pixels on a transform error, so only a length mismatch
+/// can reach the blank fallback.
+fn cms_8bit<P>(
+    buf: image::ImageBuffer<P, Vec<u8>>,
+    layout: moxcms::Layout,
     cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
-) -> DynamicImage {
+) -> DynamicImage
+where
+    P: image::Pixel<Subpixel = u8>,
+    DynamicImage: From<image::ImageBuffer<P, Vec<u8>>>,
+{
     let (w, h) = buf.dimensions();
-    cms_rebuild(
-        w,
-        h,
-        cms(moxcms::Layout::Rgb, buf.into_raw()),
-        |w, h, raw| image::RgbImage::from_raw(w, h, raw).map(DynamicImage::ImageRgb8),
-        DynamicImage::new_rgb8,
-    )
-}
-
-/// [`cms_rgb8`] for an 8-bit RGBA buffer.
-fn cms_rgba8(
-    buf: image::RgbaImage,
-    cms: impl Fn(moxcms::Layout, Vec<u8>) -> Vec<u8>,
-) -> DynamicImage {
-    let (w, h) = buf.dimensions();
-    cms_rebuild(
-        w,
-        h,
-        cms(moxcms::Layout::Rgba, buf.into_raw()),
-        |w, h, raw| image::RgbaImage::from_raw(w, h, raw).map(DynamicImage::ImageRgba8),
-        DynamicImage::new_rgba8,
-    )
-}
-
-/// Rebuild a `DynamicImage` from `cms`' output, falling back to a blank image only when the
-/// constructor rejects the buffer — a length mismatch.
-fn cms_rebuild(
-    w: u32,
-    h: u32,
-    raw: Vec<u8>,
-    from_raw: impl Fn(u32, u32, Vec<u8>) -> Option<DynamicImage>,
-    fallback: impl Fn(u32, u32) -> DynamicImage,
-) -> DynamicImage {
-    from_raw(w, h, raw).unwrap_or_else(|| fallback(w, h))
+    let raw = cms(layout, buf.into_raw());
+    image::ImageBuffer::<P, Vec<u8>>::from_raw(w, h, raw)
+        .unwrap_or_else(|| image::ImageBuffer::new(w, h))
+        .into()
 }
 
 /// Color-manage an embedded ICC profile to sRGB so wide-gamut (Display-P3 / Adobe RGB /
@@ -497,15 +473,15 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
     };
 
     match img {
-        DynamicImage::ImageRgb8(buf) => cms_rgb8(buf, cms),
-        DynamicImage::ImageRgba8(buf) => cms_rgba8(buf, cms),
+        DynamicImage::ImageRgb8(buf) => cms_8bit(buf, moxcms::Layout::Rgb, cms),
+        DynamicImage::ImageRgba8(buf) => cms_8bit(buf, moxcms::Layout::Rgba, cms),
         // Narrow to 8-bit first (see the note above) rather than skip management entirely.
         img @ (DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_)) => {
             let has_alpha = matches!(img, DynamicImage::ImageRgba16(_));
             if has_alpha {
-                cms_rgba8(img.to_rgba8(), cms)
+                cms_8bit(img.to_rgba8(), moxcms::Layout::Rgba, cms)
             } else {
-                cms_rgb8(img.to_rgb8(), cms)
+                cms_8bit(img.to_rgb8(), moxcms::Layout::Rgb, cms)
             }
         }
         other => other,

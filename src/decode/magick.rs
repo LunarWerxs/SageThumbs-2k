@@ -379,42 +379,19 @@ fn decode_via_magick_spec_alloc(
         Error::from(E_FAIL)
     })?;
 
-    // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
-    let Some(mut stdin) = child.stdin.take() else {
-        crate::safety::log_debug("magick decode: child has no stdin pipe");
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(Error::from(E_FAIL));
-    };
-    let input = bytes.to_vec();
-    let Some(writer) = crate::safety::try_spawn("st2k-magick-stdin", move || {
-        let _ = stdin.write_all(&input);
-        // drop(stdin) here closes the pipe so ImageMagick sees EOF
-    }) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(Error::from(E_FAIL));
-    };
-
-    // Read stdout on its own thread; the main thread enforces the budget.
-    let Some(stdout) = child.stdout.take() else {
-        crate::safety::log_debug("magick decode: child has no stdout pipe");
-        let _ = child.kill();
-        let _ = writer.join();
-        let _ = child.wait();
-        return Err(Error::from(E_FAIL));
-    };
+    // stdin fed and stdout read on their own threads, so a full pipe can't deadlock us; the
+    // main thread enforces the budget.
     let (tx, rx) = std::sync::mpsc::channel();
-    let Some(reader) = crate::safety::try_spawn("st2k-magick-stdout", move || {
-        let mut buf = Vec::new();
-        // Capped so a hostile/misbehaving child can't balloon our memory before the
-        // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
-        let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
-        let _ = tx.send(buf);
-    }) else {
-        let _ = child.kill();
-        let _ = writer.join();
-        let _ = child.wait();
+    let Some((writer, reader)) =
+        crate::safety::start_child_pipes(&mut child, bytes.to_vec(), move |stdout| {
+            let mut buf = Vec::new();
+            // Capped so a hostile/misbehaving child can't balloon our memory before the
+            // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
+            let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        })
+    else {
+        crate::safety::log_debug("magick decode: the child's pipes or pipe threads failed");
         return Err(Error::from(E_FAIL));
     };
 

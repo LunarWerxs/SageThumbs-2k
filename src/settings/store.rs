@@ -246,6 +246,44 @@ macro_rules! release_mutex_handle {
     }};
 }
 
+/// Best-effort acquire of a NAMED, logon-session-local (`Local\`) cross-process mutex: the one
+/// kernel object every process of this product shares under the name it passes. Waits with the
+/// shared budget — 2000 ms first (the original), then a SHORT 500 ms retry that catches the
+/// common case of a holder that was mid-edit and about to finish, instead of falling through
+/// unlocked on the first miss and silently risking a lost concurrent write (item 93). Still
+/// bounded: a genuinely wedged or leaked mutex gives up after ~2.5 s total.
+///
+/// `None` means the mutex could not be created, or both waits timed out; on a timeout the
+/// handle is closed first, so the caller can simply proceed unlocked. `timeout_message` is
+/// logged (via [`crate::safety::log_debug`]) only on that timeout path, so a degraded run
+/// leaves a trace instead of degrading silently — the message stays per-caller because only
+/// the caller knows which named mutex it was waiting on.
+///
+/// Shared by [`IniLock`] here and the app EXE's `NudgeLock` (which reaches it as
+/// `sagethumbs2k_core::settings::acquire_named_mutex`). Keeping the CreateMutexW + bounded
+/// wait + abandon-match + close-on-failure shape in ONE place is what stops the two from
+/// drifting apart: the app's copy had already lost both the retry and the log.
+pub fn acquire_named_mutex(
+    name: windows::core::PCWSTR,
+    timeout_message: &str,
+) -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+    let h = unsafe { CreateMutexW(None, false, name) }.ok()?;
+    for timeout_ms in [2_000u32, 500] {
+        match unsafe { WaitForSingleObject(h, timeout_ms) } {
+            // WAIT_ABANDONED means a previous holder died mid-edit without releasing; we
+            // still got ownership, and both callers replace their whole payload in one
+            // write, so an abandoned mutex is safe to take.
+            WAIT_OBJECT_0 | WAIT_ABANDONED => return Some(h),
+            _ => {}
+        }
+    }
+    crate::safety::log_debug(timeout_message);
+    let _ = unsafe { CloseHandle(h) };
+    None
+}
+
 /// Short-lived cross-process lock guarding one `update()` call, so two writers to the
 /// SAME portable ini (the Settings EXE, `st2k`, the screenshot daemon, or two `st2k`
 /// invocations, all in portable mode) cannot race a load-edit-write and silently drop
@@ -267,24 +305,12 @@ impl IniLock {
     /// degraded run leaves a trace instead of degrading silently.
     fn acquire() -> Option<Self> {
         use windows::core::w;
-        use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
-        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-        let h = unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.PortableIni")) }.ok()?;
-        for timeout_ms in [2_000u32, 500] {
-            match unsafe { WaitForSingleObject(h, timeout_ms) } {
-                // WAIT_ABANDONED means a previous holder died mid-edit without releasing;
-                // we still got ownership, and the file itself is never left half-written
-                // because `write_atomic` only replaces it via a completed rename.
-                WAIT_OBJECT_0 | WAIT_ABANDONED => return Some(IniLock(h)),
-                _ => {}
-            }
-        }
-        crate::safety::log_debug(
+        acquire_named_mutex(
+            w!("Local\\SageThumbs2K.PortableIni"),
             "portable ini: IniLock wait timed out twice; proceeding unlocked (a concurrent \
              write may be lost)",
-        );
-        let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
-        None
+        )
+        .map(IniLock)
     }
 }
 

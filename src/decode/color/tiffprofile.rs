@@ -1,5 +1,7 @@
 //! The ICC profile tag out of a TIFF IFD.
 
+use crate::container::util::{tiff_u16, tiff_u32};
+
 /// The ICC profile a classic TIFF carries in IFD0's tag 34675, read off the bytes directly.
 /// The `image` crate's TIFF decoder answers `None` for the profile a 16-bit TIFF written by
 /// ImageMagick carries (measured 2026-09-11 on `tests/fixtures/tiff/scene-pq2020.tif`, tag
@@ -40,22 +42,4 @@ pub(super) fn tiff_entry_bytes(bytes: &[u8], little: bool, at: usize) -> Option<
         tiff_u32(bytes, little, at + 8)? as usize
     };
     Some(bytes.get(start..start.checked_add(count)?)?.to_vec())
-}
-
-pub(super) fn tiff_u16(bytes: &[u8], little: bool, at: usize) -> Option<u16> {
-    let b: [u8; 2] = bytes.get(at..at + 2)?.try_into().ok()?;
-    Some(if little {
-        u16::from_le_bytes(b)
-    } else {
-        u16::from_be_bytes(b)
-    })
-}
-
-pub(super) fn tiff_u32(bytes: &[u8], little: bool, at: usize) -> Option<u32> {
-    let b: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
-    Some(if little {
-        u32::from_le_bytes(b)
-    } else {
-        u32::from_be_bytes(b)
-    })
 }

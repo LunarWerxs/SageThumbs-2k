@@ -88,6 +88,28 @@ pub(super) fn is_dds(bytes: &[u8]) -> bool {
     bytes.len() > DATA_OFF && bytes.starts_with(b"DDS ")
 }
 
+/// The block-compressed family a DX10 `DXGI_FORMAT` decodes as, named for display (the
+/// `strip` DDS summary), or `None` for an uncompressed or unknown format. Read off
+/// [`dxgi_layout`], so the summary can never disagree with the decoder about which number is
+/// which block (it once reported a `BC6H_SF16` texture as "BC7").
+pub(crate) fn dxgi_block_name(dxgi: u32) -> Option<&'static str> {
+    let Layout::Block(block) = dxgi_layout(dxgi)? else {
+        return None;
+    };
+    Some(match block {
+        Block::Bc1 => "BC1",
+        Block::Bc2 => "BC2",
+        Block::Bc3 => "BC3",
+        Block::Bc4 { signed: false } => "BC4",
+        Block::Bc4 { signed: true } => "BC4 (signed)",
+        Block::Bc5 { signed: false } => "BC5",
+        Block::Bc5 { signed: true } => "BC5 (signed)",
+        Block::Bc6h { signed: false } => "BC6H",
+        Block::Bc6h { signed: true } => "BC6H (signed)",
+        Block::Bc7 => "BC7",
+    })
+}
+
 /// One of the seven block-compressed layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Block {

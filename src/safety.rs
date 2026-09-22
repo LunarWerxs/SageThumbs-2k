@@ -38,8 +38,8 @@ pub use logfile::{debug_logging_on, install_panic_hook, log, log_debug, log_file
 #[cfg(test)]
 use workers::*;
 pub use workers::{
-    abandoned_budget_exhausted, abandoned_workers, spawn_budgeted, try_spawn, AbandonTicket, Lease,
-    LeasePool, MAX_ABANDONED_WORKERS,
+    abandoned_budget_exhausted, abandoned_workers, spawn_budgeted, spawn_pinned, start_child_pipes,
+    try_spawn, AbandonTicket, Lease, LeasePool, MAX_ABANDONED_WORKERS,
 };
 
 /// Longest edge the Explorer preview pane renders at, and the ceiling handed to the decoders

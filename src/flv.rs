@@ -20,7 +20,7 @@
 //! no indexing, no unwraps, checked arithmetic on every file-supplied length, a strictly
 //! forward tag walk with tag-count and byte caps, and capped allocations throughout.
 
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -514,29 +514,14 @@ pub(crate) fn child_frame_png(
     // Debug-gated, so the production path costs one cached registry flag read.
     crate::safety::log_debugf!("spawned helper pid {} for {verb}", child.id());
 
-    // Feed stdin on its own thread so a full stdout pipe can't deadlock us.
-    let mut stdin = child.stdin.take()?;
-    let input = input.to_vec();
-    let Some(writer) = crate::safety::try_spawn("st2k-helper-stdin", move || {
-        let _ = stdin.write_all(&input);
-        // drop(stdin) closes the pipe so the child sees EOF
-    }) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let mut stdout = child.stdout.take()?;
+    // stdin fed and stdout read on their own threads, so a full pipe can't deadlock us.
     let (tx, rx) = std::sync::mpsc::channel();
-    let Some(reader) = crate::safety::try_spawn("st2k-helper-stdout", move || {
-        let mut buf = Vec::new();
-        let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
-        let _ = tx.send(buf);
-    }) else {
-        let _ = child.kill();
-        let _ = writer.join();
-        let _ = child.wait();
-        return None;
-    };
+    let (writer, reader) =
+        crate::safety::start_child_pipes(&mut child, input.to_vec(), move |mut stdout| {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        })?;
 
     let png = crate::decode::await_child_output(&mut child, &rx, cpu_budget, wall_ceiling);
     // Kill unconditionally (no-op if exited): a child that closed stdout but stopped

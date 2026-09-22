@@ -64,23 +64,14 @@ pub(super) fn describe(bytes: &[u8]) -> Option<(u32, String)> {
 /// The DXGI formats a `DX10` DDS realistically carries. Anything else is reported
 /// by number rather than guessed at.
 ///
-/// The block-compressed runs are each THREE values wide (TYPELESS, UNORM, SNORM —
-/// or UNORM_SRGB), so BC4 is 79..=81, BC5 82..=84, BC6H 94..=96 and BC7 97..=99.
-/// An earlier table here shifted the last two down by one and reported a
-/// `BC6H_SF16` texture (96) as "BC7". The same numbers drive the real decoder in
-/// `decode/dds.rs`; keep the two in agreement.
+/// The block-compressed names come from the decoder's own table
+/// ([`crate::decode::dxgi_block_name`]), so the two cannot disagree about which number is
+/// which block; only the uncompressed formats are named here.
 fn dxgi_name(id: u32) -> String {
+    if let Some(block) = crate::decode::dxgi_block_name(id) {
+        return format!("{block} (DX10)");
+    }
     let name = match id {
-        70..=72 => "BC1",
-        73..=75 => "BC2",
-        76..=78 => "BC3",
-        79..=80 => "BC4",
-        81 => "BC4 (signed)",
-        82..=83 => "BC5",
-        84 => "BC5 (signed)",
-        94..=95 => "BC6H",
-        96 => "BC6H (signed)",
-        97..=99 => "BC7",
         2 => "RGBA32F",
         10 => "RGBA16F",
         11 => "RGBA16",

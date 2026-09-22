@@ -13,7 +13,7 @@
 //! odd-frequency rows/cols equals mirroring them. So `decode(transform(jpeg))`
 //! equals `rotate(decode(jpeg))` exactly — which the round-trip test asserts.
 
-mod huffman;
+pub(crate) mod huffman;
 use huffman::*;
 mod bits;
 use bits::*;

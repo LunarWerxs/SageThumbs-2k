@@ -151,15 +151,11 @@ pub enum CoverOut {
 /// Max bytes we'll read for one cover entry (DarkThumbs' CBXMEM cap, 32 MiB).
 pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
 
-/// Upper bound on the entries any single archive listing may return. It is passed
-/// INTO each format reader, so the reader itself stops collecting at the cap — the
-/// viewer's UI thread and the thumbnail host's cover pick therefore never see a
-/// directory that declares millions of entries turn into millions of allocations.
-/// Cap on how many archive entries any listing/selection path will materialize —
-/// a crafted archive whose directory declares millions of entries must never
-/// drive millions of `String` allocations (in the viewer's UI thread OR the
-/// thumbnail host's cover pick). Shared by [`list_archive`] and every
-/// `pick_covers` listing (zip/7z/rar).
+/// Upper bound on the entries any archive listing or cover pick may return (shared by
+/// [`list_archive`] and every `pick_covers` listing: zip/7z/rar). It is passed INTO each
+/// format reader, so the reader itself stops collecting at the cap: a crafted directory that
+/// declares millions of entries never becomes millions of `String` allocations, in the
+/// viewer's UI thread or in the thumbnail host.
 pub(crate) const MAX_LIST_ENTRIES: usize = 50_000;
 
 /// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
@@ -167,16 +163,12 @@ pub(crate) const MAX_LIST_ENTRIES: usize = 50_000;
 /// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
 /// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
 pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
-    const MAX_ENTRIES: usize = MAX_LIST_ENTRIES;
-    // The cap is passed INTO each reader so it bounds the collection itself — a crafted archive
-    // with millions of tiny entries never materializes millions of `String`s (which, on the UI
-    // thread in `content::archive_listing`, would freeze the viewer).
     let entries = if is_zip(bytes) {
-        zipfmt::list_bytes(bytes, MAX_ENTRIES)?
+        zipfmt::list_bytes(bytes, MAX_LIST_ENTRIES)?
     } else if is_7z(bytes) {
-        sevenz::list(bytes, MAX_ENTRIES)?
+        sevenz::list(bytes, MAX_LIST_ENTRIES)?
     } else if is_rar(bytes) {
-        rar::list(bytes, MAX_ENTRIES)?
+        rar::list(bytes, MAX_LIST_ENTRIES)?
     } else {
         return None;
     };

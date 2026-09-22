@@ -192,24 +192,7 @@ pub(super) unsafe fn draw(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC, r
             let dh = ((rd.ih as f64 * scale).round() as i32).max(1);
             let dx = (cw - dw) / 2;
             let dy = (ch - dh) / 2;
-            let memdc = CreateCompatibleDC(Some(hdc));
-            let old = SelectObject(memdc, rd.hbmp.into());
-            SetStretchBltMode(hdc, HALFTONE);
-            _ = StretchBlt(
-                hdc,
-                dx,
-                dy,
-                dw,
-                dh,
-                Some(memdc),
-                0,
-                0,
-                rd.iw,
-                rd.ih,
-                SRCCOPY,
-            );
-            SelectObject(memdc, old);
-            _ = DeleteDC(memdc);
+            crate::dib::stretch_blit(hdc, (dx, dy, dw, dh), rd.hbmp, (rd.iw, rd.ih));
         }
     }
 }

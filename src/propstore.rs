@@ -23,7 +23,7 @@
 use core::mem::ManuallyDrop;
 use std::sync::Mutex;
 
-use windows::core::{Error, Result, PCWSTR, PWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     E_FAIL, E_INVALIDARG, E_POINTER, FILETIME, PROPERTYKEY, STG_E_ACCESSDENIED, SYSTEMTIME,
 };
@@ -36,7 +36,6 @@ use windows::Win32::Storage::EnhancedStorage::{
     PKEY_Photo_CameraModel, PKEY_Photo_DateTaken, PKEY_Title, PKEY_Video_FrameHeight,
     PKEY_Video_FrameWidth,
 };
-use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::Com::StructuredStorage::{
     InitPropVariantFromFileTime, InitPropVariantFromStringVector, PROPVARIANT, PROPVARIANT_0,
     PROPVARIANT_0_0, PROPVARIANT_0_0_0,
@@ -317,38 +316,23 @@ fn push_audio_props(out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>, tags: crate::stri
 /// its own integer `From` impls; there is no single-string `InitPropVariantFromString` in this
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
-    let wide = crate::wide(s);
-    // Overflow-safe byte count, matching command.rs::alloc_pwstr's guard: can't actually
-    // overflow for any real string, but keep the allocation provably sound rather than
-    // wrapping into an under-sized CoTaskMemAlloc.
-    let Some(bytes) = checked_utf16_byte_len(wide.len()) else {
+    // The wide-string allocation (overflow-checked `len * 2`, CoTaskMemAlloc, null check,
+    // copy) lives in the one shared `crate::command::alloc_pwstr`, also used by the
+    // context-menu verbs. A failure there means "no property": emit an empty variant.
+    let Ok(pwsz) = crate::command::alloc_pwstr(s) else {
         return PROPVARIANT::default();
     };
-    unsafe {
-        let p = CoTaskMemAlloc(bytes) as *mut u16;
-        if p.is_null() {
-            return PROPVARIANT::default();
-        }
-        core::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
-        PROPVARIANT {
-            Anonymous: PROPVARIANT_0 {
-                Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
-                    vt: VT_LPWSTR,
-                    wReserved1: 0,
-                    wReserved2: 0,
-                    wReserved3: 0,
-                    Anonymous: PROPVARIANT_0_0_0 { pwszVal: PWSTR(p) },
-                }),
-            },
-        }
+    PROPVARIANT {
+        Anonymous: PROPVARIANT_0 {
+            Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+                vt: VT_LPWSTR,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: PROPVARIANT_0_0_0 { pwszVal: pwsz },
+            }),
+        },
     }
-}
-
-/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Split out from
-/// `pv_lpwstr` so the arithmetic itself is unit-testable without needing a near-`usize::MAX`
-/// element `Vec<u16>` just to exercise the overflow branch.
-fn checked_utf16_byte_len(len: usize) -> Option<usize> {
-    len.checked_mul(2)
 }
 
 /// Build a `VT_VECTOR | VT_LPWSTR` PROPVARIANT for the multi-value string keys. System.Music.Artist
@@ -461,16 +445,16 @@ mod tests {
 
     /// `checked_utf16_byte_len` must catch the overflow instead of silently wrapping into an
     /// under-sized `CoTaskMemAlloc` — the plain `len * 2` this replaced would wrap (release
-    /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr` a buffer
-    /// too small for the UTF-16 copy that follows.
+    /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr`'s
+    /// `command::alloc_pwstr` a buffer too small for the UTF-16 copy that follows.
     #[test]
     fn checked_utf16_byte_len_catches_overflow_instead_of_wrapping() {
         assert_eq!(
-            checked_utf16_byte_len(usize::MAX),
+            crate::command::checked_utf16_byte_len(usize::MAX),
             None,
             "a byte length that can't fit in usize must be rejected, not wrapped"
         );
-        assert_eq!(checked_utf16_byte_len(4), Some(8));
+        assert_eq!(crate::command::checked_utf16_byte_len(4), Some(8));
     }
 
     #[test]

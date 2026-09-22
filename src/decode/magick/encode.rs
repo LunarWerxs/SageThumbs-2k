@@ -194,28 +194,12 @@ pub(super) fn pipe_magick_encode(
     child: &mut std::process::Child,
     png: Vec<u8>,
 ) -> Result<MagickEncodePipes> {
-    use std::io::Write;
-
-    let mut stdin = child.stdin.take().ok_or_else(|| Error::from(E_FAIL))?;
-    let Some(writer) = crate::safety::try_spawn("st2k-magick-stdin", move || {
-        let _ = stdin.write_all(&png); // drop closes the pipe → magick sees EOF
-    }) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(Error::from(E_FAIL));
-    };
-
-    let stdout = child.stdout.take().ok_or_else(|| Error::from(E_FAIL))?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let Some(reader) = crate::safety::try_spawn("st2k-magick-stdout", move || {
+    let (writer, reader) = crate::safety::start_child_pipes(child, png, move |stdout| {
         let _ = drain_capped(stdout);
         let _ = tx.send(());
-    }) else {
-        let _ = child.kill();
-        let _ = writer.join();
-        let _ = child.wait();
-        return Err(Error::from(E_FAIL));
-    };
+    })
+    .ok_or_else(|| Error::from(E_FAIL))?;
 
     // Drain stderr (capped) so we can log it on failure and it can't stall magick.
     let stderr = child.stderr.take();

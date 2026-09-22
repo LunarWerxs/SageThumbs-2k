@@ -268,42 +268,31 @@ pub fn run_action_detached_with<F>(
 ) where
     F: FnOnce() -> Vec<String> + Send + 'static,
 {
-    // Pin the DLL BEFORE `spawn`, not as the worker closure's first line: `spawn` only
-    // schedules the thread, it doesn't run it, so a `ModuleRef` taken inside the closure
-    // leaves a window — between `spawn` returning here and that first line actually
-    // executing — where the DLL could unload out from under a thread that's about to
-    // touch it. `ModuleRef::default()` is NOT a no-op — its `Default` impl does the
-    // `dll_add_ref()`; clippy's "use `ModuleRef`" suggestion would skip it.
-    #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
-    let spawned = std::thread::Builder::new()
-        .name("st2k-verb".into())
-        .spawn(move || {
-            let _module = module;
-            // `HWND` wraps a raw pointer and is not `Send`; the owner crosses as an `isize`.
-            let parent = owner_hwnd(owner);
-            // STA matches the shell thread the verb used to run on (ShellExecute / clipboard /
-            // WIC all behave there). S_OK / S_FALSE add a ref to balance; RPC_E_CHANGED_MODE
-            // (already an MTA thread) does not, so only CoUninitialize when we actually inited.
-            let inited = unsafe {
-                windows::Win32::System::Com::CoInitializeEx(
-                    None,
-                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                )
-            }
-            .is_ok();
-            let paths = resolve();
-            let report = run_action(action, &paths);
-            report.surface(parent);
-            report.reveal(&paths);
-            if inited {
-                unsafe { windows::Win32::System::Com::CoUninitialize() };
-            }
-        });
+    // Pinned before `spawn` and for the worker's whole life (see `safety::spawn_pinned`).
+    let spawned = crate::safety::spawn_pinned("st2k-verb", move || {
+        // `HWND` wraps a raw pointer and is not `Send`; the owner crosses as an `isize`.
+        let parent = owner_hwnd(owner);
+        // STA matches the shell thread the verb used to run on (ShellExecute / clipboard /
+        // WIC all behave there). S_OK / S_FALSE add a ref to balance; RPC_E_CHANGED_MODE
+        // (already an MTA thread) does not, so only CoUninitialize when we actually inited.
+        let inited = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+        }
+        .is_ok();
+        let paths = resolve();
+        let report = run_action(action, &paths);
+        report.surface(parent);
+        report.reveal(&paths);
+        if inited {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    });
     // A spawn failure used to vanish silently (the menu item just "did nothing"). Log it
     // and show the same error box a failed verb would, instead of leaving the click
-    // unexplained — `module` (still held here) drops right after, releasing the pin this
-    // aborted action never used.
+    // unexplained. The pin went away with the refused closure.
     if let Err(e) = spawned {
         crate::safety::log(&format!("run_action_detached: spawn failed: {e}"));
         ActionReport::applied(attempted, 0)

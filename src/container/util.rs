@@ -72,6 +72,32 @@ pub(super) fn le16(b: &[u8], o: usize) -> Option<u16> {
     b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
 }
 
+/// Read a little- or big-endian `u16` at byte offset `o`, or `None` when the bytes run
+/// short. The one IFD endian reader: shared by the colour-profile tag reader
+/// (`decode::color::tiffprofile`), the carried-block surgery (`verbs::encode::carry::tiff`)
+/// and the EPS preview sniff (`container::eps`), which had three hand-copies of this read.
+/// The offset is `checked_add`-bounded so a crafted value near `usize::MAX` cannot overflow
+/// the slice range (the copies that used a bare `o + 2` relied on a wrap to an empty range).
+pub(crate) fn tiff_u16(b: &[u8], little: bool, o: usize) -> Option<u16> {
+    let s = b.get(o..o.checked_add(2)?)?;
+    Some(if little {
+        u16::from_le_bytes([s[0], s[1]])
+    } else {
+        u16::from_be_bytes([s[0], s[1]])
+    })
+}
+
+/// Read a little- or big-endian `u32` at byte offset `o`, or `None` when the bytes run
+/// short. See [`tiff_u16`] for why the offset is `checked_add`-bounded.
+pub(crate) fn tiff_u32(b: &[u8], little: bool, o: usize) -> Option<u32> {
+    let s = b.get(o..o.checked_add(4)?)?;
+    Some(if little {
+        u32::from_le_bytes([s[0], s[1], s[2], s[3]])
+    } else {
+        u32::from_be_bytes([s[0], s[1], s[2], s[3]])
+    })
+}
+
 /// Wrap a bare Windows DIB (a `BITMAPINFOHEADER` + palette + pixels, with NO
 /// `BM` file header) into a complete, decodable `.bmp` by prepending the 14-byte
 /// `BITMAPFILEHEADER`. Used by the DWG / Rhino / 3ds-Max / CorelDRAW preview

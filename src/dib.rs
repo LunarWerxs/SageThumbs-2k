@@ -7,7 +7,10 @@
 
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
-use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, DeleteDC, SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP,
+    HDC, SRCCOPY,
+};
 
 /// `rgba` is straight (non-premultiplied) RGBA8, row-major, top row first,
 /// `width * height * 4` bytes. Returns an owned `HBITMAP`; on the success path
@@ -86,6 +89,35 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
 ///
 /// Converts `min(src.len(), dst.len()) / 4` pixels and returns that count, so a caller whose
 /// two buffers disagree is truncated rather than panicking.
+/// `HALFTONE`-scaled `SRCCOPY` blit of the whole `src` (`width`, `height`) of `hbmp` into the
+/// `dst` rectangle (`x`, `y`, `width`, `height`) on `hdc`, through a scratch memory DC that is
+/// selected back out and deleted afterwards. Shared by the Explorer preview pane and the app's
+/// Quick preview, which draw the same way.
+///
+/// # Safety
+/// `hdc` must be a valid device context and `hbmp` a valid bitmap not selected into another DC.
+pub unsafe fn stretch_blit(hdc: HDC, dst: (i32, i32, i32, i32), hbmp: HBITMAP, src: (i32, i32)) {
+    let (dx, dy, dw, dh) = dst;
+    let memdc = CreateCompatibleDC(Some(hdc));
+    let old = SelectObject(memdc, hbmp.into());
+    SetStretchBltMode(hdc, HALFTONE);
+    let _ = StretchBlt(
+        hdc,
+        dx,
+        dy,
+        dw,
+        dh,
+        Some(memdc),
+        0,
+        0,
+        src.0,
+        src.1,
+        SRCCOPY,
+    );
+    SelectObject(memdc, old);
+    let _ = DeleteDC(memdc);
+}
+
 pub fn swap_rb_opaque(src: &[u8], dst: &mut [u8]) -> usize {
     let px = src.len().min(dst.len()) / 4;
     for i in 0..px {

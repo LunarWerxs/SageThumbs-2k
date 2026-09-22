@@ -361,28 +361,7 @@ pub(super) fn synthetic_mkv_largesize_bomb() -> Vec<u8> {
 /// a mutation almost always died at the `fmt `/`data` chunk scan before reaching any
 /// of the format/bit-depth arithmetic in `parse_wav`/`sample_to_f32`.
 pub(super) fn synthetic_wav() -> Vec<u8> {
-    const FRAMES: u32 = 512;
-    let mut data = Vec::new();
-    for i in 0..FRAMES {
-        let s = ((i as i32 % 2000) - 1000) as i16; // small triangle-ish ramp
-        data.extend_from_slice(&s.to_le_bytes());
-    }
-    let mut w = Vec::new();
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
-    w.extend_from_slice(b"WAVE");
-    w.extend_from_slice(b"fmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    w.extend_from_slice(&1u16.to_le_bytes()); // mono
-    w.extend_from_slice(&44100u32.to_le_bytes());
-    w.extend_from_slice(&88200u32.to_le_bytes()); // byte rate
-    w.extend_from_slice(&2u16.to_le_bytes()); // block align
-    w.extend_from_slice(&16u16.to_le_bytes()); // bits
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    w.extend_from_slice(&data);
-    w
+    crate::container::fuzzseed::synthetic_wav_frames(512)
 }
 
 /// A minimal 16-bit mono PCM AIFF (FORM/AIFF, `COMM` then `SSND`) — the

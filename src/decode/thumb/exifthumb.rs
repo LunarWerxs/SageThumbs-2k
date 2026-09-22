@@ -1,6 +1,7 @@
 //! The EXIF side of a thumbnail: the embedded IFD1 preview and the orientation tag.
 
 use super::*;
+use crate::container::util::{tiff_u16, tiff_u32};
 
 /// Decode a JPEG's embedded EXIF thumbnail (if any), applying the file's EXIF
 /// orientation so it matches the full image. Best-effort: any malformation or
@@ -63,26 +64,6 @@ pub(super) fn jpeg_segment(bytes: &[u8], i: usize) -> Option<(u8, usize, usize)>
     Some((marker, body_start, seg_end))
 }
 
-#[inline]
-pub(in super::super) fn r16(b: &[u8], off: usize, le: bool) -> Option<u16> {
-    let s = b.get(off..off + 2)?;
-    Some(if le {
-        u16::from_le_bytes([s[0], s[1]])
-    } else {
-        u16::from_be_bytes([s[0], s[1]])
-    })
-}
-
-#[inline]
-pub(in super::super) fn r32(b: &[u8], off: usize, le: bool) -> Option<u32> {
-    let s = b.get(off..off + 4)?;
-    Some(if le {
-        u32::from_le_bytes([s[0], s[1], s[2], s[3]])
-    } else {
-        u32::from_be_bytes([s[0], s[1], s[2], s[3]])
-    })
-}
-
 /// Walk the TIFF block (IFD0 → IFD1) for the thumbnail offset (0x0201) and
 /// length (0x0202), returning the embedded JPEG slice. All offsets are relative
 /// to the TIFF header (`tiff[0]`). Fully bounds-checked — never panics.
@@ -107,10 +88,10 @@ pub(super) fn tiff_header(tiff: &[u8]) -> Option<(bool, usize)> {
         b"MM" => false,
         _ => return None,
     };
-    if r16(tiff, 2, le)? != 42 {
+    if tiff_u16(tiff, le, 2)? != 42 {
         return None;
     }
-    let ifd0 = r32(tiff, 4, le)? as usize;
+    let ifd0 = tiff_u32(tiff, le, 4)? as usize;
     Some((le, ifd0))
 }
 
@@ -119,13 +100,13 @@ pub(super) fn tiff_header(tiff: &[u8]) -> Option<(bool, usize)> {
 /// TIFF header (`tiff[0]`).
 pub(super) fn ifd1_thumbnail_range(tiff: &[u8], le: bool, ifd0: usize) -> Option<(usize, usize)> {
     // IFD1 pointer follows IFD0's entries.
-    let n0 = r16(tiff, ifd0, le)? as usize;
-    let ifd1 = r32(tiff, ifd0 + 2 + n0 * 12, le)? as usize;
+    let n0 = tiff_u16(tiff, le, ifd0)? as usize;
+    let ifd1 = tiff_u32(tiff, le, ifd0 + 2 + n0 * 12)? as usize;
     if ifd1 == 0 {
         return None;
     }
 
-    let n1 = r16(tiff, ifd1, le)? as usize;
+    let n1 = tiff_u16(tiff, le, ifd1)? as usize;
     scan_ifd1_entries(tiff, le, ifd1, n1)
 }
 
@@ -134,9 +115,9 @@ fn scan_ifd1_entries(tiff: &[u8], le: bool, ifd1: usize, n1: usize) -> Option<(u
     let (mut off, mut len) = (None, None);
     for e in 0..n1 {
         let entry = ifd1 + 2 + e * 12;
-        match r16(tiff, entry, le)? {
-            0x0201 => off = Some(r32(tiff, entry + 8, le)? as usize), // JPEGInterchangeFormat
-            0x0202 => len = Some(r32(tiff, entry + 8, le)? as usize), // …Length
+        match tiff_u16(tiff, le, entry)? {
+            0x0201 => off = Some(tiff_u32(tiff, le, entry + 8)? as usize), // JPEGInterchangeFormat
+            0x0202 => len = Some(tiff_u32(tiff, le, entry + 8)? as usize), // …Length
             _ => {}
         }
     }
@@ -174,15 +155,15 @@ pub(super) fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
 /// Orientation (tag `0x0112`) from IFD0's entry table, walking it with the bounded [`r16`]
 /// helpers. `None` when the table has no Orientation entry or is truncated.
 pub(super) fn ifd0_orientation(tiff: &[u8], le: bool, ifd0: usize) -> Option<u32> {
-    let n0 = r16(tiff, ifd0, le)? as usize;
+    let n0 = tiff_u16(tiff, le, ifd0)? as usize;
     for e in 0..n0 {
         let entry = ifd0.checked_add(2)?.checked_add(e.checked_mul(12)?)?;
-        if r16(tiff, entry, le)? != 0x0112 {
+        if tiff_u16(tiff, le, entry)? != 0x0112 {
             continue;
         }
         // Orientation is SHORT (type 3) and left-justified in the 4-byte value field in
         // both endiannesses, the same read `rawsniff.rs`'s NewSubfileType entry uses.
-        return r16(tiff, entry.checked_add(8)?, le).map(u32::from);
+        return tiff_u16(tiff, le, entry.checked_add(8)?).map(u32::from);
     }
     None
 }

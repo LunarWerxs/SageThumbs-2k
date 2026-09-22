@@ -17,7 +17,7 @@
 //! Output is straight RGBA8, already fit within a `cx`-by-`cx` box (aspect
 //! preserved, never upscaled) with EXIF orientation applied.
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -195,6 +195,7 @@ use imagetier::*;
 /// can reach it without widening `dds`'s own visibility.
 #[cfg(test)]
 pub(crate) use cicp::fuzzapi as cicp_fuzzapi;
+pub(crate) use dds::dxgi_block_name;
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;
 #[cfg(test)]

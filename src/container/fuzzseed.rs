@@ -283,7 +283,12 @@ fn synthetic_mobi() -> Vec<u8> {
 /// A minimal 16-bit mono PCM WAV — enough frames that `column_peaks` samples real data at
 /// every output column, mirroring `waveform::tests::tiny_wav`.
 fn synthetic_wav() -> Vec<u8> {
-    let frames = 4096u32;
+    synthetic_wav_frames(4096)
+}
+
+/// A 16-bit mono 44.1 kHz PCM WAV of `frames` samples on a small ramp: the one builder behind
+/// this module's seed and `fuzz::seeds::synthetic_wav` (which asks for fewer frames).
+pub(crate) fn synthetic_wav_frames(frames: u32) -> Vec<u8> {
     let mut data = Vec::new();
     for i in 0..frames {
         let s = ((i as i32 % 2000) - 1000) as i16;

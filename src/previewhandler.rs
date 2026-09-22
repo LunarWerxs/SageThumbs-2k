@@ -28,9 +28,8 @@ use windows::Win32::Foundation::{
     COLORREF, E_FAIL, E_POINTER, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, PAINTSTRUCT,
-    SRCCOPY,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, HBITMAP,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::Com::IStream;
 use windows::Win32::System::Ole::{IObjectWithSite, IObjectWithSite_Impl};

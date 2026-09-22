@@ -25,15 +25,23 @@ use crate::{safety, settings, verbs};
 /// one constant.
 const E_PENDING: HRESULT = HRESULT(0x8000_000A_u32 as i32);
 
+/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Shared with
+/// `propstore::pv_lpwstr` so every wide-string builder rejects an overflowing allocation
+/// size rather than wrapping into an under-sized `CoTaskMemAlloc`.
+pub(crate) fn checked_utf16_byte_len(len: usize) -> Option<usize> {
+    len.checked_mul(2)
+}
+
 /// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
-fn alloc_pwstr(s: &str) -> Result<PWSTR> {
+///
+/// The single implementation of the wide-string allocation idiom, shared by the
+/// context-menu verbs here and `propstore::pv_lpwstr` (which maps the allocation failure
+/// to an empty variant instead of `E_OUTOFMEMORY`).
+pub(crate) fn alloc_pwstr(s: &str) -> Result<PWSTR> {
     let wide = crate::wide(s);
     // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
     // any real string, but keep the allocation provably sound rather than wrapping.
-    let bytes = wide
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
+    let bytes = checked_utf16_byte_len(wide.len()).ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
     let p = unsafe { CoTaskMemAlloc(bytes) } as *mut u16;
     if p.is_null() {
         return Err(Error::from(E_OUTOFMEMORY));

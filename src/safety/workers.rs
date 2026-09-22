@@ -54,6 +54,63 @@ where
         .ok()
 }
 
+/// Spawn a detached worker that holds a DLL pin ([`crate::ModuleRef`]) for its WHOLE life:
+/// taken here, BEFORE `spawn`, and moved into the closure. `spawn` only schedules the thread,
+/// so a pin taken as the closure's first line leaves a window in which the host could unload
+/// the DLL under a thread about to touch it, and a pin taken inside a helper the closure calls
+/// ends before the closure's own last writes. On `Err` the OS refused the thread; the closure,
+/// and the pin, are dropped with it, and nothing panics (`std::thread::spawn` would).
+pub fn spawn_pinned<F>(thread_name: &str, f: F) -> std::io::Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    #[allow(clippy::default_constructed_unit_structs)]
+    let module = crate::ModuleRef::default();
+    std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(move || {
+            let _module = module;
+            f();
+        })
+        .map(drop)
+}
+
+/// Start a child process's two pipe threads: one feeding `input` to its stdin (the pipe
+/// closes when that thread finishes, so the child sees EOF) and one running `read` over its
+/// stdout, each on its own thread so a full pipe can never deadlock the caller. `None` when the
+/// child has no stdin or stdout pipe, or the OS refuses a thread; the child is then killed and
+/// reaped (and a feeder that did start is joined), so nothing is left running.
+pub fn start_child_pipes<T, R>(
+    child: &mut std::process::Child,
+    input: Vec<u8>,
+    read: R,
+) -> Option<(std::thread::JoinHandle<()>, std::thread::JoinHandle<T>)>
+where
+    T: Send + 'static,
+    R: FnOnce(std::process::ChildStdout) -> T + Send + 'static,
+{
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let Some(writer) = try_spawn("st2k-child-stdin", move || {
+        use std::io::Write;
+        let _ = stdin.write_all(&input);
+    }) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let Some(reader) = try_spawn("st2k-child-stdout", move || read(stdout)) else {
+        let _ = child.kill();
+        let _ = writer.join();
+        let _ = child.wait();
+        return None;
+    };
+    Some((writer, reader))
+}
+
 pub fn spawn_budgeted<R, F>(thread_name: &str, timeout: Duration, op: F) -> Option<R>
 where
     R: Send + 'static,
