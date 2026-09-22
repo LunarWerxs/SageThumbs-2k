@@ -47,18 +47,9 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
         Error::new(E_FAIL, format!("write {}: {e}", tmp.display()))
     })?;
     // A re-run against a folder that already has an icon renames onto a target that
-    // `add_attrs` (below) left Hidden last time — clear it first, like desktop.ini
-    // below, and put the ORIGINAL attributes back if the rename doesn't take.
-    let ico_prior_attrs = clear_attrs(&ico_path, FILE_ATTRIBUTE_HIDDEN);
-    // Retry past a transient Explorer/shell lock on the target (Windows os error 5/32)
-    // instead of failing outright — see `fsutil::rename_retrying`.
-    crate::fsutil::rename_retrying(&tmp, &ico_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        if let Some(prior) = ico_prior_attrs {
-            restore_attrs(&ico_path, prior);
-        }
-        Error::new(E_FAIL, format!("rename .ico into place: {e}"))
-    })?;
+    // `add_attrs` (below) left Hidden last time — `rename_clearing` clears it first and
+    // puts the ORIGINAL attributes back if the rename doesn't take.
+    rename_clearing(&tmp, &ico_path, FILE_ATTRIBUTE_HIDDEN, ".ico")?;
 
     write_desktop_ini(&existing, ico_name, &ini_path)?;
 
@@ -87,7 +78,13 @@ fn write_desktop_ini(existing: &Option<Vec<u8>>, ico_name: &str, ini_path: &Path
     let (prior, utf16) = match existing.as_deref() {
         // UTF-16 LE with BOM — what Explorer writes for a localized folder name.
         Some(b) if b.starts_with(&[0xFF, 0xFE]) => (decode_utf16le(&b[2..]), true),
-        Some(b) => (String::from_utf8(b.to_vec()).ok(), false),
+        // Strip a UTF-8 BOM first: left in place it lands on the first line as U+FEFF, which
+        // `trim()` doesn't remove and `starts_with('[')` doesn't match, so an existing
+        // `[.ShellClassInfo]` header is missed and a duplicate section gets appended.
+        Some(b) => (
+            String::from_utf8(b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(b).to_vec()).ok(),
+            false,
+        ),
         None => (Some(String::new()), false),
     };
     // An encoding we can't read is an encoding we can't safely rewrite. Better to fail the verb
@@ -112,21 +109,37 @@ fn write_desktop_ini(existing: &Option<Vec<u8>>, ico_name: &str, ini_path: &Path
         Error::new(E_FAIL, format!("write desktop.ini: {e}"))
     })?;
     // desktop.ini is normally Hidden+System, and a rename onto a hidden file fails on Windows
-    // unless the destination's attributes allow it — clear them first, then re-apply below. If
-    // the rename doesn't take, put the ORIGINAL attributes straight back rather than leaving a
-    // bare, unhidden desktop.ini behind — `map_err` below is the only path out of this function
-    // once they're cleared, so it's the only place that can still restore them.
-    let ini_prior_attrs = clear_attrs(ini_path, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-    // Retry past a transient Explorer/shell lock on the target (Windows os error 5/32)
-    // instead of failing outright — see `fsutil::rename_retrying`.
-    crate::fsutil::rename_retrying(&ini_tmp, ini_path).map_err(|e| {
-        let _ = std::fs::remove_file(&ini_tmp);
-        if let Some(prior) = ini_prior_attrs {
-            restore_attrs(ini_path, prior);
+    // unless the destination's attributes allow it — `rename_clearing` clears them first and
+    // puts the ORIGINAL ones straight back rather than leaving a bare, unhidden desktop.ini
+    // behind if the rename doesn't take. Hidden+System are re-applied below, on success.
+    rename_clearing(
+        &ini_tmp,
+        ini_path,
+        FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM,
+        "desktop.ini",
+    )
+}
+
+/// Move `from` onto `to`, clearing `drop` from `to`'s attributes first — a rename onto a
+/// hidden/system file fails on Windows unless the destination's attributes allow it. Retries
+/// past a transient Explorer/shell lock on the target (Windows os error 5/32) instead of
+/// failing outright — see `fsutil::rename_retrying` — and if the rename still doesn't take,
+/// removes the staging file and puts `to`'s ORIGINAL attributes straight back rather than
+/// leaving a bare, unhidden target behind. `what` names the file in the error message.
+fn rename_clearing(
+    from: &Path,
+    to: &Path,
+    drop: FILE_FLAGS_AND_ATTRIBUTES,
+    what: &str,
+) -> Result<()> {
+    let prior_attrs = clear_attrs(to, drop);
+    crate::fsutil::rename_retrying(from, to).map_err(|e| {
+        let _ = std::fs::remove_file(from);
+        if let Some(prior) = prior_attrs {
+            restore_attrs(to, prior);
         }
-        Error::new(E_FAIL, format!("rename desktop.ini into place: {e}"))
-    })?;
-    Ok(())
+        Error::new(E_FAIL, format!("rename {what} into place: {e}"))
+    })
 }
 
 /// Fit `img` inside a transparent `size`×`size` RGBA canvas, centered — so a

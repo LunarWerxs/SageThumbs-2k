@@ -40,6 +40,11 @@ pub fn copy_data_uri_to_clipboard(path: &str) -> Result<()> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
+    // The read cap bounds the *file*; base64 (4/3) then UTF-16 (x2) grow the payload
+    // ~2.67x before the HGLOBAL is allocated, so bound the derived size too.
+    if bytes.len() as u64 > decode::limits::MAX_ALLOC / 3 {
+        return Err(Error::new(E_FAIL, "file too large to copy as data URI"));
+    }
     let uri = build_data_uri(ext, &bytes);
     let ok = unsafe {
         crate::clipboard::set_clipboard(
@@ -126,15 +131,18 @@ fn build_dib(w: i32, h: i32, rgba: &[u8]) -> Vec<u8> {
     push_cf_dib_header!(dib, w, h, header);
     debug_assert_eq!(dib.len(), header);
     // Pixels: bottom-up, RGBA -> BGRA. Walk source rows in reverse (last to
-    // first) and swap R/B per pixel.
+    // first), swapping R/B into a row buffer that is appended in one copy.
+    let mut row_buf = vec![0u8; row];
     for src in rgba.chunks_exact(row).rev() {
-        let (chunks, _) = src.as_chunks::<4>();
-        for px in chunks {
-            dib.push(px[2]); // B
-            dib.push(px[1]); // G
-            dib.push(px[0]); // R
-            dib.push(px[3]); // A
+        let (src_chunks, _) = src.as_chunks::<4>();
+        let (dst_chunks, _) = row_buf.as_chunks_mut::<4>();
+        for (dst, px) in dst_chunks.iter_mut().zip(src_chunks.iter()) {
+            dst[0] = px[2]; // B
+            dst[1] = px[1]; // G
+            dst[2] = px[0]; // R
+            dst[3] = px[3]; // A
         }
+        dib.extend_from_slice(&row_buf);
     }
     debug_assert_eq!(dib.len(), total);
     dib

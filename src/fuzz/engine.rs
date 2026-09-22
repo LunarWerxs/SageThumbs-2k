@@ -198,7 +198,7 @@ pub(super) fn hammer_n(
 /// Truncate the pristine seed and feed every prefix (no PRNG) — the single most productive
 /// class for short-read / off-by-one panics.
 ///
-/// Exhaustive over the first [`TRUNC_EXHAUSTIVE`] bytes, which is where the headers, length
+/// Exhaustive over the first `trunc_exhaustive` bytes, which is where the headers, length
 /// fields and index structures these parsers walk actually live, then strided over the rest.
 /// Exhaustive everywhere is not affordable and buys nothing: a 96 KB seed would be 96,000
 /// invocations for ONE (seed, target) pair, and the tail bytes are payload, not structure.

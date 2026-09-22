@@ -43,8 +43,8 @@ use surfaces::*;
 // from it here.
 mod corpus;
 
-/// The always-on, self-contained fuzz pass: synthetic seeds + random buffers, no external
-/// files. Runs in CI and on every `cargo test`.
+/// Builds the always-on seed set: synthetic container seeds, `container::fuzzseed`/new-surface
+/// seeds, header stubs, and a few random buffers.
 fn synthetic_seed_set() -> Vec<(&'static str, Vec<u8>)> {
     let mut seeds: Vec<(&'static str, Vec<u8>)> = vec![
         ("mkv", synthetic_mkv()),
@@ -62,12 +62,25 @@ fn synthetic_seed_set() -> Vec<(&'static str, Vec<u8>)> {
         seeds.push((Box::leak(format!("stub{i}").into_boxed_str()), stub));
     }
     // A few pure-random buffers of assorted sizes — covers the shallow reject paths.
-    let mut rng = Rng::new(0xDEAD_BEEF_CAFE_1234);
-    for (i, &sz) in [0usize, 1, 2, 3, 4, 8, 16, 64, 200, 999].iter().enumerate() {
-        let buf: Vec<u8> = (0..sz).map(|_| rng.byte()).collect();
-        seeds.push((Box::leak(format!("rand{i}_{sz}").into_boxed_str()), buf));
-    }
+    seeds.extend(rand_buffer_seeds());
     seeds
+}
+
+/// The ten pure-random buffers of assorted sizes, built from the fixed-seed PRNG so both the
+/// gate and the cost report see them. Shared so the two lists cannot drift.
+fn rand_buffer_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    let mut rng = Rng::new(0xDEAD_BEEF_CAFE_1234);
+    [0usize, 1, 2, 3, 4, 8, 16, 64, 200, 999]
+        .iter()
+        .enumerate()
+        .map(|(i, &sz)| {
+            let buf: Vec<u8> = (0..sz).map(|_| rng.byte()).collect();
+            (
+                Box::leak(format!("rand{i}_{sz}").into_boxed_str()) as &str,
+                buf,
+            )
+        })
+        .collect()
 }
 
 /// The always-on, self-contained fuzz pass: synthetic seeds + random buffers, no external
@@ -151,7 +164,8 @@ fn full_depth_sweep_over_the_synthetic_seeds() {
     );
 }
 
-/// Where the always-on gate's ~255 s actually goes, by seed family and by target.
+/// Where the always-on gate's time actually goes, by seed family and by target (release profile;
+/// see the note on `parsers_survive_mutation_of_synthetic_seeds` for the measured 36 s).
 ///
 /// ```text
 /// cargo test --release --lib fuzz::where_the_gate_spends_its_time -- --ignored --nocapture
@@ -192,6 +206,7 @@ fn where_the_gate_spends_its_time() {
                 .map(|(i, s)| (Box::leak(format!("stub{i}").into_boxed_str()) as &str, s))
                 .collect(),
         ),
+        ("rand-buffers", rand_buffer_seeds()),
     ];
 
     let targets = all_targets();

@@ -517,20 +517,13 @@ pub fn default_menu_tokens() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for it in MENU {
         match it {
-            // Drop a leading divider + collapse consecutive ones.
-            MenuItem::Separator
-                if !out.is_empty() && out.last().copied() != Some(MENU_SEP_TOKEN) =>
-            {
-                out.push(MENU_SEP_TOKEN);
-            }
+            MenuItem::Separator => out.push(MENU_SEP_TOKEN),
             MenuItem::Group(t, _) | MenuItem::Verb(t, _) if *t != "menu_settings" => out.push(t),
             _ => {} // menu_settings is the always-last tail, never in the saved order
         }
     }
-    while out.last().copied() == Some(MENU_SEP_TOKEN) {
-        out.pop(); // trailing divider (the one before Settings) — re-added by the builder
-    }
-    out
+    // Drop a leading divider + collapse consecutive ones.
+    normalize_sep(out, |t| *t == MENU_SEP_TOKEN)
 }
 
 pub fn ordered_top_level() -> Vec<(&'static MenuItem, u32)> {
@@ -607,26 +600,28 @@ fn append_missing_defaults(
 /// Drop a leading divider, collapse consecutive ones, drop a trailing one (the always-on
 /// divider before Settings stands in for any trailing divider).
 fn normalize_dividers(body: Vec<(&'static MenuItem, u32)>) -> Vec<(&'static MenuItem, u32)> {
-    let mut out: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(body.len() + 2);
-    for p in body {
-        if matches!(p.0, MenuItem::Separator)
-            && out
-                .last()
-                .is_none_or(|last| matches!(last.0, MenuItem::Separator))
-        {
+    normalize_sep(body, |p| matches!(p.0, MenuItem::Separator))
+}
+
+/// The shared divider rule behind [`default_menu_tokens`] and [`normalize_dividers`]: drop a
+/// leading separator, collapse consecutive ones, drop a trailing one.
+fn normalize_sep<T>(v: Vec<T>, is_sep: impl Fn(&T) -> bool) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(v.len());
+    for item in v {
+        if is_sep(&item) && out.last().is_none_or(&is_sep) {
             continue;
         }
-        out.push(p);
+        out.push(item);
     }
-    while matches!(out.last().map(|p| p.0), Some(MenuItem::Separator)) {
+    while out.last().is_some_and(&is_sep) {
         out.pop();
     }
     out
 }
 
 /// The CONDENSED top-level items shown on an UNSUPPORTED selection when the "show on all
-/// file types" Option is on: only the file-agnostic utilities (Files to folder · Sort
-/// into folders · Rename · Pick color), then a divider + the always-last Settings. Each
+/// file types" Option is on: only the file-agnostic utilities (Files to folder · Pick
+/// color), then a divider + the always-last Settings. Each
 /// carries its ORIGINAL leaf-start index so command ids match the default [`leaves`] and
 /// dispatch is unchanged (a click maps to the same action as on the full menu).
 pub fn condensed_top_level() -> Vec<(&'static MenuItem, u32)> {
@@ -709,13 +704,6 @@ fn top_level_subset(keys: &[&str]) -> Vec<(&'static MenuItem, u32)> {
     items
 }
 
-/// Is this TOP-LEVEL menu item meaningful for an AUDIO-only selection? True for the
-/// audio-relevant verbs ([`audio_top_level`]'s KEYS) plus the always-shown Settings;
-/// false for the image-only verbs. The modern Win11 flyout can't filter its top-level
-/// list (its `EnumSubCommands` has no selection context — see `command.rs`), so it gates
-/// each item's `GetState` on this instead, returning `ECS_HIDDEN` for an image-only
-/// top-level verb when the selection is audio-only. Keep in sync with
-/// [`audio_top_level`].
 /// Which TOP-LEVEL titles survive a VIDEO-ONLY selection in the modern flyout — the mirror of
 /// [`top_level_audio_ok`], and the same set [`video_top_level`] builds for the classic menu.
 /// Both surfaces have to agree: a verb offered on one and hidden on the other is the exact
@@ -728,6 +716,13 @@ pub fn top_level_video_ok(title: &str) -> bool {
     )
 }
 
+/// Is this TOP-LEVEL menu item meaningful for an AUDIO-only selection? True for the
+/// audio-relevant verbs ([`audio_top_level`]'s KEYS) plus the always-shown Settings;
+/// false for the image-only verbs. The modern Win11 flyout can't filter its top-level
+/// list (its `EnumSubCommands` has no selection context — see `command.rs`), so it gates
+/// each item's `GetState` on this instead, returning `ECS_HIDDEN` for an image-only
+/// top-level verb when the selection is audio-only. Keep in sync with
+/// [`audio_top_level`].
 pub fn top_level_audio_ok(title: &str) -> bool {
     matches!(
         title,

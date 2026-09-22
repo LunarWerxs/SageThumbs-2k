@@ -1,8 +1,10 @@
-//! EXE-only viewer/app preference accessors: the Convert dialog's per-format export
+//! Viewer/app preference accessors, mostly EXE-side: the Convert dialog's per-format export
 //! settings, the screenshot tool's default annotation tool, per-verb output preferences,
 //! the capture/custom-action hotkeys, the eyedropper's format + pick history, screenshot
 //! save-destination + diagnostics + update-check toggles, and the whole Quick preview
-//! viewer preference set. The DLL never reads any of these. The shared storage backend
+//! viewer preference set. The EXE owns the Settings-dialog accessors here, but a few
+//! behavioural switches (pdf_page, preserve_file_date, keep_metadata_on_convert) are
+//! also read by the shared core verb/Combine pipeline that runs inside the DLL. The shared storage backend
 //! (registry vs portable ini) lives in `super::store`; the thumbnail/menu settings the
 //! DLL needs live in `super::thumbs`.
 

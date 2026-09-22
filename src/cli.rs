@@ -38,9 +38,6 @@ pub use convert::{cbz, compress, convert, pdf, rotate, thumbnail, view_png, Comb
 pub use helpers::{parse_resize, parse_size};
 pub use report::{bench_decode, info, list_formats};
 
-/// `st2k devmode on|off|status`: toggle the developer-test-box flag (the HKCU `DevMachine`
-/// value). When ON, this machine's startup manifest request carries `&dev=1`. A plain
-/// machine-local flag, not an identifier; OFF on every real install.
 /// Turn Explorer thumbnails on/off for THIS USER, pointing at the DLL shipped beside this
 /// exe. This is what makes the portable zip more than a bag of tools: the handler is COM, so
 /// it has to be registered somewhere, and `HKCU\Software\Classes` is the somewhere that needs
@@ -100,6 +97,9 @@ pub fn register_portable(off: bool, status: bool) -> Result<String, String> {
     Ok(out)
 }
 
+/// `st2k devmode on|off|status`: toggle the developer-test-box flag (the HKCU `DevMachine`
+/// value). When ON, this machine's startup manifest request carries `&dev=1`. A plain
+/// machine-local flag, not an identifier; OFF on every real install.
 pub fn devmode(sub: &str) -> Result<String, String> {
     match sub {
         "on" | "enable" | "1" => {

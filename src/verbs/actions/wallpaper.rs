@@ -44,17 +44,9 @@ fn prepare_desktop_image_in(dir: &Path, path: &str, file_name: &str) -> Result<P
     // unique staging name (not a bare `<out>.st2ktmp`): `out` is always the SAME
     // fixed path, so two quick Set-as-wallpaper clicks would otherwise write
     // through separate handles to the identical temp file.
-    let tmp = unique_tmp(&out);
-    img.save_with_format(&tmp, ImageFormat::Png).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::new(E_FAIL, format!("encode wallpaper PNG: {e}"))
-    })?;
-    // Retry past a transient Explorer/thumbnail-cache lock on `out` (Windows os error
-    // 5/32) instead of failing outright — the same short backoff every other writer in
-    // this codebase uses (see `fsutil::rename_retrying`).
-    crate::fsutil::rename_retrying(&tmp, &out).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        Error::new(E_FAIL, format!("rename wallpaper into place: {e}"))
+    crate::verbs::write_atomic(&out, |tmp| {
+        img.save_with_format(tmp, ImageFormat::Png)
+            .map_err(|e| Error::new(E_FAIL, format!("encode wallpaper PNG: {e}")))
     })?;
     Ok(out)
 }

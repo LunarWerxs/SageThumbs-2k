@@ -82,7 +82,7 @@ fn remove() {
 }
 
 /// Bring the registry in line with the setting. Called after (re)registration and whenever
-/// the setting or the UI language changes, so the two can never disagree.
+/// the setting or the UI language changes.
 pub fn sync(on: bool) {
     if on {
         if let Err(e) = apply(crate::i18n::t("menu_pb_verb")) {

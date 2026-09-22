@@ -94,9 +94,9 @@ pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
 /// the 769..=1280 range normalised to a bucket Windows does not keep, and 2560 (newly
 /// reachable since `settings::THUMB_MAX` was raised) clamped down to 1920.
 ///
-/// This only ever affected our own dedup and the "what did I build" report: `one()` passes the
-/// raw size to `IThumbnailCache`, which does its own bucket selection regardless of what we
-/// think the buckets are. So this is an honesty fix, not a behaviour fix — worth having
+/// This only ever affected our own dedup and the "what did I build" report: `one()` is handed
+/// the normalised bucket, and `IThumbnailCache` re-buckets that regardless of what we think the
+/// buckets are. So this is an honesty fix, not a behaviour fix — worth having
 /// precisely because the report is what anyone debugging a missing thumbnail reads first.
 const BUCKETS: [u32; 9] = [16, 32, 48, 96, 256, 768, 1280, 1920, 2560];
 /// The last entry of [`BUCKETS`], spelled as a constant so the clamp below needs no runtime
@@ -373,7 +373,7 @@ fn visit_entry(
 /// strip it back: `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share` -> the plain
 /// `\\server\share` (stripping only `\\?\` there would leave `UNC\…`, which resolves nowhere).
 ///
-/// `pub(crate)`: `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
+/// `pub` (not `pub(crate)`): `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
 /// own `SHCreateItemFromParsingName` call, and used to carry a hand-copied duplicate of this
 /// logic (relocated from a fn into an inline block, near-verbatim) rather than importing it.
 #[doc(hidden)]

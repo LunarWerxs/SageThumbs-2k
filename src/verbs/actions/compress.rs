@@ -29,9 +29,9 @@ pub(super) fn compress_batch_report(
     let results = crate::parallel::map(imgs, |_, p| compress_one(exe, p, target));
     let attempted = imgs.len();
     let mut outs = Vec::with_capacity(results.len());
-    // The largest of the per-image "smallest reachable" numbers among the failures: asking
-    // for at least that many bytes would let every failing image in this batch succeed,
-    // which generalizes the CLI's single-file "ask for at least N bytes" advice.
+    // The largest per-image failure number: the parsed "smallest reachable" size, or the
+    // requested target when the error text doesn't match (a decode/write failure), so asking
+    // for at least that many bytes is not guaranteed to let every failing image succeed.
     let mut worst_achievable: Option<u64> = None;
     for r in results {
         match r {

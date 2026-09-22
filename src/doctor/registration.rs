@@ -399,11 +399,14 @@ fn is_windows_own_handler(clsid: &str) -> bool {
         return false;
     };
     let lower = p.trim_start_matches('"').to_ascii_lowercase();
-    if lower.starts_with("%systemroot%") || lower.starts_with("%windir%") {
+    let at_boundary = |pfx: &str| {
+        lower.starts_with(pfx) && (lower.len() == pfx.len() || lower.as_bytes()[pfx.len()] == b'\\')
+    };
+    if at_boundary("%systemroot%") || at_boundary("%windir%") {
         return true;
     }
     std::env::var("SystemRoot")
-        .map(|root| lower.starts_with(&root.to_ascii_lowercase()))
+        .map(|root| at_boundary(&root.to_ascii_lowercase()))
         .unwrap_or(false)
 }
 

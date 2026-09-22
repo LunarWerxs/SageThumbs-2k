@@ -175,9 +175,6 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
                 false,
             ),
         ),
-        // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
-        // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
-        // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
         // Structurally valid DDS surfaces, so a mutation reaches the block reader instead of
         // dying at the header. One per block family that parses differently: DXT1's
         // punch-through alpha, DXT5's interpolated alpha, BC7's mode/partition parsing, and a
@@ -202,6 +199,9 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
             "dds-mips",
             crate::decode::dds_fuzzapi::seed(b"DXT1", 0, 128, 128, 5),
         ),
+        // The audio-shaped seeds `audio_art_from_reader` had NONE of before: WAV/AIFF
+        // PCM (drives `container::waveform`'s chunk walk) and ASF/WMA (drives
+        // `container::audio::asf`'s GUID-object walk + `WM/Picture` parse).
         ("wav-pcm", synthetic_wav()),
         ("aiff-pcm", synthetic_aiff()),
         ("asf-wm-picture", synthetic_asf()),

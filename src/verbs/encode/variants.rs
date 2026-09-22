@@ -1,4 +1,4 @@
-//! Encoding one image to one native target, with the per-format variants (lossy WebP, PNG depth, PNM flavour).
+//! Encoding one image to one native target, with the per-format variants (lossy WebP, PNG compression level, PNM flavour).
 
 use super::*;
 

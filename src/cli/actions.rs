@@ -89,7 +89,7 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
     let p = path.display().to_string();
     if open {
         // Open in the default editor (same "ShellExecute open" the Settings button uses).
-        unsafe {
+        let ret = unsafe {
             use windows::core::{w, PCWSTR};
             use windows::Win32::UI::Shell::ShellExecuteW;
             use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -101,7 +101,15 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
                 PCWSTR::null(),
                 PCWSTR::null(),
                 SW_SHOWNORMAL,
-            );
+            )
+        };
+        // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is one of its
+        // SE_ERR_* codes. `.conf` has no default handler on a stock Windows 11, so "open"
+        // fails (SE_ERR_NOASSOC) and nothing launches — report that instead of success.
+        if ret.0 as usize <= 32 {
+            return Err(format!(
+                "couldn't open {p} in your default editor (no handler for .conf); open it manually"
+            ));
         }
         Ok(format!(
             "Opening upload-hosts config in your default editor:\n{p}"

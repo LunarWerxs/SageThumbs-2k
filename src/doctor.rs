@@ -18,9 +18,11 @@
 //!     -> is the format enabled in OUR settings?
 //! ```
 //!
-//! Every check is a registry/file READ or a `LoadLibrary`+`FreeLibrary`. Nothing is
-//! written, nothing is elevated, so it is always safe to ask a user to run it and paste
-//! the output. That is the point: the report is designed to be pasted into an issue.
+//! Most checks are a registry/file READ or a `LoadLibrary`+`FreeLibrary`, but not all:
+//! `check_engine` decodes a PNG in memory, `check_space_preview` enumerates windows,
+//! `check_format_capability` probes OS codecs, and the per-file probe can fill Explorer's
+//! thumbnail cache. Nothing is elevated, so it is always safe to ask a user to run it and
+//! paste the output. That is the point: the report is designed to be pasted into an issue.
 
 use crate::formats::FORMATS;
 use std::fmt::Write as _;
@@ -239,9 +241,9 @@ mod tests {
         assert!(out.contains("Verdict"), "missing verdict");
     }
 
-    /// A user is told to paste this. It must not leak their username via the paths we
-    /// print, beyond the log path they already know about... which does contain it —
-    /// so this test just pins that we print no OTHER profile-derived path.
+    /// A user is told to paste this. It must never carry NUL or other control characters,
+    /// which would corrupt the pasted report, so this test just pins that the text is
+    /// print-safe.
     #[test]
     fn report_is_plain_text() {
         let out = report(None);

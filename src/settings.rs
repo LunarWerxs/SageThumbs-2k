@@ -6,8 +6,8 @@
 //! (see the legacy `OptionsDlg.cpp` / `SageThumbs.h`), so the behavior is
 //! recognizably the same:
 //!   - EnableThumbs  (1)   master on/off for the thumbnail provider
-//!   - MaxSize       (100) skip files larger than this many MB
-//!   - Width/Height  (1024) max generated thumbnail edge, clamped to [32, 1024]
+//!   - MaxSize       (4096) skip files larger than this many MB
+//!   - Width/Height  (1024) max generated thumbnail edge, clamped to [32, 2560]
 //!   - FormatBadge   (0)   stamp the format (PSD/JXL/...) in the thumbnail corner
 //!   - UseEmbedded   (0)   prefer the image's embedded (EXIF) thumbnail for
 //!     small requests — faster, lower quality
@@ -308,7 +308,7 @@ pub fn clear_tombstone() {
         store::remove_value(None, "Tombstone");
         return;
     }
-    if let Ok(k) = CURRENT_USER.open(hkcu_root()) {
+    if let Ok(k) = CURRENT_USER.create(hkcu_root()) {
         let _ = k.remove_value("Tombstone");
     }
 }

@@ -187,8 +187,9 @@ pub struct PatternCtx<'a> {
 /// empty string, not an error — the same "best effort" the fixed EXIF patterns use);
 /// `{{`/`}}` are literal braces. `ctx.find`/`ctx.replace` are applied to the fully
 /// expanded string last (a plain, non-regex [`str::replace`]), so a replace can act
-/// on text a placeholder just produced. Pure — no filesystem, no allocation beyond
-/// the returned `String`, safe to call on every keystroke.
+/// on text a placeholder just produced. Pure — no filesystem; allocations are limited
+/// to the token buffer, per-placeholder strings, and the returned `String` — safe to
+/// call on every keystroke.
 pub fn expand_pattern(
     pattern: &str,
     ctx: &PatternCtx<'_>,
@@ -305,6 +306,9 @@ fn expand_placeholder(
             let width: usize = body[2..]
                 .parse()
                 .map_err(|_| PatternError::InvalidWidth(body.to_string()))?;
+            if width > 32 {
+                return Err(PatternError::InvalidWidth(body.to_string()));
+            }
             Ok(format!("{:0width$}", ctx.n, width = width))
         }
         _ => Err(PatternError::UnknownPlaceholder(body.to_string())),

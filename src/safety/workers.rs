@@ -39,6 +39,21 @@ use super::*;
 /// this refuses to start another (returning `None`, and logging once per process) until some
 /// of them finish, so a tree of cloud placeholders or a dropped share cannot grow the host's
 /// thread count without bound.
+/// `std::thread::spawn` for the short helper threads that are not budgeted workers (pipe
+/// feeders and drainers around a child process): `None` when the OS refuses the thread,
+/// where `std::thread::spawn` panics, and `panic = "abort"` turns that into a dead host
+/// inside Explorer. The closure, and everything it captured, is dropped on `None`.
+pub fn try_spawn<T, F>(thread_name: &str, f: F) -> Option<std::thread::JoinHandle<T>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(f)
+        .ok()
+}
+
 pub fn spawn_budgeted<R, F>(thread_name: &str, timeout: Duration, op: F) -> Option<R>
 where
     R: Send + 'static,

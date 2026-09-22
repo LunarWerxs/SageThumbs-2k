@@ -294,10 +294,8 @@ impl ContextMenu_Impl {
         }
 
         // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
-        let (new_pos, sub_preview_inserted) =
+        let sub_preview_inserted =
             self.insert_sagethumbs_submenu(hmenu, pos, idcmdfirst, budget, mode, kinds, &vis);
-        pos = new_pos;
-        let _ = pos; // last write; nothing reads it after this point
         preview_inserted | sub_preview_inserted
     }
 
@@ -305,7 +303,7 @@ impl ContextMenu_Impl {
     /// at its top in mode 1). This is the brand entry with every verb + Settings — kept
     /// cohesive with the preview above it, never "off on its own." We ship ONLY this
     /// classic handler (no packaged modern command), so "SageThumbs 2K" is listed exactly
-    /// once. Returns the new `pos` and whether the preview was actually inserted into it.
+    /// once. Returns whether the preview was actually inserted into it.
     #[allow(clippy::too_many_arguments)] // one call site; a struct would only rename these
     unsafe fn insert_sagethumbs_submenu(
         &self,
@@ -316,10 +314,10 @@ impl ContextMenu_Impl {
         mode: u32,
         kinds: Kinds,
         vis: &settings::MenuVisibility,
-    ) -> (u32, bool) {
+    ) -> bool {
         let mut preview_inserted = false;
         let Ok(hsub) = CreatePopupMenu() else {
-            return (pos, preview_inserted);
+            return preview_inserted;
         };
         if let Some(cmd) = self.preview_cmd.get() {
             if mode == 1 && self.insert_preview(hsub, 0, cmd) {
@@ -371,7 +369,7 @@ impl ContextMenu_Impl {
             // inserted rather than shifting the next handler's command-id range for
             // an item that isn't on the menu (see `consumed_ids`'s doc comment).
             let _ = DestroyMenu(hsub);
-            return (pos, false);
+            return false;
         }
         // Brand icon in front of "SageThumbs 2K" (hbmpItem, alpha-blended).
         let logo = menu_logo();
@@ -389,7 +387,7 @@ impl ContextMenu_Impl {
         // the preview + quick verbs + this entry read as one cohesive "SageThumbs" group,
         // fenced off from the rest of the menu (owner request).
         let _ = InsertMenuW(hmenu, pos, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
-        (pos, preview_inserted)
+        preview_inserted
     }
 }
 

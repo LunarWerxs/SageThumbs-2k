@@ -177,12 +177,6 @@ fn expand_single_input(
     }
 }
 
-/// BULK process many inputs (files and/or folders) in ONE process, fanned out
-/// across all cores via the shared batch pool — the fast path for the regression
-/// harness and AI agents (no more one `st2k` spawn per file). `op` is `thumbnail`
-/// (→ PNG at `size`px) or `convert` (→ `to_ext`, honoring `quality`/`resize`).
-/// Outputs go to `out_dir` (created if needed) or next to each source. Returns a
-/// `done/total` summary.
 #[allow(clippy::too_many_arguments)]
 /// Pre-build Explorer's thumbnails for whole folders, so browsing them later is instant.
 ///

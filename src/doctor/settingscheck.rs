@@ -109,9 +109,6 @@ pub(super) fn check_licence(r: &mut Report) {
     }
 }
 
-/// Prove the decoder itself works, end to end, without touching the disk or the shell.
-/// Separating this from the COM checks is the whole diagnostic value: "engine fine,
-/// shell never asked" and "engine broken" look identical to a user and need opposite fixes.
 /// Render the MaxSize setting for the report.
 ///
 /// `MaxSize = 0` means "no user limit", which [`crate::settings::max_file_size_bytes`]
@@ -130,6 +127,9 @@ fn max_file_size_detail(bytes: u64) -> String {
     }
 }
 
+/// Prove the decoder itself works, end to end, without touching the disk or the shell.
+/// Separating this from the COM checks is the whole diagnostic value: "engine fine,
+/// shell never asked" and "engine broken" look identical to a user and need opposite fixes.
 pub(super) fn check_engine(r: &mut Report) {
     r.head("Decode engine");
     let png: &[u8] = &{

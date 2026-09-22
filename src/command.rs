@@ -78,17 +78,45 @@ unsafe fn park_selection(items: &Ref<'_, IShellItemArray>) -> Option<u32> {
         .ok()
 }
 
+/// RAII owner of a [`park_selection`] cookie. It revokes the table entry on drop unless
+/// [`ParkedCookie::revoke`] already did, so a cookie whose worker never starts (the
+/// `spawn` in `run_action_detached_with` failed, dropping the closure) is still revoked
+/// instead of leaking the array's reference for explorer.exe's lifetime.
+struct ParkedCookie(Option<u32>);
+
+impl ParkedCookie {
+    /// Revoke the entry now (whatever happens next) and disarm the drop.
+    fn revoke(&mut self) {
+        if let Some(cookie) = self.0.take() {
+            unsafe {
+                if let Some(git) = crate::video::global_interface_table() {
+                    let _ = git.RevokeInterfaceFromGlobal(cookie);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ParkedCookie {
+    fn drop(&mut self) {
+        self.revoke();
+    }
+}
+
 /// The worker half of [`park_selection`]: fetch the array back out of the table, revoke
 /// the entry (whatever happens next), and walk it here. An empty Vec if the fetch fails.
-unsafe fn paths_from_global(cookie: u32) -> Vec<String> {
+unsafe fn paths_from_global(mut cookie: ParkedCookie) -> Vec<String> {
+    let Some(entry) = cookie.0 else {
+        return Vec::new();
+    };
     let Some(git) = crate::video::global_interface_table() else {
         return Vec::new();
     };
     let mut raw: *mut c_void = std::ptr::null_mut();
     let fetched = git
-        .GetInterfaceFromGlobal(cookie, &IShellItemArray::IID, &mut raw)
+        .GetInterfaceFromGlobal(entry, &IShellItemArray::IID, &mut raw)
         .is_ok();
-    let _ = git.RevokeInterfaceFromGlobal(cookie);
+    cookie.revoke();
     if !fetched || raw.is_null() {
         safety::log("command: selection could not be fetched from the interface table");
         return Vec::new();
@@ -195,8 +223,8 @@ unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
 /// Enabled only when the selection contains a supported image — mirrors the
 /// classic `IContextMenu` gate (`contextmenu.rs`) so the modern Win11 menu
 /// behaves the same. `ECS_HIDDEN` removes the verb from the flyout entirely.
-/// The enabled/hidden verdict shared by both `IExplorerCommand::GetState` impls: the
-/// verb shows only when the menu is enabled AND the selection holds a supported image.
+/// The enabled/hidden verdict for the flyout verbs: the verb shows only when the
+/// menu is enabled AND the selection holds a supported image.
 /// `gate` is a snapshot (see [`settings::MenuGate`]), not a fresh registry read here —
 /// the caller re-fetches it each `GetState` call, so a settings change is still
 /// honored without a new command object, but without a separate open per flag.
@@ -613,6 +641,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
                 // so the error MessageBox (if any) is a top-level dialog.
                 match unsafe { park_selection(&items) } {
                     Some(cookie) => {
+                        let cookie = ParkedCookie(Some(cookie));
                         let hint = unsafe { items.ok().and_then(|a| a.GetCount()) }.unwrap_or(0);
                         verbs::run_action_detached_with(
                             *action,

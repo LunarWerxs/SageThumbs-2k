@@ -49,8 +49,8 @@ pub(super) fn is_bookkeeping_seed(c: &SeedCandidate) -> bool {
 
 /// Picks up to `budget` seeds from `candidates`, stratified by root AND by format
 /// (extension): every (root, extension) group present contributes one seed before any group
-/// contributes a second, round-robin in a fixed sort order, so neither a second corpus root
-/// nor a rare format loses out to whichever bucket happens to sort first.
+/// contributes a second, round-robin in a fixed sort order, as far as the budget allows: a
+/// single root with at least `budget` distinct extensions can still take every seat.
 ///
 /// This replaces a selector that filled the WHOLE 60-file budget from one sorted,
 /// unstratified `test-corpus` listing (2026-09-05 audit, F23): with `test-corpus`'s 382 files
@@ -293,7 +293,9 @@ pub(super) fn parsers_survive_mutation_of_corpus_samples() {
 
     // Header parsers on the real files (fewer iters, there are many seeds), with a per-seed,
     // per-target progress line and elapsed time so a run states its own coverage rather than
-    // running silently for minutes. Same targets/iters/depth/base-seed `run_all` used to drive.
+    // running silently for minutes. Same targets and deep truncation depth (TRUNC_DEEP) as
+    // `run_all`, but its own 400-iteration budget and a distinct per-(seed,target) base seed
+    // 0x00C0_FFEE_1234_5678.
     // This is deliberately its own loop (not a `run_all` change) so the always-on gate and
     // the full-depth sweep, which share `run_all`, are untouched.
     let targets = all_targets();

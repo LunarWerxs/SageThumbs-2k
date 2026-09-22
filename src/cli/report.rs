@@ -142,7 +142,6 @@ fn audio_info_text(t: &strip::AudioTags) -> String {
     s.trim_end().to_string()
 }
 
-/// List every supported input extension (with category + description).
 /// Time the DECODE of many files inside ONE process, and print `name<TAB>ms` per file.
 ///
 /// Exists because measuring decode speed by timing `st2k thumbnail` once per file measures
@@ -247,6 +246,7 @@ fn capability_markers(cap: formats::Capability) -> String {
     }
 }
 
+/// List every supported input extension (with category + description).
 pub fn list_formats(json: bool) -> String {
     if json {
         let items: Vec<_> = formats::FORMATS

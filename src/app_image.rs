@@ -12,7 +12,8 @@ use core::ffi::c_void;
 use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
 
 /// Reject attacker-influenced banner/cover art whose declared dimensions would
-/// blow up the premultiplied-DIB allocation (each pixel is 4 bytes). The upstream
+/// blow up the decode allocation, charged at the decoder's own bytes-per-pixel
+/// (a 16-bit source is 8 B/px, not 4). The upstream
 /// byte cap (4 MiB) bounds the *compressed* size, but a tiny payload can still
 /// declare an enormous canvas, so probe dimensions before decoding. Reuses the
 /// decode pipeline's single bomb-guard ceilings (`decode::limits`) so all paths
@@ -23,24 +24,30 @@ const REMOTE_ART_MAX_ALLOC: u64 = crate::decode::limits::MAX_ALLOC;
 /// Cheaply read an image's declared dimensions without decoding pixels, and
 /// reject anything past the bomb-guard limits. `Some(())` means "safe to decode".
 fn remote_art_dims_ok(bytes: &[u8]) -> Option<()> {
+    use image::ImageDecoder;
     use std::io::Cursor;
-    let (w, h) = image::ImageReader::new(Cursor::new(bytes))
+    // Build the decoder from the header (no pixels) so the allocation is charged at the
+    // bytes-per-pixel the decoder will ACTUALLY materialize: `load_from_memory` does not
+    // set `image::Limits`, so a 16-bit source yields an 8 B/px buffer, not 4.
+    let decoder = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?
-        .into_dimensions()
+        .into_decoder()
         .ok()?;
+    let (w, h) = decoder.dimensions();
+    let bpp = u64::from(decoder.color_type().bytes_per_pixel());
     if w > REMOTE_ART_MAX_DIM
         || h > REMOTE_ART_MAX_DIM
-        || (w as u64 * h as u64 * 4) > REMOTE_ART_MAX_ALLOC
+        || (w as u64 * h as u64 * bpp) > REMOTE_ART_MAX_ALLOC
     {
         return None;
     }
     Some(())
 }
 
-/// RAII wrapper around a raw GDI `HBITMAP` handle so a fallible decode loop never
-/// leaks the handles it created before a mid-loop failure. Call [`into_raw`] to
-/// surrender ownership at the point of building a successful return value.
+/// RAII wrapper around a raw GDI `HBITMAP` handle: dropping it frees the handle
+/// with `DeleteObject`. Call [`into_raw`] to surrender ownership at the point of
+/// building a successful return value.
 ///
 /// [`into_raw`]: OwnedHbitmap::into_raw
 pub struct OwnedHbitmap(isize);
@@ -135,10 +142,11 @@ mod tests {
 
     #[test]
     fn the_allocation_cap_bites_before_the_dimension_cap_does() {
-        // Both dimensions are legal; it is the 4-bytes-per-pixel product that is not. The
+        // Both dimensions are legal; it is the allocation product that is not. This header
+        // declares 24 bpp, so the decoder's native 3 bytes per pixel is what is charged. The
         // boundary is exact: `MAX_ALLOC` bytes is allowed, one pixel row more is not.
         let w = REMOTE_ART_MAX_DIM as i32;
-        let h = (REMOTE_ART_MAX_ALLOC / (REMOTE_ART_MAX_DIM as u64 * 4)) as i32;
+        let h = (REMOTE_ART_MAX_ALLOC / (REMOTE_ART_MAX_DIM as u64 * 3)) as i32;
         assert!(
             remote_art_dims_ok(&bmp_header(w, h)).is_some(),
             "exactly at the cap"

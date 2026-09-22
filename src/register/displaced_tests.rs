@@ -3,8 +3,9 @@
 use super::*;
 
 /// The doctor reports displaced handlers BY FORMAT, which means parsing the extension back
-/// out of the key path `hook_ext` recorded. Both halves live in this file precisely so they
-/// can be pinned together: if `thumb_keys` ever changes shape, this fails instead of the
+/// out of the key path `hook_ext` recorded. `thumb_keys` produces those paths in register.rs
+/// and `displaced_key_ext` recovers the extension in displaced.rs; this test pins the two
+/// together. If `thumb_keys` ever changes shape, this fails instead of the
 /// report silently going blank (a `find` that matches nothing returns `None`, which the
 /// doctor skips — a failure mode with no symptom at all).
 #[test]

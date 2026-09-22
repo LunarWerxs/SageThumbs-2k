@@ -18,15 +18,15 @@
 //!
 //! # Locale TOML gotcha: duplicate keys PANIC the build
 //!
-//! `generate_locales()` below parses every `locales/<code>.toml` with
+//! `generate_locales()` below parses every `assets/locales/<code>.toml` with
 //! `toml::from_str` into a flat `BTreeMap<String, String>`. The TOML parser
 //! **rejects duplicate keys outright** and this build script does not catch
 //! that error: a duplicate key in any locale file makes the build `panic!`
-//! with `locale locales/<code>.toml: invalid TOML: duplicate key ...`.
+//! with `locale assets/locales/<code>.toml: invalid TOML: duplicate key ...`.
 //!
 //! This failure is **latent, not immediate**. Cargo only re-runs this build
-//! script when something under `locales/` changes (see the
-//! `cargo:rerun-if-changed=locales` lines below), so a locale file that
+//! script when something under `assets/locales/` changes (see the
+//! `cargo:rerun-if-changed=assets/locales` lines below), so a locale file that
 //! already contains a duplicate key can sit unnoticed through any number of
 //! unrelated builds, then panic out of nowhere the next time someone edits
 //! *any* locale file and forces a rebuild.
@@ -74,6 +74,7 @@ fn main() {
     generate_locales();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/locales");
+    println!("cargo:rerun-if-changed=assets/app.ico");
 }
 
 /// App manifest: Common-Controls v6 (modern themed controls) + per-monitor DPI
@@ -161,9 +162,6 @@ fn embed_manifest_and_icon() -> bool {
     }
     for (bin, obj) in links {
         println!("cargo:rustc-link-arg-bin={bin}={obj}");
-    }
-    if has_icon {
-        println!("cargo:rerun-if-changed=assets/app.ico");
     }
     true
 }

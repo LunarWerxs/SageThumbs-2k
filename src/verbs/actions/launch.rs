@@ -2,13 +2,13 @@
 
 use super::*;
 
-/// Launch the companion EXE with no arguments → the Options/Settings window.
+/// Launch the companion EXE, forwarding `args` (empty → the Options/Settings window).
 /// Resolves the EXE from the DLL's own directory (host-process-safe).
-pub(super) fn launch_app(args: &[&str]) {
+pub(super) fn launch_app(args: &[&str]) -> bool {
     // Test seam: swallows the launch (recording the argv) so a unit test can never
     // start a real process. Always false in a real build — see `intercept_launch`.
     if intercept_launch(args) {
-        return;
+        return true;
     }
     // A failed launch used to vanish without a trace — the menu item just "did nothing"
     // (missing companion EXE on a broken install, or spawn failure). Log it so the
@@ -17,11 +17,13 @@ pub(super) fn launch_app(args: &[&str]) {
         crate::safety::log(
             "launch_app: companion EXE not found next to the DLL — menu action dropped",
         );
-        return;
+        return false;
     };
     if let Err(e) = std::process::Command::new(exe).args(args).spawn() {
         crate::safety::log(&format!("launch_app: spawn failed: {e}"));
+        return false;
     }
+    true
 }
 
 /// Whether this [`launch_app`] call was intercepted instead of performed. **Always
@@ -53,10 +55,10 @@ pub(super) enum ListLaunch {
     /// Nothing in `paths` matched the filter — no list to hand off (not a failure;
     /// the caller reports this the same as [`ListLaunch::Launched`]).
     Nothing,
-    /// The list file was written and the companion app launched.
+    /// The list file was written and handed off to the companion app.
     Launched,
-    /// The list file couldn't be written (a full or redirected `%TEMP%`) — the menu
-    /// item would otherwise silently do nothing, with no trace of why.
+    /// The list file couldn't be written (a full or redirected `%TEMP%`) or the launch
+    /// failed — the menu item would otherwise silently do nothing, with no trace of why.
     Failed,
 }
 
@@ -70,8 +72,9 @@ pub(super) enum ListLaunch {
 /// near-simultaneous launches of the *same* kind from that host used to compute the
 /// identical `st2k_<kind>_<pid>.lst` path, and the second write could clobber the
 /// first before the spawned app read it. The counter makes every call's filename
-/// unique for the life of the host process. No cleanup is needed here: the companion
-/// app's `read_listfile` deletes the file once it's read.
+/// unique for the life of the host process. No cleanup is needed on success: the
+/// companion app's `read_listfile` deletes the file once it's read — while the failure
+/// paths above delete it themselves, so a broken install leaves nothing behind.
 pub(super) fn launch_with_list(
     paths: &[String],
     filter: impl Fn(&str) -> bool,
@@ -102,9 +105,13 @@ pub(super) fn launch_with_list(
             "launch_with_list: temp path {} isn't valid Unicode",
             lf.display()
         ));
+        let _ = std::fs::remove_file(&lf);
         return ListLaunch::Failed;
     };
-    launch_app(&[flag, s]);
+    if !launch_app(&[flag, s]) {
+        let _ = std::fs::remove_file(&lf);
+        return ListLaunch::Failed;
+    }
     ListLaunch::Launched
 }
 

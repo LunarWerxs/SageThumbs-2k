@@ -35,8 +35,6 @@ pub(super) fn jpeg_under(img: &DynamicImage, target: u64) -> Result<Option<Vec<u
         if b.len() as u64 <= target {
             best = b;
             lo = mid + 1; // fits — try higher quality
-        } else if mid == 0 {
-            break;
         } else {
             hi = mid - 1;
         }
@@ -55,7 +53,7 @@ fn shrink_until_under(img: &mut DynamicImage, target: u64) -> Result<Option<Vec<
         }
         let (w, h) = (img.width(), img.height());
         if w.min(h) <= 32 {
-            break; // already tiny — stop shrinking
+            return Ok(None); // already tiny — the probe above just failed at this size
         }
         *img = img.resize(
             (w * 4 / 5).max(1),
@@ -63,7 +61,9 @@ fn shrink_until_under(img: &mut DynamicImage, target: u64) -> Result<Option<Vec<
             image::imageops::FilterType::Lanczos3,
         );
     }
-    Ok(None)
+    // The last resize above was never probed, so probe the final size before giving up:
+    // a target that only fits there must be met, not refused.
+    jpeg_under(img, target)
 }
 
 /// Compress `path` into a JPEG at or under `target_bytes`, by binary-searching JPEG

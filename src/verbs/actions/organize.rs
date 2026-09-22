@@ -25,18 +25,11 @@ pub(super) fn handle_files_to_folder(paths: &[String]) -> ActionReport {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("New Folder");
-            // `files_to_folder` now reports (dir, moved, skipped) instead of a bare `Ok`/`Err`
-            // (the multi-file dialog case's fix — see the companion app's `files_to_folder.rs`
-            // — applies here too): a single-file move that silently skipped would otherwise
-            // still read as a clean `applied(1, 1)`.
+            // `files_to_folder` reports (dir, moved, skipped) instead of a bare `Ok`/`Err`.
+            // This arm handles a single path, and the callee returns `Err` when nothing
+            // moved, so a successful call here always means that one move landed.
             match files_to_folder(paths, stem) {
-                Ok((_, moved, skipped)) => {
-                    let mut r = ActionReport::applied(moved + skipped, moved);
-                    if skipped > 0 {
-                        r.note = Some("couldn't move the file into the new folder".into());
-                    }
-                    r
-                }
+                Ok((_, moved, _)) => ActionReport::applied(moved, moved),
                 Err(e) => {
                     crate::safety::log(&format!("Files to folder failed: {e:?}"));
                     ActionReport::applied(1, 0).with_note("couldn't create or fill the folder")

@@ -180,8 +180,6 @@ fn capped_edge(cx: u32, max_thumb: u32) -> u32 {
 }
 
 impl ThumbnailProvider_Impl {
-    /// One `ERROR` line for a thumbnail that could not be produced: the HRESULT plus the
-    /// stream's extension and size, so the log names what failed without `Debug=1`.
     /// `try_borrow`: a log line must never become a `RefCell` panic under `panic = "abort"`.
     /// The stream's extension and byte length as the log prints them (`?` when the shell gave
     /// us neither). `st2k doctor` keys its per-file "did Explorer ever ask us" verdict on this
@@ -200,6 +198,8 @@ impl ThumbnailProvider_Impl {
         log_identity_fields(ext, size)
     }
 
+    /// One `ERROR` line for a thumbnail that could not be produced: the HRESULT plus the
+    /// stream's extension and size, so the log names what failed without `Debug=1`.
     fn log_failure(&self, e: &Error) {
         let (ext, size) = self.stream_identity();
         safety::log_error(&format!(

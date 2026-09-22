@@ -21,9 +21,9 @@ pub(crate) fn file_attributes(p: &Path) -> u32 {
 /// — they used to be hand-copied as `0..5` / `from_millis(40)` in four loops.
 const RENAME_RETRIES: u32 = 5;
 /// `pub(crate)` because `strip.rs`'s `ReplaceFileW` loop retries on the same policy and must
-/// not grow a second copy of the number. It is NO LONGER part of any test's timing: the
-/// "survives a transient lock" tests used to sleep one interval of it before releasing their
-/// lock, and that guess is what made them flaky (see [`on_transient_failure`]).
+/// not grow a second copy of the number. The "survives a transient lock" tests no longer
+/// sleep one interval of it before releasing their lock (that guess is what made them flaky —
+/// see [`on_transient_failure`]); the non-transient test still uses it as an upper timing bound.
 pub(crate) const RENAME_BACKOFF: Duration = Duration::from_millis(40);
 
 /// `ERROR_ACCESS_DENIED` — also returned for a rename onto a target another process
@@ -37,7 +37,7 @@ const ERROR_SHARING_VIOLATION: i32 = 32;
 /// NOT one of the cases this skips**: verified on this machine, `MoveFileEx` onto a
 /// read-only file raises the exact same `ERROR_ACCESS_DENIED` (os error 5) as a
 /// transient Explorer/AV lock, so it is retried the full `RENAME_RETRIES` times
-/// (~200 ms) before this function's caller finally reports it - there is no cheap
+/// (~160 ms) before this function's caller finally reports it - there is no cheap
 /// way to tell the two apart from the error code alone. A cross-volume rename or a
 /// path-too-long error DO surface as different, genuinely permanent codes and return
 /// on the first attempt.
@@ -48,27 +48,34 @@ fn is_transient(e: &std::io::Error) -> bool {
     )
 }
 
+/// The retry policy [`rename_retrying`] and [`read_retrying`] share: run `op`, and if it fails
+/// transiently (see [`is_transient`]) record the error and run it again, up to
+/// [`RENAME_RETRIES`] attempts, pausing one [`RENAME_BACKOFF`] only while another attempt
+/// remains. A non-transient failure returns at once; an exhausted budget returns the LAST error.
+fn retry_transient<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut last = None;
+    for attempt in 1..=RENAME_RETRIES {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(e) if is_transient(&e) => {
+                note_transient_failure(attempt);
+                last = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+        if attempt < RENAME_RETRIES {
+            std::thread::sleep(RENAME_BACKOFF);
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("retry: no attempt was made")))
+}
+
 /// Rename `from` → `to`, retrying past a transient lock. Returns the final
 /// `std::io::Result`: `Ok` on success, else the LAST error once the retries are
 /// spent (or the first error, for a non-transient one — see [`is_transient`]).
 /// Callers keep their own temp cleanup and error mapping.
 pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
-    let mut last = Ok(());
-    for attempt in 1..=RENAME_RETRIES {
-        match std::fs::rename(from, to) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                let transient = is_transient(&e);
-                last = Err(e);
-                if !transient {
-                    return last;
-                }
-                note_transient_failure(attempt);
-            }
-        }
-        std::thread::sleep(RENAME_BACKOFF);
-    }
-    last
+    retry_transient(|| std::fs::rename(from, to))
 }
 
 /// `ERROR_NOT_SAME_DEVICE`: a rename cannot move a file to another volume.
@@ -106,22 +113,13 @@ pub(crate) fn move_file_replacing(from: &Path, to: &Path) -> io::Result<()> {
 /// `Ok(None)` when the file does not exist; any OTHER failure - still locked after the retries,
 /// access denied for real - is an error, never "an empty file". That distinction is what keeps
 /// a merge-and-replace writer (desktop.ini) from replacing content it could not read
-/// (2026-09-19 audit F19), while a scanner's momentary lock still costs nothing but ~200 ms.
+/// (2026-09-19 audit F19), while a scanner's momentary lock still costs nothing but ~160 ms.
 pub(crate) fn read_retrying(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    let mut last = None;
-    for attempt in 1..=RENAME_RETRIES {
-        match std::fs::read(path) {
-            Ok(bytes) => return Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) if is_transient(&e) => {
-                note_transient_failure(attempt);
-                last = Some(e);
-            }
-            Err(e) => return Err(e),
-        }
-        std::thread::sleep(RENAME_BACKOFF);
-    }
-    Err(last.unwrap_or_else(|| io::Error::other("read: no attempt was made")))
+    retry_transient(|| match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    })
 }
 
 /// A per-process counter folded into every staging filename [`write_atomically`] stages,

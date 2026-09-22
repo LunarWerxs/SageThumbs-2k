@@ -73,10 +73,10 @@ pub fn unregister_user() -> Result<()> {
     unregister_user_classes()
 }
 
-/// The class-key half of [`unregister_user`]: the per-user CLSIDs and `shellex` hooks, and
-/// nothing under the user's settings or shell pieces. Also what the machine-wide [`register`]
-/// runs to clear a portable registration that would shadow it, where taking the folder verb
-/// and overlay suppression away too would be wrong.
+/// The class-key half of [`unregister_user`]: the per-user CLSIDs and `shellex` hooks, plus the
+/// per-user `DisplacedThumbHandlers` record tree under `SOFTWARE\SageThumbs2K`, not the user's
+/// shell pieces. Also what the machine-wide [`register`] runs to clear a portable registration
+/// that would shadow it, where taking the folder verb and overlay suppression away would be wrong.
 pub(super) fn unregister_user_classes() -> Result<()> {
     let classes = user_classes()?;
     for (ext, _) in FORMATS {

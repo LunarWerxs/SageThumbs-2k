@@ -278,7 +278,7 @@ pub(super) fn this_pc_namespace_note(r: &mut Report, p: &Path) {
         .to_lowercase();
     for (name, target) in this_pc_namespace_entries() {
         let prefix = target.trim_end_matches('\\').to_lowercase();
-        if prefix.is_empty() || !file.starts_with(&prefix) {
+        if prefix.is_empty() || !file.starts_with(&format!("{prefix}\\")) {
             continue;
         }
         r.line(
@@ -310,8 +310,6 @@ fn this_pc_namespace_section(r: &mut Report) {
     }
 }
 
-/// Build the whole report. Read-only; safe to run unelevated, and safe to paste. When
-/// `file` is given, a per-file probe section is appended (`st2k doctor <path>`).
 /// What to call a window class in a warning, for the classes whose keystrokes the Space preview
 /// has to see. `None` for anything the feature never serves.
 ///

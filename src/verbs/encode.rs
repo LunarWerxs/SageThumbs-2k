@@ -30,8 +30,7 @@ pub struct Target {
     pub webp_quality: Option<u8>,
 }
 
-/// JPEG quality used by the shrink-for-email presets (a sensible "looks fine in
-/// an email, stays small" middle ground, independent of the saved Options value).
+/// Carry EXIF / XMP / IPTC from the source into a converted or resized output.
 mod carry;
 mod compress;
 mod samplers;
@@ -67,6 +66,8 @@ pub use watermark::{Corner, Watermark};
 
 // pub(crate): the routed CLI path (verbs::actions::helper::shrink_one) formats this
 // into `--quality` instead of hard-coding "82", so the two paths can't silently desync.
+/// JPEG quality used by the shrink-for-email presets (a sensible "looks fine in
+/// an email, stays small" middle ground, independent of the saved Options value).
 pub(crate) const EMAIL_JPEG_QUALITY: u8 = 82;
 
 /// Composite onto white and drop alpha. JPEG has no alpha channel, and a plain
@@ -182,21 +183,16 @@ fn convert_file_native(
     // Honor the target's WebP-quality (lossy for the quick WebP verb), and the
     // saved JPEG/PNG settings — same as `encode_to`, plus the lossy-WebP selector.
     let carried = carry::read(bytes, &src_ext(path));
-    write_atomic(slot.path(), |tmp| {
-        encode_to_opts(
-            &img,
-            target.format,
-            crate::settings::jpeg_quality(),
-            crate::settings::png_level(),
-            target.webp_quality,
-            target.ext,
-            tmp,
-        )?;
-        if let Some(m) = &carried {
-            carry::apply(m, tmp, target.ext)?;
-        }
-        Ok(())
-    })?;
+    encode_and_carry(
+        &img,
+        target.format,
+        crate::settings::jpeg_quality(),
+        crate::settings::png_level(),
+        target.webp_quality,
+        target.ext,
+        carried.as_ref(),
+        slot.path(),
+    )?;
     preserve_src_time(Path::new(path), slot.path());
     Ok(())
 }
@@ -392,6 +388,29 @@ fn reserved_name(
     }
 }
 
+/// Encode `img` per the given settings and graft the carried metadata onto the
+/// written file. Shared by the three convert paths so their encode+carry sequence
+/// can't drift apart.
+#[allow(clippy::too_many_arguments)] // the encoder's inputs, gathered from the caller
+fn encode_and_carry(
+    img: &DynamicImage,
+    format: ImageFormat,
+    quality: u8,
+    png_level: u32,
+    webp_quality: Option<u8>,
+    ext: &str,
+    carried: Option<&carry::Carried>,
+    out: &Path,
+) -> Result<()> {
+    write_atomic(out, |tmp| {
+        encode_to_opts(img, format, quality, png_level, webp_quality, ext, tmp)?;
+        if let Some(m) = carried {
+            carry::apply(m, tmp, ext)?;
+        }
+        Ok(())
+    })
+}
+
 /// Encode the converted `img` per `opts` and graft the carried metadata onto it.
 fn write_converted_named(
     img: &DynamicImage,
@@ -399,21 +418,16 @@ fn write_converted_named(
     carried: Option<&carry::Carried>,
     slot: &OutSlot,
 ) -> Result<()> {
-    write_atomic(slot.path(), |tmp| {
-        encode_to_opts(
-            img,
-            opts.target.format,
-            opts.jpeg_quality,
-            opts.png_level,
-            opts.webp_quality,
-            opts.target.ext,
-            tmp,
-        )?;
-        if let Some(m) = carried {
-            carry::apply(m, tmp, opts.target.ext)?;
-        }
-        Ok(())
-    })
+    encode_and_carry(
+        img,
+        opts.target.format,
+        opts.jpeg_quality,
+        opts.png_level,
+        opts.webp_quality,
+        opts.target.ext,
+        carried,
+        slot.path(),
+    )
 }
 
 /// Convert `input` to the EXACT `out` path (format inferred from its extension),
@@ -554,21 +568,16 @@ fn write_converted_to(
     carried: Option<&carry::Carried>,
     out: &Path,
 ) -> Result<()> {
-    write_atomic(out, |tmp| {
-        encode_to_opts(
-            img,
-            format,
-            quality,
-            crate::settings::png_level(),
-            webp_quality,
-            ext,
-            tmp,
-        )?;
-        if let Some(m) = carried {
-            carry::apply(m, tmp, ext)?;
-        }
-        Ok(())
-    })
+    encode_and_carry(
+        img,
+        format,
+        quality,
+        crate::settings::png_level(),
+        webp_quality,
+        ext,
+        carried,
+        out,
+    )
 }
 
 /// Decode `path`, cap its longest edge to the preset, and write a small

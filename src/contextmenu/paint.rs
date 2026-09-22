@@ -248,7 +248,7 @@ pub unsafe fn fill_checker(
 
 /// Paint the preview into `rc` of `hdc`: thumbnail centered on top, name + info
 /// lines under, with explicit `bg`/`fg` colors. Used both by the off-screen
-/// compositor ([`preview_hbitmap`]) and the diagnostic PNG renderer.
+/// compositor ([`preview_ddb`]) and the diagnostic PNG renderer.
 pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg: u32) {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, &rc, brush);
@@ -326,7 +326,7 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
 
 /// The preview item's pixel size: wide enough for the thumbnail and the (capped)
 /// caption, tall enough for the image plus the two caption rows. Reported to the menu
-/// from `WM_MEASUREITEM` and reused by the diagnostic PNG so the two can't drift.
+/// from `WM_MEASUREITEM`; the diagnostic PNG repeats the same formula.
 pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
     let text_w = caption_width_of(p);
     (p.w.max(text_w).max(72) + 12, p.h + 48)

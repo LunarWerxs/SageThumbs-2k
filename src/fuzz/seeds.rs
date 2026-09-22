@@ -155,7 +155,7 @@ pub(super) fn synthetic_mp4() -> Vec<u8> {
     let mdat_data_off = (out.len() + 8) as u32;
     // Patch the four stco offsets to point at consecutive 8-byte samples inside the mdat.
     let stco_pat = find_subslice(&out, b"stco").expect("stco present");
-    let first = stco_pat + 8 + 4 + 4; // box header + ver/flags + entry_count
+    let first = stco_pat + 4 + 4 + 4; // type(4) + ver/flags(4) + entry_count(4)
     for i in 0..4u32 {
         let off = (mdat_data_off + i * 8).to_be_bytes();
         out[first + i as usize * 4..first + i as usize * 4 + 4].copy_from_slice(&off);
@@ -164,20 +164,22 @@ pub(super) fn synthetic_mp4() -> Vec<u8> {
     out
 }
 
+/// An FLV tag: `type(1) data_size(3) timestamp+ext+stream_id(7) payload previous_tag_size(4)`.
+fn flv_tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut t = vec![tag_type];
+    t.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..4]); // u24 DataSize
+    t.extend_from_slice(&[0u8; 7]); // timestamp(3) + ext(1) + stream id(3)
+    t.extend_from_slice(payload);
+    t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
+    t
+}
+
 /// A structurally valid H.264 FLV, the way `flv::keyframe_mini_mp4` walks it: header,
 /// PreviousTagSize0, a script tag, an AVC sequence-header tag whose payload is an
 /// AVCDecoderConfigurationRecord with a real baseline SPS, an audio tag, and a keyframe
 /// NALU tag. Mutations reach the tag walk, the config parse, AND the Exp-Golomb SPS
 /// geometry reader instead of bouncing off the "FLV" magic.
 pub(super) fn synthetic_flv() -> Vec<u8> {
-    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
-        let mut t = vec![tag_type];
-        t.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..4]); // u24 DataSize
-        t.extend_from_slice(&[0u8; 7]); // timestamp(3) + ext(1) + stream id(3)
-        t.extend_from_slice(payload);
-        t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
-        t
-    }
     let avcc = h264_avcc();
     let mut seq_payload = vec![0x17, 0x00, 0, 0, 0]; // keyframe|AVC, seq header, cts
     seq_payload.extend_from_slice(&avcc);
@@ -187,10 +189,10 @@ pub(super) fn synthetic_flv() -> Vec<u8> {
     let mut f = b"FLV\x01\x05".to_vec();
     f.extend_from_slice(&9u32.to_be_bytes()); // DataOffset
     f.extend_from_slice(&0u32.to_be_bytes()); // PreviousTagSize0
-    f.extend_from_slice(&tag(18, b"\x02\x00\x0AonMetaData"));
-    f.extend_from_slice(&tag(9, &seq_payload));
-    f.extend_from_slice(&tag(8, &[0xAF, 0x00, 0x12]));
-    f.extend_from_slice(&tag(9, &kf_payload));
+    f.extend_from_slice(&flv_tag(18, b"\x02\x00\x0AonMetaData"));
+    f.extend_from_slice(&flv_tag(9, &seq_payload));
+    f.extend_from_slice(&flv_tag(8, &[0xAF, 0x00, 0x12]));
+    f.extend_from_slice(&flv_tag(9, &kf_payload));
     f
 }
 
@@ -217,14 +219,6 @@ pub(super) fn h264_avcc() -> Vec<u8> {
 /// [`synthetic_flv`] cannot stand in for this: it is H.264 (codec 7), which that scanner
 /// correctly refuses at the first video tag, so it only ever exercises the decline path.
 pub(super) fn synthetic_flash_flv(codec_id: u8) -> Vec<u8> {
-    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
-        let mut t = vec![tag_type];
-        t.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..4]); // u24 DataSize
-        t.extend_from_slice(&[0u8; 7]); // timestamp(3) + ext(1) + stream id(3)
-        t.extend_from_slice(payload);
-        t.extend_from_slice(&((11 + payload.len()) as u32).to_be_bytes());
-        t
-    }
     // An inter frame FIRST, so the walk has to keep looking rather than stopping on tag one.
     let inter = {
         let mut p = vec![(2u8 << 4) | codec_id]; // FrameType 2 = inter
@@ -246,10 +240,10 @@ pub(super) fn synthetic_flash_flv(codec_id: u8) -> Vec<u8> {
     let mut f = b"FLV\x01\x05".to_vec();
     f.extend_from_slice(&9u32.to_be_bytes()); // DataOffset
     f.extend_from_slice(&0u32.to_be_bytes()); // PreviousTagSize0
-    f.extend_from_slice(&tag(18, b"\x02\x00\x0AonMetaData"));
-    f.extend_from_slice(&tag(8, &[0xAF, 0x00, 0x12])); // an audio tag in the way
-    f.extend_from_slice(&tag(9, &inter));
-    f.extend_from_slice(&tag(9, &key));
+    f.extend_from_slice(&flv_tag(18, b"\x02\x00\x0AonMetaData"));
+    f.extend_from_slice(&flv_tag(8, &[0xAF, 0x00, 0x12])); // an audio tag in the way
+    f.extend_from_slice(&flv_tag(9, &inter));
+    f.extend_from_slice(&flv_tag(9, &key));
     f
 }
 
@@ -260,24 +254,6 @@ pub(super) fn synthetic_flash_flv(codec_id: u8) -> Vec<u8> {
 /// [`synthetic_mkv`] cannot stand in for it: that scaffold declares an HEVC track, and
 /// `vp9_keyframe` self-gates on `V_VP9`, so it returns before touching any of the above.
 pub(super) fn synthetic_webm_vp9() -> Vec<u8> {
-    const ID_EBML: u64 = 0x1A45_DFA3;
-    const ID_SEGMENT: u64 = 0x1853_8067;
-    const ID_INFO: u64 = 0x1549_A966;
-    const ID_TIMECODE_SCALE: u64 = 0x2AD7B1;
-    const ID_DURATION: u64 = 0x4489;
-    const ID_TRACKS: u64 = 0x1654_AE6B;
-    const ID_TRACK_ENTRY: u64 = 0xAE;
-    const ID_TRACK_NUMBER: u64 = 0xD7;
-    const ID_TRACK_TYPE: u64 = 0x83;
-    const ID_CODEC_ID: u64 = 0x86;
-    const ID_CUES: u64 = 0x1C53_BB6B;
-    const ID_CUE_POINT: u64 = 0xBB;
-    const ID_CUE_TIME: u64 = 0xB3;
-    const ID_CUE_TRACK_POSITIONS: u64 = 0xB7;
-    const ID_CUE_TRACK: u64 = 0xF7;
-    const ID_CUE_CLUSTER_POSITION: u64 = 0xF1;
-    const ID_CLUSTER: u64 = 0x1F43_B675;
-    const ID_CLUSTER_TIMECODE: u64 = 0xE7;
     const ID_SIMPLE_BLOCK: u64 = 0xA3;
 
     let info = ebml(

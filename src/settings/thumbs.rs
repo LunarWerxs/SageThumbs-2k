@@ -164,7 +164,7 @@ pub struct ThumbSettings {
     pub enabled: bool,
     /// `MaxSize` resolved to bytes (`u64::MAX` when the user limit is 0/unlimited).
     pub max_file_bytes: u64,
-    /// `Width`/`Height` reduced + clamped to the [32, 1024] edge.
+    /// `Width`/`Height` reduced + clamped to the [32, 2560] edge.
     pub max_thumb: u32,
     /// `UseEmbedded` — prefer the embedded thumbnail for small requests.
     pub use_embedded: bool,
@@ -375,7 +375,7 @@ pub(crate) fn clamp_png(l: u32) -> u32 {
     l.min(9)
 }
 
-/// "Convert to JPG" quality, 0–100.
+/// "Convert to JPG" quality, 1–100.
 pub fn jpeg_quality() -> u8 {
     clamp_quality(get_dword("JPEG", DEFAULT_JPEG))
 }

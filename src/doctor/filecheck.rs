@@ -184,7 +184,10 @@ fn cloud_sync_root_note(r: &mut Report, p: &Path) {
         };
         let hit = values.into_iter().any(|(_, v)| {
             let path = String::try_from(v).unwrap_or_default().to_lowercase();
-            !path.is_empty() && file.starts_with(path.trim_end_matches('\\'))
+            let base = path.trim_end_matches('\\');
+            !base.is_empty()
+                && file.starts_with(base)
+                && (file.len() == base.len() || file.as_bytes().get(base.len()) == Some(&b'\\'))
         });
         if !hit {
             continue;

@@ -25,13 +25,13 @@ pub mod badge;
 pub mod clipboard;
 mod command;
 mod container;
+/// Windows code-page decoding (`MultiByteToWideChar`) for archive entry names and the app's
+/// text preview alike: one copy of the call.
+pub use container::decode_codepage;
 /// Archive entry listing for the Quick preview viewer (no extraction).
 pub use container::list_archive;
 // The read-only CFB reader, for the app EXE's Outlook-.msg preview (`preview::mailmsg`).
 // Hidden like `ocr`: an implementation detail shared across the workspace, not API.
-/// Windows code-page decoding (`MultiByteToWideChar`) for archive entry names and the app's
-/// text preview alike: one copy of the call.
-pub use container::decode_codepage;
 #[doc(hidden)]
 pub use container::ole;
 /// True document dimensions for containers whose extracted cover is only a small baked-in
@@ -91,10 +91,10 @@ pub mod checker {
     pub use crate::contextmenu::paint::{checker_shades, fill_checker};
 }
 mod checkerpx;
+pub mod i18n;
 // Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
 // verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
 // because it isn't a stable public API — just a shared helper across our own crates.
-pub mod i18n;
 #[doc(hidden)]
 pub mod parallel;
 pub mod pdf;
@@ -118,8 +118,8 @@ mod strip;
 #[doc(hidden)]
 pub mod testcorpus;
 mod thumbprovider;
-// Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 mod topdf;
+// Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 #[doc(hidden)]
 pub mod typeoverlay;
 pub mod upload_config;

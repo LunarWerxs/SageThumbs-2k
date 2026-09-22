@@ -237,7 +237,10 @@ fn badge_geometry(
     // The divisor is the ONE thing the user's size choice moves (`BadgeSize::divisor`): 110
     // is that shipped Small, and Medium/Large only divide less. The clamp and the
     // would-dominate return below still apply at every step, so a bigger request can be
-    // refused on a small tile rather than drawn over the picture.
+    // refused on a small tile rather than drawn over the picture. On small tiles the steps
+    // floor to the same scale-1 glyph (the smallest that still draws a letter): Large first
+    // differs from Small at 110px, Medium at 160px. Rounding up instead would enlarge the
+    // badge at every size, including the 256px tiles it was tuned on.
     let scale = (edge / size.divisor()).clamp(1, 8);
     let (gw, gh) = (5 * scale, 7 * scale);
     let gap = scale;

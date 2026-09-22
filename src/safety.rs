@@ -38,8 +38,8 @@ pub use logfile::{debug_logging_on, install_panic_hook, log, log_debug, log_file
 #[cfg(test)]
 use workers::*;
 pub use workers::{
-    abandoned_budget_exhausted, abandoned_workers, spawn_budgeted, AbandonTicket, Lease, LeasePool,
-    MAX_ABANDONED_WORKERS,
+    abandoned_budget_exhausted, abandoned_workers, spawn_budgeted, try_spawn, AbandonTicket, Lease,
+    LeasePool, MAX_ABANDONED_WORKERS,
 };
 
 /// Longest edge the Explorer preview pane renders at, and the ceiling handed to the decoders
@@ -127,13 +127,9 @@ pub fn stage_stall_report(
 
 /// Wrap a COM method body that returns a raw `HRESULT`.
 pub fn guard_hr<F: FnOnce() -> HRESULT>(f: F) -> HRESULT {
-    install_panic_hook("dll");
-    match catch_unwind(AssertUnwindSafe(f)) {
+    match guard_val(|| Ok::<_, Error>(f())) {
         Ok(hr) => hr,
-        Err(_) => {
-            log_error("panic crossed a COM boundary -> E_FAIL");
-            E_FAIL
-        }
+        Err(e) => e.code(),
     }
 }
 
@@ -168,7 +164,8 @@ pub use crate::log_debugf;
 
 /// Milliseconds since the first logging call in this process — a cheap, monotonic
 /// tick that lets lines from one process be ordered without pulling in wall-clock
-/// formatting. Saturates to `u64` (decades), so the `<< 1` packing above is safe.
+/// formatting. Truncated to `u64` (decades), so the `<< 1` packing in
+/// `safety/logfile.rs` is safe.
 pub(crate) fn elapsed_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64

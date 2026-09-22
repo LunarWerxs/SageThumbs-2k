@@ -57,7 +57,6 @@ pub(super) fn save_atomic(
     .map_err(|e| e.message())
 }
 
-/// Render any supported image to `output` (format from its extension) at most
 /// The CLI's fit-to-size, kept deliberately SEPARATE from the shell extension's `fit_to_box`.
 ///
 /// Shrinking uses the one shared reduction, so `st2k thumbnail` and the MCP `view` tool now
@@ -109,7 +108,11 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
     if v <= 0.0 {
         return Err(format!("size must be positive: '{s}'"));
     }
-    Ok((v * mult as f64) as u64)
+    let scaled = v * mult as f64;
+    if !scaled.is_finite() || scaled > u64::MAX as f64 {
+        return Err(format!("size out of range: '{s}'"));
+    }
+    Ok(scaled as u64)
 }
 
 /// Parse the optional `resize` argument ("WxH" fit, no upscale; or "N%" scale)

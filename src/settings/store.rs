@@ -150,11 +150,11 @@ fn render(doc: &Doc) -> String {
     out
 }
 
-/// A value the bare `k=v` line would mis-read on the way back is written QUOTED: one with
-/// whitespace before a `;`/`#` (`D:\Screenshots #2026` came back as `D:\Screenshots`,
-/// 2026-09-19 audit F16), one that opens with a quote, `[`, `;` or `#`, or one with leading
-/// or trailing whitespace. `"` and `\` inside are backslash-escaped. Everything else stays
-/// bare, byte-identical to what this file always wrote.
+/// A value the bare `k=v` line would mis-read on the way back is written QUOTED: one whose
+/// trailing ` ; comment` would really be stripped (`512 ; KB` came back as `512`, the
+/// numeric-head rule at [`strip_inline_comment`]), one that opens with a quote, `[`, `;` or
+/// `#`, or one with leading or trailing whitespace. `"` and `\` inside are backslash-escaped.
+/// Everything else stays bare, byte-identical to what this file always wrote.
 fn quote_if_needed(v: &str) -> String {
     let needs = v.starts_with(['"', '[', ';', '#'])
         || v != v.trim()
@@ -353,9 +353,9 @@ pub fn get_u32(sub: Option<&str>, name: &str) -> Option<u32> {
 /// Whether `value` is safe to store as `name=value` in the ini. It must not contain a
 /// newline — `render` writes one `key=value` line per entry, so an embedded `\r`/`\n`
 /// would inject a literal extra line that `parse` then reads back as a bogus new key, or
-/// (if it starts with `[`) a spoofed `[section]` header, on the very next load. It must
-/// also not itself START WITH `[`, `;` or `#`, the same three lead characters `parse`
-/// treats as syntax rather than a value. Mirrors the `ini_safe()` guard
+/// (if it starts with `[`) a spoofed `[section]` header, on the very next load. A leading
+/// `[`, `;` or `#` needs no guard here: the renderer quotes those (`quote_if_needed`) and
+/// the parser unquotes them. Mirrors the `ini_safe()` guard
 /// `settings_io.rs`'s import already applies to its own writes — this generic setter did
 /// not share it (item 112).
 fn value_is_ini_safe(value: &str) -> bool {

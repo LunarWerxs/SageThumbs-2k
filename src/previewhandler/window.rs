@@ -82,9 +82,9 @@ pub(super) unsafe extern "system" fn wndproc(
             let mut rc = RECT::default();
             _ = GetClientRect(hwnd, &mut rc);
             // Guarded exactly like the WM_PAINT arm above. This is the SAME `draw` reached
-            // by a different system-driven callback (PrintWindow / thumbnail capture), so
-            // leaving it bare meant a panic that WM_PAINT would have contained instead
-            // unwound across the callback and aborted the host.
+            // by a different system-driven callback (PrintWindow / thumbnail capture), so it
+            // gets the same guard. That guard is a debug-only aid, though: panic = "abort"
+            // means catch_unwind never catches in release, so a panic here aborts the host.
             let _ = safety::guard_hr(|| {
                 draw(hwnd, hdc, &rc);
                 windows::Win32::Foundation::S_OK
