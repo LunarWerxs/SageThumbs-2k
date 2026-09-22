@@ -139,11 +139,9 @@ if ($haveWorker) {
 }
 
 # ---- Pascal: extract the shipped function, compile it, run it ----------------------------
-$iscc = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+# The same compiler lookup the release build uses, so this leg compiles with the compiler that
+# ships the installer. A child scope, so the library's StrictMode stays out of this script.
+$iscc = & { . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1'); Find-ReleaseInnoSetupCompiler }
 
 if (-not $iscc) {
     # Loud, never silent: this line is the record that one leg did not run.

@@ -1190,15 +1190,19 @@ function Get-ReleaseOpenTodoItems {
     return $open.ToArray()
 }
 
-# Where Inno Setup's compiler is on this machine, or $null. The ONE lookup, shared by the
-# release build (which compiles the installer for real) and the pre-push gate (which compiles
-# it in gate mode to prove the [Code] section still compiles). The standard locations first,
-# then the registry, because Inno can install per-user or to a non-standard folder.
+# Where Inno Setup 7's compiler is on this machine, or $null. The ONE lookup, shared by the
+# release build (which compiles the installer for real), the pre-push gate (which compiles it
+# in gate mode to prove the [Code] section still compiles) and check-email-rule.ps1's Pascal
+# leg. The standard locations first, then the registry, because Inno can install per-user or to
+# a non-standard folder. Inno Setup 7 ONLY: it installs beside 6 rather than replacing it, so a
+# machine can have both, and every installer must come out of the one compiler the pipeline was
+# tested with. A machine with only Inno Setup 6 gets $null and the caller's install hint.
+$ReleaseInnoSetupInstallHint = 'Inno Setup 7 (https://jrsoftware.org/isdl.php; a per-user install is fine)'
 function Find-ReleaseInnoSetupCompiler {
     $iscc = @(
-        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
     if ($iscc) { return $iscc }
     # Most Uninstall keys have NO DisplayName/InstallLocation at all, and this library turns
@@ -1212,7 +1216,7 @@ function Find-ReleaseInnoSetupCompiler {
             Where-Object {
                 $props = $_.PSObject.Properties
                 $props['DisplayName'] -and $props['InstallLocation'] -and
-                    $props['DisplayName'].Value -match 'Inno Setup' -and
+                    $props['DisplayName'].Value -match '^Inno Setup version 7\.' -and
                     $props['InstallLocation'].Value
             } |
             ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |

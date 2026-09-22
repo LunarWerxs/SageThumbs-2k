@@ -643,13 +643,13 @@ mod tiff_ingest {
     /// it, so ingest applies it exactly once. Out-of-range or unreadable
     /// values fall back to 1 (upright), matching libtiff and browsers.
     fn page_orientation(decoder: &mut FileDecoder<'_>) -> u16 {
-        match decoder.find_tag(Tag::Orientation) {
-            Ok(Some(v)) => match v.into_u16() {
-                Ok(o @ 1..=8) => o,
-                _ => 1,
-            },
+        let raw = match decoder.find_tag(Tag::Orientation) {
+            Ok(Some(v)) => v.into_u16().unwrap_or(1),
             _ => 1,
-        }
+        };
+        // The range check is the fallback, not decoration: TIFF defines 1..=8
+        // and files in the wild carry 0 and larger values.
+        if (1..=8).contains(&raw) { raw } else { 1 }
     }
 
     use super::{orient_pixmap, oriented_dims, source_pos};

@@ -62,7 +62,7 @@ fn catmull_rom_weights(t: f32) -> [f32; 4] {
 /// Mirrors the compositor's `sample_bilinear` semantics closely enough for an
 /// apples-to-apples comparison against `bicubic_resize` below.
 fn bilinear_resize(src: &Pixmap, dw: u32, dh: u32) -> Pixmap {
-    let mut out = Pixmap::new(dw, dh, 255, 255, 255, 255);
+    let mut out = Pixmap::try_new(dw, dh, 255, 255, 255, 255).expect("fits the pixmap limit");
     let sw = src.width.saturating_sub(1);
     let sh = src.height.saturating_sub(1);
     let xscale = src.width as f32 / dw as f32;
@@ -101,7 +101,7 @@ fn bilinear_resize(src: &Pixmap, dw: u32, dh: u32) -> Pixmap {
 /// (a = -0.5), clamped to edges. Standalone copy of the reverted in-compositor
 /// `sample_bicubic`.
 fn bicubic_resize(src: &Pixmap, dw: u32, dh: u32) -> Pixmap {
-    let mut out = Pixmap::new(dw, dh, 255, 255, 255, 255);
+    let mut out = Pixmap::try_new(dw, dh, 255, 255, 255, 255).expect("fits the pixmap limit");
     let sw = src.width.saturating_sub(1);
     let sh = src.height.saturating_sub(1);
     let xscale = src.width as f32 / dw as f32;
@@ -167,7 +167,7 @@ fn crop(pm: &Pixmap, x: u32, y: u32, w: u32, h: u32) -> Pixmap {
     let y = y.min(pm.height.saturating_sub(1));
     let w = w.min(pm.width - x).max(1);
     let h = h.min(pm.height - y).max(1);
-    let mut out = Pixmap::new(w, h, 255, 255, 255, 255);
+    let mut out = Pixmap::try_new(w, h, 255, 255, 255, 255).expect("fits the pixmap limit");
     for row in 0..h {
         let src_off = ((y + row) * pm.width + x) as usize * 4;
         let dst_off = (row * w) as usize * 4;
@@ -242,8 +242,10 @@ fn main() {
         let (mw, mh) = (mask.width, mask.height);
         // Build a `(tw, th)`-sized bitmap-like composite by nearest-mapping
         // each target pixel back into mask space.
-        let mut composite_bilinear = Pixmap::new(tw, th, 255, 255, 255, 255);
-        let mut composite_bicubic = Pixmap::new(tw, th, 255, 255, 255, 255);
+        let mut composite_bilinear =
+            Pixmap::try_new(tw, th, 255, 255, 255, 255).expect("fits the pixmap limit");
+        let mut composite_bicubic =
+            Pixmap::try_new(tw, th, 255, 255, 255, 255).expect("fits the pixmap limit");
         for y in 0..th {
             let my = ((y as u64 * mh as u64) / th as u64).min(mh as u64 - 1) as u32;
             for x in 0..tw {

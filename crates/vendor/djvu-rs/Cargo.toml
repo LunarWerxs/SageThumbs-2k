@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "djvu-rs"
-version = "0.32.1"
+version = "0.34.0"
 build = false
 exclude = [
     ".cargo/config.toml",
@@ -526,6 +526,10 @@ name = "editor"
 path = "tests/editor.rs"
 
 [[test]]
+name = "encode_banded_peak_memory"
+path = "tests/encode_banded_peak_memory.rs"
+
+[[test]]
 name = "encode_peak_memory"
 path = "tests/encode_peak_memory.rs"
 
@@ -602,6 +606,18 @@ name = "readme_sync"
 path = "tests/readme_sync.rs"
 
 [[test]]
+name = "render_cache_budget"
+path = "tests/render_cache_budget.rs"
+
+[[test]]
+name = "render_peak_memory"
+path = "tests/render_peak_memory.rs"
+
+[[test]]
+name = "render_streaming_peak_memory"
+path = "tests/render_streaming_peak_memory.rs"
+
+[[test]]
 name = "send_sync_contract"
 path = "tests/send_sync_contract.rs"
 
@@ -631,31 +647,31 @@ version = "0.3"
 optional = true
 
 [dependencies.djvu-bitmap]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-bzz]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-iff]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-iw44]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-jb2]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-pixmap]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.djvu-zp]
-version = "0.32.1"
+version = "0.34.0"
 default-features = false
 
 [dependencies.flate2]

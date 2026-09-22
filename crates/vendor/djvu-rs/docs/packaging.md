@@ -48,13 +48,14 @@ pip install ./djvu-py        # requires Rust + maturin
 
 Exposed today: open / `from_bytes`, page metadata, render (including region /
 progressive / coarse), text extraction, typed exceptions, zero-copy buffer
-views.
+views, and document export — `to_pdf` / `write_pdf`, `to_epub` / `write_epub`,
+`to_cbz` / `write_cbz`, `to_tiff` / `write_tiff`. Each `to_*` returns bytes;
+each `write_*` streams to a file and holds one page at a time.
 
 **Not exposed in the Python bindings** (use the Rust crate / CLI instead):
 
 - encode / `PageEncoder`
 - document mutation (`DjVuDocumentMut`)
-- PDF / EPUB / TIFF / CBZ export
 
 ### Typed exceptions
 
@@ -62,7 +63,8 @@ views.
 |-----------|------|
 | `djvu_rs.Error` | Base class for binding errors |
 | `djvu_rs.DecodeError` | Parse / decode / render failures |
-| `djvu_rs.IoError` | Filesystem failures from `Document.open` |
+| `djvu_rs.IoError` | Filesystem failures from `Document.open` and the `write_*` exporters |
+| `djvu_rs.ExportError` | PDF / EPUB / CBZ / TIFF conversion failures |
 | `djvu_rs.PageIndexError` | Out-of-range `Document.page` (also an `IndexError`) |
 
 ### Smoke tests

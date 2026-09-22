@@ -37,6 +37,15 @@ concurrency:
 jobs:
   resolve:
     name: Resolve version
+    # The release PR bumps Cargo.toml and djvu-py/**, so it matches the
+    # pull_request path filter above and starts this workflow. Packaging it is
+    # pointless — that version is not released yet — and the run reliably ends as a
+    # red X on the release PR: it sits pending, then the release branch is
+    # force-pushed or merged out from under it and the run fails with zero jobs
+    # (#800). Skip the whole workflow there; every other job needs this one.
+    # The version-lockstep guard is not lost: scripts/check_package_versions.sh
+    # also runs in the CI lint job, which does report on the release PR.
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

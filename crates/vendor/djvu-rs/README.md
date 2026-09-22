@@ -139,9 +139,10 @@ djvu split book.djvu --pages 10-25 --output chapter.djvu
 djvu optimize book.djvu --output optimized.djvu --preset lossless-cleanup --dry-run
 djvu optimize book.djvu --output optimized.djvu --preset lossless-cleanup
 djvu optimize book.djvu --output optimized.djvu --preset archival --target-size 26214400
-# (--max-ssim-loss is reserved for the planned archival re-encode; the current
-#  lossless cleanup is pixel-exact by construction and reports this)
-djvu optimize book.djvu --output optimized.djvu --max-ssim-loss 0.001
+# Archival re-encode: shrink each page background as far as an SSIM loss of
+# 0.02 against the input allows; --lossy-text lets the JB2 text mask join in.
+djvu optimize book.djvu --output optimized.djvu --preset archival --max-ssim-loss 0.02
+djvu optimize book.djvu --output optimized.djvu --preset archival --max-ssim-loss 0.02 --lossy-text
 
 # Encode an image (PNG, JPEG, or TIFF) into a single-page DjVu (bilevel JB2, lossless)
 # TIFF input requires building/installing with --features tiff (cli alone does not enable it).
@@ -233,10 +234,11 @@ text = page.text()
 
 PyO3 bindings live in [`djvu-py/`](djvu-py/). Wheels track the crate version
 (CPython 3.9–3.13 on manylinux/musllinux, macOS, and Windows). The bindings
-cover the reading surface: open documents, render pages (including region and
-progressive rendering, with zero-copy numpy/PIL paths), and extract the text
-layer. Encode, mutation, and PDF/EPUB/TIFF export stay on the Rust crate / CLI
-for now. See [`djvu-py/README.md`](djvu-py/README.md) and
+cover reading and export: open documents, render pages (including region and
+progressive rendering, with zero-copy numpy/PIL paths), extract the text
+layer, and convert a document to PDF, EPUB, CBZ or TIFF (`to_pdf` / `write_pdf`
+and friends). Encode and mutation stay on the Rust crate / CLI for now. See
+[`djvu-py/README.md`](djvu-py/README.md) and
 [`docs/packaging.md`](docs/packaging.md).
 
 ## WebAssembly
@@ -502,7 +504,7 @@ use djvu_rs::{Pixmap, iw44_encode::{encode_iw44_color, encode_iw44_gray, Iw44Enc
 
 fn main() {
     // Color: encode a Pixmap (RGBA) into BG44 chunk payloads.
-    let pixmap = Pixmap::new(640, 480, 255, 255, 255, 255);
+    let pixmap = Pixmap::try_new(640, 480, 255, 255, 255, 255).expect("640x480 fits");
     let chunks: Vec<Vec<u8>> = encode_iw44_color(&pixmap, &Iw44EncodeOptions::default());
     // Each Vec<u8> is a BG44 chunk payload; wrap each in a BG44 IFF tag.
 
@@ -733,9 +735,9 @@ Honest boundaries, so you can decide fast:
 
 - **Library + CLI, not a viewer.** There is no GUI; the WASM demo is the
   closest thing to one.
-- **Python bindings cover the reading surface only.** Open, render, and text
-  extraction ship in the PyPI wheels; encode, mutation, and PDF/EPUB/TIFF
-  export stay on the Rust crate / CLI for now.
+- **Python bindings cover reading and export.** Open, render, text
+  extraction, and PDF/EPUB/CBZ/TIFF conversion ship in the PyPI wheels;
+  encode and mutation stay on the Rust crate / CLI for now.
 - **Indirect DJVM mutation is indirect-only via two paths.**
   `DjVuDocumentMut::from_bytes` + `page_mut` on an indirect index errors;
   use `from_indirect_resolved` (rebundles) or `IndirectRewritePlan` (rewrites

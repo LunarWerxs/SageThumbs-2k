@@ -71,6 +71,29 @@ pub fn djvu_to_cbz(doc: &DjVuDocument, opts: &CbzOptions) -> Result<Vec<u8>, Cbz
     Ok(zip.finish()?.into_inner())
 }
 
+/// Convert a DjVu document to a CBZ archive written straight to `sink`.
+///
+/// The streaming counterpart of [`djvu_to_cbz`]: only the active page's PNG is
+/// held, instead of the whole archive. `sink` must implement [`Seek`] because
+/// ZIP writes its central directory after the entries.
+///
+/// # Errors
+///
+/// Returns [`CbzError`] if page rendering or ZIP writing fails. On error the
+/// sink may contain a partial archive; the library does not clean it up or
+/// provide atomic replacement (that policy belongs to the CLI/application
+/// layer).
+pub fn djvu_to_cbz_writer<W: Write + Seek>(
+    doc: &DjVuDocument,
+    opts: &CbzOptions,
+    sink: W,
+) -> Result<(), CbzError> {
+    let mut zip = ZipWriter::new(sink);
+    write_pages(&mut zip, doc, opts)?;
+    zip.finish()?;
+    Ok(())
+}
+
 /// Write every requested page into `zip` as `page_%04d.png` entries.
 ///
 /// Exposed crate-internally so the CLI can stream straight to a file instead

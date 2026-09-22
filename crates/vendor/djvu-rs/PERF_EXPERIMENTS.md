@@ -15419,3 +15419,507 @@ dense) plus the input wavelet planes (372 MB). Neither is waste in the sense
 change. The read path also remains unbounded by default —
 `enforce_cache_budget`, `retain_render_caches` and `evict_render_cache` are all
 opt-in and all need `&mut self`, while rendering takes `&self`.
+
+### The read path never gave memory back — a default ceiling on the render caches — **Kept** (2026-09-16)
+
+**Issue.** Rendering a page memoises what it decoded: the IW44 background, the
+JB2 mask, the converted RGB pixmaps, the composited tiles. That is why a second
+render of the same page is nearly free. Nothing bounded it. A reader that only
+renders grew about 5.3 MB per page of a colour book and never gave any of it
+back; the previous entry (ENCODE_SPARSE_RECON) closed with exactly this as the
+open item.
+
+The eviction API existed — `enforce_cache_budget`, `retain_render_caches`,
+`downgrade_render_caches`, `evict_render_cache` — and could not be reached from
+a render. Every one of them took `&mut self`, and every render entry point holds
+a shared `&DjVuPage`. The cause is the storage: `PageLayers` held twelve
+`OnceLock<Option<T>>` slots, and `OnceLock` fills through `&self` but empties
+only through `&mut self`. The cache could grow under a shared borrow and could
+not shrink under one.
+
+**Numbers.** `tests/fixtures/colorbook.djvu`, 62 pages, full-resolution render
+of every page, resident bytes read from the new `render_cache::resident_bytes`.
+
+| Run | Peak resident | Note |
+|---|---|---|
+| Whole book, no ceiling (0.32 behaviour) | 338 241 721 B | climbs monotonically, 5.3 MB/page |
+| Whole book, default 256 MiB ceiling | 268 021 244 B | under the 268 435 456 B ceiling |
+| First 8 pages, no ceiling | 42 849 264 B | still climbing |
+| First 8 pages, 16 MiB ceiling | 16 486 397 B | held from page 3 on |
+
+The 16 MiB run is the shape of the thing: pages 0-2 fill to 15 331 445 B, and
+from page 3 the total stays between 15 740 637 and 16 486 397 B for the rest of
+the run. The small overshoot is by design — the page being filled is never a
+candidate for eviction, so the total may exceed the ceiling by at most one
+page's cache.
+
+**Approach.** Three parts.
+
+*Storage.* `OnceLock<Option<T>>` becomes `CacheSlot<T>` =
+`RwLock<Option<Option<Arc<T>>>>`. The outer `Option` answers "computed?", the
+inner "did it produce a value?". The initialiser runs outside the lock, so a
+slow decode never blocks a reader of another slot; two threads racing on the
+same slot may both compute and the first store wins, which is what `OnceLock`
+already did.
+
+*Handles.* A cached layer is now handed out as `Arc<T>`, not `&T`. This is the
+whole safety argument, and it is the public break: eviction under a shared
+borrow is only sound if the reader owns what it was given. A returned reference
+would outlive the eviction. `Arc: Deref`, so nearly every consumer compiles
+unchanged. The internal layer helpers moved from `Cow<'a, T>` to `Arc<T>` for
+the same reason — once the cache hands out `Arc`, `Cow::Borrowed` is never
+constructed, and an unreachable variant does not survive `-D warnings`.
+
+*Accounting.* New `src/render_cache.rs`. Each page cache registers a `Weak`
+handle on first use. Each fill re-measures **only its own page** and folds the
+delta into one global `AtomicUsize` — the hot path never walks the registry.
+When that total crosses the ceiling the sweep runs: measure the live caches,
+sort by access tick, drop least-recently-rendered first until under. Locks are
+released before eviction, so a sweep cannot deadlock against a fill.
+
+Per-page cost of the accounting is one atomic swap and one atomic add per cache
+fill, so a program under the ceiling pays no sweep at all. Render benchmarks are
+unchanged within the noise band.
+
+**Guard.** New `tests/render_cache_budget.rs`, five tests, serialised on a mutex
+because the ceiling is process-global. It asserts the ceiling is on by default;
+that a ten-page read against a three-page ceiling peaks at no more than
+`ceiling + one page`; that `set_budget(usize::MAX)` really lifts it; that a
+layer held across `render_cache::clear()` survives and is then the caller's only
+handle (`Arc::strong_count == 1`, which is what proves the cache let go); and
+that `evict_render_cache()` works through a shared borrow.
+
+**Decision.** Kept, and shipped as a breaking release (0.33.0). Four public
+methods change their return type from `Option<&T>` to `Option<Arc<T>>`:
+`DjVuPage::decoded_bg44`, `decoded_bg44_partial`, `decoded_mask`,
+`decoded_fg44`. Six eviction methods relax `&mut self` to `&self`, which only
+admits more callers. Recorded in `docs/api-compatibility.md` §2.
+
+**Reason.** A library that grows without bound on its most ordinary path is
+wrong by default, and every alternative to the break was worse. Interior
+mutability alone cannot help: whatever hands out a borrow of a cached layer
+pins that layer for the life of the borrow. A deprecation path would mean
+shipping two parallel accessors and leaving the defect in place for two more
+minor releases. The ceiling is process-wide because memory is a process-wide
+resource and a page does not know which document it belongs to; per-document
+control stays available, and `set_budget(usize::MAX)` restores the old
+behaviour exactly for a caller that manages memory itself.
+
+**Open.** The sweep evicts a whole page cache, not individual layers, so a page
+that is 90 % background pixmap loses its cheap mask too. Layer-granular
+eviction would need a per-layer tick. The encode path still peaks at 766 MB on
+a large page (`blocks` 372 MB plus the input wavelet planes 372 MB); that needs
+a banded encode and is untouched here.
+---
+
+### Rendering one large page held three whole coefficient planes — banded IW44 reconstruction — **Kept** (2026-09-16)
+
+**IW44_BANDED_RECONSTRUCT**
+
+**Issue.** The open item left by IW44_SPARSE_BLOCKS and READ_CACHE_BOUNDED: one
+very large page still costs most of a gigabyte to draw once. A full-resolution
+render of `tests/fixtures/big-scanned-page.djvu` (6780x9148) peaks at
+890 761 440 B. dhat attributes it:
+
+| Site | Bytes | Share |
+|---|---|---|
+| `PlaneDecoder::reconstruct` x3, inside `to_rgb_subsample` | 372 523 008 | 41.7 % |
+| `Iw44Image::to_rgb_subsample` background RGBA pixmap | 248 093 760 | 27.8 % |
+| `render_pixmap_with_limits` output pixmap | 248 093 760 | 27.8 % |
+
+The two pixmaps are the picture itself — `w * h * 4` each, the render's real
+product. The three `i16` planes are not. `to_rgb_subsample` reconstructs Y, Cb
+and Cr whole, then walks them once, row by row, and never looks back. It holds
+372 MB to read each row a single time.
+
+**Approach.** Reconstruct a band of rows, convert it, drop it, take the next.
+
+Three pieces:
+
+- `PlaneDecoder::reconstruct_band(first_block, last_block)` scatters only the
+  block rows of the band through `ZIGZAG_INV` and runs the inverse wavelet over
+  them. The last band passes its real logical height, so the transform applies
+  true boundary handling exactly where the page really ends.
+- A **halo**. Each inverse pass reads +/-3s rows around a row for s = 16, 8, 4,
+  2, 1, so the vertical reach is about 186 rows. A band therefore transforms
+  extra rows above and below and keeps only its interior. Band starts stay
+  block-aligned (32 rows) so scale alignment for s <= 16 is preserved.
+- `convert_rgb_rows` takes a plane slice and a row range instead of a whole
+  plane, so the same code serves the banded and the whole-plane path.
+
+`band_keep_blocks` decides. Under `BAND_MIN_PLANE_BYTES` (128 MiB of planes)
+it returns `None` and the old whole-plane path runs unchanged. Above it, one
+band may cost `BAND_BUDGET_BYTES` (128 MiB) including both halos, and banding
+is refused unless a band keeps at most half the page — a `keep` just under
+`block_rows` would split the page into two bands that each carry nearly all of
+it, doubling the halo work for no saving.
+
+**Halo size.** Probed on `carte.djvu` against the whole-plane reconstruction,
+row by row: 1, 2 and 3 block rows **fail**; 4, 5, 6 and 7 **pass**. The measured
+minimum is 4 block rows (128 rows). `BAND_HALO_BLOCKS` is **8** (256 rows) —
+above the 186-row analytic reach and twice the measured minimum.
+
+**Numbers.** Full-resolution render of the 6780x9148 page. Peak from a counting
+global allocator; time is the median of nine samples, three interleaved rounds
+of pre-built binaries so machine drift cancels. `w * h * 2` — one
+full-resolution `i16` plane — is 124 046 880 B.
+
+| `BAND_BUDGET_BYTES` | Peak | x one plane | Time |
+|---|---|---|---|
+| whole planes (before) | 890 761 440 | 7.18 | 650 ms |
+| 64 MiB | 584 721 600 | 4.71 | 814 ms |
+| **128 MiB (chosen)** | **652 453 056** | **5.26** | **717 ms** |
+| 160 MiB | 685 016 256 | 5.52 | 697 ms |
+
+128 MiB is the knee. Against 64 MiB it gives back 68 MB of the saving and buys
+back 97 ms; against 160 MiB it saves a further 33 MB for 20 ms. The floor is
+about four planes (496 MB) — the two RGBA pixmaps — so the chosen point spends
+156 MB on bands where the old path spent 372 MB.
+
+Ordinary pages are untouched, and measured so:
+
+| Benchmark | before | banded | Change |
+|---|---|---|---|
+| `render_colorbook` | 7.5896 ms | 7.5889 ms | -0.01 % (p = 0.97) |
+| `render_corpus_color` | 32.087 ms | 32.085 ms | -0.01 % (p = 0.96) |
+
+**Exactness.** Two new in-crate tests. `reconstruct_band_matches_the_whole_plane`
+compares every row of every band against `reconstruct(1)` on `carte.djvu` for
+band sizes 1, 2 and 4 block rows. `banded_rgb_matches_whole_plane_rgb` compares
+`Pixmap::data` byte for byte against `to_rgb()` on carte, chicken and colorbook
+for band sizes 1, 3 and 8. The rendered checksum of the big page is
+50 694 640 841 on both paths.
+
+Half-resolution chroma is not exercised: `decode_chunk` pins `chroma_half` to
+`false` on purpose, because DjVuLibre decodes these files with full-resolution
+chroma. The banded branch mirrors the whole-plane arithmetic beside it.
+
+**Guard.** New `tests/render_peak_memory.rs`. One `#[test]` per file, as in
+`tests/decode_peak_memory.rs`: the allocator counters are process-global and
+`cargo test` runs a binary's tests on parallel threads. The ceiling is six
+`page_bytes`; measured 5.25. Sabotage-checked by setting `BAND_MIN_PLANE_BYTES`
+to `usize::MAX`, which reads 7.18 and fails with the intended message. Two
+controls fire first if the measurement is meaningless: the fixture must be
+larger than 64 MiB per plane, and the render must produce a non-empty pixmap
+identical to the warm-up render.
+
+**Decision.** Kept. A tenth of the time on the largest pages in the corpus, and
+nothing at all on the rest, for a quarter of their peak.
+
+**Open.** The remaining 652 MB is the two RGBA pixmaps (496 MB) plus the bands.
+Cutting the pixmaps needs a banded *render*, not a banded reconstruction —
+`render_streaming` already avoids the second one but still materialises the
+background whole. The encoder has the mirror-image problem: ENCODE_SPARSE_RECON
+left 766 MB on this page, of which 372 MB is the input wavelet planes, and the
+same banding idea applies there.
+
+### Rendering one large page held its background whole — banded composite — **Kept** (2026-09-20)
+
+**RENDER_BANDED_BG**
+
+**Issue.** #811, the open item of IW44_BANDED_RECONSTRUCT. The reconstruction
+was banded, but `decode_background_chunks` still asked the codec for the whole
+RGBA background (248 MB on the 6780x9148 page) and the compositor read it row
+by row into a second pixmap of the same size. `render_streaming` paid the
+background pixmap too, although it never keeps the output.
+
+**Approach.** The codec exposes its bands. `Iw44Image::rgb_band_rows()` says how
+many rows a caller should take at a time (`Some` only for a colour picture whose
+full-resolution planes exceed `BAND_MIN_PLANE_BYTES`), and
+`Iw44Image::rgb_rows(a..b)` reconstructs just the block rows covering `a..b`
+plus the halo and converts them. Both reuse `reconstruct_band` and the exact-slice
+`convert_rgb_rows`, so a band is byte-identical to the same rows of `to_rgb`.
+
+The render side keeps the background as a `Background` enum: `None`,
+`Whole(Arc<Pixmap>)` (the old path, unchanged for every page that fits) or
+`Banded { image, band_rows }`. `for_each_bg_band` walks the *output* in bands:
+`bg_rows_needed` mirrors the bilinear and area-average sampling arithmetic to
+find the plane rows one output range reads, `bg_band_out_rows` sizes an output
+band so those rows fit in `band_rows`, and each band is composited through a
+`CompositeContext` whose background is a `PlaneView` — a pixmap plus the height
+of the whole plane and the row it starts at, so every sampler's `y` stays in
+plane coordinates. Whole backgrounds go through the same loop as a single band.
+The tiled viewer path reconstructs one band per tile row, lazily, on the first
+cache miss. `bg_rgb_s1` returns `None` for such a page, so the 248 MB pixmap is
+never cached either.
+
+**Numbers.** Counting global allocator, full-resolution render of the
+6780x9148 page. One `i16` plane is 124 046 880 B.
+
+| Path | before | banded | x one plane |
+|---|---|---|---|
+| `render_pixmap` | 652 451 496 B | **405 118 040 B (-37.9 %)** | 5.26 -> **3.26** |
+| `render_streaming` | about 409 MB (3.3 planes, whole-pixmap path) | **157 024 280 B** | 3.3 -> **1.27** |
+
+The render floor is now the output pixmap (248 MB) plus one band and the
+coefficient blocks. Streaming holds one band of background and one band of
+output.
+
+Time. Median of five, two interleaved rounds of pre-built binaries.
+
+| Case | before | banded |
+|---|---|---|
+| big page, first render (cold codec) | 1.07-1.10 s | 1.11-1.38 s |
+| big page, repeated render (warm codec) | 325 ms | **900 ms** |
+| big page, `render_streaming` | 320 ms | **885 ms** |
+| watchmaker 2550x3301 (`render_pixmap`) | 74 ms | 74 ms |
+| `render_colorbook` (criterion) | 7.56 / 7.60 ms | 6.30 / 6.30 ms (-16.7 %) |
+| `render_corpus_color` (criterion) | 31.71 / 32.14 ms | 31.44 / 31.69 ms |
+| `render_streaming_discard/watchmaker_color` | 31.25 / 31.55 ms | 31.35 / 31.72 ms |
+| `render_streaming_discard/cable_bilevel` | 27.83 / 28.18 ms | 27.22 / 27.87 ms |
+
+The warm big-page cost is the trade. Before, the second render found the RGB
+background in the page cache; now the bands are reconstructed on every render,
+so a repeated full-page draw costs what a first draw did. Only pages above the
+128 MiB plane threshold pay it; the tiled viewer path memoises composited tiles,
+so pan and zoom after the first paint are unchanged. The `render_colorbook` gain
+comes from the compositor cleanup that the refactor forced (the 1x1 fast path
+in `sample_area_avg_bounds` and the dropped `AreaAvgX.bg_fx`), not from banding
+— colorbook's planes are far below the threshold.
+
+**Exactness.** 870 output hashes (pixmap at three sizes, streaming, region,
+tiled, coarse, progressive) over the fixtures and the corpus are identical
+between `main` and this branch. The big page's checksum stays 50 694 640 841.
+New tests: `rgb_rows_match_the_whole_picture` in the codec (every band of two
+sizes against `to_rgb`), `banded_background_composites_like_the_whole_one`
+(four pages, three scales, flat and sink outputs, forced band sizes 9..300) and
+`bg_band_planning_stays_inside_the_plane_and_the_budget` in the render module.
+
+**Guard.** `tests/render_peak_memory.rs` now caps a full render at four planes
+(measured 3.26; sabotage with `rgb_band_rows` returning `None` reads 5.25 and
+fails with the intended message). New `tests/render_streaming_peak_memory.rs`
+caps a full stream at two planes (measured 1.27).
+
+**Decision.** Kept. A large page renders in 38 % less memory and streams in
+a quarter of what it did, at the price of a slower *repeated* full-page draw on
+those pages only.
+
+**Open.** A repeated full-page render of a banded page could cache the
+composited output instead of the background. The progressive decoder and
+`render_coarse` still hold their pixmaps whole, but they are subsampled. The
+overflow panic in `render_coarse` on pages above 30 Mpx at 1.3x is
+pre-existing (`Pixmap::new` returns empty data on overflow) and untouched.
+### Encoding one large page held three whole input planes — banded forward transform — **Kept** (2026-09-20)
+
+**ENCODE_BANDED_PLANES**
+
+**Issue.** #812, the mirror image of IW44_BANDED_RECONSTRUCT and the last
+open item of ENCODE_SPARSE_RECON. A `Photo` encode of
+`tests/fixtures/big-scanned-page.djvu` (6780x9148) peaked at 766 749 958 B.
+Half of it — 372 MB — was the three `i16` input planes: `encode_iw44_color`
+converted the whole pixmap to Y, Cb and Cr, ran `forward_wavelet_transform`
+over each plane whole, and only then scattered the coefficients into the
+`blocks` grid. The planes are dead the moment `gather` has read them, but they
+sit beside the grid (another 372 MB) until then.
+
+**Approach.** Never build a plane. Transform a band of rows, gather it, reuse
+the buffer for the next band.
+
+- `PlaneEncoder::gather_rows(plane, stride, buf_first_block, first_block,
+  last_block)` scatters only the block rows of one band; `gather` is now the
+  one-band call over the whole plane.
+- `forward_gather_banded` owns three (or one) buffers of `keep + 2 * halo`
+  block rows. For each band it asks the caller to fill them straight from the
+  pixmap (`fill_color_band` / `fill_gray_band`: RGB to YCbCr, x64, padding
+  rows and columns zeroed per row), runs `forward_wavelet_transform` over the
+  buffer, and gathers the kept block rows. Under `parallel` the three planes
+  of one band run in a `rayon::scope`.
+- A **halo**, as on the decode side. Each lifting pass reads +/-3s rows for
+  s = 1..16, so a band transforms `BAND_HALO_BLOCKS` = 8 extra block rows on
+  each side and keeps only the interior. Band starts stay block-aligned so
+  scale alignment holds. A band that reaches the bottom of the plane passes
+  the image's own remaining height as `logical`, so the transform's boundary
+  handling lands where the image ends, not at the padded edge.
+
+`encode_band_keep_blocks(stride, block_rows, planes)` decides, with the
+decoder's thresholds: planes under `BAND_MIN_PLANE_BYTES` (128 MiB together)
+are transformed whole, exactly as before — this covers every other fixture in
+the corpus, and the grey plane of the big page (124 MB). Above it a band may
+cost `ENCODE_BAND_BUDGET_BYTES` (32 MiB, all planes, halos included), never
+fewer than `BAND_MIN_KEEP_BLOCKS` (32) kept block rows, and banding is refused
+unless a band keeps at most half the page. On the big page the minimum decides:
+9 bands of 32 kept block rows, each buffer 48 block rows, 62.5 MB for the
+three of them where the whole planes cost 372 MB.
+
+**Halo size.** Probed against the whole-plane transform on a 203x1131 noisy
+pixmap (every coefficient carries energy, so a halo one row short shows up as
+a differing coefficient), keep 8, halo from 0 up: 0, 1, 2, 3, 4 block rows
+**fail** (108, 106, 98, 46, 6 differing block rows of 36), 5 is the first to
+**pass**. The forward transform reaches further than the inverse (the decode
+probe passed at 4). `BAND_HALO_BLOCKS` = 8 stays above the 186-row analytic
+reach and leaves three block rows over the measured minimum.
+
+**Numbers.** `Photo` encode of the 6780x9148 page. Peak from a counting
+global allocator with the pixmap already built; time is the median of eight
+samples, two interleaved rounds of pre-built release binaries. One
+full-resolution `i16` plane, `w * h * 2`, is 124 046 880 B.
+
+| | Peak | x one plane | Time (IW44 only) |
+|---|---|---|---|
+| whole planes (before) | 766 749 958 | 6.18 | 2.005 s |
+| **banded (kept)** | **445 271 218** | **3.59** | **2.324 s** |
+
+-321 478 740 B (**-41.9 %**) for **+15.9 %** time on this one page. The time
+is the halo: 8 bands of 48 transformed block rows plus a last one of 38 for
+286 kept, 1.48x the transform and colour-conversion work. A first version that
+converted pixels through an index closure cost +24 %; writing the fills as
+straight row slices (`chunks_exact(4)`) brought it to +16 %. The remaining
+445 MB is the dense `blocks` grid (372 MB, one `[i16; 1024]` per block of
+every plane, walked by every slice) plus the 62.5 MB of band buffers and the
+sparse `recon`.
+
+Pages under the threshold run the old path and are unchanged to the byte and
+to the allocation: `watchmaker.djvu` (2550x3301) peaks at 109 850 063 B both
+ways; its time reads 410 -> 420 ms, +2.4 %, in the same paired runs, with
+`gather` now one extra call deep. The criterion benches, two interleaved
+rounds of pre-built binaries, put that inside noise:
+
+| Benchmark | before (r1 / r2) | banded (r1 / r2) | Change |
+|---|---|---|---|
+| `iw44_encode_color` | 2.3824 / 2.3732 ms | 2.3909 / 2.4057 ms | +0.4 % / +1.4 % |
+| `iw44_encode_large_1024x1024` | 28.886 / 28.599 ms | 28.884 / 28.946 ms | 0.0 % / +1.2 % |
+| `iw44_encode_gray_1024x1024` | 10.233 / 10.227 ms | 10.153 / 10.200 ms | -0.8 % / -0.3 % |
+
+**Exactness.** Fourteen encodes — seven fixtures x `Photo` and `Quality` —
+plus the big page and watchmaker as bare IW44 chunks hash identically (FNV-1a)
+before and after. Five new in-crate tests:
+`banded_forward_transform_matches_the_whole_plane` (keep 1, 3, 8, 17, 35 block
+rows against `encode_iw44_color` on a 203x1131 noisy pixmap),
+`banded_gray_forward_transform_matches_the_whole_plane` (197x1000, keep 1, 5,
+16, and one band equal to `encode_iw44_gray`), `a_missing_halo_is_detected`
+(halo 0 must differ, so the comparison has teeth),
+`one_band_is_the_whole_plane_path` (a small page is refused and encodes as
+before) and `encode_band_policy` (the thresholds above, pinned).
+
+**Guard.** New `tests/encode_banded_peak_memory.rs`, one `#[test]` per file as
+the other peak guards. The subject is a drawn 6780x9148 page — two gradients
+and a diagonal texture — rather than the rendered fixture: the peak depends on
+the page's size, not its content (both read 445 271 218 B), and rendering the
+fixture costs 40 s of the debug build's time that the render guards already
+spend. The ceiling is four `page_bytes`; measured 3.58. Sabotage-checked by
+forcing `encode_band_keep_blocks` to `None`, which reads 6.18 and fails with
+the intended message. A control fires first if the subject is ever shrunk
+under the banding threshold.
+
+**Decision.** Kept. A sixth more time on the largest page in the corpus, and
+nothing at all on the rest, for 42 % of its peak.
+
+**Open.** The floor is now the dense `blocks` grid, three times the page
+(372 MB): every progressive slice walks every block, so it must stay resident
+as long as the grid is dense. A sparse or run-length grid, or slices produced
+from bands, would be the next step; both change `encode_slice`.
+
+### The cache governor dropped whole pages — per-layer eviction — **Kept** (2026-09-21)
+
+**RENDER_CACHE_LAYER_EVICT**
+
+**Issue.** #813, the open item of READ_CACHE_BOUNDED. The process-wide sweep
+ranked pages by one tick each and dropped the least-recently-rendered page's
+cache whole: its `bg44`, its RGB pixmaps, its mask, its tiles. A page whose
+mask had just been used lost it together with the full-resolution pixmap
+nobody had looked at since. The sweep also protected the whole page being
+rendered, so the documented overshoot was one page's cache, 5.3 MB on
+`colorbook.djvu`.
+
+**Approach.** Make the layer the unit the governor sees.
+
+- `CacheSlot<T>` now carries its size function (fixed at construction, so
+  `PageLayers::new` names each measure once), the resident bytes of what it
+  holds (an atomic written when the slot fills or clears) and a last-used tick
+  from the global `ACCESS_TICK`, stamped on every hit, fill, store and
+  successful `peek`. `cached_bytes()` became thirteen atomic loads and one
+  mutex; it used to take twelve read locks.
+- A `CacheLayer` trait (`last_used`, `resident_bytes`, `drop_cached`) over
+  every slot and over the tile store, which is one layer with the tick of
+  its last hit or insert. `PageLayers::layers()` returns the thirteen.
+- `render_cache::sweep` collects `(tick, bytes, page, layer)` across every
+  live page, sorts by tick, drops layers until the total is under the
+  ceiling, and re-reports each page it touched. Only the layer being filled is
+  protected (`sweep_if_over(total, layer_id)`), so the overshoot is at most one
+  layer.
+- `DjVuDocument::enforce_cache_budget` keeps its page tick and its
+  page-granular sweep; no public API changed.
+
+**Numbers.** One `colorbook.djvu` page at full resolution caches 5 307 191 B:
+`bg_rgb_s1` 3 688 568, mask 1 038 327, `bg44` 348 960, `fg44` 231 336. A
+128 px-wide thumbnail (sub 4) of the same page costs about 0.73 MB.
+
+The acceptance figure, 16 MiB ceiling over the first eight pages at full
+resolution (`tests/render_cache_budget.rs`, `--nocapture`):
+
+| | peak | held minimum after crossing | bound |
+|---|---|---|---|
+| page-granular (READ_CACHE_BOUNDED) | 16 486 397 B | 15 740 637 B | one page, 5 307 191 B |
+| **per layer (kept)** | **16 711 357 B** | **15 331 445 B** | **one layer, 3 688 568 B** |
+
+Both stay under the 16 777 216 B ceiling after every page; the band was
+already narrower than its guarantee before. What changed is the guarantee,
+and what the band contains.
+
+That shows in a reader's pattern rather than a sequential pass. The probe:
+turn a page at full resolution, then refresh a strip of eight thumbnails
+(sub 4) of the same eight pages, sixteen turns, 16 MiB ceiling. Three runs
+each, release, pre-built binaries; the no-ceiling row is the all-warm
+reference.
+
+| | per thumbnail | per full render | resident band |
+|---|---|---|---|
+| page-granular (before) | 7.30 / 7.95 / 7.99 ms | 47.2 / 49.0 / 50.4 ms | 5 821 785 .. 16 731 828 B |
+| **per layer (kept)** | **3.57 / 3.92 / 4.21 ms** | 49.3 / 54.2 / 56.8 ms | 5 821 785 .. 16 499 691 B |
+| no ceiling | 3.94 / 4.70 ms | 43.4 / 49.4 ms | .. 46 930 238 B |
+
+Thumbnails **-51 %** (median 7.95 -> 3.92 ms), the same as with no ceiling:
+every thumbnail is a hit. Each full render adds 5.3 MB; the page-granular
+sweep answered by dropping the two or three stalest pages whole, thumbnail
+layers included, and the next strip re-decoded them (JB2 mask, partial
+BG44). The per-layer sweep drops the stale `bg_rgb_s1`, mask and `fg44` of
+the older full renders — 5 MB per old page — and the 0.7 MB thumbnail sets
+stay. Full-render times are within their own noise both ways (the runs
+alternate 47..57 ms with no ordering); the criterion benches decide:
+
+| Benchmark | before (r1 / r2) | per layer (r1 / r2) | Change |
+|---|---|---|---|
+| `render_colorbook` (warm) | 7.310 / 6.917 ms | 6.569 / 7.039 ms | -10.1 % / +1.8 % |
+| `render_colorbook_cold` | 21.49 / 15.94 ms | 15.93 / 15.97 ms | -25.9 % / +0.2 % |
+| `render_corpus_color` | 40.54 / 39.29 ms | 35.23 / 32.29 ms | -13.1 % / -17.8 % |
+
+Two interleaved rounds of pre-built binaries in separate target directories
+(main in a worktree). Round 1 of `main` ran first and cold, hence its wide
+intervals; round 2 puts the warm and cold single-page renders within 2 %.
+`render_corpus_color` reads lower both rounds; `cached_bytes()` no longer
+takes twelve read locks per fill, but the margin is wider than that explains
+and is not claimed. Nothing got slower.
+
+A working set larger than the ceiling still thrashes at any granularity: a
+probe that cycles eight pages at half resolution (2.5 MB a page, 20 MB for
+the set) under 16 MiB re-decodes on every pass before and after, the classic
+LRU scan. Granularity does not change that; it changes what a sweep keeps
+when the hot set does fit.
+
+**Exactness.** The cache decides only what is re-decoded, never what is
+drawn; `evict_render_cache_preserves_output` and the 31 cache unit tests pass
+unchanged, as does `tests/decode_cache_accounting.rs`.
+
+**Guard.** `tests/render_cache_budget.rs`:
+`a_long_read_stays_under_the_ceiling` now allows one layer of overshoot, not
+one page; new `a_tight_ceiling_holds_the_total_within_one_layer` (the 16 MiB
+band above, both sides), `a_sweep_drops_the_stale_background_and_keeps_the_warm_mask`
+(touch the mask last, set the ceiling to the mask's size plus one: the page
+keeps exactly its mask, same `Arc`; a page-granular sweep leaves nothing) and
+`a_held_layer_survives_the_sweep_that_evicts_it` (a held `Arc<Iw44Image>`
+is intact and the only handle after its slot is dropped, and decodes again as
+a fresh handle). Sabotage-checked by making the sweep call
+`evict_shared()` on the page that owns the stalest layer: the mask test fails
+with its intended message (`left: 0, right: 1038327`) while the 16 MiB band
+test still passes — the band guards the bound, the mask test guards the
+granularity.
+
+**Decision.** Kept. The overshoot bound shrinks from a page to a layer, a
+page's warm layers outlive its stale ones, and a reader with a thumbnail
+strip stops re-decoding under a tight ceiling. No public API changed; the
+hot path pays one relaxed atomic increment per layer touched.
+
+**Open.** The sweep still walks every layer of every live page when the
+total is over the ceiling — thirteen atomic loads a page instead of twelve
+read locks, so cheaper than before, but O(pages). A heap keyed by tick would
+make it O(evicted); nothing measured asks for it yet.

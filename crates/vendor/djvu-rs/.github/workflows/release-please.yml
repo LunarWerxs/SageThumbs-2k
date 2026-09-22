@@ -20,6 +20,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -31,8 +32,11 @@ jobs:
           # pushing the vX.Y.Z tag, which triggers publish.yml independently of this
           # workflow (see RELEASING.md), so the PAT is no longer on the release path.
           # Tradeoff: GitHub does not run workflows on events created by GITHUB_TOKEN,
-          # so the release PR shows BLOCKED on never-run checks — nudge it
-          # (close/reopen) or admin-merge to land the version bump, then push the tag.
+          # so the release PR would show BLOCKED on never-run required checks. The
+          # dispatch-ci job below fixes that: workflow_dispatch is exempt from the
+          # recursion guard, and a run dispatched on the release branch reports its
+          # check runs against the branch tip — which is the PR head commit — so the
+          # required checks satisfy the ruleset without an admin bypass.
           #
           # The same GITHUB_TOKEN restriction means the vX.Y.Z tag this action pushes
           # does NOT trigger publish-packages.yml's `push: tags:` filter (PyPI + npm)
@@ -45,6 +49,34 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # A release PR opened by GITHUB_TOKEN never fires `pull_request` workflows, so
+  # without this job none of the five required checks ever report and every release
+  # needs an admin bypass of the branch ruleset (#800). Dispatching ci.yml on the
+  # release branch produces those same check runs on the PR head commit.
+  dispatch-ci:
+    name: Dispatch CI for the release PR
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger ci.yml on the release branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ needs.release-please.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # Read the branch at run time rather than with fromJSON() in `env:` — a
+          # missing field there fails the job, here it degrades to a warning.
+          BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.headBranchName // empty')
+          if [ -z "$BRANCH" ]; then
+            echo "::warning::release-please reported no head branch; skipping the CI dispatch"
+            exit 0
+          fi
+          echo "Dispatching ci.yml on $BRANCH"
+          gh workflow run ci.yml \
+            --repo "${{ github.repository }}" \
+            --ref "$BRANCH"
 
   publish:
     needs: release-please

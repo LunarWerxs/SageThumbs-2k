@@ -25,7 +25,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.32.1',
+    [string]$Version = '0.34.0',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
     [switch]$Check,
     # Refuse to skip. Without this, a `-Check` run that cannot find the pristine source prints

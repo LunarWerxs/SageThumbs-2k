@@ -87,6 +87,10 @@ pub enum MutError {
     #[error("path ends on a FORM, not a leaf chunk")]
     NotALeaf,
 
+    /// A FORM was needed at the end of the path, but a leaf is there.
+    #[error("path ends on a leaf chunk, not a FORM")]
+    NotAForm,
+
     /// The path is empty — must contain at least one index.
     #[error("path must not be empty")]
     EmptyPath,
@@ -444,6 +448,43 @@ impl DjVuDocumentMut {
                 }
                 Chunk::Leaf { .. } => unreachable!("validated by chunk_at_path"),
             }
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Replace every direct leaf `id` of the FORM at `form_path` (the root
+    /// when the path is empty) with one leaf per entry of `payloads`, placed
+    /// where the first old leaf was. With no old leaf the new ones go last.
+    ///
+    /// The optimizer uses this to install a re-encoded layer: a page's
+    /// `BG44` chunks are replaced as a set, whatever their count before.
+    pub(crate) fn replace_leaves_by_id(
+        &mut self,
+        form_path: &[usize],
+        id: &[u8; 4],
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), MutError> {
+        if !form_path.is_empty() {
+            let _ = self.chunk_at_path(form_path)?;
+        }
+        let mut current = &mut self.file.root;
+        for &idx in form_path {
+            match current {
+                Chunk::Form { children, .. } => {
+                    current = &mut children[idx];
+                }
+                Chunk::Leaf { .. } => unreachable!("validated by chunk_at_path"),
+            }
+        }
+        let Chunk::Form { children, .. } = current else {
+            return Err(MutError::NotAForm);
+        };
+        let is_old = |chunk: &Chunk| matches!(chunk, Chunk::Leaf { id: leaf, .. } if leaf == id);
+        let first = children.iter().position(is_old).unwrap_or(children.len());
+        children.retain(|chunk| !is_old(chunk));
+        for (offset, data) in payloads.into_iter().enumerate() {
+            children.insert(first + offset, Chunk::Leaf { id: *id, data });
         }
         self.dirty = true;
         Ok(())

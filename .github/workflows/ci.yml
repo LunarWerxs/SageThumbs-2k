@@ -27,7 +27,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
       # which rustup installs on first cargo invocation. No setup action needed.
@@ -124,7 +124,7 @@ jobs:
       # subprocess tier had zero CI coverage: named_coders.rs and preview_capping.rs each
       # check `magick_available()` and self-skip with a loud eprintln! when it is absent
       # (so they silently never ran here), and magick_subprocess_decodes is #[ignore]d
-      # outright because it needs the binary. Same pinned 7.1.2-29 release the x64/ARM64
+      # outright because it needs the binary. Same pinned 7.1.2-31 release the x64/ARM64
       # packaging already trusts (scripts/packaging/imagemagick-source.json's provenance
       # block) - downloaded and SHA-256-verified before a silent install, never trusted on
       # a version string alone.
@@ -199,7 +199,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show
       # Same rationale and lookup as build-test: build.rs embeds VERSIONINFO via windres,
@@ -232,15 +232,21 @@ jobs:
           & $windres --version
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The runner image ships Inno Setup; install it only if that ever changes.
-      - name: Ensure Inno Setup
+      # The installer is compiled by Inno Setup 7 (scripts/release-manifest-lib.ps1 finds no
+      # other). The runner image ships Inno Setup 6 and Chocolatey lags, so install the pinned
+      # upstream release per-user, refusing a download whose SHA-256 is not the pinned one.
+      - name: Ensure Inno Setup 7
         shell: pwsh
         run: |
-          $iscc = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $iscc) { choco install innosetup --no-progress -y }
+          if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe") { return }
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.0-x64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe' -OutFile $exe
+          $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne '0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f') {
+            throw "innosetup-7.1.0-x64.exe SHA-256 mismatch: $sha"
+          }
+          $p = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Inno Setup 7 install exited $($p.ExitCode)" }
       # The real release pipeline, minus the two payloads irrelevant to updating:
       # ImageMagick (the updater behaves identically with or without it) and the signed package (needs
       # the Windows SDK signing chain; the classic-menu installer upgrades identically).
@@ -270,7 +276,7 @@ jobs:
       # Without this the cache action failed on every run and the job rebuilt from scratch.
       RUSTUP_TOOLCHAIN: stable-aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # rust-toolchain.toml pins the x64 host for the primary job. Select an
       # explicit ARM64 toolchain here so Cargo neither cross-compiles through
@@ -415,7 +421,7 @@ jobs:
     name: MSRV (Rust 1.95)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust 1.95 MSVC
         run: rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal
       - name: Check workspace at MSRV (no features)
@@ -439,7 +445,7 @@ jobs:
     name: consistency (assets · counts · version)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
@@ -564,7 +570,7 @@ jobs:
     name: vendored exr (DWA patch)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show
       - name: Cache cargo
@@ -582,7 +588,7 @@ jobs:
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
       # use on this Linux runner ("target triple in channel name"). cargo-deny only
       # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
@@ -590,7 +596,7 @@ jobs:
       - name: Drop windows-only toolchain pin (Linux runner)
         run: rm -f rust-toolchain.toml
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           # Checks the committed Cargo.lock (advisories + licenses) against
           # deny.toml's allowlist over the full (now fully-permissive) graph.

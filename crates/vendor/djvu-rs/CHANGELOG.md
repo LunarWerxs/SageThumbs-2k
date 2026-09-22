@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/matyushkin/djvu-rs/compare/v0.33.0...v0.34.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **optimizer:** `OptimizationRequest`, `RewriteAction`, `RewrittenComponent`, `OptimizationPlan` and `OptimizationReport` are now `#[non_exhaustive]`. `RewriteAction` gains `ReencodeBackground` and `ReencodeMask`; `RewrittenComponent` gains `quality: Option<ComponentQuality>` and drops `Eq`; `OptimizationPlan` and `OptimizationReport` gain `min_ssim: Option<f64>`; `OptimizationRequest` gains `lossy_text` (`with_lossy_text`). Match arms on `RewriteAction` need a wildcard; struct literals must go through the constructors. JSON adds `"quality"` per component and `"min_ssim"` at the top level. Recorded in docs/api-compatibility.md §2.
+
+### Features
+
+* **optimizer:** cooperative cancellation between components ([#814](https://github.com/matyushkin/djvu-rs/issues/814)) ([#823](https://github.com/matyushkin/djvu-rs/issues/823)) ([47156ff](https://github.com/matyushkin/djvu-rs/commit/47156ff026d4b95a7a58aec3b3baf2deac5bc6b5))
+* **optimizer:** quality-aware archival re-encode ([#814](https://github.com/matyushkin/djvu-rs/issues/814)) ([#824](https://github.com/matyushkin/djvu-rs/issues/824)) ([7944c8a](https://github.com/matyushkin/djvu-rs/commit/7944c8a231e66f7b963892abef646a6bb5b4784e))
+* **optimizer:** report progress per component and phase ([#814](https://github.com/matyushkin/djvu-rs/issues/814)) ([#822](https://github.com/matyushkin/djvu-rs/issues/822)) ([db0ffcc](https://github.com/matyushkin/djvu-rs/commit/db0ffcce39e39c0cbd24feda6ef56b8e2f06f02c))
+* **pixmap:** add fallible Pixmap::try_new, deprecate new ([#815](https://github.com/matyushkin/djvu-rs/issues/815)) ([#821](https://github.com/matyushkin/djvu-rs/issues/821)) ([aa043be](https://github.com/matyushkin/djvu-rs/commit/aa043beb419b63804f3e811431619c8a501ca479))
+
+
+### Performance Improvements
+
+* **encode:** transform large pages in bands ([#812](https://github.com/matyushkin/djvu-rs/issues/812)) ([#818](https://github.com/matyushkin/djvu-rs/issues/818)) ([bee8539](https://github.com/matyushkin/djvu-rs/commit/bee8539201a79fcad9cc27f0c95c4dbdc0a48189))
+* **render-cache:** evict per layer, not per page ([#813](https://github.com/matyushkin/djvu-rs/issues/813)) ([#820](https://github.com/matyushkin/djvu-rs/issues/820)) ([42749b4](https://github.com/matyushkin/djvu-rs/commit/42749b4fadbd1d3df813f495cc40ba4cd2d70206))
+* **render:** composite large backgrounds in bands ([#811](https://github.com/matyushkin/djvu-rs/issues/811)) ([#817](https://github.com/matyushkin/djvu-rs/issues/817)) ([8bf8436](https://github.com/matyushkin/djvu-rs/commit/8bf8436763aeac1483f2c88c2472e0cbe296da62))
+
+## [0.33.0](https://github.com/matyushkin/djvu-rs/compare/v0.32.1...v0.33.0) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **render:** `DjVuPage::decoded_bg44`, `decoded_bg44_partial`, `decoded_mask` and `decoded_fg44` return `Option<Arc<T>>` instead of `Option<&T>`. `Arc<T>` derefs to `T`, so most call sites are unchanged. Six eviction methods relax `&mut self` to `&self`, which only admits more callers. Recorded in docs/api-compatibility.md §2 and §7.
+
+### Features
+
+* **python:** export documents to PDF, EPUB, CBZ and TIFF ([#809](https://github.com/matyushkin/djvu-rs/issues/809)) ([bffcf36](https://github.com/matyushkin/djvu-rs/commit/bffcf36e27bb575503f10f9227447057bf496007))
+* **render:** bound the page render caches by default ([#807](https://github.com/matyushkin/djvu-rs/issues/807)) ([a031d32](https://github.com/matyushkin/djvu-rs/commit/a031d32a8a2dec6e09f04f7264ab8cb0272bff2f))
+
+
+### Performance Improvements
+
+* **decode:** reconstruct large IW44 planes in bands ([#808](https://github.com/matyushkin/djvu-rs/issues/808)) ([b921a81](https://github.com/matyushkin/djvu-rs/commit/b921a8184860c3a57247e960dc793c550f504a02))
+
 ## [0.32.1](https://github.com/matyushkin/djvu-rs/compare/v0.32.0...v0.32.1) (2026-09-10)
 
 

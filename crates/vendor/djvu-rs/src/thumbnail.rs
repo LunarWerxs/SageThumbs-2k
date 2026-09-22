@@ -37,7 +37,8 @@ pub const THUMBNAIL_MAX_SIDE: u32 = 128;
 /// by the caller).
 pub fn encode_th44_color(src: &Pixmap) -> Vec<Vec<u8>> {
     let (tw, th) = thumbnail_dimensions(src.width, src.height);
-    let thumb = crate::pixmap::scale_lanczos3(src, tw, th);
+    let thumb = crate::pixmap::scale_lanczos3(src, tw, th)
+        .expect("thumbnail_dimensions caps both sides at THUMBNAIL_MAX_SIDE");
     let opts = Iw44EncodeOptions {
         // One chunk is enough for a small thumbnail; the default 10×10-slice
         // chunking would produce identical quality but is overkill here.

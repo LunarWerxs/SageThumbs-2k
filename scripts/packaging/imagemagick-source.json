@@ -1,26 +1,26 @@
 {
   "schemaVersion": 1,
   "identity": {
-    "displayName": "ImageMagick 7.1.2-29 Q16-HDRI (64-bit) (2026-07-27)",
-    "fileVersion": "7.1.2-29",
-    "versionLinePattern": "^Version: ImageMagick 7\\.1\\.2-29 Q16-HDRI x64\\b",
+    "displayName": "ImageMagick 7.1.2-31 Q16-HDRI (64-bit) (2026-09-03)",
+    "fileVersion": "7.1.2-31",
+    "versionLinePattern": "^Version: ImageMagick 7\\.1\\.2-31 Q16-HDRI x64\\b",
     "installDirectoryName": "ImageMagick-7.1.2-Q16-HDRI"
   },
   "inventory": {
     "description": "SHA-256 over UTF-8 lines relative/path|byteLength|lowercaseFileSha256, ordinal-ignore-case sorted, with a final LF. Inputs are magick.exe, root DLL/XML files, License.txt, NOTICE.txt, and every file below modules.",
-    "fileCount": 195,
-    "totalBytes": 47839954,
-    "sha256": "10496d99be76de06c06c3c32731fbb3af2e4a8a22dc87469bf8bf75b036a1b38"
+    "fileCount": 198,
+    "totalBytes": 48354530,
+    "sha256": "f946a5e301d96748d79af91ccb8e9a40f6e1ddf2ad2bff8c832b635997ca6f9c"
   },
   "requiredLegalFiles": [
     "License.txt",
     "NOTICE.txt"
   ],
   "provenance": {
-    "upstreamAsset": "ImageMagick-7.1.2-29-Q16-HDRI-x64-dll.exe",
-    "upstreamUrl": "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-29/ImageMagick-7.1.2-29-Q16-HDRI-x64-dll.exe",
-    "upstreamSha256": "94c025d0f572b1f7db03c380002485b49069c6d02796f462ffd7052874ba7467",
-    "obtainedOn": "2026-09-01",
-    "note": "SAME upstream release as the ARM64 pin (7.1.2-29), so it carries the same 2026 policy.xml bypass fixes including CVE-2026-49219 and CVE-2025-66628. Downloaded once from the GitHub release to compute upstreamSha256, then installed to %ProgramFiles%\\ImageMagick-7.1.2-Q16-HDRI with the DLL install option so check-magick-source.ps1's 195-file inventory algorithm (magick.exe, root DLL/XML files, License.txt, NOTICE.txt, and everything below modules) matches this pin."
+    "upstreamAsset": "ImageMagick-7.1.2-31-Q16-HDRI-x64-dll.exe",
+    "upstreamUrl": "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-31/ImageMagick-7.1.2-31-Q16-HDRI-x64-dll.exe",
+    "upstreamSha256": "8536e5aec5053d6531fc099cf52bebbd71f983a55593fc4eab81c40040b2a629",
+    "obtainedOn": "2026-09-22",
+    "note": "SAME upstream release as the ARM64 pin (7.1.2-31). Bumped from 7.1.2-29 for the security advisories published since (among them heap over-writes in GetVirtualPixels and the distributed pixel cache, MVG and XMP-profile denial of service, a use-after-free in the cairo-less RSVG decoder, and policy bypasses in the MAT/CUT/PCD/CUBE/HALD coders). Downloaded from the GitHub release (SHA-256 matches the release's published digest, Authenticode-signed by ImageMagick Studio LLC) and installed over the previous copy in %ProgramFiles%\\ImageMagick-7.1.2-Q16-HDRI with the same DLL build and task; the installed inventory equals a fresh innoextract of the same installer (198 files, three more than -29)."
   }
 }

@@ -59,7 +59,7 @@ $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
 # ARM64 used to be forced engine-less here because there was no approved ImageMagick payload
 # for it. There is now: scripts\packaging\imagemagick-source-arm64.json pins the SAME upstream
-# 7.1.2-29 release as x64, so both architectures build Full unless -NoImageMagick is passed.
+# 7.1.2-31 release as x64, so both architectures build Full unless -NoImageMagick is passed.
 
 function Import-Arm64BuildEnvironment {
     $vcvarsCandidates = @()
@@ -342,7 +342,7 @@ if ($bundleMagick) {
     # sort first: patch releases change imports/exports and can make a previously safe trim
     # silently incomplete. check-magick-source verifies the reported identity plus a
     # deterministic inventory hash of all 195 files eligible to enter this bundle.
-    # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-29 release and the
+    # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-31 release and the
     # same 195-file set, so only the bundle bytes differ; the inventory algorithm is shared.
     $magickPinPath = if ($Architecture -eq 'arm64') {
         Join-Path $root 'scripts\packaging\imagemagick-source-arm64.json'
@@ -519,8 +519,12 @@ if ($bundleMagick) {
 
     # EXR/HDR/Farbfeld input + output are native Rust tiers now. PAM itself is
     # native too, but PFM shares ImageMagick's PNM module, so that module must stay.
+    # ase (Adobe Swatch Exchange), c2pa (Content Credentials) and wbinfo arrived with 7.1.2-30/31.
+    # None is an advertised format (our `.ase` is Aseprite, decoded natively), so each would only
+    # be new, unreviewed parser surface reachable by magic bytes from a file we hand magick.
     $dropCoder = @(
-        'exr','hdr','farbfeld','webp','svg','msvg','video','mpeg','url','clipboard','pango'
+        'exr','hdr','farbfeld','webp','svg','msvg','video','mpeg','url','clipboard','pango',
+        'ase','c2pa','wbinfo'
     ) + @($policyOnlyCoderModules.Keys)
     foreach ($c in $dropCoder) { [System.IO.File]::Delete("$stage\magick\modules\coders\IM_MOD_RL_$($c)_.dll") }
 
@@ -944,7 +948,7 @@ if ($LASTEXITCODE) { throw "email-rule implementations disagree (see above)" }
 # The one lookup (standard folders, then the registry for a per-user or non-standard
 # install), shared with the pre-push gate's compile of the same script.
 $iscc = Find-ReleaseInnoSetupCompiler
-if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found. Install with: winget install JRSoftware.InnoSetup" }
+if (-not $iscc) { throw "ISCC.exe not found. Install $ReleaseInnoSetupInstallHint" }
 Write-Host "      ISCC: $iscc" -ForegroundColor DarkGray
 New-Item -ItemType Directory "$root\dist" -Force | Out-Null
 # Derive the LIVE format count from the just-built CLI and hand it to the installer

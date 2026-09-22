@@ -253,6 +253,16 @@ pub mod semantic_diff;
 /// `djvu_render::render_progressive`.
 pub mod djvu_render;
 
+/// Process-wide ceiling for the page render caches (READ_CACHE_BOUNDED).
+///
+/// Provides `render_cache::budget`, `render_cache::set_budget`,
+/// `render_cache::resident_bytes`, `render_cache::enforce` and
+/// `render_cache::clear`. Since 0.33 the render caches are bounded by default
+/// (`render_cache::DEFAULT_BUDGET`, 256 MiB); `set_budget(usize::MAX)` restores
+/// the unbounded behaviour of earlier releases.
+#[cfg(feature = "std")]
+pub mod render_cache;
+
 /// Tile-first rendering API for viewer engines (#691).
 ///
 /// Provides `djvu_tile::TileLayout`, `djvu_tile::TileRect`,
@@ -520,7 +530,7 @@ pub(crate) mod bitmap;
 pub(crate) mod pixmap;
 
 pub use bitmap::Bitmap;
-pub use pixmap::{GrayPixmap, Pixmap};
+pub use pixmap::{GrayPixmap, Pixmap, PixmapError};
 
 // Re-export text types from the new pipeline
 #[cfg(feature = "std")]
@@ -617,6 +627,17 @@ impl Document {
         let doc = DjVuDocument::parse_backed_with_options(backing, opts)
             .map_err(|e| Error::FormatError(e.to_string()))?;
         Ok(Document { doc })
+    }
+
+    /// The parsed document this handle owns.
+    ///
+    /// The export entry points — [`crate::pdf::djvu_to_pdf_with_options`],
+    /// [`crate::epub::djvu_to_epub`], [`crate::cbz::djvu_to_cbz`],
+    /// [`crate::tiff_export::djvu_to_tiff`] and their writer forms — all take a
+    /// [`DjVuDocument`]. This hands them the one this `Document` already
+    /// parsed, instead of asking a caller to parse the bytes a second time.
+    pub fn inner(&self) -> &DjVuDocument {
+        &self.doc
     }
 
     /// Configurable resource limits supplied at parse/open time, if any.
@@ -933,10 +954,10 @@ impl<'a> Page<'a> {
                         self.index
                     ))
                 })?;
-                Ok(Self::fit_within(pm, max_w, max_h))
+                Self::fit_within(pm, max_w, max_h)
             }
             ThumbnailStrategy::Auto => match self.thumbnail()? {
-                Some(pm) => Ok(Self::fit_within(pm, max_w, max_h)),
+                Some(pm) => Self::fit_within(pm, max_w, max_h),
                 None => self.render_fit_to_box(max_w, max_h),
             },
         }
@@ -955,11 +976,11 @@ impl<'a> Page<'a> {
     /// so this is a no-op whenever the caller's box is at least that big —
     /// the common case for a thumbnail grid. It is never *upscaled* to fill
     /// a larger box: doing so would add cost without adding real detail.
-    fn fit_within(pm: Pixmap, max_w: u32, max_h: u32) -> Pixmap {
+    fn fit_within(pm: Pixmap, max_w: u32, max_h: u32) -> Result<Pixmap, Error> {
         let max_w = max_w.max(1);
         let max_h = max_h.max(1);
         if pm.width <= max_w && pm.height <= max_h {
-            return pm;
+            return Ok(pm);
         }
         let scale_w = max_w as f64 / pm.width.max(1) as f64;
         let scale_h = max_h as f64 / pm.height.max(1) as f64;
@@ -967,6 +988,7 @@ impl<'a> Page<'a> {
         let tw = ((pm.width as f64 * scale).round() as u32).max(1);
         let th = ((pm.height as f64 * scale).round() as u32).max(1);
         crate::pixmap::scale_lanczos3(&pm, tw, th)
+            .map_err(|e| Self::render_err(djvu_render::RenderError::from(e)))
     }
 
     /// Extract the text layer (TXTz/TXTa) with zone hierarchy.

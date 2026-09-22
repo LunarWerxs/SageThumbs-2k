@@ -9,6 +9,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
+  published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
+  several ways around its safety policy. It only ever runs as a separate, time-limited process.
+- **Large DjVu pages need less memory** to thumbnail, from the updated DjVu decoder.
 - **Uploaded links now say when they expire.** The free upload hosts delete files on their own
   schedule, from 3 hours (uguu.se) and 72 hours (litterbox) to 3-100 days depending on size
   (x0.at), while catbox.moe sets no date and only removes files nobody has opened for 2 years.

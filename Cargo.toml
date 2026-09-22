@@ -36,7 +36,7 @@ jxl-oxide = { path = "crates/vendor/jxl-oxide" }
 # INFO chunk declaring a page wider than the bilevel mask it ships, walking past the mask
 # row inside `composite_rows_bilevel_one`'s fallback loop and hitting `index out of bounds`
 # inside Explorer's thumbnail host, which runs `panic = "abort"` - shipped upstream in
-# 0.32.1 (2026-09-10). The vendored crate is now the exact crates.io 0.32.1 source with
+# 0.32.1 (2026-09-10). The vendored crate is now the exact crates.io 0.34.0 source with
 # only one remaining hunk: trimming upstream's `crate-type` to rlib-only. A PATH crate that
 # is cdylib+rlib is the cargo#6313 collision (see `[lib]` below) and broke
 # `cargo test --release --lib --tests` with E0463. See crates/vendor/djvu-patches/README.md.
@@ -258,7 +258,7 @@ rars = "0.9.4"
 # bump to 0.26 sheds `jpeg-encoder` + `zopfli` (+ its runtime `bumpalo`) from the DLL and
 # restores our C-free/no-zopfli `zip`. Decode-only otherwise (no image/tiff/epub/jpeg
 # export, no OCR/async/cli/parallel/serde/mmap).
-djvu-rs = { version = "0.32.1", default-features = false, features = ["std"] }
+djvu-rs = { version = "0.34.0", default-features = false, features = ["std"] }
 # JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
 # jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
 # it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
@@ -318,8 +318,8 @@ oxideav-mpeg12video = { version = "0.0.13", optional = true }
 nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
 nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
 nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
-h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", version = "0.1", optional = true }
-h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", version = "0.1", optional = true }
+h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "52df51a3587068d46f1289355301160b7df455fc", version = "0.1", optional = true }
+h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "52df51a3587068d46f1289355301160b7df455fc", version = "0.1", optional = true }
 
 [features]
 

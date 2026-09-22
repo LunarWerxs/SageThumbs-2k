@@ -21,7 +21,7 @@ param(
     # Keep this in step with vendor-djvu.ps1's own default. Passing a version this repo does
     # not pin would populate the cache with a tarball the check is not looking for, which would
     # leave the check skipping and looking like this script had failed silently.
-    [string]$Version = '0.32.1'
+    [string]$Version = '0.34.0'
 )
 $ErrorActionPreference = 'Stop'
 

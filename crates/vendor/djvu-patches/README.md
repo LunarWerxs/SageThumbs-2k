@@ -1,7 +1,7 @@
 # SageThumbs 2K patch to `djvu-rs`: crate-type trim only
 
 **The bilevel-mask fallback bounds fix (originally <https://github.com/matyushkin/djvu-rs/pull/801>,
-opened 2026-09-08) landed upstream in djvu-rs 0.32.1 (2026-09-10).** We vendor 0.32.1 unmodified
+opened 2026-09-08) landed upstream in djvu-rs 0.32.1 (2026-09-10).** We vendor 0.34.0 unmodified
 on that front - the render fix in `src/djvu_render.rs` is exactly upstream's, no local patch
 rides on it anymore. The only reason this vendored copy still exists is the `crate-type` trim
 below.
@@ -65,6 +65,7 @@ The vendored copy is still committed, deliberately, because cargo needs the path
 present at build time and CI checks out the repo without running the script. It is a build
 input; the script is how it is produced.
 
-**The pinned version must match what `Cargo.lock` would resolve unpatched** (djvu-rs 0.32.1).
+**The pinned version must match what `Cargo.lock` would resolve unpatched** (djvu-rs 0.34.0;
+0.34.0 still declares `crate-type = ["cdylib", "rlib"]`, checked 2026-09-22).
 Patching a different codebase than the one that was tested is the failure this pin exists to
 prevent.

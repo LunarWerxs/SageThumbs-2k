@@ -148,7 +148,8 @@ impl Raster {
         let Self::Ppm { width, height, rgb } = self else {
             return None;
         };
-        let mut pixmap = Pixmap::new(*width, *height, 0, 0, 0, 255);
+        let mut pixmap =
+            Pixmap::try_new(*width, *height, 0, 0, 0, 255).expect("fits the pixmap limit");
         if pixmap.data.len() != rgb.len() / 3 * 4 {
             return None;
         }

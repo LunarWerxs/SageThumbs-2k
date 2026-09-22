@@ -445,7 +445,7 @@ mod tests {
     use super::*;
 
     fn solid(w: u32, h: u32, r: u8, g: u8, b: u8) -> Pixmap {
-        Pixmap::new(w, h, r, g, b, 255)
+        Pixmap::try_new(w, h, r, g, b, 255).expect("fits the pixmap limit")
     }
 
     #[test]

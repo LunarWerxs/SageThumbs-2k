@@ -36,6 +36,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      # Cheap, and the only place this reports on the release PR — publish-packages.yml
+      # skips that PR on purpose (see the resolve job there).
+      - name: Package versions track the crate version
+        run: bash scripts/check_package_versions.sh
+
       - name: Clippy (all targets)
         run: cargo clippy --all-targets -- -D warnings
 

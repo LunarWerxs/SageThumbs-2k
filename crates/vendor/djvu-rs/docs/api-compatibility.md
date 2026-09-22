@@ -100,6 +100,7 @@ Current deprecated surfaces:
 | `bzz_new` module | re-export alias | `bzz` |
 | `iw44_new` module | re-export alias | `iw44` |
 | `ocr-neural-candle` feature | no-op feature alias | `ocr-neural` |
+| `Pixmap::new` (since 0.34.0) | constructor that returns an empty pixmap on an oversized request | `Pixmap::try_new` (reports `PixmapError`) |
 
 These aliases are kept intentionally cheap (a `pub use` or a no-op feature) so
 they can outlive the minimum window without cost.
@@ -114,7 +115,73 @@ they can outlive the minimum window without cost.
 
 Unintended breakage of the **stable** surface is caught by
 [`cargo-semver-checks`](#enforcement) in CI, which compares the PR against the
-latest published version and understands the `0.x` breaking axis.
+latest published version and understands the `0.x` breaking axis. An
+intended break is declared with a `!` in the PR title (`feat(scope)!: …`) or
+a `BREAKING CHANGE:` footer, the same marker release-please reads; the gate
+then checks the PR as the breaking bump it will produce (`0.Y` on 0.x) and
+still fails on any break the PR does not declare. The version itself is never
+bumped by hand.
+
+### Intentional breaks, by release
+
+#### 0.34.0 — the optimizer's request and report types became extensible
+
+The archival preset now re-encodes page backgrounds and, on request, masks
+under a measured SSIM floor (#814, slice 3; `docs/optimizer.md`). That needs
+a new rewrite action, a measured-quality record on each rewritten component,
+a `min_ssim` summary and a `lossy_text` knob. Adding any of those to an
+exhaustive enum or a struct with all-public fields is a break, so the types
+are marked `#[non_exhaustive]` once, now, and later slices (target-size
+search) add to them without another one:
+
+| Item | Was | Is |
+|------|-----|-----|
+| [`optimizer::OptimizationRequest`](../src/optimizer.rs) | constructible struct literal | `#[non_exhaustive]`; build with `new`/`lossless_cleanup`/`archival` and `with_*`; new field `lossy_text` |
+| [`optimizer::RewriteAction`](../src/optimizer.rs) | exhaustive enum, one variant | `#[non_exhaustive]`; new variants `ReencodeBackground`, `ReencodeMask` |
+| [`optimizer::RewrittenComponent`](../src/optimizer.rs) | constructible, `Eq` | `#[non_exhaustive]`, `PartialEq` only; new field `quality: Option<ComponentQuality>` |
+| [`optimizer::OptimizationPlan`](../src/optimizer.rs) | constructible | `#[non_exhaustive]`; new field `min_ssim: Option<f64>` |
+| [`optimizer::OptimizationReport`](../src/optimizer.rs) | constructible | `#[non_exhaustive]`; new field `min_ssim: Option<f64>` |
+
+Reading fields is unchanged. A `match` on `RewriteAction` needs a wildcard
+arm; code that built any of these structs by literal switches to the
+constructors. The JSON plan and report gain `min_ssim` and a per-component
+`quality` object; existing keys keep their meaning.
+
+#### 0.33.0 — the render caches became self-bounding
+
+Rendering memoises what it decoded. Before 0.33 nothing ever gave that memory
+back on its own: every eviction entry point wanted `&mut`, and every render
+entry point holds a shared `&DjVuPage`, so a program that only rendered grew
+until it ran out. See `PERF_EXPERIMENTS.md` (`READ_CACHE_BOUNDED`).
+
+Letting a cache drop a layer while a render is in flight means the render must
+hold its own handle on that layer, not a borrow of the cache's copy. That is
+the break:
+
+| Item | Was | Is |
+|------|-----|-----|
+| [`DjVuPage::decoded_bg44`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+| [`DjVuPage::decoded_bg44_partial`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+| [`DjVuPage::decoded_mask`](../src/djvu_document.rs) | `Option<&Bitmap>` | `Option<Arc<Bitmap>>` |
+| [`DjVuPage::decoded_fg44`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+
+`Arc<T>` derefs to `T`, so most call sites need no change; a site that stored
+the returned reference now stores an owned handle instead, which is what makes
+it safe.
+
+The eviction methods now take a shared borrow, which only ever admits more
+callers — existing `&mut` call sites keep compiling:
+
+| Item | Was | Is |
+|------|-----|-----|
+| `DjVuPage::evict_render_cache` | `&mut self` | `&self` |
+| `DjVuPage::downgrade_render_cache` | `&mut self` | `&self` |
+| `DjVuDocument::retain_render_caches` | `&mut self` | `&self` |
+| `DjVuDocument::enforce_cache_budget` | `&mut self` | `&self` |
+| `DjVuDocument::enforce_cache_budget_with` | `&mut self` | `&self` |
+| `DjVuDocument::downgrade_render_caches` | `&mut self` | `&self` |
+
+Behaviour also changed: the render caches are now bounded by default. See §7.
 
 ## 3. Minimum supported Rust version (MSRV)
 
@@ -225,6 +292,29 @@ unset, render output inherits [`DEFAULT_MAX_RENDER_PIXELS`]. Use
 [`ResourceLimits::inherited`] for the documented default render ceiling only.
 Per-render tightening uses [`render_pixmap_with_limits`](../../src/djvu_render.rs).
 The validator and `djvu validate --limits` use the same type.
+
+**Render caches are bounded by default (since 0.33).** The decode results a
+render memoises are held against a process-wide ceiling,
+[`render_cache::DEFAULT_BUDGET`](../src/render_cache.rs) = 256 MiB. When a
+cache fill takes the total over the ceiling, the least-recently-used cached
+*layers* — a decoded background, a mask, a converted pixmap, a page's tile
+store — are dropped across all pages until it is under again (#813;
+0.33 dropped whole page caches). Only the layer being filled is never dropped,
+so the resident total can exceed the ceiling by at most one layer, and a
+page's recently used layers survive while its stale ones go. This axis is a
+**policy** ceiling, not a decode ceiling: crossing it frees memory, it never
+fails a render.
+
+| Axis | Bound | Constant |
+|------|-------|----------|
+| Resident page render caches (process-wide) | 256 MiB | [`render_cache::DEFAULT_BUDGET`](../src/render_cache.rs) |
+
+Set your own ceiling with [`render_cache::set_budget`](../src/render_cache.rs),
+read the current total with `render_cache::resident_bytes`, and sweep on demand
+with `render_cache::enforce` or `render_cache::clear`. Pass `usize::MAX` to
+`set_budget` to render without a ceiling — the behaviour of 0.32 and earlier.
+Per-document control stays available through `DjVuDocument::enforce_cache_budget`.
+The module is `std`-only; a `no_std` build memoises nothing across pages.
 
 **Limit failures are typed and identify the operation.** When a ceiling is hit,
 the failing entry point returns a typed error naming the axis and operation:

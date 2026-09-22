@@ -160,9 +160,15 @@ enum Cmd {
         /// meet the target without lossy re-encoding.
         #[arg(long)]
         target_size: Option<u64>,
-        /// Maximum permitted SSIM loss.
+        /// Maximum permitted SSIM loss of a lossy re-encode against the
+        /// input's own decode (archival preset). Without it the archival
+        /// preset re-encodes nothing.
         #[arg(long)]
         max_ssim_loss: Option<f32>,
+        /// Let the archival preset re-encode JB2 text masks with lossy
+        /// symbol matching, under the same --max-ssim-loss floor.
+        #[arg(long)]
+        lossy_text: bool,
         /// Print the machine-readable plan without writing the output.
         #[arg(long)]
         dry_run: bool,
@@ -324,7 +330,9 @@ enum TextFormat {
 enum OptimizePresetArg {
     /// Remove semantically inert IFF FREE padding.
     LosslessCleanup,
-    /// Prefer archival fidelity; this slice remains pixel-exact.
+    /// Prefer archival fidelity: re-encode page backgrounds (and, with
+    /// --lossy-text, masks) only within --max-ssim-loss and only when
+    /// smaller. Pixel-exact without a floor.
     Archival,
 }
 
@@ -472,8 +480,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             preset,
             target_size,
             max_ssim_loss,
+            lossy_text,
             dry_run,
-        } => cmd_optimize(&file, &output, preset, target_size, max_ssim_loss, dry_run),
+        } => cmd_optimize(
+            &file,
+            &output,
+            preset,
+            target_size,
+            max_ssim_loss,
+            lossy_text,
+            dry_run,
+        ),
         Cmd::Text {
             file,
             page,
@@ -548,6 +565,7 @@ fn cmd_optimize(
     preset: OptimizePresetArg,
     target_size: Option<u64>,
     max_ssim_loss: Option<f32>,
+    lossy_text: bool,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_bytes = std::fs::read(input)?;
@@ -570,14 +588,42 @@ fn cmd_optimize(
     if let Some(loss) = max_ssim_loss {
         request = request.with_max_ssim_loss(loss);
     }
+    if lossy_text {
+        request = request.with_lossy_text(true);
+    }
 
-    let optimizer = djvu_rs::optimizer::Optimizer::new(request);
+    // A progress line on an interactive stderr only: the JSON on stdout is
+    // the machine-readable contract and a pipe must not see the line either.
+    use std::io::IsTerminal;
+    let show_progress = std::io::stderr().is_terminal();
+    let mut optimizer = djvu_rs::optimizer::Optimizer::new(request);
+    if show_progress {
+        optimizer = optimizer.with_progress(|event| {
+            eprint!(
+                "\r\x1b[K{} {}/{} {} {} B",
+                event.phase.as_str(),
+                event.component_index + 1,
+                event.component_count,
+                String::from_utf8_lossy(&event.component_id),
+                event.bytes_so_far
+            );
+        });
+    }
+    let end_progress = || {
+        if show_progress {
+            eprint!("\r\x1b[K");
+        }
+    };
     if dry_run {
-        println!("{}", optimizer.plan(&input_bytes)?.to_json());
+        let plan = optimizer.plan(&input_bytes);
+        end_progress();
+        println!("{}", plan?.to_json());
         return Ok(());
     }
 
-    let result = optimizer.optimize(&input_bytes)?;
+    let result = optimizer.optimize(&input_bytes);
+    end_progress();
+    let result = result?;
     write_atomic(output, &result.bytes)?;
     println!("{}", result.report.to_json());
     Ok(())

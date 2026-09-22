@@ -47,6 +47,8 @@ use crate::{
     text::{TextError, TextLayer},
 };
 
+#[cfg(not(feature = "std"))]
+use alloc::sync::Arc;
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
@@ -441,7 +443,7 @@ pub struct DjVuPage {
     /// repeated renders reuse the decode.  Populated on first render.
     /// Only available when the `std` feature is enabled (`OnceLock` requires std).
     #[cfg(feature = "std")]
-    render_layers: std::sync::OnceLock<crate::djvu_render::PageLayers>,
+    render_layers: std::sync::OnceLock<Arc<crate::djvu_render::PageLayers>>,
     /// Resource limits inherited from the parent document at parse time.
     resource_limits: Option<crate::resource_limits::ResourceLimits>,
 }
@@ -557,10 +559,14 @@ impl DjVuPage {
     /// This resets the cache so the memory is reclaimed; it rebuilds lazily on
     /// the next render of this page. A viewer can call it on pages scrolled
     /// off-screen (or use [`DjVuDocument::retain_render_caches`]) to bound memory.
-    /// Requires `&mut` since the cache uses interior mutability for shared reads.
+    ///
+    /// Takes `&self` since 0.33 (READ_CACHE_BOUNDED), so it can run from inside
+    /// a render. A render already holding a layer keeps it until it finishes.
     #[cfg(feature = "std")]
-    pub fn evict_render_cache(&mut self) {
-        self.render_layers = std::sync::OnceLock::new();
+    pub fn evict_render_cache(&self) {
+        if let Some(layers) = self.render_layers.get() {
+            layers.evict_shared();
+        }
     }
 
     /// C5_COMPRESS: cheaper alternative to [`evict_render_cache`](Self::evict_render_cache)
@@ -576,9 +582,12 @@ impl DjVuPage {
     /// [`evict_render_cache`](Self::evict_render_cache) — see
     /// PERF_EXPERIMENTS.md C5_COMPRESS for why a cheap sub=2→sub=1 "upgrade"
     /// is not possible. No-op if the page was never rendered.
+    ///
+    /// Takes `&self` since 0.33, for the same reason as
+    /// [`evict_render_cache`](Self::evict_render_cache).
     #[cfg(feature = "std")]
-    pub fn downgrade_render_cache(&mut self) {
-        if let Some(layers) = self.render_layers.get_mut() {
+    pub fn downgrade_render_cache(&self) {
+        if let Some(layers) = self.render_layers.get() {
             layers.downgrade();
         }
     }
@@ -690,11 +699,18 @@ impl DjVuPage {
     /// [`crate::djvu_render::PageLayers`].
     #[cfg(feature = "std")]
     pub(crate) fn render_layers(&self) -> &crate::djvu_render::PageLayers {
-        let layers = self
-            .render_layers
-            .get_or_init(crate::djvu_render::PageLayers::new);
-        // Stamp the LRU access tick so `enforce_cache_budget` can evict the
-        // least-recently-rendered pages first.
+        let layers = self.render_layers.get_or_init(|| {
+            // Held behind an `Arc` so `crate::render_cache` can keep a weak
+            // reference and sweep this cache when the process goes over its
+            // ceiling. Two threads racing here both build one; the loser is
+            // dropped and its weak entry is pruned by the next sweep.
+            let layers = Arc::new(crate::djvu_render::PageLayers::new());
+            crate::render_cache::register(&layers);
+            layers
+        });
+        // Stamp the page's LRU access tick so `enforce_cache_budget` can evict
+        // the least-recently-rendered pages first. The process-wide governor
+        // ranks individual layers by their own ticks instead (#813).
         layers.bump_access();
         layers
     }
@@ -727,12 +743,12 @@ impl DjVuPage {
     /// full-resolution case) via [`decoded_bg_rgb_s1`](Self::decoded_bg_rgb_s1);
     /// other subsample levels recompute the conversion each call.
     #[cfg(feature = "std")]
-    pub fn decoded_bg44(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44(&self) -> Option<Arc<Iw44Image>> {
         self.render_layers().bg44(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_bg44(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44(&self) -> Option<Arc<Iw44Image>> {
         None
     }
 
@@ -744,26 +760,26 @@ impl DjVuPage {
     ///
     /// Use this instead of [`Self::decoded_bg44`] when `subsample >= 4`.
     #[cfg(feature = "std")]
-    pub fn decoded_bg44_partial(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
         self.render_layers().bg44_partial(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_bg44_partial(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
         None
     }
 
     /// This page's cached RGB conversion for a `subsample > 4` render, when
     /// the slot holds exactly that subsample. Never decodes.
     #[cfg(feature = "std")]
-    pub(crate) fn cached_bg_rgb_subhi(&self, subsample: u32) -> Option<&Pixmap> {
+    pub(crate) fn cached_bg_rgb_subhi(&self, subsample: u32) -> Option<Arc<Pixmap>> {
         self.render_layers.get()?.bg_rgb_subhi(subsample)
     }
 
     /// Memoise the RGB conversion for a `subsample > 4` render. The first
     /// subsample a page is rendered at wins; later ones reconvert.
     #[cfg(feature = "std")]
-    pub(crate) fn store_bg_rgb_subhi(&self, subsample: u32, px: &Pixmap) {
+    pub(crate) fn store_bg_rgb_subhi(&self, subsample: u32, px: Arc<Pixmap>) {
         self.render_layers().store_bg_rgb_subhi(subsample, px);
     }
 
@@ -771,7 +787,7 @@ impl DjVuPage {
     /// never decodes. See `PageLayers::bg44_partial_cached` for why the
     /// subsample > 4 render path peeks instead of memoising.
     #[cfg(feature = "std")]
-    pub(crate) fn cached_bg44_partial(&self) -> Option<&Iw44Image> {
+    pub(crate) fn cached_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
         self.render_layers.get()?.bg44_partial_cached()
     }
 
@@ -1038,12 +1054,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no Sjbz chunk or if decoding fails.
     #[cfg(feature = "std")]
-    pub fn decoded_mask(&self) -> Option<&crate::bitmap::Bitmap> {
+    pub fn decoded_mask(&self) -> Option<Arc<crate::bitmap::Bitmap>> {
         self.render_layers().mask(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_mask(&self) -> Option<&crate::bitmap::Bitmap> {
+    pub fn decoded_mask(&self) -> Option<Arc<crate::bitmap::Bitmap>> {
         None
     }
 
@@ -1052,12 +1068,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no FG44 chunks or if decoding fails.
     #[cfg(feature = "std")]
-    pub fn decoded_fg44(&self) -> Option<&Pixmap> {
+    pub fn decoded_fg44(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().fg44(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_fg44(&self) -> Option<&Pixmap> {
+    pub fn decoded_fg44(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -1070,12 +1086,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s1(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -1088,12 +1104,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s2(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -1107,12 +1123,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s4(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -1123,12 +1139,12 @@ impl DjVuPage {
     /// that repeated palette renders pay neither cost after the first call.
     /// Returns `None` if the page has no Sjbz/Smmr chunk or decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_mask_indexed(&self) -> Option<&(crate::bitmap::Bitmap, Vec<i32>)> {
+    pub(crate) fn decoded_mask_indexed(&self) -> Option<Arc<crate::djvu_render::IndexedMask>> {
         self.render_layers().mask_indexed(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_mask_indexed(&self) -> Option<&(crate::bitmap::Bitmap, Vec<i32>)> {
+    pub(crate) fn decoded_mask_indexed(&self) -> Option<Arc<crate::djvu_render::IndexedMask>> {
         None
     }
 
@@ -1839,7 +1855,8 @@ impl DjVuDocument {
             // chain: mask/fg44 are independent of bg; bg_rgb_s1 subsumes the
             // bg44 ZP arithmetic decode (see `PageLayers::bg_rgb_s1`), so this
             // warms every cache slot a native-resolution `render_pixmap` call
-            // reads from.
+            // reads from. (A page too large to hold its background whole
+            // gets no RGB pixmap — #811 — but the bg44 slot is still warmed.)
             let _ = page.decoded_mask();
             let _ = page.decoded_fg44();
             let _ = page.decoded_bg_rgb_s1();
@@ -1875,8 +1892,8 @@ impl DjVuDocument {
     /// `keep`, bounding memory to a working set (e.g. the visible pages plus a
     /// small prefetch window) in a long-lived viewer.
     #[cfg(feature = "std")]
-    pub fn retain_render_caches(&mut self, keep: &[usize]) {
-        for (i, p) in self.pages.iter_mut().enumerate() {
+    pub fn retain_render_caches(&self, keep: &[usize]) {
+        for (i, p) in self.pages.iter().enumerate() {
             if !keep.contains(&i) {
                 p.evict_render_cache();
             }
@@ -1904,7 +1921,7 @@ impl DjVuDocument {
     /// page render to hold memory near a fixed budget. No-op (returns 0) when
     /// already under budget. Evicted caches rebuild lazily and identically.
     #[cfg(feature = "std")]
-    pub fn enforce_cache_budget(&mut self, max_bytes: usize, protect: &[usize]) -> usize {
+    pub fn enforce_cache_budget(&self, max_bytes: usize, protect: &[usize]) -> usize {
         let mut total = self.render_cache_bytes();
         if total <= max_bytes {
             return 0;
@@ -1934,8 +1951,8 @@ impl DjVuDocument {
     /// C5_COMPRESS: like [`downgrade_render_caches`](Self::downgrade_render_caches)
     /// applied to every page — downgrade instead of drop.
     #[cfg(feature = "std")]
-    pub fn downgrade_render_caches(&mut self) {
-        for p in &mut self.pages {
+    pub fn downgrade_render_caches(&self) {
+        for p in &self.pages {
             p.downgrade_render_cache();
         }
     }
@@ -1946,7 +1963,7 @@ impl DjVuDocument {
     /// downgraded — not fully dropped — pages).
     #[cfg(feature = "std")]
     pub fn enforce_cache_budget_with(
-        &mut self,
+        &self,
         max_bytes: usize,
         protect: &[usize],
         opts: CacheBudgetOptions,

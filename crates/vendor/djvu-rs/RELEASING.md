@@ -1,54 +1,54 @@
 # Releasing djvu-rs
 
-Releases are cut by **pushing a version tag**. The tag — not release-please — is what
-triggers publication to crates.io. This is deliberate: it does **not** depend on
-`RELEASE_PLEASE_TOKEN` (a PAT that expires and has silently broken a release before),
-only on `CARGO_REGISTRY_TOKEN`, which crates.io requires and which should be issued
-**without an expiry**.
+Releases are cut by **merging the release-please PR**. Everything after that merge is
+automatic and runs on the built-in `GITHUB_TOKEN` — no personal access token is on the
+release path.
 
 ## Standard release procedure
 
-1. **Land a version-bump commit on `main`** — a commit titled `chore(main): release X.Y.Z`
-   that bumps the workspace `version` in `Cargo.toml`, updates `CHANGELOG.md`, and sets
-   `.release-please-manifest.json` to `X.Y.Z`. This normally comes from the release-please
-   PR (see below), but you can also write it by hand.
+1. **Review the release PR** — release-please keeps one open, titled
+   `chore(main): release X.Y.Z`. It bumps the workspace `version` in `Cargo.toml`,
+   the Python and npm package versions, `.release-please-manifest.json`, and adds the
+   `CHANGELOG.md` section built from Conventional Commits since the last release.
 
-2. **Push the tag** — pointing at that release commit:
+2. **Wait for the checks, then merge normally.** The PR is opened by `GITHUB_TOKEN`, and
+   GitHub does not start `pull_request` workflows for such events. The `dispatch-ci` job
+   in [`.github/workflows/release-please.yml`](.github/workflows/release-please.yml)
+   works around that: it starts `ci.yml` on the release branch through
+   `workflow_dispatch`, which is exempt from the same guard. Those check runs land on the
+   PR head commit, so the required checks turn green and an admin bypass is not needed.
+
+3. **The rest happens on its own.** Merging pushes a `chore(main): release X.Y.Z` commit
+   to `main`, which starts `release-please.yml` again. That run:
+   - creates the `vX.Y.Z` tag and the GitHub Release;
+   - publishes all eight crates to crates.io in dependency order, skipping any version
+     already there, then waits for each to go live;
+   - starts [`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml)
+     through `workflow_dispatch` for the Python wheels and the npm package. The tag push
+     itself cannot start it, because that push is also authored by `GITHUB_TOKEN`.
+
+4. **Check the result** — the tag, the release notes, the eight crates on crates.io, and
+   the package run:
 
    ```sh
-   git tag -a vX.Y.Z <release-commit-sha> -m "Release X.Y.Z"
-   git push --no-verify origin vX.Y.Z
+   gh release view vX.Y.Z
+   gh run list --workflow=publish-packages.yml --limit 1
    ```
 
-   `--no-verify` skips the pre-push hook (a full `make check`); the commit is already on
-   `main` and green, so re-running it on a tag push is wasted minutes.
+## Emergency release without release-please
 
-3. **CI publishes** — `.github/workflows/publish.yml` fires on `push: tags: ['v*']`,
-   runs the release validation, then `cargo publish` for every workspace crate. It skips
-   any crate whose version already exists on crates.io, so re-pushing a tag is safe.
+`publish.yml` still listens for `push: tags: ['v*']` and for a manual
+`workflow_dispatch` with a `tag` input. Write the version-bump commit by hand, merge it,
+then:
 
-4. **Create the GitHub Release** (optional but recommended, since a manual tag does not
-   create one):
+```sh
+git tag -a vX.Y.Z <release-commit-sha> -m "Release X.Y.Z"
+git push --no-verify origin vX.Y.Z
+```
 
-   ```sh
-   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <changelog-section>.md
-   ```
-
-## Where the version-bump commit comes from
-
-release-please still does the tedious part — it opens a `chore(main): release X.Y.Z` PR
-that accumulates the `Cargo.toml` bump and the `CHANGELOG.md` section from Conventional
-Commits since the last release. Merge that PR to get the release commit on `main`, **then
-push the tag yourself** (step 2 above).
-
-> **Do not rely on release-please to create the tag / GitHub Release.** That step runs
-> under `RELEASE_PLEASE_TOKEN`; when the PAT is expired the release-please workflow fails
-> with `Bad credentials` and nothing gets tagged or published. The manual tag push in
-> step 2 bypasses that path entirely.
-
-If `RELEASE_PLEASE_TOKEN` is expired and you don't want to rotate it, you can also write
-the release commit by hand (bump `Cargo.toml` + `.release-please-manifest.json`, edit
-`CHANGELOG.md`), merge it, and proceed to step 2 — the tag flow is identical.
+`--no-verify` skips the pre-push hook (a full `make check`); the commit is already on
+`main` and green, so re-running it on a tag push is wasted minutes. A tag pushed by a
+person — not by `GITHUB_TOKEN` — does start both publish workflows.
 
 ## Conventional Commits
 
@@ -85,13 +85,13 @@ While version is `0.x`, minor bumps may include breaking changes per SemVer §4.
 
 | Secret | Used by | Notes |
 |--------|---------|-------|
-| `CARGO_REGISTRY_TOKEN` | `publish.yml` (`cargo publish`) | **Required** — crates.io cannot publish without it. Issue it with **no expiry** at <https://crates.io/settings/tokens> so it never becomes a release blocker. |
-| `RELEASE_PLEASE_TOKEN` | `release-please.yml` | Only prepares the changelog/version PR and (if you let it) the tag. **Not** on the critical path for the tag-push release flow above. If it expires, releases still go out via the manual tag. |
+| `CARGO_REGISTRY_TOKEN` | `release-please.yml` and `publish.yml` (`cargo publish`) | **Required** — crates.io cannot publish without it. Issue it with **no expiry** at <https://crates.io/settings/tokens> so it never becomes a release blocker. |
+| `GITHUB_TOKEN` | `release-please.yml` | Built in, nothing to rotate. It opens the release PR, tags, releases, publishes to crates.io, and dispatches the other two workflows. A `RELEASE_PLEASE_TOKEN` PAT was used once, expired, and silently broke the 0.25.0 release with `Bad credentials`; it is no longer used. |
 
 ## Python wheels and npm packages
 
-Tag pushes also trigger [`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml),
-which builds version-matched Python wheels/sdists and the dual wasm npm
+[`.github/workflows/publish-packages.yml`](.github/workflows/publish-packages.yml),
+started by the release run (see step 3), builds version-matched Python wheels/sdists and the dual wasm npm
 package, runs install-time smoke tests, writes `SHA256SUMS`, and attests
 artifacts. Publishing to PyPI/npm is gated on repository variables
 `PUBLISH_PYPI` / `PUBLISH_NPM` (set to `true`) plus the `pypi` / `npm`

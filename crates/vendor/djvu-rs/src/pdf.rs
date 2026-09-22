@@ -20,7 +20,9 @@
 //! ```
 
 #[cfg(not(feature = "std"))]
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+#[cfg(feature = "std")]
+use std::sync::Arc;
 
 use crate::{
     annotation::Shape,
@@ -454,19 +456,15 @@ fn collect_mask_layers(page: &DjVuPage, opts: &PdfOptions) -> Vec<MaskLayer> {
                 let Some(mask) = page.decoded_mask() else {
                     return Vec::new();
                 };
-                let fg_owned;
                 let fg = match page.decoded_fg44() {
                     Some(fg) => Some(fg),
-                    None => {
-                        fg_owned = page.extract_foreground().ok().flatten();
-                        fg_owned.as_ref()
-                    }
+                    None => page.extract_foreground().ok().flatten().map(Arc::new),
                 };
                 let Some(fg) = fg else {
                     return Vec::new();
                 };
-                return match uniform_fg_color(fg, mask) {
-                    Some(rgb) => stencil_layer_from_mask(mask, opts, rgb),
+                return match uniform_fg_color(&fg, &mask) {
+                    Some(rgb) => stencil_layer_from_mask(&mask, opts, rgb),
                     None => Vec::new(),
                 };
             }
@@ -561,7 +559,7 @@ fn collect_mask_layers(page: &DjVuPage, opts: &PdfOptions) -> Vec<MaskLayer> {
 fn black_mask_layer(page: &DjVuPage, opts: &PdfOptions) -> Vec<MaskLayer> {
     // Prefer the page cache (populated by this page's own /Im0 render).
     if let Some(mask) = page.decoded_mask() {
-        return stencil_layer_from_mask(mask, opts, (0, 0, 0));
+        return stencil_layer_from_mask(&mask, opts, (0, 0, 0));
     }
     let Ok(Some(bitmap)) = page.extract_mask() else {
         return Vec::new();

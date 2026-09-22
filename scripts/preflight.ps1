@@ -78,7 +78,7 @@ if (-not $failed) {
         $iscc = Find-ReleaseInnoSetupCompiler
         $stage = Join-Path $PSScriptRoot 'packaging\stage\x64'
         if (-not $iscc) {
-            Write-Host '  SKIPPED - Inno Setup (ISCC.exe) is not installed here; the [Code] section was NOT compiled (winget install JRSoftware.InnoSetup)' -ForegroundColor Yellow
+            Write-Host "  SKIPPED - Inno Setup 7 (ISCC.exe) is not installed here; the [Code] section was NOT compiled (install $ReleaseInnoSetupInstallHint)" -ForegroundColor Yellow
             $global:LASTEXITCODE = 0
             return
         }

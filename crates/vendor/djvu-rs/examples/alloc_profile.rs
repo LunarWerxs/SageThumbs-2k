@@ -8,6 +8,7 @@
 //!
 //! ```sh
 //! cargo run --release --features alloc-profile --example alloc_profile -- cold-open
+//! cargo run --release --features alloc-profile --example alloc_profile -- cold-open-full
 //! cargo run --release --features alloc-profile --example alloc_profile -- warm-render
 //! cargo run --release --features alloc-profile --example alloc_profile -- thumbnails
 //! cargo run --release --features alloc-profile --example alloc_profile -- encode
@@ -52,6 +53,17 @@ fn main() {
             let doc = DjVuDocument::parse(&data).unwrap();
             let page = doc.page(0).unwrap();
             let _ = render_pixmap(page, &opts_for(page, 150.0)).unwrap();
+        }
+        // Cold open + one render at the page's own full resolution.
+        "cold-open-full" => {
+            let doc = DjVuDocument::parse(&data).unwrap();
+            let page = doc.page(0).unwrap();
+            let opts = RenderOptions {
+                width: page.width() as u32,
+                height: page.height() as u32,
+                ..Default::default()
+            };
+            let _ = render_pixmap(page, &opts).unwrap();
         }
         // One cold render, then 10 warm re-renders (cache-hit path).
         "warm-render" => {

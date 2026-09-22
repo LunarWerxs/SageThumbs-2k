@@ -40,11 +40,17 @@ jobs:
     # and v0.32.0 shipped them, which reset the baseline this job compares
     # against. A finding here is now an unintended break of the stable surface.
     #
-    # If this job goes red on an *intended* break, the fix is the version bump
-    # the break requires (a `!` commit or a BREAKING CHANGE footer, which
-    # release-please turns into a minor bump on 0.x) — not re-adding
-    # continue-on-error. Adding a variant to an error enum is not a break and
-    # does not trip this.
+    # An *intended* break is declared the way release-please reads it: a `!`
+    # after the type/scope in the PR title (the squash-merge subject) or a
+    # `BREAKING CHANGE:` footer in the PR body. The step below turns that
+    # declaration into `--release-type major`: an explicit release type is
+    # taken literally, and `major` is cargo-semver-checks' name for the
+    # breaking axis, which on 0.x is the minor bump release-please makes. So a
+    # declared break is checked as the bump it will produce and the job still
+    # fails on any break the PR does *not* declare. Cargo.toml is not bumped by
+    # hand: release-please owns the version and the manifest (#814). Do not
+    # re-add continue-on-error. Adding a variant to an error enum is not a
+    # break and does not trip this.
     steps:
       - uses: actions/checkout@v6
 
@@ -56,6 +62,22 @@ jobs:
         with:
           key: semver-checks
 
+      - name: Read the release type the change declares
+        id: declared
+        env:
+          # The PR title on pull_request; the squash-merge subject on push.
+          # Read through env, never interpolated into the script.
+          SUBJECT: ${{ github.event.pull_request.title || github.event.head_commit.message }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          release_type=""
+          if printf '%s\n' "$SUBJECT" | head -n 1 | grep -Eq '^[a-z]+(\([^)]*\))?!:' \
+            || printf '%s\n%s\n' "$SUBJECT" "$BODY" | grep -Eq '^BREAKING[ -]CHANGE:'; then
+            release_type=major
+          fi
+          echo "release-type=$release_type" >> "$GITHUB_OUTPUT"
+          echo "declared release type: ${release_type:-none (derived from Cargo.toml)}"
+
       - name: cargo-semver-checks (stable public API)
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
@@ -63,6 +85,8 @@ jobs:
           # async / experimental surfaces are checked as they stabilize.
           feature-group: default-features
           package: djvu-rs
+          # Empty = derive from the version number (the action skips the flag).
+          release-type: ${{ steps.declared.outputs.release-type }}
 
   # ── Documented feature combinations & targets (AC3) ──────────────────────────
   # The human-readable companion is docs/feature-matrix.md; keep the two in sync.

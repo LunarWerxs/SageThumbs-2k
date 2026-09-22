@@ -8,7 +8,7 @@ that staging directory is also the final flattened runtime layout.
 
 **ARM64 is Full too, since 2026-08-02.** It has its own pin,
 [`imagemagick-source-arm64.json`](../scripts/packaging/imagemagick-source-arm64.json), describing the
-SAME upstream 7.1.2-29 Q16-HDRI release and the same 195-file inventory; only the bundle bytes
+SAME upstream 7.1.2-31 Q16-HDRI release and the same 198-file inventory; only the bundle bytes
 differ. The arm64 asset is an Inno installer rather than something installable on an x64 host,
 so its payload is extracted with `innoextract` into
 `%ProgramFiles%\ImageMagick-7.1.2-Q16-HDRI-arm64`, which keeps the "resolve the pinned
@@ -35,7 +35,14 @@ must never hide a missing release dependency.
 
 Production builds accept exactly:
 
-`ImageMagick 7.1.2-29 Q16-HDRI x64 (2026-07-27)`
+`ImageMagick 7.1.2-31 Q16-HDRI x64 (2026-09-03)`
+
+Bumped from `7.1.2-29` on 2026-09-22 for the security advisories published since: heap
+over-writes in `GetVirtualPixels` and the distributed pixel cache, MVG and XMP-profile denial of
+service, a use-after-free in the cairo-less RSVG decoder, and policy bypasses in the MAT, CUT,
+PCD/CUBE/HALD and UHDR coders among them. It adds three coder modules, `ase` (Adobe Swatch
+Exchange), `c2pa` (Content Credentials) and `wbinfo`; none is an advertised format, so the build
+drops all three (below) and the reviewed coder set is unchanged. The 195-file inventory is 198.
 
 Bumped from `7.1.2-25` on 2026-07-31 for the 2026 policy.xml bypass cluster, including
 **CVE-2026-49219** (symlink read of a disallowed file) whose first fix was itself incomplete
@@ -181,7 +188,14 @@ IM_MOD_RL_url_.dll
 IM_MOD_RL_video_.dll
 IM_MOD_RL_webp_.dll
 IM_MOD_RL_xps_.dll
+IM_MOD_RL_ase_.dll
+IM_MOD_RL_c2pa_.dll
+IM_MOD_RL_wbinfo_.dll
 ```
+
+The last three arrived with 7.1.2-30/31. ASE is Adobe Swatch Exchange (our `.ase` is Aseprite,
+decoded natively), C2PA reads Content Credentials manifests, and none is advertised, so each
+would only be new parser surface reachable by magic bytes.
 
 PANGO is a synthetic text-render input, not an advertised file extension, and the
 hardened policy denies it. The build proves both facts before removing that module.

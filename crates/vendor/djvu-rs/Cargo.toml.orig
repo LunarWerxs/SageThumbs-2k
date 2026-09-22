@@ -4,7 +4,7 @@ exclude = ["fuzz", "tests/no_std_smoke"]
 
 [package]
 name = "djvu-rs"
-version = "0.32.1"
+version = "0.34.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -36,13 +36,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 thiserror = "2"
 wide = "0.7"
-djvu-zp = { version = "0.32.1", path = "crates/djvu-zp", default-features = false }
-djvu-bzz = { version = "0.32.1", path = "crates/djvu-bzz", default-features = false }
-djvu-iff = { version = "0.32.1", path = "crates/djvu-iff", default-features = false }
-djvu-bitmap = { version = "0.32.1", path = "crates/djvu-bitmap", default-features = false }
-djvu-jb2 = { version = "0.32.1", path = "crates/djvu-jb2", default-features = false }
-djvu-pixmap = { version = "0.32.1", path = "crates/djvu-pixmap", default-features = false }
-djvu-iw44 = { version = "0.32.1", path = "crates/djvu-iw44", default-features = false }
+djvu-zp = { version = "0.34.0", path = "crates/djvu-zp", default-features = false }
+djvu-bzz = { version = "0.34.0", path = "crates/djvu-bzz", default-features = false }
+djvu-iff = { version = "0.34.0", path = "crates/djvu-iff", default-features = false }
+djvu-bitmap = { version = "0.34.0", path = "crates/djvu-bitmap", default-features = false }
+djvu-jb2 = { version = "0.34.0", path = "crates/djvu-jb2", default-features = false }
+djvu-pixmap = { version = "0.34.0", path = "crates/djvu-pixmap", default-features = false }
+djvu-iw44 = { version = "0.34.0", path = "crates/djvu-iw44", default-features = false }
 # Used only by the djvu CLI binary.
 clap = { version = "4", features = ["derive"], optional = true }
 png = { version = "0.17", optional = true }
