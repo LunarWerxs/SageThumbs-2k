@@ -55,7 +55,7 @@ pub(super) unsafe fn build_file_types(hwnd: HWND, hinst: HINSTANCE, sty: &Styles
     );
 
     // Live search box (filters the list as you type). Borderless + rounded panel in
-    // dark mode (like the other inputs); native bordered edit in light mode.
+    // both themes (like the other inputs); the frame is painted, not native.
     let search_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
     let search = ctl(
         hwnd,
@@ -77,8 +77,8 @@ pub(super) unsafe fn build_file_types(hwnd: HWND, hinst: HINSTANCE, sty: &Styles
         Some(LPARAM(cue.as_ptr() as isize)),
     );
 
-    // Dark mode drops the square WS_BORDER — a rounded card frame is drawn behind
-    // the list in WM_PAINT. Light mode keeps the native border.
+    // No square WS_BORDER — a rounded card frame is drawn behind
+    // the list in WM_PAINT, in both themes.
     let list_style = WINDOW_STYLE(LVS_REPORT | LVS_NOSORTHEADER) | WS_TABSTOP;
     // Shorter list in dark mode (scrollable left column lets the window be shorter);
     // y=98 leaves room (with padding) for the search box above. Dark bottom = 442.
@@ -106,7 +106,7 @@ pub(super) unsafe fn build_file_types(hwnd: HWND, hinst: HINSTANCE, sty: &Styles
     // enough for their own labels in a long language, and no amount of window resizing helps
     // because only Description grows. The reporter of issue #26.3 could read neither.
     //
-    // Sizing is back on for THE FIRST TWO, and `fit_columns` now measures them instead of
+    // Sizing is back on for THE FIRST THREE, and `fit_columns` now measures them instead of
     // assuming their widths, so widening Extension reflows Description and the total still
     // exactly fills the list.
     //

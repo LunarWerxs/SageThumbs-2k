@@ -113,8 +113,8 @@ pub(crate) unsafe fn run_shot_search(hinst: HINSTANCE, dark: bool, out: &str, ar
     crate::win::capture_and_destroy(hwnd, out)
 }
 
-/// The app's `--shot-gif` mode: build the Settings window off-screen ONCE, walk every category
-/// tab capturing each as a frame, and encode them into an animated (infinite-loop) GIF at
+/// The app's `--shot-gif` mode: capture every category tab, each in its own fresh `--shot --tab N`
+/// process, then encode them into an animated (infinite-loop) GIF at
 /// `out` — the regenerable README/site asset that cycles the Settings tabs. Frames are
 /// downscaled to the 96-dpi design width so the GIF stays crisp + small. Returns whether the
 /// GIF was written.

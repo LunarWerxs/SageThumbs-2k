@@ -493,8 +493,8 @@ unsafe fn list_item_postpaint(lv: &mut NMLVCUSTOMDRAW) {
 }
 
 /// Format-list custom draw: zebra rows, an accent selection, an accent extension
-/// column and a muted category column. (The per-row checkbox glyph is still the
-/// control's — it's the enable/disable switch for each format.)
+/// column and a muted category column. (The per-row checkbox is replaced by our
+/// rounded glyph in `list_item_postpaint`.)
 pub(super) unsafe fn draw_list_item(p: *mut NMLVCUSTOMDRAW) -> isize {
     let lv = &mut *p;
     let stage = lv.nmcd.dwDrawStage.0;

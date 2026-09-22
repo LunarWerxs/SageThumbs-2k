@@ -4,7 +4,7 @@ use super::*;
 
 thread_local! {
     /// Bitmask of pages whose dot has already been ACKNOWLEDGED, cached from settings.
-    /// `u32::MAX` is the "not loaded yet" sentinel — there are only `NCAT` (10) pages, so
+    /// `u32::MAX` is the "not loaded yet" sentinel — there are only `NCAT` (11) pages, so
     /// it can never be a real mask.
     static DOTS_SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
 }

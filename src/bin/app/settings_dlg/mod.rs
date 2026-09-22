@@ -66,9 +66,9 @@ use crate::win::{
 // this module, so they freely call its private helpers via `super::` (s, fill,
 // control_text, set_check, is_checked, …); the parent reaches their entry points
 // via the module path (restyle::…, scroll::…, list::…).
-mod list;
+mod list; // the self-contained ListView subclass + bulk-toggle context menu
 mod restyle; // dark-mode owner-draw painting + the combo/scrollbar subclasses
-mod scroll; // the left-column scroll subsystem (incl. its clipping mask) // the self-contained ListView subclass + bulk-toggle context menu
+mod scroll; // the left-column scroll subsystem (incl. its clipping mask)
 
 mod ids;
 pub(super) use ids::*;
@@ -506,7 +506,7 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
 
 /// Size the Description column to fill the list's current visible width — no dead
 /// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
-/// after the user drags either of the two columns to its left.
+/// after the user drags any of the columns to its left.
 ///
 /// It is now UNCONDITIONAL. There used to be a thread-local "the user dragged Description, so
 /// leave it alone" flag guarding this, which existed only so the auto-fit would not snap such a
@@ -517,10 +517,10 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
 pub(super) unsafe fn fit_columns(list: HWND) {
     let mut crc = RECT::default();
     let _ = GetClientRect(list, &mut crc);
-    // MEASURE the extension + category columns rather than assuming 64 + 92. Those were the
-    // creation widths, and they were also a silent dependency: the moment the user could drag
-    // them (issue #26.3) a hard-coded pair would leave Description overlapping or short by
-    // exactly however far the drag went.
+    // MEASURE the three leading columns (extension, category and How) rather than assuming
+    // 64 + 92 + a How width. Those were the creation widths, and they were also a silent
+    // dependency: the moment the user could drag them (issue #26.3) a hard-coded trio would
+    // leave Description overlapping or short by exactly however far the drag went.
     let fixed: i32 = (0..3)
         .map(|c| {
             SendMessageW(

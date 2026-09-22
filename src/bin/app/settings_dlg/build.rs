@@ -20,14 +20,13 @@ struct Styles {
 impl Styles {
     fn new() -> Self {
         let cb = WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP;
-        // Dark mode: borderless, right-aligned number fields (a rounded field frame is
-        // drawn behind them in WM_PAINT). Light mode: the original bordered,
-        // left-aligned native edits.
+        // Borderless, right-aligned number fields in both themes (a rounded field
+        // frame is drawn behind them in WM_PAINT regardless of theme).
         let edit_style = WINDOW_STYLE((ES_NUMBER | ES_AUTOHSCROLL | ES_RIGHT) as u32) | WS_TABSTOP;
-        // Section headers owner-draw (uppercase label + hairline divider) in dark
-        // mode; light mode keeps the plain native label but with SS_NOPREFIX so a
-        // localized '&' (e.g. "Limits & quality") isn't eaten as a mnemonic. The
-        // width is widened so the dark-mode divider runs to the column edge.
+        // Section headers always owner-draw (uppercase label + hairline divider) in
+        // both themes; a localized '&' (e.g. "Limits & quality") isn't eaten as a
+        // mnemonic because draw_section_header passes DT_NOPREFIX. The width is
+        // widened so the divider runs to the column edge.
         let hdr = WINDOW_STYLE(SS_OWNERDRAW);
         Styles {
             cb,
@@ -86,7 +85,7 @@ fn describe_unknown_chord(packed: u32) -> String {
 /// Append one combo item for a chord outside the curated list, with its packed
 /// value stashed as the item's data (read back at Save via `CB_GETITEMDATA`
 /// instead of re-deriving it from position). Returns the new item's index.
-unsafe fn append_unknown_chord_item(combo: HWND, packed: u32) -> usize {
+pub(super) unsafe fn append_unknown_chord_item(combo: HWND, packed: u32) -> usize {
     let label = wide(&describe_unknown_chord(packed));
     let idx = SendMessageW(
         combo,

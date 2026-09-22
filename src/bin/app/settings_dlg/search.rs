@@ -492,7 +492,7 @@ fn tip_lc(id: i32) -> String {
         .unwrap_or_default()
 }
 
-/// EN_CHANGE: rebuild the dropdown for the current needle. Under 2 chars hides it — a
+/// EN_CHANGE: rebuild the dropdown for the current needle. Under 2 bytes hides it — a
 /// 1-char needle matches half the dialog and reads as noise, not as search results.
 pub(super) unsafe fn on_change(hwnd: HWND) {
     let needle = get_edit_text(hwnd, ID_SEARCH_GLOBAL).trim().to_lowercase();

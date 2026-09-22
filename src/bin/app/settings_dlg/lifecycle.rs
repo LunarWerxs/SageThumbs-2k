@@ -40,8 +40,13 @@ pub(super) unsafe fn on_lifecycle_msg(
 /// The dialog's one exit path — WM_CLOSE (the window X / Alt+F4) and IDCANCEL (the "Close"
 /// button) used to each carry their own copy of this. Blocks up to 6s flushing any pending
 /// sync push before tearing the window down, so a Save right before closing isn't lost to a
-/// race with the background push.
+/// race with the background push. The window is hidden FIRST: it is going away either way,
+/// and left on screen it sat frozen for the whole wait, which reads as a hang.
 pub(super) unsafe fn close_settings(hwnd: HWND) {
+    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+        hwnd,
+        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+    );
     crate::sync_client::flush_pending(std::time::Duration::from_secs(6));
     let _ = DestroyWindow(hwnd);
 }

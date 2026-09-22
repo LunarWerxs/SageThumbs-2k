@@ -183,13 +183,6 @@ pub(super) unsafe fn build_licence_page(hwnd: HWND, hinst: HINSTANCE, sty: &Styl
 
     set_window_title(hwnd);
     load_values(hwnd);
-    // The custom-action toggle reflects whether a hotkey is bound; it gates the two combos.
-    check(
-        hwnd,
-        ID_CUSTOM_ACTION_ENABLE,
-        settings::custom_action_hotkey().1 != 0,
-    );
-    update_custom_action_enabled(hwnd);
     add_tooltips(hwnd, hinst);
     // v3 layout: relocate the controls created above into a category nav-rail +
     // content-pane shell (replacing the single scrolling column). Done as a

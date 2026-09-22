@@ -62,12 +62,12 @@ fn needed_title_height(dpi: u32) -> Option<i32> {
     }
 }
 
-/// THE regression. The heading box used to be a flat `dpi_scale(26)`; the reporter at 300%
+/// The heading box used to be a flat `dpi_scale(26)`; the reporter at 300%
 /// scaling lost the descender of the "g" in "Right-Click Menu" (issue #26).
 ///
-/// This measures the real font at several scalings and asserts the box we NOW compute
-/// always fits it. It also reports whether the OLD constant would have fitted, so if the
-/// shipped font ever changes, this test says which way it moved instead of silently passing.
+/// This measures the real font at several scalings and reports whether the OLD constant
+/// would have fitted, so if the shipped font ever changes, this test says which way it
+/// moved instead of silently passing.
 #[test]
 fn the_heading_box_fits_the_title_font_at_every_scaling() {
     let mut measured = 0;
@@ -77,17 +77,15 @@ fn the_heading_box_fits_the_title_font_at_every_scaling() {
         };
         measured += 1;
         assert!(needed > 0, "{dpi} dpi: font reported no height");
-        // What the code now uses IS the measured height, so the invariant is that the
-        // measurement is sane and monotonic with DPI, and that we never fall back to a
-        // box smaller than the glyphs.
+        // What the code now uses IS the measured height, so the only invariant left for
+        // this test is that the measurement itself is sane.
         let old_box = unsafe { MulDiv(26, dpi as i32, 96) };
         if old_box < needed {
             eprintln!(
                 "{dpi} dpi: old fixed box {old_box}px was SHORTER than the {needed}px the                      font needs — this is the clipping issue #26 reported"
             );
         }
-        // The new box is `needed`, so it fits by construction; assert that explicitly so
-        // the test fails if someone reintroduces a constant here.
+        // The new box is `needed`, so it fits by construction.
         let new_box = needed;
         assert!(
             new_box >= needed,

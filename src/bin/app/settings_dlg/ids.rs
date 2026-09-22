@@ -413,6 +413,9 @@ mod tests {
                     continue;
                 };
                 // Skip anything computed from another constant; only plain literals compare.
+                // Drop a trailing `//` comment first, or the parse fails and the constant is
+                // silently skipped rather than checked.
+                let value = value.split("//").next().unwrap_or(value);
                 let Ok(value) = value.trim().trim_end_matches(';').trim().parse::<i64>() else {
                     continue;
                 };

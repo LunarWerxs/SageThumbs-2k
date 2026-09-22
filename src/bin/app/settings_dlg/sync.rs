@@ -93,11 +93,12 @@ pub(super) fn sync_button_label() -> String {
 /// "never claims a completed sync that did not happen" invariant is one thing to test
 /// rather than a property of scattered `t()` calls.
 ///
-/// `Off`/`Connecting` are never returned by [`derive_sync_state`] (the persistent signals
-/// it reads have no notion of "mid sign-in"), `Connecting` is only ever constructed
+/// `Connecting` is never returned by [`derive_sync_state`] (the persistent signals
+/// it reads have no notion of "mid sign-in"), it is only ever constructed
 /// directly, for the transient overlay `begin_connect`/`begin_retry_initial_sync` show
-/// while their worker thread is running. Everything else is reachable from
-/// [`derive_sync_state`] given the right [`SyncSignals`].
+/// while their worker thread is running. Everything else, `Off` included (returned
+/// whenever `signed_in` is false), is reachable from [`derive_sync_state`] given the
+/// right [`SyncSignals`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SyncState {
     /// Not signed in.

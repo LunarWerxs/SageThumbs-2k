@@ -3,7 +3,8 @@
 use super::*;
 
 /// Every `settings::set_*` call in the `apply_*` chain below is wrapped in this instead of
-/// the bare `let _ = ...;` the whole file used to write everywhere: a failed HKCU write (a
+/// the bare `let _ = ...;` the whole file used to write everywhere — with the exception of
+/// the two `set_format_enabled` writes in `apply_format_flags`: a failed HKCU write (a
 /// portable ini on read-only media, a sharing violation, permissions) used to vanish with no
 /// error and no log line — the dialog closed clean, the file/registry never changed, and
 /// there was nothing anywhere to say why. This just records that SOMETHING failed; the
@@ -254,7 +255,7 @@ pub(super) unsafe fn apply_container_settings(hwnd: HWND) {
     ));
 }
 
-/// The numeric tuning fields (MaxSize, thumbnail size, video offset, JPEG/PNG quality).
+/// The numeric tuning fields (MaxSize, thumbnail size, video offset).
 ///
 /// These go through `set_dword_tracking_default`, which stores a value only when it
 /// differs from the default and DELETES it when it matches. This dialog writes every

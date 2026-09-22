@@ -2,8 +2,9 @@
 //! WM_VSCROLL). The v3 nav-rail layout (`navrail::apply_v3_layout`) hides both the
 //! scrollbar and the fold mask this module was built to drive unconditionally at
 //! dialog init, so nothing here is visible today, but `mod.rs` still routes
-//! WM_VSCROLL/WM_MOUSEWHEEL/WM_DRAWITEM through it, so the plumbing stays live and
-//! correct rather than silently no-op. The original per-control reposition/hide-show
+//! WM_VSCROLL/WM_MOUSEWHEEL/WM_DRAWITEM through it; the plumbing is inert under
+//! this layout: no range or scrollbar handle is ever seeded, so `scroll_to` clamps to
+//! zero and returns without doing anything. The original per-control reposition/hide-show
 //! pass (an `items: Vec<HWND>` populated by a since-removed `init_scroll`) was deleted
 //! here: it read a field nothing in the tree ever pushed to, so it always iterated
 //! zero controls. Removing it changes nothing observable: it never did anything.

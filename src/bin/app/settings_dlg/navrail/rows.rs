@@ -19,8 +19,9 @@ pub(in super::super) enum Row {
     ListFill(i32),          // a list that fills down to the footer
 }
 
-// Category order: General (Thumbnails+General merged) · File types · Ebook/comic ·
-// Right-click menu · Screenshots · Advanced.
+// Category order: General (Thumbnails+General merged) · Appearance · File types ·
+// Ebook/comic · Right-click menu · Screenshots · Quick action · Advanced ·
+// Quick preview · Data & Backup · Licence.
 /// General = the merged Thumbnails + General (Custom action is its own tab now).
 pub(super) const GENERAL: [Row; 11] = {
     use Row::*;

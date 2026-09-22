@@ -47,8 +47,9 @@ pub(super) const CAT_LICENCE: usize = NCAT - 1;
 // build-time check stays here. The nav ids and ID_PANE_HEADER share one id space, and at
 // NCAT = 11 they fit with exactly ZERO headroom: nav owns 1700..=1710 and the header sits
 // on 1711. A twelfth category would silently hand the pane header a nav item's identity,
-// and the two `(ID_NAV_BASE..ID_NAV_BASE + NCAT)` range tests in `mod.rs`'s WM_COMMAND
-// would start routing clicks on the header as a category switch. Nothing about that fails
+// and the two `(ID_NAV_BASE..ID_NAV_BASE + NCAT)` range tests — `commands.rs`'s WM_COMMAND,
+// which routes nav clicks, and `paintmsg.rs`'s WM_DRAWITEM, which picks the active row to draw
+// — would start routing clicks on the header as a category switch. Nothing about that fails
 // to compile or looks wrong in a diff, which is exactly the shape of bug this repo keeps
 // paying for, so it fails the BUILD instead.
 // (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8,

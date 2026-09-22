@@ -367,9 +367,10 @@ pub(in super::super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> us
     }
 }
 
-/// Re-select every combo whose current index [`load_values`] cannot restore on its own — it
-/// has no `CB_SETCURSEL` calls of its own, because these combos are seeded ONCE, inline,
-/// when `build::build_controls` creates them. That is fine for the dialog's normal lifetime
+/// Re-select every combo whose current index [`load_values`] cannot restore on its own —
+/// because these combos are seeded ONCE, inline, when `build::build_controls` creates them
+/// ([`load_values`] does `CB_SETCURSEL` `ID_APP_THEME` itself, so it is not one of these).
+/// That is fine for the dialog's normal lifetime
 /// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import
 /// and after an unattended sync pull) calls `load_values` WITHOUT re-running `build_controls`,
 /// so without this the combos below kept showing the PRE-import on-screen selection — and
@@ -380,15 +381,28 @@ pub(in super::super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> us
 /// otherwise. The custom-action Enable checkbox (not a combo, but the same "derived from a
 /// setting `load_values` doesn't touch" shape) and its dependent greying are re-derived here
 /// too, for the same reason.
-pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_APP_THEME) {
-        SendMessageW(
-            c,
-            CB_SETCURSEL,
-            Some(WPARAM(settings::app_theme() as usize)),
-            None,
-        );
+/// The index to select in hotkey combo `c` for the stored chord `packed` (`vk` its key). A
+/// curated preset, or no chord at all, is answered by `by_position`. Any other chord is found
+/// by its item DATA, and gets its own item if the combo has none: an Import or a sync pull can
+/// bring in a chord the dialog was not built with, and `apply_settings` reads the selection
+/// back with `CB_GETITEMDATA`, so falling back to index 0 there overwrote the imported chord
+/// with the first preset on the next Save.
+unsafe fn chord_combo_index(
+    c: HWND,
+    packed: u32,
+    vk: u32,
+    by_position: impl Fn(u32) -> usize,
+) -> usize {
+    if vk == 0 || SHOT_PRESETS.iter().any(|&(_, p)| p == packed) {
+        return by_position(packed);
     }
+    let count = SendMessageW(c, CB_GETCOUNT, None, None).0.max(0) as usize;
+    (0..count)
+        .find(|&i| SendMessageW(c, CB_GETITEMDATA, Some(WPARAM(i)), None).0 == packed as isize)
+        .unwrap_or_else(|| super::super::build::append_unknown_chord_item(c, packed))
+}
+
+pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         SendMessageW(
             c,
@@ -406,7 +420,12 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
         SendMessageW(
             c,
             CB_SETCURSEL,
-            Some(WPARAM(preset_combo_index((m << 8) | v))),
+            Some(WPARAM(chord_combo_index(
+                c,
+                (m << 8) | v,
+                v,
+                preset_combo_index,
+            ))),
             None,
         );
     }
@@ -415,7 +434,12 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
         SendMessageW(
             c,
             CB_SETCURSEL,
-            Some(WPARAM(quick_hotkey_combo_index((m << 8) | v))),
+            Some(WPARAM(chord_combo_index(
+                c,
+                (m << 8) | v,
+                v,
+                quick_hotkey_combo_index,
+            ))),
             None,
         );
     }
@@ -432,7 +456,9 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
         SendMessageW(
             c,
             CB_SETCURSEL,
-            Some(WPARAM(custom_action_hk_combo_index((m << 8) | v, v))),
+            Some(WPARAM(chord_combo_index(c, (m << 8) | v, v, |p| {
+                custom_action_hk_combo_index(p, v)
+            }))),
             None,
         );
     }
