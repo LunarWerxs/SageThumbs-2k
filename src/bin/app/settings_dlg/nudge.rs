@@ -278,7 +278,7 @@ fn clamp_row(row: &mut [(i32, i32)], pane_w: i32) {
 /// Where each button in the row lands, in design px: `(id, x, y, w, h)`, right-aligned inside the
 /// card and sharing its bottom row. Laid out right-to-left from the card's inner edge so the
 /// primary action is the one nearest the corner the eye lands on.
-fn button_rects(
+pub(super) fn button_rects(
     strip_top: i32,
     pane_x: i32,
     pane_w: i32,
@@ -317,15 +317,22 @@ pub(super) unsafe fn place(
     // Right-aligned inside the card, bottom row, laid out right-to-left from the card's inner edge
     // so the primary action is the one nearest the corner the eye lands on.
     let row = button_row(hwnd, pane_w);
-    for (id, x, y, w, h) in button_rects(strip_top, pane_x, pane_w, card_h, &row) {
-        put(id, x, y, w, h);
+    let rects = button_rects(strip_top, pane_x, pane_w, card_h, &row);
+    for (id, x, y, w, h) in &rects {
+        put(*id, *x, *y, *w, *h);
+    }
+    raise_above(hwnd, &rects.iter().map(|r| r.0).collect::<Vec<_>>());
+}
 
-        // Raise each button above the card EXPLICITLY. The buttons overlap an owner-draw STATIC
-        // and the layout pass positions everything with SWP_NOZORDER, so whichever way the shell
-        // happened to order the siblings at creation is what decides whether they are visible at
-        // all - and it ordered them UNDER the card, which rendered as a blank panel with no
-        // buttons in it and no error anywhere.
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+/// Raise each of `ids` above its siblings EXPLICITLY. The buttons overlap an owner-draw STATIC and
+/// the layout pass positions everything with SWP_NOZORDER, so whichever way the shell happened to
+/// order the siblings at creation is what decides whether they are visible at all - and it ordered
+/// them UNDER the card, which rendered as a blank panel with no buttons in it and no error anywhere.
+///
+/// The ids are raised in the order given; that order decides the resulting stacking among them.
+pub(super) unsafe fn raise_above(parent: HWND, ids: &[i32]) {
+    for &id in ids {
+        if let Ok(c) = GetDlgItem(Some(parent), id) {
             let _ = SetWindowPos(
                 c,
                 Some(HWND_TOP),

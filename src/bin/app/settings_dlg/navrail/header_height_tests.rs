@@ -58,7 +58,7 @@ fn needed_title_height(dpi: u32) -> Option<i32> {
         SelectObject(dc, old);
         let _ = DeleteDC(dc);
         let _ = DeleteObject(HGDIOBJ(font.0));
-        got.then_some(tm.tmHeight + tm.tmExternalLeading)
+        got.then_some(super::draw::title_line_height(&tm))
     }
 }
 

@@ -44,6 +44,18 @@ thread_local! {
     static SEARCH: std::cell::RefCell<SearchState> = std::cell::RefCell::new(SearchState::default());
 }
 
+/// Set the search box's cue banner text in the active language. `WPARAM(1)` keeps the cue
+/// visible while the box is focused, until typing starts.
+unsafe fn set_cue(edit: HWND) {
+    let cue = wide(t("search_settings_cue"));
+    SendMessageW(
+        edit,
+        EM_SETCUEBANNER,
+        Some(WPARAM(1)),
+        Some(LPARAM(cue.as_ptr() as isize)),
+    );
+}
+
 /// Create the search box + its (hidden) results dropdown. Called from `apply_v3_layout`,
 /// OUTSIDE the per-category control lists, so both stay visible on every page.
 pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
@@ -86,13 +98,7 @@ pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
     // Cue banner: the affordance text lives inside the box, costing no layout row.
-    let cue = wide(t("search_settings_cue"));
-    SendMessageW(
-        edit,
-        EM_SETCUEBANNER,
-        Some(WPARAM(1)), // keep the cue while focused, until typing starts
-        Some(LPARAM(cue.as_ptr() as isize)),
-    );
+    set_cue(edit);
     // Keyboard path into the results dropdown: VK_DOWN moves the highlighted row,
     // VK_RETURN commits it (or the first row when none is highlighted yet).
     let _ = SetWindowSubclass(edit, Some(search_edit_subclass), 1, 0);
@@ -402,13 +408,7 @@ pub(super) fn invalidate() {
 /// Re-set the cue banner in the (possibly just-changed) active language.
 pub(super) unsafe fn refresh_cue(hwnd: HWND) {
     if let Ok(edit) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
-        let cue = wide(t("search_settings_cue"));
-        SendMessageW(
-            edit,
-            EM_SETCUEBANNER,
-            Some(WPARAM(1)),
-            Some(LPARAM(cue.as_ptr() as isize)),
-        );
+        set_cue(edit);
     }
 }
 

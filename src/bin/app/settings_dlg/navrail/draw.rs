@@ -224,6 +224,13 @@ pub(in super::super) unsafe fn draw_nav_item(hwnd: HWND, d: &DRAWITEMSTRUCT, act
     }
 }
 
+/// The cell height one line of the pane-header TITLE needs: `tmHeight` covers ascent + descent,
+/// `tmExternalLeading` is the gap the face asks for between lines. Shared by the header draw
+/// below and the header-height test so the drawn box and the measured box can't drift apart.
+pub(super) fn title_line_height(tm: &TEXTMETRICW) -> i32 {
+    tm.tmHeight + tm.tmExternalLeading
+}
+
 /// Owner-draw the per-pane header: an accent-tinted icon chip + the active
 /// category's bold title + a muted blurb (the v3 page-header look).
 pub(in super::super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) {
@@ -298,7 +305,7 @@ pub(in super::super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) 
     let title_top = rc.top - dpi_scale(hwnd, 2);
     let mut tm = TEXTMETRICW::default();
     let line_h = if GetTextMetricsW(hdc, &mut tm).as_bool() {
-        tm.tmHeight + tm.tmExternalLeading
+        title_line_height(&tm)
     } else {
         dpi_scale(hwnd, 26) // metrics unavailable — the old constant, plus the 2px it lost
     };

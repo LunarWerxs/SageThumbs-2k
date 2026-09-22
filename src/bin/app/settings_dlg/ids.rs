@@ -59,8 +59,6 @@ pub(super) const ID_SYNC_STATUS: i32 = 1202;
 // Left-column scroll plumbing: a vertical scrollbar + an opaque mask that hides
 // controls scrolled below the viewport (so the left options can grow/scroll
 // without making the window taller).
-pub(super) const ID_SCROLLBAR: i32 = 1131;
-pub(super) const ID_LEFT_MASK: i32 = 1132;
 // Live search box that filters the supported-file-types list.
 pub(super) const ID_SEARCH: i32 = 1133;
 // Screenshot capture service: an enable toggle + a hotkey preset picker (the
@@ -342,12 +340,6 @@ pub(crate) const SHOT_PRESETS: &[(&str, u32)] = &[
 /// deliberately NOT the main `Ctrl + PrtScn` default, so enabling the instant
 /// screenshot doesn't try to grab a chord already owned by the editor hotkey.
 pub(super) const QUICK_DEFAULT_LABEL: &str = "Ctrl + Shift + S";
-
-// Left-column scroll geometry (96-dpi design px). The viewport is the visible
-// band of the left options; content taller than it scrolls.
-pub(super) const LEFT_VIEW_TOP: i32 = 6;
-pub(super) const LEFT_VIEW_BOTTOM: i32 = 442;
-pub(super) const LEFT_RIGHT_EDGE: i32 = 340; // x past which a control is "right column" (not scrolled)
 
 // ===== The "you could be signed in" banner (see `settings_dlg/nudge.rs`) =====
 //

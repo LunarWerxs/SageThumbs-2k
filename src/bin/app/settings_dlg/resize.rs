@@ -12,11 +12,10 @@ use super::*;
 // The v3 nav-rail shell (`navrail::apply_v3_layout`) dropped WS_THICKFRAME (see
 // main.rs), so the window is fixed-size now and WM_SIZE only ever fires once, at
 // creation — the "first call just captures the design layout" branch below, which
-// never falls through to an actual reflow. Left in place rather than deleted
-// outright: fully retiring it means retiring its scroll-module counterpart too
-// (`scroll::recompute_scroll`/`on_vscroll`/`scroll_to`, in the sibling `scroll.rs`),
-// which is a wider cut than this pass makes — REFLOW_CTLS below is trimmed to drop
-// the controls the v3 layout keeps permanently hidden either way (A048/A261).
+// never falls through to an actual reflow. The left-column scroll subsystem this
+// used to drive was removed on 2026-09-22 (the v3 layout had hidden its scrollbar and
+// mask since it shipped); REFLOW_CTLS below is trimmed to drop the controls the v3
+// layout keeps permanently hidden (A048/A261).
 
 pub(super) struct ReflowCtl {
     id: i32,
@@ -125,8 +124,7 @@ pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
             }
         }
     });
-    scroll::recompute_scroll(hwnd);
-    // The grown viewport / moved chrome need a repaint (the mask + dividers).
+    // The moved chrome needs a repaint (the dividers).
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 

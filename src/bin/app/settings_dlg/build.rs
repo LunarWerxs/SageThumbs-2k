@@ -47,7 +47,6 @@ pub(super) unsafe fn build_controls(hwnd: HWND, hinst: HINSTANCE) {
     build_sync(&mut lc, &sty);
     build_quick_preview(&mut lc, &sty);
     build_file_types(hwnd, hinst, &sty);
-    build_scrollbar(hwnd, hinst);
     let layout = sponsor_layout(is_dark());
     build_sponsor(hwnd, hinst);
     build_signin_banner(hwnd, hinst);
@@ -117,14 +116,11 @@ fn preset_index_for(current: u32, default_when_unset: usize) -> Option<usize> {
     SHOT_PRESETS.iter().position(|&(_, p)| p == current)
 }
 
-/// Populate a hotkey combo with the curated [`SHOT_PRESETS`] (each item's data =
-/// its packed chord), append a trailing item for `current` when it's a real
-/// (non-zero) chord absent from that list, and return the index to select —
-/// `default_when_unset` when `current` is 0 (a combo-specific "nothing saved
-/// yet" default; see callers). Save-time code reads the selection back with
-/// `CB_GETITEMDATA`, so the appended item round-trips exactly like a curated
-/// one instead of collapsing to preset 0 on the next Save (the bug this fixes).
-unsafe fn populate_hotkey_presets(combo: HWND, current: u32, default_when_unset: usize) -> usize {
+/// Append every curated [`SHOT_PRESETS`] chord to `combo`, each item's data = its
+/// packed chord (read back at Save via `CB_GETITEMDATA`). The items take whatever
+/// indices the combo hands out, so a caller that reserves a leading entry (the
+/// custom-action combo's "(none)") appends that one first and calls this after.
+pub(super) unsafe fn append_shot_presets(combo: HWND) {
     for &(label, packed) in SHOT_PRESETS {
         let w = wide(label);
         let idx = SendMessageW(combo, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize))).0;
@@ -135,6 +131,17 @@ unsafe fn populate_hotkey_presets(combo: HWND, current: u32, default_when_unset:
             Some(LPARAM(packed as isize)),
         );
     }
+}
+
+/// Populate a hotkey combo with the curated [`SHOT_PRESETS`] (each item's data =
+/// its packed chord), append a trailing item for `current` when it's a real
+/// (non-zero) chord absent from that list, and return the index to select —
+/// `default_when_unset` when `current` is 0 (a combo-specific "nothing saved
+/// yet" default; see callers). Save-time code reads the selection back with
+/// `CB_GETITEMDATA`, so the appended item round-trips exactly like a curated
+/// one instead of collapsing to preset 0 on the next Save (the bug this fixes).
+unsafe fn populate_hotkey_presets(combo: HWND, current: u32, default_when_unset: usize) -> usize {
+    append_shot_presets(combo);
     match preset_index_for(current, default_when_unset) {
         Some(idx) => idx,
         None => append_unknown_chord_item(combo, current),

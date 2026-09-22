@@ -107,8 +107,7 @@ pub(super) enum SyncState {
     Connecting,
     /// Authenticated, but the first sync never completed AND the last attempt reached the
     /// server (it answered with a rejection, or hasn't been retried since a rejection).
-    /// `error` carries the server's own message when one is known this session.
-    InitialSyncPending { error: Option<String> },
+    InitialSyncPending,
     /// The last automatic attempt (an initial sync retry, or a Save's push) never reached
     /// the server at all, no HTTP response came back at all (DNS/TCP/TLS/timeout via
     /// `http::request` returning `None`), as opposed to [`SyncState::InitialSyncPending`]
@@ -160,9 +159,7 @@ pub(super) fn derive_sync_state(signals: &SyncSignals) -> SyncState {
         return SyncState::Offline;
     }
     if signals.initial_sync_pending {
-        return SyncState::InitialSyncPending {
-            error: signals.error.clone(),
-        };
+        return SyncState::InitialSyncPending;
     }
     if signals.push_pending {
         return SyncState::SavedLocally {
@@ -187,9 +184,7 @@ pub(super) fn render_sync_state(state: &SyncState) -> (String, bool) {
     match state {
         SyncState::Off => (t("sync_state_off").to_string(), false),
         SyncState::Connecting => (t("sync_state_connecting").to_string(), false),
-        SyncState::InitialSyncPending { .. } => {
-            (t("sync_state_initial_pending").to_string(), false)
-        }
+        SyncState::InitialSyncPending => (t("sync_state_initial_pending").to_string(), false),
         SyncState::Offline => (t("sync_state_offline").to_string(), false),
         SyncState::SavedLocally { error: Some(e) } => {
             (t("sync_state_pending_err").replace("{error}", e), false)
@@ -446,9 +441,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             let state = if crate::sync_client::last_attempt_was_offline() {
                 SyncState::Offline
             } else {
-                SyncState::InitialSyncPending {
-                    error: Some(error.clone()),
-                }
+                SyncState::InitialSyncPending
             };
             set_sync_status(hwnd, Some(render_sync_state(&state)));
             crate::nudge::mark_signed_in();

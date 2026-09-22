@@ -16,25 +16,24 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
     DrawTextW, EndPaint, FillRect, GetDC, GetStockObject, GetTextExtentPoint32W, InvalidateRect,
-    RedrawWindow, ReleaseDC, ScreenToClient, SelectObject, SetBkMode, SetDCBrushColor,
-    SetTextCharacterExtra, SetTextColor, SetViewportOrgEx, DC_BRUSH, DT_CENTER, DT_END_ELLIPSIS,
-    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ, PAINTSTRUCT,
-    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY, TRANSPARENT,
+    ReleaseDC, ScreenToClient, SelectObject, SetBkMode, SetDCBrushColor, SetTextCharacterExtra,
+    SetTextColor, SetViewportOrgEx, DC_BRUSH, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::UI::Controls::{
-    SetScrollInfo, CDDS_ITEMPOSTPAINT, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDDS_SUBITEM, CDIS_FOCUS,
-    CDIS_HOT, CDIS_SELECTED, CDRF_DODEFAULT, CDRF_NEWFONT, CDRF_NOTIFYITEMDRAW,
-    CDRF_NOTIFYPOSTPAINT, CDRF_NOTIFYSUBITEMDRAW, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT,
-    LIST_VIEW_ITEM_STATE_FLAGS, LVCFMT_LEFT, LVCF_FMT, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW,
-    LVIF_PARAM, LVIF_STATE, LVIF_TEXT, LVIS_STATEIMAGEMASK, LVITEMW, LVM_DELETEALLITEMS,
-    LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM,
-    LVM_GETSELECTEDCOUNT, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETBKCOLOR, LVM_SETCOLUMNW,
-    LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW,
-    LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR, LVNI_FOCUSED, LVNI_SELECTED, LVN_ITEMCHANGED,
-    LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_NOCOLUMNHEADER, LVS_NOSORTHEADER, LVS_REPORT,
-    MEASUREITEMSTRUCT, NMCUSTOMDRAW, NMHDR, NMLINK, NMLISTVIEW, NMLVCUSTOMDRAW, NMTTDISPINFOW,
-    NM_CLICK, NM_CUSTOMDRAW, NM_RETURN, ODT_MENU, ODT_STATIC, TTF_IDISHWND, TTF_SUBCLASS,
-    TTM_ADDTOOLW, TTM_POP, TTM_SETMAXTIPWIDTH, TTN_GETDISPINFOW, TTTOOLINFOW, WC_LISTVIEWW,
+    CDDS_ITEMPOSTPAINT, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDDS_SUBITEM, CDIS_FOCUS, CDIS_HOT,
+    CDIS_SELECTED, CDRF_DODEFAULT, CDRF_NEWFONT, CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT,
+    CDRF_NOTIFYSUBITEMDRAW, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, LIST_VIEW_ITEM_STATE_FLAGS,
+    LVCFMT_LEFT, LVCF_FMT, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_PARAM, LVIF_STATE, LVIF_TEXT,
+    LVIS_STATEIMAGEMASK, LVITEMW, LVM_DELETEALLITEMS, LVM_GETHEADER, LVM_GETITEMCOUNT,
+    LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT, LVM_INSERTCOLUMNW,
+    LVM_INSERTITEMW, LVM_SETBKCOLOR, LVM_SETCOLUMNW, LVM_SETCOLUMNWIDTH,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMW, LVM_SETTEXTBKCOLOR,
+    LVM_SETTEXTCOLOR, LVNI_FOCUSED, LVNI_SELECTED, LVN_ITEMCHANGED, LVS_EX_CHECKBOXES,
+    LVS_EX_FULLROWSELECT, LVS_NOCOLUMNHEADER, LVS_NOSORTHEADER, LVS_REPORT, MEASUREITEMSTRUCT,
+    NMCUSTOMDRAW, NMHDR, NMLINK, NMLISTVIEW, NMLVCUSTOMDRAW, NMTTDISPINFOW, NM_CLICK,
+    NM_CUSTOMDRAW, NM_RETURN, ODT_MENU, ODT_STATIC, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW,
+    TTM_POP, TTM_SETMAXTIPWIDTH, TTN_GETDISPINFOW, TTTOOLINFOW, WC_LISTVIEWW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::Shell::{
@@ -65,10 +64,9 @@ use crate::win::{
 // Submodules split out of this (formerly ~2030-line) file. They're descendants of
 // this module, so they freely call its private helpers via `super::` (s, fill,
 // control_text, set_check, is_checked, …); the parent reaches their entry points
-// via the module path (restyle::…, scroll::…, list::…).
+// via the module path (restyle::…, list::…).
 mod list; // the self-contained ListView subclass + bulk-toggle context menu
-mod restyle; // dark-mode owner-draw painting + the combo/scrollbar subclasses
-mod scroll; // the left-column scroll subsystem (incl. its clipping mask)
+mod restyle; // dark-mode owner-draw painting + the combo subclass
 
 mod ids;
 pub(super) use ids::*;
@@ -580,7 +578,7 @@ pub(crate) extern "system" fn wndproc(
         if let Some(r) = on_paint_msg(hwnd, msg, wparam, lparam) {
             return r;
         }
-        if let Some(r) = on_timer_or_scroll_msg(hwnd, msg, wparam, lparam) {
+        if let Some(r) = on_timer_msg(hwnd, msg, wparam) {
             return r;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)

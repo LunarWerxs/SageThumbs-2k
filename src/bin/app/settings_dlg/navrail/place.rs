@@ -10,14 +10,8 @@ use super::*;
 /// other v2-era machinery that still keys off these ids (e.g. mod.rs's resize
 /// reflow table) can check itself against the SAME list instead of hand-copying it
 /// out of sync — see A048/A261.
-pub(in super::super) const V3_ALWAYS_HIDDEN: &[i32] = &[
-    ID_LBL_FORMATS,
-    ID_SCROLLBAR,
-    ID_LEFT_MASK,
-    ID_BANNER,
-    ID_MENU_ITEMS_LIST,
-    ID_MENU_RESET,
-];
+pub(in super::super) const V3_ALWAYS_HIDDEN: &[i32] =
+    &[ID_LBL_FORMATS, ID_BANNER, ID_MENU_ITEMS_LIST, ID_MENU_RESET];
 
 /// Applies `place` to one control and collects it into the row's `Vec`: the tail every
 /// single-control row placer (`Head`, `Switch`, `Btn`, `Status`, `Wide`) repeats verbatim.

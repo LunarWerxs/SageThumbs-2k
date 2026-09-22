@@ -394,16 +394,7 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
         Some(WPARAM(none_idx as usize)),
         Some(LPARAM(0)),
     );
-    for &(label, packed) in SHOT_PRESETS {
-        let w = wide(label);
-        let idx = SendMessageW(ahk, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize))).0;
-        SendMessageW(
-            ahk,
-            CB_SETITEMDATA,
-            Some(WPARAM(idx as usize)),
-            Some(LPARAM(packed as isize)),
-        );
-    }
+    append_shot_presets(ahk);
     let (cam, cav) = settings::custom_action_hotkey();
     let cpacked = (cam << 8) | cav;
     let hksel = if cav == 0 {

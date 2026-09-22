@@ -21,9 +21,6 @@ const BTN_H: i32 = 26;
 /// `BTN_W_ACTION` doc comment for why a floor and not a fixed width (a translated label is
 /// routinely wider).
 const BTN_W_FLOOR: i32 = 120;
-/// Gap between the two buttons.
-const BTN_GAP: i32 = 8;
-const PAD: i32 = 14;
 
 thread_local! {
     static SHOWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -159,35 +156,25 @@ pub(super) unsafe fn place(
     let h = card_h();
     put(ID_BIZNAG_CARD, pane_x, strip_top, pane_w, h);
 
-    let by = strip_top + h - BTN_H - 12;
-    let buy_w = nudge::btn_w(hwnd, t("btn_licence_buy"), BTN_W_FLOOR);
-    let buy_x = pane_x + pane_w - PAD - buy_w;
-    put(ID_BIZNAG_BUY, buy_x, by, buy_w, BTN_H);
-    let open_w = nudge::btn_w(hwnd, t("biznag_btn"), BTN_W_FLOOR);
-    put(
-        ID_BIZNAG_ACTION,
-        buy_x - BTN_GAP - open_w,
-        by,
-        open_w,
-        BTN_H,
-    );
+    // Buy first so it lands at the far right; laid out right-to-left by the shared placer.
+    let row = [
+        (
+            ID_BIZNAG_BUY,
+            nudge::btn_w(hwnd, t("btn_licence_buy"), BTN_W_FLOOR),
+        ),
+        (
+            ID_BIZNAG_ACTION,
+            nudge::btn_w(hwnd, t("biznag_btn"), BTN_W_FLOOR),
+        ),
+    ];
+    for (id, x, y, w, h) in nudge::button_rects(strip_top, pane_x, pane_w, h, &row) {
+        put(id, x, y, w, h);
+    }
 
-    // Raise the buttons above the card explicitly — same z-order fix `nudge::place`
+    // Raise the buttons above the card explicitly — same z-order fix `nudge::raise_above`
     // documents (the layout pass positions everything with SWP_NOZORDER, so creation
     // order is what decides whether a button paints over the owner-draw card under it).
-    for id in [ID_BIZNAG_ACTION, ID_BIZNAG_BUY] {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            let _ = SetWindowPos(
-                c,
-                Some(HWND_TOP),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-        }
-    }
+    nudge::raise_above(hwnd, &[ID_BIZNAG_ACTION, ID_BIZNAG_BUY]);
 }
 
 /// Draw the card: a tinted rounded panel, the wrapped body, no headline.

@@ -743,57 +743,5 @@ unsafe extern "system" fn combo_subclass(
     DefSubclassProc(h, msg, w, l)
 }
 
-/// Owner-draw the left scrollbar so its track blends with the column background
-/// (no contrasting groove) — just a rounded thumb sized/positioned from the
-/// scroll info. Hit-testing/arrows still work (the control handles those).
-pub(super) unsafe extern "system" fn scrollbar_subclass(
-    h: HWND,
-    msg: u32,
-    w: WPARAM,
-    l: LPARAM,
-    uid: usize,
-    _data: usize,
-) -> LRESULT {
-    match msg {
-        WM_NCDESTROY => {
-            let _ = RemoveWindowSubclass(h, Some(scrollbar_subclass), uid);
-        }
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(h, &mut ps);
-            let mut rc = RECT::default();
-            let _ = GetClientRect(h, &mut rc);
-            fill(hdc, &rc, DARK_BG()); // track = column background
-            let mut si = SCROLLINFO {
-                cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
-                fMask: SIF_ALL,
-                ..Default::default()
-            };
-            let _ = GetScrollInfo(h, SB_CTL, &mut si);
-            let range = (si.nMax - si.nMin + 1).max(1);
-            let track_h = (rc.bottom - rc.top).max(1);
-            let page = (si.nPage as i32).max(1);
-            // The minimum yields to a track shorter than it (clamp panics on min > max).
-            let thumb_h = ((page * track_h) / range).clamp(s(h, 28).min(track_h), track_h);
-            let max_pos = (range - page).max(1);
-            let pos = si.nPos.clamp(0, max_pos);
-            let thumb_y = (pos * (track_h - thumb_h)) / max_pos;
-            let pad = s(h, 4); // thinner thumb (~6px) to match the list's native scrollbar
-            let rad = s(h, 4);
-            let (tx, ty) = (rc.left + pad, rc.top + thumb_y);
-            let (tw, th) = ((rc.right - pad) - tx, thumb_h);
-            gdip::with_aa(hdc, |g| {
-                let b = gdip::brush(BORDER_STRONG());
-                gdip::fill_round(g, b, tx, ty, tw, th, rad);
-                gdip::drop_brush(b);
-            });
-            let _ = EndPaint(h, &ps);
-            return LRESULT(0);
-        }
-        _ => {}
-    }
-    DefSubclassProc(h, msg, w, l)
-}
-
 #[cfg(test)]
 mod tests;

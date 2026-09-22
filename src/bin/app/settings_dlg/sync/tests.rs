@@ -145,7 +145,7 @@ fn initial_sync_pending_splits_into_offline_or_pending_by_reachability() {
     );
     assert_eq!(
         derive_sync_state(&signals(true, true, false, false)),
-        SyncState::InitialSyncPending { error: None }
+        SyncState::InitialSyncPending
     );
 }
 
@@ -208,10 +208,7 @@ fn offline_initial_pending_and_saved_locally_never_render_as_synced() {
     let synced_as_example = t("sync_state_synced_as").replace("{who}", "ann@example.com");
     for state in [
         SyncState::Offline,
-        SyncState::InitialSyncPending { error: None },
-        SyncState::InitialSyncPending {
-            error: Some("boom".to_string()),
-        },
+        SyncState::InitialSyncPending,
         SyncState::SavedLocally { error: None },
         SyncState::SavedLocally {
             error: Some("boom".to_string()),

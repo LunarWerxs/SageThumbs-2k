@@ -222,7 +222,6 @@ pub(super) unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
             }
         }
     }
-    scroll::SCROLL.with(|s| *s.borrow_mut() = scroll::ScrollData::default());
     GDIP_TOKEN.with(|t| {
         let tok = t.replace(0);
         if tok != 0 {
@@ -235,12 +234,7 @@ pub(super) unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
 
 /// The three WM_TIMER chords (status refresh / GIF frame advance / sponsor rotate)
 /// plus the left-column scrollbar + mouse wheel.
-pub(super) unsafe fn on_timer_or_scroll_msg(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> Option<LRESULT> {
+pub(super) unsafe fn on_timer_msg(hwnd: HWND, msg: u32, wparam: WPARAM) -> Option<LRESULT> {
     match msg {
         // Keep the hotkey-service status line honest while the dialog is open.
         WM_TIMER if wparam.0 == TIMER_SHOT_STATUS => {
@@ -249,17 +243,6 @@ pub(super) unsafe fn on_timer_or_scroll_msg(
         }
         WM_TIMER if wparam.0 == TIMER_BANNER => Some(on_timer_banner(hwnd)),
         WM_TIMER if wparam.0 == TIMER_ROTATE => Some(on_timer_rotate(hwnd)),
-        // Left-column scrolling (dark mode): the scrollbar + the mouse wheel.
-        WM_VSCROLL => {
-            scroll::on_vscroll(hwnd, wparam, lparam);
-            Some(LRESULT(0))
-        }
-        WM_MOUSEWHEEL => {
-            let wheel = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
-            let pos = scroll::SCROLL.with(|s| s.borrow().pos);
-            scroll::scroll_to(hwnd, pos - wheel / 120 * dpi_scale(hwnd, 42));
-            Some(LRESULT(0))
-        }
         _ => None,
     }
 }

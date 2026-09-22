@@ -218,9 +218,7 @@ pub(super) unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 
 pub(super) unsafe fn on_drawitem_static(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let cid = d.CtlID as i32;
-    if d.CtlID == ID_LEFT_MASK as u32 {
-        scroll::draw_left_mask(hwnd, d);
-    } else if cid == ID_NUDGE_CARD {
+    if cid == ID_NUDGE_CARD {
         nudge::draw_card(hwnd, d);
     } else if cid == ID_BIZNAG_CARD {
         biznag::draw_card(hwnd, d);
