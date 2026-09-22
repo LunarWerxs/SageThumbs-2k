@@ -95,8 +95,13 @@ foreach ($step in $steps) {
     # while `-File` would report the script's own clean exit. The hand-typed loop this file
     # replaced got that right (CLAUDE.md 6.1, "in-session, not -File"), and the first cut of
     # this file lost it - which would have been this gate claiming a fidelity it did not have.
+    # ...and GitHub also PREPENDS `$ErrorActionPreference = 'stop'`, so a script that THROWS
+    # (a .NET exception, a missing file) fails the step there. Without the prefix the throw
+    # ended only its own statement, `$LASTEXITCODE` still read 0, and this gate printed the
+    # exception in red and then counted the step clean (2026-09-22, check-untracked-mods on a
+    # deleted-but-unstaged module).
     $argText = if ($stepArgs.Count) { ' ' + ($stepArgs -join ' ') } else { '' }
-    $invoke = "& '$path'$argText; if (Test-Path variable:\LASTEXITCODE) { exit `$LASTEXITCODE }"
+    $invoke = "`$ErrorActionPreference = 'stop'; & '$path'$argText; if (Test-Path variable:\LASTEXITCODE) { exit `$LASTEXITCODE }"
     $out = & pwsh -NoProfile -ExecutionPolicy Bypass -Command $invoke 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host ("  ok    {0}" -f $step) -ForegroundColor Green
