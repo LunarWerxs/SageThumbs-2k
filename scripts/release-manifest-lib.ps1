@@ -747,9 +747,10 @@ function Assert-ReleaseMsixIdentity {
 # Two signing modes, decided by whether a bundled certificate is given:
 #
 # * -CertificatePath (the self-signed development/test package): the signer must BE that
-#   exact certificate, and it is verified against a temporary LocalMachine\TrustedPeople
-#   entry, the same non-root store the self-signed installer populates (needs elevation
-#   unless the certificate is already trusted there). The package's Publisher must equal
+#   exact certificate, and it is verified against a LocalMachine\TrustedPeople entry, the same
+#   non-root store the self-signed installer populates. From an elevated shell the entry is
+#   added temporarily and removed again; from a non-elevated one it is re-added PERSISTENTLY
+#   through one elevated child (a release upgrade removes it by design), and stays. The package's Publisher must equal
 #   that certificate's subject.
 function Test-ReleaseElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

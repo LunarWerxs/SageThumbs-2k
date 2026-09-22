@@ -532,13 +532,12 @@ if ($bundleMagick) {
     # so an IM upgrade adapts automatically after the source pin + regression corpus are
     # deliberately updated. We compare the generated stub's export inventory to upstream
     # before accepting it. See docs/MAGICK.md.
-    # STUBS ARE x86-ONLY. gendef/gcc/dlltool come from MinGW, which emits x86_64 PEs no
+    # MINGW STUBS ARE x86-ONLY. gendef/gcc/dlltool come from MinGW, which emits x86_64 PEs no
     # matter what we are targeting: the first ARM64 Full build replaced GENUINE ARM64
-    # freetype/glib/raqm with x64 stubs, which an ARM64 process cannot load at all. Until
-    # someone builds these stubs with the ARM64 toolchain, ARM64 ships the real upstream
-    # text-stack DLLs. That costs a few MB and is strictly correct; a broken bundle is not
-    # a trade worth making for size. The staged-architecture assertion below is what caught
-    # this, and it stays regardless.
+    # freetype/glib/raqm with x64 stubs, which an ARM64 process cannot load at all. That is
+    # why ARM64 builds its stubs with the MSVC ARM64 toolchain (cl/link) instead; a broken
+    # bundle is not a trade worth making for size. The staged-architecture assertion below
+    # is what caught the x64-stub mistake, and it stays regardless.
     # Export extraction (gendef) is architecture-independent; only the compile/link half
     # is toolchain-specific, so ARM64 stubs with MSVC and x64 keeps gcc/windres.
     $stubWork = Join-Path $stage 'magick\_stubwork'
@@ -685,8 +684,9 @@ if ($bundleMagick) {
         'CORE_RL_harfbuzz_.dll'
     )
     # This candidate list is only unreferenced BECAUSE stubbing removed the code that
-    # imported it. ARM64 does not stub (MinGW stubs are x86-only), so those DLLs are
-    # genuinely still referenced there and the helper correctly refuses to delete them.
+    # imported it. The helper deletes a candidate only if nothing in the bundle still imports
+    # it, on either architecture (ARM64 stubs with MSVC, x64 with MinGW), so a DLL a stub
+    # still references stays.
     # Run the prune (this precondition it was written for always holds: this whole stage
     # only ever runs where stubbing already ran, above).
     & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
@@ -874,7 +874,8 @@ if ($Portable) {
     # all (the emulation goes the other way), so cross-building the ARM64 zip would fail this
     # check for a reason that says nothing about the payload. Skipping is the honest outcome,
     # but say so loudly: an unsmoked zip is exactly the one to hand to an ARM64 machine first.
-    # OS architecture, not this PROCESS's bitness (matches the check at line ~394 and
+    # OS architecture, not this PROCESS's bitness (matches `$hostArchNow` in the ImageMagick
+    # prune and `$hostArchFmt` before ISCC, and
     # install.ps1's Assert-NativeArm64Host): an x64 PowerShell process running natively on
     # genuine ARM64 Windows reports 'AMD64' via $env:PROCESSOR_ARCHITECTURE and would wrongly
     # skip a smoke test that host can actually run.
@@ -950,14 +951,32 @@ New-Item -ItemType Directory "$root\dist" -Force | Out-Null
 # (never hardcode the count — it's whatever FORMATS.len() returns; the old literal
 # "316" in installer.iss was a drift bomb waiting for the next format addition).
 $fmtCount = ''
-if ($Architecture -eq 'x64') {
-    $fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
-    # A crash/failure here must fail the release loudly, not silently leave $fmtCount empty:
-    # an empty count skips /DFmtCount below and installer.iss falls back to its stale "300+"
-    # literal, which would ship silently wrong instead of failing the build.
-    if ($LASTEXITCODE -ne 0) { throw "st2k.exe formats failed (exit $LASTEXITCODE) while deriving the installer's live format count" }
-    if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+# The count is FORMATS.len(), the same table in every build, so a cross-built ARM64 installer
+# asks the host-native st2k.exe (the ImageMagick prune above does the same). It used to skip
+# the probe on ARM64 entirely and ship installer.iss's "300+" literal in every ARM64 installer.
+$fmtProbe = "$targetRel\st2k.exe"
+$hostArchFmt = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+if ($Architecture -cne $hostArchFmt) {
+    $fmtProbe = @(
+        (Join-Path $targetRoot 'release\st2k.exe')
+        (Join-Path $targetRoot 'debug\st2k.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $fmtProbe) {
+        throw "Cross-building $Architecture on an $hostArchFmt host: need a host-native st2k.exe " +
+              "to read the installer's live format count. Run 'cargo build --release' first."
+    }
 }
+# Output and exit code are captured BEFORE the first line is taken: `| Select-Object -First 1`
+# stops the pipeline early, which can leave $LASTEXITCODE unset or stale, and then the guard
+# below did not reliably fire. A crash/failure here must fail the release loudly, not silently
+# leave $fmtCount empty: an empty count skips /DFmtCount below and installer.iss falls back to
+# its stale "300+" literal, which would ship silently wrong instead of failing the build.
+$fmtOut = @(& $fmtProbe formats 2>$null)
+$fmtCode = $LASTEXITCODE
+if ($fmtCode -ne 0) { throw "st2k.exe formats failed (exit $fmtCode) while deriving the installer's live format count" }
+$fmtLine = $fmtOut | Select-Object -First 1
+if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+else { throw "st2k.exe formats printed no leading count ('$fmtLine'), so the installer's format count cannot be derived" }
 $compactOnly = if ($NoImageMagick) { '1' } else { '0' }
 $isccArgs = @(
     "/DAppVer=$ver",

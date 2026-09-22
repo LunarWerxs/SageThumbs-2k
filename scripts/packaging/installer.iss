@@ -240,7 +240,8 @@ Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 ; doesn't - packaged verbs live ONLY in the compact flyout - so that suppression just hid the
 ; quick verbs on every classic-menu-default machine. The classic handler now always shows its
 ; quick verbs (nothing reads this key anymore). Deleted on install so an upgrade from <= 1.3.0
-; doesn't leave a dead value behind; the empty parent key is dropped on uninstall.
+; doesn't leave a dead value behind; the parent key is dropped on uninstall only if it is empty
+; by then, which it is not once the wizard has written LicenseMode or CornerMark beside it.
 Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: none; ValueName: "ModernMenuActive"; \
   Flags: deletevalue uninsdeletekeyifempty
 
@@ -498,7 +499,8 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
 
 [UninstallDelete]
 ; Tidy the per-user runtime files Windows would otherwise leave behind (diagnostics log +
-; update-check cache in %LOCALAPPDATA%), so an uninstall leaves nothing stray on disk.
+; update-check cache in %LOCALAPPDATA%). {localappdata} here is the ELEVATED account's profile;
+; the interactive user's own copies are removed by `--remove-user-state` (RunAsOriginalUser).
 Type: files; Name: "{localappdata}\SageThumbs2K.log"
 Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 ; Any DLL copies parked aside by `SwapAsideInUseDll` on a machine that has not rebooted since.
@@ -1639,6 +1641,10 @@ begin
     // The start-up re-registration task (see CurStepChanged) must not outlive the DLL.
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
       SW_HIDE, ewWaitUntilTerminated, TaskR);
+    // ...and neither may its HKLM RunOnce twin: an uninstall between a stale install and the
+    // restart that would have run it left a value pointing at the deleted DLL.
+    RegDeleteValue(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+      'SageThumbs2KReregister');
     // Ask why first (interactive uninstalls only), then send the optional survey answer.
     // NotifyUninstall itself stays gated the same way: an unattended/SCCM/Intune uninstall
     // should not phone home OR pop a dialog that has nobody there to answer it.

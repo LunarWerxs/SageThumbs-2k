@@ -95,10 +95,11 @@ if ($AzureSign) {
 }
 
 # 3) Stage the package payload (manifest + assets only) and pack. -------------
-# Process-ID-scoped, not a fixed "st2k_msix_stage" name: two concurrent make-msix.ps1 calls
+# Process-ID-scoped, not a fixed "st2k_msix_stage" name, so two concurrent make-msix.ps1 calls
 # (e.g. the x64 and ARM64 test packages built back-to-back by test-msix-integrity.ps1, or two
-# concurrent -Lint runs) would otherwise delete and overwrite the same staging directory out
-# from under each other mid-build.
+# concurrent -Lint runs) never delete the same STAGING directory out from under each other.
+# The packed .msix and .cer still land under fixed names in -OutDir, so concurrent runs must
+# be given different -OutDir values.
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) "st2k_msix_stage_$PID"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory $stage -Force | Out-Null

@@ -1,6 +1,7 @@
 <#
   release.ps1 - a GATED release: it never creates a release/tag until CI is GREEN
-  on that exact commit and the full artifact provenance gate passes. The GitHub
+  on that commit (or on an ancestor whose later commits are verification-only) and the
+  full artifact provenance gate passes. The GitHub
   release starts as a draft; it becomes public only after the uploaded installer
   and provenance-manifest digests match the locally validated bytes.
 
@@ -42,10 +43,9 @@ $freeze = Join-Path $root '.git\RELEASE-IN-PROGRESS'
 # two places at key-rotation time is the same one-line diff either way. Whoever runs
 # `cargo run --release --example update-keygen` updates BOTH this line and update.rs together;
 # see docs\RELEASE-SECURITY.md for the rotation procedure.
-# Placeholder (32 zero bytes) until the integrator pastes the real key from
-# `update-keygen`'s output - matches update.rs's placeholder, so a release built before the
-# real key exists fails loudly at [4e/6] instead of quietly shipping a signature nothing can
-# ever verify.
+# The real key, byte-identical to UPDATE_PUBLIC_KEY compiled into the app: a release whose
+# signature does not verify against it fails loudly at [4e/6] instead of quietly shipping a
+# signature no installed copy can ever verify.
 $UpdatePublicKeyHex = '169fce0ade4aeced2dcb36a376c127743844779184f5109bc38c00603fa8325b'
 
 # Standardised stage-outcome line (2026-09-05 audit, finding F22b): before this, a stage that
@@ -362,9 +362,9 @@ try {
     # NOT provenance- or size-gated, deliberately: there is no .release.json for a zip and no
     # calibrated size reference, and inventing either would put a brand-new failure mode
     # AFTER main is already pushed and CI is already green - the exact trap the artifact-table
-    # comment above exists to avoid. It is NOT separately VirusTotal'd either, because the
-    # bytes in it are the same EXEs the scanned installer carries. It IS digest-verified after
-    # upload like every other asset (step 5).
+    # comment above exists to avoid. Nothing is VirusTotal'd any more (stages 4b/4c, below,
+    # were retired); its EXEs are the same signed bytes the installer carries, and it IS
+    # digest-verified after upload like every other asset (step 5).
     Write-Host "[4a/6] build portable zips: $($releaseArtifacts.Architecture -join ' + ')" -ForegroundColor Green
     foreach ($artifact in $releaseArtifacts) {
         pwsh "$root\scripts\build-release.ps1" -Portable -SkipBuild -Architecture $artifact.Architecture
@@ -391,6 +391,9 @@ try {
     # the same harness on the real Full installer users will download. Side effect by
     # design: the release machine ends the ritual running the build it just shipped.
     Write-Host "[4d/6] self-update smoke on this machine (x64 artifact)" -ForegroundColor Green
+    # The size-policy check near the top already requires exactly one x64 artifact, so the
+    # else below cannot run today; it stays so the skip is labelled if that rule ever relaxes
+    # (test-release-pipeline.ps1 pins the label).
     $x64Artifact = $releaseArtifacts | Where-Object { $_.Architecture -eq 'x64' } | Select-Object -First 1
     if ($x64Artifact) {
         & (Join-Path $PSScriptRoot 'test-self-update.ps1') -Setup $x64Artifact.Setup.FullName
@@ -493,8 +496,9 @@ try {
     # used for the x64 installer above. Everything below "Downloads" used to run to a screen
     # and a half (a Verified-installer block, a five-paragraph portable explainer, an antivirus
     # paragraph with VirusTotal links); Michael, 2026-09-15: "everything from Verified installer
-    # down seems excessively long". A name and a hash per file, one line for the portable zip
-    # and one for the amd64 alias, nothing else.
+    # down seems excessively long". A name and a hash per file: the ARM64 installer and one
+    # portable zip per architecture, nothing else (the amd64 alias is the x64 bytes, so it
+    # gets no line of its own).
     #
     # PARENTHESES ARE LOAD-BEARING. In PowerShell the comma binds TIGHTER than `+`, so
     # `@( '', 'a' + $x + 'b' )` parses as `('', 'a') + $x + 'b'` and yields FOUR elements,

@@ -31,8 +31,11 @@
   -Configured says yes. Without configuration it prints one yellow line and exits 0, so the
   release flow never assumes a certificate exists.
 
-  EXIT CODES: 0 signed and verified (or nothing configured with -AllowUnsigned, or -WhatIf);
-  1 a verdict (a sign or verify failure, a missing tool); 2 -Configured said "no".
+  EXIT CODES: 0 signed and verified (or nothing configured with -AllowUnsigned, or -WhatIf
+  on a machine where signing IS configured - -WhatIf runs after the configuration gate, so
+  without configuration it exits 1 like a real signing run would);
+  1 a verdict (a sign or verify failure, a missing tool, no configuration); 2 -Configured
+  said "no".
 #>
 [CmdletBinding()]
 param(
