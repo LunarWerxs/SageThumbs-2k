@@ -28,7 +28,6 @@
 //! Runs in its OWN `--upload <png>` / `--upload-keep <list>` process (spawned by the
 //! toolbar's Upload button / the DLL verb) so the shell never blocks on the network.
 
-use core::ffi::c_void;
 mod hosts;
 use hosts::*;
 mod wire;
@@ -36,11 +35,6 @@ pub(crate) use hosts::open_hosts_config;
 use wire::*;
 
 use windows::core::PCWSTR;
-use windows::Win32::Networking::WinInet::{
-    HttpOpenRequestW, HttpSendRequestW, InternetCloseHandle, InternetConnectW, InternetSetOptionW,
-    INTERNET_FLAG_SECURE, INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
-    INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP,
-};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MessageBoxW, PeekMessageW,

@@ -157,85 +157,34 @@ pub(super) struct PostResp {
 /// reply one byte at a time never trips it and can hang the "Uploading…" pill (and block
 /// `upload_any` from ever falling through to the next configured host) indefinitely. This
 /// matches the 20 s already set on the connect/send/receive `InternetSetOptionW` calls
-/// below — well past a slow but working upload, well short of "did it freeze?".
+/// in the shared `http::open_and_send` prologue — well past a slow but working upload,
+/// well short of "did it freeze?".
 pub(super) const DRAIN_DEADLINE_SECS: u64 = 20;
 
 /// A minimal WinInet HTTPS POST (mirrors `sponsors.rs::http_fetch`, but with a body).
+/// The connect/open/send/close prologue is the shared [`crate::http::open_and_send`];
+/// this keeps only the POST-specific bits — the `INTERNET_FLAG_SECURE`-only flag set
+/// (`reload`/`no_auto_redirect` both false) and the 20 s phase budget.
 pub(super) unsafe fn post(host: &str, path: &str, headers: &str, body: &[u8]) -> Option<PostResp> {
-    let session = crate::http::open_session()?;
-    let host_w = wide(host);
-    let conn = InternetConnectW(
-        session,
-        PCWSTR(host_w.as_ptr()),
+    crate::http::open_and_send(
+        host,
         HTTPS_PORT,
-        PCWSTR::null(),
-        PCWSTR::null(),
-        INTERNET_SERVICE_HTTP,
-        0,
-        None,
-    );
-    if conn.is_null() {
-        let _ = InternetCloseHandle(session);
-        return None;
-    }
-    let verb = wide("POST");
-    let path_w = wide(path);
-    let req = HttpOpenRequestW(
-        conn,
-        PCWSTR(verb.as_ptr()),
-        PCWSTR(path_w.as_ptr()),
-        PCWSTR::null(),
-        PCWSTR::null(),
-        None,
-        INTERNET_FLAG_SECURE,
-        None,
-    );
-    if req.is_null() {
-        let _ = InternetCloseHandle(conn);
-        let _ = InternetCloseHandle(session);
-        return None;
-    }
-    // Explicit timeouts. Without them a stalled host runs out WinInet's generous defaults while
-    // the "Uploading…" pill sits there with nothing to cancel it — and `upload_any` can't fall
-    // through to the NEXT configured host until this one gives up. 20 s is well past a slow but
-    // working upload and well short of "did it freeze?".
-    for opt in [
-        INTERNET_OPTION_CONNECT_TIMEOUT,
-        INTERNET_OPTION_SEND_TIMEOUT,
-        INTERNET_OPTION_RECEIVE_TIMEOUT,
-    ] {
-        let ms: u32 = 20_000;
-        let _ = InternetSetOptionW(
-            Some(req),
-            opt,
-            Some(&ms as *const u32 as *const c_void),
-            size_of::<u32>() as u32,
-        );
-    }
-    let hdr_w = wide(headers);
-    let sent = HttpSendRequestW(
-        req,
-        Some(&hdr_w[..hdr_w.len().saturating_sub(1)]),
-        Some(body.as_ptr() as *const c_void),
-        body.len() as u32,
+        path,
+        "POST",
+        headers,
+        body,
+        false,
+        false,
+        20_000,
+        |req| {
+            // Read the status BEFORE draining (HttpQueryInfoW wants it off the still-open
+            // request) so a 4xx/5xx page can never be scraped for a URL as if it were a success.
+            let status = crate::http::query_status(req).unwrap_or(0);
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(DRAIN_DEADLINE_SECS);
+            crate::win::wininet_drain(req, MAX_RESP, Some(deadline), None)
+                .map(|body| PostResp { status, body })
+        },
     )
-    .is_ok();
-
-    // Drain via the shared helper, which caps the body and returns None on over-cap
-    // (the old inline loop here returned the TRUNCATED body — a corrupt URL). Read the
-    // status BEFORE draining (HttpQueryInfoW wants it off the still-open request) so a
-    // 4xx/5xx page can never be scraped for a URL as if it were a success.
-    let resp = if sent {
-        let status = crate::http::query_status(req).unwrap_or(0);
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(DRAIN_DEADLINE_SECS);
-        crate::win::wininet_drain(req, MAX_RESP, Some(deadline), None)
-            .map(|body| PostResp { status, body })
-    } else {
-        None
-    };
-    let _ = InternetCloseHandle(req);
-    let _ = InternetCloseHandle(conn);
-    let _ = InternetCloseHandle(session);
-    resp
+    .flatten()
 }

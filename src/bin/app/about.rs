@@ -14,6 +14,8 @@ mod checker;
 use checker::*;
 mod build;
 use build::*;
+#[cfg(test)]
+mod tests;
 
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
@@ -311,18 +313,7 @@ unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     if st.is_null() {
         return LRESULT(0);
     }
-    let result = match wparam.0 {
-        1 => {
-            let latest = FOUND_RELEASE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(update::LatestRelease::unknown);
-            Status::Available(latest)
-        }
-        2 => Status::Failed,
-        _ => Status::UpToDate,
-    };
+    let result = status_for_code(wparam.0);
     // Faux timer: if the spinner hasn't run for its minimum yet, hold the result
     // and let WM_TIMER reveal it once ≈2 s has passed; otherwise show it now.
     if (*st).spin_frame >= MIN_SPIN_FRAMES {

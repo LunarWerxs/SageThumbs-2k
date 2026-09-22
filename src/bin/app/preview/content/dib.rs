@@ -1,4 +1,5 @@
 use super::*;
+use sagethumbs2k_core::dib::stretch_blit;
 
 /// The current image render installed in the window (the DIB + its natural dims + the bg
 /// it was composited over). Sole owner of `hbmp`; freed when replaced or on window destroy.
@@ -283,30 +284,7 @@ pub(crate) unsafe fn blit_exact(hdc: HDC, rc: &RECT, rd: &RenderData) {
     if dw <= 0 || dh <= 0 || rd.bw <= 0 || rd.bh <= 0 {
         return;
     }
-    stretch_blit(hdc, rc.left, rc.top, dw, dh, rd);
-}
-
-/// `HALFTONE`-scaled `SRCCOPY` blit of `rd` at `(dx, dy)` sized `dw`x`dh`, through a scratch
-/// memory DC selected back out and deleted afterwards.
-unsafe fn stretch_blit(hdc: HDC, dx: i32, dy: i32, dw: i32, dh: i32, rd: &RenderData) {
-    let memdc = CreateCompatibleDC(Some(hdc));
-    let old = SelectObject(memdc, rd.hbmp.into());
-    SetStretchBltMode(hdc, HALFTONE);
-    let _ = StretchBlt(
-        hdc,
-        dx,
-        dy,
-        dw,
-        dh,
-        Some(memdc),
-        0,
-        0,
-        rd.bw,
-        rd.bh,
-        SRCCOPY,
-    );
-    SelectObject(memdc, old);
-    let _ = DeleteDC(memdc);
+    stretch_blit(hdc, (rc.left, rc.top, dw, dh), rd.hbmp, (rd.bw, rd.bh));
 }
 
 /// Paint the image `rd` into `rc`, letterboxed with `bg`, at `zoom`x the aspect-fit scale and
@@ -391,7 +369,7 @@ pub(crate) unsafe fn paint_image(
         // Opaque: unchanged from before any of this existed. `make_render` produced byte-identical
         // output to the old `make_dib` for these, so photos take exactly the old HALFTONE path.
         false => {
-            stretch_blit(hdc, dx, dy, dw, dh, rd);
+            stretch_blit(hdc, (dx, dy, dw, dh), rd.hbmp, (rd.bw, rd.bh));
         }
     }
 }

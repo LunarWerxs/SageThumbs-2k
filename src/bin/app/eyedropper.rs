@@ -27,6 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::dark::rgb;
 use crate::win::{app_icon, gui_font, set_clipboard_text, t, wide};
 
+mod colorfmt;
+use colorfmt::*;
+
 const EYE_K: i32 = 7; // half-window: a (2K+1)² block of screen pixels in the loupe
 const EYE_SPAN: i32 = 2 * EYE_K + 1; // 15 px sampled across
 const EYE_MAG: i32 = 150; // magnified loupe size (px) → 10× zoom
@@ -84,75 +87,6 @@ static EYE_HISTORY: Mutex<Vec<(u8, u8, u8)>> = Mutex::new(Vec::new());
 
 /// The clipboard format Tab cycles through (index into [`fmt_color`]'s match; persisted).
 static EYE_FMT: AtomicI32 = AtomicI32::new(0);
-
-fn hex_of((r, g, b): (u8, u8, u8)) -> String {
-    format!("#{r:02X}{g:02X}{b:02X}")
-}
-
-/// RGB → (hue 0..360, saturation 0..1, lightness 0..1). Textbook; kept exact enough that
-/// round numbers come out round (pure red is `hsl(0, 100%, 50%)`, not 99.6%).
-fn rgb_to_hsl((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
-    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
-    if max == min {
-        return (0.0, 0.0, l);
-    }
-    let d = max - min;
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-    let h = if max == r {
-        ((g - b) / d).rem_euclid(6.0)
-    } else if max == g {
-        (b - r) / d + 2.0
-    } else {
-        (r - g) / d + 4.0
-    } * 60.0;
-    (h, s, l)
-}
-
-/// RGB → (hue 0..360, saturation 0..1, value 0..1).
-fn rgb_to_hsv((r, g, b): (u8, u8, u8)) -> (f64, f64, f64) {
-    let (h, _, _) = rgb_to_hsl((r, g, b));
-    let (rf, gf, bf) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let s = if max == 0.0 { 0.0 } else { (max - min) / max };
-    (h, s, max)
-}
-
-/// The colour formatted for the ACTIVE format: 0 hex (the historical behaviour and the
-/// default), 1 CSS `rgb()`, 2 `hsl()`, 3 `hsv()`. Everything that reaches the clipboard —
-/// single pick, stash list, history recall — and the loupe's value row go through here, so
-/// what you read is always what you get.
-fn fmt_color(fmt: i32, c: (u8, u8, u8)) -> String {
-    match fmt {
-        1 => format!("rgb({}, {}, {})", c.0, c.1, c.2),
-        2 => {
-            let (h, s, l) = rgb_to_hsl(c);
-            format!(
-                "hsl({}, {}%, {}%)",
-                h.round() as i32 % 360,
-                (s * 100.0).round() as i32,
-                (l * 100.0).round() as i32
-            )
-        }
-        3 => {
-            let (h, s, v) = rgb_to_hsv(c);
-            format!(
-                "hsv({}, {}%, {}%)",
-                h.round() as i32 % 360,
-                (s * 100.0).round() as i32,
-                (v * 100.0).round() as i32
-            )
-        }
-        _ => hex_of(c),
-    }
-}
 
 /// Record picks into the persistent history: most recent first, deduplicated, capped by the
 /// settings writer. Called on every commit path, so the history is what you actually took
@@ -219,6 +153,36 @@ pub(crate) unsafe fn virtual_screen_metrics() -> Option<(i32, i32, i32, i32)> {
     (vw > 0 && vh > 0).then_some((vx, vy, vw, vh))
 }
 
+/// Freeze the screen rectangle `(x, y, w, h)` into a memory DC and store it (and its size) as
+/// the snapshot the eyedropper samples. `false` on a GDI failure (object-quota exhaustion is
+/// the realistic cause): a NULL mem/bmp must never be blitted into or stored, which would sample
+/// as #000000 with no error shown (A139), so everything already allocated is released.
+unsafe fn snapshot_screen(x: i32, y: i32, w: i32, h: i32) -> bool {
+    let screen = GetDC(None);
+    let mem = CreateCompatibleDC(Some(screen));
+    let bmp = CreateCompatibleBitmap(screen, w, h);
+    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
+        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
+        if !mem.is_invalid() {
+            let _ = DeleteDC(mem);
+        }
+        if !bmp.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+        }
+        if !screen.is_invalid() {
+            ReleaseDC(None, screen);
+        }
+        return false;
+    }
+    SelectObject(mem, HGDIOBJ(bmp.0)); // keep selected -> mem is a readable copy of the screen
+    let _ = BitBlt(mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY);
+    ReleaseDC(None, screen);
+    set_snapshot(mem, bmp);
+    EYE_VW.store(w, Ordering::Relaxed);
+    EYE_VH.store(h, Ordering::Relaxed);
+    true
+}
+
 pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     if let Ok(mut st) = EYE_STASH.lock() {
         st.clear();
@@ -236,31 +200,9 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
         return;
     };
-    let screen = GetDC(None);
-    let mem = CreateCompatibleDC(Some(screen));
-    let bmp = CreateCompatibleBitmap(screen, vw, vh);
-    // GDI failure here (object-quota exhaustion is the realistic cause) must not fall through
-    // to SelectObject/BitBlt on a null handle, which stores a NULL snapshot that samples as
-    // #000000 with no error shown (A139), so log, release everything already allocated, and bail.
-    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
-        if !mem.is_invalid() {
-            let _ = DeleteDC(mem);
-        }
-        if !bmp.is_invalid() {
-            let _ = DeleteObject(HGDIOBJ(bmp.0));
-        }
-        if !screen.is_invalid() {
-            ReleaseDC(None, screen);
-        }
+    if !snapshot_screen(vx, vy, vw, vh) {
         return;
     }
-    SelectObject(mem, HGDIOBJ(bmp.0)); // keep selected → mem is a readable copy of the screen
-    let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
-    ReleaseDC(None, screen);
-    set_snapshot(mem, bmp);
-    EYE_VW.store(vw, Ordering::Relaxed);
-    EYE_VH.store(vh, Ordering::Relaxed);
 
     let class = register_eyedropper_class(hinst);
 
@@ -316,30 +258,9 @@ pub(crate) unsafe fn run_shot_eyedropper(out: &str) -> bool {
         h.clear();
     }
     // Snapshot the primary monitor into a memory DC (same as run_eyedropper, but bounded).
-    let screen = GetDC(None);
-    let mem = CreateCompatibleDC(Some(screen));
-    let bmp = CreateCompatibleBitmap(screen, pw, ph);
-    // Same GDI-failure guard as run_eyedropper (A139): a NULL mem/bmp must not be blitted into
-    // or stored, which would render/write an all-black PNG with no diagnostic.
-    if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
-        if !mem.is_invalid() {
-            let _ = DeleteDC(mem);
-        }
-        if !bmp.is_invalid() {
-            let _ = DeleteObject(HGDIOBJ(bmp.0));
-        }
-        if !screen.is_invalid() {
-            ReleaseDC(None, screen);
-        }
+    if !snapshot_screen(0, 0, pw, ph) {
         return false;
     }
-    SelectObject(mem, HGDIOBJ(bmp.0));
-    let _ = BitBlt(mem, 0, 0, pw, ph, Some(screen), 0, 0, SRCCOPY);
-    ReleaseDC(None, screen);
-    set_snapshot(mem, bmp);
-    EYE_VW.store(pw, Ordering::Relaxed);
-    EYE_VH.store(ph, Ordering::Relaxed);
     // Park the loupe near the centre so it actually draws (WM_PAINT only draws it when a
     // cursor position is set).
     EYE_LAST_X.store(pw / 2, Ordering::Relaxed);

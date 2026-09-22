@@ -222,18 +222,12 @@ impl NudgeLock {
     /// leaked/wedged mutex must never hang a settings write.
     fn acquire() -> Option<Self> {
         use windows::core::w;
-        use windows::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
-        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-        let h = unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.NudgeState")) }.ok()?;
-        match unsafe { WaitForSingleObject(h, 2_000) } {
-            // WAIT_ABANDONED means a previous holder died mid-edit without releasing; we still
-            // got ownership, and `persist` only ever replaces the whole value in one write.
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(NudgeLock(h)),
-            _ => {
-                let _ = unsafe { CloseHandle(h) };
-                None
-            }
-        }
+        // The same bounded wait as the portable-ini store's lock (two tries, logged on timeout).
+        sagethumbs2k_core::settings::acquire_named_mutex(
+            w!("Local\\SageThumbs2K.NudgeState"),
+            "nudge: NudgeLock wait timed out twice; proceeding unlocked",
+        )
+        .map(NudgeLock)
     }
 }
 

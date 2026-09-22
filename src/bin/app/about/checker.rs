@@ -16,16 +16,7 @@ pub(super) static FOUND_RELEASE: std::sync::Mutex<Option<update::LatestRelease>>
 pub(super) unsafe fn start_check(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let code = match update::check() {
-            update::UpdateCheck::UpToDate => 0usize,
-            update::UpdateCheck::Available(latest) => {
-                *FOUND_RELEASE
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
-                1usize
-            }
-            update::UpdateCheck::Failed => 2usize,
-        };
+        let code = post_code(update::check());
         // Nothing to reclaim if the post fails: the release sits in `FOUND_RELEASE` until
         // the next check overwrites it.
         let _ = PostMessageW(
@@ -35,6 +26,38 @@ pub(super) unsafe fn start_check(hwnd: HWND) {
             LPARAM(0),
         );
     });
+}
+
+/// The `WPARAM` a finished check posts to [`WM_ABOUT_CHECKED`]: 0 up to date, 1 an update is
+/// available (the release itself waits in [`FOUND_RELEASE`]), 2 the check failed.
+pub(super) fn post_code(check: update::UpdateCheck) -> usize {
+    match check {
+        update::UpdateCheck::UpToDate => 0,
+        update::UpdateCheck::Available(latest) => {
+            *FOUND_RELEASE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
+            1
+        }
+        update::UpdateCheck::Failed => 2,
+    }
+}
+
+/// What [`WM_ABOUT_CHECKED`] shows for a posted code. "Available" TAKES the release out of
+/// [`FOUND_RELEASE`], so a forged or repeated message finds the slot empty and shows a release
+/// with no tag, never anything the sender chose.
+pub(super) fn status_for_code(code: usize) -> Status {
+    match code {
+        1 => Status::Available(
+            FOUND_RELEASE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .unwrap_or_else(update::LatestRelease::unknown),
+        ),
+        2 => Status::Failed,
+        _ => Status::UpToDate,
+    }
 }
 
 pub(super) unsafe fn invalidate_status(hwnd: HWND) {

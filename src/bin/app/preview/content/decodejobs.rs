@@ -97,6 +97,23 @@ pub(super) unsafe fn decode_and_post_static(
     shown
 }
 
+/// The start of every decode worker: the HWND rebuilt from its raw value (HWND isn't `Send`),
+/// and a COM apartment held for the rest of the closure. ISSUE #33: the workers reach WIC by
+/// way of `read_preview_capped` (the oversized rescue decodes THROUGH WIC by path) and the WIC
+/// tier of the in-memory decode, and without an apartment every one of those calls answered
+/// `CoInitialize has not been called (0x800401F0)` and fell back to the slow tier, or to
+/// nothing; a repeat MTA init inside is a no-op. `None` when the load was already superseded
+/// (a held-down arrow key): nothing read or decoded yet, so one atomic load reclaims the worker.
+fn begin_decode_worker(
+    hwnd_raw: isize,
+    gen: u64,
+    what: &str,
+) -> Option<(HWND, Option<sagethumbs2k_core::parallel::ComGuard>)> {
+    let hwnd = HWND(hwnd_raw as *mut c_void);
+    let com = sagethumbs2k_core::parallel::ComGuard::mta();
+    (!abandoned_logged(gen, what)).then_some((hwnd, com))
+}
+
 /// Kick off an async decode of `path` on a detached worker thread. The result (or `None`
 /// on failure/timeout) is posted back to `hwnd` as `WM_APP_RENDER` carrying a boxed
 /// `(gen, Option<SharedRgba>)`; `gen` lets the UI thread drop a stale result after the
@@ -111,22 +128,9 @@ pub(in super::super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) 
     begin_generation(gen);
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        // Reconstruct the HWND inside the worker (HWND isn't `Send`; the raw pointer is).
-        let hwnd = HWND(hwnd_raw as *mut c_void);
-        // ISSUE #33: this worker calls into WIC by way of `read_preview_capped` (the oversized
-        // rescue for a file past the thumbnail ceiling decodes THROUGH WIC by path) and the
-        // WIC tier of the in-memory decode, and WIC is COM. Without an apartment every one
-        // of those calls answered `CoInitialize has not been called (0x800401F0)` - the very
-        // line the issue's verbose log shows - and fell back to the slow tier, or to nothing.
-        // The first-paint pre-pass and the sharpen pass each init their own; this covers the
-        // rest of the worker. Held for the whole closure; a repeat MTA init inside is a no-op.
-        let _com = sagethumbs2k_core::parallel::ComGuard::mta();
-        // Held-down arrow key: by the time the scheduler gets here the user may already be two
-        // files further on. Nothing has been read or decoded yet, so this costs one atomic load
-        // and reclaims the entire worker.
-        if abandoned_logged(gen, "decode") {
+        let Some((hwnd, _com)) = begin_decode_worker(hwnd_raw, gen, "decode") else {
             return;
-        }
+        };
         if try_post_streamed(hwnd, gen, &path) {
             return;
         }
@@ -181,13 +185,11 @@ pub(in super::super) unsafe fn spawn_decode_full(hwnd: HWND, path: String, gen: 
     }
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let hwnd = HWND(hwnd_raw as *mut c_void);
-        // Same apartment as `spawn_decode`: `read_and_decode` reaches WIC by path for a file
-        // past the thumbnail ceiling, and those calls need COM on this thread.
-        let _com = sagethumbs2k_core::parallel::ComGuard::mta();
-        if abandoned_logged(gen, "full-resolution decode") {
-            return; // zoomed, then navigated away before this got a slice of CPU
-        }
+        // Zoomed, then navigated away before this got a slice of CPU: nothing to do.
+        let Some((hwnd, _com)) = begin_decode_worker(hwnd_raw, gen, "full-resolution decode")
+        else {
+            return;
+        };
         let decoded = read_and_decode(&path).map(std::sync::Arc::new);
         if let Some(d) = &decoded {
             // Replaces the scaled entry under the same key, so a later revisit gets the full

@@ -218,22 +218,28 @@ pub(crate) unsafe fn open_session() -> Option<*mut c_void> {
     (!session.is_null()).then_some(session)
 }
 
+/// The WinINet request prologue both this module and `screenshot::upload::post` need:
+/// set the per-phase timeouts on the session handle, connect to `host:port`, open the
+/// request with the cache flags derived from `reload` / `no_auto_redirect`, and send
+/// `headers` + `body`. Returns `None` (after closing every handle it opened) when any
+/// step fails; otherwise hands the OPEN request to `use_req`, closes all three handles,
+/// and returns its result. One copy so the two sites cannot drift again (the upload POST
+/// had its own, setting its timeouts on the request handle rather than the session).
 #[allow(clippy::too_many_arguments)]
-unsafe fn request_raw_ex(
-    method: &str,
+pub(crate) unsafe fn open_and_send<R>(
     host: &str,
+    port: u16,
     path: &str,
+    method: &str,
     headers: &str,
     body: &[u8],
     reload: bool,
-    timeout_secs: u64,
-    deadline: Option<Instant>,
-    max_resp: usize,
-    on_progress: Option<&mut dyn FnMut(u64)>,
-) -> Option<Resp> {
+    no_auto_redirect: bool,
+    timeout_ms: u32,
+    use_req: impl FnOnce(*mut c_void) -> R,
+) -> Option<R> {
     let session = open_session()?;
     // Bound each phase so a dead host can't hang the Settings window / worker thread.
-    let timeout_ms: u32 = (timeout_secs as u32) * 1000;
     for opt in [
         INTERNET_OPTION_CONNECT_TIMEOUT,
         INTERNET_OPTION_RECEIVE_TIMEOUT,
@@ -251,7 +257,7 @@ unsafe fn request_raw_ex(
     let conn = InternetConnectW(
         session,
         PCWSTR(host_w.as_ptr()),
-        443,
+        port,
         PCWSTR::null(),
         PCWSTR::null(),
         INTERNET_SERVICE_HTTP,
@@ -273,7 +279,7 @@ unsafe fn request_raw_ex(
     // token) must never let WinINet chase a redirect on its own — a malicious or MITM'd 30x
     // could otherwise send the token's request to an attacker-controlled host. A non-redirect
     // 3xx status is then just another non-2xx response to the caller, same as any other error.
-    if carries_authorization(headers) {
+    if no_auto_redirect {
         flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
     }
     let req = HttpOpenRequestW(
@@ -306,25 +312,8 @@ unsafe fn request_raw_ex(
         Some(body.as_ptr() as *const c_void)
     };
 
-    let sent = HttpSendRequestW(req, hdr_slice, body_ptr, body.len() as u32).is_ok();
-
-    let resp = if sent {
-        let status = query_status(req).unwrap_or(0);
-        let etag = query_text_header(req, HTTP_QUERY_ETAG);
-        // `crate::win::wininet_drain` (issue #218/C18: the fork that used to live here was
-        // folded back into that shared helper) returns Some(empty) for a 0-byte body (e.g.
-        // 204), None only on a read error, an over-cap body, or an expired deadline — either
-        // way we still hand back the status. Its progress callback takes `usize`; ours takes
-        // `u64` (matching the byte counts the rest of this module already uses).
-        let body = match on_progress {
-            Some(cb) => {
-                let mut wrapped = |n: usize| cb(n as u64);
-                crate::win::wininet_drain(req, max_resp, deadline, Some(&mut wrapped))
-            }
-            None => crate::win::wininet_drain(req, max_resp, deadline, None),
-        }
-        .unwrap_or_default();
-        Some(Resp { status, etag, body })
+    let result = if HttpSendRequestW(req, hdr_slice, body_ptr, body.len() as u32).is_ok() {
+        Some(use_req(req))
     } else {
         None
     };
@@ -332,7 +321,52 @@ unsafe fn request_raw_ex(
     let _ = InternetCloseHandle(req);
     let _ = InternetCloseHandle(conn);
     let _ = InternetCloseHandle(session);
-    resp
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn request_raw_ex(
+    method: &str,
+    host: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+    reload: bool,
+    timeout_secs: u64,
+    deadline: Option<Instant>,
+    max_resp: usize,
+    on_progress: Option<&mut dyn FnMut(u64)>,
+) -> Option<Resp> {
+    let timeout_ms: u32 = (timeout_secs as u32) * 1000;
+    open_and_send(
+        host,
+        443,
+        path,
+        method,
+        headers,
+        body,
+        reload,
+        carries_authorization(headers),
+        timeout_ms,
+        |req| {
+            let status = query_status(req).unwrap_or(0);
+            let etag = query_text_header(req, HTTP_QUERY_ETAG);
+            // `crate::win::wininet_drain` (issue #218/C18: the fork that used to live here was
+            // folded back into that shared helper) returns Some(empty) for a 0-byte body (e.g.
+            // 204), None only on a read error, an over-cap body, or an expired deadline — either
+            // way we still hand back the status. Its progress callback takes `usize`; ours takes
+            // `u64` (matching the byte counts the rest of this module already uses).
+            let body = match on_progress {
+                Some(cb) => {
+                    let mut wrapped = |n: usize| cb(n as u64);
+                    crate::win::wininet_drain(req, max_resp, deadline, Some(&mut wrapped))
+                }
+                None => crate::win::wininet_drain(req, max_resp, deadline, None),
+            }
+            .unwrap_or_default();
+            Resp { status, etag, body }
+        },
+    )
 }
 
 /// Read the numeric HTTP status code off a completed request via `HttpQueryInfoW`

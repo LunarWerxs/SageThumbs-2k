@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
-    FillRect, SelectObject, SetStretchBltMode, StretchBlt, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-    BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC, SRCCOPY,
+    FillRect, SelectObject, SetStretchBltMode, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+    BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC,
 };
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
