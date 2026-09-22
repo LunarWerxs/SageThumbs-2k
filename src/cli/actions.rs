@@ -154,16 +154,13 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
     let _ = std::fs::remove_file(&url_path); // stale leftover from a killed previous run
     std::fs::write(&list_path, path).map_err(|e| format!("couldn't write a temp file: {e}"))?;
 
-    let output = match std::process::Command::new(&app_exe)
+    let output = std::process::Command::new(&app_exe)
         .args(upload_child_args(&list_path, &url_path))
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            let _ = std::fs::remove_file(&list_path);
-            return Err(format!("couldn't run {}: {e}", app_exe.display()));
-        }
-    };
+        .output();
+    // The child deletes the list once it has read it, but not when it refuses before that
+    // (no usable upload host), so make sure here.
+    let _ = std::fs::remove_file(&list_path);
+    let output = output.map_err(|e| format!("couldn't run {}: {e}", app_exe.display()))?;
 
     if !output.status.success() {
         let _ = std::fs::remove_file(&url_path);

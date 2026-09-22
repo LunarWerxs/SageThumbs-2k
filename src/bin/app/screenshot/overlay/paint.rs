@@ -34,9 +34,11 @@ unsafe fn frame_dc(hdc: HDC, vw: i32, vh: i32) -> HDC {
         if frame_cache_hit(Some((w, h)), vw, vh) {
             return mem;
         }
-        // Stale size — drop it and fall through to build a fresh one below.
-        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        // Stale size — drop it and fall through to build a fresh one below. The DC goes
+        // FIRST: the bitmap is still selected into it, and GDI refuses to delete a selected
+        // bitmap, so the other order leaked the whole frame on every monitor change.
         let _ = DeleteDC(mem);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
     }
     let mem = CreateCompatibleDC(Some(hdc));
     let bmp = CreateCompatibleBitmap(hdc, vw, vh);

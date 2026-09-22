@@ -5,8 +5,8 @@
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
-    WPARAM,
+    CloseHandle, COLORREF, ERROR_ALREADY_EXISTS, E_FAIL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
+    POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     AlphaBlend, BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
@@ -346,15 +346,15 @@ fn overlay_ex_style() -> WINDOW_EX_STYLE {
 unsafe fn claim_single_overlay_slot(name: PCWSTR) -> windows::core::Result<HANDLE> {
     let (lock, last_err) = crate::win::create_mutex_user_only(true, name);
     let lock = lock?;
-    if last_err == ERROR_ALREADY_EXISTS {
-        return Err(windows::core::Error::from(E_FAIL));
-    }
     // One overlay at a time: each hotkey press spawns a fresh `--screenshot` process, and
     // MOD_NOREPEAT only suppresses key auto-repeat — a second REAL press would stack another
     // fullscreen overlay whose frozen snapshot is a picture OF the first (dimmed) overlay.
-    if FindWindowW(w!("SageThumbs2KShot"), PCWSTR::null()).is_ok()
+    if last_err == ERROR_ALREADY_EXISTS
+        || FindWindowW(w!("SageThumbs2KShot"), PCWSTR::null()).is_ok()
         || FindWindowW(w!("SageThumbs2KShotAutomation"), PCWSTR::null()).is_ok()
     {
+        // A refused claim holds nothing worth keeping; `HANDLE` has no Drop.
+        let _ = CloseHandle(lock);
         return Err(windows::core::Error::from(E_FAIL));
     }
     Ok(lock)

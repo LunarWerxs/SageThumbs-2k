@@ -773,7 +773,8 @@ pub(super) unsafe extern "system" fn scrollbar_subclass(
             let range = (si.nMax - si.nMin + 1).max(1);
             let track_h = (rc.bottom - rc.top).max(1);
             let page = (si.nPage as i32).max(1);
-            let thumb_h = ((page * track_h) / range).clamp(s(h, 28), track_h);
+            // The minimum yields to a track shorter than it (clamp panics on min > max).
+            let thumb_h = ((page * track_h) / range).clamp(s(h, 28).min(track_h), track_h);
             let max_pos = (range - page).max(1);
             let pos = si.nPos.clamp(0, max_pos);
             let thumb_y = (pos * (track_h - thumb_h)) / max_pos;

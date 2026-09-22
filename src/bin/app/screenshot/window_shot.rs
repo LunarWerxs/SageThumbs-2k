@@ -213,6 +213,11 @@ unsafe fn crop_to_extended_frame(
     }
     let dx = (efb.left - wr.left).clamp(0, w);
     let dy = (efb.top - wr.top).clamp(0, h);
+    // A frame that starts at or past the window's far edge (a minimized window's parked
+    // coordinates) leaves nothing to trim to, and `clamp(1, 0)` below would panic.
+    if dx >= w || dy >= h {
+        return (buf, w, h);
+    }
     let cw = (efb.right - efb.left).clamp(1, w - dx);
     let ch = (efb.bottom - efb.top).clamp(1, h - dy);
     if dx == 0 && dy == 0 && cw == w && ch == h {
