@@ -261,35 +261,50 @@ fn maybe_restart(
 
 /// Transform each component's block grid + the blocks themselves in place.
 /// Returns the output image dimensions.
+/// Move and transform every block of one component's `gw` x `gh` grid to its place in the
+/// transformed grid (`ngw` wide), in place, following each destination cycle, so a second
+/// full-size coefficient grid is never live beside the first (only a bit per block is).
+fn permute_blocks_in_place(blocks: &mut [[i32; 64]], op: Op, gw: usize, gh: usize, ngw: usize) {
+    let n = gw * gh;
+    let mut done = vec![false; n];
+    for i in 0..n {
+        if !done[i] {
+            follow_block_cycle(blocks, &mut done, i, op, (gw, gh, ngw));
+        }
+    }
+}
+
+/// One cycle of [`permute_blocks_in_place`], starting at block `start`.
+fn follow_block_cycle(
+    blocks: &mut [[i32; 64]],
+    done: &mut [bool],
+    start: usize,
+    op: Op,
+    (gw, gh, ngw): (usize, usize, usize),
+) {
+    let mut cur = start;
+    let mut carry = xform_block(&blocks[cur], op); // belongs at cur's destination
+    loop {
+        done[cur] = true;
+        let (nc, nr) = dst_pos(op, gw, gh, cur % gw, cur / gw);
+        let dst = nr * ngw + nc;
+        if dst == start {
+            blocks[start] = carry;
+            return;
+        }
+        let saved = blocks[dst];
+        blocks[dst] = carry;
+        carry = xform_block(&saved, op);
+        cur = dst;
+    }
+}
+
 fn apply_transform(comps: &mut [Comp], op: Op, width: usize, height: usize) -> (usize, usize) {
     let transpose = op.transposes();
     for c in comps.iter_mut() {
         let (gw, gh) = (c.grid_w, c.grid_h);
         let (ngw, ngh) = if transpose { (gh, gw) } else { (gw, gh) };
-        // Permute and transform the blocks in place, following each destination
-        // cycle, so a second full-size grid is never live.
-        let n = gw * gh;
-        let mut done = vec![false; n];
-        for i in 0..n {
-            if done[i] {
-                continue;
-            }
-            let mut cur = i;
-            let mut carry = xform_block(&c.blocks[cur], op); // belongs at cur's dst
-            loop {
-                done[cur] = true;
-                let (nc, nr) = dst_pos(op, gw, gh, cur % gw, cur / gw);
-                let dst = nr * ngw + nc;
-                if dst == i {
-                    c.blocks[i] = carry;
-                    break;
-                }
-                let saved = c.blocks[dst];
-                c.blocks[dst] = carry;
-                carry = xform_block(&saved, op);
-                cur = dst;
-            }
-        }
+        permute_blocks_in_place(&mut c.blocks, op, gw, gh, ngw);
         c.grid_w = ngw;
         c.grid_h = ngh;
         if transpose {

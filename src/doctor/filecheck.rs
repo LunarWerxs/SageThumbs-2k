@@ -155,6 +155,16 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
 /// folder. That is the leading explanation for "works in a normal folder, generic icon in
 /// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
 /// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
+/// Whether lowercase `file` is `root` or inside it. A bare prefix match is not enough:
+/// `c:\users\me\onedrive-old\x.jpg` starts with the sync root `c:\users\me\onedrive` but is not
+/// inside it, so the character after the root must be a separator.
+fn is_under_root(file: &str, root: &str) -> bool {
+    let base = root.trim_end_matches('\\');
+    !base.is_empty()
+        && file.starts_with(base)
+        && (file.len() == base.len() || file.as_bytes().get(base.len()) == Some(&b'\\'))
+}
+
 fn cloud_sync_root_note(r: &mut Report, p: &Path) {
     const SYNC_ROOTS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
     let Ok(file) = p.canonicalize() else {
@@ -183,11 +193,10 @@ fn cloud_sync_root_note(r: &mut Report, p: &Path) {
             continue;
         };
         let hit = values.into_iter().any(|(_, v)| {
-            let path = String::try_from(v).unwrap_or_default().to_lowercase();
-            let base = path.trim_end_matches('\\');
-            !base.is_empty()
-                && file.starts_with(base)
-                && (file.len() == base.len() || file.as_bytes().get(base.len()) == Some(&b'\\'))
+            is_under_root(
+                &file,
+                &String::try_from(v).unwrap_or_default().to_lowercase(),
+            )
         });
         if !hit {
             continue;

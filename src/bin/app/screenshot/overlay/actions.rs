@@ -273,9 +273,7 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Ocr => {
             commit_text(s);
-            if finish_ocr(s) {
-                let _ = DestroyWindow(hwnd);
-            }
+            close_if_handed_off(hwnd, finish_ocr(s));
             true
         }
         Button::Save => {
@@ -289,9 +287,7 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         }
         Button::Upload => {
             commit_text(s);
-            if compose_and_spawn(s, "--upload") {
-                let _ = DestroyWindow(hwnd);
-            }
+            close_if_handed_off(hwnd, compose_and_spawn(s, "--upload"));
             true
         }
         Button::Close => {
@@ -330,6 +326,14 @@ fn toggle_text_tool(s: &mut Shot) -> bool {
     }
     s.color_flyout = false;
     false
+}
+
+/// Close the editor once a helper process has the capture (`handed_off`); on a failed
+/// hand-off it stays open, so the annotated capture is not lost.
+pub(super) unsafe fn close_if_handed_off(hwnd: HWND, handed_off: bool) {
+    if handed_off {
+        let _ = DestroyWindow(hwnd);
+    }
 }
 
 /// The toolbar's Undo: exactly Ctrl+Z's step ([`undo_last`]).

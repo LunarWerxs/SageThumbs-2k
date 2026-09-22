@@ -113,9 +113,7 @@ pub(super) unsafe fn on_ctrl_t(hwnd: HWND, s: &mut Shot) -> bool {
     }
     if s.sel.is_some() {
         commit_text(s);
-        if finish_ocr(s) {
-            let _ = DestroyWindow(hwnd);
-        }
+        close_if_handed_off(hwnd, finish_ocr(s));
     }
     false
 }
@@ -143,9 +141,7 @@ pub(super) unsafe fn on_ctrl_u(hwnd: HWND, s: &mut Shot) -> bool {
     }
     if s.sel.is_some() {
         commit_text(s);
-        if compose_and_spawn(s, "--upload") {
-            let _ = DestroyWindow(hwnd);
-        }
+        close_if_handed_off(hwnd, compose_and_spawn(s, "--upload"));
     }
     false
 }

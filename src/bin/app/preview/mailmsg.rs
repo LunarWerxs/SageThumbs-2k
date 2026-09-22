@@ -580,6 +580,18 @@ fn strip_html(html: &str) -> String {
 /// Drop `<script>`/`<style>`/`<head>` spans wholesale (content included), and turn every
 /// other tag into either nothing (inline tags) or a newline (block tags), so what's left
 /// reads as loosely-formatted text.
+/// The close tag to skip ahead to when `tail` (lowercase) opens a `<script>`, `<style>` or
+/// `<head>` element. The element NAME must match exactly: `<header>` is not `<head>`, and
+/// treating it as one searched for a `</head>` that never comes and dropped the rest of the body.
+fn skipped_element_close(tail: &str) -> Option<String> {
+    let rest = tail.strip_prefix('<')?;
+    ["script", "style", "head"].iter().find_map(|t| {
+        let after = rest.strip_prefix(*t)?;
+        (after.is_empty() || after.starts_with(['>', '/', ' ', '\t', '\r', '\n']))
+            .then(|| format!("</{t}>"))
+    })
+}
+
 fn strip_tags_to_text(html: &str) -> String {
     let lower_all = html.to_ascii_lowercase();
     let mut cleaned = String::with_capacity(html.len());
@@ -594,15 +606,7 @@ fn strip_tags_to_text(html: &str) -> String {
         cleaned.push_str(&html[pos..pos + r]);
         let tag_start = pos + r;
         let lower_tail = &lower_all[tag_start..];
-        // The tag NAME must end where the element name does: `<header>` is not `<head>`,
-        // and treating it as one searched for a `</head>` that never comes and dropped the
-        // rest of the body.
-        let skip = ["script", "style", "head"].iter().find_map(|t| {
-            let after = lower_tail.strip_prefix('<')?.strip_prefix(*t)?;
-            (after.is_empty() || after.starts_with(['>', '/', ' ', '\t', '\r', '\n']))
-                .then(|| format!("</{t}>"))
-        });
-        if let Some(close) = skip {
+        if let Some(close) = skipped_element_close(lower_tail) {
             match lower_all[tag_start..].find(&close) {
                 Some(c) => {
                     pos = tag_start + c + close.len();
