@@ -30,7 +30,8 @@ use convert::*;
 use helpers::*;
 
 pub use actions::{
-    clip_pixels, folder_icon, ocr, strip_meta, upload, upload_hosts, wallpaper_prepare,
+    clip_pixels, folder_icon, ocr, strip_meta, upload, upload_history, upload_hosts,
+    wallpaper_prepare,
 };
 pub use batch::{batch, prebuild};
 pub use convert::{cbz, compress, convert, pdf, rotate, thumbnail, view_png, CombineOpts};

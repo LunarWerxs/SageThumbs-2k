@@ -85,6 +85,72 @@ pub const BUILTIN_HOSTS: &[BuiltinHost] = &[
     ("uguu.se", "/upload.php", "files[]", &[], true),
 ];
 
+/// How long a host keeps an uploaded file, according to the host's own published policy.
+/// The link itself says nothing about this, so without it a user has no way to tell a
+/// 3-hour link from a permanent one (a user asked for exactly this, 2026-09-21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retention {
+    /// No expiry date: the host keeps files unless they break its rules (catbox.moe).
+    Permanent,
+    /// The host deletes the file this many seconds after the upload.
+    Secs(u64),
+    /// A host whose policy we don't know - a custom line in the config file.
+    Unknown,
+}
+
+const HOUR: u64 = 3600;
+const DAY: u64 = 24 * HOUR;
+
+/// x0.at's published rule (read off https://x0.at/ on 2026-09-21): a file is kept for
+/// `MIN_AGE + (MAX_AGE - MIN_AGE) * (1 - FILE_SIZE / MAX_SIZE)^2`, with a 3-day minimum, a
+/// 100-day maximum and a 1024 MiB size cap. A screenshot therefore lives about 100 days and a
+/// file near the cap about 3.
+fn x0_retention_secs(size: u64) -> u64 {
+    const MIN_AGE: f64 = (3 * DAY) as f64;
+    const MAX_AGE: f64 = (100 * DAY) as f64;
+    const MAX_SIZE: f64 = 1024.0 * 1024.0 * 1024.0;
+    let frac = (size as f64 / MAX_SIZE).min(1.0);
+    (MIN_AGE + (MAX_AGE - MIN_AGE) * (1.0 - frac).powi(2)) as u64
+}
+
+/// litterbox's `time` form field: its upload page offers `1h`, `12h`, `24h` and `72h`. Read as
+/// `<n>h` / `<n>d` / `<n>w` rather than matched against those four, so a user's config line
+/// with a value the host adds later still reports the right time. Anything else is `None`.
+fn parse_time_field(value: &str) -> Option<u64> {
+    let v = value.trim().to_ascii_lowercase();
+    let (num, unit) = [("h", HOUR), ("d", DAY), ("w", 7 * DAY)]
+        .iter()
+        .find_map(|&(suffix, unit)| v.strip_suffix(suffix).map(|n| (n.trim(), unit)))?;
+    num.parse::<u64>()
+        .ok()
+        .filter(|&n| n > 0)?
+        .checked_mul(unit)
+}
+
+/// What `host` does with a `size`-byte upload sent with the form fields `extra`. Keyed on the
+/// host NAME rather than on [`BUILTIN_HOSTS`], so a line the user copied into the config file
+/// (say litterbox with `time=24h`) reports its real expiry too. Each policy is the host's own
+/// published one, checked 2026-09-21: litterbox deletes at the `time` it was asked for, uguu.se
+/// after 3 hours ("files expire after 3 hours"), x0.at by size ([`x0_retention_secs`]), and
+/// catbox.moe keeps files with no expiry.
+pub fn retention_for<K: AsRef<str>, V: AsRef<str>>(
+    host: &str,
+    extra: &[(K, V)],
+    size: u64,
+) -> Retention {
+    match host.to_ascii_lowercase().as_str() {
+        "catbox.moe" => Retention::Permanent,
+        "litterbox.catbox.moe" => extra
+            .iter()
+            .find(|(k, _)| k.as_ref().eq_ignore_ascii_case("time"))
+            .and_then(|(_, v)| parse_time_field(v.as_ref()))
+            .map_or(Retention::Unknown, Retention::Secs),
+        "uguu.se" => Retention::Secs(3 * HOUR),
+        "x0.at" => Retention::Secs(x0_retention_secs(size)),
+        _ => Retention::Unknown,
+    }
+}
+
 /// One `<https-url> | <field> | <response> | <extra=value> ...` config-file line for a
 /// [`BUILTIN_HOSTS`] entry, in the exact syntax [`template`]'s own FORMAT section documents.
 fn builtin_host_line(
@@ -193,6 +259,70 @@ mod tests {
     #[test]
     fn resolve_config_path_is_none_when_neither_is_available() {
         assert_eq!(resolve_config_path(None, None), None);
+    }
+
+    #[test]
+    fn every_builtin_host_has_a_known_retention() {
+        // A host added to the chain without a policy here would upload fine and then show no
+        // expiry at all, which is the exact gap the retention table exists to close.
+        for &(host, _, _, extra, _) in BUILTIN_HOSTS {
+            assert_ne!(
+                retention_for(host, extra, 1_000_000),
+                Retention::Unknown,
+                "{host} has no retention policy"
+            );
+        }
+    }
+
+    #[test]
+    fn litterbox_expires_at_the_time_it_was_asked_for() {
+        let lb = |t: &str| retention_for("litterbox.catbox.moe", &[("time", t)], 10);
+        assert_eq!(lb("72h"), Retention::Secs(72 * HOUR));
+        assert_eq!(lb("1h"), Retention::Secs(HOUR));
+        assert_eq!(lb(" 24H "), Retention::Secs(24 * HOUR));
+        assert_eq!(lb("2d"), Retention::Secs(2 * DAY));
+        assert_eq!(lb("forever"), Retention::Unknown);
+        assert_eq!(lb("0h"), Retention::Unknown);
+        assert_eq!(lb("h"), Retention::Unknown);
+        assert_eq!(lb("1é"), Retention::Unknown);
+        let no_time: &[(&str, &str)] = &[("reqtype", "fileupload")];
+        assert_eq!(
+            retention_for("litterbox.catbox.moe", no_time, 10),
+            Retention::Unknown
+        );
+        // The shipped chain asks for 72 hours.
+        let shipped = BUILTIN_HOSTS
+            .iter()
+            .find(|h| h.0 == "litterbox.catbox.moe")
+            .expect("litterbox is in the chain");
+        assert_eq!(
+            retention_for(shipped.0, shipped.3, 10),
+            Retention::Secs(72 * HOUR)
+        );
+    }
+
+    #[test]
+    fn x0_follows_its_published_size_formula() {
+        let x0 = |size: u64| match retention_for::<&str, &str>("x0.at", &[], size) {
+            Retention::Secs(s) => s,
+            other => panic!("x0.at must be timed, got {other:?}"),
+        };
+        assert_eq!(x0(0), 100 * DAY);
+        assert_eq!(x0(1024 * 1024 * 1024), 3 * DAY);
+        assert_eq!(x0(u64::MAX), 3 * DAY, "past the cap clamps to the minimum");
+        // Half the cap: 3 + 97 * 0.25 = 27.25 days.
+        assert_eq!(x0(512 * 1024 * 1024), 27 * DAY + 6 * HOUR);
+        // A 2 MB screenshot keeps nearly the full 100 days.
+        assert!(x0(2_000_000) > 99 * DAY);
+    }
+
+    #[test]
+    fn the_other_hosts_are_permanent_three_hours_or_unknown() {
+        let none: &[(&str, &str)] = &[];
+        assert_eq!(retention_for("catbox.moe", none, 5), Retention::Permanent);
+        assert_eq!(retention_for("CATBOX.MOE", none, 5), Retention::Permanent);
+        assert_eq!(retention_for("uguu.se", none, 5), Retention::Secs(3 * HOUR));
+        assert_eq!(retention_for("your.host", none, 5), Retention::Unknown);
     }
 
     #[test]

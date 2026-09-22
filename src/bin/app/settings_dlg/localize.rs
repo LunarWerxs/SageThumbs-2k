@@ -162,6 +162,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_SHOT_USE_DIR, "chk_shot_use_dir"),
         (ID_SHOT_SET_DIR, "btn_set_save_dir"),
         (ID_EDIT_UPLOAD_HOSTS, "btn_edit_upload_hosts"),
+        (ID_UPLOAD_HISTORY, "btn_recent_uploads"),
         (ID_SHOT_RESTART, "btn_restart_hotkey"),
         (ID_LBL_SHOT_ACTION, "lbl_custom_action"),
         (ID_LBL_SHOT_ACTION_HK, "lbl_custom_action_hk"),

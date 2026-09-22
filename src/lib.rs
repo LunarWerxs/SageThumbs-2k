@@ -123,6 +123,8 @@ mod topdf;
 #[doc(hidden)]
 pub mod typeoverlay;
 pub mod upload_config;
+// The local list of uploaded links and when each one expires (app window + `st2k`).
+pub mod upload_history;
 mod verbs;
 // `pub` only so the app EXE's preview player can ask `media_foundation_available()`
 // before touching the delay-loaded MF imports; the decode entry points stay internal.

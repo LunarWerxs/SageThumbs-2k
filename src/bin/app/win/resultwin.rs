@@ -35,8 +35,16 @@ pub(crate) struct ResultLayout {
 ///
 /// Keeping this in one place is the point: `IDOK | IDCANCEL` must both close (Esc arrives as an
 /// IDCANCEL command from `IsDialogMessageW` even though no control carries that id), and
-/// `WM_DESTROY` must `PostQuitMessage` because these are top-level dialogs pumped by
-/// [`run_dialog`] — a copy of this that gets one of those wrong is a window that won't close.
+/// `WM_DESTROY` must `PostQuitMessage` when the window is a top-level dialog pumped by
+/// [`run_dialog`]'s `pump_until_quit` — a copy of this that gets one of those wrong is a window
+/// that won't close.
+///
+/// ...and must NOT when the window was opened modally over another one (Doctor or Recent uploads
+/// from Settings, Recent uploads from the upload result). That pump (`pump_until_closed`) stops
+/// on its own once the window is gone, so a `WM_QUIT` from it was left in the thread's queue for
+/// the OWNER's loop, and closing the child closed Settings with it (found reviewing Recent
+/// uploads, 2026-09-21; Doctor had carried it since it moved onto this shared procedure). Owned
+/// = modal, because `run_dialog` passes the owner as the popup's parent.
 pub(crate) unsafe fn result_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -69,11 +77,18 @@ pub(crate) unsafe fn result_wndproc(
             Some(LRESULT(0))
         }
         WM_DESTROY => {
-            PostQuitMessage(0); // let run_dialog's pump_until_quit exit
+            if !is_owned(hwnd) {
+                PostQuitMessage(0); // let run_dialog's pump_until_quit exit
+            }
             Some(LRESULT(0))
         }
         _ => None,
     }
+}
+
+/// Whether `hwnd` has an owner window, i.e. was opened modally by [`run_dialog`].
+unsafe fn is_owned(hwnd: HWND) -> bool {
+    GetWindow(hwnd, GW_OWNER).is_ok_and(|owner| !owner.is_invalid())
 }
 
 /// Control id of the Copy button in every result dialog (see [`result_wndproc`]).
@@ -151,8 +166,8 @@ pub(crate) unsafe fn result_buttons(hwnd: HWND, hinst: HINSTANCE, l: &ResultLayo
 
 /// A result window whose message handling is entirely the shared kind: dark control colours,
 /// then [`result_wndproc`], then the default. Image info, Upload links and OCR are exactly this
-/// and register [`result_window_proc`] over their type; Doctor (a font to free on destroy) and the
-/// Convert report (two buttons of its own, and no quit on destroy) keep a hand-written procedure
+/// and register [`result_window_proc`] over their type; Doctor (a font to free on destroy), the
+/// Convert report and the upload result (buttons of their own) keep a hand-written procedure
 /// around the same shared core.
 pub(crate) trait ResultWindow {
     /// Lay the window out; runs on WM_CREATE with the module handle already resolved.
@@ -194,5 +209,69 @@ pub(crate) unsafe fn result_layout(hwnd: HWND) -> ResultLayout {
         btn_y: ch - m - btn_h,
         close_x,
         copy_x: close_x - gap - btn_w,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Probe;
+
+    impl ResultWindow for Probe {
+        unsafe fn build(_hwnd: HWND, _hinst: HINSTANCE) {}
+        unsafe fn copy_source(_hwnd: HWND) -> String {
+            String::new()
+        }
+    }
+
+    unsafe fn take_quit() -> bool {
+        let mut msg = MSG::default();
+        PeekMessageW(&mut msg, None, WM_QUIT, WM_QUIT, PM_REMOVE).as_bool()
+    }
+
+    /// Closing a result window opened modally over another must leave the OWNER's message loop
+    /// running; closing a top-level one must still end its own. Real windows on this test's
+    /// thread, real `DestroyWindow`, and the thread's queue read back for the `WM_QUIT`.
+    #[test]
+    fn only_a_top_level_result_window_quits_the_pump_when_it_closes() {
+        unsafe {
+            let hinst: HINSTANCE = GetModuleHandleW(None).expect("module handle").into();
+            let class = w!("St2kResultQuitProbe");
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(result_window_proc::<Probe>),
+                hInstance: hinst,
+                lpszClassName: class,
+                ..Default::default()
+            };
+            let _ = RegisterClassW(&wc); // a second registration is a harmless no-op
+            let make = |owner: Option<HWND>| {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    class,
+                    w!(""),
+                    WS_POPUP,
+                    0,
+                    0,
+                    40,
+                    40,
+                    owner,
+                    None,
+                    Some(hinst),
+                    None,
+                )
+                .expect("create a hidden probe window")
+            };
+            let top = make(None);
+            let child = make(Some(top));
+            while take_quit() {}
+            let _ = DestroyWindow(child);
+            assert!(!take_quit(), "an owned result window posted WM_QUIT");
+            let _ = DestroyWindow(top);
+            assert!(
+                take_quit(),
+                "a top-level result window no longer ends its pump"
+            );
+        }
     }
 }

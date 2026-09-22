@@ -192,7 +192,77 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
             );
         }
     }
+    print_expiry(&url);
     Ok(url)
+}
+
+/// When the host deletes `url`, read back from the list the app just wrote (hosts range from
+/// three hours to permanent, and the URL says nothing about it). stderr, so stdout stays the
+/// bare URL scripts read.
+fn print_expiry(url: &str) {
+    if let Some(e) = crate::upload_history::find(url) {
+        let now = crate::upload_history::now_unix();
+        eprintln!("{}", crate::upload_history::status_text_en(&e, now));
+    }
+}
+
+/// `st2k upload-history [--json]` — every link this machine uploaded, newest first, with when
+/// its host deletes it (the same list the app's Recent uploads window shows).
+pub fn upload_history(json: bool) -> Result<String, String> {
+    let entries = crate::upload_history::load();
+    let now = crate::upload_history::now_unix();
+    if json {
+        return Ok(upload_history_json(&entries, now).to_string());
+    }
+    if entries.is_empty() {
+        return Ok("No uploads yet.".to_string());
+    }
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let uploaded = crate::upload_history::local_datetime(e.uploaded);
+            let status = crate::upload_history::status_text_en(e, now);
+            let name = if e.name.is_empty() {
+                String::new()
+            } else {
+                format!("{} · ", e.name)
+            };
+            format!("{}\n  {name}uploaded {uploaded} · {status}", e.url)
+        })
+        .collect();
+    Ok(lines.join("\n"))
+}
+
+/// The `--json` shape: one object per upload, newest first. `expires` is a Unix time or null
+/// (no expiry date, or a host whose policy is unknown - `state` says which); `seconds_left`
+/// is null unless the link is still counting down.
+fn upload_history_json(entries: &[crate::upload_history::Entry], now: u64) -> serde_json::Value {
+    use crate::upload_history::{Expiry, Status};
+    let rows: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let (state, left) = match e.status(now) {
+                Status::Left(s) => ("live", Some(s)),
+                Status::Expired(_) => ("expired", None),
+                Status::Permanent => ("permanent", None),
+                Status::Unknown => ("unknown", None),
+            };
+            let expires = match e.expires {
+                Expiry::At(t) => Some(t),
+                Expiry::Never | Expiry::Unknown => None,
+            };
+            serde_json::json!({
+                "url": e.url,
+                "host": e.host,
+                "name": e.name,
+                "uploaded": e.uploaded,
+                "expires": expires,
+                "state": state,
+                "seconds_left": left,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(rows)
 }
 
 /// The argv `upload` passes to `SageThumbs2K.exe` — split out so the exact flags/order are
@@ -249,6 +319,41 @@ mod tests {
                 r"C:\temp\st2k-upload-123.url",
             ]
         );
+    }
+
+    /// `upload-history --json`: one object per upload with a machine-readable state, and
+    /// `seconds_left` only while the link is still counting down.
+    #[test]
+    fn upload_history_json_reports_each_state() {
+        use crate::upload_history::{Entry, Expiry};
+        let e = |expires: Expiry, url: &str| Entry {
+            uploaded: 100,
+            expires,
+            host: "litterbox.catbox.moe".into(),
+            url: url.into(),
+            name: "a.png".into(),
+        };
+        let v = upload_history_json(
+            &[
+                e(Expiry::At(1_000), "https://litter.catbox.moe/a.png"),
+                e(Expiry::At(400), "https://litter.catbox.moe/b.png"),
+                e(Expiry::Never, "https://files.catbox.moe/c.png"),
+                e(Expiry::Unknown, "https://my.host/d.png"),
+            ],
+            500,
+        );
+        let rows = v.as_array().expect("an array");
+        let field = |i: usize, k: &str| rows[i][k].clone();
+        assert_eq!(field(0, "state"), "live");
+        assert_eq!(field(0, "seconds_left"), 500);
+        assert_eq!(field(0, "expires"), 1_000);
+        assert_eq!(field(1, "state"), "expired");
+        assert!(field(1, "seconds_left").is_null());
+        assert_eq!(field(2, "state"), "permanent");
+        assert!(field(2, "expires").is_null());
+        assert_eq!(field(3, "state"), "unknown");
+        assert_eq!(field(3, "url"), "https://my.host/d.png");
+        assert_eq!(field(0, "uploaded"), 100);
     }
 
     /// The success path: a lone URL with no trailing newline.

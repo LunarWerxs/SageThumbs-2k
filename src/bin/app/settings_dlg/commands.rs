@@ -141,6 +141,7 @@ pub(super) unsafe fn on_command_shot(hwnd: HWND, id: i32) {
         ID_SHOT_SET_DIR => on_shot_set_dir(hwnd),
         ID_SHOT_RESTART => on_shot_restart(hwnd),
         ID_EDIT_UPLOAD_HOSTS => crate::screenshot::open_hosts_config(),
+        ID_UPLOAD_HISTORY => crate::upload_history_dlg::show_history(Some(hwnd)),
         _ => {}
     }
 }

@@ -50,6 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::win::{set_clipboard_text, t, wide, SS_CENTER, SS_CENTERIMAGE};
+use sagethumbs2k_core::upload_history::{self, Entry, Expiry};
 
 const MAX_RESP: usize = 64 * 1024; // a URL response is tiny; cap to be safe
 
@@ -156,9 +157,9 @@ pub(crate) unsafe fn run_upload(path: &str) {
         Err(e) => Err(format!("couldn't read the capture — {e}")),
     });
     match result {
-        Ok(u) => {
-            let _ = set_clipboard_text(&u);
-            crate::upload_result::show_upload_result(t("up_done_one"), &u);
+        Ok(done) => {
+            let _ = set_clipboard_text(&done.url);
+            crate::upload_result::show_upload_result(t("up_done_one"), std::slice::from_ref(&done));
         }
         Err(reasons) => {
             let base = upload_failed_msg(t("up_what_screenshot"), &reasons);
@@ -233,10 +234,10 @@ pub(crate) unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
     let busy = busy_message(total);
     // SAFETY: run_upload_keep is itself unsafe for the same reason (WinInet handles
     // scoped to this call), but a closure doesn't inherit its enclosing fn's unsafety.
-    let (urls, last_reason) = with_busy_pill(&busy, move || unsafe { upload_all(&files, &hosts) });
+    let (done, last_reason) = with_busy_pill(&busy, move || unsafe { upload_all(&files, &hosts) });
     match url_to {
-        Some(url_to) => report_to_file(url_to, &urls, last_reason),
-        None => report_interactively(total, &urls, last_reason),
+        Some(url_to) => report_to_file(url_to, &done, last_reason),
+        None => report_interactively(total, &done, last_reason),
     }
 }
 
@@ -263,13 +264,13 @@ fn busy_message(total: usize) -> String {
     }
 }
 
-/// Upload every file, returning the URLs that succeeded plus the last failure reason (if
+/// Upload every file, returning the uploads that succeeded plus the last failure reason (if
 /// any) so an all-fail run can still show WHY.
 ///
 /// SAFETY: upload_any only touches WinInet handles it creates + closes itself, so running
 /// it on the pill's worker thread is fine.
-unsafe fn upload_all(files: &[String], hosts: &[UploadHost]) -> (Vec<String>, Option<String>) {
-    let mut urls: Vec<String> = Vec::new();
+unsafe fn upload_all(files: &[String], hosts: &[UploadHost]) -> (Vec<Entry>, Option<String>) {
+    let mut done: Vec<Entry> = Vec::new();
     let mut last_reason: Option<String> = None;
     for f in files {
         let name = std::path::Path::new(f)
@@ -280,25 +281,26 @@ unsafe fn upload_all(files: &[String], hosts: &[UploadHost]) -> (Vec<String>, Op
             // Already in an unsafe fn body — no nested `unsafe` block needed here (unlike
             // the closure this loop used to run inside).
             Ok(bytes) => match upload_any(&bytes, name, hosts) {
-                Ok(u) => urls.push(u),
+                Ok(u) => done.push(u),
                 Err(why) => last_reason = Some(why),
             },
             Err(e) => last_reason = Some(format!("couldn't read {name} — {e}")),
         }
     }
-    (urls, last_reason)
+    (done, last_reason)
 }
 
 /// CLI path (`url_to` set): no clipboard, no dialog — just the file `st2k` is waiting to
 /// read. Success writes the URL(s) LF-joined and exits `0`; any failure writes nothing,
 /// puts the reason on stderr, and exits `1`.
-fn report_to_file(url_to: &str, urls: &[String], last_reason: Option<String>) -> ! {
-    if urls.is_empty() {
+fn report_to_file(url_to: &str, done: &[Entry], last_reason: Option<String>) -> ! {
+    if done.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
         let _ = std::fs::remove_file(url_to);
         eprintln!("{reasons}");
         std::process::exit(1);
     }
+    let urls: Vec<&str> = done.iter().map(|e| e.url.as_str()).collect();
     match std::fs::write(url_to, urls.join("\n")) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
@@ -311,8 +313,8 @@ fn report_to_file(url_to: &str, urls: &[String], last_reason: Option<String>) ->
 /// Interactive path (`url_to` unset): a failure dialog naming every host's own reason, or
 /// success — clipboard + the result window with a heading matched to how many of `total`
 /// files made it.
-unsafe fn report_interactively(total: usize, urls: &[String], last_reason: Option<String>) {
-    if urls.is_empty() {
+unsafe fn report_interactively(total: usize, done: &[Entry], last_reason: Option<String>) {
+    if done.is_empty() {
         let reasons = last_reason.unwrap_or_else(|| "no readable files".to_string());
         let what = if total == 1 {
             t("up_what_file")
@@ -322,19 +324,18 @@ unsafe fn report_interactively(total: usize, urls: &[String], last_reason: Optio
         notify(&upload_failed_msg(what, &reasons), file_caption(), true);
         return;
     }
-    let joined = urls.join("\r\n");
-    let _ = set_clipboard_text(&joined);
+    let _ = set_clipboard_text(&crate::upload_result::links_of(done));
     let heading = if total == 1 {
         t("up_done_one").to_string()
-    } else if urls.len() == total {
+    } else if done.len() == total {
         t("up_done_all").replace("{total}", &total.to_string())
     } else {
         t("up_done_partial")
-            .replace("{ok}", &urls.len().to_string())
+            .replace("{ok}", &done.len().to_string())
             .replace("{total}", &total.to_string())
-            .replace("{failed}", &(total - urls.len()).to_string())
+            .replace("{failed}", &(total - done.len()).to_string())
     };
-    crate::upload_result::show_upload_result(&heading, &joined);
+    crate::upload_result::show_upload_result(&heading, done);
 }
 
 /// Body for the "couldn't upload" dialog. Includes what each host actually said, so a
@@ -366,17 +367,36 @@ unsafe fn notify(msg: &str, caption: &str, error: bool) {
     );
 }
 
-/// Try each host in order; return the first URL, or — if all fail — a multi-line
-/// summary of what each host said (`host — reason`), one per line.
-unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Result<String, String> {
+/// Try each host in order; return the first upload that works, or — if all fail — a
+/// multi-line summary of what each host said (`host — reason`), one per line.
+unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Result<Entry, String> {
     let mut reasons: Vec<String> = Vec::new();
     for h in hosts {
         match upload_one(bytes, filename, h) {
-            Ok(url) => return Ok(url),
+            Ok(url) => return Ok(remember(h, url, filename, bytes.len())),
             Err(why) => reasons.push(format!("{} — {}", h.host, why)),
         }
     }
     Err(reasons.join("\n"))
+}
+
+/// A finished upload as a history entry: its expiry worked out now, from the policy of the
+/// host that actually took it (the fallback chain can land any file on any host), and added
+/// to the local "Recent uploads" list. Every path records here - the screenshot button, the
+/// right-click verb and `st2k upload` - so the list is complete whichever one was used. A list
+/// that cannot be written is not an upload failure; the link is already live.
+fn remember(h: &UploadHost, url: String, filename: &str, size: usize) -> Entry {
+    let now = upload_history::now_unix();
+    let retention = sagethumbs2k_core::upload_config::retention_for(&h.host, &h.extra, size as u64);
+    let entry = Entry {
+        uploaded: now,
+        expires: Expiry::from_retention(retention, now),
+        host: h.host.clone(),
+        url,
+        name: filename.to_string(),
+    };
+    let _ = upload_history::record(&entry);
+    entry
 }
 
 #[cfg(test)]

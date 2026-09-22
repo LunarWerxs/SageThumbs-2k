@@ -426,6 +426,8 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
     // Opens the user-editable upload-hosts config (the "Upload (copy link)" verb +
     // the capture overlay's Upload button POST through this chain of keyless hosts).
     lc.button(t("btn_edit_upload_hosts"), 184, ID_EDIT_UPLOAD_HOSTS);
+    // Every link uploaded through that chain, with the time each has left.
+    lc.button(t("btn_recent_uploads"), 184, ID_UPLOAD_HISTORY);
     // Live status of the background hotkey daemon + a Start/Restart button. The
     // hotkey does nothing unless this tray helper is running, so make it visible
     // and recoverable (seeded in load_values + refreshed on Restart).

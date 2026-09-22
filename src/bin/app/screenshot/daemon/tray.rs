@@ -73,15 +73,17 @@ pub(super) unsafe fn remove_tray_icon(hwnd: HWND) {
 pub(super) unsafe fn show_tray_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     // Translated, so `wide` buffers must outlive the AppendMenuW calls that point at them.
-    let (cap, ocr, set, hide, quit) = (
+    let (cap, ocr, ups, set, hide, quit) = (
         wide(crate::win::t("tray_capture")),
         wide(crate::win::t("tray_ocr")),
+        wide(crate::win::t("tray_uploads")),
         wide(crate::win::t("tray_settings")),
         wide(crate::win::t("tray_hide")),
         wide(crate::win::t("tray_quit")),
     );
     let _ = AppendMenuW(menu, MF_STRING, IDM_CAPTURE, PCWSTR(cap.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, IDM_OCR, PCWSTR(ocr.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, IDM_UPLOADS, PCWSTR(ups.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, PCWSTR(set.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, IDM_HIDE, PCWSTR(hide.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());

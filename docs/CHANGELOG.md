@@ -7,6 +7,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Uploaded links now say when they expire.** The free upload hosts delete files on their own
+  schedule, from 3 hours (uguu.se) and 72 hours (litterbox) to 3-100 days depending on size
+  (x0.at) or never (catbox.moe), and a link never says which. The upload window now shows under
+  each link when its host deletes it, and a new **Recent uploads** list keeps every link you
+  uploaded with the time it has left, or when it expired. Open it from the upload window,
+  Settings > Screenshots, or the tray menu. `st2k upload` prints the expiry too, and
+  `st2k upload-history` lists every link. Suggested by a user.
+- **Closing the "Check for problems" window no longer closes Settings with it**, along with any
+  change you had not saved yet.
+
 ## 3.2.0
 
 - **Uninstalling keeps Windows' thumbnail cache unless you ask.** Since 3.0.5 the uninstaller

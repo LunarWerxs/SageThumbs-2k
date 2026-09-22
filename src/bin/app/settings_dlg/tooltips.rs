@@ -51,6 +51,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_SHOT_USE_DIR, "tip_shot_use_dir"),
     (ID_SHOT_SET_DIR, "tip_shot_set_dir"),
     (ID_EDIT_UPLOAD_HOSTS, "tip_edit_upload_hosts"),
+    (ID_UPLOAD_HISTORY, "tip_recent_uploads"),
     (ID_SHOT_RESTART, "tip_shot_restart"),
     (ID_SHOT_HIDE_TRAY, "tip_hide_tray"),
     (ID_CUSTOM_ACTION_ENABLE, "tip_custom_action_enable"),

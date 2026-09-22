@@ -212,15 +212,9 @@ extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 return LRESULT(0);
             }
         }
-        // NOT the shared WM_DESTROY, which posts a quit for the top-level result dialogs'
-        // pump. This window is modal, and `run_dialog`'s modal pump ends the moment the
-        // window is gone with no quit needed; the posted one would sit in the queue until
-        // the Convert dialog's own pump read it, which ended that dialog mid-retry. Before
-        // the retry existed the stray quit was harmless only because the caller tore the
-        // Convert dialog down the moment this returned.
-        if msg == WM_DESTROY {
-            return LRESULT(0);
-        }
+        // The shared WM_DESTROY posts no quit for this window: it is modal (owned), and a quit
+        // from it would sit in the queue until the Convert dialog's own pump read it, which
+        // ended that dialog mid-retry. `result_wndproc` decides that by ownership now.
         if let Some(r) = crate::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
             return r;
         }

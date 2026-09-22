@@ -213,6 +213,7 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Status(ID_SHOT_DIR),
             Btn(ID_SHOT_SET_DIR, 150),
             Btn(ID_EDIT_UPLOAD_HOSTS, 184),
+            Btn(ID_UPLOAD_HISTORY, 184),
         ],
         6 => &[
             // Quick action — bind a global hotkey to run a tool.

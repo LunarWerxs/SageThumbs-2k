@@ -75,6 +75,7 @@ mod tags_to_folders;
 /// (one with no child windows of its own, e.g. an owner-drawn toolbar) would need instead.
 mod uia;
 mod update;
+mod upload_history_dlg;
 mod upload_result;
 mod win;
 use modes::*;

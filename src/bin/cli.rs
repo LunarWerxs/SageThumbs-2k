@@ -53,10 +53,12 @@ USAGE:
                                                 --bundle zips the report + log tail + formats --json for a bug report)
   st2k register  [--off|--status]               portable build: turn Explorer thumbnails on for this user
   st2k upload    <file> [--copy]                 upload a file to a keyless host, print the URL (--copy
-                                                also puts it on the clipboard); needs SageThumbs2K.exe
-                                                installed alongside st2k.exe (spawns it — no network
-                                                code lives in the CLI itself)
+                                                also puts it on the clipboard) and, on stderr, when the
+                                                host deletes it; needs SageThumbs2K.exe installed
+                                                alongside st2k.exe (spawns it — no network code lives
+                                                in the CLI itself)
   st2k upload-hosts [--open]                     show (or open) the editable upload-hosts config file
+  st2k upload-history [--json]                   every uploaded link, newest first, with its expiry
   st2k devmode   [on|off|status]                toggle the developer test-box flag
   st2k --mcp                                     run as an MCP server (stdio JSON-RPC, for AI agents)
   st2k --version | -V                            print the version and exit
@@ -122,7 +124,7 @@ fn max_positionals(verb: &str) -> Option<usize> {
         "rotate" | "compress" | "strip" | "ocr" | "info" | "doctor" | "diag" | "register"
         | "unregister" | "upload" | "upload-hosts" | "upload-host" | "devmode" | "clip-pixels"
         | "folder-icon" => Some(1),
-        "formats" => Some(0),
+        "formats" | "upload-history" => Some(0),
         // batch, prebuild, pdf, cbz and bench-decode take as many inputs as given.
         _ => None,
     }
@@ -468,6 +470,7 @@ fn dispatch_helper_verb(
             let open = has_flag(rest, "--open") || pos.first().map(|s| s.as_str()) == Some("open");
             cli::upload_hosts(open)
         }
+        "upload-history" => cli::upload_history(has_flag(rest, "--json")),
         _ => return None,
     })
 }

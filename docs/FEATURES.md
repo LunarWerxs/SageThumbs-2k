@@ -241,13 +241,20 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Copy as data URI**: base64-encodes the file and copies a `data:<mime>;base64,…`
   URI to the clipboard as text, ready to paste into CSS/HTML/JSON.
 - **Upload (copy link)**: uploads the selected image(s) to a keyless, no-account
-  host (**catbox.moe** by default; overridable via the `ScreenshotUploadUrl` registry
-  value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
-  selected image and copies all the links. A small **"Uploading…" indicator** shows
-  while the transfer runs, so a multi-second upload never looks like a dead click.
-  Upload hosts are third-party, best-effort services: availability and retention are not
-  guaranteed, and catbox may reject traffic from datacentres or VPNs. SageThumbs shows the
-  host's failure reason when an upload is refused.
+  host and copies the resulting link(s) to the clipboard. The built-in hosts are tried in
+  order until one takes the file, and the list is yours to edit (Settings ▸ Screenshots ▸
+  *Edit upload hosts…*, or `st2k upload-hosts`). Multi-select uploads every selected image
+  and copies all the links. A small **"Uploading…" indicator** shows while the transfer
+  runs, so a multi-second upload never looks like a dead click.
+  **Every link says when it expires.** Hosts keep files for anything from a few hours to
+  forever, so the result window shows under each link when its host deletes it, and
+  **Recent uploads** (the button in that window, Settings ▸ Screenshots, the tray menu, or
+  `st2k upload-history`) lists every link you uploaded with the time it has left, or when it
+  expired. The expiry comes from each host's published policy at the moment of upload; a
+  custom host of your own shows none.
+  Upload hosts are third-party, best-effort services: availability is not guaranteed, and
+  some may reject traffic from datacentres or VPNs. SageThumbs shows the host's failure
+  reason when an upload is refused.
 - **Set as folder icon**: makes the selected image the icon of its containing
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer (the same mechanism as Explorer's own

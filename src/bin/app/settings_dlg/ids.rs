@@ -222,6 +222,9 @@ pub(super) const ID_LICENCE_MOVE: i32 = 1266;
 /// its translated text like every other label, so the relabel table carries it;
 /// `licence_ui::apply_conditional_visibility` decides whether it shows.
 pub(super) const ID_LICENCE_WORK_HINT: i32 = 1268;
+/// "Recent uploads…" on the Screenshots page, under "Edit upload hosts…": every uploaded link
+/// with the time it has left before its host deletes it (`upload_history_dlg`).
+pub(super) const ID_UPLOAD_HISTORY: i32 = 1269;
 pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
 /// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
 pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;

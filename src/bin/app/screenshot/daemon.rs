@@ -54,6 +54,8 @@ const IDM_HIDE: usize = 104;
 /// "Copy text on screen (OCR)" — the same capture-overlay OCR mode the custom hotkey can be
 /// bound to, reachable with a click so it needs no hotkey set up first.
 const IDM_OCR: usize = 105;
+/// "Recent uploads" — every uploaded link with the time it has left (`--upload-history`).
+const IDM_UPLOADS: usize = 106;
 /// Periodic update check (only this already-resident process runs it — no scheduled task).
 const UPDATE_TIMER_ID: usize = 9;
 /// Re-attempt every 6h; `update::lazy_check_worker` throttles the actual network hit to 1/day.
@@ -547,6 +549,7 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) {
     match wparam.0 & 0xffff {
         IDM_CAPTURE => spawn(Some("--screenshot")),
         IDM_OCR => spawn(Some("--screenshot-ocr")),
+        IDM_UPLOADS => spawn(Some("--upload-history")),
         IDM_SETTINGS => spawn(None),
         IDM_HIDE => {
             // Hide the tray icon but keep the hotkey running (matches the

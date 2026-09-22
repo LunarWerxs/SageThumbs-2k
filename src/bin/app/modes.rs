@@ -178,6 +178,10 @@ pub(super) unsafe fn run_shot_mode(
         "feedback" => crate::feedback::run_shot_feedback(out),
         "about" => crate::about::run_shot_about(out),
         "doctor" => crate::doctor_report::run_shot_doctor(out),
+        // The upload result and the Recent uploads list, over canned uploads (one of each
+        // expiry kind) so the layout does not depend on what this machine uploaded.
+        "upload" => crate::upload_result::run_shot_upload_result(out),
+        "uploads" => crate::upload_history_dlg::run_shot_history(out),
         "firstrun" => crate::first_run::run_shot_first_run(out),
         "firstrun2" => crate::first_run::run_shot_first_run2(out),
         // The OCR result window, over canned text (no recognizer run) — or the
@@ -418,6 +422,11 @@ pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]
                 .map(String::as_str);
             crate::screenshot::run_upload_keep(listfile, url_to);
         }
+        return true;
+    }
+    // Recent uploads: every uploaded link with the time it has left (the tray menu item).
+    if args.iter().any(|a| a == "--upload-history") {
+        crate::upload_history_dlg::show_history(None);
         return true;
     }
     // Toggle the screenshot hotkey on/off (HKCU autostart + the tray daemon).
