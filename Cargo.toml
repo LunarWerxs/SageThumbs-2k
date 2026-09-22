@@ -127,8 +127,11 @@ exr = { version = "=1.74.2", default-features = false }
 # Adobe RGB) thumbnails into sRGB so they aren't over-saturated (and don't get cached
 # wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
+# KEEP THIS ON THE MINOR `image` USES: a 0.8 -> 0.9 bump (2026-09-14) put a second
+# moxcms in the lock and in every binary until `image` itself moves to 0.9; cargo deny
+# lists it as a duplicate the moment the two drift apart again.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
-moxcms = "0.9"
+moxcms = "0.8"
 # CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
 # → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
@@ -309,11 +312,11 @@ vp9dec = { version = "0.1.1", optional = true }
 # `cargo tree -p sagethumbs2k-dll` must never list oxideav.
 oxideav-mpeg12video = { version = "0.0.13", optional = true }
 
-nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
-h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
+nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", version = "0.1", optional = true }
+h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", version = "0.1", optional = true }
 
 [features]
 

@@ -623,7 +623,7 @@ dependencies = [
  "exr",
  "gif",
  "image-webp",
- "moxcms 0.8.1",
+ "moxcms",
  "num-traits",
  "png 0.18.1",
  "qoi",
@@ -1009,16 +1009,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moxcms"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "396077b717181ce3f9a6b66739b269b82d756be5ec0f76be0bc40a7c51775830"
-dependencies = [
- "num-traits",
- "pxfm",
-]
-
-[[package]]
 name = "mutate_once"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1383,7 +1373,7 @@ dependencies = [
  "jxl-oxide",
  "kamadak-exif",
  "lofty",
- "moxcms 0.9.1",
+ "moxcms",
  "nihav_codec_support",
  "nihav_core",
  "nihav_duck",
