@@ -97,8 +97,9 @@ const SECTION_NAME: PCWSTR = windows::core::w!("Local\\SageThumbs2K.DlgSel.Secti
 const EVENT_NAME: PCWSTR = windows::core::w!("Local\\SageThumbs2K.DlgSel.Done");
 const REQUEST_MESSAGE_NAME: PCWSTR = windows::core::w!("SageThumbs2K.DlgSel.Request");
 
-/// Longest path we will hand back, in UTF-16 units. Comfortably past `MAX_PATH` so long
-/// paths survive, and small enough that the whole slot is one page-ish.
+/// Buffer size and hard cap in UTF-16 units; at most `PATH_CAP - 1` units are ever handed
+/// back, since the terminating NUL must itself fit inside the buffer. Comfortably past
+/// `MAX_PATH` so long paths survive, and small enough that the whole slot is one page-ish.
 pub const PATH_CAP: usize = 1024;
 
 /// `Slot::state` values. The requester writes `REQUESTED`; we move it to `BUSY` with a

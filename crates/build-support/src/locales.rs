@@ -160,8 +160,11 @@ pub fn build_coverage_report(
     Some(coverage)
 }
 
-/// The `{name}` substitution slots in a locale value, in order of first appearance.
-/// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`).
+/// The `{name}` substitution slots in a locale value, as a set (BTreeSet, so sorted
+/// by name rather than by first appearance).
+/// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`). This scanner is
+/// duplicated in `src/i18n.rs`'s `slots` helper and `tests/f29_screenshot_i18n_contract.rs`;
+/// keep the three copies of the grammar in sync.
 fn placeholders(value: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut rest = value;
@@ -304,9 +307,9 @@ pub fn write_dll_keys(out: &mut String, langs: &BTreeMap<String, BTreeMap<String
     out.push_str("];\n");
 }
 
-/// `btn_ok` -> `BTN_OK`, `pt-BR`-style keys never occur (keys are snake_case),
-/// but any non-alphanumeric is mapped to `_` defensively so the output is always
-/// a valid Rust identifier.
+/// `btn_ok` -> `BTN_OK`, `pt-BR`-style keys never occur (keys are snake_case):
+/// ASCII alphanumerics survive, everything else becomes `_`. A leading digit would
+/// survive too, so this does not guarantee a valid Rust identifier.
 fn to_upper_snake(key: &str) -> String {
     key.chars()
         .map(|c| {

@@ -58,7 +58,7 @@ pub fn versioninfo_rc(
     }
     let (maj, min, pat) = (nums[0], nums[1], nums[2]);
     let file_type = file_type.rc_value();
-    // \r\n in the .rc string keeps rc.exe/windres happy; the version string shown
+    // The .rc is emitted with LF-only line endings; the version string shown
     // in Properties is the human-readable cargo version (incl. any -pre suffix).
     format!(
         "1 VERSIONINFO\n\

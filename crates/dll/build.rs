@@ -78,7 +78,8 @@ fn main() {
 /// be found raises a STRUCTURED EXCEPTION, and this crate builds with `panic = "abort"` --
 /// an unguarded call would kill the host process instead of degrading.
 ///
-/// (Mirrored in the other package's build script: build scripts cannot share code.)
+/// (Mirrored in the other package's build script, which scopes each flag to its two bins;
+/// here they stay package-wide.)
 fn delay_load_media_foundation() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
@@ -88,4 +89,8 @@ fn delay_load_media_foundation() {
     }
     // /DELAYLOAD is inert without the helper that performs the deferred resolution.
     println!("cargo:rustc-link-arg=delayimp.lib");
+    // The package-wide `-arg` above also reaches this crate's test harness, whose
+    // dead-code elimination may remove every MF import: the benign
+    // "delay-load DLL ignored; no imports found" case.
+    println!("cargo:rustc-link-arg=/IGNORE:4199");
 }
