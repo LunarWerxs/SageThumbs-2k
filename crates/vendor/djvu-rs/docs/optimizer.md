@@ -14,9 +14,11 @@ document semantics, so the following content is retained byte-for-byte:
 `OptimizationPreset::Archival` applies the same cleanup and then a measured
 lossy step, described under [Archival re-encode](#archival-re-encode-814-slice-3).
 It never invokes a lossy codec without a quality floor and never claims a
-target size was reached. If `--target-size` cannot be met by the selected
-rewrites, the JSON plan/report sets `target_met` to `false` and names the
-reason.
+target size was reached. With a floor, `--target-size` drives a search for the
+least loss that meets the budget, described under
+[Target-size search](#target-size-search-814-slice-4). If the target cannot be
+met by the selected rewrites, the JSON plan/report sets `target_met` to
+`false` and names the reason.
 
 `--max-ssim-loss` is the quality floor of the archival preset. Under the
 lossless preset the FREE-cleanup path is pixel-exact by construction and does
@@ -123,4 +125,59 @@ This slice marks `OptimizationRequest`, `RewriteAction`, `RewrittenComponent`,
 break recorded in [`api-compatibility.md`](api-compatibility.md) §2, so the
 next slice can add fields without another one.
 
-The remaining roadmap is target-size search.
+## Target-size search ([#814](https://github.com/matyushkin/djvu-rs/issues/814), slice 4)
+
+With `--preset archival --max-ssim-loss L --target-size N` the optimizer
+looks for the least loss whose output fits in `N` bytes. The floor `L` stays
+the outer bound: no re-encode ever loses more than `L`, and the target only
+tightens the ceiling below it. `--target-size` without a floor changes
+nothing in the selection; the plan then merely reports whether the safe
+rewrites happen to meet the target, as before.
+
+The search is a bisection over one loss ceiling `C` in `(0, L]` shared by
+every layer of the document, in twelve steps. At each ceiling every layer is
+re-chosen as under slice 3, the smallest re-encode with `1 - ssim <= C` that
+is also smaller than its input, and the output size is predicted. A ceiling
+whose predicted output fits becomes the new upper bound, otherwise the new
+lower bound; the selection returned is the one at the final upper bound, so
+the output is always within the floor and, when `target_met` is `true`,
+within the target. One ceiling for the whole document means no page pays for
+another: pages lose at most what the ceiling allows, and the search lowers it
+until the budget is met.
+
+The prediction is exact. The emitted size depends only on the chunk lengths,
+so each candidate is sized by a dry emission with placeholder payloads of the
+chosen lengths, which costs no codec work. Every background probe (one slice
+count of one page) is encoded, decoded and measured once and then memoised,
+so the search reuses the probes the floor selection already made and adds
+only the slice counts the tighter ceilings need. A page's mask is probed once,
+as under slice 3. `optimize` reuses the chunks its plan encoded for the final
+selection and re-encodes a page only when the chunks it held belong to a
+different slice count.
+
+Three outcomes are named in the plan and report:
+
+- *Met by cleanup alone.* When `FREE` removal already meets the target, no
+  layer is re-encoded and a warning says `target size N bytes is met by
+  structural cleanup alone; no layer is re-encoded`.
+- *Met.* `target_met` is `true`, `output_bytes <= N`, and each re-encoded
+  component's `reason` names the ceiling the search settled on:
+  `... within the target-size search ceiling 0.0062 (max_ssim_loss 0.02)`.
+- *Unreachable.* When even the selection at the floor is larger than `N`, the
+  floor selection is kept, `target_met` is `false`, and a warning says
+  `target size N bytes is unreachable within max_ssim_loss L: the smallest
+  output within the floor is M bytes`. `quality_floor_met` stays `true`: the
+  optimizer never trades the floor for the target.
+
+The search runs inside the `plan` phase after the per-component walk, so it
+reports no progress events of its own; the walk, where the floor selection
+(the expensive probes) is made, reports one `plan` event per component as
+before. The cancel hook is polled before each layer at each step, so a stop
+lands within one probe. No public field is added: `target_size`,
+`target_met`, `min_ssim` and per-component `quality` carry the result.
+
+A worked example on `tests/fixtures/boy.djvu` (4803 bytes, floor 0.02):
+the floor alone gives 3362 bytes at 91 slices (SSIM 0.9805); a target of
+4000 bytes gives 3872 bytes at 97 slices (SSIM 0.9938, ceiling 0.0062); a
+target of 3000 bytes is reported unreachable with the 3362-byte floor
+selection kept.

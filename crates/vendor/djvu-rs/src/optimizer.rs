@@ -12,8 +12,10 @@
 //! it is smaller. With [`OptimizationRequest::lossy_text`] the JB2 mask is
 //! re-encoded with lossy symbol matching under the same floor. Without a
 //! floor the archival preset stays pixel-exact and says so in a warning.
-//! Target-size search remains follow-up work; the plan reports an unmet
-//! target instead of guessing.
+//! With a floor and [`OptimizationRequest::target_size`] the optimizer
+//! bisects one loss ceiling within the floor, shared by every layer, for the
+//! least loss whose output meets the target, and reports a target it cannot
+//! reach within the floor instead of guessing.
 //!
 //! A long run can be observed through [`Optimizer::with_progress`]: the
 //! optimizer reports one [`ProgressEvent`] per component in each of the
@@ -22,6 +24,7 @@
 //! before each component and returns [`OptimizeError::Cancelled`] instead of
 //! partial output.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::djvu_mut::{DjVuDocumentMut, MutError};
@@ -64,9 +67,9 @@ impl OptimizationPreset {
 pub struct OptimizationRequest {
     /// The policy to apply.
     pub preset: OptimizationPreset,
-    /// Optional maximum output size in bytes. Reported as unmet when the
-    /// selected rewrites cannot reach it; target-size search is follow-up
-    /// work.
+    /// Optional maximum output size in bytes. Under the archival preset with
+    /// a floor, the optimizer searches the least SSIM loss whose output meets
+    /// it; otherwise it only reports whether the selected rewrites reach it.
     pub target_size: Option<u64>,
     /// Maximum permitted SSIM loss for a lossy re-encode: `1.0 - ssim`,
     /// where `ssim` compares the re-encode with the input's own decode over
@@ -370,11 +373,24 @@ struct Analysis {
     payloads: Vec<Vec<Vec<u8>>>,
 }
 
+/// Bisection steps of the target-size search over the loss ceiling. Each
+/// halves the interval `(0, floor]`, so the settled ceiling is within
+/// `floor / 4096` of the least loss that meets the target.
+const TARGET_SEARCH_STEPS: usize = 12;
+
 /// What the archival preset is allowed to do, once a floor is set.
 struct ArchivalPolicy {
     /// Maximum permitted `1.0 - ssim`.
     floor: f64,
+    /// The floor as the request gave it, for messages.
+    floor_given: f32,
     lossy_text: bool,
+}
+
+impl ArchivalPolicy {
+    fn floor_text(&self) -> String {
+        format!("{}", self.floor_given)
+    }
 }
 
 /// Pages the archival policy looked at and left alone, by reason, so a
@@ -387,6 +403,14 @@ struct Untouched {
 }
 
 impl Untouched {
+    /// Count a layer that has no re-encode both smaller and within the floor.
+    fn count(&mut self, layer: &Layer<'_>) {
+        match layer.kind {
+            LayerKind::Background(_) => self.backgrounds += 1,
+            LayerKind::Mask(_) => self.masks += 1,
+        }
+    }
+
     fn report(&self, warnings: &mut Vec<String>) {
         if self.backgrounds > 0 {
             warnings.push(format!(
@@ -534,24 +558,26 @@ impl Optimizer {
             .collect::<Vec<_>>();
         let mut payloads: Vec<Vec<Vec<u8>>> = vec![Vec::new(); rewrites.len()];
 
-        // The plan walk: poll before each component, analyse a page under
-        // the archival policy, report after.
+        // The plan walk: poll before each component, collect its layers
+        // under the archival policy and settle each at the floor (the
+        // expensive part), report after.
         let mut untouched = Untouched::default();
         let paths = component_paths(&document);
+        let mut layers: Vec<Layer<'_>> = Vec::new();
+        let mut at_floor: Vec<Option<Choice>> = Vec::new();
         let mut bytes_so_far = 0usize;
         for (index, form_path) in paths.iter().enumerate() {
             self.check_cancelled()?;
             let chunk = component_at(&document, form_path)?;
             if let Some(policy) = &policy {
-                analyse_page(
-                    form_path,
-                    chunk,
-                    policy,
-                    &mut rewrites,
-                    &mut payloads,
-                    &mut untouched,
-                    &mut warnings,
-                );
+                for mut layer in Layer::collect(form_path, chunk, policy, &mut untouched) {
+                    let choice = layer.choose(policy.floor, &mut warnings);
+                    if choice.is_none() && !layer.failed {
+                        untouched.count(&layer);
+                    }
+                    layers.push(layer);
+                    at_floor.push(choice);
+                }
             }
             bytes_so_far += component_size(chunk);
             self.report_progress(ProgressEvent {
@@ -563,6 +589,118 @@ impl Optimizer {
             });
         }
         untouched.report(&mut warnings);
+
+        // The emitted size depends only on the chunk lengths, so a
+        // configuration is sized by a dry emission with placeholder payloads
+        // of the chosen lengths: exact, and far cheaper than an encode.
+        let blanks = layers
+            .iter()
+            .map(|layer| layer.rewrite(&Choice::default(), String::new()))
+            .collect::<Vec<_>>();
+        let predicted = |choices: &[Option<Choice>]| -> Result<usize, OptimizeError> {
+            let mut trial = rewrites.clone();
+            let mut trial_payloads = payloads.clone();
+            for (blank, choice) in blanks.iter().zip(choices) {
+                let Some(choice) = choice else {
+                    continue;
+                };
+                trial.push(blank.clone());
+                trial_payloads.push(choice.lengths.iter().map(|&len| vec![0; len]).collect());
+            }
+            Ok(apply_rewrites(&document, &trial, &trial_payloads, |_, _| Ok(()), |_, _| {})?.len())
+        };
+        let base_bytes = predicted(&vec![None; layers.len()])?;
+
+        // The target-size search: the smallest loss ceiling within the
+        // floor whose predicted output meets the target. Zero means no
+        // re-encode; the floor is the most the request allows.
+        let mut ceiling = policy.as_ref().map(|policy| policy.floor);
+        let mut choices = at_floor;
+        if let (Some(policy), Some(target)) = (&policy, self.request.target_size) {
+            let floor_bytes = predicted(&choices)?;
+            if floor_bytes as u64 > target {
+                warnings.push(format!(
+                    "target size {target} bytes is unreachable within max_ssim_loss {}: the smallest output within the floor is {floor_bytes} bytes",
+                    policy.floor_text()
+                ));
+            } else if base_bytes as u64 <= target {
+                choices = vec![None; layers.len()];
+                ceiling = None;
+                warnings.push(format!(
+                    "target size {target} bytes is met by structural cleanup alone; no layer is re-encoded"
+                ));
+            } else {
+                let mut low = 0.0f64;
+                let mut high = policy.floor;
+                for _ in 0..TARGET_SEARCH_STEPS {
+                    let middle = (low + high) / 2.0;
+                    if middle <= low || middle >= high {
+                        break;
+                    }
+                    let mut trial = Vec::with_capacity(layers.len());
+                    for (layer, floor_choice) in layers.iter_mut().zip(&choices) {
+                        self.check_cancelled()?;
+                        // A layer with nothing smaller within the floor has
+                        // nothing smaller within a tighter ceiling either.
+                        trial.push(
+                            floor_choice
+                                .as_ref()
+                                .and_then(|_| layer.choose(middle, &mut warnings)),
+                        );
+                    }
+                    if predicted(&trial)? as u64 <= target {
+                        high = middle;
+                        choices = trial;
+                    } else {
+                        low = middle;
+                    }
+                }
+                ceiling = Some(high);
+            }
+        }
+
+        // The re-encode rewrites, in walk order after the removals.
+        for (layer, choice) in layers.iter_mut().zip(choices) {
+            let Some(choice) = choice else {
+                continue;
+            };
+            let Some(policy) = &policy else {
+                unreachable!("a choice exists only under the archival policy");
+            };
+            let chunks = match layer.payload(&choice) {
+                Ok(chunks) => chunks,
+                Err(message) => {
+                    warnings.push(format!(
+                        "page at {}: layer left untouched, its re-encode could not be reproduced: {message}",
+                        json_path(&layer.form_path)
+                    ));
+                    continue;
+                }
+            };
+            let bound = match ceiling {
+                Some(bound) if bound < policy.floor => format!(
+                    "the target-size search ceiling {bound:.4} (max_ssim_loss {})",
+                    policy.floor_text()
+                ),
+                _ => format!("max_ssim_loss {}", policy.floor_text()),
+            };
+            let reason = match layer.action {
+                RewriteAction::ReencodeMask => format!(
+                    "JB2 mask re-encoded with lossy symbol matching: SSIM {:.4} against the input decode, loss {:.4} within {bound}",
+                    choice.ssim,
+                    1.0 - choice.ssim
+                ),
+                _ => format!(
+                    "IW44 background re-encoded at {} slices: SSIM {:.4} against the input decode, loss {:.4} within {bound}",
+                    choice.slices.unwrap_or_default(),
+                    choice.ssim,
+                    1.0 - choice.ssim
+                ),
+            };
+            rewrites.push(layer.rewrite(&choice, reason));
+            payloads.push(chunks);
+        }
+        drop(layers);
 
         // A dry application, to size the output; it is polled for
         // cancellation like every other per-component step.
@@ -588,7 +726,11 @@ impl Optimizer {
             .target_size
             .is_none_or(|target| output_bytes as u64 <= target);
         let target_met = target_size_met && quality_floor_met;
-        if !target_size_met {
+        if !target_size_met
+            && !warnings
+                .iter()
+                .any(|warning| warning.contains("unreachable"))
+        {
             let target = self.request.target_size.unwrap_or_default();
             warnings.push(format!(
                 "target size {target} bytes cannot be met by the selected rewrites; output is {output_bytes} bytes"
@@ -692,6 +834,7 @@ impl Optimizer {
             OptimizationPreset::Archival => match self.request.max_ssim_loss {
                 Some(floor) => Some(ArchivalPolicy {
                     floor: f64::from(floor),
+                    floor_given: floor,
                     lossy_text: self.request.lossy_text,
                 }),
                 None => {
@@ -731,137 +874,27 @@ fn collect_free_chunks(chunk: &Chunk, path: &mut Vec<usize>, candidates: &mut Ve
     }
 }
 
-/// A re-encoded layer that passed the floor and is smaller than the input.
-struct Reencoded {
-    chunks: Vec<Vec<u8>>,
+/// One measured encode of a layer.
+#[derive(Debug, Clone)]
+struct Probe {
+    /// The payload length of each encoded chunk: what the emitted size
+    /// depends on.
+    lengths: Vec<usize>,
+    ssim: f64,
+}
+
+/// The re-encode a layer settles on at a loss ceiling.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Choice {
+    lengths: Vec<usize>,
     ssim: f64,
     slices: Option<u8>,
 }
 
-/// Select the archival rewrites for one `DJVU` page `FORM`; other components
-/// (shared dictionaries, thumbnails, directory leaves) are left alone.
-fn analyse_page(
-    form_path: &[usize],
-    chunk: &Chunk,
-    policy: &ArchivalPolicy,
-    rewrites: &mut Vec<RewrittenComponent>,
-    payloads: &mut Vec<Vec<Vec<u8>>>,
-    untouched: &mut Untouched,
-    warnings: &mut Vec<String>,
-) {
-    let Chunk::Form {
-        secondary_id,
-        children,
-        ..
-    } = chunk
-    else {
-        return;
-    };
-    if secondary_id != b"DJVU" {
-        return;
+impl Choice {
+    fn bytes(&self) -> usize {
+        self.lengths.iter().sum()
     }
-    let leaves = |wanted: &'static [u8; 4]| {
-        children
-            .iter()
-            .filter_map(move |child| match child {
-                Chunk::Leaf { id, data } if id == wanted => Some(data.as_slice()),
-                _ => None,
-            })
-            .collect::<Vec<&[u8]>>()
-    };
-
-    let bg44 = leaves(b"BG44");
-    if !bg44.is_empty() {
-        match reencode_background(&bg44, policy.floor) {
-            Ok(Some(reencoded)) => {
-                let reason = format!(
-                    "IW44 background re-encoded at {} slices: SSIM {:.4} against the input decode, loss {:.4} within max_ssim_loss {}",
-                    reencoded.slices.unwrap_or_default(),
-                    reencoded.ssim,
-                    1.0 - reencoded.ssim,
-                    policy.floor
-                );
-                push_reencode(
-                    rewrites,
-                    payloads,
-                    form_path,
-                    *b"BG44",
-                    RewriteAction::ReencodeBackground,
-                    &bg44,
-                    reencoded,
-                    reason,
-                );
-            }
-            Ok(None) => untouched.backgrounds += 1,
-            Err(error) => warnings.push(format!(
-                "page at {}: background left untouched, its BG44 does not decode: {error}",
-                json_path(form_path)
-            )),
-        }
-    }
-
-    if policy.lossy_text {
-        let sjbz = leaves(b"Sjbz");
-        let uses_dictionary = children
-            .iter()
-            .any(|child| matches!(child, Chunk::Leaf { id, .. } if id == b"INCL" || id == b"Djbz"));
-        if sjbz.len() == 1 && !uses_dictionary {
-            match reencode_mask(sjbz[0], policy.floor) {
-                Ok(Some(reencoded)) => {
-                    let reason = format!(
-                        "JB2 mask re-encoded with lossy symbol matching: SSIM {:.4} against the input decode, loss {:.4} within max_ssim_loss {}",
-                        reencoded.ssim,
-                        1.0 - reencoded.ssim,
-                        policy.floor
-                    );
-                    push_reencode(
-                        rewrites,
-                        payloads,
-                        form_path,
-                        *b"Sjbz",
-                        RewriteAction::ReencodeMask,
-                        &sjbz,
-                        reencoded,
-                        reason,
-                    );
-                }
-                Ok(None) => untouched.masks += 1,
-                Err(error) => warnings.push(format!(
-                    "page at {}: mask left untouched, its Sjbz does not decode: {error}",
-                    json_path(form_path)
-                )),
-            }
-        } else if !sjbz.is_empty() {
-            untouched.shared_masks += 1;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_reencode(
-    rewrites: &mut Vec<RewrittenComponent>,
-    payloads: &mut Vec<Vec<Vec<u8>>>,
-    form_path: &[usize],
-    chunk_id: [u8; 4],
-    action: RewriteAction,
-    old: &[&[u8]],
-    reencoded: Reencoded,
-    reason: String,
-) {
-    rewrites.push(RewrittenComponent {
-        path: form_path.to_vec(),
-        chunk_id,
-        action,
-        input_bytes: old.iter().map(|data| data.len()).sum(),
-        output_bytes: reencoded.chunks.iter().map(Vec::len).sum(),
-        reason,
-        quality: Some(ComponentQuality {
-            ssim: reencoded.ssim,
-            ssim_loss: 1.0 - reencoded.ssim,
-            slices: reencoded.slices,
-        }),
-    });
-    payloads.push(reencoded.chunks);
 }
 
 /// The input decode a re-encode is measured against.
@@ -870,58 +903,263 @@ enum Reference {
     Gray(GrayPixmap),
 }
 
-fn decode_iw44(chunks: &[&[u8]]) -> Result<Iw44Image, Iw44Error> {
-    let mut image = Iw44Image::new();
-    for chunk in chunks {
-        image.decode_chunk(chunk)?;
-    }
-    Ok(image)
+/// A fresh probe's encoded chunks, when the probe was not a memo hit.
+type FreshChunks = Option<Vec<Vec<u8>>>;
+
+/// The slice-count curve of one IW44 background: every probe made so far,
+/// keyed by slice count, so a later visit at another ceiling costs only the
+/// encodes its bisection has not made yet.
+struct BackgroundCurve {
+    /// The highest slice count worth probing: the input's own. Encoding more
+    /// slices than the input carries cannot recover detail the input lost.
+    top: u8,
+    probes: BTreeMap<u8, Probe>,
+    /// The chunks of the most recent feasible probe, so the chosen count is
+    /// usually not encoded a second time.
+    held: Option<(u8, Vec<Vec<u8>>)>,
 }
 
-/// Re-encode a page background with the fewest IW44 slices whose SSIM loss
-/// against the input decode stays within `floor`.
-///
-/// Quality grows with the slice count, so the search is a bisection over
-/// `1..=n`, where `n` is the input's own slice count: encoding more slices
-/// than the input carries cannot recover detail the input lost. `None` when
-/// no slice count is both within the floor and smaller than the input.
-fn reencode_background(chunks: &[&[u8]], floor: f64) -> Result<Option<Reencoded>, Iw44Error> {
-    let input = decode_iw44(chunks)?;
-    let input_bytes: usize = chunks.iter().map(|chunk| chunk.len()).sum();
-    // Byte 1 of every chunk header is its slice count.
-    let input_slices: u32 = chunks
-        .iter()
-        .map(|chunk| u32::from(chunk.get(1).copied().unwrap_or(0)))
-        .sum();
-    let top = match input_slices {
-        0 => u32::from(Iw44EncodeOptions::default().total_slices),
-        n => n.min(u32::from(u8::MAX)),
-    };
-    // Bit 7 of the first chunk's major-version byte marks a grayscale
-    // stream (IW44 header, byte 2); the decoder validated the header.
-    let is_gray = chunks
-        .first()
-        .and_then(|chunk| chunk.get(2))
-        .is_some_and(|major| major >> 7 != 0);
-    let reference = if is_gray {
-        Reference::Gray(input.to_gray8()?)
-    } else {
-        Reference::Color(input.to_rgb()?)
-    };
-    drop(input);
+/// The single lossy probe of one JB2 mask, made on first use.
+#[derive(Default)]
+struct MaskProbe {
+    /// `None` until probed; then the lossy encode when it is smaller than
+    /// the input, with its SSIM.
+    probe: Option<Option<(Vec<u8>, Probe)>>,
+}
 
-    let probe = |slices: u8| -> Result<(Vec<Vec<u8>>, f64), Iw44Error> {
-        let options = Iw44EncodeOptions {
-            total_slices: slices,
-            ..Iw44EncodeOptions::default()
+enum LayerKind {
+    Background(BackgroundCurve),
+    Mask(MaskProbe),
+}
+
+/// A re-encodable layer of a page under the archival policy, with the
+/// probes it has made so far. The input leaves are borrowed from the parsed
+/// document.
+struct Layer<'a> {
+    form_path: Vec<usize>,
+    chunk_id: [u8; 4],
+    action: RewriteAction,
+    /// The input leaves' payloads.
+    input: Vec<&'a [u8]>,
+    /// Payload bytes of the input leaves.
+    input_bytes: usize,
+    kind: LayerKind,
+    /// Set once a probe failed to decode; the failure was reported once and
+    /// the layer is left alone from then on.
+    failed: bool,
+}
+
+impl<'a> Layer<'a> {
+    /// The layers of one `DJVU` page `FORM` the policy may re-encode; other
+    /// components (shared dictionaries, thumbnails, directory leaves) yield
+    /// none.
+    fn collect(
+        form_path: &[usize],
+        chunk: &'a Chunk,
+        policy: &ArchivalPolicy,
+        untouched: &mut Untouched,
+    ) -> Vec<Layer<'a>> {
+        let Chunk::Form {
+            secondary_id,
+            children,
+            ..
+        } = chunk
+        else {
+            return Vec::new();
         };
-        let encoded = match &reference {
-            Reference::Color(pixmap) => encode_iw44_color(pixmap, &options),
-            Reference::Gray(gray) => encode_iw44_gray(gray, &options),
+        if secondary_id != b"DJVU" {
+            return Vec::new();
+        }
+        let leaves = |wanted: &'static [u8; 4]| {
+            children
+                .iter()
+                .filter_map(move |child| match child {
+                    Chunk::Leaf { id, data } if id == wanted => Some(data.as_slice()),
+                    _ => None,
+                })
+                .collect::<Vec<&'a [u8]>>()
         };
+        let mut layers = Vec::new();
+
+        let bg44 = leaves(b"BG44");
+        if !bg44.is_empty() {
+            // Byte 1 of every chunk header is its slice count.
+            let input_slices: u32 = bg44
+                .iter()
+                .map(|chunk| u32::from(chunk.get(1).copied().unwrap_or(0)))
+                .sum();
+            let top = match input_slices {
+                0 => Iw44EncodeOptions::default().total_slices,
+                n => n.min(u32::from(u8::MAX)) as u8,
+            };
+            layers.push(Layer::new(
+                form_path,
+                *b"BG44",
+                RewriteAction::ReencodeBackground,
+                bg44,
+                LayerKind::Background(BackgroundCurve {
+                    top,
+                    probes: BTreeMap::new(),
+                    held: None,
+                }),
+            ));
+        }
+
+        if policy.lossy_text {
+            let sjbz = leaves(b"Sjbz");
+            let uses_dictionary = children.iter().any(
+                |child| matches!(child, Chunk::Leaf { id, .. } if id == b"INCL" || id == b"Djbz"),
+            );
+            if sjbz.len() == 1 && !uses_dictionary {
+                layers.push(Layer::new(
+                    form_path,
+                    *b"Sjbz",
+                    RewriteAction::ReencodeMask,
+                    sjbz,
+                    LayerKind::Mask(MaskProbe::default()),
+                ));
+            } else if !sjbz.is_empty() {
+                untouched.shared_masks += 1;
+            }
+        }
+        layers
+    }
+
+    fn new(
+        form_path: &[usize],
+        chunk_id: [u8; 4],
+        action: RewriteAction,
+        input: Vec<&'a [u8]>,
+        kind: LayerKind,
+    ) -> Self {
+        Self {
+            form_path: form_path.to_vec(),
+            chunk_id,
+            action,
+            input_bytes: input.iter().map(|data| data.len()).sum(),
+            input,
+            kind,
+            failed: false,
+        }
+    }
+
+    /// The smallest re-encode whose loss stays within `ceiling`; `None` when
+    /// none is both within it and smaller than the input. A codec failure is
+    /// reported once as a warning and leaves the layer untouched for good.
+    fn choose(&mut self, ceiling: f64, warnings: &mut Vec<String>) -> Option<Choice> {
+        if self.failed {
+            return None;
+        }
+        let outcome = match &mut self.kind {
+            LayerKind::Background(curve) => curve.choose(&self.input, ceiling).map_err(|error| {
+                format!("background left untouched, its BG44 does not decode: {error}")
+            }),
+            LayerKind::Mask(mask) => mask
+                .choose(&self.input, ceiling)
+                .map_err(|error| format!("mask left untouched, its Sjbz does not decode: {error}")),
+        };
+        match outcome {
+            Ok(choice) => choice.filter(|choice| choice.bytes() < self.input_bytes),
+            Err(message) => {
+                self.failed = true;
+                warnings.push(format!("page at {}: {message}", json_path(&self.form_path)));
+                None
+            }
+        }
+    }
+
+    /// The plan entry for `choice`.
+    fn rewrite(&self, choice: &Choice, reason: String) -> RewrittenComponent {
+        RewrittenComponent {
+            path: self.form_path.clone(),
+            chunk_id: self.chunk_id,
+            action: self.action,
+            input_bytes: self.input_bytes,
+            output_bytes: choice.bytes(),
+            reason,
+            quality: Some(ComponentQuality {
+                ssim: choice.ssim,
+                ssim_loss: 1.0 - choice.ssim,
+                slices: choice.slices,
+            }),
+        }
+    }
+
+    /// The new leaf payloads of `choice`, encoded once more only when the
+    /// held chunks are for another slice count.
+    fn payload(&mut self, choice: &Choice) -> Result<Vec<Vec<u8>>, String> {
+        match &mut self.kind {
+            LayerKind::Background(curve) => {
+                let slices = choice.slices.unwrap_or(1);
+                if let Some((held, chunks)) = curve.held.take()
+                    && held == slices
+                {
+                    return Ok(chunks);
+                }
+                let reference = decode_reference(&self.input).map_err(|error| error.to_string())?;
+                Ok(encode_background(&reference, slices))
+            }
+            LayerKind::Mask(mask) => mask
+                .probe
+                .take()
+                .flatten()
+                .map(|(chunk, _)| vec![chunk])
+                .ok_or_else(|| "the mask probe holds no encode".to_string()),
+        }
+    }
+}
+
+impl BackgroundCurve {
+    /// Bisect over `1..=top` for the fewest slices within `ceiling`: quality
+    /// grows with the slice count. Probes already made are reused; the input
+    /// is decoded only when a new probe needs it.
+    fn choose(&mut self, input: &[&[u8]], ceiling: f64) -> Result<Option<Choice>, Iw44Error> {
+        let mut reference: Option<Reference> = None;
+        let mut low = 1u32;
+        let mut high = u32::from(self.top);
+        let mut best: Option<(u8, Probe)> = None;
+        while low <= high {
+            let middle = (low + (high - low) / 2) as u8;
+            let (probe, fresh) = self.probe(input, middle, &mut reference)?;
+            if 1.0 - probe.ssim <= ceiling {
+                best = Some((middle, probe));
+                if let Some(chunks) = fresh {
+                    self.held = Some((middle, chunks));
+                }
+                if middle == 1 {
+                    break;
+                }
+                high = u32::from(middle) - 1;
+            } else {
+                low = u32::from(middle) + 1;
+            }
+        }
+        Ok(best.map(|(slices, probe)| Choice {
+            lengths: probe.lengths,
+            ssim: probe.ssim,
+            slices: Some(slices),
+        }))
+    }
+
+    /// The probe at `slices`, from the memo or freshly made; a fresh probe
+    /// also returns its chunks.
+    fn probe(
+        &mut self,
+        input: &[&[u8]],
+        slices: u8,
+        reference: &mut Option<Reference>,
+    ) -> Result<(Probe, FreshChunks), Iw44Error> {
+        if let Some(probe) = self.probes.get(&slices) {
+            return Ok((probe.clone(), None));
+        }
+        if reference.is_none() {
+            *reference = Some(decode_reference(input)?);
+        }
+        let reference = reference.as_ref().expect("decoded above");
+        let encoded = encode_background(reference, slices);
         let borrowed = encoded.iter().map(Vec::as_slice).collect::<Vec<_>>();
         let decoded = decode_iw44(&borrowed)?;
-        let ssim = match &reference {
+        let ssim = match reference {
             Reference::Color(pixmap) => {
                 let candidate = decoded.to_rgb()?;
                 if (candidate.width, candidate.height) != (pixmap.width, pixmap.height) {
@@ -937,55 +1175,90 @@ fn reencode_background(chunks: &[&[u8]], floor: f64) -> Result<Option<Reencoded>
                 crate::quality::compare_gray(gray, &candidate).ssim
             }
         };
-        Ok((encoded, ssim))
-    };
-
-    let mut low = 1u32;
-    let mut high = top;
-    let mut best: Option<Reencoded> = None;
-    while low <= high {
-        let middle = low + (high - low) / 2;
-        let (encoded, ssim) = probe(middle as u8)?;
-        if 1.0 - ssim <= floor {
-            best = Some(Reencoded {
-                chunks: encoded,
-                ssim,
-                slices: Some(middle as u8),
-            });
-            if middle == 1 {
-                break;
-            }
-            high = middle - 1;
-        } else {
-            low = middle + 1;
-        }
+        let probe = Probe {
+            lengths: encoded.iter().map(Vec::len).collect(),
+            ssim,
+        };
+        self.probes.insert(slices, probe.clone());
+        Ok((probe, Some(encoded)))
     }
-    Ok(best.filter(|found| found.chunks.iter().map(Vec::len).sum::<usize>() < input_bytes))
+}
+
+impl MaskProbe {
+    /// The lossy re-encode of the mask when its loss stays within `ceiling`.
+    /// The encode is made once; later visits only compare the ceiling.
+    fn choose(&mut self, input: &[&[u8]], ceiling: f64) -> Result<Option<Choice>, Jb2Error> {
+        if self.probe.is_none() {
+            self.probe = Some(probe_mask(input)?);
+        }
+        Ok(self
+            .probe
+            .as_ref()
+            .and_then(|probe| probe.as_ref())
+            .filter(|(_, probe)| 1.0 - probe.ssim <= ceiling)
+            .map(|(_, probe)| Choice {
+                lengths: probe.lengths.clone(),
+                ssim: probe.ssim,
+                slices: None,
+            }))
+    }
+}
+
+fn decode_iw44(chunks: &[&[u8]]) -> Result<Iw44Image, Iw44Error> {
+    let mut image = Iw44Image::new();
+    for chunk in chunks {
+        image.decode_chunk(chunk)?;
+    }
+    Ok(image)
+}
+
+/// Decode the input background once, as the image a re-encode is measured
+/// against. Bit 7 of the first chunk's major-version byte marks a grayscale
+/// stream (IW44 header, byte 2); the decoder validated the header.
+fn decode_reference(chunks: &[&[u8]]) -> Result<Reference, Iw44Error> {
+    let input = decode_iw44(chunks)?;
+    let is_gray = chunks
+        .first()
+        .and_then(|chunk| chunk.get(2))
+        .is_some_and(|major| major >> 7 != 0);
+    Ok(if is_gray {
+        Reference::Gray(input.to_gray8()?)
+    } else {
+        Reference::Color(input.to_rgb()?)
+    })
+}
+
+fn encode_background(reference: &Reference, slices: u8) -> Vec<Vec<u8>> {
+    let options = Iw44EncodeOptions {
+        total_slices: slices,
+        ..Iw44EncodeOptions::default()
+    };
+    match reference {
+        Reference::Color(pixmap) => encode_iw44_color(pixmap, &options),
+        Reference::Gray(gray) => encode_iw44_gray(gray, &options),
+    }
 }
 
 /// Re-encode a page mask with lossy symbol matching and measure it against
-/// the input decode. `None` when the result is not both within `floor` and
-/// smaller than the input.
-fn reencode_mask(data: &[u8], floor: f64) -> Result<Option<Reencoded>, Jb2Error> {
-    let input = crate::jb2::decode(data, None)?;
-    let encoded = encode_jb2_dict_with_options(&input, &[], &Jb2EncodeOptions::lossy_text());
+/// the input decode. `None` when the result is not smaller than the input.
+fn probe_mask(input: &[&[u8]]) -> Result<Option<(Vec<u8>, Probe)>, Jb2Error> {
+    let data = input.first().copied().unwrap_or_default();
+    let decoded = crate::jb2::decode(data, None)?;
+    let encoded = encode_jb2_dict_with_options(&decoded, &[], &Jb2EncodeOptions::lossy_text());
     if encoded.len() >= data.len() {
         return Ok(None);
     }
     let candidate = crate::jb2::decode(&encoded, None)?;
-    if (candidate.width, candidate.height) != (input.width, input.height) {
+    if (candidate.width, candidate.height) != (decoded.width, decoded.height) {
         return Ok(None);
     }
     let ssim =
-        crate::quality::compare_gray(&gray_of_bitmap(&input), &gray_of_bitmap(&candidate)).ssim;
-    if 1.0 - ssim > floor {
-        return Ok(None);
-    }
-    Ok(Some(Reencoded {
-        chunks: vec![encoded],
+        crate::quality::compare_gray(&gray_of_bitmap(&decoded), &gray_of_bitmap(&candidate)).ssim;
+    let probe = Probe {
+        lengths: vec![encoded.len()],
         ssim,
-        slices: None,
-    }))
+    };
+    Ok(Some((encoded, probe)))
 }
 
 /// A bilevel mask as an 8-bit image: ink black, paper white.

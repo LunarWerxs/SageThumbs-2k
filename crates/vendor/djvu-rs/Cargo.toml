@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "djvu-rs"
-version = "0.34.0"
+version = "0.35.0"
 build = false
 exclude = [
     ".cargo/config.toml",
@@ -647,31 +647,31 @@ version = "0.3"
 optional = true
 
 [dependencies.djvu-bitmap]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-bzz]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-iff]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-iw44]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-jb2]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-pixmap]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.djvu-zp]
-version = "0.34.0"
+version = "0.35.0"
 default-features = false
 
 [dependencies.flate2]

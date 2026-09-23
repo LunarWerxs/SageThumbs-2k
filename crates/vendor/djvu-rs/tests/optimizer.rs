@@ -866,3 +866,309 @@ fn cli_archival_reencode_takes_a_floor_and_lossy_text() {
     assert!(written.len() < bytes.len());
     assert_eq!(json["output_bytes"], written.len());
 }
+
+// ---- Target-size search (#814, slice 4) ----
+
+/// The plan the archival preset makes for `input` at `floor`, optionally
+/// under a target size.
+fn archival_plan(
+    input: &[u8],
+    floor: f32,
+    target: Option<u64>,
+) -> djvu_rs::optimizer::OptimizationPlan {
+    let mut request = OptimizationRequest::archival().with_max_ssim_loss(floor);
+    if let Some(target) = target {
+        request = request.with_target_size(target);
+    }
+    Optimizer::new(request).plan(input).unwrap()
+}
+
+fn background_quality(
+    plan: &djvu_rs::optimizer::OptimizationPlan,
+) -> Vec<djvu_rs::optimizer::ComponentQuality> {
+    reencodes(
+        &plan.rewritten_components,
+        RewriteAction::ReencodeBackground,
+    )
+    .iter()
+    .map(|component| component.quality.expect("a re-encode is measured"))
+    .collect()
+}
+
+#[test]
+fn target_between_floor_output_and_input_is_met_with_the_least_loss() {
+    let input = photo_page(true);
+    let floor = 0.05f32;
+    let at_floor = archival_plan(&input, floor, None);
+    assert!(at_floor.output_bytes < input.len());
+    let target = (at_floor.output_bytes + input.len()) / 2;
+
+    let plan = archival_plan(&input, floor, Some(target as u64));
+    assert_eq!(plan.target_size, Some(target as u64));
+    assert!(plan.target_met, "{plan:?}");
+    assert!(plan.output_bytes <= target, "{plan:?}");
+    assert!(plan.output_bytes > at_floor.output_bytes, "{plan:?}");
+    assert!(plan.quality_floor_met);
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+
+    // Less loss than the floor allowed: more slices, higher SSIM.
+    let (floor_quality, quality) = (background_quality(&at_floor), background_quality(&plan));
+    assert_eq!(quality.len(), 1);
+    assert!(
+        quality[0].ssim > floor_quality[0].ssim,
+        "{quality:?} vs {floor_quality:?}"
+    );
+    assert!(quality[0].slices > floor_quality[0].slices);
+    assert!(quality[0].ssim_loss <= f64::from(floor));
+    assert_eq!(plan.min_ssim, Some(quality[0].ssim));
+    let component = &plan.rewritten_components[0];
+    assert!(
+        component.reason.contains("target-size search ceiling"),
+        "{}",
+        component.reason
+    );
+
+    // The real output is exactly the size the plan promised.
+    let result = Optimizer::new(
+        OptimizationRequest::archival()
+            .with_max_ssim_loss(floor)
+            .with_target_size(target as u64),
+    )
+    .optimize(&input)
+    .unwrap();
+    assert_eq!(result.bytes.len(), plan.output_bytes);
+    assert!(result.report.target_met);
+    assert_eq!(
+        result.report.rewritten_components,
+        plan.rewritten_components
+    );
+    assert_eq!(rendered(&result.bytes).width, rendered(&input).width);
+}
+
+#[test]
+fn unreachable_target_keeps_the_floor_selection_and_says_so() {
+    let input = photo_page(false);
+    let floor = 0.05f32;
+    let at_floor = archival_plan(&input, floor, None);
+    let target = at_floor.output_bytes as u64 - 1;
+
+    let plan = archival_plan(&input, floor, Some(target));
+    assert!(!plan.target_met, "{plan:?}");
+    assert!(plan.quality_floor_met);
+    assert_eq!(plan.output_bytes, at_floor.output_bytes);
+    assert_eq!(plan.rewritten_components, at_floor.rewritten_components);
+    assert_eq!(plan.min_ssim, at_floor.min_ssim);
+    let unreachable = plan
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("unreachable"))
+        .collect::<Vec<_>>();
+    assert_eq!(unreachable.len(), 1, "{:?}", plan.warnings);
+    assert!(
+        unreachable[0].contains(&format!("target size {target} bytes"))
+            && unreachable[0].contains(&format!("{} bytes", at_floor.output_bytes)),
+        "{}",
+        unreachable[0]
+    );
+    assert_eq!(
+        plan.warnings
+            .iter()
+            .filter(|warning| warning.contains("target size"))
+            .count(),
+        1,
+        "one target warning, not two: {:?}",
+        plan.warnings
+    );
+    // The floor is printed as given, not as an f32 widened to f64.
+    assert!(
+        unreachable[0].contains("max_ssim_loss 0.05"),
+        "{}",
+        unreachable[0]
+    );
+
+    let result = Optimizer::new(
+        OptimizationRequest::archival()
+            .with_max_ssim_loss(floor)
+            .with_target_size(target),
+    )
+    .optimize(&input)
+    .unwrap();
+    assert_eq!(result.bytes.len(), at_floor.output_bytes);
+    assert!(!result.report.target_met);
+}
+
+#[test]
+fn target_met_by_cleanup_alone_reencodes_nothing() {
+    let input = page_with_free_and_unknown_chunk();
+    let target = input.len() as u64 - 1;
+    let request = OptimizationRequest::archival()
+        .with_max_ssim_loss(0.05)
+        .with_lossy_text(true)
+        .with_target_size(target);
+    let optimizer = Optimizer::new(request);
+    let plan = optimizer.plan(&input).unwrap();
+    assert!(plan.target_met, "{plan:?}");
+    assert!(plan.output_bytes <= target as usize);
+    assert!(
+        plan.rewritten_components
+            .iter()
+            .all(|component| component.action == RewriteAction::RemoveFreeChunk),
+        "{:?}",
+        plan.rewritten_components
+    );
+    assert!(plan.min_ssim.is_none());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.contains("met by structural cleanup alone")),
+        "{:?}",
+        plan.warnings
+    );
+    let result = optimizer.optimize(&input).unwrap();
+    assert_eq!(result.bytes.len(), plan.output_bytes);
+    assert!(result.report.target_met);
+}
+
+#[test]
+fn target_at_or_above_the_input_needs_no_search() {
+    let input = photo_page(true);
+    let plan = archival_plan(&input, 0.05, Some(input.len() as u64));
+    assert!(plan.target_met);
+    assert!(!plan.changed, "{plan:?}");
+    assert_eq!(plan.output_bytes, input.len());
+    assert!(plan.rewritten_components.is_empty());
+}
+
+#[test]
+fn target_search_spans_the_pages_of_a_bundle() {
+    let pages = [photo_page(true), photo_page(false)];
+    let input = djvu_rs::djvm::merge(&[pages[0].as_slice(), pages[1].as_slice()]).unwrap();
+    let floor = 0.05f32;
+    let at_floor = archival_plan(&input, floor, None);
+    let floor_quality = background_quality(&at_floor);
+    assert_eq!(floor_quality.len(), 2, "{at_floor:?}");
+    let target = (at_floor.output_bytes + input.len()) / 2;
+
+    let plan = archival_plan(&input, floor, Some(target as u64));
+    assert!(plan.target_met, "{plan:?}");
+    assert!(plan.output_bytes <= target);
+    let quality = background_quality(&plan);
+    assert_eq!(quality.len(), 2, "{plan:?}");
+    // One ceiling for the whole document: no page loses more than it did
+    // at the floor, and at least one loses less.
+    for (page, at_floor) in quality.iter().zip(&floor_quality) {
+        assert!(page.ssim >= at_floor.ssim, "{page:?} vs {at_floor:?}");
+        assert!(page.ssim_loss <= f64::from(floor));
+    }
+    assert!(
+        quality
+            .iter()
+            .zip(&floor_quality)
+            .any(|(page, at_floor)| page.ssim > at_floor.ssim)
+    );
+    let paths = plan
+        .rewritten_components
+        .iter()
+        .map(|component| component.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec![vec![1], vec![2]], "{plan:?}");
+
+    let result = Optimizer::new(
+        OptimizationRequest::archival()
+            .with_max_ssim_loss(floor)
+            .with_target_size(target as u64),
+    )
+    .optimize(&input)
+    .unwrap();
+    assert_eq!(result.bytes.len(), plan.output_bytes);
+    assert_eq!(
+        Document::from_bytes(result.bytes.clone())
+            .unwrap()
+            .page_count(),
+        2
+    );
+}
+
+#[test]
+fn target_search_json_reports_target_and_quality() {
+    let input = photo_page(true);
+    let at_floor = archival_plan(&input, 0.05, None);
+    let target = (at_floor.output_bytes + input.len()) / 2;
+    let plan = archival_plan(&input, 0.05, Some(target as u64));
+    let json: serde_json::Value = serde_json::from_str(&plan.to_json()).unwrap();
+    assert_eq!(json["target_size"], target);
+    assert_eq!(json["target_met"], true);
+    assert_eq!(json["quality_floor_met"], true);
+    assert!(json["min_ssim"].is_number(), "{json}");
+    assert!(json["output_bytes"].as_u64().unwrap() <= target as u64);
+    let component = &json["rewritten_components"][0];
+    assert!(component["quality"]["slices"].is_number(), "{component}");
+    assert!(
+        component["reason"]
+            .as_str()
+            .unwrap()
+            .contains("target-size search ceiling"),
+        "{component}"
+    );
+}
+
+#[test]
+fn cancel_during_the_target_search_withholds_everything() {
+    let input = photo_page(true);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    let polls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&polls);
+    // Polls: before parsing, before the one plan component, then inside the
+    // search; stop on the third.
+    let optimizer = Optimizer::new(
+        OptimizationRequest::archival()
+            .with_max_ssim_loss(0.05)
+            .with_target_size(1),
+    )
+    .with_progress(move |event| sink.lock().unwrap().push(event.clone()))
+    .with_cancel(move || counter.fetch_add(1, Ordering::SeqCst) >= 2);
+    assert!(matches!(
+        optimizer.optimize(&input),
+        Err(OptimizeError::Cancelled)
+    ));
+    let events = events.lock().unwrap().clone();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].phase, OptimizationPhase::Plan);
+}
+
+#[test]
+fn cli_target_size_with_a_floor_searches_and_reports_the_ceiling() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("photo.djvu");
+    let output = dir.path().join("sized.djvu");
+    let bytes = photo_page(true);
+    fs::write(&input, &bytes).unwrap();
+    let at_floor = archival_plan(&bytes, 0.05, None);
+    let target = (at_floor.output_bytes + bytes.len()) / 2;
+
+    let assert = Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "optimize",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--preset",
+            "archival",
+            "--max-ssim-loss",
+            "0.05",
+            "--target-size",
+            &target.to_string(),
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json["target_met"], true, "{json}");
+    assert_eq!(json["target_size"], target);
+    let written = fs::read(&output).unwrap();
+    assert!(written.len() <= target);
+    assert!(written.len() > at_floor.output_bytes);
+    assert_eq!(json["output_bytes"], written.len());
+}

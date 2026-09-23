@@ -156,8 +156,10 @@ enum Cmd {
         /// Optimization policy.
         #[arg(short, long, default_value = "lossless-cleanup", value_enum)]
         preset: OptimizePresetArg,
-        /// Maximum output size in bytes. Safe cleanup reports when it cannot
-        /// meet the target without lossy re-encoding.
+        /// Maximum output size in bytes. With --preset archival and
+        /// --max-ssim-loss, the optimizer searches for the least SSIM loss
+        /// whose output fits; otherwise it only reports whether the selected
+        /// rewrites meet the target.
         #[arg(long)]
         target_size: Option<u64>,
         /// Maximum permitted SSIM loss of a lossy re-encode against the
