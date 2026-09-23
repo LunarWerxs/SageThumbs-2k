@@ -142,7 +142,7 @@ pub(super) unsafe fn compose_and_spawn(s: &Shot, mode: &str) -> bool {
     let Some(path) = output::save_temp_png(&buf, w, h) else {
         return false;
     };
-    let spawned = crate::screenshot::spawn_self(&[mode, &path]);
+    let spawned = crate::win::spawn_self(&[mode, &path]);
     if !spawned {
         let _ = std::fs::remove_file(&path);
     }
@@ -217,7 +217,8 @@ unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32) -> bool {
             &crate::screenshot::effective_save_dir(),
             &output::timestamped_name(),
         ) {
-            saved = output::save_png_to_path(std::path::Path::new(&path), buf, w, h);
+            saved =
+                crate::win::window_shot::save_png_to_path(std::path::Path::new(&path), buf, w, h);
             if !saved {
                 // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
                 // false) unless we say something — the fixed-folder branch above already

@@ -116,8 +116,7 @@ unsafe fn on_btn_md_images(hwnd: HWND, st: &ViewerState, path: Option<String>) {
 /// (`quick_preview_page`), never written as a literal — Settings pages have been inserted
 /// before and every hard-coded number silently pointed one page off.
 fn on_btn_settings() {
-    let page = crate::settings_dlg::quick_preview_page().to_string();
-    crate::preview::spawn_self(&["--tab", &page]);
+    crate::preview::spawn_self(&["--tab", "nav_quickpreview"]);
 }
 
 unsafe fn on_btn_pin(hwnd: HWND, st: &ViewerState) {

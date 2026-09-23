@@ -77,18 +77,18 @@ pub(super) unsafe fn gather(path: &str) -> InfoCard {
         let count = if count > FOLDER_WALK_MAX_ENTRIES {
             format!(
                 "{} {FOLDER_WALK_MAX_ENTRIES}",
-                crate::i18n::t("ic_size_more_than")
+                st2k_base::i18n::t("ic_size_more_than")
             )
         } else {
             count.to_string()
         };
-        let items = crate::i18n::t("ic_items");
+        let items = st2k_base::i18n::t("ic_items");
         // Recursive total, bounded (see `walk_folder_size`); a truncated walk says "more than".
         let walk = walk_folder_size(p);
         let size = if walk.truncated {
             format!(
                 "{} {}",
-                crate::i18n::t("ic_size_more_than"),
+                st2k_base::i18n::t("ic_size_more_than"),
                 human_size(walk.bytes)
             )
         } else {

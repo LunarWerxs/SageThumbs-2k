@@ -195,8 +195,8 @@ fn spawn(arg: Option<&str>) {
     // Nothing to clean up if it doesn't start (no temp file changes hands here), so the
     // success flag is deliberately dropped.
     let _ = match arg {
-        Some(a) => super::spawn_self(&[a]),
-        None => super::spawn_self(&[]),
+        Some(a) => crate::win::spawn_self(&[a]),
+        None => crate::win::spawn_self(&[]),
     };
 }
 
@@ -366,7 +366,7 @@ unsafe fn on_licence_due(hwnd: HWND) {
         &mut nid.szInfo,
         &format!(
             "{} {}",
-            crate::settings_dlg::licence_reminder_body(&snap),
+            crate::license::licence_reminder_body(&snap),
             crate::win::t("licence_toast_enter_key")
         ),
     );
@@ -376,8 +376,7 @@ unsafe fn on_licence_due(hwnd: HWND) {
 
 /// Open Settings on the Licence page (the licence balloon's click target).
 fn open_licence_settings() {
-    let tab = crate::settings_dlg::licence_page().to_string();
-    let _ = super::spawn_self(&["--tab", &tab]);
+    let _ = crate::win::spawn_self(&["--tab", "nav_licence"]);
 }
 
 extern "system" fn daemon_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

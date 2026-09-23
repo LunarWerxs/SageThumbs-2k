@@ -112,7 +112,7 @@ unsafe fn capture_hwnd_bgra_once(hwnd: HWND, fill: COLORREF) -> Option<(Vec<u8>,
 /// overflow-checked `w * h * 4` byte count (`w`/`h` come from a live GDI bitmap here, but a
 /// selection-driven caller can't assume that) — bailing on that overflow happens before any GDI
 /// object exists, so it stays each call site's responsibility rather than this helper's.
-pub(super) unsafe fn pull_top_down_bgra(
+pub(crate) unsafe fn pull_top_down_bgra(
     dc: HDC,
     bmp: HBITMAP,
     w: i32,
@@ -242,7 +242,7 @@ unsafe fn crop_to_extended_frame(
 /// Capture `hwnd` to a PNG at `path`. Returns whether the file was written.
 pub(crate) unsafe fn capture_hwnd_to_png(hwnd: HWND, path: &Path) -> bool {
     match capture_hwnd_bgra(hwnd) {
-        Some((buf, w, h)) => super::output::save_png_to_path(path, &buf, w, h),
+        Some((buf, w, h)) => save_png_to_path(path, &buf, w, h),
         None => false,
     }
 }
@@ -292,9 +292,95 @@ pub(crate) fn encode_gif(frames: &[RgbaImage], path: &Path, delay_ms: u16) -> bo
     true
 }
 
+/// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).
+pub(crate) fn to_rgba(top_down_bgra: &[u8], w: i32, h: i32) -> Option<image::RgbaImage> {
+    let mut rgba = vec![0u8; top_down_bgra.len()];
+    let (dst_chunks, _) = rgba.as_chunks_mut::<4>();
+    let (src_chunks, _) = top_down_bgra.as_chunks::<4>();
+    for (dst, src) in dst_chunks.iter_mut().zip(src_chunks.iter()) {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+        dst[3] = 255;
+    }
+    image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+}
+
+/// Save the PNG to an exact path — the location the user chose in the Save-As dialog
+/// (Ctrl+S / Save with the fixed-folder option off). Returns whether it was written.
+pub(crate) fn save_png_to_path(
+    path: &std::path::Path,
+    top_down_bgra: &[u8],
+    w: i32,
+    h: i32,
+) -> bool {
+    let Some(img) = to_rgba(top_down_bgra, w, h) else {
+        return false;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Encode the PNG in memory FIRST - the format is this function's contract, never the
+    // file name's (`RgbaImage::save` picked its encoder from the extension, and for a `.jpg`
+    // name it truncated the destination before refusing RGBA: 2026-09-19 audit F18) - then
+    // stage beside the destination and swap, so a failure at any point leaves whatever the
+    // path already held. The picker enforces `.png` too (FOS_STRICTFILETYPES).
+    let Some(png) =
+        encode_png(|buf| img.write_to(&mut std::io::Cursor::new(buf), image::ImageFormat::Png))
+    else {
+        return false;
+    };
+    st2k_base::fsutil::write_atomically(path, &png).is_ok()
+}
+
+/// PNG-encode an image into bytes in memory, or `None` if the encoder fails. Callers hold
+/// different image types (`DynamicImage` in `to_png`, `RgbaImage` in the capture save paths),
+/// whose `write_to` methods are inherent rather than trait-shared, so the write itself is
+/// passed in as a closure. `pub(crate)` and living here because the capture-side module
+/// (`crate::screenshot::output`) is private to `screenshot`, so its save paths could not
+/// reach a helper defined there.
+pub(crate) fn encode_png(
+    write: impl FnOnce(&mut Vec<u8>) -> image::ImageResult<()>,
+) -> Option<Vec<u8>> {
+    let mut png = Vec::new();
+    write(&mut png).ok()?;
+    Some(png)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-09-19 audit F18: `RgbaImage::save` chose its encoder from the file NAME, and for
+    /// an existing `.jpg` it truncated the destination to zero bytes before refusing RGBA. The
+    /// save now encodes PNG first and swaps a staged file in, so a name that lies about the
+    /// format still gets a valid PNG, and a save that cannot encode leaves the old file alone.
+    #[test]
+    fn a_save_never_destroys_what_the_destination_already_held() {
+        let dir = std::env::temp_dir().join(format!("st2k_save_png_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("existing.jpg");
+        std::fs::write(&dst, b"OLD PICTURE BYTES").unwrap();
+
+        // A capture that cannot be encoded (the buffer is shorter than w*h*4): refused, and
+        // the previous file is byte-identical.
+        assert!(!save_png_to_path(&dst, &[0u8; 8], 4, 4));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"OLD PICTURE BYTES");
+
+        // A good capture replaces it with a real PNG, whatever the name says.
+        let bgra = vec![0x40u8; 4 * 4 * 4];
+        assert!(save_png_to_path(&dst, &bgra, 4, 4));
+        let written = std::fs::read(&dst).unwrap();
+        assert!(written.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "a staging file was left behind"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `pull_top_down_bgra` is now the single implementation this module's own
     /// `capture_hwnd_bgra_once`, `overlay.rs::capture_instant`, and

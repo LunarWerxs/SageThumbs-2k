@@ -319,21 +319,7 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1258, "menu_lock_screen"),
 ];
 
-/// Capture-hotkey presets offered in the Settings dropdown, each paired with its
-/// packed HOTKEYF/VK value (high byte = HOTKEYF_* modifiers, low byte = virtual
-/// key) — the same packing `settings::screenshot_hotkey` stores. Curated to safe,
-/// non-conflicting chords (no bare letters that would hijack a global key, and
-/// avoiding Win+Shift+S / Alt+PrtScn which the OS already claims).
-pub(crate) const SHOT_PRESETS: &[(&str, u32)] = &[
-    ("Ctrl + PrtScn", (0x02 << 8) | 0x2C),
-    ("PrtScn", 0x2C),
-    ("Ctrl + Shift + S", ((0x02 | 0x01) << 8) | 0x53),
-    ("Ctrl + Shift + A", ((0x02 | 0x01) << 8) | 0x41),
-    ("Ctrl + Shift + 4", ((0x02 | 0x01) << 8) | 0x34),
-    ("Ctrl + Alt + S", ((0x02 | 0x04) << 8) | 0x53),
-    ("F9", 0x78),
-    ("Ctrl + F12", (0x02 << 8) | 0x7B),
-];
+pub(crate) use crate::screenshot::SHOT_PRESETS;
 /// Default chord pre-selected in the quick-save combo when none is saved yet —
 /// deliberately NOT the main `Ctrl + PrtScn` default, so enabling the instant
 /// screenshot doesn't try to grab a chord already owned by the editor hotkey.

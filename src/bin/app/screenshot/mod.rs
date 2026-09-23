@@ -22,7 +22,7 @@ mod spacehook; // the WH_KEYBOARD_LL "press Space to preview" hook (Quick previe
 mod toolbar;
 mod tools;
 mod upload;
-mod window_shot;
+use crate::win::window_shot;
 
 pub(crate) use daemon::run_daemon;
 pub(crate) use enable::{
@@ -30,7 +30,22 @@ pub(crate) use enable::{
 };
 pub(crate) use overlay::{capture_instant, run_capture, run_capture_automation, run_capture_ocr};
 pub(crate) use upload::{open_hosts_config, run_upload, run_upload_keep, with_busy_pill};
-pub(crate) use window_shot::{capture_hwnd_to_png, downscale_to_width, encode_gif};
+
+/// Capture-hotkey presets offered in the Settings dropdown, each paired with its
+/// packed HOTKEYF/VK value (high byte = HOTKEYF_* modifiers, low byte = virtual
+/// key) — the same packing `settings::screenshot_hotkey` stores. Curated to safe,
+/// non-conflicting chords (no bare letters that would hijack a global key, and
+/// avoiding Win+Shift+S / Alt+PrtScn which the OS already claims).
+pub(crate) const SHOT_PRESETS: &[(&str, u32)] = &[
+    ("Ctrl + PrtScn", (0x02 << 8) | 0x2C),
+    ("PrtScn", 0x2C),
+    ("Ctrl + Shift + S", ((0x02 | 0x01) << 8) | 0x53),
+    ("Ctrl + Shift + A", ((0x02 | 0x01) << 8) | 0x41),
+    ("Ctrl + Shift + 4", ((0x02 | 0x01) << 8) | 0x34),
+    ("Ctrl + Alt + S", ((0x02 | 0x04) << 8) | 0x53),
+    ("F9", 0x78),
+    ("Ctrl + F12", (0x02 << 8) | 0x7B),
+];
 
 /// The folder Ctrl+S auto-saves to when the "fixed save folder" option is on: the
 /// user's configured folder, or the Desktop when unset — so the default follows the
@@ -43,34 +58,4 @@ pub(crate) fn effective_save_dir() -> String {
     } else {
         d
     }
-}
-
-use std::os::windows::process::CommandExt;
-
-// Don't flash a console + don't inherit the spawner's stdio handles — otherwise a
-// detached background child (the daemon, a pin window) keeps a parent's handle
-// alive and can hang a `Start-Process -Wait` (and is just unclean).
-use st2k_base::host::CREATE_NO_WINDOW;
-
-/// Spawn another instance of ourselves with `args`, fully detached (null stdio, no
-/// console). Used everywhere the feature launches a sibling process (capture,
-/// daemon, pin, upload, OCR) so each truly outlives its spawner. The app's one
-/// detached-spawn implementation: the preview viewer's `preview::spawn_self` delegates here.
-///
-/// Returns whether the child actually started. Callers that handed the child a temp file
-/// to own (the capture PNG the `--upload` / `--ocr` helpers delete after reading)
-/// MUST check this: if nobody started, nobody is going to clean it up, and a picture of the
-/// user's screen would sit in `%TEMP%` forever.
-pub(super) fn spawn_self(args: &[&str]) -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    std::process::Command::new(exe)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .is_ok()
 }

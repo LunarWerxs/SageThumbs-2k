@@ -251,7 +251,7 @@ fn reconcile_wanted() {
     if is_daemon_running() {
         reload_hotkey(); // a live daemon re-reads + re-registers all hotkeys
     } else {
-        super::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
+        crate::win::spawn_self(&["--screenshot-daemon"]); // a fresh one reads them at startup
     }
 }
 

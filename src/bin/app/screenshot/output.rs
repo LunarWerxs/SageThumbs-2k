@@ -4,7 +4,7 @@
 
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 
-use crate::ocr_result::encode_png;
+use crate::win::window_shot::{encode_png, to_rgba};
 
 /// Put a packed CF_DIB (bottom-up BGRA) on the clipboard from top-down BGRA pixels.
 /// Returns whether the clipboard actually took it — the editor-less instant capture
@@ -24,20 +24,6 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
 
     // The unsafe HGLOBAL ownership dance lives once in the lib's `clipboard` module.
     st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_DIB, &dib)
-}
-
-/// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).
-fn to_rgba(top_down_bgra: &[u8], w: i32, h: i32) -> Option<image::RgbaImage> {
-    let mut rgba = vec![0u8; top_down_bgra.len()];
-    let (dst_chunks, _) = rgba.as_chunks_mut::<4>();
-    let (src_chunks, _) = top_down_bgra.as_chunks::<4>();
-    for (dst, src) in dst_chunks.iter_mut().zip(src_chunks.iter()) {
-        dst[0] = src[2];
-        dst[1] = src[1];
-        dst[2] = src[0];
-        dst[3] = 255;
-    }
-    image::RgbaImage::from_raw(w as u32, h as u32, rgba)
 }
 
 /// A capture's default filename, e.g. `Screenshot 2026-06-18 09.41.07.png`.
@@ -127,33 +113,6 @@ pub(super) fn reserve_unique_in(
     Err(last.unwrap_or_else(|| std::io::Error::other("no free capture name")))
 }
 
-/// Save the PNG to an exact path — the location the user chose in the Save-As dialog
-/// (Ctrl+S / Save with the fixed-folder option off). Returns whether it was written.
-pub(super) fn save_png_to_path(
-    path: &std::path::Path,
-    top_down_bgra: &[u8],
-    w: i32,
-    h: i32,
-) -> bool {
-    let Some(img) = to_rgba(top_down_bgra, w, h) else {
-        return false;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Encode the PNG in memory FIRST - the format is this function's contract, never the
-    // file name's (`RgbaImage::save` picked its encoder from the extension, and for a `.jpg`
-    // name it truncated the destination before refusing RGBA: 2026-09-19 audit F18) - then
-    // stage beside the destination and swap, so a failure at any point leaves whatever the
-    // path already held. The picker enforces `.png` too (FOS_STRICTFILETYPES).
-    let Some(png) =
-        encode_png(|buf| img.write_to(&mut std::io::Cursor::new(buf), image::ImageFormat::Png))
-    else {
-        return false;
-    };
-    st2k_base::fsutil::write_atomically(path, &png).is_ok()
-}
-
 /// Save the capture to a unique temp PNG and return its path — the handoff to a helper
 /// process (`--upload`, `--ocr`), which owns the file and deletes it once it has read it.
 /// If the helper never starts, the caller (`overlay::compose_and_spawn`) deletes it instead.
@@ -206,37 +165,6 @@ fn sweep_stale_captures(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 2026-09-19 audit F18: `RgbaImage::save` chose its encoder from the file NAME, and for
-    /// an existing `.jpg` it truncated the destination to zero bytes before refusing RGBA. The
-    /// save now encodes PNG first and swaps a staged file in, so a name that lies about the
-    /// format still gets a valid PNG, and a save that cannot encode leaves the old file alone.
-    #[test]
-    fn a_save_never_destroys_what_the_destination_already_held() {
-        let dir = std::env::temp_dir().join(format!("st2k_save_png_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dst = dir.join("existing.jpg");
-        std::fs::write(&dst, b"OLD PICTURE BYTES").unwrap();
-
-        // A capture that cannot be encoded (the buffer is shorter than w*h*4): refused, and
-        // the previous file is byte-identical.
-        assert!(!save_png_to_path(&dst, &[0u8; 8], 4, 4));
-        assert_eq!(std::fs::read(&dst).unwrap(), b"OLD PICTURE BYTES");
-
-        // A good capture replaces it with a real PNG, whatever the name says.
-        let bgra = vec![0x40u8; 4 * 4 * 4];
-        assert!(save_png_to_path(&dst, &bgra, 4, 4));
-        let written = std::fs::read(&dst).unwrap();
-        assert!(written.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
-        assert_eq!(
-            std::fs::read_dir(&dir).unwrap().count(),
-            1,
-            "a staging file was left behind"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     /// Two captures landing on the same second must not collide — `timestamped_name` only has
     /// 1-second resolution, so without a disambiguator the second capture's write would

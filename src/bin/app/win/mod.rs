@@ -32,8 +32,10 @@ mod pickers;
 mod resultwin;
 mod scaling;
 mod shotwin;
+// PrintWindow capture of a window to pixels / a PNG: the `--shot` harness and the screenshot tool.
 mod textmetrics;
 mod toast;
+pub(crate) mod window_shot;
 pub(crate) use dacl::{create_mutex_user_only, with_user_only_dacl};
 pub(crate) use dialogs::{confirm_verbs, confirm_warning, dialog_tail, message_box, run_dialog};
 pub(crate) use iconfont::icon_font;
@@ -639,6 +641,33 @@ pub(crate) unsafe fn app_icon() -> Option<HICON> {
         hicon
     });
     (p != 0).then_some(HICON(p as *mut c_void))
+}
+
+/// Spawn another instance of ourselves with `args`, fully detached (null stdio, no
+/// console). Used everywhere the feature launches a sibling process (capture,
+/// daemon, pin, upload, OCR) so each truly outlives its spawner. The app's one
+/// detached-spawn implementation: the preview viewer's `preview::spawn_self` and the screenshot tool use it.
+///
+/// Returns whether the child actually started. Callers that handed the child a temp file
+/// to own (the capture PNG the `--upload` / `--ocr` helpers delete after reading)
+/// MUST check this: if nobody started, nobody is going to clean it up, and a picture of the
+/// user's screen would sit in `%TEMP%` forever.
+pub(crate) fn spawn_self(args: &[&str]) -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    use std::os::windows::process::CommandExt;
+    // Don't flash a console + don't inherit the spawner's stdio handles — otherwise a
+    // detached background child (the daemon, a pin window) keeps a parent's handle
+    // alive and can hang a `Start-Process -Wait` (and is just unclean).
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
+        .spawn()
+        .is_ok()
 }
 
 #[cfg(test)]

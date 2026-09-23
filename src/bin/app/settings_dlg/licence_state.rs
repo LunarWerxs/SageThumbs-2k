@@ -140,66 +140,6 @@ pub(crate) fn renew_button_visible(snap: &crate::license::LicenceSnapshot) -> bo
     ends.saturating_sub(snap.now_unix) <= RENEW_NOTICE_SECS
 }
 
-/// The one sentence every reminder surface speaks for a posture that wants one - the
-/// startup toast or message box, the resident helper's tray balloon, and the daily
-/// one-shot's toast - shared so three surfaces cannot drift into three descriptions of one
-/// clock. Empty for the two postures that want no reminder. Pure over the snapshot.
-pub(crate) fn licence_reminder_body(snap: &crate::license::LicenceSnapshot) -> String {
-    use crate::license::{days_until, Posture};
-    let now = snap.now_unix;
-    match snap.posture {
-        Posture::Silent | Posture::DowngradeNoticeOnce => String::new(),
-        Posture::BusinessNag => t("licence_nag_toast_body").to_string(),
-        Posture::Trial { ends_unix } => {
-            t("licence_nag_toast_trial").replace("{n}", &days_until(now, ends_unix).to_string())
-        }
-        Posture::TrialExpired { locks_unix } => {
-            t("licence_expired_notice").replace("{n}", &days_until(now, locks_unix).to_string())
-        }
-        Posture::Locked { revoked: false } => t("licence_locked_notice").to_string(),
-        Posture::Locked { revoked: true } => {
-            t("biznag_body_locked_revoked").replace("{key}", &snap.key_prefix)
-        }
-        Posture::DeauthorizedLoud { locks_unix } => {
-            // Leads with WHY when the relay said (a seat the holder ejected reads very
-            // differently from a licence that ended), then the date the shell stops.
-            let why = licence_reason_line(&snap.last_reason)
-                .map(|w| format!("{w} "))
-                .unwrap_or_default();
-            let notice = t("licence_deauthorized_notice").replace("{key}", &snap.key_prefix);
-            let locks = locks_unix
-                .map(|d| {
-                    format!(
-                        " {}",
-                        t("licence_deauthorized_locks").replace("{date}", &format_unix_date(d))
-                    )
-                })
-                .unwrap_or_default();
-            format!("{why}{notice}{locks}")
-        }
-    }
-}
-
-/// The Licence page's index for `--tab`, resolved BY NAME like [`quick_preview_page`]:
-/// a literal here has silently re-pointed at the wrong page before.
-pub(crate) fn licence_page() -> usize {
-    navrail::category_index("nav_licence").unwrap_or(NAV_CATEGORY_COUNT - 1)
-}
-
-/// The human sentence for the relay's `reason` behind a revocation (`seat_revoked`: the
-/// licence holder ejected this machine; `contract_ended`: the licence itself was cancelled),
-/// or `None` for anything else, including the older breadcrumbs that never recorded one.
-/// Shared by the Licence page's state line and the startup deauthorised notice, so a user
-/// reads the same explanation in both places. The 2026-09-04 audit found the relay had been
-/// sending this since 2026-09-02 and the app dropped it on the floor.
-pub(crate) fn licence_reason_line(reason: &str) -> Option<&'static str> {
-    match reason {
-        "seat_revoked" => Some(t("licence_reason_seat_revoked")),
-        "contract_ended" => Some(t("licence_reason_contract_ended")),
-        _ => None,
-    }
-}
-
 /// The "how did this copy get here" line — "Installed for business use. Reinstall to
 /// change." / "Installed for personal use." / "Portable copy." — shown above
 /// [`licence_state_line`] on the Licence page. Portable wins over the recorded [`Mode`]:
@@ -241,20 +181,10 @@ pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'st
     t("nav_licence")
 }
 
-/// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
-/// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
-/// line has no use for a time-of-day), through the shared `st2k_base::unixtime`; no
-/// chrono/time dependency for one line.
-pub(crate) fn format_unix_date(unix_secs: u64) -> String {
-    if unix_secs == 0 {
-        return String::new();
-    }
-    st2k_base::unixtime::local_date(unix_secs).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::license::licence_reminder_body;
 
     /// Hand-build a [`crate::license::LicenceSnapshot`] for `licence_state_line` tests.
     /// Module-scope (not nested in one test fn) so both the four-states test below and the

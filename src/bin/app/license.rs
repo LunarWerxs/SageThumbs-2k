@@ -367,5 +367,69 @@ fn business_posture(
 // revoked seat.
 // ---------------------------------------------------------------------------------
 
+/// The one sentence every reminder surface speaks for a posture that wants one - the
+/// startup toast or message box, the resident helper's tray balloon, and the daily
+/// one-shot's toast - shared so three surfaces cannot drift into three descriptions of one
+/// clock. Empty for the two postures that want no reminder. Pure over the snapshot.
+pub(crate) fn licence_reminder_body(snap: &LicenceSnapshot) -> String {
+    let now = snap.now_unix;
+    match snap.posture {
+        Posture::Silent | Posture::DowngradeNoticeOnce => String::new(),
+        Posture::BusinessNag => crate::win::t("licence_nag_toast_body").to_string(),
+        Posture::Trial { ends_unix } => crate::win::t("licence_nag_toast_trial")
+            .replace("{n}", &days_until(now, ends_unix).to_string()),
+        Posture::TrialExpired { locks_unix } => crate::win::t("licence_expired_notice")
+            .replace("{n}", &days_until(now, locks_unix).to_string()),
+        Posture::Locked { revoked: false } => crate::win::t("licence_locked_notice").to_string(),
+        Posture::Locked { revoked: true } => {
+            crate::win::t("biznag_body_locked_revoked").replace("{key}", &snap.key_prefix)
+        }
+        Posture::DeauthorizedLoud { locks_unix } => {
+            // Leads with WHY when the relay said (a seat the holder ejected reads very
+            // differently from a licence that ended), then the date the shell stops.
+            let why = licence_reason_line(&snap.last_reason)
+                .map(|w| format!("{w} "))
+                .unwrap_or_default();
+            let notice =
+                crate::win::t("licence_deauthorized_notice").replace("{key}", &snap.key_prefix);
+            let locks = locks_unix
+                .map(|d| {
+                    format!(
+                        " {}",
+                        crate::win::t("licence_deauthorized_locks")
+                            .replace("{date}", &format_unix_date(d))
+                    )
+                })
+                .unwrap_or_default();
+            format!("{why}{notice}{locks}")
+        }
+    }
+}
+
+/// The human sentence for the relay's `reason` behind a revocation (`seat_revoked`: the
+/// licence holder ejected this machine; `contract_ended`: the licence itself was cancelled),
+/// or `None` for anything else, including the older breadcrumbs that never recorded one.
+/// Shared by the Licence page's state line and the startup deauthorised notice, so a user
+/// reads the same explanation in both places. The 2026-09-04 audit found the relay had been
+/// sending this since 2026-09-02 and the app dropped it on the floor.
+pub(crate) fn licence_reason_line(reason: &str) -> Option<&'static str> {
+    match reason {
+        "seat_revoked" => Some(crate::win::t("licence_reason_seat_revoked")),
+        "contract_ended" => Some(crate::win::t("licence_reason_contract_ended")),
+        _ => None,
+    }
+}
+
+/// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
+/// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
+/// line has no use for a time-of-day), through the shared `st2k_base::unixtime`; no
+/// chrono/time dependency for one line.
+pub(crate) fn format_unix_date(unix_secs: u64) -> String {
+    if unix_secs == 0 {
+        return String::new();
+    }
+    st2k_base::unixtime::local_date(unix_secs).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests;

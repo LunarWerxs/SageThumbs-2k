@@ -144,7 +144,10 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
             .unwrap_or(false);
         if ok {
             if let Ok(img) = image::open(&png) {
-                frames.push(crate::screenshot::downscale_to_width(img.to_rgba8(), 772));
+                frames.push(crate::win::window_shot::downscale_to_width(
+                    img.to_rgba8(),
+                    772,
+                ));
             }
         }
         let _ = std::fs::remove_file(&png);
@@ -153,7 +156,7 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
         return false;
     }
     // ~1.6 s per tab so a reader can take each pane in before it advances.
-    crate::screenshot::encode_gif(&frames, std::path::Path::new(out), 1600)
+    crate::win::window_shot::encode_gif(&frames, std::path::Path::new(out), 1600)
 }
 
 #[cfg(test)]

@@ -71,10 +71,9 @@ pub(crate) fn run_one_shot_check() {
     if let Some(snap) = crate::license::background_tick() {
         let body = format!(
             "{} {}",
-            crate::settings_dlg::licence_reminder_body(&snap),
+            crate::license::licence_reminder_body(&snap),
             crate::win::t("licence_toast_enter_key")
         );
-        let tab = crate::settings_dlg::licence_page().to_string();
         unsafe {
             crate::win::notify_toast_action(
                 crate::win::t("licence_popup_title"),
@@ -83,7 +82,7 @@ pub(crate) fn run_one_shot_check() {
                 move || {
                     if let Ok(exe) = std::env::current_exe() {
                         let _ = std::process::Command::new(exe)
-                            .args(["--tab", &tab])
+                            .args(["--tab", "nav_licence"])
                             .spawn();
                     }
                 },
@@ -104,7 +103,7 @@ pub(crate) fn run_one_shot_check() {
     let body = match offer_for(&snap, Some(&latest)) {
         Offer::OutsideWindow { ends_unix } => crate::win::t("upd_outside_toast")
             .replace("{ver}", &latest.tag)
-            .replace("{date}", &crate::settings_dlg::format_unix_date(ends_unix)),
+            .replace("{date}", &crate::license::format_unix_date(ends_unix)),
         // `None` is unreachable with a `Some(..)` release, and treating it like Install is
         // the same "say nothing surprising" direction the rest of this module takes.
         Offer::Install | Offer::None => {

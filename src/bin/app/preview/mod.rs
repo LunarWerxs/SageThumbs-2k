@@ -316,10 +316,10 @@ fn fmt_us(us: u128) -> String {
 }
 
 /// Spawn a fresh detached instance of ourselves with `args` (launches the viewer + the Info
-/// dialog), through the screenshot side's shared `spawn_self` — the app's one detached-spawn
+/// dialog), through the app's shared `win::spawn_self` — the app's one detached-spawn
 /// implementation.
 pub(super) fn spawn_self(args: &[&str]) {
-    let _ = crate::screenshot::spawn_self(args);
+    let _ = crate::win::spawn_self(args);
 }
 
 /// Daemon-side "Space pressed" handler (posted from the hook): if a viewer is up, close it

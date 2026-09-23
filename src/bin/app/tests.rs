@@ -67,11 +67,17 @@ fn piggyback_covers_ordinary_launches_and_spares_the_headless_ones() {
 /// against a control that did not exist.
 #[test]
 fn tab_flag_selects_a_real_settings_page() {
-    let quick = crate::settings_dlg::quick_preview_page();
+    let quick = crate::settings_dlg::page_named("nav_quickpreview").expect("a Quick preview page");
     assert_eq!(
         wanted_tab(&argv(&["--tab", &quick.to_string()])),
         Some(quick)
     );
+    // By name, as the viewer's caption gear and the licence reminders ask for it.
+    assert_eq!(
+        wanted_tab(&argv(&["--tab", "nav_quickpreview"])),
+        Some(quick)
+    );
+    assert_eq!(wanted_tab(&argv(&["--tab", "nav_no_such_page"])), None);
     assert_eq!(wanted_tab(&argv(&["--tab", "0"])), Some(0));
     // Absent, malformed, or with nothing after it: open normally, never panic.
     assert_eq!(wanted_tab(&argv(&[])), None);

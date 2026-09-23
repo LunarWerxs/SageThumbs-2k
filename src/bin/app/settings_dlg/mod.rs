@@ -124,12 +124,11 @@ mod shot;
 mod sync;
 mod tooltips;
 mod values;
+use crate::license::{format_unix_date, licence_reason_line};
 use daemon_status::*;
 use helpers::*;
+pub(crate) use licence_state::licence_state_line;
 use licence_state::*;
-pub(crate) use licence_state::{
-    format_unix_date, licence_page, licence_reminder_body, licence_state_line,
-};
 use licence_ui::*;
 use localize::*;
 use menu_rows::*;
@@ -554,11 +553,11 @@ pub(crate) unsafe fn show_category(hwnd: HWND, ci: usize) {
     switch_category(hwnd, ci);
 }
 
-/// The nav-rail index of the **Quick preview** page, for `--tab`. Resolved by NAME through
-/// `navrail::category_index` rather than written as a literal, so inserting a Settings page
-/// cannot re-point the Quick preview viewer's caption gear at somebody else's page.
-pub(crate) fn quick_preview_page() -> usize {
-    navrail::category_index("nav_quickpreview").unwrap_or(0)
+/// The nav-rail index of the page whose nav key is `key` (`nav_quickpreview`, `nav_licence`),
+/// for `--tab <name>`. Resolved by NAME, never written as a literal, so inserting a Settings
+/// page cannot re-point a caller at somebody else's page.
+pub(crate) fn page_named(key: &str) -> Option<usize> {
+    navrail::category_index(key)
 }
 pub(crate) extern "system" fn wndproc(
     hwnd: HWND,

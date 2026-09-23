@@ -43,7 +43,7 @@ pub(super) unsafe fn tray_data(hwnd: HWND, with_payload: bool) -> NOTIFYICONDATA
 pub(super) fn hotkey_label() -> &'static str {
     let (m, v) = st2k_base::settings::screenshot_hotkey();
     let packed = (m << 8) | v;
-    crate::settings_dlg::SHOT_PRESETS
+    crate::screenshot::SHOT_PRESETS
         .iter()
         .find(|&&(_, p)| p == packed)
         .map_or("Ctrl + PrtScn", |&(label, _)| label)

@@ -573,7 +573,7 @@ unsafe fn show_licensing_notices(hwnd: HWND, snap: &license::LicenceSnapshot) {
             if license::nag_due(now, posture) {
                 let body = format!(
                     "{} {}",
-                    settings_dlg::licence_reminder_body(snap),
+                    license::licence_reminder_body(snap),
                     t("licence_buy_pointer")
                 );
                 if posture.is_urgent() {
@@ -605,11 +605,18 @@ unsafe fn run_message_loop(hwnd: HWND) {
 /// a page that does not exist. Out-of-range is deliberately `None` rather than clamped: a number
 /// past the end means the caller's idea of the page list disagrees with this build's, and
 /// silently landing on the last page would hide that.
+///
+/// The page may be named instead of numbered (`--tab nav_quickpreview`): a caller below the
+/// Settings window (the viewer's caption gear, the licence reminders) names the page it wants
+/// and this build's nav table decides where that page is.
 fn wanted_tab(args: &[String]) -> Option<usize> {
-    args.iter()
+    let v = args
+        .iter()
         .position(|a| a == "--tab")
-        .and_then(|p| args.get(p + 1))
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|p| args.get(p + 1))?;
+    v.parse::<usize>()
+        .ok()
+        .or_else(|| settings_dlg::page_named(v))
         .filter(|&t| t < settings_dlg::NAV_CATEGORY_COUNT)
 }
 

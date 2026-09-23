@@ -96,13 +96,13 @@ pub(crate) unsafe fn run_hotkey_action(hinst: HINSTANCE) {
         // Nothing to clean up if the Settings window fails to launch (no temp file was handed
         // over), so the spawn result is genuinely discardable here.
         Kind::OpenSettings => {
-            let _ = crate::screenshot::spawn_self(&[]);
+            let _ = crate::win::spawn_self(&[]);
         }
         // No path argument: the viewer resolves the foreground selection itself, which is the
         // same route the Space hook uses — only the trigger differs, and that is the whole
         // point (a hotkey reaches us over an elevated window; a keystroke does not).
         Kind::Preview => {
-            let _ = crate::screenshot::spawn_self(&["--preview"]);
+            let _ = crate::win::spawn_self(&["--preview"]);
         }
         Kind::ImageVerb(action) => run_on_selection(action, true),
         Kind::AnyFileVerb(action) => run_on_selection(action, false),

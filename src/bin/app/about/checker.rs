@@ -186,7 +186,7 @@ pub(super) unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
     };
     let body = crate::win::t("upd_outside_window")
         .replace("{ver}", &ver)
-        .replace("{date}", &crate::settings_dlg::format_unix_date(ends_unix));
+        .replace("{date}", &crate::license::format_unix_date(ends_unix));
     if crate::win::confirm_verbs(
         hwnd,
         crate::win::t("upd_renew_title"),

@@ -204,7 +204,7 @@ pub(crate) unsafe fn settle_pump(hwnd: HWND, pump1: usize, pump2: usize, skip_fi
 /// `PrintWindow`-capture `hwnd` to a PNG at `out` and destroy it - the tail every headless
 /// `--shot` capture shares, whatever built the window.
 pub(crate) unsafe fn capture_and_destroy(hwnd: HWND, out: &str) -> bool {
-    let ok = crate::screenshot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    let ok = super::window_shot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
     let _ = DestroyWindow(hwnd);
     ok
 }
