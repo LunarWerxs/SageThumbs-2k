@@ -73,6 +73,9 @@ fn take_pair(
     dib: &mut Option<(usize, Vec<u8>)>,
 ) -> Option<bool> {
     match code {
+        // One count per preview: a second would re-reserve the buffer for every 12 bytes of
+        // file, so it is refused rather than obeyed.
+        b"90" if dib.is_some() => return None,
         b"90" => *dib = Some(start_image(value, body_len)?),
         b"310" => {
             let (want, bytes) = dib.as_mut()?;
@@ -174,6 +177,8 @@ mod tests {
         assert!(extract(short.as_bytes()).is_none());
         let bad = text.replacen("010203", "01020G", 1);
         assert!(extract(bad.as_bytes()).is_none());
+        let twice = text.replacen("310\r\n", " 90\r\n4\r\n310\r\n", 1);
+        assert!(extract(twice.as_bytes()).is_none(), "a second byte count");
         assert!(extract(b"  0\r\nSECTION\r\n  2\r\nENTITIES\r\n  0\r\nENDSEC\r\n").is_none());
         assert!(!looks_like_dxf(b"hello\nSECTION"));
     }

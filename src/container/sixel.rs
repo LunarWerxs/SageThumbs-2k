@@ -27,12 +27,14 @@ const PREAMBLE: usize = 512;
 /// The same ceiling `pix.rs` uses: what one forged size can make this module allocate.
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 /// A picture painted over and over (`$` and a repeat) can ask for unbounded work in a small
-/// file; this many pixel writes per picture pixel is past any real encoder's output.
-const WRITES_PER_PIXEL: u64 = 16;
-/// Pixels the canvas may have per byte of file, and the canvas any file may have (4 Mpx):
-/// see `extract`.
-const PIXELS_PER_BYTE: u64 = 2048;
-const MIN_CANVAS: u64 = 4 * 1024 * 1024;
+/// file. Real encoders paint each pixel once, in its one colour; four times over is slack.
+const WRITES_PER_PIXEL: u64 = 4;
+/// Pixels the canvas may have per byte of file, and the canvas any file may have (1 Mpx):
+/// see `extract`. Real photos run near one pixel a byte (libsixel's snake 1.0, a VT340 colour
+/// wheel 2.4); 256 leaves room for flat diagrams without letting a 100-byte file buy more
+/// than 4 MB.
+const PIXELS_PER_BYTE: u64 = 256;
+const MIN_CANVAS: u64 = 1024 * 1024;
 
 /// Where the command stream starts (just past the `q`), and the background parameter.
 fn body_start(b: &[u8]) -> Option<usize> {
@@ -161,14 +163,18 @@ impl Stream<'_> {
         Op::Colour(v[0] as usize % 256, rgb)
     }
 
-    /// `!n`, then the sixel it repeats.
+    /// `!n`, then the sixel it repeats. Anything else after the count is left for the next
+    /// step to read, so a stray `!3-` still moves down a band.
     fn repeat(&mut self) -> Step {
         let count = number(self.b, &mut self.i).clamp(1, MAX_DIM);
-        let Some(&c) = self.b.get(self.i) else {
-            return Step::End;
-        };
-        self.i += 1;
-        self.sixel(c, count)
+        match self.b.get(self.i) {
+            None => Step::End,
+            Some(&c) if (0x3F..=0x7E).contains(&c) => {
+                self.i += 1;
+                self.sixel(c, count)
+            }
+            Some(_) => Step::Skip,
+        }
     }
 
     fn sixel(&mut self, c: u8, count: u32) -> Step {
@@ -267,8 +273,7 @@ pub fn extract(b: &[u8]) -> Option<DynamicImage> {
     let start = body_start(b)?;
     let (width, height) = measure(b, start)?;
     // The canvas is paid for by the file: a few bytes of raster attributes, or one long
-    // repeat and a run of `-`, must not buy a 128 MB picture. Even a flat 4K frame, the most
-    // compressible real SIXEL there is, stays under PIXELS_PER_BYTE.
+    // repeat and a run of `-`, must not buy a big picture (32 Mpx needs a 128 KB file).
     let allowed = (b.len() as u64)
         .saturating_mul(PIXELS_PER_BYTE)
         .clamp(MIN_CANVAS, MAX_PIXELS);
@@ -421,6 +426,19 @@ mod tests {
         assert_eq!(wide.dimensions(), (MAX_DIM, 6));
         let tall = [b"\x1bPq".as_slice(), &b"~-".repeat(5000)].concat();
         assert!(extract(&tall).expect("clipped").height() <= MAX_DIM);
+        // Raster attributes cannot buy a canvas the file does not pay for: ~100 bytes
+        // declaring 16384 x 256 (4 Mpx) are refused.
+        let declared = [
+            b"\x1bPq\"1;1;16384;256~".as_slice(),
+            &b"-".repeat(42),
+            b"~\x1b\\",
+        ]
+        .concat();
+        assert!(extract(&declared).is_none());
+        // A repeat followed by something that is not a sixel leaves it to be read: `!3-`
+        // still moves down a band.
+        let img = extract(b"\x1bPq~!3-~\x1b\\").expect("two bands").to_rgba8();
+        assert_eq!(img.height(), 12);
         // Painting the same 16 columns over and over runs out of budget.
         let mut v = b"\x1bPq".to_vec();
         for _ in 0..200 {
