@@ -818,19 +818,33 @@ fn draw_layer<R: Read + Seek>(
         return Some(());
     };
     for ty in 0..canvas.grid.th {
-        if std::time::Instant::now() > canvas.deadline {
-            return None;
-        }
-        let y = canvas.grid.row(ty) as i64;
-        if !(layer.rect.top..layer.rect.bottom).contains(&y) {
-            if !layer.clipped {
-                canvas.clear_base_row(ty);
-            }
-            continue;
-        }
-        let row = sources.row(head, layer, y)?;
-        canvas.draw_row(ty, layer, &row);
+        draw_layer_row(&mut sources, head, layer, canvas, ty)?;
     }
+    Some(())
+}
+
+/// Sampled row `ty` of `layer`: drawn where the layer covers it, the clipping base cleared where
+/// it does not (unless the layer is clipped). `None` past the flatten's deadline or when the row
+/// cannot be read.
+fn draw_layer_row<R: Read + Seek>(
+    sources: &mut Sources<'_, R>,
+    head: &Head,
+    layer: &Layer,
+    canvas: &mut Canvas,
+    ty: usize,
+) -> Option<()> {
+    if std::time::Instant::now() > canvas.deadline {
+        return None;
+    }
+    let y = canvas.grid.row(ty) as i64;
+    if !(layer.rect.top..layer.rect.bottom).contains(&y) {
+        if !layer.clipped {
+            canvas.clear_base_row(ty);
+        }
+        return Some(());
+    }
+    let row = sources.row(head, layer, y)?;
+    canvas.draw_row(ty, layer, &row);
     Some(())
 }
 

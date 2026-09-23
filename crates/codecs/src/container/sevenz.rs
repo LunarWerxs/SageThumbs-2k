@@ -168,6 +168,17 @@ impl HeaderCursor<'_> {
         Some(value)
     }
 
+    /// Step over the CRC-32s of those of `n` items the defined-vector says carry one.
+    fn skip_digests(&mut self, n: u64) -> Option<()> {
+        let defined = self.defined(n)?;
+        self.skip(defined * 4)
+    }
+
+    /// Step over `n` numbers.
+    fn skip_numbers(&mut self, n: u64) -> Option<()> {
+        (0..n).try_for_each(|_| self.number().map(drop))
+    }
+
     /// A count, refused past [`MAX_HEADER_COUNT`].
     fn count(&mut self) -> Option<u64> {
         self.number().filter(|&n| n <= MAX_HEADER_COUNT)
@@ -193,73 +204,83 @@ fn encoded_header_unpack_max(c: &mut HeaderCursor) -> Option<u64> {
         skip_pack_info(c)?;
         nid = c.u8()?;
     }
-    if nid != K_UNPACK_INFO || c.u8()? != K_FOLDER {
+    if nid != K_UNPACK_INFO {
+        return None;
+    }
+    let outputs = folders_outputs(c)?;
+    if c.u8()? != K_CODERS_UNPACK_SIZE {
+        return None;
+    }
+    (0..outputs).try_fold(0u64, |most, _| c.number().map(|n| most.max(n)))
+}
+
+fn skip_pack_info(c: &mut HeaderCursor) -> Option<()> {
+    c.number()?; // pack position
+    let streams = c.count()?;
+    let nid = c.u8()?;
+    let nid = optional_section(c, nid, K_SIZE, |c| c.skip_numbers(streams))?;
+    let nid = optional_section(c, nid, K_CRC, |c| c.skip_digests(streams))?;
+    (nid == K_END).then_some(())
+}
+
+/// When `nid` opens the optional section `kind`, read it with `body`; the id after it either way.
+fn optional_section(
+    c: &mut HeaderCursor,
+    nid: u8,
+    kind: u8,
+    body: impl FnOnce(&mut HeaderCursor) -> Option<()>,
+) -> Option<u8> {
+    if nid != kind {
+        return Some(nid);
+    }
+    body(c)?;
+    c.u8()
+}
+
+/// The folder list: how many streams its folders output between them.
+fn folders_outputs(c: &mut HeaderCursor) -> Option<u64> {
+    if c.u8()? != K_FOLDER {
         return None;
     }
     let folders = c.count()?;
     if c.u8()? != 0 {
         return None; // external folder data: the crate refuses it too
     }
-    let mut outputs = 0u64;
-    for _ in 0..folders {
-        outputs += folder_outputs(c)?;
-    }
-    if c.u8()? != K_CODERS_UNPACK_SIZE {
-        return None;
-    }
-    (0..outputs).try_fold(0u64, |most, _| Some(most.max(c.number()?)))
-}
-
-fn skip_pack_info(c: &mut HeaderCursor) -> Option<()> {
-    c.number()?; // pack position
-    let streams = c.count()?;
-    let mut nid = c.u8()?;
-    if nid == K_SIZE {
-        for _ in 0..streams {
-            c.number()?;
-        }
-        nid = c.u8()?;
-    }
-    if nid == K_CRC {
-        let defined = c.defined(streams)?;
-        c.skip(defined * 4)?;
-        nid = c.u8()?;
-    }
-    (nid == K_END).then_some(())
+    (0..folders).try_fold(0u64, |n, _| folder_outputs(c).map(|o| n + o))
 }
 
 /// One folder's coders, bind pairs and packed-stream indices; how many streams it outputs.
 fn folder_outputs(c: &mut HeaderCursor) -> Option<u64> {
-    let (mut inputs, mut outputs) = (0u64, 0u64);
-    for _ in 0..c.count()? {
-        let bits = c.u8()?;
-        if bits & 0x80 != 0 {
-            return None; // alternative methods: the crate refuses them too
-        }
-        c.skip(u64::from(bits & 0x0F))?;
-        let (i, o) = if bits & 0x10 == 0 {
-            (1, 1)
-        } else {
-            (c.count()?, c.count()?)
-        };
-        inputs += i;
-        outputs += o;
-        if bits & 0x20 != 0 {
-            let props = c.number()?;
-            c.skip(props)?;
-        }
-    }
+    let coders = c.count()?;
+    let (inputs, outputs) = (0..coders).try_fold((0u64, 0u64), |(i, o), _| {
+        coder_streams(c).map(|(ci, co)| (i + ci, o + co))
+    })?;
     let pairs = outputs.checked_sub(1)?;
-    for _ in 0..pairs * 2 {
-        c.number()?;
-    }
+    c.skip_numbers(pairs * 2)?;
     let packed = inputs.checked_sub(pairs)?;
     if packed > 1 {
-        for _ in 0..packed {
-            c.number()?;
-        }
+        c.skip_numbers(packed)?;
     }
     Some(outputs)
+}
+
+/// One coder's description: how many streams it takes in and puts out.
+fn coder_streams(c: &mut HeaderCursor) -> Option<(u64, u64)> {
+    let bits = c.u8()?;
+    if bits & 0x80 != 0 {
+        return None; // alternative methods: the crate refuses them too
+    }
+    c.skip(u64::from(bits & 0x0F))?;
+    let streams = if bits & 0x10 == 0 {
+        (1, 1)
+    } else {
+        (c.count()?, c.count()?)
+    };
+    if bits & 0x20 != 0 {
+        let props = c.number()?;
+        c.skip(props)?;
+    }
+    Some(streams)
 }
 
 /// Called only from the in-memory `extract_cover` dispatch, which has no per-request
