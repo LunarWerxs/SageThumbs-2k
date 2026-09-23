@@ -267,6 +267,16 @@ fn color_planes_to_rgb(
     rgb
 }
 
+/// Does the codestream put its picture at an offset on the reference grid (`XOsiz`/`YOsiz`)?
+/// ImageMagick's reader takes such an offset off twice and crops the picture; see
+/// `pdf_tier::try_jp2_reduced_tier`.
+pub fn has_image_offset(bytes: &[u8]) -> bool {
+    codestream::find_codestream_and_palette(bytes)
+        .ok()
+        .and_then(|(cs, _)| codestream::parse(cs).ok())
+        .is_some_and(|c| c.siz.xosiz != 0 || c.siz.yosiz != 0)
+}
+
 /// Decode to RGB8 (or gray expanded to RGB) at the smallest resolution level that is still
 /// at least `target_edge` on its long side.
 ///

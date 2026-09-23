@@ -27,13 +27,15 @@ pub(super) fn decode_block_into_band(
     let (gx, gy) = (pb.bx0 + a.cblk_x, pb.by0 + a.cblk_y);
     let bw = comps[ci][r].bands[b].w;
     let bh = comps[ci][r].bands[b].h;
-    let x0 = gx * cbw_max;
-    let y0 = gy * cbh_max;
-    if x0 >= bw || y0 >= bh {
+    // The block's span on the band's own grid, where blocks sit at multiples of their size:
+    // `gx` counts from the block holding the band's origin, and a band that does not start on
+    // a block boundary (an image offset) has a narrower first block. Taking `gx * cbw_max` as
+    // the offset into the band's samples scrambled every such image.
+    let (x0, cw) = block_span(gx, cbw_max, pb.ox, bw);
+    let (y0, ch) = block_span(gy, cbh_max, pb.oy, bh);
+    if cw == 0 || ch == 0 {
         return;
     }
-    let cw = cbw_max.min(bw - x0);
-    let ch = cbh_max.min(bh - y0);
     let (exp, mant) = subband_step(c, ci, r, b);
     let gain = subband_gain(band_kind);
     let prec = c.siz.components[ci].prec as u32 + 1;
@@ -78,6 +80,15 @@ pub(super) fn decode_block_into_band(
             }
         }
     }
+}
+
+/// Where code-block `g` (counted from the block holding the band origin `o`) starts in a band
+/// of `len` samples, and how many of them it covers: blocks of `size` sit at multiples of
+/// `size` on the band's own grid, clipped to the band.
+fn block_span(g: usize, size: usize, o: usize, len: usize) -> (usize, usize) {
+    let start = (g + o / size) * size;
+    let (from, to) = (start.max(o), (start + size).min(o + len));
+    (from - o, to.saturating_sub(from))
 }
 
 /// Inverse DWT the first `nplanes` components' resolution pyramids up to

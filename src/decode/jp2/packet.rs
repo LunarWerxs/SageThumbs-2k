@@ -212,6 +212,11 @@ pub(super) struct PrecBand {
     /// Offset of this precinct's first code-block within the band's own block grid.
     pub bx0: usize,
     pub by0: usize,
+    /// The band's origin on its own coordinate grid: the code-block grid is anchored at 0 on
+    /// that grid, not at the band's first sample, so a block's place in the band's samples
+    /// needs it (an image offset puts the origin between block boundaries).
+    pub ox: usize,
+    pub oy: usize,
     pub incl: TagTree,
     pub imsb: TagTree,
     pub blocks: Vec<BlockState>,

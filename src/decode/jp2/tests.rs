@@ -212,3 +212,47 @@ fn decode_huge_corpus_jp2() {
         Err(e) => eprintln!("jp2 native: not there yet — {e}"),
     }
 }
+
+/// An image offset (the corpus's real.j2k starts its picture at x=150, y=300 on the reference
+/// grid) put every code-block in the wrong place, and the file drew as noise in every release up
+/// to 3.2.0. ImageMagick, an independent decoder, reads the same picture; it takes the offset
+/// off twice, so its frame is ours less 150 columns and 300 rows, from the top left.
+#[test]
+fn an_image_offset_decodes_to_the_picture() {
+    let Some(bytes) = crate::testcorpus::read("real.j2k") else {
+        eprintln!("NOT MEASURED: real.j2k absent");
+        return;
+    };
+    if !crate::decode::magick_available() {
+        eprintln!("NOT MEASURED: no ImageMagick");
+        return;
+    }
+    let (full_w, full_h) = (2592, 1944);
+    // Two levels down: 648x486, a quarter of the picture on each side.
+    let (rgb, w, h) = super::decode_reduced(&bytes, 600).expect("decodes");
+    assert_eq!(
+        (w * 4, h * 4),
+        (full_w, full_h),
+        "the image area, the offset taken off once"
+    );
+    let ours = image::RgbImage::from_raw(w, h, rgb).expect("buffer");
+    let theirs = crate::decode::magick::decode_via_magick_capped(
+        &bytes,
+        None,
+        crate::decode::magick::Fidelity::Full,
+    )
+    .expect("ImageMagick reads it")
+    .to_rgb8();
+    let (cw, ch) = (theirs.width() / 4, theirs.height() / 4);
+    let theirs = image::imageops::resize(&theirs, cw, ch, image::imageops::FilterType::Triangle);
+    let mut sum = 0u64;
+    for (x, y, p) in theirs.enumerate_pixels() {
+        let q = ours.get_pixel(x, y);
+        sum += (0..3).map(|i| u64::from(p[i].abs_diff(q[i]))).sum::<u64>();
+    }
+    let mean = sum as f64 / f64::from(cw * ch * 3);
+    assert!(
+        mean < 6.0,
+        "not ImageMagick's picture: mean difference {mean:.1}"
+    );
+}

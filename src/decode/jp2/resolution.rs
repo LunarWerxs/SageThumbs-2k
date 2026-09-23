@@ -372,6 +372,8 @@ pub(super) fn build_prec_band(
         nby,
         bx0: ((px0 / cbw as u32) - (ox / cbw as u32)) as usize,
         by0: ((py0 / cbh as u32) - (oy / cbh as u32)) as usize,
+        ox: ox as usize,
+        oy: oy as usize,
         incl: TagTree::new(nbx, nby),
         imsb: TagTree::new(nbx, nby),
         blocks: vec![BlockState::default(); nbx * nby],

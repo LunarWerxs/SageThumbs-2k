@@ -36,14 +36,23 @@ pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
 /// same tiers, so no JP2 that rendered before can render worse. Correctness evidence:
 /// bit-exact on every lossless corpus file (see decode/jp2 exactness tests), verified
 /// against ImageMagick on the lossy ones.
+///
+/// The one uncapped case it takes is a codestream whose picture sits at an offset on the
+/// reference grid: ImageMagick takes that offset off twice and crops the picture (the
+/// corpus's real.j2k lost 150 columns and 300 rows in Quick preview and Convert), so there
+/// this decodes it whole, at up to [`limits::MAX_DIM`].
 pub(crate) fn try_jp2_reduced_tier(
     bytes: &[u8],
     wic_thumbnail_cx: Option<u32>,
 ) -> Option<DynamicImage> {
-    let cx = wic_thumbnail_cx?;
     if !jp2::is_jp2(bytes) {
         return None;
     }
+    let cx = match wic_thumbnail_cx {
+        Some(cx) => cx,
+        None if jp2::has_image_offset(bytes) => limits::MAX_DIM,
+        None => return None,
+    };
     if let Ok((rgb, w, h)) = jp2::decode_reduced(bytes, cx) {
         if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
             // EXIF orientation, same as the final fallback tier applies. Applying it here
