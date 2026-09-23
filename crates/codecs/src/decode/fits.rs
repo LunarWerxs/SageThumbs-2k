@@ -317,8 +317,9 @@ fn display(t: f64, curve: bool) -> f64 {
     }
 }
 
-/// The first image of a FITS file, at most `target_edge` on its long side, read from `r`
-/// without buffering the file. `None` for a file with no image this reads.
+/// The first image of a FITS file, shrunk by a whole step to between `target_edge` and twice it
+/// on its long side (a picture already smaller keeps its size; the caller resizes with a real
+/// filter), read from `r` without buffering the file. `None` for a file with no image this reads.
 pub(crate) fn decode_scaled<R: Read + Seek>(mut r: R, target_edge: u32) -> Option<DynamicImage> {
     let img = first_image(&mut r)?;
     let range = if img.direct() {

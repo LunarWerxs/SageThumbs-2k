@@ -164,8 +164,9 @@ where
 
 /// Run `f` on a worker thread in its own MTA with `shell` handed over through the Global
 /// Interface Table, waiting at most `timeout` with this apartment's incoming calls served:
-/// the hand-off [`frame_from_block_stream`] uses, for any decoder that must read the shell's
-/// stream off the calling thread (the OS PDF rasterizer runs on a WinRT worker). On timeout the
+/// the same hand-off [`frame_from_block_stream`] makes inline, packaged for any other decoder
+/// that must read the shell's stream off the calling thread (the OS PDF rasterizer, which runs
+/// on a WinRT worker, is its caller). On timeout the
 /// worker is left to finish and `None` comes back at once, with a log line naming `what`.
 pub fn with_stream_on_worker<T, F>(
     shell: &IStream,

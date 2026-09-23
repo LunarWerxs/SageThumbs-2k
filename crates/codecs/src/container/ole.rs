@@ -27,6 +27,11 @@ const FREESECT: u32 = 0xFFFF_FFFF;
 const MAX_SECTORS: usize = 1 << 22;
 /// Hard cap on a returned stream (the cover cap is enforced again by the caller).
 const MAX_STREAM: usize = 32 * 1024 * 1024;
+/// The most directory a file may declare: 262,144 entries of 128 bytes, far past any real
+/// document's. The directory chain was walked whole with only the hop cap, and a crafted file
+/// (sparse, so cheap to make large) could make that 4M sectors of 4 KiB, a 16 GiB buffer on the
+/// shell's thread, which aborts it under `panic = "abort"` (Dredd, 2026-09-23).
+const MAX_DIRECTORY: usize = 32 * 1024 * 1024;
 
 pub fn looks_like_ole(head: &[u8]) -> bool {
     head.starts_with(&SIG)
@@ -240,9 +245,9 @@ fn find_directory_entries<S: Source + ?Sized>(
     first_dir: u32,
     (name, max): (&str, usize),
 ) -> Option<(Vec<StreamLoc>, Option<StreamLoc>)> {
-    // Its size isn't known ahead of the walk, so no tighter cap is available yet.
+    // Its size isn't known ahead of the walk, so the cap is the most directory any file needs.
     let mut dir = Vec::new();
-    for s in follow(first_dir, fat, MAX_SECTORS)? {
+    for s in follow(first_dir, fat, MAX_DIRECTORY / sector_size)? {
         dir.extend_from_slice(&read_sector(src, s, sector_size)?);
     }
     let mut targets: Vec<(u32, u64)> = Vec::new();
@@ -287,9 +292,11 @@ fn scan_directory_entry(
     Some(())
 }
 
-/// Read the sectors of the chain at `start` until `size` bytes are in hand, the walk capped
-/// at the sector count that size needs (plus slack) so a self-looping chain dies in a handful
-/// of hops instead of the flat MAX_SECTORS ceiling.
+/// Read the sectors of the chain at `start` until `size` bytes are in hand or the chain ends
+/// (a chain shorter than its declared size hands back what it holds, as 3.2.0's reader did; a
+/// damaged stream then fails its own decode). The walk is capped at the sector count that size
+/// needs (plus slack), so a self-looping chain dies in a handful of hops instead of the flat
+/// MAX_SECTORS ceiling.
 fn read_chain<S: Source + ?Sized>(
     src: &S,
     fat: &[u32],
@@ -515,5 +522,35 @@ mod tests {
         let fat = vec![1u32, 2u32, ENDOFCHAIN];
         assert_eq!(follow(0, &fat, 1), None);
         assert_eq!(follow(0, &fat, 3), Some(vec![0, 1, 2]));
+    }
+
+    /// A directory chain longer than any real file's is refused before it is buffered: it used
+    /// to be read whole, up to 4M sectors of 4 KiB (Dredd, 2026-09-23). A source of empty sectors
+    /// stands in for a sparse file, so the test allocates nothing large.
+    #[test]
+    fn a_directory_chain_past_its_cap_is_refused_unread() {
+        struct Blank(std::cell::Cell<usize>);
+        impl Source for Blank {
+            fn len(&self) -> u64 {
+                u64::MAX
+            }
+            fn read_at(&self, _at: u64, len: usize) -> Option<Vec<u8>> {
+                self.0.set(self.0.get() + 1);
+                Some(vec![0u8; len])
+            }
+        }
+        let long = MAX_DIRECTORY / 4096 + 8;
+        let mut fat: Vec<u32> = (1..=long as u32).collect();
+        fat.push(ENDOFCHAIN);
+        let src = Blank(std::cell::Cell::new(0));
+        assert!(find_directory_entries(&src, &fat, 4096, 0, ("x", 1)).is_none());
+        assert_eq!(
+            src.0.get(),
+            0,
+            "no sector of an over-long directory is read"
+        );
+
+        let short: Vec<u32> = vec![1, 2, ENDOFCHAIN];
+        assert!(find_directory_entries(&src, &short, 4096, 0, ("x", 1)).is_some());
     }
 }

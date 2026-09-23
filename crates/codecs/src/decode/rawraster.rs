@@ -458,8 +458,9 @@ fn rle_step<R: Read>(
     Some(())
 }
 
-/// The picture of one of these files, at most `target_edge` on its long side, read from `r`
-/// without buffering the file. `None` for a file this does not read.
+/// The picture of one of these files, shrunk by a whole step to between `target_edge` and twice
+/// it on its long side (a picture already smaller keeps its size; the caller resizes with a real
+/// filter), read from `r` without buffering the file. `None` for a file this does not read.
 pub(crate) fn decode_scaled<R: Read + Seek>(mut r: R, target_edge: u32) -> Option<DynamicImage> {
     let l = read_checked_layout(&mut r)?;
     let grid = Grid::new(&l, target_edge);
