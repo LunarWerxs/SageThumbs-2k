@@ -126,7 +126,8 @@ fn walk<R: Read + Seek>(
     let mut out = Layout::default();
     let mut at = first;
     for _ in 0..MAX_BLOCKS {
-        if at + 7 > total {
+        // Checked: `at` is advanced with `checked_add` and can sit within 7 of `u64::MAX`.
+        if at.checked_add(7).is_none_or(|end| end > total) {
             break;
         }
         let len = match block(r, at)? {
@@ -503,5 +504,16 @@ mod tests {
             }
         }
         assert!(covers_seek(Cursor::new(b"not a rar".to_vec()), 1, &prefs).is_none());
+    }
+
+    /// A block that advances the walk to within 7 of `u64::MAX` ends it instead of overflowing
+    /// (a panic in the debug and fuzz builds; Dredd, 2026-09-23).
+    #[test]
+    fn a_walk_past_the_end_of_u64_stops() {
+        fn never(_: &mut Cursor<Vec<u8>>, _: u64) -> Option<Step> {
+            panic!("no block is read past the end");
+        }
+        let layout = walk(&mut Cursor::new(Vec::new()), 100, u64::MAX - 3, never);
+        assert!(layout.is_some());
     }
 }

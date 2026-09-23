@@ -27,11 +27,12 @@ pub(super) fn checked_generic_archive_size(size: Option<u64>, max_file_bytes: u6
     size.filter(|&size| size <= max_file_bytes)
 }
 
-/// The most a 7z's end header may declare before the archive is left alone: its listing is
-/// decoded from that header, and a real 909 MB solid archive on an SMB share, with 18,037
-/// entries and a 235 KB header, blocked the shell for minutes when it was read in small pieces
-/// (it is read through a 256 KiB read-ahead now).
-const MAX_SEVENZ_HEADER: u64 = 4 << 20;
+/// The most a 7z's end header may declare before the archive is left alone
+/// (`sevenz::MAX_HEADER_BYTES`, which `sevenz::header_is_safe` enforces with the rest of the
+/// header checks when the archive is opened): its listing is decoded from that header, and a
+/// real 909 MB solid archive on an SMB share, with 18,037 entries and a 235 KB header, blocked
+/// the shell for minutes when it was read in small pieces.
+const MAX_SEVENZ_HEADER: u64 = crate::container::SEVENZ_MAX_HEADER_BYTES;
 
 /// Does a 7z's start header (the first 32 bytes) declare an end header small enough to list?
 /// Anything that is not a 7z answers `true`: the gate is for 7z alone. A 7z head too short to
@@ -44,7 +45,7 @@ pub(super) fn sevenz_header_is_sane(first: &[u8]) -> bool {
         .get(20..28)
         .and_then(|b| b.try_into().ok())
         .map(u64::from_le_bytes)
-        .is_some_and(|n| n <= MAX_SEVENZ_HEADER)
+        .is_some_and(|n| n > 0 && n <= MAX_SEVENZ_HEADER)
 }
 
 /// Does the stream's (already lowercased) extension name a generic project archive?
@@ -108,9 +109,11 @@ pub(super) unsafe fn generic_archive(
     // This gate is intentionally before ArchiveReader/ZipArchive/RAR parsing.
     // A real 909 MB solid 7z on an SMB share had 18,037 entries and a 235 KB
     // encoded header; despite the decompression budget, merely parsing it issued
-    // thousands of tiny remote reads and blocked the shell for minutes. Apply
-    // the hard decoder ceiling as well as the user's MaxSize: Settings represents
-    // "0 / unlimited" as u64::MAX, but it is only unlimited within that ceiling.
+    // thousands of tiny remote reads and blocked the shell for minutes. The size
+    // gate is the user's MaxSize alone (an archive is read by seeking, never
+    // buffered, past the input ceiling); what bounds the listing is the walk
+    // reader ([`walk_reader`]: a block cache with a read budget and a deadline)
+    // and, for a 7z, its header checks.
     let reported_size = head.size;
     let listable = sevenz_header_is_sane(head.first(32));
     let Some(size) =
@@ -165,32 +168,33 @@ unsafe fn read_archive_covers(
         crate::container::archive_covers(&bytes, want, &prefs)
     } else {
         let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-        // Buffered: the zip central directory and the 7z header are read in small pieces,
-        // and each piece would otherwise be one marshaled `IStream::Read` round trip.
         let prefs = crate::container::select::CoverPrefs::from_thumb_settings(cfg);
-        crate::container::archive_covers_seek(
-            std::io::BufReader::with_capacity(
-                READ_AHEAD_BYTES,
-                IStreamReader {
-                    stream: stream.clone(),
-                },
-            ),
-            first,
-            want,
-            &prefs,
-        )
+        crate::container::archive_covers_seek(walk_reader(stream, size), first, want, &prefs)
     }
 }
 
+/// The reader an archive walk goes through: a block cache with a read budget and a deadline,
+/// as [`super::offset_cover`] reads a compound file. A header walk seeks back and forth in
+/// small pieces (a RAR's block headers, a zip's central directory, a 7z's end header), and a
+/// seek through a plain read-ahead buffer discards it, so each few-byte read became a 256 KiB
+/// `IStream::Read`: a crafted 101 MB CBR of 100,000 empty blocks cost ~52 GB of reads, and a
+/// zeroed 7z start header ~240 GB (Dredd, 2026-09-23). The cache reads each 1 MiB block once,
+/// stops after 192 MiB of distinct reads, and ends at the deadline.
+unsafe fn walk_reader(stream: &IStream, size: u64) -> IStreamReader {
+    let deadline = std::time::Instant::now() + super::OFFSET_COVER_BUDGET;
+    let cached: IStream =
+        crate::vstream::BlockCacheStream::new(stream.clone(), size, deadline).into();
+    IStreamReader { stream: cached }
+}
+
 /// For an OVERSIZED file (past the in-memory cap), sniff whether it's a seek-
-/// streamable container — a ZIP comic archive (CBZ: central directory + one
-/// cover entry) or a Clip Studio `.clip` (the tail SQLite database holding the
-/// canvas preview) — and, if so, pull just the cover over the IStream, never the
-/// whole file. Oversized 7z/CB7 is deliberately excluded: unlike ZIP, even
-/// discovering its entries may require decoding a large encoded header through
-/// a name-less shell stream, where we cannot distinguish a comic from an
-/// arbitrary project backup. Returns None for everything else (including CBR,
-/// which `rars` can't read without a full buffer), so the caller skips it.
+/// streamable container and, if so, pull just the cover over the IStream, never the
+/// whole file: a ZIP comic (CBZ: central directory + one cover entry), a Clip Studio
+/// `.clip` (the tail SQLite database holding the canvas preview), a CBR/RAR (its block
+/// headers walked, `container::rar::covers_seek`), and a 7z only when the stream says it
+/// is a `.cb7` and its start header is sane (a name-less 7z could be any project backup,
+/// and discovering its entries may mean decoding its encoded header). Returns None for
+/// everything else, so the caller skips it.
 pub(super) unsafe fn archive_cover_streamed(
     stream: &IStream,
     head: &StreamHead,
@@ -199,22 +203,14 @@ pub(super) unsafe fn archive_cover_streamed(
     if !oversized_cover_stream_allowed(first, head.extension_is(|e| e == "cb7")) {
         return None;
     }
+    let size = head.size?;
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    // Buffered for the same reason as the generic-archive probe: the central directory is
-    // read in small pieces over a marshaled stream. No `ThumbSettings` snapshot is
-    // reachable from this call chain (see `streamsrc::oversized_rescue`), so the
-    // preferences are read here rather than threaded from further up.
+    // Through the walk reader for the same reason as the generic-archive probe. No
+    // `ThumbSettings` snapshot is reachable from this call chain (see
+    // `streamsrc::oversized_rescue`), so the preferences are read here rather than threaded
+    // from further up.
     let prefs = crate::container::select::CoverPrefs::from_settings();
-    crate::container::archive_cover_seek(
-        std::io::BufReader::with_capacity(
-            READ_AHEAD_BYTES,
-            IStreamReader {
-                stream: stream.clone(),
-            },
-        ),
-        first,
-        &prefs,
-    )
+    crate::container::archive_cover_seek(walk_reader(stream, size), first, &prefs)
 }
 
 /// The buffer cap for the RAR read in [`generic_archive`]: the effective input cap

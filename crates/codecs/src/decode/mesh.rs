@@ -198,6 +198,11 @@ fn parse_ascii_stl_vertex(rest: &str, cur: &mut Vec<f32>) -> Option<()> {
     for tok in rest.split_ascii_whitespace().take(3) {
         cur.push(tok.parse::<f32>().ok().filter(|v| v.is_finite())?);
     }
+    // A facet already past nine numbers is invalid and is dropped at its `endfacet`; hold it
+    // at ten (still invalid) rather than growing it, since a file of `vertex` lines with no
+    // `endfacet` would otherwise grow this without bound on the streamed path (Dredd,
+    // 2026-09-23).
+    cur.truncate(10);
     Some(())
 }
 

@@ -69,13 +69,29 @@ impl Rect {
     }
 
     fn height(&self) -> usize {
-        usize::try_from(self.bottom - self.top).unwrap_or(0)
+        side(self.bottom - self.top)
     }
 
     fn width(&self) -> usize {
-        usize::try_from(self.right - self.left).unwrap_or(0)
+        side(self.right - self.left)
     }
 }
+
+/// A rectangle side, or 0 (no pixels) past Photoshop's largest document side. The sides are
+/// file data: a layer 2,147,483,647 rows tall sized its row table, and one that wide its
+/// per-row buffers, at gigabytes before a pixel was read, and a failed allocation aborts the
+/// shell under `panic = "abort"` (Dredd, 2026-09-23).
+fn side(d: i64) -> usize {
+    usize::try_from(d)
+        .ok()
+        .filter(|&n| n <= super::MAX_SIDE as usize)
+        .unwrap_or(0)
+}
+
+/// How long one document's layers may take to flatten. A ZIP channel inflates forward to the
+/// rows it is asked for, so a small, highly compressible channel read deep down could keep the
+/// shell's thread inflating for minutes; past this the document keeps its baked preview.
+const FLATTEN_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct Channel {
     id: i16,
@@ -389,6 +405,7 @@ enum Rows<'a, R> {
         next: usize,
         predict: bool,
         row: Vec<u8>,
+        deadline: std::time::Instant,
     },
 }
 
@@ -397,7 +414,7 @@ fn channel_rows<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     ch: &Channel,
     (rows, row_bytes): (usize, usize),
-    psb: bool,
+    (psb, deadline): (bool, std::time::Instant),
 ) -> Option<Rows<'a, R>> {
     let body = ch.at.checked_add(2)?;
     let end = ch.at.checked_add(ch.len)?;
@@ -435,6 +452,7 @@ fn channel_rows<'a, R: Read + Seek>(
                 next: 0,
                 predict: compression == 3,
                 row: vec![0u8; row_bytes],
+                deadline,
             })
         }
         _ => None,
@@ -510,7 +528,8 @@ impl<R: Read + Seek> Rows<'_, R> {
                 next,
                 predict,
                 row,
-            } => zip_row(&mut **inflate, next, *predict, row, y, depth),
+                deadline,
+            } => zip_row(&mut **inflate, (next, *deadline), *predict, row, y, depth),
         }
     }
 }
@@ -518,13 +537,16 @@ impl<R: Read + Seek> Rows<'_, R> {
 /// Stored row `y` of a ZIP channel: inflate forward to it, then undo the prediction when set.
 fn zip_row<R: Read + Seek>(
     inflate: &mut flate2::read::ZlibDecoder<BufReader<At<'_, R>>>,
-    next: &mut usize,
+    (next, deadline): (&mut usize, std::time::Instant),
     predict: bool,
     row: &mut [u8],
     y: usize,
     depth: Depth,
 ) -> Option<Vec<u8>> {
     while *next <= y {
+        if *next % 256 == 0 && std::time::Instant::now() > deadline {
+            return None;
+        }
         inflate.read_exact(row).ok()?;
         *next += 1;
     }
@@ -555,6 +577,7 @@ fn open_sources<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     head: &Head,
     layer: &Layer,
+    deadline: std::time::Instant,
 ) -> Option<Sources<'a, R>> {
     let shape = (
         layer.rect.height(),
@@ -566,14 +589,14 @@ fn open_sources<'a, R: Read + Seek>(
     let colours = (0..head.mode.colours() as i16)
         .map(|id| {
             let ch = layer.channel(id).filter(|c| c.len > 2)?;
-            channel_rows(src, ch, shape, head.psb)
+            channel_rows(src, ch, shape, (head.psb, deadline))
         })
         .collect::<Option<Vec<_>>>()?;
     let alpha = match layer.channel(-1) {
-        Some(ch) => Some(channel_rows(src, ch, shape, head.psb)?),
+        Some(ch) => Some(channel_rows(src, ch, shape, (head.psb, deadline))?),
         None => None,
     };
-    let mask = open_mask(src, head, layer);
+    let mask = open_mask(src, head, layer, deadline);
     Some(Sources {
         colours,
         alpha,
@@ -587,11 +610,12 @@ fn open_mask<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     head: &Head,
     layer: &Layer,
+    deadline: std::time::Instant,
 ) -> Option<(Rows<'a, R>, Mask)> {
     match (layer.mask, layer.channel(-2)) {
         (Some(m), Some(ch)) if m.rect.height() > 0 && m.rect.width() > 0 => {
             let shape = (m.rect.height(), head.depth.row_bytes(m.rect.width()));
-            Some((channel_rows(src, ch, shape, head.psb)?, m))
+            Some((channel_rows(src, ch, shape, (head.psb, deadline))?, m))
         }
         _ => None,
     }
@@ -671,6 +695,8 @@ struct Canvas {
     rgba: Vec<u8>,
     /// The coverage the current clipping base left in each cell; clipped layers draw through it.
     base: Vec<u8>,
+    /// When the flatten gives up ([`FLATTEN_BUDGET`] from its start).
+    deadline: std::time::Instant,
 }
 
 impl Canvas {
@@ -687,6 +713,7 @@ impl Canvas {
             width,
             rgba,
             base,
+            deadline: std::time::Instant::now() + FLATTEN_BUDGET,
         })
     }
 
@@ -780,7 +807,7 @@ fn draw_layer<R: Read + Seek>(
     canvas: &mut Canvas,
 ) -> Option<()> {
     let sources = if show && layer.opacity > 0 {
-        open_sources(src, head, layer)
+        open_sources(src, head, layer, canvas.deadline)
     } else {
         None
     };
@@ -791,6 +818,9 @@ fn draw_layer<R: Read + Seek>(
         return Some(());
     };
     for ty in 0..canvas.grid.th {
+        if std::time::Instant::now() > canvas.deadline {
+            return None;
+        }
         let y = canvas.grid.row(ty) as i64;
         if !(layer.rect.top..layer.rect.bottom).contains(&y) {
             if !layer.clipped {
@@ -838,5 +868,20 @@ pub(super) fn flatten_any<R: Read + Seek>(mut r: R, target_edge: u32) -> Option<
     match flatten(&mut r, &head, target_edge)? {
         Flat::Picture(img) => Some(img),
         Flat::NoLayers => None,
+    }
+}
+
+#[cfg(test)]
+mod side_tests {
+    use super::side;
+
+    /// A layer or mask side past Photoshop's largest document is no pixels at all, so nothing
+    /// is sized by it (Dredd, 2026-09-23).
+    #[test]
+    fn a_side_past_the_largest_document_has_no_pixels() {
+        assert_eq!(side(300_000), 300_000);
+        assert_eq!(side(300_001), 0);
+        assert_eq!(side(i64::from(i32::MAX)), 0);
+        assert_eq!(side(-5), 0);
     }
 }

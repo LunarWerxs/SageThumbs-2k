@@ -63,6 +63,200 @@ fn complete_item_fits(prefix: u64, item: u64, budget: u64) -> bool {
 /// allocation. Well above any real cover archive, finite against a crafted one.
 const SOLID_MAX_BLOCKS: usize = 4096;
 
+/// The most a 7z's end header may declare before the archive is left alone (the listing is
+/// parsed from it; a real 18,037-entry archive's is 235 KB).
+pub(crate) const MAX_HEADER_BYTES: u64 = 4 << 20;
+
+/// The most an ENCODED end header may unpack to. 7-Zip compresses its header by default, so
+/// the small header on disk only points at a packed stream, and `sevenz_rust2` decodes that
+/// stream until the unpack size it declares: a crafted one declaring terabytes of LZMA-packed
+/// zeros grew the listing buffer until the allocation failed, which aborts the shell under
+/// `panic = "abort"` (Dredd, 2026-09-23).
+const MAX_UNPACKED_HEADER_BYTES: u64 = 64 << 20;
+
+/// Is this 7z's header safe to hand to `sevenz_rust2`? Its start header must carry its own
+/// CRC (a zeroed one sends the crate hunting for an end header a byte at a time through the
+/// last megabyte), declare a non-empty end header no larger than [`MAX_HEADER_BYTES`], and an
+/// encoded end header must declare no stream larger than [`MAX_UNPACKED_HEADER_BYTES`]. The
+/// parse mirrors the crate's own (`read_pack_info` / `read_unpack_info` / `read_block`), so an
+/// archive the crate reads is never refused here. Leaves the reader at an unspecified position.
+pub(crate) fn header_is_safe<R: Read + Seek>(r: &mut R) -> bool {
+    header_check(r).unwrap_or(false)
+}
+
+const K_END: u8 = 0x00;
+const K_HEADER: u8 = 0x01;
+const K_PACK_INFO: u8 = 0x06;
+const K_UNPACK_INFO: u8 = 0x07;
+const K_SIZE: u8 = 0x09;
+const K_CRC: u8 = 0x0A;
+const K_FOLDER: u8 = 0x0B;
+const K_CODERS_UNPACK_SIZE: u8 = 0x0C;
+const K_ENCODED_HEADER: u8 = 0x17;
+
+/// Caps on the counts an encoded header's stream description may declare: a real one has one
+/// folder of one to four coders.
+const MAX_HEADER_COUNT: u64 = 64;
+
+fn header_check<R: Read + Seek>(r: &mut R) -> Option<bool> {
+    let mut start = [0u8; 32];
+    r.seek(std::io::SeekFrom::Start(0)).ok()?;
+    r.read_exact(&mut start).ok()?;
+    let le32 = |at: usize| u32::from_le_bytes(start[at..at + 4].try_into().unwrap_or_default());
+    let le64 = |at: usize| u64::from_le_bytes(start[at..at + 8].try_into().unwrap_or_default());
+    if !super::is_7z(&start) || crc32(&start[12..32]) != le32(8) {
+        return Some(false);
+    }
+    let (offset, size) = (le64(12), le64(20));
+    if size == 0 || size > MAX_HEADER_BYTES {
+        return Some(false);
+    }
+    r.seek(std::io::SeekFrom::Start(32u64.checked_add(offset)?)).ok()?;
+    let mut next = vec![0u8; usize::try_from(size).ok()?];
+    r.read_exact(&mut next).ok()?;
+    match next.first() {
+        Some(&K_HEADER) => Some(true),
+        Some(&K_ENCODED_HEADER) => {
+            let most = encoded_header_unpack_max(&mut HeaderCursor(&next[1..]))?;
+            Some(most <= MAX_UNPACKED_HEADER_BYTES)
+        }
+        _ => Some(false),
+    }
+}
+
+/// CRC-32 (IEEE), bitwise: only ever run over the start header's 20 bytes.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+        }
+    }
+    !crc
+}
+
+/// A byte reader over an end header, every read checked.
+struct HeaderCursor<'a>(&'a [u8]);
+
+impl HeaderCursor<'_> {
+    fn u8(&mut self) -> Option<u8> {
+        let (&b, rest) = self.0.split_first()?;
+        self.0 = rest;
+        Some(b)
+    }
+
+    fn skip(&mut self, n: u64) -> Option<()> {
+        self.0 = self.0.get(usize::try_from(n).ok()?..)?;
+        Some(())
+    }
+
+    /// 7-Zip's variable-length number: the first byte's leading one bits count the bytes that
+    /// follow (little-endian), its remaining bits are the top of the value.
+    fn number(&mut self) -> Option<u64> {
+        let first = self.u8()?;
+        let mut value = 0u64;
+        for i in 0..8u32 {
+            let mask = 0x80u8 >> i;
+            if first & mask == 0 {
+                let high = u64::from(first & mask.wrapping_sub(1));
+                return Some(value | (high << (8 * i)));
+            }
+            value |= u64::from(self.u8()?) << (8 * i);
+        }
+        Some(value)
+    }
+
+    /// A count, refused past [`MAX_HEADER_COUNT`].
+    fn count(&mut self) -> Option<u64> {
+        self.number().filter(|&n| n <= MAX_HEADER_COUNT)
+    }
+
+    /// An "all defined, or a bit per item" vector: how many items it defines.
+    fn defined(&mut self, n: u64) -> Option<u64> {
+        if self.u8()? != 0 {
+            return Some(n);
+        }
+        let bytes = self.0.get(..usize::try_from(n.div_ceil(8)).ok()?)?;
+        let set = bytes.iter().map(|b| u64::from(b.count_ones())).sum();
+        self.skip(n.div_ceil(8))?;
+        Some(set)
+    }
+}
+
+/// The largest stream an encoded header's description declares it unpacks to: its pack info is
+/// stepped over, its folders read for how many streams each outputs, then their sizes.
+fn encoded_header_unpack_max(c: &mut HeaderCursor) -> Option<u64> {
+    let mut nid = c.u8()?;
+    if nid == K_PACK_INFO {
+        skip_pack_info(c)?;
+        nid = c.u8()?;
+    }
+    if nid != K_UNPACK_INFO || c.u8()? != K_FOLDER {
+        return None;
+    }
+    let folders = c.count()?;
+    if c.u8()? != 0 {
+        return None; // external folder data: the crate refuses it too
+    }
+    let mut outputs = 0u64;
+    for _ in 0..folders {
+        outputs += folder_outputs(c)?;
+    }
+    if c.u8()? != K_CODERS_UNPACK_SIZE {
+        return None;
+    }
+    (0..outputs).try_fold(0u64, |most, _| Some(most.max(c.number()?)))
+}
+
+fn skip_pack_info(c: &mut HeaderCursor) -> Option<()> {
+    c.number()?; // pack position
+    let streams = c.count()?;
+    let mut nid = c.u8()?;
+    if nid == K_SIZE {
+        for _ in 0..streams {
+            c.number()?;
+        }
+        nid = c.u8()?;
+    }
+    if nid == K_CRC {
+        let defined = c.defined(streams)?;
+        c.skip(defined * 4)?;
+        nid = c.u8()?;
+    }
+    (nid == K_END).then_some(())
+}
+
+/// One folder's coders, bind pairs and packed-stream indices; how many streams it outputs.
+fn folder_outputs(c: &mut HeaderCursor) -> Option<u64> {
+    let (mut inputs, mut outputs) = (0u64, 0u64);
+    for _ in 0..c.count()? {
+        let bits = c.u8()?;
+        if bits & 0x80 != 0 {
+            return None; // alternative methods: the crate refuses them too
+        }
+        c.skip(u64::from(bits & 0x0F))?;
+        let (i, o) = if bits & 0x10 == 0 { (1, 1) } else { (c.count()?, c.count()?) };
+        inputs += i;
+        outputs += o;
+        if bits & 0x20 != 0 {
+            let props = c.number()?;
+            c.skip(props)?;
+        }
+    }
+    let pairs = outputs.checked_sub(1)?;
+    for _ in 0..pairs * 2 {
+        c.number()?;
+    }
+    let packed = inputs.checked_sub(pairs)?;
+    if packed > 1 {
+        for _ in 0..packed {
+            c.number()?;
+        }
+    }
+    Some(outputs)
+}
+
 /// Called only from the in-memory `extract_cover` dispatch, which has no per-request
 /// settings snapshot to thread through, so it reads the preferences itself here
 /// rather than carrying a `prefs` parameter its caller can't supply.
@@ -100,6 +294,10 @@ pub fn extract_seek_n<R: Read + Seek>(
     // use BlockDecoder and actually honor an early stop — ArchiveReader 0.21.3
     // otherwise continues constructing every later block after Ok(false).
     let mut source = BufReader::with_capacity(SOURCE_BUFFER_BYTES, source);
+    if !header_is_safe(&mut source) {
+        return None;
+    }
+    source.seek(std::io::SeekFrom::Start(0)).ok()?;
     let password = Password::empty();
     let archive = Archive::read(&mut source, &password).ok()?;
 
@@ -445,6 +643,9 @@ fn solid_step(
 
 /// List up to `max` of a 7-Zip archive's entries from metadata only (no block decode, no bomb risk).
 pub fn list(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
+    if !header_is_safe(&mut Cursor::new(bytes)) {
+        return None;
+    }
     let reader = ArchiveReader::new(Cursor::new(bytes), Password::empty()).ok()?;
     Some(
         reader
@@ -783,5 +984,79 @@ mod tests {
         let covers =
             extract_seek_n(Cursor::new(bytes), 1, &default_prefs()).expect("first exact cover");
         assert_eq!(covers, vec![b"FIRST".to_vec()]);
+    }
+
+    /// A start header followed by `next` as the end header, with a correct start-header CRC.
+    fn with_end_header(next: &[u8]) -> Vec<u8> {
+        let mut out = vec![b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C, 0, 4];
+        let mut tail = Vec::new();
+        tail.extend_from_slice(&0u64.to_le_bytes()); // end header right after the start header
+        tail.extend_from_slice(&(next.len() as u64).to_le_bytes());
+        tail.extend_from_slice(&0u32.to_le_bytes()); // end-header CRC: not checked here
+        out.extend_from_slice(&crc32(&tail).to_le_bytes());
+        out.extend_from_slice(&tail);
+        out.extend_from_slice(next);
+        out
+    }
+
+    /// An encoded end header over one LZMA folder that declares `unpack` bytes.
+    fn encoded_header(unpack: u64) -> Vec<u8> {
+        let mut h = vec![K_ENCODED_HEADER, K_PACK_INFO, 0, 1, K_SIZE, 0x10, K_END];
+        h.extend_from_slice(&[K_UNPACK_INFO, K_FOLDER, 1, 0, 1, 0x03, 0x03, 0x01, 0x01]);
+        h.push(K_CODERS_UNPACK_SIZE);
+        h.push(0xFF);
+        h.extend_from_slice(&unpack.to_le_bytes());
+        h.push(K_END);
+        h
+    }
+
+    #[test]
+    fn crc32_is_the_ieee_one() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn a_seven_zip_number_reads_its_length_from_the_first_byte() {
+        assert_eq!(HeaderCursor(&[0x7F]).number(), Some(127));
+        assert_eq!(HeaderCursor(&[0x80, 0x80]).number(), Some(128));
+        assert_eq!(HeaderCursor(&[0xC1, 0x02, 0x03]).number(), Some(0x01_0302));
+        let mut nine = vec![0xFF];
+        nine.extend_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(HeaderCursor(&nine).number(), Some(u64::MAX));
+        assert_eq!(HeaderCursor(&[0x80]).number(), None, "a truncated number");
+    }
+
+    /// A zeroed start header sent sevenz_rust2 hunting for an end header a byte at a time over
+    /// the file's last megabyte, each step a fresh 256 KiB stream read (Dredd, 2026-09-23).
+    #[test]
+    fn a_zeroed_start_header_is_refused() {
+        let mut zeroed = vec![b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C, 0, 4];
+        zeroed.resize(32 + 4096, 0);
+        assert!(!header_is_safe(&mut Cursor::new(&zeroed)));
+        assert!(list(&zeroed, 10).is_none());
+    }
+
+    /// An encoded end header declaring a terabyte of listing is refused before the crate
+    /// decodes it; one declaring a real listing's size passes the same parse.
+    #[test]
+    fn an_encoded_header_is_refused_past_its_unpack_cap() {
+        assert!(!header_is_safe(&mut Cursor::new(with_end_header(&encoded_header(1 << 40)))));
+        assert!(header_is_safe(&mut Cursor::new(with_end_header(&encoded_header(4096)))));
+        assert!(header_is_safe(&mut Cursor::new(with_end_header(&[K_HEADER, K_END]))));
+    }
+
+    /// Every real archive passes: the two fixtures written by 7-Zip-compatible tooling, and
+    /// what sevenz_rust2 itself writes.
+    #[test]
+    fn real_archives_pass_the_header_check() {
+        for (name, bytes) in [("solid_order", SOLID_ORDER), ("solid_buried", SOLID_BURIED)] {
+            assert!(header_is_safe(&mut Cursor::new(bytes)), "{name}");
+        }
+        let mut written = Cursor::new(Vec::new());
+        let mut w = ArchiveWriter::new(&mut written).expect("writer");
+        w.push_archive_entry(ArchiveEntry::new_file("a.png"), Some(Cursor::new(vec![7u8; 300])))
+            .expect("entry");
+        w.finish().expect("finish");
+        assert!(header_is_safe(&mut Cursor::new(written.into_inner())));
     }
 }

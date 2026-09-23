@@ -431,10 +431,15 @@ unsafe fn mp4_mkv_or_else_tiers(
             //    st2k.exe decodes it out of process (`crate::mpeg12`). Deliberately LAST,
             //    like VP9: a `.vob` on a machine with the Store extension keeps hitting the
             //    hardware-accelerated in-process MF path.
+            // Through `EndAt`: a padded transport stream's head is trimmed to its last packet
+            // (`videosrc`), and the demux measures the stream from its END to place the mark.
             crate::mpeg12::mpeg_frame(
-                &mut IStreamReader {
-                    stream: stream.clone(),
-                },
+                &mut EndAt::new(
+                    IStreamReader {
+                        stream: stream.clone(),
+                    },
+                    head.size,
+                ),
                 at,
             )
         })
@@ -801,6 +806,48 @@ unsafe fn embedded_jpeg(stream: &IStream, who: &str) -> Option<StreamSource> {
     let jpeg = jpeg?;
     safety::log_debugf!("{who}: largest embedded JPEG ({} bytes)", jpeg.len());
     Some(StreamSource::Cover(jpeg))
+}
+
+/// A `Read + Seek` view of `inner` that ends at `len`: reads stop there and `SeekFrom::End`
+/// counts back from it (a plain `Take` cannot seek, and a pass-through seek would answer the
+/// real end). No `len` is no limit.
+struct EndAt<R> {
+    inner: R,
+    len: u64,
+    pos: u64,
+}
+
+impl<R> EndAt<R> {
+    fn new(inner: R, len: Option<u64>) -> Self {
+        Self {
+            inner,
+            len: len.unwrap_or(u64::MAX),
+            pos: 0,
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for EndAt<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let room = usize::try_from(self.len.saturating_sub(self.pos)).unwrap_or(usize::MAX);
+        let want = buf.len().min(room);
+        let n = self.inner.read(&mut buf[..want])?;
+        self.pos = self.pos.saturating_add(n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for EndAt<R> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let target = match to {
+            std::io::SeekFrom::Start(n) => Some(n),
+            std::io::SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+            std::io::SeekFrom::End(d) => self.len.checked_add_signed(d),
+        }
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        self.pos = self.inner.seek(std::io::SeekFrom::Start(target))?;
+        Ok(self.pos)
+    }
 }
 
 /// A reader that ends at a deadline: a scan of a slow or remote file stops there with what it

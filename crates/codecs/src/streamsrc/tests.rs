@@ -893,3 +893,22 @@ fn the_head_window_serves_a_picture_it_holds_whole_and_refuses_one_it_does_not()
         unsafe { CoUninitialize() };
     }
 }
+
+/// `EndAt` ends where it is told: reads stop there and `SeekFrom::End` counts back from it, which
+/// is how the MPEG tier measures a padded transport stream from its last packet.
+#[test]
+fn end_at_ends_the_stream_where_it_is_told() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut r = EndAt::new(std::io::Cursor::new((0u8..100).collect::<Vec<_>>()), Some(60));
+    assert_eq!(r.seek(SeekFrom::End(0)).unwrap(), 60);
+    assert_eq!(r.seek(SeekFrom::End(-10)).unwrap(), 50);
+    let mut rest = Vec::new();
+    r.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, (50u8..60).collect::<Vec<_>>());
+    assert!(r.seek(SeekFrom::End(-61)).is_err());
+    let mut unbounded = EndAt::new(std::io::Cursor::new(vec![1u8; 10]), None);
+    assert_eq!(unbounded.seek(SeekFrom::Start(0)).unwrap(), 0);
+    let mut all = Vec::new();
+    unbounded.read_to_end(&mut all).unwrap();
+    assert_eq!(all.len(), 10);
+}

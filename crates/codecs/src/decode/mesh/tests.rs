@@ -410,3 +410,22 @@ fn a_mesh_read_off_a_reader_renders_as_its_bytes_do() {
         assert!(streamed.to_rgba8() == whole.to_rgba8());
     }
 }
+
+/// `vertex` lines with no `endfacet` no longer grow the facet without bound (a streamed ASCII
+/// STL of nothing else grew it to ~0.6x the file; Dredd, 2026-09-23), and a facet with too many
+/// vertices is still dropped while the good facet after it is kept.
+#[test]
+fn an_ascii_stl_facet_never_grows_past_one_invalid_facet() {
+    let mut cur = Vec::new();
+    for _ in 0..10_000 {
+        parse_ascii_stl_vertex("0 0 0", &mut cur).expect("a vertex");
+    }
+    assert!(cur.len() <= 10, "{} floats held", cur.len());
+
+    let mut stl = String::from("solid x\nfacet normal 0 0 1\nouter loop\n");
+    stl.push_str(&"vertex 1 2 3\n".repeat(4));
+    stl.push_str("endloop\nendfacet\nfacet normal 0 0 1\nouter loop\n");
+    stl.push_str("vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid x\n");
+    let tris = read::read_ascii_stl(&mut std::io::Cursor::new(stl.into_bytes())).expect("parses");
+    assert_eq!(tris, vec![[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]]);
+}

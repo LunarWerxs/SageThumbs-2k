@@ -18,6 +18,16 @@ use tiff::ColorType;
 /// The longest side the result is given: 256 MiB of RGBA.
 const MAX_EDGE: u32 = 8192;
 
+/// The longest side a TIFF may declare, as the other row-at-a-time readers bound theirs
+/// (`rawraster`, `fits`). The header is file data: a 2,000,000,000-pixel ImageWidth sized the
+/// row buffer at 8 GiB before a single chunk was read, and a failed allocation aborts the
+/// shell under `panic = "abort"` (Dredd, 2026-09-23).
+const MAX_SIDE: u32 = 1 << 20;
+
+/// The most one band of chunks may hold at once. The cache keeps every chunk across a row
+/// band, so a wide image in tall tiles would otherwise hold width x tile height x channels.
+const MAX_BAND_BYTES: u64 = 256 << 20;
+
 /// One chunk's samples as display bytes, and its size in pixels.
 struct Chunk {
     index: u32,
@@ -71,6 +81,9 @@ impl Grid {
 pub(crate) fn decode_scaled<R: Read + Seek>(r: R, target_edge: u32) -> Option<DynamicImage> {
     let mut d = Decoder::new(r).ok()?;
     let (w, h) = d.dimensions().ok()?;
+    if !(1..=MAX_SIDE).contains(&w) || !(1..=MAX_SIDE).contains(&h) {
+        return None;
+    }
     let plan = read_plan(&mut d, w, h, target_edge)?;
     let (tw, th) = (plan.grid.tw as usize, plan.grid.th as usize);
     let mut out = Vec::new();
@@ -78,7 +91,7 @@ pub(crate) fn decode_scaled<R: Read + Seek>(r: R, target_edge: u32) -> Option<Dy
         .ok()?;
     out.resize(tw * th * 4, 255);
     let mut cache: Vec<Chunk> = Vec::new();
-    let mut row = vec![0u8; w as usize * plan.channels];
+    let mut row = vec![0u8; (w as usize).checked_mul(plan.channels)?];
     for ty in 0..plan.grid.th {
         read_row(&mut d, &mut cache, &plan, ty, &mut row)?;
         shrink_into(&row, (plan.channels, plan.invert), &plan.grid, ty, &mut out);
@@ -133,6 +146,9 @@ fn read_plan<R: Read + Seek>(d: &mut Decoder<R>, w: u32, h: u32, target_edge: u3
         .filter(|p| p.len() <= 4 << 20);
     let (cw, ch) = d.chunk_dimensions();
     if cw == 0 || ch == 0 {
+        return None;
+    }
+    if u64::from(w) * u64::from(ch) * channels as u64 > MAX_BAND_BYTES {
         return None;
     }
     let across = match d.get_chunk_type() {
@@ -273,5 +289,27 @@ mod tests {
         for cut in 0..bytes.len() {
             let _ = decode_scaled(Cursor::new(&bytes[..cut]), 64);
         }
+    }
+
+    /// A TIFF declaring an absurd width is refused before anything is sized by it: the row
+    /// buffer used to be `width x channels` bytes straight from the header, 8 GiB here, and a
+    /// failed allocation aborts the shell (Dredd, 2026-09-23). The `tiff` crate itself accepts
+    /// the header, so the refusal is this reader's own side cap.
+    #[test]
+    fn a_tiff_declaring_an_absurd_width_is_refused_before_allocating() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 1, image::Rgba([1, 2, 3, 4])));
+        let mut bytes = tiff_of(&img);
+        let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes(bytes[ifd..ifd + 2].try_into().unwrap()) as usize;
+        let entry = (0..count)
+            .map(|i| ifd + 2 + i * 12)
+            .find(|&e| u16::from_le_bytes(bytes[e..e + 2].try_into().unwrap()) == 256)
+            .expect("an ImageWidth entry");
+        bytes[entry + 2..entry + 4].copy_from_slice(&4u16.to_le_bytes()); // LONG
+        bytes[entry + 4..entry + 8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[entry + 8..entry + 12].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        let mut d = Decoder::new(Cursor::new(&bytes)).expect("the tiff crate opens it");
+        assert_eq!(d.dimensions().expect("dimensions").0, 0x7FFF_FFFF);
+        assert!(decode_scaled(Cursor::new(&bytes), 256).is_none());
     }
 }

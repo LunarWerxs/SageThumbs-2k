@@ -395,8 +395,14 @@ fn read_raw<R: Read + Seek>(r: &mut R, l: &Layout, grid: &Grid, out: &mut [u8]) 
     Some(())
 }
 
+/// How long a run-length TGA may take to decode. It cannot seek to the rows it wants, so a
+/// 65535 x 65535 one of maximal repeat packets (a ~70 MB file) is 4.3 billion pixel steps on the
+/// shell's thread; past this it is left to its icon (Dredd, 2026-09-23).
+const RLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Run-length TGA, decoded front to back; the rows the picture takes are kept as they pass.
 fn read_rle<R: Read>(r: R, l: &Layout, grid: &Grid, out: &mut [u8]) -> Option<()> {
+    let deadline = std::time::Instant::now() + RLE_BUDGET;
     let mut r = std::io::BufReader::with_capacity(1 << 20, r);
     let pb = l.pixel_bytes();
     let mut row = Vec::with_capacity(usize::try_from(l.row_bytes()).ok()?);
@@ -404,6 +410,9 @@ fn read_rle<R: Read>(r: R, l: &Layout, grid: &Grid, out: &mut [u8]) -> Option<()
     let mut repeat = 0usize;
     let mut literal = 0usize;
     for stored in 0..l.height {
+        if stored % 64 == 0 && std::time::Instant::now() > deadline {
+            return None;
+        }
         row.clear();
         while row.len() < l.row_bytes() as usize {
             rle_step(&mut r, &mut row, &mut px, pb, &mut repeat, &mut literal)?;

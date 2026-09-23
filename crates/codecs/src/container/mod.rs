@@ -87,6 +87,8 @@ pub(crate) use rar::{covers_seek as rar_covers_seek, fuzz_seed as rar_fuzz_seed}
 mod rhino;
 pub mod select;
 mod sevenz;
+/// The largest 7z end header the archive probe lets through (see `sevenz::header_is_safe`).
+pub(crate) use sevenz::MAX_HEADER_BYTES as SEVENZ_MAX_HEADER_BYTES;
 // Seattle FilmWorks (.sfw) and its PhotoWorks album (.pwp) - a JPEG with renumbered markers
 // and no Huffman tables, unwrapped back into one.
 mod sfw;
