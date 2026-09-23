@@ -16,6 +16,11 @@ use rars::ArchiveReader;
 use super::names::decode_entry_name;
 use super::select::{dedupe_by_name, pick_covers, CoverPrefs, Entry};
 
+mod seek;
+pub(crate) use seek::covers_seek;
+#[cfg(test)]
+pub(crate) use seek::fuzz_seed;
+
 /// Ceiling on how much of the archive we'll decompress-and-throw-away while walking TOWARDS the
 /// picked covers. RAR is sequential (a solid archive can't be entered mid-stream), so entries
 /// physically before a cover have to be decompressed even though their output is discarded — and

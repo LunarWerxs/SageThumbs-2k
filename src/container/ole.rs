@@ -5,9 +5,18 @@
 //! one code path (a COM/structured-storage API would need per-context init and
 //! wouldn't run in the CLI). Handles both the main FAT and the mini-FAT.
 //!
+//! Reads from a buffer or, for a file too big to hold, straight off a seekable reader: only
+//! the header, the FAT, the directory and the chains of the streams asked for are read, so
+//! the file's size costs nothing but the FAT (a 300 MB document grown over many saves keeps
+//! its FAT and directory at the far end, where a bounded head read never reaches them - the
+//! big-file gate, 2026-09-23).
+//!
 //! Runs on attacker-controlled bytes inside Explorer's thumbnail host under
 //! `panic = "abort"`: every read is bounds-checked (`Option`) and every chain walk
 //! is iteration-capped so a hostile/looping file can't hang or OOM the host.
+
+use std::cell::RefCell;
+use std::io::{Read, Seek, SeekFrom};
 
 use super::util::{le16, le32, le64};
 
@@ -23,13 +32,54 @@ pub fn looks_like_ole(head: &[u8]) -> bool {
     head.starts_with(&SIG)
 }
 
-fn sector_off(s: u32, sector_size: usize) -> Option<usize> {
-    (s as usize).checked_add(1)?.checked_mul(sector_size)
+/// Where a compound file's bytes come from: a buffer, or a seekable file read a sector at a
+/// time.
+trait Source {
+    fn len(&self) -> u64;
+    /// Exactly `len` bytes at `at`, or `None` past the end.
+    fn read_at(&self, at: u64, len: usize) -> Option<Vec<u8>>;
 }
 
-fn read_sector(bytes: &[u8], s: u32, sector_size: usize) -> Option<&[u8]> {
-    let o = sector_off(s, sector_size)?;
-    bytes.get(o..o.checked_add(sector_size)?)
+impl Source for [u8] {
+    fn len(&self) -> u64 {
+        <[u8]>::len(self) as u64
+    }
+
+    fn read_at(&self, at: u64, len: usize) -> Option<Vec<u8>> {
+        let at = usize::try_from(at).ok()?;
+        self.get(at..at.checked_add(len)?).map(<[u8]>::to_vec)
+    }
+}
+
+/// A seekable reader as a [`Source`]: every read is a seek and an exact read.
+struct Seeker<R> {
+    r: RefCell<R>,
+    len: u64,
+}
+
+impl<R: Read + Seek> Source for Seeker<R> {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_at(&self, at: u64, len: usize) -> Option<Vec<u8>> {
+        if at.checked_add(len as u64)? > self.len {
+            return None;
+        }
+        let mut r = self.r.try_borrow_mut().ok()?;
+        r.seek(SeekFrom::Start(at)).ok()?;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf).ok()?;
+        Some(buf)
+    }
+}
+
+fn sector_off(s: u32, sector_size: usize) -> Option<u64> {
+    u64::from(s).checked_add(1)?.checked_mul(sector_size as u64)
+}
+
+fn read_sector<S: Source + ?Sized>(src: &S, s: u32, sector_size: usize) -> Option<Vec<u8>> {
+    src.read_at(sector_off(s, sector_size)?, sector_size)
 }
 
 /// Walk a FAT/mini-FAT chain from `start`, returning the ordered sector list.
@@ -62,6 +112,16 @@ pub fn read_stream(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     read_streams(bytes, name, 1).and_then(|mut v| v.pop())
 }
 
+/// [`read_stream`] straight off a seekable reader, reading only what the stream needs.
+pub fn read_stream_from<R: Read + Seek>(mut r: R, name: &str) -> Option<Vec<u8>> {
+    let len = r.seek(SeekFrom::End(0)).ok()?;
+    let src = Seeker {
+        r: RefCell::new(r),
+        len,
+    };
+    read_streams_in(&src, name, 1).and_then(|mut v| v.pop())
+}
+
 /// Header fields needed before any stream can be located.
 struct Header {
     sector_size: usize,
@@ -89,10 +149,15 @@ fn parse_header(bytes: &[u8]) -> Option<Header> {
 }
 
 /// Collect FAT sector indices: 109 in the header DIFAT + any DIFAT chain.
-fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Option<Vec<u32>> {
+fn collect_fat_sectors<S: Source + ?Sized>(
+    src: &S,
+    head: &[u8],
+    first_difat: u32,
+    sector_size: usize,
+) -> Option<Vec<u32>> {
     let mut fat_sectors: Vec<u32> = Vec::new();
     for i in 0..109 {
-        let v = le32(bytes, 0x4C + i * 4)?;
+        let v = le32(head, 0x4C + i * 4)?;
         if v == FREESECT || v == ENDOFCHAIN {
             break;
         }
@@ -102,7 +167,7 @@ fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Op
     let mut difat_hops = 0usize;
     while difat != ENDOFCHAIN && difat != FREESECT && fat_sectors.len() <= MAX_SECTORS {
         append_difat_sector(
-            bytes,
+            src,
             &mut difat,
             &mut difat_hops,
             sector_size,
@@ -120,40 +185,41 @@ fn collect_fat_sectors(bytes: &[u8], first_difat: u32, sector_size: usize) -> Op
 /// n-1 FAT entries are all FREESECT/ENDOFCHAIN (so none are pushed) and whose trailing next
 /// pointer self-references loops forever — a true hang, reachable for anything the sniffer
 /// classifies as OLE2 (legacy Office, .msi, .max, .msg) in the thumbnail/preview host.
-fn append_difat_sector(
-    bytes: &[u8],
+fn append_difat_sector<S: Source + ?Sized>(
+    src: &S,
     difat: &mut u32,
     difat_hops: &mut usize,
     sector_size: usize,
     fat_sectors: &mut Vec<u32>,
 ) -> Option<()> {
-    if *difat_hops >= MAX_SECTORS.min(bytes.len() / sector_size) {
+    let sectors = usize::try_from(src.len() / sector_size as u64).unwrap_or(usize::MAX);
+    if *difat_hops >= MAX_SECTORS.min(sectors) {
         return None; // DIFAT chain longer than any real file could need: a cycle.
     }
     *difat_hops += 1;
-    let sec = read_sector(bytes, *difat, sector_size)?;
+    let sec = read_sector(src, *difat, sector_size)?;
     let n = sector_size / 4;
     for i in 0..n - 1 {
-        let v = le32(sec, i * 4)?;
+        let v = le32(&sec, i * 4)?;
         if v != FREESECT && v != ENDOFCHAIN {
             fat_sectors.push(v);
         }
     }
-    *difat = le32(sec, (n - 1) * 4)?;
+    *difat = le32(&sec, (n - 1) * 4)?;
     Some(())
 }
 
 /// Read a concatenated u32 table (the FAT or the mini-FAT) from a sector list.
-fn read_u32_table(
-    bytes: &[u8],
+fn read_u32_table<S: Source + ?Sized>(
+    src: &S,
     sectors: impl IntoIterator<Item = u32>,
     sector_size: usize,
 ) -> Option<Vec<u32>> {
     let mut table: Vec<u32> = Vec::new();
     for s in sectors {
-        let sec = read_sector(bytes, s, sector_size)?;
+        let sec = read_sector(src, s, sector_size)?;
         for i in 0..sector_size / 4 {
-            table.push(le32(sec, i * 4)?);
+            table.push(le32(&sec, i * 4)?);
         }
         if table.len() > MAX_SECTORS {
             return None;
@@ -162,28 +228,22 @@ fn read_u32_table(
     Some(table)
 }
 
-/// Read the FAT itself (concatenated u32 entries) from its sector list.
-fn read_fat(bytes: &[u8], fat_sectors: &[u32], sector_size: usize) -> Option<Vec<u32>> {
-    read_u32_table(bytes, fat_sectors.iter().copied(), sector_size)
-}
-
 /// A directory entry's (chain start sector, declared byte size).
 type StreamLoc = (u32, u64);
 
 /// Read the directory stream and find, in directory order, up to `max` entries
 /// whose name matches `name`, plus the root entry (needed for the mini-stream).
-fn find_directory_entries(
-    bytes: &[u8],
+fn find_directory_entries<S: Source + ?Sized>(
+    src: &S,
     fat: &[u32],
     sector_size: usize,
     first_dir: u32,
-    name: &str,
-    max: usize,
+    (name, max): (&str, usize),
 ) -> Option<(Vec<StreamLoc>, Option<StreamLoc>)> {
     // Its size isn't known ahead of the walk, so no tighter cap is available yet.
     let mut dir = Vec::new();
     for s in follow(first_dir, fat, MAX_SECTORS)? {
-        dir.extend_from_slice(read_sector(bytes, s, sector_size)?);
+        dir.extend_from_slice(&read_sector(src, s, sector_size)?);
     }
     let mut targets: Vec<(u32, u64)> = Vec::new();
     let mut root: Option<(u32, u64)> = None;
@@ -227,91 +287,68 @@ fn scan_directory_entry(
     Some(())
 }
 
-/// Read a stream whose declared size is >= the mini-stream cutoff, walking the
-/// main FAT directly.
-fn read_big_stream(
-    bytes: &[u8],
+/// Read the sectors of the chain at `start` until `size` bytes are in hand, the walk capped
+/// at the sector count that size needs (plus slack) so a self-looping chain dies in a handful
+/// of hops instead of the flat MAX_SECTORS ceiling.
+fn read_chain<S: Source + ?Sized>(
+    src: &S,
     fat: &[u32],
     sector_size: usize,
-    tstart: u32,
-    tsize: usize,
+    (start, size): (u32, usize),
 ) -> Option<Vec<u8>> {
-    // Cap the walk at the sector count the declared size actually needs (plus
-    // slack): a self-looping chain then dies in a handful of hops instead of
-    // the flat MAX_SECTORS ceiling.
-    let cap = tsize.div_ceil(sector_size).saturating_add(2);
-    let mut out = Vec::with_capacity(tsize);
-    for s in follow(tstart, fat, cap)? {
-        out.extend_from_slice(read_sector(bytes, s, sector_size)?);
-        if out.len() >= tsize {
+    let cap = size.div_ceil(sector_size).saturating_add(2);
+    let mut out = Vec::with_capacity(size);
+    for s in follow(start, fat, cap)? {
+        out.extend_from_slice(&read_sector(src, s, sector_size)?);
+        if out.len() >= size {
             break;
         }
     }
-    out.truncate(tsize);
+    out.truncate(size);
     Some(out)
 }
 
-/// Build the per-file mini-stream (the root entry's own stream), hop-bounded
-/// from its declared size and capped at `MAX_STREAM`.
-fn build_ministream(
-    bytes: &[u8],
+/// Read a stream whose declared size is below the mini-stream cutoff, via the per-file
+/// mini-stream (the root entry's stream, capped at `MAX_STREAM`) and mini-FAT. Both are built
+/// at most once per file and cached by the caller across targets.
+fn read_mini_stream<S: Source + ?Sized>(
+    src: &S,
     fat: &[u32],
-    sector_size: usize,
+    hdr: &Header,
     root: Option<StreamLoc>,
-) -> Option<Vec<u8>> {
-    let (rstart, rsize) = root?;
-    let rsize = (rsize.min(MAX_STREAM as u64)) as usize;
-    let root_cap = rsize.div_ceil(sector_size).saturating_add(2);
-    let mut m = Vec::with_capacity(rsize);
-    for s in follow(rstart, fat, root_cap)? {
-        m.extend_from_slice(read_sector(bytes, s, sector_size)?);
-        if m.len() >= rsize {
-            break;
-        }
-    }
-    m.truncate(rsize);
-    Some(m)
-}
-
-/// Build the per-file mini-FAT (concatenated u32 entries) from the main FAT chain.
-fn build_minifat(
-    bytes: &[u8],
-    fat: &[u32],
-    sector_size: usize,
-    first_minifat: u32,
-) -> Option<Vec<u32>> {
-    // The mini-FAT's own sector count isn't known ahead of the walk either.
-    read_u32_table(bytes, follow(first_minifat, fat, MAX_SECTORS)?, sector_size)
-}
-
-/// Read a stream whose declared size is below the mini-stream cutoff, via the
-/// per-file mini-stream (the root entry's stream) and mini-FAT. Both are built
-/// at most once per file (by `build_ministream`/`build_minifat` above) and
-/// cached by the caller across targets.
-#[allow(clippy::too_many_arguments)]
-fn read_mini_stream(
-    bytes: &[u8],
-    fat: &[u32],
-    sector_size: usize,
-    mini_size: usize,
-    first_minifat: u32,
-    root: Option<StreamLoc>,
-    tstart: u32,
-    tsize: usize,
-    ministream_cache: &mut Option<Vec<u8>>,
-    minifat_cache: &mut Option<Vec<u32>>,
+    (tstart, tsize): (u32, usize),
+    caches: &mut (Option<Vec<u8>>, Option<Vec<u32>>),
 ) -> Option<Vec<u8>> {
     // `insert` hands back a borrow of the value just stored, the shell-surface
     // unwrap ban's preferred spelling of this build-once-cache-forever idiom.
-    let ministream: &Vec<u8> = match ministream_cache {
+    let ministream: &Vec<u8> = match &mut caches.0 {
         Some(m) => m,
-        None => ministream_cache.insert(build_ministream(bytes, fat, sector_size, root)?),
+        slot @ None => {
+            let (rstart, rsize) = root?;
+            let rsize = rsize.min(MAX_STREAM as u64) as usize;
+            slot.insert(read_chain(src, fat, hdr.sector_size, (rstart, rsize))?)
+        }
     };
-    // The mini-FAT too is per-FILE: build it once, reuse for every small target.
-    let minifat: &Vec<u32> = match minifat_cache {
+    // The mini-FAT too is per-FILE: build it once, reuse for every small target. Its own
+    // sector count isn't known ahead of the walk.
+    let minifat: &Vec<u32> = match &mut caches.1 {
         Some(m) => m,
-        None => minifat_cache.insert(build_minifat(bytes, fat, sector_size, first_minifat)?),
+        slot @ None => {
+            let sectors = follow(hdr.first_minifat, fat, MAX_SECTORS)?;
+            slot.insert(read_u32_table(src, sectors, hdr.sector_size)?)
+        }
     };
+    read_mini_chain(ministream, minifat, hdr.mini_size, (tstart, tsize))
+}
+
+/// Walk the mini-FAT chain at `tstart`, appending `mini_size`-byte slices of `ministream`
+/// until `tsize` bytes are in hand, the walk hop-bounded by `follow`.
+fn read_mini_chain(
+    ministream: &[u8],
+    minifat: &[u32],
+    mini_size: usize,
+    (tstart, tsize): (u32, usize),
+) -> Option<Vec<u8>> {
     // Walk via the same hop-bounded follow() the FAT/root-stream chains use
     // (not an out.len()-growth bound): when the root stream is empty and
     // minifat self-loops, growth-based termination never trips because a
@@ -341,71 +378,53 @@ fn read_mini_stream(
 /// entry per attachment" without implementing red-black-tree traversal over hostile input.
 /// `None` = not a compound file / malformed; an empty Vec = valid file, no such stream.
 pub fn read_streams(bytes: &[u8], name: &str, max: usize) -> Option<Vec<Vec<u8>>> {
-    if !looks_like_ole(bytes) {
-        return None;
-    }
-    let hdr = parse_header(bytes)?;
-
-    let fat_sectors = collect_fat_sectors(bytes, hdr.first_difat, hdr.sector_size)?;
-    let fat = read_fat(bytes, &fat_sectors, hdr.sector_size)?;
-
-    let (targets, root) =
-        find_directory_entries(bytes, &fat, hdr.sector_size, hdr.first_dir, name, max)?;
-
-    // The mini-stream and mini-FAT are shared by every small stream; built at most once,
-    // on first need.
-    let mut ministream_cache: Option<Vec<u8>> = None;
-    let mut minifat_cache: Option<Vec<u32>> = None;
-    read_target_streams(
-        bytes,
-        &fat,
-        &hdr,
-        root,
-        &targets,
-        &mut ministream_cache,
-        &mut minifat_cache,
-    )
+    read_streams_in(bytes, name, max)
 }
 
-/// Read every located target stream in directory order: big targets via the main FAT,
-/// small ones via the shared (build-once) mini-stream and mini-FAT caches. Zero-length
-/// targets are skipped; `None` if any chain is malformed.
-fn read_target_streams(
-    bytes: &[u8],
+fn read_streams_in<S: Source + ?Sized>(src: &S, name: &str, max: usize) -> Option<Vec<Vec<u8>>> {
+    let head = src.read_at(0, 512)?;
+    if !looks_like_ole(&head) {
+        return None;
+    }
+    let hdr = parse_header(&head)?;
+    let fat_sectors = collect_fat_sectors(src, &head, hdr.first_difat, hdr.sector_size)?;
+    let fat = read_u32_table(src, fat_sectors.iter().copied(), hdr.sector_size)?;
+    let (targets, root) =
+        find_directory_entries(src, &fat, hdr.sector_size, hdr.first_dir, (name, max))?;
+    // The mini-stream and mini-FAT are shared by every small stream; built at most once,
+    // on first need.
+    let mut caches = (None, None);
+    let mut results: Vec<Vec<u8>> = Vec::with_capacity(targets.len());
+    for &target in &targets {
+        if let Some(out) = read_target_stream(src, &fat, &hdr, root, target, &mut caches)? {
+            results.push(out);
+        }
+    }
+    Some(results)
+}
+
+/// Read the bytes of one directory target: a zero-length target is skipped, a large one comes
+/// from the main FAT, a small one from the cached mini-stream/mini-FAT. `None` = malformed,
+/// `Some(None)` = zero-length target to skip.
+fn read_target_stream<S: Source + ?Sized>(
+    src: &S,
     fat: &[u32],
     hdr: &Header,
     root: Option<StreamLoc>,
-    targets: &[StreamLoc],
-    ministream_cache: &mut Option<Vec<u8>>,
-    minifat_cache: &mut Option<Vec<u32>>,
-) -> Option<Vec<Vec<u8>>> {
-    let mut results: Vec<Vec<u8>> = Vec::with_capacity(targets.len());
-    for &(tstart, tsize) in targets {
-        let tsize = (tsize.min(MAX_STREAM as u64)) as usize;
-        if tsize == 0 {
-            continue;
-        }
-
-        // --- Big stream → main FAT; small stream → mini-FAT inside the root stream.
-        let out = if tsize as u64 >= hdr.mini_cutoff {
-            read_big_stream(bytes, fat, hdr.sector_size, tstart, tsize)?
-        } else {
-            read_mini_stream(
-                bytes,
-                fat,
-                hdr.sector_size,
-                hdr.mini_size,
-                hdr.first_minifat,
-                root,
-                tstart,
-                tsize,
-                ministream_cache,
-                minifat_cache,
-            )?
-        };
-        results.push(out);
+    (tstart, tsize): StreamLoc,
+    caches: &mut (Option<Vec<u8>>, Option<Vec<u32>>),
+) -> Option<Option<Vec<u8>>> {
+    let tsize = (tsize.min(MAX_STREAM as u64)) as usize;
+    if tsize == 0 {
+        return Some(None);
     }
-    Some(results)
+    // Big stream → main FAT; small stream → mini-FAT inside the root stream.
+    let out = if tsize as u64 >= hdr.mini_cutoff {
+        read_chain(src, fat, hdr.sector_size, (tstart, tsize))?
+    } else {
+        read_mini_stream(src, fat, hdr, root, (tstart, tsize), caches)?
+    };
+    Some(Some(out))
 }
 
 #[cfg(test)]

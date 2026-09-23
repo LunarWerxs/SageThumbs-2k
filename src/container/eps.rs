@@ -85,6 +85,58 @@ pub fn extract_dos_eps_cover(bytes: &[u8]) -> Option<CoverOut> {
         .or(Some(CoverOut::Bytes(tiff)))
 }
 
+/// [`extract_dos_eps_cover`] straight off a seekable reader: the 30-byte header, the TIFF it
+/// points at, and (for a paletted preview) the first [`ASCII_SCAN_MAX`] bytes of the
+/// PostScript. A big EPS is its PostScript - a placed photograph - with the preview after it,
+/// so a bounded head read never reaches the preview (the big-file gate, 2026-09-23).
+pub fn dos_eps_cover_from_reader<R: std::io::Read + std::io::Seek>(mut r: R) -> Option<CoverOut> {
+    use std::io::SeekFrom;
+    let mut header = [0u8; 30];
+    r.seek(SeekFrom::Start(0)).ok()?;
+    r.read_exact(&mut header).ok()?;
+    if !header.starts_with(&MAGIC) {
+        return None;
+    }
+    let tiff = read_dos_tiff(&mut r, &header)?;
+    if !tiff_is_paletted(&tiff) {
+        return Some(CoverOut::Bytes(tiff));
+    }
+    let (ps_at, ps_len) = (le32(&header, 4)?, le32(&header, 8)? as usize);
+    read_range(&mut r, ps_at, ps_len.min(ASCII_SCAN_MAX))
+        .and_then(|ps| extract_ascii_preview(&ps))
+        .or(Some(CoverOut::Bytes(tiff)))
+}
+
+/// Read exactly `len` bytes at absolute offset `off` from a seekable reader, or None.
+fn read_range<R: std::io::Read + std::io::Seek>(
+    r: &mut R,
+    off: u32,
+    len: usize,
+) -> Option<Vec<u8>> {
+    use std::io::SeekFrom;
+    r.seek(SeekFrom::Start(u64::from(off))).ok()?;
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// Read the header's TIFF preview out of `r`, or None when its declared range is absent or
+/// out of bounds, or the bytes are not TIFF-framed.
+fn read_dos_tiff<R: std::io::Read + std::io::Seek>(
+    r: &mut R,
+    header: &[u8; 30],
+) -> Option<Vec<u8>> {
+    let (tiff_at, tiff_len) = (le32(header, 20)?, le32(header, 24)? as usize);
+    if tiff_at == 0 || tiff_len < 8 || tiff_len as u64 > MAX_COVER {
+        return None;
+    }
+    let tiff = read_range(r, tiff_at, tiff_len)?;
+    if !(tiff.starts_with(b"II\x2A\x00") || tiff.starts_with(b"MM\x00\x2A")) {
+        return None;
+    }
+    Some(tiff)
+}
+
 /// Whether a TIFF's first directory declares PhotometricInterpretation 3 (RGB palette),
 /// read with a bounds-checked walk of IFD0. Anything malformed reads as "not paletted",
 /// which hands the bytes to the decoders, whose refusal is then the answer.

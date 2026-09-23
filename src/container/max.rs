@@ -68,9 +68,22 @@ fn read_cf_value(s: &[u8], v: usize) -> Option<(u32, &[u8])> {
 
 /// Extract the embedded thumbnail from an OLE compound file, or None.
 pub fn extract(bytes: &[u8]) -> Option<CoverOut> {
-    let s = ole::read_stream(bytes, "\u{5}SummaryInformation")?;
-    let v = thumbnail_value_offset(&s)?;
-    let (tag, data) = read_cf_value(&s, v)?;
+    from_summary(&ole::read_stream(bytes, SUMMARY)?)
+}
+
+/// [`extract`] straight off a seekable reader: only the sectors the property set needs are
+/// read, so a file past the input ceiling costs no more than a small one.
+pub fn extract_from<R: std::io::Read + std::io::Seek>(r: R) -> Option<CoverOut> {
+    from_summary(&ole::read_stream_from(r, SUMMARY)?)
+}
+
+/// The stream the thumbnail lives in.
+const SUMMARY: &str = "\u{5}SummaryInformation";
+
+/// The thumbnail out of a `SummaryInformation` property set.
+fn from_summary(s: &[u8]) -> Option<CoverOut> {
+    let v = thumbnail_value_offset(s)?;
+    let (tag, data) = read_cf_value(s, v)?;
 
     match tag {
         CF_DIB => super::util::decodable_image(dib_to_bmp(data)?).map(CoverOut::Bytes),

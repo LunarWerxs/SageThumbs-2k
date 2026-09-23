@@ -532,6 +532,7 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("vsix", synthetic_vsix()),
         ("xmind", synthetic_xmind()),
         ("psd-merged", synthetic_psd_merged()),
+        ("psd-layers", synthetic_psd_layers()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),

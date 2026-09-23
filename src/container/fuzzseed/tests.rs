@@ -175,6 +175,11 @@ fn every_seed_reaches_its_parser() {
         "psd stored composite"
     );
     assert!(
+        psdmerged::from_reader(std::io::Cursor::new(by("psd-layers")), 64)
+            .is_some_and(|img| img.to_rgba8().pixels().any(|p| p.0[0] != 255)),
+        "psd layers flattened, not the white composite"
+    );
+    assert!(
         vtf::extract(&by("vtf")).is_some(),
         "vtf 7.3 resource offset"
     );

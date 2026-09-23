@@ -546,3 +546,123 @@ fn fuzz_extract_cover() {
     std::panic::set_hook(prev);
     report_fuzz_crashes(ITERS, &crashes);
 }
+
+/// The same picture of a cover, however it was reached: the bytes, or the decoded pixels.
+fn cover_pixels(c: CoverOut) -> Option<image::RgbaImage> {
+    match c {
+        CoverOut::Bytes(b) => crate::decode::decode_preview(&b).ok().map(|i| i.to_rgba8()),
+        CoverOut::Image(i) => Some(i.to_rgba8()),
+    }
+}
+
+/// `seek_cover` reads a file too big to hold by offset (a compound file through its FAT, a DOS
+/// EPS through its header, a DXF from its end). It must find exactly the cover the buffered
+/// dispatcher finds in the same file, or the Explorer tile of a big file differs from a small
+/// one's. Every real sample of those families in the corpus; skips where the corpus is absent.
+#[test]
+fn a_cover_found_by_offset_is_the_cover_found_in_the_whole_file() {
+    let names = [
+        "real.doc",
+        "real.xls",
+        "real.ppt",
+        "real.pub",
+        "real.vsd",
+        "real.max",
+        "real.sldprt",
+        "real.sldasm",
+        "real.slddrw",
+        "sample.sldasm",
+        "real.eps",
+        "real.dxf",
+    ];
+    let mut measured = 0;
+    for name in names {
+        let Some(bytes) = crate::testcorpus::read(name) else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        let whole = extract_cover(&bytes).and_then(cover_pixels);
+        let seek = seek_cover(
+            std::io::Cursor::new(&bytes),
+            &bytes[..bytes.len().min(4096)],
+        )
+        .and_then(cover_pixels);
+        match (whole, seek) {
+            (Some(a), Some(b)) => assert!(a == b, "{name}: the covers differ"),
+            (None, None) => eprintln!("{name}: no cover either way"),
+            (a, b) => panic!("{name}: whole {} / by offset {}", a.is_some(), b.is_some()),
+        }
+        measured += 1;
+    }
+    eprintln!("{measured} files compared");
+}
+
+/// The compound-file reader over a seekable source answers what the buffered one answers,
+/// stream for stream.
+#[test]
+fn an_ole_stream_read_off_a_reader_matches_the_buffered_read() {
+    for name in ["real.doc", "real.max", "sample.sldasm"] {
+        let Some(bytes) = crate::testcorpus::read(name) else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        for stream in ["\u{5}SummaryInformation", "PreviewPNG", "NoSuchStream"] {
+            assert_eq!(
+                ole::read_stream_from(std::io::Cursor::new(&bytes), stream),
+                ole::read_stream(&bytes, stream),
+                "{name} / {stream:?}"
+            );
+        }
+    }
+}
+
+/// A file's bytes followed by `len - bytes.len()` zeros, without holding the zeros: the shape
+/// of the big-file gate's tail twin, for readers that stream.
+pub(crate) struct Tailed {
+    pub(crate) data: Vec<u8>,
+    pub(crate) len: u64,
+    pub(crate) pos: u64,
+}
+
+impl std::io::Read for Tailed {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.len.saturating_sub(self.pos);
+        let n = (buf.len() as u64).min(left) as usize;
+        for (i, b) in buf[..n].iter_mut().enumerate() {
+            *b = self.data.get(self.pos as usize + i).copied().unwrap_or(0);
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for Tailed {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.pos = match to {
+            std::io::SeekFrom::Start(p) => p,
+            std::io::SeekFrom::End(d) => self.len.saturating_add_signed(d),
+            std::io::SeekFrom::Current(d) => self.pos.saturating_add_signed(d),
+        };
+        Ok(self.pos)
+    }
+}
+
+/// Album art read off a stream does not depend on how long the file is after its tags: a
+/// long recording's WMA keeps its `WM/Picture` in the header at the front.
+#[test]
+fn audio_art_does_not_care_what_follows_the_tags() {
+    for name in ["real.wma", "real.mp3", "real.flac", "real.m4a"] {
+        let Some(bytes) = crate::testcorpus::read(name) else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        let small = audio_art_from_reader(std::io::Cursor::new(&bytes));
+        let big = audio_art_from_reader(Tailed {
+            data: bytes.clone(),
+            len: 300 << 20,
+            pos: 0,
+        });
+        eprintln!("{name}: small {} big {}", small.is_some(), big.is_some());
+        assert_eq!(small.is_some(), big.is_some(), "{name}");
+    }
+}

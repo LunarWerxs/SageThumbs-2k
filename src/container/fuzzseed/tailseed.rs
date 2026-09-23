@@ -86,3 +86,10 @@ pub(super) fn synthetic_psd_merged() -> Vec<u8> {
         ((x * 9 + y * 5 + u32::from(c) * 40) % 256) as u16
     })
 }
+
+/// A 16-bit Photoshop document saved without its composite: its layers in an `Lr16` block,
+/// ZIP with prediction, one masked, one clipped, two inside a group. The flatten's record walk,
+/// block search, inflate and blend.
+pub(super) fn synthetic_psd_layers() -> Vec<u8> {
+    psdmerged::synth_layered()
+}

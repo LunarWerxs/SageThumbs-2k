@@ -42,6 +42,16 @@ pub fn extract(b: &[u8]) -> Option<Vec<u8>> {
     dib_to_bmp(&preview_dib(section_body(b)?)?)
 }
 
+/// [`extract`] for a file too big to hold: `head` is its first bytes (for the signature) and
+/// `tail` its last ones, where AutoCAD always writes the `THUMBNAILIMAGE` section. A big
+/// drawing is its geometry, so the preview is far past any bounded head read.
+pub fn extract_tail(head: &[u8], tail: &[u8]) -> Option<Vec<u8>> {
+    if !looks_like_dxf(head) {
+        return None;
+    }
+    dib_to_bmp(&preview_dib(section_body(tail)?)?)
+}
+
 /// The group pairs of the `THUMBNAILIMAGE` section: everything from the line after its name.
 fn section_body(b: &[u8]) -> Option<&[u8]> {
     let name = b"THUMBNAILIMAGE";

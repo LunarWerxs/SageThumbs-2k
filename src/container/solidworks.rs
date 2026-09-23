@@ -26,6 +26,11 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     super::util::decodable_image(ole::read_stream(bytes, "PreviewPNG")?)
 }
 
+/// [`extract`] straight off a seekable reader, for a file too big to hold.
+pub fn extract_from<R: std::io::Read + std::io::Seek>(r: R) -> Option<Vec<u8>> {
+    super::util::decodable_image(ole::read_stream_from(r, "PreviewPNG")?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

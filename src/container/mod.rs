@@ -81,6 +81,9 @@ mod psd;
 mod psdmerged;
 mod psp;
 mod rar;
+/// The RAR block-header walk and its seed, by name for the fuzzer (`crate::fuzz`).
+#[cfg(test)]
+pub(crate) use rar::{covers_seek as rar_covers_seek, fuzz_seed as rar_fuzz_seed};
 mod rhino;
 pub(crate) mod select;
 mod sevenz;
@@ -116,9 +119,10 @@ pub(crate) fn xcf_from_reader<R: std::io::Read + std::io::Seek>(
     xcf::extract_seek(src, target_edge)
 }
 
-/// A Photoshop document's merged composite, read off `src` by offset and shrunk to at most
-/// `target_edge` on its long side as it is read, so the file's size does not matter (issue
-/// #46). `None` for a document it does not read (see `psdmerged`); the caller keeps its route.
+/// A Photoshop document's picture - its merged composite, or its flattened layers when it was
+/// saved without one - read off `src` by offset and shrunk to at most `target_edge` on its long
+/// side as it is read, so the file's size does not matter (issue #46). `None` for a document
+/// it does not read (see `psdmerged`); the caller keeps its route.
 pub(crate) fn psd_merged_from_reader<R: std::io::Read + std::io::Seek>(
     src: R,
     target_edge: u32,
@@ -461,9 +465,48 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
     if is_7z(head) {
         return sevenz::extract_seek(reader, prefs);
     }
+    // RAR: CBR. The block headers are walked and only the cover's entry is read.
+    if is_rar(head) {
+        return rar::covers_seek(reader, 1, prefs)
+            .and_then(|mut covers| (!covers.is_empty()).then(|| covers.swap_remove(0)));
+    }
     // Clip Studio Paint: the preview PNG from the tail CHNKSQLi database.
     if head.starts_with(b"CSFCHUNK") {
         return clip::extract_seek(reader);
+    }
+    None
+}
+
+/// How much of a big file's end is read for a preview written there (a DXF's `THUMBNAILIMAGE`
+/// section: up to 4 MiB of image as hex lines).
+pub const SEEK_TAIL_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The cover of a file too big to hold, for the formats whose preview is found by OFFSET
+/// rather than by reading from the start: a compound file's streams (SolidWorks, 3ds Max,
+/// legacy Office, Visio, Publisher) through its FAT, a DOS EPS's preview through its header,
+/// a DXF's preview section at its end. Each reads only what it needs, so the file's size costs
+/// nothing; the same extractors answer for a small file, so the two draw the same picture.
+pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Option<CoverOut> {
+    use std::io::{Read, SeekFrom};
+    if ole::looks_like_ole(head) {
+        if let Some(png) = solidworks::extract_from(&mut r) {
+            return Some(CoverOut::Bytes(png));
+        }
+        return max::extract_from(&mut r);
+    }
+    if head.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
+        return eps::dos_eps_cover_from_reader(&mut r);
+    }
+    if dxf::looks_like_dxf(head) {
+        let len = r.seek(SeekFrom::End(0)).ok()?;
+        let at = len.saturating_sub(SEEK_TAIL_BYTES);
+        r.seek(SeekFrom::Start(at)).ok()?;
+        let mut tail = Vec::new();
+        r.by_ref()
+            .take(SEEK_TAIL_BYTES)
+            .read_to_end(&mut tail)
+            .ok()?;
+        return dxf::extract_tail(head, &tail).map(CoverOut::Bytes);
     }
     None
 }
@@ -514,6 +557,9 @@ pub fn archive_covers_seek<R: std::io::Read + std::io::Seek>(
     }
     if is_7z(head) {
         return sevenz::extract_seek_n(reader, want, prefs);
+    }
+    if is_rar(head) {
+        return rar::covers_seek(reader, want, prefs);
     }
     None
 }
