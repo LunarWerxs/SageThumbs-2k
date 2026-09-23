@@ -538,46 +538,42 @@ fn numeric_entity(num: &str) -> Option<char> {
 /// Named entity lookup, split across two tables purely to keep each match's arm count under
 /// the complexity gate.
 fn named_entity(ent: &str) -> Option<char> {
-    named_entity_basic(ent).or_else(|| named_entity_typographic(ent))
+    NAMED_ENTITIES
+        .iter()
+        .find(|(name, _)| *name == ent)
+        .map(|(_, ch)| *ch)
 }
 
-fn named_entity_basic(ent: &str) -> Option<char> {
-    match ent {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some('\u{00A0}'),
-        "middot" => Some('·'),
-        "bull" => Some('•'),
-        "copy" => Some('©'),
-        "reg" => Some('®'),
-        "trade" => Some('™'),
-        "hellip" => Some('…'),
-        "mdash" => Some('—'),
-        "ndash" => Some('–'),
-        _ => None,
-    }
-}
-
-fn named_entity_typographic(ent: &str) -> Option<char> {
-    match ent {
-        "ldquo" => Some('“'),
-        "rdquo" => Some('”'),
-        "lsquo" => Some('‘'),
-        "rsquo" => Some('’'),
-        "laquo" => Some('«'),
-        "raquo" => Some('»'),
-        "deg" => Some('°'),
-        "times" => Some('×'),
-        "larr" => Some('←'),
-        "rarr" => Some('→'),
-        "uarr" => Some('↑'),
-        "darr" => Some('↓'),
-        _ => None,
-    }
-}
+/// The named character references a README actually uses: the XML five, the space and
+/// punctuation marks, and the typographic quotes, arrows and symbols.
+const NAMED_ENTITIES: &[(&str, char)] = &[
+    ("amp", '&'),
+    ("lt", '<'),
+    ("gt", '>'),
+    ("quot", '"'),
+    ("apos", '\''),
+    ("nbsp", '\u{00A0}'),
+    ("middot", '·'),
+    ("bull", '•'),
+    ("copy", '©'),
+    ("reg", '®'),
+    ("trade", '™'),
+    ("hellip", '…'),
+    ("mdash", '—'),
+    ("ndash", '–'),
+    ("ldquo", '“'),
+    ("rdquo", '”'),
+    ("lsquo", '‘'),
+    ("rsquo", '’'),
+    ("laquo", '«'),
+    ("raquo", '»'),
+    ("deg", '°'),
+    ("times", '×'),
+    ("larr", '←'),
+    ("rarr", '→'),
+    ("uarr", '↑'),
+    ("darr", '↓'),
+];
 
 #[cfg(test)]
 mod skip_tag_tests {

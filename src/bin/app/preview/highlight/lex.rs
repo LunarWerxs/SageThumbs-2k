@@ -76,68 +76,81 @@ pub(in crate::preview) fn lang_tag(l: Lang) -> Option<&'static str> {
     })
 }
 
+/// File extensions (no dot, lowercase) for each language.
+const EXT_LANGS: &[(Lang, &[&str])] = &[
+    (Lang::Rust, &["rs"]),
+    (Lang::Py, &["py", "pyw", "pyi"]),
+    (Lang::Js, &["js", "jsx", "ts", "tsx", "mjs", "cjs"]),
+    (Lang::Json, &["json", "jsonc"]),
+    (Lang::Yaml, &["yaml", "yml"]),
+    (Lang::Toml, &["toml"]),
+    (Lang::C, &["c", "h", "cpp", "cxx", "cc", "hpp", "hxx"]),
+    (Lang::Cs, &["cs"]),
+    (Lang::Java, &["java"]),
+    (Lang::Go, &["go"]),
+    (Lang::Ruby, &["rb", "rake", "gemspec"]),
+    (Lang::Php, &["php", "phtml"]),
+    (Lang::Lua, &["lua"]),
+    (Lang::Kotlin, &["kt", "kts"]),
+    (Lang::Swift, &["swift"]),
+    (Lang::Sh, &["sh", "bash", "zsh"]),
+    (Lang::Batch, &["bat", "cmd"]),
+    (Lang::PowerShell, &["ps1", "psm1", "psd1"]),
+    (Lang::Perl, &["pl", "pm"]),
+    (Lang::Html, &["html", "htm", "xhtml"]),
+    (Lang::Css, &["css", "scss", "less"]),
+    // svg is XML — reachable via the caption's "view source" toggle on a rendered SVG.
+    (Lang::Xml, &["xml", "svg"]),
+    (Lang::Sql, &["sql"]),
+    // ini/cfg files share TOML's shape (# / ; comments, key=value, quoted strings).
+    (
+        Lang::Toml,
+        &[
+            "ini",
+            "cfg",
+            "conf",
+            "properties",
+            "editorconfig",
+            "gitconfig",
+        ],
+    ),
+];
+
+/// Markdown fence tags that are NOT also file extensions (a tag that is one falls through to
+/// [`EXT_LANGS`], which maps it the same way).
+const FENCE_LANGS: &[(Lang, &[&str])] = &[
+    (Lang::Rust, &["rust"]),
+    (Lang::Py, &["python"]),
+    (Lang::Js, &["javascript", "typescript", "node"]),
+    (Lang::C, &["c++"]),
+    (Lang::Cs, &["csharp", "c#"]),
+    (Lang::Go, &["golang"]),
+    (Lang::Ruby, &["ruby"]),
+    (Lang::Kotlin, &["kotlin"]),
+    (Lang::Sh, &["shell", "console"]),
+    (Lang::Batch, &["batch"]),
+    (Lang::PowerShell, &["powershell", "pwsh"]),
+    (Lang::Perl, &["perl"]),
+];
+
+/// The language `table` lists `key` under, if any.
+fn lang_in(table: &[(Lang, &[&str])], key: &str) -> Option<Lang> {
+    table
+        .iter()
+        .find(|(_, names)| names.contains(&key))
+        .map(|(lang, _)| *lang)
+}
+
 /// Map a file extension (no dot) to a language.
 pub(in crate::preview) fn lang_from_ext(ext: &str) -> Lang {
-    match ext.to_ascii_lowercase().as_str() {
-        "rs" => Lang::Rust,
-        "py" | "pyw" | "pyi" => Lang::Py,
-        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" => Lang::Js,
-        "json" | "jsonc" => Lang::Json,
-        "yaml" | "yml" => Lang::Yaml,
-        "toml" => Lang::Toml,
-        "c" | "h" | "cpp" | "cxx" | "cc" | "hpp" | "hxx" => Lang::C,
-        "cs" => Lang::Cs,
-        "java" => Lang::Java,
-        "go" => Lang::Go,
-        "rb" | "rake" | "gemspec" => Lang::Ruby,
-        "php" | "phtml" => Lang::Php,
-        "lua" => Lang::Lua,
-        "kt" | "kts" => Lang::Kotlin,
-        "swift" => Lang::Swift,
-        "sh" | "bash" | "zsh" => Lang::Sh,
-        "bat" | "cmd" => Lang::Batch,
-        "ps1" | "psm1" | "psd1" => Lang::PowerShell,
-        "pl" | "pm" => Lang::Perl,
-        "html" | "htm" | "xhtml" => Lang::Html,
-        "css" | "scss" | "less" => Lang::Css,
-        // svg is XML — reachable via the caption's "view source" toggle on a rendered SVG.
-        "xml" | "svg" => Lang::Xml,
-        "sql" => Lang::Sql,
-        // ini/cfg files share TOML's shape (# / ; comments, key=value, quoted strings).
-        "ini" | "cfg" | "conf" | "properties" | "editorconfig" | "gitconfig" => Lang::Toml,
-        _ => Lang::Plain,
-    }
+    lang_in(EXT_LANGS, &ext.to_ascii_lowercase()).unwrap_or(Lang::Plain)
 }
 
 /// Map a markdown fenced-code info-string tag (e.g. ```` ```rust ````) to a language. Also accepts
 /// a bare extension as the tag.
 pub(in crate::preview) fn lang_from_fence(tag: &str) -> Lang {
-    match tag.to_ascii_lowercase().as_str() {
-        "rust" | "rs" => Lang::Rust,
-        "python" | "py" => Lang::Py,
-        "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" | "node" => Lang::Js,
-        "json" | "jsonc" => Lang::Json,
-        "yaml" | "yml" => Lang::Yaml,
-        "toml" => Lang::Toml,
-        "c" | "cpp" | "c++" | "h" | "hpp" => Lang::C,
-        "cs" | "csharp" | "c#" => Lang::Cs,
-        "java" => Lang::Java,
-        "go" | "golang" => Lang::Go,
-        "ruby" | "rb" => Lang::Ruby,
-        "php" => Lang::Php,
-        "lua" => Lang::Lua,
-        "kotlin" | "kt" => Lang::Kotlin,
-        "swift" => Lang::Swift,
-        "sh" | "bash" | "shell" | "zsh" | "console" => Lang::Sh,
-        "bat" | "cmd" | "batch" => Lang::Batch,
-        "ps1" | "powershell" | "pwsh" => Lang::PowerShell,
-        "perl" | "pl" => Lang::Perl,
-        "html" | "htm" => Lang::Html,
-        "css" | "scss" | "less" => Lang::Css,
-        "xml" | "svg" => Lang::Xml,
-        "sql" => Lang::Sql,
-        other => lang_from_ext(other),
-    }
+    let tag = tag.to_ascii_lowercase();
+    lang_in(FENCE_LANGS, &tag).unwrap_or_else(|| lang_from_ext(&tag))
 }
 
 /// Per-language lexer spec.

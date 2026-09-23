@@ -108,58 +108,63 @@ pub fn apply_override_or_system(code: Option<&str>) {
 /// Map the current Windows UI language to one of our codes, or None. Split across two
 /// lookup tables purely to keep each match's arm count under the complexity gate.
 fn system_ui_code() -> Option<&'static str> {
-    let langid = unsafe { GetUserDefaultUILanguage() };
+    code_for_langid(unsafe { GetUserDefaultUILanguage() })
+}
+
+/// Every shipped language: its code, the Windows primary LANGID that selects it, and the name
+/// the language picker shows (the autonym). One row per language, so auto-detection and the
+/// picker cannot disagree about which languages exist. Chinese is two rows on one primary id,
+/// told apart by sublang in [`code_for_langid`].
+const LANGUAGES: &[(&str, u16, &str)] = &[
+    ("en", 0x09, "English"),
+    ("ar", 0x01, "العربية"),
+    ("bg", 0x02, "Български"),
+    ("cs", 0x05, "Čeština"),
+    ("da", 0x06, "Dansk"),
+    ("de", 0x07, "Deutsch"),
+    ("el", 0x08, "Ελληνικά"),
+    ("es", 0x0a, "Español"),
+    ("fa", 0x29, "فارسی"),
+    ("fi", 0x0b, "Suomi"),
+    ("fil", 0x64, "Filipino"),
+    ("fr", 0x0c, "Français"),
+    ("he", 0x0d, "עברית"),
+    ("hi", 0x39, "हिन्दी"),
+    // 0x1a is shared by Croatian/Serbian/Bosnian sublangs; Croatian is the nearest we ship.
+    ("hr", 0x1a, "Hrvatski"),
+    ("hu", 0x0e, "Magyar"),
+    ("id", 0x21, "Bahasa Indonesia"),
+    ("it", 0x10, "Italiano"),
+    ("ja", 0x11, "日本語"),
+    ("ko", 0x12, "한국어"),
+    ("ms", 0x3e, "Bahasa Melayu"),
+    ("nb", 0x14, "Norsk"),
+    ("nl", 0x13, "Nederlands"),
+    ("pl", 0x15, "Polski"),
+    ("pt-BR", 0x16, "Português (Brasil)"),
+    ("ro", 0x18, "Română"),
+    ("ru", 0x19, "Русский"),
+    ("sk", 0x1b, "Slovenčina"),
+    ("sl", 0x24, "Slovenščina"),
+    ("sv", 0x1d, "Svenska"),
+    ("th", 0x1e, "ไทย"),
+    ("tr", 0x1f, "Türkçe"),
+    ("uk", 0x22, "Українська"),
+    ("vi", 0x2a, "Tiếng Việt"),
+    ("zh-CN", 0x04, "简体中文"),
+    ("zh-TW", 0x04, "繁體中文"),
+];
+
+/// The shipped language code a Windows LANGID selects, or `None` for one we do not ship.
+fn code_for_langid(langid: u16) -> Option<&'static str> {
     let primary = langid & 0x03ff;
-    system_ui_code_a_to_i(primary).or_else(|| system_ui_code_j_to_z(primary, langid))
-}
-
-fn system_ui_code_a_to_i(primary: u16) -> Option<&'static str> {
-    Some(match primary {
-        0x09 => "en",
-        0x01 => "ar",
-        0x02 => "bg",
-        0x05 => "cs",
-        0x06 => "da",
-        0x07 => "de",
-        0x08 => "el",
-        0x0a => "es",
-        0x29 => "fa",
-        0x0b => "fi",
-        0x0c => "fr",
-        0x0d => "he",
-        0x39 => "hi",
-        // 0x1a is shared by Croatian/Serbian/Bosnian sublangs; Croatian is the
-        // nearest locale we ship.
-        0x1a => "hr",
-        0x0e => "hu",
-        0x21 => "id",
-        0x10 => "it",
-        _ => return None,
-    })
-}
-
-fn system_ui_code_j_to_z(primary: u16, langid: u16) -> Option<&'static str> {
-    Some(match primary {
-        0x11 => "ja",
-        0x12 => "ko",
-        0x3e => "ms",
-        0x14 => "nb",
-        0x13 => "nl",
-        0x64 => "fil",
-        0x15 => "pl",
-        0x16 => "pt-BR",
-        0x18 => "ro",
-        0x19 => "ru",
-        0x1b => "sk",
-        0x24 => "sl",
-        0x1d => "sv",
-        0x1e => "th",
-        0x1f => "tr",
-        0x22 => "uk",
-        0x2a => "vi",
-        0x04 => zh_variant(langid),
-        _ => return None,
-    })
+    if primary == 0x04 {
+        return Some(zh_variant(langid));
+    }
+    LANGUAGES
+        .iter()
+        .find(|(_, p, _)| *p == primary)
+        .map(|(code, _, _)| *code)
 }
 
 /// Which Chinese locale a Windows LANGID's sublang maps to. Sublangs 0x01 (Taiwan), 0x03
@@ -172,60 +177,12 @@ fn zh_variant(langid: u16) -> &'static str {
     }
 }
 
-/// Native (autonym) display name for the language picker. Split across two lookup tables
-/// purely to keep each match's arm count under the complexity gate.
+/// Native (autonym) display name for the language picker, from [`LANGUAGES`].
 pub fn native_name(code: &str) -> &'static str {
-    native_name_a_to_i(code)
-        .or_else(|| native_name_j_to_z(code))
-        .unwrap_or("English") // unreachable for our shipped codes
-}
-
-fn native_name_a_to_i(code: &str) -> Option<&'static str> {
-    Some(match code {
-        "en" => "English",
-        "ar" => "العربية",
-        "bg" => "Български",
-        "cs" => "Čeština",
-        "da" => "Dansk",
-        "de" => "Deutsch",
-        "el" => "Ελληνικά",
-        "es" => "Español",
-        "fa" => "فارسی",
-        "fi" => "Suomi",
-        "fil" => "Filipino",
-        "fr" => "Français",
-        "he" => "עברית",
-        "hi" => "हिन्दी",
-        "hr" => "Hrvatski",
-        "hu" => "Magyar",
-        "id" => "Bahasa Indonesia",
-        "it" => "Italiano",
-        _ => return None,
-    })
-}
-
-fn native_name_j_to_z(code: &str) -> Option<&'static str> {
-    Some(match code {
-        "ja" => "日本語",
-        "ko" => "한국어",
-        "ms" => "Bahasa Melayu",
-        "nb" => "Norsk",
-        "nl" => "Nederlands",
-        "pl" => "Polski",
-        "pt-BR" => "Português (Brasil)",
-        "ro" => "Română",
-        "ru" => "Русский",
-        "sk" => "Slovenčina",
-        "sl" => "Slovenščina",
-        "sv" => "Svenska",
-        "th" => "ไทย",
-        "tr" => "Türkçe",
-        "uk" => "Українська",
-        "vi" => "Tiếng Việt",
-        "zh-CN" => "简体中文",
-        "zh-TW" => "繁體中文",
-        _ => return None,
-    })
+    LANGUAGES
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map_or("English", |(_, _, name)| *name) // unreachable for our shipped codes
 }
 
 #[cfg(test)]
@@ -481,53 +438,40 @@ mod tests {
     }
 
     /// Item 115: `codes()` is derived from the build-generated `LOCALES` table (i.e. from
-    /// `assets/locales/*.toml`), but the picker's display name comes from two hand-maintained
-    /// match tables that nothing ties to it. Add a locale `.toml` without adding a
-    /// `native_name_*` arm and it silently lists in the language dropdown as a second
-    /// "English" (the `unwrap_or` fallback in [`native_name`]) rather than failing a build.
+    /// `assets/locales/*.toml`), but the picker's names and the auto-detection come from the
+    /// hand-maintained [`LANGUAGES`] table. Add a locale `.toml` without a row and it lists in
+    /// the dropdown as a second "English" and can never be auto-selected; a row with no
+    /// `.toml` auto-selects a locale that is not built. Both sets must be the same.
     #[test]
-    fn every_shipped_locale_has_a_native_display_name() {
-        for c in codes() {
-            assert!(
-                native_name_a_to_i(c)
-                    .or_else(|| native_name_j_to_z(c))
-                    .is_some(),
-                "locale {c:?} has no entry in native_name_a_to_i/j_to_z — it would render as a \
-                 second \"English\" in the language picker instead of its own name"
-            );
-        }
-    }
-
-    /// Item 115's other half: a shipped locale that `system_ui_code_a_to_i`/`_j_to_z` never
-    /// produce can never be auto-selected from the Windows UI language, and a code either
-    /// table DOES produce but that isn't actually shipped would auto-select a locale that does
-    /// not exist. The union of both tables' outputs — including BOTH `zh` variants, which
-    /// `zh_variant` only distinguishes via sublang bits no `primary`-only sweep can set — must
-    /// equal exactly the `codes()` set.
-    #[test]
-    fn system_ui_tables_map_onto_exactly_the_shipped_locale_set() {
+    fn the_language_table_is_exactly_the_shipped_locale_set() {
         use std::collections::HashSet;
-        let mut mapped: HashSet<&'static str> = HashSet::new();
-        for primary in 0u16..=0x03ff {
-            if let Some(c) = system_ui_code_a_to_i(primary) {
-                mapped.insert(c);
-            }
-            // `langid == primary` here never sets sublang bits (primary alone is < 0x400), so
-            // this leg of the sweep only ever reaches the `zh_variant` default arm — both
-            // variants are exercised explicitly below.
-            if let Some(c) = system_ui_code_j_to_z(primary, primary) {
-                mapped.insert(c);
-            }
-        }
-        mapped.insert(system_ui_code_j_to_z(0x04, (0x01u16 << 10) | 0x04).expect("zh-TW sublang"));
-        mapped.insert(system_ui_code_j_to_z(0x04, 0x04).expect("zh-CN sublang"));
-
+        let table: HashSet<&'static str> = LANGUAGES.iter().map(|(c, _, _)| *c).collect();
         let shipped: HashSet<&'static str> = codes().collect();
         assert_eq!(
-            mapped, shipped,
-            "system_ui_code_a_to_i/j_to_z must map onto exactly the shipped locale set: a \
-             locale missing from `mapped` can never be auto-selected, and an entry not in \
-             `shipped` maps to a locale that isn't actually built"
+            table, shipped,
+            "LANGUAGES must list exactly the shipped locales"
         );
+        assert_eq!(table.len(), LANGUAGES.len(), "a language code listed twice");
+    }
+
+    /// Every language is reachable from some Windows LANGID, and Chinese splits by sublang:
+    /// Taiwan/Hong Kong/Macao are Traditional, everything else Simplified.
+    #[test]
+    fn every_language_is_selected_by_its_windows_language_id() {
+        for (code, primary, _) in LANGUAGES {
+            if *primary != 0x04 {
+                assert_eq!(code_for_langid(*primary), Some(*code), "{code}");
+            }
+        }
+        assert_eq!(code_for_langid((0x01 << 10) | 0x04), Some("zh-TW"));
+        assert_eq!(code_for_langid((0x03 << 10) | 0x04), Some("zh-TW"));
+        assert_eq!(code_for_langid((0x02 << 10) | 0x04), Some("zh-CN"));
+        assert_eq!(code_for_langid(0x0409), Some("en"));
+        assert_eq!(
+            code_for_langid(0x7f),
+            None,
+            "an unshipped language falls back"
+        );
+        assert_eq!(native_name("pt-BR"), "Português (Brasil)");
     }
 }

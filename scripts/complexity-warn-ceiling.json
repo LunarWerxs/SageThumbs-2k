@@ -1,4 +1,4 @@
 {
   "$note": "The highest warn-band (see --help) count each complexity engine may report. Ratchet DOWN only: re-seeding upward turns the gate into a rubber stamp. Re-seed with: pwsh scripts\\check-complexity.ps1 -WriteWarnCeiling",
-  "vendored": 64
+  "vendored": 57
 }
