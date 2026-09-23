@@ -29,19 +29,19 @@ The Sandbox is Win11 (it mirrors the host), so it CANNOT reproduce Windows 10. i
 reporter is on Win10 Home 22H2, so this builds exactly that and runs the same clean-room
 test on it.
 
-**Get the ISO once** (put it at `D:\isos\Win10_22H2_x64.iso`):
+**Get the ISO once** (put it at `D:\.DevScratch\isos\Win10_22H2_x64.iso`):
 ```powershell
 # official MS consumer ISO URL via Fido, then download:
-Invoke-WebRequest 'https://github.com/pbatard/Fido/raw/master/Fido.ps1' -OutFile D:\isos\Fido.ps1
-$u = powershell -ExecutionPolicy Bypass -File D:\isos\Fido.ps1 -Win 10 -Rel 22H2 -Ed 'Home/Pro' -Lang English -Arch x64 -GetUrl
-Start-BitsTransfer -Source $u -Destination D:\isos\Win10_22H2_x64.iso
+Invoke-WebRequest 'https://github.com/pbatard/Fido/raw/master/Fido.ps1' -OutFile D:\.DevScratch\isos\Fido.ps1
+$u = powershell -ExecutionPolicy Bypass -File D:\.DevScratch\isos\Fido.ps1 -Win 10 -Rel 22H2 -Ed 'Home/Pro' -Lang English -Arch x64 -GetUrl
+Start-BitsTransfer -Source $u -Destination D:\.DevScratch\isos\Win10_22H2_x64.iso
 ```
 
 **`run-win10-test.ps1`** - fully automated, elevated x64-release test. It requires the
 exact x64 installer and cannot qualify the ARM64 shell extension in an x64 Explorer:
 ```powershell
 # elevated PowerShell:
-.\scripts\vm\run-win10-test.ps1 -Iso D:\isos\Win10_22H2_x64.iso
+.\scripts\vm\run-win10-test.ps1 -Iso D:\.DevScratch\isos\Win10_22H2_x64.iso
 .\scripts\vm\run-win10-test.ps1 -Resume     # reuse an already-applied VHDX (skips the ~12 min DISM apply)
 ```
 It partitions a VHDX, DISM-applies "Windows 10 Home" (index 1), writes UEFI boot files, and
@@ -49,7 +49,7 @@ drops `autounattend-win10.xml` at `Windows\Panther\unattend.xml` so first boot i
 unattended (local admin `vmadmin`, auto-logon). No DVD boot, no "press any key", no WinPE
 Setup UI. Then it drives the test over **PowerShell Direct** (no guest network needed):
 silent-install the built installer, `st2k doctor`, thumbnail a modern `.xcf` + a `.zip`, and
-copy the results back to `D:\isos\win10-test-results\` (a PASS/FAIL + the produced PNGs).
+copy the results back to `D:\.DevScratch\isos\win10-test-results\` (a PASS/FAIL + the produced PNGs).
 Pass `-Keep` to leave the VM up (`vmconnect localhost st2k-win10`); default tears it down.
 A FAILED run keeps the applied VHDX so the next attempt can `-Resume`; only a PASS reclaims it.
 
@@ -101,7 +101,7 @@ user `stduser` beside the admin `vmadmin`, and drives both scenarios over PowerS
   `SageThumbs2K-Reregister` must exist, the guest reboots with the STANDARD user signing in,
   the DLL on disk must be the new version, and a clean reinstall must remove the task.
 
-Verdicts and every measured value go to `D:\isos\win10-lifecycle-results\lifecycle-results.json`.
+Verdicts and every measured value go to `D:\.DevScratch\isos\win10-lifecycle-results\lifecycle-results.json`.
 
 Three things this proof caught the first times it ran, all fixed in `installer.iss` that day:
 `schtasks /Create /RU <other user> /NP` PROMPTS for a password (a hang inside a hidden

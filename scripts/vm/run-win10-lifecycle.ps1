@@ -20,12 +20,12 @@
   applied VHDX and skips the ~12 min DISM apply.
 #>
 param(
-    [string]$Iso = 'D:\isos\Win10_22H2_x64.iso',
+    [string]$Iso = 'D:\.DevScratch\isos\Win10_22H2_x64.iso',
     [string]$Name = 'st2k-win10-life',
-    [string]$VmRoot = 'D:\Hyper-V',
+    [string]$VmRoot = 'D:\.DevScratch\Hyper-V',
     [int]$MemoryGB = 6,
     [int]$DiskGB = 64,
-    [string]$ResultDir = 'D:\isos\win10-lifecycle-results',
+    [string]$ResultDir = 'D:\.DevScratch\isos\win10-lifecycle-results',
     [int]$BootTimeoutMin = 25,
     [string]$Installer,     # the version under test (3.1.1)
     [string]$OldInstaller,  # the previous release (3.1.0), for the F13 upgrade

@@ -6,7 +6,7 @@
   reporter is on (Win10 Home 22H2, build 19045).
 
       # elevated PowerShell:
-      .\scripts\vm\new-win10-vm.ps1 -Iso D:\isos\Win10_22H2_English_x64.iso
+      .\scripts\vm\new-win10-vm.ps1 -Iso D:\.DevScratch\isos\Win10_22H2_English_x64.iso
       .\scripts\vm\new-win10-vm.ps1 -Iso <iso> -Name st2k-win10 -MemoryGB 6 -DiskGB 64
 
   GET A WIN10 ISO (pick one):
@@ -25,7 +25,7 @@ param(
     [string]$Name = 'st2k-win10',
     [int]$MemoryGB = 6,
     [int]$DiskGB = 64,
-    [string]$VmRoot = 'D:\Hyper-V'
+    [string]$VmRoot = 'D:\.DevScratch\Hyper-V'
 )
 
 $ErrorActionPreference = 'Stop'
