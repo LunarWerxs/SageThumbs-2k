@@ -241,20 +241,43 @@ pub(super) fn last_panic_site() -> String {
     LAST_PANIC_SITE.with(|c| c.borrow().clone().unwrap_or_else(|| "?".into()))
 }
 
-/// Silence the panic hook for the duration of `body` so the thousands of intentionally
-/// caught panics (in a failing run) don't flood stderr with backtraces; restore it after.
-/// The quiet hook still records each panic's location for [`last_panic_site`].
+thread_local! {
+    /// How many [`with_quiet_panics`] calls this thread is inside.
+    static QUIET: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Silence panics on THIS thread for the duration of `body` so the thousands of intentionally
+/// caught panics (in a failing run) don't flood stderr with backtraces. The quiet hook still
+/// records each panic's location for [`last_panic_site`].
+///
+/// One hook, installed once, that is quiet only on a thread inside this call and passes every
+/// other panic to the hook it replaced. It used to swap the process-wide hook in and out per
+/// call, and two fuzz tests running at once (the default under `cargo test`) restored each
+/// other's quiet hook: the process stayed silent, and a failing session's own report - which
+/// names the parser, the seed and the input - printed nothing (Dredd, 2026-09-23).
 pub(super) fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|info| {
-        let site = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()));
-        LAST_PANIC_SITE.with(|c| *c.borrow_mut() = site);
-    }));
-    let out = body();
-    std::panic::set_hook(prev);
-    out
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if QUIET.with(std::cell::Cell::get) == 0 {
+                return prev(info);
+            }
+            let site = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()));
+            LAST_PANIC_SITE.with(|c| *c.borrow_mut() = site);
+        }));
+    });
+    struct Loud;
+    impl Drop for Loud {
+        fn drop(&mut self) {
+            QUIET.with(|q| q.set(q.get() - 1));
+        }
+    }
+    QUIET.with(|q| q.set(q.get() + 1));
+    let _loud = Loud;
+    body()
 }
 
 /// How deep the truncation sweep walks EVERY prefix before switching to a stride.
