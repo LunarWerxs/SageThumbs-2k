@@ -519,8 +519,8 @@ if ($bundleMagick) {
 
     # EXR/HDR/Farbfeld input + output are native Rust tiers now. PAM itself is
     # native too, but PFM shares ImageMagick's PNM module, so that module must stay.
-    # ase (Adobe Swatch Exchange), c2pa (Content Credentials) and wbinfo arrived with 7.1.2-30/31.
-    # None is an advertised format (our `.ase` is Aseprite, decoded natively), so each would only
+    # ase (Aseprite, which our own decoder renders), c2pa (provenance metadata, not a picture) and
+    # wbinfo (Amiga icons, no registered extension) arrived with 7.1.2-30/31. Kept, each would only
     # be new, unreviewed parser surface reachable by magic bytes from a file we hand magick.
     $dropCoder = @(
         'exr','hdr','farbfeld','webp','svg','msvg','video','mpeg','url','clipboard','pango',

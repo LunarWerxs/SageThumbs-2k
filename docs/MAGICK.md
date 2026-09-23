@@ -40,8 +40,8 @@ Production builds accept exactly:
 Bumped from `7.1.2-29` on 2026-09-22 for the security advisories published since: heap
 over-writes in `GetVirtualPixels` and the distributed pixel cache, MVG and XMP-profile denial of
 service, a use-after-free in the cairo-less RSVG decoder, and policy bypasses in the MAT, CUT,
-PCD/CUBE/HALD and UHDR coders among them. It adds three coder modules, `ase` (Adobe Swatch
-Exchange), `c2pa` (Content Credentials) and `wbinfo`; none is an advertised format, so the build
+PCD/CUBE/HALD and UHDR coders among them. It adds three coder modules, `ase` (Aseprite
+sprites), `c2pa` (C2PA provenance metadata) and `wbinfo` (Amiga Workbench icons); the build
 drops all three (below) and the reviewed coder set is unchanged. The pinned inventory went
 from 195 files to 198.
 
@@ -197,9 +197,11 @@ IM_MOD_RL_c2pa_.dll
 IM_MOD_RL_wbinfo_.dll
 ```
 
-The last three arrived with 7.1.2-30/31. ASE is Adobe Swatch Exchange (our `.ase` is Aseprite,
-decoded natively), C2PA reads Content Credentials manifests, and none is advertised, so each
-would only be new parser surface reachable by magic bytes.
+The last three arrived with 7.1.2-30/31. ASE reads Aseprite sprites, which our own decoder already
+renders (`container/aseprite.rs`); C2PA reads provenance metadata, not a picture; WBINFO reads
+Amiga Workbench icons (`.info`), which no registered extension reaches. Kept out, each would
+only be new parser surface reachable by magic bytes. Registering `.info` would be a format
+decision, and `wbinfo` would come back with it.
 
 PANGO is a synthetic text-render input, not an advertised file extension, and the
 hardened policy denies it. The build proves both facts before removing that module.
