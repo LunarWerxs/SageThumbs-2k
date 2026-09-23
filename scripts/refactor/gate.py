@@ -132,8 +132,14 @@ def tests(filt=None):
     return code
 
 
+def wait_for_release():
+    """A release being cut from this checkout holds the tree (scripts/release-lock.ps1)."""
+    subprocess.run(["pwsh", "-NoProfile", "-File", os.path.join(ROOT, "scripts", "release-lock.ps1")])
+
+
 def main():
     what = sys.argv[1] if len(sys.argv) > 1 else "clippy"
+    wait_for_release()
     if what == "clippy":
         return clippy()
     if what == "commit":

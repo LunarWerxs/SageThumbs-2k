@@ -202,6 +202,19 @@ It continues on a second line.
         }
     }
 
+    # The marker is also a lock on building (Michael, 2026-09-22): it must name its owner with a
+    # token the release hands to its children, and every gate that builds must wait on it.
+    Assert-Passes 'the release marker locks the build gates, and the release holds the key' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in '$env:RELEASE_LOCK_TOKEN = ', 'token=$($env:RELEASE_LOCK_TOKEN)') {
+            if (-not $releaseText.Contains($expected)) { throw "release.ps1 lost the lock token: $expected" }
+        }
+        foreach ($gate in 'scripts\preflight.ps1', 'scripts\verify.ps1', 'scripts\regression.ps1', 'scripts\refactor\gate.py') {
+            $text = Get-Content -LiteralPath (Join-Path $root $gate) -Raw
+            if (-not $text.Contains('release-lock.ps1')) { throw "$gate no longer waits on the release lock" }
+        }
+    }
+
     # Every shape a real unfilled template takes must still fail closed.
     foreach ($marker in @(
             '- TBD before we ship this.',

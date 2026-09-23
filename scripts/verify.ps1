@@ -82,6 +82,8 @@ $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'   # sibling of proj
 # get a target dir that does not exist on it.
 $target = & (Join-Path $PSScriptRoot '_targetdir.ps1')
 Set-Location $root
+# A release being cut from this checkout holds the tree: wait for it (scriptselease-lock.ps1).
+& (Join-Path $PSScriptRoot 'release-lock.ps1')
 
 $script:timings = @()
 function Stage([string]$name, [scriptblock]$body) {

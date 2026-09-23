@@ -211,7 +211,12 @@ try {
     # launch to exactly that). The marker is read by the local pre-commit hook, which refuses
     # any commit while it is younger than three hours; it is removed in `finally`, so a killed
     # run leaves at most a stale marker the hook ignores. Local to this machine, like the hook.
-    "$tag pid=$PID started=$(Get-Date -Format o)" | Set-Content -LiteralPath $freeze -Encoding utf8
+    # The marker is also a LOCK on building (Michael, 2026-09-22): the gates that build or test
+    # here (preflight, verify, regression, gate.py) and fairjob wait while it is live, through
+    # scripts\release-lock.ps1. This run and everything it starts carry the token, so its own
+    # push and builds pass; nobody else's cargo can rewrite Cargo.lock under a leg again.
+    $env:RELEASE_LOCK_TOKEN = [guid]::NewGuid().ToString('N')
+    "$tag pid=$PID token=$($env:RELEASE_LOCK_TOKEN) started=$(Get-Date -Format o)" | Set-Content -LiteralPath $freeze -Encoding utf8
 
     # 2) refuse to clobber an existing tag (bump the version instead).
     if (git ls-remote --tags origin "refs/tags/$tag") { throw "$tag already exists on origin - bump the version in Cargo.toml" }

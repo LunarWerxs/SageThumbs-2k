@@ -11,6 +11,8 @@
   release link — a debug `cargo test` would NOT catch them.
 #>
 $ErrorActionPreference = 'Stop'
+# A release being cut from this checkout holds the tree: wait for it (scriptselease-lock.ps1).
+& (Join-Path $PSScriptRoot 'release-lock.ps1')
 $failed = $false
 
 function Step([string]$name, [scriptblock]$block) {
