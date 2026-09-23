@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 //! Seeds for the 2026-09-22 long-tail formats: animated cursors, Valve and Khronos textures,
-//! DXF previews, SIXEL, NuGet/VSIX packages and XMind maps. Built by each module's own
-//! builder where it has one, so the seed and the module's tests cannot drift apart.
+//! DXF previews, SIXEL, NuGet/VSIX packages, XMind maps, and Photoshop's stored composite.
+//! Built by each module's own builder where it has one, so the seed and the module's tests
+//! cannot drift apart.
 
 use super::*;
 
@@ -76,4 +77,12 @@ pub(super) fn synthetic_xmind() -> Vec<u8> {
         ("resources/inserted.png", &png(4, 4)),
         ("Thumbnails/thumbnail.png", &png(16, 16)),
     ])
+}
+
+/// A transparent RGB Photoshop document whose stored composite is PackBits: the section walk,
+/// the row table and the row reads of the Quick preview's big-document path (issue #46).
+pub(super) fn synthetic_psd_merged() -> Vec<u8> {
+    psdmerged::synth((24, 18), (3, 4, 8), false, true, true, |x, y, c| {
+        ((x * 9 + y * 5 + u32::from(c) * 40) % 256) as u16
+    })
 }

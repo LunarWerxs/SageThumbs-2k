@@ -185,6 +185,20 @@ pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicIm
     oversized_wic_rescue(path, target_edge)
 }
 
+/// A Photoshop document's merged composite read straight off the file, at most `target_edge`
+/// on its long side, however big the file is (issue #46: the Quick preview's sharpen pass).
+/// `None` for a document it does not read - 32-bit, Lab, Indexed, or saved without a real
+/// composite - which is the caller's cue to keep the route it had.
+pub fn psd_composite_scaled(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    let img = std::fs::File::open(path).ok().and_then(|f| {
+        crate::container::psd_merged_from_reader(std::io::BufReader::new(f), target_edge)
+    });
+    if img.is_none() {
+        crate::safety::log_debugf!("stored PSD composite not read for {path}");
+    }
+    img
+}
+
 /// Bounded prefix handed to the WIC rescue purely so AVIF/HEIC colour can be read; the
 /// `colr` box sits in the first ISOBMFF boxes. Small on purpose — this path exists because
 /// the file is too big to hold, so reading a large slice of it would defeat the point.

@@ -166,7 +166,7 @@ def shoot(exe: Path, doc: Path, out: Path, extra: list[str] | None = None) -> Im
         "--size",
         f"{PANEL_W}x{PANEL_H}",
         "--wait-ms",
-        "500",
+        "7000",
     ]
     args += extra or []
     res = subprocess.run(args, capture_output=True, text=True)

@@ -208,9 +208,17 @@ fn display_scaled_first_paint(path: &str) -> Option<DecodedRgba> {
 /// thumbnail — PSD/PSB, where Photoshop's resource-1036 preview is often ~160 px wide no
 /// matter how big the document is (issue #20: "PSD/PSB appear lower in resolution").
 ///
+/// Two routes to it, tried in the order that suits the file (issue #46). ImageMagick flattens
+/// the document from the whole file, which is what every document under the thumbnail ceiling
+/// has always had; past that ceiling it is slow at best (the file is buffered whole and the
+/// full-size pixels must fit its memory budget) and past 2 GiB impossible, so those documents
+/// stayed on the 160-pixel preview. The composite Photoshop stores at the end of the file reads
+/// by offset instead, at any size, so a big document tries that first. A small one keeps
+/// ImageMagick first and falls back to the stored composite only where ImageMagick has nothing
+/// better (the compact install has none, so `decode_full` returns the same baked preview).
+///
 /// `None` when there is nothing better to show: not such a container, the document is not
-/// meaningfully bigger than what is already on screen, or there is no compositor (the compact
-/// install has no ImageMagick, so `decode_full` returns the same baked preview back).
+/// meaningfully bigger than what is already on screen, or neither route produced more.
 fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<DecodedRgba> {
     let (rw, rh) = sagethumbs2k_core::real_dims(head)?;
     // Only pay for a second decode when the document is clearly bigger than what we drew.
@@ -224,6 +232,50 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
         );
         return None;
     }
+    let big = std::fs::metadata(path)
+        .is_ok_and(|m| m.len() > sagethumbs2k_core::decode::limits::MAX_INPUT_BYTES);
+    let more = |img: image::RgbaImage| {
+        (img.width() as i32 > shown.0 || img.height() as i32 > shown.1).then_some(img)
+    };
+    // Only Photoshop stores a composite; a JPEG 2000 (the other format `real_dims` measures)
+    // keeps exactly the one route it always had.
+    let psd = head.starts_with(b"8BPS");
+    let stored = || psd.then(|| stored_composite(path)).flatten().and_then(more);
+    let flattened = || flattened_composite(path, (rw, rh)).and_then(more);
+    let found = if big {
+        stored().or_else(flattened)
+    } else {
+        flattened().or_else(stored)
+    };
+    let Some(rgba) = found else {
+        sagethumbs2k_core::safety::log_debugf!(
+            "preview: no sharper composite for {path} (document {rw}x{rh}, already showing {}x{})",
+            shown.0,
+            shown.1
+        );
+        return None;
+    };
+    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+    sagethumbs2k_core::safety::log_debugf!(
+        "preview: sharpened {path} from {}x{} to {w}x{h} (document is {rw}x{rh})",
+        shown.0,
+        shown.1
+    );
+    Some(DecodedRgba::full(w, h, rgba.into_raw()))
+}
+
+/// The long side the stored composite is read at: sharper than any screen the viewer is drawn
+/// on, with room to zoom, at a quarter of the memory a 16384-pixel picture would take.
+const STORED_COMPOSITE_EDGE: u32 = 8192;
+
+/// The composite Photoshop stored at the end of the file, read by offset (issue #46).
+fn stored_composite(path: &str) -> Option<image::RgbaImage> {
+    sagethumbs2k_core::decode::psd_composite_scaled(path, STORED_COMPOSITE_EDGE)
+        .map(|img| img.to_rgba8())
+}
+
+/// ImageMagick's flattening of the document, from the whole file.
+fn flattened_composite(path: &str, (rw, rh): (u32, u32)) -> Option<image::RgbaImage> {
     // Re-read the file WHOLE. The bytes the preview stage worked from came from
     // `read_preview_capped`, which for these very formats deliberately returns only a head
     // PREFIX (that is how a 100 MB PSD thumbnails cheaply) — and a truncated PSD cannot be
@@ -245,35 +297,16 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
             return None;
         }
     };
-    let full = match sagethumbs2k_core::decode::decode_full(&whole) {
-        Ok(img) => img,
+    match sagethumbs2k_core::decode::decode_full(&whole) {
+        Ok(img) => Some(img.to_rgba8()),
         Err(e) => {
             sagethumbs2k_core::safety::log_debugf!(
                 "preview: composite decode failed for {path} (document {rw}x{rh}, {} bytes): {e}",
                 whole.len()
             );
-            return None;
+            None
         }
-    };
-    let rgba = full.to_rgba8();
-    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    // Guard the no-compositor case explicitly: on a compact install `decode_full` falls back
-    // to the same baked preview, and swapping in an identical image is a repaint for nothing.
-    if w <= shown.0 && h <= shown.1 {
-        sagethumbs2k_core::safety::log_debugf!(
-            "preview: no sharper composite for {path} (document {rw}x{rh}, \
-             full decode {w}x{h}, already showing {}x{})",
-            shown.0,
-            shown.1
-        );
-        return None;
     }
-    sagethumbs2k_core::safety::log_debugf!(
-        "preview: sharpened {path} from {}x{} to {w}x{h} (document is {rw}x{rh})",
-        shown.0,
-        shown.1
-    );
-    Some(DecodedRgba::full(w, h, rgba.into_raw()))
 }
 
 /// `path`'s extension, lowercased and without the dot — `""` when it has none. Every

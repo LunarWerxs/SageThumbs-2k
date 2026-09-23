@@ -171,6 +171,10 @@ fn every_seed_reaches_its_parser() {
     );
     assert!(ani::extract(&by("ani")).is_some(), "ani seq-picked frame");
     assert!(
+        psdmerged::from_reader(std::io::Cursor::new(by("psd-merged")), 64).is_some(),
+        "psd stored composite"
+    );
+    assert!(
         vtf::extract(&by("vtf")).is_some(),
         "vtf 7.3 resource offset"
     );

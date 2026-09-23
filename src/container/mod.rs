@@ -77,6 +77,8 @@ mod pdn;
 mod pix;
 mod project;
 mod psd;
+// Photoshop's stored composite, read by offset whatever the document's size (issue #46).
+mod psdmerged;
 mod psp;
 mod rar;
 mod rhino;
@@ -112,6 +114,16 @@ pub(crate) fn xcf_from_reader<R: std::io::Read + std::io::Seek>(
     target_edge: Option<u32>,
 ) -> Option<image::DynamicImage> {
     xcf::extract_seek(src, target_edge)
+}
+
+/// A Photoshop document's merged composite, read off `src` by offset and shrunk to at most
+/// `target_edge` on its long side as it is read, so the file's size does not matter (issue
+/// #46). `None` for a document it does not read (see `psdmerged`); the caller keeps its route.
+pub(crate) fn psd_merged_from_reader<R: std::io::Read + std::io::Seek>(
+    src: R,
+    target_edge: u32,
+) -> Option<image::DynamicImage> {
+    psdmerged::from_reader(src, target_edge)
 }
 
 /// [`xcf_from_reader`] for bytes already in hand.

@@ -463,7 +463,7 @@ def main() -> None:
             "--pdf-page", str(FIND_PAGE),
             "--find", FIND_TERM,
             "--size", f"{SHOT_W}x{SHOT_H}",
-            "--wait-ms", "600",
+            "--wait-ms", "8500",
         ]
         res = subprocess.run(args, capture_output=True, text=True)
         if res.returncode != 0 or not out_png.is_file():

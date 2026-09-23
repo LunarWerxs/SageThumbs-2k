@@ -120,7 +120,11 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 /// `None` when the block isn't well-formed or its data would run past `res_end` — the caller
 /// treats either as "stop walking, no thumbnail found" (same as this function's own `?`
 /// failures did before the split).
-fn resource_block_header(bytes: &[u8], o: usize, res_end: usize) -> Option<(u16, usize, usize)> {
+pub(super) fn resource_block_header(
+    bytes: &[u8],
+    o: usize,
+    res_end: usize,
+) -> Option<(u16, usize, usize)> {
     if bytes.get(o..o + 4)? != b"8BIM" {
         return None; // not a well-formed resource run
     }

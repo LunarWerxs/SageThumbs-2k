@@ -475,7 +475,7 @@ fn parse_sham(chunk: Option<&[u8]>) -> Vec<Vec<[u8; 3]>> {
 /// byte `n`: `0..=127` → copy the next `n+1` bytes literally; `129..=255` → repeat
 /// the next byte `257-n` times; `128` → no-op. Bounded by `expected` so a hostile
 /// stream can't over-allocate. Returns the decoded bytes (possibly short).
-fn byterun1_decode(src: &[u8], expected: usize) -> Option<Vec<u8>> {
+pub(super) fn byterun1_decode(src: &[u8], expected: usize) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(expected.min(1 << 20));
     let mut i = 0usize;
     while i < src.len() && out.len() < expected {

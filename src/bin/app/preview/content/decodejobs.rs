@@ -161,10 +161,17 @@ pub(in super::super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) 
             return;
         }
         let shown = decode_and_post_static(hwnd, gen, &path, bytes.clone());
+        // A Photoshop document saved without its baked preview ("Image Previews: Never Save")
+        // draws nothing at the first stage, and is the one that most needs the composite, so
+        // it is chased from nothing rather than left on the card (issue #46).
+        let shown = shown.or_else(|| {
+            let psd = bytes.as_ref().is_some_and(|b| b.starts_with(b"8BPS"));
+            psd.then_some((0, 0))
+        });
         // The fast preview is now on screen. For PSD/PSB that preview is Photoshop's small
         // baked-in thumbnail, so chase it with the real composite and post a SECOND result.
-        // Two-stage on purpose: the composite shells out to ImageMagick and can take seconds,
-        // and paying that up front would trade an instant preview for a long blank window.
+        // Two-stage on purpose: the composite can take seconds, and paying that up front
+        // would trade an instant preview for a long blank window.
         if let (Some(bytes), Some(shown)) = (bytes, shown) {
             spawn_sharpen(hwnd, path, bytes, shown, gen);
         }

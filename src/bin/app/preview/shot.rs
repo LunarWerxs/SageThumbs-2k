@@ -95,10 +95,12 @@ unsafe fn apply_wait_ms(hwnd: HWND, wait_ms: Option<u64>) {
         super::paint::paint_into(hwnd, dc);
         ReleaseDC(Some(hwnd), dc);
     }
-    let ticks = ms.div_ceil(10);
-    for _ in 0..ticks {
-        crate::win::pump_msgs(8);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    // By the clock, not by counting: this used to be `ms / 10` rounds of an eight-frame pump
+    // (128 ms of sleep each) plus 10 ms, so `--wait-ms 20000` waited 276 s and `--wait-ms 500`
+    // waited 7. The two scripts that pass it were re-scaled to the waits they actually had.
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < until {
+        crate::win::pump_msgs(1);
     }
 }
 

@@ -53,13 +53,18 @@ pub(in super::super) fn bench_make_render(path: &str) -> Option<u128> {
 /// Resolves the sharp composite inline: a still capture gets no second paint, so the upgrade
 /// the live viewer receives asynchronously has to happen here for the shot to show it.
 pub(in super::super) fn decode_sync(path: &str) -> Option<DecodedRgba> {
-    let first = read_and_decode(path)?;
+    let first = read_and_decode(path);
+    let shown = first.as_ref().map_or((0, 0), |d| (d.w, d.h));
     if let Ok(head) = sagethumbs2k_core::decode::read_preview_capped(path) {
-        if let Some(sharp) = sharper_composite(path, &head, (first.w, first.h)) {
-            return Some(sharp);
+        // As `spawn_decode` does: a Photoshop document with no baked preview is chased from
+        // nothing rather than left on the card (issue #46).
+        if first.is_some() || head.starts_with(b"8BPS") {
+            if let Some(sharp) = sharper_composite(path, &head, shown) {
+                return Some(sharp);
+            }
         }
     }
-    Some(first)
+    first
 }
 
 /// Convert a decoded image to tight RGBA8 at full resolution: the pixels ARE the image.

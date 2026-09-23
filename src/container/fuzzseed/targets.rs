@@ -207,6 +207,10 @@ pub(crate) fn targets() -> Vec<Target> {
         ("ani::extract", |b| {
             let _ = ani::extract(b);
         }),
+        // Photoshop's stored composite: the section walk, the row table and the row reads.
+        ("psdmerged::from_reader", |b| {
+            let _ = psdmerged::from_reader(std::io::Cursor::new(b), 64);
+        }),
         // Valve textures: the header, the 7.3 resource walk and the level-offset sum.
         ("vtf::extract", |b| {
             let _ = vtf::extract(b);
