@@ -91,7 +91,7 @@ param(
     [switch]$AllowInconclusiveGates
 )
 $ErrorActionPreference = 'Continue'
-# A release being cut from this checkout holds the tree: wait for it (scriptselease-lock.ps1).
+# A release being cut from this checkout holds the tree: wait for it (scripts\release-lock.ps1).
 & (Join-Path $PSScriptRoot 'release-lock.ps1')
 
 # Shared "ran a checker, classify the outcome" primitives - see its header for why exit 2 is

@@ -213,6 +213,14 @@ It continues on a second line.
             $text = Get-Content -LiteralPath (Join-Path $root $gate) -Raw
             if (-not $text.Contains('release-lock.ps1')) { throw "$gate no longer waits on the release lock" }
         }
+        # And every one of them still PARSES. The first 3.3.0 run died at its own push because the
+        # line that added this call carried a stray carriage return (a `\r` the Bash tool made
+        # real) and preflight.ps1 no longer parsed; a check for the text alone passed it.
+        foreach ($gate in 'scripts\preflight.ps1', 'scripts\verify.ps1', 'scripts\regression.ps1', 'scripts\release-lock.ps1', 'scripts\release.ps1') {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $gate), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw "$gate does not parse: $($errors[0].Message) (line $($errors[0].Extent.StartLineNumber))" }
+        }
     }
 
     # Every shape a real unfilled template takes must still fail closed.
