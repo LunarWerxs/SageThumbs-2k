@@ -133,8 +133,10 @@ def split_lib(lib_text, mods):
         u = re.match(r"^pub use (\w+)::\{", stripped)
         if u and u.group(1) in mods:
             block = [line]
-            while not lines[i].rstrip().endswith("};"):
+            while not re.sub(r"\s*//.*$", "", lines[i]).rstrip().endswith("};"):
                 i += 1
+                if i == len(lines):
+                    sys.exit(f"unclosed `pub use {u.group(1)}::{{` in the root file")
                 block.append(lines[i])
             body = " ".join(block)
             inner = body[body.index("{") + 1: body.rindex("}")]
@@ -175,7 +177,7 @@ def _flatten_use(body):
         if "{" in part:
             prefix = part[: part.index("{")].rstrip(":")
             for leaf in _flatten_use(part[part.index("{") + 1: part.rindex("}")]):
-                out.append(f"{prefix}::{leaf}")
+                out.append(f"{prefix}::{leaf}" if prefix else leaf)
         else:
             out.append(part.split(" as ")[0].strip())
     return out

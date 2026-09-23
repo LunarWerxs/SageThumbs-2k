@@ -87,7 +87,9 @@ def warm(side, path=None):
     tree, target = SIDES[side]
     env = dict(os.environ, CARGO_TARGET_DIR=target, CARGO_TERM_COLOR="never")
     for name in COMMANDS:
-        subprocess.run(command(name, tree, path or tree / "src" / "lib.rs"), cwd=tree, env=env, capture_output=True)
+        if subprocess.run(command(name, tree, path or tree / "src" / "lib.rs"), cwd=tree, env=env,
+                          capture_output=True).returncode:
+            sys.exit(f"re-warm failed: {name} on {tree}")
 
 
 def area_file(side, candidates):
@@ -117,8 +119,9 @@ for area, candidates in AREAS.items():
                 try:
                     probe_no += 1  # never the same probe twice: each timing is a fresh edit
                     path.write_bytes(original + PROBE.format(n=probe_no).encode())
-                    _, seconds = run(side, name, area, path)
-                    times.setdefault((area, name, side), []).append(seconds)
+                    code, seconds = run(side, name, area, path)
+                    if code == 0:  # a failed build keeps its printed row, never a place in the median
+                        times.setdefault((area, name, side), []).append(seconds)
                 finally:
                     path.write_bytes(original)
     for side, path in enumerate(paths):

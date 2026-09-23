@@ -18,7 +18,9 @@ so widening on it made ~1,650 app items `pub` where a few dozen entry points nee
 (2026-09-23). Widen the entry points; whatever is still dead after that is genuinely dead.
 
 Only files under <crate-dir> are edited. Stops when a round finds nothing to widen, and
-prints whatever errors are left (those are real breaks for a person to read).
+prints whatever errors are left (those are real breaks for a person to read); if --rounds
+(default 8) run out first, it says so and exits non-zero. A cargo run that never compiled (an
+admission refusal, a manifest that does not parse) stops it too, instead of reading as clean.
 """
 import json
 import re
@@ -37,14 +39,17 @@ FIELD = re.compile(r"^(?P<ind>\s*)(?:pub\s*\([^)]*\)\s+|pub\s+)?(?P<name>\w+)\s*
 
 def check():
     cmd = "cargo check --workspace --all-targets --message-format=json"
-    out = subprocess.run(["cmd", "/c", str(FAIRJOB), "-Weight", "3", "-MinFreeGB", "5", "-Run", cmd],
-                         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
-    msgs = []
-    for line in out.splitlines():
+    proc = subprocess.run(["cmd", "/c", str(FAIRJOB), "-Weight", "3", "-MinFreeGB", "5", "-Run", cmd],
+                          cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    msgs, finished = [], False
+    for line in proc.stdout.splitlines():
         if line.startswith("{"):
             m = json.loads(line)
+            finished = finished or m.get("reason") == "build-finished"
             if m.get("reason") == "compiler-message":
                 msgs.append(m["message"])
+    if not finished:  # cargo emits build-finished even for a failed build; none means it never ran
+        sys.exit(f"cargo check did not run (exit {proc.returncode}):\n{proc.stderr.strip()[-2000:]}")
     return msgs
 
 
@@ -65,14 +70,11 @@ def widen_line(lines, idx):
     A name inside a multi-line `use a::{ ... };` group is pointed at on its own line, which is
     no item: the group's `use` line above it is what gets widened."""
     if not ITEM.match(lines[idx]) and not USE_OPEN.match(lines[idx]):
-        depth = 0
-        for j in range(idx, max(idx - 12, -1), -1):
-            depth += lines[j].count("}") - lines[j].count("{")
-            if USE_OPEN.match(lines[j]) and depth < 0:
-                idx = j
-                break
+        idx = enclosing_use(lines, idx)
     for j in range(idx, min(idx + 4, len(lines))):
         m = ITEM.match(lines[j])
+        if not m and j > idx and not lines[j].lstrip().startswith(("#", "//")):
+            return False  # only attributes and comments may sit between the line and its item
         if m:
             new = f"{m.group('ind')}pub {m.group('rest')}"
             if new != lines[j] and not lines[j].lstrip().startswith("pub "):
@@ -82,8 +84,22 @@ def widen_line(lines, idx):
     return False
 
 
-def widen_field(files, struct, field):
-    for f in files:
+def enclosing_use(lines, idx):
+    """The `use` line that opens the group `idx` sits in, however long the group; `idx` itself
+    when a finished statement comes first (the line is not inside a use group)."""
+    depth = 0
+    for j in range(idx, -1, -1):
+        if j < idx and lines[j].rstrip().endswith(";"):
+            break
+        depth += lines[j].count("}") - lines[j].count("{")
+        if USE_OPEN.match(lines[j]) and depth < 0:
+            return j
+    return idx
+
+
+def widen_field(files, module, struct, field):
+    # The struct's own module file first: two structs of one name can share a field name.
+    for f in sorted(files, key=lambda f: module not in (f.stem, f.parent.name)):
         lines = f.read_text(encoding="utf-8").split("\n")
         for i, l in enumerate(lines):
             if re.search(rf"\bstruct\s+{struct}\b", l):
@@ -140,9 +156,9 @@ def collect(msg, crate, files, edits, fields):
                 edits[sp["file_name"]].add(sp["line_start"] - 1)
     elif code in ("E0616", "E0451"):
         # "field `a` of struct `S` is private" / "fields `a`, `b` and `c` of struct ..."
-        m = re.search(r"fields? ((?:`\w+`(?:, | and )?)+) of (?:struct|union) `(?:[\w:]*::)?(\w+)", text)
+        m = re.search(r"fields? ((?:`\w+`(?:, | and )?)+) of (?:struct|union) `(?:(?:[\w:]*::)?(\w+)::)?(\w+)`", text)
         if m:
-            fields.update((m.group(2), name) for name in re.findall(r"`(\w+)`", m.group(1)))
+            fields.update((m.group(2) or "", m.group(3), name) for name in re.findall(r"`(\w+)`", m.group(1)))
     elif code in ("E0364", "E0365") and (named := re.match(r"`(\w+)` is only public within", text)):
         restricted_definitions(named.group(1), files, edits)
     elif code in ("private_interfaces", "private_bounds", "E0364", "E0365"):
@@ -159,8 +175,8 @@ def apply(edits, fields, files):
         if n:
             p.write_text("\n".join(lines), encoding="utf-8", newline="\n")
             changed += n
-    for struct, field in sorted(fields):
-        changed += widen_field(files, struct, field)
+    for module, struct, field in sorted(fields):
+        changed += widen_field(files, module, struct, field)
     return changed
 
 
@@ -191,6 +207,7 @@ def main():
         if not changed:
             report(errors)
             return
+    sys.exit(f"not settled after {rounds} rounds (the last one still widened {changed}); run it again")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,8 @@ its picture stays small. Two kinds of big file it cannot make:
   panorama, 42 Mpx - small enough for ImageMagick's float pixels to stay under a gigabyte).
 * HEAVY: an uncompressed raster whose PIXELS are past the 256 MiB input ceiling - a 300 MB
   scan saved as TIFF, PPM, FITS, TGA, BMP. Written here row by row with numpy (ImageMagick would
-  need gigabytes to hold one), at 11000x9500 RGB.
+  need gigabytes to hold one), at 11000x9500 RGB; the one-channel PGM and FITS at 13000x11000,
+  two bytes a sample.
 
 There is no normal-size twin of either, so each comes with a reference: the same picture, in the
 same format, written at a size every decoder takes. A surface's result for the big file must match
@@ -184,7 +185,8 @@ def make(out_dir):
             picture(WIDE_REF, ref)
             pairs.append((f"{ext}~wide", big, ref))
         except subprocess.CalledProcessError as e:
-            why = e.stderr.decode(errors="replace").strip().splitlines()[0][:160]
+            lines = e.stderr.decode(errors="replace").strip().splitlines()
+            why = (lines[0] if lines else f"exit code {e.returncode}, no message")[:160]
             NOT_GENERATED[f"{ext}~wide"] = f"NOT MEASURED: this ImageMagick cannot write it ({why})"
             print(f"bigpixels: ImageMagick cannot write {ext}: {why}")
     for ext in HEAVY_FORMATS:
