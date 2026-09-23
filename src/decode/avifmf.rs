@@ -325,11 +325,11 @@ pub(super) fn eligible_mf_still(bytes: &[u8]) -> Option<Av1Still> {
     validate_mf_eligibility(av1c, colr, *w, *h)
 }
 
-/// The primary item's bytes: `pitm` names it, `iinf`+`iloc` (the strip module's hardened
-/// parser) locate it. Only a plain single-extent `av01` item qualifies.
+/// The primary item's bytes: `pitm` names it, `iinf`+`iloc` (the shared hardened
+/// reader, `crate::isobmff`) locate it. Only a plain single-extent `av01` item qualifies.
 pub(super) fn primary_av1_payload(bytes: &[u8]) -> Option<&[u8]> {
     let pid = primary_item_id(bytes)?;
-    let items = crate::strip::isobmff::items(bytes);
+    let items = crate::isobmff::items(bytes);
     let item = items.iter().find(|i| i.id == pid && &i.kind == b"av01")?;
     let (off, len) = item.extent?;
     bytes.get(off..off.checked_add(len)?)

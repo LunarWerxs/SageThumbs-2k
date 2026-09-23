@@ -58,8 +58,8 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
-use crate::streamsrc::{self, StreamSource};
 use crate::host::stream_name;
+use crate::streamsrc::{self, StreamSource};
 use crate::{decode, safety, settings};
 
 /// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`

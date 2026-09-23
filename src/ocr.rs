@@ -17,8 +17,8 @@ use windows::Media::Ocr::{OcrEngine, OcrLine, OcrResult};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
+use crate::decode::read_full_fidelity_capped;
 use crate::pdf::{block_op, stream_with_bytes};
-use crate::verbs::read_full_fidelity_capped;
 
 mod table;
 

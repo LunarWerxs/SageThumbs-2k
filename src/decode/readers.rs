@@ -72,6 +72,28 @@ pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
     read_full_fidelity_from(std::fs::File::open(path)?, len)
 }
 
+/// Read a file into memory for a full-fidelity verb, refusing anything past
+/// `decode::limits::MAX_FULL_FIDELITY_INPUT_BYTES` (checked via metadata before the
+/// allocation) so a multi-GB file can't be loaded wholesale.
+///
+/// The name says which cap applies: `read_capped` refuses past the much
+/// smaller thumbnail ceiling (`MAX_INPUT_BYTES`, 256 MiB), and the preview tier's
+/// reader truncates instead of refusing. Issue #34: this used to share the thumbnail
+/// ceiling under the same name, which silently dropped every PSD over 256 MiB from a
+/// Convert batch. See [`read_full_fidelity`] for why the user-chosen
+/// file gets its own, larger budget.
+///
+/// The io error is logged and carried in the returned error's message, because a
+/// bare `E_FAIL` is what made the failure unexplainable: the verb call sites have
+/// no room for an error string, so without the log line the size refusal reached
+/// the user as a file that simply was not there.
+pub fn read_full_fidelity_capped(path: &str) -> windows::core::Result<Vec<u8>> {
+    read_full_fidelity(path).map_err(|e| {
+        crate::safety::log(&format!("cannot read {path}: {e}"));
+        Error::new(E_FAIL, format!("read {path}: {e}"))
+    })
+}
+
 /// Exactly `len` bytes of `reader` (fewer only at its EOF), into a fallibly reserved buffer.
 /// The seam behind [`read_full_fidelity`], so the growing-file property is testable with an
 /// in-memory source instead of a race against a writer thread.

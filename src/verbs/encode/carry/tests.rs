@@ -128,7 +128,7 @@ fn ifd1_is_unlinked_but_not_truncated_when_ifd0_data_follows_it() {
 /// XMP `mime` item is the packet itself. Both must come out, orientation reset.
 #[test]
 fn reads_exif_and_xmp_items_from_a_heic() {
-    use crate::strip::isobmff::testutil::synth;
+    use crate::isobmff::testutil::synth;
     let mut exif_item = 0u32.to_be_bytes().to_vec();
     exif_item.extend_from_slice(&tiff_with_orientation(6));
     let xmp_item = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF/></x:xmpmeta>";

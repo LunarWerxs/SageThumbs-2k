@@ -88,6 +88,29 @@ pub fn preserve_file_date() -> bool {
     get_dword("PreserveFileDate", 0) != 0
 }
 
+/// How each image is placed on its page.
+///
+/// PDF's unit is the point (1/72 inch) and our images go in at 72 dpi, so one
+/// image pixel is one point and the arithmetic below needs no conversion.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum PdfPage {
+    /// Page sized exactly to the image, image filling it. The original behaviour
+    /// and still the default: it is what you want for scans and comics, where a
+    /// border is just wasted paper.
+    #[default]
+    Tight,
+    /// Page sized to the image plus a uniform margin, in points.
+    Margin(f64),
+    /// A fixed sheet. The image is centred and scaled DOWN to fit inside the
+    /// margins, never UP - a small image keeps its own size instead of being
+    /// blown up and blurred, the same rule Resize follows.
+    Sheet { w: f64, h: f64, margin: f64 },
+}
+
+/// A4 and US Letter in points, for [`PdfPage::Sheet`].
+pub const A4_PT: (f64, f64) = (595.276, 841.89);
+pub const LETTER_PT: (f64, f64) = (612.0, 792.0);
+
 /// Page layout for Combine-into-PDF.
 ///
 /// `PdfLayout`: 0 = tight (default), 1 = margin, 2 = A4 sheet, 3 = Letter sheet.
@@ -96,8 +119,7 @@ pub fn preserve_file_date() -> bool {
 /// added; the two sheet modes are engine features reachable by setting
 /// `PdfLayout` directly, and are documented rather than given a four-way combo
 /// nobody asked for.
-pub fn pdf_page() -> crate::topdf::PdfPage {
-    use crate::topdf::{PdfPage, A4_PT, LETTER_PT};
+pub fn pdf_page() -> PdfPage {
     let margin = f64::from(get_dword("PdfMarginPt", 36));
     match get_dword("PdfLayout", 0) {
         1 => PdfPage::Margin(margin),

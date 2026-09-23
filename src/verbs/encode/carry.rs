@@ -182,7 +182,7 @@ fn read_heif_metadata(bytes: &[u8]) -> Carried {
     let (exif, xmp) = read_isobmff(bytes);
     out.exif = exif;
     out.xmp = xmp;
-    out.icc = crate::strip::isobmff::color_profile(bytes);
+    out.icc = crate::isobmff::color_profile(bytes);
     out
 }
 
@@ -237,7 +237,7 @@ fn iccp_chunk(icc: &[u8]) -> Option<Vec<u8>> {
 fn read_isobmff(bytes: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     let mut exif = None;
     let mut xmp = None;
-    for item in crate::strip::isobmff::items(bytes) {
+    for item in crate::isobmff::items(bytes) {
         let Some(payload) = item_bytes(bytes, &item) else {
             continue;
         };
@@ -254,7 +254,7 @@ fn read_isobmff(bytes: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
 
 /// The bytes of one `iloc` item's extent, `None` when the item has no known extent
 /// or that extent runs past the file.
-fn item_bytes<'a>(bytes: &'a [u8], item: &crate::strip::isobmff::Item) -> Option<&'a [u8]> {
+fn item_bytes<'a>(bytes: &'a [u8], item: &crate::isobmff::Item) -> Option<&'a [u8]> {
     let (off, len) = item.extent?;
     off.checked_add(len).and_then(|end| bytes.get(off..end))
 }

@@ -24,7 +24,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
 
-use crate::verbs::read_full_fidelity_capped;
+use crate::decode::read_full_fidelity_capped;
 
 mod ddsinfo;
 // `pub(crate)`: the decode tier reuses this hardened item parser to locate the primary
@@ -47,7 +47,7 @@ pub use info::{
 #[cfg(test)]
 pub(crate) mod fuzzseed;
 
-pub use isobmff::has_gain_map;
+use crate::isobmff::has_gain_map;
 pub use jumbf::has_content_credentials;
 
 /// JPEG markers we drop: Exif + XMP (both APP1), Photoshop/IPTC (APP13), and the

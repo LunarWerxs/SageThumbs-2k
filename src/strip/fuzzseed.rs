@@ -21,8 +21,8 @@ type Target = (&'static str, fn(&[u8]));
 
 pub(crate) fn targets() -> Vec<Target> {
     vec![
-        ("strip::isobmff::items", |b| {
-            let _ = isobmff::items(b);
+        ("isobmff::items", |b| {
+            let _ = crate::isobmff::items(b);
         }),
         ("strip::isobmff::strip", |b| {
             let _ = isobmff::strip(b);

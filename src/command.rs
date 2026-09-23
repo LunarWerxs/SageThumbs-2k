@@ -8,14 +8,15 @@ use core::cell::Cell;
 use core::ffi::c_void;
 
 use windows::core::{Error, Interface, Ref, Result, BOOL, GUID, HRESULT, PWSTR};
-use windows::Win32::Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, S_FALSE, S_OK};
-use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree, IBindCtx};
+use windows::Win32::Foundation::{E_NOTIMPL, E_POINTER, S_FALSE, S_OK};
+use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
 use windows::Win32::UI::Shell::{
     IEnumExplorerCommand, IEnumExplorerCommand_Impl, IExplorerCommand, IExplorerCommand_Impl,
     IShellItemArray, ECF_DEFAULT, ECF_HASSUBCOMMANDS, ECS_ENABLED, ECS_HIDDEN, SIGDN_FILESYSPATH,
 };
 use windows_implement::implement;
 
+use crate::host::alloc_pwstr;
 use crate::{safety, settings, verbs};
 
 /// COM's documented `IExplorerCommand::GetState` signal for "this would be slow and
@@ -25,37 +26,13 @@ use crate::{safety, settings, verbs};
 /// one constant.
 const E_PENDING: HRESULT = HRESULT(0x8000_000A_u32 as i32);
 
-/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Shared with
-/// `propstore::pv_lpwstr` so every wide-string builder rejects an overflowing allocation
-/// size rather than wrapping into an under-sized `CoTaskMemAlloc`.
-pub(crate) fn checked_utf16_byte_len(len: usize) -> Option<usize> {
-    len.checked_mul(2)
-}
-
-/// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
-///
-/// The single implementation of the wide-string allocation idiom, shared by the
-/// context-menu verbs here and `propstore::pv_lpwstr` (which maps the allocation failure
-/// to an empty variant instead of `E_OUTOFMEMORY`).
-pub(crate) fn alloc_pwstr(s: &str) -> Result<PWSTR> {
-    let wide = crate::host::wide(s);
-    // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
-    // any real string, but keep the allocation provably sound rather than wrapping.
-    let bytes = checked_utf16_byte_len(wide.len()).ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
-    let p = unsafe { CoTaskMemAlloc(bytes) } as *mut u16;
-    if p.is_null() {
-        return Err(Error::from(E_OUTOFMEMORY));
-    }
-    unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len()) };
-    Ok(PWSTR(p))
-}
-
 /// The companion EXE's app icon as the modern menu's `"<module>,-<resid>"` reference
 /// (resource 1). Installed next to the DLL — if it isn't there, no icon (`E_NOTIMPL`),
 /// never an error.
 fn app_icon_ref() -> Result<PWSTR> {
     safety::guard_val(|| {
-        let exe = crate::host::sibling_of_dll(crate::host::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
+        let exe = crate::host::sibling_of_dll(crate::host::APP_EXE)
+            .ok_or_else(|| Error::from(E_NOTIMPL))?;
         alloc_pwstr(&format!("{},-1", exe.display()))
     })
 }

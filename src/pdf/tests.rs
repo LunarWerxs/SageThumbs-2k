@@ -21,7 +21,7 @@ use super::{render_page_counted_path, PdfSession};
 /// US Letter at 72 dpi (612x792), one uncompressed content stream per page. The xref
 /// offsets are computed as the body is written, because a PDF whose xref lies is a PDF
 /// some readers accept and others silently refuse, and a fixture must not be the variable.
-pub(super) fn solid_colour_pdf(colours: &[(u8, u8, u8)]) -> Vec<u8> {
+pub(crate) fn solid_colour_pdf(colours: &[(u8, u8, u8)]) -> Vec<u8> {
     assert!(!colours.is_empty(), "a PDF needs at least one page");
     let n = colours.len();
     let mut out: Vec<u8> = Vec::new();

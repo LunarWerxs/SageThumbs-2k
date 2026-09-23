@@ -7,8 +7,9 @@ use core::ffi::c_void;
 use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::core::Error;
-use windows::Win32::Foundation::{E_FAIL, HMODULE};
+use windows::core::{Error, PWSTR};
+use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY, HMODULE};
+use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 
 /// Live-object + lock count. `DllCanUnloadNow` returns S_OK only at zero.
@@ -62,7 +63,9 @@ pub fn live_refs() -> i64 {
 
 /// How long since anyone last asked this host for an object.
 pub fn idle_for() -> Duration {
-    uptime().saturating_sub(Duration::from_millis(LAST_ADD_REF_MS.load(Ordering::Relaxed)))
+    uptime().saturating_sub(Duration::from_millis(
+        LAST_ADD_REF_MS.load(Ordering::Relaxed),
+    ))
 }
 
 /// RAII module-reference guard. Constructing one (via `Default`) bumps the
@@ -164,4 +167,29 @@ pub unsafe fn stream_name(stream: &windows::Win32::System::Com::IStream) -> Opti
     let s = stat.pwcsName.to_string().ok();
     windows::Win32::System::Com::CoTaskMemFree(Some(stat.pwcsName.0 as *const core::ffi::c_void));
     s
+}
+
+/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Shared by
+/// `alloc_pwstr` and `propstore::pv_lpwstr` so every wide-string builder rejects an overflowing allocation
+/// size rather than wrapping into an under-sized `CoTaskMemAlloc`.
+pub fn checked_utf16_byte_len(len: usize) -> Option<usize> {
+    len.checked_mul(2)
+}
+
+/// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
+///
+/// The single implementation of the wide-string allocation idiom, shared by the
+/// context-menu verbs (`command`) and `propstore::pv_lpwstr` (which maps the allocation failure
+/// to an empty variant instead of `E_OUTOFMEMORY`).
+pub fn alloc_pwstr(s: &str) -> windows::core::Result<PWSTR> {
+    let wide = wide(s);
+    // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
+    // any real string, but keep the allocation provably sound rather than wrapping.
+    let bytes = checked_utf16_byte_len(wide.len()).ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
+    let p = unsafe { CoTaskMemAlloc(bytes) } as *mut u16;
+    if p.is_null() {
+        return Err(Error::from(E_OUTOFMEMORY));
+    }
+    unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len()) };
+    Ok(PWSTR(p))
 }

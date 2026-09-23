@@ -222,8 +222,8 @@ pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_oversized_path, decode_preview_path, decode_preview_streamed, decode_streamed_format,
     exr_scaled_from_reader, file_head_is, is_exr_magic, psd_composite_scaled, read_bounded,
-    read_capped, read_full_fidelity, read_preview_capped, read_preview_capped_for,
-    wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
+    read_capped, read_full_fidelity, read_full_fidelity_capped, read_preview_capped,
+    read_preview_capped_for, wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
     wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, ANY_PREVIEW, COLOR_HEAD_BYTES,
     EXR_PATH_EDGE, HEAD_PREVIEW_BYTES, OVERSIZED_VIEW_EDGE,
 };

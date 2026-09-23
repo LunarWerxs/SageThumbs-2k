@@ -19,9 +19,9 @@ SRC = ROOT / "src"
 LAYERS = [
     ("base", "host safety settings formats i18n fsutil dib licence_state unixtime parallel guids hex clipboard "
              "sqlite_prim checkerpx failmemo shellcmd upload_config upload_history testcorpus"),
-    ("codecs", "container decode video vstream streamsrc mp4 mkv flv mpeg12 vcodec vp9 pdf ocr jpegtran "
-               "app_image fuzz"),
-    ("actions", "verbs strip topdf propstore"),
+    ("codecs", "container decode video vstream streamsrc isobmff mp4 mkv flv mpeg12 vcodec vp9 pdf ocr jpegtran "
+               "app_image"),
+    ("actions", "verbs strip topdf propstore fuzz"),
     ("shell", "thumbprovider previewhandler contextmenu command factory badge register typeoverlay foldermenu "
               "cli doctor mcp prebuild"),
 ]

@@ -44,6 +44,7 @@ pub use menu::{
 pub(crate) use menu::leaf_count;
 
 // Encode / convert / resize primitives and descriptors.
+pub(crate) use encode::flatten_onto_white;
 #[allow(unused_imports)]
 pub use encode::{
     compress_to_size, convert_file, convert_file_opts, convert_file_opts_named,
@@ -51,7 +52,6 @@ pub use encode::{
     convert_to_stripped, resize_file, shrink_for_email, transform_file, ConvertOpts, Corner,
     Resize, Target, Watermark,
 };
-pub(crate) use encode::{flatten_onto_white, read_full_fidelity_capped};
 
 // Folder/sort verbs + the CBZ archiver.
 #[allow(unused_imports)]

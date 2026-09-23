@@ -101,6 +101,7 @@
 //! `resize_file` use — so the routed and in-process outputs match. (It used to pin
 //! level 6 here, so a PNG output diverged in byte size whenever the setting ≠ 6.)
 
+use crate::decode::read_full_fidelity_capped;
 use core::ffi::c_void;
 use std::iter::once;
 use std::mem::size_of;
@@ -126,8 +127,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::encode::{
-    compress_to_size, edit_output_ext, predict_unique_suffix, read_full_fidelity_capped,
-    reserve_unique_suffix, resize_file, shrink_for_email, transform_file, Resize, Target,
+    compress_to_size, edit_output_ext, predict_unique_suffix, reserve_unique_suffix, resize_file,
+    shrink_for_email, transform_file, Resize, Target,
 };
 use super::fileops::{
     combine_to_cbz, combined_path, files_to_folder, reserve_dest, sanitize_component,

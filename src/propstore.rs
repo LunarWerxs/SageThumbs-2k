@@ -317,9 +317,9 @@ fn push_audio_props(out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>, tags: crate::stri
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
     // The wide-string allocation (overflow-checked `len * 2`, CoTaskMemAlloc, null check,
-    // copy) lives in the one shared `crate::command::alloc_pwstr`, also used by the
+    // copy) lives in the one shared `crate::host::alloc_pwstr`, also used by the
     // context-menu verbs. A failure there means "no property": emit an empty variant.
-    let Ok(pwsz) = crate::command::alloc_pwstr(s) else {
+    let Ok(pwsz) = crate::host::alloc_pwstr(s) else {
         return PROPVARIANT::default();
     };
     PROPVARIANT {
@@ -446,15 +446,15 @@ mod tests {
     /// `checked_utf16_byte_len` must catch the overflow instead of silently wrapping into an
     /// under-sized `CoTaskMemAlloc` — the plain `len * 2` this replaced would wrap (release
     /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr`'s
-    /// `command::alloc_pwstr` a buffer too small for the UTF-16 copy that follows.
+    /// `host::alloc_pwstr` a buffer too small for the UTF-16 copy that follows.
     #[test]
     fn checked_utf16_byte_len_catches_overflow_instead_of_wrapping() {
         assert_eq!(
-            crate::command::checked_utf16_byte_len(usize::MAX),
+            crate::host::checked_utf16_byte_len(usize::MAX),
             None,
             "a byte length that can't fit in usize must be rejected, not wrapped"
         );
-        assert_eq!(crate::command::checked_utf16_byte_len(4), Some(8));
+        assert_eq!(crate::host::checked_utf16_byte_len(4), Some(8));
     }
 
     #[test]

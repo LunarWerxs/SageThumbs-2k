@@ -9,7 +9,7 @@ use badges::*;
 mod menu;
 pub use badges::{
     badge_size, corner_mark, format_badge, format_badge_icon, set_badge_size, set_corner_mark,
-    set_format_badge_icon, BadgeSize, CornerMark,
+    set_format_badge_icon, BadgeSize, BadgeStyle, CornerMark,
 };
 #[cfg(test)]
 use menu::*;
@@ -173,7 +173,7 @@ pub struct ThumbSettings {
     pub format_badge: bool,
     /// `FormatBadgeStyle` — how that badge is drawn once it IS on. Only read when
     /// `format_badge` is true.
-    pub badge_style: crate::badge::BadgeStyle,
+    pub badge_style: BadgeStyle,
     /// `BadgeSize` - how big that badge is drawn. Only read when `format_badge` is true.
     pub badge_size: crate::settings::BadgeSize,
     /// `ThumbChecker` — burn a transparency checkerboard into the thumbnail behind
@@ -255,10 +255,7 @@ pub fn thumb_settings() -> ThumbSettings {
         ),
         use_embedded: g("UseEmbedded", 1) != 0,
         format_badge: mark == crate::settings::CornerMark::Badge,
-        badge_style: crate::badge::BadgeStyle::from_dword(g(
-            "FormatBadgeStyle",
-            DEFAULT_BADGE_STYLE,
-        )),
+        badge_style: BadgeStyle::from_dword(g("FormatBadgeStyle", DEFAULT_BADGE_STYLE)),
         badge_size: crate::settings::BadgeSize::from_dword(g("BadgeSize", DEFAULT_BADGE_SIZE)),
         thumb_checker: g("ThumbChecker", 0) != 0,
         prefer_cover_art: g("VideoCoverArt", 0) != 0,

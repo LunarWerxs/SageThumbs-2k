@@ -12,6 +12,33 @@ pub(super) const DEFAULT_BADGE_STYLE: u32 = 1;
 /// already chose to have stamped, so the bigger steps are opt-in.
 pub(super) const DEFAULT_BADGE_SIZE: u32 = 0;
 
+/// How the corner badge is drawn.
+///
+/// `Text` is the original: a near-black chip with light letters, deliberately colourless so
+/// it never competes with the picture. `Icon` is the one people actually asked for — a
+/// dog-eared page tinted by the format's CATEGORY, so a folder of mixed files is scannable
+/// by colour at a glance and only needs reading when two categories sit side by side.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BadgeStyle {
+    /// Neutral dark chip, light text.
+    Text,
+    /// Category-coloured page mark with the label inside.
+    #[default]
+    Icon,
+}
+
+impl BadgeStyle {
+    /// `FormatBadgeStyle`: 0 = text, anything else = icon. Unknown values fall to the
+    /// default rather than to "no badge" — a badge was still asked for.
+    pub fn from_dword(v: u32) -> Self {
+        if v == 0 {
+            Self::Text
+        } else {
+            Self::Icon
+        }
+    }
+}
+
 /// How big the format mark is drawn, as a share of the tile.
 ///
 /// The badge scales off the tile's SHORT EDGE divided by a constant, so a step here is a
@@ -99,7 +126,7 @@ pub enum CornerMark {
     /// before this setting existed.
     #[default]
     SystemIcon,
-    /// Our own format mark — [`crate::badge::BadgeStyle`] (`FormatBadgeStyle`) then picks the
+    /// Our own format mark — [`BadgeStyle`] (`FormatBadgeStyle`) then picks the
     /// plain text chip or the category-coloured page. Explorer's overlay is suppressed so it
     /// cannot paint over it.
     Badge,

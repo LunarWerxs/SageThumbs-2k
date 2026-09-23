@@ -508,39 +508,13 @@ mod illustrator_tests {
         assert!(matches!(cover, crate::container::CoverOut::Image(_)));
     }
 
-    fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("st2k_ai_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    /// A three-page PDF from three flat colours (one page per "artboard"), optionally wearing
-    /// Illustrator's private-data header lifted from the real corpus file, so the tier treats
-    /// it as an Illustrator file without a byte of Illustrator's own PDF being needed.
-    fn three_page_pdf(dir: &std::path::Path, illustrator: bool) -> Vec<u8> {
-        let mut paths = Vec::new();
-        for (name, rgb) in [
-            ("a", [220u8, 30, 30]),
-            ("b", [30, 200, 40]),
-            ("c", [30, 60, 220]),
-        ] {
-            let p = dir.join(format!("{name}.png"));
-            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(120, 80, image::Rgb(rgb)))
-                .save(&p)
-                .unwrap();
-            paths.push(p.to_string_lossy().into_owned());
-        }
-        let out = dir.join("boards.pdf");
-        crate::topdf::combine_to_pdf_paged(
-            &paths,
-            &out,
-            90,
-            crate::topdf::PdfPage::Tight,
-            crate::verbs::OnOmit::Report,
-        )
-        .expect("pdf");
-        let mut bytes = std::fs::read(&out).unwrap();
+    /// A three-page PDF of three flat colours (one page per "artboard"), optionally wearing
+    /// Illustrator's private-data tell, so the tier treats it as an Illustrator file without a
+    /// byte of Illustrator's own PDF being needed. Written to the spec by `pdf::tests`, never by
+    /// our own Combine writer (a fixture written by code under test shares its assumptions).
+    fn three_page_pdf(illustrator: bool) -> Vec<u8> {
+        let mut bytes =
+            crate::pdf::tests::solid_colour_pdf(&[(220, 30, 30), (30, 200, 40), (30, 60, 220)]);
         if illustrator {
             // The Illustrator tell for every era is the `/AIPrivateData` key (a real file
             // carries it in the PDF catalog; trailing bytes after %%EOF are what every
@@ -569,8 +543,7 @@ mod illustrator_tests {
     /// contact sheet, one large cell and two stacked, rather than page one alone.
     #[test]
     fn an_illustrator_file_with_three_artboards_shows_all_three() {
-        let dir = scratch("sheet");
-        let bytes = three_page_pdf(&dir, true);
+        let bytes = three_page_pdf(true);
         assert!(crate::container::ai::is_illustrator(&bytes));
         let img = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
             .expect("pdf tier")
@@ -587,15 +560,13 @@ mod illustrator_tests {
         assert_eq!(dominant(&img, e / 4, e / 2), 'r');
         assert_eq!(dominant(&img, e * 3 / 4, e / 4), 'g');
         assert_eq!(dominant(&img, e * 3 / 4, e * 3 / 4), 'b');
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The same three pages WITHOUT Illustrator's private data are an ordinary document: page
     /// one, nothing else - a report's first page is its thumbnail, never a sheet of its pages.
     #[test]
     fn a_plain_multipage_pdf_still_shows_page_one_only() {
-        let dir = scratch("plain");
-        let bytes = three_page_pdf(&dir, false);
+        let bytes = three_page_pdf(false);
         assert!(!crate::container::ai::is_illustrator(&bytes));
         let img = try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
             .expect("pdf tier")
@@ -610,6 +581,5 @@ mod illustrator_tests {
             rgba.pixels().all(|p| p[0] > p[1] && p[0] > p[2]),
             "every pixel is page one's red"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

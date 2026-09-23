@@ -3,6 +3,7 @@
 //! encode-to-file path, and the per-file convert / transform / resize / email
 //! entry points the menu actions and the CLI dispatch to.
 
+use crate::decode::read_full_fidelity_capped;
 use std::{
     io::{Seek, Write},
     path::{Path, PathBuf},
@@ -81,28 +82,6 @@ pub(crate) fn flatten_onto_white(img: &DynamicImage) -> DynamicImage {
         *dst = image::Rgb([over(r), over(g), over(b)]);
     }
     DynamicImage::ImageRgb8(rgb)
-}
-
-/// Read a file into memory for a full-fidelity verb, refusing anything past
-/// `decode::limits::MAX_FULL_FIDELITY_INPUT_BYTES` (checked via metadata before the
-/// allocation) so a multi-GB file can't be loaded wholesale.
-///
-/// The name says which cap applies: `decode::read_capped` refuses past the much
-/// smaller thumbnail ceiling (`MAX_INPUT_BYTES`, 256 MiB), and the preview tier's
-/// reader truncates instead of refusing. Issue #34: this used to share the thumbnail
-/// ceiling under the same name, which silently dropped every PSD over 256 MiB from a
-/// Convert batch. See [`crate::decode::read_full_fidelity`] for why the user-chosen
-/// file gets its own, larger budget.
-///
-/// The io error is logged and carried in the returned error's message, because a
-/// bare `E_FAIL` is what made the failure unexplainable: the verb call sites have
-/// no room for an error string, so without the log line the size refusal reached
-/// the user as a file that simply was not there.
-pub(crate) fn read_full_fidelity_capped(path: &str) -> Result<Vec<u8>> {
-    crate::decode::read_full_fidelity(path).map_err(|e| {
-        crate::safety::log(&format!("cannot read {path}: {e}"));
-        Error::new(E_FAIL, format!("read {path}: {e}"))
-    })
 }
 
 /// Map file extensions to formats this build can actually WRITE natively.

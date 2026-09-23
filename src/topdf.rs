@@ -3,6 +3,7 @@
 //! dependencies; the output was verified to load in the OS `Windows.Data.Pdf`
 //! engine (the same one our thumbnailer uses).
 
+use crate::decode::read_full_fidelity_capped;
 use std::io::Write;
 use std::path::Path;
 
@@ -12,9 +13,9 @@ use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
 use crate::decode;
+use crate::settings::PdfPage;
 use crate::verbs::{
-    flatten_onto_white, partition, read_full_fidelity_capped, refusal, write_atomic, Combined,
-    OmitCause, Omitted, OnOmit,
+    flatten_onto_white, partition, refusal, write_atomic, Combined, OmitCause, Omitted, OnOmit,
 };
 
 /// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
@@ -101,7 +102,7 @@ fn write_page<W: Write>(
     ih: u32,
     page: PdfPage,
 ) -> std::io::Result<()> {
-    let (pw, ph, dx, dy, dw, dh) = page.place(iw as f64, ih as f64);
+    let (pw, ph, dx, dy, dw, dh) = place(page, iw as f64, ih as f64);
     let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
 
     mark(off, pg, w.pos);
@@ -136,49 +137,24 @@ fn write_xref<W: Write>(w: &mut Counted<W>, off: &[usize], total: usize) -> std:
     )
 }
 
-/// How each image is placed on its page.
-///
-/// PDF's unit is the point (1/72 inch) and our images go in at 72 dpi, so one
-/// image pixel is one point and the arithmetic below needs no conversion.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub enum PdfPage {
-    /// Page sized exactly to the image, image filling it. The original behaviour
-    /// and still the default: it is what you want for scans and comics, where a
-    /// border is just wasted paper.
-    #[default]
-    Tight,
-    /// Page sized to the image plus a uniform margin, in points.
-    Margin(f64),
-    /// A fixed sheet. The image is centred and scaled DOWN to fit inside the
-    /// margins, never UP - a small image keeps its own size instead of being
-    /// blown up and blurred, the same rule Resize follows.
-    Sheet { w: f64, h: f64, margin: f64 },
-}
-
-/// A4 and US Letter in points, for [`PdfPage::Sheet`].
-pub const A4_PT: (f64, f64) = (595.276, 841.89);
-pub const LETTER_PT: (f64, f64) = (612.0, 792.0);
-
-impl PdfPage {
-    /// `(page_w, page_h, draw_x, draw_y, draw_w, draw_h)` for a `w` x `h` image.
-    fn place(self, w: f64, h: f64) -> (f64, f64, f64, f64, f64, f64) {
-        match self {
-            PdfPage::Tight => (w, h, 0.0, 0.0, w, h),
-            PdfPage::Margin(m) => {
-                let m = m.max(0.0);
-                (w + 2.0 * m, h + 2.0 * m, m, m, w, h)
-            }
-            PdfPage::Sheet {
-                w: sw,
-                h: sh,
-                margin,
-            } => {
-                let m = margin.max(0.0);
-                let (aw, ah) = ((sw - 2.0 * m).max(1.0), (sh - 2.0 * m).max(1.0));
-                let scale = (aw / w).min(ah / h).min(1.0);
-                let (dw, dh) = (w * scale, h * scale);
-                (sw, sh, (sw - dw) / 2.0, (sh - dh) / 2.0, dw, dh)
-            }
+/// `(page_w, page_h, draw_x, draw_y, draw_w, draw_h)` for a `w` x `h` image on `page`.
+fn place(page: PdfPage, w: f64, h: f64) -> (f64, f64, f64, f64, f64, f64) {
+    match page {
+        PdfPage::Tight => (w, h, 0.0, 0.0, w, h),
+        PdfPage::Margin(m) => {
+            let m = m.max(0.0);
+            (w + 2.0 * m, h + 2.0 * m, m, m, w, h)
+        }
+        PdfPage::Sheet {
+            w: sw,
+            h: sh,
+            margin,
+        } => {
+            let m = margin.max(0.0);
+            let (aw, ah) = ((sw - 2.0 * m).max(1.0), (sh - 2.0 * m).max(1.0));
+            let scale = (aw / w).min(ah / h).min(1.0);
+            let (dw, dh) = (w * scale, h * scale);
+            (sw, sh, (sw - dw) / 2.0, (sh - dh) / 2.0, dw, dh)
         }
     }
 }
@@ -325,7 +301,7 @@ pub fn combine_to_pdf_paged(
 mod tests {
     #[test]
     fn tight_pages_are_exactly_the_image() {
-        let (pw, ph, dx, dy, dw, dh) = super::PdfPage::Tight.place(800.0, 600.0);
+        let (pw, ph, dx, dy, dw, dh) = super::place(super::PdfPage::Tight, 800.0, 600.0);
         assert_eq!(
             (pw, ph, dx, dy, dw, dh),
             (800.0, 600.0, 0.0, 0.0, 800.0, 600.0)
@@ -334,7 +310,7 @@ mod tests {
 
     #[test]
     fn a_margin_grows_the_page_and_insets_the_image() {
-        let (pw, ph, dx, dy, dw, dh) = super::PdfPage::Margin(36.0).place(800.0, 600.0);
+        let (pw, ph, dx, dy, dw, dh) = super::place(super::PdfPage::Margin(36.0), 800.0, 600.0);
         assert_eq!((pw, ph), (872.0, 672.0));
         assert_eq!((dx, dy), (36.0, 36.0));
         assert_eq!(
@@ -350,12 +326,12 @@ mod tests {
     #[test]
     fn a_sheet_shrinks_an_oversized_image_and_centres_it() {
         let page = super::PdfPage::Sheet {
-            w: super::A4_PT.0,
-            h: super::A4_PT.1,
+            w: crate::settings::A4_PT.0,
+            h: crate::settings::A4_PT.1,
             margin: 36.0,
         };
-        let (pw, ph, dx, dy, dw, dh) = page.place(4000.0, 3000.0);
-        assert_eq!((pw, ph), super::A4_PT);
+        let (pw, ph, dx, dy, dw, dh) = super::place(page, 4000.0, 3000.0);
+        assert_eq!((pw, ph), crate::settings::A4_PT);
         assert!(
             dw <= pw - 72.0 + 0.01 && dh <= ph - 72.0 + 0.01,
             "{dw}x{dh} overflows the margins"
@@ -375,11 +351,11 @@ mod tests {
     #[test]
     fn a_sheet_never_enlarges_a_small_image() {
         let page = super::PdfPage::Sheet {
-            w: super::A4_PT.0,
-            h: super::A4_PT.1,
+            w: crate::settings::A4_PT.0,
+            h: crate::settings::A4_PT.1,
             margin: 36.0,
         };
-        let (_, _, dx, dy, dw, dh) = page.place(100.0, 50.0);
+        let (_, _, dx, dy, dw, dh) = super::place(page, 100.0, 50.0);
         assert_eq!((dw, dh), (100.0, 50.0));
         assert!(dx > 100.0 && dy > 100.0, "not centred: {dx},{dy}");
     }

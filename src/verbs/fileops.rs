@@ -12,8 +12,9 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR, SHCNF_PATHW};
 
 use super::actions::is_image;
-use super::encode::{read_full_fidelity_capped, reserve, write_atomic, OutSlot};
+use super::encode::{reserve, write_atomic, OutSlot};
 use super::outcome::{Combined, OmitCause, Omitted, OnOmit};
+use crate::decode::read_full_fidelity_capped;
 
 /// Windows reserved device names — invalid as a full component AND as the part before
 /// the first `.` (`CON.txt` is exactly as blocked as bare `CON`), case-insensitively.

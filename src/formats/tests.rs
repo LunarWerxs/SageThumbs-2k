@@ -289,19 +289,6 @@ fn avif_os_codec_is_av1() {
     assert_eq!(capability("avif").os_codec, Some(OsCodec::Av1));
 }
 
-/// `capability().convertible` must mirror `verbs::actions::is_image` EXACTLY (its own doc
-/// says so) - it is not a second hand-maintained rule, so prove the two never drift apart.
-#[test]
-fn convertible_matches_is_image() {
-    for &(ext, _) in FORMATS {
-        assert_eq!(
-            capability(ext).convertible,
-            crate::verbs::is_image(&format!("x.{ext}")),
-            "`{ext}`: capability().convertible must match verbs::is_image"
-        );
-    }
-}
-
 /// Archives never get the image verbs - `verbs::actions::is_image` excludes them so
 /// Convert/Rotate never act on an archive's extracted cover.
 #[test]

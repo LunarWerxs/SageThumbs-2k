@@ -146,3 +146,7 @@ pub const MAGICK_FULL_FIDELITY_WALL_SECS: u64 = 600;
 pub const MAGICK_POLICY_TIME_LIMIT: &str = "600";
 pub const MAGICK_MEMORY_LIMIT: &str = "512MiB";
 pub const MAGICK_MAP_LIMIT: &str = "1GiB";
+
+/// The thumbnail-size setting's ceiling must stay under the decoders' own bomb guard, which is
+/// the real technical limit; past it every raised request would be refused rather than honoured.
+const _: () = assert!(crate::settings::THUMB_MAX < MAX_DIM);

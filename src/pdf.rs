@@ -506,4 +506,4 @@ fn wait_until_settled(status: impl Fn() -> Result<AsyncStatus>) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

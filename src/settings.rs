@@ -367,8 +367,8 @@ pub use app_prefs::{
     set_preview_url_live, set_preview_volume, set_preview_window_size, set_screenshot_default_tool,
     set_screenshot_delay_sec, set_screenshot_hotkey, set_screenshot_quick_hotkey,
     set_screenshot_save_dir, set_screenshot_use_save_dir, set_update_auto_check, update_auto_check,
-    verbose_logging, DEFAULT_CUSTOM_ACTION, DEFAULT_SHOT_HOTKEY, DEFAULT_SHOT_TOOL,
-    SHOT_DELAY_STEPS, SHOT_TOOL_COUNT,
+    verbose_logging, PdfPage, A4_PT, DEFAULT_CUSTOM_ACTION, DEFAULT_SHOT_HOTKEY, DEFAULT_SHOT_TOOL,
+    LETTER_PT, SHOT_DELAY_STEPS, SHOT_TOOL_COUNT,
 };
 
 pub use thumbs::{
@@ -380,7 +380,7 @@ pub use thumbs::{
     set_badge_size, set_corner_mark, set_folder_prebuild_verb, set_format_badge_icon,
     set_format_enabled, set_menu_item_shown, set_menu_order, set_prefer_cover_art,
     set_thumb_checker, set_video_offset_pct, thumb_checker, thumb_settings, thumbnails_enabled,
-    use_embedded, video_offset_frac, video_offset_pct, BadgeSize, CornerMark,
+    use_embedded, video_offset_frac, video_offset_pct, BadgeSize, BadgeStyle, CornerMark,
     FormatEnabledSnapshot, MenuGate, MenuVisibility, ThumbSettings, DEFAULT_JPEG,
     DEFAULT_MAX_FILE_MB, DEFAULT_MENU_PREVIEW, DEFAULT_PNG, DEFAULT_THUMB_SIZE,
     DEFAULT_VIDEO_OFFSET_PCT, EMBEDDED_MAX_REQUEST, THUMB_MAX, THUMB_MIN, VIDEO_OFFSET_PCT_MAX,
@@ -432,9 +432,6 @@ mod tests {
         THUMB_MAX > DEFAULT_THUMB_SIZE,
         "THUMB_MAX must leave headroom above DEFAULT_THUMB_SIZE, or the setting cannot be raised",
     );
-    /// The ceiling must stay under the decoders' own bomb guard, which is the real technical
-    /// limit; past it every raised request would be refused rather than honoured.
-    const _: () = assert!(THUMB_MAX < crate::decode::limits::MAX_DIM);
 
     #[test]
     fn the_thumbnail_ceiling_reaches_the_size_the_issue_asked_for() {

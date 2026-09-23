@@ -18,10 +18,7 @@
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod app_image;
-// `pub` only because `settings::ThumbSettings` carries a `badge::BadgeStyle` field; the
-// module is an internal drawing detail, not a stable API.
-#[doc(hidden)]
-pub mod badge;
+mod badge;
 pub mod clipboard;
 mod command;
 mod container;
@@ -68,8 +65,9 @@ pub mod fsutil;
 mod fuzz;
 mod guids;
 // The DLL's own module state and the helpers every layer shares (the base layer).
-pub mod host;
 pub mod hex;
+pub mod host;
+mod isobmff;
 mod jpegtran;
 pub mod licence_state;
 pub mod mcp;
@@ -139,9 +137,10 @@ pub mod video;
 pub mod vp9;
 mod vstream;
 
-pub use strip::read_info_verbose;
 /// Conversion API surfaced for the companion app's Convert… dialog.
-pub use topdf::{combine_to_pdf, combine_to_pdf_paged, PdfPage};
+pub use settings::PdfPage;
+pub use strip::read_info_verbose;
+pub use topdf::{combine_to_pdf, combine_to_pdf_paged};
 pub use verbs::{
     convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in,
     convert_to_magick_in_named, copy_rgba_to_clipboard, copy_to_clipboard, default_menu_tokens,
@@ -160,15 +159,11 @@ use core::ffi::c_void;
 use std::time::Duration;
 
 use windows::core::{Interface, GUID, HRESULT};
-use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, E_POINTER, S_FALSE, S_OK,
-};
+use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::IClassFactory;
-
 
 const DLL_PROCESS_ATTACH: u32 = 1;
 const DLL_PROCESS_DETACH: u32 = 0;
-
 
 /// Test/diagnostics hook: decode a file's bytes the same way the thumbnail
 /// provider does (incl. ebook/comic cover extraction) and report the size.
@@ -197,7 +192,6 @@ pub fn ocr_probe(path: &str) -> Option<String> {
         .ok()
         .filter(|t| !t.trim().is_empty())
 }
-
 
 // COM entry-point IMPLEMENTATIONS. These used to be the `#[no_mangle] extern "system"`
 // `Dll*` exports directly; they now live as plain `pub fn`s here (the rlib `core`),
@@ -349,7 +343,6 @@ pub fn dll_unregister_server() -> HRESULT {
         Err(e) => e.code(),
     })
 }
-
 
 #[cfg(test)]
 mod unload_guard_tests {

@@ -16,10 +16,10 @@
 //! and cannot fail. We only ever draw `A-Z`, `0-9` and `+`, which is every character a format
 //! label can contain.
 
-/// The user's size step for the mark. Lives with the other settings (it is a stored DWORD,
-/// `BadgeSize`); this module only ever reads its [`BadgeSize::divisor`], so the drawing code
-/// stays a pure function of (image, label, style, size).
-pub use crate::settings::BadgeSize;
+/// The user's style and size for the mark live with the other settings (both are stored
+/// DWORDs); this module only reads them, so the drawing code stays a pure function of
+/// (image, label, style, size).
+use crate::settings::{BadgeSize, BadgeStyle};
 
 /// Longest label we will draw. Keeps the badge from eating the tile on a silly extension.
 const MAX_LABEL: usize = 5;
@@ -27,33 +27,6 @@ const MAX_LABEL: usize = 5;
 /// A thumbnail smaller than this gets NO badge: below ~64px the label would cover a
 /// meaningful share of the image and be unreadable anyway. Explorer's smallest tile is 16px.
 const MIN_BADGED_EDGE: u32 = 64;
-
-/// How the corner badge is drawn.
-///
-/// `Text` is the original: a near-black chip with light letters, deliberately colourless so
-/// it never competes with the picture. `Icon` is the one people actually asked for — a
-/// dog-eared page tinted by the format's CATEGORY, so a folder of mixed files is scannable
-/// by colour at a glance and only needs reading when two categories sit side by side.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum BadgeStyle {
-    /// Neutral dark chip, light text.
-    Text,
-    /// Category-coloured page mark with the label inside.
-    #[default]
-    Icon,
-}
-
-impl BadgeStyle {
-    /// `FormatBadgeStyle`: 0 = text, anything else = icon. Unknown values fall to the
-    /// default rather than to "no badge" — a badge was still asked for.
-    pub fn from_dword(v: u32) -> Self {
-        if v == 0 {
-            Self::Text
-        } else {
-            Self::Icon
-        }
-    }
-}
 
 /// The category tint for an extension, as (r, g, b).
 ///
