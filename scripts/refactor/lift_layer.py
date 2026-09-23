@@ -26,9 +26,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
+INCLUDE = re.compile(r'(include_(?:str|bytes)!\(\s*")([^"]+)("\s*\))')
 sys.path.insert(0, str(Path(__file__).parent))
 
 LAYERS = {}
@@ -240,137 +242,156 @@ def rewrite_file(path, text, roots, heads, reexports, lib):
     return t
 
 
-def main():
+def declared_mod(block):
+    return re.search(r"pub mod (\w+)", block[-1]).group(1)
+
+
+def names_used(files):
+    """The external crates the files name, and the st2k_* crates they already reach."""
+    ext, named = set(), set()
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        # A crate path starts a path (`zip::`), never follows one (`image::codecs::webp::`).
+        ext |= set(re.findall(r"(?<![\w:])([a-z_][a-z0-9_]*)::", text)) & set(EXTERNAL)
+        named |= set(re.findall(r"\bst2k_(\w+)::", text))
+    return ext, named
+
+
+def plan(layer):
+    """Everything the lift needs, read before anything moves."""
     global SRC
-    layer = sys.argv[1]
-    dry = "--dry-run" in sys.argv
-    mods = LAYERS[layer]
-    lib = lib_name(layer)
-    dest = ROOT / "crates" / layer
     # An APP layer comes out of the app binary (src/bin/app, root file main.rs) rather than the
     # library; only the binary and the app layers above it can name it.
     app = layer in APP_LAYER_NAMES
     if app:
         SRC = ROOT / "src" / "bin" / "app"
-    root_file = "main.rs" if app else "lib.rs"
+    p = SimpleNamespace(layer=layer, mods=LAYERS[layer], lib=lib_name(layer), dest=ROOT / "crates" / layer,
+                        app=app, root_file="main.rs" if app else "lib.rs", what="app" if app else "library")
     # Depend on every LIFTED layer below (the core package holds the binaries, so an app layer
     # can never depend on it: that would be a cycle; crate_layers.py --app proves it needs not).
-    below = [b for b in ORDER[: ORDER.index(layer)] if (ROOT / "crates" / b / "Cargo.toml").exists()]
-
-    moved_files = [f for m in mods for f in files_of(SRC, m)]
-    macros = exported_macros(moved_files)
-    heads = set(mods) | set(macros)
-
-    lib_rs = (SRC / root_file).read_text(encoding="utf-8")
-    new_lib, blocks, reexports = split_lib(lib_rs, set(mods))
-    missing = set(mods) - {re.search(r"pub mod (\w+)", b[-1]).group(1) for b in blocks}
+    p.below = [b for b in ORDER[: ORDER.index(layer)] if (ROOT / "crates" / b / "Cargo.toml").exists()]
+    p.moved_files = [f for m in p.mods for f in files_of(SRC, m)]
+    p.macros = exported_macros(p.moved_files)
+    p.heads = set(p.mods) | set(p.macros)
+    p.new_lib, p.blocks, p.reexports = split_lib((SRC / p.root_file).read_text(encoding="utf-8"), set(p.mods))
+    missing = set(p.mods) - {declared_mod(b) for b in p.blocks}
     if missing:
-        sys.exit(f"not declared in {root_file}: {sorted(missing)}")
-
-    ext = set()
-    named = set()
-    for f in moved_files:
-        text = f.read_text(encoding="utf-8")
-        # A crate path starts a path (`zip::`), never follows one (`image::codecs::webp::`).
-        ext |= set(re.findall(r"(?<![\w:])([a-z_][a-z0-9_]*)::", text)) & set(EXTERNAL)
-        named |= set(re.findall(r"\bst2k_(\w+)::", text))
+        sys.exit(f"not declared in {p.root_file}: {sorted(missing)}")
+    p.ext, named = names_used(p.moved_files)
     if app:
-        below = [b for b in below if b in named]
-    print(f"{layer}: {len(mods)} modules, {len(moved_files)} files, macros {macros}, "
-          f"re-exports {sorted(reexports)}, external {sorted(ext)}")
-    if dry:
-        return
+        p.below = [b for b in p.below if b in named]
+    return p
 
-    # 1. move the files, keeping every relative `include_str!`/`include_bytes!` pointed at the
-    #    same file (a path that climbs out of src/ now climbs out of crates/<layer>/src/).
-    (dest / "src").mkdir(parents=True, exist_ok=True)
-    moved_set = {f.resolve() for f in moved_files}
-    include = re.compile(r'(include_(?:str|bytes)!\(\s*")([^"]+)("\s*\))')
-    for f in moved_files:
-        new_dir = (dest / "src" / f.relative_to(SRC)).parent
-        text = f.read_text(encoding="utf-8")
 
-        def fix(m, f=f, new_dir=new_dir):
-            target = (f.parent / m.group(2)).resolve()
-            if target in moved_set or any(target.is_relative_to(SRC / mm) for mm in mods):
-                target = dest / "src" / target.relative_to(SRC)
-            rel = Path(os.path.relpath(target, new_dir)).as_posix()
-            return m.group(1) + rel + m.group(3)
+def fixed_includes(p, f, moved_set):
+    """`f`'s text with every relative `include_str!`/`include_bytes!` still pointing at the same
+    file from its new home (a path that climbs out of src/ now climbs out of crates/<layer>/src/)."""
+    new_dir = (p.dest / "src" / f.relative_to(SRC)).parent
 
-        fixed = include.sub(fix, text)
-        # Test code that reads a repo file off the manifest dir keeps meaning the repo root.
-        fixed = fixed.replace('env!("CARGO_MANIFEST_DIR")', 'concat!(env!("CARGO_MANIFEST_DIR"), "/../..")')
-        if fixed != text:
+    def fix(m):
+        target = (f.parent / m.group(2)).resolve()
+        if target in moved_set or any(target.is_relative_to(SRC / mm) for mm in p.mods):
+            target = p.dest / "src" / target.relative_to(SRC)
+        return m.group(1) + Path(os.path.relpath(target, new_dir)).as_posix() + m.group(3)
+
+    fixed = INCLUDE.sub(fix, f.read_text(encoding="utf-8"))
+    # Test code that reads a repo file off the manifest dir keeps meaning the repo root.
+    return fixed.replace('env!("CARGO_MANIFEST_DIR")', 'concat!(env!("CARGO_MANIFEST_DIR"), "/../..")')
+
+
+def move_files(p):
+    (p.dest / "src").mkdir(parents=True, exist_ok=True)
+    moved_set = {f.resolve() for f in p.moved_files}
+    for f in p.moved_files:
+        fixed = fixed_includes(p, f, moved_set)
+        if fixed != f.read_text(encoding="utf-8"):
             f.write_text(fixed, encoding="utf-8", newline="\n")
-    for m in mods:
-        for p in (SRC / f"{m}.rs", SRC / m):
-            if p.exists():
-                subprocess.run(["git", "mv", str(p), str(dest / "src" / p.name)], cwd=ROOT, check=True)
+    for path in (x for m in p.mods for x in (SRC / f"{m}.rs", SRC / m) if x.exists()):
+        subprocess.run(["git", "mv", str(path), str(p.dest / "src" / path.name)], cwd=ROOT, check=True)
 
-    # 2. the new crate's lib.rs and Cargo.toml
-    decls = "\n".join("\n".join(b) for b in sorted(blocks, key=lambda b: re.search(r"pub mod (\w+)", b[-1]).group(1)))
-    what = "app" if app else "library"
-    shell_lint = ("// The app's Win32 UI code: its `unsafe fn`s share one contract (a live window or device context\n"
-                  "// on the thread that owns it), stated where it matters, not repeated on every helper the\n"
-                  "// binary calls. They became `pub` only because the binary is a separate crate now.\n"
-                  "#![allow(clippy::missing_safety_doc)]\n" if app else
-                  "// Compiled into the shell-extension DLL, which runs inside explorer.exe under\n"
-                  "// `panic = \"abort\"`: no `.unwrap()`/`.expect()` outside tests (see the core crate).\n"
-                  "#![warn(clippy::unwrap_used, clippy::expect_used)]\n")
-    (dest / "src" / "lib.rs").write_text(
-        f"//! The `{layer}` layer of SageThumbs 2K's {what} (see scripts/refactor/crate_layers.py).\n"
+
+APP_LINT = ("// The app's Win32 UI code: its `unsafe fn`s share one contract (a live window or device context\n"
+            "// on the thread that owns it), stated where it matters, not repeated on every helper the\n"
+            "// binary calls. They became `pub` only because the binary is a separate crate now.\n"
+            "#![allow(clippy::missing_safety_doc)]\n")
+SHELL_LINT = ("// Compiled into the shell-extension DLL, which runs inside explorer.exe under\n"
+              "// `panic = \"abort\"`: no `.unwrap()`/`.expect()` outside tests (see the core crate).\n"
+              "#![warn(clippy::unwrap_used, clippy::expect_used)]\n")
+
+
+def write_crate(p):
+    """The new crate's lib.rs and Cargo.toml, and the root file without the moved declarations."""
+    decls = "\n".join("\n".join(b) for b in sorted(p.blocks, key=declared_mod))
+    (p.dest / "src" / "lib.rs").write_text(
+        f"//! The `{p.layer}` layer of SageThumbs 2K's {p.what} (see scripts/refactor/crate_layers.py).\n"
         "//! It names only the layers below it, so an edit above it never recompiles it.\n\n"
-        "#![allow(non_snake_case)]\n" + shell_lint + "\n" + decls + "\n",
+        "#![allow(non_snake_case)]\n" + (APP_LINT if p.app else SHELL_LINT) + "\n" + decls + "\n",
         encoding="utf-8", newline="\n")
-    deps = [EXTERNAL[e] for e in sorted(ext)]
-    deps += [f'{lib_name(b)} = {{ package = "sagethumbs2k-{b}", path = "../{b}" }}' for b in below]
-    (dest / "Cargo.toml").write_text(
-        f'[package]\nname = "sagethumbs2k-{layer}"\nversion.workspace = true\nedition = "2021"\n'
+    deps = [EXTERNAL[e] for e in sorted(p.ext)]
+    deps += [f'{lib_name(b)} = {{ package = "sagethumbs2k-{b}", path = "../{b}" }}' for b in p.below]
+    (p.dest / "Cargo.toml").write_text(
+        f'[package]\nname = "sagethumbs2k-{p.layer}"\nversion.workspace = true\nedition = "2021"\n'
         'rust-version.workspace = true\npublish = false\nlicense = "PolyForm-Noncommercial-1.0.0"\n'
-        f'description = "SageThumbs 2K {what}, {layer} layer"\n\n[lib]\nname = "{lib}"\n\n'
+        f'description = "SageThumbs 2K {p.what}, {p.layer} layer"\n\n[lib]\nname = "{p.lib}"\n\n'
         "[dependencies]\n" + "\n".join(deps) + "\n",
         encoding="utf-8", newline="\n")
-    (SRC / root_file).write_text(new_lib, encoding="utf-8", newline="\n")
+    (SRC / p.root_file).write_text(p.new_lib, encoding="utf-8", newline="\n")
 
-    # 3. repoint every path
+
+def repoint_targets(p):
+    """Every file that may name a moved item, with the path roots it names them through."""
     targets = []
-    for p in SRC.rglob("*.rs"):
-        rel = p.relative_to(SRC).as_posix()
-        if rel == "build.rs":
-            continue
-        roots = ["sagethumbs2k_core", "core"] if rel.startswith("bin/") and not app else ["crate"]
-        targets.append((p, roots))
-    for top in ("tests", "examples") if not app else ():
-        for p in (ROOT / top).rglob("*.rs"):
-            targets.append((p, ["sagethumbs2k_core", "core"]))
-    for above in ORDER[ORDER.index(layer) + 1:]:
-        for p in (ROOT / "crates" / above / "src").rglob("*.rs") if (ROOT / "crates" / above).exists() else []:
-            targets.append((p, ["crate"]))
+    for f in SRC.rglob("*.rs"):
+        rel = f.relative_to(SRC).as_posix()
+        if rel != "build.rs":
+            targets.append((f, ["sagethumbs2k_core", "core"] if rel.startswith("bin/") and not p.app else ["crate"]))
+    for top in () if p.app else ("tests", "examples"):
+        targets += [(f, ["sagethumbs2k_core", "core"]) for f in (ROOT / top).rglob("*.rs")]
+    for above in ORDER[ORDER.index(p.layer) + 1:]:
+        src = ROOT / "crates" / above / "src"
+        targets += [(f, ["crate"]) for f in src.rglob("*.rs")] if src.exists() else []
+    return targets
+
+
+def repoint(p):
     changed = 0
-    for p, roots in targets:
-        t = p.read_text(encoding="utf-8")
+    for f, roots in repoint_targets(p):
+        t = f.read_text(encoding="utf-8")
         # `core::` is only an alias of the core crate in a file that says so.
         roots = [r for r in roots if r != "core" or "use sagethumbs2k_core as core;" in t]
-        n = rewrite_file(p, t, roots, heads, reexports, lib)
+        n = rewrite_file(f, t, roots, p.heads, p.reexports, p.lib)
         if n != t:
-            p.write_text(n, encoding="utf-8", newline="\n")
+            f.write_text(n, encoding="utf-8", newline="\n")
             changed += 1
-    print(f"repointed {changed} files")
+    return changed
 
-    # 4. the workspace
+
+def update_workspace(p):
     cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
     # A member of both lists: `cargo test` at the root tests the default members only.
-    cargo = re.sub(r"^members = \[", f'members = ["crates/{layer}", ', cargo, count=1, flags=re.M)
-    cargo = re.sub(r'^default-members = \["\.", ', f'default-members = [".", "crates/{layer}", ', cargo, count=1, flags=re.M)
-    dep = f'{lib} = {{ package = "sagethumbs2k-{layer}", path = "crates/{layer}" }}'
-    cargo = cargo.replace("\n[dependencies]\n", f"\n[dependencies]\n# The {layer} layer of the {what}, its own crate.\n{dep}\n", 1)
+    cargo = re.sub(r"^members = \[", f'members = ["crates/{p.layer}", ', cargo, count=1, flags=re.M)
+    cargo = re.sub(r'^default-members = \["\.", ', f'default-members = [".", "crates/{p.layer}", ', cargo, count=1, flags=re.M)
+    dep = f'{p.lib} = {{ package = "sagethumbs2k-{p.layer}", path = "crates/{p.layer}" }}'
+    cargo = cargo.replace("\n[dependencies]\n", f"\n[dependencies]\n# The {p.layer} layer of the {p.what}, its own crate.\n{dep}\n", 1)
     (ROOT / "Cargo.toml").write_text(cargo, encoding="utf-8", newline="\n")
-    for above in ORDER[ORDER.index(layer) + 1:]:
+    above_dep = f'{p.lib} = {{ package = "sagethumbs2k-{p.layer}", path = "../{p.layer}" }}\n'
+    for above in ORDER[ORDER.index(p.layer) + 1:]:
         toml = ROOT / "crates" / above / "Cargo.toml"
         if toml.exists():
             t = toml.read_text(encoding="utf-8")
-            t = t.replace("[dependencies]\n", f'[dependencies]\n{lib} = {{ package = "sagethumbs2k-{layer}", path = "../{layer}" }}\n', 1)
-            toml.write_text(t, encoding="utf-8", newline="\n")
+            toml.write_text(t.replace("[dependencies]\n", "[dependencies]\n" + above_dep, 1), encoding="utf-8", newline="\n")
+
+
+def main():
+    p = plan(sys.argv[1])
+    print(f"{p.layer}: {len(p.mods)} modules, {len(p.moved_files)} files, macros {p.macros}, "
+          f"re-exports {sorted(p.reexports)}, external {sorted(p.ext)}")
+    if "--dry-run" in sys.argv:
+        return
+    move_files(p)            # 1. the files, includes still pointing where they did
+    write_crate(p)           # 2. the new crate's lib.rs and Cargo.toml
+    print(f"repointed {repoint(p)} files")  # 3. every path that named a moved item
+    update_workspace(p)      # 4. the workspace and the crates above
     print("done; now: cargo check --workspace --all-targets, then widen_pub.py")
 
 

@@ -112,6 +112,69 @@ def spans_defined_here(msg):
                 yield sp
 
 
+def restricted_definitions(name, files, edits):
+    """E0364/E0365 carry no note pointing at the item: find its restricted-visibility
+    definition, or a crate-private re-export it passes through."""
+    item = re.compile(rf"\s*pub\s*\([^)]*\)\s+(?:(?:const|async|unsafe)\s+)*"
+                      rf"(?:fn|struct|enum|union|const|static|type|trait|mod)\s+{name}\b")
+    reexport = re.compile(rf"\s*pub\s*\([^)]*\)\s+use\b[^;]*\b{name}\b[^;]*;")
+    for f in files:
+        lines = f.read_text(encoding="utf-8").split("\n")
+        hits = [i for i, l in enumerate(lines) if item.match(l) or reexport.match(l)]
+        if hits:
+            edits[str(f.relative_to(ROOT))].update(hits)
+
+
+def child_spans_within(msg, crate):
+    return [sp for ch in msg.get("children", []) for sp in ch.get("spans", []) if within(sp["file_name"], crate)]
+
+
+def collect(msg, crate, files, edits, fields):
+    """Record what one compiler message asks to widen: definition lines in `edits`
+    (file -> line indexes), private struct fields in `fields`."""
+    code = (msg.get("code") or {}).get("code")
+    text = msg["message"]
+    if code in ("E0603", "E0624"):
+        for sp in spans_defined_here(msg):
+            if within(sp["file_name"], crate):
+                edits[sp["file_name"]].add(sp["line_start"] - 1)
+    elif code in ("E0616", "E0451"):
+        # "field `a` of struct `S` is private" / "fields `a`, `b` and `c` of struct ..."
+        m = re.search(r"fields? ((?:`\w+`(?:, | and )?)+) of (?:struct|union) `(?:[\w:]*::)?(\w+)", text)
+        if m:
+            fields.update((m.group(2), name) for name in re.findall(r"`(\w+)`", m.group(1)))
+    elif code in ("E0364", "E0365") and (named := re.match(r"`(\w+)` is only public within", text)):
+        restricted_definitions(named.group(1), files, edits)
+    elif code in ("private_interfaces", "private_bounds", "E0364", "E0365"):
+        for sp in child_spans_within(msg, crate):
+            edits[sp["file_name"]].add(sp["line_start"] - 1)
+
+
+def apply(edits, fields, files):
+    changed = 0
+    for fname, idxs in edits.items():
+        p = ROOT / fname
+        lines = p.read_text(encoding="utf-8").split("\n")
+        n = sum(widen_line(lines, i) for i in sorted(idxs))
+        if n:
+            p.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+            changed += n
+    for struct, field in sorted(fields):
+        changed += widen_field(files, struct, field)
+    return changed
+
+
+def report(errors):
+    """Print each remaining error once: those are real breaks for a person to read."""
+    seen = set()
+    for m in errors:
+        sp = next((s for s in m["spans"] if s["is_primary"]), None)
+        key = (m["message"], sp and sp["file_name"], sp and sp["line_start"])
+        if key not in seen:
+            seen.add(key)
+            print(f"  {sp and sp['file_name']}:{sp and sp['line_start']}: {m['message']}")
+
+
 def main():
     crate = (ROOT / sys.argv[1]).resolve()
     rounds = int(sys.argv[sys.argv.index("--rounds") + 1]) if "--rounds" in sys.argv else 8
@@ -121,55 +184,12 @@ def main():
         edits = defaultdict(set)  # file -> line indexes
         fields = set()
         for msg in msgs:
-            code = (msg.get("code") or {}).get("code")
-            text = msg["message"]
-            if code in ("E0603", "E0624"):
-                for sp in spans_defined_here(msg):
-                    if within(sp["file_name"], crate):
-                        edits[sp["file_name"]].add(sp["line_start"] - 1)
-            elif code in ("E0616", "E0451"):
-                # "field `a` of struct `S` is private" / "fields `a`, `b` and `c` of struct ..."
-                m = re.search(r"fields? ((?:`\w+`(?:, | and )?)+) of (?:struct|union) `(?:[\w:]*::)?(\w+)", text)
-                if m:
-                    for name in re.findall(r"`(\w+)`", m.group(1)):
-                        fields.add((m.group(2), name))
-            elif code in ("E0364", "E0365") and (named := re.match(r"`(\w+)` is only public within", text)):
-                # No note points at the item: find its restricted-visibility definition.
-                for f in files:
-                    lines = f.read_text(encoding="utf-8").split("\n")
-                    for i, l in enumerate(lines):
-                        name = named.group(1)
-                        if re.match(rf"\s*pub\s*\([^)]*\)\s+(?:(?:const|async|unsafe)\s+)*"
-                                    rf"(?:fn|struct|enum|union|const|static|type|trait|mod)\s+{name}\b", l) \
-                                or re.match(rf"\s*pub\s*\([^)]*\)\s+use\b[^;]*\b{name}\b[^;]*;", l):
-                            # the item itself, or a crate-private re-export it passes through
-                            edits[str(f.relative_to(ROOT))].add(i)
-            elif code in ("private_interfaces", "private_bounds", "E0364", "E0365"):
-                for ch in msg.get("children", []):
-                    for sp in ch.get("spans", []):
-                        if within(sp["file_name"], crate):
-                            edits[sp["file_name"]].add(sp["line_start"] - 1)
-        changed = 0
-        for fname, idxs in edits.items():
-            p = ROOT / fname
-            lines = p.read_text(encoding="utf-8").split("\n")
-            n = sum(widen_line(lines, i) for i in sorted(idxs))
-            if n:
-                p.write_text("\n".join(lines), encoding="utf-8", newline="\n")
-                changed += n
-        for struct, field in sorted(fields):
-            changed += widen_field(files, struct, field)
+            collect(msg, crate, files, edits, fields)
+        changed = apply(edits, fields, files)
         errors = [m for m in msgs if m["level"] == "error"]
         print(f"round {rnd}: widened {changed}; {len(errors)} errors in the run")
         if not changed:
-            seen = set()
-            for m in errors:
-                sp = next((s for s in m["spans"] if s["is_primary"]), None)
-                key = (m["message"], sp and sp["file_name"], sp and sp["line_start"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                print(f"  {sp and sp['file_name']}:{sp and sp['line_start']}: {m['message']}")
+            report(errors)
             return
 
 
