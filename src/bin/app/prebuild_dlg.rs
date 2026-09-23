@@ -20,8 +20,8 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
-use crate::win::{ctl, run_dialog, set_edit_text, t, wm_dpichanged, BUTTON, STATIC};
+use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim};
+use st2k_appkit::win::{ctl, run_dialog, set_edit_text, t, wm_dpichanged, BUTTON, STATIC};
 
 const ID_PATH: i32 = 200;
 const ID_BAR: i32 = 201;
@@ -359,9 +359,9 @@ pub(crate) unsafe fn run_prebuild(folder: &str) {
     // Elevation would fill the ADMINISTRATOR's thumbnail cache and change nothing the user can
     // see, so refuse loudly rather than reporting a successful run that did nothing. Explorer
     // launches us unelevated, so this only fires if someone wired it up differently.
-    if sagethumbs2k_core::prebuild::is_elevated() {
-        let msg = crate::win::wide(t("pb_elevated"));
-        let title = crate::win::wide(t("pb_title"));
+    if st2k_base::host::is_elevated() {
+        let msg = st2k_appkit::win::wide(t("pb_elevated"));
+        let title = st2k_appkit::win::wide(t("pb_title"));
         MessageBoxW(
             None,
             PCWSTR(msg.as_ptr()),

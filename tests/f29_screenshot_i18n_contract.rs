@@ -67,7 +67,7 @@ fn assert_literals_absent(rel: &str, literals: &[&str]) {
 #[test]
 fn toolbar_tooltips_no_longer_hardcode_english() {
     assert_literals_absent(
-        "src/bin/app/screenshot/toolbar.rs",
+        "crates/screenshot/src/screenshot/toolbar.rs",
         &[
             "Rectangle (R) — drag to draw",
             "Ellipse (O) — drag to draw",
@@ -100,7 +100,7 @@ fn selection_hint_strip_no_longer_hardcodes_english() {
     // a doc comment or a test fixture using an unrelated marker string, which would make this
     // test cry wolf on unrelated, legitimate text.
     assert_literals_absent(
-        "src/bin/app/screenshot/overlay/paint.rs",
+        "crates/screenshot/src/screenshot/overlay/paint.rs",
         &[
             "Ctrl-drag moves  ·  Enter copy  ·  Ctrl+T text  ·  Ctrl+S save  ·  Esc close",
             "\"  ·  F8 snap 45° ON\"",
@@ -115,7 +115,7 @@ fn selection_hint_strip_no_longer_hardcodes_english() {
 #[test]
 fn text_flyout_captions_no_longer_hardcode_english() {
     assert_literals_absent(
-        "src/bin/app/screenshot/toolbar/textflyout.rs",
+        "crates/screenshot/src/screenshot/toolbar/textflyout.rs",
         &[
             "[x]  Bold",
             "[  ]  Bold",
@@ -133,7 +133,7 @@ fn preview_outline_header_no_longer_hardcodes_contents() {
     // `outline_header_matches_the_locale_tables_english_value` (paint.rs's own test module),
     // which legitimately still needs the English value as a literal to compare against.
     assert_literals_absent(
-        "src/bin/app/preview/paint.rs",
+        "crates/preview/src/preview/paint.rs",
         &["\"CONTENTS\".encode_utf16()"],
     );
 }
@@ -145,7 +145,7 @@ fn preview_outline_header_no_longer_hardcodes_contents() {
 /// count, so a later edit that shifts the function doesn't silently stop checking anything.
 #[test]
 fn tool_hint_label_body_has_no_hardcoded_display_words() {
-    let text = read("src/bin/app/screenshot/tools.rs");
+    let text = read("crates/screenshot/src/screenshot/tools.rs");
     let start = text
         .find("fn hint_label(self) -> &'static str {")
         .expect("hint_label must exist");
@@ -361,11 +361,11 @@ fn every_new_key_exists_with_matching_placeholders_in_every_locale() {
 
 /// The paint/label files F29 localized. New user-visible text overwhelmingly lands here.
 const SCANNED_FILES: [&str; 5] = [
-    "src/bin/app/screenshot/tools.rs",
-    "src/bin/app/screenshot/toolbar.rs",
-    "src/bin/app/screenshot/overlay/paint.rs",
-    "src/bin/app/screenshot/toolbar/textflyout.rs",
-    "src/bin/app/preview/paint.rs",
+    "crates/screenshot/src/screenshot/tools.rs",
+    "crates/screenshot/src/screenshot/toolbar.rs",
+    "crates/screenshot/src/screenshot/overlay/paint.rs",
+    "crates/screenshot/src/screenshot/toolbar/textflyout.rs",
+    "crates/preview/src/preview/paint.rs",
 ];
 
 /// `(file, literal, why it is not translatable)`. Every entry is a literal a human decided

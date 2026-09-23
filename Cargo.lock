@@ -1363,7 +1363,6 @@ dependencies = [
  "ed25519-dalek",
  "embed-manifest",
  "exr",
- "flate2",
  "h263-rs",
  "h263-rs-yuv",
  "image",
@@ -1374,14 +1373,15 @@ dependencies = [
  "nihav_duck",
  "oxideav-mpeg12video",
  "percent-encoding",
- "pulldown-cmark",
  "sagethumbs2k-actions",
+ "sagethumbs2k-appkit",
  "sagethumbs2k-base",
  "sagethumbs2k-codecs",
+ "sagethumbs2k-preview",
+ "sagethumbs2k-screenshot",
  "serde_json",
  "toml",
  "vp9dec",
- "webview2-com",
  "windows",
  "windows-core",
  "windows-implement",
@@ -1408,6 +1408,22 @@ dependencies = [
  "windows",
  "windows-registry",
  "zip",
+]
+
+[[package]]
+name = "sagethumbs2k-appkit"
+version = "3.3.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "image",
+ "percent-encoding",
+ "sagethumbs2k-base",
+ "sagethumbs2k-codecs",
+ "serde_json",
+ "windows",
+ "windows-core",
+ "windows-registry",
 ]
 
 [[package]]
@@ -1467,6 +1483,40 @@ dependencies = [
  "build-support",
  "sagethumbs2k",
  "windows-core",
+]
+
+[[package]]
+name = "sagethumbs2k-preview"
+version = "3.3.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "image",
+ "pulldown-cmark",
+ "sagethumbs2k-actions",
+ "sagethumbs2k-appkit",
+ "sagethumbs2k-base",
+ "sagethumbs2k-codecs",
+ "serde_json",
+ "webview2-com",
+ "windows",
+ "windows-core",
+ "zip",
+]
+
+[[package]]
+name = "sagethumbs2k-screenshot"
+version = "3.3.0"
+dependencies = [
+ "image",
+ "sagethumbs2k-actions",
+ "sagethumbs2k-appkit",
+ "sagethumbs2k-base",
+ "sagethumbs2k-codecs",
+ "sagethumbs2k-preview",
+ "windows",
+ "windows-core",
+ "windows-registry",
 ]
 
 [[package]]

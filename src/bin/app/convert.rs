@@ -37,8 +37,8 @@ use st2k_actions::{
 use st2k_base::settings;
 
 use crate::convert_report::ReportAction;
-use crate::dark::{dark_ctlcolor, dark_theme_combo};
-use crate::win::{
+use st2k_appkit::dark::{dark_ctlcolor, dark_theme_combo};
+use st2k_appkit::win::{
     checked, combo_sel, ctl, get_edit_text, make_lparam, pick_folder, read_listfile, run_dialog,
     set_edit_text, t, wide, wm_dpichanged, BM_SETCHECK_MSG, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK,
     STATIC,
@@ -196,14 +196,14 @@ pub(crate) fn cv_btn_col(label_w: i32, floor: i32) -> i32 {
 /// [`cv_label_col`] for the language actually loaded, measured against `hwnd`'s real DPI.
 unsafe fn cv_label_w(hwnd: HWND) -> i32 {
     cv_label_col(
-        crate::win::text_width(hwnd, t("cv_output_format")),
-        crate::win::text_width(hwnd, t("cv_output_folder")),
+        st2k_appkit::win::text_width(hwnd, t("cv_output_format")),
+        st2k_appkit::win::text_width(hwnd, t("cv_output_folder")),
     )
 }
 
 /// [`cv_btn_col`] for the language actually loaded.
 pub(crate) unsafe fn cv_btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
-    cv_btn_col(crate::win::text_width(hwnd, label), floor)
+    cv_btn_col(st2k_appkit::win::text_width(hwnd, label), floor)
 }
 
 /// A checkbox row's design-px width: the full remaining column (not shrink-wrapped to the
@@ -488,10 +488,10 @@ pub(crate) unsafe fn run_shot_convert(out: &str) -> bool {
     restore_export_settings();
 
     let title = t("cv_title").replace("{n}", "1");
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KConvert"),
             wndproc: Some(convert_wndproc),
             title: &title,
@@ -542,7 +542,7 @@ unsafe fn on_convert_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: every button/combo the dialog owns.
 unsafe fn on_convert_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let (id, notify) = crate::win::command_parts(wparam);
+    let (id, notify) = st2k_appkit::win::command_parts(wparam);
     match id {
         IDOK => start_convert(hwnd),
         IDCANCEL => request_close(hwnd),
@@ -635,7 +635,7 @@ extern "system" fn convert_wndproc(
             WM_CONVERT_DONE => on_convert_done(hwnd, wparam, lparam),
             // DPI, the deferred close a running batch needs (see `request_close` below),
             // destroy, default.
-            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }

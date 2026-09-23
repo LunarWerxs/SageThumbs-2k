@@ -196,21 +196,6 @@ fn walk_stops_at_the_depth_cap() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A relative path has to become the absolute, non-extended form the shell parses, or
-/// every item fails with FILE_NOT_FOUND and the run reports a 100% failure rate.
-#[test]
-fn parsing_path_is_absolute_and_carries_no_extended_prefix() {
-    let f = std::env::temp_dir().join(format!("st2k-pp-{}.png", std::process::id()));
-    std::fs::write(&f, b"x").expect("write");
-    let got = parsing_path(&f.to_string_lossy());
-    assert!(
-        !got.starts_with(r"\\?\"),
-        "extended prefix must be stripped"
-    );
-    assert!(Path::new(&got).is_absolute(), "must be absolute");
-    let _ = std::fs::remove_file(&f);
-}
-
 /// Requested edges must land on real cache buckets, and two requests that resolve to the
 /// same bucket must collapse — otherwise the run extracts the same thumbnail twice and
 /// the report claims work that never happened.
@@ -388,14 +373,4 @@ fn build_order_is_a_permutation_of_its_input() {
             "not descending: {ordered:?}"
         );
     }
-}
-
-/// A path that does not exist must come back unchanged rather than panicking — the walk
-/// races with a user deleting files underneath it.
-#[test]
-fn parsing_path_passes_through_a_missing_file() {
-    assert_eq!(
-        parsing_path("Z:\\nope\\missing.png"),
-        "Z:\\nope\\missing.png"
-    );
 }

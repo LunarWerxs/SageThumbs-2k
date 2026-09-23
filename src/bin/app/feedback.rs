@@ -26,8 +26,8 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
-use crate::win::{
+use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
+use st2k_appkit::win::{
     combo_sel, ctl, get_edit_text, open_notify_link, open_url, run_dialog, set_clipboard_text, t,
     wide, wm_dpichanged, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK, URL_GITHUB,
 };
@@ -103,10 +103,10 @@ pub(crate) unsafe fn show_feedback(owner: HWND) {
 /// `PrintWindow`ed like every other app-window shot, so the layout is verifiable
 /// without opening a window or touching the network.
 pub(crate) unsafe fn run_shot_feedback(out: &str) -> bool {
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KFeedback"),
             wndproc: Some(feedback_wndproc),
             title: t("fb_title"),
@@ -222,8 +222,8 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     );
     // `ctl` themes edits with DarkMode_CFD, which leaves a LIGHT vertical scrollbar;
     // DarkMode_Explorer renders it dark (the face/text stay dark via WM_CTLCOLOREDIT).
-    if crate::dark::is_dark() {
-        crate::dark::dark_control(msg, w!("DarkMode_Explorer"));
+    if st2k_appkit::dark::is_dark() {
+        st2k_appkit::dark::dark_control(msg, w!("DarkMode_Explorer"));
     }
 
     // Optional reply address — muted label, because it must not read as required.
@@ -308,14 +308,14 @@ fn build_body(cat: &str, msg: &str, contact: &str) -> String {
     } else {
         ""
     };
-    let enc = crate::http::form_enc;
+    let enc = st2k_appkit::http::form_enc;
     format!(
         "cat={}&msg={}&contact={}&v={}&os={}{}",
         enc(cat),
         enc(&msg),
         enc(&contact),
         enc(env!("CARGO_PKG_VERSION")),
-        enc(&crate::sponsors::os_tag()),
+        enc(&st2k_appkit::sponsors::os_tag()),
         dev,
     )
 }
@@ -425,7 +425,7 @@ unsafe fn on_send(hwnd: HWND) {
     // the (thread-safe) post. A window torn down first just makes the post a no-op.
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let ok = crate::http::request(
+        let ok = st2k_appkit::http::request(
             "POST",
             FEEDBACK_URL,
             "Content-Type: application/x-www-form-urlencoded",
@@ -550,7 +550,7 @@ unsafe fn try_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESU
 
 /// Routes a WM_COMMAND id: OK sends the form, Cancel closes the dialog.
 unsafe fn handle_command(hwnd: HWND, wparam: WPARAM) {
-    match crate::win::command_id(wparam) {
+    match st2k_appkit::win::command_id(wparam) {
         IDOK => on_send(hwnd),
         IDCANCEL => {
             let _ = DestroyWindow(hwnd);
@@ -653,8 +653,8 @@ mod tests {
 
     #[test]
     fn feedback_endpoint_and_issue_link_are_https() {
-        assert!(crate::http::split_https(FEEDBACK_URL).is_some());
-        assert!(crate::http::split_https(&issues_url()).is_some());
+        assert!(st2k_appkit::http::split_https(FEEDBACK_URL).is_some());
+        assert!(st2k_appkit::http::split_https(&issues_url()).is_some());
         assert!(issues_url().ends_with("/issues/new"));
     }
 }

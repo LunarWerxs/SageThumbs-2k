@@ -43,8 +43,8 @@
 use std::cell::RefCell;
 
 use super::*;
-use crate::gdip;
 use crate::nudge_engine::{Ask, Cadence, Outcome};
+use st2k_appkit::gdip;
 use windows::Win32::Graphics::Gdi::{DT_CALCRECT, DT_WORDBREAK};
 
 /// Design-pixel height of the whole strip, including the gaps above and below the card.
@@ -161,7 +161,7 @@ fn body_h() -> i32 {
 
 /// Measure the wrapped body at the card's real inner width, in 96-dpi design px.
 ///
-/// Measured with the 96-dpi [`crate::win::gui_font`] against a SCREEN DC, and both halves of that
+/// Measured with the 96-dpi [`st2k_appkit::win::gui_font`] against a SCREEN DC, and both halves of that
 /// are deliberate. Every number in this file is a design pixel that the layout pass then scales,
 /// so measuring at design scale is what keeps one answer right at 100%, 125% and 150%. And it has
 /// to be a screen DC because there is no window yet: this measurement is what decides how tall to
@@ -171,7 +171,7 @@ pub(super) unsafe fn measure_body_h(body: &str) -> i32 {
     if hdc.is_invalid() {
         return BODY_H_MIN;
     }
-    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font().0));
+    let old = SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font().0));
     let mut text = wide(body);
     let n = text.len().saturating_sub(1);
     let mut rc = RECT {
@@ -201,14 +201,14 @@ pub(super) unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
     if hdc.is_invalid() {
         return floor;
     }
-    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    let old = SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_for(hwnd).0));
     let text = wide(label);
     let n = text.len().saturating_sub(1);
     let mut sz = SIZE::default();
     let _ = GetTextExtentPoint32W(hdc, &text[..n], &mut sz);
     SelectObject(hdc, old);
     ReleaseDC(Some(hwnd), hdc);
-    (crate::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
+    (st2k_appkit::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
 }
 
 /// Whether a banner is live for this window.
@@ -433,7 +433,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
     let mut head = wide(&headline);
     let hn = head.len().saturating_sub(1);
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_header(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_header(hwnd).0));
     SetTextColor(hdc, DARK_TEXT());
     let mut hr = RECT {
         left: rc.left + pad,
@@ -453,7 +453,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     // instead - the first attempt - leaves ~180px for a 90-character sentence and clips it
     // mid-word. Giving the buttons their own row is what buys the text its width.
     let mut text = wide(&body);
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_for(hwnd).0));
     SetTextColor(hdc, HEADER_TEXT());
     let mut tr = RECT {
         left: rc.left + pad,

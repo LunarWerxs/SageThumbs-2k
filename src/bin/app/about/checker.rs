@@ -133,8 +133,8 @@ pub(super) unsafe fn offer_update(hwnd: HWND) {
         offer_renewal(hwnd, ends_unix);
         return;
     }
-    let cap = wide(crate::win::t("upd_confirm_title"));
-    let prompt = wide(crate::win::t("upd_confirm"));
+    let cap = wide(st2k_appkit::win::t("upd_confirm_title"));
+    let prompt = wide(st2k_appkit::win::t("upd_confirm"));
     if MessageBoxW(
         Some(hwnd),
         PCWSTR(prompt.as_ptr()),
@@ -162,7 +162,7 @@ pub(super) unsafe fn outside_window_end(hwnd: HWND) -> Option<u64> {
     let Status::Available(latest) = &(*st).status else {
         return None;
     };
-    match update::offer_for(&crate::license::snapshot(), Some(latest)) {
+    match update::offer_for(&st2k_appkit::license::snapshot(), Some(latest)) {
         update::Offer::OutsideWindow { ends_unix } => Some(ends_unix),
         _ => None,
     }
@@ -184,17 +184,17 @@ pub(super) unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
             _ => String::new(),
         }
     };
-    let body = crate::win::t("upd_outside_window")
+    let body = st2k_appkit::win::t("upd_outside_window")
         .replace("{ver}", &ver)
-        .replace("{date}", &crate::license::format_unix_date(ends_unix));
-    if crate::win::confirm_verbs(
+        .replace("{date}", &st2k_appkit::license::format_unix_date(ends_unix));
+    if st2k_appkit::win::confirm_verbs(
         hwnd,
-        crate::win::t("upd_renew_title"),
+        st2k_appkit::win::t("upd_renew_title"),
         &body,
-        crate::win::t("btn_renew"),
-        crate::win::t("btn_not_now"),
+        st2k_appkit::win::t("btn_renew"),
+        st2k_appkit::win::t("btn_not_now"),
     ) {
-        open_url(&crate::license::renew_url());
+        open_url(&st2k_appkit::license::renew_url());
     }
 }
 

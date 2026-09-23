@@ -104,7 +104,7 @@ pub(super) unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
             rgb(210, 153, 34),
             // Outside this machine's updates window the pill says so in place of the plain
             // "Update to X", so the state is visible before anything is clicked.
-            match update::offer_for(&crate::license::snapshot(), Some(latest)) {
+            match update::offer_for(&st2k_appkit::license::snapshot(), Some(latest)) {
                 update::Offer::OutsideWindow { .. } => {
                     format!("{} {}", t("about_update_outside"), latest.tag)
                 }

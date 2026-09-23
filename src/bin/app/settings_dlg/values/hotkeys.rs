@@ -110,9 +110,9 @@ pub(super) unsafe fn hotkey_role_name(hwnd: HWND, role: HotkeyRole) -> String {
             let sel = GetDlgItem(Some(hwnd), ID_SHOT_ACTION)
                 .map(|c| SendMessageW(c, CB_GETCURSEL, None, None).0.max(0) as usize)
                 .unwrap_or(0);
-            crate::hotkey::ACTIONS
+            st2k_screenshot::hotkey::ACTIONS
                 .get(sel)
-                .map(|&(_, key)| crate::hotkey::action_label(key).to_string())
+                .map(|&(_, key)| st2k_screenshot::hotkey::action_label(key).to_string())
                 .unwrap_or_else(|| t("lbl_custom_action").to_string())
         }
     }

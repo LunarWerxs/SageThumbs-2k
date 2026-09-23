@@ -77,6 +77,23 @@ pub fn library_sources() -> Vec<PathBuf> {
     .collect()
 }
 
+/// [`library_sources`] plus the app's own crates (the window kit, the viewer, the screenshot
+/// tool): every folder of Rust source in the workspace, for tests that police the whole tree.
+pub fn all_sources() -> Vec<PathBuf> {
+    let mut v = library_sources();
+    v.extend(
+        [
+            "crates/appkit/src",
+            "crates/preview/src",
+            "crates/screenshot/src",
+        ]
+        .into_iter()
+        .map(|d| workspace().join(d))
+        .filter(|p| p.is_dir()),
+    );
+    v
+}
+
 fn root(name: &str) -> PathBuf {
     touch();
     let base = workspace().join("..");
@@ -129,10 +146,7 @@ mod tests {
     #[test]
     fn the_corpus_path_is_spelled_only_here() {
         let mut offenders = Vec::new();
-        for top in library_sources()
-            .into_iter()
-            .chain([workspace().join("tests")])
-        {
+        for top in all_sources().into_iter().chain([workspace().join("tests")]) {
             walk(&top, &mut |p| {
                 let is_this_file = p.file_name().is_some_and(|n| n == "testcorpus.rs")
                     && p.parent().is_some_and(|d| d.ends_with("src"));

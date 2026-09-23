@@ -13,7 +13,7 @@ pub(super) unsafe fn on_lifecycle_msg(
 ) -> Option<LRESULT> {
     match msg {
         WM_CREATE => Some(on_create(hwnd)),
-        crate::update::WM_APP_UPDATE => Some(on_update_available(hwnd, lparam)),
+        st2k_appkit::update::WM_APP_UPDATE => Some(on_update_available(hwnd, lparam)),
         WM_APP_SYNC => Some(on_app_sync(hwnd, lparam)),
         WM_APP_CACHE => Some(on_app_cache(hwnd, lparam)),
         WM_APP_LICENCE => Some(on_app_licence(hwnd, lparam)),
@@ -54,7 +54,7 @@ pub(super) unsafe fn close_settings(hwnd: HWND) {
 pub(super) unsafe fn on_create(hwnd: HWND) -> LRESULT {
     // Bring up GDI+ for this window's lifetime so the dark-mode owner-draw can
     // render its toggle switches / icons / rounded buttons anti-aliased.
-    GDIP_TOKEN.with(|t| t.set(crate::gdip::startup()));
+    GDIP_TOKEN.with(|t| t.set(st2k_appkit::gdip::startup()));
     let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
         .unwrap()
         .into();
@@ -67,11 +67,11 @@ pub(super) unsafe fn on_create(hwnd: HWND) -> LRESULT {
     // stays silent unless a newer release exists — then it posts WM_APP_UPDATE
     // to quietly nudge (no popup). See `update::lazy_check`.
     let target = hwnd.0 as isize;
-    crate::update::lazy_check(move |tag| {
+    st2k_appkit::update::lazy_check(move |tag| {
         let raw = Box::into_raw(Box::new(tag));
         let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
             Some(HWND(target as *mut core::ffi::c_void)),
-            crate::update::WM_APP_UPDATE,
+            st2k_appkit::update::WM_APP_UPDATE,
             WPARAM(0),
             LPARAM(raw as isize),
         );
@@ -225,7 +225,7 @@ pub(super) unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
     GDIP_TOKEN.with(|t| {
         let tok = t.replace(0);
         if tok != 0 {
-            crate::gdip::shutdown(tok);
+            st2k_appkit::gdip::shutdown(tok);
         }
     });
     PostQuitMessage(0);

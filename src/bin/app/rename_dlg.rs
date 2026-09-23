@@ -20,8 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use st2k_base::settings;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{
     ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, set_edit_text, t, wide,
     EM_SETSEL, IDCANCEL, IDOK, STATIC,
 };
@@ -105,12 +105,12 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             && GetDlgItem(Some(hwnd), CID_RN_ERROR).is_ok_and(|s| s.0 as isize == lparam.0)
         {
             // The same red the Settings status lines use.
-            return crate::dark::dark_ctlcolor_tinted(wparam, crate::dark::STATUS_RED);
+            return st2k_appkit::dark::dark_ctlcolor_tinted(wparam, st2k_appkit::dark::STATUS_RED);
         }
         if msg == WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), CID_RN_HINT).is_ok_and(|s| s.0 as isize == lparam.0)
         {
-            return crate::dark::dark_ctlcolor_dim(wparam);
+            return st2k_appkit::dark::dark_ctlcolor_dim(wparam);
         }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
@@ -121,7 +121,7 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             WM_RN_DONE => on_rn_done(hwnd),
             WM_RN_PREVIEW => on_rn_preview(hwnd),
             // DPI, the deferred close a running rename needs, destroy, default.
-            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }
@@ -212,7 +212,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let (id, notify) = crate::win::command_parts(wparam);
+    let (id, notify) = st2k_appkit::win::command_parts(wparam);
     match id {
         IDOK => start_rename(hwnd),
         IDCANCEL => request_close(hwnd),

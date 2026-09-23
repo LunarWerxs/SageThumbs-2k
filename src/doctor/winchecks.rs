@@ -310,20 +310,8 @@ fn this_pc_namespace_section(r: &mut Report) {
     }
 }
 
-/// What to call a window class in a warning, for the classes whose keystrokes the Space preview
-/// has to see. `None` for anything the feature never serves.
-///
-/// Shared with the daemon's live watcher (`screenshot::elevwarn`) so the report and the warning
-/// can never disagree about which windows the feature covers.
-pub fn served_window_kind(cls: &str) -> Option<&'static str> {
-    match cls {
-        "CabinetWClass" | "ExploreWClass" => Some("File Explorer"),
-        _ if cls.starts_with("EVERYTHING") => Some("Everything"),
-        _ => None,
-    }
-}
-
-use crate::prebuild::process_is_elevated;
+use st2k_base::host::process_is_elevated;
+use st2k_base::settings::served_window_kind;
 
 unsafe extern "system" fn collect_elevated(
     hwnd: windows::Win32::Foundation::HWND,

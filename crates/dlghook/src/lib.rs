@@ -25,7 +25,7 @@
 //!
 //! # The handshake
 //!
-//! The requester (`src/bin/app/dialog_hook.rs`) creates the section and the event with a
+//! The requester (`crates/appkit/src/dialog_hook.rs`) creates the section and the event with a
 //! DACL that admits only its own user, refuses to proceed if either name already existed,
 //! writes a [`Slot`] carrying the dialog `HWND` and a fresh random nonce, installs the hook,
 //! and then SENDS the registered `SageThumbs2K.DlgSel.Request` message to the dialog. The
@@ -90,7 +90,7 @@ const PROBE_TIMEOUT_MS: u32 = 1000;
 
 /// Names of the two kernel objects the REQUESTER creates before arming a request, and of
 /// the window message it sends to the dialog to make the hook run. Kept in step with
-/// `src/bin/app/dialog_hook.rs` by hand — this crate deliberately shares no code with the
+/// `crates/appkit/src/dialog_hook.rs` by hand — this crate deliberately shares no code with the
 /// app, so that the app's dependency tree never reaches a DLL that loads into other
 /// processes. `slot_layout_and_constants_match_the_app_side` pins the numbers on both sides.
 const SECTION_NAME: PCWSTR = windows::core::w!("Local\\SageThumbs2K.DlgSel.Section");
@@ -345,7 +345,7 @@ unsafe fn signal_done() {
 mod tests {
     use super::*;
 
-    /// The app mirrors this layout by hand (`src/bin/app/dialog_hook.rs`); its test pins the
+    /// The app mirrors this layout by hand (`crates/appkit/src/dialog_hook.rs`); its test pins the
     /// same numbers, so a change on one side fails one of the two.
     #[test]
     fn slot_layout_and_constants_match_the_app_side() {

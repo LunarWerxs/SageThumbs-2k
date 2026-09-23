@@ -192,7 +192,7 @@ pub fn prebuild(
 ) -> Result<String, String> {
     use crate::prebuild as pb;
 
-    if pb::is_elevated() {
+    if st2k_base::host::is_elevated() {
         return Err(
             "prebuild must NOT run as administrator: Windows keeps the thumbnail \
                     cache per user, so an elevated run fills the administrator's cache and \

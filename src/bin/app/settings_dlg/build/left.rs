@@ -358,12 +358,12 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
         200,
         ID_SHOT_ACTION,
     );
-    for &(_, key) in crate::hotkey::ACTIONS {
-        let w = wide(crate::hotkey::action_label(key));
+    for &(_, key) in st2k_screenshot::hotkey::ACTIONS {
+        let w = wide(st2k_screenshot::hotkey::action_label(key));
         SendMessageW(act, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
     }
     let cur_action = settings::custom_action();
-    let asel = crate::hotkey::ACTIONS
+    let asel = st2k_screenshot::hotkey::ACTIONS
         .iter()
         .position(|&(id, _)| id == cur_action)
         .unwrap_or(0);

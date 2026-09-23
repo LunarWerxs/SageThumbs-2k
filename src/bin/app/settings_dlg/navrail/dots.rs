@@ -89,7 +89,7 @@ pub(in super::super) fn page_has_non_defaults(ci: usize) -> bool {
         4 => menu_page_has_non_defaults(),
         // Screenshots / Quick preview: their daemon-backed master switches are OFF by
         // default (first-run offers them), so ON is the changed state.
-        5 => crate::screenshot::is_enabled(),
+        5 => st2k_screenshot::screenshot::is_enabled(),
         // Quick action: unbound (vk == 0) is the default; any bound hotkey is a change.
         6 => s::custom_action_hotkey().1 != 0,
         8 => s::preview_enabled(),

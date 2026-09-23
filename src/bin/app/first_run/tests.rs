@@ -13,7 +13,7 @@ fn head_h(text: &str) -> i32 {
 
 /// [`head_h`] for an arbitrary column and floor.
 fn need(text: &str, col_w: i32, min_h: i32) -> i32 {
-    unsafe { crate::win::design_wrapped_text_h(text, col_w) }.max(min_h)
+    unsafe { st2k_appkit::win::design_wrapped_text_h(text, col_w) }.max(min_h)
 }
 
 /// Every shipped locale's `fr_intro`/`fr_intro_portable` stays within a sane band:

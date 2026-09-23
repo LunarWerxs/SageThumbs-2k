@@ -5,7 +5,7 @@
 //! on purpose and is untouched by this fix) as a subprocess, with `ST2K_PREVIEW_SLOW_READ_MS`
 //! as the deterministic slow-read seam (`preview::content::read_capped`, shared by the
 //! unknown-extension sniff and the text/markdown read, see `docs/CHANGELOG.md` and
-//! `src/bin/app/preview/content.rs`). No real network share or removable drive is touched.
+//! `crates/preview/src/preview/content.rs`). No real network share or removable drive is touched.
 //!
 //! Pre-fix, `load()` ran the archive/DB/mail/text read synchronously on the same thread that
 //! was about to become the window's message pump, so a slow read left the window either
@@ -14,7 +14,7 @@
 //! immediately and keeps answering `WM_COPYDATA` throughout the slow read.
 //!
 //! The companion unit test for the OTHER half of the acceptance bar (a stale, superseded load's
-//! completion must never paint over the newest one) lives in `src/bin/app/preview/loader.rs`
+//! completion must never paint over the newest one) lives in `crates/preview/src/preview/loader.rs`
 //! (`is_load_current`), since that decision is a pure function extracted for exactly this.
 #![cfg(windows)]
 

@@ -49,7 +49,8 @@ pub(in super::super) unsafe fn spawn_cache_rebuild(
 /// existing backup and then hitting a write failure must leave the OLD backup intact rather
 /// than truncated, since the dialog is reporting the export as FAILED either way.
 pub(in super::super) unsafe fn export_settings_to_file(hwnd: HWND) {
-    let Some(path) = crate::win::pick_save_settings(hwnd, "SageThumbs2K-settings.json") else {
+    let Some(path) = st2k_appkit::win::pick_save_settings(hwnd, "SageThumbs2K-settings.json")
+    else {
         return;
     };
     match crate::settings_io::export_settings_to_path(std::path::Path::new(&path)) {
@@ -72,7 +73,7 @@ pub(in super::super) unsafe fn export_settings_to_file(hwnd: HWND) {
 /// dialog, and re-register the machine-wide shell hooks if the per-format enables
 /// changed (Diagnostics ▸ Import).
 pub(in super::super) unsafe fn import_settings_from_file(hwnd: HWND) {
-    let Some(path) = crate::win::pick_open_settings(hwnd) else {
+    let Some(path) = st2k_appkit::win::pick_open_settings(hwnd) else {
         return;
     };
     let text = match std::fs::read_to_string(&path) {
@@ -150,7 +151,7 @@ pub(in super::super) unsafe fn msg(hwnd: HWND, text: &str, caption: &str, icon: 
 /// — it briefly blinks the taskbar. This is the fix for the classic "I changed a setting
 /// but the thumbnails look the same" (Explorer keeps serving stale cached thumbnails).
 pub(in super::super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
-    if !crate::win::confirm_warning(
+    if !st2k_appkit::win::confirm_warning(
         hwnd,
         "Rebuild Thumbnail Cache",
         "This clears Windows' thumbnail cache and briefly restarts File Explorer (your \
@@ -276,7 +277,7 @@ pub(in super::super) unsafe fn reregister_elevated() -> Reg {
 /// context-menu / property hooks back to us), then clears the thumbnail cache + restarts
 /// Explorer so the repaired thumbnails render immediately instead of serving stale blanks.
 pub(in super::super) unsafe fn repair_associations(hwnd: HWND) {
-    if !crate::win::confirm_warning(
+    if !st2k_appkit::win::confirm_warning(
         hwnd,
         "Repair File Associations",
         "This re-registers SageThumbs 2K for all your enabled file types — the fix when \

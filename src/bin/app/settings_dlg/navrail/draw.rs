@@ -279,7 +279,7 @@ pub(in super::super) unsafe fn draw_pane_header(hwnd: HWND, d: &DRAWITEMSTRUCT) 
         ACCENT(),
     );
     let tx = rc.left + dpi_scale(hwnd, 46);
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_title(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_title(hwnd).0));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, DARK_TEXT());
     let mut title = wide(pane_title(ci));

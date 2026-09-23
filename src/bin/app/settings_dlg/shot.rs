@@ -19,7 +19,7 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
     // `ST2K_LICENCE_MODE=business` and point `ST2K_LICENCE_HOME` at a scratch breadcrumb
     // (`scratchpad/shot-trial.ps1` in the 2026-09-13 session is the shape).
     biznag::decide();
-    let hwnd = crate::win::create_shot_window(
+    let hwnd = st2k_appkit::win::create_shot_window(
         hinst,
         dark,
         w!("SageThumbs2KOptions"),
@@ -29,7 +29,7 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
         588 + nudge::extra_height() + biznag::extra_height(),
     )?;
     // Let the controls — the ListView especially — realize + paint before we drive panes.
-    crate::win::pump_msgs(20);
+    st2k_appkit::win::pump_msgs(20);
     Some(hwnd)
 }
 
@@ -41,12 +41,12 @@ pub(super) unsafe fn build_settings_shot_window(hinst: HINSTANCE, dark: bool) ->
 pub(super) unsafe fn settle_pane(hwnd: HWND, tab: usize) {
     let tab = tab.min(NCAT - 1);
     switch_category(hwnd, prime_category(tab, NCAT));
-    crate::win::pump_msgs(5);
+    st2k_appkit::win::pump_msgs(5);
     switch_category(hwnd, tab);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(12);
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(4);
+    st2k_appkit::win::force_repaint(hwnd);
+    st2k_appkit::win::pump_msgs(12);
+    st2k_appkit::win::force_repaint(hwnd);
+    st2k_appkit::win::pump_msgs(4);
 }
 
 /// Which category [`settle_pane`] should switch to FIRST so the switch to `tab` lands as a
@@ -70,7 +70,7 @@ pub(crate) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, tab: usiz
         return false;
     };
     settle_pane(hwnd, tab);
-    crate::win::capture_and_destroy(hwnd, out)
+    st2k_appkit::win::capture_and_destroy(hwnd, out)
 }
 
 /// `--shot … --search <needle>[!]` : drive the settings-wide search headlessly and capture
@@ -88,10 +88,10 @@ pub(crate) unsafe fn run_shot_search(hinst: HINSTANCE, dark: bool, out: &str, ar
         None => (arg, false),
     };
     if let Ok(edit) = GetDlgItem(Some(hwnd), ID_SEARCH_GLOBAL) {
-        let w = crate::win::wide(needle);
+        let w = st2k_appkit::win::wide(needle);
         SendMessageW(edit, WM_SETTEXT, None, Some(LPARAM(w.as_ptr() as isize)));
     }
-    crate::win::pump_msgs(8);
+    st2k_appkit::win::pump_msgs(8);
     if pick {
         if let Ok(list) = GetDlgItem(Some(hwnd), ID_SEARCH_RESULTS) {
             SendMessageW(list, LB_SETCURSEL, Some(WPARAM(0)), None);
@@ -105,12 +105,12 @@ pub(crate) unsafe fn run_shot_search(hinst: HINSTANCE, dark: bool, out: &str, ar
                 Some(LPARAM(list.0 as isize)),
             );
         }
-        crate::win::force_repaint(hwnd);
-        crate::win::pump_msgs(8);
+        st2k_appkit::win::force_repaint(hwnd);
+        st2k_appkit::win::pump_msgs(8);
     }
-    crate::win::force_repaint(hwnd);
-    crate::win::pump_msgs(4);
-    crate::win::capture_and_destroy(hwnd, out)
+    st2k_appkit::win::force_repaint(hwnd);
+    st2k_appkit::win::pump_msgs(4);
+    st2k_appkit::win::capture_and_destroy(hwnd, out)
 }
 
 /// The app's `--shot-gif` mode: capture every category tab, each in its own fresh `--shot --tab N`
@@ -144,7 +144,7 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
             .unwrap_or(false);
         if ok {
             if let Ok(img) = image::open(&png) {
-                frames.push(crate::win::window_shot::downscale_to_width(
+                frames.push(st2k_appkit::win::window_shot::downscale_to_width(
                     img.to_rgba8(),
                     772,
                 ));
@@ -156,7 +156,7 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
         return false;
     }
     // ~1.6 s per tab so a reader can take each pane in before it advances.
-    crate::win::window_shot::encode_gif(&frames, std::path::Path::new(out), 1600)
+    st2k_appkit::win::window_shot::encode_gif(&frames, std::path::Path::new(out), 1600)
 }
 
 #[cfg(test)]

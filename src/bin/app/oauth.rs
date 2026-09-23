@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 
-use crate::http;
+use st2k_appkit::http;
 
 /// This app's public OAuth client id (== its data-locker `appId`). Registered with
 /// Connections 2026-07-05; a public PKCE client, so there is NO client secret here.
@@ -69,7 +69,7 @@ fn b64url(bytes: &[u8]) -> String {
 /// random bytes; challenge = base64url(SHA-256(verifier)).
 fn pkce() -> Option<(String, String)> {
     let verifier = b64url(&random_bytes(32)?);
-    let challenge = b64url(&crate::license::sha256(verifier.as_bytes())?);
+    let challenge = b64url(&st2k_appkit::license::sha256(verifier.as_bytes())?);
     Some((verifier, challenge))
 }
 
@@ -105,7 +105,7 @@ pub(crate) fn login() -> Result<Tokens, String> {
     let url = authorize_url(&redirect, &challenge, &state);
     // Open the user's real browser. Best-effort: if it doesn't open, the loopback simply
     // times out below and we surface that.
-    unsafe { crate::win::open_url(&url) };
+    unsafe { st2k_appkit::win::open_url(&url) };
 
     let code = catch_code(&listener, Duration::from_secs(LOGIN_TIMEOUT_SECS), &state)?;
     exchange_code(&code, &redirect, &verifier)
@@ -363,24 +363,24 @@ fn handle_conn(
             // i18n::t reads a process-wide atomic, so it is safe from this loopback thread.
             respond_html(
                 stream,
-                crate::win::t("oauth_canceled_title"),
-                crate::win::t("oauth_close_tab"),
+                st2k_appkit::win::t("oauth_canceled_title"),
+                st2k_appkit::win::t("oauth_close_tab"),
             );
             Some(Err(format!("sign-in was canceled ({err})")))
         }
         Callback::Code(code) => {
             respond_html(
                 stream,
-                crate::win::t("oauth_signed_in_title"),
-                crate::win::t("oauth_close_tab"),
+                st2k_appkit::win::t("oauth_signed_in_title"),
+                st2k_appkit::win::t("oauth_close_tab"),
             );
             Some(Ok(code))
         }
         Callback::NoCode => {
             respond_html(
                 stream,
-                crate::win::t("oauth_failed_title"),
-                crate::win::t("oauth_failed_body"),
+                st2k_appkit::win::t("oauth_failed_title"),
+                st2k_appkit::win::t("oauth_failed_body"),
             );
             Some(Err(
                 "the sign-in response carried no authorization code".to_string()
@@ -527,7 +527,7 @@ mod tests {
             "verifier must be URL-safe, unpadded"
         );
         // The challenge must equal base64url(SHA-256(verifier)) — the relying party recomputes this.
-        let expected = b64url(&crate::license::sha256(verifier.as_bytes()).unwrap());
+        let expected = b64url(&st2k_appkit::license::sha256(verifier.as_bytes()).unwrap());
         assert_eq!(challenge, expected);
     }
 

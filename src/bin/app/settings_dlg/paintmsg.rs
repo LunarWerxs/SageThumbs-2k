@@ -53,12 +53,12 @@ pub(super) unsafe fn special_ctlcolor(
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && dimmed_caption(hwnd, lparam)
     {
-        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+        return Some(st2k_appkit::dark::dark_ctlcolor_dim(wparam));
     }
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && disabled_framed_edit(hwnd, lparam)
     {
-        return Some(crate::dark::dark_ctlcolor_field_disabled(wparam));
+        return Some(st2k_appkit::dark::dark_ctlcolor_field_disabled(wparam));
     }
     if let Some(r) = status_ctlcolor(hwnd, msg, wparam, lparam) {
         return Some(r);
@@ -92,11 +92,11 @@ unsafe fn status_ctlcolor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) 
         // English words, which broke silently in every non-English build.
         let running = SHOT_STATUS_GREEN.with(|g| g.get());
         let col = if running {
-            crate::dark::STATUS_GREEN
+            st2k_appkit::dark::STATUS_GREEN
         } else {
-            crate::dark::STATUS_RED
+            st2k_appkit::dark::STATUS_RED
         };
-        return Some(crate::dark::dark_ctlcolor_tinted(wparam, col));
+        return Some(st2k_appkit::dark::dark_ctlcolor_tinted(wparam, col));
     }
     // The Settings-sync status line: green in a healthy synced state, else a muted grey
     // (the signed-out invite / a transient "Connecting…"). Mirrors the hotkey-service
@@ -108,12 +108,12 @@ unsafe fn status_ctlcolor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) 
         && GetDlgItem(Some(hwnd), ID_SYNC_STATUS).is_ok_and(|s| s.0 as isize == lparam.0)
     {
         if sync::sync_status_is_green() {
-            return Some(crate::dark::dark_ctlcolor_tinted(
+            return Some(st2k_appkit::dark::dark_ctlcolor_tinted(
                 wparam,
-                crate::dark::STATUS_GREEN,
+                st2k_appkit::dark::STATUS_GREEN,
             ));
         }
-        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+        return Some(st2k_appkit::dark::dark_ctlcolor_dim(wparam));
     }
     // The "using it at work?" line on the Licence page: a caption, so the muted grey every
     // other explanatory line on this dialog uses (`dark_ctlcolor_dim`), never the full
@@ -121,7 +121,7 @@ unsafe fn status_ctlcolor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) 
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC
         && GetDlgItem(Some(hwnd), ID_LICENCE_WORK_HINT).is_ok_and(|s| s.0 as isize == lparam.0)
     {
-        return Some(crate::dark::dark_ctlcolor_dim(wparam));
+        return Some(st2k_appkit::dark::dark_ctlcolor_dim(wparam));
     }
     None
 }
@@ -137,13 +137,13 @@ pub(super) unsafe fn tone_ctlcolor(
 ) -> Option<LRESULT> {
     match tone {
         licence_ui::Tone::Neutral => dark_ctlcolor(msg, wparam),
-        licence_ui::Tone::Good => Some(crate::dark::dark_ctlcolor_tinted(
+        licence_ui::Tone::Good => Some(st2k_appkit::dark::dark_ctlcolor_tinted(
             wparam,
-            crate::dark::STATUS_GREEN,
+            st2k_appkit::dark::STATUS_GREEN,
         )),
-        licence_ui::Tone::Bad => Some(crate::dark::dark_ctlcolor_tinted(
+        licence_ui::Tone::Bad => Some(st2k_appkit::dark::dark_ctlcolor_tinted(
             wparam,
-            crate::dark::STATUS_RED,
+            st2k_appkit::dark::STATUS_RED,
         )),
     }
 }
@@ -192,7 +192,7 @@ pub(super) unsafe fn on_measureitem(
     }
     if m.CtlType == ODT_MENU {
         let label = list::ctx_menu_label(m.itemID as usize);
-        crate::win::measure_menu_item(hwnd, m, label);
+        st2k_appkit::win::measure_menu_item(hwnd, m, label);
         LRESULT(1)
     } else {
         DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -206,7 +206,7 @@ pub(super) unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         return LRESULT(1);
     }
     if d.CtlType == ODT_MENU {
-        crate::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
+        st2k_appkit::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
         return LRESULT(1);
     }
     if d.CtlType == ODT_STATIC {

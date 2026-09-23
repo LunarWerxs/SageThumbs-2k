@@ -101,8 +101,6 @@ use registration::*;
 use settingscheck::*;
 use winchecks::*;
 
-pub use winchecks::served_window_kind;
-
 /// `st2k doctor --bundle <out.zip>`: the report, the log's tail, `formats --json` and the
 /// stored settings in one file. `docs/FAQ.md` tells a confused user to run `st2k doctor`
 /// and paste its output, but the crash/panic log lives at a separate path found via Settings
@@ -154,7 +152,7 @@ pub fn report(file: Option<&str>) -> String {
     r.line(S::Info, "SageThumbs 2K version", env!("CARGO_PKG_VERSION"));
     r.line(S::Info, "Windows", &st2k_base::safety::os_string());
     r.line(S::Info, "Process architecture", std::env::consts::ARCH);
-    if crate::prebuild::is_elevated() {
+    if st2k_base::host::is_elevated() {
         // Every HKCU check below reads THIS process's hive. Elevated, that is the
         // administrator's hive, not the interactive user's — a clean HKCU check here can
         // still misreport the user's own session as unregistered.

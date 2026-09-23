@@ -37,7 +37,8 @@ use windows_registry::{Key, CURRENT_USER};
 
 use st2k_base::settings;
 
-use crate::{cred_store, sync_client};
+use crate::sync_client;
+use st2k_appkit::cred_store;
 
 /// The export doc's `_about` field, hoisted into one const rather than the two separate
 /// hand-typed copies `export_tree` and `export_settings`' portable branch used to each carry

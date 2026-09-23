@@ -298,9 +298,9 @@ fn localize(mut ask: Ask) -> Ask {
         // never English, which is the failure this whole change exists to remove.
         ("nudge_head_generic", "nudge_body_generic")
     };
-    ask.headline = crate::win::t(head).replace("{app}", APP_NAME);
-    ask.body = crate::win::t(body).replace("{app}", APP_NAME);
-    ask.action_label = crate::win::t("nudge_action").to_string();
+    ask.headline = st2k_appkit::win::t(head).replace("{app}", APP_NAME);
+    ask.body = st2k_appkit::win::t(body).replace("{app}", APP_NAME);
+    ask.action_label = st2k_appkit::win::t("nudge_action").to_string();
     ask
 }
 

@@ -1,0 +1,524 @@
+//! Quick preview viewer — the QuickLook-style "press Space, see the file" popup
+//! window, dispatched from `main.rs` for `--preview [path]`.
+//!
+//! The viewer is launched by the Phase 2 Space/Esc `WH_KEYBOARD_LL` hook the daemon
+//! installs, or by hand. It is driven by `--preview <path>` on the command line and by
+//! `WM_COPYDATA` commands (which the hook's `request_toggle`/`request_close`, and the
+//! single-instance forwarder here, use to switch/close a running viewer).
+//!
+//! Process model (plan §3): a SEPARATE single-instance process, not a window inside the
+//! daemon — matches the codebase's "daemon spawns single-purpose helpers" pattern
+//! (`--convert`, `--screenshot`), keeps decode crashes away from the hotkey owner (the
+//! release profile is `panic=abort`, so a hostile-file decode panic aborts THIS throwaway
+//! viewer only; Explorer + the daemon are untouched), and keeps the hook thread free.
+//!
+//! Submodules: [`window`] owns the window/chrome/toolbar/wndproc; [`content`] owns the
+//! budgeted decode worker + the image DIB paint; [`infocard`] is the fallback card.
+
+mod anim;
+mod benches;
+mod content;
+mod dbdoc;
+mod docconv;
+mod find;
+mod font;
+mod hexview;
+mod highlight;
+mod infocard;
+mod loader;
+mod mailmsg;
+mod markdown;
+mod mdhtml;
+mod paint;
+mod pdfview;
+mod print;
+mod selection;
+mod shot;
+mod toolbar;
+mod transport;
+mod video;
+#[cfg(feature = "html-preview")]
+mod webview;
+mod window;
+mod woff;
+pub use benches::{run_bench, run_mash_bench, run_nav_bench, run_probe};
+
+use core::ffi::c_void;
+use core::sync::atomic::{AtomicU64, Ordering};
+use std::fmt::Write as _;
+
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA, WM_KEYDOWN,
+};
+
+/// Last time we spawned a `--preview` in response to a Space press (ms tick), or 0. Serializes
+/// the FindWindow-then-spawn race: we won't spawn a second viewer while one is still coming up.
+static SPAWN_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Window class of the viewer (NOTE: `"SageThumbs2KPreview"` is TAKEN by
+/// `previewhandler.rs`; this is a distinct class — see the plan §7).
+pub(super) const VIEWER_CLASS: PCWSTR = w!("SageThumbs2KViewer");
+
+/// Single-instance mutex — mirrors the daemon's mutex-first startup so two `--preview`
+/// launches can't both create a window (the loser forwards its path and exits).
+const VIEWER_MUTEX: PCWSTR = w!("SageThumbs2K.Viewer.Single");
+
+// WM_COPYDATA command tags (the `dwData` field). The payload, when present, is the
+// target file path as UTF-16 (no NUL required; `cbData` bounds it).
+/// Switch the viewer to preview the payload path (reuse the window). Always honored.
+pub(super) const CMD_SET_PATH: usize = 1;
+/// Toggle: if the viewer is showing the payload path, close; else switch to it. Honored
+/// only after the open grace window (plan §3) so a key-repeat can't close a fresh window.
+pub(super) const CMD_TOGGLE: usize = 2;
+/// Close the viewer. Honored only after the open grace window.
+pub(super) const CMD_CLOSE: usize = 3;
+
+/// `--preview [path]` entry. Claims the single-instance mutex; if another viewer is
+/// already up, forwards the path to it via `WM_COPYDATA` and returns. Otherwise creates
+/// the viewer window, kicks off the initial decode, and runs the message loop until close.
+pub unsafe fn run_preview(hinst: HINSTANCE, initial_path: Option<&str>) {
+    // Mutex-first single-instance (TOCTOU-safe; mirrors `daemon::run_daemon` +
+    // `main`'s `SageThumbs2K.App.Single`). The helper reads `GetLastError` immediately after
+    // `CreateMutexW`, before any other Win32 call clobbers it, and gives the mutex an
+    // owner-only DACL so another account's process cannot open it.
+    let (mutex, last_err) = st2k_appkit::win::create_mutex_user_only(true, VIEWER_MUTEX);
+    // `mutex.is_err()` is NOT the same question as "does someone else already own it" —
+    // `CreateMutexW` can also fail outright (e.g. an access-denied against a differently-DACL'd
+    // object of the same name). Either case means this process cannot establish itself as the
+    // single-instance owner, so both route through the same forward-or-bail path below instead
+    // of one of them silently falling through to create a second, uncoordinated viewer window.
+    let mutex = match mutex {
+        Ok(m) if last_err != ERROR_ALREADY_EXISTS => m,
+        _ => {
+            forward_to_running_viewer(initial_path);
+            return; // no window to forward to, and no safe way to become the owner either
+        }
+    };
+    // Held (leaked) for the life of the viewer on purpose — dropping it early would let a
+    // third launch create a second window. `_mutex` binds it so it isn't dropped now.
+    let _mutex = mutex;
+
+    // Resolve the target: an explicit `--preview <path>` (manual/test), else the foreground
+    // Explorer selection (the authoritative hot path — the daemon spawns `--preview` with NO
+    // path because COM is forbidden in the hook, so the viewer resolves the selection itself).
+    // Both resolutions run on a BUDGETED worker: the IShellWindows automation marshals into
+    // explorer.exe (and a `.lnk` resolve can touch a dead network target), so a hung shell
+    // would otherwise park this process forever before any window exists.
+    let target = match initial_path {
+        Some(p) => {
+            let raw = p.to_string();
+            let for_resolve = raw.clone();
+            // On timeout, fall back to the raw path (an unresolved .lnk previews as its card).
+            st2k_appkit::explorer_selection::PreviewTarget::Path(
+                budgeted(move || unsafe {
+                    st2k_appkit::explorer_selection::resolve_explicit(&for_resolve)
+                })
+                .unwrap_or(raw),
+            )
+        }
+        None => match budgeted(|| unsafe { st2k_appkit::explorer_selection::preview_target() }) {
+            Some(t) => t,
+            None => return, // shell hung mid-resolve → nothing to preview
+        },
+    };
+
+    // A VIRTUAL selection (Recycle Bin / This PC / …) still opens the viewer — it just shows
+    // the "nothing to preview" card instead of a decoded file (2026-09-08 QuickLook-parity
+    // audit). `Empty` (nothing selected at all) is the one case that must open NOTHING.
+    let (init_path, virtual_card) = match target {
+        st2k_appkit::explorer_selection::PreviewTarget::Path(p) => (Some(p), false),
+        st2k_appkit::explorer_selection::PreviewTarget::Virtual => (None, true),
+        st2k_appkit::explorer_selection::PreviewTarget::Empty => return,
+    };
+
+    let dark = st2k_appkit::dark::is_dark();
+    let Some(hwnd) = window::create_viewer(hinst, dark, init_path, None) else {
+        return;
+    };
+    if virtual_card {
+        loader::show_virtual_card(hwnd);
+    }
+
+    // Standard modal-less pump; `WM_DESTROY` posts `WM_QUIT` which ends this.
+    st2k_appkit::win::pump_plain();
+    // `_mutex` drops here, releasing single-instance ownership as the process exits.
+}
+
+/// Forward `initial_path` to an already-running viewer, retrying `FindWindowW` briefly in case the owner is still mid-create.
+unsafe fn forward_to_running_viewer(initial_path: Option<&str>) {
+    for _ in 0..25 {
+        if let Ok(existing) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
+            if let Some(p) = initial_path {
+                send_command(existing, CMD_SET_PATH, Some(p));
+            }
+            st2k_appkit::win::force_foreground(existing);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+}
+
+/// Send a `WM_COPYDATA` command (+ optional path payload) to a viewer window. Blocking, because
+/// `WM_COPYDATA`'s buffer is only valid for the call — but bounded with `SMTO_ABORTIFHUNG` and a
+/// 2 s timeout, so a viewer wedged on its own UI thread (a WebView2/COM call, a modal) can't
+/// park the sender forever.
+pub(super) unsafe fn send_command(hwnd: HWND, cmd: usize, path: Option<&str>) {
+    let wide = path.map(st2k_appkit::win::wide).unwrap_or_default();
+    let cds = COPYDATASTRUCT {
+        dwData: cmd,
+        cbData: (wide.len() * 2) as u32,
+        lpData: if wide.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            wide.as_ptr() as *mut c_void
+        },
+    };
+    let mut result = 0usize;
+    let _ = SendMessageTimeoutW(
+        hwnd,
+        WM_COPYDATA,
+        WPARAM(0),
+        LPARAM(&cds as *const _ as isize),
+        SMTO_ABORTIFHUNG,
+        2000,
+        Some(&mut result),
+    );
+}
+
+/// Parse a `WM_COPYDATA` payload back into `(command, path)`. `path` is `None` when the
+/// message carried no buffer.
+pub(super) unsafe fn parse_command(lparam: LPARAM) -> Option<(usize, Option<String>)> {
+    // WM_COPYDATA is receivable from ANY local same-desktop process that knows the viewer's
+    // window class, so treat the payload as untrusted: cap the claimed size (a real path is at
+    // most ~32K chars) so a bogus/huge `cbData` can't drive a giant allocation. Windows copies
+    // the buffer into our address space for the call, so within the cap the read is bounded.
+    const MAX_PAYLOAD_BYTES: u32 = 0x10000; // 64 KB = 32K UTF-16 units, > any real path
+    let cds = (lparam.0 as *const COPYDATASTRUCT).as_ref()?;
+    let path = if (2..=MAX_PAYLOAD_BYTES).contains(&cds.cbData) && !cds.lpData.is_null() {
+        let n = (cds.cbData / 2) as usize;
+        let slice = core::slice::from_raw_parts(cds.lpData as *const u16, n);
+        Some(
+            String::from_utf16_lossy(slice)
+                .trim_end_matches('\0')
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    Some((cds.dwData, path))
+}
+
+/// Run `f` on a detached worker with a 3 s wall-clock budget; `None` on timeout (the worker is
+/// abandoned — it sends into a dropped channel and exits, or dies with the process). Guards the
+/// startup selection/.lnk resolution against a hung explorer.exe (see `run_preview`).
+fn budgeted<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(3)).ok()
+}
+
+/// Drain whatever the viewer's message queue holds right now, once. The mash bench runs this
+/// BETWEEN keypresses (to keep the window alive); [`wait_until_loaded`] runs it at the top of every
+/// poll.
+fn drain_messages() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// Pump the viewer's message loop until it has fully loaded `expected`, or `budget_ms` passes.
+///
+/// "Loaded" is deliberately BOTH conditions: the state's path is the file we asked for AND the
+/// kind has left `Loading`. Checking only the path would stop the clock when navigation began
+/// rather than when the picture arrived, which would measure nothing worth measuring.
+fn wait_until_loaded(hwnd: HWND, expected: &str, budget_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget_ms);
+    loop {
+        // Drain the queue DIRECTLY rather than via `win::pump_msgs`, which sleeps 16 ms per
+        // "frame" — it exists to let a headless screenshot settle, not to time anything. Using
+        // it here put a 128 ms floor under every measured step and made a 400x300 JPEG look
+        // exactly as slow as a 12 MP one, which is what gave the game away.
+        drain_messages();
+        // The window can die under us (a decode abort, a close, anything), and `state()` then
+        // hands back a NULL pointer that `&*` would happily dereference -- an access
+        // violation, which is exactly how this harness crashed at 14 steps while passing at 8.
+        // A dead window is a legitimate outcome to report, not to fault on.
+        if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)) }.as_bool() {
+            return false;
+        }
+        let sp = unsafe { window::state(hwnd) };
+        if sp.is_null() {
+            return false;
+        }
+        let st = unsafe { &*sp };
+        let here = st.path.borrow().clone().unwrap_or_default();
+        if here.eq_ignore_ascii_case(expected) && st.kind.get() != window::ContentKind::Loading {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        // Sub-millisecond, so the poll granularity is noise next to a real step.
+        std::thread::sleep(std::time::Duration::from_micros(200));
+    }
+}
+
+/// System load at the moment of measuring, stamped into every bench report.
+///
+/// A timing without this is not a measurement, it is an anecdote: the same bench on this
+/// machine swung from 315 ms to 604 ms per step purely because something else was using the
+/// CPU. Sampling it here means a stored report can be trusted (or discarded) later without
+/// anyone having to remember what the box was doing.
+fn load_snapshot() -> String {
+    // Deliberately NOT a CPU-percentage reading: that needs another `windows` crate feature
+    // on a binary whose size is release-gated, and a percentage is the wrong number anyway.
+    // What a benchmark cares about is how much CPU this process can actually GET, so time a
+    // FIXED unit of work on the spot. It degrades exactly when the machine is busy, which is
+    // what makes two reports comparable — or visibly not — without anyone having to remember
+    // what else was running an hour ago. (This session saw the same bench swing 315 ms to
+    // 604 ms per step on a box that was pegged at 100% by unrelated work.)
+    let t0 = std::time::Instant::now();
+    let mut acc = 0u64;
+    for i in 0..40_000_000u64 {
+        acc = acc.wrapping_add(i ^ (acc >> 7));
+    }
+    let us = t0.elapsed().as_micros();
+    std::hint::black_box(acc);
+    format!(
+        "calibration: a fixed CPU workload took {} here (lower = quieter machine; \
+         compare runs only when these agree)",
+        fmt_us(us)
+    )
+}
+
+fn fmt_us(us: u128) -> String {
+    if us >= 1_000_000 {
+        format!("{:.2} s", us as f64 / 1_000_000.0)
+    } else if us >= 1_000 {
+        format!("{:.1} ms", us as f64 / 1_000.0)
+    } else {
+        format!("{us} us")
+    }
+}
+
+/// Spawn a fresh detached instance of ourselves with `args` (launches the viewer + the Info
+/// dialog), through the app's shared `win::spawn_self` — the app's one detached-spawn
+/// implementation.
+pub(super) fn spawn_self(args: &[&str]) {
+    let _ = st2k_appkit::win::spawn_self(args);
+}
+
+/// Daemon-side "Space pressed" handler (posted from the hook): if a viewer is up, close it
+/// (toggle off); otherwise spawn one (toggle on) — serialized so a fast double-press can't open
+/// two windows. Called on the DAEMON thread, off the LL-hook callback (FindWindow / spawn /
+/// WM_COPYDATA must not run inside the hook).
+pub unsafe fn request_toggle() {
+    if let Ok(hwnd) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
+        SPAWN_TICK.store(0, Ordering::Relaxed);
+        send_command(hwnd, CMD_TOGGLE, None);
+        return;
+    }
+    let now = GetTickCount64();
+    let last = SPAWN_TICK.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < 2000 {
+        return; // a spawn is already in flight; the viewer's mutex-first startup guards any race
+    }
+    SPAWN_TICK.store(now, Ordering::Relaxed);
+    spawn_self(&["--preview"]);
+}
+
+/// Daemon-side "Esc / Enter / hold-to-peek" handler: close the viewer if it's up.
+pub unsafe fn request_close() {
+    if let Ok(hwnd) = FindWindowW(VIEWER_CLASS, PCWSTR::null()) {
+        send_command(hwnd, CMD_CLOSE, None);
+    }
+}
+
+/// Headless `--shot --window preview` options. Lets the off-screen capture force the runtime-only
+/// states that a plain still can't show — so verifying the toolbar hover, a pinned window, a PDF's
+/// page pager, an animation frame, or the video transport strip never needs to drive the desktop.
+#[derive(Default)]
+pub struct ShotOpts {
+    /// File to preview (`--file`); a synthetic gradient is used when `None`.
+    pub file: Option<String>,
+    /// Force toolbar button index `N` hovered (`--hot N`).
+    pub hot: Option<usize>,
+    /// Open pinned — filled pin glyph + topmost (`--pinned`).
+    pub pinned: bool,
+    /// For a PDF, render page `N` (0-based) and populate the pager/count (`--pdf-page N`).
+    pub pdf_page: Option<u32>,
+    /// For an animated GIF/APNG/WebP, show frame `N` (`--frame N`).
+    pub frame: Option<usize>,
+    /// For a video, load the engine + pump to first-frame so the transport strip renders
+    /// (`--play`). The video surface itself is a swap chain PrintWindow can't read, so it stays
+    /// black; the strip (GDI) captures fine.
+    pub play: bool,
+    /// Force the layout/font DPI (`--dpi N`, e.g. 192 for 200%) so a high-DPI render can be
+    /// captured off-screen without a physical high-DPI monitor. `None`/0 uses the real DPI.
+    pub dpi: Option<i32>,
+    /// Scroll the text/Markdown pane down `N` device px before capturing (`--scroll N`) —
+    /// lets a long document's middle/bottom be shot-verified headlessly.
+    pub scroll: Option<i32>,
+    /// `--wheel N [--ctrl|--shift]`: post N REAL `WM_MOUSEWHEEL` notches into the viewer's own
+    /// window procedure before capturing. Distinct from `--scroll`, which calls the scroll
+    /// function directly: 2.3.1 shipped a PDF whose wheel did nothing precisely because every
+    /// test bypassed the message that a user actually sends. Negative scrolls down, matching
+    /// the sign Windows uses.
+    pub wheel: Option<i32>,
+    pub wheel_ctrl: bool,
+    pub wheel_shift: bool,
+    /// Force a text-pane selection over the raw byte range `A..B` before capturing
+    /// (`--sel A,B`) — lets the selection highlight be shot-verified headlessly.
+    pub sel: Option<(usize, usize)>,
+    /// Open the find bar on this query and jump to its first match (`--find <text>`), so the bar,
+    /// the pane shrinking around it and the match highlight are all shot-verifiable.
+    pub find: Option<String>,
+    /// Pump the message loop for `N` ms before capturing (`--wait-ms N`) — lets async work
+    /// (e.g. an opt-in remote markdown image fetch) land in the frame.
+    pub wait_ms: Option<u64>,
+    /// Open in "view source" mode (`--source`) — the raw text of a file that would normally
+    /// RENDER (Markdown, CSV/TSV/notebook, SVG), as the caption's `{ }` toggle shows it.
+    pub source: bool,
+    /// PRESS the view-source toolbar button once after loading (`--toggle-source`), driving the
+    /// real click path (`do_action` → `toggle_source` → reload) rather than presetting the mode
+    /// like `--source` does. Combine with `--source` to verify toggling back to rendered.
+    pub toggle_source: bool,
+    /// PRESS the light/dark toolbar button once after loading (`--toggle-theme`), driving the
+    /// real click path (`do_action` -> `toggle_theme` -> palette override + reload). Without it
+    /// the toggle would be verifiable only by clicking, and its whole job is that everything the
+    /// previous theme was baked into gets rebuilt - which a still of a window that merely
+    /// STARTED in the other theme cannot show.
+    pub toggle_theme: bool,
+    /// RESIZE the window to `W`x`H` after loading (`--size WxH`), exactly as dragging the frame
+    /// does (a real `SetWindowPos` → `WM_SIZE`), then capture. This is how "does the content
+    /// re-flow when the window gets wider" is verified headlessly instead of on the desktop.
+    pub size: Option<(i32, i32)>,
+    /// Force keyboard focus onto caption-toolbar button `N` after loading (`--focus N`),
+    /// setting `toolbar::FocusTarget::Caption` exactly as Tab/arrow key navigation would land
+    /// on it — proves `paint::draw_toolbar_focus_ring` headlessly. `N` is a `BTNS` index, the
+    /// SAME numbering `--hot N` uses (0..17, shifts whenever `BTNS` gains an entry — see
+    /// `window.rs`'s `BTNS`), not the visible-only position the focus model stores internally;
+    /// `shot.rs` translates one into the other by locating the button in `button_rects`. A
+    /// button that is not currently visible (see `btn_visible`) is silently ignored, same as a
+    /// Tab landing on nothing.
+    pub focus: Option<usize>,
+    /// Force keyboard focus onto transport-strip button `N` after loading
+    /// (`--focus-transport N`), setting `toolbar::FocusTarget::Transport`. `N` indexes
+    /// `transport::TBTNS` (0..7) directly — the strip carries no per-document visibility
+    /// filter, so unlike `--focus` this needs no translation. Meaningless (silently ignored)
+    /// unless the transport strip is showing (video/audio); combine with `--play`.
+    pub focus_transport: Option<usize>,
+}
+
+/// The app's `--shot --window preview` mode: build the viewer OFF-SCREEN per `opts`, render it to
+/// a PNG at `out` via `PrintWindow`, then tear it down. Returns whether the PNG was written.
+pub unsafe fn run_shot_preview(hinst: HINSTANCE, dark: bool, out: &str, opts: &ShotOpts) -> bool {
+    shot::run_shot(hinst, dark, out, opts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Below a millisecond the number is shown verbatim, so the calibration line never reads
+    /// "0.0 ms" for a workload that did, in fact, take 300 us.
+    #[test]
+    fn fmt_us_formats_below_a_millisecond_in_microseconds() {
+        assert_eq!(fmt_us(0), "0 us");
+        assert_eq!(fmt_us(999), "999 us");
+    }
+
+    #[test]
+    fn fmt_us_switches_to_milliseconds_at_exactly_one_millisecond() {
+        assert_eq!(fmt_us(1_000), "1.0 ms");
+        // Just under the next cut-off still prints in ms (rounded), never in seconds.
+        assert_eq!(fmt_us(999_999), "1000.0 ms");
+    }
+
+    #[test]
+    fn fmt_us_switches_to_seconds_at_exactly_one_second() {
+        assert_eq!(fmt_us(1_000_000), "1.00 s");
+        assert_eq!(fmt_us(1_500_000), "1.50 s");
+    }
+
+    /// A sender that copies the wide string including its terminator must not leave a stray NUL
+    /// on the path — a path with a NUL in it matches no file, so the viewer would clear itself.
+    #[test]
+    fn parse_command_trims_the_trailing_nul_of_a_payload() {
+        let mut wide: Vec<u16> = "C:\\pic.jpg".encode_utf16().collect();
+        wide.push(0);
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: (wide.len() * 2) as u32,
+            lpData: wide.as_ptr() as *mut c_void,
+        };
+        let (cmd, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(cmd, CMD_SET_PATH);
+        assert_eq!(path.as_deref(), Some("C:\\pic.jpg"));
+    }
+
+    /// `cbData == 0` is a command carrying no path (CMD_CLOSE): the parser must report `None`,
+    /// not an empty string, so a command's "no path" stays distinguishable from a blank one.
+    #[test]
+    fn parse_command_treats_an_empty_payload_as_no_path() {
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_CLOSE,
+            cbData: 0,
+            lpData: core::ptr::null_mut(),
+        };
+        let (cmd, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(cmd, CMD_CLOSE);
+        assert_eq!(path, None);
+    }
+
+    /// The size cap is the untrusted-input defence: `WM_COPYDATA` is receivable from any
+    /// same-desktop process, so a bogus/huge `cbData` must be refused rather than drive a giant
+    /// allocation. 64 KiB (inclusive) is the documented ceiling.
+    #[test]
+    fn parse_command_refuses_a_payload_over_the_size_cap() {
+        let wide: Vec<u16> = "C:\\pic.jpg".encode_utf16().collect();
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: 0x10001,
+            lpData: wide.as_ptr() as *mut c_void,
+        };
+        let (_, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn parse_command_refuses_a_null_data_pointer() {
+        let cds = COPYDATASTRUCT {
+            dwData: CMD_SET_PATH,
+            cbData: 16,
+            lpData: core::ptr::null_mut(),
+        };
+        let (_, path) = unsafe { parse_command(LPARAM(&cds as *const _ as isize)) }
+            .expect("a well-formed COPYDATASTRUCT");
+        assert_eq!(path, None);
+    }
+
+    /// A malformed sender can hand us a null `LPARAM`; that must read as "no command" rather than
+    /// be dereferenced as a COPYDATASTRUCT.
+    #[test]
+    fn parse_command_reads_a_null_lparam_as_no_command() {
+        assert_eq!(unsafe { parse_command(LPARAM(0)) }, None);
+    }
+}

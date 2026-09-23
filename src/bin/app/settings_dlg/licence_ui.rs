@@ -21,8 +21,8 @@ pub(super) const WM_APP_LICENCE: u32 = 0x8000 + 11;
 /// result line can say so; the status lines themselves are re-read from
 /// `license::snapshot()`, which the call has already updated.
 pub(super) enum LicenceEvent {
-    Redeemed(crate::license::RedeemOutcome),
-    Checked(Option<crate::license::Entitlement>),
+    Redeemed(st2k_appkit::license::RedeemOutcome),
+    Checked(Option<st2k_appkit::license::Entitlement>),
 }
 
 /// Text-colour intent for a status line, decided where the text is set (not sniffed back
@@ -72,7 +72,7 @@ pub(super) unsafe fn seed_licence_ui(hwnd: HWND) {
 /// [`seed_licence_ui`] and every completion handler below, so a Redeem or a Check now
 /// leaves the page showing the SAME thing a fresh open would.
 unsafe fn refresh_licence_status(hwnd: HWND) {
-    let snap = crate::license::snapshot();
+    let snap = st2k_appkit::license::snapshot();
     set_licence_line(
         hwnd,
         ID_LICENCE_MODE_STATUS,
@@ -86,10 +86,10 @@ unsafe fn refresh_licence_status(hwnd: HWND) {
     {
         Tone::Bad
     } else if snap.entitled
-        || (snap.mode == crate::license::Mode::Business && !snap.key_prefix.is_empty())
+        || (snap.mode == st2k_appkit::license::Mode::Business && !snap.key_prefix.is_empty())
     {
         Tone::Good
-    } else if snap.mode == crate::license::Mode::Personal && snap.key_prefix.is_empty() {
+    } else if snap.mode == st2k_appkit::license::Mode::Personal && snap.key_prefix.is_empty() {
         // "Personal use, no licence needed" is a good state, not a missing one: the copy is
         // exactly as licensed as it needs to be. Grey read as "something is unset".
         Tone::Good
@@ -154,7 +154,7 @@ unsafe fn set_licence_line(hwnd: HWND, id: i32, text: &str, repaint: bool) {
 /// and `switch_category` calls this on its way to the Licence page, so the row is back the
 /// moment that page opens.
 pub(super) unsafe fn apply_conditional_visibility(hwnd: HWND) {
-    let snap = crate::license::snapshot();
+    let snap = st2k_appkit::license::snapshot();
     let active = NAV.with(|n| n.borrow().active);
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_LICENCE_RENEW) {
         let show = if licence_row_shown(active, renew_button_visible(&snap)) {
@@ -207,13 +207,15 @@ pub(super) fn licence_row_shown(active: usize, wants: bool) -> bool {
 ///   plan, and where it lives. Until the monthly plan existed (2026-09-16) this state showed
 ///   nothing here, on the grounds that `biznag` already nags it - which is still true, and is
 ///   exactly why this line sells the alternative rather than repeating the nag.
-pub(super) fn prospect_hint_key(snap: &crate::license::LicenceSnapshot) -> Option<&'static str> {
+pub(super) fn prospect_hint_key(
+    snap: &st2k_appkit::license::LicenceSnapshot,
+) -> Option<&'static str> {
     if snap.entitled || !snap.key_prefix.is_empty() {
         return None;
     }
     match snap.mode {
-        crate::license::Mode::Personal => Some("licence_work_hint"),
-        crate::license::Mode::Business => Some("licence_monthly_hint"),
+        st2k_appkit::license::Mode::Personal => Some("licence_work_hint"),
+        st2k_appkit::license::Mode::Business => Some("licence_monthly_hint"),
     }
 }
 
@@ -272,7 +274,7 @@ pub(super) unsafe fn on_check_now_click(hwnd: HWND) {
 pub(super) fn spawn_redeem(hwnd: HWND, raw_key: String) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let outcome = crate::license::redeem(&raw_key);
+        let outcome = st2k_appkit::license::redeem(&raw_key);
         post_boxed_event(target, WM_APP_LICENCE, LicenceEvent::Redeemed(outcome));
     });
 }
@@ -282,7 +284,7 @@ pub(super) fn spawn_redeem(hwnd: HWND, raw_key: String) {
 pub(super) fn spawn_check_now(hwnd: HWND) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let result = crate::license::refresh_entitlement_now();
+        let result = st2k_appkit::license::refresh_entitlement_now();
         post_boxed_event(target, WM_APP_LICENCE, LicenceEvent::Checked(result));
     });
 }
@@ -317,10 +319,10 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
                 // The check has just recorded the relay's own verdict. A revocation is said out loud,
                 // and it outranks a cached positive still inside its grace window: the relay saying
                 // "revoked" is newer than anything the cache remembers.
-                Some(_) if crate::license::snapshot().last_status == "revoked" => {
+                Some(_) if st2k_appkit::license::snapshot().last_status == "revoked" => {
                     (t("licence_check_revoked"), Tone::Bad)
                 }
-                Some(crate::license::Entitlement::Licensed) => {
+                Some(st2k_appkit::license::Entitlement::Licensed) => {
                     (t("licence_check_active"), Tone::Good)
                 }
                 Some(_) => (t("licence_check_none"), Tone::Neutral),
@@ -334,9 +336,9 @@ pub(super) unsafe fn handle_licence_event(hwnd: HWND, event: LicenceEvent) {
 
 /// Apply one [`LicenceEvent::Redeemed`] outcome to the page: the redeem-result line, and (on a
 /// successful redeem) the cleared key field, a status refresh and the activation popup.
-unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: crate::license::RedeemOutcome) {
+unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: st2k_appkit::license::RedeemOutcome) {
     match outcome {
-        crate::license::RedeemOutcome::Redeemed { key_prefix } => {
+        st2k_appkit::license::RedeemOutcome::Redeemed { key_prefix } => {
             set_redeem_status(
                 hwnd,
                 &t("licence_redeemed").replace("{key}", &key_prefix),
@@ -356,7 +358,7 @@ unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: crate::license::RedeemOutcom
                 MB_ICONINFORMATION,
             );
         }
-        crate::license::RedeemOutcome::Rejected { message } => {
+        st2k_appkit::license::RedeemOutcome::Rejected { message } => {
             set_redeem_status(hwnd, &message, Tone::Bad);
             licence_popup(
                 hwnd,
@@ -365,7 +367,7 @@ unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: crate::license::RedeemOutcom
                 MB_ICONWARNING,
             );
         }
-        crate::license::RedeemOutcome::Offline => {
+        st2k_appkit::license::RedeemOutcome::Offline => {
             set_redeem_status(hwnd, t("licence_offline"), Tone::Bad);
             licence_popup(
                 hwnd,
@@ -380,7 +382,7 @@ unsafe fn apply_redeem_outcome(hwnd: HWND, outcome: crate::license::RedeemOutcom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::license::{LicenceSnapshot, Mode, Posture};
+    use st2k_appkit::license::{LicenceSnapshot, Mode, Posture};
 
     /// A snapshot with only the three fields [`prospect_hint_key`] actually reads set by the
     /// caller. Everything else is the quiet default, so a test that changes one of those three

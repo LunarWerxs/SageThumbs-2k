@@ -22,8 +22,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
-use crate::win::{
+use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim};
+use st2k_appkit::win::{
     check, checked, ctl, dpi_scale, run_dialog, t, wm_dpichanged, BUTTON, IDOK, STATIC,
 };
 
@@ -130,10 +130,10 @@ const BOTTOM_BLOCK: i32 = 12 + BTN_H + 16;
 
 /// Height `text` needs in this window wrapped to `col_w`, never below `min_h`.
 ///
-/// `hwnd` may be `HWND::default()`: [`crate::win::wrapped_text_h`] then measures at the
+/// `hwnd` may be `HWND::default()`: [`st2k_appkit::win::wrapped_text_h`] then measures at the
 /// headless-shot DPI override, or 96, which is what [`dlg_h`] needs before any window exists.
 unsafe fn block_h(hwnd: HWND, text: &str, col_w: i32, min_h: i32) -> i32 {
-    crate::win::wrapped_text_h(hwnd, text, col_w).max(min_h)
+    st2k_appkit::win::wrapped_text_h(hwnd, text, col_w).max(min_h)
 }
 
 /// The window's text column in design px: the real client area less both margins, or the
@@ -444,7 +444,7 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
     fit_window(hwnd, needed);
     reanchor_button(hwnd);
     if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
-        let txt = crate::win::wide(t("fr_go"));
+        let txt = st2k_appkit::win::wide(t("fr_go"));
         let _ = SetWindowTextW(b, windows::core::PCWSTR(txt.as_ptr()));
     }
     ON_PAGE_2.with(|p| p.set(true));
@@ -622,11 +622,11 @@ unsafe fn apply(hwnd: HWND) {
         // Last: `set_enabled` reconciles the autostart entry AND starts the daemon, which
         // reads the hotkey settings at startup — so the hotkey has to be persisted first
         // or the fresh daemon would register Ctrl+PrtScn and ignore the choice above.
-        crate::screenshot::set_enabled(true);
+        st2k_screenshot::screenshot::set_enabled(true);
     } else if checked(hwnd, ID_PREVIEW) {
         // Quick preview alone still needs the resident helper (it owns the Space hook);
         // `heal_if_wanted` is what notices the feature is now wanted and brings it up.
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
     }
 }
 
@@ -672,7 +672,7 @@ unsafe fn on_first_run_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: the Print-Screen sync checkbox and the OK/Next button.
 unsafe fn on_first_run_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match crate::win::command_id(wparam) {
+    match st2k_appkit::win::command_id(wparam) {
         ID_SHOT => sync_prtscn(hwnd),
         IDOK => {
             if ON_PAGE_2.with(|p| p.get()) {
@@ -751,10 +751,10 @@ unsafe fn shot_first_run(
     class: PCWSTR,
     after_create: impl FnOnce(HWND, HINSTANCE),
 ) -> bool {
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class,
             wndproc: Some(first_run_wndproc),
             title: t("fr_title"),

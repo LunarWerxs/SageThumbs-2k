@@ -15,8 +15,8 @@ use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{
     ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, t, wide, BUTTON, EM_SETSEL,
     IDCANCEL, IDOK,
 };
@@ -63,7 +63,7 @@ extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_COMMAND => on_command(hwnd, wparam),
             WM_F2F_DONE => on_f2f_done(hwnd),
             // DPI, the deferred close a running move needs, destroy, default.
-            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }
@@ -153,7 +153,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = crate::win::command_id(wparam);
+    let id = st2k_appkit::win::command_id(wparam);
     match id {
         IDOK => start_move(hwnd),
         IDCANCEL => request_close(hwnd),

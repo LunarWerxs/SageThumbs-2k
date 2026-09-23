@@ -45,17 +45,17 @@ use st2k_actions::{verbs::default_menu_tokens, verbs::MENU_SEP_TOKEN};
 use st2k_base::{formats, i18n, settings};
 
 use crate::about::show_about;
-use crate::dark::{
+use st2k_appkit::dark::{
     dark_bg_brush, dark_control, dark_ctlcolor, dark_theme_combo, is_dark, ACCENT, ACCENT_HOT,
     ACCENT_PRESS, ACCENT_TEXT, BORDER, BORDER_STRONG, BTN_FACE, BTN_FACE_HOT, BTN_FACE_PRESS,
     CHECK_BG, DARK_BG, DARK_TEXT, DISABLED_TEXT, HEADER_TEXT, INPUT_BG, ON_ACCENT, SEL_BG, SURFACE,
     ZEBRA,
 };
-use crate::sponsors::{
+use st2k_appkit::sponsors::{
     drop_sponsor_rotator, show_current_image, sponsors_enabled, SponsorRotator, TIMER_BANNER,
     TIMER_ROTATE, WM_APP_SPONSORS,
 };
-use crate::win::{
+use st2k_appkit::win::{
     check, checked, ctl, dpi_scale, get_edit_text, gui_font_for, gui_font_header, message_box,
     open_url, t, wide, wm_dpichanged, wstr_to_string, BTN_H, BUTTON, CHECKED, COMBOBOX, EDIT,
     EDIT_X, IDCANCEL, IDOK, INDENT, LABEL_W, MARGIN, SS_BITMAP, SS_NOTIFY, SS_OWNERDRAW,
@@ -124,7 +124,6 @@ mod shot;
 mod sync;
 mod tooltips;
 mod values;
-use crate::license::{format_unix_date, licence_reason_line};
 use daemon_status::*;
 use helpers::*;
 pub(crate) use licence_state::licence_state_line;
@@ -135,6 +134,7 @@ use menu_rows::*;
 use navrail::*;
 use resize::*;
 pub(crate) use shot::{run_shot, run_shot_gif, run_shot_search};
+use st2k_appkit::license::{format_unix_date, licence_reason_line};
 use sync::*;
 use tooltips::*;
 use values::*;

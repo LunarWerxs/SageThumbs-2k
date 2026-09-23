@@ -1302,13 +1302,18 @@ and the developer box has a fatter one installed, "it works here" is not evidenc
 the payload, not the machine, and give every such lookup a switch that turns the fallback off.
 
 
-## The library is four crates, and a path names the crate that OWNS the item (2026-09-23)
+## The library is four crates and the app three more, and a path names the crate that OWNS the item (2026-09-23)
 
 The library was one crate of ~100k lines, so any edit re-analysed all of it and rebuilt one test
 binary holding every module's tests. It is now `crates/base` (`st2k_base`), `crates/codecs`
 (`st2k_codecs`), `crates/actions` (`st2k_actions`) and the core crate (`sagethumbs2k_core`: the COM
-surfaces, the CLI/MCP, `lib.rs`), each naming only the ones below it. What to know when you touch
-it:
+surfaces, the CLI/MCP, `lib.rs`), each naming only the ones below it. The app binary's parts
+are crates too: `crates/appkit` (`st2k_appkit`: `win`, `dark`, `http`, the licence and the
+updater), `crates/preview` (`st2k_preview`: Quick preview) and `crates/screenshot`
+(`st2k_screenshot`: the capture tool, the eyedropper, the OCR window, uploads, hotkeys), under the
+binary (`src/bin/app`: Settings, the dialogs, `main`). None of them may depend on the core
+package, which holds the binaries (that would be a cycle); `crate_layers.py . --app` checks
+what is still in `src/bin/app`. What to know when you touch it:
 
 - **Name the owner, never a re-export.** `st2k_base::settings::PdfPage`, not a copy re-exported
   through the core. The split deleted every such shim; adding one back makes two paths to one item
@@ -1323,6 +1328,9 @@ it:
 - **An upward reference is now a build error, not a style problem**: a dependency cycle between
   crates is impossible to write. For the modules still in the core crate,
   `python scripts/refactor/crate_layers.py .` checks the same rule.
+- **A test that reads the running EXE's own resources** (the version stamp) only passes in the
+  binary's test build, the one the build script links the resources into; it lives in
+  `src/bin/app/tests.rs`, not in the crate that owns the reader.
 - **Test the whole workspace, not the core package.** `cargo test -p sagethumbs2k` runs only the
   core's tests now; a bare `cargo test` at the root runs every default member, and every layer is
   one. A job that must name packages names all four (see `release-profile-tests.yml`).

@@ -58,7 +58,11 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     });
     // The screenshot toggle reflects the live service state (an HKCU autostart
     // entry), not a SageThumbs2K DWORD — so it's read separately.
-    check(hwnd, ID_SHOT_ENABLE, crate::screenshot::is_enabled());
+    check(
+        hwnd,
+        ID_SHOT_ENABLE,
+        st2k_screenshot::screenshot::is_enabled(),
+    );
     check(hwnd, ID_SHOT_HIDE_TRAY, settings::screenshot_hide_tray());
     check(hwnd, ID_SHOT_USE_DIR, settings::screenshot_use_save_dir());
     set_shot_dir_label(hwnd);
@@ -445,7 +449,7 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
     }
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
         let cur = settings::custom_action();
-        let sel = crate::hotkey::ACTIONS
+        let sel = st2k_screenshot::hotkey::ACTIONS
             .iter()
             .position(|&(id, _)| id == cur)
             .unwrap_or(0);

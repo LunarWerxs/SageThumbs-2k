@@ -28,7 +28,7 @@ pub(super) unsafe fn on_command_or_notify_msg(
 }
 
 pub(super) unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let (id, notify) = crate::win::command_parts(wparam);
+    let (id, notify) = st2k_appkit::win::command_parts(wparam);
     on_command_dialog(hwnd, id, notify);
     on_command_shot(hwnd, id);
     on_command_sync_nav(hwnd, id, notify);
@@ -140,8 +140,8 @@ pub(super) unsafe fn on_command_shot(hwnd: HWND, id: i32) {
         ID_SHOT_USE_DIR => update_save_dir_enabled(hwnd),
         ID_SHOT_SET_DIR => on_shot_set_dir(hwnd),
         ID_SHOT_RESTART => on_shot_restart(hwnd),
-        ID_EDIT_UPLOAD_HOSTS => crate::screenshot::open_hosts_config(),
-        ID_UPLOAD_HISTORY => crate::upload_history_dlg::show_history(Some(hwnd)),
+        ID_EDIT_UPLOAD_HOSTS => st2k_screenshot::screenshot::open_hosts_config(),
+        ID_UPLOAD_HISTORY => st2k_screenshot::upload_history_dlg::show_history(Some(hwnd)),
         _ => {}
     }
 }
@@ -150,7 +150,7 @@ pub(super) unsafe fn on_command_shot(hwnd: HWND, id: i32) {
 /// display. (The toggle next to it is saved with the other settings
 /// on the Save button.)
 pub(super) unsafe fn on_shot_set_dir(hwnd: HWND) {
-    if let Some(dir) = crate::win::pick_folder(hwnd) {
+    if let Some(dir) = st2k_appkit::win::pick_folder(hwnd) {
         let _ = settings::set_screenshot_save_dir(&dir);
         set_shot_dir_label(hwnd);
     }
@@ -161,8 +161,8 @@ pub(super) unsafe fn on_shot_set_dir(hwnd: HWND) {
 /// Enable box to match, and show an optimistic status (the
 /// daemon was just spawned; the true state shows on reopen).
 pub(super) unsafe fn on_shot_restart(hwnd: HWND) {
-    crate::screenshot::set_enabled(true);
-    crate::screenshot::reload_hotkey();
+    st2k_screenshot::screenshot::set_enabled(true);
+    st2k_screenshot::screenshot::reload_hotkey();
     check(hwnd, ID_SHOT_ENABLE, true);
     set_shot_status(hwnd, t("shot_status_started"), true);
     // check() above is a raw BM_SETCHECK, not a click: it never sends
@@ -237,9 +237,9 @@ pub(super) unsafe fn on_command_licence(hwnd: HWND, id: i32) {
     match id {
         ID_LICENCE_REDEEM_BTN => licence_ui::on_redeem_click(hwnd),
         ID_LICENCE_CHECK_NOW => licence_ui::on_check_now_click(hwnd),
-        ID_LICENCE_BUY => crate::win::open_url(crate::license::BUY_URL),
-        ID_LICENCE_RENEW => crate::win::open_url(&crate::license::renew_url()),
-        ID_LICENCE_MOVE => crate::win::open_url(crate::license::PORTAL_CLAIM_URL),
+        ID_LICENCE_BUY => st2k_appkit::win::open_url(st2k_appkit::license::BUY_URL),
+        ID_LICENCE_RENEW => st2k_appkit::win::open_url(&st2k_appkit::license::renew_url()),
+        ID_LICENCE_MOVE => st2k_appkit::win::open_url(st2k_appkit::license::PORTAL_CLAIM_URL),
         _ => {}
     }
 }

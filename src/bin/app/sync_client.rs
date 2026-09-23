@@ -32,7 +32,8 @@ use serde_json::{Map, Value};
 
 use st2k_base::settings;
 
-use crate::{cred_store, http, oauth};
+use crate::oauth;
+use st2k_appkit::{cred_store, http};
 
 const STORE_BASE: &str = "https://studio.connectionsapi.com/v1/app-data";
 const TIMEOUT_SECS: u64 = 20;
@@ -526,7 +527,7 @@ pub(crate) fn connect() -> Result<ConnectOutcome, String> {
     // through. Folded into the returned label rather than a second dialog: the caller
     // (`settings_dlg::sync`) already shows this string in its "signed in" message box(es).
     if settings::portable() {
-        who = format!("{who}\n\n{}", crate::win::t("sync_portable_notice"));
+        who = format!("{who}\n\n{}", st2k_appkit::win::t("sync_portable_notice"));
     }
 
     let outcome = connect_outcome(who, sync_once(&tokens.access_token).map(|_| ()));

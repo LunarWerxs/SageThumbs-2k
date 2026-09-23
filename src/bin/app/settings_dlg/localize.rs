@@ -208,12 +208,12 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     #[cfg(not(feature = "html-preview"))]
     let gated: &[(i32, &str)] = &[];
     for &(id, key) in pairs.iter().chain(gated) {
-        crate::win::set_edit_text(hwnd, id, t(key));
+        st2k_appkit::win::set_edit_text(hwnd, id, t(key));
     }
     // Re-text + repaint the owner-draw nav rail and the page header (they read their
     // labels from nav_label()/cat_blurb(), which now follow the active language).
     for i in 0..NCAT as i32 {
-        crate::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
+        st2k_appkit::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
         invalidate_control(hwnd, ID_NAV_BASE + i);
     }
     invalidate_control(hwnd, ID_PANE_HEADER);
@@ -283,9 +283,9 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     rebuild_combo(
         hwnd,
         ID_SHOT_ACTION,
-        crate::hotkey::ACTIONS
+        st2k_screenshot::hotkey::ACTIONS
             .iter()
-            .map(|&(_, key)| crate::hotkey::action_label(key)),
+            .map(|&(_, key)| st2k_screenshot::hotkey::action_label(key)),
     );
     // The credit SysLink's caption ("<promo text> Lunarwerx"): build.rs's ID_PROMO_LINK
     // format string, verbatim, so a language switch doesn't leave this one line English.
@@ -338,7 +338,7 @@ pub(super) unsafe fn set_column_text(list: HWND, idx: i32, s: &str) {
 
 /// Repeating timer that keeps the hotkey-service status line live while Settings is open, so
 /// it reflects a self-heal or the helper stopping without reopening the dialog.
-/// IDs 1–2 are the sponsor banner timers (see [`crate::sponsors`]); this is the third.
+/// IDs 1–2 are the sponsor banner timers (see [`st2k_appkit::sponsors`]); this is the third.
 pub(super) const TIMER_SHOT_STATUS: usize = 3;
 
 #[cfg(test)]

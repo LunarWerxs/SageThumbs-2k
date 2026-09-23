@@ -37,7 +37,7 @@ $root = Split-Path $PSScriptRoot -Parent
 # The main-freeze marker (see [2/6]); named here so `finally` can always remove it.
 $freeze = Join-Path $root '.git\RELEASE-IN-PROGRESS'
 
-# MUST match `UPDATE_PUBLIC_KEY` in src\bin\app\update.rs byte-for-byte. Kept here as a plain
+# MUST match `UPDATE_PUBLIC_KEY` in crates\appkit\src\update.rs byte-for-byte. Kept here as a plain
 # constant rather than parsed out of the built binary - a self-check that re-derives the value
 # it is checking from the same build proves nothing, and pasting the same array literal into
 # two places at key-rotation time is the same one-line diff either way. Whoever runs

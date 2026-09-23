@@ -2,7 +2,9 @@
 points from a lower layer UP to a higher one (or names an item that lives in lib.rs itself) is a
 cut the split has to make first. Prints each violating edge with its file:line sites.
 
-    python scripts/refactor/crate_layers.py . [--sites N]
+    python scripts/refactor/crate_layers.py . [--sites N] [--app]
+
+`--app` checks the app binary (src/bin/app) against APP_LAYERS instead of the library.
 
 LAYERS below is the split plan, bottom layer first; edit it when the plan changes. Zero
 violations means every layer can move into its own crate as it stands.
@@ -25,13 +27,27 @@ LAYERS = [
     ("shell", "thumbprovider previewhandler propstore contextmenu command factory badge register typeoverlay foldermenu "
               "cli doctor mcp prebuild"),
 ]
+# The app binary (src/bin/app, root file main.rs), split the same way: the shared window kit,
+# the viewer, the screenshot tool, and the binary itself (everything not named here).
+APP_LAYERS = [
+    ("appkit", "win dark gdip uia gif_frames http sponsors explorer_selection dialog_hook license "
+               "cred_store licence_cert update"),
+    ("preview", "preview"),
+    ("screenshot", "screenshot ocr_result upload_result upload_history_dlg eyedropper hotkey"),
+]
+if "--app" in sys.argv:
+    SRC = ROOT / "src" / "bin" / "app"
+    _main = (SRC / "main.rs").read_text(encoding="utf-8", errors="replace")
+    _named = {m for _, mods in APP_LAYERS for m in mods.split()}
+    _all = set(re.findall(r"^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", _main, re.M))
+    LAYERS = APP_LAYERS + [("app", " ".join(sorted(_all - _named)))]
 LEVEL = {m: i for i, (_, mods) in enumerate(LAYERS) for m in mods.split()}
 NAME = [name for name, _ in LAYERS]
 # A layer already lifted into crates/<layer> is its own crate: cargo refuses an upward edge
 # from it outright (a dependency cycle), so only the modules still in src/ need checking.
 LIFTED = {m for name, mods in LAYERS if (ROOT / "crates" / name / "src" / "lib.rs").exists() for m in mods.split()}
 
-lib = (SRC / "lib.rs").read_text(encoding="utf-8", errors="replace")
+lib = (SRC / ("main.rs" if "--app" in sys.argv else "lib.rs")).read_text(encoding="utf-8", errors="replace")
 declared = set(re.findall(r"^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", lib, re.M))
 missing = sorted(declared - set(LEVEL))
 extra = sorted(set(LEVEL) - declared - LIFTED)

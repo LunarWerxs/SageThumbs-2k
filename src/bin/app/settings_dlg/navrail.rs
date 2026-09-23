@@ -9,14 +9,14 @@ use dots::*;
 mod navkeys;
 use navkeys::*;
 mod place;
-use crate::gdip;
-use crate::uia;
 pub(super) use dots::dot_visible;
 pub(super) use draw::{blend, draw_nav_item, draw_pane_header};
 pub(super) use place::apply_v3_layout;
 #[cfg(test)]
 pub(super) use place::V3_ALWAYS_HIDDEN;
 pub(super) use rows::{cat_rows, pair_field_ids, wide_edit_ids, Row};
+use st2k_appkit::gdip;
+use st2k_appkit::uia;
 use windows::Win32::Graphics::Gdi::{GetTextMetricsW, DT_END_ELLIPSIS, TEXTMETRICW};
 use windows::Win32::UI::Accessibility::{NotifyWinEvent, UIA_ListItemControlTypeId};
 // EVENT_OBJECT_SELECTION, OBJID_CLIENT and CHILDID_SELF come from
@@ -90,7 +90,7 @@ pub(super) fn nav_label(ci: usize) -> &'static str {
 /// [`nav_label`] on purpose - the rail and search must keep finding the page by its plain name.
 pub(super) fn pane_title(ci: usize) -> &'static str {
     if nav_key(ci) == "nav_licence" {
-        return super::licence_page_title(&crate::license::snapshot());
+        return super::licence_page_title(&st2k_appkit::license::snapshot());
     }
     nav_label(ci)
 }

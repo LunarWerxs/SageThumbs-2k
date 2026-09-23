@@ -31,12 +31,12 @@ use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{
+use st2k_appkit::dark::{
     dark_bg_brush, dark_control, dark_ctlcolor, dark_titlebar, is_dark, rgb, BORDER_STRONG,
     BTN_FACE, DARK_BG, DARK_TEXT, DISABLED_TEXT, HEADER_TEXT,
 };
-use crate::update;
-use crate::win::{
+use st2k_appkit::update;
+use st2k_appkit::win::{
     ctl, dpi_scale, dpi_scale_dpi, gui_font_for, gui_font_sized, load_art, open_url,
     set_static_bitmap, t, text_width, wide, wm_dpichanged, IDCANCEL, IDOK, SS_BITMAP, SS_CENTER,
     SS_NOTIFY, SS_OWNERDRAW, STATIC, URL_GITHUB, URL_PARENT,
@@ -152,7 +152,7 @@ pub(crate) unsafe fn show_about(parent: HWND) {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
     let class = w!("SageThumbs2KAbout");
     // Theme-aware background, app icon, arrow cursor; idempotent on a second call.
-    crate::win::register_app_class(class, Some(about_wndproc), hinst);
+    st2k_appkit::win::register_app_class(class, Some(about_wndproc), hinst);
 
     // Size the frame so the *client* area is exactly the design size, scaled to the
     // parent's DPI (identity at 96 → standard displays are unchanged).
@@ -208,10 +208,10 @@ pub(crate) unsafe fn show_about(parent: HWND) {
 /// exactly `CW`×`CH`, but `create_shot_window`'s `design_w/h` size the whole WINDOW
 /// — so the frame is added back here rather than guessed at the call.
 pub(crate) unsafe fn run_shot_about(out: &str) -> bool {
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
         is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KAbout"),
             wndproc: Some(about_wndproc),
             title: "About SageThumbs 2K",
@@ -340,7 +340,7 @@ unsafe fn on_spin_timer(hwnd: HWND) -> LRESULT {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let (id, notify) = crate::win::command_parts(wparam);
+    let (id, notify) = st2k_appkit::win::command_parts(wparam);
     match id {
         IDOK | IDCANCEL => {
             let _ = DestroyWindow(hwnd);

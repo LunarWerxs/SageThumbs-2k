@@ -25,17 +25,6 @@ pub mod doctor;
 mod factory;
 pub mod foldermenu;
 pub mod mcp;
-// The transparency checkerboard, re-exported from the classic menu tile's painter so the app bin's
-// Quick preview draws the SAME backdrop, from the SAME `settings::preview_checker()` toggle. One
-// implementation, so the two surfaces cannot drift apart. `doc(hidden)` for the same reason as the
-// rest of these: an internal surface, not a stable public API.
-#[doc(hidden)]
-pub mod checker {
-    pub use crate::contextmenu::paint::{checker_shades, fill_checker};
-    /// The pixel-space twin, for the one surface that has no device context to draw on:
-    /// the Explorer thumbnail bitmap. See [`st2k_base::checkerpx`].
-    pub use st2k_base::checkerpx::compose_under;
-}
 pub mod prebuild;
 mod previewhandler;
 // The Details-pane property handler (`IPropertyStore`), one of the COM surfaces.

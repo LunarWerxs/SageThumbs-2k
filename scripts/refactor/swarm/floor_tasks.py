@@ -81,7 +81,7 @@ WHAT COUNTS AS A RESTRUCTURE:
 
 RULES OF THIS REPO you must respect in any plan:
   - `src/bin/app/nudge_engine.rs` is a verbatim port: never touched.
-  - `src/bin/app/uia.rs` and `src/bin/app/screenshot/overlay/uia.rs` are ISSUES.md issue 8:
+  - `crates/appkit/src/uia.rs` and `crates/screenshot/src/screenshot/overlay/uia.rs` are ISSUES.md issue 8:
     never touched without a screen reader running.
   - Scripts and tests are read BY NAME by other scripts. Before you propose moving anything out
     of a file, grep `scripts/`, `tests/`, `.github/workflows/` and `docs/` for that file's name

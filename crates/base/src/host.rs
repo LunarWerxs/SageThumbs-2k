@@ -193,3 +193,74 @@ pub fn alloc_pwstr(s: &str) -> windows::core::Result<PWSTR> {
     unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len()) };
     Ok(PWSTR(p))
 }
+
+/// True when this process is running elevated.
+///
+/// The thumbnail cache is PER USER (`%LocalAppData%\Microsoft\Windows\Explorer`). Run from an
+/// admin prompt, every thumbnail lands in the administrator's cache and the user sees exactly
+/// no change — the most confusing possible failure, because it reports total success.
+pub fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let elevated = token_is_elevated(token);
+        let _ = CloseHandle(token);
+        elevated
+    }
+}
+
+/// `TokenElevation` of an open `TOKEN_QUERY` token; a refused query answers "not elevated"
+/// (both callers use the answer to EXPLAIN a problem, so a wrong "yes" would invent one).
+/// The token stays the caller's to close.
+unsafe fn token_is_elevated(token: windows::Win32::Foundation::HANDLE) -> bool {
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
+    let mut el = TOKEN_ELEVATION::default();
+    let mut len = 0u32;
+    GetTokenInformation(
+        token,
+        TokenElevation,
+        Some(core::ptr::addr_of_mut!(el).cast()),
+        core::mem::size_of::<TOKEN_ELEVATION>() as u32,
+        &mut len,
+    )
+    .is_ok()
+        && el.TokenIsElevated != 0
+}
+
+/// True when the process `pid` is running elevated.
+///
+/// Cross-process, and callable from an ORDINARY process, which is the non-obvious part:
+/// opening a higher-integrity process for MEMORY access is refused, but
+/// `PROCESS_QUERY_LIMITED_INFORMATION` plus `TOKEN_QUERY` is granted for the same user, so the
+/// elevation flag can be read directly instead of inferred from something else failing.
+///
+/// Any refusal answers "not elevated". Both callers use this to EXPLAIN a problem, so a wrong
+/// "yes" would invent one; a wrong "no" just leaves things as they were.
+pub fn process_is_elevated(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut token = HANDLE::default();
+        let mut elevated = false;
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok() {
+            elevated = token_is_elevated(token);
+            let _ = CloseHandle(token);
+        }
+        let _ = CloseHandle(process);
+        elevated
+    }
+}

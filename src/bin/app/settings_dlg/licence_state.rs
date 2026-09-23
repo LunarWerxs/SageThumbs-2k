@@ -1,7 +1,7 @@
 //! The licence/state-line formatters: the Licence page's status line, the updates-window
 //! line + Renew-button visibility, the shared reminder sentence (startup toast / tray
 //! balloon / daily one-shot), and the plain `format_unix_date` helper they all lean on.
-//! Split out of `mod.rs` — pure functions over a [`crate::license::LicenceSnapshot`], no
+//! Split out of `mod.rs` — pure functions over a [`st2k_appkit::license::LicenceSnapshot`], no
 //! window/control access, so they're safe to unit-test without any HWND.
 
 use super::*;
@@ -10,8 +10,8 @@ use super::*;
 /// "Licence revoked (key esk_XXXX)" / "Personal use, no licence needed" — the ONE formatter
 /// for it, shared between this window's status line and the About box's licence line (see
 /// `about.rs`) so the two surfaces cannot silently drift into disagreeing over what the exact
-/// same [`crate::license::snapshot`] means.
-pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> String {
+/// same [`st2k_appkit::license::snapshot`] means.
+pub(crate) fn licence_state_line(snap: &st2k_appkit::license::LicenceSnapshot) -> String {
     // A REVOKED key outranks the installer's answer for the same reason a live one does: a
     // Personal copy whose business key was taken back must say so. Checked before the Personal
     // line below, which a revoked copy (no longer entitled) would otherwise fall into and read
@@ -22,21 +22,23 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     // The evaluation and its lock, before the plain "no key" line: a Business copy with no
     // key is on a clock, and the line says where on it this machine stands.
     match snap.posture {
-        crate::license::Posture::Trial { ends_unix } => {
+        st2k_appkit::license::Posture::Trial { ends_unix } => {
             return t("licence_state_trial")
                 .replace(
                     "{n}",
-                    &crate::license::days_until(snap.now_unix, ends_unix).to_string(),
+                    &st2k_appkit::license::days_until(snap.now_unix, ends_unix).to_string(),
                 )
                 .replace(
                     "{date}",
-                    &format_unix_date(ends_unix.saturating_add(crate::license::LOCK_GRACE_SECS)),
+                    &format_unix_date(
+                        ends_unix.saturating_add(st2k_appkit::license::LOCK_GRACE_SECS),
+                    ),
                 );
         }
-        crate::license::Posture::TrialExpired { locks_unix } => {
+        st2k_appkit::license::Posture::TrialExpired { locks_unix } => {
             return t("licence_state_expired").replace("{date}", &format_unix_date(locks_unix));
         }
-        crate::license::Posture::Locked { revoked: false } => {
+        st2k_appkit::license::Posture::Locked { revoked: false } => {
             return t("licence_state_locked").to_string();
         }
         _ => {}
@@ -46,7 +48,7 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     // as a live business licence - so the status line must say so too, or the page contradicts
     // itself ("licence is active" beside "Personal use, no licence needed"). A stale breadcrumb from
     // a former Business install is NOT entitled, so it still reads Personal here.
-    if snap.mode == crate::license::Mode::Personal && !snap.entitled {
+    if snap.mode == st2k_appkit::license::Mode::Personal && !snap.entitled {
         return t("licence_state_personal").to_string();
     }
     if snap.key_prefix.is_empty() {
@@ -59,7 +61,7 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
     // instant the snapshot was built with, never a fresh clock read.
     if let Some(expires) = snap.cert_expires_unix {
         let remaining = expires.saturating_sub(snap.now_unix as i64);
-        if remaining >= 0 && (remaining as u64) <= crate::license::CERT_EXPIRY_WARNING_SECS {
+        if remaining >= 0 && (remaining as u64) <= st2k_appkit::license::CERT_EXPIRY_WARNING_SECS {
             let expires_unix = u64::try_from(expires).unwrap_or(0);
             return t("licence_state_cert_expiring")
                 .replace("{date}", &format_unix_date(expires_unix));
@@ -70,7 +72,7 @@ pub(crate) fn licence_state_line(snap: &crate::license::LicenceSnapshot) -> Stri
 
 /// Builds the revoked-key state line for [`licence_state_line`]: the plain revocation
 /// sentence, the relay's reason when recorded, then the lock from the current posture.
-fn revoked_state_line(snap: &crate::license::LicenceSnapshot) -> String {
+fn revoked_state_line(snap: &st2k_appkit::license::LicenceSnapshot) -> String {
     let mut line = t("licence_state_revoked").replace("{key}", &snap.key_prefix);
     if let Some(why) = licence_reason_line(&snap.last_reason) {
         line.push(' ');
@@ -78,7 +80,7 @@ fn revoked_state_line(snap: &crate::license::LicenceSnapshot) -> String {
     }
     // The lock, from the same phase the shell reads: the date it lands, or that it has.
     match snap.posture {
-        crate::license::Posture::DeauthorizedLoud {
+        st2k_appkit::license::Posture::DeauthorizedLoud {
             locks_unix: Some(locks),
         } => {
             line.push(' ');
@@ -86,7 +88,7 @@ fn revoked_state_line(snap: &crate::license::LicenceSnapshot) -> String {
                 &t("licence_deauthorized_locks").replace("{date}", &format_unix_date(locks)),
             );
         }
-        crate::license::Posture::Locked { revoked: true } => {
+        st2k_appkit::license::Posture::Locked { revoked: true } => {
             line.push(' ');
             line.push_str(t("licence_state_locked"));
         }
@@ -104,7 +106,7 @@ pub(crate) const RENEW_NOTICE_SECS: u64 = 60 * 24 * 60 * 60;
 /// Does this snapshot describe a machine whose UPDATES WINDOW is a real, current fact worth
 /// showing? A window end on record, a key that redeemed it, and no revocation - a revoked
 /// seat needs a licence, not another twelve months of updates on one it no longer holds.
-fn has_updates_window(snap: &crate::license::LicenceSnapshot) -> Option<u64> {
+fn has_updates_window(snap: &st2k_appkit::license::LicenceSnapshot) -> Option<u64> {
     if snap.key_prefix.is_empty() || snap.last_status == "revoked" {
         return None;
     }
@@ -118,7 +120,7 @@ fn has_updates_window(snap: &crate::license::LicenceSnapshot) -> Option<u64> {
 /// ⛔ Deliberately NOT folded into [`licence_state_line`]. The licence is perpetual and the
 /// updates window is not; one sentence carrying both is how a customer reads "ended" as "my
 /// licence expired", which is the single wrong idea this whole feature exists to prevent.
-pub(crate) fn licence_updates_line(snap: &crate::license::LicenceSnapshot) -> Option<String> {
+pub(crate) fn licence_updates_line(snap: &st2k_appkit::license::LicenceSnapshot) -> Option<String> {
     let ends = has_updates_window(snap)?;
     let key = if ends >= snap.now_unix {
         "licence_updates_until"
@@ -131,7 +133,7 @@ pub(crate) fn licence_updates_line(snap: &crate::license::LicenceSnapshot) -> Op
 /// Should the "Renew updates (US$29)" button be visible? Only for a machine that actually
 /// holds a window, and only once that window is within [`RENEW_NOTICE_SECS`] of closing or
 /// has already closed. Pure over the snapshot so both boundaries are pinned by tests.
-pub(crate) fn renew_button_visible(snap: &crate::license::LicenceSnapshot) -> bool {
+pub(crate) fn renew_button_visible(snap: &st2k_appkit::license::LicenceSnapshot) -> bool {
     let Some(ends) = has_updates_window(snap) else {
         return false;
     };
@@ -152,8 +154,8 @@ pub(crate) fn renew_button_visible(snap: &crate::license::LicenceSnapshot) -> bo
 /// answer no longer describes it, so the line names the licence and its key instead. A Personal
 /// install that redeems a business key is a business install from then on (owner, 2026-09-11).
 ///
-/// [`Mode`]: crate::license::Mode
-pub(super) fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> String {
+/// [`Mode`]: st2k_appkit::license::Mode
+pub(super) fn licence_mode_line(snap: &st2k_appkit::license::LicenceSnapshot) -> String {
     if snap.entitled && !snap.key_prefix.is_empty() {
         return t("licence_mode_licensed").replace("{key}", &snap.key_prefix);
     }
@@ -161,8 +163,8 @@ pub(super) fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> Strin
         return t("licence_mode_portable").to_string();
     }
     match snap.mode {
-        crate::license::Mode::Business => t("licence_mode_business").to_string(),
-        crate::license::Mode::Personal => t("licence_mode_personal").to_string(),
+        st2k_appkit::license::Mode::Business => t("licence_mode_business").to_string(),
+        st2k_appkit::license::Mode::Personal => t("licence_mode_personal").to_string(),
     }
 }
 
@@ -171,11 +173,11 @@ pub(super) fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> Strin
 /// "Personal licence" on a Personal copy without one - a revoked key included - and the plain
 /// page name on a Business install with no key yet (owner, 2026-09-11). Only the header uses
 /// this; the nav rail and search keep the page name so the page is still found by it.
-pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'static str {
+pub(crate) fn licence_page_title(snap: &st2k_appkit::license::LicenceSnapshot) -> &'static str {
     if snap.entitled && !snap.key_prefix.is_empty() {
         return t("licence_title_business");
     }
-    if snap.mode == crate::license::Mode::Personal {
+    if snap.mode == st2k_appkit::license::Mode::Personal {
         return t("licence_title_personal");
     }
     t("nav_licence")
@@ -184,35 +186,35 @@ pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::license::licence_reminder_body;
+    use st2k_appkit::license::licence_reminder_body;
 
-    /// Hand-build a [`crate::license::LicenceSnapshot`] for `licence_state_line` tests.
+    /// Hand-build a [`st2k_appkit::license::LicenceSnapshot`] for `licence_state_line` tests.
     /// Module-scope (not nested in one test fn) so both the four-states test below and the
     /// E05 certificate-expiry tests can share it.
     fn snap(
-        mode: crate::license::Mode,
+        mode: st2k_appkit::license::Mode,
         key_prefix: &str,
         last_status: &str,
         last_positive_unix: u64,
-    ) -> crate::license::LicenceSnapshot {
+    ) -> st2k_appkit::license::LicenceSnapshot {
         snap_at(mode, key_prefix, last_status, last_positive_unix, None, 0)
     }
 
     /// [`snap`] plus the two E05 fields, for the certificate-expiry tests below.
     fn snap_at(
-        mode: crate::license::Mode,
+        mode: st2k_appkit::license::Mode,
         key_prefix: &str,
         last_status: &str,
         last_positive_unix: u64,
         cert_expires_unix: Option<i64>,
         now_unix: u64,
-    ) -> crate::license::LicenceSnapshot {
-        crate::license::LicenceSnapshot {
+    ) -> st2k_appkit::license::LicenceSnapshot {
+        st2k_appkit::license::LicenceSnapshot {
             mode,
             // `Silent` here: the four original states derive from `mode`/`key_prefix`/
             // `last_status` alone; the evaluation-and-lock states are the posture arms
             // `the_state_line_speaks_the_evaluation_and_the_lock` sets explicitly.
-            posture: crate::license::Posture::Silent,
+            posture: st2k_appkit::license::Posture::Silent,
             key_prefix: key_prefix.to_string(),
             last_positive_unix,
             last_status: last_status.to_string(),
@@ -230,7 +232,7 @@ mod tests {
     /// day count, and a revoked copy's line carries the lock date once the app knows it.
     #[test]
     fn the_state_line_and_the_reminder_speak_the_evaluation_and_the_lock() {
-        use crate::license::{Mode, Posture};
+        use st2k_appkit::license::{Mode, Posture};
         const DAY: u64 = 24 * 60 * 60;
         let now = 1_760_000_000u64;
         let mut s = snap_at(Mode::Business, "", "", 0, None, now);
@@ -292,9 +294,9 @@ mod tests {
     /// pins without touching the real breadcrumb.
     /// A licensed snapshot with an updates window `ends` and the clock at `now`, for the
     /// updates-line and renew-button tests below.
-    fn snap_window(ends: Option<u64>, now: u64) -> crate::license::LicenceSnapshot {
+    fn snap_window(ends: Option<u64>, now: u64) -> st2k_appkit::license::LicenceSnapshot {
         let mut s = snap_at(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "active",
             now.saturating_sub(3600),
@@ -416,7 +418,7 @@ mod tests {
     fn licence_state_line_covers_all_four_states() {
         // A revocation WITH the relay's reason says why; an unknown token adds nothing.
         let mut why = snap(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "revoked",
             1_700_000_000,
@@ -440,7 +442,7 @@ mod tests {
         // entitled any more (the downgrade notice, not this line, owns that story).
         assert_eq!(
             licence_state_line(&snap(
-                crate::license::Mode::Personal,
+                st2k_appkit::license::Mode::Personal,
                 "esk_A1B2",
                 "active",
                 1
@@ -450,7 +452,7 @@ mod tests {
         // ⛔ BUT A KEY REDEEMED ON THIS PERSONAL COPY, AND LIVE, IS A LICENCE. The page used to
         // show "Personal use, no licence needed" beside a green "licence is active" (2026-09-11).
         let mut redeemed_here = snap(
-            crate::license::Mode::Personal,
+            st2k_appkit::license::Mode::Personal,
             "esk_A1B2",
             "active",
             1_700_000_000,
@@ -464,7 +466,7 @@ mod tests {
         // 2026-09-11 it fell into the Personal branch and the revocation vanished from the page.
         assert_eq!(
             licence_state_line(&snap(
-                crate::license::Mode::Personal,
+                st2k_appkit::license::Mode::Personal,
                 "esk_A1B2",
                 "revoked",
                 1_700_000_000
@@ -473,13 +475,13 @@ mod tests {
         );
         // Business, never redeemed anything.
         assert_eq!(
-            licence_state_line(&snap(crate::license::Mode::Business, "", "", 0)),
+            licence_state_line(&snap(st2k_appkit::license::Mode::Business, "", "", 0)),
             t("licence_state_none")
         );
         // Business, the breadcrumb's last recorded status is a revocation.
         assert_eq!(
             licence_state_line(&snap(
-                crate::license::Mode::Business,
+                st2k_appkit::license::Mode::Business,
                 "esk_A1B2",
                 "revoked",
                 1_700_000_000
@@ -488,7 +490,7 @@ mod tests {
         );
         // Business, a key on record and no revocation — "Licensed", with the verify date.
         let licensed = licence_state_line(&snap(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "active",
             1_700_000_000,
@@ -504,7 +506,7 @@ mod tests {
     #[test]
     fn licence_mode_line_names_the_business_licence_once_a_key_is_live() {
         let mut live = snap(
-            crate::license::Mode::Personal,
+            st2k_appkit::license::Mode::Personal,
             "esk_A1B2",
             "active",
             1_700_000_000,
@@ -521,7 +523,7 @@ mod tests {
         }
         assert_eq!(
             licence_mode_line(&snap(
-                crate::license::Mode::Personal,
+                st2k_appkit::license::Mode::Personal,
                 "esk_A1B2",
                 "revoked",
                 1_700_000_000
@@ -535,7 +537,7 @@ mod tests {
     #[test]
     fn licence_page_title_names_the_licence_this_copy_holds() {
         let mut live = snap(
-            crate::license::Mode::Personal,
+            st2k_appkit::license::Mode::Personal,
             "esk_A1B2",
             "active",
             1_700_000_000,
@@ -544,7 +546,7 @@ mod tests {
         assert_eq!(licence_page_title(&live), t("licence_title_business"));
         assert_eq!(
             licence_page_title(&snap(
-                crate::license::Mode::Personal,
+                st2k_appkit::license::Mode::Personal,
                 "esk_A1B2",
                 "revoked",
                 1_700_000_000
@@ -552,7 +554,7 @@ mod tests {
             t("licence_title_personal")
         );
         assert_eq!(
-            licence_page_title(&snap(crate::license::Mode::Business, "", "", 0)),
+            licence_page_title(&snap(st2k_appkit::license::Mode::Business, "", "", 0)),
             t("nav_licence")
         );
     }
@@ -565,13 +567,13 @@ mod tests {
     /// "fails against the old code."
     #[test]
     fn licence_state_line_shows_certificate_expiry_only_inside_the_warning_window() {
-        let warning = crate::license::CERT_EXPIRY_WARNING_SECS as i64;
+        let warning = st2k_appkit::license::CERT_EXPIRY_WARNING_SECS as i64;
         let now = 1_700_000_000i64;
 
         // Far from expiry: the ordinary "Licensed" line, using whatever last_positive_unix
         // the snapshot carries (a cert-only-licensed machine may have none from the relay).
         let far = snap_at(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "active",
             1_650_000_000,
@@ -586,7 +588,7 @@ mod tests {
 
         // Exactly at the boundary: inside (inclusive).
         let boundary = snap_at(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "active",
             1_650_000_000,
@@ -602,7 +604,7 @@ mod tests {
 
         // Well inside the window.
         let soon = snap_at(
-            crate::license::Mode::Business,
+            st2k_appkit::license::Mode::Business,
             "esk_A1B2",
             "active",
             1_650_000_000,
@@ -619,7 +621,14 @@ mod tests {
         // carries this - but a renderer that used `saturating_sub` incorrectly could still
         // show a nonsense expiring line): make sure the ordinary "no key" wording is what
         // shows for a machine with no key on record and no certificate contribution at all.
-        let expired_no_relay = snap_at(crate::license::Mode::Business, "", "", 0, None, now as u64);
+        let expired_no_relay = snap_at(
+            st2k_appkit::license::Mode::Business,
+            "",
+            "",
+            0,
+            None,
+            now as u64,
+        );
         assert_eq!(
             licence_state_line(&expired_no_relay),
             t("licence_state_none"),

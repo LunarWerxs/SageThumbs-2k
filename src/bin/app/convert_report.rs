@@ -27,8 +27,8 @@ use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{ctl, run_dialog, t, BUTTON};
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{ctl, run_dialog, t, BUTTON};
 
 const ID_EDIT: i32 = 100;
 /// This dialog's own buttons, past `ID_RESULT_COPY` (101) so they cannot collide with the
@@ -127,10 +127,10 @@ pub(crate) unsafe fn run_shot_convert_report(out: &str) -> bool {
     RETRY_INPUTS.with(|r| *r.borrow_mut() = failed.iter().map(|f| f.input.clone()).collect());
     CAN_OPEN.with(|c| c.set(true));
     CHOICE.with(|c| c.set(Choice::Close));
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KConvertReport"),
             wndproc: Some(report_wndproc),
             title: "SageThumbs 2K",
@@ -148,12 +148,13 @@ pub(crate) unsafe fn run_shot_convert_report(out: &str) -> bool {
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // Shared with the Image-info, Upload-links and OCR result windows. See
     // `win::result_layout` for why this comes off the real client rect, not the design size.
-    let l = crate::win::result_layout(hwnd);
+    let l = st2k_appkit::win::result_layout(hwnd);
     // Read-only and vertically scrollable: the list is as long as the run's failures, and
     // nothing here is meant to be edited. No ES_AUTOHSCROLL wrap either, a full path is
     // long, and folding it mid-path makes it harder to read than scrolling does.
     let style = WINDOW_STYLE((ES_MULTILINE | ES_READONLY) as u32);
-    REPORT.with(|r| crate::win::result_edit(hwnd, hinst, &l, l.m, style, ID_EDIT, &r.borrow()));
+    REPORT
+        .with(|r| st2k_appkit::win::result_edit(hwnd, hinst, &l, l.m, style, ID_EDIT, &r.borrow()));
 
     // Buttons bottom-right, inside the client: Close rightmost, then Copy, then the
     // optional Open-folder button, then Retry. `leftmost` walks left as each is placed.
@@ -184,12 +185,16 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
             hwnd, BUTTON, label, WS_TABSTOP, leftmost, l.btn_y, retry_w, l.btn_h, ID_RETRY, hinst,
         );
     }
-    crate::win::result_buttons(hwnd, hinst, &l);
+    st2k_appkit::win::result_buttons(hwnd, hinst, &l);
 }
 
 // What the Copy button puts on the clipboard: the whole report, paths and all. The EDIT is
 // read-only, so its contents can never differ from the stored text.
-crate::win::report_copy_source!(REPORT);
+/// The `copy_source` this dialog hands to `result_wndproc`: its whole per-thread report, which is
+/// what the Copy button puts on the clipboard.
+unsafe fn copy_source(_hwnd: windows::Win32::Foundation::HWND) -> String {
+    REPORT.with(|r| r.borrow().clone())
+}
 
 extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
@@ -201,7 +206,7 @@ extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // owner back its input. Everything else (create, Copy, close) is the shared
         // result-dialog behaviour.
         if msg == WM_COMMAND {
-            let choice = match crate::win::command_id(wparam) {
+            let choice = match st2k_appkit::win::command_id(wparam) {
                 ID_OPEN_FOLDER => Some(Choice::OpenFolder),
                 ID_RETRY => Some(Choice::Retry),
                 _ => None,
@@ -215,7 +220,7 @@ extern "system" fn report_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // The shared WM_DESTROY posts no quit for this window: it is modal (owned), and a quit
         // from it would sit in the queue until the Convert dialog's own pump read it, which
         // ended that dialog mid-retry. `result_wndproc` decides that by ownership now.
-        if let Some(r) = crate::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
+        if let Some(r) = st2k_appkit::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
             return r;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -239,7 +244,8 @@ mod tests {
                 .find(|(k, _)| *k == "btn_retry_failed")
                 .map(|(_, v)| *v)
                 .unwrap_or_else(|| panic!("{code}: btn_retry_failed missing"));
-            let w = crate::convert::cv_btn_col(unsafe { crate::win::design_text_w(label) }, 82);
+            let w =
+                crate::convert::cv_btn_col(unsafe { st2k_appkit::win::design_text_w(label) }, 82);
             assert!(
                 w <= RETRY_W_MAX,
                 "{code}: \"{label}\" needs a {w}px button, over the {RETRY_W_MAX}px the row \

@@ -453,9 +453,55 @@ pub fn aliased_input<'a>(
         .find(|input| same_file(output, Path::new(input)))
 }
 
+/// Absolute path in the grammar `SHCreateItemFromParsingName` accepts.
+///
+/// `canonicalize` returns the extended-length form and the parsing-name grammar rejects it, so
+/// strip it back: `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share` -> the plain
+/// `\\server\share` (stripping only `\\?\` there would leave `UNC\…`, which resolves nowhere).
+pub fn parsing_path(path: &str) -> String {
+    Path::new(path)
+        .canonicalize()
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{rest}")
+            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+                rest.to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|_| path.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relative path has to become the absolute, non-extended form the shell parses, or
+    /// every item fails with FILE_NOT_FOUND and the run reports a 100% failure rate.
+    #[test]
+    fn parsing_path_is_absolute_and_carries_no_extended_prefix() {
+        let f = std::env::temp_dir().join(format!("st2k-pp-{}.png", std::process::id()));
+        std::fs::write(&f, b"x").expect("write");
+        let got = parsing_path(&f.to_string_lossy());
+        assert!(
+            !got.starts_with(r"\\?\"),
+            "extended prefix must be stripped"
+        );
+        assert!(std::path::Path::new(&got).is_absolute(), "must be absolute");
+        let _ = std::fs::remove_file(&f);
+    }
+
+    /// A path that does not exist must come back unchanged rather than panicking — the walk
+    /// races with a user deleting files underneath it.
+    #[test]
+    fn parsing_path_passes_through_a_missing_file() {
+        assert_eq!(
+            parsing_path("Z:\\nope\\missing.png"),
+            "Z:\\nope\\missing.png"
+        );
+    }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

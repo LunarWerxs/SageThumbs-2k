@@ -60,7 +60,7 @@ pub(super) unsafe fn toggle_portable_registration(hwnd: HWND) {
             // The DLL travels in the portable zip; if it is missing the copy was unpacked
             // partially or pruned, and saying which file beats a bare "failed".
             _ => {
-                crate::win::message_box(
+                st2k_appkit::win::message_box(
                     hwnd,
                     t("msg_portable_dll_missing"),
                     t("btn_portable_register"),
@@ -70,7 +70,7 @@ pub(super) unsafe fn toggle_portable_registration(hwnd: HWND) {
         }
     };
     if result.is_err() {
-        crate::win::message_box(
+        st2k_appkit::win::message_box(
             hwnd,
             t("msg_portable_reg_failed"),
             t("btn_portable_register"),
@@ -83,8 +83,10 @@ pub(super) unsafe fn toggle_portable_registration(hwnd: HWND) {
 /// one, or the Desktop default). Called on load and after the folder picker.
 pub(super) unsafe fn set_shot_dir_label(hwnd: HWND) {
     if let Ok(h) = GetDlgItem(Some(hwnd), ID_SHOT_DIR) {
-        let w =
-            wide(&t("shot_dir_label").replace("{dir}", &crate::screenshot::effective_save_dir()));
+        let w = wide(
+            &t("shot_dir_label")
+                .replace("{dir}", &st2k_screenshot::screenshot::effective_save_dir()),
+        );
         let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
     }
 }
@@ -100,12 +102,12 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     // another app otherwise looked identical to a working one ("Running" while the
     // hotkey silently never fires). Only trust the flag while the daemon is actually
     // alive (it rewrites the mask on every re-arm; a dead daemon's value is stale).
-    let bind_failed = if crate::screenshot::is_daemon_running() {
+    let bind_failed = if st2k_screenshot::screenshot::is_daemon_running() {
         settings::get_dword_opt("HotkeyBindFailed").unwrap_or(0)
     } else {
         0
     };
-    let daemon_running = enabled && crate::screenshot::is_daemon_running();
+    let daemon_running = enabled && st2k_screenshot::screenshot::is_daemon_running();
     // Localized like every other line on the page: these were hard-coded English until
     // 2026-09-18, so a Chinese UI read "Running" beside translated labels. The tint never
     // depends on the text (see SHOT_STATUS_GREEN), so any language is safe here.

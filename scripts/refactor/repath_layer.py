@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from lift_layer import LAYERS, ROOT  # noqa: E402
+from lift_layer import APP_LAYER_NAMES, LAYERS, ROOT  # noqa: E402
 
 TEXT = {".ps1", ".psm1", ".py", ".mjs", ".js", ".yml", ".yaml", ".json", ".toml", ".md", ".rs", ".sh", ".txt", ".iss"}
 SKIP_DIRS = {"vendor", "stage", "__pycache__", "node_modules", "target", ".git"}
@@ -41,7 +41,9 @@ def main():
     alt = "|".join(sorted(LAYERS[layer], key=len, reverse=True))
     # Already under crates/<some layer>/src: leave it (look-behinds must be fixed-width, so one each).
     behind = "".join(rf"(?<!{name}[/\\])" for name in LAYERS)
-    pat = re.compile(rf"{behind}(?<![\w.-])src(?P<sep>[/\\]+)(?P<m>{alt})(?=\.rs\b|[/\\]|\b)")
+    # An app layer came out of src/bin/app rather than src.
+    under = r"(?:[/\\]+bin[/\\]+app)" if layer in APP_LAYER_NAMES else ""
+    pat = re.compile(rf"{behind}(?<![\w.-])src{under}(?P<sep>[/\\]+)(?P<m>{alt})(?=\.rs\b|[/\\]|\b)")
     total = 0
     for p in candidates():
         rel = p.relative_to(ROOT).as_posix()

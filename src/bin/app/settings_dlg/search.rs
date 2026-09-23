@@ -59,7 +59,7 @@ unsafe fn set_cue(edit: HWND) {
 /// Create the search box + its (hidden) results dropdown. Called from `apply_v3_layout`,
 /// OUTSIDE the per-category control lists, so both stay visible on every page.
 pub(super) unsafe fn build_search(hwnd: HWND, hinst: HINSTANCE) {
-    use crate::win::{ctl, EDIT};
+    use st2k_appkit::win::{ctl, EDIT};
     // Borderless, like every other input on this dialog: its rounded frame is PAINTED
     // (anti-aliased) behind it — by `navrail::draw_pane_header`, since the box floats over
     // that header. WS_BORDER draws a hard SQUARE 1px frame, and the rounded region clip
@@ -251,7 +251,7 @@ thread_local! {
 
 /// WM_MEASUREITEM for the dropdown (dispatched from the settings wndproc).
 pub(super) unsafe fn measure_row(hwnd: HWND, m: &mut MEASUREITEMSTRUCT) {
-    m.itemHeight = crate::win::dpi_scale(hwnd, ROW_H) as u32;
+    m.itemHeight = st2k_appkit::win::dpi_scale(hwnd, ROW_H) as u32;
 }
 
 /// Read one listbox row's text via the safe two-step LB_GETTEXTLEN/LB_GETTEXT pattern
@@ -303,7 +303,7 @@ pub(super) unsafe fn draw_row(hwnd: HWND, d: &DRAWITEMSTRUCT) {
         windows::Win32::Graphics::Gdi::HGDIOBJ(gui_font_for(hwnd).0),
     );
     let mut rc = d.rcItem;
-    rc.left += crate::win::dpi_scale(hwnd, 10);
+    rc.left += st2k_appkit::win::dpi_scale(hwnd, 10);
     DrawTextW(
         d.hDC,
         &mut buf,
@@ -324,11 +324,11 @@ unsafe fn paint_dropdown_border(list: HWND) {
     }
     let mut rc = RECT::default();
     let _ = GetClientRect(list, &mut rc);
-    let bw = crate::win::dpi_scale(list, 1).max(1);
-    let rad = crate::win::dpi_scale(list, 8);
-    crate::gdip::with_aa(hdc, |g| {
-        let p = crate::gdip::pen(BORDER(), bw);
-        crate::gdip::stroke_round(
+    let bw = st2k_appkit::win::dpi_scale(list, 1).max(1);
+    let rad = st2k_appkit::win::dpi_scale(list, 8);
+    st2k_appkit::gdip::with_aa(hdc, |g| {
+        let p = st2k_appkit::gdip::pen(BORDER(), bw);
+        st2k_appkit::gdip::stroke_round(
             g,
             p,
             rc.left,
@@ -337,7 +337,7 @@ unsafe fn paint_dropdown_border(list: HWND) {
             (rc.bottom - rc.top) - bw,
             rad,
         );
-        crate::gdip::drop_pen(p);
+        st2k_appkit::gdip::drop_pen(p);
     });
     ReleaseDC(Some(list), hdc);
 }
@@ -374,7 +374,7 @@ unsafe extern "system" fn hover_proc(
             if prev != idx {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
-            crate::arm_mouse_leave!(hwnd);
+            st2k_preview::arm_mouse_leave!(hwnd);
         }
         WM_MOUSELEAVE if HOT.with(|h| h.replace(-1)) != -1 => {
             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -513,10 +513,10 @@ pub(super) unsafe fn on_change(hwnd: HWND) {
     if shown > 0 {
         // Size the dropdown to EXACTLY its rows (the fixed 180px box left dead space
         // under short result lists), then re-clip the rounded corners to the new size.
-        let h = crate::win::dpi_scale(hwnd, ROW_H * shown as i32 + 4);
-        let w = crate::win::dpi_scale(hwnd, DROP_W);
-        let x = crate::win::dpi_scale(hwnd, DROP_X);
-        let y = crate::win::dpi_scale(hwnd, DROP_Y);
+        let h = st2k_appkit::win::dpi_scale(hwnd, ROW_H * shown as i32 + 4);
+        let w = st2k_appkit::win::dpi_scale(hwnd, DROP_W);
+        let x = st2k_appkit::win::dpi_scale(hwnd, DROP_X);
+        let y = st2k_appkit::win::dpi_scale(hwnd, DROP_Y);
         let _ = SetWindowPos(
             list,
             Some(HWND_TOP),

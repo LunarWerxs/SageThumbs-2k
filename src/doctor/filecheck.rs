@@ -99,7 +99,7 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
     // canonicalizes and undoes the extended-length prefix (its own doc has the UNC details);
     // shared with `prebuild.rs`'s `one()`, which needs the identical normalization for its
     // own `SHCreateItemFromParsingName` call — this used to be a hand-copied duplicate.
-    let abs = crate::prebuild::parsing_path(path);
+    let abs = st2k_base::fsutil::parsing_path(path);
     let path = abs.as_str();
 
     // The shell objects need an apartment. Uninitialise only if WE initialised, so this

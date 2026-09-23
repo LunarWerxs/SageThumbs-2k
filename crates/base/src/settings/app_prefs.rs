@@ -621,6 +621,19 @@ pub fn preview_blocked(ext: &str) -> bool {
     parse_blocked_exts(&preview_blocked_exts_raw()).contains(&ext)
 }
 
+/// What to call a window class in a warning, for the classes whose keystrokes the Space preview
+/// has to see. `None` for anything the feature never serves.
+///
+/// Shared by `st2k doctor` and the daemon's live watcher (`screenshot::elevwarn`) so the
+/// report and the warning can never disagree about which windows the feature covers.
+pub fn served_window_kind(cls: &str) -> Option<&'static str> {
+    match cls {
+        "CabinetWClass" | "ExploreWClass" => Some("File Explorer"),
+        _ if cls.starts_with("EVERYTHING") => Some("Everything"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod blocked_ext_tests {
     use super::parse_blocked_exts;

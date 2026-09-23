@@ -14,7 +14,7 @@
 //! The popup is modal over Settings, so nothing can read the list while it is away.
 
 use super::*;
-use crate::win::IDOK;
+use st2k_appkit::win::IDOK;
 
 // The Settings window, so the close path can hand the list back. Set for the popup's
 // lifetime only.
@@ -26,12 +26,12 @@ const POP_W: i32 = 400;
 const POP_H: i32 = 470;
 const M: i32 = 14;
 // ID_POP_RESET lives in ids.rs now (so `control_ids_are_unique` there covers it).
-// IDOK (the "Done" button) comes from crate::win.
+// IDOK (the "Done" button) comes from st2k_appkit::win.
 
 /// Open the editor, modal over `settings`. Returns after it closes.
 pub(super) unsafe fn open(settings: HWND) {
     OWNER.with(|o| o.set(Some(settings.0 as isize)));
-    crate::win::run_dialog(
+    st2k_appkit::win::run_dialog(
         w!("SageThumbs2KMenuItems"),
         Some(popup_wndproc),
         t("grp_menu_items"),
@@ -71,7 +71,7 @@ fn popup_layout(cw: i32, ch: i32) -> PopupLayout {
 
 /// Take the checklist from Settings, fill the popup with it, and add Reset/Done.
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
-    use crate::win::{ctl, dpi_scale, dpi_unscale, BUTTON, IDOK};
+    use st2k_appkit::win::{ctl, dpi_scale, dpi_unscale, BUTTON, IDOK};
     let Some(settings) = settings_hwnd() else {
         return;
     };
@@ -130,7 +130,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
 
 extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
-        if let Some(r) = crate::dark::dark_ctlcolor(msg, wparam) {
+        if let Some(r) = st2k_appkit::dark::dark_ctlcolor(msg, wparam) {
             return r;
         }
         match msg {
@@ -196,7 +196,7 @@ unsafe fn on_measureitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     let label = list::ctx_menu_label(m.itemID as usize);
-    crate::win::measure_menu_item(hwnd, m, label);
+    st2k_appkit::win::measure_menu_item(hwnd, m, label);
     LRESULT(1)
 }
 
@@ -205,7 +205,7 @@ unsafe fn on_drawitem(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> L
     if d.CtlType != ODT_MENU {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
-    crate::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
+    st2k_appkit::win::draw_menu_item(d, list::ctx_menu_label(d.itemID as usize));
     LRESULT(1)
 }
 
@@ -227,7 +227,7 @@ fn popup_command(id: i32) -> PopupCommand {
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match popup_command(crate::win::command_id(wparam)) {
+    match popup_command(st2k_appkit::win::command_id(wparam)) {
         PopupCommand::Reset => {
             if let Ok(list) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
                 list::reset_menu_order(list);

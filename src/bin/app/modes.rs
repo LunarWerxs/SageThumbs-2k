@@ -11,34 +11,34 @@ use super::*;
 /// fenced inside the overlay. Returns `true` if a flag fired (caller should return).
 pub(super) unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]) -> bool {
     if args.iter().any(|a| a == "--screenshot-automation") {
-        crate::screenshot::run_capture_automation(hinst);
+        st2k_screenshot::screenshot::run_capture_automation(hinst);
         return true;
     }
     // `--bench-preview <dir>`: times the Quick preview's REAL decode path over a folder —
     // a cold pass, then a warm pass off the cache — so the arrow-key stepping cost is a
     // number rather than an impression. Console output, no window, no side effects.
     if let Some((dir, _)) = bench_flag_args(args, "--bench-preview") {
-        crate::preview::run_bench(&dir);
+        st2k_preview::preview::run_bench(&dir);
         return true;
     }
     // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
     // real WM_KEYDOWN arrow presses, timed from keypress to painted.
     if let Some((dir, steps)) = bench_flag_args(args, "--bench-nav") {
-        crate::preview::run_nav_bench(hinst, &dir, steps);
+        st2k_preview::preview::run_nav_bench(hinst, &dir, steps);
         return true;
     }
     // `--bench-mash <dir> <keys>`: the HELD arrow key, pressed without waiting for each
     // paint, so several decodes really are in flight at once. `ST2K_NO_CANCEL=1` switches
     // abandonment off for an A/B on the same binary.
     if let Some((dir, keys)) = bench_flag_args(args, "--bench-mash") {
-        crate::preview::run_mash_bench(hinst, &dir, keys);
+        st2k_preview::preview::run_mash_bench(hinst, &dir, keys);
         return true;
     }
     // `--probe-preview <file> <out.png>`: the picture Quick preview ends up showing, for the
     // big-file gate (scripts/bigfiles/). No window, no side effects.
     if let Some(pos) = args.iter().position(|a| a == "--probe-preview") {
         let arg = |i: usize| args.get(pos + i).cloned().unwrap_or_default();
-        crate::preview::run_probe(&arg(1), &arg(2));
+        st2k_preview::preview::run_probe(&arg(1), &arg(2));
         return true;
     }
     false
@@ -51,13 +51,13 @@ pub(super) unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]
 /// Returns `true` if a flag fired (caller should return).
 pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--update-check") {
-        crate::update::run_one_shot_check();
+        st2k_appkit::update::run_one_shot_check();
         return true;
     }
     if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
         let ok = args
             .get(pos + 1)
-            .is_some_and(|p| crate::update::run_selftest(std::path::Path::new(p)));
+            .is_some_and(|p| st2k_appkit::update::run_selftest(std::path::Path::new(p)));
         std::process::exit(if ok { 0 } else { 1 });
     }
     if args.iter().any(|a| a == "--first-run-seen") {
@@ -66,9 +66,9 @@ pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
     }
     if let Some(pos) = args.iter().position(|a| a == "--update-task") {
         if args.get(pos + 1).map(String::as_str) == Some("remove") {
-            crate::update::remove_update_task();
+            st2k_appkit::update::remove_update_task();
         } else {
-            crate::update::sync_update_task();
+            st2k_appkit::update::sync_update_task();
         }
         return true;
     }
@@ -81,13 +81,13 @@ pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
 /// `--hot`), `--focus-transport N` (transport-strip button N keyboard-focused), `--pinned`,
 /// `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip), `--source` (raw
 /// text of a normally-rendered file), and the rest.
-pub(super) fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOpts {
+pub(super) fn build_shot_preview_opts(args: &[String]) -> st2k_preview::preview::ShotOpts {
     let val = |name: &str| {
         args.iter()
             .position(|a| a == name)
             .and_then(|p| args.get(p + 1))
     };
-    crate::preview::ShotOpts {
+    st2k_preview::preview::ShotOpts {
         file: val("--file").cloned(),
         hot: val("--hot").and_then(|s| s.parse().ok()),
         focus: val("--focus").and_then(|s| s.parse().ok()),
@@ -166,7 +166,7 @@ pub(super) unsafe fn run_shot_mode(
         .and_then(|p| args.get(p + 1))
         .and_then(|s| s.parse::<i32>().ok())
     {
-        crate::win::set_dpi_override(dpi);
+        st2k_appkit::win::set_dpi_override(dpi);
     }
     let window = args
         .iter()
@@ -182,14 +182,14 @@ pub(super) unsafe fn run_shot_mode(
         // The Convert dialog's failure report, over canned failures: it only appears when a
         // batch actually fails, which a shot cannot arrange.
         "convert-report" => crate::convert_report::run_shot_convert_report(out),
-        "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
+        "eyedropper" => st2k_screenshot::eyedropper::run_shot_eyedropper(out),
         "feedback" => crate::feedback::run_shot_feedback(out),
         "about" => crate::about::run_shot_about(out),
         "doctor" => crate::doctor_report::run_shot_doctor(out),
         // The upload result and the Recent uploads list, over canned uploads (one of each
         // expiry kind) so the layout does not depend on what this machine uploaded.
-        "upload" => crate::upload_result::run_shot_upload_result(out),
-        "uploads" => crate::upload_history_dlg::run_shot_history(out),
+        "upload" => st2k_screenshot::upload_result::run_shot_upload_result(out),
+        "uploads" => st2k_screenshot::upload_history_dlg::run_shot_history(out),
         "firstrun" => crate::first_run::run_shot_first_run(out),
         "firstrun2" => crate::first_run::run_shot_first_run2(out),
         // The OCR result window, over canned text (no recognizer run) — or the
@@ -199,11 +199,11 @@ pub(super) unsafe fn run_shot_mode(
                 .iter()
                 .position(|a| a == "--file")
                 .and_then(|p| args.get(p + 1));
-            crate::ocr_result::run_shot_ocr(out, file.map(String::as_str))
+            st2k_screenshot::ocr_result::run_shot_ocr(out, file.map(String::as_str))
         }
         "preview" => {
             let opts = build_shot_preview_opts(args);
-            crate::preview::run_shot_preview(hinst, dark, out, &opts)
+            st2k_preview::preview::run_shot_preview(hinst, dark, out, &opts)
         }
         _ => run_shot_settings_window(hinst, dark, out, args),
     }
@@ -278,7 +278,7 @@ pub(super) unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[S
             .get(pos + 1)
             .filter(|p| !p.starts_with("--"))
             .map(String::as_str);
-        crate::preview::run_preview(hinst, path);
+        st2k_preview::preview::run_preview(hinst, path);
         return true;
     }
     false
@@ -366,7 +366,7 @@ pub(super) unsafe fn refused_by_licence(notice_key: &str) -> bool {
     if !license::shell_locked() {
         return false;
     }
-    crate::win::notify_toast(
+    st2k_appkit::win::notify_toast(
         "SageThumbs 2K",
         t(notice_key),
         std::time::Duration::from_secs(5),
@@ -382,37 +382,37 @@ pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]
     // Instant capture: grabs the whole screen straight to the clipboard + a PNG, no
     // overlay. Checked before `--screenshot` (exact match, so they don't overlap).
     if args.iter().any(|a| a == "--screenshot-instant") {
-        crate::screenshot::capture_instant();
+        st2k_screenshot::screenshot::capture_instant();
         return true;
     }
     // Screen OCR mode: opens the same overlay, but the first finished region drag reads
     // its text and closes — no editor. Checked before `--screenshot` (exact match).
     if args.iter().any(|a| a == "--screenshot-ocr") {
-        crate::screenshot::run_capture_ocr(hinst);
+        st2k_screenshot::screenshot::run_capture_ocr(hinst);
         return true;
     }
     // Screenshot mode: opens the Flameshot-style capture + annotation overlay
     // (region -> draw -> copy/save). Wired to a hotkey by the opt-in tray daemon.
     if args.iter().any(|a| a == "--screenshot") {
-        crate::screenshot::run_capture(hinst);
+        st2k_screenshot::screenshot::run_capture(hinst);
         return true;
     }
     // Screenshot daemon: runs the opt-in tray helper that registers the global hotkey and
     // spawns captures. Launched at logon only after the user enables it in Settings.
     if args.iter().any(|a| a == "--screenshot-daemon") {
-        crate::screenshot::run_daemon(hinst);
+        st2k_screenshot::screenshot::run_daemon(hinst);
         return true;
     }
     // Custom action hotkey: spawned by the daemon when the user's assigned chord fires;
     // runs whichever action they bound in Settings > Screenshots.
     if args.iter().any(|a| a == "--hotkey-action") {
-        crate::hotkey::run_hotkey_action(hinst);
+        st2k_screenshot::hotkey::run_hotkey_action(hinst);
         return true;
     }
     // Upload mode: POSTs a capture to a keyless host and copies the URL to the clipboard.
     if let Some(pos) = args.iter().position(|a| a == "--upload") {
         if let Some(path) = args.get(pos + 1) {
-            crate::screenshot::run_upload(path);
+            st2k_screenshot::screenshot::run_upload(path);
         }
         return true;
     }
@@ -428,18 +428,18 @@ pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]
                 .position(|a| a == "--url-to")
                 .and_then(|p| args.get(p + 1))
                 .map(String::as_str);
-            crate::screenshot::run_upload_keep(listfile, url_to);
+            st2k_screenshot::screenshot::run_upload_keep(listfile, url_to);
         }
         return true;
     }
     // Recent uploads: every uploaded link with the time it has left (the tray menu item).
     if args.iter().any(|a| a == "--upload-history") {
-        crate::upload_history_dlg::show_history(None);
+        st2k_screenshot::upload_history_dlg::show_history(None);
         return true;
     }
     // Toggle the screenshot hotkey on/off (HKCU autostart + the tray daemon).
     if args.iter().any(|a| a == "--screenshot-toggle") {
-        crate::screenshot::set_enabled(!crate::screenshot::is_enabled());
+        st2k_screenshot::screenshot::set_enabled(!st2k_screenshot::screenshot::is_enabled());
         return true;
     }
     false
@@ -481,7 +481,7 @@ pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
         let ver = args
             .get(pos + 1)
             .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
-        crate::update::show_updated_toast(ver);
+        st2k_appkit::update::show_updated_toast(ver);
         offer_thumbnail_refresh(ver);
         return true;
     }
@@ -526,7 +526,7 @@ pub(super) fn detach_rebuild_thumbnail_cache() {
 /// nothing: the process has no other work, and the restart takes the tray icon with it.
 pub(super) unsafe fn offer_thumbnail_refresh(ver: &str) {
     let _ = st2k_base::settings::set_string("CacheStaleSince", ver);
-    crate::win::notify_toast_action(
+    st2k_appkit::win::notify_toast_action(
         "Refresh thumbnails now?",
         "New thumbnails won't appear for files Explorer already cached until the cache is \
          cleared. Click to refresh thumbnails now (restarts Explorer).",
@@ -640,7 +640,7 @@ pub(super) unsafe fn remove_user_state() {
         let _ = std::fs::remove_file(log.with_extension("log.old"));
         let _ = std::fs::remove_file(log);
     }
-    if let Some(cache) = crate::update::cache_path() {
+    if let Some(cache) = st2k_appkit::update::cache_path() {
         let _ = std::fs::remove_file(cache);
     }
 }

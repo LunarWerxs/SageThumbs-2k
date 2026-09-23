@@ -189,7 +189,7 @@ pub(super) unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
     ctl(
         hwnd,
         STATIC,
-        &crate::settings_dlg::licence_state_line(&crate::license::snapshot()),
+        &crate::settings_dlg::licence_state_line(&st2k_appkit::license::snapshot()),
         WINDOW_STYLE(0),
         22,
         268,

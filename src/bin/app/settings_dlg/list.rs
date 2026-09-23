@@ -91,7 +91,7 @@ pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
     }
     // Foreground + WM_NULL bracket: the documented fix for the "menu shows then
     // immediately vanishes" quirk. Owner is the top-level dialog, not the list.
-    crate::win::force_foreground(owner);
+    st2k_appkit::win::force_foreground(owner);
     let cmd = TrackPopupMenu(
         menu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
@@ -243,7 +243,7 @@ unsafe fn draw_insert_line(list: HWND) {
         bottom: y + 1,
     };
     let hdc = GetDC(Some(list));
-    let br = CreateSolidBrush(crate::dark::ACCENT());
+    let br = CreateSolidBrush(st2k_appkit::dark::ACCENT());
     FillRect(hdc, &line, br);
     let _ = DeleteObject(HGDIOBJ(br.0));
     ReleaseDC(Some(list), hdc);

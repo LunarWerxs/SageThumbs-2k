@@ -12,8 +12,8 @@ use windows::Win32::UI::Controls::PBS_MARQUEE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{
     checked, ctl, edit_field, get_edit_text, label, pick_folder, read_listfile, run_dialog,
     set_edit_text, t, wide, BM_SETCHECK_MSG, BUTTON, IDCANCEL, IDOK,
 };
@@ -65,7 +65,7 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_COMMAND => on_command(hwnd, wparam),
             WM_TTF_DONE => on_ttf_done(hwnd),
             // DPI, the deferred close a running sort needs, destroy, default.
-            _ => crate::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }
@@ -209,7 +209,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 
 /// `WM_COMMAND`: dispatch by control/menu id.
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = crate::win::command_id(wparam);
+    let id = st2k_appkit::win::command_id(wparam);
     match id {
         CID_TTF_BROWSE => {
             if let Some(dir) = pick_folder(hwnd) {

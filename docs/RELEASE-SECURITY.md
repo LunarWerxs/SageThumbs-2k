@@ -34,7 +34,7 @@ How it travels:
 - `scripts/packaging/analytics/worker.js` reads GitHub's `releases/latest` at the edge and
   publishes `latestSecurity: true` in the manifest when the body contains the marker (its
   `SECURITY_RELEASE_MARKER` constant), alongside `latestPublishedAt`.
-- `src/bin/app/update.rs` reads both, and its `is_security_body` applies the identical rule on
+- `crates/appkit/src/update.rs` reads both, and its `is_security_body` applies the identical rule on
   the direct-GitHub fallback path. `update_offer` is the one decision function; its
   `a_security_release_overrides_a_closed_window` test is the rule written down as code.
 - The marker is matched as PLAIN TEXT, never a regex, so `**[security-release]**` and
@@ -485,7 +485,7 @@ signature covers the exact bytes of the file it sits beside; nothing else (not t
 the filename) is signed or checked.
 
 **Where the public key lives.** Baked into the app at compile time: `UPDATE_PUBLIC_KEY` in
-`src/bin/app/update.rs`. The matching private key never ships - it lives only in whoever's
+`crates/appkit/src/update.rs`. The matching private key never ships - it lives only in whoever's
 `.env` holds `ST2K_UPDATE_SIGNING_KEY`, generated once by `examples/update-keygen.rs` and
 never printed or logged by anything in this repo.
 

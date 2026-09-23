@@ -65,7 +65,7 @@ fn every_locale_resize_checkbox_label_fits_its_allocated_column() {
 /// `text_width`, whose answer follows the process-wide shot-DPI override that a sibling
 /// test in `scaling.rs` flips underneath this one; see `win::design_text_w`.
 fn measure_label(text: &str) -> i32 {
-    unsafe { crate::win::design_text_w(text) }
+    unsafe { st2k_appkit::win::design_text_w(text) }
 }
 
 /// The second half of F36 in this dialog: every OTHER row also handed a translated

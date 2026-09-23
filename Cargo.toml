@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook", "crates/build-support"]
+members = ["crates/screenshot", "crates/preview", "crates/appkit", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook", "crates/build-support"]
 exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/djvu-rs"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
 # (st2k_dlghook.dll): the Open/Save-dialog selection reader, which is a SEPARATE tiny
 # cdylib because it gets loaded into other applications — see crates/dlghook/Cargo.toml.
-default-members = [".", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook"]
+default-members = [".", "crates/screenshot", "crates/preview", "crates/appkit", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook"]
 resolver = "2"
 
 # exr 1.74.2 added DWAA/DWAB encode/decode support, but stores two lazily-filled
@@ -117,6 +117,12 @@ name = "st2k"
 path = "src/bin/cli.rs"
 
 [dependencies]
+# The screenshot layer of the app, its own crate.
+st2k_screenshot = { package = "sagethumbs2k-screenshot", path = "crates/screenshot" }
+# The preview layer of the app, its own crate.
+st2k_preview = { package = "sagethumbs2k-preview", path = "crates/preview" }
+# The appkit layer of the app, its own crate.
+st2k_appkit = { package = "sagethumbs2k-appkit", path = "crates/appkit" }
 # The actions layer of the library, its own crate.
 st2k_actions = { package = "sagethumbs2k-actions", path = "crates/actions" }
 # The codecs layer of the library, its own crate.
@@ -146,22 +152,12 @@ kamadak-exif = "0.6"
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
 # the shell-extension DLL (which never touches the mcp module).
 serde_json = "1"
-# Quick preview: markdown -> block/inline events for the viewer's in-process GDI renderer
-# (VIEWER / EXE-only). Pure-Rust, MIT, small — chosen over a WebView2 host to keep the binary
-# lean + the render `--shot`-verifiable. Referenced ONLY from `src/bin/app/preview/**`, so LTO
-# dead-strips it from the DLL. default-features off drops the `getopts` CLI bits.
-pulldown-cmark = { version = "0.13", default-features = false }
 windows-registry = "0.6"
 # NOT unused despite what cargo-machete says: the `#[implement]` macro from
 # windows-implement EXPANDS to code that references `windows_core::` paths, so the
 # direct dep must stay or every COM coclass fails its IUnknownImpl bound.
 windows-core = "0.62"
 windows-implement = "0.60"
-# WebView2 COM bindings for the Quick preview HTML host — OPTIONAL, gated behind the
-# `html-preview` feature (EXE-only; see [features]). 0.39 uses the same `windows` 0.62
-# the project already has (verified single-crate). Not bundled: the Edge engine ships
-# with Win11; only WebView2Loader.dll (~150 KB) rides alongside the EXE.
-webview2-com = { version = "0.39", optional = true }
 
 # --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
 # All pure-Rust, MIT/Apache. We only ever READ zip members, so we want inflate
@@ -179,7 +175,6 @@ webview2-com = { version = "0.39", optional = true }
 # nor any `deflate-flate2-zlib*` variant is reachable from what we ask for, so the
 # C-free/no-zopfli property this comment exists to protect still holds.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 base64 = "0.23"
 # Offline licence certificates (EXE-only; see `src/bin/app/licence_cert.rs`). Pay signs
 # them Ed25519, and Windows CANNOT verify that: CNG has no Ed25519 before Windows 10
@@ -256,17 +251,7 @@ h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "52df51a3587
 # the feature off for the DLL build its `windows` dependency is compiled without
 # them. Measured: enabling this for the DLL too blew the Rust payload budget by
 # 681 KB for code that could never run there.
-hdr-capture = [
-    "windows/Win32_Graphics_Dxgi",
-    "windows/Win32_Graphics_Dxgi_Common",
-    "windows/Win32_Graphics_Direct3D",
-    "windows/Win32_Graphics_Direct3D11",
-    "windows/Win32_System_WinRT_Direct3D11",
-    "windows/Win32_System_WinRT_Graphics_Capture",
-    "windows/Graphics_Capture",
-    "windows/Graphics_DirectX",
-    "windows/Graphics_DirectX_Direct3D11",
-]
+hdr-capture = ["st2k_screenshot/hdr-capture"]
 
 # (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
 # `flash-video` is DEFAULT-ON so a plain dev `cargo build`/`cargo test` exercises the FLV
@@ -281,7 +266,7 @@ default = ["flash-video", "vp9-video", "mpeg-video"]
 # project already uses (single crate). The Evergreen runtime ships with Win11, so nothing
 # heavy is bundled — just the ~150 KB WebView2Loader.dll alongside the EXE. Runtime is
 # ALSO gated behind default-OFF Settings toggles (preview_html / preview_url_live).
-html-preview = ["dep:webview2-com"]
+html-preview = ["st2k_preview/html-preview"]
 # FLV VP6 / Sorenson Spark decode for the hidden `st2k flv-frame` child verb. EXE-ONLY,
 # same containment as `html-preview`: the decoder crates are referenced ONLY from
 # `src/bin/vdec/` (the st2k console binary), and the DLL package opts out via
@@ -325,6 +310,10 @@ webp-lossy = ["st2k_actions/webp-lossy"]
 # for a SECOND `cargo build --lib` that produces the slim DLL; the EXEs/CLI keep the
 # full table. NEVER use on the default build — it would strip the app's dialog strings.
 dll-i18n-subset = ["st2k_base/dll-i18n-subset"]
+
+[dev-dependencies]
+# The app layers' test helpers (their `testkit` feature), for the binary's own tests.
+st2k_appkit = { package = "sagethumbs2k-appkit", path = "crates/appkit", features = ["testkit"] }
 
 [build-dependencies]
 # The SDK-rc lookup + VERSIONINFO .rc template shared with crates/dll and crates/dlghook's

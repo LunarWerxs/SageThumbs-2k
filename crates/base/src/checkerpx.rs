@@ -79,6 +79,79 @@ fn blend_row(rgba: &mut [u8], w: u32, y: u32, cell: u32) {
     }
 }
 
+/// Two subtle checkerboard shades from a base menu colour: the base nudged a few
+/// levels darker and a few lighter. Their average stays ≈ `bg` (so the menu tone
+/// doesn't shift) and they sit only ~16 levels apart — enough to read as
+/// "transparency here" without competing with the menu. Follows light/dark/accent
+/// automatically since it's derived from whatever `bg` is passed.
+pub fn checker_shades(bg: u32) -> (u32, u32) {
+    let ch = |shift: u32| (bg >> shift) & 0xFF; // COLORREF is 0x00BBGGRR
+    let (r, g, b) = (ch(0), ch(8), ch(16));
+    let darker = |c: u32| c.saturating_sub(8);
+    let lighter = |c: u32| (c + 8).min(255);
+    let pack = |r: u32, g: u32, b: u32| r | (g << 8) | (b << 16);
+    (
+        pack(darker(r), darker(g), darker(b)),
+        pack(lighter(r), lighter(g), lighter(b)),
+    )
+}
+
+/// Fill `rc` with a two-tone checkerboard of `cell`-px squares — the backdrop a thumbnail is
+/// alpha-blended onto, so transparent pixels reveal the pattern instead of disappearing into the
+/// flat background colour.
+///
+/// `cell` is a caller choice because the two surfaces that use this are different sizes: the menu
+/// tile is a ~72px thumbnail where 8px reads as texture, while the Quick preview window is
+/// full-size and wants a DPI-scaled, visibly larger square.
+///
+/// # Safety
+///
+/// `hdc` must be a valid device context that stays alive for the call. Nothing is retained.
+pub unsafe fn fill_checker(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    rc: &windows::Win32::Foundation::RECT,
+    c0: u32,
+    c1: u32,
+    cell: i32,
+) {
+    let (left, top) = (rc.left, rc.top);
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    let cell = cell.max(2);
+    let b0 =
+        windows::Win32::Graphics::Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(c0));
+    let b1 =
+        windows::Win32::Graphics::Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(c1));
+    windows::Win32::Graphics::Gdi::FillRect(
+        hdc,
+        &windows::Win32::Foundation::RECT {
+            left,
+            top,
+            right: left + w,
+            bottom: top + h,
+        },
+        b0,
+    );
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            if ((x / cell) + (y / cell)) & 1 == 1 {
+                let r = windows::Win32::Foundation::RECT {
+                    left: left + x,
+                    top: top + y,
+                    right: left + (x + cell).min(w),
+                    bottom: top + (y + cell).min(h),
+                };
+                windows::Win32::Graphics::Gdi::FillRect(hdc, &r, b1);
+            }
+            x += cell;
+        }
+        y += cell;
+    }
+    let _ = windows::Win32::Graphics::Gdi::DeleteObject(b0.into());
+    let _ = windows::Win32::Graphics::Gdi::DeleteObject(b1.into());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

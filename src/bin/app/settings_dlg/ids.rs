@@ -319,7 +319,7 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1258, "menu_lock_screen"),
 ];
 
-pub(crate) use crate::screenshot::SHOT_PRESETS;
+pub(crate) use st2k_screenshot::screenshot::SHOT_PRESETS;
 /// Default chord pre-selected in the quick-save combo when none is saved yet —
 /// deliberately NOT the main `Ctrl + PrtScn` default, so enabling the instant
 /// screenshot doesn't try to grab a chord already owned by the editor hotkey.

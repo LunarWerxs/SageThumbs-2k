@@ -8,7 +8,7 @@ use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::UI::WindowsAndMessaging::{ES_MULTILINE, ES_READONLY, WINDOW_STYLE};
 
-use crate::win::{
+use st2k_appkit::win::{
     result_buttons, result_edit, result_layout, result_window_proc, run_dialog, t, ResultWindow,
 };
 

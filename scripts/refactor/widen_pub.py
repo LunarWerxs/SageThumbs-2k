@@ -12,7 +12,10 @@ its old crate", makes the DEFINITION `pub`:
     E0616 / E0451  field is private       -> that field, found in its struct
     private_interfaces / private_bounds   -> the more-private type's definition
     E0364 / E0365  re-export of a crate-private item -> the item the note points at
-    dead_code (inside the lifted crate)   -> the item: its only users live above it now
+
+NOT dead_code: an item looks dead only because the entry point that uses it is not `pub` yet,
+so widening on it made ~1,650 app items `pub` where a few dozen entry points needed it
+(2026-09-23). Widen the entry points; whatever is still dead after that is genuinely dead.
 
 Only files under <crate-dir> are edited. Stops when a round finds nothing to widen, and
 prints whatever errors are left (those are real breaks for a person to read).
@@ -53,8 +56,21 @@ def within(path, crate):
         return False
 
 
+USE_OPEN = re.compile(r"^\s*(?:pub\s*\([^)]*\)\s+|pub\s+)?use\s")
+
+
 def widen_line(lines, idx):
-    """Make the item that starts at or just after lines[idx] `pub`. True when changed."""
+    """Make the item that starts at or just after lines[idx] `pub`. True when changed.
+
+    A name inside a multi-line `use a::{ ... };` group is pointed at on its own line, which is
+    no item: the group's `use` line above it is what gets widened."""
+    if not ITEM.match(lines[idx]) and not USE_OPEN.match(lines[idx]):
+        depth = 0
+        for j in range(idx, max(idx - 12, -1), -1):
+            depth += lines[j].count("}") - lines[j].count("{")
+            if USE_OPEN.match(lines[j]) and depth < 0:
+                idx = j
+                break
     for j in range(idx, min(idx + 4, len(lines))):
         m = ITEM.match(lines[j])
         if m:
@@ -85,6 +101,11 @@ def widen_field(files, struct, field):
 
 
 def spans_defined_here(msg):
+    # E0624 (a private method) labels its definition on a secondary span of the error itself;
+    # E0603 puts it in a child note. Take both.
+    for sp in msg.get("spans", []):
+        if not sp["is_primary"] and (sp.get("label") or "").endswith("defined here"):
+            yield sp
     for ch in msg.get("children", []):
         for sp in ch.get("spans", []):
             if "defined here" in (ch.get("message") or "") or (sp.get("label") or "").endswith("defined here"):
@@ -128,10 +149,6 @@ def main():
                     for sp in ch.get("spans", []):
                         if within(sp["file_name"], crate):
                             edits[sp["file_name"]].add(sp["line_start"] - 1)
-            elif code == "dead_code" and "field" not in text.split("`")[0]:
-                for sp in msg["spans"]:
-                    if sp["is_primary"] and within(sp["file_name"], crate):
-                        edits[sp["file_name"]].add(sp["line_start"] - 1)
         changed = 0
         for fname, idxs in edits.items():
             p = ROOT / fname

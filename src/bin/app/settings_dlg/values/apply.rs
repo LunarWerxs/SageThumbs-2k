@@ -170,7 +170,7 @@ pub(super) unsafe fn apply_menu_and_misc_toggles(hwnd: HWND) {
     // toggle has to create/remove that task — otherwise turning it OFF would leave the
     // task running (and turning it back ON after an install where task creation failed
     // would never bring it back). Best-effort: the launch-time piggyback covers either way.
-    crate::update::sync_update_task();
+    st2k_appkit::update::sync_update_task();
 }
 
 /// Persist the context-menu item list's per-item visibility AND row order.
@@ -212,7 +212,7 @@ pub(super) unsafe fn apply_menu_preview_and_theme(hwnd: HWND) {
         let sel = SendMessageW(c, CB_GETCURSEL, None, None).0.clamp(0, 2);
         let _ = note(settings::set_app_theme(sel as u32));
         if sel as u32 != theme_before {
-            crate::preview::request_close();
+            st2k_preview::preview::request_close();
         }
     }
 }
@@ -365,7 +365,7 @@ pub(super) unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
     // keeps the daemon resident whenever a custom hotkey is bound — sees the new state.
     if let Ok(act) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
         let sel = SendMessageW(act, CB_GETCURSEL, None, None).0;
-        if let Some(&(id, _)) = crate::hotkey::ACTIONS.get(sel.max(0) as usize) {
+        if let Some(&(id, _)) = st2k_screenshot::hotkey::ACTIONS.get(sel.max(0) as usize) {
             let _ = note(settings::set_custom_action(id));
         }
     }
@@ -442,7 +442,7 @@ pub(super) unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
     // re-register) accounting for the screenshot feature, the custom hotkey saved above,
     // AND Quick preview persisted just above — so it covers the "daemon needed only for a
     // custom hotkey / Quick preview" cases too.
-    crate::screenshot::set_enabled(shot_on);
+    st2k_screenshot::screenshot::set_enabled(shot_on);
 }
 
 /// Per-format enable/disable flags: collect the changes against the (possibly filtered)

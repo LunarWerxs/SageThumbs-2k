@@ -164,7 +164,7 @@ foreach ($run in $rustRuns) {
         }
     } elseif ($run.File.StartsWith('src/bin/app/')) {
         $cargoArgs += @('--bin', 'SageThumbs2K')
-    } elseif ($run.File -match '^crates/(base|codecs|actions)/') {
+    } elseif ($run.File -match '^crates/(base|codecs|actions|appkit|preview|screenshot)/') {
         # A library layer is its own crate (2026-09-23); its tests run in its own package.
         $cargoArgs += @('-p', "sagethumbs2k-$($Matches[1])", '--lib')
     } else {

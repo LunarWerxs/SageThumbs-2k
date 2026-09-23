@@ -89,3 +89,20 @@ fn tab_flag_selects_a_real_settings_page() {
     let past_end = crate::settings_dlg::NAV_CATEGORY_COUNT;
     assert_eq!(wanted_tab(&argv(&["--tab", &past_end.to_string()])), None);
 }
+
+/// The build script stamps the app binary with the crate version (the same stamp the
+/// installer's stub gets from `installer.iss`), and the updater's stamp reader reads it back:
+/// this test binary is the app binary's own build, so it carries the resource.
+#[test]
+fn this_binary_is_stamped_with_the_crate_version() {
+    let me = std::env::current_exe().unwrap();
+    let want: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert_eq!(
+        st2k_appkit::update::pe_stamped_version(&me),
+        Some((want[0], want[1], want[2])),
+        "this binary's stamp is the crate version"
+    );
+}

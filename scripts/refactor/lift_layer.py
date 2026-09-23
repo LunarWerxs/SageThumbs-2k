@@ -33,9 +33,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 LAYERS = {}
 _text = (Path(__file__).parent / "crate_layers.py").read_text(encoding="utf-8")
-for name, mods in re.findall(r'\("(\w+)",\s*((?:"[^"]*"\s*)+)\)', _text):
+# Only the two tables (the checker's own code below them has tuples of strings too).
+_tables = _text[: _text.index('if "--app" in sys.argv')]
+for name, mods in re.findall(r'\("(\w+)",\s*((?:"[^"]*"\s*)+)\)', _tables):
     LAYERS[name] = " ".join(re.findall(r'"([^"]*)"', mods)).split()
 ORDER = list(LAYERS)
+_app_block = _text[_text.index("APP_LAYERS = ["):]
+_app_block = _app_block[: _app_block.index("]\n")]
+APP_LAYER_NAMES = set(re.findall(r'\("(\w+)",', _app_block))
 
 # External crates a moved file may name, as `<crate>::` in source -> Cargo.toml dependency line.
 # Kept in step with the root Cargo.toml; `windows` comes from [workspace.dependencies].
@@ -67,6 +72,9 @@ EXTERNAL = {
     "jxl_oxide": 'jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }',
     "bcdec_rs": 'bcdec_rs = "0.2"',
     "exr": 'exr = { version = "=1.74.2", default-features = false }',
+    "pulldown_cmark": 'pulldown-cmark = { version = "0.13", default-features = false }',
+    "webview2_com": 'webview2-com = { version = "0.39", optional = true }',
+    "ed25519_dalek": 'ed25519-dalek = { version = "3", default-features = false }',
 }
 
 
@@ -233,26 +241,41 @@ def rewrite_file(path, text, roots, heads, reexports, lib):
 
 
 def main():
+    global SRC
     layer = sys.argv[1]
     dry = "--dry-run" in sys.argv
     mods = LAYERS[layer]
     lib = lib_name(layer)
     dest = ROOT / "crates" / layer
-    below = ORDER[: ORDER.index(layer)]
+    # An APP layer comes out of the app binary (src/bin/app, root file main.rs) rather than the
+    # library; only the binary and the app layers above it can name it.
+    app = layer in APP_LAYER_NAMES
+    if app:
+        SRC = ROOT / "src" / "bin" / "app"
+    root_file = "main.rs" if app else "lib.rs"
+    # Depend on every LIFTED layer below (the core package holds the binaries, so an app layer
+    # can never depend on it: that would be a cycle; crate_layers.py --app proves it needs not).
+    below = [b for b in ORDER[: ORDER.index(layer)] if (ROOT / "crates" / b / "Cargo.toml").exists()]
 
     moved_files = [f for m in mods for f in files_of(SRC, m)]
     macros = exported_macros(moved_files)
     heads = set(mods) | set(macros)
 
-    lib_rs = (SRC / "lib.rs").read_text(encoding="utf-8")
+    lib_rs = (SRC / root_file).read_text(encoding="utf-8")
     new_lib, blocks, reexports = split_lib(lib_rs, set(mods))
     missing = set(mods) - {re.search(r"pub mod (\w+)", b[-1]).group(1) for b in blocks}
     if missing:
-        sys.exit(f"not declared in lib.rs: {sorted(missing)}")
+        sys.exit(f"not declared in {root_file}: {sorted(missing)}")
 
     ext = set()
+    named = set()
     for f in moved_files:
-        ext |= set(re.findall(r"\b([a-z_][a-z0-9_]*)::", f.read_text(encoding="utf-8"))) & set(EXTERNAL)
+        text = f.read_text(encoding="utf-8")
+        # A crate path starts a path (`zip::`), never follows one (`image::codecs::webp::`).
+        ext |= set(re.findall(r"(?<![\w:])([a-z_][a-z0-9_]*)::", text)) & set(EXTERNAL)
+        named |= set(re.findall(r"\bst2k_(\w+)::", text))
+    if app:
+        below = [b for b in below if b in named]
     print(f"{layer}: {len(mods)} modules, {len(moved_files)} files, macros {macros}, "
           f"re-exports {sorted(reexports)}, external {sorted(ext)}")
     if dry:
@@ -286,23 +309,28 @@ def main():
 
     # 2. the new crate's lib.rs and Cargo.toml
     decls = "\n".join("\n".join(b) for b in sorted(blocks, key=lambda b: re.search(r"pub mod (\w+)", b[-1]).group(1)))
+    what = "app" if app else "library"
+    shell_lint = ("// The app's Win32 UI code: its `unsafe fn`s share one contract (a live window or device context\n"
+                  "// on the thread that owns it), stated where it matters, not repeated on every helper the\n"
+                  "// binary calls. They became `pub` only because the binary is a separate crate now.\n"
+                  "#![allow(clippy::missing_safety_doc)]\n" if app else
+                  "// Compiled into the shell-extension DLL, which runs inside explorer.exe under\n"
+                  "// `panic = \"abort\"`: no `.unwrap()`/`.expect()` outside tests (see the core crate).\n"
+                  "#![warn(clippy::unwrap_used, clippy::expect_used)]\n")
     (dest / "src" / "lib.rs").write_text(
-        f"//! The `{layer}` layer of SageThumbs 2K's library (see scripts/refactor/crate_layers.py).\n"
+        f"//! The `{layer}` layer of SageThumbs 2K's {what} (see scripts/refactor/crate_layers.py).\n"
         "//! It names only the layers below it, so an edit above it never recompiles it.\n\n"
-        "#![allow(non_snake_case)]\n"
-        "// Compiled into the shell-extension DLL, which runs inside explorer.exe under\n"
-        "// `panic = \"abort\"`: no `.unwrap()`/`.expect()` outside tests (see the core crate).\n"
-        "#![warn(clippy::unwrap_used, clippy::expect_used)]\n\n" + decls + "\n",
+        "#![allow(non_snake_case)]\n" + shell_lint + "\n" + decls + "\n",
         encoding="utf-8", newline="\n")
     deps = [EXTERNAL[e] for e in sorted(ext)]
     deps += [f'{lib_name(b)} = {{ package = "sagethumbs2k-{b}", path = "../{b}" }}' for b in below]
     (dest / "Cargo.toml").write_text(
         f'[package]\nname = "sagethumbs2k-{layer}"\nversion.workspace = true\nedition = "2021"\n'
         'rust-version.workspace = true\npublish = false\nlicense = "PolyForm-Noncommercial-1.0.0"\n'
-        f'description = "SageThumbs 2K library, {layer} layer"\n\n[lib]\nname = "{lib}"\n\n'
+        f'description = "SageThumbs 2K {what}, {layer} layer"\n\n[lib]\nname = "{lib}"\n\n'
         "[dependencies]\n" + "\n".join(deps) + "\n",
         encoding="utf-8", newline="\n")
-    (SRC / "lib.rs").write_text(new_lib, encoding="utf-8", newline="\n")
+    (SRC / root_file).write_text(new_lib, encoding="utf-8", newline="\n")
 
     # 3. repoint every path
     targets = []
@@ -310,9 +338,9 @@ def main():
         rel = p.relative_to(SRC).as_posix()
         if rel == "build.rs":
             continue
-        roots = ["sagethumbs2k_core", "core"] if rel.startswith("bin/") else ["crate"]
+        roots = ["sagethumbs2k_core", "core"] if rel.startswith("bin/") and not app else ["crate"]
         targets.append((p, roots))
-    for top in ("tests", "examples"):
+    for top in ("tests", "examples") if not app else ():
         for p in (ROOT / top).rglob("*.rs"):
             targets.append((p, ["sagethumbs2k_core", "core"]))
     for above in ORDER[ORDER.index(layer) + 1:]:
@@ -335,7 +363,7 @@ def main():
     cargo = re.sub(r"^members = \[", f'members = ["crates/{layer}", ', cargo, count=1, flags=re.M)
     cargo = re.sub(r'^default-members = \["\.", ', f'default-members = [".", "crates/{layer}", ', cargo, count=1, flags=re.M)
     dep = f'{lib} = {{ package = "sagethumbs2k-{layer}", path = "crates/{layer}" }}'
-    cargo = cargo.replace("\n[dependencies]\n", f"\n[dependencies]\n# The {layer} layer of the library, its own crate.\n{dep}\n", 1)
+    cargo = cargo.replace("\n[dependencies]\n", f"\n[dependencies]\n# The {layer} layer of the {what}, its own crate.\n{dep}\n", 1)
     (ROOT / "Cargo.toml").write_text(cargo, encoding="utf-8", newline="\n")
     for above in ORDER[ORDER.index(layer) + 1:]:
         toml = ROOT / "crates" / above / "Cargo.toml"

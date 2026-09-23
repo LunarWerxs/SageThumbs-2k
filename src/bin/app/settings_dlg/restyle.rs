@@ -19,7 +19,7 @@ pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
     if w <= 0 || h <= 0 {
         return;
     }
-    let r = crate::win::dpi_scale(parent, radius_dp);
+    let r = st2k_appkit::win::dpi_scale(parent, radius_dp);
     let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2);
     // SetWindowRgn only takes ownership of the HRGN on success (a nonzero return); on
     // failure the caller must delete it, or every failed call leaks a GDI region handle
@@ -30,7 +30,7 @@ pub(super) unsafe fn round_corners(parent: HWND, ctl: HWND, radius_dp: i32) {
         let _ = DeleteObject(rgn.into());
     }
 }
-use crate::gdip;
+use st2k_appkit::gdip;
 
 /// Cached GDI+ brushes/pens, keyed by the inputs that fully determine them, so
 /// `draw_check_glyph`/`draw_switch_glyph` stop allocating-then-immediately-freeing a
@@ -579,7 +579,7 @@ unsafe fn frame_visible_fields(hwnd: HWND, hdc: HDC, ids: &[i32], iy_top: i32, i
     for &id in ids {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
             if IsWindowVisible(c).as_bool() {
-                let fill_c = crate::dark::field_fill(enabled(c));
+                let fill_c = st2k_appkit::dark::field_fill(enabled(c));
                 draw_rounded_panel(hwnd, hdc, c, fill_c, BORDER(), 10, 4, iy_top, iy_bottom);
             }
         }
@@ -640,7 +640,7 @@ unsafe fn combo_paint(h: HWND) -> LRESULT {
     // picker while "instant screenshot" is off). Native Win32 greys a disabled
     // combo automatically; our owner-draw must do it explicitly.
     let enabled = windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(h).as_bool();
-    fill(hdc, &rc, crate::dark::field_fill(enabled));
+    fill(hdc, &rc, st2k_appkit::dark::field_fill(enabled));
     let text_col = if enabled {
         DARK_TEXT()
     } else {

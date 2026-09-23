@@ -28,24 +28,11 @@
 mod about;
 mod convert;
 mod convert_report;
-mod cred_store;
-mod dark;
-mod dialog_hook;
 mod doctor_report;
-mod explorer_selection;
-mod eyedropper;
 mod feedback;
 mod files_to_folder;
 mod first_run;
-mod gdip;
-mod gif_frames;
-mod hotkey;
-mod http;
 mod image_info;
-/// Offline licence certificates: the signed, network-free FLOOR under `license`'s relay
-/// check. Never a replacement for it — see that module's own docs for why both exist.
-mod licence_cert;
-mod license;
 mod modes;
 /// The "you could be signed in" prompt: app glue (persistence, identity, the decision).
 mod nudge;
@@ -59,25 +46,12 @@ mod nudge;
 #[allow(dead_code, reason = "verbatim vendored copy; see the module doc above")]
 mod nudge_engine;
 mod oauth;
-mod ocr_result;
 mod prebuild_dlg;
-mod preview;
 mod rename_dlg;
-mod screenshot;
 mod settings_dlg;
 mod settings_io;
-mod sponsors;
 mod sync_client;
 mod tags_to_folders;
-/// Shared UI Automation scaffolding for a surface built from real child windows (the Settings
-/// nav rail today): each item overrides its own `WM_GETOBJECT` on top of its native provider
-/// rather than growing a virtual fragment tree. See the module doc for what a second surface
-/// (one with no child windows of its own, e.g. an owner-drawn toolbar) would need instead.
-mod uia;
-mod update;
-mod upload_history_dlg;
-mod upload_result;
-mod win;
 use modes::*;
 
 use windows::core::w;
@@ -89,15 +63,17 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use st2k_appkit::{explorer_selection, license, win};
 use st2k_base::i18n;
+use st2k_screenshot::ocr_result;
 
 use crate::convert::run_convert_dialog;
-use crate::dark::{dark_control, dark_titlebar, init_dark_app, is_dark};
-use crate::eyedropper::run_eyedropper;
 use crate::files_to_folder::run_files_to_folder_dialog;
 use crate::rename_dlg::run_rename_with_pattern_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
-use crate::win::t;
+use st2k_appkit::dark::{dark_control, dark_titlebar, init_dark_app, is_dark};
+use st2k_appkit::win::t;
+use st2k_screenshot::eyedropper::run_eyedropper;
 
 /// Is this process running with an ELEVATED (admin) token? The installer's post-install
 /// [Run] steps carry `runasoriginaluser`, but when Setup itself was launched pre-elevated
@@ -107,11 +83,11 @@ use crate::win::t;
 /// non-elevated Settings window's `WM_RELOAD` forever (hotkey changes silently stop
 /// applying), and every capture helper it spawns runs as admin too.
 ///
-/// The token check itself lives in the core crate (`prebuild::is_elevated`), which needs the
+/// The token check itself lives in the base crate (`host::is_elevated`); the pre-build needs the
 /// same answer for a different reason: the thumbnail cache is per user, so an elevated
 /// pre-build would fill the administrator's cache instead. One implementation, two callers.
 unsafe fn is_elevated() -> bool {
-    sagethumbs2k_core::prebuild::is_elevated()
+    st2k_base::host::is_elevated()
 }
 
 /// De-elevate the heal through a ONE-SHOT `LIMITED` scheduled task: the task starts
@@ -126,7 +102,7 @@ fn schedule_unelevated_heal() {
     use std::os::windows::process::CommandExt;
     const TASK: &str = "SageThumbs2K_HealHotkeys";
     let Ok(exe) = std::env::current_exe() else {
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
         return;
     };
     let tr = format!("\"{}\" --heal-hotkeys", exe.display());
@@ -155,13 +131,13 @@ fn schedule_unelevated_heal() {
                 o.status,
                 String::from_utf8_lossy(&o.stderr).trim()
             ));
-            crate::screenshot::heal_if_wanted();
+            st2k_screenshot::screenshot::heal_if_wanted();
         }
         Err(e) => {
             st2k_base::safety::log(&format!(
                 "heal: schtasks unavailable ({e}) — healing elevated instead"
             ));
-            crate::screenshot::heal_if_wanted();
+            st2k_screenshot::screenshot::heal_if_wanted();
         }
     }
 }
@@ -174,7 +150,7 @@ fn heal_after_install() {
     if unsafe { is_elevated() } {
         schedule_unelevated_heal();
     } else {
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
     }
 }
 
@@ -263,7 +239,7 @@ fn main() {
         // in which case it spawns the detached `--update-check` one-shot and returns; this
         // process never waits on the network and needn't outlive the toast.
         if update_piggyback_wanted(&args) {
-            crate::update::spawn_due_check();
+            st2k_appkit::update::spawn_due_check();
         }
 
         // Every headless / one-shot CLI mode, in the same relative order the original
@@ -284,7 +260,7 @@ fn main() {
         // if it's enabled (or a custom hotkey is bound) but not running — e.g. it was
         // killed, or a prior logon never brought it up — restart it now so
         // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
 
         // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
         // caption gear opens Settings straight on the Quick preview page. It used to be parsed
@@ -389,7 +365,7 @@ unsafe fn activate_existing_instance(want_tab: Option<usize>) -> bool {
             }
             // If the foreground grab is refused the window stays hidden behind whatever
             // is in front, and the menu item reads as dead.
-            crate::win::force_foreground(existing);
+            st2k_appkit::win::force_foreground(existing);
             if let Some(tab) = want_tab {
                 let _ = PostMessageW(
                     Some(existing),
@@ -554,7 +530,7 @@ unsafe fn show_licensing_notices(hwnd: HWND, snap: &license::LicenceSnapshot) {
             } else {
                 "licence_downgrade_notice"
             };
-            crate::win::message_box(
+            st2k_appkit::win::message_box(
                 hwnd,
                 &t(key).replace("{key}", &snap.key_prefix),
                 "SageThumbs 2K",
@@ -577,12 +553,12 @@ unsafe fn show_licensing_notices(hwnd: HWND, snap: &license::LicenceSnapshot) {
                     t("licence_buy_pointer")
                 );
                 if posture.is_urgent() {
-                    crate::win::message_box(hwnd, &body, "SageThumbs 2K");
+                    st2k_appkit::win::message_box(hwnd, &body, "SageThumbs 2K");
                 } else {
                     // The toast pumps its own message loop for as long as it lingers; on
                     // its own thread it cannot hold up the Settings window being built here.
                     std::thread::spawn(move || {
-                        crate::win::notify_toast(
+                        st2k_appkit::win::notify_toast(
                             "SageThumbs 2K",
                             &body,
                             std::time::Duration::from_secs(6),

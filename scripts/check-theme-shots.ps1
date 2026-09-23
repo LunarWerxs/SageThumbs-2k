@@ -154,7 +154,7 @@ $svg = Join-Path $outDir 'theme-probe.svg'
 </svg>
 '@ | Set-Content -LiteralPath $svg -Encoding UTF8
 $png = Join-Path $root 'assets\logo.png'
-$code = Join-Path $root 'src\bin\app\preview\highlight.rs'
+$code = Join-Path $root 'crates\preview\src\preview\highlight.rs'
 
 $cases = @(
     @{ Name = 'settings'; Args = @('--window', 'settings') }

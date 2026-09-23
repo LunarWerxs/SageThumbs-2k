@@ -11,7 +11,7 @@
 //! the NEXT Settings open decides differently (a key was redeemed).
 
 use super::*;
-use crate::license::Posture;
+use st2k_appkit::license::Posture;
 
 /// Top offset of the body text within the card. Smaller than `nudge`'s `BODY_TOP` (36):
 /// this card has no headline above the body, just the body then the button row.
@@ -40,7 +40,7 @@ thread_local! {
 /// Ask the licence engine, once, before the window is created. Returns whether the strip
 /// will be shown, which is what the caller uses to decide how tall to make the window.
 pub(crate) fn decide() -> bool {
-    let snap = crate::license::snapshot();
+    let snap = st2k_appkit::license::snapshot();
     let showing = snap.posture.wants_reminder();
     SHOWING.with(|s| s.set(showing));
     POSTURE.with(|p| p.set(snap.posture));
@@ -82,7 +82,7 @@ fn body_text() -> String {
 /// The strip's sentence per posture. `Silent`/`DowngradeNoticeOnce` never show a strip,
 /// so they read as the plain reminder here rather than panicking on an unreachable arm.
 pub(super) fn body_text_for(posture: Posture, key: &str, now: u64) -> String {
-    use crate::license::days_until;
+    use st2k_appkit::license::days_until;
     match posture {
         Posture::Trial { ends_unix } => {
             t("biznag_body_trial").replace("{n}", &days_until(now, ends_unix).to_string())
@@ -185,7 +185,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let pad = nudge::paint_panel(hwnd, d, tint());
 
     let mut text = wide(&body_text());
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_for(hwnd).0));
     SetTextColor(hdc, DARK_TEXT());
     let mut tr = RECT {
         left: rc.left + pad,
@@ -206,7 +206,7 @@ pub(super) unsafe fn on_command(hwnd: HWND, id: i32) -> bool {
             true
         }
         ID_BIZNAG_BUY => {
-            crate::win::open_url(crate::license::BUY_URL);
+            st2k_appkit::win::open_url(st2k_appkit::license::BUY_URL);
             true
         }
         _ => false,

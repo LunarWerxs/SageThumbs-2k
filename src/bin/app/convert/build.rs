@@ -59,7 +59,7 @@ pub(super) fn load_watermark_settings() {
 /// "Choose image…" picker for the watermark mark file: the shared open-file picker,
 /// filtered for common raster formats.
 pub(super) unsafe fn pick_watermark_image(owner: HWND) -> Option<String> {
-    crate::win::pick_open_file(
+    st2k_appkit::win::pick_open_file(
         owner,
         t("cv_watermark_filter"),
         "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff",
@@ -227,7 +227,7 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         hwnd,
         STATIC,
         "\u{00d7}",
-        WINDOW_STYLE(crate::win::SS_CENTER),
+        WINDOW_STYLE(st2k_appkit::win::SS_CENTER),
         wh_x + 68,
         CV_ROW_WH + 3,
         16,
