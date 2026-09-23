@@ -7,6 +7,16 @@
 
 use super::*;
 
+/// A malformed TOC is a decode error on both jxl paths, never a panic: the unpatched
+/// `jxl-frame` 0.13.3 indexed past the TOC for this file, which ends a `panic = "abort"` host.
+#[test]
+fn a_jxl_whose_toc_is_short_of_groups_is_refused_not_a_panic() {
+    let full = std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, None));
+    let reduced = std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, Some(256)));
+    assert!(full.is_ok(), "the 1:1 path panicked on a short TOC");
+    assert!(reduced.is_ok(), "the 1:8 path panicked on a short TOC");
+}
+
 /// Issue #43: a JPEG-transcoded jxl keeps the JPEG's chroma subsampling, and the 1:8
 /// thumbnail path handed the YCbCr conversion Cb and Cr planes still at their subsampled
 /// size. That is a panic inside the decoder ("Grid size mismatch"), which under the shell's

@@ -30,7 +30,8 @@ param(
     # not pin would populate the cache with a tarball the check is not looking for, which
     # would leave the check skipping and looking like this script had failed silently.
     [string]$Render = '0.12.4',
-    [string]$Oxide = '0.12.6'
+    [string]$Oxide = '0.12.6',
+    [string]$Frame = '0.13.3'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -51,6 +52,7 @@ edition = "2021"
 [dependencies]
 jxl-render = "=$Render"
 jxl-oxide = "=$Oxide"
+jxl-frame = "=$Frame"
 
 [workspace]
 "@
@@ -58,7 +60,7 @@ jxl-oxide = "=$Oxide"
     New-Item -ItemType Directory -Force (Join-Path $scratch 'src') | Out-Null
     Set-Content -LiteralPath (Join-Path $scratch 'src\lib.rs') -Value '' -Encoding utf8
 
-    Write-Host "[fetch-pristine-jxl] fetching jxl-render $Render and jxl-oxide $Oxide from crates.io" -ForegroundColor Cyan
+    Write-Host "[fetch-pristine-jxl] fetching jxl-render $Render, jxl-oxide $Oxide and jxl-frame $Frame from crates.io" -ForegroundColor Cyan
     Push-Location $scratch
     try {
         # Download and extract only. No compilation, so this costs seconds and needs no
@@ -77,7 +79,7 @@ jxl-oxide = "=$Oxide"
 # than letting the checker skip and report a pass.
 $found = @()
 $missing = @()
-foreach ($pair in @(@('jxl-render', $Render), @('jxl-oxide', $Oxide))) {
+foreach ($pair in @(@('jxl-render', $Render), @('jxl-oxide', $Oxide), @('jxl-frame', $Frame))) {
     $name, $ver = $pair
     $hit = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { Join-Path $_.FullName "$name-$ver" } |

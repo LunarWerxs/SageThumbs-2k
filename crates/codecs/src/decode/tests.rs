@@ -154,6 +154,13 @@ const JXL_SDR709: &[u8] = include_bytes!("../../../../tests/fixtures/jxl/scene-s
 /// then `cjxl in.jpg jpeg420_transcode.jxl` (the same again with 4:2:2).
 const JXL_JPEG420: &[u8] = include_bytes!("../../../../tests/fixtures/jxl/jpeg420_transcode.jxl");
 const JXL_JPEG422: &[u8] = include_bytes!("../../../../tests/fixtures/jxl/jpeg422_transcode.jxl");
+/// A 687-byte mutation of the modular-ICC fuzz seed whose TOC holds fewer groups than its
+/// frame header implies, so the decoder asked `jxl-frame` for a group past the TOC's entries
+/// and indexed out of bounds (`toc.rs`): a panic, which under the shell's `panic = "abort"`
+/// ends the thumbnail host. Found by Dredd's deep fuzz session on 2026-09-23 and captured by
+/// replaying the session's generator; fixed by crates/vendor/jxl-patches/jxl-frame.patch.
+const JXL_TOC_GROUP_PAST_ENTRIES: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/toc-group-past-entries.jxl");
 /// The same twin scene as AVIF, 10-bit 4:4:4 lossless: one tagged PQ / BT.2020 (`nclx` 9, 16,
 /// 9, full range), one sRGB / BT.709. The first is the "HDR base" AVIF of issue #39 and the
 /// second its SDR control. Regenerate both with

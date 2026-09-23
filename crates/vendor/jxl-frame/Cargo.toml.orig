@@ -1,0 +1,47 @@
+[package]
+name = "jxl-frame"
+description = "JPEG XL frame data representation, part of jxl-oxide"
+authors = ["Wonwoo Choi <chwo9843@gmail.com>"]
+repository = "https://github.com/tirr-c/jxl-oxide.git"
+readme = "README.md"
+keywords = ["jpeg-xl", "decoder", "jxl-oxide"]
+categories = ["multimedia::images"]
+license = "MIT OR Apache-2.0"
+
+version = "0.13.3"
+edition = "2024"
+
+[dependencies]
+tracing.workspace = true
+
+[dependencies.jxl-bitstream]
+version = "1.0.0"
+path = "../jxl-bitstream"
+
+[dependencies.jxl-coding]
+version = "1.0.0"
+path = "../jxl-coding"
+
+[dependencies.jxl-grid]
+version = "0.6.0"
+path = "../jxl-grid"
+
+[dependencies.jxl-image]
+version = "0.13.0"
+path = "../jxl-image"
+
+[dependencies.jxl-modular]
+version = "0.11.2"
+path = "../jxl-modular"
+
+[dependencies.jxl-oxide-common]
+version = "1.0.0"
+path = "../jxl-oxide-common"
+
+[dependencies.jxl-threadpool]
+version = "1.0.0"
+path = "../jxl-threadpool"
+
+[dependencies.jxl-vardct]
+version = "0.11.0"
+path = "../jxl-vardct"
