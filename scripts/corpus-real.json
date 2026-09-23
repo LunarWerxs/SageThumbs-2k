@@ -170,6 +170,13 @@
    "source": "python-pillow/Pillow@26ddd05b  Tests/images/m13.fits"
   },
   {
+   "file": "real-extension.fits",
+   "url": "https://raw.githubusercontent.com/astropy/astropy/1337c18ce53e076a7642f1b2d3349d1f5108e20d/astropy/io/fits/tests/data/test0.fits",
+   "sha256": "EA06EE30B28F1EA2E8CA62C5289756763B7F41356D7FA3291DBC346E2ED34E94",
+   "bytes": 57600,
+   "source": "astropy/astropy@1337c18c  astropy/io/fits/tests/data/test0.fits (empty primary + four IMAGE extensions)"
+  },
+  {
    "file": "real.fts",
    "url": "https://sembiance.com/fileFormatSamples/image/fits/MOON.FTS",
    "sha256": "36A7C69C3511C7727D2347DA3D2E9B511F5ABEEC23ECAF3BF8CD321EACD98293",
@@ -892,10 +899,10 @@
   },
   {
    "file": "real.ggb",
-   "url": "https://raw.githubusercontent.com/dariush-bahrami/gravity.optimizer/9c12068752097a9336d74c89d841781188c8b9d6/materials/gravity_math_materials/max_step_grad_schematic.ggb",
-   "sha256": "69E0E03142C6A0660A2407B177177AE391BC09FFC9FE1541628D4B2C4620C88D",
-   "bytes": 36356,
-   "source": "dariush-bahrami/gravity.optimizer@9c120687  materials/gravity_math_materials/max_step_grad_schematic.ggb"
+   "url": "https://media.githubusercontent.com/media/dotnetCarpenter/matematik_c/18e2716a1638672598be2cca3a4f3b72b1f8e37d/modul1B/Opgave3_modul1B.ggb",
+   "sha256": "7043820AB0348486003FEF467D754A796A92FDB1D331C1074D510A268216D3C6",
+   "bytes": 67144,
+   "source": "dotnetCarpenter/matematik_c@18e2716a  modul1B/Opgave3_modul1B.ggb (a GeoGebra Classic save: geogebra.xml + geogebra_thumbnail.png; Git LFS, so the media host)"
   },
   {
    "file": "real.odt",
@@ -1249,10 +1256,10 @@
   },
   {
    "file": "real.3gp",
-   "url": "https://raw.githubusercontent.com/koakh/RustMinioS3SurrealDbDirectoryTraversalUploader/9067677e5738c9283d392445c63bd292873cd1a2/upload/mime-types/file.3gp",
-   "sha256": "04982BE07E6866299E0455E73689AAFB0A9643890F3A0580720905A7E0A10843",
-   "bytes": 21509,
-   "source": "koakh/RustMinioS3SurrealDbDirectoryTraversalUploader@9067677e  upload/mime-types/file.3gp"
+   "url": "https://raw.githubusercontent.com/f0rm2l1n/multimedia_av_codec_mirror/8cb0e6b30c1c76cc6940b17b692a98d8f550cd45/test/unittest/resources/demuxer_res/3gp_h264_noaudio.3gp",
+   "sha256": "488A96CD23410E1C52C1034655EF9D6F564DEA8174716F34ACD07C9D1F7B1E03",
+   "bytes": 513845,
+   "source": "f0rm2l1n/multimedia_av_codec_mirror@8cb0e6b3  test/unittest/resources/demuxer_res/3gp_h264_noaudio.3gp (OpenHarmony demuxer test data; ftyp 3gp4, H.264)"
   },
   {
    "file": "real.ts",
@@ -1673,8 +1680,10 @@
   },
   {
    "file": "real.3g2",
-   "alias_of": "real.3gp",
-   "why": "3GPP2: the same ISO-BMFF layout as .3gp with a different brand"
+   "url": "https://raw.githubusercontent.com/f0rm2l1n/multimedia_av_codec_mirror/3094bf893d68009127a3efa67bbcdf09a55b2be4/test/moduletest/resources/demuxer/3g2_mp4v_simple%40level1_720_480_mp4a_2.3g2",
+   "sha256": "B24FE24D6063BF58D89B28E735225CE2023EC979C7952A2818923228FDB0999A",
+   "bytes": 516852,
+   "source": "f0rm2l1n/multimedia_av_codec_mirror@3094bf89  test/moduletest/resources/demuxer/3g2_mp4v_simple@level1_720_480_mp4a_2.3g2 (OpenHarmony demuxer test data; ftyp 3g2a, MPEG-4 Part 2)"
   },
   {
    "file": "real.mts",
@@ -2309,7 +2318,8 @@
    "sample.fff"
   ],
   "fits": [
-   "real.fits"
+   "real.fits",
+   "real-extension.fits"
   ],
   "flac": [
    "real.flac"

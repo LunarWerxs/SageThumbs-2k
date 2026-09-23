@@ -30,17 +30,16 @@ use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use windows::core::{s, w, Error, Interface, Result, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::core::{w, Error, Interface, Result, GUID, PCWSTR};
+use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
     BITMAPINFOHEADER, DIB_RGB_COLORS,
 };
 use windows::Win32::System::Com::{
-    CoInitializeEx, IClassFactory, IStream, COINIT_APARTMENTTHREADED, STGM_READ,
-    STGM_SHARE_DENY_NONE,
+    CoInitializeEx, IStream, COINIT_APARTMENTTHREADED, STGM_READ, STGM_SHARE_DENY_NONE,
 };
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
 use windows::Win32::UI::Shell::{
     IPreviewHandler, IThumbnailProvider, SHCreateMemStream, SHCreateStreamOnFileEx, WTS_ALPHATYPE,
@@ -66,62 +65,15 @@ const WM_HOST_CLOSE: u32 = WM_APP + 9;
 const PANE_W: i32 = 320;
 const PANE_H: i32 = 240;
 
-type DllGetClassObjectFn =
-    unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
-
 /// Load the DLL and create the preview handler asking for the initializer, the
 /// same handshake prevhost performs.
 unsafe fn create_handler() -> Result<IInitializeWithStream> {
-    let path = common::dll_path();
-    assert!(
-        path.exists(),
-        "cdylib not built at {path:?} — run `cargo build` first"
-    );
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
-
-    let proc =
-        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
-    let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-
-    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-    dll_get_class_object(
-        &CLSID_PREVIEW_HANDLER,
-        &IClassFactory::IID,
-        &mut factory_ptr,
-    )
-    .ok()?;
-    assert!(!factory_ptr.is_null(), "null class factory");
-    let factory = IClassFactory::from_raw(factory_ptr);
-    factory.CreateInstance(None)
+    common::create_instance(&CLSID_PREVIEW_HANDLER)
 }
 
 /// Same handshake, for the THUMBNAIL coclass.
 unsafe fn create_thumb_provider() -> Result<IInitializeWithStream> {
-    let path = common::dll_path();
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
-    let proc =
-        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
-    let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-    dll_get_class_object(
-        &CLSID_THUMBNAIL_PROVIDER,
-        &IClassFactory::IID,
-        &mut factory_ptr,
-    )
-    .ok()?;
-    assert!(!factory_ptr.is_null(), "null thumbnail class factory");
-    let factory = IClassFactory::from_raw(factory_ptr);
-    factory.CreateInstance(None)
+    common::create_instance(&CLSID_THUMBNAIL_PROVIDER)
 }
 
 /// Minimal pane-host wndproc: on our close message it destroys itself; on

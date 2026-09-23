@@ -228,6 +228,35 @@ def check_coverage_rendered(coverage, corpus, rendered, tally):
             tally.problems.append(".%s: none of its real samples rendered (%s)" % (ext, ", ".join(files)))
 
 
+# Registered formats whose files ARE markup, so a sample that opens with `<svg` / `<?xml` is
+# what it claims to be.
+MARKUP_FORMATS = {"svg", "fb2", "html", "htm", "xhtml", "xml", "dae", "kml", "xaml", "drawio", "mm"}
+
+
+def check_content_is_its_format(samples, corpus, tally):
+    """A pinned sample must BE its format, not merely carry its extension.
+
+    Found 2026-09-23 by the big-file gate: `real.3gp` (and `real.3g2`, its alias) and
+    `real.ggb` were SVG files - a mime-type ICON of a 3GP file, and a schematic - pinned by
+    URL and SHA like any other sample. Every check passed them, because an SVG renders, so
+    "3GP thumbnails on a real file" had been a false claim since the manifest was built. The
+    two shapes a wrong download takes are checked here: markup standing in for a binary
+    format (an icon, an error page), and a Git LFS pointer (the 130-byte stub a raw URL
+    returns for a file kept in LFS)."""
+    for s in samples:
+        ext = ext_of(s["file"])
+        path = os.path.join(corpus, s["file"])
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as f:
+            head = f.read(512)
+        text = head.lstrip().lower()
+        if head.startswith(b"version https://git-lfs"):
+            tally.problems.append("%s: a Git LFS pointer, not the file (pin the media.githubusercontent.com URL)" % s["file"])
+        elif ext not in MARKUP_FORMATS and text.startswith((b"<svg", b"<?xml", b"<!doctype html", b"<html")):
+            tally.problems.append("%s: its content is SVG/HTML/XML markup, not a .%s file" % (s["file"], ext))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="verify the corpus against the manifest; no network")
@@ -254,6 +283,8 @@ def main():
         settle_derived(s, args.corpus, args.check, tally)
     if args.check and args.rendered and not args.ext:
         check_coverage_rendered(doc.get("coverage", {}), args.corpus, args.rendered, tally)
+    if args.check:
+        check_content_is_its_format(samples, args.corpus, tally)
 
     print("real samples: %d already in place, %d downloaded, %d alias/derived files written"
           % (tally.present, tally.fetched, tally.copied))

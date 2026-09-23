@@ -540,6 +540,49 @@ if (-not (Test-Path $realManifest)) {
   }
 }
 
+# --- 9) every registered extension says how it is grown past the size gates ------------------
+# scripts/bigfiles/big-files.json is the big-file gate's manifest (scripts/bigfiles/bigfiles.py).
+# Issue #46 found a 300 MB Photoshop document left on its baked preview in Quick preview: no
+# check had ever handed any surface a file past the 256 MiB input ceiling. Each extension now
+# names the ballast strategy that grows its real sample WITHOUT changing its picture, or waives
+# with a reason. So a new format cannot be registered without deciding what happens to a user
+# who has a big one, and the gate then measures that decision on every surface.
+$bigManifest = Join-Path $root 'scripts\bigfiles\big-files.json'
+$ballastPy = Join-Path $root 'scripts\bigfiles\ballast.py'
+if (-not (Test-Path $bigManifest) -or -not (Test-Path $ballastPy)) {
+  $fail.Add('scripts/bigfiles/big-files.json or ballast.py is missing - the big-file gate''s manifest every registered extension is checked against')
+} else {
+  $big = Get-Content $bigManifest -Raw | ConvertFrom-Json -AsHashtable
+  # The strategy names are the keys of ballast.py's STRATEGIES table, read off the source.
+  $table = [regex]::Match((Get-Content $ballastPy -Raw), '(?s)STRATEGIES = \{(.*?)\}').Groups[1].Value
+  $strategies = @([regex]::Matches($table, '"([a-z0-9-]+)"\s*:') | ForEach-Object { $_.Groups[1].Value })
+  if ($strategies.Count -lt 3) { $fail.Add('could not read the STRATEGIES table out of scripts/bigfiles/ballast.py') }
+  $registeredBig = @([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  foreach ($ext in $registeredBig) {
+    $e = $big[$ext]
+    if ($null -eq $e) {
+      $fail.Add("big-files.json: .$ext is registered in FORMATS but has no big-file entry. Name the ballast strategy that grows its sample without changing its picture (scripts\bigfiles\ballast.py), or a 'waive' that says why no big twin of it can exist.")
+      continue
+    }
+    $hasStrategy = $e.ContainsKey('strategy')
+    $hasWaiver = $e.ContainsKey('waive')
+    if ($hasStrategy -eq $hasWaiver) { $fail.Add("big-files.json: .$ext needs exactly one of 'strategy' / 'waive'") }
+    elseif ($hasStrategy -and $strategies -notcontains $e.strategy) { $fail.Add("big-files.json: .$ext names strategy '$($e.strategy)', which ballast.py does not have") }
+    elseif ($hasWaiver -and "$($e.waive)".Trim().Length -lt 40) { $fail.Add("big-files.json: the waiver for .$ext is too short to be a reason") }
+    # A waiver for one size only (the gate reports those twins as SKIP with the reason).
+    if ($e.ContainsKey('waive_sizes')) {
+      foreach ($size in $e.waive_sizes.Keys) {
+        if (@('300M', '2.2G', '5G') -notcontains $size) { $fail.Add("big-files.json: .$ext waives size '$size', which the gate does not grow") }
+        elseif ("$($e.waive_sizes[$size])".Trim().Length -lt 40) { $fail.Add("big-files.json: the $size waiver for .$ext is too short to be a reason") }
+      }
+    }
+  }
+  foreach ($ext in $big.Keys) {
+    if ($registeredBig -notcontains $ext) { $fail.Add("big-files.json: .$ext has an entry but is not in FORMATS any more - delete the stale entry") }
+  }
+}
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red

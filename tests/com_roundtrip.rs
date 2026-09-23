@@ -21,22 +21,16 @@ use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use windows::core::{s, Error, Interface, Result, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, HMODULE};
+use windows::core::{Error, Interface, Result, GUID, HRESULT, PCWSTR};
+use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HBITMAP};
-use windows::Win32::System::Com::{
-    CoInitializeEx, IClassFactory, IStream, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
 use windows::Win32::UI::Shell::{
     IThumbnailProvider, SHCreateMemStream, WTSAT_ARGB, WTSAT_UNKNOWN, WTS_ALPHATYPE,
 };
 
 const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_B1E7_2A5D9F0C6E31);
-
-type DllGetClassObjectFn =
-    unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
 /// A returned thumbnail: width, height, tightly-packed BGRA bytes, alpha tag.
 struct Thumb {
@@ -109,35 +103,7 @@ unsafe fn get_thumbnail_from_stream(stream: &IStream, cx: u32) -> Result<Thumb> 
     // whether the DLL is built with panic=unwind (debug) or panic=abort (release).
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    let path = common::dll_path();
-    assert!(
-        path.exists(),
-        "cdylib not built at {path:?} — run `cargo build` first"
-    );
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
-
-    let proc =
-        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
-    let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-
-    // Class factory, exactly as the shell does it.
-    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-    dll_get_class_object(
-        &CLSID_THUMBNAIL_PROVIDER,
-        &IClassFactory::IID,
-        &mut factory_ptr,
-    )
-    .ok()?;
-    assert!(!factory_ptr.is_null(), "null class factory");
-    let factory = IClassFactory::from_raw(factory_ptr);
-
-    // Create the object asking for the initializer interface.
-    let init: IInitializeWithStream = factory.CreateInstance(None)?;
+    let init: IInitializeWithStream = common::create_instance(&CLSID_THUMBNAIL_PROVIDER)?;
 
     // Feed the bytes as an IStream, exactly as the shell does.
     init.Initialize(stream, 0)?;
@@ -441,6 +407,54 @@ fn a_large_request_gets_the_psd_composite_not_the_baked_preview() {
     );
 }
 
+/// **Issue #46, at the Explorer thumbnail.** The same document as above, grown past the
+/// 256 MiB input ceiling by a layer section full of nothing - which is where a real big
+/// document's size lives. Past the ceiling the whole file can no longer be buffered, and the
+/// tile used to fall back to the baked preview blown up; the stored composite must still be
+/// reached, read by offset off the FILE stream Explorer hands over.
+#[test]
+fn an_oversized_psd_still_gets_its_composite_when_the_preview_cannot_serve() {
+    use std::io::{Seek, SeekFrom, Write};
+    use windows::Win32::System::Com::{STGM_READ, STGM_SHARE_DENY_NONE};
+    use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
+    let _settings = settings_lock();
+
+    let psd = psd_with_distinct_preview_and_composite();
+    // The empty layer-section length sits right after the resources; grow that section.
+    let resources = u32::from_be_bytes(psd[30..34].try_into().unwrap()) as usize;
+    let layers_at = 34 + resources;
+    let gap: u64 = 300 << 20;
+    let path = std::env::temp_dir().join(format!("st2k-oversized-{}.psd", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&psd[..layers_at]).unwrap();
+        f.write_all(&(gap as u32).to_be_bytes()).unwrap();
+        f.seek(SeekFrom::Current(gap as i64)).unwrap();
+        f.write_all(&psd[layers_at + 4..]).unwrap();
+    }
+    let wide = common::to_wide(path.as_os_str());
+    let stream: IStream = unsafe {
+        SHCreateStreamOnFileEx(
+            PCWSTR(wide.as_ptr()),
+            STGM_READ.0 | STGM_SHARE_DENY_NONE.0,
+            0,
+            false,
+            None,
+        )
+    }
+    .expect("file stream");
+    let t = unsafe { get_thumbnail_from_stream(&stream, 1024) };
+    drop(stream);
+    let _ = std::fs::remove_file(&path);
+    let t = t.expect("an oversized PSD must still thumbnail");
+    let [b, g, r, _] = t.px(t.w / 2, 2);
+    assert!(
+        g > r && g > b,
+        "past the input ceiling the stored composite (green) must answer, got BGRA {:?}",
+        [b, g, r]
+    );
+}
+
 #[test]
 fn garbage_returns_error_not_crash() {
     let _settings = settings_lock();
@@ -493,25 +507,8 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
         )
         .expect("file stream");
 
-        let path_dll = common::dll_path();
-        let wide_dll: Vec<u16> = path_dll
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let module: HMODULE = LoadLibraryW(PCWSTR(wide_dll.as_ptr())).expect("LoadLibrary");
-        let proc = GetProcAddress(module, s!("DllGetClassObject")).expect("DllGetClassObject");
-        let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-        let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-        dll_get_class_object(
-            &CLSID_THUMBNAIL_PROVIDER,
-            &IClassFactory::IID,
-            &mut factory_ptr,
-        )
-        .ok()
-        .expect("class object");
-        let factory = IClassFactory::from_raw(factory_ptr);
-        let init: IInitializeWithStream = factory.CreateInstance(None).expect("create");
+        let init: IInitializeWithStream =
+            common::create_instance(&CLSID_THUMBNAIL_PROVIDER).expect("create");
         init.Initialize(&stream, 0).expect("Initialize");
         let provider: IThumbnailProvider = init.cast().expect("QI");
         let mut hbmp = HBITMAP::default();
