@@ -15,13 +15,27 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   inside a `.dxf`, XMind mind maps (`.xmind`), Visio templates and stencils (`.vstx`/`.vssx`),
   and the icon inside NuGet (`.nupkg`) and Visual Studio / VS Code (`.vsix`) packages. A DXF,
   stencil or package that carries no picture keeps its usual icon.
-- **Big Photoshop files get sharp in Quick preview.** A `.psd` or `.psb` over about 256 MB
-  stayed on the small, blurry preview Photoshop saves inside it, or took very long to sharpen,
-  and one over 2 GB never sharpened at all. Quick preview now reads the full picture Photoshop
-  keeps at the end of the file straight off the disk, only the parts it needs, so a document of
-  any size sharpens quickly, and a big document saved without that small preview shows its
-  picture instead of nothing. Files saved with Photoshop's "Maximize compatibility" turned off
-  do not contain that full picture and behave as before. Reported by a user.
+- **Big Photoshop files get a sharp picture everywhere.** A `.psd` or `.psb` over about 256 MB
+  showed the small, blurry preview Photoshop saves inside it, in Explorer, the preview pane and
+  Quick preview alike, and one over 2 GB never sharpened at all. SageThumbs now reads the full
+  picture Photoshop keeps in the file straight off the disk, only the parts it needs, so a
+  document of any size is sharp. A document saved with "Maximize compatibility" turned off,
+  which holds no full picture, is now drawn from its layers instead. Reported in #46.
+- **Very big files of many other types get their picture too.** Past about 256 MB, PDF and
+  Illustrator files, EPS, older Word, Excel, PowerPoint, Visio and Publisher files, 3ds Max and
+  SolidWorks files, RAR and 7-Zip archives and comics, 3D models (STL, OBJ, PLY), FITS images,
+  JPEG 2000, and huge TIFF (BigTIFF included), PPM, PGM and TGA scans showed the plain icon, an
+  empty preview pane or nothing in Quick preview. They are now read straight off the disk, only
+  as far as the picture needs. An app icon, album cover or comic cover inside such a file fills
+  the thumbnail as it does in a small file.
+- **Windows Media Audio (`.wma`) files show their album cover in Explorer and the preview
+  pane.** They share their container with Windows Media video and were taken for a video
+  with no picture, so the cover never showed there, at any size.
+- **FITS astronomy images show their stars.** SageThumbs reads them itself now, with the
+  contrast stretch astronomy software uses, instead of drawing most of them nearly black, and a
+  file that keeps its picture in a later section shows it too.
+- **TIFF files with a colour profile keep their colours** when Windows' own decoder reads
+  them, which it does for every TIFF past 256 MB; they came out slightly off.
 - **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
   published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
   several ways around its safety policy. It only ever runs as a separate, time-limited process.

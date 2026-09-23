@@ -83,8 +83,10 @@ image named "cover" preferred, junk like `__MACOSX` and `Thumbs.db` skipped. The
 comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
 images actually shown. Generic archives identified by filename honor **Max file size** before
 the directory is parsed; an oversized 7z is also refused when the shell supplies a name-less
-stream. This is especially important for large project backups on network shares. Oversized
-ZIP-family comics can still stream one cover without reading the whole archive. Within the
+stream. This is especially important for large project backups on network shares. Past the
+256 MB in-memory limit an archive is never loaded whole: a ZIP or 7z reads its directory and
+the picked images, and a RAR (or `.cbr` comic) walks its entry headers and reads only the
+cover's entry. Within the
 limit, 7z reads are buffered to avoid tiny remote round trips, extraction uses one CPU thread,
 and picked images share an 8 MiB total budget. Solid 7z must decode
 front-to-back, so SageThumbs uses the first eligible images in physical order and enforces the
@@ -113,6 +115,16 @@ tooltip**, and as **sortable / groupable columns**; and the columns are *offered
 even gets its GPS location, which Windows itself leaves blank.) It's **read-only** (it never
 writes back to your files) and **crash-isolated** behind the same panic boundary as the
 thumbnail provider, so a malformed file can't take down Explorer.
+
+**Very big files get their real picture.** A file past 256 MB is never loaded whole, on any
+surface (Explorer tile, preview pane, Quick preview, `st2k`), and still shows what the same
+file shows at a normal size: a Photoshop document's full picture (or, saved without
+"Maximize compatibility", its layers flattened), a PDF's or Illustrator file's first page or
+artboards, an Office, Visio, Publisher, 3ds Max or SolidWorks thumbnail, a RAR or 7z comic's
+cover, a 3D model, a FITS image, a huge TIFF/BigTIFF, PPM, PGM or TGA scan read a row at a
+time, and, for everything else, the picture in the file's first 16 MB when that is where it
+sits. A picture that runs past that point is never drawn from its first rows. Checked before
+every release by growing a real sample of every supported format past each size limit.
 
 **Big preview in the reading pane:** a companion **preview handler** (`IPreviewHandler`)
 renders the image LARGE in Explorer's preview/reading pane (and the file-open dialog's
