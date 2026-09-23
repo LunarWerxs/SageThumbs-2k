@@ -313,7 +313,7 @@ unsafe fn on_about_checked(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     if st.is_null() {
         return LRESULT(0);
     }
-    let result = status_for_code(wparam.0);
+    let result = status_for_code(hwnd.0 as isize, wparam.0);
     // Faux timer: if the spinner hasn't run for its minimum yet, hold the result
     // and let WM_TIMER reveal it once ≈2 s has passed; otherwise show it now.
     if (*st).spin_frame >= MIN_SPIN_FRAMES {

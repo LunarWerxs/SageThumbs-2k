@@ -63,7 +63,10 @@ deterministic SHA-256 inventory of every source file eligible to enter the bundl
 the first `C:\Program Files\ImageMagick*` directory is deliberately forbidden.
 
 An ImageMagick upgrade is therefore an explicit source change: review the new upstream
-package, update the pin, regenerate and inspect the stubs, run the full format regression
+package (list both installers with `innoextract -l` and diff them: every coder module a
+release ADDS reaches the bundle unless `build-release.ps1`'s `$dropCoder` names it, because the
+trim and the policy are both deny-lists; 7.1.2-30/31 added three), update the pin, regenerate
+and inspect the stubs, run the full format regression
 corpus, review the final dependency inventory, and run
 `pwsh scripts/check-magick-dependency-freshness.ps1 -BundlePath scripts/packaging/stage/x64/magick`.
 That last check is an advisory

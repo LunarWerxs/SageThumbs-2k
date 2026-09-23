@@ -389,9 +389,14 @@ fn looks_like_image(path: &str) -> bool {
     magic_is_image(&head)
 }
 
+/// Does `h` carry `sig` at byte offset `off`?
+fn sig_at(h: &[u8], off: usize, sig: &[u8]) -> bool {
+    h.get(off..off + sig.len()) == Some(sig)
+}
+
 /// The signature table behind [`looks_like_image`], split out so it is testable without a file.
 fn magic_is_image(h: &[u8]) -> bool {
-    let at = |off: usize, sig: &[u8]| h.len() >= off + sig.len() && &h[off..off + sig.len()] == sig;
+    let at = |off: usize, sig: &[u8]| sig_at(h, off, sig);
     at(0, b"\x89PNG\r\n\x1a\n")                                   // PNG / APNG
         || at(0, b"\xFF\xD8\xFF")                                 // JPEG
         || at(0, b"GIF87a")
@@ -407,8 +412,9 @@ fn magic_is_image(h: &[u8]) -> bool {
 /// The ISO-BMFF `ftyp` brand signatures at offset 4 (AVIF/HEIC/HEIX/HEIF), the one family in the
 /// [`magic_is_image`] table that does not sit at offset 0.
 fn magic_ftyp_is_image(h: &[u8]) -> bool {
-    let at = |off: usize, sig: &[u8]| h.len() >= off + sig.len() && &h[off..off + sig.len()] == sig;
-    at(4, b"ftypavif") || at(4, b"ftypheic") || at(4, b"ftypheix") || at(4, b"ftypmif1")
+    [b"ftypavif", b"ftypheic", b"ftypheix", b"ftypmif1"]
+        .iter()
+        .any(|brand| sig_at(h, 4, *brand))
 }
 
 /// Extensions shown as a file LISTING (container formats with no cover/thumbnail — deliberately

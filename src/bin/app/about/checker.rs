@@ -8,8 +8,28 @@ use super::*;
 /// same-desktop process post one of its own and make us free memory it chose (the daemon's
 /// `UPDATE_TAG` has the same shape for the same reason). A forged message can only ever surface
 /// what a real check stored here, never memory it chose.
-pub(super) static FOUND_RELEASE: std::sync::Mutex<Option<update::LatestRelease>> =
-    std::sync::Mutex::new(None);
+/// Keyed by the window that started the check: two About windows open at once (About and
+/// Check for updates each open one) must not take each other's result.
+pub(super) static FOUND_RELEASE: std::sync::Mutex<Vec<(isize, update::LatestRelease)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Put `value` in `slot` for window `hwnd`, replacing that window's previous one.
+fn park<T>(slot: &std::sync::Mutex<Vec<(isize, T)>>, hwnd: isize, value: T) {
+    let mut v = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    v.retain(|(h, _)| *h != hwnd);
+    v.push((hwnd, value));
+}
+
+/// Take window `hwnd`'s value out of `slot`, if it has one.
+fn take<T>(slot: &std::sync::Mutex<Vec<(isize, T)>>, hwnd: isize) -> Option<T> {
+    let mut v = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let i = v.iter().position(|(h, _)| *h == hwnd)?;
+    Some(v.swap_remove(i).1)
+}
 
 /// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
 /// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
@@ -17,7 +37,7 @@ pub(super) static FOUND_RELEASE: std::sync::Mutex<Option<update::LatestRelease>>
 pub(super) unsafe fn start_check(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let code = post_code(update::check());
+        let code = post_code(raw, update::check());
         // Nothing to reclaim if the post fails: the release sits in `FOUND_RELEASE` until
         // the next check overwrites it.
         let _ = PostMessageW(
@@ -31,13 +51,11 @@ pub(super) unsafe fn start_check(hwnd: HWND) {
 
 /// The `WPARAM` a finished check posts to [`WM_ABOUT_CHECKED`]: 0 up to date, 1 an update is
 /// available (the release itself waits in [`FOUND_RELEASE`]), 2 the check failed.
-pub(super) fn post_code(check: update::UpdateCheck) -> usize {
+pub(super) fn post_code(hwnd: isize, check: update::UpdateCheck) -> usize {
     match check {
         update::UpdateCheck::UpToDate => 0,
         update::UpdateCheck::Available(latest) => {
-            *FOUND_RELEASE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
+            park(&FOUND_RELEASE, hwnd, latest);
             1
         }
         update::UpdateCheck::Failed => 2,
@@ -47,14 +65,10 @@ pub(super) fn post_code(check: update::UpdateCheck) -> usize {
 /// What [`WM_ABOUT_CHECKED`] shows for a posted code. "Available" TAKES the release out of
 /// [`FOUND_RELEASE`], so a repeated message finds the slot empty and shows a release with no
 /// tag; a forged one can at most show a release a real check stored, never anything it chose.
-pub(super) fn status_for_code(code: usize) -> Status {
+pub(super) fn status_for_code(hwnd: isize, code: usize) -> Status {
     match code {
         1 => Status::Available(
-            FOUND_RELEASE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(update::LatestRelease::unknown),
+            take(&FOUND_RELEASE, hwnd).unwrap_or_else(update::LatestRelease::unknown),
         ),
         2 => Status::Failed,
         _ => Status::UpToDate,
@@ -187,8 +201,8 @@ pub(super) unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
 /// The install attempt's outcome, for [`WM_ABOUT_INSTALLED`]'s handler to take - the same
 /// process-local handover as [`FOUND_RELEASE`], for the same reason: a pointer in a `WM_APP`
 /// message on a discoverable window is one any same-desktop process could forge.
-static INSTALL_RESULT: std::sync::Mutex<Option<Result<String, update::UpdateError>>> =
-    std::sync::Mutex::new(None);
+static INSTALL_RESULT: std::sync::Mutex<Vec<(isize, Result<String, update::UpdateError>)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Kick off `update::download_and_install` on a worker thread; it posts the outcome back
 /// to `hwnd` via [`WM_ABOUT_INSTALLED`]. HWND isn't `Send`, so the raw handle value crosses
@@ -199,9 +213,7 @@ pub(super) unsafe fn start_install(hwnd: HWND) {
     std::thread::spawn(move || {
         let owner = HWND(raw as *mut c_void);
         let result = update::download_and_install(owner);
-        *INSTALL_RESULT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        park(&INSTALL_RESULT, raw, result);
         // Nothing to reclaim if the post fails: the result waits in the slot.
         let _ = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(0));
     });
@@ -215,11 +227,7 @@ pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     // `lparam` carries nothing: the result waits in INSTALL_RESULT. A repeated or forged message
     // finds the slot empty, or at most takes a result a real install stored.
     let _ = lparam;
-    let Some(result) = INSTALL_RESULT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    else {
+    let Some(result) = take(&INSTALL_RESULT, hwnd.0 as isize) else {
         return LRESULT(0);
     };
     let st = about_state(hwnd);
