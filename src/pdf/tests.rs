@@ -2,6 +2,8 @@
 
 use super::render_page_counted;
 use super::width_fitted_dims;
+use super::{engine_can_open, render_pages_from_stream, PageFit, MAX_ENGINE_BYTES};
+use super::{render_page_counted_path, PdfSession};
 
 /// Build a minimal, valid multi-page PDF where page `i` is a solid `colours[i]`.
 ///
@@ -496,4 +498,52 @@ fn a_width_fitted_page_never_passes_max_dim() {
     assert_eq!(width_fitted_dims(612.0, 792.0, 1000), (1000, 1294));
     let (w, h) = width_fitted_dims(612.0, 792.0, 100_000);
     assert!(w <= cap && h <= cap, "{w} x {h}");
+}
+
+/// A page rendered by PATH (the rasterizer reading the file itself, as Quick preview does so a
+/// PDF past the input ceiling still opens) is the page rendered from the same file's bytes, and
+/// a session opened by path lays out the same pages.
+#[test]
+fn a_pdf_read_by_path_renders_as_its_bytes_do() {
+    for name in ["real.pdf", "real.ai"] {
+        let (Some(path), Some(bytes)) =
+            (crate::testcorpus::path(name), crate::testcorpus::read(name))
+        else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        let path = path.to_string_lossy().into_owned();
+        let (a, n) = render_page_counted(&bytes, 0, 300).expect("from bytes");
+        let (b, m) = render_page_counted_path(&path, 0, 300).expect("by path");
+        assert_eq!(n, m, "{name}: page count");
+        let (a, b) = (
+            image::load_from_memory(&a).unwrap().to_rgba8(),
+            image::load_from_memory(&b).unwrap().to_rgba8(),
+        );
+        assert!(a == b, "{name}: the two renders differ");
+        let session = PdfSession::open_path(&path).expect("session by path");
+        assert_eq!(session.page_count(), n as usize, "{name}");
+    }
+}
+
+/// Windows' PDF engine crashes the process on a document past 2 GiB, so none is handed to it:
+/// the stream render refuses on the declared size alone, before it reads a byte (the stream here
+/// is a real, small PDF, which would render if the size were not checked first).
+#[test]
+fn a_pdf_past_two_gib_is_never_handed_to_the_engine() {
+    assert!(engine_can_open(MAX_ENGINE_BYTES));
+    assert!(!engine_can_open(MAX_ENGINE_BYTES + 1));
+    assert!(!engine_can_open(2253 << 20), "the gate's 2.2 GB twin");
+    let Some(bytes) = crate::testcorpus::read("real.pdf") else {
+        eprintln!("NOT MEASURED: real.pdf absent");
+        return;
+    };
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    // The render hands the stream to its worker through the Global Interface Table.
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let stream = unsafe { windows::Win32::UI::Shell::SHCreateMemStream(Some(&bytes)) }
+        .expect("SHCreateMemStream");
+    let fit = PageFit::LongSide(256);
+    assert!(render_pages_from_stream(&stream, bytes.len() as u64, fit, 1).is_some());
+    assert!(render_pages_from_stream(&stream, MAX_ENGINE_BYTES + 1, fit, 1).is_none());
 }

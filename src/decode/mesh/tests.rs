@@ -374,3 +374,39 @@ fn rasterizer_budget_bounds_full_canvas_triangles() {
          them - the aggregate rasterization budget does not appear to be bounding the work"
     );
 }
+
+/// A model with more triangles than the render keeps is sampled across ALL of them, not cut
+/// off after the first `MAX_TRIS`: triangles numbered along x keep both ends of the range.
+#[test]
+fn a_model_past_the_triangle_budget_is_sampled_from_end_to_end() {
+    let n = MAX_TRIS * 3;
+    let mut res = read::Reservoir::new();
+    for i in 0..n {
+        let x = i as f32;
+        res.push([x, 0.0, 0.0, x, 1.0, 0.0, x, 0.0, 1.0]);
+    }
+    let kept = res.into_tris();
+    assert_eq!(kept.len(), MAX_TRIS);
+    let (lo, hi) = kept.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| {
+        (lo.min(t[0]), hi.max(t[0]))
+    });
+    assert!(lo < n as f32 * 0.01, "the start of the model is kept: {lo}");
+    assert!(hi > n as f32 * 0.99, "the end of the model is kept: {hi}");
+    let past_cap = kept.iter().filter(|t| t[0] >= MAX_TRIS as f32).count();
+    assert!(
+        past_cap > MAX_TRIS / 2,
+        "about two thirds of the kept triangles come from past the cap: {past_cap}"
+    );
+}
+
+/// A mesh read off a reader with its true length renders the same as its bytes do: the path
+/// a file too big to hold takes through the stream cascade.
+#[test]
+fn a_mesh_read_off_a_reader_renders_as_its_bytes_do() {
+    for bytes in [cube_stl(), tetra_obj(), tetra_ply()] {
+        let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
+        let streamed = mesh_from_reader(&bytes[..], head, bytes.len() as u64).expect("renders");
+        let whole = decode_mesh_sniffed(&bytes).expect("renders");
+        assert!(streamed.to_rgba8() == whole.to_rgba8());
+    }
+}

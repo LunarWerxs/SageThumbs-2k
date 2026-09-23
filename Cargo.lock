@@ -1386,6 +1386,7 @@ dependencies = [
  "ruzstd",
  "serde_json",
  "sevenz-rust2",
+ "tiff",
  "toml",
  "vp9dec",
  "webp",

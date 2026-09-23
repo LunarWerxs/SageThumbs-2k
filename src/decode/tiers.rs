@@ -168,7 +168,7 @@ pub(crate) const MIN_RAW_PREVIEW: usize = 16 * 1024;
 /// clean compact install with no Microsoft RAW Image Extension — accept even a small
 /// embedded JPEG (a camera's ~160px EXIF thumbnail) so the RAW shows *something* rather
 /// than a blank tile. A valid JPEG this small is still ~2–10 KB; below this is noise.
-pub(super) const LENIENT_RAW_PREVIEW: usize = 2 * 1024;
+pub(crate) const LENIENT_RAW_PREVIEW: usize = 2 * 1024;
 
 /// A preview larger than this is almost certainly a FULL-resolution JPEG (tens of MP)
 /// — slow to decode in pure Rust and far bigger than a thumbnail (or a convenience
@@ -238,7 +238,7 @@ pub(crate) fn largest_embedded_jpeg(data: &[u8], min_size: usize) -> Option<&[u8
         }
         if data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             // SOI (FF D8 FF…). Measure it; a valid JPEG is skipped whole.
-            i += span_at_soi(data, i, min_size, &mut found);
+            i += span_at_soi(data, i, 0, min_size, &mut found);
             if bump_seen(&mut seen) {
                 break;
             }
@@ -293,7 +293,16 @@ impl Rank {
 /// preview, and both the `image` crate and WIC then reject it ("the image header is
 /// unrecognized"). Skipping the frame still advances by its measured span, so this costs
 /// nothing.
-fn span_at_soi(data: &[u8], i: usize, min_size: usize, found: &mut Candidates) -> usize {
+///
+/// `origin` is the file offset of `data[0]`, for a scan that holds a window of the file
+/// ([`largest_embedded_jpeg_from`]); the candidate is recorded at `origin + i`.
+fn span_at_soi(
+    data: &[u8],
+    i: usize,
+    origin: usize,
+    min_size: usize,
+    found: &mut Candidates,
+) -> usize {
     match jpeg_span_frame(data, i) {
         Some((len, Some(frame))) if !jpeg_sof_is_decodable(frame.sof) => len,
         Some((len, frame)) => {
@@ -301,7 +310,7 @@ fn span_at_soi(data: &[u8], i: usize, min_size: usize, found: &mut Candidates) -
                 Some(f) if f.is_greyscale() => &mut found.grey,
                 _ => &mut found.colour,
             };
-            consider_candidate(rank, i, len, min_size);
+            consider_candidate(rank, origin + i, len, min_size);
             len
         }
         None => 1,
@@ -331,6 +340,148 @@ fn consider_candidate(rank: &mut Rank, start: usize, len: usize, min_size: usize
 fn bump_seen(seen: &mut usize) -> bool {
     *seen += 1;
     *seen >= 64
+}
+
+/// The longest JPEG [`largest_embedded_jpeg_from`] measures; a longer one is skipped.
+const MAX_STREAMED_JPEG: usize = 32 << 20;
+/// How much [`largest_embedded_jpeg_from`] reads ahead at a time.
+const STREAM_CHUNK: usize = 4 << 20;
+
+/// [`largest_embedded_jpeg`] over a file too big to hold, read once from front to back: the
+/// same scan, measure and pick, and the pick's bytes handed back. For the stream cascade's
+/// last rescue, where the buffered path's last resort (`try_embedded_jpeg_last_resort`) is
+/// what draws a legacy Office document: a Word file carries no thumbnail, and its tile is the
+/// largest photo inside it, which in a big one can sit anywhere. A JPEG longer than
+/// [`MAX_STREAMED_JPEG`] is not measured. At most one chunk and one JPEG are held at a time.
+pub(crate) fn largest_embedded_jpeg_from<R: Read>(r: R, min_size: usize) -> Option<Vec<u8>> {
+    let mut scan = StreamedScan {
+        r,
+        window: Vec::new(),
+        base: 0,
+        eof: false,
+        found: Candidates::default(),
+        kept: Vec::new(),
+    };
+    scan.run(min_size);
+    let (start, _) = scan.found.pick()?;
+    scan.kept
+        .into_iter()
+        .find(|(at, _)| *at == start)
+        .map(|(_, bytes)| bytes)
+}
+
+/// The state of [`largest_embedded_jpeg_from`]'s pass.
+struct StreamedScan<R> {
+    r: R,
+    /// The file's bytes from offset `base` on, as far as they have been read.
+    window: Vec<u8>,
+    base: usize,
+    eof: bool,
+    found: Candidates,
+    /// The bytes of each candidate `found` holds, by file offset.
+    kept: Vec<(usize, Vec<u8>)>,
+}
+
+impl<R: Read> StreamedScan<R> {
+    /// Read on until the window holds `n` bytes from offset `at`, or the file ends.
+    fn fill(&mut self, at: usize, n: usize) {
+        let need = at - self.base + n;
+        while self.window.len() < need && !self.eof {
+            let old = self.window.len();
+            self.window.resize(old + STREAM_CHUNK.min(need - old), 0);
+            match self.r.read(&mut self.window[old..]) {
+                Ok(0) | Err(_) => {
+                    self.window.truncate(old);
+                    self.eof = true;
+                }
+                Ok(got) => self.window.truncate(old + got),
+            }
+        }
+    }
+
+    /// Let go of everything before offset `at`.
+    fn drop_before(&mut self, at: usize) {
+        let cut = (at - self.base).min(self.window.len());
+        self.window.drain(..cut);
+        self.base += cut;
+    }
+
+    /// The front-to-back scan of [`largest_embedded_jpeg`], a chunk at a time.
+    fn run(&mut self, min_size: usize) {
+        let (mut pos, mut seen) = (0usize, 0usize);
+        loop {
+            self.fill(pos, STREAM_CHUNK);
+            let data = &self.window[pos - self.base..];
+            let Some(k) = find_soi(data) else {
+                if self.eof {
+                    return;
+                }
+                // Keep two bytes: an SOI can straddle the chunk's end.
+                pos += data.len().saturating_sub(2);
+                self.drop_before(pos);
+                continue;
+            };
+            let at = pos + k;
+            let span = self.measure(at, min_size);
+            if bump_seen(&mut seen) {
+                return;
+            }
+            pos = at + span;
+            self.drop_before(pos);
+        }
+    }
+
+    /// Measure the JPEG at offset `at` as [`span_at_soi`] does, reading on while it runs past
+    /// the window, and keep its bytes if it became a candidate.
+    fn measure(&mut self, at: usize, min_size: usize) -> usize {
+        let mut want = 1 << 20;
+        loop {
+            self.fill(at, want);
+            let data = &self.window[at - self.base..];
+            let ended = data.len() < want;
+            let span = span_at_soi(data, 0, at, min_size, &mut self.found);
+            if span > 1 || ended || want >= MAX_STREAMED_JPEG {
+                self.keep(at);
+                return span;
+            }
+            want *= 2;
+        }
+    }
+
+    /// Hold the bytes of whatever `found` holds now (a new holder is the JPEG just measured at
+    /// `at`, still in the window) and drop the rest.
+    fn keep(&mut self, at: usize) {
+        let held = [
+            self.found.colour.capped,
+            self.found.colour.overall,
+            self.found.grey.capped,
+            self.found.grey.overall,
+        ];
+        self.kept
+            .retain(|(start, _)| held.iter().flatten().any(|(s, _)| s == start));
+        for (start, len) in held.into_iter().flatten() {
+            if start == at && !self.kept.iter().any(|(s, _)| *s == at) {
+                let from = at - self.base;
+                if let Some(bytes) = self.window.get(from..from + len) {
+                    self.kept.push((at, bytes.to_vec()));
+                }
+            }
+        }
+    }
+}
+
+/// Where the next JPEG start of image (`FF D8 FF`) is in `data`, found as
+/// [`largest_embedded_jpeg`] finds it.
+fn find_soi(data: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    while i + 2 < data.len() {
+        i += data[i..data.len() - 2].iter().position(|&b| b == 0xFF)?;
+        if data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Decode a headerless Truevision TGA (and its `.icb`/`.vda`/`.vst` aliases) when
@@ -403,5 +554,59 @@ pub(crate) mod fuzzapi {
     /// The 1:1 path, which the reduced one falls back to and every non-thumbnail caller takes.
     pub(crate) fn full(b: &[u8]) {
         let _ = decode_jxl(b, None);
+    }
+}
+
+#[cfg(test)]
+mod streamed_carve_tests {
+    use super::*;
+
+    fn jpeg(w: u32, h: u32, shade: u8) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x * 3) as u8, (y * 5) as u8 ^ shade, shade])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("jpeg");
+        out
+    }
+
+    /// Read front to back, the scan picks what the whole-buffer scan picks, wherever the
+    /// pictures sit (one straddling the first chunk's end), and hands back its bytes.
+    #[test]
+    fn the_streamed_carve_picks_what_the_buffered_one_does() {
+        let (small, big) = (jpeg(160, 120, 90), jpeg(400, 300, 30));
+        let mut file = vec![0u8; STREAM_CHUNK - 7];
+        file.extend(&small);
+        file.extend(vec![7u8; 3 << 20]);
+        file.extend(&big);
+        file.extend(vec![0u8; 1 << 20]);
+        let whole = largest_embedded_jpeg(&file, 1024).map(<[u8]>::to_vec);
+        assert_eq!(whole.as_deref(), Some(&big[..]));
+        let streamed = largest_embedded_jpeg_from(std::io::Cursor::new(&file), 1024);
+        assert_eq!(streamed, whole);
+        for name in ["real.doc", "sample.nef", "sample.cr2", "real.pef"] {
+            let Some(bytes) = crate::testcorpus::read(name) else {
+                eprintln!("NOT MEASURED: {name} absent");
+                continue;
+            };
+            let whole = largest_embedded_jpeg(&bytes, LENIENT_RAW_PREVIEW).map(<[u8]>::to_vec);
+            let streamed =
+                largest_embedded_jpeg_from(std::io::Cursor::new(&bytes), LENIENT_RAW_PREVIEW);
+            assert_eq!(streamed, whole, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_cut_or_empty_stream_is_refused_without_panicking() {
+        let big = jpeg(200, 150, 10);
+        for cut in [0, 1, 2, 3, 10, big.len() / 2, big.len() - 1] {
+            let _ = largest_embedded_jpeg_from(std::io::Cursor::new(&big[..cut]), 1024);
+        }
+        assert!(largest_embedded_jpeg_from(std::io::Cursor::new(vec![0u8; 100]), 1024).is_none());
     }
 }

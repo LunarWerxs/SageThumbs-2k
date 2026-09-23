@@ -29,7 +29,7 @@ use image::DynamicImage;
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
-use super::limits::{MAX_DIM, MAX_PIXELS};
+use super::limits::MAX_SCALED_SOURCE_PIXELS;
 
 /// OpenEXR file signature.
 const EXR_MAGIC: [u8; 4] = [0x76, 0x2f, 0x31, 0x01];
@@ -43,11 +43,12 @@ const MAX_TARGET_EDGE: u32 = 2048;
 /// gate (that is the whole point), so it needs its own bound on the one structure
 /// that scales with the file rather than with the output: `filter_chunks` reads the
 /// WHOLE offset table (8 bytes per chunk) and walks every block before our row
-/// filter can drop any of them. A degenerate 1x1-tile layer at [`MAX_DIM`] squared
-/// declares ~268M chunks, i.e. a 2 GB table and 268M filter iterations.
+/// filter can drop any of them. A degenerate 1x1-tile layer at the pixel budget
+/// ([`MAX_SCALED_SOURCE_PIXELS`]) declares ~1G chunks, i.e. an 8 GB table and 1G filter
+/// iterations.
 ///
-/// 4 Mi chunks is far above anything real: the largest image we accept at all
-/// (16384x16384) is 16 384 chunks as scan lines and 1 Mi chunks even at 16x16
+/// 4 Mi chunks is far above anything real: the tallest image we accept ([`MAX_SIDE`] rows)
+/// is 262 144 chunks as scan lines, the pixel budget is exactly 4 Mi chunks even at 16x16
 /// tiles, and production EXRs use 32-256 px tiles. It bounds the table at 32 MB.
 /// (`chunk_count` is COMPUTED from the data window and block description, never
 /// trusted from the file, so this is a bound on geometry, not on a claimed number.)
@@ -200,16 +201,24 @@ fn resolve_channels(header: &Header) -> Option<(usize, usize, usize, Option<usiz
     Some((ch_r, ch_g, ch_b, idx_of("A")))
 }
 
-/// The DISPLAY window's `(width, height)`, bounds-checked against [`MAX_DIM`],
-/// [`MAX_PIXELS`] and [`MAX_CHUNKS`]. The display window is the image the viewer sees;
-/// the layer's own data window may be offset from it (and may be smaller or larger).
+/// The longest side this decoder takes. It never holds the full-resolution picture, only one
+/// row of samples at a time, so the decoders' 16384 limit (which bounds a materialised image)
+/// does not apply: a 17000-pixel panorama used to fall off this tier onto one that tone-maps
+/// differently, and came out a different picture from the same render at 2048 (the big-file
+/// gate's pixel axis, 2026-09-23). PSB's own ceiling, 300000, rounded down.
+const MAX_SIDE: usize = 1 << 18;
+
+/// The DISPLAY window's `(width, height)`, bounds-checked against [`MAX_SIDE`], the scaled
+/// decoders' pixel budget ([`MAX_SCALED_SOURCE_PIXELS`]: the time a crafted file can cost)
+/// and [`MAX_CHUNKS`]. The display window is the image the viewer sees; the layer's own data
+/// window may be offset from it (and may be smaller or larger).
 fn validate_layer_dims(header: &Header) -> Option<(usize, usize)> {
     let display = header.shared_attributes.display_window;
     let (w, h) = (display.size.width(), display.size.height());
-    if w == 0 || h == 0 || w > MAX_DIM as usize || h > MAX_DIM as usize {
+    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return None;
     }
-    if (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
+    if (w as u64).saturating_mul(h as u64) > MAX_SCALED_SOURCE_PIXELS {
         return None;
     }
     if header.chunk_count > MAX_CHUNKS {
@@ -556,16 +565,16 @@ mod tests {
     /// or it would silently reject legitimate files instead of pathological ones.
     #[test]
     fn the_chunk_ceiling_clears_every_acceptable_image() {
-        let max = MAX_DIM as usize;
-        // Worst legitimate cases: full-size scan lines (1 chunk per row), and full
-        // size at the smallest tile size real encoders emit (16x16).
-        assert!(max <= MAX_CHUNKS, "scan-line worst case must fit");
+        let pixels = MAX_SCALED_SOURCE_PIXELS as usize;
+        // Worst legitimate cases: the tallest scan-line image (1 chunk per row), and the
+        // pixel budget at the smallest tile size real encoders emit (16x16).
+        const { assert!(MAX_SIDE <= MAX_CHUNKS, "scan-line worst case must fit") };
         assert!(
-            max.div_ceil(16) * max.div_ceil(16) <= MAX_CHUNKS,
+            pixels / (16 * 16) <= MAX_CHUNKS,
             "16x16-tiled worst case must fit"
         );
         // ...and BELOW the degenerate 1x1-tile layer it exists to stop.
-        assert!(max * max > MAX_CHUNKS, "1x1 tiles must be refused");
+        assert!(pixels > MAX_CHUNKS, "1x1 tiles must be refused");
     }
 
     #[test]

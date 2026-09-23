@@ -114,9 +114,27 @@ where
     F: FnOnce() -> Option<T> + Send + 'static,
 {
     MF_GRAB_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    match run_pumping(timeout, f) {
+        Ok(r) => r,
+        Err(done) => {
+            note_strand(done, what);
+            None
+        }
+    }
+}
+
+/// [`run_bounded_pumping`] without the video bookkeeping: `Err` carries the worker's done
+/// flag when `timeout` passed first (the worker is left to finish on its own).
+fn run_pumping<T, F>(timeout: Duration, f: F) -> std::result::Result<Option<T>, Arc<AtomicBool>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
     // Manual-reset, and shared: a worker finishing after the timeout signals a handle both
     // sides still hold, which closes with the last of them, never one already recycled.
-    let raw = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.ok()?;
+    let Ok(raw) = (unsafe { CreateEventW(None, true, false, PCWSTR::null()) }) else {
+        return Ok(None);
+    };
     // SAFETY: a fresh event handle this function owns; wrapped so it is closed exactly once.
     let event = Arc::new(unsafe { OwnedHandle::from_raw_handle(raw.0) });
     let slot: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
@@ -132,14 +150,54 @@ where
         let _ = unsafe { SetEvent(HANDLE(w_event.as_raw_handle())) };
     });
     if started.is_err() {
-        return None;
+        return Ok(None);
     }
     if wait_pumping(HANDLE(event.as_raw_handle()), timeout) {
-        slot.lock().unwrap_or_else(|p| p.into_inner()).take()
+        Ok(slot.lock().unwrap_or_else(|p| p.into_inner()).take())
     } else {
-        note_strand(done, what);
-        None
+        Err(done)
     }
+}
+
+/// Run `f` on a worker thread in its own MTA with `shell` handed over through the Global
+/// Interface Table, waiting at most `timeout` with this apartment's incoming calls served:
+/// the hand-off [`frame_from_block_stream`] uses, for any decoder that must read the shell's
+/// stream off the calling thread (the OS PDF rasterizer runs on a WinRT worker). On timeout the
+/// worker is left to finish and `None` comes back at once, with a log line naming `what`.
+pub(crate) fn with_stream_on_worker<T, F>(
+    shell: &IStream,
+    timeout: Duration,
+    what: &'static str,
+    f: F,
+) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce(IStream) -> Option<T> + Send + 'static,
+{
+    let git = unsafe { global_interface_table() }?;
+    let cookie = unsafe { git.RegisterInterfaceInGlobal(shell, &IStream::IID) }.ok()?;
+    let mut cookie = GitCookie(Some(cookie));
+    let r = run_pumping(timeout, move || unsafe {
+        let entry = cookie.0?;
+        let git = global_interface_table()?;
+        let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+        let fetched = git
+            .GetInterfaceFromGlobal(entry, &IStream::IID, &mut raw)
+            .is_ok();
+        cookie.revoke();
+        if !fetched || raw.is_null() {
+            return None;
+        }
+        // SAFETY: a live, AddRef'd IStream the table just handed this apartment.
+        f(IStream::from_raw(raw))
+    });
+    r.unwrap_or_else(|_| {
+        crate::safety::log(&format!(
+            "{what} still running past its {} s budget; leaving the worker to finish on its own",
+            timeout.as_secs()
+        ));
+        None
+    })
 }
 
 /// Wait for `h` up to `timeout`, dispatching this apartment's incoming COM calls while

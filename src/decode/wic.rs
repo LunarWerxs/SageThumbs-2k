@@ -22,8 +22,9 @@ fn wic_factory() -> Result<IWICImagingFactory> {
 ///
 /// `OnDemand`, matching the by-path twins: nothing on these paths reads WIC's cached metadata
 /// graph (EXIF comes from `kamadak-exif` over the raw bytes, ICC from `GetColorContexts`, a
-/// frame API), so eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even
-/// runs is pure loss. A by-bytes caller may also decide it cannot help and return without
+/// frame API, or for a TIFF one tag asked for by name after decoding, `wic_tiff_icc`), so
+/// eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even runs is pure
+/// loss. A by-bytes caller may also decide it cannot help and return without
 /// decoding, so the loss would be paid on top of the normal decode the caller then runs.
 unsafe fn wic_frame_from_bytes(
     factory: &IWICImagingFactory,
@@ -117,10 +118,10 @@ pub(super) unsafe fn wic_decode_stream(
 /// `GetFrame` before the MAX_DIM/MAX_PIXELS guard had even seen the dimensions. It matters most
 /// for [`wic_decode_path_if_codec_scales`], which often decides it cannot help (PNG) and returns
 /// without decoding anything, so any metadata parsed eagerly during `GetFrame` would be pure
-/// loss on top of the full decode the caller then runs. Nothing on these paths reads WIC
-/// metadata (EXIF comes from `kamadak-exif` over the raw bytes, and the ICC profile comes from
-/// `GetColorContexts`, which is a frame API and not the metadata reader), so deferring it costs
-/// nothing.
+/// loss on top of the full decode the caller then runs. Nothing on these paths walks WIC's
+/// metadata graph (EXIF comes from `kamadak-exif` over the raw bytes, and the ICC profile comes
+/// from `GetColorContexts`, a frame API, or for a TIFF from ONE tag asked for by name after the
+/// decode, `wic_tiff_icc`), so deferring it costs nothing.
 unsafe fn wic_frame_from_filename(
     factory: &IWICImagingFactory,
     path: &str,
@@ -440,8 +441,39 @@ pub(super) unsafe fn wic_decode_frame(
     // truth, and the codec's answer is the fallback.
     let icc = isobmff_color_icc(container_bytes)
         .or_else(|| jpeg_icc(container_bytes))
-        .or_else(|| wic_icc(factory, frame));
+        .or_else(|| wic_icc(factory, frame))
+        .or_else(|| wic_tiff_icc(frame));
     Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
+}
+
+/// The ICC profile of a TIFF frame, through WIC's metadata reader (`/ifd/{ushort=34675}`,
+/// InterColorProfile). Windows' TIFF codec does not offer the tag as a colour context -
+/// measured 2026-09-23 on the corpus's `real.tif`, which carries an Apple display profile:
+/// `GetColorContexts` found none - so every TIFF that WIC decoded came out unmanaged, and
+/// past the input ceiling WIC decodes every TIFF. The big-file gate caught it: a 300 MB
+/// twin rendered 7 levels off its normal-size self, which matches a colour-managed
+/// reference to 0.1. The reader seeks to the tag wherever it sits, so a profile at the far
+/// end of a 5 GB scan costs one read. Profiles past 4 MiB are ignored, as `tiff_icc` does.
+unsafe fn wic_tiff_icc(frame: &IWICBitmapFrameDecode) -> Option<Vec<u8>> {
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    use windows::Win32::System::Variant::{VARENUM, VT_BLOB, VT_UI1, VT_VECTOR};
+    let reader = frame.GetMetadataQueryReader().ok()?;
+    let mut value = PROPVARIANT::default();
+    reader
+        .GetMetadataByName(windows::core::w!("/ifd/{ushort=34675}"), &mut value)
+        .ok()?;
+    let inner = &value.Anonymous.Anonymous;
+    let (len, ptr) = if inner.vt == VT_BLOB {
+        (inner.Anonymous.blob.cbSize, inner.Anonymous.blob.pBlobData)
+    } else if inner.vt == VARENUM(VT_VECTOR.0 | VT_UI1.0) {
+        (inner.Anonymous.caub.cElems, inner.Anonymous.caub.pElems)
+    } else {
+        (0, std::ptr::null_mut())
+    };
+    let bytes = (!ptr.is_null() && len > 0 && len <= 4 << 20)
+        .then(|| std::slice::from_raw_parts(ptr, len as usize).to_vec());
+    let _ = PropVariantClear(&mut value);
+    bytes
 }
 
 /// Size `source`, copy its pixels out and wrap them as an RGBA8 image (the tail of

@@ -133,7 +133,10 @@ pub fn jp2_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 mod exrscale;
+mod fits;
 mod magick;
+mod rawraster;
+mod tiffscale;
 pub(crate) use magick::looks_like_metafile;
 /// Which budget a magick child runs under - see [`magick::Fidelity`]. Re-exported because
 /// `flv.rs` runs its own magick child for the Flash tier and has to say which kind it is.
@@ -146,6 +149,13 @@ pub(crate) use magick::await_magick_output as await_child_output;
 use magick::metafile_min_density;
 use magick::{decode_named_extension, has_name_selected_coder};
 use magick::{decode_psd_composite, decode_via_magick_capped};
+
+/// ImageMagick's own reading of a Photoshop composite, bypassing ours: the independent opinion
+/// `container::psdmerged`'s tests compare against.
+#[cfg(test)]
+pub(crate) fn psd_composite_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
+    magick::decode_psd_composite_magick(bytes, Fidelity::Full)
+}
 pub use magick::{
     encode_via_magick, encode_via_magick_png, magick_available, magick_output_extensions,
     magick_output_supported,
@@ -188,6 +198,7 @@ use cascade::*;
 mod wicprefer;
 use wicprefer::*;
 mod imagetier;
+pub(crate) use cascade::declared_dimensions;
 pub use cascade::luma_sd;
 use imagetier::*;
 
@@ -199,25 +210,34 @@ pub(crate) use dds::dxgi_block_name;
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;
 #[cfg(test)]
+pub(crate) use fits::fuzz_seed as fits_fuzz_seed;
+pub(crate) use fits::{decode_scaled as fits_scaled_from_reader, is_fits};
+#[cfg(test)]
 pub(crate) use jp2::fuzzapi as jp2_fuzzapi;
 #[cfg(test)]
 pub(crate) use mesh::fuzzapi as mesh_fuzzapi;
+pub(crate) use mesh::{mesh_from_reader, mesh_kind, MESH_SNIFF_BYTES};
+pub(crate) use rawraster::{decode_scaled as raw_raster_scaled_from_reader, is_raw_raster};
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
-    decode_preview_path, decode_preview_streamed, exr_scaled_from_reader, is_exr_magic,
-    psd_composite_scaled, read_bounded, read_capped, read_full_fidelity, read_preview_capped,
-    read_preview_capped_for, wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
+    decode_oversized_path, decode_preview_path, decode_preview_streamed, decode_streamed_format,
+    exr_scaled_from_reader, is_exr_magic, psd_composite_scaled, read_bounded, read_capped,
+    read_full_fidelity, read_preview_capped, read_preview_capped_for,
+    wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
     wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, ANY_PREVIEW, COLOR_HEAD_BYTES,
-    EXR_PATH_EDGE, HEAD_PREVIEW_BYTES,
+    EXR_PATH_EDGE, HEAD_PREVIEW_BYTES, OVERSIZED_VIEW_EDGE,
 };
 pub(crate) use thumb::exif_orientation;
 pub use thumb::{
-    decode_thumbnail_opts, embedded_preview_serves, reduce_to_fit, thumbnail_from_covers,
-    thumbnail_from_image,
+    decode_stand_in_thumbnail, decode_thumbnail_opts, embedded_preview_serves, reduce_to_fit,
+    thumbnail_from_covers, thumbnail_from_image, thumbnail_from_own_picture,
 };
 #[cfg(test)]
 pub(crate) use tiers::fuzzapi as jxl_fuzzapi;
-pub(crate) use tiers::{largest_embedded_jpeg, MIN_RAW_PREVIEW};
+pub(crate) use tiers::{
+    largest_embedded_jpeg, largest_embedded_jpeg_from, LENIENT_RAW_PREVIEW, MIN_RAW_PREVIEW,
+};
+pub(crate) use tiffscale::decode_scaled as tiff_scaled_from_reader;
 
 /// Is the OS codec `codec` present on THIS machine? Audit E03: `st2k doctor`'s "Format
 /// capability" block uses this to name which OS-codec-dependent formats will actually

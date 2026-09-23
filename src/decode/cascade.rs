@@ -135,7 +135,7 @@ fn try_external_tiers(
 /// stand-in check switched off rather than guessing. For a TIFF (and the TIFF-based camera
 /// RAWs) this is IFD0, which describes a small preview as often as the sensor, so a RAW whose
 /// embedded preview is larger than its IFD0 is never refused on its account.
-pub(super) fn declared_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn declared_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if let Some(dims) = psd_declared_dimensions(bytes) {
         return Some(dims);
     }
@@ -235,6 +235,9 @@ pub(super) fn decode_any_with_wic_target(
     if let Some(img) = try_dds_tier(bytes, wic_thumbnail_cx) {
         return Ok(img);
     }
+    if let Some(img) = try_fits_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
+    }
     // The WIC tiers get a target edge only from the ISOLATED hosts (`external`). A target
     // edge is what unlocks `MAX_SCALED_SOURCE_PIXELS`, the widened ceiling a thumbnail may
     // stream through because a hostile file costs a throwaway dllhost there; the in-process
@@ -259,6 +262,9 @@ pub(super) fn decode_any_with_wic_target(
         ImageTierOutcome::Decoded(img) => return Ok(img),
         ImageTierOutcome::ReducedIfd0(img) => reduced_ifd0 = Some(img),
         ImageTierOutcome::Failed => {}
+    }
+    if let Some(img) = try_raw_raster_tier(bytes, wic_thumbnail_cx) {
+        return Ok(img);
     }
     // Camera-RAW fast path for preview fidelity. A RAW file embeds a JPEG the
     // camera already rendered; decoding that is ~10–30× faster than demosaicing.
@@ -296,6 +302,37 @@ pub(super) fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Optio
             None
         }
     }
+}
+
+/// The simple rasters (binary PNM, PAM, PFM, farbfeld, TGA) the `image` tier declined - a
+/// picture past its side limit, or a layout it does not read: our own row reader, which
+/// shrinks as it reads (see `rawraster.rs`), the same one a file past the input ceiling gets.
+pub(super) fn try_raw_raster_tier(
+    bytes: &[u8],
+    wic_thumbnail_cx: Option<u32>,
+) -> Option<DynamicImage> {
+    if !rawraster::is_raw_raster(bytes) {
+        return None;
+    }
+    let edge = wic_thumbnail_cx.unwrap_or(limits::MAX_DIM);
+    rawraster::decode_scaled(std::io::Cursor::new(bytes), edge)
+}
+
+/// FITS: our own reader, signature-gated, ahead of ImageMagick (see `fits.rs`: it finds an image
+/// in an extension, reads a file of any size, and scales a 16-bit exposure instead of drawing
+/// it black). The same reader answers past the input ceiling, in the stream cascade and by
+/// path, so a small and a big file of the same picture look alike. A full-fidelity caller
+/// (`None`) gets the picture at the decoders' side limit.
+pub(super) fn try_fits_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+    if !fits::is_fits(bytes) {
+        return None;
+    }
+    let edge = wic_thumbnail_cx.unwrap_or(limits::MAX_DIM);
+    let img = fits::decode_scaled(std::io::Cursor::new(bytes), edge);
+    if img.is_none() {
+        crate::safety::log_debug("decode tier `fits` found no image it reads");
+    }
+    img
 }
 
 /// DDS: our own tier, magic-gated, ahead of `image` because it OWNS the format -

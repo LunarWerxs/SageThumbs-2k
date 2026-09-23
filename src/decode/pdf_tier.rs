@@ -341,7 +341,7 @@ pub(crate) fn try_pdf_tier(
 }
 
 /// Pages of an Illustrator file laid out as a contact sheet: up to this many artboards.
-const AI_SHEET_PAGES: usize = 4;
+pub(crate) const AI_SHEET_PAGES: usize = 4;
 
 /// The thumbnail of an Illustrator file, by what the file actually holds:
 ///
@@ -356,17 +356,41 @@ const AI_SHEET_PAGES: usize = 4;
 /// `None` hands the file to the ordinary page-one render (a PDF the session cannot open, a
 /// file whose private thumbnail is missing or malformed).
 fn illustrator_thumbnail(bytes: &[u8], edge: u32) -> Option<Result<DynamicImage>> {
-    use crate::container::ai;
     let session = crate::pdf::PdfSession::open(bytes)?;
     let pages = session.page_count();
-    if pages >= 2 {
-        if let Some(sheet) = illustrator_sheet(&session, pages.min(AI_SHEET_PAGES), edge) {
+    // A sheet takes the first pages; one page is all a single artboard needs.
+    let want = if pages >= 2 {
+        pages.min(AI_SHEET_PAGES)
+    } else {
+        1
+    };
+    let rendered = (0..want)
+        .map_while(|i| {
+            session
+                .render_to_width(i, edge)
+                .and_then(|png| image::load_from_memory(&png).ok())
+        })
+        .collect();
+    illustrator_answer(rendered, pages, bytes, edge)
+}
+
+/// The Illustrator answer (see [`illustrator_thumbnail`]) from its first pages already drawn
+/// `edge` wide, in order (fewer than asked when one failed), the document's page count, and the
+/// bytes that hold its private data: the whole file, or the head of one too big to hold (the
+/// stream cascade's big-file path, where the pages are drawn off the stream itself).
+pub(crate) fn illustrator_answer(
+    rendered: Vec<DynamicImage>,
+    pages: usize,
+    bytes: &[u8],
+    edge: u32,
+) -> Option<Result<DynamicImage>> {
+    use crate::container::ai;
+    if pages >= 2 && rendered.len() == pages.min(AI_SHEET_PAGES) {
+        if let Some(sheet) = illustrator_sheet(&rendered, edge) {
             return Some(Ok(sheet));
         }
     }
-    let page = session
-        .render_to_width(0, edge)
-        .and_then(|png| image::load_from_memory(&png).ok());
+    let page = rendered.into_iter().next();
     match (page, ai::private_thumbnail(bytes)) {
         // Illustrator up to CS4 kept a raster of the artwork beside the placeholder.
         (Some(page), Some(thumb)) if ai::page_is_placeholder(&page, &thumb) => Some(Ok(thumb)),
@@ -383,18 +407,12 @@ fn illustrator_thumbnail(bytes: &[u8], edge: u32) -> Option<Result<DynamicImage>
     }
 }
 
-/// Render pages `0..n` of an open session at `edge` and fold them into one square sheet.
-fn illustrator_sheet(
-    session: &crate::pdf::PdfSession,
-    n: usize,
-    edge: u32,
-) -> Option<DynamicImage> {
-    let mut prepared = Vec::with_capacity(n);
-    for i in 0..n {
-        let png = session.render_to_width(i, edge)?;
-        let img = image::load_from_memory(&png).ok()?;
-        prepared.push(crate::container::collage::prepare_for_sheet(&img, edge));
-    }
+/// Fold pages already drawn `edge` wide into one square sheet.
+fn illustrator_sheet(pages: &[DynamicImage], edge: u32) -> Option<DynamicImage> {
+    let prepared: Vec<_> = pages
+        .iter()
+        .map(|img| crate::container::collage::prepare_for_sheet(img, edge))
+        .collect();
     crate::container::collage::compose_prepared(&prepared, edge).map(DynamicImage::ImageRgba8)
 }
 

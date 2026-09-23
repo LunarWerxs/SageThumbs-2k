@@ -27,6 +27,20 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
     Ok(decoded)
 }
 
+/// [`decode_thumbnail_opts`] for a picture that stands in for the file it came out of (the
+/// stream cascade's `StreamSource::Cover`: an app's icon, an album's art, a comic's cover).
+/// It fills the tile, exactly as the same cover does when the buffered path finds it inside
+/// the whole file, where [`tile_box_edge`] sees the container's header and not the cover's.
+pub fn decode_stand_in_thumbnail(bytes: &[u8], cx: u32) -> Result<Decoded> {
+    let cx = cx.max(1);
+    // The call the container tier makes for a cover it found inside the whole file, so the
+    // same cover decodes to the same pixels (the JPEG-scaling tier would draw it softer).
+    let img = decode_image_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))?;
+    let mut decoded = fit_to_box(img, cx);
+    resolve_transparency(&mut decoded)?;
+    Ok(decoded)
+}
+
 /// Pick the decode source for [`decode_thumbnail_opts`]: the embedded (EXIF) thumbnail when the
 /// caller asked for it and the request is small enough, else a full preview decode.
 fn embedded_or_preview(bytes: &[u8], cx: u32, use_embedded: bool) -> Result<DynamicImage> {
@@ -625,6 +639,15 @@ pub(super) fn fit_to_box(img: DynamicImage, cx: u32) -> Decoded {
 /// thumbnail provider's video branch can reuse the same resize → `Decoded` step.
 pub fn thumbnail_from_image(img: DynamicImage, cx: u32) -> Decoded {
     fit_to_box(img, cx.max(1))
+}
+
+/// [`thumbnail_from_image`] for a file's OWN picture decoded straight off its stream (a
+/// streamed EXR, a Photoshop composite, the WIC rescue): never drawn larger than it is, the
+/// rule the buffered path applies through [`tile_box_edge`]. Without it a small picture past
+/// the input ceiling came out enlarged where the same picture under it did not.
+pub fn thumbnail_from_own_picture(img: DynamicImage, cx: u32) -> Decoded {
+    let long = img.width().max(img.height());
+    fit_to_box(img, cx.min(long).max(1))
 }
 
 /// Compose a generic archive's picked images (.zip/.rar/.7z contact sheet) into one

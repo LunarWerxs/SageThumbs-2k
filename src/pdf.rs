@@ -60,7 +60,75 @@ pub fn render_first_page(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
 /// powers the Quick preview viewer's page navigation; thumbnail/preview-pane callers use the
 /// page-0 [`render_first_page`] wrapper (whose behaviour is UNCHANGED). `None` on any failure.
 pub fn render_page_counted(bytes: &[u8], page_index: u32, max_dim: u32) -> Option<(Vec<u8>, u32)> {
-    let owned = bytes.to_vec();
+    render_page_counted_from(Source::Bytes(bytes.to_vec()), page_index, max_dim)
+}
+
+/// [`render_page_counted`] for the file at `path`, read by the rasterizer as it needs it: no
+/// copy of the document is held, so its size does not matter. What the Quick preview uses;
+/// reading the whole file first refused any PDF past the 256 MiB input ceiling (the big-file
+/// gate, 2026-09-23).
+pub fn render_page_counted_path(
+    path: &str,
+    page_index: u32,
+    max_dim: u32,
+) -> Option<(Vec<u8>, u32)> {
+    render_page_counted_from(Source::Path(path.to_string()), page_index, max_dim)
+}
+
+/// The biggest document handed to Windows' PDF engine. Past 2 GiB `Windows.Data.Pdf` takes the
+/// whole PROCESS down with an access violation - measured 2026-09-23 on a 2.2 GB PDF, loaded by
+/// `PdfDocument::LoadFromFileAsync` from plain PowerShell with none of our code involved - and
+/// in Explorer that process is the thumbnail host. So a bigger PDF gets no page from us.
+pub(crate) const MAX_ENGINE_BYTES: u64 = i32::MAX as u64;
+
+/// May a document `len` bytes long be handed to Windows' PDF engine? See [`MAX_ENGINE_BYTES`].
+pub(crate) fn engine_can_open(len: u64) -> bool {
+    len <= MAX_ENGINE_BYTES
+}
+
+/// Where a document is read from: bytes in hand, or a file the rasterizer reads itself.
+enum Source {
+    Bytes(Vec<u8>),
+    Path(String),
+}
+
+impl Source {
+    /// The document as the stream `PdfDocument` loads from.
+    fn open(&self) -> Result<windows::Storage::Streams::IRandomAccessStream> {
+        use windows::core::Interface;
+        let len = match self {
+            Self::Bytes(bytes) => Some(bytes.len() as u64),
+            Self::Path(path) => std::fs::metadata(path).ok().map(|m| m.len()),
+        };
+        if !len.is_some_and(engine_can_open) {
+            return Err(E_FAIL.into());
+        }
+        match self {
+            Self::Bytes(bytes) => stream_with_bytes(bytes)?.cast(),
+            Self::Path(path) => unsafe {
+                use windows::Win32::System::Com::STGM_READ;
+                let file = windows::Win32::UI::Shell::SHCreateStreamOnFileEx(
+                    &windows::core::HSTRING::from(path.as_str()),
+                    STGM_READ.0,
+                    0,
+                    false,
+                    None,
+                )?;
+                windows::Win32::System::WinRT::CreateRandomAccessStreamOverStream(
+                    &file,
+                    windows::Win32::System::WinRT::BSOS_DEFAULT,
+                )
+            },
+        }
+    }
+}
+
+fn render_page_counted_from(
+    source: Source,
+    page_index: u32,
+    max_dim: u32,
+) -> Option<(Vec<u8>, u32)> {
+    let owned = source;
     // Dedicated MTA thread (see module docs), waited on for at most PDF_TIMEOUT so a
     // malformed/encrypted PDF can never park the in-process shell thumbnail thread. A
     // budgeted worker: it holds a ModuleRef from before `spawn` until it has sent its result,
@@ -158,7 +226,16 @@ impl PdfSession {
     /// Open `bytes` and read every page's size. `None` if the document will not load (encrypted,
     /// malformed, the API missing) or has more than [`MAX_SESSION_PAGES`] pages.
     pub fn open(bytes: &[u8]) -> Option<Self> {
-        let owned = bytes.to_vec();
+        Self::open_from(Source::Bytes(bytes.to_vec()))
+    }
+
+    /// [`Self::open`] for the file at `path`, read by the rasterizer as it needs it (see
+    /// [`render_page_counted_path`]).
+    pub fn open_path(path: &str) -> Option<Self> {
+        Self::open_from(Source::Path(path.to_string()))
+    }
+
+    fn open_from(owned: Source) -> Option<Self> {
         let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<Vec<PageSize>>>();
         crate::safety::try_spawn("st2k-pdf-session", move || {
@@ -233,10 +310,9 @@ impl PdfSession {
     }
 }
 
-/// Load a document from bytes and read every page's declared size.
-fn open_document(bytes: &[u8]) -> Result<(PdfDocument, Vec<PageSize>)> {
-    let stream = stream_with_bytes(bytes)?;
-    let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
+/// Load a document and read every page's declared size.
+fn open_document(source: &Source) -> Result<(PdfDocument, Vec<PageSize>)> {
+    let doc = block_op(&PdfDocument::LoadFromStreamAsync(&source.open()?)?)?;
     let count = doc.PageCount()?;
     if count == 0 || count as usize > MAX_SESSION_PAGES {
         return Err(E_FAIL.into());
@@ -280,11 +356,71 @@ fn width_fitted_dims(pw: f32, ph: f32, width: u32) -> (u32, u32) {
     )
 }
 
-fn render(bytes: &[u8], page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
-    let stream = stream_with_bytes(bytes)?;
+fn render(source: &Source, page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
+    render_doc(
+        block_op(&PdfDocument::LoadFromStreamAsync(&source.open()?)?)?,
+        page_index,
+        max_dim,
+    )
+}
 
-    // Load the document and grab the requested page (clamped into range).
-    let doc = block_op(&PdfDocument::LoadFromStreamAsync(&stream)?)?;
+/// How a page is sized: by its long side, or, Illustrator's rule (`decode::pdf_tier`), by its
+/// width.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PageFit {
+    LongSide(u32),
+    Width(u32),
+}
+
+/// The first `pages` pages of a PDF read straight off `shell`, a stream `size` bytes long, each
+/// fitted by `fit`, as PNG bytes, with the document's page count: a file too big to hold. A big
+/// PDF is its images and fonts, with the cross-reference that finds page one at its END, so no
+/// bounded head read serves it (the big-file gate, 2026-09-23); the OS rasterizer reads what it
+/// needs through a block cache instead. The worker gets the stream through the Global Interface
+/// Table, so this is safe from the thumbnail host's thread whatever its apartment. A page that
+/// fails to render ends the list there.
+pub(crate) fn render_pages_from_stream(
+    shell: &windows::Win32::System::Com::IStream,
+    size: u64,
+    fit: PageFit,
+    pages: u32,
+) -> Option<(Vec<Vec<u8>>, u32)> {
+    use windows::Storage::Streams::IRandomAccessStream;
+    use windows::Win32::System::WinRT::{CreateRandomAccessStreamOverStream, BSOS_DEFAULT};
+    if !engine_can_open(size) {
+        return None;
+    }
+    crate::video::with_stream_on_worker(
+        shell,
+        PDF_TIMEOUT,
+        "pdf: the streamed render",
+        move |inner| {
+            let deadline = std::time::Instant::now() + PDF_TIMEOUT;
+            let cached: windows::Win32::System::Com::IStream =
+                crate::vstream::BlockCacheStream::new(inner, size, deadline).into();
+            let ras: IRandomAccessStream =
+                unsafe { CreateRandomAccessStreamOverStream(&cached, BSOS_DEFAULT) }.ok()?;
+            let doc = block_op(&PdfDocument::LoadFromStreamAsync(&ras).ok()?).ok()?;
+            let count = doc.PageCount().ok()?;
+            let pngs: Vec<Vec<u8>> = (0..count.min(pages))
+                .map_while(|i| render_fitted(&doc, i, fit).ok())
+                .collect();
+            Some((pngs, count))
+        },
+    )
+}
+
+/// Page `i` of an open document, sized by `fit`, as PNG bytes.
+fn render_fitted(doc: &PdfDocument, i: u32, fit: PageFit) -> Result<Vec<u8>> {
+    match fit {
+        PageFit::LongSide(max_dim) => render_doc(doc.clone(), i, max_dim).map(|(png, _)| png),
+        PageFit::Width(width) => render_page_of(doc, i, width),
+    }
+}
+
+/// Page `page_index` (clamped into range) of an open document at long edge `max_dim`, as PNG
+/// bytes, and the document's page count.
+fn render_doc(doc: PdfDocument, page_index: u32, max_dim: u32) -> Result<(Vec<u8>, u32)> {
     let count = doc.PageCount()?;
     if count == 0 {
         return Err(E_FAIL.into());

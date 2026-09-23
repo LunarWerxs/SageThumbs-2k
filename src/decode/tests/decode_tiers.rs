@@ -301,7 +301,7 @@ fn wic_by_path_decodes_and_scales_without_buffering() {
     // `limits::MAX_INPUT_BYTES` still thumbnails instead of getting the stock icon.
     // Staging a >256 MB file in a unit test is absurd, so this exercises the decode
     // (`wic_scaled_from_path`, which carries no size gate — its two callers apply their
-    // own) and leaves the threshold itself to `oversized_wic_rescue`.
+    // own) and leaves the threshold itself to `readers::decode_oversized_path`.
     unsafe {
         let _ = windows::Win32::System::Com::CoInitializeEx(
             None,

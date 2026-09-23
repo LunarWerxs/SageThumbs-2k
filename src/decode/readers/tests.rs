@@ -105,11 +105,11 @@ fn scaled_prepass_declines_cmyk_jpeg_even_when_large_enough_to_qualify() {
 
 /// A084: `decode_preview_path` returns `decode_preview_streamed`'s result directly on
 /// success; for a file past MAX_INPUT_BYTES that result comes from
-/// `oversized_wic_rescue` -> `wic_scaled_from_path`, which used to hand back WIC's raw,
+/// the oversized WIC rescue (`wic_scaled_from_path`), which used to hand back WIC's raw,
 /// unrotated pixels with no EXIF orientation applied anywhere on that branch — so a large
 /// rotated phone photo/scan rendered sideways. `wic_scaled_from_path` carries no size gate
 /// of its own (its callers apply theirs), so this exercises the real function directly
-/// off a real file, the same as `oversized_wic_rescue` would for an oversized one.
+/// off a real file, the same as the oversized rescue once did for an oversized one.
 #[test]
 fn wic_scaled_from_path_applies_exif_orientation() {
     // The path is genuinely WIC, so it needs COM on this thread like the other WIC tests.
@@ -304,4 +304,44 @@ fn preview_read_refuses_a_file_that_grew_past_the_cap_after_its_size_was_checked
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// A TIFF decoded by WIC - and past the input ceiling every TIFF is - keeps its colour
+/// profile. Windows' TIFF codec offers the InterColorProfile tag as no colour context, so
+/// `wic::wic_tiff_icc` asks for it by name; before that, the corpus's `real.tif` (an Apple
+/// display profile) rendered 7 levels off the image tier, which matches a colour-managed
+/// ImageMagick reference to 0.1. Found by the big-file gate (`scripts/bigfiles/`).
+#[test]
+fn a_tiff_decoded_by_wic_is_colour_managed_like_the_image_tier() {
+    let (Some(path), Some(bytes)) = (
+        crate::testcorpus::path("real.tif"),
+        crate::testcorpus::read("real.tif"),
+    ) else {
+        eprintln!("NOT MEASURED: real.tif absent");
+        return;
+    };
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
+    let wic = wic_scaled_from_path(&path.to_string_lossy(), 256)
+        .expect("WIC must decode real.tif")
+        .to_rgb8();
+    let tier = super::decode_preview(&bytes)
+        .expect("the image tier must decode real.tif")
+        .resize_exact(wic.width(), wic.height(), FilterType::Triangle)
+        .to_rgb8();
+    let diff: u64 = wic
+        .as_raw()
+        .iter()
+        .zip(tier.as_raw())
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)))
+        .sum();
+    let mean = diff as f64 / wic.as_raw().len() as f64;
+    assert!(
+        mean < 2.5,
+        "WIC's real.tif is {mean:.1} levels off the image tier"
+    );
 }

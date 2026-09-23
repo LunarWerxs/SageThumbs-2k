@@ -99,6 +99,22 @@ fn a_files_own_picture_is_never_drawn_larger_than_it_is() {
     assert!(d.width <= 256 && d.height <= 256 && d.width.max(d.height) == 256);
 }
 
+/// The same 72 px PNG is two things: a file of its own, drawn at its size, and an app's icon
+/// handed over by the stream cascade from inside a 300 MB package, which stands in for the
+/// package and fills the tile as the buffered read of that package does (the big-file gate:
+/// apk/xapk/vsix came out 72 px past the input ceiling and 256 px under it).
+#[test]
+fn a_cover_handed_over_on_its_own_fills_the_tile_its_file_would() {
+    let icon = png_bytes(72, 72, [10, 20, 30, 255]);
+    let own = decode_thumbnail_opts(&icon, 256, false).unwrap();
+    assert_eq!((own.width, own.height), (72, 72));
+    let cover = crate::decode::decode_stand_in_thumbnail(&icon, 256).unwrap();
+    assert_eq!((cover.width, cover.height), (256, 256));
+    let tall = crate::decode::decode_stand_in_thumbnail(&png_bytes(120, 171, [9, 9, 9, 255]), 256)
+        .unwrap();
+    assert_eq!(tall.height, 256, "aspect kept, long side filled");
+}
+
 #[test]
 fn garbage_bytes_fail_cleanly() {
     assert!(decode_thumbnail_opts(&[0u8, 1, 2, 3, 4, 5, 6, 7], 96, false).is_err());

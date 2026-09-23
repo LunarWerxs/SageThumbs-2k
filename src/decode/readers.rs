@@ -107,6 +107,13 @@ fn read_full_fidelity_from(reader: impl std::io::Read, len: u64) -> std::io::Res
 /// render pass crisp in a maximized viewer while still bounding the work.
 pub const EXR_PATH_EDGE: u32 = 2048;
 
+/// The edge the Quick preview asks [`decode_oversized_path`] for. The viewer draws full
+/// screen and zooms, and a file under the input ceiling is shown at its full resolution, so
+/// one past it is read as large as that too, up to 8192 on its long side (256 MiB of RGBA at
+/// worst). At 2048 a big camera RAW or HEIF came out a quarter of the size of the same picture
+/// in a small file (the big-file gate, 2026-09-23).
+pub const OVERSIZED_VIEW_EDGE: u32 = 8192;
+
 /// Does this head start with the OpenEXR magic? The stream cascade uses it to
 /// route an EXR into [`exr_scaled_from_reader`] before anything buffers it.
 pub fn is_exr_magic(head: &[u8]) -> bool {
@@ -150,10 +157,26 @@ pub fn exr_scaled_from_reader<R: Read + std::io::Seek>(
 /// streaming decoder declined the file), and the caller should take the ordinary
 /// [`read_preview_capped`] + [`decode_preview`] route unchanged.
 ///
-/// Today the only such rescue is OpenEXR, whose 12K+ render passes routinely blow
-/// past both the user's MaxSize and [`limits::MAX_INPUT_BYTES`] and so never
-/// reached a decoder at all.
+/// GIMP and OpenEXR stream at any size ([`decode_streamed_format`]); everything else past
+/// [`limits::MAX_INPUT_BYTES`] goes through the shell's own cascade over a file stream
+/// ([`decode_oversized_path`]).
 pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    decode_streamed_format(path, target_edge).or_else(|| decode_oversized_path(path, target_edge))
+}
+
+/// The formats whose own decoder streams off the file at any size, scaled to `target_edge` as
+/// it reads: GIMP `.xcf`, OpenEXR and FITS. `None` for anything else, or when that decoder
+/// declines.
+pub fn decode_streamed_format(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    if file_head_is(path, super::fits::is_fits) {
+        let img = std::fs::File::open(path).ok().and_then(|f| {
+            super::fits::decode_scaled(std::io::BufReader::with_capacity(1 << 16, f), target_edge)
+        });
+        if img.is_none() {
+            crate::safety::log_debug("streamed FITS decode declined");
+        }
+        return img;
+    }
     // GIMP `.xcf`: no baked preview to carve, and no OS codec, so both the prefix rescues and
     // the WIC one below decline it. Its own decoder walks absolute file offsets and reads only
     // the tiles it draws, so a file past the shared input ceiling still thumbnails. Files under
@@ -182,7 +205,7 @@ pub fn decode_preview_streamed(path: &str, target_edge: u32) -> Option<DynamicIm
             }
         };
     }
-    oversized_wic_rescue(path, target_edge)
+    None
 }
 
 /// A Photoshop document's merged composite read straight off the file, at most `target_edge`
@@ -204,38 +227,83 @@ pub fn psd_composite_scaled(path: &str, target_edge: u32) -> Option<DynamicImage
 /// the file is too big to hold, so reading a large slice of it would defeat the point.
 pub const COLOR_HEAD_BYTES: usize = 256 * 1024;
 
-/// Last-chance decode for a file the buffered path REFUSES outright.
+/// Last-chance decode for a file the buffered path REFUSES outright: the SAME cascade the
+/// Explorer thumbnail runs (`streamsrc::stream_source`), over a stream on the file.
 ///
 /// Gated on the file already being past [`limits::MAX_INPUT_BYTES`], so nothing that works
 /// today changes route: every file under the cap takes the exact `image`-crate-first tier
 /// order it always did, with its established colour, orientation and performance behaviour.
-/// Only what currently renders as a stock icon is affected, which is what keeps this out of
-/// the corpus baseline's way.
 ///
-/// WIC covers the formats where huge files actually turn up — JPEG, PNG, TIFF, HEIC, AVIF,
-/// JPEG XR, camera RAW through the OS codecs — and it scales during decode, so the memory
-/// cost is the thumbnail, not the document. Anything WIC cannot open returns `None` and the
-/// caller refuses as before.
-fn oversized_wic_rescue(path: &str, target_edge: u32) -> Option<DynamicImage> {
+/// Past the cap this used to be a thinner copy of that cascade - WIC, and nothing else - so
+/// the big-file gate (`scripts/bigfiles/`, built after issue #46) found `st2k thumbnail` and
+/// Quick preview failing on files Explorer thumbnailed fine: a 300 MB WavPack album had no
+/// cover, a big MP4 no frame, a big Photoshop document only its baked preview. One cascade
+/// serves both now, WIC still its last rescue. The user's MaxSize is not applied here, as it
+/// never was on this path: these callers name a file the user chose.
+///
+/// Public on its own for the Quick preview, which asks it for a larger picture than the
+/// streamed EXR/XCF decode it runs beside (a full-screen viewer, not a tile).
+pub fn decode_oversized_path(path: &str, target_edge: u32) -> Option<DynamicImage> {
+    use windows::Win32::System::Com::{STGM_READ, STGM_SHARE_DENY_NONE};
     let len = std::fs::metadata(path).ok()?.len();
     if len <= limits::MAX_INPUT_BYTES {
         return None; // the ordinary buffered tiers can have it, unchanged
     }
-    wic_scaled_from_path(path, target_edge)
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let stream = unsafe {
+        windows::Win32::UI::Shell::SHCreateStreamOnFileEx(
+            windows::core::PCWSTR(wide.as_ptr()),
+            STGM_READ.0 | STGM_SHARE_DENY_NONE.0,
+            0,
+            false,
+            None,
+        )
+    }
+    .ok()?;
+    let mut cfg = crate::settings::thumb_settings();
+    cfg.max_file_bytes = u64::MAX;
+    let source =
+        unsafe { crate::streamsrc::stream_source(&stream, &cfg, target_edge, "by-path") }.ok()?;
+    match source {
+        crate::streamsrc::StreamSource::Frame(img)
+        | crate::streamsrc::StreamSource::Picture(img) => Some(img),
+        crate::streamsrc::StreamSource::Cover(bytes) => decode_cover_for(&bytes, target_edge),
+        // Capped at the edge asked for, as the buffered read of a small file is: a JPEG 2000
+        // decoded whole and then shrunk is not the picture its reduced-resolution decode is.
+        crate::streamsrc::StreamSource::Bytes(bytes) => {
+            super::decode_preview_capped_for_path(&bytes, target_edge, path).ok()
+        }
+        // A preview by path shows an archive's cover, as `decode_preview` of the same archive
+        // under the ceiling does; the contact sheet is the shell thumbnail's.
+        crate::streamsrc::StreamSource::Covers(covers) => covers
+            .first()
+            .and_then(|cover| decode_cover_for(cover, target_edge)),
+    }
+}
+
+/// A stand-in cover decoded for a by-path caller as the buffered read of the small file decodes
+/// it: at the edge a thumbnail asked for (a vector thumbnail is drawn at that size, not drawn
+/// large and shrunk), and at its own size for the viewer's whole-picture request
+/// ([`OVERSIZED_VIEW_EDGE`]), which is what `decode_preview` gives it.
+fn decode_cover_for(bytes: &[u8], target_edge: u32) -> Option<DynamicImage> {
+    if target_edge >= OVERSIZED_VIEW_EDGE {
+        super::decode_preview(bytes).ok()
+    } else {
+        super::decode_preview_capped(bytes, target_edge).ok()
+    }
 }
 
 /// The WIC-off-the-file decode itself, scaled to `target_edge`, with NO size gate.
 ///
-/// Separate from [`oversized_wic_rescue`] because the two callers disagree about what
-/// "oversized" means and only they can know: the by-path front ends are bounded by
-/// [`limits::MAX_INPUT_BYTES`], while the shell's stream cascade is bounded by the user's
-/// MaxSize, which can be lower. Each applies its own threshold and then calls this.
+/// The by-path front ends are bounded by [`limits::MAX_INPUT_BYTES`], while the shell's
+/// stream cascade is bounded by the user's MaxSize, which can be lower; each applies its own
+/// threshold and then decodes. Kept for the callers that want WIC by name.
 pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage> {
     let head = read_head(path, COLOR_HEAD_BYTES).unwrap_or_default();
     match unsafe { wic::wic_decode_path(path, Some(target_edge), &head) } {
-        // WIC hands back the codec's stored pixels, unrotated. The sole caller of this
-        // path is `oversized_wic_rescue` (files past MAX_INPUT_BYTES, so no full buffer
-        // exists to read EXIF from), and camera JPEGs carry Orientation in the first few
+        // WIC hands back the codec's stored pixels, unrotated. Callers reach this for files
+        // they cannot buffer (so no full buffer exists to read EXIF from), and camera JPEGs
+        // carry Orientation in the first few
         // KB — well inside the head we already read for the `colr` box — so applying it
         // here is what keeps a large rotated phone photo from rendering sideways.
         Ok(img) => Some(apply_exif_orientation(img, &head)),
@@ -357,8 +425,10 @@ pub fn wic_scaled_from_path_if_codec_scales(path: &str, target_edge: u32) -> Opt
 /// path (only a leaf name), so there is nothing to give [`wic_scaled_from_path`]. WIC reads a
 /// stream lazily, so this achieves the same thing without a path existing at all.
 ///
-/// `head` is a bounded prefix the caller has already read for the ISOBMFF colour box. The
-/// caller owns rewinding the stream before handing it over.
+/// `head` is a bounded prefix the caller has already read for the ISOBMFF colour box, and
+/// the EXIF orientation is taken from it exactly as [`wic_scaled_from_path`] takes it: WIC
+/// hands back the stored pixels, so a big rotated camera file (a DNG panorama) would
+/// otherwise lie on its side. The caller owns rewinding the stream before handing it over.
 ///
 /// # Safety
 /// `stream` must be a valid, seekable `IStream` positioned at the start.
@@ -368,7 +438,7 @@ pub unsafe fn wic_scaled_from_stream(
     head: &[u8],
 ) -> Option<DynamicImage> {
     match wic::wic_decode_stream(stream, Some(target_edge), head) {
-        Ok(img) => Some(img),
+        Ok(img) => Some(apply_exif_orientation(img, head)),
         Err(e) => {
             crate::safety::log_debugf!("WIC-from-stream declined: {e}");
             None

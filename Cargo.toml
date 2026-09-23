@@ -140,6 +140,9 @@ moxcms = "0.8"
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
 # color-manage CMYK→sRGB via moxcms above. Re-exports `zune_core` (ColorSpace/DecoderOptions).
 zune-jpeg = "0.5"
+# A TIFF read a strip at a time (BigTIFF past the input ceiling, which WIC cannot open);
+# the same crate and version `image` already builds.
+tiff = { version = "0.11", default-features = false }
 kamadak-exif = "0.6"
 # JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
@@ -432,6 +435,7 @@ features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_WinRT", # CreateRandomAccessStreamOverStream: the PDF rasterizer reads a file too big to hold off its stream
     "Win32_System_Variant", # PROPVARIANT + the IMFSourceReader seek methods (Get/SetCurrentPosition) for the video frame-grab offset
 
     "Win32_Networking_WinInet", # InternetOpenUrlW: HTTPS-only, size-capped fetch of the remote ad manifest + images
@@ -515,6 +519,10 @@ path = "tests/integration.rs"
 [[test]]
 name = "batch_stress"
 path = "tests/batch_stress.rs"
+
+[[test]]
+name = "big_files"
+path = "tests/big_files.rs"
 
 [[test]]
 name = "com_roundtrip"

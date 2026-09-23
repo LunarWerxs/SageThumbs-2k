@@ -18,10 +18,10 @@ mod strands;
 use strands::*;
 mod blockstream;
 mod nv12;
-pub(crate) use blockstream::global_interface_table;
 #[cfg(test)]
 use blockstream::*;
 pub use blockstream::{frame_from_block_stream, frame_from_block_stream_file};
+pub(crate) use blockstream::{global_interface_table, with_stream_on_worker};
 pub use nv12::{
     frame_from_bytes_repr, frame_from_owned_bytes, nv12_frame_from_owned_bytes, Nv12Frame,
 };

@@ -234,7 +234,28 @@ fn magick_stdin_spec(bytes: &[u8]) -> &'static str {
 /// the `image` tier — making a >~134 MP PSD fall back to its 160px baked-in
 /// thumbnail. This PNG is OUR OWN re-encode (its dimensions are already bounded
 /// by the resize spec), so the wider allocation is safe here.
+///
+/// Our own reader answers first (`container::psdmerged`): it reads the same composite, or
+/// flattens the layers of a document saved without one, and it is the reader the shell's
+/// stream cascade and the Quick preview use for a file past the input ceiling, so a document
+/// cannot draw one picture under that ceiling and another past it (the big-file gate,
+/// 2026-09-23). It also gets right what ImageMagick does not: a 32-bit document's linear light
+/// (ImageMagick writes it without the sRGB curve) and Photoshop's D50 Lab. ImageMagick stays the
+/// fallback for what it declines (Multichannel, a ZIP composite).
 pub(super) fn decode_psd_composite(bytes: &[u8], fidelity: Fidelity) -> Result<DynamicImage> {
+    let edge = limits::MAX_DIM;
+    if let Some(img) = crate::container::psd_merged_from_reader(std::io::Cursor::new(bytes), edge) {
+        return Ok(img);
+    }
+    decode_psd_composite_magick(bytes, fidelity)
+}
+
+/// [`decode_psd_composite`]'s ImageMagick half on its own: the fallback, and the independent
+/// reading the Photoshop reader's tests compare against.
+pub(crate) fn decode_psd_composite_magick(
+    bytes: &[u8],
+    fidelity: Fidelity,
+) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
         bytes,
         &[],

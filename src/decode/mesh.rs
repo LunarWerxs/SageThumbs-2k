@@ -15,14 +15,17 @@
 
 use super::*;
 mod ply;
-pub(crate) use ply::parse_ply;
+mod read;
+use ply::*;
+use read::*;
 
-/// Triangle cap: a 2M-triangle binary STL is ~100 MB — past both the user's MaxSize gate
-/// and any honest thumbnail need. Parsing stops AT the cap (a partial render of a huge
-/// model still shows its shape; refusing outright would thumbnail nothing).
+/// Triangles the render keeps. A model with more is SAMPLED down to this uniformly
+/// (`read::Reservoir`), never cut off at it, so a huge scan still shows its whole shape; a
+/// 2M-triangle render is already far past what a 1024 px canvas can show.
 const MAX_TRIS: usize = 2_000_000;
-/// Vertex cap for the indexed formats (OBJ/PLY).
-const MAX_VERTS: usize = 2_000_000;
+/// Vertex cap for the indexed formats (OBJ/PLY): every vertex a sampled face may name has to be
+/// in hand. 16M positions are 192 MB, the size of a detailed 3D scan; past it the file declines.
+const MAX_VERTS: usize = 16_000_000;
 /// Aggregate rasterization budget, in bounding-box PIXEL-ITERATIONS across every triangle
 /// in one render — a multiple of the (supersampled) canvas area. `MAX_TRIS` bounds parse
 /// cost, not fill cost: nothing else stops a crafted mesh whose triangles all share the
@@ -37,6 +40,8 @@ const RASTER_BUDGET_CANVAS_MULTIPLE: u64 = 64;
 const RENDER_EDGE: u32 = 1024;
 /// Supersample factor (render at N×, box-average down) — cheap anti-aliasing.
 const SS: u32 = 2;
+/// How much of a text mesh's head the sniffers look at.
+pub(crate) const MESH_SNIFF_BYTES: usize = 64 * 1024;
 
 /// Sniff-and-render, mirroring `decode_svg_if_svg`'s shape: `None` = not a mesh, fall
 /// through to the raster tiers untouched.
@@ -48,39 +53,85 @@ pub(super) fn decode_mesh_sniffed(bytes: &[u8]) -> Option<DynamicImage> {
     Some(DynamicImage::ImageRgba8(render(&tris, RENDER_EDGE)))
 }
 
-/// Parse whichever mesh format the bytes are, or `None` when they're none of them.
-/// Order: PLY (magic) → binary STL (its length equation) → ASCII STL ("solid"+"facet")
-/// → OBJ (v/f line sniff). Public-in-crate so the fuzz harness can hit each branch.
-pub(crate) fn parse_mesh_sniffed(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    if bytes.starts_with(b"ply") {
-        return parse_ply(bytes);
+/// Which mesh format a file is, from its head and its full length.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MeshKind {
+    Ply,
+    /// With its declared triangle count.
+    BinaryStl(u32),
+    AsciiStl,
+    Obj,
+}
+
+/// Which mesh format `head` (at least [`MESH_SNIFF_BYTES`] of the file where it has them)
+/// opens, `total` being the file's length. Order: PLY (magic) → binary STL (its length
+/// equation) → ASCII STL ("solid"+"facet") → OBJ (v/f line sniff).
+pub(crate) fn mesh_kind(head: &[u8], total: u64) -> Option<MeshKind> {
+    if head.starts_with(b"ply") {
+        return Some(MeshKind::Ply);
     }
     // Binary first: its exact-length equation is the stronger signal, and an ASCII STL
     // fails it and falls through, whereas a binary STL whose 80-byte comment header
     // happens to start with "solid" and contain "facet" would be misrouted if the ASCII
     // probe ran first.
-    if looks_like_binary_stl(bytes) {
-        return parse_binary_stl(bytes);
+    if let Some(n) = binary_stl_count(head, total) {
+        return Some(MeshKind::BinaryStl(n));
     }
-    if looks_like_ascii_stl(bytes) {
-        return parse_ascii_stl(bytes);
+    if looks_like_ascii_stl(head) {
+        return Some(MeshKind::AsciiStl);
     }
-    if looks_like_obj(bytes) {
-        return parse_obj(bytes);
+    looks_like_obj(head).then_some(MeshKind::Obj)
+}
+
+/// Parse a mesh of `kind` from `r`, standing at the start of the file.
+pub(crate) fn parse_mesh_reader<R: std::io::BufRead>(
+    r: &mut R,
+    kind: MeshKind,
+) -> Option<Vec<[f32; 9]>> {
+    match kind {
+        MeshKind::Ply => read_ply(r),
+        MeshKind::BinaryStl(n) => {
+            let mut header = [0u8; 84];
+            r.read_exact(&mut header).ok()?;
+            Some(read_binary_stl(r, n))
+        }
+        MeshKind::AsciiStl => read_ascii_stl(r),
+        MeshKind::Obj => read_obj(r),
     }
-    None
+}
+
+/// A mesh read and rendered straight off `r` (a stream over a file too big to hold), `head`
+/// being its first bytes and `total` its length: the render the bytes would get.
+pub(crate) fn mesh_from_reader<R: std::io::BufRead>(
+    mut r: R,
+    head: &[u8],
+    total: u64,
+) -> Option<DynamicImage> {
+    let tris = parse_mesh_reader(&mut r, mesh_kind(head, total)?)?;
+    (!tris.is_empty()).then(|| DynamicImage::ImageRgba8(render(&tris, RENDER_EDGE)))
+}
+
+/// Parse whichever mesh format the bytes are, or `None` when they're none of them.
+/// Public-in-crate so the fuzz harness can hit each branch.
+pub(crate) fn parse_mesh_sniffed(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
+    let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
+    let kind = mesh_kind(head, bytes.len() as u64)?;
+    parse_mesh_reader(&mut &bytes[..], kind)
 }
 
 /// Binary STL has NO magic; its signature is arithmetic: 80-byte header + u32 count +
-/// exactly 50 bytes per triangle. An exact length match on a non-trivial count is a far
-/// stronger signal than the "doesn't start with solid" folklore (plenty of binary STLs
-/// DO start with "solid" — exporters put anything in the comment header).
+/// exactly 50 bytes per triangle, against the file's TRUE length (`total`, which the stream
+/// cascade knows without reading the file). An exact length match on a non-trivial count is a
+/// far stronger signal than the "doesn't start with solid" folklore (plenty of binary STLs DO
+/// start with "solid" — exporters put anything in the comment header).
+pub(crate) fn binary_stl_count(head: &[u8], total: u64) -> Option<u32> {
+    let n = u32::from_le_bytes(head.get(80..84)?.try_into().ok()?);
+    (n > 0 && total == 84 + u64::from(n) * 50).then_some(n)
+}
+
+#[cfg(test)]
 pub(crate) fn looks_like_binary_stl(bytes: &[u8]) -> bool {
-    if bytes.len() < 84 {
-        return false;
-    }
-    let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
-    n > 0 && bytes.len() == 84 + n.saturating_mul(50)
+    binary_stl_count(bytes, bytes.len() as u64).is_some()
 }
 
 fn looks_like_ascii_stl(bytes: &[u8]) -> bool {
@@ -89,11 +140,16 @@ fn looks_like_ascii_stl(bytes: &[u8]) -> bool {
 }
 
 /// OBJ has no magic at all: accept only when the head has a `v ` vertex line AND an
-/// `f ` face line — a prose file with a line starting "v " won't also have faces.
+/// `f ` face line — a prose file with a line starting "v " won't also have faces. A head
+/// cut mid-character is read up to the cut.
 fn looks_like_obj(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(64 * 1024)];
-    let Ok(text) = core::str::from_utf8(head) else {
-        return false;
+    let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
+    let text = match core::str::from_utf8(head) {
+        Ok(t) => t,
+        Err(e) if e.error_len().is_none() => {
+            core::str::from_utf8(&head[..e.valid_up_to()]).unwrap_or_default()
+        }
+        Err(_) => return false,
     };
     let mut has_v = false;
     let mut has_f = false;
@@ -115,41 +171,25 @@ fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_binary_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    if bytes.len() < 84 {
-        return None;
-    }
-    let n = (u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize)
-        .min(MAX_TRIS)
-        .min(bytes.len().saturating_sub(84) / 50);
-    let mut tris = Vec::with_capacity(n);
-    for i in 0..n {
-        let o = 84 + i * 50 + 12; // skip the stored normal; recomputed from the winding
-        let mut t = [0f32; 9];
-        for (j, v) in t.iter_mut().enumerate() {
-            let p = o + j * 4;
-            *v = f32::from_le_bytes(bytes.get(p..p + 4)?.try_into().ok()?);
-        }
-        if t.iter().all(|v| v.is_finite()) {
-            tris.push(t);
-        }
-    }
-    Some(tris)
+    let n = u32::from_le_bytes(bytes.get(80..84)?.try_into().ok()?);
+    Some(read_binary_stl(&mut bytes.get(84..)?, n))
 }
 
+#[cfg(test)]
 pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    let text = core::str::from_utf8(bytes).ok()?;
-    let mut tris = Vec::new();
-    let mut cur: Vec<f32> = Vec::with_capacity(9);
-    for line in text.lines() {
-        let l = line.trim_start();
-        if let Some(rest) = l.strip_prefix("vertex") {
-            parse_ascii_stl_vertex(rest, &mut cur)?;
-        } else if l.starts_with("endfacet") && flush_ascii_stl_facet(&mut tris, &mut cur) {
-            break;
-        }
-    }
-    Some(tris)
+    read_ascii_stl(&mut &bytes[..])
+}
+
+#[cfg(test)]
+pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
+    read_obj(&mut &bytes[..])
+}
+
+#[cfg(test)]
+pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
+    read_ply(&mut &bytes[..])
 }
 
 /// Push the up-to-three x/y/z tokens after a `vertex` keyword onto `cur`. `None` when a
@@ -159,19 +199,6 @@ fn parse_ascii_stl_vertex(rest: &str, cur: &mut Vec<f32>) -> Option<()> {
         cur.push(tok.parse::<f32>().ok().filter(|v| v.is_finite())?);
     }
     Some(())
-}
-
-/// Flush a completed 9-float facet from `cur` into `tris`; returns whether the `MAX_TRIS`
-/// cap was reached (the caller then stops).
-fn flush_ascii_stl_facet(tris: &mut Vec<[f32; 9]>, cur: &mut Vec<f32>) -> bool {
-    let capped = cur.len() == 9 && {
-        tris.push([
-            cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7], cur[8],
-        ]);
-        tris.len() >= MAX_TRIS
-    };
-    cur.clear();
-    capped
 }
 
 /// Parse one OBJ `v` line's x/y/z. `None` propagates as a whole-file parse
@@ -199,68 +226,6 @@ fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
             usize::try_from(resolved).ok().filter(|&r| r < n_verts)
         })
         .collect()
-}
-
-/// Fan-triangulate one face's indices into `tris`, stopping the instant
-/// MAX_TRIS is reached (mid-face, same cutoff point as before). Returns
-/// whether the cap was hit, so the caller can return early.
-fn push_obj_face(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) -> bool {
-    for w in 1..idx.len().saturating_sub(1) {
-        let (a, b, c) = (verts[idx[0]], verts[idx[w]], verts[idx[w + 1]]);
-        tris.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]);
-        if tris.len() >= MAX_TRIS {
-            return true;
-        }
-    }
-    false
-}
-
-pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    let text = core::str::from_utf8(bytes).ok()?;
-    let mut verts: Vec<[f32; 3]> = Vec::new();
-    let mut tris: Vec<[f32; 9]> = Vec::new();
-    for line in text.lines() {
-        match parse_obj_line(line.trim_start(), &mut verts, &mut tris) {
-            None => return None,
-            Some(true) => return Some(tris),
-            Some(false) => {}
-        }
-    }
-    Some(tris)
-}
-
-/// Handle one OBJ line: add a `v` vertex or fan an `f` face into `verts`/`tris`;
-/// `None` means the parse failed, `Some(true)` means the triangle cap was hit.
-fn parse_obj_line(l: &str, verts: &mut Vec<[f32; 3]>, tris: &mut Vec<[f32; 9]>) -> Option<bool> {
-    if let Some(rest) = l.strip_prefix("v ") {
-        let v = parse_obj_vertex(rest)?;
-        // Push a placeholder for a non-finite vertex rather than dropping it: OBJ face
-        // indices are 1-based positions into the file's FULL `v` line sequence, so
-        // skipping an entry here would silently shift every later face's index off by
-        // one — the same desync `read_ply_ascii`/`read_ply_binary` push `[0.0; 3]` to
-        // avoid.
-        verts.push(if v.iter().all(|c| c.is_finite()) {
-            v
-        } else {
-            [0.0; 3]
-        });
-        if verts.len() > MAX_VERTS {
-            return None;
-        }
-    } else if let Some(rest) = l.strip_prefix("f ") {
-        let idx = parse_obj_face_indices(rest, verts.len());
-        if push_obj_face(tris, verts, &idx) {
-            return Some(true);
-        }
-    }
-    Some(false)
-}
-
-fn fan(tris: &mut Vec<[f32; 9]>, verts: &[[f32; 3]], idx: &[usize]) {
-    for w in 1..idx.len().saturating_sub(1) {
-        let (a, b, c) = (verts[idx[0]], verts[idx[w]], verts[idx[w + 1]]);
-        tris.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]);
-    }
 }
 
 /// The fixed turntable/tilt view: turntable −35°, tilt −25°, giving every mesh the same
