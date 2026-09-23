@@ -176,7 +176,11 @@ if (-not $failed) { Step 'build debug test DLL (mirrors CI)' { cargo build --loc
 $corpusTouchLog = Join-Path ([System.IO.Path]::GetTempPath()) "st2k-corpus-touch-$PID.txt"
 Remove-Item -LiteralPath $corpusTouchLog -ErrorAction SilentlyContinue
 $env:ST2K_CORPUS_TOUCH_LOG = $corpusTouchLog
-if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests } }
+# --no-fail-fast: a failing test program must not hide the others. Without it cargo stops at the
+# first red binary, so a push that has two broken tests reports one, and the second costs another
+# fifteen-minute push to find (2026-09-23: the qualification-matrix test was the first red, and
+# nothing after it had run). A green run is identical either way.
+if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests --no-fail-fast } }
 Remove-Item Env:\ST2K_CORPUS_TOUCH_LOG -ErrorAction SilentlyContinue
 
 # THE CORPUS-ABSENT PASS (2026-09-19). CI has no `..\test-corpus` (it is a sibling of the repo,

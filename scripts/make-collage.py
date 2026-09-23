@@ -135,7 +135,7 @@ def demo_files(scratch: Path) -> dict[str, Path]:
     else:
         stl.write_text(_ascii_tetrahedron(), encoding="ascii")
 
-    return {"md": md, "eml": eml, "stl": stl, "code": ROOT / "src" / "decode" / "mesh.rs"}
+    return {"md": md, "eml": eml, "stl": stl, "code": ROOT / "crates" / "codecs" / "src" / "decode" / "mesh.rs"}
 
 
 def _ascii_tetrahedron() -> str:

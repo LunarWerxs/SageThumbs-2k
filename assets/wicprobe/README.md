@@ -1,11 +1,11 @@
 # AVIF colour probes
 
-Eight ~360-byte AVIF files that ship inside the binary. `src/decode/wicprobe.rs` decodes them
+Eight ~360-byte AVIF files that ship inside the binary. `crates/codecs/src/decode/wicprobe.rs` decodes them
 through Windows' own AV1 codec on the first AVIF of each process and compares the result with
 what they are known to contain, so the decision "can WIC be trusted with this file's colour"
 is a measurement of the codec that is installed rather than a table someone wrote down once.
 
-Read `src/decode/wicprobe.rs` for the history. The short version: the table it replaced was
+Read `crates/codecs/src/decode/wicprobe.rs` for the history. The short version: the table it replaced was
 measured against AV1 Video Extension 2.0.24.0, Microsoft shipped 2.0.30.0, two rows changed,
 and the fix for issue #9 quietly turned back into issue #9 for most AVIF on the web.
 
