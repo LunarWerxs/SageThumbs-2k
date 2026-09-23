@@ -9,6 +9,31 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.3.0
 
+**TL;DR**
+
+- **Huge files get a real picture:** Photoshop, PDF, Office, archives, comics, 3D models and
+  scans, even past 256 MB (fixes #46)
+- **12 more file types (361 in all):** game textures, animated cursors, SIXEL, AVIF sequences,
+  DXF, XMind, Visio templates, NuGet and VS Code packages
+- **Damaged or booby-trapped files** can no longer crash or stall thumbnails
+- **Bundled ImageMagick updated** with the latest security fixes
+- **WMA album covers** show in Explorer and the preview pane
+- **FITS astronomy images** show their stars instead of near-black
+- **3D scans (PLY)** draw as the model, not a jumble of triangles
+- **Upload links show when they expire**, plus a new Recent uploads list
+- **Screenshot editor:** Delete, then Undo, brings the shape back
+- **Quick preview fixes** for email, touchpad zoom, Find, huge folders and very tall PDFs
+- **Preview pane fixes:** old Excel files, HEIF/AVIF sequences and six retro image formats now
+  show
+- **Image fixes:** TIFF colour profiles, odd-sized DDS textures, offset JPEG 2000, leaner DjVu
+- **Recordings still being written (.ts)** get a thumbnail
+- **Settings fixes:** "Check for problems" no longer closes Settings, imported shortcuts survive
+  Save, no freeze on close
+- **Uninstall removes its leftover files** from your profile
+- **Plus smaller fixes** for e-book covers, JPEG thumbnails and long paths from Everything
+
+**Everything in 3.3.0**
+
 - **Twelve more file types get thumbnails (361 in all):** Valve game textures (`.vtf`) and
   Khronos KTX textures (`.ktx`), animated cursors (`.ani`), SIXEL terminal graphics
   (`.six`/`.sixel`), AVIF image sequences (`.avifs`), the preview AutoCAD and BricsCAD save

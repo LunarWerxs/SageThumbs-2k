@@ -1058,8 +1058,44 @@ function Get-ReleaseChangelogSection {
     return $section
 }
 
+# The written TL;DR of a changelog section: a `**TL;DR**` line, its headline bullets, then a
+# bold-only line (`**Everything in 3.3.0**`) that starts the detail. Returns the TL;DR's
+# bullet lines (continuations folded) and the section with that block and both marker lines
+# removed; `Tldr` is empty when the section has none.
+function Split-ReleaseNotesTldr {
+    param([Parameter(Mandatory)][string]$Section)
+    $lines = @($Section -split "\r?\n")
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\*\*TL;DR\*\*\s*$') { $start = $i; break } }
+    if ($start -lt 0) { return [pscustomobject]@{ Tldr = @(); Rest = $Section } }
+    $tldr = New-Object System.Collections.Generic.List[string]
+    $end = $lines.Count
+    for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+        if ($lines[$j] -match '^\*\*[^*]+\*\*\s*$') { $end = $j; break }
+        if ($lines[$j] -match '^-[ ]+\S') { $tldr.Add($lines[$j].TrimEnd()) }
+        elseif ($lines[$j] -match '^\s+\S' -and $tldr.Count) { $tldr[$tldr.Count - 1] += ' ' + $lines[$j].Trim() }
+    }
+    $before = if ($start -gt 0) { @($lines[0..($start - 1)]) } else { @() }
+    $after = @($lines | Select-Object -Skip ($end + 1))
+    return [pscustomobject]@{ Tldr = @($tldr); Rest = (($before + $after) -join "`n") }
+}
+
+# Release-day gate (release.ps1 [1/6]): a section with more than two changes must carry a
+# written TL;DR. The bold leads cannot stand in for one - half of 3.3.0's were fragments
+# ("DDS textures whose sides are not powers of two"), and a headline has to read on its own.
+function Assert-ReleaseNotesTldr {
+    param([Parameter(Mandatory)][string]$Section, [Parameter(Mandatory)][string]$Version)
+    $split = Split-ReleaseNotesTldr -Section $Section
+    $changes = @([regex]::Matches($split.Rest, '(?m)^-[ ]+\S')).Count
+    if ($changes -gt 2 -and -not $split.Tldr.Count) {
+        throw ("changelog section $Version has $changes changes and no TL;DR: open it with a ``**TL;DR**`` line, " +
+            "one short headline bullet per change that matters, then ``**Everything in $Version**`` before the full list")
+    }
+}
+
 # A changelog bullet's headline: its bold lead (`- **Big files look sharp.** Detail` -> `Big
 # files look sharp`), else its first sentence. Trailing `.`/`:` go; the TL;DR adds its own bold.
+# Only the fallback for a section with no written TL;DR (see Split-ReleaseNotesTldr).
 function Get-ReleaseNotesHeadline {
     param([Parameter(Mandatory)][string]$Bullet)
     $text = ($Bullet -replace '^-[ ]+', '').Trim()
@@ -1070,8 +1106,8 @@ function Get-ReleaseNotesHeadline {
 }
 
 # The public release body's layout, derived from the flat changelog section (which stays the
-# one source): the logo, a centred intro when the section opens with a paragraph, a two-line
-# TL;DR with the full list folded under "Read more" (see below), emoji on the
+# one source): the logo, a centred intro when the section opens with a paragraph, a TL;DR of
+# one headline per change with the full list folded under "Read more" (see below), emoji on the
 # `### New` / `### Changed` / `### Fixed` headings with a rule between them, and the section's
 # lines otherwise verbatim - the 3.0.0 notes were laid out this way BY HAND after publishing.
 # Nothing is dropped: every non-blank line of the section must survive into the output (the
@@ -1086,7 +1122,8 @@ function Format-ReleaseNotesBody {
         [string]$Version
     )
     $emoji = @{ 'New' = '🆕 New'; 'Changed' = '🔁 Changed'; 'Fixed' = '🩹 Fixed' }
-    $lines = @($Section -split "\r?\n")
+    $split = Split-ReleaseNotesTldr -Section $Section
+    $lines = @($split.Rest -split "\r?\n")
     $intro = New-Object System.Collections.Generic.List[string]
     $i = 0
     while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(###|- )') {
@@ -1144,16 +1181,27 @@ function Format-ReleaseNotesBody {
         $out.Add('---')
         $out.Add('')
     }
-    # TL;DR, then the full list folded away (Michael, 2026-09-23, on the 3.3.0 page: "Split this
-    # into 2 bullet point headline things... then a read more"). The headlines are the bold leads
-    # of the section's first two bullets - the changelog already leads with what matters most -
-    # so there is nothing extra to write and nothing to forget. A section of two bullets or fewer
-    # is already short, and is shown whole.
+    # A TL;DR of headlines, then the full list folded away (Michael, 2026-09-23, on the 3.3.0
+    # page: "Split this into 2... bullet point headline things... then a read more", and when a
+    # first cut showed only two headlines: "your tldr is WAAAAAAY too short"). One headline per
+    # bullet - its bold lead - so every change is on the page in one line and the detail is one
+    # click away; nothing extra to write, nothing to forget. Licence items stay out of it (they
+    # are one short line at the end of the detail, and never lead). A section of two bullets or
+    # fewer is already short, and is shown whole.
+    # The changelog's written TL;DR is used as is (release.ps1 refuses a long section without
+    # one); the bold leads are only the fallback for a hand export of an older section.
     $bullets = @($body | Where-Object { $_ -match '^-[ ]+\S' })
-    if ($bullets.Count -gt 2) {
+    if ($split.Tldr.Count -or $bullets.Count -gt 2) {
         $out.Add('## TL;DR')
         $out.Add('')
-        foreach ($b in $bullets[0..1]) { $out.Add('- **' + (Get-ReleaseNotesHeadline $b) + '**') }
+        if ($split.Tldr.Count) {
+            foreach ($t in $split.Tldr) { $out.Add($t) }
+        } else {
+            foreach ($b in $bullets) {
+                if ($b -match '(?i)\blicen[cs]') { continue }
+                $out.Add('- **' + (Get-ReleaseNotesHeadline $b) + '**')
+            }
+        }
         $out.Add('')
         $out.Add('<details>')
         $out.Add("<summary><b>Read more: everything in $Version</b></summary>")
@@ -1167,7 +1215,7 @@ function Format-ReleaseNotesBody {
         foreach ($l in $body) { $out.Add($l) }
     }
     $text = ($out -join "`n").TrimEnd()
-    foreach ($line in $lines) {
+    foreach ($line in @($lines) + @($split.Tldr)) {
         $t = $line.Trim()
         if (-not $t) { continue }
         $want = if ($t -match '^###[ ]+(New|Changed|Fixed)\s*$') { "### $($emoji[$Matches[1]])" } else { $t }

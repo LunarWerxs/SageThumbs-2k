@@ -184,10 +184,16 @@ It continues on a second line.
         if (($body -split "`n" | Where-Object { $_ -eq '---' }).Count -lt 2) { throw 'no rules between the sections' }
         if ($body -match '### New\s*$' -or $body -match '(?m)^### Fixed\s*$') { throw 'a plain heading survived undecorated' }
     }
-    Assert-Passes 'a long section gets a two-line TL;DR and the whole list under Read more' {
-        $long = "- **First big thing.** Detail one.`n- **Second thing:** detail two`n  wrapped.`n- Third thing without a lead. More."
+    Assert-Passes 'a long section gets a headline per change and the whole list under Read more' {
+        $long = "- **First big thing.** Detail one.`n- **Second thing:** detail two`n  wrapped.`n- Third thing without a lead. More.`n- For the few installations on a business licence: one short line."
         $body = Format-ReleaseNotesBody -Section $long -Version '9.8.7'
-        foreach ($must in @('## TL;DR', '- **First big thing**', '- **Second thing**',
+        $fold = $body.IndexOf('<details>')
+        foreach ($head in @('- **First big thing**', '- **Second thing**', '- **Third thing without a lead**')) {
+            $at = $body.IndexOf($head)
+            if ($at -lt 0 -or $at -gt $fold) { throw "no TL;DR headline above the fold: $head" }
+        }
+        if ($body.Substring(0, $fold) -match '(?i)licen[cs]') { throw 'a licence item made the TL;DR' }
+        foreach ($must in @('## TL;DR',
                 '<summary><b>Read more: everything in 9.8.7</b></summary>', '</details>',
                 '- **First big thing.** Detail one.', '- **Second thing:** detail two wrapped.',
                 '- Third thing without a lead. More.')) {
@@ -197,6 +203,30 @@ It continues on a second line.
         if ($body.Contains("## What's changed")) { throw 'a folded section kept the flat heading' }
         if ((Get-ReleaseNotesHeadline '- Third thing without a lead. More.') -ne 'Third thing without a lead') {
             throw 'a bullet without a bold lead did not fall back to its first sentence'
+        }
+    }
+    $written = "**TL;DR**`n`n- **Big thing** in short`n- **Two** in short,`n  wrapped`n`n**Everything in 9.8.7**`n`n- **Big thing.** Long detail.`n- **Two.** Detail.`n- **Three.** Detail."
+    Assert-Passes 'a written TL;DR is used as is, the markers go, the detail folds under Read more' {
+        $body = Format-ReleaseNotesBody -Section $written -Version '9.8.7'
+        $fold = $body.IndexOf('<details>')
+        foreach ($head in @('- **Big thing** in short', '- **Two** in short, wrapped')) {
+            $at = $body.IndexOf($head)
+            if ($at -lt 0 -or $at -gt $fold) { throw "written headline not above the fold: $head" }
+        }
+        if ($body.Contains('**TL;DR**') -or $body.Contains('**Everything in 9.8.7**')) { throw 'a marker line leaked into the body' }
+        if ($body.Contains('- **Three**') -and $body.IndexOf('- **Three**') -lt $fold) { throw 'the fallback headlines ran despite a written TL;DR' }
+        foreach ($must in @('- **Big thing.** Long detail.', '- **Three.** Detail.')) {
+            if ($body.IndexOf($must) -lt $fold) { throw "detail missing below the fold: $must" }
+        }
+    }
+    Assert-Passes 'release.ps1 refuses a long section with no written TL;DR' {
+        $threw = $false
+        try { Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y`n- **C.** z" -Version '9.8.7' } catch { $threw = $true }
+        if (-not $threw) { throw 'three changes and no TL;DR passed' }
+        Assert-ReleaseNotesTldr -Section $written -Version '9.8.7'
+        Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y" -Version '9.8.7'
+        if (-not (Get-Content -Raw (Join-Path $root 'scripts\release.ps1')).Contains('Assert-ReleaseNotesTldr -Section $section')) {
+            throw 'release.ps1 no longer runs the TL;DR gate'
         }
     }
     Assert-Passes 'a section with no intro paragraph gets no intro block' {

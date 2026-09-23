@@ -183,7 +183,8 @@ try {
         }
     }
     $changelog = Join-Path $root 'docs\CHANGELOG.md'
-    $null = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
+    $section = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
+    Assert-ReleaseNotesTldr -Section $section -Version $ver
     pwsh "$root\scripts\check-consistency.ps1"; if ($LASTEXITCODE) { throw "consistency check failed - fix before releasing" }
     # The pre-release issue review (CLAUDE.md 6.2). Informational, never a gate - see the
     # header of check-issues.ps1 for why gating would be wrong. It prints the OPEN issues AND,
