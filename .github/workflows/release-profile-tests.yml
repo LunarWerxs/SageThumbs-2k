@@ -95,7 +95,10 @@ jobs:
         run: |
           $pin = Get-Content -Raw 'scripts\packaging\imagemagick-source.json' | ConvertFrom-Json
           $installer = Join-Path $env:RUNNER_TEMP $pin.provenance.upstreamAsset
-          Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $pin.provenance.upstreamSha256) {
             throw "ImageMagick installer hash mismatch: expected $($pin.provenance.upstreamSha256), got $hash"
