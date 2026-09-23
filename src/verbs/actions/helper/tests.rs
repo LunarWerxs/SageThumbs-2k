@@ -115,7 +115,7 @@ fn run_st2k_logs_the_real_stderr_on_a_non_zero_exit() {
         "a non-zero exit must report Failed"
     );
 
-    let log_path = crate::safety::log_file().expect("LOCALAPPDATA must be set to find the log");
+    let log_path = st2k_base::safety::log_file().expect("LOCALAPPDATA must be set to find the log");
     let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
     assert!(
         contents.contains(&marker),

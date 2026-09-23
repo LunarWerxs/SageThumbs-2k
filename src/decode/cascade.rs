@@ -14,7 +14,7 @@ pub(super) fn finish_wic_fallback(
         route.avif_verdict,
         color::AvifWicVerdict::NeedsHighDepthCurve
     ) {
-        crate::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
+        st2k_base::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
         color::undo_wic_high_depth_curve(img)
     } else {
         img
@@ -26,7 +26,7 @@ pub(super) fn finish_wic_fallback(
         // beats no tile (it is what the Compact install shows anyway), but it must be
         // diagnosable — the alternative is issue #9's "some files are just wrong
         // sometimes", with nothing in the log to point at.
-        crate::safety::log_debug(
+        st2k_base::safety::log_debug(
             "decode: fell back to WIC after routing around it — colours may be off",
         );
     }
@@ -50,14 +50,14 @@ pub(super) fn last_resort_tiers(
     let magick_attempted = route.magick_attempted;
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => return Ok(finish_wic_fallback(img, &route, magick_attempted)),
-        Err(e) => crate::safety::log_debugf!("decode tier `WIC` failed: {e}"),
+        Err(e) => st2k_base::safety::log_debugf!("decode tier `WIC` failed: {e}"),
     }
     // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss
     // it; detect it by a header sanity check and decode with an explicit format
     // BEFORE magick, so a real TGA skips a doomed (20s-capped) subprocess.
     match decode_tga(bytes) {
         Ok(img) => return Ok(img),
-        Err(e) => crate::safety::log_debugf!("decode tier `TGA` failed: {e}"),
+        Err(e) => st2k_base::safety::log_debugf!("decode tier `TGA` failed: {e}"),
     }
     // ImageMagick subprocess (the exotic long tail) + the full-fidelity after-external
     // RAW fallback. SKIPPED entirely when `external` is false: the classic in-shell menu
@@ -116,7 +116,7 @@ fn try_external_tiers(
         match decode_via_magick_capped(bytes, wic_thumbnail_cx, raw_preview.fidelity()) {
             Ok(img) => return Some(finish_magick_output(img, bytes, false)),
             Err(e) => {
-                crate::safety::log_debugf!("decode tier `magick` failed: {e}");
+                st2k_base::safety::log_debugf!("decode tier `magick` failed: {e}");
                 *last_err = e;
             }
         }
@@ -298,7 +298,7 @@ pub(super) fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Optio
     match decode_jxl(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `jxl` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `jxl` failed: {e}");
             None
         }
     }
@@ -330,7 +330,7 @@ pub(super) fn try_fits_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Opti
     let edge = wic_thumbnail_cx.unwrap_or(limits::MAX_DIM);
     let img = fits::decode_scaled(std::io::Cursor::new(bytes), edge);
     if img.is_none() {
-        crate::safety::log_debug("decode tier `fits` found no image it reads");
+        st2k_base::safety::log_debug("decode tier `fits` found no image it reads");
     }
     img
 }
@@ -363,7 +363,7 @@ pub(super) fn try_dds_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Optio
             },
         ),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `dds` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `dds` failed: {e}");
             None
         }
     }
@@ -403,7 +403,7 @@ pub(super) fn try_wic_thumbnail_fastpath(
     match wic_fallback(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!(
+            st2k_base::safety::log_debugf!(
                 "decode: WIC fast path unavailable, using the image tier: {e}"
             );
             None
@@ -444,19 +444,19 @@ pub(super) fn try_image_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Ima
             // costing 1.3 seconds and costing nothing. See `reduced_ifd0_serves` for why the
             // content test is not optional.
             if reduced_ifd0_serves(&img, wic_thumbnail_cx) {
-                crate::safety::log_debug(
+                st2k_base::safety::log_debug(
                     "decode tier `image`: reduced-resolution IFD0 covers this tile and has content - using it",
                 );
                 return ImageTierOutcome::Decoded(img);
             }
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "decode tier `image`: TIFF IFD0 is reduced-resolution - held as fallback",
             );
             ImageTierOutcome::ReducedIfd0(img)
         }
         Ok((img, icc)) => finish_image_tier(img, icc, wic_thumbnail_cx),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `image` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `image` failed: {e}");
             ImageTierOutcome::Failed
         }
     }
@@ -562,7 +562,7 @@ pub(super) fn try_raw_preview_tier(
     match decode_raw_preview(bytes, wic_thumbnail_cx) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `raw-preview` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `raw-preview` failed: {e}");
             None
         }
     }
@@ -628,7 +628,7 @@ pub(super) fn route_isobmff_wic_quirks(
     } else {
         "AVIF nclx colour"
     };
-    crate::safety::log_debugf!("decode: routing around WIC ({why})");
+    st2k_base::safety::log_debugf!("decode: routing around WIC ({why})");
     // The 8-bit bucket first tries the OS's own AV1 decoder via Media Foundation
     // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
     // the ~180 ms this route used to cost. Narrowly gated and best-effort - anything it
@@ -636,7 +636,7 @@ pub(super) fn route_isobmff_wic_quirks(
     // as before, so this can only ever be faster, never different.
     if wic_avif_color {
         if let Some(img) = avifmf::decode_8bit_avif_via_mf(bytes, wic_thumbnail_cx) {
-            crate::safety::log_debug("decode: tier `avif-mf` decoded the 8-bit AVIF");
+            st2k_base::safety::log_debug("decode: tier `avif-mf` decoded the 8-bit AVIF");
             return Ok(img);
         }
     }
@@ -658,7 +658,7 @@ pub(super) fn route_isobmff_wic_quirks(
         // was fixed for JPEG XL in 1.7.1.
         Ok(img) => Ok(finish_magick_output(img, bytes, true)),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `magick ({why})` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `magick ({why})` failed: {e}");
             Err(WicQuirkRoute {
                 magick_attempted,
                 avif_verdict,
@@ -701,7 +701,7 @@ pub(super) fn try_embedded_jpeg_last_resort(bytes: &[u8]) -> Option<DynamicImage
     match decode_with_image(jpeg) {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!("decode tier `embedded-jpeg (lenient)` failed: {e}");
+            st2k_base::safety::log_debugf!("decode tier `embedded-jpeg (lenient)` failed: {e}");
             None
         }
     }

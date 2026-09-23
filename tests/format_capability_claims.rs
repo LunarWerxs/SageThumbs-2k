@@ -47,8 +47,8 @@ fn png_bytes(w: u32, h: u32) -> Vec<u8> {
 #[test]
 fn full_decode_thumbnail_matches_the_source_image() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("png").source,
-        sagethumbs2k_core::formats::Source::FullDecode
+        st2k_base::formats::capability("png").source,
+        st2k_base::formats::Source::FullDecode
     );
     let src = scratch("full_decode.png");
     std::fs::write(&src, png_bytes(37, 29)).unwrap();
@@ -67,10 +67,10 @@ fn full_decode_thumbnail_matches_the_source_image() {
 #[test]
 fn contained_images_archive_thumbnail_comes_from_the_zipped_png() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("zip").source,
-        sagethumbs2k_core::formats::Source::ContainedImages
+        st2k_base::formats::capability("zip").source,
+        st2k_base::formats::Source::ContainedImages
     );
-    let cap = sagethumbs2k_core::formats::capability("zip");
+    let cap = st2k_base::formats::capability("zip");
     assert!(cap.preview_listing, "archives must be preview_listing");
     assert!(!cap.convertible, "archives must not be convertible");
 
@@ -154,8 +154,8 @@ fn synthetic_flac_with_picture(picture: &[u8]) -> Vec<u8> {
 #[test]
 fn cover_art_audio_thumbnail_matches_the_embedded_picture() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("flac").source,
-        sagethumbs2k_core::formats::Source::CoverArt
+        st2k_base::formats::capability("flac").source,
+        st2k_base::formats::Source::CoverArt
     );
     let pic_w = 33u32;
     let pic_h = 19u32;
@@ -181,12 +181,12 @@ fn cover_art_audio_thumbnail_matches_the_embedded_picture() {
 #[test]
 fn video_frame_thumbnail_comes_from_a_real_decoded_frame() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("mp4").source,
-        sagethumbs2k_core::formats::Source::VideoFrame
+        st2k_base::formats::capability("mp4").source,
+        st2k_base::formats::Source::VideoFrame
     );
     assert_eq!(
-        sagethumbs2k_core::formats::capability("mp4").os_codec,
-        Some(sagethumbs2k_core::formats::OsCodec::MediaFoundation)
+        st2k_base::formats::capability("mp4").os_codec,
+        Some(st2k_base::formats::OsCodec::MediaFoundation)
     );
     if !sagethumbs2k_core::video::media_foundation_available() {
         eprintln!("skipping: Media Foundation absent on this machine");
@@ -323,8 +323,8 @@ fn green_preview_jpeg() -> Vec<u8> {
 #[test]
 fn embedded_preview_raw_thumbnail_comes_from_the_carried_jpeg_not_the_reduced_ifd0() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("dng").source,
-        sagethumbs2k_core::formats::Source::EmbeddedPreview
+        st2k_base::formats::capability("dng").source,
+        st2k_base::formats::Source::EmbeddedPreview
     );
     let src = scratch("synthetic.dng");
     std::fs::write(&src, synthetic_dng(&green_preview_jpeg())).unwrap();
@@ -417,8 +417,8 @@ fn solid_colour_pdf(colours: &[(u8, u8, u8)]) -> Vec<u8> {
 #[test]
 fn cover_or_first_page_document_thumbnail_is_page_one() {
     assert_eq!(
-        sagethumbs2k_core::formats::capability("pdf").source,
-        sagethumbs2k_core::formats::Source::CoverOrFirstPage
+        st2k_base::formats::capability("pdf").source,
+        st2k_base::formats::Source::CoverOrFirstPage
     );
     let src = scratch("two_pages.pdf");
     std::fs::write(&src, solid_colour_pdf(&[(30, 60, 210), (210, 40, 30)])).unwrap();

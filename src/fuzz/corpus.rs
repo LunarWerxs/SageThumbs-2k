@@ -267,7 +267,10 @@ pub(super) fn fuzz_seeds_over_decode_cascade(
 #[test]
 #[ignore = "deep corpus fuzz (minutes); run with --ignored"]
 pub(super) fn parsers_survive_mutation_of_corpus_samples() {
-    let roots = [crate::testcorpus::dir(), crate::testcorpus::real_dir()];
+    let roots = [
+        st2k_base::testcorpus::dir(),
+        st2k_base::testcorpus::real_dir(),
+    ];
     // Cap per-file bytes so a multi-MB RAW doesn't make the mutation loop crawl; the header
     // parsers only ever look near the start, and decode caps its own input anyway.
     const CAP: usize = 96 * 1024;

@@ -606,10 +606,13 @@ mod tests {
             "pspselection",
             "pspmask",
         ] {
-            assert!(crate::formats::is_known(ext), "{ext} must be registered");
+            assert!(
+                st2k_base::formats::is_known(ext),
+                "{ext} must be registered"
+            );
             // Mixed case must match too — Explorer hands us whatever case is on disk.
             assert!(
-                crate::formats::is_known(&ext.to_ascii_uppercase()),
+                st2k_base::formats::is_known(&ext.to_ascii_uppercase()),
                 "{ext} uppercase"
             );
         }
@@ -630,7 +633,7 @@ mod tests {
     /// ours to decide, so they deliberately stay out of tree.
     #[test]
     fn decodes_real_psp_family_samples_via_lz77() {
-        let corpus = crate::testcorpus::dir();
+        let corpus = st2k_base::testcorpus::dir();
         // (file, expected dimensions, expected mostly-white background)
         let cases = [
             ("blob.PspBrush", 300u32, 300u32),

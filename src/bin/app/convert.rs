@@ -30,7 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use image::ImageFormat;
 
-use sagethumbs2k_core::{settings, ConvertOpts, Corner, FileOutcome, Resize, Target, Watermark};
+use sagethumbs2k_core::{ConvertOpts, Corner, FileOutcome, Resize, Target, Watermark};
+use st2k_base::settings;
 
 use crate::convert_report::ReportAction;
 use crate::dark::{dark_ctlcolor, dark_theme_combo};

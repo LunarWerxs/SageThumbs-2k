@@ -14,7 +14,7 @@ pub(super) fn reject_output_alias<'a>(
     output: &str,
     inputs: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), String> {
-    match crate::fsutil::aliased_input(Path::new(output), inputs) {
+    match st2k_base::fsutil::aliased_input(Path::new(output), inputs) {
         Some(input) => Err(format!(
             "output {output} is the same file as input {input}; refusing to overwrite the \
              source (write to a different path)"

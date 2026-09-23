@@ -186,7 +186,7 @@ pub(super) fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
     if mode != Mode::Business && !has_redeemed {
         return None;
     }
-    let now = sagethumbs2k_core::unixtime::now();
+    let now = st2k_base::unixtime::now();
     let last_check = history.as_ref().map_or(0, |h| h.last_check_unix);
     if !force && !refresh_due(now, last_check) {
         return None;
@@ -226,7 +226,7 @@ pub(super) fn apply_check_response(
     body: &[u8],
 ) -> Option<Entitlement> {
     let result = parse_check_response(status, body)?;
-    sagethumbs2k_core::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "license: check entitled={} status={} maintenance_active={:?} maint_unix={:?}",
         result.entitled,
         result.status,

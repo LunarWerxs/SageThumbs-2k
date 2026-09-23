@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn real_packages_carry_their_icon() {
         for name in ["real.nupkg", "real.vsix"] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

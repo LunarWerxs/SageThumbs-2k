@@ -175,7 +175,7 @@ unsafe fn user_chosen_size(hwnd: HWND, st: &ViewerState) -> Option<(i32, i32)> {
             return Some((r.right - r.left, r.bottom - r.top));
         }
     }
-    let (w, h) = sagethumbs2k_core::settings::preview_window_size()?;
+    let (w, h) = st2k_base::settings::preview_window_size()?;
     let (_dpi, work) = crate::win::cursor_monitor_metrics();
     Some(clamp_remembered_size(
         (sc(w), sc(h)),
@@ -255,7 +255,7 @@ pub(in super::super) unsafe fn remember_size(hwnd: HWND) {
         crate::win::dpi_unscale(hwnd, r.right - r.left),
         crate::win::dpi_unscale(hwnd, r.bottom - r.top),
     );
-    let _ = sagethumbs2k_core::settings::set_preview_window_size(Some(size));
+    let _ = st2k_base::settings::set_preview_window_size(Some(size));
 }
 
 /// Forget the remembered size and re-fit the window to the file it is showing — the caption
@@ -263,7 +263,7 @@ pub(in super::super) unsafe fn remember_size(hwnd: HWND) {
 pub(in super::super) unsafe fn forget_size(hwnd: HWND) {
     let st = &*state(hwnd);
     st.user_sized.set(false);
-    let _ = sagethumbs2k_core::settings::set_preview_window_size(None);
+    let _ = st2k_base::settings::set_preview_window_size(None);
     if st.shot || st.fullscreen.get().is_some() {
         return;
     }

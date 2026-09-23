@@ -125,7 +125,7 @@ pub fn utf16_nul_bytes(text: &str) -> Vec<u8> {
 }
 
 /// The little-endian UTF-16 code units in `bytes`, ignoring a trailing odd byte.
-pub(crate) fn utf16_le_units(bytes: &[u8]) -> Vec<u16> {
+pub fn utf16_le_units(bytes: &[u8]) -> Vec<u16> {
     bytes
         .as_chunks::<2>()
         .0

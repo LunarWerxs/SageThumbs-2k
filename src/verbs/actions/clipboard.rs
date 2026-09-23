@@ -47,9 +47,9 @@ pub fn copy_data_uri_to_clipboard(path: &str) -> Result<()> {
     }
     let uri = build_data_uri(ext, &bytes);
     let ok = unsafe {
-        crate::clipboard::set_clipboard(
-            crate::clipboard::CF_UNICODETEXT,
-            &crate::clipboard::utf16_nul_bytes(&uri),
+        st2k_base::clipboard::set_clipboard(
+            st2k_base::clipboard::CF_UNICODETEXT,
+            &st2k_base::clipboard::utf16_nul_bytes(&uri),
         )
     };
     if ok {
@@ -80,8 +80,8 @@ pub fn copy_rgba_to_clipboard(w: i32, h: i32, rgba: &[u8]) -> Result<()> {
     }
     let dib = build_dib(w, h, rgba);
 
-    // The unsafe HGLOBAL ownership dance lives once in `crate::clipboard`.
-    if unsafe { crate::clipboard::set_clipboard(crate::clipboard::CF_DIB, &dib) } {
+    // The unsafe HGLOBAL ownership dance lives once in `st2k_base::clipboard`.
+    if unsafe { st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_DIB, &dib) } {
         Ok(())
     } else {
         Err(Error::new(E_FAIL, "copy to clipboard failed"))

@@ -294,7 +294,7 @@ fn real_documents_agree_with_imagemagick() {
         ("sample.psb", 1.5),
     ];
     for (name, tolerance) in READ {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -317,7 +317,7 @@ fn real_documents_agree_with_imagemagick() {
 #[test]
 fn thirty_two_bit_documents_agree_with_photoshops_preview() {
     for name in ["real-32bit.psd", "real-32bit.psb"] {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -354,7 +354,7 @@ fn flattened_layers_match_photoshops_own_composite() {
         "real-16bit.psb",
     ];
     for name in LAYERED {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -745,7 +745,7 @@ fn a_cut_short_layered_document_is_refused_not_misread() {
 /// gate's blind-spot check found it).
 #[test]
 fn a_layer_that_draws_nothing_leaves_the_composite() {
-    let Some(bytes) = crate::testcorpus::read("real.psd") else {
+    let Some(bytes) = st2k_base::testcorpus::read("real.psd") else {
         eprintln!("NOT MEASURED: real.psd absent");
         return;
     };

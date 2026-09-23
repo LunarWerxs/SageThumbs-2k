@@ -54,10 +54,10 @@ pub(crate) fn decode_stand_in(bytes: &[u8], cx: Option<u32>) -> Result<DynamicIm
 /// Pick the decode source for [`decode_thumbnail_opts`]: the embedded (EXIF) thumbnail when the
 /// caller asked for it and the request is small enough, else a full preview decode.
 fn embedded_or_preview(bytes: &[u8], cx: u32, use_embedded: bool) -> Result<DynamicImage> {
-    if use_embedded && cx <= crate::settings::EMBEDDED_MAX_REQUEST {
+    if use_embedded && cx <= st2k_base::settings::EMBEDDED_MAX_REQUEST {
         match embedded_thumbnail(bytes) {
             Some(t) => {
-                crate::safety::log_debug("decode: used embedded EXIF thumbnail");
+                st2k_base::safety::log_debug("decode: used embedded EXIF thumbnail");
                 Ok(t)
             }
             None => decode_preview_thumbnail(bytes, cx),
@@ -118,14 +118,18 @@ fn resolve_transparency(decoded: &mut Decoded) -> Result<()> {
         .iter()
         .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
     {
-        crate::safety::log_debug("decode: all-transparent but has RGB content — forcing opaque");
+        st2k_base::safety::log_debug(
+            "decode: all-transparent but has RGB content — forcing opaque",
+        );
         let (chunks, _) = decoded.rgba.as_chunks_mut::<4>();
         for px in chunks {
             px[3] = 255;
         }
         Ok(())
     } else {
-        crate::safety::log_debug("decode: thumbnail was fully transparent — rejecting as blank");
+        st2k_base::safety::log_debug(
+            "decode: thumbnail was fully transparent — rejecting as blank",
+        );
         Err(Error::from(E_FAIL))
     }
 }
@@ -148,7 +152,9 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
                 // below and decoding the same baked JPEG a second time (G145a).
                 CompositeVerdict::UseBakedPreview(preview) => return Ok(preview),
             },
-            Err(e) => crate::safety::log_debugf!("PSD composite failed ({e}); using baked preview"),
+            Err(e) => {
+                st2k_base::safety::log_debugf!("PSD composite failed ({e}); using baked preview")
+            }
         }
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))

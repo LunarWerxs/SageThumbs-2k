@@ -11,13 +11,13 @@ use super::*;
 /// The `st2k.exe` CLI helper that ships next to our DLL, if it's actually there.
 ///
 /// The installer drops `st2k.exe` in the same directory as `sagethumbs2k.dll`, so
-/// we resolve it from the DLL's OWN path ([`crate::host::module_path`]) — **never**
+/// we resolve it from the DLL's OWN path ([`st2k_base::host::module_path`]) — **never**
 /// `current_exe()`, which in the shell host is `explorer.exe`/`dllhost.exe`. Returns
 /// `Some` only when the file exists; `None` (helper missing — tests, or a DLL-only
 /// install) makes every routed verb fall back to its in-process path. See the
 /// module docs for the rationale.
 pub(super) fn st2k_exe() -> Option<PathBuf> {
-    crate::host::sibling_of_dll(crate::host::CLI_EXE)
+    st2k_base::host::sibling_of_dll(st2k_base::host::CLI_EXE)
 }
 
 /// Outcome of a routed `st2k` helper run. The three cases are deliberately
@@ -46,7 +46,7 @@ fn run_st2k(exe: &Path, path: &str, args: &[&str]) -> RunOutcome {
     // Worded differently from the thumbnail tiers' "spawned helper pid" on purpose: the
     // Explorer verify counts THAT phrase per thumbnail, and a verb the user happens to run
     // during it must not land in the count.
-    crate::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "running verb helper {} for {path}",
         args.first().copied().unwrap_or("?")
     );
@@ -61,11 +61,14 @@ fn run_st2k(exe: &Path, path: &str, args: &[&str]) -> RunOutcome {
         Ok(out) if out.status.success() => RunOutcome::Ok,
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            st2k_base::safety::log_error(&format!(
+                "st2k helper failed for {path}: {}",
+                stderr.trim()
+            ));
             RunOutcome::Failed
         }
         Err(e) => {
-            crate::safety::log_error(&format!(
+            st2k_base::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             RunOutcome::SpawnFailed
@@ -124,11 +127,14 @@ fn run_st2k_capture(exe: &Path, path: &str, args: &[&str]) -> CaptureOutcome {
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            st2k_base::safety::log_error(&format!(
+                "st2k helper failed for {path}: {}",
+                stderr.trim()
+            ));
             CaptureOutcome::Failed
         }
         Err(e) => {
-            crate::safety::log_error(&format!(
+            st2k_base::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             CaptureOutcome::SpawnFailed
@@ -173,7 +179,7 @@ pub(super) fn convert_one(exe: Option<&Path>, p: &str, target: Target) -> Option
             let Some(out_s) = slot.path().to_str() else {
                 return convert_one(None, p, target);
             };
-            let q = crate::settings::jpeg_quality().to_string();
+            let q = st2k_base::settings::jpeg_quality().to_string();
             let mut args = vec!["convert", p, out_s, "--quality", q.as_str()];
             // Lossy WebP (the quick WebP verb): pass the same quality the in-process
             // `convert_file` would use via `target.webp_quality`, so the routed file
@@ -187,7 +193,7 @@ pub(super) fn convert_one(exe: Option<&Path>, p: &str, target: Target) -> Option
             match run_st2k(exe, p, &args) {
                 RunOutcome::Ok => Some(slot.path().to_path_buf()),
                 RunOutcome::Failed => {
-                    crate::safety::log(&format!("Convert (st2k) failed for {p}"));
+                    st2k_base::safety::log(&format!("Convert (st2k) failed for {p}"));
                     None
                 }
                 RunOutcome::SpawnFailed => convert_one(None, p, target),
@@ -196,7 +202,7 @@ pub(super) fn convert_one(exe: Option<&Path>, p: &str, target: Target) -> Option
         None => match crate::verbs::encode::convert_file(p, target) {
             Ok(out) => Some(out),
             Err(e) => {
-                crate::safety::log(&format!("Convert failed for {p}: {e:?}"));
+                st2k_base::safety::log(&format!("Convert failed for {p}: {e:?}"));
                 None
             }
         },
@@ -234,7 +240,7 @@ pub(super) fn transform_one(exe: Option<&Path>, p: &str, t: Transform) -> Option
                     let ext = routed_edit_output_ext(src);
                     let predicted = predict_unique_suffix(src, "edited", &ext);
                     if predicted != path {
-                        crate::safety::log(&format!(
+                        st2k_base::safety::log(&format!(
                             "Transform (st2k): predicted output {predicted:?} differs from \
                              the actual {path:?} for {p} — a concurrent edit likely won the \
                              naming race; using the actual path"
@@ -243,7 +249,7 @@ pub(super) fn transform_one(exe: Option<&Path>, p: &str, t: Transform) -> Option
                     Some(path)
                 }
                 CaptureOutcome::Failed => {
-                    crate::safety::log(&format!("Transform (st2k) failed for {p}"));
+                    st2k_base::safety::log(&format!("Transform (st2k) failed for {p}"));
                     None
                 }
                 CaptureOutcome::SpawnFailed => transform_one(None, p, t),
@@ -268,7 +274,7 @@ fn finish_st2k<F: FnOnce() -> Option<PathBuf>>(
     match run_st2k(exe, p, args) {
         RunOutcome::Ok => Some(out),
         RunOutcome::Failed => {
-            crate::safety::log(fail_msg);
+            st2k_base::safety::log(fail_msg);
             None
         }
         RunOutcome::SpawnFailed => fallback(),
@@ -287,7 +293,7 @@ pub(super) fn resize_one(exe: Option<&Path>, p: &str, r: Resize) -> Option<PathB
             let (Some(out_s), Some(rs)) = (slot.path().to_str(), resize_arg(r)) else {
                 return resize_one(None, p, r);
             };
-            let q = crate::settings::jpeg_quality().to_string();
+            let q = st2k_base::settings::jpeg_quality().to_string();
             finish_st2k(
                 exe,
                 p,
@@ -300,7 +306,7 @@ pub(super) fn resize_one(exe: Option<&Path>, p: &str, r: Resize) -> Option<PathB
         None => match resize_file(p, r) {
             Ok(out) => Some(out),
             Err(e) => {
-                crate::safety::log(&format!("Resize failed for {p}: {e:?}"));
+                st2k_base::safety::log(&format!("Resize failed for {p}: {e:?}"));
                 None
             }
         },
@@ -356,7 +362,7 @@ pub(super) fn shrink_one(exe: Option<&Path>, p: &str, size: EmailSize) -> Option
         None => match shrink_for_email(p, size) {
             Ok(out) => Some(out),
             Err(e) => {
-                crate::safety::log(&format!("Shrink for email failed for {p}: {e:?}"));
+                st2k_base::safety::log(&format!("Shrink for email failed for {p}: {e:?}"));
                 None
             }
         },
@@ -370,7 +376,7 @@ pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
         Some(exe) => match run_st2k(exe, p, &["strip", p]) {
             RunOutcome::Ok => true,
             RunOutcome::Failed => {
-                crate::safety::log(&format!("Strip metadata (st2k) failed for {p}"));
+                st2k_base::safety::log(&format!("Strip metadata (st2k) failed for {p}"));
                 false
             }
             RunOutcome::SpawnFailed => strip_one(None, p),
@@ -378,7 +384,7 @@ pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
         None => match crate::strip::strip_metadata(p) {
             Ok(()) => true,
             Err(e) => {
-                crate::safety::log(&format!("Strip metadata failed for {p}: {e:?}"));
+                st2k_base::safety::log(&format!("Strip metadata failed for {p}: {e:?}"));
                 false
             }
         },
@@ -402,7 +408,7 @@ pub(super) fn compress_one(
             match run_st2k_capture_text(exe, p, &["compress", p, "--max-size", &target_s]) {
                 TextOutcome::Ok(path) => Ok(path),
                 TextOutcome::Failed(stderr) => {
-                    crate::safety::log(&format!("Compress (st2k) failed for {p}"));
+                    st2k_base::safety::log(&format!("Compress (st2k) failed for {p}"));
                     Err(parse_smallest_achievable(&stderr))
                 }
                 TextOutcome::SpawnFailed => compress_one(None, p, target),
@@ -422,7 +428,7 @@ pub(super) fn clipboard_one(exe: Option<&Path>, p: &str) -> Result<()> {
             BytesOutcome::Ok(stdout) => match parse_clip_pixels(&stdout) {
                 Some((w, h, rgba)) => copy_rgba_to_clipboard(w as i32, h as i32, rgba),
                 None => {
-                    crate::safety::log(&format!(
+                    st2k_base::safety::log(&format!(
                         "Copy to clipboard (st2k) produced an unreadable pixel stream for {p}"
                     ));
                     Err(Error::new(
@@ -432,7 +438,7 @@ pub(super) fn clipboard_one(exe: Option<&Path>, p: &str) -> Result<()> {
                 }
             },
             BytesOutcome::Failed => {
-                crate::safety::log(&format!("Copy to clipboard (st2k) failed for {p}"));
+                st2k_base::safety::log(&format!("Copy to clipboard (st2k) failed for {p}"));
                 Err(Error::new(E_FAIL, "couldn't decode or copy the image"))
             }
             BytesOutcome::SpawnFailed => clipboard_one(None, p),
@@ -494,7 +500,7 @@ pub(super) fn prepare_wallpaper_routed(
             match run_st2k_capture(exe, p, &args) {
                 CaptureOutcome::Ok(wp) => Ok(wp),
                 CaptureOutcome::Failed => {
-                    crate::safety::log(&format!("Set wallpaper (st2k) failed for {p}"));
+                    st2k_base::safety::log(&format!("Set wallpaper (st2k) failed for {p}"));
                     Err(Error::new(E_FAIL, "couldn't set the wallpaper"))
                 }
                 CaptureOutcome::SpawnFailed => prepare_wallpaper_routed(None, p, lock_screen),
@@ -533,7 +539,7 @@ pub(super) fn folder_icon_one(exe: Option<&Path>, p: &str) -> Result<()> {
         Some(exe) => match run_st2k(exe, p, &["folder-icon", p]) {
             RunOutcome::Ok => Ok(()),
             RunOutcome::Failed => {
-                crate::safety::log(&format!("Set folder icon (st2k) failed for {p}"));
+                st2k_base::safety::log(&format!("Set folder icon (st2k) failed for {p}"));
                 Err(Error::new(E_FAIL, "couldn't set the folder icon"))
             }
             RunOutcome::SpawnFailed => folder_icon_one(None, p),
@@ -564,11 +570,11 @@ pub(super) fn save_video_frame_one(exe: Option<&Path>, p: &str) -> Result<PathBu
     match run_st2k(exe, p, &["thumbnail", p, out_s, "--size", "0"]) {
         RunOutcome::Ok => Ok(slot.path().to_path_buf()),
         RunOutcome::Failed => {
-            crate::safety::log(&format!("Save video frame (st2k) failed for {p}"));
+            st2k_base::safety::log(&format!("Save video frame (st2k) failed for {p}"));
             Err(Error::new(E_FAIL, "couldn't extract the video frame"))
         }
         RunOutcome::SpawnFailed => {
-            crate::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "Save video frame (st2k) couldn't spawn the helper for {p}"
             ));
             Err(Error::new(E_FAIL, "the st2k helper couldn't be started"))
@@ -597,11 +603,11 @@ fn run_st2k_capture_text(exe: &Path, path: &str, args: &[&str]) -> TextOutcome {
         },
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            crate::safety::log_error(&format!("st2k helper failed for {path}: {stderr}"));
+            st2k_base::safety::log_error(&format!("st2k helper failed for {path}: {stderr}"));
             TextOutcome::Failed(stderr)
         }
         Err(e) => {
-            crate::safety::log_error(&format!(
+            st2k_base::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             TextOutcome::SpawnFailed
@@ -626,11 +632,14 @@ fn run_st2k_capture_bytes(exe: &Path, path: &str, args: &[&str]) -> BytesOutcome
         Ok(out) if out.status.success() => BytesOutcome::Ok(out.stdout),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            crate::safety::log_error(&format!("st2k helper failed for {path}: {}", stderr.trim()));
+            st2k_base::safety::log_error(&format!(
+                "st2k helper failed for {path}: {}",
+                stderr.trim()
+            ));
             BytesOutcome::Failed
         }
         Err(e) => {
-            crate::safety::log_error(&format!(
+            st2k_base::safety::log_error(&format!(
                 "st2k helper FAILED TO SPAWN ({e}) — routing this verb in-process instead"
             ));
             BytesOutcome::SpawnFailed

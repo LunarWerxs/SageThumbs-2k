@@ -172,10 +172,10 @@ fn persist_rotation_is_a_no_op_when_the_server_did_not_rotate_the_token() {
 /// which differs between `cargo test`, the CI job and a packaged run. `include_str!` resolves
 /// relative to THIS file, so each path is checked by the compiler and cannot silently miss.
 const SETTINGS_SRC: &[&str] = &[
-    include_str!("../../../settings.rs"),
-    include_str!("../../../settings/store.rs"),
-    include_str!("../../../settings/thumbs.rs"),
-    include_str!("../../../settings/app_prefs.rs"),
+    include_str!("../../../../crates/base/src/settings.rs"),
+    include_str!("../../../../crates/base/src/settings/store.rs"),
+    include_str!("../../../../crates/base/src/settings/thumbs.rs"),
+    include_str!("../../../../crates/base/src/settings/app_prefs.rs"),
 ];
 
 /// Every setting name the settings module reads or writes.

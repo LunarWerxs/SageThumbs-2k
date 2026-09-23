@@ -405,7 +405,7 @@ fn export_settings_to_path_writes_parseable_json_with_no_leftover_temp_file() {
 /// comment claiming otherwise.
 ///
 /// This drives the same fail-point `fsutil::write_atomically`'s own tests use
-/// (`sagethumbs2k_core::fsutil::inject_partial_write_failure` - exposed across the
+/// (`st2k_base::fsutil::inject_partial_write_failure` - exposed across the
 /// crate boundary rather than gated `#[cfg(test)]`, because `#[cfg(test)]` items are
 /// only compiled when the LIB itself is the crate under test and are invisible to this
 /// bin crate's own tests; see that function's doc comment) to fail the write after 4 of
@@ -418,9 +418,9 @@ fn export_settings_to_path_never_destroys_a_prior_backup_on_failed_replace() {
     let original: &[u8] = b"a previous export backup, not valid JSON on purpose";
     std::fs::write(&path, original).unwrap();
 
-    sagethumbs2k_core::fsutil::inject_partial_write_failure(4);
+    st2k_base::fsutil::inject_partial_write_failure(4);
     let result = export_settings_to_path(&path);
-    sagethumbs2k_core::fsutil::clear_partial_write_failure();
+    st2k_base::fsutil::clear_partial_write_failure();
 
     assert!(
         result.is_err(),

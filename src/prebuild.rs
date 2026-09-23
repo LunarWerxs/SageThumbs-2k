@@ -20,7 +20,7 @@
 //! Rebuild-changed-only and pause/resume are not here. The shell already keys its cache on
 //! path + size + mtime, so the `WTS_INCACHEONLY` probe IS change detection for free; a
 //! separate "changed files" mode would need our own sidecar index to beat it. Pause needs a
-//! gate inside [`crate::parallel`]'s worker loop, which has no such primitive today — v1
+//! gate inside [`st2k_base::parallel`]'s worker loop, which has no such primitive today — v1
 //! offers cancel (Ctrl+C) instead.
 //!
 //! Purging is not here either: no API deletes cache entries for one folder, only the whole
@@ -30,7 +30,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::formats;
+use st2k_base::formats;
 
 /// Files whose thumbnail we will not ask for, and why the count is reported separately.
 #[derive(Default)]
@@ -299,16 +299,16 @@ const REPARSE: u32 = 0x0000_0400;
 /// definition now, reused everywhere a caller needs to decide "would extracting this file's
 /// thumbnail download the whole thing?" (item C13).
 pub fn is_cloud_placeholder(path: &Path) -> bool {
-    crate::fsutil::file_attributes(path) & OFFLINE_ATTRS != 0
+    st2k_base::fsutil::file_attributes(path) & OFFLINE_ATTRS != 0
 }
 
 /// Is this extension one we hook AND the user still has enabled? A format they turned off has
 /// no SageThumbs thumbnail to build, and asking the shell for one just burns a round trip.
-/// Takes a pre-taken [`crate::settings::FormatEnabledSnapshot`] rather than calling
-/// [`crate::settings::format_enabled`] per file: in portable mode that reparses the WHOLE ini
+/// Takes a pre-taken [`st2k_base::settings::FormatEnabledSnapshot`] rather than calling
+/// [`st2k_base::settings::format_enabled`] per file: in portable mode that reparses the WHOLE ini
 /// from disk on every single call, so a 50,000-file prebuild used to do 50,000 full ini parses
 /// to decide what it wanted (item 134).
-fn wanted(p: &Path, snap: &crate::settings::FormatEnabledSnapshot) -> bool {
+fn wanted(p: &Path, snap: &st2k_base::settings::FormatEnabledSnapshot) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| formats::is_known(e) && snap.enabled(&e.to_lowercase()))
@@ -316,7 +316,7 @@ fn wanted(p: &Path, snap: &crate::settings::FormatEnabledSnapshot) -> bool {
 
 /// Collect the supported files under `root`. Non-recursive by default; never follows a
 /// reparse point, and stops at `max_depth` so a junction cycle cannot spin forever. `snap` is
-/// one [`crate::settings::format_enabled_snapshot`] shared across the whole walk — see
+/// one [`st2k_base::settings::format_enabled_snapshot`] shared across the whole walk — see
 /// [`wanted`].
 fn walk(
     root: &Path,
@@ -324,7 +324,7 @@ fn walk(
     depth: u32,
     out: &mut Vec<String>,
     rep: &mut Report,
-    snap: &crate::settings::FormatEnabledSnapshot,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
 ) {
     if depth > opts.max_depth {
         return;
@@ -347,10 +347,10 @@ fn visit_entry(
     depth: u32,
     out: &mut Vec<String>,
     rep: &mut Report,
-    snap: &crate::settings::FormatEnabledSnapshot,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
 ) {
     let p = e.path();
-    let a = crate::fsutil::file_attributes(&p);
+    let a = st2k_base::fsutil::file_attributes(&p);
     if a & REPARSE != 0 {
         return;
     }
@@ -470,7 +470,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
             // No size produced anything AND none was already cached. Worth a line even at
             // normal verbosity would be too much for a big run, so it stays debug-gated, but
             // it is the one that names a file the user will actually notice.
-            crate::safety::log_debugf!("prebuild: {abs} produced no thumbnail at any size");
+            st2k_base::safety::log_debugf!("prebuild: {abs} produced no thumbnail at any size");
             Ok(Outcome::Failed)
         }
     })();
@@ -517,7 +517,7 @@ unsafe fn build_sizes(
             // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
             // unless someone has turned diagnostics on to find exactly this.
             Err(e) => {
-                crate::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
+                st2k_base::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
                 missing.push(size);
             }
         }
@@ -540,7 +540,7 @@ unsafe fn build_sizes(
                     false // landed on the retry — no longer missing
                 }
                 Err(e) => {
-                    crate::safety::log_debugf!(
+                    st2k_base::safety::log_debugf!(
                         "prebuild: {abs} size {size} still not built after retry: {e}"
                     );
                     true
@@ -659,7 +659,7 @@ pub fn process_is_elevated(pid: u32) -> bool {
 /// `cancel`, when supplied and set, stops the run at the next file: the pool has no cancel
 /// primitive, so every remaining item is visited and skipped rather than truly interrupted.
 /// That is instant in practice because skipping is free, and it avoids threading a new
-/// abort path through [`crate::parallel`].
+/// abort path through [`st2k_base::parallel`].
 ///
 /// The caller must still tell the user that the cache is **LRU-capped**: pre-building a whole
 /// 32 TB drive evicts its own early work long before it finishes, so a run can report complete
@@ -674,7 +674,7 @@ pub fn run(
     let mut files: Vec<String> = Vec::new();
     // ONE snapshot for the whole sweep (the walk plus this per-input loop), not one ini
     // reparse per file (item 134).
-    let snap = crate::settings::format_enabled_snapshot();
+    let snap = st2k_base::settings::format_enabled_snapshot();
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
@@ -717,7 +717,7 @@ pub fn run(
     let total = files.len();
     let stopping = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
-    crate::parallel::map_indexed(
+    st2k_base::parallel::map_indexed(
         &files,
         workers,
         |_, path: &String| {

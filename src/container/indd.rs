@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn corpus_samples_decode_completely() {
         for name in ["sample.indd", "sample.indt"] {
-            let path = crate::testcorpus::dir().join(name);
+            let path = st2k_base::testcorpus::dir().join(name);
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };

@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn real_files_decode_with_colour() {
         for (name, dims) in [("real.six", (600, 450)), ("real-vt340.six", (480, 480))] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

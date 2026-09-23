@@ -73,10 +73,13 @@ fn a_buffer_too_small_to_judge_is_not_called_black() {
 /// wherever the corpus isn't present (e.g. CI, or before that script has run).
 #[test]
 fn block_stream_decodes_avi_and_wmv() {
-    let dirs: Vec<_> = [crate::testcorpus::real_dir(), crate::testcorpus::dir()]
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect();
+    let dirs: Vec<_> = [
+        st2k_base::testcorpus::real_dir(),
+        st2k_base::testcorpus::dir(),
+    ]
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect();
     let samples: Vec<_> = ["sample.avi", "sample.wmv"]
         .into_iter()
         .filter_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()))

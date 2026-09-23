@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/dll", "crates/dlghook", "crates/build-support"]
+members = ["crates/base", "crates/dll", "crates/dlghook", "crates/build-support"]
 exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/djvu-rs"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
 # (st2k_dlghook.dll): the Open/Save-dialog selection reader, which is a SEPARATE tiny
 # cdylib because it gets loaded into other applications — see crates/dlghook/Cargo.toml.
-default-members = [".", "crates/dll", "crates/dlghook"]
+default-members = [".", "crates/base", "crates/dll", "crates/dlghook"]
 resolver = "2"
 
 # exr 1.74.2 added DWAA/DWAB encode/decode support, but stores two lazily-filled
@@ -46,6 +46,13 @@ djvu-rs = { path = "crates/vendor/djvu-rs" }
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
 # build-release.ps1 reads this line; keep it in sync with
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
+# Shared by every crate of the library and the binaries, so they build one copy with one
+# feature set.
+[workspace.dependencies]
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
+] }
+
 [workspace.package]
 version = "3.3.0"
 rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the note below
@@ -110,12 +117,13 @@ name = "st2k"
 path = "src/bin/cli.rs"
 
 [dependencies]
+# The base layer of the library, its own crate.
+st2k_base = { package = "sagethumbs2k-base", path = "crates/base" }
+windows = { workspace = true }
 # Default features off (they'd pull the heavy AVIF encoder rav1e); we enable just
 # the codecs we use. AVIF/HEIC *decode* comes via WIC; exotic convert-to targets
 # (PSD/DDS/JP2/…) are encoded through the bundled ImageMagick, not `image`.
-image = { version = "0.25", default-features = false, features = [
-    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
-] }
+image = { workspace = true }
 # DDS block decoding (BC1–BC7, including BC6H HDR). `image`'s own DDS decoder — and
 # Windows' WIC DDS codec — stop at DXT1/3/5, and ImageMagick can't read BC4/BC5-signed/
 # BC6H at all, so modern game textures needed this. MIT, `no_std`, ZERO dependencies,
@@ -401,9 +409,11 @@ webp-lossy = ["dep:webp"]
 # into Explorer and only looks up `menu_*` strings). The release pipeline enables it
 # for a SECOND `cargo build --lib` that produces the slim DLL; the EXEs/CLI keep the
 # full table. NEVER use on the default build — it would strip the app's dialog strings.
-dll-i18n-subset = []
+dll-i18n-subset = ["st2k_base/dll-i18n-subset"]
 
 [dev-dependencies]
+# The lower layers' test seams (see their `testkit` feature), for this crate's tests only.
+st2k_base = { package = "sagethumbs2k-base", path = "crates/base", features = ["testkit"] }
 # Test-only 7z writer: build non-solid/duplicate-name archives in memory so the
 # exact-index, aggregate-budget extraction path has end-to-end coverage. The
 # shipped dependency above remains decode-only (`compress` is not in release).
@@ -429,7 +439,7 @@ toml = "1"
 # windres is already a build requirement here (the file icon), with a graceful
 # cargo:warning fallback if it's missing.
 
-[dependencies.windows]
+[workspace.dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",

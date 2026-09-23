@@ -98,7 +98,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
             None => menu_theme_colors(),
         };
 
-        let bmi = crate::safety::top_down_bmi!(BITMAPINFO, BITMAPINFOHEADER, iw, ih);
+        let bmi = st2k_base::safety::top_down_bmi(iw, ih);
         let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
         let Ok(dib) = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
             return false;
@@ -138,7 +138,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
         };
         let src = core::slice::from_raw_parts(bits as *const u8, n);
         let mut rgba = vec![0u8; n];
-        crate::dib::swap_rb_opaque(src, &mut rgba);
+        st2k_base::dib::swap_rb_opaque(src, &mut rgba);
         SelectObject(memdc, oldbmp);
         let _ = DeleteDC(memdc);
         let _ = DeleteObject(dib.into());
@@ -154,13 +154,13 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
 /// returns the light gray), so a dark menu would get a glaring white preview
 /// block. Detect the real menu theme from the registry instead.
 ///
-/// Reads `AppsUseLightTheme` via the shared [`crate::safety::apps_use_dark_theme`] probe,
+/// Reads `AppsUseLightTheme` via the shared [`st2k_base::safety::apps_use_dark_theme`] probe,
 /// matching `bin/app/dark.rs` and `previewhandler.rs`. It used to read `SystemUsesLightTheme`
 /// — that key is the TASKBAR/Start theme, which is independent: "dark apps + light taskbar" is
 /// a common setup, and there it reported light while Explorer's menu was dark, so the preview
 /// tile was baked white-on-dark (reported from a pt-BR Win11 machine, v1.3.1).
 pub(crate) fn menu_dark() -> bool {
-    crate::safety::apps_use_dark_theme()
+    st2k_base::safety::apps_use_dark_theme()
 }
 
 /// The (bg, fg) baked into the preview tile so it matches the surrounding menu.
@@ -334,7 +334,7 @@ pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
 
 /// Open the file with its default app (the preview item's click action).
 pub(crate) fn open_with_default(path: &str) {
-    let wide = crate::host::wide(path);
+    let wide = st2k_base::host::wide(path);
     unsafe {
         let ret = ShellExecuteW(
             None,
@@ -350,7 +350,7 @@ pub(crate) fn open_with_default(path: &str) {
         // the pattern `launch_app` already logs for the companion-EXE launch path.
         let se_code = ret.0 as usize;
         if !shell_execute_succeeded(se_code) {
-            crate::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "open_with_default: ShellExecuteW failed for {path} (code {se_code})"
             ));
         }

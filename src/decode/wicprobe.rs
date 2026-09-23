@@ -174,7 +174,7 @@ fn trust() -> &'static [AvifWicVerdict; 8] {
         for class in WicClass::ALL {
             out[class.index()] = measure(class);
         }
-        crate::safety::log_debugf!(
+        st2k_base::safety::log_debugf!(
             "decode: WIC AVIF colour probe: 8/709={:?} 8/601={:?} 8/none={:?} \
              hi/709={:?} hi/601={:?} hi/mono={:?} hi/pq={:?} hi/none={:?}",
             out[0],

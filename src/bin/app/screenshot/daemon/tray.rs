@@ -41,7 +41,7 @@ pub(super) unsafe fn tray_data(hwnd: HWND, with_payload: bool) -> NOTIFYICONDATA
 /// hardcoded default. The stored value always comes from the Settings dropdown, so
 /// it matches one of the presets; an unknown value falls back to the default label.
 pub(super) fn hotkey_label() -> &'static str {
-    let (m, v) = sagethumbs2k_core::settings::screenshot_hotkey();
+    let (m, v) = st2k_base::settings::screenshot_hotkey();
     let packed = (m << 8) | v;
     crate::settings_dlg::SHOT_PRESETS
         .iter()
@@ -139,7 +139,7 @@ pub(super) unsafe fn show_elevated_warning(hwnd: HWND, kind: &str) {
     // Always logged, not just under verbose: this is the answer to "I pressed Space and nothing
     // happened", and a support reply should not depend on the user having had logging on before
     // the thing they are reporting happened.
-    sagethumbs2k_core::safety::log(&format!(
+    st2k_base::safety::log(&format!(
         "quick preview: {kind} is running elevated — its keystrokes never reach us, warning shown"
     ));
     LAST_BALLOON.store(BALLOON_ELEVATED, Ordering::Relaxed);

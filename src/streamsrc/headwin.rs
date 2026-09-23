@@ -181,7 +181,7 @@ mod tests {
         huge.extend(15u32.to_le_bytes());
         huge.extend(u32::MAX.to_le_bytes());
         assert_eq!(mat_picture_end(&huge), None);
-        match crate::testcorpus::read("real.mat") {
+        match st2k_base::testcorpus::read("real.mat") {
             Some(real) => assert_eq!(
                 mat_picture_end(&real),
                 Some(real.len() as u64),

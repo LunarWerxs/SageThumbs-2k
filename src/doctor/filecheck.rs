@@ -243,7 +243,7 @@ fn explorer_asked_us_note(r: &mut Report, p: &Path, ext: &str) {
         return;
     };
     let key = format!("ext={ext} size={}", meta.len());
-    let Some(log) = crate::safety::log_file().filter(|l| l.exists()) else {
+    let Some(log) = st2k_base::safety::log_file().filter(|l| l.exists()) else {
         r.line(S::Info, LABEL, "no diagnostics log on this machine yet");
         return;
     };
@@ -406,7 +406,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
     // exists even with no codec at all, which is the whole answer for an HEVC library on a
     // machine without the Store extension. Say so, and say which rule is currently in force.
     if crate::vcodec::cover_art(&mut file).is_some() {
-        let detail = if crate::settings::prefer_cover_art() {
+        let detail = if st2k_base::settings::prefer_cover_art() {
             "present, and Settings prefers it, so this is the thumbnail you get"
         } else {
             "present - used when no frame can be decoded. Settings > General > 'Use a \
@@ -516,7 +516,7 @@ fn drive_kind(root: &[u16]) -> &'static str {
 pub(super) fn probe_file(
     r: &mut Report,
     path: &str,
-    snap: &crate::settings::FormatEnabledSnapshot,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
 ) {
     r.head("This file");
     let p = Path::new(path);
@@ -569,7 +569,7 @@ pub(super) fn probe_file(
     }
     // Is this extension one SageThumbs hooks at all? If not, THAT is the whole answer —
     // Explorer never asks us, no matter how healthy registration is.
-    if !crate::formats::is_known(&ext) {
+    if !st2k_base::formats::is_known(&ext) {
         r.fail_with_fix(
             &format!(".{ext}"),
             "NOT a format SageThumbs handles — Explorer will never ask us for it",
@@ -590,8 +590,8 @@ pub(super) fn probe_file(
         );
     }
     let is_video = matches!(
-        crate::formats::category(&ext),
-        crate::formats::Category::Video
+        st2k_base::formats::category(&ext),
+        st2k_base::formats::Category::Video
     );
     if is_video {
         video_codec_note(r, path);

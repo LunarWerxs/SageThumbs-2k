@@ -486,7 +486,7 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
     use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
     use windows_registry::CURRENT_USER;
 
-    let corpus = sagethumbs2k_core::testcorpus::dir().join("sample.png");
+    let corpus = st2k_base::testcorpus::dir().join("sample.png");
     if !corpus.exists() {
         eprintln!("skipping: no ../test-corpus/sample.png");
         return;

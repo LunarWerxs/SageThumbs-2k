@@ -16,7 +16,7 @@
 //!
 //! **User-editable config:** the whole chain is overridable via a plain-text file
 //! `%APPDATA%\SageThumbs2K\upload-hosts.conf` (auto-created, self-documenting — the
-//! path + template live in `sagethumbs2k_core::upload_config`, shared with the
+//! path + template live in `st2k_base::upload_config`, shared with the
 //! `st2k upload-hosts` CLI) so a user can add / reorder / replace hosts, or point at
 //! their own server, with no rebuild. A legacy single-host HKCU override still works
 //! too. See [`upload_hosts`] for the precedence.
@@ -44,7 +44,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::win::{set_clipboard_text, t, wide, SS_CENTER, SS_CENTERIMAGE};
-use sagethumbs2k_core::upload_history::{self, Entry, Expiry};
+use st2k_base::upload_history::{self, Entry, Expiry};
 
 const MAX_RESP: usize = 64 * 1024; // a URL response is tiny; cap to be safe
 
@@ -346,7 +346,7 @@ unsafe fn report_interactively(total: usize, done: &[Entry], last_reason: Option
 /// Body for the "couldn't upload" dialog. Includes what each host actually said, so a
 /// host outage ("just wait") is distinguishable from a real connection problem.
 fn upload_failed_msg(what: &str, reasons: &str) -> String {
-    let cfg = sagethumbs2k_core::upload_config::config_path()
+    let cfg = st2k_base::upload_config::config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "%APPDATA%\\SageThumbs2K\\upload-hosts.conf".to_string());
     t("up_failed")
@@ -391,8 +391,8 @@ unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Resu
 /// right-click verb and `st2k upload` - so the list is complete whichever one was used. A list
 /// that cannot be written is not an upload failure; the link is already live.
 fn remember(h: &UploadHost, url: String, filename: &str, size: usize) -> Entry {
-    let now = sagethumbs2k_core::unixtime::now();
-    let retention = sagethumbs2k_core::upload_config::retention_for(&h.host, &h.extra, size as u64);
+    let now = st2k_base::unixtime::now();
+    let retention = st2k_base::upload_config::retention_for(&h.host, &h.extra, size as u64);
     let entry = Entry {
         uploaded: now,
         expires: Expiry::from_retention(retention, now),

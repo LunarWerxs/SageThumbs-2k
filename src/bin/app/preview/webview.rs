@@ -131,8 +131,8 @@ fn resolve_profile_dir(_mode: Mode) -> Option<(Option<std::path::PathBuf>, std::
 /// `screenshot/enable.rs::autostart_allowed` documents for why ITS portable exception runs the
 /// other way, skipping a write non-portable installs make).
 fn profile_root() -> Option<std::path::PathBuf> {
-    if sagethumbs2k_core::settings::portable() {
-        if let Some(dir) = sagethumbs2k_core::settings::ini_path().and_then(|p| p.parent()) {
+    if st2k_base::settings::portable() {
+        if let Some(dir) = st2k_base::settings::ini_path().and_then(|p| p.parent()) {
             return Some(dir.join("SageThumbs2K-wv2"));
         }
     }

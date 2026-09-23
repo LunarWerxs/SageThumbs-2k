@@ -42,7 +42,7 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 
 use crate::container::{jpeg_sof_is_decodable, jpeg_span_frame};
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
-use crate::host::CREATE_NO_WINDOW;
+use st2k_base::host::CREATE_NO_WINDOW;
 /// Hard WALL-CLOCK backstop on a single ImageMagick child (belt-and-suspenders with its
 /// own `-limit time`): a child hung past this is killed and the decode fails cleanly.
 /// Derived from [`limits::MAGICK_WALL_SECS`] so the external watchdog and magick's own
@@ -158,7 +158,7 @@ pub(crate) fn psd_composite_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
 }
 pub use magick::{
     encode_via_magick, encode_via_magick_png, magick_available, magick_output_extensions,
-    magick_output_supported,
+    magick_output_supported, magick_png_bytes,
 };
 mod mesh;
 pub(crate) mod pdf_tier;
@@ -221,8 +221,8 @@ pub(crate) use rawraster::{decode_scaled as raw_raster_scaled_from_reader, is_ra
 pub(crate) use readers::effective_input_cap;
 pub use readers::{
     decode_oversized_path, decode_preview_path, decode_preview_streamed, decode_streamed_format,
-    exr_scaled_from_reader, file_head_is, is_exr_magic, psd_composite_scaled, read_bounded,
-    read_capped, read_full_fidelity, read_full_fidelity_capped, read_preview_capped,
+    exr_scaled_from_reader, file_head, file_head_is, is_exr_magic, psd_composite_scaled,
+    read_bounded, read_capped, read_full_fidelity, read_full_fidelity_capped, read_preview_capped,
     read_preview_capped_for, wic_scaled_from_bytes_if_codec_scales, wic_scaled_from_path,
     wic_scaled_from_path_if_codec_scales, wic_scaled_from_stream, ANY_PREVIEW, COLOR_HEAD_BYTES,
     EXR_PATH_EDGE, HEAD_PREVIEW_BYTES, OVERSIZED_VIEW_EDGE,
@@ -245,8 +245,8 @@ pub(crate) use tiffscale::decode_scaled as tiff_scaled_from_reader;
 /// [`crate::video::media_foundation_available`] (a delay-load probe, not WIC); the two
 /// WIC-based codecs are answered by [`wic::wic_container_codec_available`] against their
 /// real container-format GUIDs - the same component lookup a real decode would do.
-pub fn os_codec_available(codec: crate::formats::OsCodec) -> bool {
-    use crate::formats::OsCodec;
+pub fn os_codec_available(codec: st2k_base::formats::OsCodec) -> bool {
+    use st2k_base::formats::OsCodec;
     use windows::Win32::Graphics::Imaging::{GUID_ContainerFormatHeif, GUID_ContainerFormatWmp};
     match codec {
         OsCodec::MediaFoundation => crate::video::media_foundation_available(),
@@ -273,7 +273,7 @@ pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
             Ok(img) => return Ok(img),
             // Fall back to the preview path (the 160px baked-in thumbnail) — note
             // it so a surprising "my big PSD converted tiny" is diagnosable.
-            Err(e) => crate::safety::log_debugf!(
+            Err(e) => st2k_base::safety::log_debugf!(
                 "PSD composite decode failed ({e}); falling back to baked preview"
             ),
         }
@@ -313,7 +313,7 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
         match decode_psd_composite(bytes, Fidelity::Tile) {
             Ok(img) => return Ok(img),
-            Err(e) => crate::safety::log_debugf!(
+            Err(e) => st2k_base::safety::log_debugf!(
                 "transparent PSD composite failed ({e}); using baked preview"
             ),
         }
@@ -402,7 +402,7 @@ fn raw_extension_reread(bytes: &[u8], ext: &str, small: &DynamicImage) -> Result
     // alternative is handing back a 304px preview of a 150 MP photograph.
     match magick::decode_named_extension_native(bytes, ext) {
         Ok(full) if big_enough(&full) => {
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "decode: full-fidelity RAW re-read through the named coder for its extension",
             );
             Ok(full)
@@ -413,7 +413,7 @@ fn raw_extension_reread(bytes: &[u8], ext: &str, small: &DynamicImage) -> Result
         Ok(_) => Ok(small.clone()),
         Err(_) => match decode_by_extension(bytes, ext, None) {
             Ok(full) if big_enough(&full) => {
-                crate::safety::log_debug(
+                st2k_base::safety::log_debug(
                     "decode: RAW re-read fell back to the capped named-coder decode",
                 );
                 Ok(full)

@@ -89,7 +89,7 @@ mod tests {
         )
     }
 
-    const MANIFEST: &str = include_str!("../scripts/packaging/AppxManifest.xml");
+    const MANIFEST: &str = include_str!("../../../scripts/packaging/AppxManifest.xml");
 
     /// The registry string-form CLSIDs must equal their typed GUIDs — a hand typo
     /// in either would register the wrong coclass with no compile error.

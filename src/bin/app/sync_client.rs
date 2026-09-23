@@ -30,7 +30,7 @@ pub(crate) use markers::{
 
 use serde_json::{Map, Value};
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 use crate::{cred_store, http, oauth};
 

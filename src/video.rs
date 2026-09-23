@@ -261,7 +261,7 @@ pub(crate) fn frame_from_path(path: &str) -> Option<DynamicImage> {
         grab_reader(
             &reader,
             Seek {
-                frac: crate::settings::video_offset_frac(),
+                frac: st2k_base::settings::video_offset_frac(),
                 cap_hns: None,
             },
         )
@@ -311,7 +311,7 @@ where
     let finished = done.clone();
     // Pinned for the worker's whole life (on timeout we return and leave it running), and no
     // frame rather than a panic in Explorer when the OS refuses the thread.
-    let started = crate::safety::spawn_pinned("st2k-video-grab", move || {
+    let started = st2k_base::safety::spawn_pinned("st2k-video-grab", move || {
         let r = crate::pdf::with_mta_apartment(f);
         let _ = tx.send(r);
         // Last act, after the apartment is gone: "done" means done with Media Foundation.

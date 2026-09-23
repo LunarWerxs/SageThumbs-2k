@@ -180,8 +180,8 @@ pub(super) fn resolve_dims_via_full_decode(path: &str, info: &mut ImageInfo) {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         if matches!(
-            crate::formats::category(&ext),
-            crate::formats::Category::Video
+            st2k_base::formats::category(&ext),
+            st2k_base::formats::Category::Video
         ) {
             if let Some(img) = crate::video::frame_from_path(path) {
                 info.width = img.width();
@@ -193,7 +193,7 @@ pub(super) fn resolve_dims_via_full_decode(path: &str, info: &mut ImageInfo) {
         // All probes (image-crate header, container canvas, full decode, video frame)
         // failed — leave a breadcrumb so a "shows no dimensions" report is diagnosable
         // instead of silently surfacing the 0×0 sentinel.
-        crate::safety::log_debugf!("read_info: could not determine dimensions for {path}");
+        st2k_base::safety::log_debugf!("read_info: could not determine dimensions for {path}");
     }
 }
 
@@ -328,7 +328,7 @@ pub(super) fn write_file_section(s: &mut String, path: &str, p: &Path) {
     }
     if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
         let lc = ext.to_ascii_lowercase();
-        let _ = writeln!(s, "Type: .{lc}  ({:?})", crate::formats::category(&lc));
+        let _ = writeln!(s, "Type: .{lc}  ({:?})", st2k_base::formats::category(&lc));
     }
     let _ = writeln!(s);
 }
@@ -545,11 +545,27 @@ pub fn read_audio_tags(path: &str) -> AudioTags {
     out
 }
 
+/// Split an EXIF-style `"DATE TIME"` stamp (`"YYYY:MM:DD HH:MM:SS"`) into its three date and
+/// at-least-three time components. `:` is the EXIF date separator, but `-`/`/` are tolerated in
+/// case a tool rewrote the stamp; a trailing sub-seconds field keeps `t` at four elements.
+/// Returns `None` unless both halves have that shape. The components themselves are NOT
+/// validated here — digits-only and never-set-clock checks stay in the callers
+/// (`format_exif_datetime` here and the property handler's `DateTaken`).
+pub fn split_exif_datetime(s: &str) -> Option<(Vec<&str>, Vec<&str>)> {
+    let (date, time) = s.split_once(' ')?;
+    let d: Vec<&str> = date.split([':', '-', '/']).collect();
+    let t: Vec<&str> = time.split([':', '.']).collect();
+    if d.len() != 3 || t.len() < 3 {
+        return None;
+    }
+    Some((d, t))
+}
+
 /// Reshape an EXIF `DateTime` (`"YYYY:MM:DD HH:MM:SS"`) into a filename-safe
 /// `"YYYY-MM-DD HH.MM.SS"`. Returns None for a malformed or all-zero stamp (some
 /// cameras write `"0000:00:00 00:00:00"` when the clock was never set).
 pub(super) fn format_exif_datetime(s: &str) -> Option<String> {
-    let (d, t) = crate::propstore::split_exif_datetime(s)?;
+    let (d, t) = split_exif_datetime(s)?;
     // Every component must be all-ASCII-digits and non-empty.
     if !d
         .iter()

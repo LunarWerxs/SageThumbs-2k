@@ -41,7 +41,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::{default_menu_tokens, formats, i18n, settings, MENU_SEP_TOKEN};
+use sagethumbs2k_core::{default_menu_tokens, MENU_SEP_TOKEN};
+use st2k_base::{formats, i18n, settings};
 
 use crate::about::show_about;
 use crate::dark::{

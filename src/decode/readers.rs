@@ -89,7 +89,7 @@ pub fn read_full_fidelity(path: &str) -> std::io::Result<Vec<u8>> {
 /// the user as a file that simply was not there.
 pub fn read_full_fidelity_capped(path: &str) -> windows::core::Result<Vec<u8>> {
     read_full_fidelity(path).map_err(|e| {
-        crate::safety::log(&format!("cannot read {path}: {e}"));
+        st2k_base::safety::log(&format!("cannot read {path}: {e}"));
         Error::new(E_FAIL, format!("read {path}: {e}"))
     })
 }
@@ -153,12 +153,18 @@ pub(super) fn file_is_exr(path: &str) -> bool {
 /// A short file simply fails the test rather than erroring: every magic this routes on is
 /// longer than the bytes a truncated file would supply.
 pub fn file_head_is(path: &str, test: impl Fn(&[u8]) -> bool) -> bool {
+    file_head(path, 16).is_some_and(|head| test(&head))
+}
+
+/// The first `n` bytes of `path`, never more of the file; `None` when it is shorter or
+/// unreadable. For a caller that needs a header's fields, not only its magic.
+pub fn file_head(path: &str, n: usize) -> Option<Vec<u8>> {
     use std::io::Read;
-    let mut magic = [0u8; 16];
+    let mut head = vec![0u8; n];
     std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut magic))
-        .is_ok()
-        && test(&magic)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .ok()?;
+    Some(head)
 }
 
 /// Decode an OpenEXR from a seekable source to a display-ready 8-bit sRGB image at
@@ -195,7 +201,7 @@ pub fn decode_streamed_format(path: &str, target_edge: u32) -> Option<DynamicIma
             super::fits::decode_scaled(std::io::BufReader::with_capacity(1 << 16, f), target_edge)
         });
         if img.is_none() {
-            crate::safety::log_debug("streamed FITS decode declined");
+            st2k_base::safety::log_debug("streamed FITS decode declined");
         }
         return img;
     }
@@ -210,7 +216,7 @@ pub fn decode_streamed_format(path: &str, target_edge: u32) -> Option<DynamicIma
         {
             Some(img) => Some(img),
             None => {
-                crate::safety::log_debug("streamed XCF decode declined");
+                st2k_base::safety::log_debug("streamed XCF decode declined");
                 None
             }
         };
@@ -222,7 +228,7 @@ pub fn decode_streamed_format(path: &str, target_edge: u32) -> Option<DynamicIma
         {
             Ok(img) => Some(img),
             Err(e) => {
-                crate::safety::log_debugf!("scaled EXR decode failed: {e}");
+                st2k_base::safety::log_debugf!("scaled EXR decode failed: {e}");
                 None
             }
         };
@@ -239,7 +245,7 @@ pub fn psd_composite_scaled(path: &str, target_edge: u32) -> Option<DynamicImage
         crate::container::psd_merged_from_reader(std::io::BufReader::new(f), target_edge)
     });
     if img.is_none() {
-        crate::safety::log_debugf!("stored PSD composite not read for {path}");
+        st2k_base::safety::log_debugf!("stored PSD composite not read for {path}");
     }
     img
 }
@@ -282,7 +288,7 @@ pub fn decode_oversized_path(path: &str, target_edge: u32) -> Option<DynamicImag
         )
     }
     .ok()?;
-    let mut cfg = crate::settings::thumb_settings();
+    let mut cfg = st2k_base::settings::thumb_settings();
     cfg.max_file_bytes = u64::MAX;
     let source =
         unsafe { crate::streamsrc::stream_source(&stream, &cfg, target_edge, "by-path") }.ok()?;
@@ -327,7 +333,7 @@ pub fn wic_scaled_from_path(path: &str, target_edge: u32) -> Option<DynamicImage
         // here is what keeps a large rotated phone photo from rendering sideways.
         Ok(img) => Some(apply_exif_orientation(img, &head)),
         Err(e) => {
-            crate::safety::log_debugf!("WIC-by-path declined {path}: {e}");
+            st2k_base::safety::log_debugf!("WIC-by-path declined {path}: {e}");
             None
         }
     }
@@ -421,7 +427,7 @@ pub fn wic_scaled_from_bytes_if_codec_scales(
     match unsafe { wic::wic_decode_bytes_if_codec_scales(bytes, target_edge, bytes) } {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!("WIC scaled-from-bytes declined: {e}");
+            st2k_base::safety::log_debugf!("WIC scaled-from-bytes declined: {e}");
             None
         }
     }
@@ -432,7 +438,7 @@ pub fn wic_scaled_from_path_if_codec_scales(path: &str, target_edge: u32) -> Opt
     match unsafe { wic::wic_decode_path_if_codec_scales(path, target_edge, &head) } {
         Ok(img) => Some(img),
         Err(e) => {
-            crate::safety::log_debugf!("WIC scaled pre-pass declined {path}: {e}");
+            st2k_base::safety::log_debugf!("WIC scaled pre-pass declined {path}: {e}");
             None
         }
     }
@@ -459,7 +465,7 @@ pub unsafe fn wic_scaled_from_stream(
     match wic::wic_decode_stream(stream, Some(target_edge), head) {
         Ok(img) => Some(apply_exif_orientation(img, head)),
         Err(e) => {
-            crate::safety::log_debugf!("WIC-from-stream declined: {e}");
+            st2k_base::safety::log_debugf!("WIC-from-stream declined: {e}");
             None
         }
     }

@@ -101,7 +101,7 @@ impl Carried {
 /// Lift the metadata off `bytes`. `None` when the source carries none, when the
 /// format is not one we can read it from, or when the user turned the setting off.
 pub(super) fn read(bytes: &[u8], src_ext: &str) -> Option<Carried> {
-    if !crate::settings::keep_metadata_on_convert() {
+    if !st2k_base::settings::keep_metadata_on_convert() {
         return None;
     }
     let mut out = match src_ext {

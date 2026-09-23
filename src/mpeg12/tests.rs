@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 fn corpus(name: &str) -> PathBuf {
-    crate::testcorpus::dir().join(name)
+    st2k_base::testcorpus::dir().join(name)
 }
 
 /// The three synthetic shapes all demux to the SAME elementary stream, byte for byte:
@@ -343,7 +343,7 @@ fn a_real_stream_decodes_when_the_helper_exists() {
         return;
     };
     let got = mpeg_frame(&mut Cursor::new(&bytes), 0.30);
-    match crate::host::sibling_of_dll(crate::host::CLI_EXE) {
+    match st2k_base::host::sibling_of_dll(st2k_base::host::CLI_EXE) {
         Some(exe) if exe.exists() => {
             let img = got.expect("the helper is present, so MPEG-1 must decode");
             assert_eq!((img.width(), img.height()), (640, 360));

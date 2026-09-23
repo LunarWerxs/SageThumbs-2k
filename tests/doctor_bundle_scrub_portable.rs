@@ -14,7 +14,8 @@
 
 mod common;
 
-use sagethumbs2k_core::{doctor, settings};
+use sagethumbs2k_core::doctor;
+use st2k_base::settings;
 
 const TOKEN: &str = "synthetic-refresh-token-7f3a9c";
 const CERT: &str = "synthetic-licence-cert-2b8e41";

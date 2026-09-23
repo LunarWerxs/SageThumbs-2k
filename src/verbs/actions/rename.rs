@@ -47,7 +47,7 @@ fn rename_batch_report(
         }
     }
     if skipped > 0 || errored > 0 {
-        crate::safety::log(&log(renamed, skipped, errored));
+        st2k_base::safety::log(&log(renamed, skipped, errored));
     }
     // Count only true attempts (rename or error) — a skip means the file
     // intentionally has nothing to do, so it shouldn't read as "failed".
@@ -70,7 +70,7 @@ fn move_to_reserved_target(path: &str, base: &str) -> Result<bool> {
     let Some(slot) = reserve_dest(src, dir, base)? else {
         return Ok(false); // already correctly named
     };
-    crate::fsutil::rename_retrying(src, slot.path())
+    st2k_base::fsutil::rename_retrying(src, slot.path())
         .map_err(|e| Error::new(E_FAIL, format!("rename to {}: {e}", slot.path().display())))?;
     slot.release();
     Ok(true)
@@ -323,7 +323,7 @@ fn pattern_modified_date(path: &str) -> Option<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    crate::unixtime::local_date(unix_secs)
+    st2k_base::unixtime::local_date(unix_secs)
 }
 
 /// `{date}`'s value for `path`: the same capture date [`RenamePattern::DateTaken`]

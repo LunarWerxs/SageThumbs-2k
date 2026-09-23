@@ -81,7 +81,7 @@ pub(super) fn resolve_hex_or_card(path: &str) -> Resolved {
 /// synchronous dispatch did.
 pub(super) fn resolve_text_or_markdown(path: &str, kind: ContentKind) -> Resolved {
     let ext = ext_of(path);
-    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext) {
+    let read = if st2k_base::formats::is_preview_doc(&ext) {
         content::read_doc(path)
     } else {
         content::read_text(path)
@@ -101,7 +101,7 @@ pub(super) fn resolve_text_or_markdown(path: &str, kind: ContentKind) -> Resolve
         md_flags = Some((
             super::super::markdown::has_headings(&t),
             super::super::markdown::has_remote_images(&t),
-            sagethumbs2k_core::settings::preview_md_remote_img(),
+            st2k_base::settings::preview_md_remote_img(),
         ));
     }
     Resolved::TextOrMarkdown {
@@ -141,9 +141,8 @@ pub(super) fn resolve_load(path: &str, view_source_active: bool) -> Resolved {
 /// this worker posts back through `PostMessageW`, never through a receiver the caller can time
 /// out on, so `safety::AbandonTicket` is how the budget learns it might still be blocked in I/O
 /// on a dead share (2026-09-05 audit, F10), same shape as `contextmenu::thumb`'s `MenuThumbJob`.
-pub(super) static PENDING_PREPARE: std::sync::Mutex<
-    Option<sagethumbs2k_core::safety::AbandonTicket>,
-> = std::sync::Mutex::new(None);
+pub(super) static PENDING_PREPARE: std::sync::Mutex<Option<st2k_base::safety::AbandonTicket>> =
+    std::sync::Mutex::new(None);
 
 /// Mark any still-outstanding prepare worker as abandoned. Called at the start of every new
 /// load ([`reset_viewer_state`]), right next to `content::begin_generation`'s equivalent step,
@@ -199,15 +198,15 @@ pub(super) unsafe fn spawn_prepare_load(
     gen: u64,
     view_source_active: bool,
 ) {
-    if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
-        sagethumbs2k_core::safety::log_debugf!(
+    if st2k_base::safety::abandoned_budget_exhausted() {
+        st2k_base::safety::log_debugf!(
             "preview load: too many workers still running past their budget; showing {path} \
              the fallback card"
         );
         show_load_refused(hwnd, &path);
         return;
     }
-    let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+    let ticket = st2k_base::safety::AbandonTicket::new();
     *PENDING_PREPARE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket.clone());
@@ -218,14 +217,14 @@ pub(super) unsafe fn spawn_prepare_load(
         .spawn(move || {
             let stage_start = std::time::Instant::now();
             let resolved = resolve_load(&worker_path, view_source_active);
-            if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+            if let Some(line) = st2k_base::safety::stage_stall_report(
                 "prepare",
                 stage_start.elapsed(),
-                sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET,
+                st2k_base::safety::PREVIEW_DECODE_BUDGET,
                 gen,
                 &worker_path,
             ) {
-                sagethumbs2k_core::safety::log_debug(&line);
+                st2k_base::safety::log_debug(&line);
             }
             ticket.worker_finished();
             let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
@@ -239,7 +238,7 @@ pub(super) unsafe fn spawn_prepare_load(
         *PENDING_PREPARE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        sagethumbs2k_core::safety::log_debug("preview load: failed to start the prepare worker");
+        st2k_base::safety::log_debug("preview load: failed to start the prepare worker");
         show_load_refused(hwnd, &path);
     }
 }

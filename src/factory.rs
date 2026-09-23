@@ -10,15 +10,15 @@ use windows_implement::implement;
 
 use crate::command::{self, ExplorerCommand};
 use crate::contextmenu::ContextMenu;
-use crate::guids;
 use crate::previewhandler::PreviewHandler;
 use crate::propstore::PropertyStore;
-use crate::safety;
 use crate::thumbprovider::ThumbnailProvider;
+use st2k_base::guids;
+use st2k_base::safety;
 
 #[implement(IClassFactory)]
 pub struct ClassFactory {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     clsid: GUID,
 }
 
@@ -27,7 +27,7 @@ impl ClassFactory {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn new(clsid: GUID) -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             clsid,
         }
     }
@@ -70,9 +70,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
     fn LockServer(&self, flock: BOOL) -> Result<()> {
         safety::guard(|| {
             if flock.as_bool() {
-                crate::host::dll_add_ref();
+                st2k_base::host::dll_add_ref();
             } else {
-                crate::host::dll_release();
+                st2k_base::host::dll_release();
             }
             Ok(())
         })

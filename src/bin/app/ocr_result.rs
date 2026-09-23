@@ -129,7 +129,7 @@ fn outcome_message_key(outcome: &Result<String, (i32, String)>) -> Option<&'stat
 unsafe fn surface(outcome: Result<String, (i32, String)>) {
     if let Some(key) = outcome_message_key(&outcome) {
         if let Err((_, reason)) = &outcome {
-            sagethumbs2k_core::safety::log(&format!("screen OCR failed: {reason}"));
+            st2k_base::safety::log(&format!("screen OCR failed: {reason}"));
         }
         notify(t(key));
         return;

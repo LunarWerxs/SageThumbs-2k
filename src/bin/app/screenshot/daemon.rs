@@ -272,7 +272,7 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
 
     // Tray icon is shown unless the user hid it in Settings (the hotkey still works).
     // `ensure_tray_icon` retries on a timer if the taskbar isn't accepting adds yet.
-    if !sagethumbs2k_core::settings::screenshot_hide_tray() {
+    if !st2k_base::settings::screenshot_hide_tray() {
         ensure_tray_icon(hwnd);
     }
 
@@ -282,7 +282,7 @@ pub(crate) unsafe fn run_daemon(hinst: HINSTANCE) {
     // three share the once/day throttle in `update::check_throttled`, so having the helper
     // running just means the check happens here first. This 6h timer re-attempts (covering
     // machines left on for days); one check fires shortly after startup.
-    if sagethumbs2k_core::settings::update_auto_check() {
+    if st2k_base::settings::update_auto_check() {
         let _ = SetTimer(Some(hwnd), UPDATE_TIMER_ID, UPDATE_TIMER_MS, None);
         kick_update_check(hwnd);
     }
@@ -488,7 +488,7 @@ unsafe fn on_check_elevated(hwnd: HWND, wparam: WPARAM) {
 /// just-changed) hide-tray setting.
 unsafe fn on_reload(hwnd: HWND) {
     rearm_hotkeys(hwnd);
-    if sagethumbs2k_core::settings::screenshot_hide_tray() {
+    if st2k_base::settings::screenshot_hide_tray() {
         remove_tray_icon(hwnd);
     } else {
         ensure_tray_icon(hwnd);
@@ -525,7 +525,7 @@ unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) {
         // The taskbar rejected our icon earlier (logon race) - try again until
         // it takes, unless the user hid the icon meanwhile.
         TRAY_RETRY_TIMER_ID => {
-            if sagethumbs2k_core::settings::screenshot_hide_tray() {
+            if st2k_base::settings::screenshot_hide_tray() {
                 let _ = KillTimer(Some(hwnd), TRAY_RETRY_TIMER_ID);
             } else {
                 ensure_tray_icon(hwnd);
@@ -547,7 +547,7 @@ unsafe fn on_powerbroadcast(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 
 /// The taskbar-created broadcast: re-add the tray icon (unless the user hid it).
 unsafe fn on_taskbar_created(hwnd: HWND) {
-    if !sagethumbs2k_core::settings::screenshot_hide_tray() {
+    if !st2k_base::settings::screenshot_hide_tray() {
         ensure_tray_icon(hwnd);
     }
 }
@@ -573,7 +573,7 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) {
         IDM_HIDE => {
             // Hide the tray icon but keep the hotkey running (matches the
             // Settings "Hide tray icon" toggle). Restore via Settings.
-            let _ = sagethumbs2k_core::settings::set_dword("ScreenshotHideTray", 1);
+            let _ = st2k_base::settings::set_dword("ScreenshotHideTray", 1);
             remove_tray_icon(hwnd);
         }
         IDM_QUIT => {

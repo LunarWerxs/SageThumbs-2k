@@ -1,5 +1,5 @@
 use super::*;
-use sagethumbs2k_core::dib::stretch_blit;
+use st2k_base::dib::stretch_blit;
 
 /// The current image render installed in the window (the DIB + its natural dims + the bg
 /// it was composited over). Sole owner of `hbmp`; freed when replaced or on window destroy.
@@ -82,7 +82,7 @@ fn all_opaque(rgba: &[u8], px: usize) -> bool {
 }
 
 /// Source-over composite of one channel: `s` at coverage `a` laid onto `d`. Mirrors the private
-/// `comp` closure inside `sagethumbs2k_core::safety::composite_rgba_over_bg` (the now-shared
+/// `comp` closure inside `st2k_base::safety::composite_rgba_over_bg` (the now-shared
 /// implementation `make_dib_hinted` below delegates to) — kept here, `#[cfg(test)]`-only, so the
 /// `a == 255` / `a == 0` reductions that fast path relies on stay a property a test can assert
 /// against, rather than just a claim in a comment. Not production code any more (nothing here
@@ -96,7 +96,7 @@ fn composite_channel(s: u32, d: u32, a: u32) -> u8 {
 /// full pass over the alpha bytes; callers that already know (because they had to ask the same
 /// question to choose a DIB builder at all) pass `Some` and save it.
 ///
-/// A thin wrapper over [`sagethumbs2k_core::safety::composite_rgba_over_bg`] — the actual
+/// A thin wrapper over [`st2k_base::safety::composite_rgba_over_bg`] — the actual
 /// compositing loop is shared with `previewhandler::make_dib` (the Explorer preview-pane host),
 /// which used to carry its own hand-copied duplicate that never got this opacity-hint fast
 /// path. `all_opaque` above stays local: `make_render`'s premultiplied path below still needs it
@@ -109,7 +109,7 @@ unsafe fn make_dib_hinted(
     bg: u32,
     opaque: Option<bool>,
 ) -> Option<HBITMAP> {
-    sagethumbs2k_core::safety::composite_rgba_over_bg(iw, ih, rgba, bg, opaque)
+    st2k_base::safety::composite_rgba_over_bg(iw, ih, rgba, bg, opaque)
 }
 
 /// The same DIB, but for the MAIN image pane, where transparency has to survive to paint time so a
@@ -122,7 +122,7 @@ unsafe fn make_dib_hinted(
 /// makes the intermediate `StretchBlt` in [`paint_image`] filter correctly, since premultiplied
 /// channels are linearly interpolatable and straight ones are not.
 pub(crate) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<RenderData> {
-    let px = sagethumbs2k_core::safety::checked_pixel_count(iw, ih, rgba)?;
+    let px = st2k_base::safety::checked_pixel_count(iw, ih, rgba)?;
     let has_alpha = !all_opaque(rgba, px);
     if !has_alpha {
         // The opacity question is already answered — hand it down rather than let `make_dib`
@@ -130,7 +130,7 @@ pub(crate) unsafe fn make_render(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Opti
         return make_dib_hinted(iw, ih, rgba, bg, Some(true))
             .map(|h| RenderData::opaque(h, iw, ih));
     }
-    let (hbmp, bits) = sagethumbs2k_core::safety::create_dib_section(iw, ih).ok()?;
+    let (hbmp, bits) = st2k_base::safety::create_dib_section(iw, ih).ok()?;
     let dst = core::slice::from_raw_parts_mut(bits as *mut u8, px * 4);
     for i in 0..px {
         let a = rgba[i * 4 + 3] as u32;

@@ -3,7 +3,7 @@
 use super::*;
 mod history;
 mod responses;
-use sagethumbs2k_core::licence_state::{parse_mode, GRACE_SECS, TRIAL_SECS};
+use st2k_base::licence_state::{parse_mode, GRACE_SECS, TRIAL_SECS};
 
 /// [`redeem_outcome_from_response`] with a fixed canonical key, so the mapping tests
 /// read as status + body only.

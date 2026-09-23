@@ -1384,6 +1384,7 @@ dependencies = [
  "resvg",
  "roxmltree",
  "ruzstd",
+ "sagethumbs2k-base",
  "serde_json",
  "sevenz-rust2",
  "tiff",
@@ -1398,6 +1399,17 @@ dependencies = [
  "windows-registry",
  "zip",
  "zune-jpeg",
+]
+
+[[package]]
+name = "sagethumbs2k-base"
+version = "3.3.0"
+dependencies = [
+ "build-support",
+ "image",
+ "serde_json",
+ "windows",
+ "windows-registry",
 ]
 
 [[package]]

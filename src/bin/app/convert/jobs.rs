@@ -343,7 +343,7 @@ pub(super) unsafe fn launch_batch(hwnd: HWND, files: Vec<String>) {
         let done = std::sync::atomic::AtomicUsize::new(0);
         // Each entry is (first produced output, why the file is not fully converted;
         // `None` means every requested size/job for it was written, issue #28).
-        let outs: Vec<(Option<PathBuf>, Option<String>)> = sagethumbs2k_core::parallel::map_indexed(
+        let outs: Vec<(Option<PathBuf>, Option<String>)> = st2k_base::parallel::map_indexed(
             &files,
             0, // auto worker count = available_parallelism
             |_, f| {

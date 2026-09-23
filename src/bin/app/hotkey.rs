@@ -9,8 +9,8 @@
 
 use windows::Win32::Foundation::HINSTANCE;
 
-use sagethumbs2k_core::settings;
 use sagethumbs2k_core::{run_action, Transform, VerbAction};
+use st2k_base::settings;
 
 /// The curated actions offered in the Settings "Custom action" dropdown, in display order,
 /// each paired with its STABLE persisted id (`settings::custom_action`). Keep ids stable —

@@ -474,7 +474,7 @@ fn write_searchable_pdf_fixture() {
 #[test]
 #[ignore = "writes a corpus fixture on demand"]
 fn write_pdf_corpus_fixture() {
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     assert!(corpus.is_dir(), "no test-corpus at {}", corpus.display());
     let pdf = solid_colour_pdf(&PAGES);
     let p = corpus.join("sample-multipage.pdf");
@@ -506,9 +506,10 @@ fn a_width_fitted_page_never_passes_max_dim() {
 #[test]
 fn a_pdf_read_by_path_renders_as_its_bytes_do() {
     for name in ["real.pdf", "real.ai"] {
-        let (Some(path), Some(bytes)) =
-            (crate::testcorpus::path(name), crate::testcorpus::read(name))
-        else {
+        let (Some(path), Some(bytes)) = (
+            st2k_base::testcorpus::path(name),
+            st2k_base::testcorpus::read(name),
+        ) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -534,7 +535,7 @@ fn a_pdf_past_two_gib_is_never_handed_to_the_engine() {
     assert!(engine_can_open(MAX_ENGINE_BYTES));
     assert!(!engine_can_open(MAX_ENGINE_BYTES + 1));
     assert!(!engine_can_open(2253 << 20), "the gate's 2.2 GB twin");
-    let Some(bytes) = crate::testcorpus::read("real.pdf") else {
+    let Some(bytes) = st2k_base::testcorpus::read("real.pdf") else {
         eprintln!("NOT MEASURED: real.pdf absent");
         return;
     };

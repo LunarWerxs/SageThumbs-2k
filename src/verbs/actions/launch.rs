@@ -13,14 +13,14 @@ pub(super) fn launch_app(args: &[&str]) -> bool {
     // A failed launch used to vanish without a trace — the menu item just "did nothing"
     // (missing companion EXE on a broken install, or spawn failure). Log it so the
     // Diagnostics log at least explains a dead menu item.
-    let Some(exe) = crate::host::sibling_of_dll(crate::host::APP_EXE) else {
-        crate::safety::log(
+    let Some(exe) = st2k_base::host::sibling_of_dll(st2k_base::host::APP_EXE) else {
+        st2k_base::safety::log(
             "launch_app: companion EXE not found next to the DLL — menu action dropped",
         );
         return false;
     };
     if let Err(e) = std::process::Command::new(exe).args(args).spawn() {
-        crate::safety::log(&format!("launch_app: spawn failed: {e}"));
+        st2k_base::safety::log(&format!("launch_app: spawn failed: {e}"));
         return false;
     }
     true
@@ -94,7 +94,7 @@ pub(super) fn launch_with_list(
     let mut lf = std::env::temp_dir();
     lf.push(format!("st2k_{prefix}_{}_{n}.lst", std::process::id()));
     if let Err(e) = std::fs::write(&lf, filtered.join("\r\n")) {
-        crate::safety::log_error(&format!(
+        st2k_base::safety::log_error(&format!(
             "launch_with_list: couldn't write {}: {e}",
             lf.display()
         ));
@@ -102,7 +102,7 @@ pub(super) fn launch_with_list(
         return ListLaunch::Failed;
     }
     let Some(s) = lf.to_str() else {
-        crate::safety::log_error(&format!(
+        st2k_base::safety::log_error(&format!(
             "launch_with_list: temp path {} isn't valid Unicode",
             lf.display()
         ));

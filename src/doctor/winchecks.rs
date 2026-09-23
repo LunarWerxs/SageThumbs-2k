@@ -384,7 +384,7 @@ fn elevated_served_windows() -> Vec<String> {
 /// understandably leave it that way.
 pub(super) fn check_space_preview(r: &mut Report) {
     r.head("Press Space to preview");
-    if !crate::settings::preview_enabled() {
+    if !st2k_base::settings::preview_enabled() {
         r.line(
             S::Info,
             "Quick preview",

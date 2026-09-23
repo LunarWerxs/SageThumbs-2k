@@ -217,7 +217,7 @@ pub(super) fn licence_mode_line(snap: &crate::license::LicenceSnapshot) -> Strin
     if snap.entitled && !snap.key_prefix.is_empty() {
         return t("licence_mode_licensed").replace("{key}", &snap.key_prefix);
     }
-    if sagethumbs2k_core::settings::portable() {
+    if st2k_base::settings::portable() {
         return t("licence_mode_portable").to_string();
     }
     match snap.mode {
@@ -243,13 +243,13 @@ pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'st
 
 /// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
-/// line has no use for a time-of-day), through the shared `sagethumbs2k_core::unixtime`; no
+/// line has no use for a time-of-day), through the shared `st2k_base::unixtime`; no
 /// chrono/time dependency for one line.
 pub(crate) fn format_unix_date(unix_secs: u64) -> String {
     if unix_secs == 0 {
         return String::new();
     }
-    sagethumbs2k_core::unixtime::local_date(unix_secs).unwrap_or_default()
+    st2k_base::unixtime::local_date(unix_secs).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -586,7 +586,7 @@ mod tests {
         );
         // A portable test runner has no installer answer to fall back to; the live-key half above
         // is the part that matters and it has already run.
-        if sagethumbs2k_core::settings::portable() {
+        if st2k_base::settings::portable() {
             return;
         }
         assert_eq!(

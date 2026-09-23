@@ -89,7 +89,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::i18n;
+use st2k_base::i18n;
 
 use crate::convert::run_convert_dialog;
 use crate::dark::{dark_control, dark_titlebar, init_dark_app, is_dark};
@@ -133,7 +133,7 @@ fn schedule_unelevated_heal() {
     let run = |args: &[&str]| {
         std::process::Command::new("schtasks.exe")
             .args(args)
-            .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
+            .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
             .output()
     };
     // `/sc once /st 00:00` only satisfies schtasks' mandatory-schedule syntax — the task
@@ -150,7 +150,7 @@ fn schedule_unelevated_heal() {
             let _ = run(&["/delete", "/f", "/tn", TASK]);
         }
         Ok(o) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "heal: schtasks create failed ({}): {} — healing elevated instead",
                 o.status,
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -158,7 +158,7 @@ fn schedule_unelevated_heal() {
             crate::screenshot::heal_if_wanted();
         }
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "heal: schtasks unavailable ({e}) — healing elevated instead"
             ));
             crate::screenshot::heal_if_wanted();
@@ -228,7 +228,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
 
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
-    sagethumbs2k_core::safety::install_panic_hook("app");
+    st2k_base::safety::install_panic_hook("app");
     unsafe {
         let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
 
@@ -353,7 +353,7 @@ unsafe fn dispatch_cli_launch_modes(hinst: HINSTANCE, dark: bool, args: &[String
     // The detached half of the above: does the real (blocking) work and exits. Not
     // reachable from a normal launch — only from the re-spawn just above.
     if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
         return true;
     }
     if dispatch_user_state_modes(args) {
@@ -433,7 +433,7 @@ unsafe fn handle_single_instance(want_tab: Option<usize>) -> bool {
         // window), which is the bug: a failure here means "unknown", not "no". Log it (this
         // used to be silent) and proceed best-effort rather than either claim.
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "single-instance mutex could not be created/opened ({e}) — cannot verify \
                  whether another instance is already running"
             ));

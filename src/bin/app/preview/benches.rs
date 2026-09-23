@@ -120,7 +120,7 @@ pub(crate) fn run_bench(dir: &str) {
         flush("usage: SageThumbs2K.exe --bench-preview <folder> [out.txt]\n");
         return;
     }
-    let mut files = match bench_files(dir, sagethumbs2k_core::formats::is_known) {
+    let mut files = match bench_files(dir, st2k_base::formats::is_known) {
         Ok(files) => files,
         Err(e) => {
             flush(&format!("bench: {e}\n"));

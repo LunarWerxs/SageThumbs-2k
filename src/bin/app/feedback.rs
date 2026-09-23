@@ -303,7 +303,7 @@ fn build_body(cat: &str, msg: &str, contact: &str) -> String {
     let contact: String = contact.chars().take(MAX_CONTACT).collect();
     // The developer's own test box (HKCU DevMachine=1) tags the request, so test
     // submissions are distinguishable from real ones. Empty on every real install.
-    let dev = if sagethumbs2k_core::settings::is_dev_machine() {
+    let dev = if st2k_base::settings::is_dev_machine() {
         "&dev=1"
     } else {
         ""

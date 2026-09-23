@@ -18,7 +18,7 @@ use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 use crate::dark::dark_ctlcolor;
 use crate::win::{

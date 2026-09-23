@@ -231,8 +231,8 @@ mod tests {
             "the lock screen is untouched"
         );
         assert!(
-            crate::fsutil::staging_leftovers(&wall).is_empty()
-                && crate::fsutil::staging_leftovers(&lock).is_empty()
+            st2k_base::fsutil::staging_leftovers(&wall).is_empty()
+                && st2k_base::fsutil::staging_leftovers(&lock).is_empty()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -267,10 +267,10 @@ mod tests {
         // spawn released after a hard-coded interval measured from when it HAPPENED TO NOTICE
         // the staged temp file, which under a loaded suite can land after the whole retry
         // budget is spent - see `fsutil::on_transient_failure`.
-        let failures = crate::fsutil::lock_until_first_retry(&dest);
+        let failures = st2k_base::fsutil::lock_until_first_retry(&dest);
 
         let result = prepare_wallpaper_in(&dir, src_path.to_str().unwrap());
-        crate::fsutil::clear_transient_failure_hook();
+        st2k_base::fsutil::clear_transient_failure_hook();
 
         assert!(
             result.is_ok(),

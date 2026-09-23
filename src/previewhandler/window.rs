@@ -29,7 +29,7 @@ pub(super) fn class_acquire() {
             let wc = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(wndproc),
-                hInstance: HINSTANCE(crate::host::dll_hmodule().0),
+                hInstance: HINSTANCE(st2k_base::host::dll_hmodule().0),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                 lpszClassName: CLASS_NAME,
                 ..Default::default()
@@ -51,7 +51,11 @@ pub(super) fn class_release() {
         // Refused (ERROR_CLASS_HAS_WINDOWS) while any window of the class is still alive; then
         // it stays registered and the next acquire simply does not re-register.
         let gone = unsafe {
-            UnregisterClassW(CLASS_NAME, Some(HINSTANCE(crate::host::dll_hmodule().0))).is_ok()
+            UnregisterClassW(
+                CLASS_NAME,
+                Some(HINSTANCE(st2k_base::host::dll_hmodule().0)),
+            )
+            .is_ok()
         };
         if gone {
             c.registered = false;
@@ -192,7 +196,7 @@ pub(super) unsafe fn draw(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC, r
             let dh = ((rd.ih as f64 * scale).round() as i32).max(1);
             let dx = (cw - dw) / 2;
             let dy = (ch - dh) / 2;
-            crate::dib::stretch_blit(hdc, (dx, dy, dw, dh), rd.hbmp, (rd.iw, rd.ih));
+            st2k_base::dib::stretch_blit(hdc, (dx, dy, dw, dh), rd.hbmp, (rd.iw, rd.ih));
         }
     }
 }

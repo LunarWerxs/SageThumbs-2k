@@ -3,7 +3,7 @@
 //! does the per-format `shellex`/ProgID walk point at us rather than another program.
 
 use super::*;
-use crate::guids::{
+use st2k_base::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
     CLSID_THUMBNAIL_PROVIDER_STR, THUMB_HANDLER_CATEGORY,
 };
@@ -258,9 +258,9 @@ fn effective_thumb_handler(
 /// `snap`: G134 — this loop is exactly the ~330-lookup sweep `FormatEnabledSnapshot`'s own
 /// doc comment names (`register.rs`, `typeoverlay.rs`, and this file's per-format audit); in
 /// portable mode `format_enabled` re-reads and re-parses the WHOLE ini file from disk on
-/// EVERY call, so a per-extension `crate::settings::format_enabled(ext)` call here meant one
+/// EVERY call, so a per-extension `st2k_base::settings::format_enabled(ext)` call here meant one
 /// full ini parse per format. Take the snapshot once in [`report`] and reuse it.
-pub(super) fn check_extensions(r: &mut Report, snap: &crate::settings::FormatEnabledSnapshot) {
+pub(super) fn check_extensions(r: &mut Report, snap: &st2k_base::settings::FormatEnabledSnapshot) {
     r.head("Per-format file associations");
 
     let (mut ours, mut missing, mut stolen, mut disabled) = (0usize, 0usize, 0usize, 0usize);
@@ -344,7 +344,7 @@ enum ThumbSlotVerdict {
 /// Resolve one format's effective thumbnail handler into its bucket, recording a capped example.
 fn thumb_slot_verdict(
     ext: &str,
-    snap: &crate::settings::FormatEnabledSnapshot,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
     stolen_examples: &mut Vec<String>,
     missing_examples: &mut Vec<String>,
 ) -> ThumbSlotVerdict {
@@ -403,7 +403,10 @@ fn is_windows_own_handler(clsid: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn check_progid_handlers(r: &mut Report, snap: &crate::settings::FormatEnabledSnapshot) {
+pub(super) fn check_progid_handlers(
+    r: &mut Report,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
+) {
     r.head("ProgID-level thumbnail handlers (checked before our own keys)");
 
     let mut total = 0usize;

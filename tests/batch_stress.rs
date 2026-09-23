@@ -6,7 +6,7 @@
 //! checked that outputs *existed*, not that they were *right*, and a 1-in-100
 //! failure never shows up in a three-file test.
 //!
-//! Our batch path is a hand-rolled scoped thread pool (`src/parallel.rs`) with
+//! Our batch path is a hand-rolled scoped thread pool (`crates/base/src/parallel.rs`) with
 //! output names reserved serially before the parallel pass, so the same class of
 //! race is plausible here. This test therefore runs a few hundred files through
 //! it and asserts the DIMENSIONS of every single output, plus that no two files
@@ -19,7 +19,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sagethumbs2k_core::{parallel, resize_file, Resize};
+use sagethumbs2k_core::{resize_file, Resize};
+use st2k_base::parallel;
 
 /// Enough files to expose a 1-in-100 race, small enough to stay a fast test.
 const COUNT: usize = 300;

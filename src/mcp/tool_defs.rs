@@ -2,8 +2,8 @@
 //! the data table `tools/list` hands the client. Its own file since 2026-09-20 (`mcp.rs` had
 //! crossed the 800-line mark); nothing here changed, it only moved.
 
-use crate::formats;
 use serde_json::{json, Value};
+use st2k_base::formats;
 
 /// The tool catalog (name + description + JSON-Schema for arguments).
 pub(super) fn tool_defs() -> Value {

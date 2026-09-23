@@ -89,7 +89,7 @@
 
 use windows_registry::{CLASSES_ROOT, CURRENT_USER};
 
-use crate::formats::{self, Category};
+use st2k_base::formats::{self, Category};
 
 /// Marker proving a `TypeOverlay` under a ProgID key is one we wrote.
 const MARK: &str = "SageThumbs2K.TypeOverlay";
@@ -506,7 +506,7 @@ pub fn sync(on: bool) {
     clear_every_mark(&classes);
     // One settings snapshot for the whole sweep; the per-extension lookup below is then an
     // in-memory hit instead of a full ini parse per format in portable mode.
-    let fmt = crate::settings::format_enabled_snapshot();
+    let fmt = st2k_base::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
         // A format we no longer thumbnail has no corner of ours to own, either way.
         if !fmt.enabled(ext) {
@@ -534,7 +534,7 @@ pub fn remove_all() {
 /// work out from the symptom.
 pub fn foreign_overlays() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    let fmt = crate::settings::format_enabled_snapshot();
+    let fmt = st2k_base::settings::format_enabled_snapshot();
     for (ext, _) in formats::FORMATS {
         if !fmt.enabled(ext) {
             continue;
@@ -580,7 +580,7 @@ pub struct Restored {
 /// Every enabled format's effective ProgID with its class key opened: the set
 /// [`restored_overlays`] and [`owner_suppressed`] both walk.
 fn enabled_progid_keys() -> Vec<(&'static str, String, windows_registry::Key)> {
-    let fmt = crate::settings::format_enabled_snapshot();
+    let fmt = st2k_base::settings::format_enabled_snapshot();
     let mut out = Vec::new();
     for (ext, _) in formats::FORMATS {
         if !fmt.enabled(ext) {

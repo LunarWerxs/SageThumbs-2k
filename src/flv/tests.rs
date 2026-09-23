@@ -294,7 +294,7 @@ fn malformed_avcc_returns_none() {
 /// present (CI).
 #[test]
 fn corpus_sorenson_flv_declines_the_mp4_remux_path() {
-    let path = crate::testcorpus::dir().join("sample.flv");
+    let path = st2k_base::testcorpus::dir().join("sample.flv");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("corpus_sorenson_flv: no sample.flv — skipping");
         return;
@@ -322,7 +322,7 @@ fn corpus_sorenson_flv_declines_the_mp4_remux_path() {
 /// kind — would cost a process per thumbnail while still looking perfectly correct.
 #[test]
 fn corpus_h264_flv_remuxes_in_process() {
-    let path = crate::testcorpus::dir().join("sample-h264.flv");
+    let path = st2k_base::testcorpus::dir().join("sample-h264.flv");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("corpus_h264_flv: no sample-h264.flv — skipping");
         return;
@@ -425,7 +425,7 @@ fn flash_frame_declines_cleanly_without_the_helper() {
 /// without committing a video fixture. Skips when no corpus sample is available.
 #[test]
 fn real_h264_flv_round_trips_through_mediafoundation() {
-    let path = crate::testcorpus::dir().join("sample.mp4");
+    let path = st2k_base::testcorpus::dir().join("sample.mp4");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("real_h264_flv_round_trips: no sample.mp4 — skipping");
         return;

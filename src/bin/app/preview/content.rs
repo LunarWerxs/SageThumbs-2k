@@ -225,7 +225,7 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
     if rw <= (shown.0.max(1) as u32).saturating_mul(3) / 2
         && rh <= (shown.1.max(1) as u32).saturating_mul(3) / 2
     {
-        sagethumbs2k_core::safety::log_debugf!(
+        st2k_base::safety::log_debugf!(
             "preview: keeping the baked preview of {path} (document {rw}x{rh}, showing {}x{})",
             shown.0,
             shown.1
@@ -248,7 +248,7 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
         flattened().or_else(stored)
     };
     let Some(rgba) = found else {
-        sagethumbs2k_core::safety::log_debugf!(
+        st2k_base::safety::log_debugf!(
             "preview: no sharper composite for {path} (document {rw}x{rh}, already showing {}x{})",
             shown.0,
             shown.1
@@ -256,7 +256,7 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
         return None;
     };
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-    sagethumbs2k_core::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "preview: sharpened {path} from {}x{} to {w}x{h} (document is {rw}x{rh})",
         shown.0,
         shown.1
@@ -291,7 +291,7 @@ fn flattened_composite(path: &str, (rw, rh): (u32, u32)) -> Option<image::RgbaIm
     let whole = match sagethumbs2k_core::decode::read_full_fidelity(path) {
         Ok(bytes) => bytes,
         Err(e) => {
-            sagethumbs2k_core::safety::log_debugf!(
+            st2k_base::safety::log_debugf!(
                 "preview: cannot re-read {path} for the composite (document {rw}x{rh}): {e}"
             );
             return None;
@@ -300,7 +300,7 @@ fn flattened_composite(path: &str, (rw, rh): (u32, u32)) -> Option<image::RgbaIm
     match sagethumbs2k_core::decode::decode_full(&whole) {
         Ok(img) => Some(img.to_rgba8()),
         Err(e) => {
-            sagethumbs2k_core::safety::log_debugf!(
+            st2k_base::safety::log_debugf!(
                 "preview: composite decode failed for {path} (document {rw}x{rh}, {} bytes): {e}",
                 whole.len()
             );
@@ -329,7 +329,7 @@ pub(super) fn lower_ext(path: &str) -> String {
 /// file → Text. Phase 3's text branch shows the file as readable monospace text; rendered
 /// GitHub-style Markdown + syntax highlighting (WebView2 + syntect) is a later enhancement.
 pub(super) fn classify(path: &str) -> ContentKind {
-    use sagethumbs2k_core::{formats, settings};
+    use st2k_base::{formats, settings};
     let p = std::path::Path::new(path);
     if p.is_dir() {
         return ContentKind::InfoCard;
@@ -379,7 +379,7 @@ pub(super) fn classify(path: &str) -> ContentKind {
 /// toggle a user would expect to govern it; `None` when `ext` is not such a document or its
 /// toggle is off.
 fn doc_ext_kind(ext: &str) -> Option<ContentKind> {
-    use sagethumbs2k_core::{formats, settings};
+    use st2k_base::{formats, settings};
     if formats::is_preview_doc(ext) {
         let on = if ext.eq_ignore_ascii_case("ipynb") {
             settings::preview_markdown()
@@ -399,7 +399,7 @@ fn doc_ext_kind(ext: &str) -> Option<ContentKind> {
 /// frame. The head is sniffed so a binary stream gets its frame while a textual TypeScript
 /// file keeps its text view; only an extension on BOTH lists pays for the extra read.
 fn text_ext_kind(path: &str, ext: &str) -> ContentKind {
-    use sagethumbs2k_core::formats;
+    use st2k_base::formats;
     let video =
         formats::is_known(ext) && matches!(formats::category(ext), formats::Category::Video);
     if video && looks_like_binary(path) {

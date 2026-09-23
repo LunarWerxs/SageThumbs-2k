@@ -25,7 +25,7 @@ fn need(text: &str, col_w: i32, min_h: i32) -> i32 {
 fn every_locale_intro_line_stays_within_a_sane_height_band() {
     // Generous: catches a broken measurement, not a long sentence.
     const SANE_MAX: i32 = INTRO_H_MIN * 4;
-    for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+    for (code, pairs) in st2k_base::i18n::LOCALES {
         for key in ["fr_intro", "fr_intro_portable"] {
             let Some((_, text)) = pairs.iter().find(|(k, _)| *k == key) else {
                 continue;
@@ -111,7 +111,7 @@ fn every_locale_first_run_page_fits_a_reasonable_window() {
         ("fr2_head", &[&PAGE2_ROWS[0], &PAGE2_ROWS[1]], "fr2_sub"),
     ];
 
-    for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+    for (code, pairs) in st2k_base::i18n::LOCALES {
         let value = |key: &str| {
             pairs
                 .iter()

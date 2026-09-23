@@ -22,7 +22,7 @@ pub(super) struct UploadHost {
 /// **permanent-first, temporary-last**, so a normal upload gets a permanent link and
 /// only falls back to an expiring one when every permanent host is down.
 ///
-/// Built from [`sagethumbs2k_core::upload_config::BUILTIN_HOSTS`] rather than its
+/// Built from [`st2k_base::upload_config::BUILTIN_HOSTS`] rather than its
 /// own hardcoded list, so this chain and the config template's "current built-in
 /// defaults" comment can never drift apart — x0.at (currently the only *up* permanent
 /// keyless host), catbox.moe (kept in the chain so uploads return to it automatically
@@ -31,7 +31,7 @@ pub(super) struct UploadHost {
 /// permanent-operator fallback), and uguu.se (a THIRD, independent operator, ~3h temp,
 /// JSON reply — `{"files":[{"url":"…"}]}` with `\/`-escaped slashes).
 pub(super) fn builtin_hosts() -> Vec<UploadHost> {
-    sagethumbs2k_core::upload_config::BUILTIN_HOSTS
+    st2k_base::upload_config::BUILTIN_HOSTS
         .iter()
         .map(|&(host, path, field, extra, json)| UploadHost {
             host: host.into(),
@@ -64,7 +64,7 @@ pub(super) fn upload_hosts() -> Result<Vec<UploadHost>, String> {
     // Always make sure the self-documenting config file exists (all-commented =
     // "use the built-in defaults"), so it's there to find and edit. Path + template
     // live in the shared core module so the `st2k` CLI resolves the SAME file.
-    let cfg = sagethumbs2k_core::upload_config::ensure_config();
+    let cfg = st2k_base::upload_config::ensure_config();
 
     // 1) The config file wins when it defines any host. A file whose ACTIVE lines are all
     //    unusable is a misconfiguration, not "no configuration": the user chose a destination
@@ -79,7 +79,7 @@ pub(super) fn upload_hosts() -> Result<Vec<UploadHost>, String> {
     // direct CURRENT_USER open) so a portable install (marker-INI backend) reads the
     // same value it can actually set — opening the registry here would silently miss
     // a portable override and could pick up stale machine-registry state instead.
-    if let Some(raw) = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadUrl") {
+    if let Some(raw) = st2k_base::settings::get_string_opt("ScreenshotUploadUrl") {
         let url = raw.trim().to_string();
         if !url.is_empty() {
             let Some((host, path)) = crate::http::split_https(&url) else {
@@ -90,10 +90,10 @@ pub(super) fn upload_hosts() -> Result<Vec<UploadHost>, String> {
                      (or use the upload-hosts config file)."
                 ));
             };
-            let field = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadField")
+            let field = st2k_base::settings::get_string_opt("ScreenshotUploadField")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "file".into());
-            let extra = sagethumbs2k_core::settings::get_string_opt("ScreenshotUploadExtra")
+            let extra = st2k_base::settings::get_string_opt("ScreenshotUploadExtra")
                 .filter(|s| !s.is_empty())
                 .and_then(|kv| {
                     kv.split_once('=')
@@ -151,10 +151,10 @@ fn hosts_from_config_file(
 
 /// Ensure the config exists, then open it in the user's default text editor. Wired to
 /// the Settings ▸ Screenshots "Edit upload hosts…" button. (Path + template come from
-/// the shared `sagethumbs2k_core::upload_config` module — the `st2k` CLI opens the
+/// the shared `st2k_base::upload_config` module — the `st2k` CLI opens the
 /// same file.)
 pub(crate) unsafe fn open_hosts_config() {
-    let Some(path) = sagethumbs2k_core::upload_config::ensure_config() else {
+    let Some(path) = st2k_base::upload_config::ensure_config() else {
         return;
     };
     // If we couldn't create the file for some reason, open its folder instead.

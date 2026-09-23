@@ -13,8 +13,8 @@ use windows::Win32::UI::Shell::{
     FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FOS_STRICTFILETYPES, KF_FLAG_DEFAULT, SIGDN_FILESYSPATH,
 };
 
-use sagethumbs2k_core::parallel::ComGuard;
 use sagethumbs2k_core::prebuild::parsing_path;
+use st2k_base::parallel::ComGuard;
 
 use super::wide;
 
@@ -165,11 +165,8 @@ pub(crate) unsafe fn pick_open_file(
 /// Put `text` on the clipboard as Unicode text. Best-effort. Delegates the unsafe
 /// HGLOBAL ownership dance to the one shared writer in the lib's `clipboard` module.
 pub(crate) unsafe fn set_clipboard_text(text: &str) -> bool {
-    let bytes = sagethumbs2k_core::clipboard::utf16_nul_bytes(text);
-    sagethumbs2k_core::clipboard::set_clipboard(
-        sagethumbs2k_core::clipboard::CF_UNICODETEXT,
-        &bytes,
-    )
+    let bytes = st2k_base::clipboard::utf16_nul_bytes(text);
+    st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_UNICODETEXT, &bytes)
 }
 
 #[cfg(test)]

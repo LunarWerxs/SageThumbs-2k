@@ -61,7 +61,7 @@ pub(crate) fn try_jp2_reduced_tier(
             return Some(apply_exif_orientation(DynamicImage::ImageRgb8(img), bytes));
         }
     }
-    crate::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
+    st2k_base::safety::log_debug("decode: jp2 native reduced decode declined, using tiers");
     None
 }
 
@@ -114,7 +114,7 @@ pub(crate) fn try_video_tier(
     // every frame tier also fails) must not call `vcodec::cover_art` a second time — the
     // bytes haven't changed, so it would just re-scan the same moov to the same null answer.
     let mut tried_cover_art = false;
-    if crate::settings::prefer_cover_art() {
+    if st2k_base::settings::prefer_cover_art() {
         tried_cover_art = true;
         if let Some(cover) = crate::vcodec::cover_art(&mut std::io::Cursor::new(bytes)) {
             return Some(decode_image_with_raw_order(
@@ -130,7 +130,7 @@ pub(crate) fn try_video_tier(
     // when the index can't be mapped), so we fall back to decoding a frame off the buffer.
     // The mark is the user's `VideoOffset` (30 % unless changed), read ONCE so every tier
     // below seeks to the same place.
-    let at = crate::settings::video_offset_frac();
+    let at = st2k_base::settings::video_offset_frac();
     // The MP4/MKV tiers hand back the display rotation they already parsed out of the same
     // moov/Tracks they read for the mini-clip, so a tier that DID parse the
     // container never needs the standalone `display_rotation` probe below to re-read it.
@@ -153,7 +153,7 @@ pub(crate) fn try_video_tier(
         .as_deref()
         .and_then(|m| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(m)));
     if let Some(reason) = &mf_refused {
-        crate::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "video: {reason}; every Media Foundation tier skipped (issue #35)"
         ));
     }
@@ -254,7 +254,7 @@ fn rotated_as_displayed(
     };
     match rotation {
         Some(deg) => {
-            crate::safety::log_debugf!("video: display matrix asks for {deg} deg");
+            st2k_base::safety::log_debugf!("video: display matrix asks for {deg} deg");
             crate::video::apply_display_rotation(frame, deg)
         }
         None => frame,
@@ -431,7 +431,7 @@ mod illustrator_tests {
     use super::*;
 
     fn corpus(name: &str) -> Option<Vec<u8>> {
-        crate::testcorpus::read(name)
+        st2k_base::testcorpus::read(name)
     }
 
     /// Files Illustrator 30.8 (2026) wrote on 2026-09-19, authored through the app's own

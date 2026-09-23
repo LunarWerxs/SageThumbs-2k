@@ -20,7 +20,7 @@ pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
     // success (2026-09-19 audit F19). A transient lock is retried exactly like the rename
     // below; refusing here, before the .ico exists, leaves the folder exactly as it was.
     let ini_path = dir.join("desktop.ini");
-    let existing = crate::fsutil::read_retrying(&ini_path).map_err(|e| {
+    let existing = st2k_base::fsutil::read_retrying(&ini_path).map_err(|e| {
         Error::new(
             E_FAIL,
             format!("read desktop.ini: {e} - leaving the folder untouched"),
@@ -133,7 +133,7 @@ fn rename_clearing(
     what: &str,
 ) -> Result<()> {
     let prior_attrs = clear_attrs(to, drop);
-    crate::fsutil::rename_retrying(from, to).map_err(|e| {
+    st2k_base::fsutil::rename_retrying(from, to).map_err(|e| {
         let _ = std::fs::remove_file(from);
         if let Some(prior) = prior_attrs {
             restore_attrs(to, prior);
@@ -225,7 +225,7 @@ fn clear_attrs(path: &Path, drop: FILE_FLAGS_AND_ATTRIBUTES) -> Option<FILE_FLAG
         let cur = GetFileAttributesW(PCWSTR(wide.as_ptr()));
         if cur == u32::MAX {
             if !matches!(GetLastError(), ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) {
-                crate::safety::log(&format!(
+                st2k_base::safety::log(&format!(
                     "clear_attrs: GetFileAttributesW({}) failed for a reason other than \
                      \"doesn't exist\" — leaving it untouched",
                     path.display()
@@ -359,7 +359,7 @@ mod tests {
         (dir, src_path)
     }
 
-    use crate::fsutil::lock_until_first_retry;
+    use st2k_base::fsutil::lock_until_first_retry;
 
     /// Hold `lock_path` open with no sharing across a `set_folder_icon` run over `src_path`,
     /// then assert the rename retried past that transient lock instead of failing outright —
@@ -368,7 +368,7 @@ mod tests {
         let failures = lock_until_first_retry(lock_path);
 
         let result = set_folder_icon(src_path.to_str().unwrap());
-        crate::fsutil::clear_transient_failure_hook();
+        st2k_base::fsutil::clear_transient_failure_hook();
 
         assert!(
             result.is_ok(),

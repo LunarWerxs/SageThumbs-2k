@@ -37,7 +37,7 @@ use super::docconv::{fence_for, md_cell};
 // Shared with `highlight::lex`'s own UTF-8 stepping so a multibyte-boundary fix only has to
 // happen once.
 use super::highlight::utf8_len;
-use sagethumbs2k_core::sqlite_prim::{local_size, serial_size, varint};
+use st2k_base::sqlite_prim::{local_size, serial_size, varint};
 
 /// Extensions offered the database view. Kept here rather than in `formats.rs` for the same
 /// reason `content::is_archive_ext` is: these are VIEWER routing, not registered formats.

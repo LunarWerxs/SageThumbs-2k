@@ -7,7 +7,7 @@ use super::*;
 /// Our own settings, which can switch everything off without any registry problem.
 pub(super) fn check_settings(r: &mut Report) {
     r.head("SageThumbs 2K settings");
-    if crate::settings::thumbnails_enabled() {
+    if st2k_base::settings::thumbnails_enabled() {
         r.line(S::Ok, "Thumbnails", "enabled");
     } else {
         r.fail_with_fix(
@@ -19,27 +19,27 @@ pub(super) fn check_settings(r: &mut Report) {
     r.line(
         S::Info,
         "Max file size",
-        &max_file_size_detail(crate::settings::max_file_size_bytes()),
+        &max_file_size_detail(st2k_base::settings::max_file_size_bytes()),
     );
     r.line(
         S::Info,
         "Max thumbnail size",
-        &format!("{} px", crate::settings::max_thumb_size()),
+        &format!("{} px", st2k_base::settings::max_thumb_size()),
     );
     r.line(
         S::Info,
         "Embedded previews preferred",
-        if crate::settings::use_embedded() {
+        if st2k_base::settings::use_embedded() {
             "yes"
         } else {
             "no"
         },
     );
-    if crate::settings::format_badge() {
+    if st2k_base::settings::format_badge() {
         r.line(
             S::Info,
             "Format badge",
-            if crate::settings::format_badge_icon() {
+            if st2k_base::settings::format_badge_icon() {
                 "on (icon)"
             } else {
                 "on (text)"
@@ -47,10 +47,10 @@ pub(super) fn check_settings(r: &mut Report) {
         );
         // Only relevant when there IS a badge for Windows' icon to sit on top of.
         type_overlay_note(r);
-    } else if crate::settings::corner_mark() == crate::settings::CornerMark::SystemIcon {
+    } else if st2k_base::settings::corner_mark() == st2k_base::settings::CornerMark::SystemIcon {
         system_icon_note(r);
     }
-    if crate::settings::thumb_checker() {
+    if st2k_base::settings::thumb_checker() {
         r.line(
             S::Info,
             "Transparency checkerboard",
@@ -67,7 +67,7 @@ pub(super) fn check_settings(r: &mut Report) {
 /// too, as information and as a warning, so a support thread can see the clock. A
 /// Personal copy prints one line and nothing else: free is free.
 pub(super) fn check_licence(r: &mut Report) {
-    use crate::licence_state::{current_phase, days_until, read_mode, Mode, Phase};
+    use st2k_base::licence_state::{current_phase, days_until, read_mode, Mode, Phase};
     r.head("Licence");
     if read_mode() == Mode::Personal {
         r.line(
@@ -77,7 +77,7 @@ pub(super) fn check_licence(r: &mut Report) {
         );
         return;
     }
-    let now = crate::unixtime::now();
+    let now = st2k_base::unixtime::now();
     match current_phase() {
         Phase::Clear => r.line(
             S::Info,
@@ -90,7 +90,7 @@ pub(super) fn check_licence(r: &mut Report) {
             &format!(
                 "running, {} day(s) left; without a licence key, thumbnails stop {} day(s) after that",
                 days_until(now, ends_unix),
-                crate::licence_state::LOCK_GRACE_SECS / (24 * 60 * 60)
+                st2k_base::licence_state::LOCK_GRACE_SECS / (24 * 60 * 60)
             ),
         ),
         Phase::Expiring { locks_unix } => r.line(
@@ -111,7 +111,7 @@ pub(super) fn check_licence(r: &mut Report) {
 
 /// Render the MaxSize setting for the report.
 ///
-/// `MaxSize = 0` means "no user limit", which [`crate::settings::max_file_size_bytes`]
+/// `MaxSize = 0` means "no user limit", which [`st2k_base::settings::max_file_size_bytes`]
 /// represents as `u64::MAX`. Dividing that by a megabyte and printing it told the user
 /// their cap was 17,592,186,044,415 MB — a fabricated number in the one tool whose whole
 /// value is that its statements can be trusted. Pure so the sentinel case is testable
@@ -194,20 +194,20 @@ pub(super) fn check_format_capability(r: &mut Report) {
         std::collections::BTreeMap::new();
     for &(ext, _) in FORMATS {
         *counts
-            .entry(crate::formats::capability(ext).source.as_str())
+            .entry(st2k_base::formats::capability(ext).source.as_str())
             .or_insert(0) += 1;
     }
     let by_source: Vec<String> = counts.iter().map(|(k, v)| format!("{k}={v}")).collect();
     r.line(S::Info, "By source", &by_source.join(", "));
 
-    use crate::formats::OsCodec;
+    use st2k_base::formats::OsCodec;
     // `Av1` is deliberately NOT in this array - it has no `os_codec_available` component
     // lookup to run at all (no WIC container GUID exists for it), so it gets its own honest
     // block below instead of a present/MISSING verdict this loop can't actually back up.
     for codec in [OsCodec::MediaFoundation, OsCodec::WmPhoto, OsCodec::Heif] {
         let exts: Vec<&str> = FORMATS
             .iter()
-            .filter(|&&(ext, _)| crate::formats::capability(ext).os_codec == Some(codec))
+            .filter(|&&(ext, _)| st2k_base::formats::capability(ext).os_codec == Some(codec))
             .map(|&(ext, _)| ext)
             .collect();
         if exts.is_empty() {
@@ -222,7 +222,7 @@ pub(super) fn check_format_capability(r: &mut Report) {
     // without claiming a verdict the code can't actually back up.
     let av1_exts: Vec<&str> = FORMATS
         .iter()
-        .filter(|&&(ext, _)| crate::formats::capability(ext).os_codec == Some(OsCodec::Av1))
+        .filter(|&&(ext, _)| st2k_base::formats::capability(ext).os_codec == Some(OsCodec::Av1))
         .map(|&(ext, _)| ext)
         .collect();
     if !av1_exts.is_empty() {
@@ -241,8 +241,8 @@ pub(super) fn check_format_capability(r: &mut Report) {
 
 /// Reports one OS-codec dependency: its label and whether the codec is present here, over the
 /// formats that ride on it.
-fn report_os_codec(r: &mut Report, codec: crate::formats::OsCodec, exts: &[&str]) {
-    use crate::formats::OsCodec;
+fn report_os_codec(r: &mut Report, codec: st2k_base::formats::OsCodec, exts: &[&str]) {
+    use st2k_base::formats::OsCodec;
     let label = match codec {
         OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
         OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
@@ -553,7 +553,7 @@ fn registry_values(key: &windows_registry::Key) -> Vec<(String, String)> {
 /// The settings tree of an installed copy: the root's values plus one level of subkeys,
 /// which is the whole depth the app ever writes. Absent root means nothing configured.
 fn registry_settings() -> Vec<SettingsSection> {
-    let Ok(root) = CURRENT_USER.open(crate::settings::hkcu_root_path()) else {
+    let Ok(root) = CURRENT_USER.open(st2k_base::settings::hkcu_root_path()) else {
         return Vec::new();
     };
     let mut out = vec![(None, registry_values(&root))];
@@ -576,11 +576,11 @@ fn portable_settings() -> Vec<SettingsSection> {
         v.sort();
         v
     };
-    let mut out = vec![(None, sorted(crate::settings::portable_values(None)))];
-    let mut sections = crate::settings::portable_subkeys();
+    let mut out = vec![(None, sorted(st2k_base::settings::portable_values(None)))];
+    let mut sections = st2k_base::settings::portable_subkeys();
     sections.sort();
     for name in sections {
-        let values = sorted(crate::settings::portable_values(Some(&name)));
+        let values = sorted(st2k_base::settings::portable_values(Some(&name)));
         out.push((Some(name), values));
     }
     out
@@ -588,7 +588,7 @@ fn portable_settings() -> Vec<SettingsSection> {
 
 /// Drop the sign-in state from a settings tree: the credential section on an installed copy
 /// and the prefixed root values on a portable one (2026-09-05 audit, E01). The rule is
-/// [`crate::settings::is_credential_subkey`] / [`crate::settings::is_credential_root_value`],
+/// [`st2k_base::settings::is_credential_subkey`] / [`st2k_base::settings::is_credential_root_value`],
 /// the same one the settings export applies, and deliberately NOT a list of value names: the
 /// credential store writes everything under that one container, so a credential it grows
 /// later is scrubbed here without anyone remembering to add it. The root filter runs for
@@ -602,10 +602,10 @@ fn without_credentials(mut sections: Vec<SettingsSection>) -> Vec<SettingsSectio
     sections.retain(|(name, _)| {
         !name
             .as_deref()
-            .is_some_and(crate::settings::is_credential_subkey)
+            .is_some_and(st2k_base::settings::is_credential_subkey)
     });
     for (_, values) in &mut sections {
-        values.retain(|(name, _)| !crate::settings::is_credential_root_value(name));
+        values.retain(|(name, _)| !st2k_base::settings::is_credential_root_value(name));
     }
     sections
 }
@@ -627,7 +627,7 @@ fn render_settings(storage: &str, sections: &[SettingsSection]) -> String {
     for (name, values) in sections {
         let heading = name
             .as_deref()
-            .unwrap_or(crate::settings::PORTABLE_ROOT_SECTION);
+            .unwrap_or(st2k_base::settings::PORTABLE_ROOT_SECTION);
         let _ = write!(s, "\n[{heading}]\n");
         for (k, v) in values {
             let _ = writeln!(s, "{k}={v}");
@@ -644,13 +644,13 @@ fn render_settings(storage: &str, sections: &[SettingsSection]) -> String {
 /// blank a thumbnail; a bug about a format toggle, a menu item or a convert default needs
 /// the rest, which used to be a separate export the reporter had to think to attach.
 pub(super) fn settings_snapshot() -> String {
-    let (storage, sections) = match crate::settings::ini_path() {
+    let (storage, sections) = match st2k_base::settings::ini_path() {
         Some(ini) => (
             format!("portable ini at {}", ini.display()),
             portable_settings(),
         ),
         None => (
-            format!(r"registry, HKCU\{}", crate::settings::hkcu_root_path()),
+            format!(r"registry, HKCU\{}", st2k_base::settings::hkcu_root_path()),
             registry_settings(),
         ),
     };

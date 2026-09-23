@@ -149,8 +149,7 @@ unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     *st.text.borrow_mut() = None;
     *st.video.borrow_mut() = None; // stop + tear down any previous video player
     st.video_dims.set(None); // the next clip re-reports its own size at LOADEDMETADATA
-    st.arrow_nav
-        .set(sagethumbs2k_core::settings::preview_arrow_nav());
+    st.arrow_nav.set(st2k_base::settings::preview_arrow_nav());
     #[cfg(feature = "html-preview")]
     {
         *st.webview.borrow_mut() = None; // close any previous WebView2 host
@@ -353,7 +352,7 @@ unsafe fn render_font_to_state(st: &ViewerState, path: &str) -> bool {
 /// would be a button that visibly does nothing. Formats whose only view is source (`.rs`, `.json`)
 /// and whose only view is rendered (a PNG, a video) are both excluded.
 pub(super) fn source_capable(ext: &str) -> bool {
-    use sagethumbs2k_core::{formats, settings};
+    use st2k_base::{formats, settings};
     if formats::is_preview_markdown(ext) {
         return settings::preview_markdown();
     }
@@ -384,7 +383,7 @@ pub(super) fn source_capable(ext: &str) -> bool {
 /// extension, the Text toggle is off, or the bytes aren't SQLite). One helper because both the
 /// async `load` and the headless `load_static` must gate identically.
 fn db_markdown(path: &str) -> Option<String> {
-    if !super::dbdoc::is_db_ext(&ext_of(path)) || !sagethumbs2k_core::settings::preview_text() {
+    if !super::dbdoc::is_db_ext(&ext_of(path)) || !st2k_base::settings::preview_text() {
         return None;
     }
     super::dbdoc::to_markdown(path)
@@ -394,7 +393,7 @@ fn db_markdown(path: &str) -> Option<String> {
 /// Text toggle off, or the bytes aren't RFC-822/OLE) — same gate discipline as
 /// [`db_markdown`], one helper so `load` and `load_static` cannot diverge.
 fn mail_markdown(path: &str) -> Option<String> {
-    if !super::mailmsg::is_mail_ext(&ext_of(path)) || !sagethumbs2k_core::settings::preview_text() {
+    if !super::mailmsg::is_mail_ext(&ext_of(path)) || !st2k_base::settings::preview_text() {
         return None;
     }
     super::mailmsg::to_markdown(path)
@@ -406,7 +405,7 @@ fn mail_markdown(path: &str) -> Option<String> {
 /// only ever answers for whatever [`content::classify`] already gave up on (see
 /// [`resolve_hex_or_card`] and its `load_static` twin, `apply_static_hex_or_card`).
 fn hex_markdown(path: &str) -> Option<String> {
-    if !sagethumbs2k_core::settings::preview_text() {
+    if !st2k_base::settings::preview_text() {
         return None;
     }
     hexview::to_markdown(path)
@@ -417,7 +416,7 @@ fn hex_markdown(path: &str) -> Option<String> {
 /// can't diverge on how the extension is extracted, mirroring `db_markdown`/`mail_markdown`'s
 /// shared-gate pattern above.
 fn is_load_blocked(path: &str) -> bool {
-    sagethumbs2k_core::settings::preview_blocked(&ext_of(path))
+    st2k_base::settings::preview_blocked(&ext_of(path))
 }
 
 /// Lowercase extension of `path` (no dot). Delegates to [`content::lower_ext`], the single
@@ -436,7 +435,7 @@ pub(super) fn is_animatable(path: &str) -> bool {
 /// backdrop". Reads the same `FORMATS` category table the rest of the app does, so a new audio
 /// extension is covered the moment it is registered.
 pub(super) fn is_audio(path: &str) -> bool {
-    use sagethumbs2k_core::formats;
+    use st2k_base::formats;
     matches!(formats::category(&ext_of(path)), formats::Category::Audio)
 }
 

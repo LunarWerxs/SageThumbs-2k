@@ -106,7 +106,7 @@ static STATE_EVERYTHING: WarnState = WarnState::new();
 pub(super) unsafe fn rearm(daemon_hwnd: HWND) {
     DAEMON_HWND.store(daemon_hwnd.0 as isize, Ordering::Relaxed);
     uninstall();
-    if !sagethumbs2k_core::settings::preview_enabled() {
+    if !st2k_base::settings::preview_enabled() {
         return;
     }
     let hook = SetWinEventHook(
@@ -164,7 +164,7 @@ unsafe extern "system" fn win_event_proc(
 /// Returns the program's name when the user should be warned, `None` otherwise. Opening a process
 /// handle is far too heavy for the hook callback, which is why it lives here.
 pub(super) unsafe fn warning_for(hwnd: HWND) -> Option<&'static str> {
-    if !sagethumbs2k_core::settings::preview_enabled() {
+    if !st2k_base::settings::preview_enabled() {
         return None;
     }
     // `hwnd` was posted asynchronously by `win_event_proc`; by the time the daemon's

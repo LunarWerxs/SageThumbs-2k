@@ -41,13 +41,13 @@ pub use user::{
     user_registration_path,
 };
 
-use crate::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
-use crate::guids::{
+use st2k_base::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
+use st2k_base::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
     CLSID_THUMBNAIL_PROVIDER_STR, PREVHOST_APPID, PREVIEW_HANDLER_CATEGORY, THUMB_HANDLER_CATEGORY,
 };
-use crate::safety::{log, log_error};
-use crate::settings::{self, FormatEnabledSnapshot};
+use st2k_base::safety::{log, log_error};
+use st2k_base::settings::{self, FormatEnabledSnapshot};
 
 const NAME: &str = "SageThumbs 2K Thumbnail Provider";
 const CM_NAME: &str = "SageThumbs 2K Context Menu";

@@ -73,7 +73,7 @@ pub(crate) fn vp9_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<imag
     let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
     let max = crate::decode::limits::MAX_DIM;
     if img.width() == 0 || img.height() == 0 || img.width() > max || img.height() > max {
-        crate::safety::log_debug("vp9 decode: child returned out-of-bounds dimensions");
+        st2k_base::safety::log_debug("vp9 decode: child returned out-of-bounds dimensions");
         return None;
     }
     Some(img)
@@ -103,12 +103,12 @@ mod tests {
     /// nothing about the feature, so it is inverted here into the stronger claim.
     #[test]
     fn a_real_profile2_container_decodes_when_the_helper_exists() {
-        let path = crate::testcorpus::dir().join("sample-vp9p2.webm");
+        let path = st2k_base::testcorpus::dir().join("sample-vp9p2.webm");
         let Ok(bytes) = std::fs::read(&path) else {
             return; // corpus-gated, like the other sample-backed tests
         };
         let got = vp9_frame(&mut Cursor::new(&bytes), 0.30);
-        match crate::host::sibling_of_dll(crate::host::CLI_EXE) {
+        match st2k_base::host::sibling_of_dll(st2k_base::host::CLI_EXE) {
             Some(exe) if exe.exists() => {
                 let img = got.expect("the helper is present, so Profile 2 must decode");
                 assert!(

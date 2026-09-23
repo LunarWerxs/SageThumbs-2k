@@ -81,7 +81,7 @@ const THUMBS_ROW_H: i32 = 68;
 /// Does this copy get the thumbnails row? Only a portable one: an installed build registered
 /// the handler machine-wide at setup, so offering it again would be a switch that does nothing.
 fn offers_thumbnails() -> bool {
-    sagethumbs2k_core::settings::portable()
+    st2k_base::settings::portable()
 }
 
 // ---- Measured row heights (2026-09-05 audit finding F36) ----------------------------
@@ -291,7 +291,7 @@ unsafe fn fit_window(hwnd: HWND, client_h: i32) {
 
 /// Has the welcome window already been shown on this account?
 pub(crate) fn already_shown() -> bool {
-    sagethumbs2k_core::settings::get_dword_opt(FIRST_RUN_SHOWN).unwrap_or(0) != 0
+    st2k_base::settings::get_dword_opt(FIRST_RUN_SHOWN).unwrap_or(0) != 0
 }
 
 /// Record that the welcome has been dealt with. Also the `--first-run-seen` entry point:
@@ -299,7 +299,7 @@ pub(crate) fn already_shown() -> bool {
 /// because someone who already had SageThumbs installed has already made these choices and
 /// must not be greeted like a new user.
 pub(crate) fn mark_shown() {
-    let _ = sagethumbs2k_core::settings::set_dword(FIRST_RUN_SHOWN, 1);
+    let _ = st2k_base::settings::set_dword(FIRST_RUN_SHOWN, 1);
 }
 
 /// Show the welcome window and block until it is dismissed. No-op if it has run before.
@@ -452,7 +452,7 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
 
 /// Apply the page-2 switches. Each maps 1:1 to the Settings row that owns it.
 unsafe fn apply_persona(hwnd: HWND) {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     if checked(hwnd, ID_P_COVERS) {
         let _ = s::set_prefer_cover_art(true);
     }
@@ -612,11 +612,11 @@ unsafe fn apply(hwnd: HWND) {
         }
     }
     if checked(hwnd, ID_PREVIEW) {
-        let _ = sagethumbs2k_core::settings::set_preview_enabled(true);
+        let _ = st2k_base::settings::set_preview_enabled(true);
     }
     if checked(hwnd, ID_SHOT) {
         if checked(hwnd, ID_PRTSCN) {
-            let _ = sagethumbs2k_core::settings::set_screenshot_hotkey(PRTSCN_ONLY);
+            let _ = st2k_base::settings::set_screenshot_hotkey(PRTSCN_ONLY);
             release_windows_prtscn();
         }
         // Last: `set_enabled` reconciles the autostart entry AND starts the daemon, which

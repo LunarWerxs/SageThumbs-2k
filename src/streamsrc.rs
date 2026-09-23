@@ -18,8 +18,9 @@ use windows::Win32::System::Com::{
     STREAM_SEEK_END, STREAM_SEEK_SET,
 };
 
-use crate::settings::ThumbSettings;
-use crate::{decode, safety};
+use crate::decode;
+use st2k_base::safety;
+use st2k_base::settings::ThumbSettings;
 
 mod archive;
 mod headprev;

@@ -370,7 +370,7 @@ fn vp9_keyframe_gates_on_the_codec_and_survives_junk() {
 /// this also covers the first-cluster fallback). Skips when the corpus is absent (CI).
 #[test]
 fn corpus_vp9_profile2_yields_a_keyframe() {
-    let path = crate::testcorpus::dir().join("sample-vp9p2.webm");
+    let path = st2k_base::testcorpus::dir().join("sample-vp9p2.webm");
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("corpus_vp9_profile2: no sample-vp9p2.webm — skipping");
         return;

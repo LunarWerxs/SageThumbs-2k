@@ -28,7 +28,7 @@ const DAEMON_STOPPED_KEY: &str = "DaemonStopped";
 /// presence (which used to BE the screenshot-enabled state) so their setting migrates
 /// cleanly — once `set_enabled` writes the DWORD, the fallback is never consulted again.
 pub(crate) fn is_enabled() -> bool {
-    match sagethumbs2k_core::settings::get_dword_opt("ScreenshotEnabled") {
+    match st2k_base::settings::get_dword_opt("ScreenshotEnabled") {
         Some(v) => v != 0,
         None => run_entry_present(),
     }
@@ -37,20 +37,20 @@ pub(crate) fn is_enabled() -> bool {
 /// Is a custom action hotkey bound (a non-disabled chord)? Such a binding also needs the
 /// daemon resident, independently of the screenshot feature.
 fn custom_hotkey_bound() -> bool {
-    sagethumbs2k_core::settings::custom_action_hotkey().1 != 0
+    st2k_base::settings::custom_action_hotkey().1 != 0
 }
 
 /// Is Quick preview enabled? Its Space keyboard hook lives in this same daemon, so the
 /// daemon must be resident whenever the feature is on — independently of screenshots or a
 /// custom hotkey.
 fn preview_wanted() -> bool {
-    sagethumbs2k_core::settings::preview_enabled()
+    st2k_base::settings::preview_enabled()
 }
 
 /// Was the daemon explicitly stopped from the tray, and hasn't Settings been
 /// saved since? See [`DAEMON_STOPPED_KEY`].
 fn daemon_stopped() -> bool {
-    sagethumbs2k_core::settings::get_dword_opt(DAEMON_STOPPED_KEY) == Some(1)
+    st2k_base::settings::get_dword_opt(DAEMON_STOPPED_KEY) == Some(1)
 }
 
 /// Pure core of [`daemon_wanted`], split out for testing: an explicit stop
@@ -103,7 +103,7 @@ fn autostart_missing_while_wanted_from(wanted: bool, allowed: bool, missing: boo
 /// [`autostart_points_at_other_install`] exists to clean up after. The daemon still runs
 /// for the current session when something wants it; it just doesn't survive a logoff.
 fn autostart_allowed() -> bool {
-    !sagethumbs2k_core::settings::portable()
+    !st2k_base::settings::portable()
 }
 
 /// Is the `…\Run` autostart entry present? (The legacy "screenshots enabled" signal, now
@@ -195,11 +195,10 @@ const AUTOSTART_HEAL_COUNT_KEY: &str = "AutostartHealCount";
 /// occurrence into "this keeps happening", pointing at the real cause (a security product
 /// repeatedly deleting the value) rather than at our code.
 fn record_autostart_heal() {
-    let prior = sagethumbs2k_core::settings::get_dword_opt(AUTOSTART_HEAL_COUNT_KEY).unwrap_or(0);
-    let _ =
-        sagethumbs2k_core::settings::set_dword(AUTOSTART_HEAL_COUNT_KEY, prior.saturating_add(1));
+    let prior = st2k_base::settings::get_dword_opt(AUTOSTART_HEAL_COUNT_KEY).unwrap_or(0);
+    let _ = st2k_base::settings::set_dword(AUTOSTART_HEAL_COUNT_KEY, prior.saturating_add(1));
     if prior == 0 {
-        sagethumbs2k_core::safety::log(
+        st2k_base::safety::log(
             "screenshot: autostart Run entry was missing while the daemon is still wanted \
              (settings say autostart on, but the registry value is gone) — restoring it. \
              Likely cause: antivirus/cleanup software flagging it as persistence, as \
@@ -207,7 +206,7 @@ fn record_autostart_heal() {
              place to look — check its quarantine/threat log and add an exclusion for our exe.",
         );
     } else {
-        sagethumbs2k_core::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "screenshot: autostart Run entry went missing AGAIN (heal #{}) — something on \
              this machine keeps deleting it, most likely antivirus real-time protection re-\
              flagging the value on every scan. Restoring it again, but this is no longer a \
@@ -223,8 +222,8 @@ fn record_autostart_heal() {
 pub(crate) fn set_enabled(on: bool) {
     // Any Settings ▸ Save clears a tray "Quit" stop — the user is actively
     // engaging with Settings again, which is "re-enabling something" in the plainest sense.
-    let _ = sagethumbs2k_core::settings::set_dword(DAEMON_STOPPED_KEY, 0);
-    let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", on as u32);
+    let _ = st2k_base::settings::set_dword(DAEMON_STOPPED_KEY, 0);
+    let _ = st2k_base::settings::set_dword("ScreenshotEnabled", on as u32);
     reconcile();
 }
 
@@ -277,13 +276,13 @@ fn install_autostart_entry() {
                 RUN_NAME,
                 format!("\"{}\" --screenshot-daemon", exe.display()),
             ) {
-                sagethumbs2k_core::safety::log(&format!(
+                st2k_base::safety::log(&format!(
                     "screenshot: failed to write autostart Run entry: {e}"
                 ));
             }
         }
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "screenshot: failed to open Run key for autostart: {e}"
             ));
         }
@@ -299,9 +298,7 @@ fn remove_autostart_entry(action: &str) {
     }
     if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
         if let Err(e) = k.remove_value(RUN_NAME) {
-            sagethumbs2k_core::safety::log(&format!(
-                "screenshot: {action} autostart Run entry: {e}"
-            ));
+            st2k_base::safety::log(&format!("screenshot: {action} autostart Run entry: {e}"));
         }
     }
 }
@@ -325,8 +322,8 @@ pub(crate) fn quit() {
     // `daemon_wanted()` still true (a bound custom hotkey or Quick preview keeps it true even
     // with screenshots off) and silently re-created the very autostart entry + daemon this
     // function just removed.
-    let _ = sagethumbs2k_core::settings::set_dword(DAEMON_STOPPED_KEY, 1);
-    let _ = sagethumbs2k_core::settings::set_dword("ScreenshotEnabled", 0);
+    let _ = st2k_base::settings::set_dword(DAEMON_STOPPED_KEY, 1);
+    let _ = st2k_base::settings::set_dword("ScreenshotEnabled", 0);
     remove_autostart_entry("quit failed to remove");
     unsafe { stop_daemon() };
 }

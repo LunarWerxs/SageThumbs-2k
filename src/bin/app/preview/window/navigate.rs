@@ -19,7 +19,7 @@ type SiblingListing = (
 /// with what `loader::load` actually handles: decoded formats + text/markdown + archives + fonts
 /// + SQLite databases + mail messages + web shortcuts.
 pub(in crate::preview) fn is_previewable_ext(ext: &str) -> bool {
-    use sagethumbs2k_core::formats;
+    use st2k_base::formats;
     formats::is_known(ext)
         || formats::is_preview_text(ext)
         || formats::is_preview_markdown(ext)

@@ -498,7 +498,7 @@ pub fn quick_items() -> Vec<QuickItem> {
 }
 
 /// The top-level MENU items to DISPLAY, in the user's saved order
-/// ([`crate::settings::menu_order`]), each paired with its ORIGINAL leaf-start index.
+/// ([`st2k_base::settings::menu_order`]), each paired with its ORIGINAL leaf-start index.
 /// The original index keeps command ids STABLE regardless of display order — dispatch
 /// reads the original [`leaves`]/[`slot_for`], so only the INSERTION order changes,
 /// never the id→action mapping. With no saved order this is just the default MENU
@@ -527,7 +527,7 @@ pub fn default_menu_tokens() -> Vec<&'static str> {
 }
 
 pub fn ordered_top_level() -> Vec<(&'static MenuItem, u32)> {
-    order_top_level_with(&crate::settings::menu_order())
+    order_top_level_with(&st2k_base::settings::menu_order())
 }
 
 /// Pure core of [`ordered_top_level`]: apply `saved` (top-level item keys +

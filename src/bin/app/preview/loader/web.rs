@@ -17,7 +17,7 @@ pub(super) unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
     let st = &*state(hwnd);
     match ext_of(path).as_str() {
         "html" | "htm" | "xhtml" => {
-            if !sagethumbs2k_core::settings::preview_html() {
+            if !st2k_base::settings::preview_html() {
                 return false; // show source as text instead
             }
             create_web(hwnd, &file_uri(path), super::super::webview::Mode::Local)
@@ -26,7 +26,7 @@ pub(super) unsafe fn try_load_web(hwnd: HWND, path: &str) -> bool {
             let Some(target) = parse_url_shortcut(path) else {
                 return false;
             };
-            if sagethumbs2k_core::settings::preview_url_live() {
+            if st2k_base::settings::preview_url_live() {
                 return create_web(hwnd, &target, super::super::webview::Mode::Live);
             }
             // Text-first (the safe default): show the parsed target; never auto-load.

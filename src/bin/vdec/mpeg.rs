@@ -416,7 +416,7 @@ mod tests {
     /// this test and move `real.mpg` into `corpus_mpeg_streams_decode`'s table (352x288).
     #[test]
     fn a_field_coded_stream_is_refused_by_the_decoder_upstream() {
-        let corpus = sagethumbs2k_core::testcorpus::dir();
+        let corpus = st2k_base::testcorpus::dir();
         let Ok(bytes) = std::fs::read(corpus.join("real.mpg")) else {
             eprintln!("a_field_coded_stream_is_refused_by_the_decoder_upstream: no corpus");
             return;
@@ -446,7 +446,7 @@ mod tests {
     /// Skips when the corpus is absent (CI).
     #[test]
     fn corpus_mpeg_streams_decode() {
-        let corpus = sagethumbs2k_core::testcorpus::dir();
+        let corpus = st2k_base::testcorpus::dir();
         let mut proved = 0;
         for (name, w, h) in [
             ("sample.mpg", 640, 360),

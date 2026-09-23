@@ -63,7 +63,7 @@ fn a_full_fidelity_caller_is_never_served_a_preview() {
 /// The real files, by name. Skipped when the corpus is absent (CI never checks it out).
 #[test]
 fn the_corpus_raws_land_on_the_side_the_measurement_says() {
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     // (file, tile, must this be served from IFD0?)
     let cases = [
         // The placeholder. Bigger than both small tiles and still worthless.

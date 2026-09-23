@@ -57,9 +57,29 @@ fn touch() {
     }
 }
 
+/// The workspace root (the `app` checkout): this crate sits in `crates/base`.
+pub fn workspace() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+}
+
+/// Every library crate's `src`: the core crate's (which also holds the binaries, under
+/// `src/bin`) and each layer's under `crates/`, for tests that read the source tree.
+pub fn library_sources() -> Vec<PathBuf> {
+    [
+        "src",
+        "crates/base/src",
+        "crates/codecs/src",
+        "crates/actions/src",
+    ]
+    .into_iter()
+    .map(|d| workspace().join(d))
+    .filter(|p| p.is_dir())
+    .collect()
+}
+
 fn root(name: &str) -> PathBuf {
     touch();
-    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let base = workspace().join("..");
     if absent() {
         // The process id keeps it unique and impossible to have been created by anyone.
         return base.join(format!("{name}.absent-{}", std::process::id()));
@@ -108,10 +128,12 @@ mod tests {
     /// a string literal that IS the path (`"test-corpus"`, `"../test-corpus/x"`) may not.
     #[test]
     fn the_corpus_path_is_spelled_only_here() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offenders = Vec::new();
-        for top in ["src", "tests"] {
-            walk(&root.join(top), &mut |p| {
+        for top in library_sources()
+            .into_iter()
+            .chain([workspace().join("tests")])
+        {
+            walk(&top, &mut |p| {
                 let is_this_file = p.file_name().is_some_and(|n| n == "testcorpus.rs")
                     && p.parent().is_some_and(|d| d.ends_with("src"));
                 if p.extension().is_none_or(|e| e != "rs") || is_this_file {
@@ -132,7 +154,7 @@ mod tests {
         }
         assert!(
             offenders.is_empty(),
-            "the corpus path belongs in src/testcorpus.rs only (use testcorpus::dir(), \
+            "the corpus path belongs in crates/base/src/testcorpus.rs only (use testcorpus::dir(), \
              read() or path()); found:\n{}",
             offenders.join("\n")
         );

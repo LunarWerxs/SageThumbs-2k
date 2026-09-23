@@ -590,7 +590,7 @@ mod streamed_carve_tests {
         let streamed = largest_embedded_jpeg_from(std::io::Cursor::new(&file), 1024);
         assert_eq!(streamed, whole);
         for name in ["real.doc", "sample.nef", "sample.cr2", "real.pef"] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

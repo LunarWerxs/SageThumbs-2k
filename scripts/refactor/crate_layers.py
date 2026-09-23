@@ -20,18 +20,21 @@ LAYERS = [
     ("base", "host safety settings formats i18n fsutil dib licence_state unixtime parallel guids hex clipboard "
              "sqlite_prim checkerpx failmemo shellcmd upload_config upload_history testcorpus"),
     ("codecs", "container decode video vstream streamsrc isobmff mp4 mkv flv mpeg12 vcodec vp9 pdf ocr jpegtran "
-               "app_image"),
-    ("actions", "verbs strip topdf propstore fuzz"),
+               "app_image strip fuzz"),
+    ("actions", "verbs topdf propstore"),
     ("shell", "thumbprovider previewhandler contextmenu command factory badge register typeoverlay foldermenu "
               "cli doctor mcp prebuild"),
 ]
 LEVEL = {m: i for i, (_, mods) in enumerate(LAYERS) for m in mods.split()}
 NAME = [name for name, _ in LAYERS]
+# A layer already lifted into crates/<layer> is its own crate: cargo refuses an upward edge
+# from it outright (a dependency cycle), so only the modules still in src/ need checking.
+LIFTED = {m for name, mods in LAYERS if (ROOT / "crates" / name / "src" / "lib.rs").exists() for m in mods.split()}
 
 lib = (SRC / "lib.rs").read_text(encoding="utf-8", errors="replace")
 declared = set(re.findall(r"^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", lib, re.M))
 missing = sorted(declared - set(LEVEL))
-extra = sorted(set(LEVEL) - declared)
+extra = sorted(set(LEVEL) - declared - LIFTED)
 
 
 def files_of(m):
@@ -66,6 +69,8 @@ for m in LEVEL:
 PATH = re.compile(r"\b(crate|super)::(\{[^;]*?\}|\w+)(!?)", re.S)
 violations = defaultdict(list)
 for m, level in LEVEL.items():
+    if m in LIFTED:
+        continue
     for f in files_of(m):
         text = f.read_text(encoding="utf-8", errors="replace")
         code = re.sub(r"//[^\n]*", lambda x: " " * len(x.group(0)), text)

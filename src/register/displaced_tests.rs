@@ -10,7 +10,7 @@ use super::*;
 /// doctor skips — a failure mode with no symptom at all).
 #[test]
 fn displaced_key_ext_matches_thumb_keys() {
-    for (ext, _) in crate::formats::FORMATS {
+    for (ext, _) in st2k_base::formats::FORMATS {
         for path in thumb_keys(ext) {
             assert_eq!(
                 displaced_key_ext(&path),
@@ -27,7 +27,7 @@ fn displaced_key_ext_matches_thumb_keys() {
 #[test]
 fn thumb_keys_are_distinct_per_extension() {
     let mut seen = std::collections::BTreeSet::new();
-    for (ext, _) in crate::formats::FORMATS {
+    for (ext, _) in st2k_base::formats::FORMATS {
         for path in thumb_keys(ext) {
             assert!(seen.insert(path.clone()), "duplicate displaced key {path}");
         }

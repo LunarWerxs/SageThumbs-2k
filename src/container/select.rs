@@ -30,15 +30,15 @@ impl CoverPrefs {
     /// The preferences as the individual accessors read them (three registry opens).
     pub fn from_settings() -> Self {
         Self {
-            prefer_cover: crate::settings::container_prefer_cover(),
-            sort: crate::settings::container_sort(),
-            skip_scanlation: crate::settings::container_skip_scanlation(),
+            prefer_cover: st2k_base::settings::container_prefer_cover(),
+            sort: st2k_base::settings::container_sort(),
+            skip_scanlation: st2k_base::settings::container_skip_scanlation(),
         }
     }
 
     /// The preferences out of an existing per-request settings snapshot (no registry
     /// access).
-    pub fn from_thumb_settings(cfg: &crate::settings::ThumbSettings) -> Self {
+    pub fn from_thumb_settings(cfg: &st2k_base::settings::ThumbSettings) -> Self {
         Self {
             prefer_cover: cfg.container_prefer_cover,
             sort: cfg.container_sort,
@@ -224,7 +224,7 @@ fn demote_brackets(s: &str) -> String {
 }
 
 fn wide(s: &str) -> Vec<u16> {
-    crate::host::wide(s)
+    st2k_base::host::wide(s)
 }
 
 #[cfg(test)]

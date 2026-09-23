@@ -437,7 +437,7 @@ mod tests {
     fn corpus_rars() -> Vec<(&'static str, Vec<u8>)> {
         ["real.rar", "sample.cbr", "archive-sample.rar"]
             .into_iter()
-            .filter_map(|name| match crate::testcorpus::read(name) {
+            .filter_map(|name| match st2k_base::testcorpus::read(name) {
                 Some(bytes) => Some((name, bytes)),
                 None => {
                     eprintln!("NOT MEASURED: {name} absent");

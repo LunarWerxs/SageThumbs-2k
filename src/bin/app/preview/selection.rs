@@ -93,7 +93,7 @@ pub(super) unsafe fn doc_len(hwnd: HWND) -> Option<usize> {
 }
 
 /// The text Ctrl+C puts on the clipboard: the selection, else the whole document. Line endings
-/// are NOT normalized here — [`sagethumbs2k_core::clipboard::utf16_nul_bytes`] does it for every
+/// are NOT normalized here — [`st2k_base::clipboard::utf16_nul_bytes`] does it for every
 /// text copy in the product, and doing it twice would allocate a second full copy of what can be
 /// a multi-megabyte document.
 pub(super) unsafe fn copy_text(hwnd: HWND) -> Option<String> {

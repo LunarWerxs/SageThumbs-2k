@@ -35,7 +35,7 @@ use std::path::Path;
 use serde_json::{Map, Value as Json};
 use windows_registry::{Key, CURRENT_USER};
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 use crate::{cred_store, sync_client};
 
@@ -163,12 +163,12 @@ pub(crate) fn export_settings() -> String {
 /// Export the current settings to `path` ATOMICALLY (Diagnostics > Export and the hidden
 /// `--export-settings <path>` CLI flag both call this - one entry point, so the guarantee
 /// can't drift between them). Delegates to
-/// [`sagethumbs2k_core::fsutil::write_atomically`]: the JSON is staged in a temp file
+/// [`st2k_base::fsutil::write_atomically`]: the JSON is staged in a temp file
 /// beside `path` and swapped in, so a failed overwrite (disk full, a removed drive, a
 /// destination that refuses the rename) can never destroy a PRIOR backup at that path -
 /// the straight `fs::write` this replaces could (2026-09-05 audit, F13).
 pub(crate) fn export_settings_to_path(path: &Path) -> std::io::Result<()> {
-    sagethumbs2k_core::fsutil::write_atomically(path, export_settings().as_bytes())
+    st2k_base::fsutil::write_atomically(path, export_settings().as_bytes())
 }
 
 // ---- import: plan first ----------------------------------------------------------------

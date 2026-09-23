@@ -202,7 +202,7 @@ fn video_avi_thumbnails_via_the_block_stream_worker_on_an_mta_thread() {
 fn video_h264_444_is_refused_at_once_through_the_shell_handshake() {
     let _settings = settings_lock();
     let bytes = fixture_video("h264-high444-320x240.mp4");
-    let log = sagethumbs2k_core::safety::log_file();
+    let log = st2k_base::safety::log_file();
     let before = log
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())

@@ -103,7 +103,7 @@ pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) 
     }
     // Worth a line in the diagnostics log: if someone reports a washed-out or an
     // oddly-coloured screenshot, the first thing to know is which path ran.
-    sagethumbs2k_core::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "screenshot: HDR capture for {n} of {} monitor(s)",
         mons.len()
     );

@@ -139,7 +139,7 @@ use crate::decode;
 
 // Don't flash a console window when we spawn `st2k.exe` from the shell host
 // (`explorer.exe`/`dllhost.exe` are GUI processes — a child console would pop).
-use crate::host::CREATE_NO_WINDOW;
+use st2k_base::host::CREATE_NO_WINDOW;
 
 mod clipboard;
 mod foldericon;
@@ -193,24 +193,24 @@ pub fn is_image(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| crate::formats::is_known(e) && !crate::formats::is_archive(e))
+        .is_some_and(|e| st2k_base::formats::is_known(e) && !st2k_base::formats::is_archive(e))
 }
 
 /// Does `path` have an audio extension (one we read tags from)? Gates the
 /// audio-only verbs (rename-by-tag dispatch, Tags→Folders) and the audio-only
 /// menu views on both surfaces (`contextmenu.rs` / `command.rs`).
 pub fn is_audio(path: &str) -> bool {
-    has_category(path, crate::formats::Category::Audio)
+    has_category(path, st2k_base::formats::Category::Audio)
 }
 
 /// Does `path`'s extension belong to `category`? The one lookup behind [`is_audio`] and
 /// [`is_video`].
-fn has_category(path: &str, category: crate::formats::Category) -> bool {
+fn has_category(path: &str, category: st2k_base::formats::Category) -> bool {
     std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .is_some_and(|ext| crate::formats::category(&ext) == category)
+        .is_some_and(|ext| st2k_base::formats::category(&ext) == category)
 }
 
 /// Does `path` have a video extension (one we grab a frame from via OS Media
@@ -218,7 +218,7 @@ fn has_category(path: &str, category: crate::formats::Category) -> bool {
 /// `VerbAction::SaveVideoFrame`'s file filter, the same way [`is_audio`] gates the
 /// audio-only surfaces.
 pub fn is_video(path: &str) -> bool {
-    has_category(path, crate::formats::Category::Video)
+    has_category(path, st2k_base::formats::Category::Video)
 }
 
 /// Per-call unique temp-staging name for an atomic write to a FIXED destination
@@ -247,7 +247,7 @@ fn owner_hwnd(owner: Option<isize>) -> Option<windows::Win32::Foundation::HWND> 
 /// reveal new-folder output — so the shell's `IContextMenu::InvokeCommand` /
 /// `IExplorerCommand::Invoke` returns immediately instead of blocking explorer.exe's UI
 /// thread for the (possibly many-file, many-second) batch. The worker holds a
-/// [`crate::host::ModuleRef`] (so the DLL can't unload mid-action) and initializes its own STA
+/// [`st2k_base::host::ModuleRef`] (so the DLL can't unload mid-action) and initializes its own STA
 /// COM apartment (verbs may touch WIC / the shell); it owns clones of every input, so it
 /// keeps NO reference to the COM object that launched it. `owner` is the parent HWND (as
 /// `isize`) for the error MessageBox, or `None`.
@@ -270,7 +270,7 @@ pub fn run_action_detached_with<F>(
     F: FnOnce() -> Vec<String> + Send + 'static,
 {
     // Pinned before `spawn` and for the worker's whole life (see `safety::spawn_pinned`).
-    let spawned = crate::safety::spawn_pinned("st2k-verb", move || {
+    let spawned = st2k_base::safety::spawn_pinned("st2k-verb", move || {
         // `HWND` wraps a raw pointer and is not `Send`; the owner crosses as an `isize`.
         let parent = owner_hwnd(owner);
         // STA matches the shell thread the verb used to run on (ShellExecute / clipboard /
@@ -295,7 +295,7 @@ pub fn run_action_detached_with<F>(
     // and show the same error box a failed verb would, instead of leaving the click
     // unexplained. The pin went away with the refused closure.
     if let Err(e) = spawned {
-        crate::safety::log(&format!("run_action_detached: spawn failed: {e}"));
+        st2k_base::safety::log(&format!("run_action_detached: spawn failed: {e}"));
         ActionReport::applied(attempted, 0)
             .with_note("couldn't start the action")
             .surface(owner_hwnd(owner));
@@ -393,14 +393,14 @@ fn per_file_action(
     note: &str,
     one: impl Fn(&str) -> Option<PathBuf> + Sync,
 ) -> ActionReport {
-    let outs: Vec<PathBuf> = crate::parallel::map(paths, |_, p| one(p))
+    let outs: Vec<PathBuf> = st2k_base::parallel::map(paths, |_, p| one(p))
         .into_iter()
         .flatten()
         .collect();
     let n = outs.len();
     let first = outs.into_iter().next();
     let mut r = if n < paths.len() {
-        crate::safety::log(&format!("{what}: only {n}/{} succeeded", paths.len()));
+        st2k_base::safety::log(&format!("{what}: only {n}/{} succeeded", paths.len()));
         ActionReport::applied(paths.len(), n).with_note(note)
     } else {
         ActionReport::applied(paths.len(), n)
@@ -449,11 +449,11 @@ fn first_image_action<E: std::fmt::Debug>(
     let Some(p) = paths.iter().find(|p| is_image(p.as_str())) else {
         return ActionReport::default();
     };
-    crate::safety::log_debugf!("{what}: using {p}");
+    st2k_base::safety::log_debugf!("{what}: using {p}");
     match run(p) {
         Ok(()) => ActionReport::applied(1, 1),
         Err(e) => {
-            crate::safety::log(&format!("{what} failed for {p}: {e:?}"));
+            st2k_base::safety::log(&format!("{what} failed for {p}: {e:?}"));
             ActionReport::applied(1, 0).with_note(note)
         }
     }
@@ -509,7 +509,7 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
             crate::topdf::combine_to_pdf(
                 imgs,
                 out,
-                crate::settings::jpeg_quality(),
+                st2k_base::settings::jpeg_quality(),
                 super::OnOmit::Report,
             )
             .map(|combined| combined.omitted.len())
@@ -557,7 +557,7 @@ fn combine_action<E: std::fmt::Debug>(
             }
         }
         Err(e) => {
-            crate::safety::log(&format!("{what} failed: {e:?}"));
+            st2k_base::safety::log(&format!("{what} failed: {e:?}"));
             ActionReport::applied(1, 0).with_note(note)
         }
     }
@@ -591,7 +591,7 @@ fn handle_strip_metadata(paths: &[String]) -> ActionReport {
     let exe = st2k_exe();
     let exe_ref = exe.as_deref();
     let imgs = images_in(paths);
-    let oks = crate::parallel::map(&imgs, |_, p| strip_one(exe_ref, p));
+    let oks = st2k_base::parallel::map(&imgs, |_, p| strip_one(exe_ref, p));
     let attempted = imgs.len();
     let done = oks.iter().filter(|&&ok| ok).count();
     let mut r = ActionReport::applied(attempted, done);

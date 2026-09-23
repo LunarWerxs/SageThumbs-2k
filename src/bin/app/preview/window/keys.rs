@@ -372,7 +372,7 @@ unsafe fn video_key_toggle(v: &crate::preview::video::VideoPlayer, vk: u16) -> b
         k if k == 'L' as u16 => {
             let on = !v.looping();
             v.set_looping(on);
-            let _ = sagethumbs2k_core::settings::set_preview_loop(on);
+            let _ = st2k_base::settings::set_preview_loop(on);
         }
         _ => return false,
     }

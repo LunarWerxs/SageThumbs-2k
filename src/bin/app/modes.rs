@@ -501,15 +501,15 @@ pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
 pub(super) fn detach_rebuild_thumbnail_cache() {
     use std::os::windows::process::CommandExt;
     let Ok(exe) = std::env::current_exe() else {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
         return;
     };
     let spawned = std::process::Command::new(&exe)
         .arg("--rebuild-thumbnail-cache-now")
-        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
         .spawn();
     if spawned.is_err() {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
     }
 }
 
@@ -525,15 +525,15 @@ pub(super) fn detach_rebuild_thumbnail_cache() {
 /// verify loop and explorer.exe fallback with it. Blocking here for the ~30 s cycle costs
 /// nothing: the process has no other work, and the restart takes the tray icon with it.
 pub(super) unsafe fn offer_thumbnail_refresh(ver: &str) {
-    let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", ver);
+    let _ = st2k_base::settings::set_string("CacheStaleSince", ver);
     crate::win::notify_toast_action(
         "Refresh thumbnails now?",
         "New thumbnails won't appear for files Explorer already cached until the cache is \
          cleared. Click to refresh thumbnails now (restarts Explorer).",
         std::time::Duration::from_secs(8),
         || {
-            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-            let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", "");
+            let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
+            let _ = st2k_base::settings::set_string("CacheStaleSince", "");
         },
     );
 }
@@ -569,7 +569,7 @@ pub(super) fn queue_cache_rebuild() {
 pub(super) unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--sync-user-shell") {
         if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
-            sagethumbs2k_core::safety::log(&format!("--sync-user-shell failed: {e}"));
+            st2k_base::safety::log(&format!("--sync-user-shell failed: {e}"));
         }
         // The installer runs this as the original user right after the wizard, which is
         // the first moment a copy declared Business can be seen: the evaluation clock
@@ -617,15 +617,15 @@ pub(super) unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
 ///
 /// Wipes `HKCU\Software\SageThumbs2K` entirely, then re-leaves the reinstall tombstone —
 /// the same "wipe the root, then leave one value behind" shape
-/// [`sagethumbs2k_core::settings::clear_tombstone`]'s doc comment describes the machine-wide
+/// [`st2k_base::settings::clear_tombstone`]'s doc comment describes the machine-wide
 /// uninstaller performing — via the general string setter (which targets the exact same
 /// key `tombstone_version`/`clear_tombstone` read and clear), and drops the screenshot
 /// daemon's logon autostart entry. `RUN_KEY`/`RUN_NAME` mirror the private constants in
 /// `screenshot::enable` (that module owns the daemon's own add/remove of the same value;
 /// its consts aren't `pub`, so the literal is repeated here — keep both in sync).
 pub(super) unsafe fn remove_user_state() {
-    let _ = windows_registry::CURRENT_USER.remove_tree(sagethumbs2k_core::settings::ROOT);
-    let _ = sagethumbs2k_core::settings::set_string("Tombstone", env!("CARGO_PKG_VERSION"));
+    let _ = windows_registry::CURRENT_USER.remove_tree(st2k_base::settings::ROOT);
+    let _ = st2k_base::settings::set_string("Tombstone", env!("CARGO_PKG_VERSION"));
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN_NAME: &str = "SageThumbs2KScreenshot";
@@ -636,7 +636,7 @@ pub(super) unsafe fn remove_user_state() {
     // This user's runtime files: the diagnostics log (and its one rotated backup) and the
     // update-check cache. The installer's [UninstallDelete] rows expand {localappdata} in the
     // ELEVATED account's profile, so for this user only this pass can reach them.
-    if let Some(log) = sagethumbs2k_core::safety::log_file() {
+    if let Some(log) = st2k_base::safety::log_file() {
         let _ = std::fs::remove_file(log.with_extension("log.old"));
         let _ = std::fs::remove_file(log);
     }

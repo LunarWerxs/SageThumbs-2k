@@ -308,7 +308,7 @@ mod tests {
     /// detail. Skips where the sibling corpus is absent (CI).
     #[test]
     fn a_real_seattle_filmworks_photo_decodes() {
-        let Ok(bytes) = std::fs::read(crate::testcorpus::dir().join("real.sfw")) else {
+        let Ok(bytes) = std::fs::read(st2k_base::testcorpus::dir().join("real.sfw")) else {
             return;
         };
         let img = extract(&bytes)

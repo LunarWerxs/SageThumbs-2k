@@ -70,8 +70,8 @@ impl ActionReport {
             Some(n) => msg.push_str(&format!("\n\n{failed} failed: {n}")),
             None => msg.push_str(&format!("\n\n{failed} item{plural} failed.")),
         }
-        let t = crate::host::wide(&msg);
-        let c = crate::host::wide("SageThumbs 2K");
+        let t = st2k_base::host::wide(&msg);
+        let c = st2k_base::host::wide("SageThumbs 2K");
         unsafe {
             MessageBoxW(
                 parent,

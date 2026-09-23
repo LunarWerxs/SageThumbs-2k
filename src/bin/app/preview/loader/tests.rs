@@ -45,7 +45,7 @@ fn view_source_mode_overrides_the_web_route() {
 #[test]
 fn html_falls_back_to_worker_text_classification_without_the_web_route() {
     let kind = super::content::classify("nonexistent_probe.html");
-    let want = if sagethumbs2k_core::settings::preview_text() {
+    let want = if st2k_base::settings::preview_text() {
         super::ContentKind::Text
     } else {
         // Text toggle off and no other match: `classify`'s last resort for a nonexistent
@@ -124,7 +124,7 @@ fn a_superseded_generation_is_never_current() {
 /// binary run budgeted workers concurrently, so a before/after read of that count races them.
 #[test]
 fn abandon_pending_prepare_counts_a_live_ticket_and_releases_it_on_finish() {
-    let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+    let ticket = st2k_base::safety::AbandonTicket::new();
     let worker = ticket.clone();
     *super::PENDING_PREPARE
         .lock()
@@ -161,10 +161,7 @@ fn resolve_by_content_kind_falls_back_to_the_info_card_when_hex_declines() {
 fn source_capable_reaches_eml_but_not_msg() {
     // .eml is genuine RFC-822 text (same gate as any other text preview); .msg's raw
     // bytes are an OLE compound file with no text view to show.
-    assert_eq!(
-        source_capable("eml"),
-        sagethumbs2k_core::settings::preview_text()
-    );
+    assert_eq!(source_capable("eml"), st2k_base::settings::preview_text());
     assert!(!source_capable("msg"));
 }
 

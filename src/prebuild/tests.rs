@@ -154,7 +154,7 @@ fn walk_is_shallow_by_default_and_deep_on_request() {
     std::fs::write(root.join("notes.txt"), b"x").expect("txt");
 
     let mut rep = Report::default();
-    let snap = crate::settings::format_enabled_snapshot();
+    let snap = st2k_base::settings::format_enabled_snapshot();
     let mut shallow = Vec::new();
     walk(&root, &Options::default(), 0, &mut shallow, &mut rep, &snap);
     assert_eq!(shallow.len(), 1, "non-recursive must stop at the top level");
@@ -183,7 +183,7 @@ fn walk_stops_at_the_depth_cap() {
     std::fs::write(deep.join("x.png"), b"x").expect("x");
 
     let mut rep = Report::default();
-    let snap = crate::settings::format_enabled_snapshot();
+    let snap = st2k_base::settings::format_enabled_snapshot();
     let mut out = Vec::new();
     let opts = Options {
         recurse: true,

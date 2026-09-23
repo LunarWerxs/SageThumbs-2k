@@ -142,7 +142,7 @@ where
     let (w_event, w_slot, w_done) = (event.clone(), slot.clone(), done.clone());
     // Pinned for the worker's whole life (see `safety::spawn_pinned`): the slot store and
     // `SetEvent` run after `with_mta_apartment` has dropped its own pin.
-    let started = crate::safety::spawn_pinned("st2k-video-worker", move || {
+    let started = st2k_base::safety::spawn_pinned("st2k-video-worker", move || {
         let r = crate::pdf::with_mta_apartment(f);
         *w_slot.lock().unwrap_or_else(|p| p.into_inner()) = r;
         // Last act, after the apartment is gone: "done" means done with Media Foundation.
@@ -192,7 +192,7 @@ where
         f(IStream::from_raw(raw))
     });
     r.unwrap_or_else(|_| {
-        crate::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "{what} still running past its {} s budget; leaving the worker to finish on its own",
             timeout.as_secs()
         ));

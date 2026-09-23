@@ -24,7 +24,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetActiveWindow,
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::i18n;
+use st2k_base::i18n;
 mod dacl;
 mod dialogs;
 mod iconfont;

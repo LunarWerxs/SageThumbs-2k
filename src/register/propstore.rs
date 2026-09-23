@@ -142,7 +142,7 @@ pub(super) fn set_assoc_value_if_empty(key: &Key, name: &str, value: &str) {
 /// The `PerceivedType` we stamp for `ext`, or `None` for a format we leave unclassified.
 /// Image formats WIC cannot open get `None` (see [`WIC_IMAGE_EXTS`]).
 pub(super) fn perceived_type_for(ext: &str) -> Option<&'static str> {
-    Some(match crate::formats::category(ext) {
+    Some(match st2k_base::formats::category(ext) {
         Category::Audio => "audio",
         Category::Video => "video",
         Category::Ebook | Category::Document => "document",

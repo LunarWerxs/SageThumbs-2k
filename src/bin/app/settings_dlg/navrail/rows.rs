@@ -124,7 +124,7 @@ pub(in super::super) fn wide_edit_ids() -> Vec<i32> {
 pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
     match ci {
-        0 if sagethumbs2k_core::settings::portable() => &GENERAL,
+        0 if st2k_base::settings::portable() => &GENERAL,
         0 => &GENERAL[1..],
         1 => &[
             // Appearance: every "what does the tile look like" switch in ONE place.

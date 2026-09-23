@@ -82,9 +82,9 @@ pub fn ocr(input: &str) -> Result<String, String> {
 /// file. The right-click "Upload" verb and the screenshot Upload button read this file
 /// to decide which keyless host(s) to POST to; editing it lets you reorder / add hosts
 /// or point at your own server. The documented template is created on first use. Path +
-/// template are shared with the app via [`crate::upload_config`].
+/// template are shared with the app via [`st2k_base::upload_config`].
 pub fn upload_hosts(open: bool) -> Result<String, String> {
-    let path = crate::upload_config::ensure_config()
+    let path = st2k_base::upload_config::ensure_config()
         .ok_or_else(|| "couldn't resolve %APPDATA% for the upload-hosts config path".to_string())?;
     let p = path.display().to_string();
     if open {
@@ -93,7 +93,7 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
             use windows::core::{w, PCWSTR};
             use windows::Win32::UI::Shell::ShellExecuteW;
             use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            let file = crate::host::wide(&p);
+            let file = st2k_base::host::wide(&p);
             ShellExecuteW(
                 None,
                 w!("open"),
@@ -153,7 +153,7 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
     let app_exe = exe
         .parent()
         .ok_or("this exe has no parent directory")?
-        .join(crate::host::APP_EXE);
+        .join(st2k_base::host::APP_EXE);
     if !app_exe.exists() {
         return Err(format!(
             "{} not found beside st2k.exe — `upload` needs both installed together.",
@@ -197,9 +197,9 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
         // same call `run_upload_keep` itself would have made — just done here instead so a
         // `--copy`-less run touches the clipboard not at all, as the CLI contract promises.
         unsafe {
-            crate::clipboard::set_clipboard(
-                crate::clipboard::CF_UNICODETEXT,
-                &crate::clipboard::utf16_nul_bytes(&url),
+            st2k_base::clipboard::set_clipboard(
+                st2k_base::clipboard::CF_UNICODETEXT,
+                &st2k_base::clipboard::utf16_nul_bytes(&url),
             );
         }
     }
@@ -211,17 +211,17 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
 /// three hours to permanent, and the URL says nothing about it). stderr, so stdout stays the
 /// bare URL scripts read.
 fn print_expiry(url: &str) {
-    if let Some(e) = crate::upload_history::find(url) {
-        let now = crate::unixtime::now();
-        eprintln!("{}", crate::upload_history::status_text_en(&e, now));
+    if let Some(e) = st2k_base::upload_history::find(url) {
+        let now = st2k_base::unixtime::now();
+        eprintln!("{}", st2k_base::upload_history::status_text_en(&e, now));
     }
 }
 
 /// `st2k upload-history [--json]` — every link this machine uploaded, newest first, with when
 /// its host deletes it (the same list the app's Recent uploads window shows).
 pub fn upload_history(json: bool) -> Result<String, String> {
-    let entries = crate::upload_history::load();
-    let now = crate::unixtime::now();
+    let entries = st2k_base::upload_history::load();
+    let now = st2k_base::unixtime::now();
     if json {
         return Ok(upload_history_json(&entries, now).to_string());
     }
@@ -231,8 +231,8 @@ pub fn upload_history(json: bool) -> Result<String, String> {
     let lines: Vec<String> = entries
         .iter()
         .map(|e| {
-            let uploaded = crate::unixtime::local_datetime(e.uploaded);
-            let status = crate::upload_history::status_text_en(e, now);
+            let uploaded = st2k_base::unixtime::local_datetime(e.uploaded);
+            let status = st2k_base::upload_history::status_text_en(e, now);
             let name = if e.name.is_empty() {
                 String::new()
             } else {
@@ -247,8 +247,11 @@ pub fn upload_history(json: bool) -> Result<String, String> {
 /// The `--json` shape: one object per upload, newest first. `expires` is a Unix time or null
 /// (no expiry date, or a host whose policy is unknown - `state` says which); `seconds_left`
 /// is null unless the link is still counting down.
-fn upload_history_json(entries: &[crate::upload_history::Entry], now: u64) -> serde_json::Value {
-    use crate::upload_history::{Expiry, Status};
+fn upload_history_json(
+    entries: &[st2k_base::upload_history::Entry],
+    now: u64,
+) -> serde_json::Value {
+    use st2k_base::upload_history::{Expiry, Status};
     let rows: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| {
@@ -336,7 +339,7 @@ mod tests {
     /// `seconds_left` only while the link is still counting down.
     #[test]
     fn upload_history_json_reports_each_state() {
-        use crate::upload_history::{Entry, Expiry};
+        use st2k_base::upload_history::{Entry, Expiry};
         let e = |expires: Expiry, url: &str| Entry {
             uploaded: 100,
             expires,

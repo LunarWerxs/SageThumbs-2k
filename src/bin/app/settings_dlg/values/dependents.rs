@@ -95,7 +95,7 @@ pub(in super::super) const DEPENDENT_SWITCHES: &[(i32, &[i32])] = &[
 /// there is no "on" to test, only a specific answer.
 pub(in super::super) const DEPENDENT_ON_COMBO: &[(i32, u32, &[i32])] = &[(
     ID_CORNER_MARK,
-    sagethumbs2k_core::settings::CornerMark::Badge.as_dword(),
+    st2k_base::settings::CornerMark::Badge.as_dword(),
     // The size COMBO joins it for the same reason. Its LABEL is deliberately not here: a
     // disabled static draws etched (strikethrough-looking) in dark mode, which is how the
     // Appearance page read as "failed to render" in 3.1.0. The label stays enabled and
@@ -109,8 +109,7 @@ pub(in super::super) const DEPENDENT_ON_COMBO: &[(i32, u32, &[i32])] = &[(
 /// dependent CONTROLS read this through [`DEPENDENT_ON_COMBO`]; the row's label reads it from
 /// `special_ctlcolor`, where it is dimmed by paint rather than disabled (see the table's note).
 pub(in super::super) unsafe fn badge_size_active(hwnd: HWND) -> bool {
-    combo_sel(hwnd, ID_CORNER_MARK, 2) as u32
-        == sagethumbs2k_core::settings::CornerMark::Badge.as_dword()
+    combo_sel(hwnd, ID_CORNER_MARK, 2) as u32 == st2k_base::settings::CornerMark::Badge.as_dword()
 }
 
 /// Is `id` a dependent (child) switch? The layout indents these.

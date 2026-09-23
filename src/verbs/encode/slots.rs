@@ -98,7 +98,7 @@ pub(crate) fn reserve(name: impl Fn(u32) -> PathBuf) -> OutSlot {
             // The slot records that it owns nothing at that path, and the io error is
             // logged here because the encode's own failure message names only E_FAIL.
             Err(e) => {
-                crate::safety::log(&format!("cannot reserve {}: {e}", cand.display()));
+                st2k_base::safety::log(&format!("cannot reserve {}: {e}", cand.display()));
                 return OutSlot {
                     path: cand,
                     created: false,
@@ -146,27 +146,27 @@ pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
 }
 
 /// The staging entries left beside `out` (`<out>.<pid>-<n>.st2ktmp`, reserved by
-/// [`crate::fsutil::create_staging`]). A finished or failed write leaves none — the thing
+/// [`st2k_base::fsutil::create_staging`]). A finished or failed write leaves none — the thing
 /// every "the temp file must be cleaned up" test asserts.
 #[cfg(test)]
 pub(crate) fn staging_leftovers(out: &Path) -> Vec<PathBuf> {
-    crate::fsutil::staging_leftovers(out)
+    st2k_base::fsutil::staging_leftovers(out)
 }
 
 /// Atomic write: run `write` against a same-volume staging file reserved beside `out`
-/// ([`crate::fsutil::create_staging`]: a unique `.st2ktmp` name opened with `create_new`, so
+/// ([`st2k_base::fsutil::create_staging`]: a unique `.st2ktmp` name opened with `create_new`, so
 /// nothing that already exists there is ever truncated), then rename it over `out`. Owns the
 /// on-error temp cleanup (a failed/partial write leaves no staging file and never an `out`)
 /// and a short bounded rename retry (strip.rs-style: 5×40 ms) so a transient
 /// Explorer/thumbnail-cache lock (os error 5/32) doesn't fail an otherwise good write.
 /// `write` receives the temp path and must produce the finished file there.
 pub(crate) fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
-    let tmp = crate::fsutil::create_staging(out)
+    let tmp = st2k_base::fsutil::create_staging(out)
         .map_err(|e| Error::new(E_FAIL, format!("stage {}: {e}", out.display())))?;
     write(&tmp).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })?;
-    crate::fsutil::rename_retrying(&tmp, out).map_err(|e| {
+    st2k_base::fsutil::rename_retrying(&tmp, out).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Error::new(
             E_FAIL,
@@ -178,7 +178,7 @@ pub(crate) fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) 
 /// If "preserve original file date" is enabled (Options), stamp the source file's
 /// modified-time onto a freshly-saved output. Best-effort — never fails a save.
 pub(crate) fn preserve_src_time(src: &Path, out: &Path) {
-    if !crate::settings::preserve_file_date() {
+    if !st2k_base::settings::preserve_file_date() {
         return;
     }
     if let Ok(mtime) = std::fs::metadata(src).and_then(|m| m.modified()) {

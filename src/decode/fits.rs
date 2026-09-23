@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn real_files_are_not_black() {
         for name in ["real.fits", "real.fts", "sample.fits", "sample.fts"] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

@@ -32,7 +32,7 @@ pub(in crate::preview) unsafe fn strip_width(hwnd: HWND) -> i32 {
     let Some(doc) = slot.as_ref() else {
         return 0;
     };
-    if doc.page_count() < 2 || !sagethumbs2k_core::settings::preview_pdf_strip() {
+    if doc.page_count() < 2 || !st2k_base::settings::preview_pdf_strip() {
         return 0;
     }
     let mut r = windows::Win32::Foundation::RECT::default();

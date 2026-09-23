@@ -352,14 +352,14 @@ fn an_office_metafile_draws_at_the_pane_size() {
         eprintln!("NOT MEASURED: no ImageMagick");
         return;
     }
-    let Some(bytes) = crate::testcorpus::read("real.xls") else {
+    let Some(bytes) = st2k_base::testcorpus::read("real.xls") else {
         eprintln!("NOT MEASURED: real.xls absent");
         return;
     };
-    let img = crate::decode::decode_preview_capped(&bytes, crate::safety::PREVIEW_TARGET_EDGE)
+    let img = crate::decode::decode_preview_capped(&bytes, st2k_base::safety::PREVIEW_TARGET_EDGE)
         .expect("the pane's picture");
     assert_eq!(
         img.width().max(img.height()),
-        crate::safety::PREVIEW_TARGET_EDGE
+        st2k_base::safety::PREVIEW_TARGET_EDGE
     );
 }

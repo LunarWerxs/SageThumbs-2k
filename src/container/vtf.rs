@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn real_textures_decode() {
         for name in ["real.vtf", "real-dxt5.vtf", "real-bgra8888.vtf"] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

@@ -30,7 +30,7 @@ pub(super) fn encode_via_magick_carrying(
     out_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    let mut png = crate::magick_png_bytes!(img, png_encode_error);
+    let mut png = decode::magick_png_bytes(img).map_err(png_encode_error)?;
     if let Some(meta) = carried {
         png = carry::apply_to_png_bytes(meta, png);
     }

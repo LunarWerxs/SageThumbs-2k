@@ -16,7 +16,7 @@
 use std::ffi::c_void;
 
 use base64::Engine;
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
 use windows::Win32::Security::Cryptography::{
@@ -44,7 +44,7 @@ const V_NAME: &str = "Name";
 const V_PICTURE: &str = "Picture";
 
 /// Prefix for the portable-mode key names (issue #117). Kept distinct from every other
-/// root-level setting `sagethumbs2k_core::settings::set_string`/`get_string_opt` might
+/// root-level setting `st2k_base::settings::set_string`/`get_string_opt` might
 /// hold, since portable mode routes through those (the root of the portable ini) rather
 /// than the `OAuth` registry subkey used on an installed copy.
 ///
@@ -66,7 +66,7 @@ const OAUTH_SUBKEY: &str = settings::CREDENTIAL_SUBKEY;
 /// calls safe to hand-edit, and importing another backup replaced or deleted the current
 /// sign-in (2026-09-05 audit, F05). One classification for both backends, defined beside the
 /// names it classifies; re-exported here so this module stays the app's one window onto it.
-pub(crate) use sagethumbs2k_core::settings::{is_credential_root_value, is_credential_subkey};
+pub(crate) use st2k_base::settings::{is_credential_root_value, is_credential_subkey};
 
 /// The signed-in user's identity, for the "Synced as …" UI row. Not a secret. `email` is a
 /// per-app privacy-relay address (`<hex>@privaterelay.connections.icu`), never the user's

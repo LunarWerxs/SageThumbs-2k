@@ -373,7 +373,7 @@ fn oversized_file_backed_stream_is_rescued() {
 /// `redirect_licence_to_scratch`), written through the same `write_history` the app uses.
 #[test]
 fn the_business_licence_lock_gates_the_provider() {
-    use sagethumbs2k_core::licence_state::{write_history, History, LOCK_GRACE_SECS, TRIAL_SECS};
+    use st2k_base::licence_state::{write_history, History, LOCK_GRACE_SECS, TRIAL_SECS};
     let _serial = lock_settings();
     unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
     let home = redirect_licence_to_scratch();
@@ -456,7 +456,7 @@ fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
     reset_scratch();
     put("EnableThumbs", 1);
 
-    let corpus = sagethumbs2k_core::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     let mut proved = 0;
     // ST2K_NO_MF=1 makes this process behave like a machine with NO Media Foundation, which
     // is what this test has to be: with the Store MPEG-2 Video Extension installed (as it is

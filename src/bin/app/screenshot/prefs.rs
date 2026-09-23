@@ -5,7 +5,7 @@
 
 use windows::Win32::Foundation::COLORREF;
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 const VAL: &str = "ScreenshotCustomColors";
 const MAX: usize = 4;

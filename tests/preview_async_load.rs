@@ -142,7 +142,7 @@ fn slow_file_read_never_blocks_the_message_pump() {
 
     // The window must appear within the documented responsiveness contract
     // (`safety::PREVIEW_APPEARANCE_BUDGET`), long before the 4 s slow read finishes.
-    let appearance_budget = sagethumbs2k_core::safety::PREVIEW_APPEARANCE_BUDGET;
+    let appearance_budget = st2k_base::safety::PREVIEW_APPEARANCE_BUDGET;
     let hwnd = match wait_for_viewer(appearance_budget) {
         Some(h) => h,
         None => {

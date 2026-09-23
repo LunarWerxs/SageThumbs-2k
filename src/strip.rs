@@ -38,8 +38,8 @@ mod xmpinfo;
 #[cfg(test)]
 use info::format_exif_datetime;
 pub use info::{
-    read_audio_tags, read_capture, read_info, read_info_bounded, read_info_verbose, AudioTags,
-    ImageInfo,
+    read_audio_tags, read_capture, read_info, read_info_bounded, read_info_verbose,
+    split_exif_datetime, AudioTags, ImageInfo,
 };
 
 // Direct fuzz entry points into the (private) parsers above — see its own doc comment for why
@@ -189,7 +189,7 @@ fn strip_jpeg(input: Bytes) -> Result<Vec<u8>> {
         .any(|s| s.marker() == markers::APP2 && s.contents().starts_with(MPF_PREFIX))
     {
         let why = "multi-picture (MPF) JPEG: its index would no longer match the file";
-        crate::safety::log(&format!("strip refused: {why}"));
+        st2k_base::safety::log(&format!("strip refused: {why}"));
         return Err(Error::new(E_FAIL, why));
     }
     // C2PA / Content Credentials: a JUMBF box spread over APP11 segments. Only the
@@ -291,7 +291,7 @@ fn atomic_overwrite_with(dst: &Path, data: &[u8], notify: impl FnOnce(&Path)) ->
     // A reserved, unique staging entry (`create_new`), never the bare `<dst>.st2ktmp` this used
     // to write into: a pre-existing entry at a predictable name - a hard link to the file
     // itself, say - was truncated by the write (2026-09-19 audit F03).
-    let tmp: PathBuf = crate::fsutil::create_staging(dst)
+    let tmp: PathBuf = st2k_base::fsutil::create_staging(dst)
         .map_err(|e| Error::new(E_FAIL, format!("stage {}: {e}", dst.display())))?;
     let mtime = std::fs::metadata(dst).and_then(|m| m.modified()).ok();
     std::fs::write(&tmp, data).map_err(|e| {
@@ -302,7 +302,7 @@ fn atomic_overwrite_with(dst: &Path, data: &[u8], notify: impl FnOnce(&Path)) ->
         let _ = std::fs::remove_file(&tmp);
         Error::new(E_FAIL, format!("replace {}: {e}", dst.display()))
     })?;
-    if crate::settings::preserve_file_date() {
+    if st2k_base::settings::preserve_file_date() {
         if let Some(m) = mtime {
             if let Ok(f) = std::fs::OpenOptions::new().write(true).open(dst) {
                 let _ = f.set_modified(m);
@@ -324,7 +324,7 @@ const REPLACE_RETRIES: u32 = 5;
 /// nothing to preserve and takes the plain rename.
 fn replace_retrying(tmp: &Path, dst: &Path) -> std::io::Result<()> {
     if !dst.exists() {
-        return crate::fsutil::rename_retrying(tmp, dst);
+        return st2k_base::fsutil::rename_retrying(tmp, dst);
     }
     let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(once(0)).collect() };
     let (replaced, replacement) = (wide(dst), wide(tmp));
@@ -346,7 +346,7 @@ fn replace_retrying(tmp: &Path, dst: &Path) -> std::io::Result<()> {
             Ok(()) => return Ok(()),
             Err(e) => last = Err(std::io::Error::other(e)),
         }
-        std::thread::sleep(crate::fsutil::RENAME_BACKOFF);
+        std::thread::sleep(st2k_base::fsutil::RENAME_BACKOFF);
     }
     last
 }

@@ -558,13 +558,13 @@ fn real_mp4_round_trips_through_mediafoundation() {
     let candidates = [
         std::env::var("ST2K_TEST_VIDEO").ok(),
         Some(
-            crate::testcorpus::real_dir()
+            st2k_base::testcorpus::real_dir()
                 .join("sample.mp4")
                 .to_string_lossy()
                 .into_owned(),
         ),
         Some(
-            crate::testcorpus::dir()
+            st2k_base::testcorpus::dir()
                 .join("sample.mp4")
                 .to_string_lossy()
                 .into_owned(),

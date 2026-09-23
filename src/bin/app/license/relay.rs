@@ -122,7 +122,7 @@ pub(crate) fn machine_fingerprint() -> Option<String> {
 /// touching HKLM.
 pub(super) fn fingerprint_from_guid(guid: &str) -> Option<String> {
     let digest = sha256(format!("{guid}{FINGERPRINT_SALT}").as_bytes())?;
-    Some(sagethumbs2k_core::hex::encode(&digest))
+    Some(st2k_base::hex::encode(&digest))
 }
 
 /// Turn whatever a human typed or pasted into the canonical `esk_XXXXX-XXXXX-XXXXX-
@@ -221,7 +221,7 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         // This is the one place a full key is written and `cred_store::V_LICENCE_KEY` says
         // why it is there and not in the breadcrumb.
         let _ = crate::cred_store::save_licence_key(&canonical);
-        let now = sagethumbs2k_core::unixtime::now();
+        let now = st2k_base::unixtime::now();
         update_history(|h| {
             h.was_business = true;
             h.last_status = "active".to_string();
@@ -234,8 +234,8 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         });
         // A portable copy has no HKLM the installer could have written, so this is
         // the ONE store `read_mode` consults for it - see that function's docs.
-        if sagethumbs2k_core::settings::portable() {
-            let _ = sagethumbs2k_core::settings::set_string(MODE_VALUE, "business");
+        if st2k_base::settings::portable() {
+            let _ = st2k_base::settings::set_string(MODE_VALUE, "business");
         }
     }
     outcome

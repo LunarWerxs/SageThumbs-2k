@@ -110,9 +110,9 @@ fn perceived_type_is_image_only_where_wic_can_open_it() {
     for ext in WIC_IMAGE_EXTS {
         assert!(
             matches!(
-                crate::formats::category(ext),
-                crate::formats::Category::Image | crate::formats::Category::Raw
-            ) || !crate::formats::is_known(ext),
+                st2k_base::formats::category(ext),
+                st2k_base::formats::Category::Image | st2k_base::formats::Category::Raw
+            ) || !st2k_base::formats::is_known(ext),
             ".{ext} is listed as WIC-openable but is not an image format"
         );
     }

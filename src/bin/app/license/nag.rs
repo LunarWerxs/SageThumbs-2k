@@ -145,5 +145,5 @@ pub(crate) fn at(now_unix: u64) -> LicenceSnapshot {
 /// reads, same as [`current_posture`]. Thin wrapper over [`at`] so every other caller
 /// (tests included) can pin the clock instead.
 pub(crate) fn snapshot() -> LicenceSnapshot {
-    at(sagethumbs2k_core::unixtime::now())
+    at(st2k_base::unixtime::now())
 }

@@ -29,7 +29,7 @@ pub(in crate::preview) unsafe fn click_content(hwnd: HWND, x: i32, y: i32) {
 /// `raw` (Ctrl+Shift+C) copies a Markdown file's SOURCE instead of its rendered text.
 /// The toolbar Copy button still copies the file PATH.
 pub(in crate::preview) unsafe fn copy_content(hwnd: HWND, raw: bool) {
-    use sagethumbs2k_core::clipboard::{set_clipboard, utf16_nul_bytes, CF_UNICODETEXT};
+    use st2k_base::clipboard::{set_clipboard, utf16_nul_bytes, CF_UNICODETEXT};
     let st = &*state(hwnd);
     match st.kind.get() {
         ContentKind::Markdown if raw => {
@@ -79,7 +79,7 @@ fn copy_image_content(st: &ViewerState) {
             // indistinguishable from the keypress not registering — say so in the log.
             // (Also reached when the copy was dropped as stale, not just a real decode
             // failure — both cases end in "nothing landed on the clipboard".)
-            sagethumbs2k_core::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
+            st2k_base::safety::log(&format!("preview: Ctrl+C could not copy {p}"));
         }
         if inited {
             unsafe { CoUninitialize() };

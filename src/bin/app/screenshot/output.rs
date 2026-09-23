@@ -23,7 +23,7 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
     }
 
     // The unsafe HGLOBAL ownership dance lives once in the lib's `clipboard` module.
-    sagethumbs2k_core::clipboard::set_clipboard(sagethumbs2k_core::clipboard::CF_DIB, &dib)
+    st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_DIB, &dib)
 }
 
 /// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).
@@ -151,7 +151,7 @@ pub(super) fn save_png_to_path(
     else {
         return false;
     };
-    sagethumbs2k_core::fsutil::write_atomically(path, &png).is_ok()
+    st2k_base::fsutil::write_atomically(path, &png).is_ok()
 }
 
 /// Save the capture to a unique temp PNG and return its path — the handoff to a helper

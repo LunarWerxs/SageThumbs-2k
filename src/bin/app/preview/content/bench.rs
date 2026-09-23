@@ -55,7 +55,10 @@ pub(in super::super) fn bench_make_render(path: &str) -> Option<u128> {
 pub(in super::super) fn decode_sync(path: &str) -> Option<DecodedRgba> {
     let first = read_and_decode(path);
     let shown = first.as_ref().map_or((0, 0), |d| (d.w, d.h));
-    if let Ok(head) = sagethumbs2k_core::decode::read_preview_capped(path) {
+    let head = sagethumbs2k_core::decode::read_preview_capped(path)
+        .ok()
+        .or_else(|| photoshop_header(path));
+    if let Some(head) = head {
         // As `spawn_decode` does: a Photoshop document with no baked preview is chased from
         // nothing rather than left on the card (issue #46).
         if first.is_some() || head.starts_with(b"8BPS") {

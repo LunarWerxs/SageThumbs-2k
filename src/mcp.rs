@@ -16,7 +16,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 
 use crate::cli;
-use crate::formats;
+use st2k_base::formats;
 
 mod tool_defs;
 use tool_defs::tool_defs;

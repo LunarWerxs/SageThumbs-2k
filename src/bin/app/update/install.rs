@@ -179,7 +179,7 @@ pub(super) fn launch_installer_silent(path: &Path, owner: HWND) -> Result<(), Up
         !path.exists(),
         smart_app_control_enforcing(),
     );
-    sagethumbs2k_core::safety::log(&format!(
+    st2k_base::safety::log(&format!(
         "update: installer launch failed (ShellExecute={se_code}, GetLastError={last_error}, \
          file_present={}): {}",
         path.exists(),
@@ -295,7 +295,7 @@ pub(crate) fn download_and_install(parent: HWND) -> Result<String, UpdateError> 
     // caller (e.g. the About page's Update button) forgets its own `!settings::portable()`
     // check — `launch_installer_silent` below is what elevates and writes Program Files, and
     // it must never run for a portable copy on a PC the user may not have admin rights to.
-    if sagethumbs2k_core::settings::portable() {
+    if st2k_base::settings::portable() {
         return Err(UpdateError::Blocked(format!(
             "This is the portable copy of SageThumbs 2K, which never installs itself or asks \
              for administrator rights. Download the latest portable zip from {RELEASES_URL} \

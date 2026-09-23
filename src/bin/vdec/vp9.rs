@@ -391,7 +391,7 @@ mod tests {
     /// when the plain corpus sample.webm is VP9. Skips when the corpus is absent (CI).
     #[test]
     fn corpus_vp9_vectors_decode() {
-        let corpus = sagethumbs2k_core::testcorpus::dir();
+        let corpus = st2k_base::testcorpus::dir();
         let mut proved = 0;
         for name in ["sample-vp9p2.webm", "sample-vp9p3.webm", "sample.webm"] {
             let Ok(bytes) = std::fs::read(corpus.join(name)) else {

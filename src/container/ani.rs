@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_real_cursor_decodes() {
-        let Some(bytes) = crate::testcorpus::read("real.ani") else {
+        let Some(bytes) = st2k_base::testcorpus::read("real.ani") else {
             eprintln!("NOT MEASURED: real.ani absent");
             return;
         };

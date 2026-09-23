@@ -42,7 +42,7 @@ use windows::Win32::UI::Shell::{
     SHCreateShellItemArrayFromShellItem, ECF_HASSUBCOMMANDS, ECS_ENABLED, ECS_HIDDEN,
 };
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 const CLSID_EXPLORER_COMMAND: GUID = GUID::from_u128(0xD4F1C8A2_3E7B_4A96_8C0F_6B1E2D9A4C57);
 // The four modern-menu quick-verb coclasses (must match guids.rs / AppxManifest.xml).
@@ -135,7 +135,7 @@ const CF_DIB: u32 = 8;
 /// `ERROR_ACCESS_DENIED`) whenever any other process has it open, and collisions are
 /// millisecond-scale and constant — clipboard managers, browsers, the Win+V history poller,
 /// and on this machine `SageThumbs2K.exe --screenshot-daemon`.
-/// `src/clipboard.rs` retries for exactly this reason on the WRITE side; a single-attempt
+/// `crates/base/src/clipboard.rs` retries for exactly this reason on the WRITE side; a single-attempt
 /// READ here is what made `clipboard_verb_copies_image_to_clipboard` flake.
 unsafe fn open_clipboard_retrying(timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;

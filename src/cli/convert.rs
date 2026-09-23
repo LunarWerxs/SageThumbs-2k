@@ -40,8 +40,8 @@ pub(super) fn thumbnail_reporting(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if crate::formats::is_archive(archive_ext) {
-        reject_oversized_archive(input, crate::settings::max_file_size_bytes())
+    if st2k_base::formats::is_archive(archive_ext) {
+        reject_oversized_archive(input, st2k_base::settings::max_file_size_bytes())
             .map_err(|e| (OmitCause::Unreadable, e))?;
     }
     // Generic archive (.zip/.rar/.7z): the same list-then-extract path Explorer
@@ -132,10 +132,10 @@ fn archive_covers(input: &str) -> Option<Vec<Vec<u8>>> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if !crate::formats::is_archive(ext) {
+    if !st2k_base::formats::is_archive(ext) {
         return None;
     }
-    let want = if crate::settings::archive_collage() {
+    let want = if st2k_base::settings::archive_collage() {
         4
     } else {
         1
@@ -297,7 +297,7 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
     let combined = topdf::combine_to_pdf(
         inputs,
         Path::new(output),
-        crate::settings::jpeg_quality(),
+        st2k_base::settings::jpeg_quality(),
         opts.on_omit(),
     )
     .map_err(|e| format!("pdf build failed: {}", e.message()))?;

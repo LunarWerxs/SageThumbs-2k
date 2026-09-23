@@ -64,15 +64,12 @@ static HOLD_PEEK: AtomicBool = AtomicBool::new(true);
 pub(super) unsafe fn rearm(daemon_hwnd: HWND) {
     DAEMON_HWND.store(daemon_hwnd.0 as isize, Ordering::Relaxed);
     // Cache the hold-to-peek setting here (on the daemon thread), NOT in the hook callback.
-    HOLD_PEEK.store(
-        sagethumbs2k_core::settings::preview_hold_peek(),
-        Ordering::Relaxed,
-    );
+    HOLD_PEEK.store(st2k_base::settings::preview_hold_peek(), Ordering::Relaxed);
     uninstall();
-    if !sagethumbs2k_core::settings::preview_enabled() {
+    if !st2k_base::settings::preview_enabled() {
         reset_latch();
     }
-    if sagethumbs2k_core::settings::preview_enabled() {
+    if st2k_base::settings::preview_enabled() {
         let hmod = GetModuleHandleW(None).ok();
         let hinst = hmod
             .map(|m| windows::Win32::Foundation::HINSTANCE(m.0))

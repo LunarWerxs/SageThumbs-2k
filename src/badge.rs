@@ -19,7 +19,7 @@
 /// The user's style and size for the mark live with the other settings (both are stored
 /// DWORDs); this module only reads them, so the drawing code stays a pure function of
 /// (image, label, style, size).
-use crate::settings::{BadgeSize, BadgeStyle};
+use st2k_base::settings::{BadgeSize, BadgeStyle};
 
 /// Longest label we will draw. Keeps the badge from eating the tile on a silly extension.
 const MAX_LABEL: usize = 5;
@@ -30,13 +30,13 @@ const MIN_BADGED_EDGE: u32 = 64;
 
 /// The category tint for an extension, as (r, g, b).
 ///
-/// Seven hues, one per [`crate::formats::Category`], picked to stay apart from each other at
+/// Seven hues, one per [`st2k_base::formats::Category`], picked to stay apart from each other at
 /// badge size (roughly 20 px across on a 256 px tile) and to read on both light and dark
 /// thumbnails. They are NOT theme-aware on purpose: the badge is burned into the bitmap the
 /// shell caches, so it cannot follow a theme the user changes later.
 fn category_rgb(ext: &str) -> (u8, u8, u8) {
-    use crate::formats::Category;
-    match crate::formats::category(ext) {
+    use st2k_base::formats::Category;
+    match st2k_base::formats::category(ext) {
         Category::Image => (36, 116, 208),   // blue
         Category::Raw => (124, 77, 200),     // violet
         Category::Ebook => (32, 140, 84),    // green
@@ -516,7 +516,7 @@ mod visual {
     /// can be LOOKED AT. Pixel assertions prove placement; only eyes prove legibility.
     #[test]
     fn render_sample_sheet() {
-        let src = crate::testcorpus::dir().join("sample.png");
+        let src = st2k_base::testcorpus::dir().join("sample.png");
         let Ok(img) = image::open(&src) else {
             eprintln!("skipping: no ../test-corpus/sample.png");
             return;

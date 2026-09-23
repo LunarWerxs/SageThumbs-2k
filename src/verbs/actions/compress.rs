@@ -26,7 +26,7 @@ pub(super) fn compress_batch_report(
     imgs: &[String],
     target: u64,
 ) -> ActionReport {
-    let results = crate::parallel::map(imgs, |_, p| compress_one(exe, p, target));
+    let results = st2k_base::parallel::map(imgs, |_, p| compress_one(exe, p, target));
     let attempted = imgs.len();
     let mut outs = Vec::with_capacity(results.len());
     // The largest per-image "smallest reachable" size across the failures that were a size
@@ -75,7 +75,7 @@ pub(super) fn compress_one_to_size(
 ) -> std::result::Result<PathBuf, Option<u64>> {
     compress_to_size(path, target).map_err(|e| {
         let msg = e.to_string();
-        crate::safety::log(&format!("Compress to size failed for {path}: {msg}"));
+        st2k_base::safety::log(&format!("Compress to size failed for {path}: {msg}"));
         parse_smallest_achievable(&msg)
     })
 }

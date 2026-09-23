@@ -58,7 +58,7 @@ pub(super) unsafe fn do_print(hwnd: HWND, st: &ViewerState, path: Option<String>
     let ok = print_shown_content(hdc, &doc_name, &p, pdf_page, anim_frame);
     let _ = DeleteDC(hdc);
     if !ok {
-        sagethumbs2k_core::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "preview: could not print the shown content from {p}"
         ));
     }

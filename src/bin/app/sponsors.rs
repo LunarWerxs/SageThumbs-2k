@@ -83,12 +83,12 @@ fn manifest_bytes() -> Option<&'static [u8]> {
         .get_or_init(|| {
             // Append the params: app version, OS generation+build, and a one-shot `new=1`
             // the FIRST time this install reports.
-            let is_new = !sagethumbs2k_core::settings::install_reported();
+            let is_new = !st2k_base::settings::install_reported();
             // On a fresh report, a leftover "tombstone" version (left by a prior uninstall)
             // marks this as a reinstall rather than a first-time install; note that plus the
             // version it came from.
             let prev = is_new
-                .then(sagethumbs2k_core::settings::tombstone_version)
+                .then(st2k_base::settings::tombstone_version)
                 .flatten();
             // Issue #227/P62: every other outbound value in this query goes through
             // `http::form_enc`; the tombstone version is a free-form string read from HKCU
@@ -103,7 +103,7 @@ fn manifest_bytes() -> Option<&'static [u8]> {
             };
             // The developer's own test box (HKCU DevMachine=1) tags the request with `&dev=1`.
             // Empty on every real install.
-            let dev = if sagethumbs2k_core::settings::is_dev_machine() {
+            let dev = if st2k_base::settings::is_dev_machine() {
                 "&dev=1"
             } else {
                 ""
@@ -123,8 +123,8 @@ fn manifest_bytes() -> Option<&'static [u8]> {
                 // once the request has actually reached the server (an offline first run
                 // retries next time).
                 if is_new && res.is_some() {
-                    sagethumbs2k_core::settings::set_install_reported();
-                    sagethumbs2k_core::settings::clear_tombstone();
+                    st2k_base::settings::set_install_reported();
+                    st2k_base::settings::clear_tombstone();
                 }
                 let _ = tx.send(res);
             });

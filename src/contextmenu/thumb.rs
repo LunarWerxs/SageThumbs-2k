@@ -47,7 +47,7 @@ fn acquire_menu_preview_slot(now_ms: usize) -> Option<usize> {
     let expiry = now_ms.saturating_add(MENU_PREVIEW_LEASE_MS);
     for (i, slot) in MENU_PREVIEW_SLOTS.iter().enumerate() {
         // Free, or the previous holder's lease has run out and we may take it over.
-        let claimed = crate::try_claim_slot!(slot, now_ms, expiry);
+        let claimed = st2k_base::try_claim_slot!(slot, now_ms, expiry);
         if claimed {
             return Some(i);
         }
@@ -120,7 +120,7 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
 }
 
 /// Start reading + decoding `path` to a scaled menu thumbnail on a detached worker. Mirrors
-/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::host::ModuleRef` and inits
+/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `st2k_base::host::ModuleRef` and inits
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment). Uses only the cheap in-process tiers
 /// (`decode_menu_preview` — container covers, fast image/WIC tiers, and pure-Rust resvg for
 /// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
@@ -144,7 +144,7 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
     // committed to running, not from whenever the new thread happens to get scheduled —
     // see `safety.rs`'s note on why the in-closure form is the weaker one.
     #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::host::ModuleRef::default();
+    let module = st2k_base::host::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let ticket = safety::AbandonTicket::new();
     let worker_ticket = ticket.clone();

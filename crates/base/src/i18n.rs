@@ -287,8 +287,12 @@ mod tests {
 
     #[test]
     fn lib_side_translation_keys_all_survive_the_dll_subset() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let (checked, offenders) = scan_lib_t_calls(&src);
+        let (mut checked, mut offenders) = (0, Vec::new());
+        for src in crate::testcorpus::library_sources() {
+            let (c, o) = scan_lib_t_calls(&src);
+            checked += c;
+            offenders.extend(o);
+        }
 
         assert!(
             offenders.is_empty(),

@@ -95,7 +95,7 @@ unsafe fn on_btn_toc(hwnd: HWND, st: &ViewerState) {
     st.toc_open.set(open);
     st.toc_anim.set(Some(from));
     SetTimer(Some(hwnd), TOC_TIMER_ID, 15, None);
-    let _ = sagethumbs2k_core::settings::set_preview_toc_open(open); // persist ("pin")
+    let _ = st2k_base::settings::set_preview_toc_open(open); // persist ("pin")
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
@@ -105,7 +105,7 @@ unsafe fn on_btn_toc(hwnd: HWND, st: &ViewerState) {
 /// already tears down the image cache and re-parses.
 unsafe fn on_btn_md_images(hwnd: HWND, st: &ViewerState, path: Option<String>) {
     let on = !st.md_remote_ok.get();
-    let _ = sagethumbs2k_core::settings::set_preview_md_remote_img(on);
+    let _ = st2k_base::settings::set_preview_md_remote_img(on);
     st.md_remote_ok.set(on);
     if let Some(p) = path {
         request_load(hwnd, &p);
@@ -138,11 +138,8 @@ unsafe fn on_btn_pin(hwnd: HWND, st: &ViewerState) {
 
 unsafe fn on_btn_copy(path: Option<String>) {
     if let Some(p) = path {
-        let bytes = sagethumbs2k_core::clipboard::utf16_nul_bytes(&p);
-        let _ = sagethumbs2k_core::clipboard::set_clipboard(
-            sagethumbs2k_core::clipboard::CF_UNICODETEXT,
-            &bytes,
-        );
+        let bytes = st2k_base::clipboard::utf16_nul_bytes(&p);
+        let _ = st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_UNICODETEXT, &bytes);
     }
 }
 
@@ -187,7 +184,7 @@ unsafe fn on_btn_save_page(hwnd: HWND, st: &ViewerState, path: Option<String>) {
         return; // user cancelled the picker
     };
     if !save_shown_image(&p, pdf_page, anim_frame, &dest) {
-        sagethumbs2k_core::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "preview: could not save the shown page/frame from {p} to {dest}"
         ));
     }

@@ -153,7 +153,7 @@ unsafe fn insert_quick_verb_item(
                 pos,
                 MF_BYPOSITION | MF_POPUP | MF_STRING,
                 qsub.0 as usize,
-                &HSTRING::from(crate::i18n::t(title)),
+                &HSTRING::from(st2k_base::i18n::t(title)),
             )
             .is_ok()
             {
@@ -175,7 +175,7 @@ unsafe fn insert_quick_verb_item(
                     pos,
                     MF_BYPOSITION | MF_STRING,
                     cmd as usize,
-                    &HSTRING::from(crate::i18n::t(title)),
+                    &HSTRING::from(st2k_base::i18n::t(title)),
                 );
                 pos + 1
             } else {

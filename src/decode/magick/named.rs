@@ -126,7 +126,7 @@ impl NamedTemp {
                 return Some(staged);
             }
         }
-        crate::safety::log_debug("magick decode: could not claim a staging name in %TEMP%");
+        st2k_base::safety::log_debug("magick decode: could not claim a staging name in %TEMP%");
         None
     }
 }
@@ -200,7 +200,7 @@ pub(super) fn decode_named_extension_spec(
         return Err(Error::from(E_FAIL));
     }
     let Some(temp) = NamedTemp::create(bytes, &ext) else {
-        crate::safety::log_debug("magick decode: could not stage a named temp file");
+        st2k_base::safety::log_debug("magick decode: could not stage a named temp file");
         return Err(Error::from(E_FAIL));
     };
     let Some(spec) = temp.0.to_str() else {

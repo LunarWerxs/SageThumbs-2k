@@ -523,8 +523,8 @@ pub(super) unsafe fn create_viewer(
     };
     // "Open in front": bring the window to the top of the z-order on first show (never steals
     // focus, always coverable). Not applicable to the off-screen shot window.
-    let open_front = shot.is_none() && sagethumbs2k_core::settings::preview_open_front();
-    let manual = shot.is_none() && !sagethumbs2k_core::settings::preview_enabled();
+    let open_front = shot.is_none() && st2k_base::settings::preview_open_front();
+    let manual = shot.is_none() && !st2k_base::settings::preview_enabled();
     let ex = if pinned {
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST
     } else {
@@ -565,7 +565,7 @@ pub(super) unsafe fn create_viewer(
         text: RefCell::new(None),
         video: RefCell::new(None),
         video_dims: Cell::new(None),
-        arrow_nav: Cell::new(sagethumbs2k_core::settings::preview_arrow_nav()),
+        arrow_nav: Cell::new(st2k_base::settings::preview_arrow_nav()),
         find: super::find::new_state(),
         hinst,
         pinned: Cell::new(pinned),
@@ -599,7 +599,7 @@ pub(super) unsafe fn create_viewer(
         md_links: RefCell::new(Vec::new()),
         md_toc: RefCell::new(Vec::new()),
         toc_hits: RefCell::new(Vec::new()),
-        toc_open: Cell::new(sagethumbs2k_core::settings::preview_toc_open()),
+        toc_open: Cell::new(st2k_base::settings::preview_toc_open()),
         toc_sel: Cell::new(None),
         toc_anim: Cell::new(None),
         md_has_headings: Cell::new(false),

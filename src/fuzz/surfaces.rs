@@ -453,7 +453,7 @@ pub(super) fn deep_session_over_the_new_parsers() {
     let mut seeds = new_surface_seeds();
     // Real samples where the corpus has them: a synthetic seed is a scaffold this code wrote
     // for itself, so it can only ever contain structures this code already thought of.
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     for name in [
         "sample.apk",
         "sample.xapk",

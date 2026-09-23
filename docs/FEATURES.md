@@ -147,7 +147,7 @@ are deliberately left out of this menu (thumbnail and preview only).
 
 **Multi-file jobs run in parallel.** When the selection has several files, Convert /
 Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a tiny
-dependency-free scoped thread pool (`src/parallel.rs`), 6–15× faster than the old
+dependency-free scoped thread pool (`crates/base/src/parallel.rs`), 6–15× faster than the old
 one-at-a-time pass, with no rayon weight added to the in-Explorer DLL. Each worker
 initializes COM, which incidentally fixed HEIC/RAW silently failing in the Convert path.
 

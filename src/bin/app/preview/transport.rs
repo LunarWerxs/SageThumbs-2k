@@ -149,17 +149,17 @@ unsafe fn do_transport_action(
         TBtn::Loop => {
             let loop_on = !v.looping();
             v.set_looping(loop_on);
-            let _ = sagethumbs2k_core::settings::set_preview_loop(loop_on);
+            let _ = st2k_base::settings::set_preview_loop(loop_on);
         }
         TBtn::Arrows => {
             let arr_on = !st.arrow_nav.get();
             st.arrow_nav.set(arr_on);
-            let _ = sagethumbs2k_core::settings::set_preview_arrow_nav(arr_on);
+            let _ = st2k_base::settings::set_preview_arrow_nav(arr_on);
         }
         TBtn::Speed => {
             let sp = next_speed(v.speed());
             v.set_speed(sp);
-            let _ = sagethumbs2k_core::settings::set_preview_speed((sp * 100.0).round() as u32);
+            let _ = st2k_base::settings::set_preview_speed((sp * 100.0).round() as u32);
         }
         TBtn::Prev | TBtn::Next => unreachable!("Prev/Next are handled by the callers"),
     }
@@ -334,8 +334,8 @@ pub(super) unsafe fn apply_vol(v: &super::video::VideoPlayer, x: i32, vol: &RECT
 /// clicked, never per mouse-move: each call is a registry write.
 pub(super) unsafe fn persist_volume(v: &super::video::VideoPlayer) {
     let pct = (v.volume() * 100.0).round().clamp(0.0, 100.0) as u32;
-    let _ = sagethumbs2k_core::settings::set_preview_volume(pct);
-    let _ = sagethumbs2k_core::settings::set_preview_muted(v.muted());
+    let _ = st2k_base::settings::set_preview_volume(pct);
+    let _ = st2k_base::settings::set_preview_muted(v.muted());
 }
 
 /// Dispatch a mouse-down on the video transport strip (play/pause · mute · seek · volume).

@@ -14,8 +14,8 @@ fn preview_measures_a_real_tile_rect() {
         hbm: HBITMAP::default(),
         w: 0,
         h: 0,
-        name: crate::host::wide("photo.jpg"),
-        info: crate::host::wide("1500 x 1500 px - 96 KB"),
+        name: st2k_base::host::wide("photo.jpg"),
+        info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
         checker: true,
     };
     unsafe {
@@ -74,8 +74,8 @@ fn unskinned_preview_item_is_a_bitmap() {
             hbm: HBITMAP::default(),
             w: 0,
             h: 0,
-            name: crate::host::wide("photo.jpg"),
-            info: crate::host::wide("1500 x 1500 px - 96 KB"),
+            name: st2k_base::host::wide("photo.jpg"),
+            info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
             checker: true,
         };
         let bmp = preview_ddb(&p);

@@ -187,16 +187,16 @@ pub(super) unsafe fn create(
             return None;
         }
     };
-    let looping = sagethumbs2k_core::settings::preview_loop();
-    let speed = (sagethumbs2k_core::settings::preview_speed() as f64 / 100.0).clamp(0.25, 4.0);
+    let looping = st2k_base::settings::preview_loop();
+    let speed = (st2k_base::settings::preview_speed() as f64 / 100.0).clamp(0.25, 4.0);
     let _ = engine.SetLoop(looping);
     let _ = engine.SetPlaybackRate(speed);
     // Open at the level the transport strip was last left on, instead of the engine's full-volume
     // default — a player that forgets the volume you set on the previous file is the whole reason
     // this is persisted (see `settings::preview_volume`). Set BEFORE `SetSource` so the very first
     // audio frame is already at the right level; re-asserted at CANPLAY (see `on_event`).
-    let vol = (sagethumbs2k_core::settings::preview_volume() as f64 / 100.0).clamp(0.0, 1.0);
-    let muted = sagethumbs2k_core::settings::preview_muted();
+    let vol = (st2k_base::settings::preview_volume() as f64 / 100.0).clamp(0.0, 1.0);
+    let muted = st2k_base::settings::preview_muted();
     let _ = engine.SetVolume(vol);
     let _ = engine.SetMuted(muted);
     let url = BSTR::from(path);
@@ -419,7 +419,7 @@ pub(super) fn save_current_frame(path: String, frac: f64, dest: String) {
             .and_then(|img| img.save(&dest).ok())
             .is_some();
         if !ok {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "preview: could not save the current video frame from {path} to {dest}"
             ));
             unsafe {

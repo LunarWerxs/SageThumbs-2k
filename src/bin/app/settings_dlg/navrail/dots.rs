@@ -13,7 +13,7 @@ thread_local! {
 // JPEG/PNG quality fields (also on this page — see ID_JPEG/ID_PNG in `cat_rows`'s GENERAL
 // rows).
 pub(super) fn general_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     !s::thumbnails_enabled()
         || !s::use_embedded()
         || s::max_file_size_bytes() != u64::from(s::DEFAULT_MAX_FILE_MB) * 1024 * 1024
@@ -26,7 +26,7 @@ pub(super) fn general_page_has_non_defaults() -> bool {
 // mark is one tri-state now, so ANY non-default value counts once — asking
 // `format_badge() || hide_type_overlay()` would double-count the same choice.
 pub(super) fn appearance_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     s::corner_mark() != s::CornerMark::default()
         || !s::format_badge_icon()
         || s::thumb_checker()
@@ -38,7 +38,7 @@ pub(super) fn appearance_page_has_non_defaults() -> bool {
 // "Enabled unless an explicit 0 is stored"), so the page has changed the moment any one of
 // them is unchecked.
 pub(super) fn filetypes_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     formats::FORMATS
         .iter()
         .any(|&(ext, _)| !s::format_enabled(ext))
@@ -47,16 +47,16 @@ pub(super) fn filetypes_page_has_non_defaults() -> bool {
 // Ebook/comic: also where ID_PDF_MARGIN actually lives (moved here from General, see
 // `cat_rows`), so its non-Tight PDF page layout counts toward this page's dot.
 pub(super) fn ebook_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     !s::container_sort()
         || !s::container_prefer_cover()
         || !s::container_skip_scanlation()
         || !s::archive_collage()
-        || s::pdf_page() != sagethumbs2k_core::PdfPage::Tight
+        || s::pdf_page() != st2k_base::settings::PdfPage::Tight
 }
 
 pub(super) fn menu_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     !s::menu_enabled()
         || s::menu_all_file_types()
         || s::menu_quick_verbs()
@@ -68,7 +68,7 @@ pub(super) fn menu_page_has_non_defaults() -> bool {
 
 // Advanced: auto-update check defaults ON, and the "hide from tray" toggle defaults off.
 pub(super) fn advanced_page_has_non_defaults() -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     !s::update_auto_check() || s::screenshot_hide_tray()
 }
 
@@ -80,7 +80,7 @@ pub(super) fn advanced_page_has_non_defaults() -> bool {
 /// Deliberately coarse: it names the pages that DIFFER, it does not promise the reverse
 /// (a page with no dot may still have sub-state we don't track, e.g. list orderings).
 pub(in super::super) fn page_has_non_defaults(ci: usize) -> bool {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     match ci {
         0 => general_page_has_non_defaults(),
         1 => appearance_page_has_non_defaults(),
@@ -104,7 +104,7 @@ pub(in super::super) fn page_has_non_defaults(ci: usize) -> bool {
 pub(super) fn dots_seen() -> u32 {
     DOTS_SEEN.with(|c| {
         if c.get() == u32::MAX {
-            c.set(sagethumbs2k_core::settings::get_dword_opt("NavDotsSeen").unwrap_or(0));
+            c.set(st2k_base::settings::get_dword_opt("NavDotsSeen").unwrap_or(0));
         }
         c.get()
     })
@@ -129,5 +129,5 @@ pub(super) fn mark_dot_seen(ci: usize) {
     }
     DOTS_SEEN.with(|c| c.set(cur | bit));
     // Best-effort: a failed write costs a dot that reappears next launch, nothing more.
-    let _ = sagethumbs2k_core::settings::set_dword("NavDotsSeen", cur | bit);
+    let _ = st2k_base::settings::set_dword("NavDotsSeen", cur | bit);
 }

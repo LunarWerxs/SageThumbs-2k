@@ -190,7 +190,7 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
     let Some((buf, w, h)) = compose(s) else {
         return false;
     };
-    if sagethumbs2k_core::settings::screenshot_use_save_dir() {
+    if st2k_base::settings::screenshot_use_save_dir() {
         let dir = crate::screenshot::effective_save_dir();
         let ok = output::save_png_to_dir(std::path::Path::new(&dir), &buf, w, h);
         if !ok {

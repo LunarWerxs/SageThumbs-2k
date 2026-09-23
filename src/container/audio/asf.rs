@@ -339,7 +339,7 @@ pub(super) fn name_eq(name: &[u8], want: &[u8]) -> bool {
 /// Decode UTF-16LE bytes to a String, trimmed of trailing NULs/whitespace. `None`
 /// if empty after trimming.
 fn utf16_string(bytes: &[u8]) -> Option<String> {
-    let units = crate::clipboard::utf16_le_units(bytes);
+    let units = st2k_base::clipboard::utf16_le_units(bytes);
     let s = String::from_utf16_lossy(&units);
     let s = s.trim_end_matches('\0').trim().to_string();
     (!s.is_empty()).then_some(s)

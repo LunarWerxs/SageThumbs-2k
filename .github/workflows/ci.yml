@@ -357,13 +357,13 @@ jobs:
           Copy-Item (Join-Path $target 'SageThumbs2K.exe') $drop
           # Take the marker filename from the Rust const; a literal here could drift, and the
           # failure mode is silent (no marker found means it quietly uses HKCU and passes).
-          # The settings module is a hub plus children (src/settings.rs + src/settings/*.rs since
+          # The settings module is a hub plus children (crates/base/src/settings.rs + crates/base/src/settings/*.rs since
           # 2026-09-08; INI_NAME lives in store.rs). Scan all of them so a later move cannot turn
           # this proof into a false red the way the split did.
-          $settingsSrc = @(Get-Content ./src/settings.rs -Raw) + @(Get-ChildItem ./src/settings -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })
+          $settingsSrc = @(Get-Content ./crates/base/src/settings.rs -Raw) + @(Get-ChildItem ./crates/base/src/settings -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })
           $iniName = [regex]::Match(($settingsSrc -join "`n"),
             '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"').Groups[1].Value
-          if (-not $iniName) { throw 'Could not read INI_NAME from src/settings.rs or src/settings/*.rs' }
+          if (-not $iniName) { throw 'Could not read INI_NAME from crates/base/src/settings.rs or crates/base/src/settings/*.rs' }
           # Values no default would ever produce, so a match cannot be a coincidence.
           Set-Content (Join-Path $drop $iniName) -Value @('[Settings]', 'Width=137', 'Height=137', 'MaxSize=42')
 
@@ -438,7 +438,7 @@ jobs:
 
   # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
   # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count
-  # must match src/formats.rs FORMATS; the AppxManifest version must match Cargo.toml.
+  # must match crates/base/src/formats.rs FORMATS; the AppxManifest version must match Cargo.toml.
   # Catches the "referenced-but-not-committed" + version/count drift classes that have
   # broken releases — fails fast, before anything ships. See scripts/check-consistency.ps1.
   consistency:

@@ -100,7 +100,7 @@ fn eye_remember(picked: &[(u8, u8, u8)]) {
         h.insert(0, c);
     }
     h.truncate(10);
-    let _ = sagethumbs2k_core::settings::set_eyedropper_history(&h);
+    let _ = st2k_base::settings::set_eyedropper_history(&h);
 }
 
 /// Is a modifier held? Ctrl means "add to the list and keep picking".
@@ -162,7 +162,7 @@ unsafe fn snapshot_screen(x: i32, y: i32, w: i32, h: i32) -> bool {
     let mem = CreateCompatibleDC(Some(screen));
     let bmp = CreateCompatibleBitmap(screen, w, h);
     if screen.is_invalid() || mem.is_invalid() || bmp.is_invalid() {
-        sagethumbs2k_core::safety::log("eyedropper: GDI snapshot allocation failed");
+        st2k_base::safety::log("eyedropper: GDI snapshot allocation failed");
         if !mem.is_invalid() {
             let _ = DeleteDC(mem);
         }
@@ -190,11 +190,11 @@ pub(crate) unsafe fn run_eyedropper(hinst: HINSTANCE) {
     // The remembered format + past picks. Loaded here rather than lazily so the loupe's very
     // first paint already shows both.
     EYE_FMT.store(
-        sagethumbs2k_core::settings::eyedropper_format() as i32,
+        st2k_base::settings::eyedropper_format() as i32,
         Ordering::Relaxed,
     );
     if let Ok(mut h) = EYE_HISTORY.lock() {
-        *h = sagethumbs2k_core::settings::eyedropper_history();
+        *h = st2k_base::settings::eyedropper_history();
     }
     // Snapshot the whole virtual screen into a memory DC.
     let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
@@ -445,7 +445,7 @@ unsafe fn on_keydown_space(hwnd: HWND) -> LRESULT {
 unsafe fn on_keydown_tab(hwnd: HWND) -> LRESULT {
     let fmt = (EYE_FMT.load(Ordering::Relaxed) + 1) % 4;
     EYE_FMT.store(fmt, Ordering::Relaxed);
-    let _ = sagethumbs2k_core::settings::set_eyedropper_format(fmt as u32);
+    let _ = st2k_base::settings::set_eyedropper_format(fmt as u32);
     let cx = EYE_LAST_X.load(Ordering::Relaxed);
     let cy = EYE_LAST_Y.load(Ordering::Relaxed);
     let _ = InvalidateRect(Some(hwnd), Some(&eye_loupe_box(cx, cy)), false);

@@ -14,8 +14,8 @@ pub(super) fn encode_to(
     encode_to_opts(
         img,
         format,
-        crate::settings::jpeg_quality(),
-        crate::settings::png_level(),
+        st2k_base::settings::jpeg_quality(),
+        st2k_base::settings::png_level(),
         None,
         target_ext,
         path,

@@ -548,8 +548,8 @@ mod tests {
     /// locale table (audit F29) — never the raw key echoed back.
     #[test]
     fn checkbox_label_marks_the_state_and_reads_the_localized_name() {
-        sagethumbs2k_core::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
-        sagethumbs2k_core::i18n::apply_override_or_system(Some("en"));
+        st2k_base::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
+        st2k_base::i18n::apply_override_or_system(Some("en"));
         let name = crate::win::t("shot_text_bold");
         assert!(!name.is_empty(), "the key must resolve to a real caption");
         assert_eq!(

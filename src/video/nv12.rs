@@ -151,7 +151,7 @@ pub fn frame_from_owned_bytes(owned: Vec<u8>) -> Option<DynamicImage> {
 }
 
 /// Grab a frame from a full in-memory buffer at the TRUE representative mark
-/// ([`crate::settings::video_offset_frac`], no depth cap). For callers that hold the WHOLE file
+/// ([`st2k_base::settings::video_offset_frac`], no depth cap). For callers that hold the WHOLE file
 /// in RAM (the size-capped CLI read), so MF can seek freely via the container's own index —
 /// unlike [`frame_from_bytes`], whose 3 s cap assumes a bounded head prefix. Used as the
 /// CLI/preview fallback for non-MP4/MKV containers.
@@ -169,7 +169,7 @@ pub fn frame_from_bytes_repr(bytes: &[u8]) -> Option<DynamicImage> {
         grab(
             &bs,
             Seek {
-                frac: crate::settings::video_offset_frac(),
+                frac: st2k_base::settings::video_offset_frac(),
                 cap_hns: None,
             },
         )

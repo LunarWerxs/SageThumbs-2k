@@ -18,6 +18,7 @@ pub(crate) use child::await_magick_output;
 use child::*;
 pub use encode::{
     encode_via_magick, encode_via_magick_png, magick_output_extensions, magick_output_supported,
+    magick_png_bytes,
 };
 pub(crate) use named::is_raw_coder_ext;
 pub(super) use named::{
@@ -52,7 +53,7 @@ fn find_magick() -> Option<PathBuf> {
 
 /// `magick.exe` next to this module (the Full install bundles it there).
 fn bundled_magick() -> Option<PathBuf> {
-    let dll = crate::host::module_path().ok()?;
+    let dll = st2k_base::host::module_path().ok()?;
     let p = std::path::Path::new(&dll).parent()?.join("magick.exe");
     p.exists().then_some(p)
 }
@@ -91,7 +92,7 @@ fn apply_magick_environment(cmd: &mut Command, exe: &std::path::Path) {
     cmd.env("MAGICK_CODER_MODULE_PATH", &coder_path);
     cmd.env("MAGICK_FILTER_MODULE_PATH", &filter_path);
 
-    let app_policy_dir = crate::host::module_path()
+    let app_policy_dir = st2k_base::host::module_path()
         .ok()
         .and_then(|module| {
             std::path::Path::new(&module)
@@ -368,7 +369,7 @@ fn decode_via_magick_spec_alloc(
     let budget = budget_for(fidelity, is_meta);
     let DecodeCaps { max_alloc, png_cap } = caps;
     let Some(exe) = magick_exe() else {
-        crate::safety::log_debug("magick decode: ImageMagick not available");
+        st2k_base::safety::log_debug("magick decode: ImageMagick not available");
         return Err(Error::from(E_FAIL));
     };
     let mut cmd = Command::new(exe);
@@ -408,7 +409,7 @@ fn decode_via_magick_spec_alloc(
     // is how issue #9 stayed invisible. Process creation really can fail on a machine that
     // is out of resources, so it needs a breadcrumb like every other tier has.
     let mut child = cmd.spawn().map_err(|e| {
-        crate::safety::log_debugf!("magick decode: could not start the child: {e}");
+        st2k_base::safety::log_debugf!("magick decode: could not start the child: {e}");
         Error::from(E_FAIL)
     })?;
 
@@ -416,7 +417,7 @@ fn decode_via_magick_spec_alloc(
     // main thread enforces the budget.
     let (tx, rx) = std::sync::mpsc::channel();
     let Some((writer, reader)) =
-        crate::safety::start_child_pipes(&mut child, bytes.to_vec(), move |stdout| {
+        st2k_base::safety::start_child_pipes(&mut child, bytes.to_vec(), move |stdout| {
             let mut buf = Vec::new();
             // Capped so a hostile/misbehaving child can't balloon our memory before the
             // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
@@ -424,7 +425,7 @@ fn decode_via_magick_spec_alloc(
             let _ = tx.send(buf);
         })
     else {
-        crate::safety::log_debug("magick decode: the child's pipes or pipe threads failed");
+        st2k_base::safety::log_debug("magick decode: the child's pipes or pipe threads failed");
         return Err(Error::from(E_FAIL));
     };
 
@@ -433,7 +434,7 @@ fn decode_via_magick_spec_alloc(
     let stderr = child.stderr.take();
     // Without the thread there are no diagnostics; the budget still bounds the child.
     let errdrain = stderr
-        .and_then(|s| crate::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
+        .and_then(|s| st2k_base::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
 
     let png = match await_magick_output(&mut child, &rx, budget.cpu, budget.wall) {
         Ok(buf) => buf,
@@ -458,7 +459,7 @@ fn decode_via_magick_spec_alloc(
     // we may have killed a child that had already produced a complete PNG).
     // image::Limits bound this safe-tier decode.
     decode_with_image_alloc(&png, max_alloc).inspect_err(|e| {
-        crate::safety::log_debugf!(
+        st2k_base::safety::log_debugf!(
             "magick decode: could not re-decode the {} byte PNG it returned: {e}",
             png.len()
         );

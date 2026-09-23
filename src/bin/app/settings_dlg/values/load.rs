@@ -47,7 +47,7 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     check(
         hwnd,
         ID_PDF_MARGIN,
-        !matches!(settings::pdf_page(), sagethumbs2k_core::PdfPage::Tight),
+        !matches!(settings::pdf_page(), st2k_base::settings::PdfPage::Tight),
     );
     for_each_menu_row(hwnd, |mlist, row, ti| {
         set_check(

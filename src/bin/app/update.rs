@@ -252,7 +252,7 @@ fn now_secs() -> u64 {
 /// host's `%LOCALAPPDATA%`, the same split `settings.rs`/`sync_client.rs` already apply to
 /// every other setting); next to the diagnostics log in `%LOCALAPPDATA%` otherwise.
 pub(crate) fn cache_path() -> Option<PathBuf> {
-    if let Some(ini) = sagethumbs2k_core::settings::ini_path() {
+    if let Some(ini) = st2k_base::settings::ini_path() {
         return ini.parent().map(|d| d.join("SageThumbs2K-update.txt"));
     }
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("SageThumbs2K-update.txt"))
@@ -359,7 +359,7 @@ pub(crate) fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
 /// the pre-existing behaviour, never a refusal.
 fn latest_from_worker() -> Option<LatestRelease> {
     // Tag the request with &dev=1 on a developer test box (see `is_dev_machine`).
-    let dev = if sagethumbs2k_core::settings::is_dev_machine() {
+    let dev = if st2k_base::settings::is_dev_machine() {
         "&dev=1"
     } else {
         ""
@@ -503,7 +503,7 @@ const SIG_TIMEOUT_SECS: u64 = 15;
 /// nothing ever drove the real pipeline against a real executable. This entry point is
 /// what makes that class of failure a red build instead of a bug report.
 pub(crate) fn run_selftest(setup: &Path) -> bool {
-    let log = |m: &str| sagethumbs2k_core::safety::log(&format!("update-selftest: {m}"));
+    let log = |m: &str| st2k_base::safety::log(&format!("update-selftest: {m}"));
     let Ok(bytes) = std::fs::read(setup) else {
         log(&format!("couldn't read {}", setup.display()));
         return false;

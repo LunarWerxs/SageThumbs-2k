@@ -7,7 +7,7 @@
 //! link shared last week could be dead or good for months with nothing to tell them apart. A
 //! user asked for a countdown on the link's page (2026-09-21); that page is the host's, so the
 //! countdown lives here instead, fed by the list every upload writes
-//! (`sagethumbs2k_core::upload_history`).
+//! (`st2k_base::upload_history`).
 //!
 //! Same shape as the other result windows (`win::result_window_proc`: a read-only edit, Copy,
 //! Close, dark mode). Copy puts every link that has not expired on the clipboard, newest first.
@@ -16,9 +16,7 @@
 
 use core::cell::RefCell;
 
-use sagethumbs2k_core::upload_history::{
-    duration_text, load, DurationWords, Entry, Expiry, Status,
-};
+use st2k_base::upload_history::{duration_text, load, DurationWords, Entry, Expiry, Status};
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::UI::WindowsAndMessaging::{ES_MULTILINE, ES_READONLY, WINDOW_STYLE};
@@ -87,11 +85,11 @@ fn status_words(e: &Entry, now: u64, w: &ExpiryWords) -> String {
             .replace("{left}", &duration_text(left, &w.dur))
             .replace(
                 "{date}",
-                &sagethumbs2k_core::unixtime::local_datetime(now.saturating_add(left)),
+                &st2k_base::unixtime::local_datetime(now.saturating_add(left)),
             ),
         Status::Expired(at) => w
             .expired
-            .replace("{date}", &sagethumbs2k_core::unixtime::local_datetime(at)),
+            .replace("{date}", &st2k_base::unixtime::local_datetime(at)),
         Status::NoExpiry => w.list_no_expiry.to_string(),
         Status::Unknown => w.unknown.to_string(),
     }
@@ -100,10 +98,9 @@ fn status_words(e: &Entry, now: u64, w: &ExpiryWords) -> String {
 /// The second line under a link: "shot.png · uploaded 2026-09-21 23:50 · 2 d 23 h left, until
 /// 2026-09-24 23:50" (the name is left out when there isn't one).
 fn detail_line(e: &Entry, now: u64, w: &ExpiryWords) -> String {
-    let uploaded = w.uploaded.replace(
-        "{date}",
-        &sagethumbs2k_core::unixtime::local_datetime(e.uploaded),
-    );
+    let uploaded = w
+        .uploaded
+        .replace("{date}", &st2k_base::unixtime::local_datetime(e.uploaded));
     let status = status_words(e, now, w);
     if e.name.is_empty() {
         format!("{uploaded} · {status}")
@@ -154,7 +151,7 @@ fn fill(entries: &[Entry], now: u64) {
 /// Open the list. `owner` makes it modal to whatever opened it (Settings, the upload result);
 /// `None` is the tray's own `--upload-history` process.
 pub(crate) fn show_history(owner: Option<HWND>) {
-    fill(&load(), sagethumbs2k_core::unixtime::now());
+    fill(&load(), st2k_base::unixtime::now());
     unsafe {
         run_dialog(
             w!("SageThumbs2KUploadHistory"),
@@ -211,7 +208,7 @@ pub(crate) fn sample_entries(now: u64) -> Vec<Entry> {
 
 /// Headless capture (`--shot <out.png> --window uploads`) over [`sample_entries`].
 pub(crate) unsafe fn run_shot_history(out: &str) -> bool {
-    let now = sagethumbs2k_core::unixtime::now();
+    let now = st2k_base::unixtime::now();
     fill(&sample_entries(now), now);
     crate::win::capture_shot_window(
         out,
@@ -249,7 +246,7 @@ impl ResultWindow for History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sagethumbs2k_core::upload_history::ENGLISH;
+    use st2k_base::upload_history::ENGLISH;
 
     fn words() -> ExpiryWords<'static> {
         ExpiryWords {

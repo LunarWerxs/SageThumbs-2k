@@ -278,7 +278,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     // "Automatically check for updates" off, respect it here too — this arm used to
     // fire regardless, which is exactly what issue #26 reported. The manual pill
     // click below still checks unconditionally, because that IS a request.
-    let auto = sagethumbs2k_core::settings::update_auto_check();
+    let auto = st2k_base::settings::update_auto_check();
     let state = Box::new(About {
         status: if auto { Status::Checking } else { Status::Idle },
         checking: false,

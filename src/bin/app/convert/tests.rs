@@ -24,7 +24,7 @@ fn every_locale_resize_checkbox_label_fits_its_allocated_column() {
     let dependent_col = cv_checkbox_w(true);
     let mut old_width_would_have_clipped = false;
 
-    for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+    for (code, pairs) in st2k_base::i18n::LOCALES {
         let value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
 
         if let Some(label) = value("cv_resize") {
@@ -84,7 +84,7 @@ fn measure_label(text: &str) -> i32 {
 fn every_locale_fits_the_convert_row_it_is_laid_out_into() {
     let mut would_have_clipped: Vec<String> = Vec::new();
 
-    for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+    for (code, pairs) in st2k_base::i18n::LOCALES {
         let value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
         let width = |key: &str| value(key).map(measure_label).unwrap_or(0);
 

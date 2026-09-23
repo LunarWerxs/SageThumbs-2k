@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::{SHCreateMemStream, SHCreateStreamOnFileEx};
 fn test_cfg(max_file_bytes: u64) -> ThumbSettings {
     ThumbSettings {
         max_file_bytes,
-        ..crate::settings::thumb_settings()
+        ..st2k_base::settings::thumb_settings()
     }
 }
 
@@ -106,7 +106,7 @@ fn oversized_stream_is_rescued_at_the_shipped_default_not_only_at_unlimited() {
     }
     let jpeg = substantial_jpeg();
     let stream = unsafe { SHCreateMemStream(Some(&jpeg)) }.expect("SHCreateMemStream");
-    let default_allowance = u64::from(crate::settings::DEFAULT_MAX_FILE_MB) * 1024 * 1024;
+    let default_allowance = u64::from(st2k_base::settings::DEFAULT_MAX_FILE_MB) * 1024 * 1024;
     assert!(
         default_allowance > decode::limits::MAX_INPUT_BYTES,
         "the default allowance must sit CLEAR of the buffering ceiling, or the rescue's \
@@ -302,7 +302,7 @@ fn raw_fast_path_gate_rejects_plain_tiff_and_non_raw() {
 /// headers are walked off the stream and only the cover's entry is read.
 #[test]
 fn an_oversized_rar_comic_gets_the_cover_the_whole_file_gets() {
-    let Some(cbr) = crate::testcorpus::read("sample.cbr") else {
+    let Some(cbr) = st2k_base::testcorpus::read("sample.cbr") else {
         eprintln!("NOT MEASURED: sample.cbr absent");
         return;
     };
@@ -349,7 +349,7 @@ fn an_oversized_rar_comic_gets_the_cover_the_whole_file_gets() {
 fn a_wma_shows_its_cover_through_the_stream() {
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
     for name in ["real.wma", "sample.wma"] {
-        let Some(wma) = crate::testcorpus::read(name) else {
+        let Some(wma) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -410,7 +410,7 @@ fn unnamed_raw_stream_returns_only_its_early_preview_and_honors_max_size() {
 
 #[test]
 fn real_large_pef_stream_uses_bounded_preview_when_corpus_is_available() {
-    let path = crate::testcorpus::real_dir().join("sample.pef");
+    let path = st2k_base::testcorpus::real_dir().join("sample.pef");
     if !path.exists() {
         return;
     }
@@ -818,7 +818,7 @@ fn previews_found_by_offset_or_index_survive_the_ceiling() {
         "real.dxf",
         "real.pdf",
     ] {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };

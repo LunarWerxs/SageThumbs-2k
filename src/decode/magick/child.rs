@@ -117,7 +117,7 @@ pub(super) fn log_magick_failure(
 ) {
     let err = String::from_utf8_lossy(stderr);
     let err = err.trim();
-    crate::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "magick {what} (status {status:?}): {}",
         if err.is_empty() { "<no stderr>" } else { err }
     );

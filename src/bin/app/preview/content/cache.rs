@@ -151,7 +151,7 @@ pub(super) fn cache_get(path: &str) -> Option<SharedRgba> {
     let key = cache_key(path)?;
     let mut c = CACHE.lock().ok()?;
     let found = c.iter().position(|(k, _)| *k == key);
-    sagethumbs2k_core::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "preview cache: {} for {path} ({} entries held)",
         if found.is_some() { "HIT" } else { "miss" },
         c.len()

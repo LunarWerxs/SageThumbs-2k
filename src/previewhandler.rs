@@ -58,9 +58,10 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
-use crate::host::stream_name;
+use crate::decode;
 use crate::streamsrc::{self, StreamSource};
-use crate::{decode, safety, settings};
+use st2k_base::host::stream_name;
+use st2k_base::{safety, settings};
 
 /// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`
 /// hosts one pane, so a couple of slots cover a decode still running past its budget when
@@ -140,7 +141,7 @@ struct RenderData {
     IPreviewHandlerVisuals
 )]
 pub struct PreviewHandler {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     stream: RefCell<Option<IStream>>,
     site: RefCell<Option<IUnknown>>,
     parent: Cell<isize>, // host parent HWND (as isize, so the struct stays Cell-friendly)
@@ -167,7 +168,7 @@ impl Default for PreviewHandler {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             stream: RefCell::new(None),
             site: RefCell::new(None),
             parent: Cell::new(0),
@@ -255,7 +256,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             // The business-licence lock (see `licence_state` and the thumbnail provider's
             // twin check): a locked copy leaves the pane empty, the same terminal state as
             // an undecodable file, before any window is created for it.
-            if crate::licence_state::shell_locked() {
+            if st2k_base::licence_state::shell_locked() {
                 safety::log_debug("DoPreview: refused, business licence lock");
                 return Err(Error::from(E_FAIL));
             }
@@ -287,7 +288,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                     streamsrc::stream_source(
                         stream,
                         &cfg,
-                        crate::safety::PREVIEW_TARGET_EDGE,
+                        st2k_base::safety::PREVIEW_TARGET_EDGE,
                         "DoPreview",
                     )
                 }
@@ -469,7 +470,7 @@ impl PreviewHandler_Impl {
             }
             // Stale: drop the handle and reap the old UI thread before building a new one,
             // so we never accumulate threads across host recycles.
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "preview: child window went stale (host recycled the pane) - rebuilding",
             );
             self.hwnd.set(0);
@@ -486,7 +487,7 @@ impl PreviewHandler_Impl {
         }
         let r = self.rect.get();
         let (win_w, win_h) = rect_extent(&r);
-        let hinst_isize = crate::host::dll_hmodule().0 as isize;
+        let hinst_isize = st2k_base::host::dll_hmodule().0 as isize;
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
         // Create + OWN the preview window on a DEDICATED UI thread whose own GetMessage loop pumps
         // its messages — including the cross-process WM_DESTROY when the dialog closes — so teardown
@@ -499,7 +500,7 @@ impl PreviewHandler_Impl {
             .name("st2k-preview-ui".to_string())
             .spawn(move || {
                 #[allow(clippy::default_constructed_unit_structs)]
-                let _module = crate::host::ModuleRef::default();
+                let _module = st2k_base::host::ModuleRef::default();
                 // Held for the whole window lifetime, released after the loop below ends and
                 // BEFORE `_module` drops: the class must be gone before the DLL can be.
                 class_acquire();

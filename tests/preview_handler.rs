@@ -320,7 +320,7 @@ fn preview_streams_cover_from_oversized_cbz() {
 /// stream to prove the pane actually paints, rather than reasoning about it.
 #[test]
 fn preview_renders_a_jp2_from_memory_stream() {
-    let jp2 = std::fs::read(sagethumbs2k_core::testcorpus::dir().join("sample.jp2"));
+    let jp2 = std::fs::read(st2k_base::testcorpus::dir().join("sample.jp2"));
     let Ok(jp2) = jp2 else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;
@@ -376,7 +376,7 @@ unsafe fn wait_for_pixel(parent: HWND, is_hit: impl Fn([u8; 4]) -> bool, secs: u
 /// pane actually changes each time, rather than keeping the previous file's pixels.
 #[test]
 fn preview_refreshes_when_one_handler_is_reused_across_files() {
-    let jp2 = std::fs::read(sagethumbs2k_core::testcorpus::dir().join("sample.jp2"));
+    let jp2 = std::fs::read(st2k_base::testcorpus::dir().join("sample.jp2"));
     let Ok(jp2) = jp2 else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;

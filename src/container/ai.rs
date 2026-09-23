@@ -326,7 +326,7 @@ mod tests {
     /// sample, not a fixture in git: absent (CI), the test says NOT MEASURED and returns.
     #[test]
     fn real_ai_private_thumbnail_decodes_to_its_declared_size() {
-        let Some(bytes) = crate::testcorpus::read("real.ai") else {
+        let Some(bytes) = st2k_base::testcorpus::read("real.ai") else {
             return;
         };
         assert!(is_illustrator(&bytes));
@@ -358,7 +358,7 @@ mod tests {
     /// stand-in when the page is the placeholder.
     #[test]
     fn real_ai_private_thumbnail_agrees_with_the_rendered_page() {
-        let Some(bytes) = crate::testcorpus::read("real.ai") else {
+        let Some(bytes) = st2k_base::testcorpus::read("real.ai") else {
             return;
         };
         let thumb = private_thumbnail(&bytes).expect("thumbnail");
@@ -422,7 +422,7 @@ mod tests {
             private_thumbnail(b"%AI7_Thumbnail: 2 2 8\r%%BeginData: 4 Hex Bytes\r%00").is_none()
         );
         // The mutations of a real block need the corpus file (NOT MEASURED without it).
-        let Some(good) = crate::testcorpus::read("real.ai") else {
+        let Some(good) = st2k_base::testcorpus::read("real.ai") else {
             return;
         };
         let at = find(&good, THUMB_KEY).unwrap();

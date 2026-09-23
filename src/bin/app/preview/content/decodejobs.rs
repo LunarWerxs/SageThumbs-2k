@@ -79,14 +79,14 @@ pub(super) unsafe fn decode_and_post_static(
 ) -> Option<(i32, i32)> {
     let stage_start = std::time::Instant::now();
     let decoded = bytes.and_then(decode_loaded).map(std::sync::Arc::new);
-    if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+    if let Some(line) = st2k_base::safety::stage_stall_report(
         "decode",
         stage_start.elapsed(),
-        sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET,
+        st2k_base::safety::PREVIEW_DECODE_BUDGET,
         gen,
         path,
     ) {
-        sagethumbs2k_core::safety::log_debug(&line);
+        st2k_base::safety::log_debug(&line);
     }
     // Cache and hand over the SAME allocation — one decode, no copy of the pixels.
     let shown = decoded.as_ref().map(|d| (d.w, d.h));
@@ -108,9 +108,9 @@ fn begin_decode_worker(
     hwnd_raw: isize,
     gen: u64,
     what: &str,
-) -> Option<(HWND, Option<sagethumbs2k_core::parallel::ComGuard>)> {
+) -> Option<(HWND, Option<st2k_base::parallel::ComGuard>)> {
     let hwnd = HWND(hwnd_raw as *mut c_void);
-    let com = sagethumbs2k_core::parallel::ComGuard::mta();
+    let com = st2k_base::parallel::ComGuard::mta();
     (!abandoned_logged(gen, what)).then_some((hwnd, com))
 }
 
@@ -163,7 +163,10 @@ pub(in super::super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) 
         let shown = decode_and_post_static(hwnd, gen, &path, bytes.clone());
         // A Photoshop document saved without its baked preview ("Image Previews: Never Save")
         // draws nothing at the first stage, and is the one that most needs the composite, so
-        // it is chased from nothing rather than left on the card (issue #46).
+        // it is chased from nothing rather than left on the card (issue #46). Past the input
+        // ceiling the preview read declines such a document outright, so its header is read
+        // on its own: it is all the chase needs.
+        let bytes = bytes.or_else(|| photoshop_header(&path).map(std::sync::Arc::new));
         let shown = shown.or_else(|| {
             let psd = bytes.as_ref().is_some_and(|b| b.starts_with(b"8BPS"));
             psd.then_some((0, 0))

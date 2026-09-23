@@ -57,7 +57,7 @@ fn corpus_covers_decode(max_read: u64) {
     // is how the 2.0.0 wrong-layer bug was caught. The `--ignored` sweep still runs them.
     let slow_by_design = max_read != u64::MAX;
 
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     let Ok(entries) = std::fs::read_dir(&corpus) else {
         return;
     };
@@ -398,7 +398,7 @@ fn compressed_blend_tolerates_truncation() {
 fn cover_exts_are_known_formats() {
     for &ext in COVER_IMAGE_EXTS {
         assert!(
-            crate::formats::is_known(ext) || COVER_ONLY_EXCEPTIONS.contains(&ext),
+            st2k_base::formats::is_known(ext) || COVER_ONLY_EXCEPTIONS.contains(&ext),
             "is_image_name accepts `{ext}`, which is neither in FORMATS nor a documented \
              cover-only exception — add it to FORMATS or to COVER_ONLY_EXCEPTIONS",
         );
@@ -412,7 +412,7 @@ fn cover_exts_are_known_formats() {
 fn cover_exceptions_are_not_stale() {
     for &ext in COVER_ONLY_EXCEPTIONS {
         assert!(
-            !crate::formats::is_known(ext),
+            !st2k_base::formats::is_known(ext),
             "`{ext}` is now in FORMATS — remove it from COVER_ONLY_EXCEPTIONS",
         );
         assert!(
@@ -425,7 +425,7 @@ fn cover_exceptions_are_not_stale() {
 /// Seeds for `fuzz_extract_cover`: every corpus sample (size-capped) plus a few
 /// degenerate buffers.
 fn fuzz_seed_corpus() -> Vec<Vec<u8>> {
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     let mut seeds: Vec<Vec<u8>> = vec![Vec::new(), vec![0u8; 64], vec![0xFFu8; 64]];
     if let Ok(rd) = std::fs::read_dir(&corpus) {
         for entry in rd.flatten() {
@@ -577,7 +577,7 @@ fn a_cover_found_by_offset_is_the_cover_found_in_the_whole_file() {
     ];
     let mut measured = 0;
     for name in names {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -602,7 +602,7 @@ fn a_cover_found_by_offset_is_the_cover_found_in_the_whole_file() {
 #[test]
 fn an_ole_stream_read_off_a_reader_matches_the_buffered_read() {
     for name in ["real.doc", "real.max", "sample.sldasm"] {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };
@@ -652,7 +652,7 @@ impl std::io::Seek for Tailed {
 #[test]
 fn audio_art_does_not_care_what_follows_the_tags() {
     for name in ["real.wma", "real.mp3", "real.flac", "real.m4a"] {
-        let Some(bytes) = crate::testcorpus::read(name) else {
+        let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;
         };

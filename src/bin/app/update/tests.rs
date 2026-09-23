@@ -475,7 +475,7 @@ fn locked_installer_can_still_be_launched() {
 
     // ShellExecuteW("runas") ultimately maps the image exactly as this does.
     let spawned = std::process::Command::new(&path)
-        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
         .output();
     // ...and the lock is still doing its job while that happens.
     let writer_refused = std::fs::OpenOptions::new().write(true).open(&path).is_err();

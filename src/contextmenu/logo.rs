@@ -28,7 +28,7 @@ pub(super) fn menu_logo() -> HBITMAP {
                 .to_rgba8()
         })
         .and_then(|rgba| {
-            unsafe { crate::dib::create_premultiplied_dib(cx, cy, rgba.as_raw()) }.ok()
+            unsafe { st2k_base::dib::create_premultiplied_dib(cx, cy, rgba.as_raw()) }.ok()
         })
         .map(|b| b.0 as isize)
         .unwrap_or(0);

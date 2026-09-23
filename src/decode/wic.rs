@@ -126,7 +126,7 @@ unsafe fn wic_frame_from_filename(
     factory: &IWICImagingFactory,
     path: &str,
 ) -> Result<IWICBitmapFrameDecode> {
-    let wide = crate::host::wide(path);
+    let wide = st2k_base::host::wide(path);
     let decoder = factory.CreateDecoderFromFilename(
         windows::core::PCWSTR(wide.as_ptr()),
         None,
@@ -562,7 +562,7 @@ unsafe fn wic_scrgb_to_srgb(
         px.0[1] *= scale;
         px.0[2] *= scale;
     }
-    crate::safety::log_debug("decode: WIC handed back linear scRGB floats (HDR); tone-mapping");
+    st2k_base::safety::log_debug("decode: WIC handed back linear scRGB floats (HDR); tone-mapping");
     Ok(tone_map_float(&DynamicImage::ImageRgba32F(img)))
 }
 

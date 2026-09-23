@@ -11,7 +11,7 @@ use super::*;
 /// is) and repaints only on whole-second boundaries.
 pub(super) unsafe fn countdown_delay() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
-    let secs = sagethumbs2k_core::settings::screenshot_delay_sec();
+    let secs = st2k_base::settings::screenshot_delay_sec();
     if secs == 0 {
         return true;
     }

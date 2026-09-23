@@ -32,11 +32,11 @@ const ENV_VAR: &str = "ST2K_UPDATE_SIGNING_KEY";
 fn parse_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
     // The shared decoder deliberately does not trim; an environment variable may carry a
     // trailing newline from however it was set, so the trim belongs here.
-    sagethumbs2k_core::hex::decode::<N>(s.trim())
+    st2k_base::hex::decode::<N>(s.trim())
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    sagethumbs2k_core::hex::encode(bytes)
+    st2k_base::hex::encode(bytes)
 }
 
 fn sign_files(files: &[String]) -> bool {

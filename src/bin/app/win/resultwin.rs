@@ -130,7 +130,7 @@ pub(crate) unsafe fn result_edit(
     if crate::dark::is_dark() {
         crate::dark::dark_control(edit, w!("DarkMode_Explorer"));
     }
-    let w = wide(&sagethumbs2k_core::clipboard::to_crlf(text));
+    let w = wide(&st2k_base::clipboard::to_crlf(text));
     let _ = SetWindowTextW(edit, PCWSTR(w.as_ptr()));
     edit
 }

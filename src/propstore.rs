@@ -47,7 +47,7 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
 };
 use windows_implement::implement;
 
-use crate::safety;
+use st2k_base::safety;
 
 /// Hard wall-clock cap on one in-process metadata query (see
 /// [`PropertyStore_Impl::build_props`]).  Explorer and SearchIndexer call property handlers on
@@ -75,7 +75,7 @@ static PROBE_POOL: safety::LeasePool<MAX_ACTIVE_PROBES> = safety::LeasePool::new
 /// an MTA host fail cleanly instead of racing the borrow flag.
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     path: Mutex<Option<String>>,
     /// Built lazily from the file on the first query, then cached for this instance.
     props: Mutex<Option<Vec<(PROPERTYKEY, PROPVARIANT)>>>,
@@ -85,7 +85,7 @@ impl Default for PropertyStore {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             path: Mutex::new(None),
             props: Mutex::new(None),
         }
@@ -105,7 +105,7 @@ impl IInitializeWithFile_Impl for PropertyStore_Impl {
             // The business-licence lock (see `licence_state`): a locked copy declines to
             // initialise, so the Details pane and the columns simply show nothing for the
             // formats we own - the same thing the shell does when no handler is registered.
-            if crate::licence_state::shell_locked() {
+            if st2k_base::licence_state::shell_locked() {
                 return Err(Error::from(E_FAIL));
             }
             let path = unsafe { pszfilepath.to_string() }.map_err(|_| Error::from(E_FAIL))?;
@@ -212,8 +212,8 @@ impl PropertyStore_Impl {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         let is_video = matches!(
-            crate::formats::category(&ext),
-            crate::formats::Category::Video
+            st2k_base::formats::category(&ext),
+            st2k_base::formats::Category::Video
         );
 
         // Image dimensions + EXIF camera (same probe "Image info" uses, under the decode guards).
@@ -317,9 +317,9 @@ fn push_audio_props(out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>, tags: crate::stri
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
     // The wide-string allocation (overflow-checked `len * 2`, CoTaskMemAlloc, null check,
-    // copy) lives in the one shared `crate::host::alloc_pwstr`, also used by the
+    // copy) lives in the one shared `st2k_base::host::alloc_pwstr`, also used by the
     // context-menu verbs. A failure there means "no property": emit an empty variant.
-    let Ok(pwsz) = crate::host::alloc_pwstr(s) else {
+    let Ok(pwsz) = st2k_base::host::alloc_pwstr(s) else {
         return PROPVARIANT::default();
     };
     PROPVARIANT {
@@ -340,24 +340,9 @@ fn pv_lpwstr(s: &str) -> PROPVARIANT {
 /// wrong canonical type for the index — these must be a string vector (one element here, since our
 /// extractors yield a single value). `InitPropVariantFromStringVector` copies the strings.
 fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
-    let wide = crate::host::wide(s);
+    let wide = st2k_base::host::wide(s);
     let arr = [PCWSTR(wide.as_ptr())];
     unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
-}
-
-/// Split an EXIF-style `"DATE TIME"` stamp (`"YYYY:MM:DD HH:MM:SS"`) into its three date and
-/// at-least-three time components. `:` is the EXIF date separator, but `-`/`/` are tolerated in
-/// case a tool rewrote the stamp; a trailing sub-seconds field keeps `t` at four elements.
-/// Returns `None` unless both halves have that shape. The components themselves are NOT
-/// validated here — digits-only and never-set-clock checks stay in the callers.
-pub(crate) fn split_exif_datetime(s: &str) -> Option<(Vec<&str>, Vec<&str>)> {
-    let (date, time) = s.split_once(' ')?;
-    let d: Vec<&str> = date.split([':', '-', '/']).collect();
-    let t: Vec<&str> = time.split([':', '.']).collect();
-    if d.len() != 3 || t.len() < 3 {
-        return None;
-    }
-    Some((d, t))
 }
 
 /// Build a `VT_FILETIME` PROPVARIANT from an EXIF datetime (`"YYYY:MM:DD HH:MM:SS"`, also
@@ -370,7 +355,7 @@ pub(crate) fn split_exif_datetime(s: &str) -> Option<(Vec<&str>, Vec<&str>)> {
 /// zone), or the displayed time would be shifted by the local UTC offset. With the conversion, the
 /// Details pane shows the original wall-clock — matching Windows' own photo property handler.
 fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
-    let (d, t) = split_exif_datetime(s)?;
+    let (d, t) = crate::strip::split_exif_datetime(s)?;
     let local = exif_systemtime(&d, &t)?;
     if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
         return None; // a camera that never had its clock set writes 0000:00:00
@@ -436,7 +421,9 @@ fn property_path_is_audio(path: &str) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
-        .is_some_and(|ext| crate::formats::category(&ext) == crate::formats::Category::Audio)
+        .is_some_and(|ext| {
+            st2k_base::formats::category(&ext) == st2k_base::formats::Category::Audio
+        })
 }
 
 #[cfg(test)]
@@ -450,11 +437,11 @@ mod tests {
     #[test]
     fn checked_utf16_byte_len_catches_overflow_instead_of_wrapping() {
         assert_eq!(
-            crate::host::checked_utf16_byte_len(usize::MAX),
+            st2k_base::host::checked_utf16_byte_len(usize::MAX),
             None,
             "a byte length that can't fit in usize must be rejected, not wrapped"
         );
-        assert_eq!(crate::host::checked_utf16_byte_len(4), Some(8));
+        assert_eq!(st2k_base::host::checked_utf16_byte_len(4), Some(8));
     }
 
     #[test]
@@ -504,7 +491,7 @@ mod tests {
         *com.get().props.lock().unwrap() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
 
         let init: IInitializeWithFile = com.to_interface();
-        let w = crate::host::wide(r"C:\second\file.jpg");
+        let w = st2k_base::host::wide(r"C:\second\file.jpg");
         let pc = PCWSTR(w.as_ptr());
         unsafe { init.Initialize(pc, 0) }.expect("Initialize should succeed");
 

@@ -7,7 +7,7 @@ use crate::eyedropper::virtual_screen_metrics;
 /// diagnosable abort message), then deletes the memory DC and bitmap and releases the
 /// screen DC, each only if it was actually created.
 pub(super) unsafe fn release_gdi_on_fail(screen: HDC, mem: HDC, bmp: HBITMAP, msg: &str) {
-    sagethumbs2k_core::safety::log(msg);
+    st2k_base::safety::log(msg);
     if !mem.is_invalid() {
         let _ = DeleteDC(mem);
     }
@@ -137,7 +137,7 @@ pub(super) unsafe fn build_shot_state(
         sel_dragging: false,
         sel_anchor: POINT::default(),
         // The user's chosen starting tool (Settings > Screenshots). Arrow by default.
-        tool: Tool::from_default_index(sagethumbs2k_core::settings::screenshot_default_tool()),
+        tool: Tool::from_default_index(st2k_base::settings::screenshot_default_tool()),
         cur_color: {
             let (r, g, b) = PALETTE[0];
             rgb(r, g, b)
@@ -357,7 +357,7 @@ pub(crate) unsafe fn capture_instant() {
     match (copied, saved) {
         (true, true) => flash_screen(vx, vy, vw, vh),
         (true, false) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "instant capture: PNG save to {dir} failed (it's still on the clipboard)"
             ));
             crate::win::notify_toast(
@@ -369,7 +369,7 @@ pub(crate) unsafe fn capture_instant() {
             );
         }
         (false, true) => {
-            sagethumbs2k_core::safety::log("instant capture: clipboard copy failed (PNG saved)");
+            st2k_base::safety::log("instant capture: clipboard copy failed (PNG saved)");
             crate::win::notify_toast(
                 "SageThumbs 2K",
                 crate::win::t("toast_shot_fail_clip"),
@@ -377,7 +377,7 @@ pub(crate) unsafe fn capture_instant() {
             );
         }
         (false, false) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "instant capture: BOTH clipboard copy and PNG save to {dir} failed"
             ));
             crate::win::notify_toast(

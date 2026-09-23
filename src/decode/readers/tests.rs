@@ -314,8 +314,8 @@ fn preview_read_refuses_a_file_that_grew_past_the_cap_after_its_size_was_checked
 #[test]
 fn a_tiff_decoded_by_wic_is_colour_managed_like_the_image_tier() {
     let (Some(path), Some(bytes)) = (
-        crate::testcorpus::path("real.tif"),
-        crate::testcorpus::read("real.tif"),
+        st2k_base::testcorpus::path("real.tif"),
+        st2k_base::testcorpus::read("real.tif"),
     ) else {
         eprintln!("NOT MEASURED: real.tif absent");
         return;

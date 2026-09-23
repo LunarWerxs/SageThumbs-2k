@@ -29,8 +29,8 @@ fn quick_clsids_resolve_to_menu_items() {
             "quick_root_item returned the wrong MENU node for {key}"
         );
     }
-    assert!(!is_quick_clsid(crate::guids::CLSID_EXPLORER_COMMAND));
-    assert!(quick_root_item(crate::guids::CLSID_EXPLORER_COMMAND).is_none());
+    assert!(!is_quick_clsid(st2k_base::guids::CLSID_EXPLORER_COMMAND));
+    assert!(quick_root_item(st2k_base::guids::CLSID_EXPLORER_COMMAND).is_none());
 }
 
 /// A quick verb's GetState must hide it when EITHER gate is off, not just the

@@ -8,7 +8,7 @@ use std::time::Duration;
 /// A path's raw `FILE_ATTRIBUTE_*` bits from `symlink_metadata` (so a reparse point answers
 /// for itself and a cloud placeholder is never hydrated by the question); 0 when the path
 /// cannot be stat'ed. The `st2k batch` walk and the prebuild walk each had their own copy.
-pub(crate) fn file_attributes(p: &Path) -> u32 {
+pub fn file_attributes(p: &Path) -> u32 {
     use std::os::windows::fs::MetadataExt;
     std::fs::symlink_metadata(p)
         .map(|m| m.file_attributes())
@@ -24,7 +24,7 @@ const RENAME_RETRIES: u32 = 5;
 /// not grow a second copy of the number. The "survives a transient lock" tests no longer
 /// sleep one interval of it before releasing their lock (that guess is what made them flaky —
 /// see [`on_transient_failure`]); the non-transient test still uses it as an upper timing bound.
-pub(crate) const RENAME_BACKOFF: Duration = Duration::from_millis(40);
+pub const RENAME_BACKOFF: Duration = Duration::from_millis(40);
 
 /// `ERROR_ACCESS_DENIED` — also returned for a rename onto a target another process
 /// (Explorer, a thumbnail cache scan, an AV scanner) briefly holds open.
@@ -74,12 +74,12 @@ fn retry_transient<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
 /// `std::io::Result`: `Ok` on success, else the LAST error once the retries are
 /// spent (or the first error, for a non-transient one — see [`is_transient`]).
 /// Callers keep their own temp cleanup and error mapping.
-pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+pub fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     retry_transient(|| std::fs::rename(from, to))
 }
 
 /// `ERROR_NOT_SAME_DEVICE`: a rename cannot move a file to another volume.
-const ERROR_NOT_SAME_DEVICE: i32 = 17;
+pub const ERROR_NOT_SAME_DEVICE: i32 = 17;
 
 /// Move `from` onto `to` (which may already exist as a placeholder), across volumes if it
 /// has to. A same-volume move is [`rename_retrying`]. When the volumes differ, `rename` fails
@@ -89,7 +89,7 @@ const ERROR_NOT_SAME_DEVICE: i32 = 17;
 /// data, attributes, timestamps and alternate streams and deletes the source only once the
 /// copy is complete; on any failure the source is untouched and the caller still owns
 /// whatever landed at `to`.
-pub(crate) fn move_file_replacing(from: &Path, to: &Path) -> io::Result<()> {
+pub fn move_file_replacing(from: &Path, to: &Path) -> io::Result<()> {
     match rename_retrying(from, to) {
         Err(e) if e.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) => {}
         other => return other,
@@ -114,7 +114,7 @@ pub(crate) fn move_file_replacing(from: &Path, to: &Path) -> io::Result<()> {
 /// access denied for real - is an error, never "an empty file". That distinction is what keeps
 /// a merge-and-replace writer (desktop.ini) from replacing content it could not read
 /// (2026-09-19 audit F19), while a scanner's momentary lock still costs nothing but ~160 ms.
-pub(crate) fn read_retrying(path: &Path) -> io::Result<Option<Vec<u8>>> {
+pub fn read_retrying(path: &Path) -> io::Result<Option<Vec<u8>>> {
     retry_transient(|| match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -299,16 +299,16 @@ thread_local! {
 }
 
 /// Compiled out of every shipping build — see [`on_transient_failure`] for what it is for.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "testkit")))]
 #[inline(always)]
 fn note_transient_failure(_attempt: u32) {}
 
 /// The hook slot's type, named so `clippy::type_complexity` has something to read. `FnMut`
 /// rather than `Fn` because the one real hook takes its handle out of an `Option` on first call.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 type TransientFailureHook = std::cell::RefCell<Option<Box<dyn FnMut(u32)>>>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 thread_local! {
     /// Per-thread hook, so two tests running in parallel cannot see each other's.
     static AFTER_TRANSIENT_FAILURE: TransientFailureHook = const { std::cell::RefCell::new(None) };
@@ -331,22 +331,22 @@ thread_local! {
 /// and gone before attempt 2, on every machine, at every load, with no clock anywhere. The
 /// hook also makes the tests provably non-vacuous — it cannot fire unless the production path
 /// really went through this function and really met the lock, so a test asserts it fired.
-#[cfg(test)]
-pub(crate) fn on_transient_failure(hook: impl FnMut(u32) + 'static) {
+#[cfg(any(test, feature = "testkit"))]
+pub fn on_transient_failure(hook: impl FnMut(u32) + 'static) {
     AFTER_TRANSIENT_FAILURE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
 
 /// Drop this thread's hook. Rust's test harness gives each test its own thread, so this is
 /// belt-and-braces rather than load-bearing.
-#[cfg(test)]
-pub(crate) fn clear_transient_failure_hook() {
+#[cfg(any(test, feature = "testkit"))]
+pub fn clear_transient_failure_hook() {
     AFTER_TRANSIENT_FAILURE.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// The hook is taken OUT of the cell for the duration of the call and put back after, so a
 /// hook that itself touches the filesystem (and re-enters this function) cannot panic on an
 /// already-borrowed `RefCell`.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn note_transient_failure(attempt: u32) {
     let taken = AFTER_TRANSIENT_FAILURE.with(|slot| slot.borrow_mut().take());
     if let Some(mut hook) = taken {
@@ -364,8 +364,12 @@ fn note_transient_failure(attempt: u32) {
 /// Lives here, beside the loop that orders it, because three call sites in two modules
 /// (`foldericon`'s two writers and `wallpaper`'s) need exactly this and used to carry a copy
 /// each of a watcher thread and a hard-coded sleep.
-#[cfg(test)]
-pub(crate) fn lock_until_first_retry(path: &Path) -> std::sync::Arc<std::sync::atomic::AtomicU32> {
+#[cfg(any(test, feature = "testkit"))]
+#[allow(
+    clippy::expect_used,
+    reason = "a test seam: a lock target that will not open is a broken test"
+)]
+pub fn lock_until_first_retry(path: &Path) -> std::sync::Arc<std::sync::atomic::AtomicU32> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
@@ -389,7 +393,7 @@ pub(crate) fn lock_until_first_retry(path: &Path) -> std::sync::Arc<std::sync::a
 /// which every hard link to it, every case spelling of its name and every relative or
 /// `..`-laden path to it all share. `None` when the file cannot be opened (missing, a
 /// directory, or held with no sharing), which the caller treats as "not provably the same".
-fn file_identity(p: &Path) -> Option<(u32, u64)> {
+pub fn file_identity(p: &Path) -> Option<(u32, u64)> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -409,7 +413,7 @@ fn file_identity(p: &Path) -> Option<(u32, u64)> {
 /// canonical path is the on-disk name), but a hard link is a different path to one file, so
 /// this is the question "is the destination already where the file is", not [`same_file`]'s
 /// "would writing one destroy the other". `false` when either path does not exist.
-pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+pub fn same_path(a: &Path, b: &Path) -> bool {
     matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
@@ -421,7 +425,7 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
 /// hard link is a second name with nothing in common. Canonical paths settle the first three;
 /// the volume-and-index identity settles hard links. Two files that are not both openable are
 /// reported as different, because nothing about them can be proven either way.
-pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+pub fn same_file(a: &Path, b: &Path) -> bool {
     if same_path(a, b) {
         return true;
     }
@@ -440,7 +444,7 @@ pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
 /// The first of `inputs` that is the same file as `output` (see [`same_file`]), or `None`.
 /// The one alias check every path-taking verb runs BEFORE it reads or writes anything, so the
 /// CLI, the MCP tools and the composers all refuse the same spellings.
-pub(crate) fn aliased_input<'a>(
+pub fn aliased_input<'a>(
     output: &Path,
     inputs: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {

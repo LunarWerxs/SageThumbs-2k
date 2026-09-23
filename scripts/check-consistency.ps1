@@ -7,7 +7,7 @@
       it builds/renders locally because the file is on disk, then breaks on a clean checkout.)
 
    2. FORMAT COUNT - the count in the README shields badge and docs/FEATURES.md must match the
-      number of entries in src/formats.rs `FORMATS`.
+      number of entries in crates/base/src/formats.rs `FORMATS`.
 
     3. VERSION - scripts/packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
       is a hand-written literal that has silently drifted before).
@@ -57,10 +57,10 @@ foreach ($doc in $docs) {
   }
 }
 
-# --- 2) format count: src/formats.rs FORMATS vs README badge + FEATURES --------
+# --- 2) format count: crates/base/src/formats.rs FORMATS vs README badge + FEATURES --------
 # FORMATS entries are ("ext", "Friendly name") tuples; the category sub-lists are bare
 # &[&str] (no tuple) so this pattern counts FORMATS only. (Cross-checked == `st2k formats`.)
-$count = ([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
+$count = ([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
 if ($count -lt 250) {
   $fail.Add("FORMATS count parse looks wrong ($count) - the regex in this script needs fixing")
 }
@@ -456,9 +456,9 @@ foreach ($bad in ($iss -split "
   $fail.Add("installer.iss: an uninstall directive names license-history - the breadcrumb MUST survive uninstall: $($bad.Trim())")
 }
 # And the Rust side must agree with the installer on where history lives. Since 2026-09-13 the
-# breadcrumb reader lives in the CORE crate (src/licence_state.rs) so the shell handlers can
+# breadcrumb reader lives in the CORE crate (crates/base/src/licence_state.rs) so the shell handlers can
 # read the business-licence lock from inside explorer.exe; the app's license.rs re-exports it.
-$lic = Get-Content -Raw "$root/src/licence_state.rs"
+$lic = Get-Content -Raw "$root/crates/base/src/licence_state.rs"
 if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("licence_state.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
 if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("licence_state.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
 # The installer's "was this a business machine?" confirmation greps the pretty-printed
@@ -471,7 +471,7 @@ if ($lic -notmatch [regex]::Escape('"downgrade_acknowledged": self.downgrade_ack
 # The shell honours the lock: every in-process surface consults it, and nothing may quietly
 # drop one (a surface that keeps serving a stopped copy is the lock's only failure mode).
 # (the menu gate moved to settings/thumbs/menu.rs on 2026-09-20 when thumbs.rs was split)
-foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'src/settings/thumbs/menu.rs') {
+foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'crates/base/src/settings/thumbs/menu.rs') {
   if ((Get-Content -Raw "$root/$surface") -notmatch [regex]::Escape('licence_state::shell_locked()')) { $fail.Add("$surface no longer consults licence_state::shell_locked() - a stopped business copy would keep serving through it") }
 }
 
@@ -508,7 +508,7 @@ if (-not (Test-Path $realManifest)) {
   $fail.Add('scripts/corpus-real.json is missing - the real-sample manifest every registered extension is checked against')
 } else {
   $real = Get-Content $realManifest -Raw | ConvertFrom-Json -AsHashtable
-  $registered = @([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+  $registered = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
     ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
   $known = @{}
   foreach ($s in $real.samples) {
@@ -557,7 +557,7 @@ if (-not (Test-Path $bigManifest) -or -not (Test-Path $ballastPy)) {
   $table = [regex]::Match((Get-Content $ballastPy -Raw), '(?s)STRATEGIES = \{(.*?)\}').Groups[1].Value
   $strategies = @([regex]::Matches($table, '"([a-z0-9-]+)"\s*:') | ForEach-Object { $_.Groups[1].Value })
   if ($strategies.Count -lt 3) { $fail.Add('could not read the STRATEGIES table out of scripts/bigfiles/ballast.py') }
-  $registeredBig = @([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+  $registeredBig = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
     ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
   foreach ($ext in $registeredBig) {
     $e = $big[$ext]

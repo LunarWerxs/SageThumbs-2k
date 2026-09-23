@@ -793,20 +793,20 @@ if ($Portable) {
     }
 
     # The marker IS the config file. Its presence next to the EXE is the entire portable
-    # switch (src/settings.rs `store`), so an empty one means "factory defaults, stored here".
+    # switch (crates/base/src/settings.rs `store`), so an empty one means "factory defaults, stored here".
     #
     # That also makes the filename load-bearing across two languages, and getting it wrong
     # fails SILENTLY: the app finds no marker, quietly uses HKCU, and the zip looks fine while
     # doing the one thing it promised not to. So take the name from the Rust const rather than
     # trusting a literal here to stay in sync with it.
     $iniConst = [regex]::Match(
-        # The hub plus its children (src/settings/*.rs; INI_NAME lives in store.rs since the
+        # The hub plus its children (crates/base/src/settings/*.rs; INI_NAME lives in store.rs since the
         # 2026-09-08 split, and this read went red the day it moved).
-        ((@(Get-Content "$root\src\settings.rs" -Raw) + @(Get-ChildItem "$root\src\settings" -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })) -join "`n"),
+        ((@(Get-Content "$root\crates\base\src\settings.rs" -Raw) + @(Get-ChildItem "$root\crates\base\src\settings" -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })) -join "`n"),
         '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"'
     )
     if (-not $iniConst.Success) {
-        throw "couldn't read INI_NAME out of src\settings.rs - the portable marker name is " +
+        throw "couldn't read INI_NAME out of crates\base\src\settings.rs - the portable marker name is " +
               "defined there and must not be duplicated as a literal in this script"
     }
     $iniName = $iniConst.Groups[1].Value

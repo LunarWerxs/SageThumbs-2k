@@ -13,7 +13,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 SKIP_FILE_PARTS = ("tests/", "tests.rs", "uia", "nudge_engine.rs", "src/fuzz/", "fuzzseed")
 SKIP_FUNCS = {
-    ("src/licence_state.rs", "from_json"),
+    ("crates/base/src/licence_state.rs", "from_json"),
     ("src/decode/jp2/mq.rs", "cleanup_pass"),
     ("src/decode/magick/encode.rs", "wait_for_magick_child"),
     ("src/fuzz/surfaces.rs", "deep_session_over_the_new_parsers"),

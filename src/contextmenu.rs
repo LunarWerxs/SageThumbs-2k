@@ -49,9 +49,9 @@ use windows::Win32::Graphics::Gdi::{
     AlphaBlend, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW,
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, GdiFlush, GetDC, GetStockObject,
     GetSysColor, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, COLOR_HIGHLIGHT,
-    COLOR_HIGHLIGHTTEXT, COLOR_MENU, COLOR_MENUTEXT, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER,
-    DT_END_ELLIPSIS, DT_SINGLELINE, HBITMAP, HDC, HFONT, HGDIOBJ, TRANSPARENT,
+    AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_MENU,
+    COLOR_MENUTEXT, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE,
+    HBITMAP, HDC, HFONT, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
 use windows::Win32::System::Ole::ReleaseStgMedium;
@@ -73,7 +73,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_implement::implement;
 
-use crate::{safety, settings, verbs};
+use crate::verbs;
+use st2k_base::{safety, settings};
 
 mod com;
 mod logo;
@@ -123,7 +124,7 @@ impl Drop for Preview {
 
 #[implement(IShellExtInit, IContextMenu3)]
 pub struct ContextMenu {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     paths: RefCell<Vec<String>>,
     preview: RefCell<Option<Preview>>,
     /// Preview decode started from `IShellExtInit::Initialize` for either visible
@@ -157,7 +158,7 @@ impl Default for ContextMenu {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             paths: RefCell::new(Vec::new()),
             preview: RefCell::new(None),
             preview_job: RefCell::new(None),
@@ -226,7 +227,7 @@ fn metadata_budgeted(path: &str) -> Option<std::fs::Metadata> {
     // `DllCanUnloadNow` would report the DLL free while the worker still executes its code inside
     // explorer.exe — an access violation when it resumes into unmapped memory. Every other
     // detached worker in the crate pins this way; this hand-rolled one (from the A002 fix) did not.
-    crate::safety::spawn_budgeted("st2k-menu-metadata", MENU_PREVIEW_BUDGET, move || {
+    st2k_base::safety::spawn_budgeted("st2k-menu-metadata", MENU_PREVIEW_BUDGET, move || {
         std::fs::metadata(&path).ok()
     })
     .flatten()
@@ -298,7 +299,7 @@ fn build_preview(
     // The DIB (a GDI object) is created HERE from the worker's plain-RGBA result; only the
     // decode (the slow part) is offloaded. On timeout -> caption-only tile (handled below).
     let decoded = decode_menu_thumb_budgeted(path, prefetched).and_then(|t| {
-        let hbm = unsafe { crate::dib::create_premultiplied_dib(t.w, t.h, &t.rgba).ok()? };
+        let hbm = unsafe { st2k_base::dib::create_premultiplied_dib(t.w, t.h, &t.rgba).ok()? };
         Some((hbm, t.w, t.h, t.ow, t.oh))
     });
     let (hbm, w, h, info) = match decoded {
@@ -474,7 +475,7 @@ unsafe fn build_menu_into(
                     parent,
                     MF_STRING,
                     cmd as usize,
-                    &HSTRING::from(crate::i18n::t(title)),
+                    &HSTRING::from(st2k_base::i18n::t(title)),
                 );
                 *next_leaf += 1;
                 has_emitted = true;
@@ -510,7 +511,7 @@ unsafe fn attach_popup(parent: HMENU, sub: HMENU, title: &str) -> bool {
         parent,
         MF_POPUP | MF_STRING,
         sub.0 as usize,
-        &HSTRING::from(crate::i18n::t(title)),
+        &HSTRING::from(st2k_base::i18n::t(title)),
     )
     .is_ok();
     if !attached {

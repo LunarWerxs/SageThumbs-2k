@@ -26,12 +26,13 @@ use windows::Win32::UI::Shell::{
 };
 use windows_implement::implement;
 
+use crate::decode;
 use crate::streamsrc::{self, StreamSource};
-use crate::{decode, dib, failmemo, safety, settings};
+use st2k_base::{dib, failmemo, safety, settings};
 
 #[implement(IThumbnailProvider, IInitializeWithStream)]
 pub struct ThumbnailProvider {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     stream: RefCell<Option<IStream>>,
 }
 
@@ -40,7 +41,7 @@ impl Default for ThumbnailProvider {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             stream: RefCell::new(None),
         }
     }
@@ -92,7 +93,7 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
             // reason: a locked provider fails every call by design and must not write an
             // `ERROR` line per file. One HKLM read for the Personal copies that are 99% of
             // installs; `st2k doctor` names this state so "no thumbnails" has an answer.
-            if crate::licence_state::shell_locked() {
+            if st2k_base::licence_state::shell_locked() {
                 safety::log_debug("GetThumbnail: refused, business licence lock");
                 return Err(Error::from(E_FAIL));
             }
@@ -349,7 +350,7 @@ impl ThumbnailProvider_Impl {
         // composited over it would sit on top of the label. This makes the tile opaque.
         let mut img = img;
         if cfg.thumb_checker {
-            crate::checkerpx::compose_under(&mut img.rgba, img.width, img.height);
+            st2k_base::checkerpx::compose_under(&mut img.rgba, img.width, img.height);
         }
 
         // Optional format badge (`FormatBadge`, off by default). Stamped HERE, on the
@@ -362,7 +363,7 @@ impl ThumbnailProvider_Impl {
                 let borrow = self.stream.borrow();
                 borrow
                     .as_ref()
-                    .and_then(|s| unsafe { crate::host::stream_name(s) })
+                    .and_then(|s| unsafe { st2k_base::host::stream_name(s) })
                     .and_then(|n| crate::badge::label_for(&n))
             };
             if let Some(label) = label {

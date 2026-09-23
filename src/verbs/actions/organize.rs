@@ -31,7 +31,7 @@ pub(super) fn handle_files_to_folder(paths: &[String]) -> ActionReport {
             match files_to_folder(paths, stem) {
                 Ok((_, moved, _)) => ActionReport::applied(moved, moved),
                 Err(e) => {
-                    crate::safety::log(&format!("Files to folder failed: {e:?}"));
+                    st2k_base::safety::log(&format!("Files to folder failed: {e:?}"));
                     ActionReport::applied(1, 0).with_note("couldn't create or fill the folder")
                 }
             }
@@ -80,7 +80,7 @@ pub(super) fn bucket_sort_report(
     why_note: &str,
 ) -> ActionReport {
     if skipped > 0 {
-        crate::safety::log(&format!(
+        st2k_base::safety::log(&format!(
             "{what}: {moved} moved, {skipped} skipped ({why_log})"
         ));
         ActionReport::applied(moved + skipped, moved).with_note(format!("{skipped} {why_note}"))

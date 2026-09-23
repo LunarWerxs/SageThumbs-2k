@@ -19,7 +19,6 @@
 
 pub mod app_image;
 mod badge;
-pub mod clipboard;
 mod command;
 mod container;
 /// Windows code-page decoding (`MultiByteToWideChar`) for archive entry names and the app's
@@ -42,34 +41,19 @@ pub use container::util::find;
 pub mod cli;
 mod contextmenu;
 pub mod decode;
-pub mod dib;
 pub mod doctor;
 mod factory;
-// Bounded, process-local memory of thumbnail decode failures (a circuit breaker), so a
-// hostile or broken file already known to fail is not re-decoded on every redraw.
-mod failmemo;
 // `pub` (hidden) because the `st2k` bin's `flv-frame` child verb reuses the FLV tag walk
 // (`flv::scan_flash_keyframe`) — one parser, so the parent's probe and the child's
 // extraction can never disagree about what counts as the first Flash-codec keyframe.
 #[doc(hidden)]
 pub mod flv;
 pub mod foldermenu;
-pub mod formats;
-// `pub` (hidden) so the app EXE's settings export path (`settings_io::export_settings_to_path`,
-// 2026-09-05 audit, F13) can reuse `write_atomically` rather than growing its own copy -
-// same arrangement as `ocr`/`parallel`: an internal helper, not a stable public API.
-#[doc(hidden)]
-pub mod fsutil;
 // Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.
 #[cfg(test)]
 mod fuzz;
-mod guids;
-// The DLL's own module state and the helpers every layer shares (the base layer).
-pub mod hex;
-pub mod host;
 mod isobmff;
 mod jpegtran;
-pub mod licence_state;
 pub mod mcp;
 mod mkv;
 mod mp4;
@@ -85,47 +69,23 @@ pub mod ocr;
 // rest of these: an internal surface, not a stable public API.
 #[doc(hidden)]
 pub mod checker {
-    /// The pixel-space twin, for the one surface that has no device context to draw on:
-    /// the Explorer thumbnail bitmap. See [`crate::checkerpx`].
-    pub use crate::checkerpx::compose_under;
     pub use crate::contextmenu::paint::{checker_shades, fill_checker};
+    /// The pixel-space twin, for the one surface that has no device context to draw on:
+    /// the Explorer thumbnail bitmap. See [`st2k_base::checkerpx`].
+    pub use st2k_base::checkerpx::compose_under;
 }
-mod checkerpx;
-pub mod i18n;
-// Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
-// verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
-// because it isn't a stable public API — just a shared helper across our own crates.
-#[doc(hidden)]
-pub mod parallel;
 pub mod pdf;
 pub mod prebuild;
 mod previewhandler;
 mod propstore;
 pub mod register;
-pub mod safety;
-pub mod settings;
-pub mod shellcmd;
-// Shared read-only SQLite low-level primitives (varint/serial-size/overflow local-size) — one
-// copy used by both `container::clip` and the app EXE's `preview::dbdoc`. `pub` (hidden) for the
-// same reason as `ocr`/`parallel`/`flv`: `dbdoc` lives in the companion binary crate and needs
-// `sagethumbs2k_core::sqlite_prim` to reach it.
-#[doc(hidden)]
-pub mod sqlite_prim;
 mod streamsrc;
 mod strip;
-// The one place test code learns where `..\test-corpus` is; public for the integration
-// tests and the `vdec` bin, and the pre-push gate's switch for making the corpus vanish.
-#[doc(hidden)]
-pub mod testcorpus;
 mod thumbprovider;
 mod topdf;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 #[doc(hidden)]
 pub mod typeoverlay;
-pub mod unixtime;
-pub mod upload_config;
-// The local list of uploaded links and when each one expires (app window + `st2k`).
-pub mod upload_history;
 mod verbs;
 // `pub` only so the app EXE's preview player can ask `media_foundation_available()`
 // before touching the delay-loaded MF imports; the decode entry points stay internal.
@@ -137,8 +97,6 @@ pub mod video;
 pub mod vp9;
 mod vstream;
 
-/// Conversion API surfaced for the companion app's Convert… dialog.
-pub use settings::PdfPage;
 pub use strip::read_info_verbose;
 pub use topdf::{combine_to_pdf, combine_to_pdf_paged};
 pub use verbs::{
@@ -149,13 +107,8 @@ pub use verbs::{
     OmitCause, Omitted, OnOmit, Resize, Target, Transform, VerbAction, Watermark, MENU_SEP_TOKEN,
 };
 
-/// Is ImageMagick available? Gates the magick-backed Convert targets (PSD/DDS/…),
-/// which are hidden on a compact install.
-pub fn magick_available() -> bool {
-    decode::magick_available()
-}
-
 use core::ffi::c_void;
+use st2k_base::{guids, host, safety};
 use std::time::Duration;
 
 use windows::core::{Interface, GUID, HRESULT};
@@ -359,7 +312,7 @@ mod unload_guard_tests {
         let (ended_tx, ended_rx) = mpsc::channel();
         std::thread::spawn(move || {
             #[allow(clippy::default_constructed_unit_structs)]
-            let module = crate::host::ModuleRef::default(); // exactly what the budgeted workers now do
+            let module = st2k_base::host::ModuleRef::default(); // exactly what the budgeted workers now do
             started_tx.send(()).unwrap();
             release_rx.recv().unwrap(); // hold the ref open until the test releases us
             drop(module);

@@ -48,7 +48,7 @@ fn tc(dark: COLORREF, light: COLORREF) -> COLORREF {
 
 /// Windows' High Contrast accessibility mode is on (`SPI_GETHIGHCONTRAST` /
 /// `HCF_HIGHCONTRASTON`). Uncached and re-probed on every call, like
-/// [`sagethumbs2k_core::safety::apps_use_dark_theme`]'s raw registry read — the OS toggles
+/// [`st2k_base::safety::apps_use_dark_theme`]'s raw registry read — the OS toggles
 /// this live (a keyboard shortcut, not just a settings-app change), and every owner-drawn
 /// surface below should follow that within one repaint rather than needing a restart.
 pub(crate) fn high_contrast() -> bool {
@@ -240,7 +240,7 @@ pub(crate) fn set_theme_override(dark: Option<bool>) {
 }
 
 /// True when the (effective) theme is dark. Reads `AppsUseLightTheme == 0` via the shared
-/// [`sagethumbs2k_core::safety::apps_use_dark_theme`] probe (also used by
+/// [`st2k_base::safety::apps_use_dark_theme`] probe (also used by
 /// `contextmenu::paint::menu_dark` and `previewhandler::theme_is_dark` — this used to be a
 /// third independent copy of the same registry read), cached for the process lifetime.
 /// `ST2K_THEME=light|dark` overrides the registry — a test/diagnostic hook so both
@@ -261,12 +261,12 @@ pub(crate) fn is_dark() -> bool {
         // The user's own choice wins over the OS, when they made one. `0` means "follow
         // Windows", which is the default and what every version before this did, so an
         // untouched install reads the registry exactly as it always has.
-        match sagethumbs2k_core::settings::app_theme() {
+        match st2k_base::settings::app_theme() {
             1 => return false,
             2 => return true,
             _ => {}
         }
-        sagethumbs2k_core::safety::apps_use_dark_theme()
+        st2k_base::safety::apps_use_dark_theme()
     })
 }
 
@@ -339,7 +339,7 @@ pub(crate) unsafe fn dark_titlebar(h: HWND) {
 
 /// Windows build number (`CurrentBuild` under `HKLM\SOFTWARE\Microsoft\Windows NT\
 /// CurrentVersion`), 0 if unreadable. Same registry read
-/// [`sagethumbs2k_core::safety::os_string`] uses for its version-string header; kept as a
+/// [`st2k_base::safety::os_string`] uses for its version-string header; kept as a
 /// separate local read (rather than parsing that formatted string back apart) because this
 /// module only needs the raw number. Cached for the process lifetime — the OS build cannot
 /// change while this process is running.

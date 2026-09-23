@@ -532,7 +532,7 @@ fn missing_feature(feature: &str) -> ! {
 
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
-    sagethumbs2k_core::safety::install_panic_hook("st2k");
+    st2k_base::safety::install_panic_hook("st2k");
     // WIC / WinRT decoders (HEIC, PDF, RAW via the OS) need COM.
     unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};

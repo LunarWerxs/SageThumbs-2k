@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn every_locale_retry_label_fits_the_button_row() {
         const RETRY_W_MAX: i32 = 240;
-        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
+        for (code, pairs) in st2k_base::i18n::LOCALES {
             let label = pairs
                 .iter()
                 .find(|(k, _)| *k == "btn_retry_failed")

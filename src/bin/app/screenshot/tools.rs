@@ -116,7 +116,7 @@ fn tool_strings(tool: Tool) -> (&'static str, &'static str) {
 /// tool here without updating that constant would silently drop it off the end of the
 /// dropdown, so the two are welded together at COMPILE time rather than by a comment.
 const _: () = assert!(
-    Tool::DEFAULTABLE.len() == sagethumbs2k_core::settings::SHOT_TOOL_COUNT as usize,
+    Tool::DEFAULTABLE.len() == st2k_base::settings::SHOT_TOOL_COUNT as usize,
     "Tool::DEFAULTABLE and settings::SHOT_TOOL_COUNT disagree"
 );
 

@@ -39,7 +39,7 @@ const CASES: &[&str] = &[
 
 fn corpus() -> std::path::PathBuf {
     // `..\test-corpus`, a sibling of the project root.
-    sagethumbs2k_core::testcorpus::dir()
+    st2k_base::testcorpus::dir()
 }
 
 /// Ask the shell for a thumbnail exactly the way a picker does.

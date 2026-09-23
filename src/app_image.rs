@@ -4,7 +4,7 @@
 //! remote-downloaded images for the Win32 EXEs (About box logo, Options banner,
 //! ad/banner image). They live out of the crate root because the DLL never uses
 //! them (LTO dead-strips them from the cdylib); the EXEs link them from the rlib
-//! as `sagethumbs2k_core::app_image::*`. Pure relocation — see `crate::dib` for the
+//! as `sagethumbs2k_core::app_image::*`. Pure relocation — see `st2k_base::dib` for the
 //! shared DIB builder.
 
 use core::ffi::c_void;
@@ -79,7 +79,8 @@ pub fn rgba_to_hbitmap(w: u32, h: u32, rgba: &[u8]) -> Option<isize> {
     if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 {
         return None;
     }
-    let hbmp = unsafe { crate::dib::create_premultiplied_dib(w as i32, h as i32, rgba) }.ok()?;
+    let hbmp =
+        unsafe { st2k_base::dib::create_premultiplied_dib(w as i32, h as i32, rgba) }.ok()?;
     Some(hbmp.0 as isize)
 }
 
@@ -99,7 +100,8 @@ pub fn image_to_hbitmap_sized(bytes: &[u8], w: u32, h: u32) -> Option<isize> {
         .resize_exact(w, h, image::imageops::FilterType::Lanczos3)
         .to_rgba8();
     let hbmp =
-        unsafe { crate::dib::create_premultiplied_dib(w as i32, h as i32, rgba.as_raw()) }.ok()?;
+        unsafe { st2k_base::dib::create_premultiplied_dib(w as i32, h as i32, rgba.as_raw()) }
+            .ok()?;
     Some(OwnedHbitmap(hbmp.0 as isize).into_raw())
 }
 

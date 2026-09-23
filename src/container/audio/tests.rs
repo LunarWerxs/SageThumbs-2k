@@ -320,7 +320,7 @@ fn apev2_picks_the_largest_front_cover() {
 /// Skipped when the corpus isn't present (it is a sibling of the repo; CI has none).
 #[test]
 fn corpus_audio_covers_are_real_pictures() {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
@@ -328,7 +328,8 @@ fn corpus_audio_covers_are_real_pictures() {
     for entry in entries.flatten() {
         let path = entry.path();
         let is_audio = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            crate::formats::category(&e.to_ascii_lowercase()) == crate::formats::Category::Audio
+            st2k_base::formats::category(&e.to_ascii_lowercase())
+                == st2k_base::formats::Category::Audio
         });
         if !is_audio {
             continue;

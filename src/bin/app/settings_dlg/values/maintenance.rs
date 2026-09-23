@@ -28,7 +28,7 @@ pub(in super::super) unsafe fn spawn_cache_rebuild(
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(hwnd, false);
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
         let raw = Box::into_raw(Box::new(CacheRebuiltEvent { after }));
         unsafe {
             let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
@@ -175,7 +175,7 @@ pub(in super::super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
 /// Open the diagnostics log in the user's default text editor (or its folder if the
 /// log doesn't exist yet), so a user can find it and send it in for a bug report.
 pub(in super::super) unsafe fn open_diagnostics_log() {
-    let path = match sagethumbs2k_core::safety::log_file() {
+    let path = match st2k_base::safety::log_file() {
         Some(p) if p.exists() => p,
         // No log yet → open its folder (the user sees there's nothing to send).
         Some(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),
@@ -335,11 +335,11 @@ pub(in super::super) unsafe fn repair_associations(hwnd: HWND) {
     // Re-registering can change which ProgID owns a type, and the type-overlay suppression
     // is written per ProgID — so re-point it at whatever owns the types NOW, or the repair
     // would silently leave the icon back on top of the badge.
-    sagethumbs2k_core::typeoverlay::sync(sagethumbs2k_core::settings::hide_type_overlay());
+    sagethumbs2k_core::typeoverlay::sync(st2k_base::settings::hide_type_overlay());
     // The folder verb records an ABSOLUTE path to the companion EXE, so a repair after the app
     // moved (or a reinstall to a different directory) has to rewrite it or the entry silently
     // launches nothing.
-    sagethumbs2k_core::foldermenu::sync(sagethumbs2k_core::settings::folder_prebuild_verb());
+    sagethumbs2k_core::foldermenu::sync(st2k_base::settings::folder_prebuild_verb());
     // Registration rewrote the hooks; drop the stale cached thumbnails + restart Explorer so
     // the repaired ones render right away. (The cmd sequence gives regsvr32 time to finish.)
     // Backgrounded — see `spawn_cache_rebuild`; the success message shows once it's back.

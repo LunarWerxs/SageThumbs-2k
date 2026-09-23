@@ -9,7 +9,7 @@
 #[test]
 #[ignore = "prints corpus measurements; needs ../test-corpus"]
 fn what_every_raw_sample_holds_in_its_reduced_ifd0() {
-    let corpus = crate::testcorpus::dir();
+    let corpus = st2k_base::testcorpus::dir();
     let Ok(rd) = std::fs::read_dir(&corpus) else {
         eprintln!("no corpus at {}", corpus.display());
         return;

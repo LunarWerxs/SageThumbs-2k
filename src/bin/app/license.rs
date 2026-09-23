@@ -15,7 +15,7 @@
 //!   with everything working, then three days of loud notice that a key is required, then
 //!   the shell stops serving (thumbnails, previews, Details pane, right-click menu) until
 //!   a key is redeemed. The arithmetic and the shell's read of it live in
-//!   [`sagethumbs2k_core::licence_state`], because the thumbnail provider runs inside
+//!   [`st2k_base::licence_state`], because the thumbnail provider runs inside
 //!   `explorer.exe` and must decide with no app process alive. This module STARTS the
 //!   clock ([`start_trial_if_due`]), speaks the phases ([`Posture`]) and never locks a
 //!   copy that once held a licence and merely went quiet.
@@ -32,7 +32,7 @@
 //! machine launder itself into a fresh home install. `installer.iss` creates the
 //! directory with `uninsneveruninstall` and user-modify permissions; `check-consistency.ps1`
 //! pins both so neither can be tidied away silently. The struct and its (de)serialization
-//! are [`sagethumbs2k_core::licence_state::History`]; this module owns every WRITE.
+//! are [`st2k_base::licence_state::History`]; this module owns every WRITE.
 //!
 //! TRUST BOUNDARY, stated plainly: the breadcrumb is a users-writable file and the mode is
 //! a world-readable value. Both are ADVISORY. A user who edits them defeats the reminders
@@ -62,14 +62,14 @@ pub(crate) use relay::{
     RELAY_BASE,
 };
 
-pub(crate) use sagethumbs2k_core::licence_state::{
+pub(crate) use st2k_base::licence_state::{
     days_until, entitlement_from_cache, history_path, phase, read_history, read_mode, shell_locked,
     write_history, Entitlement, History, Mode, Phase, LOCK_GRACE_SECS,
 };
 
 /// The portable settings marker a redeemed key writes - the same string the installer
 /// writes to HKLM, so [`read_mode`] reads either store through one parser.
-const MODE_VALUE: &str = sagethumbs2k_core::licence_state::MODE_VALUE;
+const MODE_VALUE: &str = st2k_base::licence_state::MODE_VALUE;
 
 // ---------------------------------------------------------------------------------
 // The pure decisions. Everything below is deterministic over its arguments so the
@@ -257,12 +257,10 @@ pub(crate) fn current_posture() -> Posture {
     start_trial_if_due();
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
-    let now = sagethumbs2k_core::unixtime::now();
+    let now = st2k_base::unixtime::now();
     let ent = entitlement_now(now, history.as_ref());
     let p = posture(now, mode, ent, history.as_ref());
-    sagethumbs2k_core::safety::log_debugf!(
-        "license: mode={mode:?} entitlement={ent:?} -> posture={p:?}"
-    );
+    st2k_base::safety::log_debugf!("license: mode={mode:?} entitlement={ent:?} -> posture={p:?}");
     p
 }
 
@@ -289,12 +287,12 @@ pub(crate) fn start_trial_if_due() {
     if !needs_clock && !needs_revoked_stamp {
         return;
     }
-    let now = sagethumbs2k_core::unixtime::now();
+    let now = st2k_base::unixtime::now();
     update_history_at(&path, |h| {
         if h.last_positive_unix == 0 && h.trial_started_unix == 0 {
             h.trial_started_unix = now;
             h.was_business = true;
-            sagethumbs2k_core::safety::log("license: business evaluation started");
+            st2k_base::safety::log("license: business evaluation started");
         }
         if h.last_status == "revoked" && h.revoked_unix == 0 {
             h.revoked_unix = now;

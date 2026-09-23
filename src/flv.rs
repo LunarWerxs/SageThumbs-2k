@@ -475,7 +475,7 @@ pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicIma
         || img.width() as usize > FLASH_MAX_DIM
         || img.height() as usize > FLASH_MAX_DIM
     {
-        crate::safety::log_debug("flv flash decode: child returned out-of-bounds dimensions");
+        st2k_base::safety::log_debug("flv flash decode: child returned out-of-bounds dimensions");
         return None;
     }
     Some(img)
@@ -495,13 +495,13 @@ pub(crate) fn child_frame_png(
     wall_ceiling: Duration,
     png_cap: usize,
 ) -> Option<Vec<u8>> {
-    let exe = crate::host::sibling_of_dll(crate::host::CLI_EXE)?;
+    let exe = st2k_base::host::sibling_of_dll(st2k_base::host::CLI_EXE)?;
     let mut cmd = Command::new(exe);
     cmd.arg(verb)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // the child logs its own failures via the panic hook/log
-        .creation_flags(crate::host::CREATE_NO_WINDOW);
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW);
     // Bound concurrent decode children (the ImageMagick gate is cross-process and named, so
     // st2k fan-outs and in-process decodes share the one cap).
     let _permit = crate::decode::magick_gate::acquire_for(crate::decode::Fidelity::Tile);
@@ -512,12 +512,12 @@ pub(crate) fn child_frame_png(
     // saw 0 - the decode tier ordering changed" (2026-09-09, a false red that cost an hour).
     // A line written by the process that did the spawning cannot be missed by a scheduler.
     // Debug-gated, so the production path costs one cached registry flag read.
-    crate::safety::log_debugf!("spawned helper pid {} for {verb}", child.id());
+    st2k_base::safety::log_debugf!("spawned helper pid {} for {verb}", child.id());
 
     // stdin fed and stdout read on their own threads, so a full pipe can't deadlock us.
     let (tx, rx) = std::sync::mpsc::channel();
     let (writer, reader) =
-        crate::safety::start_child_pipes(&mut child, input.to_vec(), move |mut stdout| {
+        st2k_base::safety::start_child_pipes(&mut child, input.to_vec(), move |mut stdout| {
             let mut buf = Vec::new();
             let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
             let _ = tx.send(buf);
@@ -533,13 +533,13 @@ pub(crate) fn child_frame_png(
     match png {
         Ok(png) if !png.is_empty() && png.len() <= png_cap => Some(png),
         Ok(_) => {
-            crate::safety::log_debugf!(
+            st2k_base::safety::log_debugf!(
                 "{verb} decode: child produced no/oversized output (status {status:?})"
             );
             None
         }
         Err(why) => {
-            crate::safety::log_debugf!("{verb} decode: {why} (status {status:?})");
+            st2k_base::safety::log_debugf!("{verb} decode: {why} (status {status:?})");
             None
         }
     }

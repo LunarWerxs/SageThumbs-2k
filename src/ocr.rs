@@ -58,7 +58,7 @@ pub const OCR_IMAGE_TOO_LARGE: windows::core::HRESULT =
 /// for nothing (and this runs in-process in the shell, where "for nothing" is a second
 /// image-sized allocation).
 ///
-/// Built on [`crate::safety::spawn_budgeted`] (shared with `previewhandler.rs`'s preview decode
+/// Built on [`st2k_base::safety::spawn_budgeted`] (shared with `previewhandler.rs`'s preview decode
 /// and `propstore.rs`'s property probe): it holds a `ModuleRef` for the worker's whole run —
 /// unlike those two, this call site has no concurrency-limiting slot of its own, so it needs no
 /// RAII guard beyond what `spawn_budgeted` already provides — and returns `None` uniformly for
@@ -68,7 +68,7 @@ pub const OCR_IMAGE_TOO_LARGE: windows::core::HRESULT =
 pub fn recognize_bytes(bytes: Vec<u8>) -> Result<String> {
     // Fresh MTA thread (blocking WinRT waits can deadlock in an STA; we can't assume the
     // caller's apartment).
-    let out = crate::safety::spawn_budgeted("st2k-ocr-recognize", OCR_TIMEOUT, move || {
+    let out = st2k_base::safety::spawn_budgeted("st2k-ocr-recognize", OCR_TIMEOUT, move || {
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let out = recognize(&bytes);
         if inited {
@@ -79,7 +79,7 @@ pub fn recognize_bytes(bytes: Vec<u8>) -> Result<String> {
     match out {
         Some(out) => out,
         None => {
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "ocr: recognize exceeded the wall-clock deadline or failed to start",
             );
             Err(Error::from(E_FAIL))
@@ -267,10 +267,10 @@ fn recognize(bytes: &[u8]) -> Result<String> {
 }
 
 /// Put UTF-16 `text` on the clipboard as CF_UNICODETEXT, via the one shared,
-/// audited clipboard writer in `crate::clipboard`.
+/// audited clipboard writer in `st2k_base::clipboard`.
 unsafe fn copy_text_to_clipboard(text: &str) -> Result<()> {
-    let bytes = crate::clipboard::utf16_nul_bytes(text);
-    if crate::clipboard::set_clipboard(crate::clipboard::CF_UNICODETEXT, &bytes) {
+    let bytes = st2k_base::clipboard::utf16_nul_bytes(text);
+    if st2k_base::clipboard::set_clipboard(st2k_base::clipboard::CF_UNICODETEXT, &bytes) {
         Ok(())
     } else {
         Err(Error::from(E_FAIL))

@@ -16,8 +16,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows_implement::implement;
 
-use crate::host::alloc_pwstr;
-use crate::{safety, settings, verbs};
+use crate::verbs;
+use st2k_base::host::alloc_pwstr;
+use st2k_base::{safety, settings};
 
 /// COM's documented `IExplorerCommand::GetState` signal for "this would be slow and
 /// `fOkToBeSlow` said not to block — ask again once it's OK to be slow" (`Urlmon`'s
@@ -31,7 +32,7 @@ const E_PENDING: HRESULT = HRESULT(0x8000_000A_u32 as i32);
 /// never an error.
 fn app_icon_ref() -> Result<PWSTR> {
     safety::guard_val(|| {
-        let exe = crate::host::sibling_of_dll(crate::host::APP_EXE)
+        let exe = st2k_base::host::sibling_of_dll(st2k_base::host::APP_EXE)
             .ok_or_else(|| Error::from(E_NOTIMPL))?;
         alloc_pwstr(&format!("{},-1", exe.display()))
     })
@@ -264,22 +265,22 @@ fn quick_root_visible(quick_verbs_on: bool, item_shown: bool) -> bool {
 /// attributes in `scripts/packaging/AppxManifest.xml`.
 const QUICK_VERBS: &[(GUID, &str, &str)] = &[
     (
-        crate::guids::CLSID_QUICK_CONVERT_INTO,
+        st2k_base::guids::CLSID_QUICK_CONVERT_INTO,
         "menu_convert_into",
         "SageThumbs2KConvertInto",
     ),
     (
-        crate::guids::CLSID_QUICK_CONVERT_DIALOG,
+        st2k_base::guids::CLSID_QUICK_CONVERT_DIALOG,
         "menu_convert_dialog",
         "SageThumbs2KConvertDialog",
     ),
     (
-        crate::guids::CLSID_QUICK_RESIZE,
+        st2k_base::guids::CLSID_QUICK_RESIZE,
         "menu_resize",
         "SageThumbs2KResize",
     ),
     (
-        crate::guids::CLSID_QUICK_ROTATE,
+        st2k_base::guids::CLSID_QUICK_ROTATE,
         "menu_rotate",
         "SageThumbs2KRotate",
     ),
@@ -304,7 +305,7 @@ pub fn quick_root_item(clsid: GUID) -> Option<&'static verbs::MenuItem> {
 
 #[implement(IExplorerCommand)]
 pub struct ExplorerCommand {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     /// Cached "selection contains an image" verdict. The shell may call
     /// `GetState` repeatedly on one command instance and the selection is fixed
     /// for the object's lifetime, so we iterate the array at most once.
@@ -317,7 +318,7 @@ impl Default for ExplorerCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             has_image: Cell::new(None),
         }
     }
@@ -432,7 +433,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
 
 #[implement(IExplorerCommand)]
 pub struct MenuCommand {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     item: &'static verbs::MenuItem,
     /// True when this command is a TOP-LEVEL flyout entry (created by the root's
     /// `EnumSubCommands`), false when it's a child created by a group's own
@@ -483,7 +484,7 @@ impl MenuCommand {
         gate: settings::MenuGate,
     ) -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             item,
             top_level,
             condensed,
@@ -502,7 +503,7 @@ impl MenuCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn quick_root(item: &'static verbs::MenuItem) -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             item,
             top_level: true,
             condensed: false,
@@ -566,7 +567,7 @@ fn cached_verdict(
 
 impl IExplorerCommand_Impl for MenuCommand_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        safety::guard_val(|| alloc_pwstr(crate::i18n::t(self.item.title())))
+        safety::guard_val(|| alloc_pwstr(st2k_base::i18n::t(self.item.title())))
     }
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         // A top-level quick verb carries the app icon (like the root command) so it's
@@ -675,7 +676,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
 
 #[implement(IEnumExplorerCommand)]
 pub struct SubCommandEnum {
-    _ref: crate::host::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     items: Vec<IExplorerCommand>,
     pos: Cell<usize>,
 }
@@ -685,7 +686,7 @@ impl SubCommandEnum {
     #[allow(clippy::default_constructed_unit_structs)]
     fn new(items: Vec<IExplorerCommand>) -> Self {
         Self {
-            _ref: crate::host::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             items,
             pos: Cell::new(0),
         }

@@ -316,7 +316,7 @@ pub(super) unsafe fn render_specimen(
     // Read the DIB (BGRA, top-down) back as RGBA.
     let px = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize);
     let mut rgba = vec![0u8; (w * h * 4) as usize];
-    sagethumbs2k_core::dib::swap_rb_opaque(px, &mut rgba);
+    st2k_base::dib::swap_rb_opaque(px, &mut rgba);
 
     SelectObject(mdc, old);
     let _ = DeleteObject(HGDIOBJ(dib.0));

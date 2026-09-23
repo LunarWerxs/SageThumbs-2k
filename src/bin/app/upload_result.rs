@@ -12,7 +12,7 @@
 
 use core::cell::RefCell;
 
-use sagethumbs2k_core::upload_history::{duration_text, Entry, Status};
+use st2k_base::upload_history::{duration_text, Entry, Status};
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -51,7 +51,7 @@ pub(crate) fn expiry_line(e: &Entry, now: u64, w: &ExpiryWords) -> Option<String
             w.expires
                 .replace(
                     "{date}",
-                    &sagethumbs2k_core::unixtime::local_datetime(now.saturating_add(left)),
+                    &st2k_base::unixtime::local_datetime(now.saturating_add(left)),
                 )
                 .replace("{left}", &duration_text(left, &w.dur)),
         ),
@@ -78,7 +78,7 @@ pub(crate) fn result_text(heading: &str, done: &[Entry], now: u64, w: &ExpiryWor
 /// Show the uploaded `done` links under `heading`, each with its expiry, with a Copy button
 /// that (re-)copies just the links to the clipboard.
 pub fn show_upload_result(heading: &str, done: &[Entry]) {
-    fill(heading, done, sagethumbs2k_core::unixtime::now());
+    fill(heading, done, st2k_base::unixtime::now());
     unsafe {
         // `run_dialog`'s w/h are the TOTAL window size (no client adjustment), so the
         // client is ~30 design-px shorter than `h`. Size generously and keep the buttons
@@ -102,7 +102,7 @@ fn fill(heading: &str, done: &[Entry], now: u64) {
 /// Headless capture (`--shot <out.png> --window upload`) over canned uploads: the window only
 /// appears after a real upload, which a shot cannot arrange.
 pub(crate) unsafe fn run_shot_upload_result(out: &str) -> bool {
-    let now = sagethumbs2k_core::unixtime::now();
+    let now = st2k_base::unixtime::now();
     let done = crate::upload_history_dlg::sample_entries(now);
     let heading = t("up_done_all").replace("{total}", "2");
     fill(&heading, &done[..2], now);
@@ -174,7 +174,7 @@ extern "system" fn upload_result_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sagethumbs2k_core::upload_history::{Expiry, ENGLISH};
+    use st2k_base::upload_history::{Expiry, ENGLISH};
 
     fn words() -> ExpiryWords<'static> {
         ExpiryWords {

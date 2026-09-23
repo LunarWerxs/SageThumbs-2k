@@ -32,18 +32,18 @@ pub(super) unsafe fn register_configured_hotkey(hwnd: HWND) {
     // while it's enabled, so a daemon kept alive solely for a custom hotkey doesn't also grab
     // Ctrl+PrtScn.
     if super::super::is_enabled() {
-        let (hkf, vk) = sagethumbs2k_core::settings::screenshot_hotkey();
+        let (hkf, vk) = st2k_base::settings::screenshot_hotkey();
         if RegisterHotKey(Some(hwnd), HOTKEY_ID, hkf_to_mods(hkf), vk).is_err() {
             failed |= 1;
         }
-        let (qhkf, qvk) = sagethumbs2k_core::settings::screenshot_quick_hotkey();
+        let (qhkf, qvk) = st2k_base::settings::screenshot_quick_hotkey();
         if qvk != 0 && RegisterHotKey(Some(hwnd), QUICK_HOTKEY_ID, hkf_to_mods(qhkf), qvk).is_err()
         {
             failed |= 2;
         }
     }
     // The user-assignable custom action hotkey — independent of the screenshot feature.
-    let (chkf, cvk) = sagethumbs2k_core::settings::custom_action_hotkey();
+    let (chkf, cvk) = st2k_base::settings::custom_action_hotkey();
     if cvk != 0 && RegisterHotKey(Some(hwnd), CUSTOM_HOTKEY_ID, hkf_to_mods(chkf), cvk).is_err() {
         failed |= 4;
     }
@@ -51,15 +51,15 @@ pub(super) unsafe fn register_configured_hotkey(hwnd: HWND) {
     // unconditional write here is a full settings rewrite (a portable-mode ini rewrite) once a
     // minute forever, even on the overwhelming majority of ticks where nothing changed. Only
     // write when the bitmask actually moved.
-    let current = sagethumbs2k_core::settings::get_dword_opt("HotkeyBindFailed");
+    let current = st2k_base::settings::get_dword_opt("HotkeyBindFailed");
     if hotkey_bind_failed_changed(current, failed) {
-        let _ = sagethumbs2k_core::settings::set_dword("HotkeyBindFailed", failed);
+        let _ = st2k_base::settings::set_dword("HotkeyBindFailed", failed);
     }
 }
 
 /// Whether the freshly-computed `HotkeyBindFailed` bitmask differs from what's already
 /// stored, so [`register_configured_hotkey`] can skip the rewrite when it hasn't changed.
-/// `current` mirrors [`sagethumbs2k_core::settings::get_dword_opt`]'s "absent" semantics —
+/// `current` mirrors [`st2k_base::settings::get_dword_opt`]'s "absent" semantics —
 /// the Settings status line (`settings_dlg/mod.rs`) reads a never-written value as `0`, so
 /// `None` must compare equal to `new == 0` here too, or a freshly-installed daemon would
 /// write a redundant `0` on its very first re-arm tick.

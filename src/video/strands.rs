@@ -56,7 +56,7 @@ pub(super) fn note_strand(done: Arc<AtomicBool>, what: &str) {
         since: Instant::now(),
         done,
     });
-    crate::safety::log(&format!(
+    st2k_base::safety::log(&format!(
         "video: {what} still running past its {} s budget; giving up on this frame and leaving \
          the worker to finish on its own ({} such worker(s) alive in this host, issue #35)",
         VIDEO_TIMEOUT.as_secs(),
@@ -108,7 +108,7 @@ pub fn mf_usable() -> bool {
     if mf_wedged() {
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::SeqCst) {
-            crate::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "video: Media Foundation is wedged in this host (a decode worker has been stuck \
                  for over {} s); video tiers are off until the host recycles (issue #35)",
                 STRAND_GRACE.as_secs()

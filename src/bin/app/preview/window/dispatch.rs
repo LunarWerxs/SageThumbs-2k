@@ -183,7 +183,7 @@ pub(super) unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 }
 
 /// Log one debug line when a UI-thread pipeline stage (`apply_resolved`, the render post-back
-/// handler `on_render`) took longer than [`sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET`]:
+/// handler `on_render`) took longer than [`st2k_base::safety::PREVIEW_UI_STAGE_BUDGET`]:
 /// see that constant's doc comment for the whole responsiveness contract this is part of
 /// (audit E02, 2026-09-07). Diagnostic only: the stage has already run to completion by the
 /// time this is called, nothing is aborted or retried. A stage that PUMPS the message loop
@@ -194,14 +194,14 @@ pub(super) unsafe fn on_timer(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 /// window may have freed the state by the time this runs, so the caller must capture whatever it
 /// needs from `st` before making that call, not after.
 pub(super) fn log_ui_stage_stall(stage: &str, elapsed: std::time::Duration, gen: u64, path: &str) {
-    if let Some(line) = sagethumbs2k_core::safety::stage_stall_report(
+    if let Some(line) = st2k_base::safety::stage_stall_report(
         stage,
         elapsed,
-        sagethumbs2k_core::safety::PREVIEW_UI_STAGE_BUDGET,
+        st2k_base::safety::PREVIEW_UI_STAGE_BUDGET,
         gen,
         path,
     ) {
-        sagethumbs2k_core::safety::log_debug(&line);
+        st2k_base::safety::log_debug(&line);
     }
 }
 
@@ -235,10 +235,10 @@ pub(in super::super) fn log_abandoned_worker(context: &str) {
     if !should_log {
         return;
     }
-    sagethumbs2k_core::safety::log_debugf!(
+    st2k_base::safety::log_debugf!(
         "preview {context}: abandoned a worker ({} of {} abandoned-worker budget slots live)",
-        sagethumbs2k_core::safety::abandoned_workers(),
-        sagethumbs2k_core::safety::MAX_ABANDONED_WORKERS,
+        st2k_base::safety::abandoned_workers(),
+        st2k_base::safety::MAX_ABANDONED_WORKERS,
     );
 }
 
@@ -282,7 +282,7 @@ pub(super) unsafe fn on_activate(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE
         && !st.pinned.get()
         && GetTickCount64().saturating_sub(st.born.get()) >= SETTLE_CLOSE_MS
-        && sagethumbs2k_core::settings::preview_close_on_focus_loss()
+        && st2k_base::settings::preview_close_on_focus_loss()
     {
         request_close(hwnd);
     }

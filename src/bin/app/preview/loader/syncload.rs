@@ -219,7 +219,7 @@ pub(super) unsafe fn apply_static_text_or_markdown(
     path: &str,
     kind: ContentKind,
 ) {
-    let read = if sagethumbs2k_core::formats::is_preview_doc(&ext_of(path)) {
+    let read = if st2k_base::formats::is_preview_doc(&ext_of(path)) {
         content::read_doc(path)
     } else {
         content::read_text(path)
@@ -239,7 +239,7 @@ pub(super) unsafe fn apply_static_text_or_markdown(
         st.md_has_remote
             .set(super::super::markdown::has_remote_images(&t));
         st.md_remote_ok
-            .set(sagethumbs2k_core::settings::preview_md_remote_img());
+            .set(st2k_base::settings::preview_md_remote_img());
     }
     *st.text.borrow_mut() = Some(t);
     st.kind.set(kind);

@@ -20,7 +20,7 @@
 //! Huge manga/art userbase; no existing Windows thumbnailer.
 
 use super::MAX_COVER;
-use crate::sqlite_prim::{local_size, serial_size, varint};
+use st2k_base::sqlite_prim::{local_size, serial_size, varint};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Hard cap on the embedded SQLite database bytes we'll buffer — the shared

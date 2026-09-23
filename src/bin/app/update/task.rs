@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
     std::process::Command::new("schtasks.exe")
         .args(args)
-        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
         .output()
 }
 
@@ -28,7 +28,7 @@ pub(crate) fn install_update_task() -> bool {
     match created {
         Ok(o) if o.status.success() => true,
         Ok(o) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "update: schtasks create failed ({}): {}",
                 o.status,
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -36,7 +36,7 @@ pub(crate) fn install_update_task() -> bool {
             false
         }
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!("update: schtasks unavailable ({e})"));
+            st2k_base::safety::log(&format!("update: schtasks unavailable ({e})"));
             false
         }
     }
@@ -52,7 +52,7 @@ pub(crate) fn remove_update_task() {
 /// after every install and whenever the Settings checkbox is applied, so turning the
 /// setting off genuinely removes the task instead of leaving an inert one behind.
 pub(crate) fn sync_update_task() {
-    if sagethumbs2k_core::settings::update_auto_check() {
+    if st2k_base::settings::update_auto_check() {
         install_update_task();
     } else {
         remove_update_task();
@@ -91,7 +91,7 @@ pub(crate) fn run_one_shot_check() {
         }
         crate::license::note_nag_shown(snap.now_unix);
     }
-    if !sagethumbs2k_core::settings::update_auto_check() {
+    if !st2k_base::settings::update_auto_check() {
         return;
     }
     let Some(latest) = check_throttled() else {
@@ -124,7 +124,7 @@ pub(crate) fn run_one_shot_check() {
 /// expired, spawn the detached `--update-check` one-shot and return immediately. The caller
 /// does no network work and can exit whenever it likes — the toast belongs to the child.
 pub(crate) fn spawn_due_check() {
-    if !sagethumbs2k_core::settings::update_auto_check() || !check_due() {
+    if !st2k_base::settings::update_auto_check() || !check_due() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else {
@@ -132,6 +132,6 @@ pub(crate) fn spawn_due_check() {
     };
     let _ = std::process::Command::new(exe)
         .arg("--update-check")
-        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
+        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
         .spawn();
 }

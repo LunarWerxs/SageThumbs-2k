@@ -1,16 +1,17 @@
 """What one small edit costs to rebuild in SageThumbs, by where the edit lands.
 
-Builds a detached worktree at the repo's HEAD in a private target dir, warms it, then for each
+Builds a copy of one commit in a private target dir, warms it, then for each
 area appends one unused private function to that area's module file (a realistic small edit that
 shifts no other item) and times the three inner-loop commands: `cargo check --lib` (the fast
 type check), `cargo test --lib --no-run` (building the unit tests) and `cargo build --bins` (the
 app and CLI, which link the library). Restores the file and re-warms before the next area.
 One JSON line per timing on stdout. Run through fairjob.
 
-    python scripts/refactor/rebuild_cost.py <worktree dir> <target dir>
+    python scripts/refactor/rebuild_cost.py <tree dir> <target dir>
 
-Use a detached worktree (`git worktree add --detach <dir> HEAD`) and a target dir of its own, so
-the probe edits and builds never touch a tree or a target another session is using.
+Use a plain copy of the commit (`git archive <commit> | tar -x -C <dir>`; never a worktree, this
+repo works on main only) and a target dir of its own, so the probe edits and builds never touch
+a tree or a target another session is using.
 """
 import json
 import os
@@ -27,11 +28,13 @@ COMMANDS = {
     "test-lib-build": ["cargo", "test", "--lib", "--no-run"],
     "build-bins": ["cargo", "build", "--bins"],
 }
+# Each area's module file, in every layout the tree has had: the first that exists is edited, so
+# the same script measures a commit from before the crate split and one after it.
 AREAS = {
-    "decode": ["src/decode.rs", "src/decode/mod.rs"],
-    "container": ["src/container.rs", "src/container/mod.rs"],
-    "verbs": ["src/verbs.rs", "src/verbs/mod.rs"],
-    "settings": ["src/settings.rs", "src/settings/mod.rs"],
+    "decode": ["crates/codecs/src/decode.rs", "src/decode.rs", "src/decode/mod.rs"],
+    "container": ["crates/codecs/src/container/mod.rs", "src/container/mod.rs", "src/container.rs"],
+    "verbs": ["crates/actions/src/verbs.rs", "src/verbs.rs", "src/verbs/mod.rs"],
+    "settings": ["crates/base/src/settings.rs", "src/settings.rs", "src/settings/mod.rs"],
     "app (bin only)": ["src/bin/app/main.rs"],
 }
 PROBE = "\n#[allow(dead_code)]\nfn rebuild_probe_{n}() -> u32 {{ {n} }}\n"

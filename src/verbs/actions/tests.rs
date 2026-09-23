@@ -440,9 +440,9 @@ fn rapid_same_kind_launches_get_distinct_listfile_names() {
 /// says so) - it is not a second hand-maintained rule, so prove the two never drift apart.
 #[test]
 fn convertible_matches_is_image() {
-    for &(ext, _) in crate::formats::FORMATS {
+    for &(ext, _) in st2k_base::formats::FORMATS {
         assert_eq!(
-            crate::formats::capability(ext).convertible,
+            st2k_base::formats::capability(ext).convertible,
             super::is_image(&format!("x.{ext}")),
             "`{ext}`: capability().convertible must match is_image"
         );

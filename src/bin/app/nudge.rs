@@ -9,7 +9,7 @@
 //! What this file owns:
 //!
 //!   * **Persistence.** One JSON string in the same place every other SageThumbs preference lives
-//!     ([`sagethumbs2k_core::settings`] — HKCU on an installed copy, the portable store otherwise),
+//!     ([`st2k_base::settings`] — HKCU on an installed copy, the portable store otherwise),
 //!     so a portable copy carries the prompt's memory with it and an uninstall takes it away.
 //!   * **Signed-in truth.** The engine asks the host; the host asks [`crate::sync_client`].
 //!   * **Hand-rolled JSON.** No serde derive, because this crate has no serde derive — the app
@@ -190,7 +190,7 @@ fn config() -> Config {
 
 fn load() -> NudgeState {
     let now = now_ms();
-    let parsed = sagethumbs2k_core::settings::get_string_opt(STATE_VALUE)
+    let parsed = st2k_base::settings::get_string_opt(STATE_VALUE)
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|v| from_json(&v));
     match parsed {
@@ -206,7 +206,7 @@ fn load() -> NudgeState {
 }
 
 fn persist(state: &NudgeState) {
-    let _ = sagethumbs2k_core::settings::set_string(STATE_VALUE, &to_json(state).to_string());
+    let _ = st2k_base::settings::set_string(STATE_VALUE, &to_json(state).to_string());
 }
 
 /// A NAMED mutex so every process (the settings EXE, `st2k`, the shell extension host) shares
@@ -223,7 +223,7 @@ impl NudgeLock {
     fn acquire() -> Option<Self> {
         use windows::core::w;
         // The same bounded wait as the portable-ini store's lock (two tries, logged on timeout).
-        sagethumbs2k_core::settings::acquire_named_mutex(
+        st2k_base::settings::acquire_named_mutex(
             w!("Local\\SageThumbs2K.NudgeState"),
             "nudge: NudgeLock wait timed out twice; proceeding unlocked",
         )
@@ -233,7 +233,7 @@ impl NudgeLock {
 
 impl Drop for NudgeLock {
     fn drop(&mut self) {
-        sagethumbs2k_core::release_mutex_handle!(self.0);
+        st2k_base::release_mutex_handle!(self.0);
     }
 }
 

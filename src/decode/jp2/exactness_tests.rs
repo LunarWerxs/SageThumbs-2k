@@ -8,7 +8,7 @@
 
 #[test]
 fn lossless_tiny_files_decode_bit_exactly() {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     for name in [
         "tiny8-gray",
         "tiny16-rgb",

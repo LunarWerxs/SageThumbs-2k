@@ -44,7 +44,8 @@ const CONTAINERS: [(&str, &str); 3] = [
 
 /// Full path to the companion EXE, which is what the verb runs.
 fn app_exe() -> Option<String> {
-    crate::host::sibling_of_dll(crate::host::APP_EXE).map(|p| p.to_string_lossy().into_owned())
+    st2k_base::host::sibling_of_dll(st2k_base::host::APP_EXE)
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Write (or rewrite) the verb under every container class.
@@ -54,7 +55,9 @@ fn app_exe() -> Option<String> {
 /// is fixed at write time, which is why [`sync`] runs again whenever the UI language changes.
 fn apply(label: &str) -> windows_registry::Result<()> {
     let Some(exe) = app_exe() else {
-        crate::safety::log("foldermenu: companion EXE not found next to the DLL — verb skipped");
+        st2k_base::safety::log(
+            "foldermenu: companion EXE not found next to the DLL — verb skipped",
+        );
         return Ok(());
     };
     let classes = CURRENT_USER.create(r"Software\Classes")?;
@@ -85,8 +88,8 @@ fn remove() {
 /// the setting or the UI language changes.
 pub fn sync(on: bool) {
     if on {
-        if let Err(e) = apply(crate::i18n::t("menu_pb_verb")) {
-            crate::safety::log(&format!("foldermenu: could not write the verb: {e}"));
+        if let Err(e) = apply(st2k_base::i18n::t("menu_pb_verb")) {
+            st2k_base::safety::log(&format!("foldermenu: could not write the verb: {e}"));
         }
     } else {
         remove();

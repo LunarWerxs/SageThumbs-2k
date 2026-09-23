@@ -39,7 +39,7 @@ mod tests {
     /// 2015+ part yields nothing rather than something wrong. Skips where the corpus is absent.
     #[test]
     fn a_real_assembly_yields_its_preview_and_a_wrapped_part_yields_none() {
-        let dir = crate::testcorpus::dir();
+        let dir = st2k_base::testcorpus::dir();
         if let Ok(bytes) = std::fs::read(dir.join("sample.sldasm")) {
             let png = extract(&bytes).expect("assembly preview");
             let img = image::load_from_memory(&png).expect("png");

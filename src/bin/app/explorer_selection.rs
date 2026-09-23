@@ -80,7 +80,7 @@ pub(crate) unsafe fn selection_or_pick(images_only: bool) -> SelectionOutcome {
     // Apartment-threaded COM for the shell automation interfaces below. `sta()` is
     // `None` (rather than a guard that no-ops on drop) when `CoInitializeEx` itself
     // failed, so `Drop` only ever balances a real init (issue #158/C17).
-    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
+    let _com = st2k_base::parallel::ComGuard::sta();
     // Everything is a real answer, not a "no selection" — without this the picker would open
     // over a window that is already pointing at the exact file the user meant.
     if let Some(p) = everything_selection() {
@@ -92,7 +92,7 @@ pub(crate) unsafe fn selection_or_pick(images_only: bool) -> SelectionOutcome {
         // "you selected the Recycle Bin" for "you selected nothing", which is its own way of
         // hiding the outcome from the caller. `st2k doctor`-style diagnosis needs a trail.
         SelectionOutcome::VirtualOnly => {
-            sagethumbs2k_core::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "selection_or_pick: foreground selection is virtual-only \
                  (no filesystem path behind any selected item)",
             );
@@ -157,7 +157,7 @@ pub(crate) enum PreviewTarget {
 /// Everything is asked FIRST because it is cheap and unambiguous: the shell automation below can
 /// only ever say "I have never heard of that window", and it would spend [`SETTLE_MS`] proving it.
 pub(crate) unsafe fn preview_target() -> PreviewTarget {
-    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
+    let _com = st2k_base::parallel::ComGuard::sta();
     if let Some(raw) = everything_selection().or_else(|| foreground_dialog_selection()) {
         return PreviewTarget::Path(resolve_lnk(&raw));
     }
@@ -177,7 +177,7 @@ fn first_target(outcome: SelectionOutcome, context: &str) -> Option<PreviewTarge
             Some(PreviewTarget::Path(paths.remove(0)))
         }
         SelectionOutcome::VirtualOnly => {
-            sagethumbs2k_core::safety::log_debugf!(
+            st2k_base::safety::log_debugf!(
                 "{context}: selection is virtual-only (no filesystem path behind any selected item)"
             );
             Some(PreviewTarget::Virtual)
@@ -190,7 +190,7 @@ fn first_target(outcome: SelectionOutcome, context: &str) -> Option<PreviewTarge
 /// preview of a shortcut shows the pointed-at file), leaving anything else unchanged. Inits its
 /// own COM STA (the explicit path doesn't otherwise touch the shell).
 pub(crate) unsafe fn resolve_explicit(path: &str) -> String {
-    let _com = sagethumbs2k_core::parallel::ComGuard::sta();
+    let _com = st2k_base::parallel::ComGuard::sta();
     resolve_lnk(path)
 }
 

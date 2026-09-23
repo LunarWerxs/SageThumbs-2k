@@ -33,7 +33,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows_registry::CURRENT_USER;
 mod logfile;
 mod workers;
-pub(crate) use logfile::log_error;
+pub use logfile::log_error;
 pub use logfile::{debug_logging_on, install_panic_hook, log, log_debug, log_file, os_string};
 #[cfg(test)]
 use workers::*;
@@ -166,7 +166,7 @@ pub use crate::log_debugf;
 /// tick that lets lines from one process be ordered without pulling in wall-clock
 /// formatting. Truncated to `u64` (decades), so the `<< 1` packing in
 /// `safety/logfile.rs` is safe.
-pub(crate) fn elapsed_ms() -> u64 {
+pub fn elapsed_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
@@ -205,22 +205,16 @@ pub fn checked_pixel_count(iw: i32, ih: i32, rgba: &[u8]) -> Option<usize> {
 /// The `BITMAPINFO` every 32bpp DIB path in this workspace builds: top-down (negative
 /// `biHeight`) `BI_RGB`, one plane, 32 bits per pixel. Shared by [`create_dib_section`] here and
 /// `contextmenu::paint`'s preview-tile DIB.
-///
-/// The two windows-rs type names are macro arguments rather than baked in, so each call site's
-/// own `use` still names them (they reach the paint code through `contextmenu`'s re-export).
-macro_rules! top_down_bmi {
-    ($bmi:ty, $hdr:ty, $w:expr, $h:expr) => {{
-        let mut bmi = <$bmi>::default();
-        bmi.bmiHeader.biSize = core::mem::size_of::<$hdr>() as u32;
-        bmi.bmiHeader.biWidth = $w;
-        bmi.bmiHeader.biHeight = -$h; // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = 0; // BI_RGB
-        bmi
-    }};
+pub fn top_down_bmi(w: i32, h: i32) -> BITMAPINFO {
+    let mut bmi = BITMAPINFO::default();
+    bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = 0; // BI_RGB
+    bmi
 }
-pub(crate) use top_down_bmi;
 
 /// Create the empty top-down 32bpp `BI_RGB` DIB section `iw`x`ih` the DIB builders in this
 /// workspace write their pixels into, returning its bitmap and its (still uninitialised) pixel
@@ -231,7 +225,7 @@ pub(crate) use top_down_bmi;
 /// Calls into GDI (`CreateDIBSection`), so this must run with a valid GDI/thread context, and
 /// the caller owns the returned `HBITMAP` — it must eventually `DeleteObject` it.
 pub unsafe fn create_dib_section(iw: i32, ih: i32) -> Result<(HBITMAP, *mut c_void)> {
-    let bmi = top_down_bmi!(BITMAPINFO, BITMAPINFOHEADER, iw, ih);
+    let bmi = top_down_bmi(iw, ih);
 
     let mut bits: *mut c_void = core::ptr::null_mut();
     let hbmp = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)?;

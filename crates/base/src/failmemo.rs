@@ -19,25 +19,25 @@ use std::sync::{Mutex, TryLockError};
 /// for a passing reason (a locked file, a wedged Media Foundation still inside its grace
 /// period), and the cost being avoided is the re-decode on every redraw of the SAME
 /// Explorer view, which happens within seconds, not minutes.
-const COOLDOWN_MS: u64 = 2 * 60 * 1000;
+pub const COOLDOWN_MS: u64 = 2 * 60 * 1000;
 
 /// Most failure entries kept at once; the oldest is evicted to make room for a new one.
-const MAX_ENTRIES: usize = 256;
+pub const MAX_ENTRIES: usize = 256;
 
 /// The identity the provider has for a stream: its reported name, size, and modified
 /// time, from one `IStream::Stat` call (see `thumbprovider::stream_identity`). A file
 /// whose size or modified time changed is a different identity, so a past failure
 /// recorded against the old one never matches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Identity {
-    pub(crate) name: String,
-    pub(crate) size: u64,
-    pub(crate) mtime: u64,
+pub struct Identity {
+    pub name: String,
+    pub size: u64,
+    pub mtime: u64,
 }
 
 /// One remembered failure and when the memory of it expires.
 #[derive(Clone, Debug)]
-struct Entry {
+pub struct Entry {
     name: String,
     size: u64,
     mtime: u64,
@@ -45,7 +45,7 @@ struct Entry {
 }
 
 impl Entry {
-    fn matches(&self, id: &Identity) -> bool {
+    pub fn matches(&self, id: &Identity) -> bool {
         self.name == id.name && self.size == id.size && self.mtime == id.mtime
     }
 }
@@ -54,12 +54,18 @@ impl Entry {
 /// their own isolated instance instead of sharing the one process-wide table - `cargo
 /// test` runs this crate's tests concurrently, and a single shared table would make the
 /// eviction/expiry tests race each other.
-struct FailMemo {
+pub struct FailMemo {
     entries: Mutex<VecDeque<Entry>>,
 }
 
+impl Default for FailMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FailMemo {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: Mutex::new(VecDeque::new()),
         }
@@ -71,7 +77,7 @@ impl FailMemo {
     /// caller panicked while holding it) is recovered and used rather than propagated:
     /// the entries themselves are still valid data, a panic elsewhere does not corrupt
     /// them.
-    fn is_remembered_failure_at(&self, id: &Identity, now_ms: u64) -> bool {
+    pub fn is_remembered_failure_at(&self, id: &Identity, now_ms: u64) -> bool {
         self.with_entries(false, |entries| {
             entries
                 .iter()
@@ -84,7 +90,7 @@ impl FailMemo {
     /// way as [`Self::is_remembered_failure_at`]; on contention the record is simply
     /// dropped (a missed circuit-breaker entry costs one extra re-decode next time, not
     /// correctness).
-    fn record_failure_at(&self, id: Identity, now_ms: u64) {
+    pub fn record_failure_at(&self, id: Identity, now_ms: u64) {
         self.with_entries((), |entries| {
             if entries.len() >= MAX_ENTRIES {
                 entries.pop_front();
@@ -98,7 +104,7 @@ impl FailMemo {
         });
     }
 
-    fn with_entries<R>(&self, default: R, f: impl FnOnce(&mut VecDeque<Entry>) -> R) -> R {
+    pub fn with_entries<R>(&self, default: R, f: impl FnOnce(&mut VecDeque<Entry>) -> R) -> R {
         match self.entries.try_lock() {
             Ok(mut guard) => f(&mut guard),
             Err(TryLockError::Poisoned(poisoned)) => {
@@ -116,16 +122,16 @@ impl FailMemo {
 }
 
 /// The one process-wide failure memory.
-static MEMORY: FailMemo = FailMemo::new();
+pub static MEMORY: FailMemo = FailMemo::new();
 
 /// Whether `id` is a remembered failure right now. See
 /// [`FailMemo::is_remembered_failure_at`].
-pub(crate) fn is_remembered_failure(id: &Identity) -> bool {
+pub fn is_remembered_failure(id: &Identity) -> bool {
     MEMORY.is_remembered_failure_at(id, crate::safety::elapsed_ms())
 }
 
 /// Record `id` as a failure right now. See [`FailMemo::record_failure_at`].
-pub(crate) fn record_failure(id: Identity) {
+pub fn record_failure(id: Identity) {
     MEMORY.record_failure_at(id, crate::safety::elapsed_ms());
 }
 

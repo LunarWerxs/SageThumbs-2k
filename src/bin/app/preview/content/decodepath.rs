@@ -98,7 +98,7 @@ pub(super) fn decode_loaded(bytes: std::sync::Arc<Vec<u8>>) -> Option<DecodedRgb
 }
 
 /// Run `decode::decode_preview` on a detached sub-thread, returning its result only if it
-/// finishes within [`sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET`]. On timeout returns
+/// finishes within [`st2k_base::safety::PREVIEW_DECODE_BUDGET`]. On timeout returns
 /// `None` and abandons the
 /// sub-thread (it sends into a dropped channel and exits on its own). The sub-thread holds
 /// a COM MTA apartment because the WIC decode tier (HEIC/RAW/JPEG-XR) needs it — the
@@ -131,11 +131,11 @@ pub(super) fn decode_preview_budgeted(
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     // The same pre-spawn gate `spawn_budgeted` consults: past the process-wide abandoned budget
     // this must not start one more worker, or the count it maintains could never throttle it.
-    if sagethumbs2k_core::safety::abandoned_budget_exhausted() {
+    if st2k_base::safety::abandoned_budget_exhausted() {
         return None;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let ticket = sagethumbs2k_core::safety::AbandonTicket::new();
+    let ticket = st2k_base::safety::AbandonTicket::new();
     let worker_ticket = ticket.clone();
     std::thread::spawn(move || {
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -146,7 +146,7 @@ pub(super) fn decode_preview_budgeted(
         let _ = tx.send(out);
         worker_ticket.worker_finished();
     });
-    match rx.recv_timeout(sagethumbs2k_core::safety::PREVIEW_DECODE_BUDGET) {
+    match rx.recv_timeout(st2k_base::safety::PREVIEW_DECODE_BUDGET) {
         Ok(out) => out,
         Err(_) => {
             ticket.caller_gave_up();
@@ -158,4 +158,13 @@ pub(super) fn decode_preview_budgeted(
 /// Does `path` start with Photoshop's `8BPS` signature? A peek at its head, never the file.
 fn is_photoshop(path: &str) -> bool {
     sagethumbs2k_core::decode::file_head_is(path, |head| head.starts_with(b"8BPS"))
+}
+
+/// A Photoshop document's header (signature, channels, canvas size), for a document the
+/// preview read declined: past the input ceiling with no baked preview there is nothing in
+/// its head worth decoding, but the header still names it and says how big its composite
+/// is, which is all [`super::sharper_composite`] needs to go and read that composite by path
+/// (issue #46: such a document was left on the error card).
+pub(in super::super) fn photoshop_header(path: &str) -> Option<Vec<u8>> {
+    sagethumbs2k_core::decode::file_head(path, 64).filter(|head| head.starts_with(b"8BPS"))
 }

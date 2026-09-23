@@ -288,7 +288,7 @@ mod tests {
             ("real-bc2.ktx", (1024, 1024)),
             ("real-not4.ktx", (270, 270)),
         ] {
-            let Some(bytes) = crate::testcorpus::read(name) else {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
                 eprintln!("NOT MEASURED: {name} absent");
                 continue;
             };

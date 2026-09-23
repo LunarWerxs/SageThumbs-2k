@@ -90,12 +90,12 @@ pub(super) fn has_css_animation(bytes: &[u8]) -> bool {
 
 /// Rasterize an SVG to straight (non-premultiplied) RGBA via resvg/tiny-skia.
 ///
-/// Parse+render run on a budgeted worker ([`crate::safety::spawn_budgeted`]) joined with a
+/// Parse+render run on a budgeted worker ([`st2k_base::safety::spawn_budgeted`]) joined with a
 /// deadline ([`SVG_TIMEOUT`]): resvg has no internal timeout and runs in-process inside
 /// Explorer's thumbnail host and, through `decode_menu_preview`, inside explorer.exe itself,
 /// so an unbounded run is a DoS vector. On timeout this returns E_FAIL and the worker
 /// finishes on its own, pinning the DLL (the `ModuleRef` `spawn_budgeted` takes before it
-/// spawns) and counted against [`crate::safety::MAX_ABANDONED_WORKERS`] like every other
+/// spawns) and counted against [`st2k_base::safety::MAX_ABANDONED_WORKERS`] like every other
 /// late worker, so repeated hostile SVGs cannot pile render threads up past the process-wide
 /// budget. This used to spawn a bare `std::thread`, which was the one detached-worker path
 /// that budget did not cover (2026-09-05 audit, F01).
@@ -111,10 +111,10 @@ where
     F: FnOnce(&[u8]) -> Result<DynamicImage> + Send + 'static,
 {
     let owned = bytes.to_vec();
-    match crate::safety::spawn_budgeted("st2k-svg-render", timeout, move || render(&owned)) {
+    match st2k_base::safety::spawn_budgeted("st2k-svg-render", timeout, move || render(&owned)) {
         Some(r) => r,
         None => {
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "SVG render exceeded the wall-clock deadline, or the abandoned-worker budget \
                  refused to start it",
             );
@@ -152,7 +152,7 @@ pub(super) fn render_svg(bytes: &[u8]) -> Result<DynamicImage> {
     // Keep the usvg cause: "this looked like SVG but won't parse" is the single
     // most common SVG triage question, and a bare E_FAIL discards the reason.
     let tree = usvg::Tree::from_data(bytes, &opt).map_err(|e| {
-        crate::safety::log_debugf!("SVG parse failed: {e:?}");
+        st2k_base::safety::log_debugf!("SVG parse failed: {e:?}");
         Error::from(E_FAIL)
     })?;
     let size = tree.size();
@@ -225,7 +225,7 @@ mod worker_tests {
         // Our render is still blocked and counted, so the count is at least one whatever
         // other tests' workers do in the meantime.
         assert!(
-            crate::safety::abandoned_workers() >= 1,
+            st2k_base::safety::abandoned_workers() >= 1,
             "the still-blocked render must be counted as abandoned"
         );
         let _ = release_tx.send(());

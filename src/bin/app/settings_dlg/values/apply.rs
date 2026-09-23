@@ -152,7 +152,7 @@ pub(super) unsafe fn apply_menu_and_misc_toggles(hwnd: HWND) {
     // Only ever toggles between tight (0) and margin (1); a registry-chosen sheet mode
     // (2/3) is left alone unless the user actually unticks the box.
     if checked(hwnd, ID_PDF_MARGIN) {
-        if settings::pdf_page() == sagethumbs2k_core::PdfPage::Tight {
+        if settings::pdf_page() == st2k_base::settings::PdfPage::Tight {
             let _ = note(settings::set_dword("PdfLayout", 1));
         }
     } else {

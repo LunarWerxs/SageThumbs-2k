@@ -729,12 +729,12 @@ pub(crate) fn mpeg_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<ima
             .into_dimensions()
             .ok()?;
     if w == 0 || h == 0 || w > max || h > max {
-        crate::safety::log_debug("mpeg decode: child declared out-of-bounds dimensions");
+        st2k_base::safety::log_debug("mpeg decode: child declared out-of-bounds dimensions");
         return None;
     }
     let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
     if img.width() != w || img.height() != h {
-        crate::safety::log_debug("mpeg decode: child returned out-of-bounds dimensions");
+        st2k_base::safety::log_debug("mpeg decode: child returned out-of-bounds dimensions");
         return None;
     }
     Some(img)

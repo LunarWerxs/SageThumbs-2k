@@ -163,7 +163,7 @@ pub fn build_coverage_report(
 /// The `{name}` substitution slots in a locale value, as a set (BTreeSet, so sorted
 /// by name rather than by first appearance).
 /// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`). The one identical
-/// copy is `src/i18n.rs`'s `slots` helper; keep the two copies of the grammar in sync.
+/// copy is `crates/base/src/i18n.rs`'s `slots` helper; keep the two copies of the grammar in sync.
 /// (`tests/f29_screenshot_i18n_contract.rs` captures any `{...}` body, a looser scan.)
 fn placeholders(value: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();

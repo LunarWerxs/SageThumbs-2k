@@ -5,7 +5,7 @@
 /// tested against every JPEG 2000 flavour in the corpus.
 #[test]
 fn dimensions_match_the_corpus() {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     let cases = [
         ("sample.jp2", 512u32, 384u32),
         ("sample.jpf", 512, 384),

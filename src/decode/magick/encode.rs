@@ -119,15 +119,17 @@ pub(super) fn magick_encode_target(
     out: &std::path::Path,
 ) -> Result<(&'static PathBuf, String)> {
     let Some(exe) = magick_exe() else {
-        crate::safety::log_debug("encode_via_magick: ImageMagick not available for this target");
+        st2k_base::safety::log_debug(
+            "encode_via_magick: ImageMagick not available for this target",
+        );
         return Err(Error::from(E_FAIL));
     };
     let coder = output_coder(target_ext).ok_or_else(|| {
-        crate::safety::log_debug("encode_via_magick: unsupported output extension");
+        st2k_base::safety::log_debug("encode_via_magick: unsupported output extension");
         Error::from(E_FAIL)
     })?;
     if !encode_target_length_ok(out) {
-        crate::safety::log_debugf!(
+        st2k_base::safety::log_debugf!(
             "encode_via_magick: target path too long for magick's raw, unprefixed coder \
              spec: {}",
             out.display()
@@ -195,7 +197,7 @@ pub(super) fn pipe_magick_encode(
     png: Vec<u8>,
 ) -> Result<MagickEncodePipes> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let (writer, reader) = crate::safety::start_child_pipes(child, png, move |stdout| {
+    let (writer, reader) = st2k_base::safety::start_child_pipes(child, png, move |stdout| {
         let _ = drain_capped(stdout);
         let _ = tx.send(());
     })
@@ -204,7 +206,7 @@ pub(super) fn pipe_magick_encode(
     // Drain stderr (capped) so we can log it on failure and it can't stall magick.
     let stderr = child.stderr.take();
     let errdrain = stderr
-        .and_then(|s| crate::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
+        .and_then(|s| st2k_base::safety::try_spawn("st2k-magick-stderr", move || drain_capped(s)));
 
     Ok((writer, reader, rx, errdrain))
 }
@@ -325,18 +327,12 @@ pub(super) fn finish_magick_encode(
     }
 }
 
-/// PNG-encode `$img` into a fresh byte buffer, mapping an encoder failure through
-/// `$map_err` so each caller keeps its own error text. `#[macro_export]` rather than a
-/// `fn` because the two magick encode call sites (this module and the `verbs::encode::
-/// magickpath` path) sit behind private modules that cannot name each other's items.
-#[macro_export]
-macro_rules! magick_png_bytes {
-    ($img:expr, $map_err:expr) => {{
-        let mut png = Vec::new();
-        $img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .map_err($map_err)?;
-        png
-    }};
+/// PNG-encode `img` into a fresh byte buffer: the intermediate every magick encode feeds
+/// ImageMagick on stdin (this module's and the Convert pipeline's `verbs::encode::magickpath`).
+pub fn magick_png_bytes(img: &DynamicImage) -> image::ImageResult<Vec<u8>> {
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    Ok(png)
 }
 
 /// ENCODE `img` to `out` via ImageMagick using the explicit `target_ext` coder.
@@ -351,7 +347,7 @@ pub fn encode_via_magick(
     target_ext: &str,
     quality: Option<u8>,
 ) -> Result<()> {
-    let png = crate::magick_png_bytes!(img, |_| Error::from(E_FAIL));
+    let png = magick_png_bytes(img).map_err(|_| Error::from(E_FAIL))?;
     encode_via_magick_png(png, out, target_ext, quality)
 }
 

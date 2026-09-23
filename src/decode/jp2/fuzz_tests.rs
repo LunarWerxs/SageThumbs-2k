@@ -24,7 +24,7 @@ impl Rng {
 }
 
 fn corpus() -> Vec<Vec<u8>> {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     ["sample.jp2", "sample.j2k", "sample.jpf", "huge.jp2"]
         .iter()
         .filter_map(|n| std::fs::read(dir.join(n)).ok())

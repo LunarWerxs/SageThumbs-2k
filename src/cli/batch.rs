@@ -89,7 +89,7 @@ fn expand_inputs_visit(
     out: &mut Vec<String>,
     skipped_offline: &mut usize,
 ) {
-    let a = crate::fsutil::file_attributes(p);
+    let a = st2k_base::fsutil::file_attributes(p);
     if a & REPARSE_ATTR != 0 {
         return;
     }
@@ -385,7 +385,7 @@ pub fn batch(
         resize,
     };
     // Fan out: each (input, pre-reserved output) is independent → no naming race.
-    let mut outcomes = crate::parallel::map(&pairs, |_, (input, slot)| job.run(input, slot));
+    let mut outcomes = st2k_base::parallel::map(&pairs, |_, (input, slot)| job.run(input, slot));
     // AFTER the real outcomes, so `clean_failed_placeholders`' pair-by-pair zip still lines up.
     outcomes.extend(unresolved.iter().map(|(input, why)| {
         verbs::FileOutcome::failed(input, Some(verbs::OmitCause::Unreadable), why)
@@ -535,7 +535,7 @@ fn batch_info(inputs: &[String], recurse: bool) -> Result<String, String> {
     if files.is_empty() {
         return Err("no supported image files found in the inputs".to_string());
     }
-    let results = crate::parallel::map(&files, |_, f: &String| -> serde_json::Value {
+    let results = st2k_base::parallel::map(&files, |_, f: &String| -> serde_json::Value {
         match info(f, true) {
             Ok(text) => {
                 // `info`'s JSON already excludes the path (it's the CALLER's argument in

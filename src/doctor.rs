@@ -24,7 +24,7 @@
 //! thumbnail cache. Nothing is elevated, so it is always safe to ask a user to run it and
 //! paste the output. That is the point: the report is designed to be pasted into an issue.
 
-use crate::formats::FORMATS;
+use st2k_base::formats::FORMATS;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use windows_registry::{CLASSES_ROOT, CURRENT_USER, LOCAL_MACHINE};
@@ -119,7 +119,7 @@ pub fn bundle(out: &Path, file: Option<&str>) -> Result<(), String> {
     let report_text = report(file);
     let formats_json = crate::cli::list_formats(true);
     let settings_text = settings_snapshot();
-    let log_tail = match crate::safety::log_file() {
+    let log_tail = match st2k_base::safety::log_file() {
         Some(p) if p.exists() => read_log_tail(&p, LOG_TAIL_SCAN_BYTES),
         Some(_) => "(no diagnostics log yet)".to_string(),
         None => "(LOCALAPPDATA is unset — no diagnostics log path)".to_string(),
@@ -152,7 +152,7 @@ pub fn report(file: Option<&str>) -> String {
 
     r.head("Environment");
     r.line(S::Info, "SageThumbs 2K version", env!("CARGO_PKG_VERSION"));
-    r.line(S::Info, "Windows", &crate::safety::os_string());
+    r.line(S::Info, "Windows", &st2k_base::safety::os_string());
     r.line(S::Info, "Process architecture", std::env::consts::ARCH);
     if crate::prebuild::is_elevated() {
         // Every HKCU check below reads THIS process's hive. Elevated, that is the
@@ -169,7 +169,7 @@ pub fn report(file: Option<&str>) -> String {
         Some(p) => r.line_with_size("Shell extension DLL", &p),
         None => r.line(S::Warn, "Shell extension DLL", "could not determine a path"),
     }
-    match crate::safety::log_file() {
+    match st2k_base::safety::log_file() {
         Some(p) if p.exists() => {
             r.line_with_size("Diagnostics log", &p);
             append_log_tail(&mut r, &p);
@@ -185,7 +185,7 @@ pub fn report(file: Option<&str>) -> String {
     // One snapshot for the whole report, instead of `check_extensions`'s ~330-format
     // sweep (and, now, `check_progid_handlers`'s matching sweep) each re-reading and
     // re-parsing the whole portable ini once per format.
-    let snap = crate::settings::format_enabled_snapshot();
+    let snap = st2k_base::settings::format_enabled_snapshot();
 
     check_windows_switches(&mut r);
     check_registration(&mut r);

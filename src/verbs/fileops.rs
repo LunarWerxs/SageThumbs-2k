@@ -154,7 +154,7 @@ fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
 /// Refuses an `out` that is one of `imgs` before reading anything (2026-09-05 audit, F30):
 /// the write replaces the destination, so an alias would destroy a source.
 pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Combined> {
-    if let Some(alias) = crate::fsutil::aliased_input(out, imgs.iter().map(String::as_str)) {
+    if let Some(alias) = st2k_base::fsutil::aliased_input(out, imgs.iter().map(String::as_str)) {
         return Err(Error::new(
             E_FAIL,
             format!(
@@ -176,7 +176,7 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
     // Read every page UP FRONT (in parallel — mirrors `combine_to_pdf_paged`), so a
     // page that can't be read drops out here instead of aborting the zip write
     // already in progress, and is recorded with the read error as its cause.
-    let reads = crate::parallel::map(&sorted, |_, p| {
+    let reads = st2k_base::parallel::map(&sorted, |_, p| {
         read_full_fidelity_capped(p.as_str()).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))
     });
     let mut omitted = Vec::new();
@@ -266,7 +266,7 @@ pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<
         Some(e) => dir.join(format!("{stem}.{e}")),
         None => dir.join(stem),
     };
-    if crate::fsutil::same_path(&natural, src) {
+    if st2k_base::fsutil::same_path(&natural, src) {
         return Ok(None); // already in place, no rename/move needed
     }
     let (stem, dir) = (stem.to_string(), dir.to_path_buf());
@@ -307,7 +307,7 @@ fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
     // so it is removed here explicitly - the source is never touched by a failed move.
     // Keep `{e}` rather than mapping to a bare E_FAIL: it's the only place a caller
     // could learn WHY a file didn't move (locked, permission denied, disk full).
-    if let Err(e) = crate::fsutil::move_file_replacing(src, slot.path()) {
+    if let Err(e) = st2k_base::fsutil::move_file_replacing(src, slot.path()) {
         if slot.created() {
             cleanup_failed_dest(slot.path());
         }
@@ -486,7 +486,7 @@ fn sort_by_bucket(
     bucket: impl Fn(&str) -> Option<String> + Sync,
 ) -> (usize, usize) {
     let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
-    let buckets = crate::parallel::map(&images, |_, p| bucket(p.as_str()));
+    let buckets = st2k_base::parallel::map(&images, |_, p| bucket(p.as_str()));
     move_into_buckets(&images, buckets)
 }
 

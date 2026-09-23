@@ -688,7 +688,7 @@ three CI runs red in a row - a class the mirror above is structurally blind to, 
 step it mirrors runs on the machine that has the files.
 
 Two things closed it, and both are load-bearing. **The path is spelled in ONE place,
-`src/testcorpus.rs`** (`dir()`, `read()`, `path()`, `real_dir()`); a test in that module scans
+`crates/base/src/testcorpus.rs`** (`dir()`, `read()`, `path()`, `real_dir()`); a test in that module scans
 `src/` and `tests/` for any other spelling and fails on it. **The gate makes the corpus
 vanish:** `ST2K_CORPUS_ABSENT=1` makes every accessor answer a path that does not exist, and
 `ST2K_CORPUS_TOUCH_LOG` records the calling test's name (libtest names the thread after the

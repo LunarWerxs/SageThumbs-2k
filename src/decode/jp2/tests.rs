@@ -136,7 +136,7 @@ fn mixed_precision_colour_components_are_refused() {
 /// the preview-handler integration tests; this one pins breadth and speed.)
 #[test]
 fn decode_every_corpus_jp2() {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     for name in [
         "sample.j2k",
         "sample.jp2",
@@ -166,7 +166,7 @@ fn decode_every_corpus_jp2() {
 /// the image is genuinely blank and the palette is genuinely two-entry.
 #[test]
 fn bilevel_paletted_page_renders_white() {
-    let p = crate::testcorpus::dir().join("tiny-bilevel.jp2");
+    let p = st2k_base::testcorpus::dir().join("tiny-bilevel.jp2");
     let Ok(bytes) = std::fs::read(&p) else {
         eprintln!("skipping: no tiny-bilevel.jp2");
         return;
@@ -181,7 +181,7 @@ fn bilevel_paletted_page_renders_white() {
 
 #[test]
 fn decode_huge_corpus_jp2() {
-    let p = crate::testcorpus::dir().join("huge.jp2");
+    let p = st2k_base::testcorpus::dir().join("huge.jp2");
     let Ok(bytes) = std::fs::read(&p) else {
         eprintln!("skipping: no ../test-corpus/huge.jp2");
         return;
@@ -219,7 +219,7 @@ fn decode_huge_corpus_jp2() {
 /// off twice, so its frame is ours less 150 columns and 300 rows, from the top left.
 #[test]
 fn an_image_offset_decodes_to_the_picture() {
-    let Some(bytes) = crate::testcorpus::read("real.j2k") else {
+    let Some(bytes) = st2k_base::testcorpus::read("real.j2k") else {
         eprintln!("NOT MEASURED: real.j2k absent");
         return;
     };

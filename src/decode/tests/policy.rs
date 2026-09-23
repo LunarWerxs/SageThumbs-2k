@@ -243,7 +243,7 @@ fn pdf_raster_edge_follows_the_request_but_never_drops_below_1024() {
     // And it must NOT track the user's global ceiling: at the top setting, a tiny request is
     // still a tiny request. This is the assertion that fails if the regression comes back.
     assert!(
-        pdf_raster_edge(Some(32)) < crate::settings::THUMB_MAX,
+        pdf_raster_edge(Some(32)) < st2k_base::settings::THUMB_MAX,
         "a small request must not rasterize at the global ceiling",
     );
 }

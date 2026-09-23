@@ -46,8 +46,8 @@ fn every_button_is_hittable_and_no_two_overlap() {
 /// the assertion below checks a literal English substring.
 #[test]
 fn ocr_button_sits_next_to_copy_and_is_described() {
-    sagethumbs2k_core::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
-    sagethumbs2k_core::i18n::apply_override_or_system(Some("en"));
+    st2k_base::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
+    st2k_base::i18n::apply_override_or_system(Some("en"));
     let order: Vec<Button> = items().iter().map(|(b, _)| *b).collect();
     let copy = order
         .iter()
@@ -78,8 +78,8 @@ fn ocr_button_sits_next_to_copy_and_is_described() {
 /// a missing `.replace()` would leave the literal text `{key}` in the tooltip.
 #[test]
 fn button_tip_reads_the_locale_table_and_fills_the_key_placeholder() {
-    sagethumbs2k_core::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
-    sagethumbs2k_core::i18n::apply_override_or_system(Some("en"));
+    st2k_base::i18n::ensure_init(); // first, so its one-time pick cannot undo "en"
+    st2k_base::i18n::apply_override_or_system(Some("en"));
     let pairs = [
         (Button::Tool(Tool::Rect), "shot_tip_rect", "R"),
         (Button::Tool(Tool::Ellipse), "shot_tip_ellipse", "O"),

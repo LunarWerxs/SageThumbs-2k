@@ -218,7 +218,7 @@ fn refuses_what_is_not_a_drawable_sprite() {
 /// one Background layer) and a legacy `.ase` banner. Skips where the sibling corpus is absent.
 #[test]
 fn real_sprites_render_at_their_declared_size() {
-    let dir = crate::testcorpus::dir();
+    let dir = st2k_base::testcorpus::dir();
     for (name, w, h, min_opaque_pct) in [
         ("sample.aseprite", 48, 48, 30),
         ("sample-indexed.aseprite", 256, 256, 100),

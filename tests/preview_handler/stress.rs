@@ -201,7 +201,7 @@ pub(super) unsafe fn run_jp2_pane_walkthrough(paths: &[std::path::PathBuf]) -> V
 /// Every selection must render. A blank pane here is the bug the reporter is seeing.
 #[test]
 fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
-    let corpus = sagethumbs2k_core::testcorpus::dir().join("sample.jp2");
+    let corpus = st2k_base::testcorpus::dir().join("sample.jp2");
     let Ok(jp2) = std::fs::read(&corpus) else {
         eprintln!("skipping: ../test-corpus/sample.jp2 not present");
         return;
@@ -255,7 +255,7 @@ fn preview_keeps_up_with_a_folder_of_jp2_under_thumbnail_load() {
 /// `scripts/build-corpus.ps1`; the test skips when the corpus has not been built.
 #[test]
 fn preview_renders_a_76_megapixel_jp2_inside_the_budget() {
-    let path = sagethumbs2k_core::testcorpus::dir().join("huge.jp2");
+    let path = st2k_base::testcorpus::dir().join("huge.jp2");
     let Ok(huge) = std::fs::read(&path) else {
         eprintln!("skipping: ../test-corpus/huge.jp2 not present (run scripts/build-corpus.ps1)");
         return;

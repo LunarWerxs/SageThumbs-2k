@@ -113,7 +113,7 @@ pub(super) fn update_history(mutate: impl FnOnce(&mut History)) {
 /// now refuses to reproduce.
 pub(super) fn update_history_at(path: &std::path::Path, mutate: impl FnOnce(&mut History)) -> bool {
     let Some(_lock) = HistoryLock::acquire(&lock_path(path)) else {
-        sagethumbs2k_core::safety::log_debug(
+        st2k_base::safety::log_debug(
             "license: history lock unavailable after retrying, skipping this update rather than writing over a possibly newer file",
         );
         return false;

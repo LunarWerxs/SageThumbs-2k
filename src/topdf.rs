@@ -13,10 +13,10 @@ use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
 use crate::decode;
-use crate::settings::PdfPage;
 use crate::verbs::{
     flatten_onto_white, partition, refusal, write_atomic, Combined, OmitCause, Omitted, OnOmit,
 };
+use st2k_base::settings::PdfPage;
 
 /// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
 /// `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view pixel is
@@ -170,7 +170,13 @@ pub fn combine_to_pdf(
     quality: u8,
     on_omit: OnOmit,
 ) -> Result<Combined> {
-    combine_to_pdf_paged(paths, out, quality, crate::settings::pdf_page(), on_omit)
+    combine_to_pdf_paged(
+        paths,
+        out,
+        quality,
+        st2k_base::settings::pdf_page(),
+        on_omit,
+    )
 }
 
 /// A path's file name as a NUL-terminated UTF-16 buffer — the pre-encoded sort key for the
@@ -181,7 +187,7 @@ pub(crate) fn file_name_key(p: &str) -> Vec<u16> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(p);
-    crate::host::wide(fname)
+    st2k_base::host::wide(fname)
 }
 
 /// Natural-sort `paths` by file name (page2 before page10), matching Explorer and
@@ -202,11 +208,11 @@ fn decode_page(p: &str, quality: u8) -> std::result::Result<Page, Omitted> {
     let bytes =
         read_full_fidelity_capped(p).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))?;
     let img = decode::decode_full_for_output(&bytes).map_err(|e| {
-        crate::safety::log(&format!("pdf: cannot decode {p}: {e}"));
+        st2k_base::safety::log(&format!("pdf: cannot decode {p}: {e}"));
         Omitted::new(p, OmitCause::Undecodable, e)
     })?;
     image_to_baseline_jpeg(&img, quality).map_err(|e| {
-        crate::safety::log(&format!("pdf: cannot encode {p}: {e}"));
+        st2k_base::safety::log(&format!("pdf: cannot encode {p}: {e}"));
         Omitted::new(p, OmitCause::Unencodable, e)
     })
 }
@@ -240,7 +246,7 @@ pub fn combine_to_pdf_paged(
     page: PdfPage,
     on_omit: OnOmit,
 ) -> Result<Combined> {
-    if let Some(alias) = crate::fsutil::aliased_input(out, paths.iter().map(String::as_str)) {
+    if let Some(alias) = st2k_base::fsutil::aliased_input(out, paths.iter().map(String::as_str)) {
         return Err(Error::new(
             E_FAIL,
             format!(
@@ -257,7 +263,7 @@ pub fn combine_to_pdf_paged(
     // pass would peak at N x decoded-image size on a hundreds-of-pages comic
     // combine. Per-worker COM init + the global magick cap are handled inside the
     // pool / decoder.
-    let attempts = crate::parallel::map(&paths, |_, p| decode_page(p, quality));
+    let attempts = st2k_base::parallel::map(&paths, |_, p| decode_page(p, quality));
     let (pages, omitted) = partition(attempts);
     if pages.is_empty() {
         let headline = format!("pdf: none of the {} inputs could be decoded", paths.len());
@@ -326,12 +332,12 @@ mod tests {
     #[test]
     fn a_sheet_shrinks_an_oversized_image_and_centres_it() {
         let page = super::PdfPage::Sheet {
-            w: crate::settings::A4_PT.0,
-            h: crate::settings::A4_PT.1,
+            w: st2k_base::settings::A4_PT.0,
+            h: st2k_base::settings::A4_PT.1,
             margin: 36.0,
         };
         let (pw, ph, dx, dy, dw, dh) = super::place(page, 4000.0, 3000.0);
-        assert_eq!((pw, ph), crate::settings::A4_PT);
+        assert_eq!((pw, ph), st2k_base::settings::A4_PT);
         assert!(
             dw <= pw - 72.0 + 0.01 && dh <= ph - 72.0 + 0.01,
             "{dw}x{dh} overflows the margins"
@@ -351,8 +357,8 @@ mod tests {
     #[test]
     fn a_sheet_never_enlarges_a_small_image() {
         let page = super::PdfPage::Sheet {
-            w: crate::settings::A4_PT.0,
-            h: crate::settings::A4_PT.1,
+            w: st2k_base::settings::A4_PT.0,
+            h: st2k_base::settings::A4_PT.1,
             margin: 36.0,
         };
         let (_, _, dx, dy, dw, dh) = super::place(page, 100.0, 50.0);

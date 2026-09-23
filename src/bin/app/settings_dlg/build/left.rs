@@ -12,7 +12,7 @@ pub(super) unsafe fn build_thumbnails(hwnd: HWND, lc: &mut LeftCol, sty: &Styles
     // layout never visits keeps the position it was created at, so on an installed build the
     // button and its status floated over the nav rail and the page header. Caught by shooting
     // the page; nothing about the code reads wrong.
-    if sagethumbs2k_core::settings::portable() {
+    if st2k_base::settings::portable() {
         lc.status(ID_PORTABLE_REG_STATUS);
         if let Ok(h) = GetDlgItem(Some(hwnd), ID_PORTABLE_REG_STATUS) {
             const SS_RIGHT: u32 = 0x0002;
