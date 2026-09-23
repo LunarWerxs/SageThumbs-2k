@@ -17,17 +17,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   stencil or package that carries no picture keeps its usual icon.
 - **Big Photoshop files get a sharp picture everywhere.** A `.psd` or `.psb` over about 256 MB
   showed the small, blurry preview Photoshop saves inside it, in Explorer, the preview pane and
-  Quick preview alike, and one over 2 GB never sharpened at all. SageThumbs now reads the full
-  picture Photoshop keeps in the file straight off the disk, only the parts it needs, so a
-  document of any size is sharp. A document saved with "Maximize compatibility" turned off,
-  which holds no full picture, is now drawn from its layers instead. Reported in #46.
+  Quick preview alike. SageThumbs now reads the full picture straight off the disk, only the
+  parts it needs, so a document of any size is sharp; one saved with "Maximize compatibility"
+  off is drawn from its layers. Reported in #46.
 - **Very big files of many other types get their picture too.** Past about 256 MB, PDF and
   Illustrator files, EPS, older Word, Excel, PowerPoint, Visio and Publisher files, 3ds Max and
   SolidWorks files, RAR and 7-Zip archives and comics, 3D models (STL, OBJ, PLY), FITS images,
   JPEG 2000, and huge TIFF (BigTIFF included), PPM, PGM and TGA scans showed the plain icon, an
   empty preview pane or nothing in Quick preview. They are now read straight off the disk, only
-  as far as the picture needs. An app icon, album cover or comic cover inside such a file fills
-  the thumbnail as it does in a small file.
+  as far as the picture needs.
 - **Windows Media Audio (`.wma`) files show their album cover in Explorer and the preview
   pane.** They share their container with Windows Media video and were taken for a video
   with no picture, so the cover never showed there, at any size.
@@ -45,14 +43,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   again; an empty `.ts` file opens as text in Quick preview instead of as a broken video; Redo
   with nothing to redo no longer stops Undo from bringing back a deleted annotation; and a file
   picked in Everything with a very long path is used whole instead of cut short.
-- **Uploaded links now say when they expire.** The free upload hosts delete files on their own
-  schedule, from 3 hours (uguu.se) and 72 hours (litterbox) to 3-100 days depending on size
-  (x0.at), while catbox.moe sets no date and only removes files nobody has opened for 2 years.
-  A link never says which. The upload window now shows under
-  each link when its host deletes it, and a new **Recent uploads** list keeps every link you
-  uploaded with the time it has left, or when it expired. Open it from the upload window,
-  Settings > Screenshots, or the tray menu. `st2k upload` prints the expiry too, and
-  `st2k upload-history` lists every link. Suggested by a user.
+- **Uploaded links now say when they expire.** Each free host deletes files on its own
+  schedule, from 3 hours (uguu.se) to 3-100 days (x0.at), and a link never said which. The
+  upload window now shows each link's expiry, and a new **Recent uploads** list (upload window,
+  Settings > Screenshots, or the tray menu) keeps every link with the time it has left.
+  `st2k upload` prints the expiry too, and `st2k upload-history` lists every link. Suggested
+  by a user.
 - **Closing the "Check for problems" window no longer closes Settings with it**, along with any
   change you had not saved yet.
 - **3D scans in PLY format thumbnail correctly.** Binary PLY files that store a colour or a

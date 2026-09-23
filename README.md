@@ -4,7 +4,7 @@
 
 # SageThumbs 2K
 
-### Thumbnails for everything Windows won't show you.
+### Real thumbnails where Windows shows a blank icon.
 
 A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-room revival of the legendary (but decade-abandoned) [SageThumbs](https://sagethumbs.en.lo4d.com/).
 
@@ -52,9 +52,9 @@ SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds 
 
 - 🖼️ Explorer thumbnails for **361 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
-- ⚡ **Fast even on big files**: camera RAW thumbnails from its embedded preview instead of a slow demosaic (3–13× quicker), and no format is allowed to hang a folder.
+- ⚡ **Fast even on huge files**: camera RAW thumbnails come from the embedded preview instead of a slow demosaic (3–13× quicker), multi-gigabyte Photoshop files and archives are read straight off the disk, and no file is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.
-- 👁️ **Press Space to preview** any file, QuickLook-style: an instant full-size popup with **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, **multi-page PDF** paging, a **Save button (Ctrl+S)** to save the page or frame you're viewing as a PNG, **font specimens**, **archive listings**, **SQLite databases** (tables, columns and rows, read-only), **email files** (.eml and Outlook .msg: headers, body and the attachment list, with nothing fetched from the web), **3D-print models** (STL/OBJ/PLY, shaded), a **light/dark button on the window itself** (for the dark photo or bright scan that reads better the other way round), arrow-key folder browsing and full-screen (F11). Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
+- 👁️ **Press Space to preview** any file, QuickLook-style: **video & audio play**, code is **syntax-highlighted**, Markdown renders, PDFs page, and **email**, **SQLite databases** and **3D models** open read-only. Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
 - 🔤 **Copy text off your screen**: drag a region and the words land on your clipboard, in an editable window so you can fix a misread. Uses Windows' own recognizer, so it adds nothing to the download.
 - 🎛️ **Make the menu yours**: **drag-reorder** (and show/hide) every right-click entry *and* its dividers; the context menu mirrors your layout exactly.
 - 🎨 **Redesigned Settings**: a Win11-style category nav rail with toggle switches, a **search box that finds any setting on any page**, system-following **dark mode**, **36 languages**.
@@ -78,7 +78,7 @@ SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds 
 
 The original **SageThumbs** was a Windows legend. It made Explorer show thumbnails for *hundreds* of formats nothing else could. Then it stopped: no updates since ~2017, built on the proprietary, frozen **GFL** library.
 
-**SageThumbs 2K rebuilds it from scratch in safe Rust** (a maintained decode pipeline, real crash isolation, and a native Windows 11 look) while keeping the one thing that made it great: **thumbnails for everything.**
+**SageThumbs 2K rebuilds it from scratch in safe Rust** (a maintained decode pipeline, real crash isolation, and a native Windows 11 look) while keeping the one thing that made it great: **thumbnails for the files nothing else will show.**
 
 ---
 
@@ -91,7 +91,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
 | 🔊 **Docs & audio** | PDF first page, Microsoft Office (Word/Excel/PowerPoint) & OpenDocument, and album art for MP3/FLAC/Ogg/Opus/M4A/**WMA**/**DSF (DSD)**/… (WMA/ASF and DSD/.dsf via hand-rolled parsers; `lofty` can't read either) |
-| 👁️ **Space-bar preview** | Tap **Space** in Explorer (or on the Desktop) for an instant QuickLook-style popup of the selected file: any supported format at full size, plus **video & audio playback** (with a scrubber + volume), **syntax-highlighted** code, **GitHub-style rendered Markdown**, animated GIF/APNG/WebP, a real **PDF viewer** (continuous scrolling, a clickable page-thumbnail strip, zoom that re-renders sharp, and **Ctrl+F text search** via Windows' built-in OCR), a **Save button** (or **Ctrl+S**) to save the PDF page, animated frame **or the video frame you're paused on** as an image, **printing** (**Ctrl+P**) of whatever you're looking at, **font specimens** (.ttf/.otf/.ttc), **archive listings** (zip/7z/rar), **SQLite databases** (.db/.sqlite: every table's columns and first rows, plus the schema, strictly read-only), a **hex dump** for binaries nothing can render, **folder sizes**, **←/→ folder browsing** and **full-screen (F11)**. The caption toolbar carries a **light/dark toggle for that window alone**, independent of the app theme, and a **gear** that opens the Quick preview settings. Optionally renders local HTML in a locked-down WebView2 (scripts off, no network) when enabled. Off by default; opt in from Settings |
+| 👁️ **Space-bar preview** | Tap **Space** in Explorer or on the Desktop for an instant full-size preview of any supported format, plus **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, a **PDF viewer** with page thumbnails and **Ctrl+F search**, **font specimens**, **archive listings**, **SQLite databases** and **email** (read-only), a **hex dump** for anything else, **Save (Ctrl+S)**, **Print (Ctrl+P)**, **←/→ folder browsing** and **F11 full-screen**. Off by default; opt in from Settings |
 | 🧰 **Right-click toolkit** | Convert (29 targets) with an optional **watermark**, resize, shrink-for-email, **lossless** JPEG rotate/flip, combine→PDF/CBZ, batch rename from EXIF/tags **or from a pattern you write**, eyedropper, set-as-folder-icon, **set as wallpaper (Fill · Fit · Span · …) or lock screen**, OCR, strip metadata, upload & copy the link (it shows when the link expires), **copy as data URI**. A batch that partly fails can be **retried for just the files that failed** |
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
@@ -101,7 +101,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
 | 🌗 **Native Win11 UI** | Redesigned **Settings**: a Win11-style category nav rail (General · Appearance · File types · Ebook/comic · Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup) with toggle switches, Common-Controls v6, a **search box that finds any setting on any page**, **light/dark theme** (follow Windows, or pick your own), 36 languages |
-| 🔤 **Screen OCR** | **Copy text (OCR)** wherever you need it: a button in the screenshot editor (or **Ctrl+T**), a button on the Quick preview toolbar, a one-click tray item, or a global hotkey that goes straight to drag-a-region-get-the-text. The words land on your clipboard *and* in an editable window, so a misread character is fixable before you paste. Small on-screen type is enlarged before it's read, which is what the in-box recognizer needs to see it at all |
+| 🔤 **Screen OCR** | **Copy text (OCR)** from the screenshot editor (**Ctrl+T**), the Quick preview toolbar, the tray or a global hotkey: drag a region and the words land on your clipboard *and* in an editable window, so a misread is fixable before you paste |
 | 💬 **Send feedback** | A box in the About card mails a suggestion, bug report or format request straight to the developer: no GitHub account, no email address required (leave one only if you want a reply). A failed send puts your text on the clipboard so nothing is lost |
 | ⌨️ **Keyboard & screen readers** | The Quick preview's caption toolbar and video controls are reachable with **Tab**, walked with the arrow keys and pressed with Enter or Space, with a visible focus ring; **Escape** returns to the content. Every category in the Settings nav rail reports its name and selected state, so Narrator and NVDA announce where you are |
 | 🔍 **True transparency** | Real premultiplied-ARGB alpha, so Explorer shows the folder background through a transparent PNG instead of a baked-in grey grid. Prefer the classic look? One switch puts the checkerboard back |
@@ -114,28 +114,28 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 ## 🧹 One install, a whole stack gone
 
-There's a checklist of little utilities people reinstall on every new Windows box: a thumbnail/codec pack, a converter, a color picker, a screenshot tool, an EXIF viewer. SageThumbs 2K is one shell extension (plus a single `st2k.exe`) that quietly does all of their jobs, with no accounts to create and no cloud service to sign into.
+One shell extension and one `st2k.exe` do the jobs of the utilities people reinstall on every new Windows box, with no account and no cloud service.
 
 | Instead of installing... | You already have it |
 |---|---|
-| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **361 formats**, crash-isolated so a corrupt file can't hang Explorer |
-| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 361 formats (reading pane and Open dialogs) |
-| A **Space-bar preview** app (QuickLook, Seer) | Tap Space for an instant full-size preview, macOS-style: video plays, code is syntax-highlighted, Markdown renders, PDFs page, SQLite databases open as tables **(new)** |
-| An **EXIF / metadata viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS, dimensions and audio tags as **sortable Explorer columns** |
-| A **batch converter** (XnConvert, IrfanView + plugins, ImageMagick) | Right-click **Convert** to ~29 formats (AVIF, JPEG XL, PSD, DDS, EXR...), batched across every core |
+| A **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **hundreds of formats**, crash-isolated |
+| A **preview-pane** add-on | A large **preview handler** in the reading pane and Open dialogs |
+| A **Space-bar preview** app (QuickLook, Seer) | **Tap Space** for an instant full-size preview |
+| An **EXIF viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS and audio tags as **sortable Explorer columns** |
+| A **batch converter** (XnConvert, IrfanView) | Right-click **Convert** to ~29 formats, batched across every core |
 | A **resizer** (PowerToys Image Resizer) | Right-click **Resize** presets and **Shrink for email** |
-| **jpegtran**, or IrfanView's lossless-rotate plugin | **Lossless JPEG rotate / flip**, zero re-encode |
-| A **color picker** (PowerToys, Just Color Picker, Instant Eyedropper) | A **system-wide eyedropper** with a 10x loupe; copies **hex, rgb(), hsl() or hsv()** (Tab switches) and keeps your **last 10 picks** a keypress away |
-| A **metadata scrubber** (ExifCleaner, BatchPurifier) | Right-click **Strip metadata** (EXIF/IPTC/XMP/GPS), keeps your ICC profile |
-| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Built-in capture: **drag a region or click a window**, an optional **countdown delay** for menus and tooltips, an annotation editor and quick-save |
-| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text (OCR)** four ways: right-click a file, **Ctrl+T** in the screenshot editor, the Quick preview toolbar, or a one-key hotkey / tray click that goes straight to drag-a-region-get-the-text; **captured tables keep their columns** (tabs, so they paste into Excel as cells) |
+| **jpegtran**, or IrfanView's lossless-rotate plugin | **Lossless JPEG rotate / flip** |
+| A **color picker** (PowerToys, Just Color Picker) | A **system-wide eyedropper** with a 10x loupe |
+| A **metadata scrubber** (ExifCleaner, BatchPurifier) | Right-click **Strip metadata**, ICC profile kept |
+| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Region or window **capture** with a delay, annotations and quick-save |
+| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text** off a file or any region of the screen; tables keep their columns |
 | An **image uploader** (ShareX, Imgur apps) | **Upload (copy link)** to a keyless host, no account |
-| A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ**, natural-sorted |
-| **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server**, so agents get an image toolbox with zero extra installs |
+| A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ** |
+| **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server** |
 
-**That's a dozen-plus tools folded into one tiny download** with no separate codec pack to install and every decoder isolated from Explorer. The thumbnailer runs only when Explorer asks it for a thumbnail; the background helper for the screenshot hotkey and Space-bar preview is opt-in, so a default install has nothing resident at all.
+**A dozen-plus tools in one download**, every decoder isolated from Explorer. Nothing stays running unless you turn on the screenshot hotkey or the Space-bar preview.
 
-<sub>Fine print, because we'd rather undersell: a few exotic formats lean on codecs already in Windows (WIC) or the bundled ImageMagick engine rather than pure Rust; SageThumbs 2K is what wires all of it into Explorer. And several tools above (PowerToys, Snipping Tool, ShareX) are free too. The point isn't that they cost money, it's that you no longer have to assemble and run a dozen of them side by side.</sub>
+<sub>Fine print: a few exotic formats lean on codecs already in Windows (WIC) or the bundled ImageMagick; SageThumbs 2K wires them into Explorer. Several tools above are free too; the point is one install instead of a dozen.</sub>
 
 ---
 
