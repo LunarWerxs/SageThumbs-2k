@@ -2,7 +2,8 @@
 
 Every strategy adds bytes the format's readers skip - ballast - and writes the zeros as a
 sparse range (NTFS FSCTL_SET_SPARSE), so a 5 GB twin of a 30 KB sample costs no disk and a
-second to make. Only the text strategy writes real bytes: a comment is not zeros.
+second to make. Two strategies write real bytes instead (`PHYSICAL`): a comment is not
+zeros, and a video grown by repeating its content repeats real packets.
 
 The strategies, and which files take which, are the gate's business (`bigfiles.py`); each one
 here is a pure "src -> dst of `size` bytes, same picture" transform. Which formats tolerate
