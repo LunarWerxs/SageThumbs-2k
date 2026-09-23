@@ -96,8 +96,12 @@ fn embed_manifest_and_icon() -> bool {
     // own FileDescription + OriginalFilename. (FileVersion / ProductVersion =
     // CARGO_PKG_VERSION so Explorer's Properties → Details shows a version for each.)
     let mut prelude = String::from("1 24 \"app.manifest\"\n");
-    let has_icon = std::path::Path::new("assets/app.ico").exists()
-        && std::fs::copy("assets/app.ico", format!("{out}/app.ico")).is_ok();
+    let has_icon = std::path::Path::new("assets/app.ico").exists();
+    // A present icon that cannot be copied is a failed write like any other: no link args,
+    // `false`, rather than both EXEs silently linking with no icon.
+    if has_icon && std::fs::copy("assets/app.ico", format!("{out}/app.ico")).is_err() {
+        return false;
+    }
     if has_icon {
         prelude.push_str("1 ICON \"app.ico\"\n");
     }

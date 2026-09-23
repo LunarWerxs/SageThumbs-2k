@@ -17,9 +17,10 @@
 //! per-extension flags we just wrote) elevated, exactly as the original did.
 //!
 //! This file is the facade / entry point. The UI is split into submodules:
-//! `win` (shared Win32 primitives), `dark` (dark mode), `sponsors` (the remote
-//! banner), `settings_dlg` (the main window), `about`, `convert`,
-//! `files_to_folder`, `rename_dlg`, `tags_to_folders`, and `eyedropper`.
+//! `settings_dlg` (the main window), `modes` (the command-line dispatch), `about`,
+//! `convert`, `files_to_folder`, `rename_dlg` and `tags_to_folders`, among others.
+//! The shared Win32 primitives (`win`), dark mode (`dark`) and the remote banner
+//! (`sponsors`) live in `st2k_appkit`, and the eyedropper in `st2k_screenshot`.
 // `not(test)`: under `cargo test` we need the console subsystem so the harness can
 // print results; the shipped binary stays a GUI ("windows") subsystem app.
 #![cfg_attr(not(test), windows_subsystem = "windows")]

@@ -77,8 +77,8 @@ pub(crate) fn next_line<R: BufRead>(r: &mut R, buf: &mut Vec<u8>) -> Option<bool
 }
 
 /// A line as text, without leading whitespace or its line ending; `None` when it is not UTF-8.
-/// The callers end the block there: what was read before a garbled line is drawn, as a
-/// truncated file's part is.
+/// The PLY body readers end their block there and draw what was read before the garbled line,
+/// as a truncated file's part is; the PLY header, ASCII STL and OBJ readers decline the file.
 fn text(buf: &[u8]) -> Option<&str> {
     Some(std::str::from_utf8(buf).ok()?.trim())
 }
@@ -243,25 +243,28 @@ fn ascii_face(line: &str, n_verts: usize) -> Option<Vec<usize>> {
 }
 
 /// Binary vertex records of the declared stride (a vertex element with a `list` property has
-/// none, and is declined rather than guessed), then faces of a count byte (3..=64) and that
-/// many 4-byte indices. A body cut short keeps what fully read.
+/// none, and is declined rather than guessed), then faces of a count byte (at least 3) and that
+/// many 4-byte indices, of which the first 64 are drawn, as the ASCII reader draws them. A body
+/// cut short keeps what fully read.
 fn read_ply_binary<R: Read>(r: &mut R, state: &PlyHeaderState) -> Option<Vec<[f32; 9]>> {
     let verts = read_ply_binary_verts(r, state)?;
     let mut res = Reservoir::new();
     let mut idx = Vec::with_capacity(64);
-    let mut raw = [0u8; 4 * 64];
+    // A count byte is at most 255, so any face fits; a polygon past 64 corners (a cylinder cap
+    // saved as one n-gon) is read whole to stay aligned, where it used to end the face block.
+    let mut raw = [0u8; 4 * 255];
     for _ in 0..state.n_faces {
         let mut cnt = [0u8; 1];
         let cnt = match r.read_exact(&mut cnt) {
             Ok(()) => usize::from(cnt[0]),
             Err(_) => break,
         };
-        if !(3..=64).contains(&cnt) || r.read_exact(&mut raw[..cnt * 4]).is_err() {
+        if cnt < 3 || r.read_exact(&mut raw[..cnt * 4]).is_err() {
             break;
         }
         idx.clear();
         idx.extend(
-            raw[..cnt * 4]
+            raw[..cnt.min(64) * 4]
                 .as_chunks::<4>()
                 .0
                 .iter()

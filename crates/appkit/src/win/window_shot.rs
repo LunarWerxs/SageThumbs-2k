@@ -137,10 +137,10 @@ pub unsafe fn pull_top_down_bgra(
     }
 }
 
-/// Trim any fully-(near)black edge rows/columns left after the DWM-bounds crop — the window's
-/// 1px outer border line reads near-black in a PrintWindow grab. Bounded to a few px per side so
-/// it can NEVER eat into real content (content is never a uniformly near-black line), and only an
-/// edge that is entirely near-black is trimmed (so a legitimately dark-but-not-black edge stays).
+/// Trim near-black border rows/columns left after the DWM-bounds crop — the window's 1px outer
+/// border line reads near-black in a PrintWindow grab. Bounded to a few px per side, and an edge
+/// line counts as border only when at least 60% of its pixels are near-black (R+G+B <= `DARK`),
+/// so a legitimately dark-but-not-black edge, whose pixels all sit above `DARK`, stays.
 fn trim_black_edges(buf: Vec<u8>, w: i32, h: i32) -> (Vec<u8>, i32, i32) {
     // R+G+B <= this = a dark border line. The window's own 1px outer border reads ~30-40; the
     // darkest real content (the nav well, SURFACE 24,24,24 = 72; the window bg 32,32,32 = 96) is
@@ -274,22 +274,25 @@ pub fn encode_gif(frames: &[RgbaImage], path: &Path, delay_ms: u16) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(file) = std::fs::File::create(path) else {
-        return false;
-    };
-    // Speed 10 (of 1..=30) balances palette quality against encode time.
-    let mut enc = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
-    if enc.set_repeat(Repeat::Infinite).is_err() {
-        return false;
-    }
-    for img in frames {
-        let delay = Delay::from_numer_denom_ms(delay_ms as u32, 1);
-        let frame = Frame::from_parts(img.clone(), 0, 0, delay);
-        if enc.encode_frame(frame).is_err() {
+    // Encode in memory FIRST, then stage and swap (as `save_png_to_path` does), so a failed
+    // encode leaves whatever the path already held and a dropped encoder cannot swallow an
+    // I/O error.
+    let mut gif = Vec::new();
+    {
+        // Speed 10 (of 1..=30) balances palette quality against encode time.
+        let mut enc = GifEncoder::new_with_speed(&mut gif, 10);
+        if enc.set_repeat(Repeat::Infinite).is_err() {
             return false;
         }
-    }
-    true
+        for img in frames {
+            let delay = Delay::from_numer_denom_ms(delay_ms as u32, 1);
+            let frame = Frame::from_parts(img.clone(), 0, 0, delay);
+            if enc.encode_frame(frame).is_err() {
+                return false;
+            }
+        }
+    } // dropping the encoder writes the trailer into `gif`
+    st2k_base::fsutil::write_atomically(path, &gif).is_ok()
 }
 
 /// BGRA (top-down) -> an opaque RGBA image (GDI bitmaps carry no alpha).
@@ -331,9 +334,9 @@ pub fn save_png_to_path(path: &std::path::Path, top_down_bgra: &[u8], w: i32, h:
 /// PNG-encode an image into bytes in memory, or `None` if the encoder fails. Callers hold
 /// different image types (`DynamicImage` in `to_png`, `RgbaImage` in the capture save paths),
 /// whose `write_to` methods are inherent rather than trait-shared, so the write itself is
-/// passed in as a closure. `pub(crate)` and living here because the capture-side module
-/// (`crate::screenshot::output`) is private to `screenshot`, so its save paths could not
-/// reach a helper defined there.
+/// passed in as a closure. `pub` and living here in appkit because `save_png_to_path` above uses
+/// it, and the `st2k_screenshot` crate's save paths (`screenshot::output`, `ocr_result`) sit
+/// above appkit, so a helper defined there could not be reached from here.
 pub fn encode_png(write: impl FnOnce(&mut Vec<u8>) -> image::ImageResult<()>) -> Option<Vec<u8>> {
     let mut png = Vec::new();
     write(&mut png).ok()?;

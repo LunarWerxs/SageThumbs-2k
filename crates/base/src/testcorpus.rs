@@ -78,7 +78,9 @@ pub fn library_sources() -> Vec<PathBuf> {
 }
 
 /// [`library_sources`] plus the app's own crates (the window kit, the viewer, the screenshot
-/// tool): every folder of Rust source in the workspace, for tests that police the whole tree.
+/// tool) and the three shims (`dll`, `dlghook`, `build-support`): every workspace crate's `src`,
+/// for tests that police the whole tree. The root `tests/` and `examples/` are not included;
+/// a caller that wants them adds them.
 pub fn all_sources() -> Vec<PathBuf> {
     let mut v = library_sources();
     v.extend(
@@ -86,6 +88,9 @@ pub fn all_sources() -> Vec<PathBuf> {
             "crates/appkit/src",
             "crates/preview/src",
             "crates/screenshot/src",
+            "crates/dll/src",
+            "crates/dlghook/src",
+            "crates/build-support/src",
         ]
         .into_iter()
         .map(|d| workspace().join(d))

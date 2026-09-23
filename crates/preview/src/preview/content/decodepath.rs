@@ -64,8 +64,9 @@ pub(in super::super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: 
 
 /// Read the file and run the budgeted decoder, converting the result to tight RGBA8.
 pub(super) fn read_and_decode(path: &str) -> Option<DecodedRgba> {
-    // Formats that stream + downscale off the file handle (OpenEXR) never go
-    // through the bounded whole-file read — a 12K render pass is past every cap.
+    // Formats that stream + downscale off the file handle (XCF, OpenEXR, FITS), and any file
+    // past the input ceiling, never go through the bounded whole-file read — a 12K render
+    // pass is past every cap.
     if let Some(img) = streamed_decode(path) {
         return Some(img);
     }

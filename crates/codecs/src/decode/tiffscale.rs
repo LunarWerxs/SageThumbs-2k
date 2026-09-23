@@ -76,8 +76,9 @@ impl Grid {
     }
 }
 
-/// The picture of a TIFF (classic or BigTIFF), at most `target_edge` on its long side, read
-/// from `r` without buffering the file. `None` for a layout this does not read.
+/// The picture of a TIFF (classic or BigTIFF), shrunk by a whole step to between `target_edge`
+/// and twice it on its long side (never past `MAX_EDGE`; a picture already smaller keeps its
+/// size), read from `r` without buffering the file. `None` for a layout this does not read.
 pub(crate) fn decode_scaled<R: Read + Seek>(r: R, target_edge: u32) -> Option<DynamicImage> {
     let mut d = Decoder::new(r).ok()?;
     let (w, h) = d.dimensions().ok()?;

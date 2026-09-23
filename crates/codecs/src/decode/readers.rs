@@ -22,7 +22,6 @@ pub(crate) fn effective_input_cap(configured_max: u64) -> u64 {
 /// MCP tools), which otherwise `std::fs::read` an arbitrarily large file wholesale
 /// before decoding. So "too big to load" means the same thing on every path.
 pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
     let len = std::fs::metadata(path)?.len();
     if len > limits::MAX_INPUT_BYTES {
         return Err(std::io::Error::new(
@@ -36,13 +35,10 @@ pub fn read_capped(path: &str) -> std::io::Result<Vec<u8>> {
     // The metadata length above is a SNAPSHOT, not a bound: `std::fs::read` (plain
     // `read_to_end`) keeps reading to EOF regardless of what `len` said, so a file that
     // grows between the check and the read (a download in progress, a log, a share) would
-    // sail past the cap. Read through `Read::take` so the ceiling is enforced by the reader
-    // itself, not by a metadata call that can already be stale by the time it returns.
-    let mut buf = Vec::new();
-    std::fs::File::open(path)?
-        .take(limits::MAX_INPUT_BYTES)
-        .read_to_end(&mut buf)?;
-    Ok(buf)
+    // sail past the cap. Read through [`read_bounded`] so the reader itself enforces the
+    // ceiling, and an input that proves to be past it is REFUSED rather than handed back
+    // truncated.
+    read_bounded(std::fs::File::open(path)?, limits::MAX_INPUT_BYTES)
 }
 
 /// Read a whole file for a **user-initiated full-fidelity verb** (Convert, Resize, Rotate,
