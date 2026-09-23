@@ -21,7 +21,6 @@
 /dist/
 # staged payload incl. the bundled ImageMagick
 /scripts/packaging/stage/
-.saydeploy/
 test/
 
 # Editor / OS / local junk (.vscode/settings.json is intentionally tracked)
