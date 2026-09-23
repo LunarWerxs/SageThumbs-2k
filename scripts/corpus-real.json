@@ -1017,6 +1017,13 @@
    "source": "apache/poi@dca7cda1  test-data/document/45690.docm"
   },
   {
+   "file": "real.dng",
+   "url": "https://raw.pixls.us/getfile.php/7317/nice/Blackmagic%20-%20Micro%20Cinema%20Camera%20-%2012bit%20(16:9).dng",
+   "sha256": "4C65B8CDA205087CFB94D8931811E53E15EB4DF538AD67C1B4A3E76C1185B277",
+   "bytes": 1228096,
+   "source": "raw.pixls.us  Blackmagic - Micro Cinema Camera - 12bit (16:9).dng (the sample fetch-raw-samples.py pins)"
+  },
+  {
    "file": "real.doc",
    "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_2006ml.doc",
    "sha256": "06B4D4EA1AD7DFB75024CCD956EBC316D8D32361E3E5C7617678A0B4A9343F72",
@@ -2235,6 +2242,7 @@
    "real.djvu"
   ],
   "dng": [
+   "real.dng",
    "sample.dng"
   ],
   "doc": [
