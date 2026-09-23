@@ -17,7 +17,7 @@ SKIP_FUNCS = {
     ("crates/codecs/src/decode/jp2/mq.rs", "cleanup_pass"),
     ("crates/codecs/src/decode/magick/encode.rs", "wait_for_magick_child"),
     ("crates/codecs/src/fuzz/surfaces.rs", "deep_session_over_the_new_parsers"),
-    ("src/verbs/actions.rs", "run_action"),
+    ("crates/actions/src/verbs/actions.rs", "run_action"),
     ("src/mcp.rs", "dispatch_tool"),
 }
 

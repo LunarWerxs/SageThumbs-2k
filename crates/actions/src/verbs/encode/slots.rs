@@ -145,14 +145,6 @@ pub(crate) fn unique_output(src: &Path, ext: &str) -> OutSlot {
     })
 }
 
-/// The staging entries left beside `out` (`<out>.<pid>-<n>.st2ktmp`, reserved by
-/// [`st2k_base::fsutil::create_staging`]). A finished or failed write leaves none — the thing
-/// every "the temp file must be cleaned up" test asserts.
-#[cfg(test)]
-pub(crate) fn staging_leftovers(out: &Path) -> Vec<PathBuf> {
-    st2k_base::fsutil::staging_leftovers(out)
-}
-
 /// Atomic write: run `write` against a same-volume staging file reserved beside `out`
 /// ([`st2k_base::fsutil::create_staging`]: a unique `.st2ktmp` name opened with `create_new`, so
 /// nothing that already exists there is ever truncated), then rename it over `out`. Owns the
@@ -160,7 +152,7 @@ pub(crate) fn staging_leftovers(out: &Path) -> Vec<PathBuf> {
 /// and a short bounded rename retry (strip.rs-style: 5×40 ms) so a transient
 /// Explorer/thumbnail-cache lock (os error 5/32) doesn't fail an otherwise good write.
 /// `write` receives the temp path and must produce the finished file there.
-pub(crate) fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+pub fn write_atomic(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     let tmp = st2k_base::fsutil::create_staging(out)
         .map_err(|e| Error::new(E_FAIL, format!("stage {}: {e}", out.display())))?;
     write(&tmp).inspect_err(|_| {

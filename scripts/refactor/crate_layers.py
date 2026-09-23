@@ -21,8 +21,8 @@ LAYERS = [
              "sqlite_prim checkerpx failmemo shellcmd upload_config upload_history testcorpus"),
     ("codecs", "container decode video vstream streamsrc isobmff mp4 mkv flv mpeg12 vcodec vp9 pdf ocr jpegtran "
                "app_image strip fuzz"),
-    ("actions", "verbs topdf propstore"),
-    ("shell", "thumbprovider previewhandler contextmenu command factory badge register typeoverlay foldermenu "
+    ("actions", "verbs topdf"),
+    ("shell", "thumbprovider previewhandler propstore contextmenu command factory badge register typeoverlay foldermenu "
               "cli doctor mcp prebuild"),
 ]
 LEVEL = {m: i for i, (_, mods) in enumerate(LAYERS) for m in mods.split()}

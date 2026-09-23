@@ -146,14 +146,14 @@ pub(in crate::preview) fn copy_shown_image(
 ) -> bool {
     if let Some((w, h, rgba)) = navigated_shown_image_rgba(path, pdf_page, anim_frame) {
         return content::generation_current(gen)
-            && sagethumbs2k_core::copy_rgba_to_clipboard(w, h, &rgba).is_ok();
+            && st2k_actions::verbs::copy_rgba_to_clipboard(w, h, &rgba).is_ok();
     }
     if pdf_page.is_some() {
         return false; // page N failed to render — copying page 1 instead would be a silent lie
     }
     // Either not navigated at all, or an animation frame that failed to extract — either way
     // the file's own full-fidelity decode (first frame, for an animation) beats nothing.
-    content::generation_current(gen) && sagethumbs2k_core::copy_to_clipboard(path).is_ok()
+    content::generation_current(gen) && st2k_actions::verbs::copy_to_clipboard(path).is_ok()
 }
 
 /// Save the image the viewer is currently SHOWING (the navigated-to PDF page / animation frame)

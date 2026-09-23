@@ -90,7 +90,7 @@ function Get-References([string]$evidence) {
         $tail = $parts[1]
         $funcParts = $tail -split '::'
         $func = $funcParts[$funcParts.Count - 1]
-        if ($path.EndsWith('.rs') -and ($path.StartsWith('tests/') -or $path.StartsWith('src/'))) {
+        if ($path.EndsWith('.rs') -and ($path.StartsWith('tests/') -or $path.StartsWith('src/') -or $path.StartsWith('crates/'))) {
             $refs += [pscustomobject]@{ Kind = 'rust'; File = $path; Func = $func }
         } elseif ($path.EndsWith('.ps1') -and $path.StartsWith('scripts/')) {
             $refs += [pscustomobject]@{ Kind = 'ps1'; File = $path; Func = $func }
@@ -164,6 +164,9 @@ foreach ($run in $rustRuns) {
         }
     } elseif ($run.File.StartsWith('src/bin/app/')) {
         $cargoArgs += @('--bin', 'SageThumbs2K')
+    } elseif ($run.File -match '^crates/(base|codecs|actions)/') {
+        # A library layer is its own crate (2026-09-23); its tests run in its own package.
+        $cargoArgs += @('-p', "sagethumbs2k-$($Matches[1])", '--lib')
     } else {
         $cargoArgs += @('-p', 'sagethumbs2k', '--lib')
     }

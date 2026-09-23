@@ -166,7 +166,7 @@ use helper::{
 use rename::rename_by_exif;
 
 pub use clipboard::{copy_data_uri_to_clipboard, copy_rgba_to_clipboard, copy_to_clipboard};
-pub(crate) use foldericon::set_folder_icon;
+pub use foldericon::set_folder_icon;
 #[cfg(test)]
 pub use wallpaper::set_wallpaper;
 pub use wallpaper::{prepare_lock_screen_in, prepare_wallpaper, prepare_wallpaper_in};

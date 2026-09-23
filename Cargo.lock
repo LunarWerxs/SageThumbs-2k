@@ -1359,9 +1359,7 @@ name = "sagethumbs2k"
 version = "3.3.0"
 dependencies = [
  "base64",
- "bcdec_rs",
  "build-support",
- "djvu-rs",
  "ed25519-dalek",
  "embed-manifest",
  "exr",
@@ -1369,10 +1367,7 @@ dependencies = [
  "h263-rs",
  "h263-rs-yuv",
  "image",
- "img-parts",
- "jxl-oxide",
  "kamadak-exif",
- "lofty",
  "moxcms",
  "nihav_codec_support",
  "nihav_core",
@@ -1380,26 +1375,39 @@ dependencies = [
  "oxideav-mpeg12video",
  "percent-encoding",
  "pulldown-cmark",
- "rars",
- "resvg",
- "roxmltree",
- "ruzstd",
+ "sagethumbs2k-actions",
  "sagethumbs2k-base",
  "sagethumbs2k-codecs",
  "serde_json",
- "sevenz-rust2",
- "tiff",
  "toml",
  "vp9dec",
- "webp",
  "webview2-com",
  "windows",
  "windows-core",
- "windows-future",
  "windows-implement",
  "windows-registry",
  "zip",
- "zune-jpeg",
+]
+
+[[package]]
+name = "sagethumbs2k-actions"
+version = "3.3.0"
+dependencies = [
+ "base64",
+ "exr",
+ "flate2",
+ "image",
+ "img-parts",
+ "kamadak-exif",
+ "lofty",
+ "sagethumbs2k-base",
+ "sagethumbs2k-codecs",
+ "serde_json",
+ "tiff",
+ "webp",
+ "windows",
+ "windows-registry",
+ "zip",
 ]
 
 [[package]]
@@ -1407,7 +1415,6 @@ name = "sagethumbs2k-base"
 version = "3.3.0"
 dependencies = [
  "build-support",
- "image",
  "serde_json",
  "windows",
  "windows-registry",

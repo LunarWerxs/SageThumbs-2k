@@ -161,24 +161,35 @@ pub(in super::super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) 
             return;
         }
         let shown = decode_and_post_static(hwnd, gen, &path, bytes.clone());
-        // A Photoshop document saved without its baked preview ("Image Previews: Never Save")
-        // draws nothing at the first stage, and is the one that most needs the composite, so
-        // it is chased from nothing rather than left on the card (issue #46). Past the input
-        // ceiling the preview read declines such a document outright, so its header is read
-        // on its own: it is all the chase needs.
-        let bytes = bytes.or_else(|| photoshop_header(&path).map(std::sync::Arc::new));
-        let shown = shown.or_else(|| {
-            let psd = bytes.as_ref().is_some_and(|b| b.starts_with(b"8BPS"));
-            psd.then_some((0, 0))
-        });
         // The fast preview is now on screen. For PSD/PSB that preview is Photoshop's small
         // baked-in thumbnail, so chase it with the real composite and post a SECOND result.
         // Two-stage on purpose: the composite can take seconds, and paying that up front
         // would trade an instant preview for a long blank window.
-        if let (Some(bytes), Some(shown)) = (bytes, shown) {
+        if let Some((bytes, shown)) = sharpen_start(&path, bytes, shown) {
             spawn_sharpen(hwnd, path, bytes, shown, gen);
         }
     });
+}
+
+/// The file's bytes as the first stage read them, shared with the sharpen pass.
+type SharedBytes = std::sync::Arc<Vec<u8>>;
+
+/// Where the composite chase starts from: the bytes the first stage read and the size it drew,
+/// or `None` when there is nothing to chase.
+///
+/// A Photoshop document saved without its baked preview ("Image Previews: Never Save") draws
+/// nothing at the first stage, and is the one that most needs the composite, so it is chased
+/// from nothing rather than left on the card (issue #46). Past the input ceiling the preview
+/// read declines such a document outright, so its header is read on its own: it is all the
+/// chase needs.
+fn sharpen_start(
+    path: &str,
+    bytes: Option<SharedBytes>,
+    shown: Option<(i32, i32)>,
+) -> Option<(SharedBytes, (i32, i32))> {
+    let bytes = bytes.or_else(|| photoshop_header(path).map(std::sync::Arc::new))?;
+    let shown = shown.or_else(|| bytes.starts_with(b"8BPS").then_some((0, 0)))?;
+    Some((bytes, shown))
 }
 
 /// Decode `path` at FULL resolution and post it, skipping the codec-scaled shortcut.

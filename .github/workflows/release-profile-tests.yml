@@ -121,9 +121,11 @@ jobs:
       # into the next Cargo invocation (2026-09-19 audit F09): `cargo test` with the default set
       # rebuilt the EXE without webp-lossy/html-preview/hdr-capture, so the HTML-route and HDR
       # test cases vanished from the inventory and every `CARGO_BIN_EXE_*` integration test ran
-      # against a binary nobody ships. `-p sagethumbs2k` keeps this to the core+EXE package; the
-      # slim DLL above is not a test target and is not rebuilt; the dialog hook has its own step.
+      # against a binary nobody ships. The four library packages (the core+EXE package and the
+      # base / codecs / actions layers it is built from) are named, and the features are
+      # qualified by the package that has them; the slim DLL above is not a test target and is
+      # not rebuilt; the dialog hook has its own step.
       - name: Unit and integration tests (release profile, shipped EXE features)
-        run: cargo test --release --locked -p sagethumbs2k --lib --tests --features webp-lossy,html-preview,hdr-capture
+        run: cargo test --release --locked -p sagethumbs2k -p sagethumbs2k-base -p sagethumbs2k-codecs -p sagethumbs2k-actions --lib --tests --features sagethumbs2k/webp-lossy,sagethumbs2k/html-preview,sagethumbs2k/hdr-capture
       - name: Dialog hook tests (release profile)
         run: cargo test --release --locked -p sagethumbs2k-dlghook

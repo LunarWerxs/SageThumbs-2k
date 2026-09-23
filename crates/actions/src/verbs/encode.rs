@@ -55,11 +55,10 @@ pub use transform::transform_file;
 use variants::*;
 
 pub use compress::compress_to_size;
-#[cfg(test)]
-pub(crate) use slots::staging_leftovers;
+pub use slots::write_atomic;
 pub(crate) use slots::{
     predict_unique_suffix, preserve_src_time, reserve, reserve_unique_suffix, unique_output,
-    write_atomic, OutSlot,
+    OutSlot,
 };
 pub use watermark::{Corner, Watermark};
 

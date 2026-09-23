@@ -31,8 +31,8 @@ COMMANDS = {
 # Each area's module file, in every layout the tree has had: the first that exists is edited, so
 # the same script measures a commit from before the crate split and one after it.
 AREAS = {
-    "decode": ["crates/codecs/src/decode.rs", "crates/codecs/src/decode.rs", "crates/codecs/src/decode/mod.rs"],
-    "container": ["crates/codecs/src/container/mod.rs", "crates/codecs/src/container/mod.rs", "crates/codecs/src/container.rs"],
+    "decode": ["crates/codecs/src/decode.rs", "src/decode.rs", "src/decode/mod.rs"],
+    "container": ["crates/codecs/src/container/mod.rs", "src/container/mod.rs", "src/container.rs"],
     "verbs": ["crates/actions/src/verbs.rs", "src/verbs.rs", "src/verbs/mod.rs"],
     "settings": ["crates/base/src/settings.rs", "src/settings.rs", "src/settings/mod.rs"],
     "app (bin only)": ["src/bin/app/main.rs"],

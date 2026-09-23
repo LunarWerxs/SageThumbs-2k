@@ -1,7 +1,7 @@
 //! The DLL's "Sort into folders ▸ By audio tag" verb on an audio selection
 //! (`--tags-to-folders <listfile>`). Dialog: destination, a `$artist - $album`
 //! folder-name template, and copy-vs-move. The sort engine is in the lib
-//! (`sagethumbs2k_core::tags_to_folders`).
+//! (`st2k_actions::verbs::tags_to_folders`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -263,7 +263,7 @@ unsafe fn on_command_ok(hwnd: HWND) {
         CID_TTF_PROGRESS,
         WM_TTF_DONE,
         move || {
-            let (done, skipped) = sagethumbs2k_core::tags_to_folders(
+            let (done, skipped) = st2k_actions::verbs::tags_to_folders(
                 &files,
                 std::path::Path::new(&dest),
                 &template,

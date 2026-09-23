@@ -128,7 +128,7 @@ pub(super) fn produce_convert_job(
                 watermark: watermark.cloned(),
             };
             Some(
-                sagethumbs2k_core::convert_file_opts_named(f, opts, dir, tag)
+                st2k_actions::verbs::convert_file_opts_named(f, opts, dir, tag)
                     .map_err(|e| e.message()),
             )
         }
@@ -136,7 +136,7 @@ pub(super) fn produce_convert_job(
         // is a PDF page-layout setting (Settings > Saving), not a pixel resize.
         CvTarget::Pdf if pdf_already_written => None,
         CvTarget::Pdf => Some(
-            sagethumbs2k_core::convert_image_to_pdf_in(f, dir, quality).map_err(|e| e.message()),
+            st2k_actions::verbs::convert_image_to_pdf_in(f, dir, quality).map_err(|e| e.message()),
         ),
         // Exotic target written by the bundled ImageMagick (reserved name).
         CvTarget::Magick(ext) => {
@@ -145,7 +145,7 @@ pub(super) fn produce_convert_job(
             let q = matches!(ext, "avif" | "jxl")
                 .then(|| MAGICK_QUALITY.load(Ordering::Relaxed).clamp(1, 100) as u8);
             Some(
-                sagethumbs2k_core::convert_to_magick_in_named(
+                st2k_actions::verbs::convert_to_magick_in_named(
                     f, dir, ext, resize, q, tag, watermark,
                 )
                 .map_err(|e| e.message()),

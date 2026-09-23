@@ -7,35 +7,110 @@ publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 description = "SageThumbs 2K library, codecs layer"
 
+# cargo-machete reads crate NAMES, so it misses `kamadak-exif` (imported as `exif`) and
+# `windows-core` (named only by the `#[implement]` macro's expansion). Both are used.
+[package.metadata.cargo-machete]
+ignored = ["kamadak-exif", "windows-core"]
+
 [lib]
 name = "st2k_codecs"
 
 [dependencies]
 base64 = "0.23"
+# DDS block decoding (BC1–BC7, including BC6H HDR). `image`'s own DDS decoder — and
+# Windows' WIC DDS codec — stop at DXT1/3/5, and ImageMagick can't read BC4/BC5-signed/
+# BC6H at all, so modern game textures needed this. MIT, `no_std`, ZERO dependencies,
+# safe Rust, and fuzzed against the original C `bcdec` for identical output. The
+# container half (headers, DXGI dispatch, bomb guards) is ours in `decode/dds.rs`.
 bcdec_rs = "0.2"
+# DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
+# fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
+# lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support.
+# `std` is REQUIRED: the render pipeline needs it at runtime (a no_std build compiles but
+# silently decodes nothing). It necessarily brings decode-side `png 0.17` + `zune-jpeg`
+# (the app's image stack uses `png 0.18`, so deny.toml documents that unavoidable duplicate).
+# Historically `std` ALSO dragged in the writer stack — `zip`/`zopfli` + `jpeg-encoder`
+# (PDF/TIFF/EPUB/image EXPORT we never call) — and because Cargo unifies features, its
+# `zip[deflate]` even forced `zopfli` back into OUR
+# deliberately-zopfli-free `zip` below. Fixed upstream in 0.26.0 (issue #509): `std` is now
+# DECODE-ONLY; the writer deps live under `pdf`/`epub`/`cli`, which we don't enable. So the
+# bump to 0.26 sheds `jpeg-encoder` + `zopfli` (+ its runtime `bumpalo`) from the DLL and
+# restores our C-free/no-zopfli `zip`. Decode-only otherwise (no image/tiff/epub/jpeg
+# export, no OCR/async/cli/parallel/serde/mmap).
 djvu-rs = { version = "0.35.0", default-features = false, features = ["std"] }
 kamadak-exif = "0.6"
 exr = { version = "=1.74.2", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 image = { workspace = true }
+# Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
+# Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
 img-parts = "0.4"
+# JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
+# jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
+# it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
+# this tier jxl silently fails to thumbnail on a clean install. The `image` feature
+# yields a DynamicImage via the ImageDecoder trait (gray/RGB/alpha, 8/16-bit, float).
+# `default-features = false` DROPS the `rayon` feature on purpose: rayon would land a
+# global thread pool inside explorer.exe (the same reason parallel.rs hand-rolls its
+# pool). The optional `lcms2` (a C ICC binding) stays off — thumbnails don't need CMS.
+# NOTE: jxl-oxide is Rust edition 2024 and needs Rust 1.85; the workspace's effective
+# MSRV is higher because of sevenz-rust2 (see `rust-version` above).
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+# Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
+# Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
 lofty = "0.25"
 moxcms = "0.8"
 percent-encoding = "2"
+# RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
+# proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
+# real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),
+# so `.cbr` now works in the DEFAULT build and there's no longer a non-permissive piece
+# anywhere. Reads from memory, so no `tempfile` spill is needed either.
+#
+# rars 0.6.0 made `rayon` a MANDATORY (non-optional) dependency of its own Cargo.toml,
+# so there is no longer a `parallel` feature to turn off: rayon links into every crate
+# that pulls `rars`, including the shell DLL (`cargo tree -p sagethumbs2k-dll -i rayon`
+# confirms it). No pool is actually spun up today: `container/rar.rs::extract_n` calls
+# the sequential `ArchiveReader::extract_to`, never `extract_to_parallel_buffered` (the
+# only rars API that touches rayon); a guard test in rar.rs keeps it that way. The
+# exposure is binary size plus a future call-site regression, not a live pool inside
+# Explorer. Revisit (pin/patch) if upstream ships a release with `rayon` optional again.
 rars = "0.9.4"
+# Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
+# default-features off: we render with `usvg::Options::default()` and never load a
+# fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
+# the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
 resvg = { version = "0.48", default-features = false }
+# The XML parser resvg already brings in, named directly so the SVG metadata strip can ask it
+# "is the rewrite still well-formed?" before a file is replaced (2026-09-19 audit F02).
 roxmltree = "0.21"
+# Autodesk Fusion 360 `.f3d` stores its preview PNG as a zstd-compressed ZIP entry,
+# which the `zip` crate can't inflate without the zstd C lib. `ruzstd` is a pure-Rust,
+# decode-only zstd implementation (MIT OR Apache-2.0) — keeps the build C-free.
 ruzstd = "0.9"
 serde_json = "1"
+# 7-Zip (cb7 + generic .7z) — pure-Rust. `default-features = false` is LOAD-BEARING:
+# 0.21's default set pulls `bzip2` (C) and the LZMA *encoder*; with it off we get
+# only the pure-Rust LZMA/LZMA2/BCJ/Delta DECODE path (`lzma-rust2` is a non-optional
+# dep), keeping the build C-free (no bzip2/zstd/brotli/lz4). 0.21 (from 0.13) is the
+# version that BOUNDS the header's declared entry count (`bounded_count`), so a crafted
+# `.7z` can no longer abort us with a capacity-overflow allocation during header parse.
 sevenz-rust2 = { version = "0.23", default-features = false }
+# A TIFF read a strip at a time (BigTIFF past the input ceiling, which WIC cannot open);
+# the same crate and version `image` already builds.
 tiff = { version = "0.11", default-features = false }
 windows = { workspace = true }
 # The `#[implement]` macro expands to `windows_core::` paths.
 windows-core = "0.62"
+# WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
+# renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
 windows-future = "0.3"
 windows-implement = "0.60"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+# CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
+# → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
+# `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
+# color-manage CMYK→sRGB via moxcms above. Re-exports `zune_core` (ColorSpace/DecoderOptions).
 zune-jpeg = "0.5"
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 

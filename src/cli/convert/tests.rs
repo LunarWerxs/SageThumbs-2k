@@ -201,7 +201,7 @@ fn a_failed_thumbnail_write_leaves_an_existing_output_intact() {
         "a failed write must not touch the existing destination"
     );
     assert!(
-        verbs::staging_leftovers(&out).is_empty(),
+        st2k_base::fsutil::staging_leftovers(&out).is_empty(),
         "the temp file must be cleaned up"
     );
 

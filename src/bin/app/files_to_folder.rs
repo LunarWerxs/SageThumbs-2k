@@ -1,7 +1,7 @@
 //! A name-prompt dialog for the DLL's "Files to folder" verb on a multi-file
 //! selection (`--files-to-folder <listfile>`). Single-file selections are handled
 //! in the DLL with no prompt. The actual create-folder-and-move lives in the lib
-//! (`sagethumbs2k_core::files_to_folder`), shared with the DLL's single-file path.
+//! (`st2k_actions::verbs::files_to_folder`), shared with the DLL's single-file path.
 
 use core::ffi::c_void;
 use std::path::PathBuf;
@@ -181,7 +181,7 @@ unsafe fn start_move(hwnd: HWND) {
         CID_F2F_PROGRESS,
         WM_F2F_DONE,
         move || {
-            let result = sagethumbs2k_core::files_to_folder(&files, &name);
+            let result = st2k_actions::verbs::files_to_folder(&files, &name);
             *F2F_RESULT.lock().unwrap() = Some(result);
         },
     );

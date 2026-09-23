@@ -22,7 +22,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use sagethumbs2k_core::FileOutcome;
+use st2k_actions::verbs::FileOutcome;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;

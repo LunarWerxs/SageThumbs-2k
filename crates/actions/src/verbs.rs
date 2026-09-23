@@ -41,7 +41,7 @@ pub use menu::{
 };
 // The leaf COUNT alone, for the QueryContextMenu id budget: cheaper than `leaves().len()`,
 // which allocated the whole ~46-entry Vec on every right-click just to read its length.
-pub(crate) use menu::leaf_count;
+pub use menu::leaf_count;
 
 // Encode / convert / resize primitives and descriptors.
 pub(crate) use encode::flatten_onto_white;
@@ -78,16 +78,14 @@ pub use actions::{rename_by_pattern, rename_pattern_preview};
 // Crate-internal helpers (module-private in the monolith). Left ungated on purpose:
 // the routed Wallpaper/SetFolderIcon verbs in `cli::actions` call all three, so a
 // normal (non-test) lib build reaches them too.
-pub(crate) use actions::{prepare_lock_screen_in, prepare_wallpaper_in, set_folder_icon};
+pub use actions::{prepare_lock_screen_in, prepare_wallpaper_in, set_folder_icon};
 // `#[cfg(test)]` so these don't warn as unused in a normal (non-test) lib build —
 // they're reached only via the in-crate `tests` module below.
 #[cfg(test)]
 pub(crate) use actions::{rename_one, set_wallpaper, tag_base};
 // `write_atomic` is reachable in normal builds too: `topdf` writes through it.
 #[allow(unused_imports)]
-#[cfg(test)]
-pub(crate) use encode::staging_leftovers;
-pub(crate) use encode::write_atomic;
+pub use encode::write_atomic;
 #[cfg(test)]
 pub(crate) use encode::{apply_resize, convert_to_magick};
 #[cfg(test)]

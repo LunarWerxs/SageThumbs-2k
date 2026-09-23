@@ -244,9 +244,10 @@ fn retry_inputs(rest: &[String], given: &[String]) -> Result<Vec<String>, String
     }
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("--retry-from: cannot read {path}: {e}"))?;
-    let inputs = sagethumbs2k_core::BatchReport::failed_inputs_from_json(&text).map_err(|why| {
-        format!("--retry-from: {path} is {why}; it has to be a report `batch --json` wrote")
-    })?;
+    let inputs =
+        st2k_actions::verbs::BatchReport::failed_inputs_from_json(&text).map_err(|why| {
+            format!("--retry-from: {path} is {why}; it has to be a report `batch --json` wrote")
+        })?;
     if inputs.is_empty() {
         return Err(format!(
             "--retry-from: {path} lists no failed files, nothing to retry"

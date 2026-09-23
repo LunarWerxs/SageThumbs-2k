@@ -16,7 +16,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows_implement::implement;
 
-use crate::verbs;
+use st2k_actions::verbs;
 use st2k_base::host::alloc_pwstr;
 use st2k_base::{safety, settings};
 

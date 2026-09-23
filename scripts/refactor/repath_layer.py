@@ -20,7 +20,9 @@ TEXT = {".ps1", ".psm1", ".py", ".mjs", ".js", ".yml", ".yaml", ".json", ".toml"
 SKIP_DIRS = {"vendor", "stage", "__pycache__", "node_modules", "target", ".git"}
 # History, which records the paths as they were when it was written, and these instruments.
 SKIP_FILES = {"docs/ROADMAP.md", "docs/CHANGELOG.md", "scripts/packaging/size-budget.json",
-              "scripts/refactor/repath_layer.py", "scripts/refactor/lift_layer.py"}
+              "scripts/refactor/repath_layer.py", "scripts/refactor/lift_layer.py",
+              # names both layouts on purpose, to measure a commit from either side of the split
+              "scripts/refactor/rebuild_cost.py"}
 
 
 def candidates():

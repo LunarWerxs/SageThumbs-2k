@@ -117,8 +117,11 @@ def main():
                 for f in files:
                     lines = f.read_text(encoding="utf-8").split("\n")
                     for i, l in enumerate(lines):
+                        name = named.group(1)
                         if re.match(rf"\s*pub\s*\([^)]*\)\s+(?:(?:const|async|unsafe)\s+)*"
-                                    rf"(?:fn|struct|enum|union|const|static|type|trait|mod)\s+{named.group(1)}\b", l):
+                                    rf"(?:fn|struct|enum|union|const|static|type|trait|mod)\s+{name}\b", l) \
+                                or re.match(rf"\s*pub\s*\([^)]*\)\s+use\b[^;]*\b{name}\b[^;]*;", l):
+                            # the item itself, or a crate-private re-export it passes through
                             edits[str(f.relative_to(ROOT))].add(i)
             elif code in ("private_interfaces", "private_bounds", "E0364", "E0365"):
                 for ch in msg.get("children", []):

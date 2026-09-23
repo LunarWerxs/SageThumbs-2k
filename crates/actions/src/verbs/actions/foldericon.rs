@@ -7,7 +7,7 @@ use super::*;
 /// hidden square `.ico`, a `desktop.ini` pointing at it, mark the folder
 /// customized, and ask the shell to refresh. Mirrors how Explorer's own
 /// "Customize ▸ Change Icon" persists a folder icon.
-pub(crate) fn set_folder_icon(image_path: &str) -> Result<()> {
+pub fn set_folder_icon(image_path: &str) -> Result<()> {
     let src = Path::new(image_path);
     let dir = src
         .parent()

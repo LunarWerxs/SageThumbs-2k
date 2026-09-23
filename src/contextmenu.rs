@@ -73,7 +73,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_implement::implement;
 
-use crate::verbs;
+use st2k_actions::verbs;
 use st2k_base::{safety, settings};
 
 mod com;

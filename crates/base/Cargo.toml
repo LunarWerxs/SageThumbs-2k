@@ -12,7 +12,6 @@ build = "build.rs"
 name = "st2k_base"
 
 [dependencies]
-image = { workspace = true }
 serde_json = "1"
 windows = { workspace = true }
 windows-registry = "0.6"

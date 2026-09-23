@@ -282,7 +282,7 @@ fn compute_preview(
             return None;
         }
         let preview =
-            sagethumbs2k_core::rename_pattern_preview(p, (i + 1) as u32, pattern, find, replace);
+            st2k_actions::verbs::rename_pattern_preview(p, (i + 1) as u32, pattern, find, replace);
         match preview {
             Ok(new_name) => {
                 if rows.len() < PREVIEW_ROWS {
@@ -381,7 +381,7 @@ unsafe fn start_rename(hwnd: HWND) {
 
     let raw = hwnd.0 as usize;
     std::thread::spawn(move || {
-        let r = sagethumbs2k_core::rename_by_pattern(&files, &pattern, &find, &replace);
+        let r = st2k_actions::verbs::rename_by_pattern(&files, &pattern, &find, &replace);
         *RN_RESULT.lock().unwrap() = Some((r.attempted, r.done, r.note.clone()));
         let _ = PostMessageW(
             Some(HWND(raw as *mut c_void)),

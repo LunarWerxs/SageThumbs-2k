@@ -9,7 +9,7 @@
 
 use windows::Win32::Foundation::HINSTANCE;
 
-use sagethumbs2k_core::{run_action, Transform, VerbAction};
+use st2k_actions::{verbs::run_action, verbs::Transform, verbs::VerbAction};
 use st2k_base::settings;
 
 /// The curated actions offered in the Settings "Custom action" dropdown, in display order,

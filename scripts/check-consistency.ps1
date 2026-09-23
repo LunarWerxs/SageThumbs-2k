@@ -36,8 +36,10 @@ $tracked = @{}
 & git -C $root ls-files | ForEach-Object { $tracked[$_] = $true }
 
 # --- 1) referenced assets must be git-tracked ---------------------------------
-# include_bytes!/include_str! - path is relative to the .rs file that references it.
-Get-ChildItem (Join-Path $root 'src') -Recurse -Filter *.rs | ForEach-Object {
+# include_bytes!/include_str! - path is relative to the .rs file that references it. Every library
+# crate's sources: the core's src/ and each layer's crates/<layer>/src (split 2026-09-23).
+$rustRoots = @('src', 'crates/base/src', 'crates/codecs/src', 'crates/actions/src') | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ }
+Get-ChildItem $rustRoots -Recurse -Filter *.rs | ForEach-Object {
   $dir = $_.DirectoryName; $name = $_.Name
   foreach ($m in [regex]::Matches((Get-Content $_.FullName -Raw), 'include_(?:bytes|str)!\(\s*"([^"]+)"')) {
     $abs = [System.IO.Path]::GetFullPath((Join-Path $dir $m.Groups[1].Value))

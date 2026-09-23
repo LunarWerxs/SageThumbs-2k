@@ -389,7 +389,7 @@ fn exact_unknown_conversion_rejects_without_replacing_destination() {
 
     assert!(convert_to(input.to_str().unwrap(), &output, 90, None, Resize::None).is_err());
     assert_eq!(std::fs::read(&output).unwrap(), b"original destination");
-    assert!(staging_leftovers(&output).is_empty());
+    assert!(st2k_base::fsutil::staging_leftovers(&output).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -421,7 +421,7 @@ fn exact_psd_and_magick_backed_edits_have_psd_signatures() {
     std::fs::write(&psd, b"old destination").unwrap();
     convert_to(input.to_str().unwrap(), &psd, 90, None, Resize::None).unwrap();
     assert!(std::fs::read(&psd).unwrap().starts_with(b"8BPS"));
-    assert!(staging_leftovers(&psd).is_empty());
+    assert!(st2k_base::fsutil::staging_leftovers(&psd).is_empty());
 
     let edited = transform_file(psd.to_str().unwrap(), Transform::Right90).unwrap();
     assert_ext_and_magic(&edited, "psd", b"8BPS");

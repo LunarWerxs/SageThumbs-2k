@@ -15,7 +15,7 @@ CFG = re.compile(r"^#\[cfg\(test\)\]\s*$")
 MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+\s*\{")
 
 rows = []
-for base in ("src", "crates/dll", "tests"):
+for base in ("src", "crates", "tests"):
     for dp, dn, fn in os.walk(os.path.join(ROOT, base)):
         if "vendor" in dp.replace("\\", "/").split("/"):
             continue

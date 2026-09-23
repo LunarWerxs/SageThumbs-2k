@@ -19,7 +19,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sagethumbs2k_core::{resize_file, Resize};
+use st2k_actions::{verbs::resize_file, verbs::Resize};
 use st2k_base::parallel;
 
 /// Enough files to expose a 1-in-100 race, small enough to stay a fast test.

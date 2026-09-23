@@ -1301,3 +1301,41 @@ and mask the very thing being measured.
 and the developer box has a fatter one installed, "it works here" is not evidence. Test against
 the payload, not the machine, and give every such lookup a switch that turns the fallback off.
 
+
+## The library is four crates, and a path names the crate that OWNS the item (2026-09-23)
+
+The library was one crate of ~100k lines, so any edit re-analysed all of it and rebuilt one test
+binary holding every module's tests. It is now `crates/base` (`st2k_base`), `crates/codecs`
+(`st2k_codecs`), `crates/actions` (`st2k_actions`) and the core crate (`sagethumbs2k_core`: the COM
+surfaces, the CLI/MCP, `lib.rs`), each naming only the ones below it. What to know when you touch
+it:
+
+- **Name the owner, never a re-export.** `st2k_base::settings::PdfPage`, not a copy re-exported
+  through the core. The split deleted every such shim; adding one back makes two paths to one item
+  and a rename that only updates one of them.
+- **A crate's `#[cfg(test)]` items do not exist for any other crate** (the rule the section above
+  found for the app binary, now true between the layers too). A test fixture or seam an upper
+  crate's tests need sits behind that crate's **`testkit`** feature
+  (`#[cfg(any(test, feature = "testkit"))]`), which only the upper crates' `[dev-dependencies]`
+  turn on. Keep that surface small: every testkit item is compiled into every test build of the
+  workspace, and outside `cfg(test)` clippy's `unwrap_used` applies, so a testkit fixture carries
+  its own `#[allow]` with a reason.
+- **An upward reference is now a build error, not a style problem**: a dependency cycle between
+  crates is impossible to write. For the modules still in the core crate,
+  `python scripts/refactor/crate_layers.py .` checks the same rule.
+- **Test the whole workspace, not the core package.** `cargo test -p sagethumbs2k` runs only the
+  core's tests now; a bare `cargo test` at the root runs every default member, and every layer is
+  one. A job that must name packages names all four (see `release-profile-tests.yml`).
+- **A relative `include_bytes!` / `include_str!` is relative to the FILE**, so moving a file into
+  `crates/<layer>/src` moves every asset path two levels further away, and
+  `env!("CARGO_MANIFEST_DIR")` now names the layer's folder, not the repo. Tests that read repo
+  files go through `st2k_base::testcorpus::workspace()` / `library_sources()`, or spell the repo
+  root as `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")`.
+- **A `#[macro_export]` macro whose only reason was "these two private modules cannot name each
+  other's fn" is a plain `pub fn` now** (`magick_png_bytes`, `push_cf_dib_header`,
+  `top_down_bmi`): a crate boundary is exactly what a `pub fn` crosses.
+
+The instruments are banked in `scripts/refactor/`: `lift_layer.py` (moves a layer, repoints every
+path, fixes include paths), `widen_pub.py` (makes `pub` exactly what the compiler says the layers
+above use), `private_mods.py` (keeps private every module nothing outside names) and
+`repath_layer.py` (the scripts, workflows and docs that spell the old `src/...` paths).

@@ -38,23 +38,13 @@ pub mod checker {
 }
 pub mod prebuild;
 mod previewhandler;
+// The Details-pane property handler (`IPropertyStore`), one of the COM surfaces.
 mod propstore;
 pub mod register;
 mod thumbprovider;
-mod topdf;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 #[doc(hidden)]
 pub mod typeoverlay;
-mod verbs;
-
-pub use topdf::{combine_to_pdf, combine_to_pdf_paged};
-pub use verbs::{
-    convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in,
-    convert_to_magick_in_named, copy_rgba_to_clipboard, copy_to_clipboard, default_menu_tokens,
-    files_to_folder, rename_by_pattern, rename_pattern_preview, resize_file, run_action,
-    tags_to_folders, BatchReport, Combined, ConvertOpts, Corner, FileOutcome, FileStatus,
-    OmitCause, Omitted, OnOmit, Resize, Target, Transform, VerbAction, Watermark, MENU_SEP_TOKEN,
-};
 
 use core::ffi::c_void;
 use st2k_base::{guids, host, safety};
