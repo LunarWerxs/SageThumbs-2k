@@ -53,6 +53,10 @@ def args():
     ap.add_argument("--axis", choices=["size", "pixels", "all"], default="all")
     # Where report.md and results.json go (a proof run against another build keeps its own).
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "tmp", "bigfiles"))
+    # The Explorer/pane driver (tests/big_files.rs) loads the sagethumbs2k.dll one folder above
+    # itself, so a copy placed at <dir>/deps/ beside <dir>/sagethumbs2k.dll drives THAT build:
+    # how the gate is run against a released DLL to prove it fails where that release failed.
+    ap.add_argument("--test-exe", default="")
     return ap.parse_args()
 
 
@@ -170,7 +174,7 @@ def verdicts(case, runs):
 
 def main():
     a = args()
-    test_exe = build() if a.build else find_test_exe()
+    test_exe = a.test_exe or (build() if a.build else find_test_exe())
     if not test_exe:
         raise SystemExit("no big_files test executable: run with --build")
     manifest = json.load(open(MANIFEST, encoding="utf-8")) if os.path.isfile(MANIFEST) else {}

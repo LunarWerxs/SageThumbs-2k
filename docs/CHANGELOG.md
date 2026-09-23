@@ -73,6 +73,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   says both. A very tall PDF page no longer asks for a gigantic picture.
 - **DDS textures whose sides are not powers of two** now take their smaller mip levels from
   the right place in the file.
+- **JPEG 2000 images that do not start at the corner of their canvas** (an image offset, which
+  some scanners and mapping tools write) drew as noise; they now draw the picture.
+- **Older Excel workbooks (`.xls`) show their preview in the preview pane** instead of an empty
+  pane, and **HEIF and AVIF image sequences** read only their first picture for a thumbnail
+  instead of every frame, which took long enough to leave the preview pane blank.
 - **Closing Settings while a sync upload is finishing** hides the window at once instead of
   leaving it frozen for a few seconds, and the welcome window's "Get started" no longer freezes
   while Explorer restarts to show file-type badges.
