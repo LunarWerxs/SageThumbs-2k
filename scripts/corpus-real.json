@@ -1744,6 +1744,137 @@
    "file": "real.mp2v",
    "alias_of": "real-es.m2v",
    "why": "The Windows/DVD-tool spelling of an MPEG-2 video elementary stream - the same bytes as .m2v, named to say the codec is MPEG-2 rather than MPEG-1"
+  },
+  {
+   "file": "real.vssx",
+   "url": "https://raw.githubusercontent.com/bhdicaire/visioStencils/e7ebc3ee33281f767852725ee8eaf8754f4bd69a/Stencils/Computer%20Racks/OpenGear%20OM2248.vssx",
+   "sha256": "6530C661D92238CF044F88C7BC6EDB54F2B8ADBF002B1C0F2B2E385AF3D99559",
+   "bytes": 131565,
+   "source": "bhdicaire/visioStencils@e7ebc3ee  Stencils/Computer Racks/OpenGear OM2248.vssx"
+  },
+  {
+   "file": "real.vstx",
+   "url": "https://raw.githubusercontent.com/bhdicaire/visioStencils/e7ebc3ee33281f767852725ee8eaf8754f4bd69a/Documents/Samples/Expanded%20block%20timeline%20v2024.vstx",
+   "sha256": "4019A045B9119D9224CD0298CD3AD7A63225051401929AC2923FAA8CF3228129",
+   "bytes": 25579,
+   "source": "bhdicaire/visioStencils@e7ebc3ee  Documents/Samples/Expanded block timeline v2024.vstx"
+  },
+  {
+   "file": "real.xmind",
+   "url": "https://raw.githubusercontent.com/tobyqin/xmind2testlink/e0692a07c7cdd1458dfff33f4f82db642b1b9aea/tests/zen%20test%20v1.xmind",
+   "sha256": "8AA282227F58DADDEF588B30C256964A274C29235CF867547073881F8BF37692",
+   "bytes": 40779,
+   "source": "tobyqin/xmind2testlink@e0692a07  tests/zen test v1.xmind"
+  },
+  {
+   "file": "real-xmind8.xmind",
+   "url": "https://raw.githubusercontent.com/tobyqin/xmind2testlink/e0692a07c7cdd1458dfff33f4f82db642b1b9aea/tests/Test%20cases%20by%20xmind%20v1.xmind",
+   "sha256": "E1F0605FF88EAF47A06923637555CEC06C861EB4086E69EE570E713D9A48D556",
+   "bytes": 143572,
+   "source": "tobyqin/xmind2testlink@e0692a07  tests/Test cases by xmind v1.xmind"
+  },
+  {
+   "file": "real.avifs",
+   "url": "https://raw.githubusercontent.com/Link-U/avif-sample-images/c666a368b73006246694919b5dbcc078317af6cc/star-8bpc.avifs",
+   "sha256": "AE35B161DE67A5AFEB195EE401F369C34990F0FF8662F70AB4065BC6931F0A66",
+   "bytes": 15679,
+   "source": "Link-U/avif-sample-images@c666a368  star-8bpc.avifs"
+  },
+  {
+   "file": "real.six",
+   "url": "https://raw.githubusercontent.com/saitoha/libsixel/a0151d940af8bb0733dac77248bd55ae86949e56/images/snake.six",
+   "sha256": "0D7C03729CF08EB756BBA0717081855ED585C3785CC810B5F06A47BB4BA8D724",
+   "bytes": 262914,
+   "source": "saitoha/libsixel@a0151d94  images/snake.six"
+  },
+  {
+   "file": "real-vt340.six",
+   "url": "https://raw.githubusercontent.com/hackerb9/vt340test/9485704b827ec6d40109d1955e9e6c6a485a50c2/sixeltests/colorwheel.six",
+   "sha256": "B4DD25F1725D55B109B9599834CE7F605C6813AC57C1B91AB658CBB25A8D5B95",
+   "bytes": 93905,
+   "source": "hackerb9/vt340test@9485704b  sixeltests/colorwheel.six"
+  },
+  {
+   "file": "real.ani",
+   "url": "https://raw.githubusercontent.com/smileyhead/winClassic-cur-ani/fe4ce532a5914538dc2d17080c4c2c1e38bd562c/Cursors/busy_i.ani",
+   "sha256": "F1DF9DD1B595CE34FE62B268E8A2788C1BCB9ED82A9A520011CDA1529E06BE33",
+   "bytes": 68772,
+   "source": "smileyhead/winClassic-cur-ani@fe4ce532  Cursors/busy_i.ani"
+  },
+  {
+   "file": "real.dxf",
+   "url": "https://raw.githubusercontent.com/mozman/ezdxf/d6f2ac10caeddc712ed1824aaeb3b9c050de4a04/examples_dxf/columns_R2007.dxf",
+   "sha256": "31D4D411982821A3DB75854F90108E15F867ECDD619D526FB3C9BD761B92095C",
+   "bytes": 195808,
+   "source": "mozman/ezdxf@d6f2ac10  examples_dxf/columns_R2007.dxf"
+  },
+  {
+   "file": "real-bricscad.dxf",
+   "url": "https://raw.githubusercontent.com/mozman/ezdxf/d6f2ac10caeddc712ed1824aaeb3b9c050de4a04/examples_dxf/insert_bricscad_level_1.dxf",
+   "sha256": "C2597F95C007852DB2BA82DEDD9558F9318981115DDA82FCCFC0267CA60E5A56",
+   "bytes": 91914,
+   "source": "mozman/ezdxf@d6f2ac10  examples_dxf/insert_bricscad_level_1.dxf"
+  },
+  {
+   "file": "real.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/hotspot.vtf",
+   "sha256": "39412CF3C36420802356D0D439ADA6E57155BC352BDB434CE82B2F0B29546C4A",
+   "bytes": 349801,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/hotspot.vtf"
+  },
+  {
+   "file": "real-dxt5.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/sample_dxt5.vtf",
+   "sha256": "11044EB4E2F3C9E4E2553410A718F52E825EA70E41EA91D482A6BA37D99EE178",
+   "bytes": 5696,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/sample_dxt5.vtf"
+  },
+  {
+   "file": "real-bgra8888.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/sample_bgra8888.vtf",
+   "sha256": "D5CCDDB73CEB30F3EA1EA9B58272241183233AA6F32ED1576A92399F833A1402",
+   "bytes": 22052,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/sample_bgra8888.vtf"
+  },
+  {
+   "file": "real.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/hi_mark.ktx",
+   "sha256": "C671CF4E1114A7EB5C53E74AB86A8F443159192F2F15E641BA88514EED6EC503",
+   "bytes": 50856,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/hi_mark.ktx"
+  },
+  {
+   "file": "real-bc2.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/pattern_02_bc2.ktx",
+   "sha256": "92124AA86D4F0386F35DCB8652F0E985CBD023B60A6B6F1B06C2A9F116CE4419",
+   "bytes": 1398268,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/pattern_02_bc2.ktx"
+  },
+  {
+   "file": "real-not4.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/not4_r8g8b8_srgb.ktx",
+   "sha256": "F99F7D4A88BD2EB3BE9B5841DB55DFD57B3CDCEAE91EA1F90A286919CCC0425C",
+   "bytes": 292448,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/not4_r8g8b8_srgb.ktx"
+  },
+  {
+   "file": "real.nupkg",
+   "url": "https://www.nuget.org/api/v2/package/Serilog/4.0.0",
+   "sha256": "8FC850E5374BD538DF7468813BD3F21C914C30FBC04C758DD5DB6BAD465994DC",
+   "bytes": 536714,
+   "source": "nuget.org  Serilog 4.0.0"
+  },
+  {
+   "file": "real.vsix",
+   "url": "https://open-vsx.org/api/EditorConfig/EditorConfig/0.16.4/file/EditorConfig.EditorConfig-0.16.4.vsix",
+   "sha256": "E50381AE8F82CAC7388C07476849702DD23D4936983195C99B5346FC3707F321",
+   "bytes": 110722,
+   "source": "open-vsx.org  EditorConfig.EditorConfig 0.16.4"
+  },
+  {
+   "file": "real.sixel",
+   "alias_of": "real.six",
+   "why": "DEC SIXEL under its long extension: the same control string, byte for byte. The only public .sixel files found are a terminal test script with text around its image (csdvrx/sixel-testsuite text-test.sixel) and a crash reproducer (libsixel issue 220)."
   }
  ],
  "existing": {
@@ -1862,6 +1993,9 @@
   "aiff": [
    "real.aiff"
   ],
+  "ani": [
+   "real.ani"
+  ],
   "ape": [
    "real.ape"
   ],
@@ -1899,6 +2033,9 @@
   "avif": [
    "real.avif",
    "sample-avif-alpha.avif"
+  ],
+  "avifs": [
+   "real.avifs"
   ],
   "azw": [
    "real.azw"
@@ -2119,6 +2256,10 @@
    "real.dwg",
    "sample.dwg"
   ],
+  "dxf": [
+   "real.dxf",
+   "real-bricscad.dxf"
+  ],
   "dxt1": [
    "real.dxt1"
   ],
@@ -2304,6 +2445,11 @@
   "kra": [
    "real.kra"
   ],
+  "ktx": [
+   "real.ktx",
+   "real-bc2.ktx",
+   "real-not4.ktx"
+  ],
   "lbm": [
    "real.lbm"
   ],
@@ -2415,6 +2561,9 @@
   ],
   "numbers": [
    "real.numbers"
+  ],
+  "nupkg": [
+   "real.nupkg"
   ],
   "obj": [
    "real.obj"
@@ -2625,6 +2774,13 @@
   "sgi": [
    "real.sgi"
   ],
+  "six": [
+   "real.six",
+   "real-vt340.six"
+  ],
+  "sixel": [
+   "real.sixel"
+  ],
   "skb": [
    "real.skb"
   ],
@@ -2728,8 +2884,22 @@
    "real.vsdx",
    "sample.vsdx"
   ],
+  "vsix": [
+   "real.vsix"
+  ],
+  "vssx": [
+   "real.vssx"
+  ],
   "vst": [
    "real.vst"
+  ],
+  "vstx": [
+   "real.vstx"
+  ],
+  "vtf": [
+   "real.vtf",
+   "real-dxt5.vtf",
+   "real-bgra8888.vtf"
   ],
   "wav": [
    "real.wav"
@@ -2796,6 +2966,10 @@
   ],
   "xltx": [
    "real.xltx"
+  ],
+  "xmind": [
+   "real.xmind",
+   "real-xmind8.xmind"
   ],
   "xpm": [
    "real.xpm"

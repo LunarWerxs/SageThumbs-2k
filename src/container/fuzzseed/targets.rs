@@ -203,6 +203,36 @@ pub(crate) fn targets() -> Vec<Target> {
         ("pix::extract", |b| {
             let _ = pix::extract(b);
         }),
+        // Animated cursors: the RIFF chunk walk, the `seq ` pick and the icon-directory check.
+        ("ani::extract", |b| {
+            let _ = ani::extract(b);
+        }),
+        // Valve textures: the header, the 7.3 resource walk and the level-offset sum.
+        ("vtf::extract", |b| {
+            let _ = vtf::extract(b);
+        }),
+        // Khronos KTX 1: the key/value walk, the row repack and the flip.
+        ("ktx::extract", |b| {
+            let _ = ktx::extract(b);
+        }),
+        // DXF: the backwards section search and the hex-pair decode.
+        ("dxf::extract", |b| {
+            let _ = dxf::extract(b);
+        }),
+        // SIXEL: both interpreter passes, the palette and the paint budget.
+        ("sixel::extract", |b| {
+            let _ = sixel::extract(b);
+        }),
+        // NuGet / VSIX manifests, on the XML directly: a zip's CRC check would otherwise stop
+        // every mutation of the manifest before it reached the parser.
+        ("package::icon_path", |b| {
+            let _ = package::icon_path(b, false);
+            let _ = package::icon_path(b, true);
+        }),
+        ("package::extract", |b| {
+            let _ = zip::ZipArchive::new(std::io::Cursor::new(b))
+                .map(|mut zip| package::extract(&mut zip));
+        }),
         // SolidWorks: the `PreviewPNG` stream lookup, over the OLE reader.
         ("solidworks::extract", |b| {
             let _ = solidworks::extract(b);

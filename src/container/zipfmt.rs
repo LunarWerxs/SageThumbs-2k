@@ -82,6 +82,12 @@ fn dedicated_preview<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Dedicated {
         return Dedicated::Final(Some(frame));
     }
 
+    // NuGet / VSIX packages: the icon the manifest names, or the stock icon - a package is
+    // full of images that are not its picture, so the generic pick never runs for one.
+    if let Some(icon) = super::package::extract(zip) {
+        return Dedicated::Final(icon);
+    }
+
     // Office documents (ODF / OOXML PowerPoint): a dedicated embedded preview. If
     // the package IS one of these, its thumbnail is the only sensible cover — take
     // it (or None) without falling through.

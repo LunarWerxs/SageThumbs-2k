@@ -9,6 +9,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Twelve more file types get thumbnails (361 in all):** Valve game textures (`.vtf`) and
+  Khronos KTX textures (`.ktx`), animated cursors (`.ani`), SIXEL terminal graphics
+  (`.six`/`.sixel`), AVIF image sequences (`.avifs`), the preview AutoCAD and BricsCAD save
+  inside a `.dxf`, XMind mind maps (`.xmind`), Visio templates and stencils (`.vstx`/`.vssx`),
+  and the icon inside NuGet (`.nupkg`) and Visual Studio / VS Code (`.vsix`) packages. A DXF,
+  stencil or package that carries no picture keeps its usual icon.
 - **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
   published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
   several ways around its safety policy. It only ever runs as a separate, time-limited process.

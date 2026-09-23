@@ -35,7 +35,8 @@ const EBOOK_EXTS: &[&str] = &[
 ];
 const DOCUMENT_EXTS: &[&str] = &[
     "pdf", "djv", "djvu", "odt", "ods", "odp", "odg", "odf", "ott", "ots", "otp", "pptx", "pptm",
-    "potx", "key", "pages", "numbers", "indd", "indt", "vsdx", "vsdm", "vsd", "pub", "ggb",
+    "potx", "key", "pages", "numbers", "indd", "indt", "vsdx", "vsdm", "vsd", "vstx", "vssx",
+    "pub", "ggb", "xmind",
     // Microsoft Word / Excel / PowerPoint (OOXML packages + legacy OLE compound docs).
     "docx", "docm", "dotx", "dotm", "doc", "dot", "xlsx", "xlsm", "xlsb", "xltx", "xltm", "xls",
     "xlt", "ppsx", "ppsm", "potm", "ppt", "pps", "pot",
@@ -98,8 +99,11 @@ const ARCHIVE_EXTS: &[&str] = &["7z", "rar", "zip"];
 /// (enforced by `removed_extensions_disjoint_from_formats`). NOTE: `mpc` is NOT here — the
 /// Magick-Pixel-Cache `.mpc` was dropped, but `.mpc` is now LIVE as Musepack audio.
 pub const REMOVED_EXTENSIONS: &[&str] = &[
-    "aai", "art", "avs", "cache", "hrz", "ipl", "mtv", "palm", "six", "jpt", "fax", "g3", "g4",
-    "otb", "wbmp", "rgb", "pct", "pict",
+    "aai", "art", "avs", "cache", "hrz", "ipl", "mtv", "palm", "jpt", "fax", "g3", "g4", "otb",
+    "wbmp", "rgb", "pct", "pict",
+    // `six` was here too until 2026-09-22, when a native SIXEL reader (`container/sixel.rs`)
+    // made it a live format again: ImageMagick, which the 2026-06-11 triage relied on, draws
+    // every real SIXEL file solid black.
     // jbig: removed 2026-07-08 (see the FORMATS comment above); listed here so
     // register()/unregister() still sweep the stale shellex hook on machines that
     // ran a build where it was registered.
@@ -270,11 +274,11 @@ const WMPHOTO_EXTS: &[&str] = &["jxr", "wdp", "hdp", "wmp"];
 /// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
 const HEIF_OS_CODEC_EXTS: &[&str] = &["heic", "heif", "heics", "heifs", "hif", "avci"];
 
-/// AVIF (AV1 Image File Format) - see [`OsCodec::Av1`] for why this can't be probed the
-/// way `WMPHOTO_EXTS`/`HEIF_OS_CODEC_EXTS` are. One extension today; a future `avifs`-style
-/// sibling belongs here, not hand-added at the call site.
+/// AVIF (AV1 Image File Format) and its image-sequence sibling `avifs` (whose first frame the
+/// same AV1 codec decodes) - see [`OsCodec::Av1`] for why this can't be probed the way
+/// `WMPHOTO_EXTS`/`HEIF_OS_CODEC_EXTS` are.
 /// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
-const AV1_OS_CODEC_EXTS: &[&str] = &["avif"];
+const AV1_OS_CODEC_EXTS: &[&str] = &["avif", "avifs"];
 
 /// `Category::Image` extensions whose cover is an EMBEDDED preview the container already
 /// carries (`container::extract_cover`), never a full raster decode of the image itself -
@@ -352,6 +356,8 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "3dm",
     // Autodesk 3ds Max: the OLE2 `\x05SummaryInformation` thumbnail (`container::max`).
     "max",
+    // AutoCAD DXF: the `THUMBNAILIMAGE` section AutoCAD and BricsCAD write (`container::dxf`).
+    "dxf",
     // 3D-printer G-code: an embedded base64 PNG preview some slicers bake into the header
     // comments (`container::gcode`) - not a render of the sliced print.
     "gcode",
@@ -397,6 +403,9 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "apks",
     "xapk",
     "apkm",
+    // NuGet and Visual Studio packages: the icon their manifest names (`container::package`).
+    "nupkg",
+    "vsix",
 ];
 
 /// The capability of a hooked extension - derived from `category()` plus the small explicit
@@ -447,6 +456,8 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("apng", "Animated Portable Network Graphics"),
     ("avci", "AVC Image File Format"),
     ("avif", "AV1 Image File Format"),
+    ("avifs", "AV1 Image File Format sequence"),
+    ("ani", "Windows animated cursor"),
     ("bmp", "Microsoft Windows bitmap image"),
     ("bw", "Silicon Graphics (B&W)"),
     ("cal", "Continuous Acquisition and Life-cycle Support"),
@@ -570,6 +581,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("procreate", "Procreate document"),
     ("skp", "SketchUp model"),
     ("dwg", "AutoCAD drawing"),
+    ("dxf", "AutoCAD drawing exchange"),
     ("3dm", "Rhino 3D model"),
     ("xd", "Adobe XD design"),
     ("max", "Autodesk 3ds Max scene"),
@@ -581,6 +593,8 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("apks", "Android split-APK bundle"),
     ("xapk", "Android split-APK bundle (XAPK)"),
     ("apkm", "Android split-APK bundle (APKM)"),
+    ("nupkg", "NuGet package"),
+    ("vsix", "Visual Studio extension package"),
     ("pam", "Portable Arbitrary Map"),
     ("pbm", "Portable bitmap format"),
     ("pcd", "Photo CD"),
@@ -609,6 +623,8 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("sf3", "Simple File Format Family Images"),
     ("sfw", "Seattle Film Works"),
     ("sgi", "Silicon Graphics RGB"),
+    ("six", "DEC SIXEL graphics"),
+    ("sixel", "DEC SIXEL graphics"),
     ("sti", "Sinar CaptureShop Raw Format"),
     ("sun", "SUN Rasterfile"),
     ("svg", "Scalable Vector Graphics"),
@@ -623,6 +639,9 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("vicar", "Video Image Communication And Retrieval"),
     ("viff", "Khoros Visualization image"),
     ("vips", "VIPS image"),
+    // Game textures, read through the DDS decoders (`container::vtf` / `container::ktx`).
+    ("vtf", "Valve Texture Format"),
+    ("ktx", "Khronos texture (KTX 1)"),
     ("vst", "Truevision Targa image"),
     ("webp", "Google WebP"),
     ("wmf", "Windows Metafile"),
@@ -762,6 +781,9 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("vsdx", "Visio drawing"),
     ("vsdm", "Visio macro-enabled drawing"),
     ("vsd", "Visio drawing (legacy)"),
+    ("vstx", "Visio template"),
+    ("vssx", "Visio stencil"),
+    ("xmind", "XMind mind map"),
     ("pub", "Microsoft Publisher document"),
     // Microsoft Word / Excel / PowerPoint. OOXML packages carry a docProps/thumbnail
     // (present when the author saved a preview) handled by the generic `office.rs`
@@ -886,6 +908,9 @@ pub const PREVIEW_MD_EXTS: &[&str] = &["md", "markdown", "mdown", "mkd", "mdwn",
 pub const PREVIEW_TEXT_EXTS: &[&str] = &[
     "txt", "log", "json", "yaml", "yml", "toml", "xml", "ini", "cfg", "rs", "py", "js", "ts", "c",
     "cpp", "h", "cs", "java", "sh", "ps1", "bat", "html", "css", "sql", "srt", "vtt",
+    // A registered thumbnail format too, but most DXF files carry no preview: the viewer keeps
+    // showing the drawing's text, as it did before `.dxf` was registered (2026-09-22).
+    "dxf",
 ];
 
 /// Structured documents the viewer converts to markdown at load and renders through the

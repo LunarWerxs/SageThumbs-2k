@@ -14,6 +14,7 @@ ai
 aif
 aifc
 aiff
+ani
 ape
 apk
 apkm
@@ -26,6 +27,7 @@ asf
 avci
 avi
 avif
+avifs
 azw
 azw3
 bgcode
@@ -101,6 +103,7 @@ dotx
 dpx
 dsf
 dwg
+dxf
 dxt1
 dxt5
 emf
@@ -163,6 +166,7 @@ k25
 kdc
 key
 kra
+ktx
 lbm
 livp
 m1v
@@ -200,6 +204,7 @@ mts
 nef
 nrw
 numbers
+nupkg
 obj
 odf
 odg
@@ -273,6 +278,8 @@ sct
 sf3
 sfw
 sgi
+six
+sixel
 skb
 sketch
 skp
@@ -306,7 +313,11 @@ vob
 vsd
 vsdm
 vsdx
+vsix
+vssx
 vst
+vstx
+vtf
 wav
 wdp
 webm
@@ -330,6 +341,7 @@ xlsx
 xlt
 xltm
 xltx
+xmind
 xpm
 xv
 xyze

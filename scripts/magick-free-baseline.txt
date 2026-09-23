@@ -16,8 +16,12 @@ real-16bit.psd
 real-32bit.psb
 real-32bit.psd
 real-artboards.ai
+real-bc2.ktx
+real-bgra8888.vtf
+real-bricscad.dxf
 real-cmyk.psb
 real-cmyk.psd
+real-dxt5.vtf
 real-es.m2v
 real-flat.psb
 real-flat.psd
@@ -33,11 +37,14 @@ real-legacy8.ai
 real-nocomposite.psb
 real-nocomposite.psd
 real-nopreview.eps
+real-not4.ktx
 real-photoshop-nopreview.eps
 real-photoshop-tiffpreview.eps
 real-rgb-layers.psb
 real-rgb-layers.psd
 real-vcd.mpg
+real-vt340.six
+real-xmind8.xmind
 real.3g2
 real.3gp
 real.3mf
@@ -46,6 +53,7 @@ real.ai
 real.aif
 real.aifc
 real.aiff
+real.ani
 real.ape
 real.apk
 real.apng
@@ -53,6 +61,7 @@ real.aseprite
 real.asf
 real.avi
 real.avif
+real.avifs
 real.azw
 real.azw3
 real.bgcode
@@ -105,6 +114,7 @@ real.docm
 real.dot
 real.dotm
 real.dwg
+real.dxf
 real.dxt1
 real.dxt5
 real.eps
@@ -152,6 +162,7 @@ real.jxr
 real.k25
 real.key
 real.kra
+real.ktx
 real.lbm
 real.m1v
 real.m2p
@@ -174,6 +185,7 @@ real.mpo
 real.mpv
 real.mts
 real.numbers
+real.nupkg
 real.obj
 real.odg
 real.odp
@@ -217,6 +229,8 @@ real.rar
 real.rgbe
 real.rle
 real.sfw
+real.six
+real.sixel
 real.skb
 real.sketch
 real.skp
@@ -235,7 +249,9 @@ real.ts
 real.tub
 real.vda
 real.vob
+real.vsix
 real.vst
+real.vtf
 real.wav
 real.wdp
 real.webm
@@ -247,6 +263,7 @@ real.wv
 real.xcf
 real.xlsm
 real.xltm
+real.xmind
 real.zip
 sample (edited).png
 sample-1080p.aseprite

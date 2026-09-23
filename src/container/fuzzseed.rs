@@ -34,6 +34,8 @@ use apkseed::*;
 mod design;
 pub(crate) use apkseed::{apk_arsc, apk_axml, apk_pool_utf8};
 use design::*;
+mod tailseed;
+use tailseed::*;
 pub(crate) use targets::targets;
 
 // ── seed builders ─────────────────────────────────────────────────────────────────────────
@@ -520,6 +522,15 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("sfw", synthetic_sfw()),
         ("pix", synthetic_pix()),
         ("solidworks", synthetic_solidworks()),
+        ("ani", synthetic_ani()),
+        ("vtf", synthetic_vtf()),
+        ("vtf-72", synthetic_vtf_72()),
+        ("ktx", synthetic_ktx()),
+        ("dxf", synthetic_dxf()),
+        ("sixel", synthetic_sixel()),
+        ("nupkg", synthetic_nupkg()),
+        ("vsix", synthetic_vsix()),
+        ("xmind", synthetic_xmind()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),

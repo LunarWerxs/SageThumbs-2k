@@ -92,26 +92,10 @@ fn corpus_covers_decode(max_read: u64) {
         covers += 1;
         let (w, h) = match cover {
             CoverOut::Image(img) => (img.width(), img.height()),
-            CoverOut::Bytes(raw) => {
-                // A Windows metafile is an accepted cover (Visio ships one) and the
-                // `image` crate cannot read it — that tier is WIC/magick. Assert what IS
-                // checkable here: that it is the format it claims to be.
-                if crate::decode::looks_like_metafile(&raw) {
-                    continue;
-                }
-                // JPEG 2000 is the other cover the `image` crate cannot read: an old
-                // macOS icon keeps its 256 and 512 px members as JP2 codestreams (the
-                // real `Apple Retro.icns` in the corpus), and that tier is ours
-                // (`decode::jp2`). Its header parse is what is checkable here.
-                if let Some(dims) = crate::decode::jp2_dimensions(&raw) {
-                    dims
-                } else {
-                    let img = image::load_from_memory(&raw).unwrap_or_else(|e| {
-                        panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
-                    });
-                    (img.width(), img.height())
-                }
-            }
+            CoverOut::Bytes(raw) => match cover_bytes_dims(&name, &raw) {
+                Some(dims) => dims,
+                None => continue,
+            },
         };
         assert!(
             w > 1 && h > 1,
@@ -122,6 +106,32 @@ fn corpus_covers_decode(max_read: u64) {
         checked == 0 || covers > 0,
         "read {checked} corpus samples and not one produced a cover — the dispatch is broken"
     );
+}
+
+/// The size of a byte cover, decoded the way its tier would, or `None` for a Windows
+/// metafile: an accepted cover (Visio ships one) that the `image` crate cannot read, which is
+/// WIC's or ImageMagick's tier. Panics, naming the sample, when the bytes do not decode.
+fn cover_bytes_dims(name: &str, raw: &[u8]) -> Option<(u32, u32)> {
+    if crate::decode::looks_like_metafile(raw) {
+        return None;
+    }
+    // JPEG 2000 is the other cover the `image` crate cannot read: an old macOS icon keeps its
+    // 256 and 512 px members as JP2 codestreams (the real `Apple Retro.icns` in the corpus),
+    // and that tier is ours (`decode::jp2`). Its header parse is what is checkable here.
+    if let Some(dims) = crate::decode::jp2_dimensions(raw) {
+        return Some(dims);
+    }
+    // A game texture (`.vtf`, `.ktx`) comes back as a DDS for our own DDS tier, which the
+    // `image` crate is not built to read either.
+    let img = if raw.starts_with(b"DDS ") {
+        crate::decode::decode_preview(raw).map_err(|e| e.to_string())
+    } else {
+        image::load_from_memory(raw).map_err(|e| e.to_string())
+    };
+    let img = img.unwrap_or_else(|e| {
+        panic!("{name}: extract_cover handed back bytes that do not decode: {e}")
+    });
+    Some((img.width(), img.height()))
 }
 
 /// `real_or_decoded_dims` is the shared chain that replaced three hand-copied versions of

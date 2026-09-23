@@ -14,7 +14,9 @@
 //!   - CorelDRAW  `.cdr`   → `metadata/thumbnails/thumbnail.bmp` (X4+/2008+, ZIP/OPC;
 //!     older RIFF-based .cdr aren't ZIPs and aren't covered)
 //!   - Adobe XD   `.xd`    → `thumbnail.png` | `preview.png`     (mimetype: sparkler)
-//!   - Visio      `.vsdx/.vsdm` → `docProps/thumbnail.emf`       (EMF, decoded by magick)
+//!   - Visio      `.vsdx/.vsdm/.vstx/.vssx` → `docProps/thumbnail.emf` (EMF, decoded by
+//!     magick; templates carry one, most stencils do not and keep the stock icon)
+//!   - XMind      `.xmind` → `Thumbnails/thumbnail.png`          (XMind 8 and 2020+)
 //!
 //! Most have NO existing Windows thumbnailer. Works on compact installs (no
 //! bundled ImageMagick) since the preview is already a raster image.
@@ -60,6 +62,14 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
             }
         }
     }
+    // XMind mind maps (2026-09-22): XMind 8 and XMind 2020+ both save a picture of the map as
+    // `Thumbnails/thumbnail.png`. That path is ODF's and OpenRaster's too, so it is taken only
+    // beside XMind's own parts: `content.json` + `metadata.json` (2020+), or a manifest in
+    // XMind 8's `urn:xmind` namespace. A map's inserted pictures live beside it, which is why
+    // the generic pick would not do.
+    if let Some(img) = xmind_thumbnail(zip) {
+        return Some(img);
+    }
     // 3MF + FreeCAD + design apps (Sketch / Procreate / Apple iWork): probe the
     // known preview paths. Each is distinctive enough not to false-positive on
     // other ZIPs (epub/cbz/office lack them); `preview.jpg` is probed LAST so a
@@ -76,7 +86,7 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
             "QuickLook/Thumbnail.jpg",           // Apple iWork (Keynote/Pages/Numbers)
             "metadata/thumbnails/thumbnail.bmp", // CorelDRAW (X4+/2008+, ZIP/OPC)
             "metadata/thumbnails/page1.bmp",     // CorelDRAW (alternate)
-            "docProps/thumbnail.emf", // Visio .vsdx/.vsdm (EMF preview; magick decodes it)
+            "docProps/thumbnail.emf", // Visio .vsdx/.vsdm/.vstx/.vssx (EMF; magick decodes it)
             "geogebra_thumbnail.png", // GeoGebra .ggb (root-level, distinctive)
             "preview.jpg",            // Apple iWork (root preview) — least specific, last
         ],
@@ -108,6 +118,18 @@ fn mimetype_paths(mt: &[u8]) -> Option<&'static [&'static str]> {
         return Some(&["preview.png"]);
     }
     None
+}
+
+fn xmind_thumbnail<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    if !is_xmind(zip) {
+        return None;
+    }
+    read_named(zip, "Thumbnails/thumbnail.png").and_then(decodable_image)
+}
+
+fn is_xmind<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
+    (zip.by_name("content.json").is_ok() && zip.by_name("metadata.json").is_ok())
+        || read_named(zip, "META-INF/manifest.xml").is_some_and(|m| contains_ci(&m, b"urn:xmind"))
 }
 
 fn try_paths<R: Read + Seek>(zip: &mut ZipArchive<R>, paths: &[&str]) -> Option<Vec<u8>> {
@@ -279,6 +301,30 @@ mod tests {
             ("docProps/thumbnail.emf", emf.as_slice()),
         ]);
         assert!(extract_bytes(&vsdx).is_some(), "visio emf preview");
+
+        // XMind 2020+ and XMind 8: the map picture, keyed off XMind's own parts.
+        let zen = make_zip(&[
+            ("content.json", b"[]"),
+            ("metadata.json", b"{}"),
+            ("resources/attached.png", &png),
+            ("Thumbnails/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&zen).is_some(), "xmind 2020+ thumbnail");
+        let x8 = make_zip(&[
+            (
+                "META-INF/manifest.xml",
+                b"<manifest xmlns=\"urn:xmind:xmap:xmlns:manifest:1.0\"/>",
+            ),
+            ("content.xml", b"<xmap-content/>"),
+            ("Thumbnails/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&x8).is_some(), "xmind 8 thumbnail");
+        // The same path in a zip that is not XMind's is not claimed here.
+        let other = make_zip(&[("Thumbnails/thumbnail.png", &png)]);
+        assert!(
+            extract_bytes(&other).is_none(),
+            "bare Thumbnails/ is no xmind"
+        );
 
         // A plain image zip (CBZ-style) must NOT be treated as a project file.
         let cbz = make_zip(&[("001.png", &png)]);

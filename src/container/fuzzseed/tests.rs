@@ -169,6 +169,31 @@ fn every_seed_reaches_its_parser() {
         solidworks::extract(&by("solidworks")).is_some(),
         "solidworks PreviewPNG stream"
     );
+    assert!(ani::extract(&by("ani")).is_some(), "ani seq-picked frame");
+    assert!(
+        vtf::extract(&by("vtf")).is_some(),
+        "vtf 7.3 resource offset"
+    );
+    assert!(vtf::extract(&by("vtf-72")).is_some(), "vtf 7.2 level chain");
+    assert!(
+        ktx::extract(&by("ktx")).is_some(),
+        "ktx padded bottom-up rows"
+    );
+    assert!(dxf::extract(&by("dxf")).is_some(), "dxf THUMBNAILIMAGE dib");
+    assert!(
+        sixel::extract(&by("sixel")).is_some(),
+        "sixel after a preamble"
+    );
+    for (label, why) in [("nupkg", "nuspec icon"), ("vsix", "vsixmanifest icon")] {
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(by(label))).expect("valid zip seed");
+        assert!(package::extract(&mut zip).flatten().is_some(), "{why}");
+    }
+    {
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(by("xmind"))).expect("valid zip seed");
+        assert!(project::extract(&mut zip).is_some(), "xmind map thumbnail");
+    }
     assert!(
         audio::ape_fuzzapi::cover_from_items_result(&by("apev2-item"), 1).is_some(),
         "apev2 cover item"
@@ -251,6 +276,15 @@ fn the_dispatcher_routes_every_cover_bearing_seed() {
         "sfw",
         "pix",
         "solidworks",
+        "ani",
+        "vtf",
+        "vtf-72",
+        "ktx",
+        "dxf",
+        "sixel",
+        "nupkg",
+        "vsix",
+        "xmind",
     ] {
         let bytes = seeds()
             .into_iter()

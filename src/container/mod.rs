@@ -20,6 +20,8 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+// Windows animated cursors (.ani) - the first shown frame, which is a whole .cur/.ico file.
+mod ani;
 mod creative;
 use creative::*;
 pub(crate) mod ai;
@@ -44,7 +46,11 @@ mod clip;
 pub(crate) mod collage;
 // DjVu (.djvu) cover decode — via the maintained pure-Rust `djvu-rs` crate (see djvu.rs).
 mod djvu;
+// A DDS header in front of one texture surface, for the game-texture containers below.
+mod ddswrap;
 mod dwg;
+// AutoCAD drawing exchange (.dxf) - the THUMBNAILIMAGE section's DIB preview.
+mod dxf;
 mod eps;
 pub(crate) use eps::is_eps;
 mod epub;
@@ -53,6 +59,8 @@ mod gcode;
 mod indd;
 // Amiga / Deluxe Paint IFF ILBM (.iff/.ilbm/.lbm) — a real planar-bitmap decoder.
 mod ilbm;
+// Khronos KTX 1 textures (.ktx) - mip level 0 through the DDS decoders.
+mod ktx;
 mod max;
 mod mobi;
 // Shared entry-name decoding (Shift-JIS / CP437 fallback for a name with no UTF-8 flag),
@@ -61,6 +69,8 @@ mod names;
 pub use names::decode_codepage;
 mod office;
 pub mod ole;
+// NuGet (.nupkg) and VSIX (.vsix) packages - the icon the manifest names.
+mod package;
 mod pdn;
 // Alias/Wavefront PIX (.pix) - run-length pixels with no signature; recognised by the runs
 // adding up to the picture exactly at end-of-file, then decoded natively.
@@ -75,10 +85,14 @@ mod sevenz;
 // Seattle FilmWorks (.sfw) and its PhotoWorks album (.pwp) - a JPEG with renumbered markers
 // and no Huffman tables, unwrapped back into one.
 mod sfw;
+// DEC SIXEL (.six/.sixel) - the terminal image format, decoded natively.
+mod sixel;
 mod skp;
 mod spla;
 mod tarfmt;
 pub(crate) mod util;
+// Valve Texture Format (.vtf) - the full-resolution level through the DDS decoders.
+mod vtf;
 // GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
 mod xcf;
 
@@ -357,6 +371,17 @@ fn try_ebook_and_cad_cover(bytes: &[u8]) -> Option<CoverOut> {
 
 /// Everything else: audio album art, then the G-code last resort.
 fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
+    // Animated cursors (RIFF `ACON`), Valve and Khronos textures: all magic-keyed, and each
+    // answers with its own picture or `None`.
+    if ani::looks_like_ani(bytes) {
+        return ani::extract(bytes).map(CoverOut::Bytes);
+    }
+    if vtf::looks_like_vtf(bytes) {
+        return vtf::extract(bytes).map(CoverOut::Bytes);
+    }
+    if ktx::looks_like_ktx(bytes) {
+        return ktx::extract(bytes).map(CoverOut::Bytes);
+    }
     // Audio with embedded album art (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/…).
     if audio::looks_like_audio(bytes) {
         return audio::extract(bytes).map(CoverOut::Bytes);
@@ -364,6 +389,14 @@ fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
     // PrusaSlicer binary G-code: the slicer's preview stored as whole image blocks.
     if bgcode::looks_like_bgcode(bytes) {
         return bgcode::extract(bytes).map(CoverOut::Bytes);
+    }
+    // AutoCAD DXF: the preview section at the end of the text (the drawing is never parsed).
+    if dxf::looks_like_dxf(bytes) {
+        return dxf::extract(bytes).map(CoverOut::Bytes);
+    }
+    // DEC SIXEL: a terminal control string, possibly after a little printable chatter.
+    if sixel::looks_like_sixel(bytes) {
+        return sixel::extract(bytes).map(CoverOut::Image);
     }
     // 3D-printer G-code with an embedded base64 PNG preview (text scan; bails
     // fast on binary, so it's a cheap last resort).
