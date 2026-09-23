@@ -137,8 +137,9 @@ enum Reference {
     PsFn { file: String, func: String },
 }
 
-/// Extracts every `tests/…`, `src/…`, or `scripts/…` reference out of an evidence cell.
-/// Spans that are not one of those three shapes (plain file names, CI job names, shell
+/// Extracts every `tests/…`, `src/…`, `crates/…/src/…` or `scripts/…` reference out of an
+/// evidence cell.
+/// Spans that are not one of those shapes (plain file names, CI job names, shell
 /// commands) are ignored - they are not claims this test can or needs to verify.
 fn extract_references(evidence: &str) -> Vec<Reference> {
     let mut out = Vec::new();
@@ -151,8 +152,11 @@ fn extract_references(evidence: &str) -> Vec<Reference> {
             .next()
             .expect("split_once guarantees a non-empty tail")
             .to_string();
-        let is_rust_path =
-            (path.starts_with("tests/") || path.starts_with("src/")) && path.ends_with(".rs");
+        // `crates/<name>/src/...`: the library and app layers are workspace crates since the
+        // 2026-09-23 split, and evidence names the file where the test now lives.
+        let in_crate = path.starts_with("crates/") && path.contains("/src/");
+        let is_rust_path = (path.starts_with("tests/") || path.starts_with("src/") || in_crate)
+            && path.ends_with(".rs");
         if is_rust_path {
             out.push(Reference::RustFn {
                 file: path.to_string(),
@@ -285,7 +289,7 @@ fn every_automated_rows_evidence_resolves_to_a_real_function() {
         let refs = extract_references(row.evidence());
         assert!(
             !refs.is_empty(),
-            "AUTOMATED row has no `tests/…::…`, `src/…::…`, or `scripts/…::…` evidence \
+            "AUTOMATED row has no `tests/…::…`, `src/…::…`, `crates/…/src/…::…` or `scripts/…::…` evidence \
              reference to check: {}",
             row.raw
         );
