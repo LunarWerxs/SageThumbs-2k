@@ -111,7 +111,8 @@ fn header_check<R: Read + Seek>(r: &mut R) -> Option<bool> {
     if size == 0 || size > MAX_HEADER_BYTES {
         return Some(false);
     }
-    r.seek(std::io::SeekFrom::Start(32u64.checked_add(offset)?)).ok()?;
+    r.seek(std::io::SeekFrom::Start(32u64.checked_add(offset)?))
+        .ok()?;
     let mut next = vec![0u8; usize::try_from(size).ok()?];
     r.read_exact(&mut next).ok()?;
     match next.first() {
@@ -236,7 +237,11 @@ fn folder_outputs(c: &mut HeaderCursor) -> Option<u64> {
             return None; // alternative methods: the crate refuses them too
         }
         c.skip(u64::from(bits & 0x0F))?;
-        let (i, o) = if bits & 0x10 == 0 { (1, 1) } else { (c.count()?, c.count()?) };
+        let (i, o) = if bits & 0x10 == 0 {
+            (1, 1)
+        } else {
+            (c.count()?, c.count()?)
+        };
         inputs += i;
         outputs += o;
         if bits & 0x20 != 0 {
@@ -1040,9 +1045,15 @@ mod tests {
     /// decodes it; one declaring a real listing's size passes the same parse.
     #[test]
     fn an_encoded_header_is_refused_past_its_unpack_cap() {
-        assert!(!header_is_safe(&mut Cursor::new(with_end_header(&encoded_header(1 << 40)))));
-        assert!(header_is_safe(&mut Cursor::new(with_end_header(&encoded_header(4096)))));
-        assert!(header_is_safe(&mut Cursor::new(with_end_header(&[K_HEADER, K_END]))));
+        assert!(!header_is_safe(&mut Cursor::new(with_end_header(
+            &encoded_header(1 << 40)
+        ))));
+        assert!(header_is_safe(&mut Cursor::new(with_end_header(
+            &encoded_header(4096)
+        ))));
+        assert!(header_is_safe(&mut Cursor::new(with_end_header(&[
+            K_HEADER, K_END
+        ]))));
     }
 
     /// Every real archive passes: the two fixtures written by 7-Zip-compatible tooling, and
@@ -1054,8 +1065,11 @@ mod tests {
         }
         let mut written = Cursor::new(Vec::new());
         let mut w = ArchiveWriter::new(&mut written).expect("writer");
-        w.push_archive_entry(ArchiveEntry::new_file("a.png"), Some(Cursor::new(vec![7u8; 300])))
-            .expect("entry");
+        w.push_archive_entry(
+            ArchiveEntry::new_file("a.png"),
+            Some(Cursor::new(vec![7u8; 300])),
+        )
+        .expect("entry");
         w.finish().expect("finish");
         assert!(header_is_safe(&mut Cursor::new(written.into_inner())));
     }

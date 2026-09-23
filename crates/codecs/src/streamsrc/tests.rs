@@ -899,7 +899,10 @@ fn the_head_window_serves_a_picture_it_holds_whole_and_refuses_one_it_does_not()
 #[test]
 fn end_at_ends_the_stream_where_it_is_told() {
     use std::io::{Read as _, Seek as _, SeekFrom};
-    let mut r = EndAt::new(std::io::Cursor::new((0u8..100).collect::<Vec<_>>()), Some(60));
+    let mut r = EndAt::new(
+        std::io::Cursor::new((0u8..100).collect::<Vec<_>>()),
+        Some(60),
+    );
     assert_eq!(r.seek(SeekFrom::End(0)).unwrap(), 60);
     assert_eq!(r.seek(SeekFrom::End(-10)).unwrap(), 50);
     let mut rest = Vec::new();

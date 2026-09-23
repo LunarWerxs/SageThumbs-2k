@@ -11,8 +11,12 @@ use super::*;
 /// `jxl-frame` 0.13.3 indexed past the TOC for this file, which ends a `panic = "abort"` host.
 #[test]
 fn a_jxl_whose_toc_is_short_of_groups_is_refused_not_a_panic() {
-    let full = std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, None));
-    let reduced = std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, Some(256)));
+    let full = std::panic::catch_unwind(|| {
+        crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, None)
+    });
+    let reduced = std::panic::catch_unwind(|| {
+        crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, Some(256))
+    });
     assert!(full.is_ok(), "the 1:1 path panicked on a short TOC");
     assert!(reduced.is_ok(), "the 1:8 path panicked on a short TOC");
 }
