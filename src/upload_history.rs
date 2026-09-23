@@ -16,7 +16,6 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::upload_config::Retention;
 
@@ -89,13 +88,6 @@ impl Entry {
     pub fn is_live(&self, now: u64) -> bool {
         !matches!(self.status(now), Status::Expired(_))
     }
-}
-
-/// The current Unix time (0 if the clock is before 1970).
-pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// A field with every control character (tab and line breaks included) turned into a space,
@@ -269,44 +261,16 @@ pub fn duration_text(secs: u64, w: &DurationWords) -> String {
         .replace("{m}", &m.to_string())
 }
 
-/// `unix_secs` as local "YYYY-MM-DD HH:MM", the same shape the Quick preview's info card
-/// uses for a file's modified time (empty if the conversion fails).
-pub fn local_datetime(unix_secs: u64) -> String {
-    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-    // FILETIME ticks are 100 ns since 1601-01-01; the Unix epoch is 11_644_473_600 s later.
-    let ticks = unix_secs
-        .saturating_add(11_644_473_600)
-        .saturating_mul(10_000_000);
-    let ft = FILETIME {
-        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    // SAFETY: both calls only read and write the stack structs passed to them.
-    if unsafe { FileTimeToSystemTime(&ft, &mut utc) }.is_err() {
-        return String::new();
-    }
-    let mut local = utc;
-    unsafe {
-        let _ = SystemTimeToTzSpecificLocalTime(None, &utc, &mut local);
-    }
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute
-    )
-}
-
 /// One English line for `st2k`: "expires 2026-09-24 23:50 (in 3 d)", "expired ...",
 /// "no expiry date (...)" or "expiry unknown".
 pub fn status_text_en(e: &Entry, now: u64) -> String {
     match e.status(now) {
         Status::Left(left) => format!(
             "expires {} (in {})",
-            local_datetime(now.saturating_add(left)),
+            crate::unixtime::local_datetime(now.saturating_add(left)),
             duration_text(left, &ENGLISH)
         ),
-        Status::Expired(at) => format!("expired {}", local_datetime(at)),
+        Status::Expired(at) => format!("expired {}", crate::unixtime::local_datetime(at)),
         Status::NoExpiry => "no expiry date (removed after 2 years unopened)".to_string(),
         Status::Unknown => "expiry unknown (custom host)".to_string(),
     }

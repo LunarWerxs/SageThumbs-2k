@@ -122,6 +122,7 @@ mod topdf;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 #[doc(hidden)]
 pub mod typeoverlay;
+pub mod unixtime;
 pub mod upload_config;
 // The local list of uploaded links and when each one expires (app window + `st2k`).
 pub mod upload_history;

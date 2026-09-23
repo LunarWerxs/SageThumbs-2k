@@ -459,8 +459,8 @@ mod tests {
         assert!(f16(0x0001) > 0.0 && f16(0x0001) < 1e-6); // smallest subnormal
     }
 
-    /// The whole point: SDR white must stay white, and the highlights above it
-    /// must stay DISTINCT rather than all clipping to 255.
+    /// SDR white must map to white, mid-tones must stay ordered, and highlights
+    /// above white must saturate to white rather than overflow or go black.
     #[test]
     fn tone_curve_keeps_white_white_and_highlights_separable() {
         assert_eq!(encode(0.0), 0);

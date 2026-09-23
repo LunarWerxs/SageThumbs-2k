@@ -56,10 +56,8 @@ pub(super) const ID_SYNC_BTN: i32 = 1201;
 // Live "● Synced · up to date" status line beside the sync button (green when signed in,
 // muted when signed out) — replaces baking the raw account id into the button label.
 pub(super) const ID_SYNC_STATUS: i32 = 1202;
-// Left-column scroll plumbing: a vertical scrollbar + an opaque mask that hides
-// controls scrolled below the viewport (so the left options can grow/scroll
-// without making the window taller).
-// Live search box that filters the supported-file-types list.
+// File-types page: the full-width live search box that filters the
+// supported-file-types list below it as you type.
 pub(super) const ID_SEARCH: i32 = 1133;
 // Screenshot capture service: an enable toggle + a hotkey preset picker (the
 // opt-in tray daemon's global hotkey, configurable here instead of via the tray).

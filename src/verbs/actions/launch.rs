@@ -98,6 +98,7 @@ pub(super) fn launch_with_list(
             "launch_with_list: couldn't write {}: {e}",
             lf.display()
         ));
+        let _ = std::fs::remove_file(&lf); // a failed write can still leave a partial file
         return ListLaunch::Failed;
     }
     let Some(s) = lf.to_str() else {

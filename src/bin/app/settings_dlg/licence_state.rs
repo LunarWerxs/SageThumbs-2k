@@ -243,14 +243,13 @@ pub(crate) fn licence_page_title(snap: &crate::license::LicenceSnapshot) -> &'st
 
 /// `unix_secs` (0 = unknown) as "YYYY-MM-DD" in local time — the same FILETIME plumbing
 /// `preview::infocard::modified_string` uses for a file's mtime, just date-only (the licence
-/// line has no use for a time-of-day). Shares the conversion with the lib's
-/// `pattern_modified_date` through `sagethumbs2k_core::unix_secs_local_date!`; no
+/// line has no use for a time-of-day), through the shared `sagethumbs2k_core::unixtime`; no
 /// chrono/time dependency for one line.
 pub(crate) fn format_unix_date(unix_secs: u64) -> String {
     if unix_secs == 0 {
         return String::new();
     }
-    sagethumbs2k_core::unix_secs_local_date!(unix_secs).unwrap_or_default()
+    sagethumbs2k_core::unixtime::local_date(unix_secs).unwrap_or_default()
 }
 
 #[cfg(test)]

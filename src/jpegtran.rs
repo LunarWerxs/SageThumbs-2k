@@ -259,8 +259,6 @@ fn maybe_restart(
     Some(())
 }
 
-/// Transform each component's block grid + the blocks themselves in place.
-/// Returns the output image dimensions.
 /// Move and transform every block of one component's `gw` x `gh` grid to its place in the
 /// transformed grid (`ngw` wide), in place, following each destination cycle, so a second
 /// full-size coefficient grid is never live beside the first (only a bit per block is).
@@ -299,6 +297,8 @@ fn follow_block_cycle(
     }
 }
 
+/// Transform each component's block grid + the blocks themselves in place.
+/// Returns the output image dimensions.
 fn apply_transform(comps: &mut [Comp], op: Op, width: usize, height: usize) -> (usize, usize) {
     let transpose = op.transposes();
     for c in comps.iter_mut() {

@@ -375,3 +375,139 @@ fn skip_utf16z(v: &[u8], mut p: usize) -> Option<usize> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UTF-16LE bytes for an attribute name or value, exactly as ASF stores them.
+    fn utf16(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    /// A `GUID(16) + size(8) + payload` object, as `walk_objects` lays one out.
+    fn asf_object(guid: [u8; 16], payload: &[u8]) -> Vec<u8> {
+        let mut o = guid.to_vec();
+        o.extend_from_slice(&((24 + payload.len()) as u64).to_le_bytes());
+        o.extend_from_slice(payload);
+        o
+    }
+
+    fn put_u64(buf: &mut [u8], at: usize, v: u64) {
+        buf[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn put_u32(buf: &mut [u8], at: usize, v: u32) {
+        buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// `WM/TrackNumber` is written by taggers as "5" or "5/12"; either must yield 5, and
+    /// a value with no leading number must yield nothing rather than a 0 the UI would show.
+    #[test]
+    fn parse_track_reads_the_leading_number_of_a_track_pair() {
+        assert_eq!(parse_track("7/12"), Some(7));
+        assert_eq!(parse_track("5"), Some(5));
+        assert_eq!(parse_track(""), None);
+        assert_eq!(parse_track("A/1"), None);
+    }
+
+    /// `WM/Year` is a string, so a tagger that writes "2003-05" (or any longer value) must
+    /// still produce the leading 4-digit year, and a value that cannot hold one produces none.
+    #[test]
+    fn wm_year_keeps_only_the_leading_four_digits() {
+        let name = utf16("WM/Year");
+        let mut tags = AudioTags::default();
+        apply_unicode_attr(&name, &utf16("2003-05"), &mut tags);
+        assert_eq!(tags.year, Some(2003));
+
+        let mut short = AudioTags::default();
+        apply_unicode_attr(&name, &utf16("99"), &mut short);
+        assert_eq!(short.year, None);
+    }
+
+    /// The DWORD `WM/Track` is zero-based, so 0 means track 1. First value wins: a later
+    /// DWORD must not overwrite a track the file already answered.
+    #[test]
+    fn wm_track_dword_is_zero_based_and_first_value_wins() {
+        let mut tags = AudioTags::default();
+        apply_text_attr(&utf16("WM/Track"), 3, &0u32.to_le_bytes(), &mut tags);
+        assert_eq!(tags.track, Some(1));
+        apply_text_attr(&utf16("WM/Track"), 3, &4u32.to_le_bytes(), &mut tags);
+        assert_eq!(tags.track, Some(1));
+    }
+
+    /// A dtype-3 value on some other name is not a track number; only `WM/Track` is.
+    #[test]
+    fn a_dword_on_a_non_track_name_is_not_a_track() {
+        let mut tags = AudioTags::default();
+        apply_text_attr(&utf16("WM/GenreID"), 3, &0u32.to_le_bytes(), &mut tags);
+        assert_eq!(tags.track, None);
+    }
+
+    /// Unicode attributes are first-value-wins, the invariant that keeps a WM/AlbumArtist
+    /// or a duplicate ECD from displacing the real album.
+    #[test]
+    fn unicode_attrs_keep_the_first_value() {
+        let name = utf16("WM/AlbumTitle");
+        let mut tags = AudioTags::default();
+        apply_unicode_attr(&name, &utf16("First Album"), &mut tags);
+        apply_unicode_attr(&name, &utf16("Second Album"), &mut tags);
+        assert_eq!(tags.album.as_deref(), Some("First Album"));
+    }
+
+    /// File Properties Object: play duration in 100-ns units at offset 40, preroll in ms at
+    /// 56, max bitrate in bits/sec at 76. The rendered duration must have the preroll removed.
+    #[test]
+    fn file_props_converts_play_duration_and_bitrate() {
+        let mut body = vec![0u8; 80];
+        put_u64(&mut body, 40, 100_000_000); // 10 s of play time, preroll included
+        put_u64(&mut body, 56, 2_500); // 2.5 s of preroll
+        put_u32(&mut body, 76, 128_000); // 128 kbps
+        let mut tags = AudioTags::default();
+        file_props(&body, &mut tags).unwrap();
+        assert_eq!(tags.duration_ms, 7_500);
+        assert_eq!(tags.bitrate_kbps, 128);
+    }
+
+    /// A preroll longer than the play duration must clamp to 0 rather than wrap into a
+    /// ~600-million-year duration the Details pane would print.
+    #[test]
+    fn file_props_saturates_when_preroll_exceeds_play_duration() {
+        let mut body = vec![0u8; 80];
+        put_u64(&mut body, 40, 10_000); // 1 ms of play time
+        put_u64(&mut body, 56, 5_000); // a 5 s preroll
+        put_u32(&mut body, 76, 320_000);
+        let mut tags = AudioTags::default();
+        file_props(&body, &mut tags).unwrap();
+        assert_eq!(tags.duration_ms, 0);
+    }
+
+    /// A truncated File Properties body has no bitrate field: the whole call bails rather
+    /// than reporting a duration from half-read data.
+    #[test]
+    fn file_props_rejects_a_body_shorter_than_the_bitrate_field() {
+        let mut body = vec![0u8; 64]; // play duration + preroll present, bitrate (76..80) missing
+        put_u64(&mut body, 40, 100_000_000);
+        put_u64(&mut body, 56, 0);
+        let mut tags = AudioTags::default();
+        assert_eq!(file_props(&body, &mut tags), None);
+    }
+
+    /// A malformed object whose declared size overruns the buffer stops the walk. Descending
+    /// into it would read whatever follows in the file as if it were ASF objects.
+    #[test]
+    fn walk_objects_stops_at_the_first_truncated_object() {
+        let good = asf_object(ASF_ECD_GUID, &[1, 2, 3, 4]);
+        let mut truncated = asf_object(ASF_ECD_GUID, &[5, 6, 7, 8]);
+        truncated.pop(); // declared size now overruns the buffer
+        let mut buf = good;
+        buf.extend_from_slice(&truncated);
+
+        let mut seen = 0usize;
+        walk_objects(&buf, 0, &mut |_guid: &[u8], _payload: &[u8]| seen += 1);
+        assert_eq!(
+            seen, 1,
+            "a truncated object must stop the walk, not be visited"
+        );
+    }
+}

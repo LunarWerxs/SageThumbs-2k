@@ -392,15 +392,6 @@ pub fn days_until(now_unix: u64, until_unix: u64) -> u64 {
     (until_unix - now_unix).div_ceil(24 * 60 * 60).max(1)
 }
 
-/// Now, in Unix seconds. `SystemTime::now()` failing (a clock before 1970) reads as 0,
-/// which every caller in this module treats as "no time has passed" - the safe direction.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// The phase THIS machine is in right now, from the real stores. The one I/O entry point
 /// the shell handlers and the doctor share with the app.
 pub fn current_phase() -> Phase {
@@ -411,7 +402,7 @@ pub fn current_phase() -> Phase {
         return Phase::Clear;
     }
     let history = history_path().and_then(|p| read_history(&p));
-    phase(now_unix(), mode, history.as_ref())
+    phase(crate::unixtime::now(), mode, history.as_ref())
 }
 
 /// Should the shell handlers refuse right now? Called per `GetThumbnail` / `DoPreview` /

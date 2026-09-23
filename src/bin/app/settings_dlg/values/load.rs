@@ -367,20 +367,6 @@ pub(in super::super) fn custom_action_hk_combo_index(packed: u32, vk: u32) -> us
     }
 }
 
-/// Re-select every combo whose current index [`load_values`] cannot restore on its own —
-/// because these combos are seeded ONCE, inline, when `build::build_controls` creates them
-/// ([`load_values`] does `CB_SETCURSEL` `ID_APP_THEME` itself, so it is not one of these).
-/// That is fine for the dialog's normal lifetime
-/// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import
-/// and after an unattended sync pull) calls `load_values` WITHOUT re-running `build_controls`,
-/// so without this the combos below kept showing the PRE-import on-screen selection — and
-/// `apply_settings` then read that stale index back via `CB_GETCURSEL` and silently overwrote
-/// the just-imported value on Save. `ID_LANG` IS included: `apply_settings` reads it on every
-/// Save (`settings::set_lang(selected_lang(hwnd)...)`), so leaving it stale here reverted an
-/// imported language exactly like the other combos, despite an earlier comment here claiming
-/// otherwise. The custom-action Enable checkbox (not a combo, but the same "derived from a
-/// setting `load_values` doesn't touch" shape) and its dependent greying are re-derived here
-/// too, for the same reason.
 /// The index to select in hotkey combo `c` for the stored chord `packed` (`vk` its key). A
 /// curated preset, or no chord at all, is answered by `by_position`. Any other chord is found
 /// by its item DATA, and gets its own item if the combo has none: an Import or a sync pull can
@@ -402,6 +388,20 @@ unsafe fn chord_combo_index(
         .unwrap_or_else(|| super::super::build::append_unknown_chord_item(c, packed))
 }
 
+/// Re-select every combo whose current index [`load_values`] cannot restore on its own —
+/// because these combos are seeded ONCE, inline, when `build::build_controls` creates them
+/// ([`load_values`] does `CB_SETCURSEL` `ID_APP_THEME` itself, so it is not one of these).
+/// That is fine for the dialog's normal lifetime
+/// (the combo keeps whatever the user last picked), but `refresh_from_settings` (post-Import
+/// and after an unattended sync pull) calls `load_values` WITHOUT re-running `build_controls`,
+/// so without this the combos below kept showing the PRE-import on-screen selection — and
+/// `apply_settings` then read that stale index back via `CB_GETCURSEL` and silently overwrote
+/// the just-imported value on Save. `ID_LANG` IS included: `apply_settings` reads it on every
+/// Save (`settings::set_lang(selected_lang(hwnd)...)`), so leaving it stale here reverted an
+/// imported language exactly like the other combos, despite an earlier comment here claiming
+/// otherwise. The custom-action Enable checkbox (not a combo, but the same "derived from a
+/// setting `load_values` doesn't touch" shape) and its dependent greying are re-derived here
+/// too, for the same reason.
 pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
         SendMessageW(

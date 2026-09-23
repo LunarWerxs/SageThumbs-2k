@@ -31,7 +31,7 @@
 //! unrelated builds, then panic out of nowhere the next time someone edits
 //! *any* locale file and forces a rebuild.
 //!
-//! **Any script or tool that writes to `locales/*.toml` must preserve the
+//! **Any script or tool that writes to `assets/locales/*.toml` must preserve the
 //! existing encoding exactly: UTF-8 with no BOM, and CRLF line endings.**
 //! Tools that do "universal newline" text I/O (e.g. Python's default text
 //! mode) will silently normalize CRLF to LF on read or write, which is an
@@ -166,7 +166,7 @@ fn embed_manifest_and_icon() -> bool {
     true
 }
 
-/// Parse every `locales/<code>.toml` into a generated `LOCALES` table that
+/// Parse every `assets/locales/<code>.toml` into a generated `LOCALES` table that
 /// `src/i18n.rs` includes. `en` is emitted first so it is index 0 (the
 /// fallback). Values are emitted as raw string literals — no runtime TOML.
 fn generate_locales() {

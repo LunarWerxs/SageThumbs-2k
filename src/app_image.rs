@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
 
 /// Reject attacker-influenced banner/cover art whose declared dimensions would
 /// blow up the decode allocation, charged at the decoder's own bytes-per-pixel
-/// (a 16-bit source is 8 B/px, not 4). The upstream
+/// (a 16-bit source is 2-8 B/px, not always 4). The upstream
 /// byte cap (4 MiB) bounds the *compressed* size, but a tiny payload can still
 /// declare an enormous canvas, so probe dimensions before decoding. Reuses the
 /// decode pipeline's single bomb-guard ceilings (`decode::limits`) so all paths
@@ -107,7 +107,7 @@ pub fn image_to_hbitmap_sized(bytes: &[u8], w: u32, h: u32) -> Option<isize> {
 mod tests {
     use super::*;
 
-    /// A BMP file header declaring `w` x `h` and nothing else: `into_dimensions` reads the
+    /// A BMP file header declaring `w` x `h` and nothing else: `into_decoder` reads the
     /// 54-byte header and never touches pixel data, which is exactly the attack this guard
     /// exists for - a tiny payload declaring an enormous canvas.
     fn bmp_header(w: i32, h: i32) -> Vec<u8> {

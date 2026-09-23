@@ -1,4 +1,4 @@
-//! The right column: the file-type list and the left column's scrollbar and clipping mask.
+//! The right column: the format label and buttons, the live search box, and the file-type list.
 
 use super::*;
 

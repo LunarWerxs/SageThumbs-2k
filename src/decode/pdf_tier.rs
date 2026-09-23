@@ -20,8 +20,8 @@ pub(crate) fn pdf_raster_edge(wic_thumbnail_cx: Option<u32>) -> u32 {
     // ...and a ceiling at the crate-wide raster cap: an MCP/CLI caller can pass any `size`,
     // and `pdf::scaled_page_dims` clamps the page to exactly this number before asking WinRT
     // to rasterize it. The Illustrator paths instead call `PdfSession::render_to_width`, which
-    // uses this as the exact WIDTH and derives the height from the page's aspect ratio, with
-    // no clamp and without consulting `scaled_page_dims`.
+    // takes this as the requested WIDTH and fits the page to it (`pdf::width_fitted_dims`),
+    // scaling BOTH edges down together when the derived height would pass this same cap.
     wic_thumbnail_cx
         .unwrap_or(1024)
         .clamp(1024, limits::MAX_DIM)

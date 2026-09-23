@@ -113,8 +113,9 @@ fn check_legacy_install(r: &mut Report) {
 }
 
 /// Check one COM handler's registration/load status, writing to the report as it goes.
-/// A broken critical handler is reported via `fail_with_fix`; a non-critical one with
-/// `S::Warn` only.
+/// A not-registered critical handler is reported via `fail_with_fix`, a non-registered
+/// non-critical one with `S::Warn`; a registered handler whose DLL is missing or unloadable
+/// always goes through `fail_with_fix`.
 fn check_one_handler(r: &mut Report, name: &str, clsid: &str, critical: bool) {
     match inproc_path(clsid) {
         None => {

@@ -110,17 +110,28 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
             }
 
             let r = self.get_thumbnail_inner(cx, phbmp, pdwalpha, &cfg);
-            if let Err(e) = &r {
-                // Always-on breadcrumb: the shell swallows the HRESULT and just falls
-                // back to the default icon, so without this line the most common report
-                // ("X shows the generic icon") produced an empty log.
-                self.log_failure(e);
-                if let Some(id) = id {
-                    failmemo::record_failure(id);
-                }
-            }
+            report_thumbnail_failure(self, &r, id);
             r
         })
+    }
+}
+
+/// The breadcrumb a failed `GetThumbnail` leaves behind: one `ERROR` line with the HRESULT, and
+/// the stream's identity into the failure memory so the next call for the same file is refused
+/// before any decode work. Does nothing on `Ok`.
+fn report_thumbnail_failure(
+    provider: &ThumbnailProvider_Impl,
+    r: &Result<()>,
+    id: Option<failmemo::Identity>,
+) {
+    if let Err(e) = r {
+        // Always-on breadcrumb: the shell swallows the HRESULT and just falls
+        // back to the default icon, so without this line the most common report
+        // ("X shows the generic icon") produced an empty log.
+        provider.log_failure(e);
+        if let Some(id) = id {
+            failmemo::record_failure(id);
+        }
     }
 }
 

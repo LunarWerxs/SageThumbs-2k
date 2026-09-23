@@ -185,7 +185,7 @@ fn duration_text_fills_a_translated_template() {
 
 #[test]
 fn local_datetime_has_the_info_card_shape() {
-    let s = local_datetime(1_758_000_000);
+    let s = crate::unixtime::local_datetime(1_758_000_000);
     assert_eq!(s.len(), 16, "{s}");
     assert_eq!(&s[4..5], "-");
     assert_eq!(&s[10..11], " ");

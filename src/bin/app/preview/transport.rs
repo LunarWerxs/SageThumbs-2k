@@ -474,17 +474,7 @@ pub(super) unsafe fn draw_scrub_strip(
     SelectObject(hdc, op);
     let _ = DeleteObject(HGDIOBJ(pen.0));
 
-    let Parts {
-        prev,
-        next,
-        play,
-        track,
-        mute,
-        vol,
-        loopb,
-        arrows,
-        speed,
-    } = scrub_parts(hwnd, sr);
+    let parts = scrub_parts(hwnd, sr);
     let accent = crate::dark::ACCENT().0;
     let border = crate::dark::BORDER().0;
 
@@ -492,8 +482,8 @@ pub(super) unsafe fn draw_scrub_strip(
     let icon = super::paint::icon_font(hwnd);
 
     // prev / next file, `subtle` so play/pause stays the dominant control.
-    glyph(hdc, icon, &prev, GLYPH_PREVIOUS, subtle);
-    glyph(hdc, icon, &next, GLYPH_NEXT, subtle);
+    glyph(hdc, icon, &parts.prev, GLYPH_PREVIOUS, subtle);
+    glyph(hdc, icon, &parts.next, GLYPH_NEXT, subtle);
 
     // play / pause, in the text colour.
     let pp = if v.is_paused() {
@@ -501,7 +491,7 @@ pub(super) unsafe fn draw_scrub_strip(
     } else {
         GLYPH_PAUSE
     };
-    glyph(hdc, icon, &play, pp, text);
+    glyph(hdc, icon, &parts.play, pp, text);
 
     // time label
     let dur = v.duration();
@@ -514,9 +504,9 @@ pub(super) unsafe fn draw_scrub_strip(
     let mut w: Vec<u16> = label.encode_utf16().collect();
     let mut tr = RECT {
         // After the LAST button of the left cluster (next-file), or the label runs under it.
-        left: next.right + sc(6),
+        left: parts.next.right + sc(6),
         top: sr.top,
-        right: track.left - sc(6),
+        right: parts.track.left - sc(6),
         bottom: sr.bottom,
     };
     DrawTextW(
@@ -533,13 +523,13 @@ pub(super) unsafe fn draw_scrub_strip(
     } else {
         0.0
     };
-    draw_slider(hdc, &track, frac, accent, border);
+    draw_slider(hdc, &parts.track, frac, accent, border);
 
     // speaker (muted swaps to the crossed-out glyph, in `subtle`) + volume slider
     let full = RECT {
         top: sr.top,
         bottom: sr.bottom,
-        ..mute
+        ..parts.mute
     };
     if v.muted() {
         glyph(hdc, icon, &full, GLYPH_MUTE, subtle);
@@ -551,13 +541,44 @@ pub(super) unsafe fn draw_scrub_strip(
     } else {
         v.volume().clamp(0.0, 1.0)
     };
-    draw_slider(hdc, &vol, vfrac, accent, border);
+    draw_slider(hdc, &parts.vol, vfrac, accent, border);
 
+    // repeat toggle, ←/→ meaning and playback speed: the state-carrying right-hand controls.
+    draw_right_controls(hdc, hwnd, icon, &parts, v, accent, subtle);
+
+    // Keyboard focus ring, drawn last so it always sits on top of whatever it outlines.
+    if let Some(tb) = focus {
+        let r = match tb {
+            TBtn::Prev => parts.prev,
+            TBtn::Play => parts.play,
+            TBtn::Next => parts.next,
+            TBtn::Mute => parts.mute,
+            TBtn::Loop => parts.loopb,
+            TBtn::Arrows => parts.arrows,
+            TBtn::Speed => parts.speed,
+        };
+        draw_focus_ring(hdc, &r);
+    }
+
+    let _ = DeleteObject(icon.into());
+}
+
+/// Draw the strip's right-hand controls — repeat toggle, ←/→ meaning, playback speed — whose
+/// glyph or label colour encodes live player state (ACCENT when on / non-default, else `subtle`).
+unsafe fn draw_right_controls(
+    hdc: HDC,
+    hwnd: HWND,
+    icon: HFONT,
+    parts: &Parts,
+    v: &super::video::VideoPlayer,
+    accent: u32,
+    subtle: u32,
+) {
     // repeat toggle: ACCENT when on, `subtle` when off, so the state reads at a glance.
     glyph(
         hdc,
         icon,
-        &loopb,
+        &parts.loopb,
         GLYPH_REPEAT,
         if v.looping() { accent } else { subtle },
     );
@@ -567,7 +588,7 @@ pub(super) unsafe fn draw_scrub_strip(
     glyph(
         hdc,
         icon,
-        &arrows,
+        &parts.arrows,
         GLYPH_SWITCH,
         if nav_on { accent } else { subtle },
     );
@@ -588,7 +609,7 @@ pub(super) unsafe fn draw_scrub_strip(
         }),
     );
     let mut sw: Vec<u16> = fmt_speed(sp).encode_utf16().collect();
-    let mut sr2 = speed;
+    let mut sr2 = parts.speed;
     DrawTextW(
         hdc,
         &mut sw,
@@ -596,22 +617,6 @@ pub(super) unsafe fn draw_scrub_strip(
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
     );
     SelectObject(hdc, oldf2);
-
-    // Keyboard focus ring, drawn last so it always sits on top of whatever it outlines.
-    if let Some(tb) = focus {
-        let r = match tb {
-            TBtn::Prev => prev,
-            TBtn::Play => play,
-            TBtn::Next => next,
-            TBtn::Mute => mute,
-            TBtn::Loop => loopb,
-            TBtn::Arrows => arrows,
-            TBtn::Speed => speed,
-        };
-        draw_focus_ring(hdc, &r);
-    }
-
-    let _ = DeleteObject(icon.into());
 }
 
 /// Keyboard-focus ring for one transport control: a 1px accent frame drawn just inside its

@@ -233,7 +233,7 @@ pub(super) unsafe fn on_destroy(hwnd: HWND) -> LRESULT {
 }
 
 /// The three WM_TIMER chords (status refresh / GIF frame advance / sponsor rotate)
-/// plus the left-column scrollbar + mouse wheel.
+/// Any other message returns None so the caller falls through.
 pub(super) unsafe fn on_timer_msg(hwnd: HWND, msg: u32, wparam: WPARAM) -> Option<LRESULT> {
     match msg {
         // Keep the hotkey-service status line honest while the dialog is open.

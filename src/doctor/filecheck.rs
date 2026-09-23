@@ -146,15 +146,6 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
     }
 }
 
-/// Is this file inside a cloud sync root (OneDrive and friends), and does that provider
-/// register its own thumbnail source?
-///
-/// A sync engine built on the Cloud Files API may declare a `ThumbnailProvider` under its
-/// `SyncRootManager` entry, which applies to EVERYTHING under that root rather than to one
-/// file type — so it can pre-empt a per-extension handler like ours for every file in the
-/// folder. That is the leading explanation for "works in a normal folder, generic icon in
-/// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
-/// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
 /// Whether lowercase `file` is `root` or inside it. A bare prefix match is not enough:
 /// `c:\users\me\onedrive-old\x.jpg` starts with the sync root `c:\users\me\onedrive` but is not
 /// inside it, so the character after the root must be a separator.
@@ -165,6 +156,15 @@ fn is_under_root(file: &str, root: &str) -> bool {
         && (file.len() == base.len() || file.as_bytes().get(base.len()) == Some(&b'\\'))
 }
 
+/// Is this file inside a cloud sync root (OneDrive and friends), and does that provider
+/// register its own thumbnail source?
+///
+/// A sync engine built on the Cloud Files API may declare a `ThumbnailProvider` under its
+/// `SyncRootManager` entry, which applies to EVERYTHING under that root rather than to one
+/// file type — so it can pre-empt a per-extension handler like ours for every file in the
+/// folder. That is the leading explanation for "works in a normal folder, generic icon in
+/// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
+/// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
 fn cloud_sync_root_note(r: &mut Report, p: &Path) {
     const SYNC_ROOTS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
     let Ok(file) = p.canonicalize() else {

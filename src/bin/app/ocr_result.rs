@@ -98,28 +98,37 @@ pub(crate) fn encode_png(
     Some(png)
 }
 
+/// The message key explaining an outcome that has no text to show, or `None` when the outcome
+/// carries text (which goes to the clipboard and the result window).
+///
+/// Blank/whitespace-only text is "the engine ran and found no words" — common and not an error,
+/// so say so plainly. "Too big to recognize" is a DIFFERENT problem from "the engine can't run",
+/// and the fix is different too (select a smaller area vs install a language pack). Telling an
+/// ultrawide/multi-monitor user to install a language pack sends them somewhere that can't help.
+fn outcome_message_key(outcome: &Result<String, (i32, String)>) -> Option<&'static str> {
+    match outcome {
+        Ok(text) if !text.trim().is_empty() => None,
+        Ok(_) => Some("ocr_none"),
+        Err((code, _)) if *code == sagethumbs2k_core::ocr::OCR_IMAGE_TOO_LARGE.0 => {
+            Some("ocr_too_large")
+        }
+        Err(_) => Some("ocr_failed"),
+    }
+}
+
 /// Route a recognition outcome to the clipboard + result window, or to the right explanation.
 unsafe fn surface(outcome: Result<String, (i32, String)>) {
-    match outcome {
-        // Recognized something → clipboard + the result window.
-        Ok(text) if !text.trim().is_empty() => {
-            let _ = set_clipboard_text(&text);
-            show_ocr_result(&text);
-        }
-        // The engine ran and found no words. Common and not an error — say so plainly.
-        Ok(_) => notify(t("ocr_none")),
-        Err((code, reason)) => {
+    if let Some(key) = outcome_message_key(&outcome) {
+        if let Err((_, reason)) = &outcome {
             sagethumbs2k_core::safety::log(&format!("screen OCR failed: {reason}"));
-            // "Too big to recognize" is a DIFFERENT problem from "the engine can't run", and the
-            // fix is different too (select a smaller area vs install a language pack). Telling an
-            // ultrawide/multi-monitor user to install a language pack sends them somewhere that
-            // can't help.
-            notify(if code == sagethumbs2k_core::ocr::OCR_IMAGE_TOO_LARGE.0 {
-                t("ocr_too_large")
-            } else {
-                t("ocr_failed")
-            });
         }
+        notify(t(key));
+        return;
+    }
+    // Recognized something → clipboard + the result window.
+    if let Ok(text) = outcome {
+        let _ = set_clipboard_text(&text);
+        show_ocr_result(&text);
     }
 }
 
@@ -221,5 +230,63 @@ impl ResultWindow for OcrResult {
 
     unsafe fn copy_source(hwnd: HWND) -> String {
         get_edit_text(hwnd, ID_EDIT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_outcome_with_text_has_no_message_to_show() {
+        let outcome: Result<String, (i32, String)> = Ok("recognized\nlines".to_string());
+        assert_eq!(outcome_message_key(&outcome), None);
+    }
+
+    #[test]
+    fn whitespace_only_text_counts_as_no_words_found_not_a_failure() {
+        for blank in ["", " ", "\r\n\t "] {
+            let outcome: Result<String, (i32, String)> = Ok(blank.to_string());
+            assert_eq!(
+                outcome_message_key(&outcome),
+                Some("ocr_none"),
+                "{blank:?} is no text, not a failure"
+            );
+        }
+    }
+
+    #[test]
+    fn an_oversized_image_gets_the_too_large_key() {
+        let outcome: Result<String, (i32, String)> = Err((
+            sagethumbs2k_core::ocr::OCR_IMAGE_TOO_LARGE.0,
+            "image too large".into(),
+        ));
+        assert_eq!(outcome_message_key(&outcome), Some("ocr_too_large"));
+    }
+
+    #[test]
+    fn any_other_engine_failure_gets_the_failed_key() {
+        let outcome: Result<String, (i32, String)> = Err((-2147467259, "engine".into()));
+        assert_eq!(outcome_message_key(&outcome), Some("ocr_failed"));
+    }
+
+    #[test]
+    fn encode_png_hands_back_exactly_what_the_writer_produced() {
+        let png = encode_png(|buf| {
+            buf.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+            Ok(())
+        });
+        assert_eq!(png.as_deref(), Some(&b"\x89PNG\r\n\x1a\n"[..]));
+    }
+
+    #[test]
+    fn a_writer_that_fails_yields_none_rather_than_a_partial_buffer() {
+        let png = encode_png(|buf| {
+            buf.extend_from_slice(b"partial");
+            Err(image::ImageError::IoError(std::io::Error::other(
+                "encoder failed",
+            )))
+        });
+        assert_eq!(png, None);
     }
 }

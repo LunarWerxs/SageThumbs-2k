@@ -269,7 +269,7 @@ fn decode_via_magick_spec(
 /// Worst-case bytes the decode path's stdout can legitimately carry: every call site
 /// caps geometry at [`MAGICK_MAX_EDGE_PX`] (4096) before asking magick to write a PNG,
 /// and the bundled build is Q16 and writes 16-BIT PNGs, so 4096x4096 16-bit RGBA
-/// (134 MiB) is the ceiling with framing overhead on top. Without this, a starved-but-
+/// (128 MiB) is the ceiling with framing overhead on top. Without this, a starved-but-
 /// alive magick child could stream unbounded bytes into this process for the whole
 /// CPU/wall budget window below.
 const MAGICK_PNG_CAP: usize =

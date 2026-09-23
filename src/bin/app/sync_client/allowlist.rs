@@ -101,9 +101,9 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
 
 /// Every setting that deliberately does NOT sync, with the reason it doesn't.
 ///
-/// Its only consumer is `every_setting_is_classified` in `tests.rs`, so it is compiled out of
-/// non-test builds. Its real job is to be the written-down decision, and to fail the build's
-/// test run when a new setting has no decision yet.
+/// Its only consumer is `every_setting_is_classified` in `tests.rs`, so non-test builds see it
+/// as dead code and allow the lint. Its real job is to be the written-down decision, and to fail
+/// the build's test run when a new setting has no decision yet.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) const NEVER_SYNCED: &[&str] = &[
     // An absolute path on THIS PC.

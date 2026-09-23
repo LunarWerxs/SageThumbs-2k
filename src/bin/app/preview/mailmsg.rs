@@ -577,9 +577,6 @@ fn strip_html(html: &str) -> String {
     collapse_blank_lines(&unescaped)
 }
 
-/// Drop `<script>`/`<style>`/`<head>` spans wholesale (content included), and turn every
-/// other tag into either nothing (inline tags) or a newline (block tags), so what's left
-/// reads as loosely-formatted text.
 /// The close tag to skip ahead to when `tail` (lowercase) opens a `<script>`, `<style>` or
 /// `<head>` element. The element NAME must match exactly: `<header>` is not `<head>`, and
 /// treating it as one searched for a `</head>` that never comes and dropped the rest of the body.
@@ -592,6 +589,9 @@ fn skipped_element_close(tail: &str) -> Option<String> {
     })
 }
 
+/// Drop `<script>`/`<style>`/`<head>` spans wholesale (content included), and turn every
+/// other tag into either nothing (inline tags) or a newline (block tags), so what's left
+/// reads as loosely-formatted text.
 fn strip_tags_to_text(html: &str) -> String {
     let lower_all = html.to_ascii_lowercase();
     let mut cleaned = String::with_capacity(html.len());

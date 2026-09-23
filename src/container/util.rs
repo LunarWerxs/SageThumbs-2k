@@ -103,8 +103,9 @@ pub(crate) fn tiff_u32(b: &[u8], little: bool, o: usize) -> Option<u32> {
 /// `BITMAPFILEHEADER`. Used by the DWG / Rhino / 3ds-Max / CorelDRAW preview
 /// extractors, whose embedded previews are stored as raw DIBs. Rejects a `biSize`
 /// outside the known `BITMAPINFOHEADER`-family sizes and a `biBitCount` outside the
-/// valid set, computes `bfOffBits` from the header (palette size for ≤8bpp, +12 for
-/// `BI_BITFIELDS`), and bounds the wrapped output to [`super::MAX_COVER`].
+/// valid set, computes `bfOffBits` from the header (palette size for ≤8bpp, 12 mask
+/// bytes for a 40-byte `BI_BITFIELDS` header), and bounds the wrapped output to
+/// [`super::MAX_COVER`].
 pub(super) fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     let (bi_size, bit_count, compression, clr_used) = dib_header_fields(dib)?;
     let ncol = if clr_used != 0 {

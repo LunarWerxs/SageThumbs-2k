@@ -36,11 +36,11 @@ thread_local! {
 }
 
 /// Controls reflowed on resize: the right file-types list GROWs in height; the
-/// footer buttons slide down with the bottom. Does NOT list `ID_SCROLLBAR` /
-/// `ID_LEFT_MASK` / `ID_BANNER` — `navrail::V3_ALWAYS_HIDDEN` hides those on every
-/// page with no page that ever un-hides them, so reflowing them would just move
-/// invisible controls (A048/A261; `reflow_ctls_never_targets_a_permanently_hidden_control`
-/// below locks this against a future entry re-adding one of them).
+/// footer buttons slide down with the bottom. Does NOT list `ID_BANNER` —
+/// `navrail::V3_ALWAYS_HIDDEN` hides it on every page with no page that ever
+/// un-hides it, so reflowing it would just move an invisible control (A048/A261;
+/// `reflow_ctls_never_targets_a_permanently_hidden_control`
+/// below locks this against a future entry re-adding it).
 const REFLOW_CTLS: &[(i32, bool)] = &[
     (ID_LIST, true),
     (ID_ABOUT, false),
@@ -85,8 +85,8 @@ unsafe fn capture_design_layout(hwnd: HWND, client_h: i32) {
     });
 }
 
-/// Reflow the bottom-anchored controls for the new client height + recompute the left
-/// scroll viewport. The first call (during creation) just captures the design layout.
+/// Reflow the bottom-anchored controls for the new client height. The first call
+/// (during creation) just captures the design layout.
 pub(super) unsafe fn on_resize(hwnd: HWND, client_h: i32) {
     let first = RESIZE.with(|s| s.borrow().is_none());
     if first {
@@ -134,8 +134,8 @@ mod tests {
 
     /// A048/A261: `REFLOW_CTLS` must never target a control `navrail::V3_ALWAYS_HIDDEN`
     /// keeps permanently hidden — reflowing an invisible control on resize is pure
-    /// waste and is exactly what got trimmed here (ID_SCROLLBAR/ID_LEFT_MASK/
-    /// ID_BANNER). Fails if a future edit re-adds one of those ids to REFLOW_CTLS
+    /// waste and is exactly what got trimmed here (ID_BANNER). Fails if a future
+    /// edit re-adds such an id to REFLOW_CTLS
     /// without noticing the v3 layout hides it unconditionally.
     #[test]
     fn reflow_ctls_never_targets_a_permanently_hidden_control() {

@@ -63,8 +63,8 @@ pub(crate) use relay::{
 };
 
 pub(crate) use sagethumbs2k_core::licence_state::{
-    days_until, entitlement_from_cache, history_path, now_unix, phase, read_history, read_mode,
-    shell_locked, write_history, Entitlement, History, Mode, Phase, LOCK_GRACE_SECS,
+    days_until, entitlement_from_cache, history_path, phase, read_history, read_mode, shell_locked,
+    write_history, Entitlement, History, Mode, Phase, LOCK_GRACE_SECS,
 };
 
 /// The portable settings marker a redeemed key writes - the same string the installer
@@ -257,7 +257,7 @@ pub(crate) fn current_posture() -> Posture {
     start_trial_if_due();
     let mode = read_mode();
     let history = history_path().and_then(|p| read_history(&p));
-    let now = now_unix();
+    let now = sagethumbs2k_core::unixtime::now();
     let ent = entitlement_now(now, history.as_ref());
     let p = posture(now, mode, ent, history.as_ref());
     sagethumbs2k_core::safety::log_debugf!(
@@ -289,7 +289,7 @@ pub(crate) fn start_trial_if_due() {
     if !needs_clock && !needs_revoked_stamp {
         return;
     }
-    let now = now_unix();
+    let now = sagethumbs2k_core::unixtime::now();
     update_history_at(&path, |h| {
         if h.last_positive_unix == 0 && h.trial_started_unix == 0 {
             h.trial_started_unix = now;

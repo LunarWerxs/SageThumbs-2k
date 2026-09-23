@@ -73,22 +73,6 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
     Ok(hbmp)
 }
 
-/// Swap the red and blue channels of a 32bpp raster and force every pixel opaque, copying
-/// `src` into `dst`.
-///
-/// GDI hands a DIB section's bits back as `B,G,R,A` and every `image::RgbaImage` in this repo
-/// wants `R,G,B,A`, so BGRA -> RGBA and RGBA -> BGRA are the SAME operation - swap channels 0
-/// and 2 - which is why one function serves both directions. Four call sites had pasted the
-/// identical four-line loop: `safety::composite_rgba_over_bg`'s fully-opaque fast path,
-/// `contextmenu::paint`'s menu-preview capture, the preview font specimen's read-back, and the
-/// `previewhandler_shot` example.
-///
-/// ⚠ The `_opaque` in the name is load-bearing: this writes 255 into every alpha byte and
-/// discards whatever was there. Anything that must honour transparency premultiplies instead
-/// (`create_premultiplied_dib` above, `preview::content::dib`) and must NOT call this.
-///
-/// Converts `min(src.len(), dst.len()) / 4` pixels and returns that count, so a caller whose
-/// two buffers disagree is truncated rather than panicking.
 /// `HALFTONE`-scaled `SRCCOPY` blit of the whole `src` (`width`, `height`) of `hbmp` into the
 /// `dst` rectangle (`x`, `y`, `width`, `height`) on `hdc`, through a scratch memory DC that is
 /// selected back out and deleted afterwards. Shared by the Explorer preview pane and the app's
@@ -118,6 +102,22 @@ pub unsafe fn stretch_blit(hdc: HDC, dst: (i32, i32, i32, i32), hbmp: HBITMAP, s
     let _ = DeleteDC(memdc);
 }
 
+/// Swap the red and blue channels of a 32bpp raster and force every pixel opaque, copying
+/// `src` into `dst`.
+///
+/// GDI hands a DIB section's bits back as `B,G,R,A` and every `image::RgbaImage` in this repo
+/// wants `R,G,B,A`, so BGRA -> RGBA and RGBA -> BGRA are the SAME operation - swap channels 0
+/// and 2 - which is why one function serves both directions. Four call sites had pasted the
+/// identical four-line loop: `safety::composite_rgba_over_bg`'s fully-opaque fast path,
+/// `contextmenu::paint`'s menu-preview capture, the preview font specimen's read-back, and the
+/// `previewhandler_shot` example.
+///
+/// ⚠ The `_opaque` in the name is load-bearing: this writes 255 into every alpha byte and
+/// discards whatever was there. Anything that must honour transparency premultiplies instead
+/// (`create_premultiplied_dib` above, `preview::content::dib`) and must NOT call this.
+///
+/// Converts `min(src.len(), dst.len()) / 4` pixels and returns that count, so a caller whose
+/// two buffers disagree is truncated rather than panicking.
 pub fn swap_rb_opaque(src: &[u8], dst: &mut [u8]) -> usize {
     let px = src.len().min(dst.len()) / 4;
     for i in 0..px {

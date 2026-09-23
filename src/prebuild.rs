@@ -373,9 +373,8 @@ fn visit_entry(
 /// strip it back: `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share` -> the plain
 /// `\\server\share` (stripping only `\\?\` there would leave `UNC\…`, which resolves nowhere).
 ///
-/// `pub` (not `pub(crate)`): `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
-/// own `SHCreateItemFromParsingName` call, and used to carry a hand-copied duplicate of this
-/// logic (relocated from a fn into an inline block, near-verbatim) rather than importing it.
+/// `pub` (not `pub(crate)`): the separate `app` bin crate imports this for its own
+/// `SHCreateItemFromParsingName` calls, and so lives outside this crate's visibility scope.
 #[doc(hidden)]
 pub fn parsing_path(path: &str) -> String {
     Path::new(path)

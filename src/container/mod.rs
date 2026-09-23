@@ -314,6 +314,11 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     if looks_like_djvu(bytes) {
         return djvu::extract(bytes).map(CoverOut::Image);
     }
+    // PSD / DOS-EPS / EPS carry an embedded preview only: a magic match answers with
+    // that preview or None; only an unmatched magic reaches the checks below.
+    if let Some(cover) = try_embedded_preview_cover(bytes) {
+        return cover;
+    }
     // GIMP XCF: native flatten-to-thumbnail. Takes priority over the magick tier on
     // purpose — ImageMagick's coder fails on the modern "gimp xcf v011" (GIMP 2.10/3.0),
     // and ours needs no ImageMagick at all (works on the compact install).
@@ -324,29 +329,6 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     // .NET-serialized document after it, so no ImageMagick and no deserializer.
     if pdn::looks_like_pdn(bytes) {
         return pdn::extract(bytes).map(CoverOut::Bytes);
-    }
-    // Photoshop PSD/PSB: the baked-in JPEG thumbnail (resource 1036). Works with
-    // no ImageMagick; on None we fall through so a full install can still render
-    // the layers via the magick tier.
-    if bytes.starts_with(b"8BPS") {
-        if let Some(thumb) = psd::extract(bytes) {
-            return Some(CoverOut::Bytes(thumb));
-        }
-    }
-    // DOS-EPS: the baked-in TIFF screen preview (real PS rendering would need
-    // Ghostscript). A WMF-only/bare file stays terminally unsupported in the
-    // decoder instead of falling through to any PostScript-capable external tier.
-    if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
-        if let Some(cover) = eps::extract_dos_eps_cover(bytes) {
-            return Some(cover);
-        }
-    }
-    // Plain EPS: only read an already-embedded EPSI/Photoshop raster preview;
-    // never invoke a PostScript interpreter in the thumbnail host.
-    if bytes.starts_with(b"%!PS") {
-        if let Some(cover) = eps::extract_ascii_preview(bytes) {
-            return Some(cover);
-        }
     }
     // Apple Icon Image: slice out the largest embedded PNG / JPEG-2000 member.
     if bytes.starts_with(b"icns") {
@@ -377,6 +359,14 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
         return psp::extract_best(bytes).or_else(|| psp::extract(bytes).map(CoverOut::Bytes));
     }
 
+    // The remaining native decoders (keyed on a magic word, never the extension).
+    try_native_decoder_cover(bytes)
+}
+
+/// Native-decoder creative-app formats with no image tier behind them — Aseprite,
+/// Seattle FilmWorks, IFF ILBM, Cinema 4D, CorelDRAW, Clip Studio — each carve or
+/// decode their own preview; `None` when no magic matches.
+fn try_native_decoder_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Aseprite sprites: rendered from their own layers. Keyed on the magic word at offset 4,
     // never the extension - `.ase` is also 3DS ASCII scenes, Adobe swatches and GAP data.
     if aseprite::looks_like_aseprite(bytes) {
@@ -405,6 +395,40 @@ fn try_creative_app_cover(bytes: &[u8]) -> Option<CoverOut> {
     // Clip Studio Paint: read the preview PNG out of the embedded SQLite db.
     if bytes.starts_with(b"CSFCHUNK") {
         return clip::extract(bytes).map(CoverOut::Bytes);
+    }
+    None
+}
+
+/// Embedded-preview-only native formats (Photoshop PSD/PSB, DOS-EPS, plain EPS):
+/// `Some(Some(cover))` when the magic matched and a preview was usable, `Some(None)`
+/// when the magic matched but yields no cover (the caller returns that `None`),
+/// `None` when the magic does not match at all.
+fn try_embedded_preview_cover(bytes: &[u8]) -> Option<Option<CoverOut>> {
+    // Photoshop PSD/PSB: the baked-in JPEG thumbnail (resource 1036). Works with
+    // no ImageMagick; on None we fall through so a full install can still render
+    // the layers via the magick tier.
+    if bytes.starts_with(b"8BPS") {
+        if let Some(thumb) = psd::extract(bytes) {
+            return Some(Some(CoverOut::Bytes(thumb)));
+        }
+        return Some(None);
+    }
+    // DOS-EPS: the baked-in TIFF screen preview (real PS rendering would need
+    // Ghostscript). A WMF-only/bare file stays terminally unsupported in the
+    // decoder instead of falling through to any PostScript-capable external tier.
+    if bytes.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
+        if let Some(cover) = eps::extract_dos_eps_cover(bytes) {
+            return Some(Some(cover));
+        }
+        return Some(None);
+    }
+    // Plain EPS: only read an already-embedded EPSI/Photoshop raster preview;
+    // never invoke a PostScript interpreter in the thumbnail host.
+    if bytes.starts_with(b"%!PS") {
+        if let Some(cover) = eps::extract_ascii_preview(bytes) {
+            return Some(Some(cover));
+        }
+        return Some(None);
     }
     None
 }
@@ -703,8 +727,8 @@ pub fn head_preview_len<R: std::io::Read + std::io::Seek>(
 ///
 /// `read_prefix` performs the actual prefix read — a `File` handle here, a shell
 /// stream there — and is handed the (already rewound) reader and the byte count.
-/// The reader is parked back at 0 before any return, because [`head_preview_len`]
-/// seeks the shared stream around and a caller may reuse it afterwards.
+/// The reader is parked back at 0 before [`read_prefix`] runs, because
+/// [`head_preview_len`] seeks the shared stream around.
 pub(crate) fn head_preview_prefix<R, F>(
     head: &[u8],
     ext: Option<&str>,
@@ -719,8 +743,8 @@ where
     F: FnOnce(&mut R, u64) -> Option<Vec<u8>>,
 {
     let wanted = head_preview_len(head, ext, r, blanket);
-    // The length probe seeks the SHARED stream around; park it back at 0 before any
-    // return. Every downstream consumer re-seeks anyway — this is insurance for
+    // The length probe seeks the SHARED stream around; park it back at 0 before the
+    // prefix read. Every downstream consumer re-seeks anyway — this is insurance for
     // future ones that might not.
     let _ = r.seek(std::io::SeekFrom::Start(0));
     let wanted = wanted?.min(blanket);

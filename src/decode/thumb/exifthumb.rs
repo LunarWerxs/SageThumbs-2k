@@ -45,11 +45,15 @@ pub(super) fn jpeg_segment(bytes: &[u8], i: usize) -> Option<(u8, usize, usize)>
     if marker == 0xD9 || marker == 0xDA {
         return None; // EOI / start-of-scan: past the metadata headers
     }
-    // Standalone markers — 0xFF fill padding, TEM, RSTn, SOI — have no length
-    // bytes to read. Step over just the marker (an empty body) so the next
-    // iteration lands on the real marker instead of treating two of its bytes
-    // as a segment length.
-    if marker == 0xFF || marker == 0x01 || (0xD0..=0xD8).contains(&marker) {
+    // A fill byte: this 0xFF only pads, and the one after it starts the real marker, so step
+    // ONE byte (two would swallow that marker's own 0xFF and end the walk).
+    if marker == 0xFF {
+        return Some((marker, i + 1, i + 1));
+    }
+    // Standalone markers — TEM, RSTn, SOI — have no length bytes to read. Step over just the
+    // marker (an empty body) so the next iteration lands on the real marker instead of
+    // treating two of its bytes as a segment length.
+    if marker == 0x01 || (0xD0..=0xD8).contains(&marker) {
         return Some((marker, i + 2, i + 2));
     }
     let seg_len = u16::from_be_bytes([*bytes.get(i + 2)?, *bytes.get(i + 3)?]) as usize;
@@ -140,7 +144,7 @@ pub(in super::super) fn apply_exif_orientation(img: DynamicImage, bytes: &[u8]) 
 }
 
 /// EXIF Orientation (tag `0x0112`) straight out of IFD0, walking only the entry table
-/// with the existing [`r16`]/[`r32`] helpers — the bounded, zero-copy sibling of
+/// with the existing [`tiff_u16`]/[`tiff_u32`] helpers — the bounded, zero-copy sibling of
 /// [`tiff_thumbnail`]'s IFD1 walk, for the one question this call site actually needs
 /// answered. `exif::Reader::read_from_container` reads a TIFF-magic buffer whole to
 /// answer this same one-tag question, and every camera RAW this handler is hooked for
@@ -152,7 +156,7 @@ pub(super) fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
     ifd0_orientation(tiff, le, ifd0)
 }
 
-/// Orientation (tag `0x0112`) from IFD0's entry table, walking it with the bounded [`r16`]
+/// Orientation (tag `0x0112`) from IFD0's entry table, walking it with the bounded [`tiff_u16`]
 /// helpers. `None` when the table has no Orientation entry or is truncated.
 pub(super) fn ifd0_orientation(tiff: &[u8], le: bool, ifd0: usize) -> Option<u32> {
     let n0 = tiff_u16(tiff, le, ifd0)? as usize;
@@ -200,4 +204,18 @@ pub(in super::super) fn has_exif_container(b: &[u8]) -> bool {
             || b.starts_with(&[0x89, b'P', b'N', b'G'])        // PNG (eXIf chunk)
             || (b.starts_with(b"RIFF") && &b[8..12] == b"WEBP") // WebP
             || &b[4..8] == b"ftyp") // ISOBMFF: HEIF/HEIC/AVIF
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 0xFF fill byte is one byte: stepping two would swallow the next marker's own 0xFF and
+    /// end the walk before the APP1 segment that carries the EXIF thumbnail.
+    #[test]
+    fn a_fill_byte_steps_one_byte_and_the_next_marker_still_parses() {
+        let bytes = [0xFF, 0xD8, 0xFF, 0xFF, 0xE1, 0x00, 0x04, 0xAA, 0xBB];
+        assert_eq!(jpeg_segment(&bytes, 2), Some((0xFF, 3, 3)));
+        assert_eq!(jpeg_segment(&bytes, 3), Some((0xE1, 7, 9)));
+    }
 }

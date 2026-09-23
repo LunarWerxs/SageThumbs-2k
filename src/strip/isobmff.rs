@@ -395,17 +395,18 @@ fn targets_replaceable(targets: &[&Item]) -> bool {
 /// image item from the comparison too, and the overwrite would land on the picture. A
 /// target with no extent answers false (`targets_replaceable` already refused it).
 fn targets_disjoint(bytes: &[u8], found: &[Item]) -> bool {
-    // Every non-`mdat` top-level box, HEADER INCLUDED: pointing a target at any of
-    // them (ftyp, the meta box itself, ...) would overwrite the box structure.
-    // Spans are reconstructed from the body offsets `boxes` returns plus box
-    // contiguity; `mdat` (where real payloads legitimately live) is exempt.
+    // Every top-level box, HEADER INCLUDED: pointing a target at any of them (ftyp, the
+    // meta box itself, ...) would overwrite the box structure. Spans are reconstructed
+    // from the body offsets `boxes` returns plus box contiguity; `mdat`'s BODY (where real
+    // payloads legitimately live) is exempt, its header is not.
     let mut prev_end = 0usize;
     let structural: Vec<(usize, usize)> = boxes(bytes, 0)
         .into_iter()
-        .filter_map(|(typ, o, l)| {
+        .map(|(typ, o, l)| {
             let start = prev_end;
             prev_end = o + l;
-            (&typ != b"mdat").then_some((start, (o + l).saturating_sub(start)))
+            let end = if &typ == b"mdat" { o } else { o + l };
+            (start, end.saturating_sub(start))
         })
         .collect();
     let overlaps = |a: (usize, usize), b: (usize, usize)| a.0 < b.0 + b.1 && b.0 < a.0 + a.1;

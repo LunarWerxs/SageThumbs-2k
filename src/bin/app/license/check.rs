@@ -186,7 +186,7 @@ pub(super) fn refresh_entitlement_inner(force: bool) -> Option<Entitlement> {
     if mode != Mode::Business && !has_redeemed {
         return None;
     }
-    let now = now_unix();
+    let now = sagethumbs2k_core::unixtime::now();
     let last_check = history.as_ref().map_or(0, |h| h.last_check_unix);
     if !force && !refresh_due(now, last_check) {
         return None;

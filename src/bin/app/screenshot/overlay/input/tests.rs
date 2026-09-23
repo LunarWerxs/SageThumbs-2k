@@ -301,6 +301,39 @@ fn deleting_a_shape_keeps_it_restorable_by_undo() {
     }
 }
 
+/// Redo with nothing to redo is not an action: it must leave a just-made Delete undoable
+/// (it used to forget it, and the next Ctrl+Z then popped a different, live shape).
+#[test]
+fn redo_with_nothing_to_redo_keeps_a_delete_undoable() {
+    unsafe {
+        let hwnd = test_window();
+        {
+            let s = &mut *shot_ptr(hwnd);
+            s.shapes.push(Shape::Number {
+                at: POINT { x: 5, y: 5 },
+                n: 3,
+                color: s.cur_color,
+            });
+            s.selected = Some(0);
+        }
+        assert!(handle_key(hwnd, VK_DELETE.0));
+        {
+            let s = &mut *shot_ptr(hwnd);
+            redo_last(s);
+            assert!(
+                has_pending_delete(),
+                "an empty redo must not forget the delete"
+            );
+            undo_last(s);
+            match s.shapes.as_slice() {
+                [Shape::Number { n, .. }] => assert_eq!(*n, 3),
+                _ => panic!("undo must restore the deleted shape"),
+            }
+        }
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
 /// The flyout's +/- and the `[`/`]` keyboard shortcut must not disagree on the
 /// text-size ceiling — a size the flyout allowed used to silently shrink the moment
 /// `]` was pressed next, because this path clamped to a smaller, different max.

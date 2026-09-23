@@ -160,29 +160,51 @@ fn for_each_jpeg_segment<'b, B>(
 ) -> Option<B> {
     let mut i = 2usize;
     while i + 4 <= b.len() {
-        if b[i] != 0xFF {
-            i += 1;
-            continue;
+        match jpeg_segment_step(b, i, &mut visit) {
+            JpegSegmentStep::Next(next) => i = next,
+            JpegSegmentStep::End => return None,
+            JpegSegmentStep::Found(found) => return Some(found),
         }
-        let marker = b[i + 1];
-        if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
-            i += 2;
-            continue;
-        }
-        if marker == 0xDA {
-            return None;
-        }
-        let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
-        if len < 2 {
-            return None;
-        }
-        let payload = b.get(i + 4..i + 2 + len)?;
-        if let core::ops::ControlFlow::Break(found) = visit(marker, payload) {
-            return Some(found);
-        }
-        i += 2 + len;
     }
     None
+}
+
+/// Scan the ONE segment at offset `i`: the offset the walk resumes at, that the walk is over,
+/// or the value a `Break` from `visit` ends it with.
+fn jpeg_segment_step<'b, B>(
+    b: &'b [u8],
+    i: usize,
+    visit: &mut impl FnMut(u8, &'b [u8]) -> core::ops::ControlFlow<B>,
+) -> JpegSegmentStep<B> {
+    if b[i] != 0xFF {
+        return JpegSegmentStep::Next(i + 1);
+    }
+    let marker = b[i + 1];
+    if marker == 0xFF || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+        return JpegSegmentStep::Next(i + 2);
+    }
+    if marker == 0xDA {
+        return JpegSegmentStep::End;
+    }
+    let len = ((b[i + 2] as usize) << 8) | b[i + 3] as usize;
+    if len < 2 {
+        return JpegSegmentStep::End;
+    }
+    let Some(payload) = b.get(i + 4..i + 2 + len) else {
+        return JpegSegmentStep::End;
+    };
+    match visit(marker, payload) {
+        core::ops::ControlFlow::Break(found) => JpegSegmentStep::Found(found),
+        core::ops::ControlFlow::Continue(()) => JpegSegmentStep::Next(i + 2 + len),
+    }
+}
+
+/// What [`jpeg_segment_step`] found: resume the walk at this offset, end it with no value
+/// (SOS, a length under 2, or a payload overrunning the buffer), or end it with a value.
+enum JpegSegmentStep<B> {
+    Next(usize),
+    End,
+    Found(B),
 }
 
 /// Quick check: a JPEG whose frame header declares 4 components (CMYK / YCCK). Walks the
@@ -238,15 +260,7 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     }
     let info = dec.info()?;
     let (w, h) = (u32::from(info.width), u32::from(info.height));
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
-        return None;
-    }
-    // MAX_DIM/MAX_PIXELS alone bound the OUTPUT shape, not what this function actually
-    // allocates on the way there. Unlike `decode_with_image_alloc`, this path runs before
-    // that budget is even constructed (it's tried up front in `decode_with_image_alloc`),
-    // so it has to enforce its own ceiling here rather than inherit one from a
-    // caller-supplied `Limits`.
-    if cmyk_transient_bytes_exceed_budget(w, h, MAX_ALLOC) {
+    if !cmyk_output_within_limits(w, h) {
         return None;
     }
     // We can only color-manage with the embedded CMYK profile — without one there is no
@@ -279,6 +293,23 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     let mut rgba = vec![0u8; px * 4];
     transform.transform(&cmyka, &mut rgba).ok()?;
     image::RgbaImage::from_raw(w, h, rgba).map(DynamicImage::ImageRgba8)
+}
+
+/// Are a CMYK JPEG's `w`×`h` samples decodable here: nonzero, within `MAX_DIM`/`MAX_PIXELS`,
+/// and inside the transient-byte budget of the three buffers the decode allocates?
+fn cmyk_output_within_limits(w: u32, h: u32) -> bool {
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
+        return false;
+    }
+    // MAX_DIM/MAX_PIXELS alone bound the OUTPUT shape, not what the decode actually
+    // allocates on the way there. Unlike `decode_with_image_alloc`, this path runs before
+    // that budget is even constructed (it's tried up front in `decode_with_image_alloc`),
+    // so it has to enforce its own ceiling here rather than inherit one from a
+    // caller-supplied `Limits`.
+    if cmyk_transient_bytes_exceed_budget(w, h, MAX_ALLOC) {
+        return false;
+    }
+    true
 }
 
 /// The standard sRGB electro-optical transfer function (IEC 61966-2-1) — the reference
@@ -333,25 +364,7 @@ fn icc_profile_is_srgb(src: &moxcms::ColorProfile) -> bool {
 /// the colorants against the BT.2020 and Display P3 references. HLG is only recognised from
 /// the tag: its curve is too close to a gamma to name from three samples.
 pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::PngCicp> {
-    use moxcms::{CicpColorPrimaries, ColorProfile, TransferCharacteristics, Xyzd};
-    let primaries_from_colorants = || -> u8 {
-        const EPS: f64 = 0.002;
-        let close = |a: Xyzd, b: Xyzd| {
-            (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
-        };
-        let matches = |reference: &ColorProfile| {
-            close(src.red_colorant, reference.red_colorant)
-                && close(src.green_colorant, reference.green_colorant)
-                && close(src.blue_colorant, reference.blue_colorant)
-        };
-        if matches(&ColorProfile::new_bt2020()) {
-            9
-        } else if matches(&ColorProfile::new_display_p3()) {
-            12
-        } else {
-            1
-        }
-    };
+    use moxcms::{CicpColorPrimaries, TransferCharacteristics};
     if let Some(tag) = src.cicp {
         let transfer = match tag.transfer_characteristics {
             TransferCharacteristics::Smpte2084 => 16,
@@ -362,7 +375,7 @@ pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::Pn
             CicpColorPrimaries::Bt2020 => 9,
             CicpColorPrimaries::Smpte432 => 12,
             CicpColorPrimaries::Bt709 => 1,
-            _ => primaries_from_colorants(),
+            _ => primaries_from_colorants(src),
         };
         return Some(super::cicp::PngCicp {
             primaries,
@@ -382,12 +395,33 @@ pub(super) fn icc_hdr_cicp(src: &moxcms::ColorProfile) -> Option<super::cicp::Pn
     };
     if curve_is_pq(&src.red_trc) && curve_is_pq(&src.green_trc) && curve_is_pq(&src.blue_trc) {
         return Some(super::cicp::PngCicp {
-            primaries: primaries_from_colorants(),
+            primaries: primaries_from_colorants(src),
             transfer: 16,
             full_range: true,
         });
     }
     None
+}
+
+/// CICP primaries code read off `src`'s colorants: 9 for BT.2020, 12 for Display P3, 1 otherwise.
+fn primaries_from_colorants(src: &moxcms::ColorProfile) -> u8 {
+    use moxcms::{ColorProfile, Xyzd};
+    const EPS: f64 = 0.002;
+    let close = |a: Xyzd, b: Xyzd| {
+        (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
+    };
+    let matches = |reference: &ColorProfile| {
+        close(src.red_colorant, reference.red_colorant)
+            && close(src.green_colorant, reference.green_colorant)
+            && close(src.blue_colorant, reference.blue_colorant)
+    };
+    if matches(&ColorProfile::new_bt2020()) {
+        9
+    } else if matches(&ColorProfile::new_display_p3()) {
+        12
+    } else {
+        1
+    }
 }
 
 /// Run `cms` over an 8-bit RGB or RGBA buffer (`layout` says which) and rebuild the image
@@ -431,7 +465,7 @@ where
 /// (checked numerically by [`icc_profile_is_srgb`]) — most PNG/TIFF/WebP exports carry
 /// one, and building a `moxcms` transform for the identity case is pure loss.
 pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
-    use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
+    use moxcms::{ColorProfile, DataColorSpace, Layout};
 
     let Some(icc) = icc.filter(|p| !p.is_empty()) else {
         return img;
@@ -464,13 +498,8 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
 
     // Transform a flat 8-bit buffer (sample count is preserved, so the ImageBuffer
     // rebuild can't fail). On any error, keep the ORIGINAL pixels — never a blank.
-    let cms = |layout: Layout, px: Vec<u8>| -> Vec<u8> {
-        let mut out = vec![0u8; px.len()];
-        match src.create_transform_8bit(layout, &dst, layout, TransformOptions::default()) {
-            Ok(t) if t.transform(&px, &mut out).is_ok() => out,
-            _ => px,
-        }
-    };
+    let cms =
+        |layout: Layout, px: Vec<u8>| -> Vec<u8> { icc_transform_8bit(&src, &dst, layout, px) };
 
     match img {
         DynamicImage::ImageRgb8(buf) => cms_8bit(buf, moxcms::Layout::Rgb, cms),
@@ -485,6 +514,21 @@ pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
             }
         }
         other => other,
+    }
+}
+
+/// Run the `src`→`dst` 8-bit CMS over a flat buffer in `layout`, keeping the ORIGINAL pixels
+/// on any transform error — never a blank.
+fn icc_transform_8bit(
+    src: &moxcms::ColorProfile,
+    dst: &moxcms::ColorProfile,
+    layout: moxcms::Layout,
+    px: Vec<u8>,
+) -> Vec<u8> {
+    let mut out = vec![0u8; px.len()];
+    match src.create_transform_8bit(layout, dst, layout, moxcms::TransformOptions::default()) {
+        Ok(t) if t.transform(&px, &mut out).is_ok() => out,
+        _ => px,
     }
 }
 

@@ -48,7 +48,7 @@ const KEYFRAME_MAX: usize = 16 * 1024 * 1024;
 /// Largest plausible FLV header DataOffset (spec value is 9; some writers pad slightly).
 const HEADER_MAX: u64 = 4096;
 
-/// Validate a 9-byte FLV header's signature and parse its 24-bit `DataOffset`: `None` for a
+/// Validate a 9-byte FLV header's signature and parse its 32-bit `DataOffset`: `None` for a
 /// bad signature or a `DataOffset` outside `9..=HEADER_MAX`. Shared by the Read+Seek and
 /// slice entry points so the two can't drift on what counts as a well-formed FLV header.
 fn flv_data_offset(hdr: &[u8; 9]) -> Option<u64> {

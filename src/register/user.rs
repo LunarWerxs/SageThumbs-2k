@@ -107,10 +107,10 @@ pub(super) fn unregister_user_classes() -> Result<()> {
 /// that looks like a half-removed handler to anyone who goes looking.
 pub(super) fn remove_user_if_ours(classes: &Key, ext: &str) {
     for path in thumb_keys(ext) {
-        // Only a slot WE own is removed (the shared body also hands it back to whoever we took
-        // it from), and only then is the parent chain walked back and pruned — a foreign
-        // handler's chain must not be swept. The machine-wide unregister path prunes
-        // unconditionally; here the guard preserves this path's stricter behaviour.
+        // Only a slot WE own is removed (the shared leaf helper merely reports ownership), and
+        // only then is the parent chain walked back and pruned — a foreign handler's chain must
+        // not be swept. The machine-wide unregister path prunes unconditionally; here the guard
+        // preserves this path's stricter behaviour.
         if remove_if_ours_leaf(classes, &path) {
             // Hand the slot back to whoever we took it from, through the per-user records
             // hive. This also leaves the key non-empty, which is what stops the prune below

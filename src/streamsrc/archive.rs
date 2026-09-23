@@ -26,6 +26,30 @@ pub(super) fn checked_generic_archive_size(size: Option<u64>, max_file_bytes: u6
     (size <= decode::effective_input_cap(max_file_bytes)).then_some(size)
 }
 
+/// Does the stream's (already lowercased) extension name a generic project archive?
+/// cbz/epub/office/kra packages share the zip magic but keep their dedicated
+/// single-cover paths, so the extension must say exactly zip/rar/7z.
+fn is_generic_archive_extension(ext: &str) -> bool {
+    matches!(ext, "zip" | "rar" | "7z")
+}
+
+/// How many cover images a generic-archive probe wants: one for the normal
+/// single-cover pipeline, four once the user asked for a contact sheet.
+fn archive_cover_want(archive_collage: u32) -> usize {
+    if archive_collage != 0 {
+        4
+    } else {
+        1
+    }
+}
+
+/// Is an oversized container's head worth a seek-only cover rescue? A 7z is
+/// deliberately excluded (its entries may need a large encoded header decoded
+/// through a name-less shell stream) and so is a head too short to sniff.
+fn oversized_cover_stream_allowed(first: &[u8]) -> bool {
+    first.len() >= 8 && !crate::container::is_7z(first)
+}
+
 /// The generic-archive (.zip/.rar/.7z) branch of [`stream_source`]. Fires only
 /// when BOTH the magic is an archive signature AND the Stat-recovered file name
 /// carries a generic-archive extension — cbz/epub/office/kra packages share the
@@ -53,7 +77,7 @@ pub(super) unsafe fn generic_archive(
     // relative name would otherwise be resolved against our own working directory), so
     // asking it for an extension here meant this gate answered "not a generic archive"
     // for every stream Explorer ever handed us.
-    if !head.extension_is(|ext| matches!(ext, "zip" | "rar" | "7z")) {
+    if !head.extension_is(is_generic_archive_extension) {
         return ArchiveProbe::NotGeneric;
     }
 
@@ -73,7 +97,7 @@ pub(super) unsafe fn generic_archive(
         return ArchiveProbe::NoCover;
     };
 
-    let want = if cfg.archive_collage != 0 { 4 } else { 1 };
+    let want = archive_cover_want(cfg.archive_collage);
     let covers = read_archive_covers(stream, first, size, max_file_bytes, want, cfg);
 
     match covers {
@@ -142,7 +166,7 @@ pub(super) unsafe fn archive_cover_streamed(
     head: &StreamHead,
 ) -> Option<Vec<u8>> {
     let first = head.first(8);
-    if first.len() < 8 || crate::container::is_7z(first) {
+    if !oversized_cover_stream_allowed(first) {
         return None;
     }
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
@@ -169,4 +193,80 @@ pub(super) unsafe fn archive_cover_streamed(
 pub(super) fn rar_buffer_cap(max_file_bytes: u64) -> usize {
     let max = decode::effective_input_cap(max_file_bytes);
     usize::try_from(max).map_or(MAX_BYTES, |max| max.min(MAX_BYTES))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pre-parse gate must fail closed: no reported size means no parse, and the
+    /// hard decoder ceiling is a second bound below the user's MaxSize.
+    #[test]
+    fn generic_archive_size_gate_refuses_an_unknown_or_oversized_size() {
+        let ceiling = crate::decode::limits::MAX_INPUT_BYTES;
+        assert_eq!(checked_generic_archive_size(None, u64::MAX), None);
+        assert_eq!(
+            checked_generic_archive_size(Some(ceiling), u64::MAX),
+            Some(ceiling),
+            "the ceiling itself is still allowed"
+        );
+        assert_eq!(
+            checked_generic_archive_size(Some(ceiling + 1), u64::MAX),
+            None
+        );
+        assert_eq!(
+            checked_generic_archive_size(Some(4096), 1024),
+            None,
+            "the user's MaxSize is the tighter bound"
+        );
+        assert_eq!(checked_generic_archive_size(Some(1024), 1024), Some(1024));
+    }
+
+    /// The extension gate is the whole reason a .cbz/.epub/.docx does not lose its
+    /// dedicated single-cover path, so it must match exactly zip/rar/7z.
+    #[test]
+    fn generic_archive_extension_excludes_the_zip_family_siblings() {
+        for ext in ["zip", "rar", "7z"] {
+            assert!(is_generic_archive_extension(ext), "{ext}");
+        }
+        for ext in ["cbz", "cbr", "cb7", "epub", "kra", "docx", "apk", ""] {
+            assert!(
+                !is_generic_archive_extension(ext),
+                "{ext} must keep its dedicated path"
+            );
+        }
+    }
+
+    /// The ArchiveCollage preference is a raw DWORD, but only "on" means the
+    /// four-image contact sheet: any nonzero value must want four covers.
+    #[test]
+    fn a_collage_preference_raises_the_wanted_cover_count() {
+        assert_eq!(archive_cover_want(0), 1);
+        assert_eq!(archive_cover_want(1), 4);
+        assert_eq!(archive_cover_want(u32::MAX), 4);
+    }
+
+    /// An oversized 7z is deliberately not rescued, and a head too short to carry
+    /// the signature cannot be sniffed either.
+    #[test]
+    fn oversized_stream_refuses_sevenz_but_keeps_the_zip_family() {
+        const SEVENZ: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+        const ZIP: &[u8] = &[0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00];
+        assert!(!oversized_cover_stream_allowed(SEVENZ));
+        assert!(oversized_cover_stream_allowed(ZIP));
+        assert!(!oversized_cover_stream_allowed(&ZIP[..7]));
+    }
+
+    /// The RAR buffer is the effective cap, never above the hard ceiling: an
+    /// "unlimited" MaxSize still stops at MAX_BYTES.
+    #[test]
+    fn rar_buffer_is_bounded_by_the_effective_cap_not_the_hard_ceiling() {
+        let ceiling = crate::decode::limits::MAX_INPUT_BYTES as usize;
+        assert_eq!(rar_buffer_cap(1 << 20), 1 << 20);
+        assert_eq!(
+            rar_buffer_cap(crate::decode::limits::MAX_INPUT_BYTES + 1),
+            ceiling
+        );
+        assert_eq!(rar_buffer_cap(u64::MAX), ceiling);
+    }
 }

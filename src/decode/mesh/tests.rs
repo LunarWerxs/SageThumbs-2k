@@ -151,9 +151,9 @@ fn binary_ply_parses() {
 }
 
 /// `property double x/y/z` (CloudCompare, Open3D, PCL all write it) must be
-/// DECLINED, not read at the `float`-sized 4-byte stride `read_ply_binary` assumes —
-/// which would desync every property after it into garbage. Same tetra as
-/// `binary_ply_parses`, `double` (8 bytes/component) in place of `float`.
+/// DECLINED: `handle_property_line` counts x/y/z toward the leading trio only when
+/// they are `float`, so `xyz_lead` stays short of 3 and `is_valid` refuses the header.
+/// Same tetra as `binary_ply_parses`, `double` (8 bytes/component) in place of `float`.
 #[test]
 fn binary_ply_declines_double_xyz_type() {
     let mut out = Vec::new();

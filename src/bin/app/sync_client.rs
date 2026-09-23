@@ -196,24 +196,10 @@ fn apply_remote_with(
     let mut applied = 0;
     let mut failed: Vec<String> = Vec::new();
     for (name, kind) in ALLOW {
-        let Some(val) = obj.get(*name) else { continue };
-        let write = match kind {
-            // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
-            // or corrupted doc) must be REJECTED, not silently truncated and then counted as
-            // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
-            // success, writing a value the remote document never actually held.
-            Kind::Dword => match val.as_u64().and_then(|n| u32::try_from(n).ok()) {
-                Some(n) => set_dword(name, n),
-                None => continue,
-            },
-            Kind::Str => match val.as_str() {
-                Some(s) => set_string(name, s),
-                None => continue,
-            },
-        };
-        match write {
-            Ok(()) => applied += 1,
-            Err(e) => failed.push(format!("{name} ({e})")),
+        match apply_entry(name, *kind, obj, &set_dword, &set_string) {
+            Some(Ok(())) => applied += 1,
+            Some(Err(e)) => failed.push(format!("{name} ({e})")),
+            None => {}
         }
     }
     if failed.is_empty() {
@@ -227,10 +213,59 @@ fn apply_remote_with(
     }
 }
 
+/// Apply ONE allowlisted remote entry: look it up on `obj`, reject a wrong-shaped value
+/// (the hostile-doc rule), and run it through the matching injected setter. Returns `None`
+/// when the remote omits the key or holds it in the wrong shape, `Some(Ok)`/`Some(Err)`
+/// with the setter's own result otherwise.
+fn apply_entry(
+    name: &str,
+    kind: Kind,
+    obj: &Map<String, Value>,
+    set_dword: &impl Fn(&str, u32) -> Result<(), String>,
+    set_string: &impl Fn(&str, &str) -> Result<(), String>,
+) -> Option<Result<(), String>> {
+    let val = obj.get(name)?;
+    Some(match kind {
+        // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
+        // or corrupted doc) must be REJECTED, not silently truncated and then counted as
+        // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
+        // success, writing a value the remote document never actually held.
+        Kind::Dword => set_dword(name, val.as_u64().and_then(|n| u32::try_from(n).ok())?),
+        Kind::Str => set_string(name, val.as_str()?),
+    })
+}
+
 // ---- store transport -----------------------------------------------------
 
 fn credential_string(value: &str) -> Option<&'static str> {
     let value = value.trim();
+    let alpha_num_dash = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
+
+    if let Some(what) = prefixed_provider_credential(value) {
+        return Some(what);
+    }
+    if value.len() == 39 && ascii_tail(value, "AIza", 35, alpha_num_dash) {
+        return Some("a Google API key");
+    }
+    let jwt = value.split('.').collect::<Vec<_>>();
+    if value.starts_with("ey")
+        && jwt.len() == 3
+        && jwt[0].len() >= 10
+        && jwt[1].len() >= 10
+        && jwt[2].len() >= 5
+        && jwt.iter().all(|part| part.bytes().all(alpha_num_dash))
+    {
+        return Some("a JWT");
+    }
+    if value.contains("-----BEGIN ") && value.contains("PRIVATE KEY-----") {
+        return Some("a private key");
+    }
+    None
+}
+
+/// Recognize a well-known prefixed provider token or key id at the start of `value`
+/// (Stripe/OpenAI/GitHub/Slack tokens, an AWS access key id), or `None`.
+fn prefixed_provider_credential(value: &str) -> Option<&'static str> {
     let alpha_num = |byte: u8| byte.is_ascii_alphanumeric();
     let alpha_num_dash = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
 
@@ -269,22 +304,6 @@ fn credential_string(value: &str) -> Option<&'static str> {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
     {
         return Some("an AWS access key id");
-    }
-    if value.len() == 39 && ascii_tail(value, "AIza", 35, alpha_num_dash) {
-        return Some("a Google API key");
-    }
-    let jwt = value.split('.').collect::<Vec<_>>();
-    if value.starts_with("ey")
-        && jwt.len() == 3
-        && jwt[0].len() >= 10
-        && jwt[1].len() >= 10
-        && jwt[2].len() >= 5
-        && jwt.iter().all(|part| part.bytes().all(alpha_num_dash))
-    {
-        return Some("a JWT");
-    }
-    if value.contains("-----BEGIN ") && value.contains("PRIVATE KEY-----") {
-        return Some("a private key");
     }
     None
 }

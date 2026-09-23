@@ -150,18 +150,25 @@ unsafe fn sel_drag_move(hwnd: HWND, st: &ViewerState, x: i32, y: i32) {
         }
     }
     let c = content_rect(hwnd);
-    let overshoot = if y < c.top {
-        y - c.top
-    } else if y > c.bottom {
-        y - c.bottom
-    } else {
-        0
-    };
+    let overshoot = drag_overshoot(y, c.top, c.bottom);
     if overshoot != 0 {
         let step_cap = crate::win::dpi_scale(hwnd, 40);
         selection::scroll_by(hwnd, overshoot.clamp(-step_cap, step_cap));
     }
     let _ = InvalidateRect(Some(hwnd), Some(&c), false);
+}
+
+/// How far past the content rect's top/bottom edge `y` has been dragged: negative above the
+/// top, positive below the bottom, `0` while inside. Split out of `sel_drag_move` so the edge
+/// cases (a point exactly on an edge is still inside) are assertable without a window.
+fn drag_overshoot(y: i32, top: i32, bottom: i32) -> i32 {
+    if y < top {
+        y - top
+    } else if y > bottom {
+        y - bottom
+    } else {
+        0
+    }
 }
 
 /// Toolbar-button hover + custom-scrollbar hover feedback, and arming `TrackMouseEvent` so
@@ -289,7 +296,7 @@ pub(super) unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         let _ = ReleaseCapture();
         // Nothing was dragged out (anchor == focus): that's a plain CLICK — drop any
         // old selection and let it act like one (outline jump / link open).
-        if matches!(st.sel.get(), Some((a, b)) if a == b) {
+        if sel_range_collapsed(st.sel.get()) {
             st.sel.set(None);
             let (x, y) = lparam_xy(lparam);
             click_content(hwnd, x, y);
@@ -301,6 +308,13 @@ pub(super) unsafe fn on_lbuttonup(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         click_content(hwnd, x, y);
     }
     LRESULT(0)
+}
+
+/// A button-up after a selection drag whose focus never moved (anchor == focus) is a plain
+/// CLICK, not a selection: the caller drops the selection and acts like a click (outline jump
+/// / link open). `None` (no selection at all) is NOT a click — that path is handled separately.
+fn sel_range_collapsed(sel: Option<(usize, usize)>) -> bool {
+    matches!(sel, Some((a, b)) if a == b)
 }
 
 /// End a video seek/volume drag: clear both drag flags, release the capture, and persist
@@ -405,7 +419,7 @@ pub(super) unsafe fn on_lbuttondblclk(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 /// `WM_MOUSEWHEEL`: scroll/zoom/pan a PDF, zoom an image, scroll text, or nudge video volume/seek.
 pub(super) unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // GET_WHEEL_DELTA_WPARAM (signed high word).
-    let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
+    let delta = wheel_delta(wparam);
     let st = &*state(hwnd);
     match st.kind.get() {
         // A continuously scrolled PDF takes the wheel for SCROLLING, which is what
@@ -422,7 +436,7 @@ pub(super) unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -
         // it calls.
         ContentKind::Image if crate::preview::pdfview::active(hwnd) => {
             // Three lines a notch.
-            let step = -delta * crate::win::dpi_scale(hwnd, 54) / 120;
+            let step = pdf_wheel_step(delta, crate::win::dpi_scale(hwnd, 54));
             match pdf_wheel_action(
                 GetKeyState(VK_CONTROL.0 as i32) < 0,
                 GetKeyState(VK_SHIFT.0 as i32) < 0,
@@ -456,6 +470,21 @@ pub(super) unsafe fn on_mousewheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -
     LRESULT(0)
 }
 
+/// Decode `GET_WHEEL_DELTA_WPARAM`: the SIGNED high word of the wheel message's `wParam`,
+/// positive when the wheel rolls away from the user, negative toward it. Split out of
+/// `WM_MOUSEWHEEL` so the sign extension (a naive unsigned shift turns -120 into 65416) is
+/// assertable.
+fn wheel_delta(wparam: WPARAM) -> i32 {
+    ((wparam.0 >> 16) & 0xFFFF) as i16 as i32
+}
+
+/// How far one PDF wheel event moves the document: three lines a notch, where a notch (120
+/// units) is the DPI-scaled `54` logical rows. Split out of `WM_MOUSEWHEEL` so the sign (a
+/// wheel-forward delta scrolls the document DOWN, i.e. a negative step) is assertable.
+fn pdf_wheel_step(delta: i32, unit: i32) -> i32 {
+    -delta * unit / 120
+}
+
 /// Wheel over video/audio: accumulate the deltas into whole notches and nudge the volume
 /// (Ctrl seeks instead), sharing `wheel_remainder` with text scrolling.
 unsafe fn wheel_video(hwnd: HWND, st: &ViewerState, delta: i32) {
@@ -471,5 +500,70 @@ unsafe fn wheel_video(hwnd: HWND, st: &ViewerState, delta: i32) {
             }
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::WPARAM;
+
+    /// The wheel's sign lives in the high word as a two's-complement `i16`: a notch toward the
+    /// user (`0xFF88`) reads as `-120`, never as the 65416 a plain unsigned shift would give.
+    #[test]
+    fn wheel_delta_sign_extends_the_high_word() {
+        assert_eq!(wheel_delta(WPARAM(0xFF88_usize << 16)), -120);
+        assert_eq!(wheel_delta(WPARAM(120_usize << 16)), 120);
+    }
+
+    /// A wheel message with nothing in its high word (a click, not a rotation) is a zero
+    /// delta, so the accumulator must not be nudged.
+    #[test]
+    fn wheel_delta_is_zero_for_a_message_without_a_rotation() {
+        assert_eq!(wheel_delta(WPARAM(0)), 0);
+    }
+
+    /// Ctrl magnifies a PDF whatever Shift is doing; Shift alone pans; the bare wheel scrolls.
+    #[test]
+    fn pdf_wheel_action_ctrl_beats_shift() {
+        assert_eq!(pdf_wheel_action(true, true), WheelAction::Zoom);
+        assert_eq!(pdf_wheel_action(false, true), WheelAction::Pan);
+        assert_eq!(pdf_wheel_action(false, false), WheelAction::Scroll);
+    }
+
+    /// A notch away from the user (+120) must move the document DOWN (a negative step); the
+    /// same notch toward the user brings it back up. 2.3.1 shipped a wheel that did nothing
+    /// over a PDF, so the sign of this step is the release's whole regression.
+    #[test]
+    fn pdf_wheel_step_is_negative_when_the_wheel_rolls_forward() {
+        assert_eq!(pdf_wheel_step(120, 54), -54);
+        assert_eq!(pdf_wheel_step(-120, 54), 54);
+        assert_eq!(pdf_wheel_step(0, 54), 0);
+    }
+
+    /// A drag only auto-scrolls once the cursor leaves the content rect: the overshoot is
+    /// signed so the caller knows which edge was left, and zero well inside.
+    #[test]
+    fn drag_overshoot_is_signed_only_past_an_edge() {
+        assert_eq!(drag_overshoot(5, 10, 100), -5);
+        assert_eq!(drag_overshoot(150, 10, 100), 50);
+        assert_eq!(drag_overshoot(50, 10, 100), 0);
+    }
+
+    /// The comparisons are strict: a cursor exactly on the top or bottom edge is still inside
+    /// the pane, so a drag that just reaches the edge must not start auto-scrolling.
+    #[test]
+    fn drag_overshoot_is_zero_on_the_pane_edges() {
+        assert_eq!(drag_overshoot(10, 10, 100), 0);
+        assert_eq!(drag_overshoot(100, 10, 100), 0);
+    }
+
+    /// Only a collapsed range (the button came up where it went down) is a click; a real
+    /// selection, and the no-selection case, must not be mistaken for one.
+    #[test]
+    fn sel_range_collapsed_is_true_only_for_an_unmoved_anchor() {
+        assert!(sel_range_collapsed(Some((3, 3))));
+        assert!(!sel_range_collapsed(Some((3, 4))));
+        assert!(!sel_range_collapsed(None));
     }
 }

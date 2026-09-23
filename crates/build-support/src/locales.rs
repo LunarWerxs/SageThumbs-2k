@@ -162,9 +162,9 @@ pub fn build_coverage_report(
 
 /// The `{name}` substitution slots in a locale value, as a set (BTreeSet, so sorted
 /// by name rather than by first appearance).
-/// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`). This scanner is
-/// duplicated in `src/i18n.rs`'s `slots` helper and `tests/f29_screenshot_i18n_contract.rs`;
-/// keep the three copies of the grammar in sync.
+/// Same shape `scripts/check-locale-keys.ps1` compares (`\{[a-z_]+\}`). The one identical
+/// copy is `src/i18n.rs`'s `slots` helper; keep the two copies of the grammar in sync.
+/// (`tests/f29_screenshot_i18n_contract.rs` captures any `{...}` body, a looser scan.)
 fn placeholders(value: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut rest = value;
@@ -202,57 +202,7 @@ pub fn enforce_locale_parity(langs: &BTreeMap<String, BTreeMap<String, String>>,
         if code == "en" {
             continue;
         }
-        let loc = &langs[code];
-        let missing: Vec<&str> = en
-            .keys()
-            .filter(|k| !loc.contains_key(*k))
-            .map(String::as_str)
-            .collect();
-        let extra: Vec<&str> = loc
-            .keys()
-            .filter(|k| !en.contains_key(*k))
-            .map(String::as_str)
-            .collect();
-        let slots: Vec<String> = en
-            .iter()
-            .filter_map(|(k, v)| {
-                let theirs = loc.get(k)?;
-                let want = placeholders(v);
-                (!want.is_empty() && want != placeholders(theirs))
-                    .then(|| format!("{k} (en has {want:?})"))
-            })
-            .collect();
-        let first = |items: &[&str]| -> String {
-            let shown: Vec<&str> = items.iter().take(5).copied().collect();
-            let more = items.len().saturating_sub(shown.len());
-            if more > 0 {
-                format!("{} (+{more} more)", shown.join(", "))
-            } else {
-                shown.join(", ")
-            }
-        };
-        if !missing.is_empty() {
-            problems.push(format!(
-                "locales/{code}.toml is MISSING {} key(s) that en.toml has: {}",
-                missing.len(),
-                first(&missing)
-            ));
-        }
-        if !extra.is_empty() {
-            problems.push(format!(
-                "locales/{code}.toml has {} key(s) that en.toml does not: {}",
-                extra.len(),
-                first(&extra)
-            ));
-        }
-        if !slots.is_empty() {
-            let shown: Vec<&str> = slots.iter().map(String::as_str).collect();
-            problems.push(format!(
-                "locales/{code}.toml drops or invents a {{placeholder}} in {} key(s): {}",
-                slots.len(),
-                first(&shown)
-            ));
-        }
+        problems.extend(locale_parity_problems(en, code, &langs[code]));
     }
     if !problems.is_empty() {
         panic!(
@@ -264,6 +214,67 @@ pub fn enforce_locale_parity(langs: &BTreeMap<String, BTreeMap<String, String>>,
             problems.join("\n  ")
         );
     }
+}
+
+/// Collect the parity problems for one non-English `code` against `en` - missing keys,
+/// extra keys, then dropped or invented `{placeholder}`s, in that order.
+fn locale_parity_problems(
+    en: &BTreeMap<String, String>,
+    code: &str,
+    loc: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    let missing: Vec<&str> = en
+        .keys()
+        .filter(|k| !loc.contains_key(*k))
+        .map(String::as_str)
+        .collect();
+    let extra: Vec<&str> = loc
+        .keys()
+        .filter(|k| !en.contains_key(*k))
+        .map(String::as_str)
+        .collect();
+    let slots: Vec<String> = en
+        .iter()
+        .filter_map(|(k, v)| {
+            let theirs = loc.get(k)?;
+            let want = placeholders(v);
+            (!want.is_empty() && want != placeholders(theirs))
+                .then(|| format!("{k} (en has {want:?})"))
+        })
+        .collect();
+    let first = |items: &[&str]| -> String {
+        let shown: Vec<&str> = items.iter().take(5).copied().collect();
+        let more = items.len().saturating_sub(shown.len());
+        if more > 0 {
+            format!("{} (+{more} more)", shown.join(", "))
+        } else {
+            shown.join(", ")
+        }
+    };
+    if !missing.is_empty() {
+        problems.push(format!(
+            "locales/{code}.toml is MISSING {} key(s) that en.toml has: {}",
+            missing.len(),
+            first(&missing)
+        ));
+    }
+    if !extra.is_empty() {
+        problems.push(format!(
+            "locales/{code}.toml has {} key(s) that en.toml does not: {}",
+            extra.len(),
+            first(&extra)
+        ));
+    }
+    if !slots.is_empty() {
+        let shown: Vec<&str> = slots.iter().map(String::as_str).collect();
+        problems.push(format!(
+            "locales/{code}.toml drops or invents a {{placeholder}} in {} key(s): {}",
+            slots.len(),
+            first(&shown)
+        ));
+    }
+    problems
 }
 
 /// Write the coverage report to `$OUT_DIR/i18n_coverage.txt`, if `OUT_DIR` is set.

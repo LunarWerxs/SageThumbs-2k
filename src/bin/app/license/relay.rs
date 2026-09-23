@@ -221,7 +221,7 @@ pub(crate) fn redeem(raw_key: &str) -> RedeemOutcome {
         // This is the one place a full key is written and `cred_store::V_LICENCE_KEY` says
         // why it is there and not in the breadcrumb.
         let _ = crate::cred_store::save_licence_key(&canonical);
-        let now = now_unix();
+        let now = sagethumbs2k_core::unixtime::now();
         update_history(|h| {
             h.was_business = true;
             h.last_status = "active".to_string();

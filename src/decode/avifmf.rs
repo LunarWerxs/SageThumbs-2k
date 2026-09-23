@@ -402,3 +402,239 @@ fn be16(b: &[u8], o: usize) -> Option<u16> {
 fn be32(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(o..o + 4)?.try_into().ok()?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[size][type][body]`, the shape every hand-built box in these tests needs.
+    fn boxed(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(typ);
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// A complete `av1C` box: body byte 1 is seq_profile(3)+level(5), byte 2 carries
+    /// high_bitdepth (bit 6) and monochrome (bit 4).
+    fn av1c_box(profile: u8, high_bitdepth: bool, monochrome: bool) -> Vec<u8> {
+        let flags2 = (u8::from(high_bitdepth) << 6) | (u8::from(monochrome) << 4);
+        boxed(b"av1C", &[0x81, profile << 5, flags2, 0x00])
+    }
+
+    /// A complete `colr` box: `nclx` + primaries/transfer/matrix as u16, then full_range in
+    /// the top bit of byte 18 (past the 8-byte header and the 4-byte `nclx` type).
+    fn colr_nclx(primaries: u16, matrix: u16, full_range: bool) -> Vec<u8> {
+        let mut body = b"nclx".to_vec();
+        body.extend_from_slice(&primaries.to_be_bytes());
+        body.extend_from_slice(&2u16.to_be_bytes()); // transfer unspecified
+        body.extend_from_slice(&matrix.to_be_bytes());
+        body.push(u8::from(full_range) << 7);
+        boxed(b"colr", &body)
+    }
+
+    fn ispe_box(w: u32, h: u32) -> Vec<u8> {
+        let mut body = vec![0u8; 4]; // FullBox version + flags
+        body.extend_from_slice(&w.to_be_bytes());
+        body.extend_from_slice(&h.to_be_bytes());
+        boxed(b"ispe", &body)
+    }
+
+    /// An AVIF-shaped file: `ftyp`, then `meta`/`iprp`/`ipco` carrying `props`.
+    fn avif_file(props: &[Vec<u8>]) -> Vec<u8> {
+        let mut ipco_body = Vec::new();
+        for p in props {
+            ipco_body.extend_from_slice(p);
+        }
+        let mut meta_body = vec![0u8; 4];
+        meta_body.extend_from_slice(&boxed(b"iprp", &boxed(b"ipco", &ipco_body)));
+        let mut file = boxed(b"ftyp", b"avif");
+        file.extend_from_slice(&boxed(b"meta", &meta_body));
+        file
+    }
+
+    fn nv12_frame(w: u32, h: u32, y: &[u8], uv: &[u8]) -> crate::video::Nv12Frame {
+        let mut data = y.to_vec();
+        data.extend_from_slice(uv);
+        crate::video::Nv12Frame {
+            data,
+            width: w,
+            height: h,
+            stride: w,
+        }
+    }
+
+    #[test]
+    fn an_eligible_nclx_and_av1c_yield_a_bt601_still_with_the_files_range() {
+        let av1c = av1c_box(0, false, false);
+        let colr = colr_nclx(1, 5, true);
+        let still = validate_mf_eligibility(&av1c, &colr, 64, 48).unwrap();
+        assert_eq!(still.matrix, Av1Matrix::Bt601);
+        assert!(still.full_range);
+        assert_eq!((still.width, still.height), (64, 48));
+        assert_eq!(still.av1c, av1c, "the av1C box is copied verbatim");
+        assert_eq!(still.colr, colr, "the colr box is copied verbatim");
+
+        // full_range is the nclx byte's top bit, so a cleared bit must read as limited range.
+        let limited = colr_nclx(1, 5, false);
+        let still = validate_mf_eligibility(&av1c, &limited, 64, 48).unwrap();
+        assert!(!still.full_range);
+    }
+
+    #[test]
+    fn only_the_bt601_and_bt709_nclx_matrices_are_accepted() {
+        let av1c = av1c_box(0, false, false);
+        for m in [2u16, 5, 6] {
+            let still = validate_mf_eligibility(&av1c, &colr_nclx(1, m, true), 8, 8).unwrap();
+            assert_eq!(still.matrix, Av1Matrix::Bt601, "matrix {m}");
+        }
+        let still = validate_mf_eligibility(&av1c, &colr_nclx(1, 1, true), 8, 8).unwrap();
+        assert_eq!(still.matrix, Av1Matrix::Bt709);
+        // Matrix 0 is the GBR identity: there is no YUV matrix to apply, so this path must
+        // refuse it rather than misdescribing GBR planes as NV12.
+        for m in [0u16, 3, 8, 14] {
+            assert!(
+                validate_mf_eligibility(&av1c, &colr_nclx(1, m, true), 8, 8).is_none(),
+                "matrix {m} must stay with magick"
+            );
+        }
+    }
+
+    #[test]
+    fn only_bt601_and_bt709_primaries_are_accepted() {
+        let av1c = av1c_box(0, false, false);
+        for p in [1u16, 2, 5, 6] {
+            assert!(
+                validate_mf_eligibility(&av1c, &colr_nclx(p, 5, true), 8, 8).is_some(),
+                "primaries {p}"
+            );
+        }
+        // Wide-gamut and exotic primaries stay with magick, which honours the full CICP.
+        for p in [0u16, 9, 12] {
+            assert!(
+                validate_mf_eligibility(&av1c, &colr_nclx(p, 5, true), 8, 8).is_none(),
+                "primaries {p} must stay with magick"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_main_profile_high_bitdepth_or_monochrome_av1c_is_refused() {
+        let colr = colr_nclx(1, 5, true);
+        assert!(
+            validate_mf_eligibility(&av1c_box(1, false, false), &colr, 8, 8).is_none(),
+            "only Main profile (0) is accepted"
+        );
+        assert!(
+            validate_mf_eligibility(&av1c_box(0, true, false), &colr, 8, 8).is_none(),
+            "10-bit is not this path"
+        );
+        assert!(
+            validate_mf_eligibility(&av1c_box(0, false, true), &colr, 8, 8).is_none(),
+            "monochrome has no chroma to convert"
+        );
+    }
+
+    #[test]
+    fn eligible_mf_still_requires_exactly_one_av1c_colr_ispe_and_no_aux_property() {
+        let props = [
+            av1c_box(0, false, false),
+            colr_nclx(1, 5, true),
+            ispe_box(64, 48),
+        ];
+        assert!(eligible_mf_still(&avif_file(&props)).is_some());
+
+        // An alpha AVIF carries a second av1C (and an auxC) for its auxiliary item; without
+        // ipma association walking, "exactly one" is the only unambiguous read, so these
+        // files must fall through to the magick route instead.
+        let two_av1c = [
+            av1c_box(0, false, false),
+            colr_nclx(1, 5, true),
+            ispe_box(64, 48),
+            av1c_box(0, false, false),
+        ];
+        assert!(eligible_mf_still(&avif_file(&two_av1c)).is_none());
+        let with_aux = [
+            av1c_box(0, false, false),
+            colr_nclx(1, 5, true),
+            ispe_box(64, 48),
+            boxed(b"auxC", &[0u8; 4]),
+        ];
+        assert!(eligible_mf_still(&avif_file(&with_aux)).is_none());
+        let no_ispe = [av1c_box(0, false, false), colr_nclx(1, 5, true)];
+        assert!(eligible_mf_still(&avif_file(&no_ispe)).is_none());
+    }
+
+    #[test]
+    fn pitm_names_the_primary_item_in_both_versions() {
+        let v0 = boxed(b"pitm", &[0, 0, 0, 0, 0x00, 0x07]);
+        assert_eq!(primary_item_id(&v0), Some(7));
+        let v1 = boxed(b"pitm", &[1, 0, 0, 0, 0, 0, 0, 9]);
+        assert_eq!(primary_item_id(&v1), Some(9));
+
+        // Under `meta`, the walker must skip the FullBox prefix and still reach it.
+        let mut meta_body = vec![0u8; 4];
+        meta_body.extend_from_slice(&v1);
+        assert_eq!(primary_item_id(&boxed(b"meta", &meta_body)), Some(9));
+
+        // The first pitm answers even when it is malformed: no id, not "keep looking".
+        let mut combined = boxed(b"pitm", &[]);
+        combined.extend_from_slice(&v1);
+        assert_eq!(primary_item_id(&combined), None);
+    }
+
+    #[test]
+    fn neutral_chroma_is_grey_in_every_matrix_and_range() {
+        // Cb = Cr = 128 is the achromatic axis, so whatever the matrix or range expands to,
+        // R, G and B must come out equal.
+        let frame = nv12_frame(2, 2, &[128, 128, 128, 128], &[128, 128]);
+        for matrix in [Av1Matrix::Bt601, Av1Matrix::Bt709] {
+            for full_range in [true, false] {
+                let out = nv12_to_srgb(&frame, 2, 2, full_range, matrix, None)
+                    .unwrap()
+                    .to_rgba8();
+                for p in out.pixels() {
+                    assert_eq!(p.0[0], p.0[1], "{matrix:?} full_range={full_range}");
+                    assert_eq!(p.0[1], p.0[2], "{matrix:?} full_range={full_range}");
+                    assert_eq!(p.0[3], 255);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn limited_range_black_and_white_land_on_0_and_255() {
+        let black = nv12_to_srgb(
+            &nv12_frame(1, 1, &[16], &[128, 128]),
+            1,
+            1,
+            false,
+            Av1Matrix::Bt601,
+            None,
+        )
+        .unwrap()
+        .to_rgba8();
+        assert_eq!(black.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        let white = nv12_to_srgb(
+            &nv12_frame(1, 1, &[235], &[128, 128]),
+            1,
+            1,
+            false,
+            Av1Matrix::Bt601,
+            None,
+        )
+        .unwrap()
+        .to_rgba8();
+        assert_eq!(white.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_truncated_nv12_buffer_is_declined() {
+        // Too few luma rows for the advertised height...
+        let short = nv12_frame(4, 4, &[0u8; 3], &[]);
+        assert!(nv12_to_srgb(&short, 4, 4, true, Av1Matrix::Bt601, None).is_none());
+        // ...and the right luma with no chroma plane at all.
+        let no_uv = nv12_frame(4, 4, &[0u8; 16], &[]);
+        assert!(nv12_to_srgb(&no_uv, 4, 4, true, Av1Matrix::Bt601, None).is_none());
+    }
+}

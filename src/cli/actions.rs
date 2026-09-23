@@ -106,9 +106,15 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
         // ShellExecuteW returns an HINSTANCE-like value > 32 on success; <= 32 is one of its
         // SE_ERR_* codes. `.conf` has no default handler on a stock Windows 11, so "open"
         // fails (SE_ERR_NOASSOC) and nothing launches — report that instead of success.
-        if ret.0 as usize <= 32 {
+        let code = ret.0 as usize;
+        if code <= 32 {
+            let why = if code == 31 {
+                "no handler for .conf".to_string()
+            } else {
+                format!("Windows error {code}")
+            };
             return Err(format!(
-                "couldn't open {p} in your default editor (no handler for .conf); open it manually"
+                "couldn't open {p} in your default editor ({why}); open it manually"
             ));
         }
         Ok(format!(
@@ -206,7 +212,7 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
 /// bare URL scripts read.
 fn print_expiry(url: &str) {
     if let Some(e) = crate::upload_history::find(url) {
-        let now = crate::upload_history::now_unix();
+        let now = crate::unixtime::now();
         eprintln!("{}", crate::upload_history::status_text_en(&e, now));
     }
 }
@@ -215,7 +221,7 @@ fn print_expiry(url: &str) {
 /// its host deletes it (the same list the app's Recent uploads window shows).
 pub fn upload_history(json: bool) -> Result<String, String> {
     let entries = crate::upload_history::load();
-    let now = crate::upload_history::now_unix();
+    let now = crate::unixtime::now();
     if json {
         return Ok(upload_history_json(&entries, now).to_string());
     }
@@ -225,7 +231,7 @@ pub fn upload_history(json: bool) -> Result<String, String> {
     let lines: Vec<String> = entries
         .iter()
         .map(|e| {
-            let uploaded = crate::upload_history::local_datetime(e.uploaded);
+            let uploaded = crate::unixtime::local_datetime(e.uploaded);
             let status = crate::upload_history::status_text_en(e, now);
             let name = if e.name.is_empty() {
                 String::new()

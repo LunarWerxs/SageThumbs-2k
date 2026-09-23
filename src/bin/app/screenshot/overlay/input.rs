@@ -79,14 +79,21 @@ pub(super) fn undo_last(s: &mut Shot) {
     undo_step(s, MOVE_UNDO.with(|c| c.take()));
 }
 
-/// One step forward, for Ctrl+Y / Ctrl+Shift+Z and the toolbar's Redo alike.
+/// One step forward, for Ctrl+Y / Ctrl+Shift+Z and the toolbar's Redo alike. With nothing to
+/// redo it changes nothing, so a pending Delete or Move stays the thing Undo reverts.
 pub(super) fn redo_last(s: &mut Shot) {
-    if let Some(sh) = s.redo.pop() {
-        s.shapes.push(sh);
-    }
+    let Some(sh) = s.redo.pop() else {
+        return;
+    };
+    s.shapes.push(sh);
     s.selected = None;
     s.move_from = None;
     forget_pending_undo(); // a redo is a new "last action"
+}
+
+/// Is a Delete waiting to be undone? Undo has work to do then even with no shapes left.
+pub(super) fn has_pending_delete() -> bool {
+    DELETE_UNDO.with(|d| d.borrow().is_some())
 }
 
 pub(super) fn pt(lparam: LPARAM) -> POINT {

@@ -405,6 +405,14 @@ fn file_identity(p: &Path) -> Option<(u32, u64)> {
     Some((info.dwVolumeSerialNumber, index))
 }
 
+/// Do `a` and `b` resolve to the same PATH? Case, `.`/`..` and relative spellings fold (the
+/// canonical path is the on-disk name), but a hard link is a different path to one file, so
+/// this is the question "is the destination already where the file is", not [`same_file`]'s
+/// "would writing one destroy the other". `false` when either path does not exist.
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
 /// Do `a` and `b` name the SAME file on disk? (2026-09-05 audit, F30.)
 ///
 /// A verb that reads its inputs and then replaces its destination destroys the source when
@@ -414,10 +422,8 @@ fn file_identity(p: &Path) -> Option<(u32, u64)> {
 /// the volume-and-index identity settles hard links. Two files that are not both openable are
 /// reported as different, because nothing about them can be proven either way.
 pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
-    if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        if x == y {
-            return true;
-        }
+    if same_path(a, b) {
+        return true;
     }
     // Hard links share one MFT record, so their lengths agree; two files whose lengths
     // differ cannot be one file, and skipping the opens keeps a 300-page combine cheap.
@@ -490,6 +496,24 @@ mod tests {
         assert!(same_file(&a, &link), "a hard link is the same file");
         assert_eq!(aliased_input(&link, [a.to_str().unwrap()]), a.to_str());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `same_path` folds the SPELLING of one path (case, `..`) but a hard link is a second path:
+    /// a move whose destination name is a hard link to the source is not "already in place".
+    #[test]
+    fn same_path_folds_spelling_but_a_hard_link_is_another_path() {
+        let dir = scratch("samepath");
+        let a = dir.join("Photo.png");
+        std::fs::write(&a, b"pixels").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        assert!(same_path(&a, &dir.join("PHOTO.PNG")));
+        assert!(same_path(&a, &dir.join("sub").join("..").join("Photo.png")));
+        let link = dir.join("link.png");
+        std::fs::hard_link(&a, &link).unwrap();
+        assert!(!same_path(&a, &link), "a hard link is a different path");
+        assert!(same_file(&a, &link), "... to the same file");
+        assert!(!same_path(&a, &dir.join("missing.png")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

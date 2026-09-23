@@ -184,25 +184,7 @@ pub fn register(dll_path: &str) -> Result<()> {
     // failing key (transient lock, locked-down subtree) must NOT abort the whole
     // register and skip the context-menu setup + shell-notify below, but it IS
     // counted, and a pass that wrote nothing fails the call at the end.
-    let mut thumbs = Pass::default();
-    for (ext, _) in FORMATS {
-        if fmt.enabled(ext) {
-            hook_ext(&classes, ext, &mut thumbs);
-        } else {
-            unhook_ext(&classes, ext);
-        }
-    }
-    let thumbs_failed = thumbs.report("thumbnail shellex pass");
-
-    // Sweep away stale hooks from extensions OLDER builds registered but we've since dropped
-    // (they're no longer in FORMATS, so the loop above never touches their keys → an upgrade
-    // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
-    // so this never unhooks a live format. Best-effort, one pass per (re-)register.
-    for ext in REMOVED_EXTENSIONS {
-        unhook_ext_propstore(&classes, ext);
-        unhook_ext_and_prune(&classes, ext);
-        unhook_ext_preview_and_prune(&classes, ext);
-    }
+    let thumbs_failed = sweep_format_hooks(&classes, &fmt);
 
     // The classic IContextMenu handler's COM server (for classic-menu machines:
     // StartAllBack, ExplorerPatcher, or the {86ca1aa0…} tweak). Registered under
@@ -247,6 +229,32 @@ pub fn register(dll_path: &str) -> Result<()> {
         return Err(Error::from(E_FAIL));
     }
     Ok(())
+}
+
+/// Hook every enabled format's thumbnail shellex and unhook the disabled ones, then sweep
+/// away stale hooks from extensions older builds registered. Best-effort per key; returns
+/// true when the pass attempted something and wrote nothing.
+fn sweep_format_hooks(classes: &Key, fmt: &FormatEnabledSnapshot) -> bool {
+    let mut thumbs = Pass::default();
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
+            hook_ext(classes, ext, &mut thumbs);
+        } else {
+            unhook_ext(classes, ext);
+        }
+    }
+    let thumbs_failed = thumbs.report("thumbnail shellex pass");
+
+    // Sweep away stale hooks from extensions OLDER builds registered but we've since dropped
+    // (they're no longer in FORMATS, so the loop above never touches their keys → an upgrade
+    // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
+    // so this never unhooks a live format. Best-effort, one pass per (re-)register.
+    for ext in REMOVED_EXTENSIONS {
+        unhook_ext_propstore(classes, ext);
+        unhook_ext_and_prune(classes, ext);
+        unhook_ext_preview_and_prune(classes, ext);
+    }
+    thumbs_failed
 }
 
 /// Bring the CURRENT user's per-user shell pieces in line with their settings: the folder

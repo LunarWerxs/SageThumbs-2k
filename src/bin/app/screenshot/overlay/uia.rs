@@ -770,12 +770,13 @@ fn button_control_type(btn: Button) -> UIA_CONTROLTYPE_ID {
 }
 
 /// Undo and Redo genuinely do nothing with an empty stack (see `actions::handle_button`), and
-/// saying so is the point of the property. The bar does not grey them out, so this is the only
+/// saying so is the point of the property. A deleted shape waiting to be restored counts as work
+/// for Undo even when no shapes are left. The bar does not grey them out, so this is the only
 /// place that difference is visible, which is a small honesty gain for a screen reader user
 /// rather than a change to what the bar does.
 fn button_enabled(s: &Shot, btn: Button) -> bool {
     match btn {
-        Button::Undo => !s.shapes.is_empty(),
+        Button::Undo => !s.shapes.is_empty() || super::input::has_pending_delete(),
         Button::Redo => !s.redo.is_empty(),
         _ => true,
     }

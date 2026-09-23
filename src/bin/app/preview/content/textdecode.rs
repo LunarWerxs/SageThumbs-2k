@@ -42,6 +42,12 @@ pub(super) fn looks_like_text(path: &str) -> bool {
     }
 }
 
+/// Does `path` start with binary bytes? `false` for an empty or unreadable file, which is why
+/// this is not `!looks_like_text`: an empty `.ts` is still TypeScript, not a video stream.
+pub(super) fn looks_like_binary(path: &str) -> bool {
+    matches!(read_capped(path, 16 * 1024), Some((bytes, _)) if !bytes.is_empty() && is_binary(&bytes))
+}
+
 /// Read up to `cap` bytes of `path`; the bool is whether the file was longer (i.e. truncated).
 ///
 /// The shared bottom of both the unknown-extension sniff (`looks_like_text`/`looks_like_image`,

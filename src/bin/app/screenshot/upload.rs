@@ -391,7 +391,7 @@ unsafe fn upload_any(bytes: &[u8], filename: &str, hosts: &[UploadHost]) -> Resu
 /// right-click verb and `st2k upload` - so the list is complete whichever one was used. A list
 /// that cannot be written is not an upload failure; the link is already live.
 fn remember(h: &UploadHost, url: String, filename: &str, size: usize) -> Entry {
-    let now = upload_history::now_unix();
+    let now = sagethumbs2k_core::unixtime::now();
     let retention = sagethumbs2k_core::upload_config::retention_for(&h.host, &h.extra, size as u64);
     let entry = Entry {
         uploaded: now,

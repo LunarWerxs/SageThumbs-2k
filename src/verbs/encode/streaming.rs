@@ -366,3 +366,230 @@ fn write_ppm_pixel<W: Write>(
         writer.write_all(&[r, g, b])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `hdr_component_run` gathers at most 127 samples: the Radiance run byte is
+    /// `128 + run`, so reporting 128 or more would look like a literal count to the
+    /// decoder and desync the whole scanline.
+    #[test]
+    fn hdr_component_run_is_capped_at_the_rle_limit() {
+        let scanline = vec![[7u8, 7, 7, 7]; 200];
+        assert_eq!(hdr_component_run(&scanline, 0, 0), 127);
+        assert_eq!(
+            hdr_component_run(&scanline, 150, 0),
+            50,
+            "the cap must not invent samples that are not there"
+        );
+    }
+
+    /// A run is per component and stops at the first sample that differs, even when a
+    /// neighbouring component keeps going.
+    #[test]
+    fn hdr_component_run_counts_only_the_leading_equal_samples_of_one_component() {
+        let scanline = [[5u8, 9, 1, 1], [5, 9, 2, 1], [5, 8, 2, 1], [6, 8, 2, 1]];
+        assert_eq!(hdr_component_run(&scanline, 0, 0), 3);
+        assert_eq!(hdr_component_run(&scanline, 0, 1), 2);
+        assert_eq!(
+            hdr_component_run(&scanline, 1, 2),
+            3,
+            "component 2 is 2,2,2 from the second pixel"
+        );
+    }
+
+    /// The literal collector must stop *before* a run the encoder can emit as an RLE
+    /// packet, or the run would be swallowed into a literal that the next iteration
+    /// double-counts, corrupting the scanline.
+    #[test]
+    fn collect_hdr_component_literal_stops_before_a_run_and_at_its_cap() {
+        let scanline = [
+            [10u8, 0, 0, 0],
+            [11, 0, 0, 0],
+            [12, 0, 0, 0],
+            [12, 0, 0, 0],
+            [12, 0, 0, 0],
+            [13, 0, 0, 0],
+        ];
+        let mut literal = [0u8; 128];
+        assert_eq!(
+            collect_hdr_component_literal(&scanline, 0, 0, &mut literal),
+            2,
+            "the 3-long run at index 2 must stay out of the literal"
+        );
+        assert_eq!(&literal[..2], &[10, 11]);
+
+        // Alternating samples never reach a run of 3, so the literal fills to MAX_LITERAL.
+        let long: Vec<[u8; 4]> = (0..300).map(|i| [(i % 2) as u8, 0, 0, 0]).collect();
+        assert_eq!(
+            collect_hdr_component_literal(&long, 0, 0, &mut literal),
+            128
+        );
+    }
+
+    /// One scanline component: a short literal packet (pad + bytes) followed by a run
+    /// packet (`128 + run`, value): the exact bytes a Radiance reader consumes.
+    #[test]
+    fn write_hdr_component_rle_emits_a_literal_packet_then_a_run_packet() {
+        let scanline = [
+            [10u8, 0, 0, 0],
+            [10, 0, 0, 0],
+            [20, 0, 0, 0],
+            [20, 0, 0, 0],
+            [20, 0, 0, 0],
+        ];
+        let mut out = Vec::new();
+        write_hdr_component_rle(&mut out, &scanline, 0).unwrap();
+        assert_eq!(out, [2, 10, 10, 131, 20]);
+    }
+
+    /// PAM keeps the source's channel model: grayscale is channel 0 alone, grayscale
+    /// with alpha moves its alpha sample up to channel 1 (not channel 3), and RGB(A)
+    /// keeps the leading samples.
+    #[test]
+    fn pam_tuple_narrows_to_the_source_channel_model() {
+        let samples = [11u16, 22, 33, 44];
+        assert_eq!(pam_tuple(samples, 1), [11, 0, 0, 0]);
+        assert_eq!(
+            pam_tuple(samples, 2),
+            [11, 44, 0, 0],
+            "grayscale+alpha's alpha belongs in channel 1"
+        );
+        assert_eq!(pam_tuple(samples, 3), [11, 22, 33, 0]);
+        assert_eq!(pam_tuple(samples, 4), samples);
+    }
+
+    /// Every `DynamicImage` channel model maps to its PAM depth, tuple type and sample
+    /// width; a wrong `wide` would write 1-byte samples under a `MAXVAL 65535` header.
+    #[test]
+    fn pam_layout_classifies_every_source_channel_model() {
+        let cases: [(DynamicImage, usize, &str, bool); 10] = [
+            (
+                DynamicImage::ImageLuma8(image::GrayImage::from_pixel(1, 1, image::Luma([1]))),
+                1,
+                "GRAYSCALE",
+                false,
+            ),
+            (
+                DynamicImage::ImageLumaA8(image::ImageBuffer::from_pixel(
+                    1,
+                    1,
+                    image::LumaA([1u8, 2]),
+                )),
+                2,
+                "GRAYSCALE_ALPHA",
+                false,
+            ),
+            (
+                DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]))),
+                3,
+                "RGB",
+                false,
+            ),
+            (
+                DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    1,
+                    1,
+                    image::Rgba([1, 2, 3, 4]),
+                )),
+                4,
+                "RGB_ALPHA",
+                false,
+            ),
+            (
+                DynamicImage::ImageLuma16(image::ImageBuffer::from_pixel(
+                    1,
+                    1,
+                    image::Luma([1u16]),
+                )),
+                1,
+                "GRAYSCALE",
+                true,
+            ),
+            (
+                DynamicImage::ImageLumaA16(image::ImageBuffer::from_pixel(
+                    1,
+                    1,
+                    image::LumaA([1u16, 2]),
+                )),
+                2,
+                "GRAYSCALE_ALPHA",
+                true,
+            ),
+            (
+                DynamicImage::ImageRgb16(image::ImageBuffer::from_pixel(
+                    1,
+                    1,
+                    image::Rgb([1u16, 2, 3]),
+                )),
+                3,
+                "RGB",
+                true,
+            ),
+            (
+                DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
+                    1,
+                    1,
+                    image::Rgba([1u16, 2, 3, 4]),
+                )),
+                4,
+                "RGB_ALPHA",
+                true,
+            ),
+            (
+                DynamicImage::ImageRgb32F(image::Rgb32FImage::from_pixel(
+                    1,
+                    1,
+                    image::Rgb([1.0, 2.0, 3.0]),
+                )),
+                3,
+                "RGB",
+                true,
+            ),
+            (
+                DynamicImage::ImageRgba32F(image::Rgba32FImage::from_pixel(
+                    1,
+                    1,
+                    image::Rgba([1.0, 2.0, 3.0, 4.0]),
+                )),
+                4,
+                "RGB_ALPHA",
+                true,
+            ),
+        ];
+        for (img, depth, tuple_type, wide) in cases {
+            assert_eq!(
+                pam_layout(&img),
+                (depth, tuple_type, wide),
+                "{:?} must map to {depth}/{tuple_type}/{wide}",
+                img.color()
+            );
+        }
+    }
+
+    /// The PAM header is a line protocol: the tuple type and `MAXVAL` must match the
+    /// depth/width the pixel writer will use, and the block ends with `ENDHDR`.
+    #[test]
+    fn write_pam_header_reports_the_tuple_and_maxval() {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            3,
+            2,
+            image::Rgba([1, 2, 3, 4]),
+        ));
+
+        let mut narrow = Vec::new();
+        write_pam_header(&mut narrow, &img, 4, "RGB_ALPHA", false).unwrap();
+        assert_eq!(
+            String::from_utf8(narrow).unwrap(),
+            "P7\nWIDTH 3\nHEIGHT 2\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"
+        );
+
+        let mut wide = Vec::new();
+        write_pam_header(&mut wide, &img, 4, "RGB_ALPHA", true).unwrap();
+        assert!(
+            String::from_utf8(wide).unwrap().contains("MAXVAL 65535\n"),
+            "wide samples must advertise MAXVAL 65535"
+        );
+    }
+}

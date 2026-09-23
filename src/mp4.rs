@@ -58,24 +58,7 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(
 
     // --- Locate the video track's sample tables inside the moov ------------------------------
     let trak = video_trak(box_body(&moov))?;
-    let mdia_body = box_body(find(trak, b"mdia")?);
-    let minf = find(mdia_body, b"minf")?;
-    let stbl = box_body(find(box_body(minf), b"stbl")?);
-
-    let stsd = find(stbl, b"stsd")?; // copied verbatim — carries avcC/hvcC codec config
-    let stts = find(stbl, b"stts")?;
-    let stsc = find(stbl, b"stsc")?;
-    let stss = find(stbl, b"stss"); // optional: absent ⇒ every sample is a sync sample
-    let chunks = find(stbl, b"stco")
-        .map(|b| (b, false))
-        .or_else(|| find(stbl, b"co64").map(|b| (b, true)))?;
-    let sizes = find(stbl, b"stsz")
-        .map(SampleSizes::Stsz)
-        .or_else(|| find(stbl, b"stz2").map(SampleSizes::Stz2))?;
-
-    let media_timescale = find(mdia_body, b"mdhd")
-        .and_then(mdhd_timescale)
-        .unwrap_or(1000);
+    let (stsd, stts, stsc, stss, chunks, sizes, media_timescale) = video_sample_tables(trak)?;
 
     // --- Map 30 %-of-duration → decoding-order sample → nearest preceding sync sample --------
     let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
@@ -115,6 +98,43 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(
         ),
         rotation,
     ))
+}
+
+/// `stsd`, `stts`, `stsc`, the optional `stss`, the chunk-offset table with its 64-bit flag,
+/// the sample sizes and the media timescale, as [`video_sample_tables`] returns them.
+type VideoSampleTables<'a> = (
+    &'a [u8],
+    &'a [u8],
+    &'a [u8],
+    Option<&'a [u8]>,
+    (&'a [u8], bool),
+    SampleSizes<'a>,
+    u32,
+);
+
+/// Locate the video track's sample tables inside its `trak` body: `stsd` (copied verbatim —
+/// carries avcC/hvcC codec config), `stts`, `stsc`, the optional `stss` (absent ⇒ every sample
+/// is a sync sample), the `stco`/`co64` chunk table with its 64-bit flag, the `stsz`/`stz2`
+/// size table, and the `mdia` media timescale. `None` if any mandatory table is missing.
+fn video_sample_tables(trak: &[u8]) -> Option<VideoSampleTables<'_>> {
+    let mdia_body = box_body(find(trak, b"mdia")?);
+    let minf = find(mdia_body, b"minf")?;
+    let stbl = box_body(find(box_body(minf), b"stbl")?);
+
+    let stsd = find(stbl, b"stsd")?;
+    let stts = find(stbl, b"stts")?;
+    let stsc = find(stbl, b"stsc")?;
+    let stss = find(stbl, b"stss");
+    let chunks = find(stbl, b"stco")
+        .map(|b| (b, false))
+        .or_else(|| find(stbl, b"co64").map(|b| (b, true)))?;
+    let sizes = find(stbl, b"stsz")
+        .map(SampleSizes::Stsz)
+        .or_else(|| find(stbl, b"stz2").map(SampleSizes::Stz2))?;
+    let media_timescale = find(mdia_body, b"mdhd")
+        .and_then(mdhd_timescale)
+        .unwrap_or(1000);
+    Some((stsd, stts, stsc, stss, chunks, sizes, media_timescale))
 }
 
 /// One top-level box header at `pos`: its fourcc and its full (header+body) size, honoring
@@ -161,28 +181,14 @@ fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Ve
         if boxes_seen > MAX_TOP_LEVEL_BOXES {
             return None;
         }
-        let Some((typ, full)) = read_top_level_header(r, pos, total) else {
-            break;
-        };
-        // ISO-BMFF gate: a real mp4/mov starts with `ftyp`. This cheaply rejects Matroska/AVI/
-        // ASF/FLV/MPEG (their leading bytes are not a sane `ftyp` box), so the caller's broader
-        // `is_video_magic` sniff still routes those to the bounded-prefix path.
-        if pos == 0 && &typ != b"ftyp" {
-            return None;
-        }
-        match &typ {
-            b"ftyp" if full <= FTYP_MAX => {
-                let mut fb = vec![0u8; full as usize];
-                read_exact_at(r, pos, &mut fb)?;
-                ftyp = Some(fb);
-            }
-            b"moov" => {
-                moov_range = Some((pos, full));
+        match step_top_level(r, pos, total, &mut ftyp)? {
+            TopLevelStep::Advance(next) => pos = next,
+            TopLevelStep::Moov(off, size) => {
+                moov_range = Some((off, size));
                 break; // moov found (faststart: right after ftyp; else: after mdat) — stop walking
             }
-            _ => {}
+            TopLevelStep::Stop => break,
         }
-        pos = pos.checked_add(full)?;
     }
 
     let (moov_off, moov_size) = moov_range?;
@@ -192,6 +198,49 @@ fn scan_top_level<R: Read + Seek>(r: &mut R) -> Option<(u64, Option<Vec<u8>>, Ve
     let mut moov = vec![0u8; moov_size as usize];
     read_exact_at(r, moov_off, &mut moov)?;
     Some((total, ftyp, moov))
+}
+
+/// What `scan_top_level` should do after consuming the top-level box at `pos`.
+enum TopLevelStep {
+    /// Continue the walk at this absolute offset.
+    Advance(u64),
+    /// A `moov` box starts here: its (offset, full size) — stop walking.
+    Moov(u64, u64),
+    /// The header could not be read: stop walking, keeping whatever was already found.
+    Stop,
+}
+
+/// Consume ONE top-level box at `pos` for `scan_top_level`: apply the `ftyp` gate, copy a
+/// sanely-sized `ftyp` into `ftyp`, and report whether to advance, that the `moov` was found,
+/// or that the walk should stop. `None` rejects the whole file (a non-ISO-BMFF first box, a
+/// short read, or an overflowing size).
+fn step_top_level<R: Read + Seek>(
+    r: &mut R,
+    pos: u64,
+    total: u64,
+    ftyp: &mut Option<Vec<u8>>,
+) -> Option<TopLevelStep> {
+    let Some((typ, full)) = read_top_level_header(r, pos, total) else {
+        return Some(TopLevelStep::Stop);
+    };
+    // ISO-BMFF gate: a real mp4/mov starts with `ftyp`. This cheaply rejects Matroska/AVI/
+    // ASF/FLV/MPEG (their leading bytes are not a sane `ftyp` box), so the caller's broader
+    // `is_video_magic` sniff still routes those to the bounded-prefix path.
+    if pos == 0 && &typ != b"ftyp" {
+        return None;
+    }
+    match &typ {
+        b"ftyp" if full <= FTYP_MAX => {
+            let mut fb = vec![0u8; full as usize];
+            read_exact_at(r, pos, &mut fb)?;
+            *ftyp = Some(fb);
+        }
+        b"moov" => {
+            return Some(TopLevelStep::Moov(pos, full));
+        }
+        _ => {}
+    }
+    Some(TopLevelStep::Advance(pos.checked_add(full)?))
 }
 
 /// The `mdia` body of the video track (the trak whose `hdlr` handler_type is 'vide').

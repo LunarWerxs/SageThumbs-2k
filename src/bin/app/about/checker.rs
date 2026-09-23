@@ -6,7 +6,8 @@ use super::*;
 /// process-local rather than boxed into the LPARAM: `WM_ABOUT_CHECKED` is a plain `WM_APP`
 /// id on a `FindWindowW`-discoverable class, so a pointer in the message would let any
 /// same-desktop process post one of its own and make us free memory it chose (the daemon's
-/// `UPDATE_TAG` has the same shape for the same reason). A forged message finds nothing here.
+/// `UPDATE_TAG` has the same shape for the same reason). A forged message can only ever surface
+/// what a real check stored here, never memory it chose.
 pub(super) static FOUND_RELEASE: std::sync::Mutex<Option<update::LatestRelease>> =
     std::sync::Mutex::new(None);
 
@@ -44,8 +45,8 @@ pub(super) fn post_code(check: update::UpdateCheck) -> usize {
 }
 
 /// What [`WM_ABOUT_CHECKED`] shows for a posted code. "Available" TAKES the release out of
-/// [`FOUND_RELEASE`], so a forged or repeated message finds the slot empty and shows a release
-/// with no tag, never anything the sender chose.
+/// [`FOUND_RELEASE`], so a repeated message finds the slot empty and shows a release with no
+/// tag; a forged one can at most show a release a real check stored, never anything it chose.
 pub(super) fn status_for_code(code: usize) -> Status {
     match code {
         1 => Status::Available(
@@ -183,6 +184,12 @@ pub(super) unsafe fn offer_renewal(hwnd: HWND, ends_unix: u64) {
     }
 }
 
+/// The install attempt's outcome, for [`WM_ABOUT_INSTALLED`]'s handler to take - the same
+/// process-local handover as [`FOUND_RELEASE`], for the same reason: a pointer in a `WM_APP`
+/// message on a discoverable window is one any same-desktop process could forge.
+static INSTALL_RESULT: std::sync::Mutex<Option<Result<String, update::UpdateError>>> =
+    std::sync::Mutex::new(None);
+
 /// Kick off `update::download_and_install` on a worker thread; it posts the outcome back
 /// to `hwnd` via [`WM_ABOUT_INSTALLED`]. HWND isn't `Send`, so the raw handle value crosses
 /// the thread boundary and is rebuilt for both the (still `IProgressDialog`-owning) call and
@@ -192,27 +199,29 @@ pub(super) unsafe fn start_install(hwnd: HWND) {
     std::thread::spawn(move || {
         let owner = HWND(raw as *mut c_void);
         let result = update::download_and_install(owner);
-        let lp = Box::into_raw(Box::new(result)) as isize;
-        let posted = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(lp));
-        if posted.is_err() {
-            // Window torn down between spawn and post — nobody will ever reclaim this box,
-            // so reclaim it right here.
-            drop(Box::from_raw(
-                lp as *mut Result<String, update::UpdateError>,
-            ));
-        }
+        *INSTALL_RESULT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        // Nothing to reclaim if the post fails: the result waits in the slot.
+        let _ = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(0));
     });
 }
 
-/// [`WM_ABOUT_INSTALLED`] handler: reclaim the boxed result and do what `offer_update` used
+/// [`WM_ABOUT_INSTALLED`] handler: take the install result and do what `offer_update` used
 /// to do inline once the call returned — exit on success (the installer closes us and
 /// relaunches), stay silent on a user cancel, or show the failure and fall back to the
 /// releases page.
 pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    if lparam.0 == 0 {
+    // `lparam` carries nothing: the result waits in INSTALL_RESULT. A repeated or forged message
+    // finds the slot empty, or at most takes a result a real install stored.
+    let _ = lparam;
+    let Some(result) = INSTALL_RESULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    else {
         return LRESULT(0);
-    }
-    let result = *Box::from_raw(lparam.0 as *mut Result<String, update::UpdateError>);
+    };
     let st = about_state(hwnd);
     if !st.is_null() {
         (*st).installing = false;

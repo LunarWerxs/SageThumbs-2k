@@ -12,7 +12,7 @@
 
 use core::cell::RefCell;
 
-use sagethumbs2k_core::upload_history::{duration_text, local_datetime, now_unix, Entry, Status};
+use sagethumbs2k_core::upload_history::{duration_text, Entry, Status};
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -49,7 +49,10 @@ pub(crate) fn expiry_line(e: &Entry, now: u64, w: &ExpiryWords) -> Option<String
     match e.status(now) {
         Status::Left(left) => Some(
             w.expires
-                .replace("{date}", &local_datetime(now.saturating_add(left)))
+                .replace(
+                    "{date}",
+                    &sagethumbs2k_core::unixtime::local_datetime(now.saturating_add(left)),
+                )
                 .replace("{left}", &duration_text(left, &w.dur)),
         ),
         Status::NoExpiry => Some(w.no_expiry.to_string()),
@@ -75,7 +78,7 @@ pub(crate) fn result_text(heading: &str, done: &[Entry], now: u64, w: &ExpiryWor
 /// Show the uploaded `done` links under `heading`, each with its expiry, with a Copy button
 /// that (re-)copies just the links to the clipboard.
 pub fn show_upload_result(heading: &str, done: &[Entry]) {
-    fill(heading, done, now_unix());
+    fill(heading, done, sagethumbs2k_core::unixtime::now());
     unsafe {
         // `run_dialog`'s w/h are the TOTAL window size (no client adjustment), so the
         // client is ~30 design-px shorter than `h`. Size generously and keep the buttons
@@ -99,7 +102,7 @@ fn fill(heading: &str, done: &[Entry], now: u64) {
 /// Headless capture (`--shot <out.png> --window upload`) over canned uploads: the window only
 /// appears after a real upload, which a shot cannot arrange.
 pub(crate) unsafe fn run_shot_upload_result(out: &str) -> bool {
-    let now = now_unix();
+    let now = sagethumbs2k_core::unixtime::now();
     let done = crate::upload_history_dlg::sample_entries(now);
     let heading = t("up_done_all").replace("{total}", "2");
     fill(&heading, &done[..2], now);

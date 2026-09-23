@@ -67,7 +67,7 @@ pub(super) fn check_settings(r: &mut Report) {
 /// too, as information and as a warning, so a support thread can see the clock. A
 /// Personal copy prints one line and nothing else: free is free.
 pub(super) fn check_licence(r: &mut Report) {
-    use crate::licence_state::{current_phase, days_until, now_unix, read_mode, Mode, Phase};
+    use crate::licence_state::{current_phase, days_until, read_mode, Mode, Phase};
     r.head("Licence");
     if read_mode() == Mode::Personal {
         r.line(
@@ -77,7 +77,7 @@ pub(super) fn check_licence(r: &mut Report) {
         );
         return;
     }
-    let now = now_unix();
+    let now = crate::unixtime::now();
     match current_phase() {
         Phase::Clear => r.line(
             S::Info,

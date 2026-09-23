@@ -178,11 +178,10 @@ fn tag_image_src(tag: &str) -> Option<String> {
     None
 }
 
-/// The `<...>` tag that STARTS at byte position `start` (the '<'). `close` carries the
-/// `>` of the tag returned for the previous start: while a later start still falls
-/// inside that same tag, that `>` is reused, so the forward scan never restarts behind
-/// the cursor (a run of unclosed `<img` prefixes is O(n), not O(n^2)). `None` when no
-/// `>` follows `start` — no later start can have one either.
+/// The `<...>` tag that STARTS at byte position `start` (the '<'). `close` memoizes
+/// the scan: when no `>` follows `start` it is set to `s.len()`, so
+/// every later candidate is rejected in O(1) without rescanning to the end (the O(n^2)
+/// hang). `None` when no `>` follows `start` — no later start can have one either.
 fn tag_from<'a>(s: &'a str, start: usize, close: &mut Option<usize>) -> Option<&'a str> {
     let end = match *close {
         Some(e) if e > start => e,
@@ -241,7 +240,16 @@ fn tag_attr_ci(tag: &str, attr: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     for quote in ['"', '\''] {
         let pat = format!("{attr}={quote}");
-        if let Some(at) = lower.find(&pat) {
+        // The same name boundary `util::xml_attr` checks: `src` must not match `data-src`.
+        for (at, _) in lower.match_indices(&pat) {
+            let boundary = at == 0
+                || !matches!(
+                    lower.as_bytes()[at - 1],
+                    b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b':'
+                );
+            if !boundary {
+                continue;
+            }
             let start = at + pat.len();
             if let Some(rel_end) = tag[start..].find(quote) {
                 return Some(tag[start..start + rel_end].to_string());
@@ -326,6 +334,15 @@ fn read_named_ci<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lazy-loading `data-src` placeholder before the real `src` must not be taken for it:
+    /// the name has to start at an attribute boundary, as in `util::xml_attr`.
+    #[test]
+    fn a_case_insensitive_attribute_needs_a_name_boundary() {
+        let tag = r#"<IMG data-src="lazy.jpg" SRC="Cover.JPG">"#;
+        assert_eq!(tag_attr_ci(tag, "src").as_deref(), Some("Cover.JPG"));
+        assert_eq!(tag_attr_ci(r#"<img data-src='x.png'>"#, "src"), None);
+    }
 
     #[test]
     fn html_path_detection() {

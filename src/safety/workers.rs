@@ -2,43 +2,6 @@
 
 use super::*;
 
-/// Run `op` on a fresh, DETACHED OS thread that pins the DLL for its whole lifetime, returning
-/// its result only if it arrives within `timeout`. `None` on timeout OR if the OS refuses to
-/// create the thread — the two are collapsed on purpose: a timed-out worker cannot be cancelled
-/// safely (there is no way to abort a thread mid-decode/mid-probe), so either way the caller is
-/// blocked for at most `timeout` and gets nothing back. A worker that times out keeps running —
-/// it sends into a now-dropped channel (the send simply errors) and exits on its own.
-///
-/// The DLL pin happens BEFORE spawning, not as `op`'s first line: a `Builder::spawn` that fails
-/// to create the OS thread never runs `op` at all, and pinning only on entry would leave a
-/// narrow window, right after OS thread creation, during which nothing pins the DLL. On a
-/// timeout the worker thread outlives this call, and `DllCanUnloadNow` must not think the DLL is
-/// free to unload while that thread is still running — a `ModuleRef` moved into the SAME closure
-/// as `op` (rather than acquired inside it) means it is held for the worker's entire run either
-/// way.
-///
-/// Any per-call resource `op` needs to release when the worker finishes — a concurrency-limiting
-/// slot lease, for instance — should be an RAII guard captured by `op` itself (constructed by
-/// the CALLER, before this is invoked, then moved in). That guard then drops correctly on every
-/// exit path: normal completion, timeout-but-still-running, AND a failed `Builder::spawn` (Rust
-/// drops an unstarted thread closure, and everything it captured, when `spawn` returns `Err`) —
-/// no separate "release on spawn failure" branch needed at the call site.
-///
-/// This does NOT initialize COM for `op` — callers whose work needs an apartment (the WIC/WinRT
-/// decode tiers) must `CoInitializeEx`/`CoUninitialize` inside `op` themselves, since the
-/// current callers genuinely disagree on whether they need one (the property-store probe
-/// deliberately does not, to stay cheap on Explorer's/SearchIndexer's UI/indexing paths).
-///
-/// Shared by the preview-pane decode (`previewhandler::decode_preview_budgeted`), the property
-/// probe (`propstore::probe_budgeted`), screen/file OCR (`ocr::recognize_bytes`) and the
-/// metadata probe (`decode::metadata_budgeted`).
-///
-/// Abandoned workers are counted process-wide (see [`abandoned_workers`]): a worker that ran
-/// past its budget cannot be cancelled, so each one is a thread, its stack, and a `ModuleRef`
-/// pin held for as long as its read stays blocked. Past [`MAX_ABANDONED_WORKERS`] live ones
-/// this refuses to start another (returning `None`, and logging once per process) until some
-/// of them finish, so a tree of cloud placeholders or a dropped share cannot grow the host's
-/// thread count without bound.
 /// `std::thread::spawn` for the short helper threads that are not budgeted workers (pipe
 /// feeders and drainers around a child process): `None` when the OS refuses the thread,
 /// where `std::thread::spawn` panics, and `panic = "abort"` turns that into a dead host
@@ -111,6 +74,43 @@ where
     Some((writer, reader))
 }
 
+/// Run `op` on a fresh, DETACHED OS thread that pins the DLL for its whole lifetime, returning
+/// its result only if it arrives within `timeout`. `None` on timeout OR if the OS refuses to
+/// create the thread — the two are collapsed on purpose: a timed-out worker cannot be cancelled
+/// safely (there is no way to abort a thread mid-decode/mid-probe), so either way the caller is
+/// blocked for at most `timeout` and gets nothing back. A worker that times out keeps running —
+/// it sends into a now-dropped channel (the send simply errors) and exits on its own.
+///
+/// The DLL pin happens BEFORE spawning, not as `op`'s first line: a `Builder::spawn` that fails
+/// to create the OS thread never runs `op` at all, and pinning only on entry would leave a
+/// narrow window, right after OS thread creation, during which nothing pins the DLL. On a
+/// timeout the worker thread outlives this call, and `DllCanUnloadNow` must not think the DLL is
+/// free to unload while that thread is still running — a `ModuleRef` moved into the SAME closure
+/// as `op` (rather than acquired inside it) means it is held for the worker's entire run either
+/// way.
+///
+/// Any per-call resource `op` needs to release when the worker finishes — a concurrency-limiting
+/// slot lease, for instance — should be an RAII guard captured by `op` itself (constructed by
+/// the CALLER, before this is invoked, then moved in). That guard then drops correctly on every
+/// exit path: normal completion, timeout-but-still-running, AND a failed `Builder::spawn` (Rust
+/// drops an unstarted thread closure, and everything it captured, when `spawn` returns `Err`) —
+/// no separate "release on spawn failure" branch needed at the call site.
+///
+/// This does NOT initialize COM for `op` — callers whose work needs an apartment (the WIC/WinRT
+/// decode tiers) must `CoInitializeEx`/`CoUninitialize` inside `op` themselves, since the
+/// current callers genuinely disagree on whether they need one (the property-store probe
+/// deliberately does not, to stay cheap on Explorer's/SearchIndexer's UI/indexing paths).
+///
+/// Shared by the preview-pane decode (`previewhandler::decode_preview_budgeted`), the property
+/// probe (`propstore::probe_budgeted`), screen/file OCR (`ocr::recognize_bytes`) and the
+/// metadata probe (`decode::metadata_budgeted`).
+///
+/// Abandoned workers are counted process-wide (see [`abandoned_workers`]): a worker that ran
+/// past its budget cannot be cancelled, so each one is a thread, its stack, and a `ModuleRef`
+/// pin held for as long as its read stays blocked. Past [`MAX_ABANDONED_WORKERS`] live ones
+/// this refuses to start another (returning `None`, and logging once per process) until some
+/// of them finish, so a tree of cloud placeholders or a dropped share cannot grow the host's
+/// thread count without bound.
 pub fn spawn_budgeted<R, F>(thread_name: &str, timeout: Duration, op: F) -> Option<R>
 where
     R: Send + 'static,

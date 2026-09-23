@@ -621,7 +621,6 @@ pub(super) unsafe fn paint_chrome(hwnd: HWND, hdc: HDC) {
     // box in the header. Derived from the rows for the reason the Pair lists are.
     frame_visible_fields(hwnd, hdc, &navrail::wide_edit_ids(), 5, 3);
     frame_visible_fields(hwnd, hdc, &combo_ids, 2, 2);
-    // (The horizontal rule above the banner is drawn by the left mask's owner-draw.)
 }
 
 /// Apply the combo overpaint subclass — both themes (it owner-paints the closed

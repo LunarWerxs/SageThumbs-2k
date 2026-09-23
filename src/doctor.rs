@@ -248,7 +248,10 @@ mod tests {
     fn report_is_plain_text() {
         let out = report(None);
         assert!(!out.contains('\u{0}'), "report contains NUL");
-        assert!(out.is_ascii() || out.chars().all(|c| !c.is_control() || c == '\n'));
+        assert!(
+            out.chars().all(|c| !c.is_control() || c == '\n'),
+            "report contains a control character"
+        );
     }
 
     /// The per-file probe must run and reach a verdict for any path, including a

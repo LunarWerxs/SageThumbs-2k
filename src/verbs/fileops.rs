@@ -265,7 +265,7 @@ pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<
         Some(e) => dir.join(format!("{stem}.{e}")),
         None => dir.join(stem),
     };
-    if crate::fsutil::same_file(&natural, src) {
+    if crate::fsutil::same_path(&natural, src) {
         return Ok(None); // already in place, no rename/move needed
     }
     let (stem, dir) = (stem.to_string(), dir.to_path_buf());

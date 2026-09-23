@@ -159,26 +159,32 @@ unsafe fn handle_key(vk: u32, is_down: bool) {
     let key = trigger_key(vk);
 
     if key == Trigger::Space {
-        if is_down {
-            if SPACE_LATCHED.load(Ordering::Relaxed) {
-                return; // auto-repeat while held — debounce (QuickLook's _spaceIsDown)
-            }
-            if qualifies() {
-                SPACE_LATCHED.store(true, Ordering::Relaxed);
-                SPACE_DOWN_TICK.store(GetTickCount64(), Ordering::Relaxed);
-                let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW, WPARAM(0), LPARAM(0));
-            }
-        } else if SPACE_LATCHED.swap(false, Ordering::Relaxed) {
-            // Key-up decision uses the LATCHED verdict (QuickLook keeps the down-time judgment).
-            let held = GetTickCount64().saturating_sub(SPACE_DOWN_TICK.load(Ordering::Relaxed));
-            if release_is_peek(held, HOLD_PEEK.load(Ordering::Relaxed)) {
-                let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW_CLOSE, WPARAM(0), LPARAM(0));
-            }
-        }
+        handle_space_key(daemon, is_down);
     } else if key == Trigger::Close && is_down && qualifies() {
         // Esc / Enter close the preview if it's up. We never swallow, so Explorer still gets the
         // key too (Enter then opens the file natively — the intended hand-off).
         let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// The Space half of [`handle_key`]: latch a qualifying press (debouncing auto-repeat) and post
+/// the open, or honour a key-up release as the hold-to-peek close. `daemon` is the post target.
+unsafe fn handle_space_key(daemon: HWND, is_down: bool) {
+    if is_down {
+        if SPACE_LATCHED.load(Ordering::Relaxed) {
+            return; // auto-repeat while held — debounce (QuickLook's _spaceIsDown)
+        }
+        if qualifies() {
+            SPACE_LATCHED.store(true, Ordering::Relaxed);
+            SPACE_DOWN_TICK.store(GetTickCount64(), Ordering::Relaxed);
+            let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW, WPARAM(0), LPARAM(0));
+        }
+    } else if SPACE_LATCHED.swap(false, Ordering::Relaxed) {
+        // Key-up decision uses the LATCHED verdict (QuickLook keeps the down-time judgment).
+        let held = GetTickCount64().saturating_sub(SPACE_DOWN_TICK.load(Ordering::Relaxed));
+        if release_is_peek(held, HOLD_PEEK.load(Ordering::Relaxed)) {
+            let _ = PostMessageW(Some(daemon), WM_APP_PREVIEW_CLOSE, WPARAM(0), LPARAM(0));
+        }
     }
 }
 

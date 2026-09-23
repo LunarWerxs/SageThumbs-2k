@@ -291,7 +291,8 @@ pub(super) fn lower_ext(path: &str) -> String {
 }
 
 /// Decide how to present `path`: directory / unsupported → InfoCard; text/markdown (gated on
-/// the settings) → Text; any supported format → Image; an unknown-but-textual
+/// the settings) → Text (or Video for a text extension that is also a video container and
+/// sniffs as binary); any supported format → Image; an unknown-but-textual
 /// file → Text. Phase 3's text branch shows the file as readable monospace text; rendered
 /// GitHub-style Markdown + syntax highlighting (WebView2 + syntect) is a later enhancement.
 pub(super) fn classify(path: &str) -> ContentKind {
@@ -309,15 +310,8 @@ pub(super) fn classify(path: &str) -> ContentKind {
     // honors the toggle a user would expect to govern it: a notebook is a markdown document,
     // CSV/TSV are data/text files (review finding, 2026-07-13 — with Markdown off + Text on,
     // csv used to fall through to the raw-text sniff and lose its table view).
-    if formats::is_preview_doc(&ext) {
-        let on = if ext.eq_ignore_ascii_case("ipynb") {
-            settings::preview_markdown()
-        } else {
-            settings::preview_text()
-        };
-        if on {
-            return ContentKind::Markdown;
-        }
+    if let Some(kind) = doc_ext_kind(&ext) {
+        return kind;
     }
     if settings::preview_text() && formats::is_preview_text(&ext) {
         return text_ext_kind(path, &ext);
@@ -348,6 +342,24 @@ pub(super) fn classify(path: &str) -> ContentKind {
     ContentKind::InfoCard
 }
 
+/// ContentKind for a structured-document extension (`docconv`: notebook/CSV/TSV), gated on the
+/// toggle a user would expect to govern it; `None` when `ext` is not such a document or its
+/// toggle is off.
+fn doc_ext_kind(ext: &str) -> Option<ContentKind> {
+    use sagethumbs2k_core::{formats, settings};
+    if formats::is_preview_doc(ext) {
+        let on = if ext.eq_ignore_ascii_case("ipynb") {
+            settings::preview_markdown()
+        } else {
+            settings::preview_text()
+        };
+        if on {
+            return Some(ContentKind::Markdown);
+        }
+    }
+    None
+}
+
 /// What a file with a listed text/code extension (Text preview on) shows as. Text, except
 /// where the extension is ALSO a registered video container: `.ts` is TypeScript and MPEG
 /// Transport Stream alike, and sending every .ts stream to the monospace reader lost its
@@ -357,7 +369,7 @@ fn text_ext_kind(path: &str, ext: &str) -> ContentKind {
     use sagethumbs2k_core::formats;
     let video =
         formats::is_known(ext) && matches!(formats::category(ext), formats::Category::Video);
-    if video && !looks_like_text(path) {
+    if video && looks_like_binary(path) {
         ContentKind::Video
     } else {
         ContentKind::Text
@@ -387,12 +399,16 @@ fn magic_is_image(h: &[u8]) -> bool {
         || at(0, b"BM")                                           // BMP
         || (at(0, b"RIFF") && at(8, b"WEBP"))
         || at(0, b"qoif")                                         // QOI
-        || at(4, b"ftypavif")                                     // AVIF
-        || at(4, b"ftypheic")
-        || at(4, b"ftypheix")
-        || at(4, b"ftypmif1")                                     // HEIF
+        || magic_ftyp_is_image(h)                                 // AVIF / HEIC / HEIF
         || at(0, b"II*\0")                                        // TIFF little-endian
         || at(0, b"MM\0*") // TIFF big-endian
+}
+
+/// The ISO-BMFF `ftyp` brand signatures at offset 4 (AVIF/HEIC/HEIX/HEIF), the one family in the
+/// [`magic_is_image`] table that does not sit at offset 0.
+fn magic_ftyp_is_image(h: &[u8]) -> bool {
+    let at = |off: usize, sig: &[u8]| h.len() >= off + sig.len() && &h[off..off + sig.len()] == sig;
+    at(4, b"ftypavif") || at(4, b"ftypheic") || at(4, b"ftypheix") || at(4, b"ftypmif1")
 }
 
 /// Extensions shown as a file LISTING (container formats with no cover/thumbnail — deliberately
@@ -483,6 +499,31 @@ pub(super) fn human_size(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `.ts` is TypeScript and MPEG-TS alike: a file whose head is binary is a stream, while an
+    /// EMPTY file (a new TypeScript file, say) keeps the text view.
+    #[test]
+    fn a_ts_file_is_a_stream_only_when_its_head_is_binary() {
+        let dir = std::env::temp_dir().join(format!("st2k-ts-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("empty.ts");
+        std::fs::write(&empty, b"").unwrap();
+        let stream = dir.join("clip.ts");
+        let mut packet = vec![0u8; 188 * 4];
+        for k in 0..4 {
+            packet[k * 188] = 0x47;
+        }
+        std::fs::write(&stream, &packet).unwrap();
+        assert!(matches!(
+            text_ext_kind(empty.to_str().unwrap(), "ts"),
+            ContentKind::Text
+        ));
+        assert!(matches!(
+            text_ext_kind(stream.to_str().unwrap(), "ts"),
+            ContentKind::Video
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Every fixed-offset signature the table declares, at the offset it declares. A reader
     /// keeping only some of these (say, dropping the TIFF pair or QOI) would send a real image
