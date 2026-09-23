@@ -102,12 +102,14 @@ pub(super) unsafe fn refresh_shot_status(hwnd: HWND) {
     // another app otherwise looked identical to a working one ("Running" while the
     // hotkey silently never fires). Only trust the flag while the daemon is actually
     // alive (it rewrites the mask on every re-arm; a dead daemon's value is stale).
-    let bind_failed = if st2k_screenshot::screenshot::is_daemon_running() {
+    // Asked once: two calls could disagree if the daemon exits in between.
+    let alive = st2k_screenshot::screenshot::is_daemon_running();
+    let bind_failed = if alive {
         settings::get_dword_opt("HotkeyBindFailed").unwrap_or(0)
     } else {
         0
     };
-    let daemon_running = enabled && st2k_screenshot::screenshot::is_daemon_running();
+    let daemon_running = enabled && alive;
     // Localized like every other line on the page: these were hard-coded English until
     // 2026-09-18, so a Chinese UI read "Running" beside translated labels. The tint never
     // depends on the text (see SHOT_STATUS_GREEN), so any language is safe here.
