@@ -117,6 +117,10 @@ fn pnm_token(head: &[u8], i: usize) -> Option<(Option<u64>, usize)> {
     }
 }
 
+/// What [`pnm_number`] reads a negative number as: only PFM's scale may be one, and its sign is
+/// the byte order. No PNM size or MAXVAL takes it.
+const NEGATIVE: u64 = u64::MAX;
+
 /// The number token starting at `i`, and the index after it.
 fn pnm_number(head: &[u8], i: usize) -> Option<(u64, usize)> {
     let end = i + head
@@ -126,7 +130,7 @@ fn pnm_number(head: &[u8], i: usize) -> Option<(u64, usize)> {
     let text = std::str::from_utf8(head.get(i..end)?).ok()?;
     // PFM's scale is a float; only its sign (the byte order) matters.
     let v = if text.starts_with('-') {
-        1
+        NEGATIVE
     } else {
         text.parse::<f64>().ok()? as u64
     };
@@ -148,13 +152,11 @@ fn pnm_layout(head: &[u8]) -> Option<Layout> {
     let (width, height) = (t[0], t[1]);
     let sample = match magic {
         b"P4" => Sample::Bit,
-        b"PF" | b"Pf" => {
-            // A negative scale is little-endian.
-            let text = std::str::from_utf8(head.get(..data as usize)?).ok()?;
-            Sample::Float {
-                le: text.split_ascii_whitespace().nth(3)?.starts_with('-'),
-            }
-        }
+        // A negative scale is little-endian: read from the tokens, so a comment in the header
+        // cannot shift it.
+        b"PF" | b"Pf" => Sample::Float {
+            le: t[2] == NEGATIVE,
+        },
         _ => sample_of_max(t[2])?,
     };
     Some(Layout {
@@ -574,6 +576,22 @@ mod tests {
         assert_eq!(img.get_pixel(0, 1).0[0], 50);
         assert_eq!(img.get_pixel(1, 1).0[0], 100);
         assert_eq!(img.get_pixel(2, 1).0[0], 150);
+    }
+
+    /// A PFM's byte order is its scale's sign, a comment in its header or not.
+    #[test]
+    fn a_pfm_scale_sets_the_byte_order_through_a_comment() {
+        for (scale, bytes) in [
+            ("-1.0", 0.5f32.to_le_bytes()),
+            ("1.0", 0.5f32.to_be_bytes()),
+        ] {
+            let mut pfm = format!("Pf\n# made by a test\n1 1\n{scale}\n").into_bytes();
+            pfm.extend(bytes);
+            let img = decode_scaled(Cursor::new(&pfm), 64)
+                .expect("reads")
+                .to_rgba8();
+            assert_eq!(img.get_pixel(0, 0).0[0], 128, "scale {scale}");
+        }
     }
 
     /// Past the decoders' 16384 side limit, which the `image` tier refuses, the picture is

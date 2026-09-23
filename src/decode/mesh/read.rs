@@ -76,8 +76,9 @@ pub(crate) fn next_line<R: BufRead>(r: &mut R, buf: &mut Vec<u8>) -> Option<bool
     Some(n > 0)
 }
 
-/// A line as text, without leading whitespace or its line ending; `None` when it is not UTF-8,
-/// which fails the whole parse (a text mesh is text).
+/// A line as text, without leading whitespace or its line ending; `None` when it is not UTF-8.
+/// The callers end the block there: what was read before a garbled line is drawn, as a
+/// truncated file's part is.
 fn text(buf: &[u8]) -> Option<&str> {
     Some(std::str::from_utf8(buf).ok()?.trim())
 }

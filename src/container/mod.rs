@@ -433,8 +433,8 @@ fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
 /// without ever buffering it. ZIP-family and 7-Zip archives seek to the central
 /// directory + one cover entry; Clip Studio `.clip` seeks to the embedded SQLite
 /// database at the file's tail and reads only that (a big canvas's bulk is layer
-/// raster chunks we never touch). RAR can't stream (the `rars` crate needs the full
-/// buffer), so a giant CBR still falls through to the default icon. `head` is the
+/// raster chunks we never touch). A CBR walks its RAR block headers and reads only the cover's
+/// entry (`rar::covers_seek`). `head` is the
 /// first bytes (already peeked) for the magic sniff.
 pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
     reader: R,
@@ -544,8 +544,9 @@ pub fn archive_covers(
 /// Streaming [`archive_covers`] over a seekable reader (the shell's IStream or an
 /// open `File`): the entry LIST comes from the central directory / archive header
 /// (zip stores it at the tail — one seek, a few KB), then only the picked entries
-/// are read. A multi-GB zip of photos costs its directory plus 4 images. ZIP and
-/// 7z only ([`archive_needs_buffer`] — RAR goes through the in-memory variant).
+/// are read. A multi-GB zip of photos costs its directory plus 4 images. A RAR walks its block
+/// headers instead (`rar::covers_seek`); inside the input ceiling the shell still reads a RAR
+/// whole ([`archive_needs_buffer`]), the route this was checked against.
 pub fn archive_covers_seek<R: std::io::Read + std::io::Seek>(
     reader: R,
     head: &[u8],

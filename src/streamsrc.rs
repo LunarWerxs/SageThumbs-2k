@@ -481,16 +481,32 @@ unsafe fn try_fits_source(
     if !decode::is_fits(head.bytes()) {
         return None;
     }
-    let source = std::io::BufReader::with_capacity(
-        READ_AHEAD_BYTES,
-        IStreamReader {
-            stream: stream.clone(),
-        },
-    );
-    let img = decode::fits_scaled_from_reader(source, target_edge);
+    picture_off_stream(stream, head, (who, "FITS"), |r| {
+        decode::fits_scaled_from_reader(
+            std::io::BufReader::with_capacity(READ_AHEAD_BYTES, r),
+            target_edge,
+        )
+    })
+}
+
+/// A picture a reader decodes straight off `stream` (rewound after), logged as `what`, and
+/// marked as the buffered path marks the same decode ([`own_picture`]).
+unsafe fn picture_off_stream(
+    stream: &IStream,
+    head: &StreamHead,
+    (who, what): (&str, &str),
+    decode: impl FnOnce(IStreamReader) -> Option<image::DynamicImage>,
+) -> Option<StreamSource> {
+    let img = decode(IStreamReader {
+        stream: stream.clone(),
+    });
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let img = img?;
-    safety::log_debugf!("{who}: FITS {}x{}", img.width(), img.height());
+    safety::log_debugf!(
+        "{who}: {what} off the stream -> {}x{}",
+        img.width(),
+        img.height()
+    );
     Some(own_picture(head.bytes(), img))
 }
 
@@ -742,18 +758,9 @@ unsafe fn raw_raster(
     }
     // Unbuffered: each sampled row is one exact read at its offset (a read-ahead would be
     // thrown away by the next seek), and run-length TGA buffers its own front-to-back pass.
-    let reader = IStreamReader {
-        stream: stream.clone(),
-    };
-    let img = decode::raw_raster_scaled_from_reader(reader, target_edge);
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let img = img?;
-    safety::log_debugf!(
-        "{who}: raster rows read off the stream -> {}x{}",
-        img.width(),
-        img.height()
-    );
-    Some(own_picture(head.bytes(), img))
+    picture_off_stream(stream, head, (who, "raster rows"), |r| {
+        decode::raw_raster_scaled_from_reader(r, target_edge)
+    })
 }
 
 /// A TIFF the OS codecs would not open (BigTIFF, above all), read a strip or tile at a time
@@ -767,18 +774,9 @@ unsafe fn tiff_strips(
     if !plain_tiff(head) {
         return None;
     }
-    let reader = IStreamReader {
-        stream: stream.clone(),
-    };
-    let img = decode::tiff_scaled_from_reader(reader, target_edge);
-    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let img = img?;
-    safety::log_debugf!(
-        "{who}: TIFF strips read off the stream -> {}x{}",
-        img.width(),
-        img.height()
-    );
-    Some(own_picture(head.bytes(), img))
+    picture_off_stream(stream, head, (who, "TIFF strips"), |r| {
+        decode::tiff_scaled_from_reader(r, target_edge)
+    })
 }
 
 /// The largest JPEG embedded anywhere in the file (`decode::largest_embedded_jpeg_from`), read

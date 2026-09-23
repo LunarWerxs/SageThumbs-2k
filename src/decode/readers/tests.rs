@@ -104,8 +104,8 @@ fn scaled_prepass_declines_cmyk_jpeg_even_when_large_enough_to_qualify() {
 }
 
 /// A084: `decode_preview_path` returns `decode_preview_streamed`'s result directly on
-/// success; for a file past MAX_INPUT_BYTES that result comes from
-/// the oversized WIC rescue (`wic_scaled_from_path`), which used to hand back WIC's raw,
+/// success; for a file past MAX_INPUT_BYTES that result comes from the stream cascade, whose
+/// WIC rescue decodes like `wic_scaled_from_path` does - which used to hand back WIC's raw,
 /// unrotated pixels with no EXIF orientation applied anywhere on that branch — so a large
 /// rotated phone photo/scan rendered sideways. `wic_scaled_from_path` carries no size gate
 /// of its own (its callers apply theirs), so this exercises the real function directly

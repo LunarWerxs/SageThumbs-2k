@@ -738,3 +738,21 @@ fn a_cut_short_layered_document_is_refused_not_misread() {
     let records = f.windows(4).position(|w| w == b"Lr16").expect("Lr16 block") + 30;
     assert!(decode(&f[..records], 64).is_none());
 }
+
+/// `real.psd` keeps one layer of no size in an `Lr16` block and its picture in the composite,
+/// whatever its flag says. Flattening that layer drew nothing, and the empty canvas was taken
+/// for the picture: every surface drew a blank tile where 3.2.0 drew the file (the big-file
+/// gate's blind-spot check found it).
+#[test]
+fn a_layer_that_draws_nothing_leaves_the_composite() {
+    let Some(bytes) = crate::testcorpus::read("real.psd") else {
+        eprintln!("NOT MEASURED: real.psd absent");
+        return;
+    };
+    let img = super::from_reader(Cursor::new(&bytes), 256)
+        .expect("reads")
+        .to_rgba8();
+    assert!(img.pixels().all(|p| p[3] == 255), "the composite is opaque");
+    let first = img.get_pixel(0, 0);
+    assert!(img.pixels().any(|p| p != first), "a flat picture");
+}

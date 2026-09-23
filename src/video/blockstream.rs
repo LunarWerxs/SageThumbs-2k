@@ -79,7 +79,7 @@ pub(crate) unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
 
 /// RAII owner of a [`frame_from_block_stream`] GIT cookie. It revokes the table entry on drop
 /// unless [`GitCookie::revoke`] already did, so a cookie whose worker never starts (the
-/// `spawn` in `run_bounded_pumping` failed, dropping the closure) is still revoked instead of
+/// `spawn` in `run_pumping` failed, dropping the closure) is still revoked instead of
 /// pinning the shell `IStream` for the host's lifetime.
 struct GitCookie(Option<u32>);
 

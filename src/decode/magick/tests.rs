@@ -45,6 +45,20 @@ fn mini_avif_uses_explicit_avif_stdin_spec() {
     assert_eq!(magick_stdin_spec(&compatible), "avif:-");
 }
 
+/// An image sequence is read for its first frame only: a bare `-` decodes every frame, ten
+/// times slower on the corpus's real.heics for the same picture.
+#[test]
+fn an_image_sequence_asks_magick_for_its_first_frame() {
+    for brand in [b"msf1", b"hevs", b"avis"] {
+        assert_eq!(magick_stdin_spec(&ftyp(brand, &[*b"hevc"])), "-[0]");
+    }
+    assert_eq!(
+        magick_stdin_spec(&ftyp(b"mif1", &[*b"msf1"])),
+        "-",
+        "a still keeps `-`"
+    );
+}
+
 #[test]
 fn ordinary_avif_keeps_magick_auto_detection() {
     let mut bytes = ftyp(b"avif", &[*b"mif1"]);
@@ -326,4 +340,26 @@ fn encode_target_length_is_refused_past_windows_limits() {
     }
     deep = deep.join("thumbnail.dds");
     assert!(!super::encode_target_length_ok(&deep));
+}
+
+/// A legacy Excel file's thumbnail WMF draws at the preview pane's 1024 px inside the metafile
+/// budget. Under a 96 MiB cap its 3832x2153 render spilled ImageMagick's pixel cache to disk,
+/// took 11.5 s against a 3 s CPU budget, and the pane stayed blank (the big-file gate's
+/// blind-spot check found it: the thumbnail, at 256 px, drew fine).
+#[test]
+fn an_office_metafile_draws_at_the_pane_size() {
+    if !crate::decode::magick_available() {
+        eprintln!("NOT MEASURED: no ImageMagick");
+        return;
+    }
+    let Some(bytes) = crate::testcorpus::read("real.xls") else {
+        eprintln!("NOT MEASURED: real.xls absent");
+        return;
+    };
+    let img = crate::decode::decode_preview_capped(&bytes, crate::safety::PREVIEW_TARGET_EDGE)
+        .expect("the pane's picture");
+    assert_eq!(
+        img.width().max(img.height()),
+        crate::safety::PREVIEW_TARGET_EDGE
+    );
 }

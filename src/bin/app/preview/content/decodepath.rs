@@ -155,11 +155,7 @@ pub(super) fn decode_preview_budgeted(
     }
 }
 
-/// Does `path` start with Photoshop's `8BPS` signature? Four bytes, never the file.
+/// Does `path` start with Photoshop's `8BPS` signature? A peek at its head, never the file.
 fn is_photoshop(path: &str) -> bool {
-    use std::io::Read;
-    let mut magic = [0u8; 4];
-    std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut magic))
-        .is_ok_and(|()| &magic == b"8BPS")
+    sagethumbs2k_core::decode::file_head_is(path, |head| head.starts_with(b"8BPS"))
 }

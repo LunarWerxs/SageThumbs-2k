@@ -34,9 +34,15 @@ pub(in super::super) fn add_magick_limits(cmd: &mut Command, wall: Duration) {
 /// budget merely to produce a useless frame. These are deliberately command-line
 /// overrides, after [`add_magick_limits`], so they constrain only this decode
 /// invocation and do not weaken the broader Magick policy or raster/PSD support.
-pub(super) const METAFILE_MAGICK_MEMORY_LIMIT: &str = "96MiB";
+///
+/// 192 MiB, not the 96 it was: an ordinary Excel file's thumbnail WMF (the corpus's
+/// `real.xls`) renders at 3832x2153 before it is shrunk, and at the preview pane's 1024 px the
+/// resize no longer fit in 96, spilled the pixel cache to disk and took 11.5 s, past the 3 s
+/// CPU budget, so the pane stayed blank; in 128 MiB it takes 0.4 s (measured 2026-09-23). The
+/// CPU budget below is what stops a hostile program, not this.
+pub(super) const METAFILE_MAGICK_MEMORY_LIMIT: &str = "192MiB";
 
-pub(super) const METAFILE_MAGICK_MAP_LIMIT: &str = "96MiB";
+pub(super) const METAFILE_MAGICK_MAP_LIMIT: &str = "192MiB";
 
 /// Metafile CPU budget, and the elapsed-time backstop that goes with it. Same split as the
 /// general-purpose pair (see [`limits::MAGICK_CPU_SECS`]): 3 s of CPU still kills a complex

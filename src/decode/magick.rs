@@ -218,9 +218,21 @@ pub(super) fn decode_via_magick_capped(
 fn magick_stdin_spec(bytes: &[u8]) -> &'static str {
     if is_mini_avif(bytes) {
         "avif:-"
+    } else if is_image_sequence(bytes) {
+        // Only frame 0 is ever used, and a bare `-` decodes EVERY frame of the sequence first:
+        // measured on the corpus's real.heics, 5.0 s against 0.54 s for the same picture, which
+        // left a normal-size sequence's preview pane blank on a loaded machine.
+        "-[0]"
     } else {
         "-"
     }
+}
+
+/// A HEIF or AVIF image SEQUENCE (major brand `msf1`, `hevs` or `avis`): many frames, of which
+/// a thumbnail or preview takes the first.
+fn is_image_sequence(bytes: &[u8]) -> bool {
+    bytes.get(4..8) == Some(b"ftyp")
+        && matches!(bytes.get(8..12), Some(b"msf1" | b"hevs" | b"avis"))
 }
 
 /// The PSD/PSB composite at full resolution. Frame `[0]` of a PSD in ImageMagick

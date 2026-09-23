@@ -466,7 +466,8 @@ fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
     let mut zbuf = vec![f32::NEG_INFINITY; (big * big) as usize];
     let mut shade = vec![0u8; (big * big) as usize];
     let light = mesh_light();
-    // Aggregate rasterization budget: `MAX_TRIS` bounds parse cost, not fill cost, and a
+    // Aggregate rasterization budget: `MAX_TRIS` bounds how many triangles are drawn (a bigger
+    // model is sampled down to it as it is read), not how much each one fills, and a
     // crafted mesh whose triangles all cover roughly the whole canvas would otherwise multiply
     // triangle count by full-canvas coverage — see `RASTER_BUDGET_CANVAS_MULTIPLE`. Stopping
     // early keeps whatever fully rasterized so far, the same partial-result spirit as the

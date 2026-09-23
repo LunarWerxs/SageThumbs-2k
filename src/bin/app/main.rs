@@ -201,7 +201,8 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         // network call running out of a process whose whole job was one `cmd` line.
         "--rebuild-thumbnail-cache",
         "--rebuild-thumbnail-cache-now",
-        // The hidden dev measurement flags: console-output-only, no window, no side effects —
+        // The hidden dev measurement flags: no window, and no side effect beyond the file they
+        // are told to write (`--probe-preview`'s picture) —
         // a network call spawned mid-benchmark would be a stray side effect in a mode whose
         // whole point is a clean, repeatable number.
         "--bench-preview",

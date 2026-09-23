@@ -33,12 +33,22 @@ pub fn decode_thumbnail_opts(bytes: &[u8], cx: u32, use_embedded: bool) -> Resul
 /// the whole file, where [`tile_box_edge`] sees the container's header and not the cover's.
 pub fn decode_stand_in_thumbnail(bytes: &[u8], cx: u32) -> Result<Decoded> {
     let cx = cx.max(1);
-    // The call the container tier makes for a cover it found inside the whole file, so the
-    // same cover decodes to the same pixels (the JPEG-scaling tier would draw it softer).
-    let img = decode_image_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))?;
-    let mut decoded = fit_to_box(img, cx);
+    let mut decoded = fit_to_box(decode_stand_in(bytes, Some(cx))?, cx);
     resolve_transparency(&mut decoded)?;
     Ok(decoded)
+}
+
+/// A stand-in cover's picture, decoded by the call the container tier makes for a cover it
+/// finds inside the whole file, so the same cover decodes to the same pixels on both routes
+/// (the JPEG-scaling tier would draw it softer): for a thumbnail of `cx`, or at its own size
+/// (`None`), as `decode_preview` decodes one.
+pub(crate) fn decode_stand_in(bytes: &[u8], cx: Option<u32>) -> Result<DynamicImage> {
+    let order = if cx.is_some() {
+        RawPreviewOrder::BeforeExternal
+    } else {
+        RawPreviewOrder::AfterExternal
+    };
+    decode_image_with_raw_order(bytes, order, cx)
 }
 
 /// Pick the decode source for [`decode_thumbnail_opts`]: the embedded (EXIF) thumbnail when the

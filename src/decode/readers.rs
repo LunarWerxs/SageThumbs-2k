@@ -130,7 +130,7 @@ pub(super) fn file_is_exr(path: &str) -> bool {
 ///
 /// A short file simply fails the test rather than erroring: every magic this routes on is
 /// longer than the bytes a truncated file would supply.
-fn file_head_is(path: &str, test: impl Fn(&[u8]) -> bool) -> bool {
+pub fn file_head_is(path: &str, test: impl Fn(&[u8]) -> bool) -> bool {
     use std::io::Read;
     let mut magic = [0u8; 16];
     std::fs::File::open(path)
@@ -208,10 +208,10 @@ pub fn decode_streamed_format(path: &str, target_edge: u32) -> Option<DynamicIma
     None
 }
 
-/// A Photoshop document's merged composite read straight off the file, at most `target_edge`
-/// on its long side, however big the file is (issue #46: the Quick preview's sharpen pass).
-/// `None` for a document it does not read - 32-bit, Lab, Indexed, or saved without a real
-/// composite - which is the caller's cue to keep the route it had.
+/// A Photoshop document's picture read straight off the file - its merged composite, or its
+/// flattened layers when it was saved without one - sampled toward `target_edge`, however big
+/// the file is (issue #46: the Quick preview's sharpen pass). `None` for a document it does
+/// not read, which is the caller's cue to keep the route it had.
 pub fn psd_composite_scaled(path: &str, target_edge: u32) -> Option<DynamicImage> {
     let img = std::fs::File::open(path).ok().and_then(|f| {
         crate::container::psd_merged_from_reader(std::io::BufReader::new(f), target_edge)
@@ -286,11 +286,8 @@ pub fn decode_oversized_path(path: &str, target_edge: u32) -> Option<DynamicImag
 /// large and shrunk), and at its own size for the viewer's whole-picture request
 /// ([`OVERSIZED_VIEW_EDGE`]), which is what `decode_preview` gives it.
 fn decode_cover_for(bytes: &[u8], target_edge: u32) -> Option<DynamicImage> {
-    if target_edge >= OVERSIZED_VIEW_EDGE {
-        super::decode_preview(bytes).ok()
-    } else {
-        super::decode_preview_capped(bytes, target_edge).ok()
-    }
+    let cx = (target_edge < OVERSIZED_VIEW_EDGE).then_some(target_edge);
+    super::decode_stand_in(bytes, cx).ok()
 }
 
 /// The WIC-off-the-file decode itself, scaled to `target_edge`, with NO size gate.
@@ -579,7 +576,13 @@ pub(super) fn read_preview_capped_at(
         let mut head = vec![0u8; prefix.min(len as usize)];
         head[..8].copy_from_slice(&magic);
         f.read_exact(&mut head[8..])?;
-        return Ok(head);
+        // A Photoshop head is worth handing on only with its baked preview in it. Without one,
+        // a decoder given the cut-off document draws whatever part the cut left: ImageMagick
+        // drew the layers of a big PDD whose whole file draws its composite (the big-file
+        // gate). The caller's stored-composite read (`psd_composite_scaled`) draws the file.
+        if !magic.starts_with(b"8BPS") || crate::container::extract_cover(&head).is_some() {
+            return Ok(head);
+        }
     }
     // The magic sets are disjoint, so this runs only when the head path didn't.
     let prefs = crate::container::select::CoverPrefs::from_settings();

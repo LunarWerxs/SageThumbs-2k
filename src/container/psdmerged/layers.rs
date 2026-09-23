@@ -44,7 +44,7 @@ const LONG_KEYS: [&[u8; 4]; 13] = [
 /// What [`flatten`] found.
 pub(super) enum Flat {
     Picture(DynamicImage),
-    /// No layers at all: the composite is the only picture there is.
+    /// No layers at all, or none that draws anything: the composite is the only picture there is.
     NoLayers,
 }
 
@@ -821,6 +821,11 @@ pub(super) fn flatten<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) 
         if layer.section == 0 {
             draw_layer(&src, head, layer, show, &mut canvas)?;
         }
+    }
+    // Layers that drew nothing (the corpus's `real.psd`: one layer of no size, its picture in
+    // the composite whatever the flag says) leave the composite as the only picture there is.
+    if canvas.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
+        return Some(Flat::NoLayers);
     }
     Some(Flat::Picture(canvas.image()?))
 }

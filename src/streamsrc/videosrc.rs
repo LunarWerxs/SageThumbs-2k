@@ -165,8 +165,9 @@ pub(super) unsafe fn resolve_decoded_frame(
     StreamSource::Frame(frame)
 }
 
-/// The tail of the cascade once every frame tier has come back empty: OggS falls through
-/// to the audio-art path (`None`, same as "not video" as far as the caller is concerned),
+/// The tail of the cascade once every frame tier has come back empty: Ogg and ASF fall through
+/// to the audio-art path (`None`, same as "not video" as far as the caller is concerned; both
+/// containers carry audio alone as often as video, and a WMA's cover is in its tags),
 /// a genuine undecodable video gets one last Matroska-attached-cover-art rescue, and
 /// otherwise the file fails outright. Mirrors the tail of `try_video_source` exactly.
 pub(super) unsafe fn video_undecodable_fallback(

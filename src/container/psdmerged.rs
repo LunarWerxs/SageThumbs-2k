@@ -616,7 +616,7 @@ fn canvas(grid: &Grid, fill: u8) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
-/// The stored composite, at most `target_edge` on its long side.
+/// The stored composite, sampled to at least `target_edge` on its long side (see `Grid::new`).
 fn composite<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) -> Option<DynamicImage> {
     let (data, packed) = image_data(r, head.layers, head.psb)?;
     let grid = Grid::new(head.width, head.height, target_edge);
@@ -635,8 +635,9 @@ fn composite<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) -> Option
     Some(DynamicImage::ImageRgba8(img))
 }
 
-/// The document's picture, at most `target_edge` (and never more than [`MAX_TARGET_EDGE`]) on
-/// its long side, read from `r` without buffering the file: the stored composite, or the
+/// The document's picture, sampled to at least `target_edge` (the caller's resize takes it the
+/// rest of the way) and never more than [`MAX_TARGET_EDGE`] on its long side, read from `r`
+/// without buffering the file: the stored composite, or the
 /// flattened layers when Photoshop says the composite is not the picture.
 pub(crate) fn from_reader<R: Read + Seek>(mut r: R, target_edge: u32) -> Option<DynamicImage> {
     let head = read_head(&mut r)?;

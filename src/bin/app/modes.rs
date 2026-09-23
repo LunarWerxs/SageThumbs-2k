@@ -3,7 +3,8 @@
 use super::*;
 
 /// Hidden, side-effect-free UI integration route (`--screenshot-automation`) plus the
-/// hidden dev measurement flags (`--bench-preview` / `--bench-nav` / `--bench-mash`).
+/// hidden dev measurement flags (`--bench-preview` / `--bench-nav` / `--bench-mash` /
+/// `--probe-preview`).
 /// Checked first: the automation route takes precedence over every other output-capable
 /// mode even in a malformed mixed invocation, preserving its privacy/safety contract —
 /// synthetic full-screen pixels only, with clipboard, file, dialog, and upload paths
