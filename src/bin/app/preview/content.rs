@@ -732,4 +732,110 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    /// A Photoshop document whose stored composite (800x600, green) is `gap` bytes past its
+    /// head, in a layer section of nothing - the shape of a real big document, whose size lives
+    /// in its layers. With `preview`, it also carries a 64 px red baked preview. A `psb` is a
+    /// PSB (64-bit section lengths), which is what a document past 2 GB has to be.
+    ///
+    /// The gap is a SPARSE range (`fsutil sparse setflag`), so a 2.2 GB document costs no disk
+    /// and no time: the point is sizes the old code refused, not bytes to write.
+    fn psd_with_a_gap(gap: u64, psb: bool, preview: bool, name: &str) -> std::path::PathBuf {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut res = Vec::new();
+        if preview {
+            let mut jpeg = Vec::new();
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                64,
+                48,
+                image::Rgb([200, 40, 40]),
+            ))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+            let mut thumb = 1u32.to_be_bytes().to_vec(); // format = JPEG
+            thumb.extend_from_slice(&[0u8; 20]);
+            thumb.extend_from_slice(&[0, 24, 0, 1]);
+            thumb.extend_from_slice(&jpeg);
+            res.extend_from_slice(b"8BIM");
+            res.extend_from_slice(&1036u16.to_be_bytes());
+            res.extend_from_slice(&[0, 0]);
+            res.extend_from_slice(&(thumb.len() as u32).to_be_bytes());
+            res.extend_from_slice(&thumb);
+            if thumb.len() % 2 == 1 {
+                res.push(0);
+            }
+        }
+        let (w, h) = (800u32, 600u32);
+        let mut head = b"8BPS".to_vec();
+        head.extend_from_slice(&[0, 1 + u8::from(psb), 0, 0, 0, 0, 0, 0, 0, 3]);
+        head.extend_from_slice(&h.to_be_bytes());
+        head.extend_from_slice(&w.to_be_bytes());
+        head.extend_from_slice(&[0, 8, 0, 3]); // 8-bit RGB
+        head.extend_from_slice(&0u32.to_be_bytes());
+        head.extend_from_slice(&(res.len() as u32).to_be_bytes());
+        head.extend_from_slice(&res);
+        if psb {
+            head.extend_from_slice(&gap.to_be_bytes());
+        } else {
+            head.extend_from_slice(&(gap as u32).to_be_bytes());
+        }
+        let ext = if psb { "psb" } else { "psd" };
+        let path = std::env::temp_dir().join(format!("st2k-{name}-{}.{ext}", std::process::id()));
+        drop(std::fs::File::create(&path).unwrap());
+        let _ = std::process::Command::new("fsutil")
+            .args(["sparse", "setflag"])
+            .arg(&path)
+            .output();
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(&head).unwrap();
+        f.seek(SeekFrom::Current(gap as i64)).unwrap();
+        f.write_all(&[0, 0]).unwrap(); // raw composite
+        for v in [30u8, 190, 60] {
+            f.write_all(&vec![v; (w * h) as usize]).unwrap();
+        }
+        path
+    }
+
+    /// What Quick preview ends up showing for `path` (its size and centre pixel), through the
+    /// viewer's own two stages (`decode_sync`). The file is removed either way.
+    fn shown_centre(path: &std::path::Path) -> Option<((i32, i32), [u8; 3])> {
+        let shown = decode_sync(path.to_str().unwrap());
+        let _ = std::fs::remove_file(path);
+        let d = shown?;
+        let at = ((d.h / 2 * d.w + d.w / 2) * 4) as usize;
+        Some(((d.w, d.h), [d.rgba[at], d.rgba[at + 1], d.rgba[at + 2]]))
+    }
+
+    /// **Issue #46.** Quick preview of a document past the 256 MiB input ceiling must end on
+    /// its real, green 800x600 composite, not stay on the 64 px baked preview.
+    #[test]
+    fn a_document_past_the_input_ceiling_sharpens_to_its_stored_composite() {
+        let path = psd_with_a_gap(300 << 20, false, true, "quick-300m");
+        let (dims, px) = shown_centre(&path).expect("a 300 MB PSD must preview");
+        assert_eq!(dims, (800, 600), "the composite, not the 64 px preview");
+        assert!(px[1] > 150 && px[0] < 60, "the green composite, got {px:?}");
+    }
+
+    /// The same past 2 GB, where the old composite route refused the file outright (the
+    /// reporter's 5 and 10 GB documents never sharpened at all).
+    #[test]
+    fn a_document_past_two_gigabytes_sharpens_to_its_stored_composite() {
+        let path = psd_with_a_gap(2253 << 20, true, true, "quick-2g");
+        let (dims, px) = shown_centre(&path).expect("a 2.2 GB PSB must preview");
+        assert_eq!(dims, (800, 600), "the composite, not the 64 px preview");
+        assert!(px[1] > 150 && px[0] < 60, "the green composite, got {px:?}");
+    }
+
+    /// A big document saved with "Image Previews: Never Save" has nothing for the first stage
+    /// to draw; it must be chased to its composite rather than left on the error card.
+    #[test]
+    fn a_big_document_without_a_baked_preview_still_shows_its_composite() {
+        let path = psd_with_a_gap(300 << 20, false, false, "quick-nopreview");
+        let (dims, px) = shown_centre(&path).expect("a preview-less 300 MB PSD must preview");
+        assert_eq!(dims, (800, 600));
+        assert!(px[1] > 150 && px[0] < 60, "the green composite, got {px:?}");
+    }
 }

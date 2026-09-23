@@ -4,7 +4,7 @@ use super::*;
 use std::io::Write;
 
 #[test]
-fn unlimited_archive_setting_still_rejects_before_parse_at_hard_cap() {
+fn the_archive_gate_is_the_users_max_size_not_the_input_ceiling() {
     let path = std::env::temp_dir().join(format!(
         "st2k_cli_oversized_{}_{}.7z",
         std::process::id(),
@@ -21,8 +21,12 @@ fn unlimited_archive_setting_still_rejects_before_parse_at_hard_cap() {
     file.set_len(decode::limits::MAX_INPUT_BYTES + 1).unwrap();
     drop(file);
 
-    let err = reject_oversized_archive(path.to_str().unwrap(), u64::MAX).unwrap_err();
-    assert!(err.contains(&decode::limits::MAX_INPUT_BYTES.to_string()));
+    assert!(
+        reject_oversized_archive(path.to_str().unwrap(), u64::MAX).is_ok(),
+        "past the input ceiling an archive is read by seeking, as Explorer reads it"
+    );
+    let err = reject_oversized_archive(path.to_str().unwrap(), 1 << 20).unwrap_err();
+    assert!(err.contains(&(1u64 << 20).to_string()));
 
     let _ = std::fs::remove_file(path);
 }

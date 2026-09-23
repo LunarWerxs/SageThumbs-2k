@@ -109,6 +109,21 @@ pub(super) fn header_targets() -> Vec<Target> {
         ("decode::exr_scaled_from_reader", |b| {
             let _ = crate::decode::exr_scaled_from_reader(Cursor::new(b), 64);
         }),
+        // FITS: the header-data unit walk, the card parse and the row sampling, straight off a
+        // Read + Seek source, as the shell's stream cascade runs it.
+        ("decode::fits_scaled_from_reader", |b| {
+            let _ = crate::decode::fits_scaled_from_reader(Cursor::new(b), 64);
+        }),
+        // A RAR past the input ceiling: the block-header walk, the cut-down archive it builds
+        // and `rars` reading that, straight off a Read + Seek source.
+        ("container::rar_covers_seek", |b| {
+            let prefs = crate::container::select::CoverPrefs {
+                prefer_cover: true,
+                sort: true,
+                skip_scanlation: true,
+            };
+            let _ = crate::container::rar_covers_seek(Cursor::new(b), 4, &prefs);
+        }),
     ]
 }
 

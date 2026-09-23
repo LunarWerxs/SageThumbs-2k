@@ -207,6 +207,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--bench-preview",
         "--bench-nav",
         "--bench-mash",
+        "--probe-preview",
         // Documented as read-only and side-effect-free ("prints what a global hotkey would
         // act on right now... and exits"); it must stay that way even under `--after-ms`.
         "--explorer-selection",

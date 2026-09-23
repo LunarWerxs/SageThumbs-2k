@@ -23,6 +23,7 @@ use crate::{decode, safety};
 
 mod archive;
 mod headprev;
+mod headwin;
 mod mp4remux;
 mod rawsniff;
 
@@ -32,6 +33,7 @@ mod rawsniff;
 // `stream_source` / `StreamSource`, which stay in this file.
 use archive::*;
 use headprev::*;
+use headwin::*;
 use mp4remux::*;
 use rawsniff::*;
 mod istream;
@@ -53,12 +55,24 @@ const MAX_BYTES: usize = decode::limits::MAX_INPUT_BYTES as usize;
 const READ_AHEAD_BYTES: usize = 256 * 1024;
 
 /// What [`stream_source`] hands back: a video frame Media Foundation already
-/// decoded (no bytes to re-decode), bounded raw bytes for the caller's tiered
-/// byte decoder, or a generic archive's picked cover images for the
-/// contact-sheet compositor (`decode::thumbnail_from_covers`).
+/// decoded (no bytes to re-decode), the file's own picture decoded off the stream,
+/// bounded raw bytes for the caller's tiered byte decoder, or a generic archive's
+/// picked cover images for the contact-sheet compositor
+/// (`decode::thumbnail_from_covers`).
 pub enum StreamSource {
     Frame(image::DynamicImage),
+    /// The file's own picture, read straight off the stream at or below its real size
+    /// (a streamed EXR, a Photoshop composite, a GIMP flatten, the WIC rescue). A tile
+    /// never enlarges it, exactly as the buffered path never enlarges a small file's own
+    /// picture (`decode::thumbnail_from_own_picture`).
+    Picture(image::DynamicImage),
     Bytes(Vec<u8>),
+    /// A picture that STANDS IN for the file (an app's icon, an album's art, a document's
+    /// baked thumbnail, a comic's cover, a rendered page), encoded. It fills the tile the way
+    /// the same cover does when the buffered path finds it inside the whole file: the rule
+    /// that never enlarges a file's own small picture is about the file, and a 72 px icon
+    /// inside a 300 MB package is not the package's picture (`decode::decode_stand_in_thumbnail`).
+    Cover(Vec<u8>),
     Covers(Vec<Vec<u8>>),
 }
 
@@ -85,7 +99,7 @@ pub enum StreamSource {
 ///    read ONLY the art (not the whole file). Sidesteps the size cap AND avoids
 ///    buffering; artless audio stops here (raw audio bytes are not a decodable
 ///    image, a full read + decode would just burn time and fail).
-/// 3. OPENEXR — decoded straight off the stream at the target edge, never
+/// 3. OPENEXR and FITS — decoded straight off the stream at the target edge, never
 ///    buffered (a 12K render pass is hundreds of MB of input and gigabytes of
 ///    float pixels; both caps refuse it, so it used to get the stock icon).
 /// 4. OVERSIZED (past the cap) — streamed container cover (CBZ central
@@ -134,7 +148,7 @@ pub(crate) unsafe fn stream_source_with_caps(
     }
 
     match audio_art(stream, &head) {
-        AudioArt::Art(art) => return Ok(StreamSource::Bytes(art)),
+        AudioArt::Art(art) => return Ok(StreamSource::Cover(art)),
         AudioArt::NoArt => {
             safety::log_debugf!("{who}: audio file has no embedded art");
             return Err(Error::from(E_FAIL));
@@ -143,6 +157,9 @@ pub(crate) unsafe fn stream_source_with_caps(
     }
 
     if let Some(src) = try_exr_source(stream, &head, who, target_edge) {
+        return Ok(src);
+    }
+    if let Some(src) = try_fits_source(stream, &head, who, target_edge) {
         return Ok(src);
     }
 
@@ -216,10 +233,10 @@ unsafe fn finish_bounded_read(
         // Oversized: the whole-file read is a DoS risk, so we skip it —
         // EXCEPT a seek-streamable container: a giant ZIP comic archive
         // (CBZ) reads only its central directory + one cover entry
-        // over the IStream, and a Clip Studio .clip seeks to the SQLite
-        // database at its tail and reads only that. (CBR can't — `rars`
-        // needs the full buffer — so a huge .cbr still gets the default
-        // icon.) Head-preview containers (.blend / PSD-PSB) get a second
+        // over the IStream, a Clip Studio .clip seeks to the SQLite
+        // database at its tail and reads only that, and a CBR's block
+        // headers are walked to the cover's entry (`rar::covers_seek`).
+        // Head-preview containers (.blend / PSD-PSB) get a second
         // rescue: their baked thumbnail sits in the first bytes, so a
         // bounded prefix read suffices no matter the file size (issue #1).
         Some(size) if size > max => {
@@ -442,7 +459,7 @@ unsafe fn try_exr_source(
     match decode::exr_scaled_from_reader(source, target_edge) {
         Ok(img) => {
             safety::log_debugf!("{who}: scaled EXR {}x{}", img.width(), img.height());
-            Some(StreamSource::Frame(img))
+            Some(own_picture(head.bytes(), img))
         }
         Err(e) => {
             safety::log_debugf!("{who}: scaled EXR decode failed ({e})");
@@ -450,6 +467,31 @@ unsafe fn try_exr_source(
             None
         }
     }
+}
+
+/// FITS - the file's first image read off the stream at the target edge, whatever the file's
+/// size (see `decode::fits`): the same reader the buffered tiers use, so a big file draws what
+/// a small one does. A file it does not read falls through to the cascade below.
+unsafe fn try_fits_source(
+    stream: &IStream,
+    head: &StreamHead,
+    who: &str,
+    target_edge: u32,
+) -> Option<StreamSource> {
+    if !decode::is_fits(head.bytes()) {
+        return None;
+    }
+    let source = std::io::BufReader::with_capacity(
+        READ_AHEAD_BYTES,
+        IStreamReader {
+            stream: stream.clone(),
+        },
+    );
+    let img = decode::fits_scaled_from_reader(source, target_edge);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!("{who}: FITS {}x{}", img.width(), img.height());
+    Some(own_picture(head.bytes(), img))
 }
 
 /// CAMERA-RAW embedded-preview fast path (see the callsite comment in
@@ -487,16 +529,29 @@ unsafe fn try_raw_preview_fast(
     }
 }
 
-/// Log a rescued frame and hand it back as [`StreamSource::Frame`], or rewind `stream` so
-/// the next rescue reads it from the start. Both oversized-file rescues in
+/// A picture decoded straight off the stream, marked the way the buffered path treats the same
+/// decode: the file's own picture, never enlarged, when the header declares a size the buffered
+/// path can read (`decode::declared_dimensions`); otherwise a picture that fills the tile, as a
+/// FITS or GIMP file under the input ceiling does. A small picture past the ceiling then draws
+/// at the size it draws under it.
+fn own_picture(head: &[u8], img: image::DynamicImage) -> StreamSource {
+    if decode::declared_dimensions(head).is_some() {
+        StreamSource::Picture(img)
+    } else {
+        StreamSource::Frame(img)
+    }
+}
+
+/// Log a rescued picture and hand it back through [`own_picture`], or rewind `stream`
+/// so the next rescue reads it from the start. The oversized-file rescues in
 /// [`oversized_rescue`] end that way and differ only in their decode call and debug line;
-/// the format string stays a literal at the call site so the two lines read exactly as
-/// they did before.
+/// the format string stays a literal at the call site so the lines read exactly as they
+/// did before.
 macro_rules! frame_or_rewind {
-    ($stream:expr, $decode:expr, $fmt:literal) => {
+    ($stream:expr, $head:expr, $decode:expr, $fmt:literal) => {
         if let Some(img) = $decode {
             safety::log_debugf!($fmt, img.width(), img.height());
-            return Ok(StreamSource::Frame(img));
+            return Ok(own_picture($head, img));
         }
         let _ = $stream.Seek(0, STREAM_SEEK_SET, None);
     };
@@ -516,7 +571,23 @@ unsafe fn oversized_rescue(
 ) -> Result<StreamSource> {
     if let Some(cover) = archive_cover_streamed(stream, head) {
         safety::log_debugf!("{who}: streamed cover from {size}-byte archive");
-        return Ok(StreamSource::Bytes(cover));
+        return Ok(StreamSource::Cover(cover));
+    }
+    // A Photoshop document too big to buffer whose baked preview does not serve the request
+    // (the head-preview fast path above takes every one whose preview does). Its stored
+    // composite is read by offset, only the rows this tile needs, so the size costs nothing
+    // (issue #46: past the ceiling the tile used to be the ~160 px preview blown up). Behind
+    // MaxSize like the XCF walk below, for the same reason.
+    if size <= max_file_bytes && head.bytes.starts_with(b"8BPS") {
+        let reader = IStreamReader {
+            stream: stream.clone(),
+        };
+        frame_or_rewind!(
+            stream,
+            head.bytes(),
+            crate::container::psd_merged_from_reader(reader, target_edge),
+            "{who}: stored PSD composite of {size}-byte file -> {}x{}"
+        );
     }
     if let Some(prefix) = head_preview_prefix(stream, head) {
         safety::log_debugf!(
@@ -546,33 +617,278 @@ unsafe fn oversized_rescue(
         // nobody would look at.
         frame_or_rewind!(
             stream,
+            head.bytes(),
             crate::container::xcf_from_reader(&mut reader, Some(target_edge)),
             "{who}: streamed XCF decode of {size}-byte file -> {}x{}"
         );
     }
-    // LAST RESCUE: let the OS codecs read THIS STREAM and scale during decode, so a
-    // huge scan/panorama/RAW gets a real thumbnail instead of the stock icon.
-    //
-    // Deliberately stream-based, not path-based. The shell gives a thumbnail provider
-    // no path (its stream reports only a leaf name), so an earlier by-path version of
-    // this rescue could never fire here. WIC reads a stream lazily, which is all the
-    // rescue ever actually needed: nothing buffers the document, and `target_edge`
-    // bounds what gets copied out.
-    //
     // ONLY when OUR OWN buffering ceiling is what refused the file. If the USER set a
-    // smaller MaxSize, they asked us to skip files this big and the rescue must not
+    // smaller MaxSize, they asked us to skip files this big and the last rescues must not
     // quietly overrule that -- "too big to hold in memory" is our problem to route
     // around, "don't spend effort on files over N MB" is their decision to keep.
     if size <= max_file_bytes {
-        let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
-        frame_or_rewind!(
-            stream,
-            decode::wic_scaled_from_stream(stream, target_edge, &head),
-            "{who}: oversized WIC rescue of {size}-byte stream -> {}x{}"
-        );
+        if let Some(src) = last_rescues(stream, head, target_edge, who) {
+            return Ok(src);
+        }
     }
     safety::log_debugf!("{who}: skip, {size} bytes over limit");
     Err(Error::from(E_FAIL))
+}
+
+/// The last rescues, in the order that suits the file: a preview found by offset (a compound
+/// file's streams, a DOS EPS, a DXF) or a PDF's first page read through its index, both exact;
+/// then the OS codecs reading the stream (a big scan or panorama is a big picture), and the
+/// ordinary tiers on the file's head (a model, a document or an e-book is usually a small
+/// picture in front of a lot of data; see `headwin`).
+unsafe fn last_rescues(
+    stream: &IStream,
+    head: &StreamHead,
+    target_edge: u32,
+    who: &str,
+) -> Option<StreamSource> {
+    if let Some(src) = offset_cover(stream, head, who) {
+        return Some(src);
+    }
+    if crate::container::ole::looks_like_ole(head.bytes()) {
+        // A compound file with no thumbnail stream: what draws the small one is the last
+        // resort, the largest JPEG inside it, and in a big one that can sit anywhere.
+        return embedded_jpeg(stream, who);
+    }
+    if head.bytes().starts_with(b"%PDF-") {
+        // A PDF is its page renderer's alone: no head window or codec reads one, and a file the
+        // renderer declines (an Illustrator placeholder, a document past 2 GiB) has no picture.
+        return pdf_page(stream, head, target_edge, who);
+    }
+    if let Some(src) = mesh_stream(stream, head, who) {
+        return Some(src);
+    }
+    if let Some(src) = raw_raster(stream, head, target_edge, who) {
+        return Some(src);
+    }
+    let wic_first = wic_reads_the_whole_picture(head);
+    if !wic_first {
+        if let Some(img) = head_window(stream, head, target_edge, who) {
+            return Some(own_picture(head.bytes(), img));
+        }
+    }
+    if let Some(src) = wic_rescue(stream, target_edge, who) {
+        return Some(src);
+    }
+    if let Some(src) = tiff_strips(stream, head, target_edge, who) {
+        return Some(src);
+    }
+    if wic_first {
+        return head_window(stream, head, target_edge, who)
+            .map(|img| own_picture(head.bytes(), img));
+    }
+    None
+}
+
+/// A preview the container readers find by OFFSET, read through a block cache so a scattered
+/// walk (a compound file's FAT) costs a few big reads rather than thousands of tiny ones.
+/// Rewinds the stream.
+unsafe fn offset_cover(stream: &IStream, head: &StreamHead, who: &str) -> Option<StreamSource> {
+    let size = head.size?;
+    let deadline = std::time::Instant::now() + OFFSET_COVER_BUDGET;
+    let cached: IStream =
+        crate::vstream::BlockCacheStream::new(stream.clone(), size, deadline).into();
+    let cover = crate::container::seek_cover(IStreamReader { stream: cached }, head.bytes());
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    match cover? {
+        crate::container::CoverOut::Bytes(bytes) => {
+            safety::log_debugf!("{who}: preview found by offset ({} bytes)", bytes.len());
+            Some(StreamSource::Cover(bytes))
+        }
+        crate::container::CoverOut::Image(img) => Some(StreamSource::Frame(img)),
+    }
+}
+
+/// A 3D mesh (STL, OBJ, PLY) read whole off the stream and rendered, a huge one sampled down
+/// to the render's triangle budget (see `decode::mesh`): a big model is all triangles, so no
+/// head holds its shape.
+unsafe fn mesh_stream(stream: &IStream, head: &StreamHead, who: &str) -> Option<StreamSource> {
+    let size = head.size?;
+    let sniff = stream_prefix(stream, Some(size), decode::MESH_SNIFF_BYTES)?;
+    decode::mesh_kind(&sniff, size)?;
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let reader = std::io::BufReader::with_capacity(
+        1 << 20,
+        IStreamReader {
+            stream: stream.clone(),
+        },
+    );
+    let img = decode::mesh_from_reader(reader, &sniff, size);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!(
+        "{who}: mesh read off the stream -> {}x{}",
+        img.width(),
+        img.height()
+    );
+    Some(StreamSource::Frame(img))
+}
+
+/// A simple raster (binary PNM, PAM, PFM, farbfeld, TGA) too big to hold: the rows the tile
+/// takes, read off the stream (see `decode::rawraster`). A big one of these is all pixels, so
+/// no head holds it.
+unsafe fn raw_raster(
+    stream: &IStream,
+    head: &StreamHead,
+    target_edge: u32,
+    who: &str,
+) -> Option<StreamSource> {
+    if !decode::is_raw_raster(head.bytes()) {
+        return None;
+    }
+    // Unbuffered: each sampled row is one exact read at its offset (a read-ahead would be
+    // thrown away by the next seek), and run-length TGA buffers its own front-to-back pass.
+    let reader = IStreamReader {
+        stream: stream.clone(),
+    };
+    let img = decode::raw_raster_scaled_from_reader(reader, target_edge);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!(
+        "{who}: raster rows read off the stream -> {}x{}",
+        img.width(),
+        img.height()
+    );
+    Some(own_picture(head.bytes(), img))
+}
+
+/// A TIFF the OS codecs would not open (BigTIFF, above all), read a strip or tile at a time
+/// (see `decode::tiffscale`).
+unsafe fn tiff_strips(
+    stream: &IStream,
+    head: &StreamHead,
+    target_edge: u32,
+    who: &str,
+) -> Option<StreamSource> {
+    if !plain_tiff(head) {
+        return None;
+    }
+    let reader = IStreamReader {
+        stream: stream.clone(),
+    };
+    let img = decode::tiff_scaled_from_reader(reader, target_edge);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!(
+        "{who}: TIFF strips read off the stream -> {}x{}",
+        img.width(),
+        img.height()
+    );
+    Some(own_picture(head.bytes(), img))
+}
+
+/// The largest JPEG embedded anywhere in the file (`decode::largest_embedded_jpeg_from`), read
+/// front to back once within [`OFFSET_COVER_BUDGET`]; the buffered path's last resort. Rewinds.
+unsafe fn embedded_jpeg(stream: &IStream, who: &str) -> Option<StreamSource> {
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let reader = UntilDeadline {
+        inner: IStreamReader {
+            stream: stream.clone(),
+        },
+        deadline: std::time::Instant::now() + OFFSET_COVER_BUDGET,
+    };
+    let jpeg = decode::largest_embedded_jpeg_from(
+        std::io::BufReader::with_capacity(READ_AHEAD_BYTES, reader),
+        decode::LENIENT_RAW_PREVIEW,
+    );
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let jpeg = jpeg?;
+    safety::log_debugf!("{who}: largest embedded JPEG ({} bytes)", jpeg.len());
+    Some(StreamSource::Cover(jpeg))
+}
+
+/// A reader that ends at a deadline: a scan of a slow or remote file stops there with what it
+/// has read.
+struct UntilDeadline<R> {
+    inner: R,
+    deadline: std::time::Instant,
+}
+
+impl<R: std::io::Read> std::io::Read for UntilDeadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.deadline {
+            return Ok(0);
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// How long [`offset_cover`] may spend reading.
+const OFFSET_COVER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How much of a big PDF's head is read to tell an Illustrator file and find its private data:
+/// Illustrator writes that among its first objects (at ~40-110 KB in the corpus's files).
+const PDF_FRONT_BYTES: usize = 16 << 20;
+
+/// A PDF's first page, or an Illustrator file's artboards by Illustrator's rules (see
+/// `decode::pdf_tier::illustrator_answer`), rendered by the OS rasterizer reading the stream
+/// itself (`pdf::render_pages_from_stream`), at the edge the PDF tier renders a small file at.
+unsafe fn pdf_page(
+    stream: &IStream,
+    head: &StreamHead,
+    target_edge: u32,
+    who: &str,
+) -> Option<StreamSource> {
+    use crate::decode::pdf_tier;
+    use crate::pdf::PageFit;
+    let size = head.size?;
+    // The viewer's whole-picture request is no thumbnail size: a page renders at the edge the
+    // buffered preview gives it.
+    let cx = (target_edge < decode::OVERSIZED_VIEW_EDGE).then_some(target_edge);
+    let edge = pdf_tier::pdf_raster_edge(cx);
+    let front = stream_prefix(stream, Some(size), PDF_FRONT_BYTES)?;
+    let illustrator = crate::container::ai::is_illustrator(&front);
+    let (fit, want) = if illustrator {
+        (PageFit::Width(edge), pdf_tier::AI_SHEET_PAGES as u32)
+    } else {
+        (PageFit::LongSide(edge), 1)
+    };
+    let pages = crate::pdf::render_pages_from_stream(stream, size, fit, want);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let (pngs, count) = pages?;
+    safety::log_debugf!(
+        "{who}: {} of {count} PDF page(s) rendered off the stream",
+        pngs.len()
+    );
+    if !illustrator {
+        return pngs.into_iter().next().map(StreamSource::Cover);
+    }
+    let rendered = pngs
+        .iter()
+        .map_while(|png| image::load_from_memory(png).ok())
+        .collect();
+    match pdf_tier::illustrator_answer(rendered, count as usize, &front, edge)? {
+        Ok(img) => Some(StreamSource::Frame(img)),
+        Err(e) => {
+            safety::log_debugf!("{who}: {}", e.message());
+            None
+        }
+    }
+}
+
+/// Let the OS codecs read THIS STREAM and scale during decode, so a huge scan, panorama or
+/// RAW gets a real thumbnail instead of the stock icon. Rewinds the stream either way.
+///
+/// Deliberately stream-based, not path-based. The shell gives a thumbnail provider no path
+/// (its stream reports only a leaf name), so an earlier by-path version of this rescue could
+/// never fire here. WIC reads a stream lazily, which is all the rescue ever actually needed:
+/// nothing buffers the document, and `target_edge` bounds what gets copied out.
+unsafe fn wic_rescue(stream: &IStream, target_edge: u32, who: &str) -> Option<StreamSource> {
+    let head = read_prefix(stream, decode::COLOR_HEAD_BYTES);
+    let img = decode::wic_scaled_from_stream(stream, target_edge, &head);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!(
+        "{who}: oversized WIC rescue -> {}x{}",
+        img.width(),
+        img.height()
+    );
+    // A JPEG XR or HEIF the buffered path cannot size fills the tile there, so here too.
+    Some(own_picture(&head, img))
 }
 
 /// Does the post-frame-tiers cover-art rescue in

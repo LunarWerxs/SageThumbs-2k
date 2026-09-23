@@ -41,7 +41,7 @@ mod video;
 mod webview;
 mod window;
 mod woff;
-pub(crate) use benches::{run_bench, run_mash_bench, run_nav_bench};
+pub(crate) use benches::{run_bench, run_mash_bench, run_nav_bench, run_probe};
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};

@@ -298,10 +298,10 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             // report can be read from the log without `Debug=1`.
             let decoded = match source {
                 // A video frame arrives already decoded by Media Foundation.
-                Ok(StreamSource::Frame(frame)) => Some(frame),
+                Ok(StreamSource::Frame(frame) | StreamSource::Picture(frame)) => Some(frame),
                 // Decode bytes OFF the host thread under a wall-clock budget so a
                 // slow/exotic decode can't freeze the preview host's message pump.
-                Ok(StreamSource::Bytes(bytes)) => {
+                Ok(StreamSource::Bytes(bytes) | StreamSource::Cover(bytes)) => {
                     let len = bytes.len();
                     safety::log_debugf!("DoPreview: read {len} bytes from stream");
                     match decode_preview_budgeted(bytes) {

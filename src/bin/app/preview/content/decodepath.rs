@@ -41,9 +41,7 @@ pub(in super::super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: 
         if abandoned_logged(gen, "PDF page render") {
             return;
         }
-        let rendered = sagethumbs2k_core::decode::read_capped(&path)
-            .ok()
-            .and_then(|bytes| sagethumbs2k_core::pdf::render_page_counted(&bytes, page, 1600));
+        let rendered = sagethumbs2k_core::pdf::render_page_counted_path(&path, page, 1600);
         let (rgba, count) = match rendered {
             Some((png, count)) => {
                 let d = image::load_from_memory(&png).ok().map(rgba8_full);
@@ -74,10 +72,17 @@ pub(super) fn read_and_decode(path: &str) -> Option<DecodedRgba> {
 /// The by-path streaming decode (see `decode::decode_preview_streamed`), converted
 /// to tight RGBA8. `None` when the path isn't one of those formats.
 pub(super) fn streamed_decode(path: &str) -> Option<DecodedRgba> {
-    let img = sagethumbs2k_core::decode::decode_preview_streamed(
-        path,
-        sagethumbs2k_core::decode::EXR_PATH_EDGE,
-    )?;
+    // A Photoshop document keeps the viewer's own two stages - its baked preview at once,
+    // then the stored composite at `STORED_COMPOSITE_EDGE` - rather than one streamed pass
+    // capped at the thumbnail edge, which would also end the sharpen chase before it began.
+    if is_photoshop(path) {
+        return None;
+    }
+    use sagethumbs2k_core::decode;
+    // A file past the input ceiling is read as large as the viewer would show it whole; the
+    // streamed EXR/XCF decode keeps its own, smaller edge (its cost grows with the edge).
+    let img = decode::decode_streamed_format(path, decode::EXR_PATH_EDGE)
+        .or_else(|| decode::decode_oversized_path(path, decode::OVERSIZED_VIEW_EDGE))?;
     Some(rgba8_full(img))
 }
 
@@ -148,4 +153,13 @@ pub(super) fn decode_preview_budgeted(
             None
         }
     }
+}
+
+/// Does `path` start with Photoshop's `8BPS` signature? Four bytes, never the file.
+fn is_photoshop(path: &str) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok_and(|()| &magic == b"8BPS")
 }

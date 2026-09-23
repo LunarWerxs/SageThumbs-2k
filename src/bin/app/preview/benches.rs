@@ -378,3 +378,34 @@ pub(crate) fn run_nav_bench(hinst: HINSTANCE, dir: &str, steps: usize) {
     let _ = writeln!(out, "{:<41} {:>12}", "timeouts", timeouts);
     flush(&out);
 }
+
+/// `--probe-preview <file> <out.png>`: the picture the Quick preview ends up showing for one
+/// file (its first stage and the composite chase, resolved exactly as `--shot` resolves them),
+/// written to `<out.png>`, with `<out.png>.tsv` holding `width  height  milliseconds`
+/// (`0 0 ms` when nothing decoded). The big-file gate (`scripts/bigfiles/bigfiles.py`) runs a
+/// document grown past the size gates and its normal-size twin through this; issue #46, a
+/// 300 MB Photoshop document left on its 160-pixel preview, is exactly what it catches.
+/// A picture wider than 4096 is saved at 4096: the gate compares at a common size anyway.
+pub(crate) fn run_probe(file: &str, out: &str) {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let start = std::time::Instant::now();
+    let decoded = content::decode_sync(file);
+    let ms = start.elapsed().as_millis();
+    let (w, h) = decoded.as_ref().map_or((0, 0), |d| (d.w, d.h));
+    let img = decoded
+        .and_then(|d| image::RgbaImage::from_raw(d.w as u32, d.h as u32, d.rgba))
+        .map(|img| probe_sized(image::DynamicImage::ImageRgba8(img)));
+    if let Some(img) = img {
+        let _ = img.save(out);
+    }
+    let _ = std::fs::write(format!("{out}.tsv"), format!("{w}\t{h}\t{ms}\n"));
+}
+
+/// At most 4096 on the long side, which is all the comparison needs.
+fn probe_sized(img: image::DynamicImage) -> image::DynamicImage {
+    if img.width().max(img.height()) <= 4096 {
+        return img;
+    }
+    img.resize(4096, 4096, image::imageops::FilterType::Triangle)
+}

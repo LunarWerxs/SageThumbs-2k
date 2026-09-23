@@ -99,15 +99,15 @@ fn decode_thumbnail_image(
     }
 }
 
-/// Fail before opening or parsing a generic archive when either the user's
-/// MaxSize preference or the shared hard input ceiling rejects its metadata
-/// length. `configured_max == u64::MAX` is Settings' "Unlimited" representation.
+/// Fail before opening or parsing a generic archive when the user's MaxSize preference rejects
+/// its length, the bound Explorer applies. The input ceiling is not one: past it an archive is
+/// read by seeking, never buffered (a RAR by walking its block headers).
+/// `configured_max == u64::MAX` is Settings' "Unlimited" representation.
 fn reject_oversized_archive(input: &str, configured_max: u64) -> Result<(), String> {
-    let max = decode::effective_input_cap(configured_max);
     if let Ok(meta) = std::fs::metadata(input) {
-        if meta.len() > max {
+        if meta.len() > configured_max {
             return Err(format!(
-                "input is {} bytes, over the effective archive limit of {max} bytes",
+                "input is {} bytes, over the archive limit (MaxSize) of {configured_max} bytes",
                 meta.len()
             ));
         }
@@ -145,9 +145,10 @@ fn archive_covers(input: &str) -> Option<Vec<Vec<u8>>> {
     f.read_exact(&mut head).ok()?;
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
     let prefs = crate::container::select::CoverPrefs::from_settings();
-    if crate::container::archive_needs_buffer(&head) {
-        // RAR buffers whole (`rars` accepts no reader) — same bounded read as the
-        // normal path, so a multi-GB .rar fails to the normal decode error.
+    let size = f.metadata().ok()?.len();
+    if crate::container::archive_needs_buffer(&head) && size <= decode::limits::MAX_INPUT_BYTES {
+        // RAR buffers whole inside the ceiling (`rars` accepts no reader), the same bounded
+        // read as the normal path; past it, the seek path walks its block headers.
         let bytes = decode::read_preview_capped(input).ok()?;
         crate::container::archive_covers(&bytes, want, &prefs)
     } else {

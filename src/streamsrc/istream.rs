@@ -49,6 +49,13 @@ impl StreamHead {
         self.bytes.starts_with(b"OggS")
     }
 
+    /// The ASF header GUID. ASF carries Windows Media video (.wmv) and audio (.wma) alike, so
+    /// a frame-grab miss on one is most often a WMA, whose cover lives in its tags.
+    pub(super) fn is_asf(&self) -> bool {
+        self.bytes
+            .starts_with(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11])
+    }
+
     /// The 7z signature. Used only for the unknown-size fail-closed gate; ZIP remains
     /// eligible for its deliberate seek-only CBZ cover rescue.
     pub(super) fn is_7z(&self) -> bool {

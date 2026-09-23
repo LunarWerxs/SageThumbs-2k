@@ -206,6 +206,8 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("aiff-pcm", synthetic_aiff()),
         ("asf-wm-picture", synthetic_asf()),
         ("exr-scanline", synthetic_exr()),
+        ("fits-extension", crate::decode::fits_fuzz_seed()),
+        ("rar5-stored", crate::container::rar_fuzz_seed()),
         ("jp2-codestream", crate::decode::jp2_fuzzapi::seed()),
     ]
 }
@@ -332,6 +334,25 @@ pub(super) fn every_new_surface_seed_reaches_its_parser() {
     assert!(
         crate::decode::exr_scaled_from_reader(Cursor::new(synthetic_exr()), 64).is_ok(),
         "exr-scanline seed no longer reaches exrscale::decode_scaled"
+    );
+    assert!(
+        crate::decode::fits_scaled_from_reader(Cursor::new(crate::decode::fits_fuzz_seed()), 64)
+            .is_some(),
+        "fits-extension seed no longer reaches fits::decode_scaled"
+    );
+    let prefs = crate::container::select::CoverPrefs {
+        prefer_cover: true,
+        sort: true,
+        skip_scanlation: true,
+    };
+    assert!(
+        crate::container::rar_covers_seek(
+            Cursor::new(crate::container::rar_fuzz_seed()),
+            1,
+            &prefs
+        )
+        .is_some(),
+        "rar5-stored seed no longer reaches rar::covers_seek"
     );
     assert!(
         crate::decode::jp2_fuzzapi::seed_decodes(),

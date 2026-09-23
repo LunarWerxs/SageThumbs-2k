@@ -23,13 +23,14 @@ fn test_cfg(max_file_bytes: u64) -> ThumbSettings {
 fn source_bytes(bytes: &[u8]) -> Vec<u8> {
     let stream = unsafe { SHCreateMemStream(Some(bytes)) }.expect("SHCreateMemStream");
     match unsafe { stream_source(&stream, &test_cfg(100 << 20), 256, "test") } {
-        Ok(StreamSource::Bytes(b)) => b,
+        Ok(StreamSource::Bytes(b) | StreamSource::Cover(b)) => b,
         other => panic!(
             "expected StreamSource::Bytes, got {}",
             match other {
                 Ok(StreamSource::Frame(_)) => "Frame".into(),
+                Ok(StreamSource::Picture(_)) => "Picture".into(),
                 Ok(StreamSource::Covers(_)) => "Covers".into(),
-                Ok(StreamSource::Bytes(_)) => unreachable!(),
+                Ok(StreamSource::Bytes(_) | StreamSource::Cover(_)) => unreachable!(),
                 Err(e) => format!("Err({e})"),
             }
         ),
@@ -64,7 +65,7 @@ fn oversized_stream_is_rescued_without_any_path() {
     // ceiling, which is precisely the production shape for a half-gigabyte scan.
     let got = unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 1024, 64, "test") };
     match got {
-        Ok(StreamSource::Frame(img)) => {
+        Ok(StreamSource::Picture(img)) => {
             // Scaled DURING decode, so the rescue never materialises the full image.
             assert!(
                 img.width().max(img.height()) <= 64,
@@ -74,11 +75,13 @@ fn oversized_stream_is_rescued_without_any_path() {
             );
         }
         other => panic!(
-            "oversized stream should be rescued into a Frame, got {}",
+            "oversized stream should be rescued into its own picture, got {}",
             match other {
                 Ok(StreamSource::Bytes(_)) => "Bytes".into(),
+                Ok(StreamSource::Cover(_)) => "Cover".into(),
                 Ok(StreamSource::Covers(_)) => "Covers".into(),
-                Ok(StreamSource::Frame(_)) => unreachable!(),
+                Ok(StreamSource::Frame(_)) => "Frame".into(),
+                Ok(StreamSource::Picture(_)) => unreachable!(),
                 Err(e) => format!("Err({e})"),
             }
         ),
@@ -116,7 +119,7 @@ fn oversized_stream_is_rescued_at_the_shipped_default_not_only_at_unlimited() {
     let got =
         unsafe { stream_source_with_caps(&stream, &test_cfg(default_allowance), 1024, 64, "test") };
     assert!(
-        matches!(got, Ok(StreamSource::Frame(_))),
+        matches!(got, Ok(StreamSource::Picture(_))),
         "the default setting must still reach the oversized rescue"
     );
     unsafe { CoUninitialize() };
@@ -295,6 +298,75 @@ fn raw_fast_path_gate_rejects_plain_tiff_and_non_raw() {
     assert!(!looks_like_raw_container(b"not a camera raw", true));
 }
 
+/// A RAR comic past the buffering ceiling gets the cover the whole-file read picks: its block
+/// headers are walked off the stream and only the cover's entry is read.
+#[test]
+fn an_oversized_rar_comic_gets_the_cover_the_whole_file_gets() {
+    let Some(cbr) = crate::testcorpus::read("sample.cbr") else {
+        eprintln!("NOT MEASURED: sample.cbr absent");
+        return;
+    };
+    // The same preferences the streamed read uses (`archive_cover_streamed` reads them too).
+    let prefs = crate::container::select::CoverPrefs::from_settings();
+    let whole = crate::container::archive_covers(&cbr, 1, &prefs)
+        .and_then(|mut covers| covers.pop())
+        .expect("the buffered read finds a cover");
+    let stream = unsafe { SHCreateMemStream(Some(&cbr)) }.expect("SHCreateMemStream");
+    // A hard cap below the file's size: the oversized rescue, as for a 300 MB comic.
+    assert!(
+        cbr.len() > 128,
+        "the fixture must be bigger than the cap below"
+    );
+    let got = unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 128, 256, "test") };
+    match got {
+        Ok(StreamSource::Cover(cover)) => assert_eq!(
+            crate::decode::decode_preview(&cover)
+                .ok()
+                .map(|i| i.to_rgba8()),
+            crate::decode::decode_preview(&whole)
+                .ok()
+                .map(|i| i.to_rgba8())
+        ),
+        other => panic!(
+            "expected the streamed cover, got {}",
+            match other {
+                Ok(StreamSource::Bytes(b)) => format!("Bytes({})", b.len()),
+                Ok(StreamSource::Covers(_)) => "Covers".into(),
+                Ok(StreamSource::Frame(_)) => "Frame".into(),
+                Ok(StreamSource::Picture(_)) => "Picture".into(),
+                Ok(StreamSource::Cover(_)) => unreachable!(),
+                Err(e) => format!("Err({e})"),
+            }
+        ),
+    }
+}
+
+/// A WMA shows its cover through the shell's stream cascade. It shares the ASF container with
+/// WMV, and the cascade used to stop at "video with no decodable frame", so no WMA ever showed
+/// its cover in Explorer or the preview pane (the big-file gate: the CLI drew it, the shell
+/// surfaces drew nothing at any size).
+#[test]
+fn a_wma_shows_its_cover_through_the_stream() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    for name in ["real.wma", "sample.wma"] {
+        let Some(wma) = crate::testcorpus::read(name) else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        let want = crate::container::extract_cover(&wma).is_some();
+        let stream = unsafe { SHCreateMemStream(Some(&wma)) }.expect("SHCreateMemStream");
+        let got = unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") };
+        assert_eq!(
+            matches!(got, Ok(StreamSource::Cover(_))),
+            want,
+            "{name}: the stream must find the cover the buffered read finds"
+        );
+    }
+    if com {
+        unsafe { CoUninitialize() };
+    }
+}
+
 #[test]
 fn raw_fast_path_respects_the_configured_input_cap() {
     let large_raw = (RAW_PREFIX_BYTES as u64) + 1;
@@ -390,15 +462,17 @@ fn oversized_exr_is_scaled_off_the_stream_instead_of_refused() {
     let stream = unsafe { SHCreateMemStream(Some(&exr)) }.expect("SHCreateMemStream");
     match unsafe { stream_source(&stream, &test_cfg(1), 64, "test") } {
         // step = floor(600 / 64) = 9 -> ceil(600/9) x ceil(400/9) = 67x45.
-        Ok(StreamSource::Frame(img)) => {
+        Ok(StreamSource::Picture(img)) => {
             assert_eq!((img.width(), img.height()), (67, 45));
         }
         other => panic!(
-            "oversized EXR must yield a scaled frame, got {}",
+            "oversized EXR must yield its own picture, scaled, got {}",
             match other {
                 Ok(StreamSource::Bytes(_)) => "Bytes".to_string(),
+                Ok(StreamSource::Cover(_)) => "Cover".to_string(),
                 Ok(StreamSource::Covers(_)) => "Covers".to_string(),
-                Ok(StreamSource::Frame(_)) => unreachable!(),
+                Ok(StreamSource::Frame(_)) => "Frame".to_string(),
+                Ok(StreamSource::Picture(_)) => unreachable!(),
                 Err(e) => format!("Err({e})"),
             }
         ),
@@ -409,23 +483,9 @@ fn oversized_exr_is_scaled_off_the_stream_instead_of_refused() {
     let stream = unsafe { SHCreateMemStream(Some(&exr)) }.expect("SHCreateMemStream");
     match unsafe { stream_source(&stream, &test_cfg(u64::MAX), 256, "test") } {
         // step = floor(600 / 256) = 2 -> 300x200.
-        Ok(StreamSource::Frame(img)) => assert_eq!((img.width(), img.height()), (300, 200)),
+        Ok(StreamSource::Picture(img)) => assert_eq!((img.width(), img.height()), (300, 200)),
         _ => panic!("EXR should scale to the requested edge"),
     }
-}
-
-#[test]
-fn generic_archive_requires_a_known_size_before_parse() {
-    assert_eq!(checked_generic_archive_size(None, u64::MAX), None);
-    assert_eq!(
-        checked_generic_archive_size(Some(decode::limits::MAX_INPUT_BYTES + 1), u64::MAX),
-        None
-    );
-    assert_eq!(
-        checked_generic_archive_size(Some(4096), u64::MAX),
-        Some(4096)
-    );
-    assert_eq!(checked_generic_archive_size(Some(4096), 1024), None);
 }
 
 #[test]
@@ -735,4 +795,101 @@ fn disabled_tier_never_runs() {
     })
     .is_none());
     assert!(ran.get());
+}
+
+/// What the cascade hands back for `bytes` when a tiny hard cap makes it "too big to hold":
+/// the production shape of a file past `MAX_INPUT_BYTES`, without staging one.
+fn oversized_source(bytes: &[u8], edge: u32) -> Option<StreamSource> {
+    let stream = unsafe { SHCreateMemStream(Some(bytes)) }.expect("SHCreateMemStream");
+    unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 1024, edge, "test") }.ok()
+}
+
+/// The formats whose preview sits where no bounded head read reaches it in a big file - a
+/// compound file's streams behind its FAT, a DOS EPS's preview after its PostScript, a DXF's
+/// preview section at its end, a PDF's first page behind the cross-reference at its end - are
+/// still drawn past the input ceiling, from the stream alone (the big-file gate, 2026-09-23).
+#[test]
+fn previews_found_by_offset_or_index_survive_the_ceiling() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    for name in [
+        "real.max",
+        "sample.sldasm",
+        "real.eps",
+        "real.dxf",
+        "real.pdf",
+    ] {
+        let Some(bytes) = crate::testcorpus::read(name) else {
+            eprintln!("NOT MEASURED: {name} absent");
+            continue;
+        };
+        // The rescue itself, not the head window behind it: a file this small would also fit
+        // that window, which a big one of these formats does not.
+        let stream = unsafe { SHCreateMemStream(Some(&bytes)) }.expect("SHCreateMemStream");
+        let head = unsafe { stream_head(&stream) };
+        let found = unsafe {
+            offset_cover(&stream, &head, "test").or_else(|| pdf_page(&stream, &head, 256, "test"))
+        };
+        let img = match found {
+            Some(StreamSource::Bytes(b) | StreamSource::Cover(b)) => {
+                crate::decode::decode_preview(&b).ok()
+            }
+            Some(StreamSource::Frame(img) | StreamSource::Picture(img)) => Some(img),
+            _ => None,
+        };
+        let img = img.unwrap_or_else(|| panic!("{name}: no preview by offset or index"));
+        assert!(
+            img.width() >= 16 && img.height() >= 16,
+            "{name}: {}x{}",
+            img.width(),
+            img.height()
+        );
+        // And the whole cascade, past a (scaled-down) ceiling, answers too.
+        assert!(
+            oversized_source(&bytes, 256).is_some(),
+            "{name}: nothing past the ceiling"
+        );
+    }
+    if com {
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// The head window's contract (see `headwin`): a small picture in front of a long tail is
+/// served from the file's head, and a picture that runs past the head is refused rather than
+/// drawn from its first rows.
+#[test]
+fn the_head_window_serves_a_picture_it_holds_whole_and_refuses_one_it_does_not() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    // A 64x48 PNG, then 40 MiB of zeros: the whole picture is in the first 16 MiB.
+    let mut png = Vec::new();
+    image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8 * 4, y as u8 * 5, 90]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("png");
+    let mut tailed = png.clone();
+    tailed.resize(40 << 20, 0);
+    let stream = unsafe { SHCreateMemStream(Some(&tailed)) }.expect("SHCreateMemStream");
+    let head = unsafe { stream_head(&stream) };
+    let img = unsafe { head_window(&stream, &head, 256, "test") }.expect("the head holds it");
+    assert_eq!((img.width(), img.height()), (64, 48));
+
+    // An uncompressed 40 MiB BMP: its rows run past both windows, so no picture.
+    let (w, h) = (4096u32, 3413u32);
+    let row = (w * 3) as usize;
+    let mut bmp = b"BM".to_vec();
+    bmp.extend_from_slice(&(54 + row as u32 * h).to_le_bytes());
+    bmp.extend_from_slice(&[0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0]);
+    bmp.extend_from_slice(&w.to_le_bytes());
+    bmp.extend_from_slice(&h.to_le_bytes());
+    bmp.extend_from_slice(&[1, 0, 24, 0]);
+    bmp.extend_from_slice(&[0u8; 24]);
+    bmp.extend((0..row * h as usize).map(|i| (i % 251) as u8));
+    let stream = unsafe { SHCreateMemStream(Some(&bmp)) }.expect("SHCreateMemStream");
+    let head = unsafe { stream_head(&stream) };
+    assert!(
+        unsafe { head_window(&stream, &head, 256, "test") }.is_none(),
+        "a picture past the head must not be drawn from its first rows"
+    );
+    if com {
+        unsafe { CoUninitialize() };
+    }
 }

@@ -60,9 +60,18 @@ pub(crate) unsafe fn run_ocr(path: &str) {
 pub(crate) unsafe fn run_ocr_keep(path: &str, page: Option<u32>) {
     let path = path.to_string();
     let outcome = crate::screenshot::with_busy_pill(t("ocr_busy"), move || {
-        let bytes = sagethumbs2k_core::decode::read_capped(&path)
-            .map_err(|e| (0, format!("couldn't read {path} — {e}")))?;
-        let png = to_png(&bytes, page).ok_or((0, format!("couldn't decode {path}")))?;
+        // A PDF page by path first: the rasterizer reads what it needs, so a document past
+        // the input ceiling is recognized too.
+        let by_path =
+            page.and_then(|n| sagethumbs2k_core::pdf::render_page_counted_path(&path, n, 2400));
+        let png = match by_path {
+            Some((png, _pages)) => png,
+            None => {
+                let bytes = sagethumbs2k_core::decode::read_capped(&path)
+                    .map_err(|e| (0, format!("couldn't read {path} — {e}")))?;
+                to_png(&bytes, page).ok_or((0, format!("couldn't decode {path}")))?
+            }
+        };
         sagethumbs2k_core::ocr::recognize_bytes(png).map_err(|e| (e.code().0, format!("{e:?}")))
     });
     surface(outcome);

@@ -33,6 +33,13 @@ pub(super) unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]
         crate::preview::run_mash_bench(hinst, &dir, keys);
         return true;
     }
+    // `--probe-preview <file> <out.png>`: the picture Quick preview ends up showing, for the
+    // big-file gate (scripts/bigfiles/). No window, no side effects.
+    if let Some(pos) = args.iter().position(|a| a == "--probe-preview") {
+        let arg = |i: usize| args.get(pos + i).cloned().unwrap_or_default();
+        crate::preview::run_probe(&arg(1), &arg(2));
+        return true;
+    }
     false
 }
 

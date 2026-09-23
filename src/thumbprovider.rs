@@ -273,6 +273,11 @@ impl ThumbnailProvider_Impl {
     ) -> Result<decode::Decoded> {
         match source {
             StreamSource::Frame(frame) => Ok(decode::thumbnail_from_image(frame, cx)),
+            StreamSource::Picture(img) => Ok(decode::thumbnail_from_own_picture(img, cx)),
+            StreamSource::Cover(bytes) => {
+                safety::log_debugf!("GetThumbnail: cx={cx} cover={}", bytes.len());
+                decode::decode_stand_in_thumbnail(&bytes, cx)
+            }
             StreamSource::Bytes(bytes) => {
                 // Same `ext=… size=…` key as the failure line, so the doctor can match a
                 // successful call to a file as readily as a failed one (#37).

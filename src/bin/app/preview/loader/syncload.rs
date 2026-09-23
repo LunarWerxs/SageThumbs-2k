@@ -102,9 +102,7 @@ pub(super) unsafe fn load_sync_pdf(
     // `--wait-ms` is what lets a shot wait for the scrolling view on purpose.
     super::super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
     let pg = opts.pdf_page.unwrap_or(0);
-    let done = sagethumbs2k_core::decode::read_capped(path)
-        .ok()
-        .and_then(|b| sagethumbs2k_core::pdf::render_page_counted(&b, pg, 1600))
+    let done = sagethumbs2k_core::pdf::render_page_counted_path(path, pg, 1600)
         .and_then(|(png, count)| image::load_from_memory(&png).ok().map(|img| (img, count)))
         .map(|(img, count)| {
             let rgba = img.to_rgba8();

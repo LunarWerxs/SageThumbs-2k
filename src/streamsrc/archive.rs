@@ -17,13 +17,34 @@ pub(super) enum ArchiveProbe {
     Found(StreamSource),
 }
 
-/// A generic project archive is parsed only when its total size is known and
-/// inside both the user's preference and the hard decoder ceiling. Unlike a
-/// dedicated comic/ebook cover, there is no safe reason to probe an unbounded
-/// ZIP/7z directory over an opaque provider stream.
+/// A generic project archive is parsed only when its total size is known and inside the
+/// user's preference; a `buffered` one (RAR: `rars` reads from memory) also inside the hard
+/// decoder ceiling. ZIP and 7z are read off the stream - the central directory or the header,
+/// then the picked entries - so past the ceiling they cost the listing and nothing more, and
+/// refusing them there only cost a big photo archive its thumbnail (the big-file gate,
+/// 2026-09-23). What bounds a 7z's listing is its header size ([`sevenz_header_is_sane`]).
 pub(super) fn checked_generic_archive_size(size: Option<u64>, max_file_bytes: u64) -> Option<u64> {
-    let size = size?;
-    (size <= decode::effective_input_cap(max_file_bytes)).then_some(size)
+    size.filter(|&size| size <= max_file_bytes)
+}
+
+/// The most a 7z's end header may declare before the archive is left alone: its listing is
+/// decoded from that header, and a real 909 MB solid archive on an SMB share, with 18,037
+/// entries and a 235 KB header, blocked the shell for minutes when it was read in small pieces
+/// (it is read through a 256 KiB read-ahead now).
+const MAX_SEVENZ_HEADER: u64 = 4 << 20;
+
+/// Does a 7z's start header (the first 32 bytes) declare an end header small enough to list?
+/// Anything that is not a 7z answers `true`: the gate is for 7z alone. A 7z head too short to
+/// say answers `false`.
+pub(super) fn sevenz_header_is_sane(first: &[u8]) -> bool {
+    if !crate::container::is_7z(first) {
+        return true;
+    }
+    first
+        .get(20..28)
+        .and_then(|b| b.try_into().ok())
+        .map(u64::from_le_bytes)
+        .is_some_and(|n| n <= MAX_SEVENZ_HEADER)
 }
 
 /// Does the stream's (already lowercased) extension name a generic project archive?
@@ -43,11 +64,14 @@ fn archive_cover_want(archive_collage: u32) -> usize {
     }
 }
 
-/// Is an oversized container's head worth a seek-only cover rescue? A 7z is
-/// deliberately excluded (its entries may need a large encoded header decoded
-/// through a name-less shell stream) and so is a head too short to sniff.
-fn oversized_cover_stream_allowed(first: &[u8]) -> bool {
-    first.len() >= 8 && !crate::container::is_7z(first)
+/// Is an oversized container's head worth a seek-only cover rescue? A 7z only when it is a
+/// comic (`comic`: the stream's name says `.cb7`, so the archive IS its pages) with a sane end
+/// header; a name-less 7z could be any project backup. A head too short to sniff never is.
+fn oversized_cover_stream_allowed(first: &[u8], comic: bool) -> bool {
+    if crate::container::is_7z(first) {
+        return comic && sevenz_header_is_sane(first);
+    }
+    first.len() >= 8
 }
 
 /// The generic-archive (.zip/.rar/.7z) branch of [`stream_source`]. Fires only
@@ -87,11 +111,13 @@ pub(super) unsafe fn generic_archive(
     // thousands of tiny remote reads and blocked the shell for minutes. Apply
     // the hard decoder ceiling as well as the user's MaxSize: Settings represents
     // "0 / unlimited" as u64::MAX, but it is only unlimited within that ceiling.
-    let max = decode::effective_input_cap(max_file_bytes);
     let reported_size = head.size;
-    let Some(size) = checked_generic_archive_size(reported_size, max_file_bytes) else {
+    let listable = sevenz_header_is_sane(head.first(32));
+    let Some(size) =
+        checked_generic_archive_size(reported_size, max_file_bytes).filter(|_| listable)
+    else {
         let detail = reported_size
-            .map(|n| format!("{n} > {max} bytes"))
+            .map(|n| format!("{n} bytes; MaxSize {max_file_bytes}; 7z header sane: {listable}"))
             .unwrap_or_else(|| "stream size unavailable".to_string());
         safety::log_debugf!("{who}: refusing generic archive before parse ({detail})");
         return ArchiveProbe::NoCover;
@@ -106,7 +132,7 @@ pub(super) unsafe fn generic_archive(
         Some(mut covers) if covers.len() == 1 => {
             // One image: the normal aspect-preserving single-cover pipeline.
             safety::log_debugf!("{who}: generic archive single cover");
-            ArchiveProbe::Found(StreamSource::Bytes(covers.swap_remove(0)))
+            ArchiveProbe::Found(StreamSource::Cover(covers.swap_remove(0)))
         }
         Some(covers) => {
             safety::log_debugf!("{who}: generic archive {} covers", covers.len());
@@ -115,7 +141,9 @@ pub(super) unsafe fn generic_archive(
     }
 }
 
-/// Reads covers from a generic archive, either buffered in memory (RAR) or seek-streamed (ZIP/7z).
+/// Reads covers from a generic archive: a RAR inside the input ceiling buffered in memory (the
+/// reader `rars` wants), everything else seek-streamed (a RAR past the ceiling by walking its
+/// block headers, `container::rar::covers_seek`).
 unsafe fn read_archive_covers(
     stream: &IStream,
     first: &[u8],
@@ -124,7 +152,9 @@ unsafe fn read_archive_covers(
     want: usize,
     cfg: &ThumbSettings,
 ) -> Option<Vec<Vec<u8>>> {
-    if crate::container::archive_needs_buffer(first) {
+    if crate::container::archive_needs_buffer(first)
+        && size <= decode::effective_input_cap(max_file_bytes)
+    {
         // RAR: same bounded whole-file read as the normal path, then the one-pass
         // multi-target extraction over the buffer. Bounded by the effective cap the gate
         // above was computed from, not the hard ceiling: a stream that delivers more than
@@ -165,8 +195,8 @@ pub(super) unsafe fn archive_cover_streamed(
     stream: &IStream,
     head: &StreamHead,
 ) -> Option<Vec<u8>> {
-    let first = head.first(8);
-    if !oversized_cover_stream_allowed(first) {
+    let first = head.first(32);
+    if !oversized_cover_stream_allowed(first, head.extension_is(|e| e == "cb7")) {
         return None;
     }
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
@@ -199,27 +229,42 @@ pub(super) fn rar_buffer_cap(max_file_bytes: u64) -> usize {
 mod tests {
     use super::*;
 
-    /// The pre-parse gate must fail closed: no reported size means no parse, and the
-    /// hard decoder ceiling is a second bound below the user's MaxSize.
+    /// The pre-parse gate must fail closed: no reported size means no parse. The user's
+    /// MaxSize is the bound; the input ceiling is not, since past it every generic archive is
+    /// read by seeking (a RAR by walking its block headers).
     #[test]
     fn generic_archive_size_gate_refuses_an_unknown_or_oversized_size() {
         let ceiling = crate::decode::limits::MAX_INPUT_BYTES;
         assert_eq!(checked_generic_archive_size(None, u64::MAX), None);
         assert_eq!(
-            checked_generic_archive_size(Some(ceiling), u64::MAX),
-            Some(ceiling),
-            "the ceiling itself is still allowed"
-        );
-        assert_eq!(
             checked_generic_archive_size(Some(ceiling + 1), u64::MAX),
-            None
+            Some(ceiling + 1)
         );
         assert_eq!(
             checked_generic_archive_size(Some(4096), 1024),
             None,
-            "the user's MaxSize is the tighter bound"
+            "the user's MaxSize is the bound"
         );
         assert_eq!(checked_generic_archive_size(Some(1024), 1024), Some(1024));
+    }
+
+    /// A 7z's listing is attempted only when its end header is a sane size.
+    #[test]
+    fn a_sevenz_header_past_the_limit_is_not_listed() {
+        let mut head = vec![0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+        head.extend_from_slice(&[0u8; 12]);
+        head.extend_from_slice(&(64u64 << 10).to_le_bytes());
+        head.extend_from_slice(&[0u8; 4]);
+        assert!(sevenz_header_is_sane(&head));
+        head[20..28].copy_from_slice(&(MAX_SEVENZ_HEADER + 1).to_le_bytes());
+        assert!(!sevenz_header_is_sane(&head));
+        assert!(
+            !sevenz_header_is_sane(&head[..24]),
+            "a head too short to say is not sane"
+        );
+        assert!(sevenz_header_is_sane(
+            b"PK\x03\x04 and not a 7z at all ......"
+        ));
     }
 
     /// The extension gate is the whole reason a .cbz/.epub/.docx does not lose its
@@ -246,15 +291,22 @@ mod tests {
         assert_eq!(archive_cover_want(u32::MAX), 4);
     }
 
-    /// An oversized 7z is deliberately not rescued, and a head too short to carry
-    /// the signature cannot be sniffed either.
+    /// An oversized 7z is rescued only as a comic with a sane header, and a head too short
+    /// to carry the signature cannot be sniffed either.
     #[test]
-    fn oversized_stream_refuses_sevenz_but_keeps_the_zip_family() {
-        const SEVENZ: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+    fn oversized_stream_takes_a_comic_sevenz_and_the_zip_family() {
+        let mut sevenz = vec![0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+        sevenz.extend_from_slice(&[0u8; 12]);
+        sevenz.extend_from_slice(&4096u64.to_le_bytes());
+        sevenz.extend_from_slice(&[0u8; 4]);
         const ZIP: &[u8] = &[0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00];
-        assert!(!oversized_cover_stream_allowed(SEVENZ));
-        assert!(oversized_cover_stream_allowed(ZIP));
-        assert!(!oversized_cover_stream_allowed(&ZIP[..7]));
+        assert!(
+            !oversized_cover_stream_allowed(&sevenz, false),
+            "a name-less 7z"
+        );
+        assert!(oversized_cover_stream_allowed(&sevenz, true), "a .cb7");
+        assert!(oversized_cover_stream_allowed(ZIP, false));
+        assert!(!oversized_cover_stream_allowed(&ZIP[..7], false));
     }
 
     /// The RAR buffer is the effective cap, never above the hard ceiling: an

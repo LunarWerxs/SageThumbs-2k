@@ -506,10 +506,7 @@ pub(in crate::preview) unsafe fn spawn_open(hwnd: HWND, path: String, gen: u64) 
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
-        let Ok(bytes) = sagethumbs2k_core::decode::read_capped(&path) else {
-            return;
-        };
-        let Some(session) = PdfSession::open(&bytes) else {
+        let Some(session) = PdfSession::open_path(&path) else {
             return; // encrypted, malformed, or past the page cap: stay a pager
         };
         if session.page_count() < 2 {

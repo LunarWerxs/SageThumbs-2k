@@ -3,7 +3,7 @@
 use super::*;
 
 /// Read the embedded cover art through a fresh `IStreamReader` and, on a hit, log `$fmt`
-/// with the cover's byte count and hand it straight back as [`StreamSource::Bytes`].
+/// with the cover's byte count and hand it straight back as [`StreamSource::Cover`].
 /// Both cover-art rescues in this module end that way and differ only in their debug
 /// line; the format string stays a literal at the call site so the two lines read exactly
 /// as they did before. `$stream` must be a simple expression (`clone` is called on it).
@@ -13,7 +13,7 @@ macro_rules! cover_art_source {
             stream: $stream.clone(),
         }) {
             safety::log_debugf!($fmt, cover.len());
-            return Some(Ok(StreamSource::Bytes(cover)));
+            return Some(Ok(StreamSource::Cover(cover)));
         }
     };
 }
@@ -175,8 +175,10 @@ pub(super) unsafe fn video_undecodable_fallback(
     stream: &IStream,
     who: &str,
 ) -> Option<Result<StreamSource>> {
-    if head.is_ogg() {
-        safety::log_debugf!("{who}: OggS not video - trying album art");
+    if head.is_ogg() || head.is_asf() {
+        // A WMA shares the ASF container with WMV, and with no frame it is audio: its cover
+        // is in its tags (the big-file gate found every WMA without one in Explorer).
+        safety::log_debugf!("{who}: Ogg/ASF with no video frame - trying album art");
         return None;
     }
     if needs_fallback_cover_art(tried_cover_art) {
