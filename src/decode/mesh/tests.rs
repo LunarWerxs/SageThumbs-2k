@@ -337,9 +337,13 @@ fn nan_vertices_cannot_poison_the_render() {
 
 /// An aggregate rasterization budget must stop a mesh whose triangles all
 /// cover (near) the full canvas well before triangle count x canvas area, or a crafted
-/// file can peg the surrogate for a very long time. Timing-bound rather than
-/// instrumented, so it pins the OBSERVABLE property (bounded wall time) rather than an
-/// internal constant a future tune could drift out of sync with.
+/// file can peg the surrogate for a very long time. Timed rather than instrumented, so
+/// it pins the OBSERVABLE property (bounded work) rather than an internal constant a
+/// future tune could drift out of sync with; and timed as a RATIO, never a budget, so
+/// machine load cannot decide it: 100,000 such triangles against 1,000 of them rendered
+/// beside it, best of three rounds on both sides. With the budget binding, both stop
+/// at the same fill work (a ratio near 1); without it the larger mesh does a hundred
+/// times the work of the smaller, which the bound of 10 sits far below.
 #[test]
 fn rasterizer_budget_bounds_full_canvas_triangles() {
     // Every triangle spans far past the model's real bounding box in every direction —
@@ -349,15 +353,24 @@ fn rasterizer_budget_bounds_full_canvas_triangles() {
         -1000.0, -1000.0, 0.0, 1000.0, -1000.0, 0.0, -1000.0, 1000.0, 0.0,
     ];
     let tris = vec![full_canvas_tri; 100_000];
+    let best_render = |tris: &[[f32; 9]]| {
+        (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let img = render(tris, 64);
+                let elapsed = start.elapsed();
+                assert_eq!((img.width(), img.height()), (64, 64));
+                elapsed
+            })
+            .min()
+            .unwrap_or(std::time::Duration::MAX)
+    };
 
-    let start = std::time::Instant::now();
-    let img = render(&tris, 64);
-    let elapsed = start.elapsed();
-
-    assert_eq!((img.width(), img.height()), (64, 64));
+    let reference = best_render(&tris[..1_000]);
+    let hostile = best_render(&tris);
     assert!(
-        elapsed.as_secs() < 5,
-        "100,000 full-canvas triangles took {elapsed:?} - the aggregate rasterization \
-         budget does not appear to be bounding the work"
+        hostile < reference * 10,
+        "100,000 full-canvas triangles took {hostile:?} against {reference:?} for 1,000 of \
+         them - the aggregate rasterization budget does not appear to be bounding the work"
     );
 }

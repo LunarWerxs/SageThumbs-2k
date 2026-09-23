@@ -160,6 +160,7 @@ fn bounded_worker_returns_on_time_and_records_the_strand() {
         r, None,
         "an overrunning worker must be given up on, not waited for"
     );
+    // wall-clock-allow: a hang backstop, not a measurement. The worker is held on a flag for up to 10 s, so a caller that waited for it lands past 5 s; the strand-ledger assert below is the load-proof half.
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "the caller came back late: {:?}",
