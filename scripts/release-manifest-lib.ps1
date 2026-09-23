@@ -1058,8 +1058,20 @@ function Get-ReleaseChangelogSection {
     return $section
 }
 
+# A changelog bullet's headline: its bold lead (`- **Big files look sharp.** Detail` -> `Big
+# files look sharp`), else its first sentence. Trailing `.`/`:` go; the TL;DR adds its own bold.
+function Get-ReleaseNotesHeadline {
+    param([Parameter(Mandatory)][string]$Bullet)
+    $text = ($Bullet -replace '^-[ ]+', '').Trim()
+    if ($text -match '^\*\*(.+?)\*\*') { $lead = $Matches[1] }
+    elseif ($text -match '^(.+?[.!?])(\s|$)') { $lead = $Matches[1] }
+    else { $lead = $text }
+    return $lead.Trim().TrimEnd('.', ':').Trim()
+}
+
 # The public release body's layout, derived from the flat changelog section (which stays the
-# one source): the logo, a centred intro when the section opens with a paragraph, emoji on the
+# one source): the logo, a centred intro when the section opens with a paragraph, a two-line
+# TL;DR with the full list folded under "Read more" (see below), emoji on the
 # `### New` / `### Changed` / `### Fixed` headings with a rule between them, and the section's
 # lines otherwise verbatim - the 3.0.0 notes were laid out this way BY HAND after publishing.
 # Nothing is dropped: every non-blank line of the section must survive into the output (the
@@ -1132,9 +1144,28 @@ function Format-ReleaseNotesBody {
         $out.Add('---')
         $out.Add('')
     }
-    $out.Add("## What's changed")
-    $out.Add('')
-    foreach ($l in $body) { $out.Add($l) }
+    # TL;DR, then the full list folded away (Michael, 2026-09-23, on the 3.3.0 page: "Split this
+    # into 2 bullet point headline things... then a read more"). The headlines are the bold leads
+    # of the section's first two bullets - the changelog already leads with what matters most -
+    # so there is nothing extra to write and nothing to forget. A section of two bullets or fewer
+    # is already short, and is shown whole.
+    $bullets = @($body | Where-Object { $_ -match '^-[ ]+\S' })
+    if ($bullets.Count -gt 2) {
+        $out.Add('## TL;DR')
+        $out.Add('')
+        foreach ($b in $bullets[0..1]) { $out.Add('- **' + (Get-ReleaseNotesHeadline $b) + '**') }
+        $out.Add('')
+        $out.Add('<details>')
+        $out.Add("<summary><b>Read more: everything in $Version</b></summary>")
+        $out.Add('')
+        foreach ($l in $body) { $out.Add($l) }
+        $out.Add('')
+        $out.Add('</details>')
+    } else {
+        $out.Add("## What's changed")
+        $out.Add('')
+        foreach ($l in $body) { $out.Add($l) }
+    }
     $text = ($out -join "`n").TrimEnd()
     foreach ($line in $lines) {
         $t = $line.Trim()

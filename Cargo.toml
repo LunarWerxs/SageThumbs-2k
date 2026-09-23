@@ -478,6 +478,10 @@ name = "portable_settings"
 path = "tests/portable_settings.rs"
 
 [[test]]
+name = "prevhost_pane"
+path = "tests/prevhost_pane.rs"
+
+[[test]]
 name = "preview_async_load"
 path = "tests/preview_async_load.rs"
 

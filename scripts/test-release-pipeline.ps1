@@ -184,6 +184,21 @@ It continues on a second line.
         if (($body -split "`n" | Where-Object { $_ -eq '---' }).Count -lt 2) { throw 'no rules between the sections' }
         if ($body -match '### New\s*$' -or $body -match '(?m)^### Fixed\s*$') { throw 'a plain heading survived undecorated' }
     }
+    Assert-Passes 'a long section gets a two-line TL;DR and the whole list under Read more' {
+        $long = "- **First big thing.** Detail one.`n- **Second thing:** detail two`n  wrapped.`n- Third thing without a lead. More."
+        $body = Format-ReleaseNotesBody -Section $long -Version '9.8.7'
+        foreach ($must in @('## TL;DR', '- **First big thing**', '- **Second thing**',
+                '<summary><b>Read more: everything in 9.8.7</b></summary>', '</details>',
+                '- **First big thing.** Detail one.', '- **Second thing:** detail two wrapped.',
+                '- Third thing without a lead. More.')) {
+            if (-not $body.Contains($must)) { throw "layout lost: $must" }
+        }
+        if ($body.IndexOf('## TL;DR') -gt $body.IndexOf('<details>')) { throw 'the TL;DR is not above the fold' }
+        if ($body.Contains("## What's changed")) { throw 'a folded section kept the flat heading' }
+        if ((Get-ReleaseNotesHeadline '- Third thing without a lead. More.') -ne 'Third thing without a lead') {
+            throw 'a bullet without a bold lead did not fall back to its first sentence'
+        }
+    }
     Assert-Passes 'a section with no intro paragraph gets no intro block' {
         $body = Format-ReleaseNotesBody -Section "### Fixed`n`n- **Only a fix.** Detail." -Version '9.8.7'
         if ($body.Contains('<p align="center">')) { throw 'an empty intro was rendered' }
