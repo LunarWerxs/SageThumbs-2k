@@ -13,6 +13,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
   several ways around its safety policy. It only ever runs as a separate, time-limited process.
 - **Large DjVu pages need less memory** to thumbnail, from the updated DjVu decoder.
+- **Smaller fixes:** an e-book whose cover image carries a lazy-loading placeholder shows the
+  real cover; JPEGs with padding bytes before their camera data get their embedded thumbnail
+  again; an empty `.ts` file opens as text in Quick preview instead of as a broken video; Redo
+  with nothing to redo no longer stops Undo from bringing back a deleted annotation; and a file
+  picked in Everything with a very long path is used whole instead of cut short.
 - **Uploaded links now say when they expire.** The free upload hosts delete files on their own
   schedule, from 3 hours (uguu.se) and 72 hours (litterbox) to 3-100 days depending on size
   (x0.at), while catbox.moe sets no date and only removes files nobody has opened for 2 years.
