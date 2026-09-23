@@ -85,28 +85,35 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WM_APP,
 };
 
-/// Run one closure on an item's owning UI thread; see [`run_job`]. Picked as `WM_APP + 60` —
-/// clear of every `WM_APP_*` constant `settings_dlg` already defines (+7..+11, +30, +40..+42;
-/// see those modules) even though a collision could only matter if the SAME window received
-/// both, which none currently do.
+/// Run one closure on a window's owning UI thread; see [`run_job`]. Picked as `WM_APP + 60` —
+/// clear of every `WM_APP_*` constant `settings_dlg` defines (+7..+11, +30, +40..+42) and of the
+/// screenshot editor's (+8, +9), both of which windows also receive this one.
 pub(crate) const WM_UIA_JOB: u32 = WM_APP + 60;
 
 /// How long a provider call waits for the owning thread before giving up and reporting nothing.
-/// A timeout rather than a plain blocking send for the same reason `overlay::uia` uses one: the
-/// owning thread can be sitting in a modal dialog, and a screen reader that hangs until the user
-/// closes a dialog it cannot describe is worse than one that briefly reports nothing.
+/// A timeout rather than a plain blocking send because the owning thread can be sitting in a
+/// modal dialog (the screenshot editor's Font or Colour dialog, say), and a screen reader that
+/// hangs until the user closes a dialog it cannot describe is worse than one that briefly
+/// reports nothing.
 const JOB_TIMEOUT_MS: u32 = 250;
 
-fn hwnd_of(raw: isize) -> HWND {
+pub(crate) fn hwnd_of(raw: isize) -> HWND {
     HWND(raw as *mut c_void)
 }
 
 /// One marshalled unit of work, type-erased so the window procedure can run it without knowing
-/// what it returns. Heap-allocated and receiver-owned for the same reason `overlay::uia`'s `Job`
-/// is: a timed-out `SendMessageTimeoutW` does not cancel delivery, so the sender cannot know
-/// when it is safe to free the payload — the receiver drops it, on a delivered message, and a
-/// timed-out one deliberately leaks a few dozen bytes rather than risk a use-after-free in a
-/// process that aborts on panic.
+/// what it returns.
+///
+/// The obvious implementation puts the closure on the CALLER's stack and passes a pointer to
+/// it, and it is wrong in a way that would only ever show up under load: a timed-out
+/// `SendMessageTimeoutW` does not cancel anything. Windows leaves the message in the target
+/// thread's sent-message queue and delivers it the next time that thread pumps, which by then
+/// is after the caller's frame has gone, so the receiver would call a closure that no longer
+/// exists. The payload is therefore heap allocated, and the RECEIVER owns it: on a delivered
+/// message it has already been dropped, and on a timed-out one the allocation is deliberately
+/// abandoned rather than freed by a sender that cannot know whether the other thread is about
+/// to touch it. Leaking a few dozen bytes on a stall we do not expect to see is the cheap side
+/// of that trade; the other side is a use-after-free in a process that aborts on panic.
 trait Job: Send + Sync {
     fn run(&self, hwnd: HWND);
 }
@@ -183,6 +190,17 @@ pub(crate) unsafe fn run_job(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     LRESULT(1)
 }
 
+/// `WM_UIA_JOB` refused: free the marshalled closure without running it, so a window that
+/// declines a job (the screenshot editor inside a nested modal pump) still reclaims it. The
+/// caller then reads "not available".
+pub(crate) unsafe fn discard_job(lparam: LPARAM) {
+    let ptr = lparam.0 as *mut Arc<dyn Job>;
+    if !ptr.is_null() {
+        // SAFETY: as in `run_job`: the receiver owns the handed-over reference.
+        drop(unsafe { Box::from_raw(ptr) });
+    }
+}
+
 /// Everything a provider call can be asked about one item.
 pub(crate) struct ItemFacts {
     pub name: String,
@@ -205,10 +223,16 @@ pub(crate) struct ItemOps {
     pub select: fn(HWND),
 }
 
-/// "There is no element here, and that is not an error." See `overlay::uia::no_element` for the
-/// full reasoning (`Error::empty()` carries S_OK, which is the documented answer for "no
-/// pattern/no host provider" — a real failure HRESULT would read as a broken provider instead).
-fn no_element<T>() -> Result<T> {
+/// "There is no element here, and that is not an error."
+///
+/// UIA's contract for `Navigate`, `GetPatternProvider` and `HostRawElementProvider` is S_OK
+/// with a NULL out pointer, but the generated trait signature is `Result<Interface>` and every
+/// windows-rs interface wrapper is a NON-NULL pointer internally. `Ok(null)` is therefore not
+/// merely unidiomatic, it is an invalid value whose niche the `Ok`/`Err` layout is free to
+/// reuse. `Error::empty()` carries the code S_OK, so the generated vtable shim returns S_OK and
+/// leaves the caller's out pointer at the NULL it initialised. Returning a real failure
+/// HRESULT was rejected: a client would read "you are the last sibling" as a broken provider.
+pub(crate) fn no_element<T>() -> Result<T> {
     Err(Error::empty())
 }
 
