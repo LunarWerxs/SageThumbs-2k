@@ -23,6 +23,7 @@ real-cmyk.psb
 real-cmyk.psd
 real-dxt5.vtf
 real-es.m2v
+real-extension.fits
 real-flat.psb
 real-flat.psd
 real-grey.psb
@@ -126,8 +127,10 @@ real.fb2
 real.fbz
 real.fcstd
 real.ff
+real.fits
 real.flac
 real.flv
+real.fts
 real.gco
 real.gcode
 real.ggb
@@ -203,6 +206,7 @@ real.pages
 real.pam
 real.pbm
 real.pdf
+real.pfm
 real.pgm
 real.pix
 real.ply
@@ -417,8 +421,10 @@ sample.fbz
 sample.fcstd
 sample.ff
 sample.fff
+sample.fits
 sample.flac
 sample.flv
+sample.fts
 sample.gco
 sample.gcode
 sample.ggb
@@ -506,6 +512,7 @@ sample.pdd
 sample.pdf
 sample.pdn
 sample.pef
+sample.pfm
 sample.pgm
 sample.phz
 sample.png

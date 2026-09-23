@@ -23,6 +23,7 @@ real-cmyk.psb
 real-cmyk.psd
 real-dxt5.vtf
 real-es.m2v
+real-extension.fits
 real-flat.psb
 real-flat.psd
 real-grey.psb
