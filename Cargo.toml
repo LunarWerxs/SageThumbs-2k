@@ -47,7 +47,7 @@ djvu-rs = { path = "crates/vendor/djvu-rs" }
 # build-release.ps1 reads this line; keep it in sync with
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
 [workspace.package]
-version = "3.2.0"
+version = "3.3.0"
 rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the note below
 # Raised from 1.93 on 2026-09-20, on the owner's word. The old floor was set by
 # sevenz-rust2 (the comment said 0.21.4; the lock had moved to 0.22.2, which also declares

@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.3.0
 
 - **Twelve more file types get thumbnails (361 in all):** Valve game textures (`.vtf`) and
   Khronos KTX textures (`.ktx`), animated cursors (`.ani`), SIXEL terminal graphics
@@ -15,6 +15,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   inside a `.dxf`, XMind mind maps (`.xmind`), Visio templates and stencils (`.vstx`/`.vssx`),
   and the icon inside NuGet (`.nupkg`) and Visual Studio / VS Code (`.vsix`) packages. A DXF,
   stencil or package that carries no picture keeps its usual icon.
+- **Big Photoshop files get sharp in Quick preview.** A `.psd` or `.psb` over about 256 MB
+  stayed on the small, blurry preview Photoshop saves inside it, or took very long to sharpen,
+  and one over 2 GB never sharpened at all. Quick preview now reads the full picture Photoshop
+  keeps at the end of the file straight off the disk, only the parts it needs, so a document of
+  any size sharpens quickly, and a big document saved without that small preview shows its
+  picture instead of nothing. Files saved with Photoshop's "Maximize compatibility" turned off
+  do not contain that full picture and behave as before. Reported by a user.
 - **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
   published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
   several ways around its safety policy. It only ever runs as a separate, time-limited process.
