@@ -462,18 +462,31 @@ pub fn decode_preview_capped_for_path(
     max_edge: u32,
     path: &str,
 ) -> Result<DynamicImage> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.to_ascii_lowercase());
+    decode_preview_capped_named(bytes, max_edge, ext.as_deref())
+}
+
+/// [`decode_preview_capped_for_path`] for a caller that has the file's extension but no path:
+/// the preview pane, whose shell stream reports a leaf name. Formats with no signature an
+/// external decoder can sniff (Wavefront RLA, PSX TIM, MacPaint, Dr Halo CUT, Scitex CT, ZX
+/// Spectrum SCR, ...) decode only when their coder is NAMED, so a declined decode is retried
+/// by extension, the same retry the thumbnail provider makes. `ext` is lowercase, no dot.
+pub fn decode_preview_capped_named(
+    bytes: &[u8],
+    max_edge: u32,
+    ext: Option<&str>,
+) -> Result<DynamicImage> {
     let first = if max_edge > 0 {
         decode_preview_capped(bytes, max_edge)
     } else {
         decode_preview(bytes)
     };
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|x| x.to_str())
-        .map(|x| x.to_ascii_lowercase());
     first.or_else(|e| match ext {
-        Some(ext) if extension_has_named_coder(&ext) => {
-            decode_by_extension(bytes, &ext, (max_edge > 0).then_some(max_edge)).map_err(|_| e)
+        Some(ext) if extension_has_named_coder(ext) => {
+            decode_by_extension(bytes, ext, (max_edge > 0).then_some(max_edge)).map_err(|_| e)
         }
         _ => Err(e),
     })

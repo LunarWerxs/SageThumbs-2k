@@ -159,7 +159,12 @@ pub(crate) fn try_video_tier(
     }
     let mf = mf_refused.is_none();
 
-    if let Some(frame) = frame_by_bytes(bytes, mini, mf, at) {
+    // A transport stream padded past its content (a preallocated or half-downloaded recording)
+    // is handed over without the padding, which Media Foundation's transport source refuses.
+    let content =
+        crate::mpeg12::ts_content_len(&mut std::io::Cursor::new(bytes), bytes, bytes.len() as u64)
+            .map_or(bytes, |n| &bytes[..n as usize]);
+    if let Some(frame) = frame_by_bytes(content, mini, mf, at) {
         return Some(Ok(rotated_as_displayed(
             frame,
             bytes,

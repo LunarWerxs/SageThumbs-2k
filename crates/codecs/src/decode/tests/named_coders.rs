@@ -79,3 +79,27 @@ fn a_crafted_extension_cannot_steer_the_staged_file() {
         );
     }
 }
+
+/// The preview pane's route (a decode capped at the pane's edge, with only the stream's
+/// extension to go on) retries by extension exactly as the thumbnail provider does. Without it
+/// the pane stayed blank for every format nothing can sniff while Explorer's thumbnail drew
+/// it: the big-file gate's blind-spot check found six (CUT, MAC, RLA, SCR, SCT, TIM).
+#[test]
+fn the_pane_route_names_the_coder_a_decline_needs() {
+    if !magick_available() {
+        eprintln!("SKIPPED the_pane_route_names_the_coder_a_decline_needs: no ImageMagick");
+        return;
+    }
+    let tim = synthetic_tim();
+    assert!(
+        decode_preview_capped(&tim, 1024).is_err(),
+        "the premise: unnamed, it declines"
+    );
+    let img = decode_preview_capped_named(&tim, 1024, Some("tim"))
+        .expect("named by its extension, the pane's decode reads it");
+    assert_eq!((img.width(), img.height()), (4, 4));
+    assert!(
+        decode_preview_capped_named(&tim, 1024, None).is_err(),
+        "no name, no retry"
+    );
+}

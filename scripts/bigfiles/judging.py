@@ -10,7 +10,13 @@ def load(path):
     if not path or not os.path.isfile(path):
         return None
     try:
-        return np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+        im = Image.open(path)
+        if im.mode.startswith("I"):
+            # A 16-bit greyscale render (st2k keeps a 16-bit PGM's depth): `convert("RGB")`
+            # CLIPS it to 255 rather than scaling, which made a correct picture read as white.
+            g = np.asarray(im, dtype=np.float32) / (257.0 if im.mode.startswith("I;16") else 1.0)
+            return np.repeat(np.clip(g, 0, 255)[:, :, None], 3, axis=2)
+        return np.asarray(im.convert("RGB"), dtype=np.float32)
     except OSError:
         return None
 
@@ -67,7 +73,11 @@ def judge(surface, normal, big, reference=False, same_frame=True):
         return "FAIL", f"a {b.shape[1]}x{b.shape[0]} picture where the normal file gets {a.shape[1]}x{a.shape[0]}"
     diff = float(np.abs(a - b).mean()) if same_frame else 0.0
     sa, sb = sharpness(a), sharpness(b)
-    if diff > 6 or (sa > 1 and sb / sa < 0.85):
+    # Another frame of a longer video is simply another picture: its detail is its own (a
+    # program stream's twin read 0.77 of the normal frame's, and both were real frames). The
+    # sharpness bar there only guards against an enlarged stand-in, which loses far more.
+    floor = 0.85 if same_frame else 0.5
+    if diff > 6 or (sa > 1 and sb / sa < floor):
         return "FAIL", f"a different or blurrier picture (mean diff {diff:.1f}, sharpness {sb:.1f} vs {sa:.1f})"
     if b_ms > budget(surface, n_ms):
         return "FAIL", f"too slow: {b_ms} ms against {n_ms} ms at normal size"

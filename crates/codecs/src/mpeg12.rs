@@ -160,6 +160,46 @@ fn syncs_at(buf: &[u8], offset: usize, stride: usize) -> bool {
     (0..4).all(|n| buf.get(offset + n * stride) == Some(&TS_SYNC))
 }
 
+/// Where a transport stream's content ends: just past its last sync-marked packet, or `None`
+/// when the file's head is not a transport stream or its content runs to the end already.
+///
+/// A recorder that preallocates its file, or a download still in progress, leaves zeros past
+/// the last packet written, and Media Foundation's transport source refuses such a file
+/// outright (no frame, at any size, measured 2026-09-23); handed only the packets it reads it
+/// like any other. The content is assumed to come first and the padding after, which is how a
+/// sequential writer leaves a file, so a binary search over packet indices finds the boundary
+/// with one one-byte read per step: a multi-GB padded tail costs ~30 reads.
+pub fn ts_content_len<R: Read + Seek>(r: &mut R, head: &[u8], total: u64) -> Option<u64> {
+    let Some(Shape::TransportStream(TsLayout { stride, offset })) = shape(head) else {
+        return None;
+    };
+    let (stride, offset) = (stride as u64, offset as u64);
+    let packets = total.checked_sub(offset)? / stride;
+    let mut sync_at = |i: u64| -> bool {
+        let mut b = [0u8; 1];
+        r.seek(SeekFrom::Start(offset + i * stride)).is_ok()
+            && r.read_exact(&mut b).is_ok()
+            && b[0] == TS_SYNC
+    };
+    if packets == 0 || sync_at(packets - 1) {
+        return None;
+    }
+    // Invariant: packet `lo` is synced (the head proved packet 0 is), packet `hi` is not.
+    let (mut lo, mut hi) = (0u64, packets - 1);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if sync_at(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    // The packet that starts at the last sync (plus, for a 204-byte stride, its parity bytes;
+    // an M2TS stride's 4-byte timestamp sits before the sync and is counted by `offset`).
+    let tail = (TS_PACKET as u64).max(stride - offset);
+    Some((offset + lo * stride + tail).min(total))
+}
+
 /// The video codec inside a program or elementary stream, for `doctor` (`crate::vcodec`):
 /// MPEG-1 or MPEG-2, decided by whether a `sequence_extension` follows the first sequence
 /// header of the video ES. Reads at most the forward window from the file's head; `None`

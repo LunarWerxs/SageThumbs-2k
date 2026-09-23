@@ -166,6 +166,11 @@ def write_tiff(size, out, big):
         f.write(struct.pack(pack, 0))
 
 
+# Cases this machine could not generate, with why: the report lists them, so a gap is named
+# rather than silently shrinking the axis.
+NOT_GENERATED = {}
+
+
 def make(out_dir):
     """Write every pair into `out_dir`; returns [(case id, big path, reference path)]."""
     os.makedirs(out_dir, exist_ok=True)
@@ -179,7 +184,9 @@ def make(out_dir):
             picture(WIDE_REF, ref)
             pairs.append((f"{ext}~wide", big, ref))
         except subprocess.CalledProcessError as e:
-            print(f"bigpixels: ImageMagick cannot write {ext}: {e.stderr.decode(errors='replace')[:120]}")
+            why = e.stderr.decode(errors="replace").strip().splitlines()[0][:160]
+            NOT_GENERATED[f"{ext}~wide"] = f"NOT MEASURED: this ImageMagick cannot write it ({why})"
+            print(f"bigpixels: ImageMagick cannot write {ext}: {why}")
     for ext in HEAVY_FORMATS:
         big = os.path.join(out_dir, f"heavy.{ext}")
         # The same picture in the same format at a tenth of the size: the pattern scales with

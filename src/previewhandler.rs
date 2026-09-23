@@ -275,12 +275,16 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             // Video gets a frame-grab (never buffering a multi-GB movie), audio a
             // seek-only album-art read, oversized archives/.blend/PSD a streamed
             // cover / head prefix — everything else a bounded whole-file read.
+            // The extension names the external decoder's coder for the formats it cannot
+            // sniff (see `decode::decode_preview_capped_named`); read with the stream here.
+            let ext;
             let source = {
                 let borrow = self.stream.borrow();
                 let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
                 if let Some(name) = unsafe { stream_name(stream) } {
                     safety::log_debugf!("DoPreview: file {name}");
                 }
+                ext = unsafe { streamsrc::stream_extension(stream) };
                 // 1024 px matches the PDF/contact-sheet rasterize target below —
                 // crisp at any pane size, and it is what the streaming EXR tier
                 // scales to as it reads.
@@ -306,7 +310,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 Ok(StreamSource::Bytes(bytes) | StreamSource::Cover(bytes)) => {
                     let len = bytes.len();
                     safety::log_debugf!("DoPreview: read {len} bytes from stream");
-                    match decode_preview_budgeted(bytes) {
+                    match decode_preview_budgeted(bytes, ext) {
                         Ok(img) => Some(img),
                         Err(why) => {
                             safety::log_error(&format!(
@@ -663,7 +667,10 @@ impl Drop for PreviewHandler {
 /// [`DECODE_SLOTS`] lease until it finishes or the lease runs out; the host thread is blocked
 /// for at most the budget. Safe off the apartment thread: `DynamicImage` is `Send` and the
 /// worker touches only the pure decoder, no GDI/HWND state.
-fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::DynamicImage, String> {
+fn decode_preview_budgeted(
+    bytes: Vec<u8>,
+    ext: Option<String>,
+) -> std::result::Result<image::DynamicImage, String> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     // The lease is taken HERE and moved into the worker, so a refused `Builder::spawn` drops
     // it (freeing the slot) exactly like a normal worker exit would. A burst of selections
@@ -702,8 +709,12 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::Dynamic
             // stream cascade scales to). Without it a 76 MP JPEG 2000 spent 15.6s producing
             // a 4096px surface we immediately threw away, blew the budget, and left the pane
             // blank on a perfectly good file (issue #11).
-            let out = decode::decode_preview_capped(&bytes, safety::PREVIEW_TARGET_EDGE)
-                .map_err(|e| e.to_string());
+            let out = decode::decode_preview_capped_named(
+                &bytes,
+                safety::PREVIEW_TARGET_EDGE,
+                ext.as_deref(),
+            )
+            .map_err(|e| e.to_string());
             // `out` is a plain `DynamicImage`; all WIC/MF objects are already dropped inside
             // the decoder, so the apartment holds no live COM ref at teardown.
             if inited {

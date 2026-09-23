@@ -66,6 +66,29 @@ pub(super) unsafe fn try_video_source(
     // mid-decode, and the fallbacks would then show a different frame from the tier that
     // was meant to run.
     let at = cfg.video_offset_frac;
+    // A transport stream padded past its content (a preallocated or half-downloaded
+    // recording): every tier below sees the stream end at its last packet, because Media
+    // Foundation's transport source refuses the padding outright.
+    let trimmed;
+    let head = match head.size.and_then(|total| {
+        crate::mpeg12::ts_content_len(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            &head.bytes,
+            total,
+        )
+    }) {
+        Some(content) => {
+            trimmed = StreamHead {
+                bytes: head.bytes.clone(),
+                size: Some(content),
+                ext: head.ext.clone(),
+            };
+            &trimmed
+        }
+        None => head,
+    };
     // Media Foundation is delay-loaded and absent on the N/KN editions and Server Core.
     // Every in-process tier below hands its bytes to MF, so without it each can only fail,
     // after paying its reads (up to 64 MiB for the prefix tier, 128 + 96 MiB for the

@@ -75,6 +75,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the right place in the file.
 - **JPEG 2000 images that do not start at the corner of their canvas** (an image offset, which
   some scanners and mapping tools write) drew as noise; they now draw the picture.
+- **The preview pane shows Dr Halo (`.cut`), MacPaint (`.mac`), Wavefront (`.rla`), ZX
+  Spectrum (`.scr`), Scitex CT (`.sct`) and PlayStation (`.tim`) images.** Their thumbnails
+  worked, but the pane stayed empty: these formats carry nothing to recognise them by, and only
+  the thumbnail told the decoder which format it was reading.
+- **A video recording that is still being written, or was preallocated on disk,** gets its
+  thumbnail: a transport stream (`.ts`, `.m2ts`, `.mts`) with empty space after its last frame
+  used to get none.
 - **Older Excel workbooks (`.xls`) show their preview in the preview pane** instead of an empty
   pane, and **HEIF and AVIF image sequences** read only their first picture for a thumbnail
   instead of every frame, which took long enough to leave the preview pane blank.

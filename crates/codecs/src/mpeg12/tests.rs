@@ -354,3 +354,66 @@ fn a_real_stream_decodes_when_the_helper_exists() {
         ),
     }
 }
+
+/// `n` synthetic transport packets at `stride` (sync byte first, or four bytes in for M2TS),
+/// followed by `pad` zero bytes: a recording whose file was preallocated past its content.
+fn padded_ts(n: usize, stride: usize, offset: usize, pad: usize) -> Vec<u8> {
+    let mut v = vec![0u8; offset + n * stride];
+    for i in 0..n {
+        v[offset + i * stride] = 0x47;
+        v[offset + i * stride + 1] = (i % 251) as u8;
+    }
+    v.resize(v.len() + pad, 0);
+    v
+}
+
+#[test]
+fn a_transport_stream_padded_with_zeros_ends_at_its_last_packet() {
+    for (stride, offset) in [(188, 0), (192, 4), (204, 0)] {
+        for n in [4usize, 5, 17, 1000] {
+            let content = offset + (n - 1) * stride + 188.max(stride - offset);
+            let bytes = padded_ts(n, stride, offset, 3 * n * stride + 7);
+            assert_eq!(
+                ts_content_len(&mut Cursor::new(&bytes), &bytes, bytes.len() as u64),
+                Some(content as u64),
+                "stride {stride}, {n} packets"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unpadded_or_non_transport_file_is_left_whole() {
+    let whole = padded_ts(50, 188, 0, 0);
+    assert_eq!(
+        ts_content_len(&mut Cursor::new(&whole), &whole, whole.len() as u64),
+        None
+    );
+    let ps = [&[0u8, 0, 1, 0xBA][..], &[0u8; 4000][..]].concat();
+    assert_eq!(
+        ts_content_len(&mut Cursor::new(&ps), &ps, ps.len() as u64),
+        None
+    );
+    let empty: [u8; 0] = [];
+    assert_eq!(ts_content_len(&mut Cursor::new(&empty), &empty, 0), None);
+}
+
+/// End to end: the corpus's real transport stream, preallocated to four times its length with
+/// zeros (a recording or download still being written), decodes to the same frame as the clean
+/// file. Media Foundation's transport source refused the padded file outright until the video
+/// tier handed it only the packets.
+#[test]
+fn a_transport_stream_padded_with_zeros_still_gives_its_frame() {
+    let Some(clean) = st2k_base::testcorpus::read("real.ts") else {
+        return;
+    };
+    if !crate::video::media_foundation_available() {
+        eprintln!("NOT MEASURED: no Media Foundation on this machine");
+        return;
+    }
+    let mut padded = clean.clone();
+    padded.resize(clean.len() * 4, 0);
+    let a = crate::decode::decode_preview(&clean).expect("the clean stream decodes");
+    let b = crate::decode::decode_preview(&padded).expect("the padded stream decodes too");
+    assert_eq!((a.width(), a.height()), (b.width(), b.height()));
+}
