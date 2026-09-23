@@ -138,7 +138,7 @@ pub(crate) unsafe fn run_shot_gif(_hinst: HINSTANCE, _dark: bool, out: &str) -> 
         let Some(png_s) = png.to_str() else { continue };
         let ok = std::process::Command::new(&exe)
             .args(["--shot", png_s, "--tab", &tab.to_string()])
-            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+            .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
             .status()
             .map(|s| s.success())
             .unwrap_or(false);

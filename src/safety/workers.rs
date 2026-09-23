@@ -17,7 +17,7 @@ where
         .ok()
 }
 
-/// Spawn a detached worker that holds a DLL pin ([`crate::ModuleRef`]) for its WHOLE life:
+/// Spawn a detached worker that holds a DLL pin ([`crate::host::ModuleRef`]) for its WHOLE life:
 /// taken here, BEFORE `spawn`, and moved into the closure. `spawn` only schedules the thread,
 /// so a pin taken as the closure's first line leaves a window in which the host could unload
 /// the DLL under a thread about to touch it, and a pin taken inside a helper the closure calls
@@ -28,7 +28,7 @@ where
     F: FnOnce() + Send + 'static,
 {
     #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
+    let module = crate::host::ModuleRef::default();
     std::thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
@@ -127,7 +127,7 @@ where
         return None;
     }
     #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
+    let module = crate::host::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let ticket = AbandonTicket::new();
     let worker_ticket = ticket.clone();

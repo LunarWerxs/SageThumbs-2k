@@ -495,13 +495,13 @@ pub(crate) fn child_frame_png(
     wall_ceiling: Duration,
     png_cap: usize,
 ) -> Option<Vec<u8>> {
-    let exe = crate::sibling_of_dll(crate::CLI_EXE)?;
+    let exe = crate::host::sibling_of_dll(crate::host::CLI_EXE)?;
     let mut cmd = Command::new(exe);
     cmd.arg(verb)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // the child logs its own failures via the panic hook/log
-        .creation_flags(crate::CREATE_NO_WINDOW);
+        .creation_flags(crate::host::CREATE_NO_WINDOW);
     // Bound concurrent decode children (the ImageMagick gate is cross-process and named, so
     // st2k fan-outs and in-process decodes share the one cap).
     let _permit = crate::decode::magick_gate::acquire_for(crate::decode::Fidelity::Tile);

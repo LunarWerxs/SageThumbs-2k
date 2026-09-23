@@ -205,7 +205,7 @@ pub(crate) fn file_name_key(p: &str) -> Vec<u16> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(p);
-    crate::wide(fname)
+    crate::host::wide(fname)
 }
 
 /// Natural-sort `paths` by file name (page2 before page10), matching Explorer and

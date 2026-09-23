@@ -42,7 +42,7 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 
 use crate::container::{jpeg_sof_is_decodable, jpeg_span_frame};
 // Don't flash a console window when we spawn `magick.exe` from the shell host.
-use crate::CREATE_NO_WINDOW;
+use crate::host::CREATE_NO_WINDOW;
 /// Hard WALL-CLOCK backstop on a single ImageMagick child (belt-and-suspenders with its
 /// own `-limit time`): a child hung past this is killed and the decode fails cleanly.
 /// Derived from [`limits::MAGICK_WALL_SECS`] so the external watchdog and magick's own

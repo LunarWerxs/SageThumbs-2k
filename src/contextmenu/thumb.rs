@@ -120,7 +120,7 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
 }
 
 /// Start reading + decoding `path` to a scaled menu thumbnail on a detached worker. Mirrors
-/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::ModuleRef` and inits
+/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::host::ModuleRef` and inits
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment). Uses only the cheap in-process tiers
 /// (`decode_menu_preview` — container covers, fast image/WIC tiers, and pure-Rust resvg for
 /// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
@@ -144,7 +144,7 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
     // committed to running, not from whenever the new thread happens to get scheduled —
     // see `safety.rs`'s note on why the in-closure form is the weaker one.
     #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
+    let module = crate::host::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let ticket = safety::AbandonTicket::new();
     let worker_ticket = ticket.clone();

@@ -52,7 +52,7 @@ fn find_magick() -> Option<PathBuf> {
 
 /// `magick.exe` next to this module (the Full install bundles it there).
 fn bundled_magick() -> Option<PathBuf> {
-    let dll = crate::module_path().ok()?;
+    let dll = crate::host::module_path().ok()?;
     let p = std::path::Path::new(&dll).parent()?.join("magick.exe");
     p.exists().then_some(p)
 }
@@ -91,7 +91,7 @@ fn apply_magick_environment(cmd: &mut Command, exe: &std::path::Path) {
     cmd.env("MAGICK_CODER_MODULE_PATH", &coder_path);
     cmd.env("MAGICK_FILTER_MODULE_PATH", &filter_path);
 
-    let app_policy_dir = crate::module_path()
+    let app_policy_dir = crate::host::module_path()
         .ok()
         .and_then(|module| {
             std::path::Path::new(&module)

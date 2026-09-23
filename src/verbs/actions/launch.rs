@@ -13,7 +13,7 @@ pub(super) fn launch_app(args: &[&str]) -> bool {
     // A failed launch used to vanish without a trace — the menu item just "did nothing"
     // (missing companion EXE on a broken install, or spawn failure). Log it so the
     // Diagnostics log at least explains a dead menu item.
-    let Some(exe) = crate::sibling_of_dll(crate::APP_EXE) else {
+    let Some(exe) = crate::host::sibling_of_dll(crate::host::APP_EXE) else {
         crate::safety::log(
             "launch_app: companion EXE not found next to the DLL — menu action dropped",
         );

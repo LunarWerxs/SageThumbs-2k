@@ -31,7 +31,7 @@ use crate::{decode, dib, failmemo, safety, settings};
 
 #[implement(IThumbnailProvider, IInitializeWithStream)]
 pub struct ThumbnailProvider {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     stream: RefCell<Option<IStream>>,
 }
 
@@ -40,7 +40,7 @@ impl Default for ThumbnailProvider {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             stream: RefCell::new(None),
         }
     }
@@ -362,7 +362,7 @@ impl ThumbnailProvider_Impl {
                 let borrow = self.stream.borrow();
                 borrow
                     .as_ref()
-                    .and_then(|s| unsafe { crate::stream_name(s) })
+                    .and_then(|s| unsafe { crate::host::stream_name(s) })
                     .and_then(|n| crate::badge::label_for(&n))
             };
             if let Some(label) = label {

@@ -50,7 +50,7 @@ use std::os::windows::process::CommandExt;
 // Don't flash a console + don't inherit the spawner's stdio handles — otherwise a
 // detached background child (the daemon, a pin window) keeps a parent's handle
 // alive and can hang a `Start-Process -Wait` (and is just unclean).
-use sagethumbs2k_core::CREATE_NO_WINDOW;
+use sagethumbs2k_core::host::CREATE_NO_WINDOW;
 
 /// Spawn another instance of ourselves with `args`, fully detached (null stdio, no
 /// console). Used everywhere the feature launches a sibling process (capture,

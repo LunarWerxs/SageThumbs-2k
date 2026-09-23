@@ -38,7 +38,7 @@ pub(crate) fn checked_utf16_byte_len(len: usize) -> Option<usize> {
 /// context-menu verbs here and `propstore::pv_lpwstr` (which maps the allocation failure
 /// to an empty variant instead of `E_OUTOFMEMORY`).
 pub(crate) fn alloc_pwstr(s: &str) -> Result<PWSTR> {
-    let wide = crate::wide(s);
+    let wide = crate::host::wide(s);
     // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
     // any real string, but keep the allocation provably sound rather than wrapping.
     let bytes = checked_utf16_byte_len(wide.len()).ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
@@ -55,7 +55,7 @@ pub(crate) fn alloc_pwstr(s: &str) -> Result<PWSTR> {
 /// never an error.
 fn app_icon_ref() -> Result<PWSTR> {
     safety::guard_val(|| {
-        let exe = crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
+        let exe = crate::host::sibling_of_dll(crate::host::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
         alloc_pwstr(&format!("{},-1", exe.display()))
     })
 }
@@ -327,7 +327,7 @@ pub fn quick_root_item(clsid: GUID) -> Option<&'static verbs::MenuItem> {
 
 #[implement(IExplorerCommand)]
 pub struct ExplorerCommand {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     /// Cached "selection contains an image" verdict. The shell may call
     /// `GetState` repeatedly on one command instance and the selection is fixed
     /// for the object's lifetime, so we iterate the array at most once.
@@ -340,7 +340,7 @@ impl Default for ExplorerCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             has_image: Cell::new(None),
         }
     }
@@ -455,7 +455,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
 
 #[implement(IExplorerCommand)]
 pub struct MenuCommand {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     item: &'static verbs::MenuItem,
     /// True when this command is a TOP-LEVEL flyout entry (created by the root's
     /// `EnumSubCommands`), false when it's a child created by a group's own
@@ -506,7 +506,7 @@ impl MenuCommand {
         gate: settings::MenuGate,
     ) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             item,
             top_level,
             condensed,
@@ -525,7 +525,7 @@ impl MenuCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn quick_root(item: &'static verbs::MenuItem) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             item,
             top_level: true,
             condensed: false,
@@ -698,7 +698,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
 
 #[implement(IEnumExplorerCommand)]
 pub struct SubCommandEnum {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     items: Vec<IExplorerCommand>,
     pos: Cell<usize>,
 }
@@ -708,7 +708,7 @@ impl SubCommandEnum {
     #[allow(clippy::default_constructed_unit_structs)]
     fn new(items: Vec<IExplorerCommand>) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             items,
             pos: Cell::new(0),
         }

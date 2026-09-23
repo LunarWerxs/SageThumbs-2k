@@ -112,7 +112,7 @@ pub(super) unsafe fn stream_stat(stream: &IStream) -> (Option<u64>, Option<Strin
 /// Recover the backing file path from the shell's `IStream` via `IStream::Stat`
 /// (`STATFLAG_DEFAULT` fills `pwcsName` — file-backed shell streams report the full path).
 /// Returned only when it names an existing file, so a stream with no / non-file name simply
-/// falls back to streaming. The `Stat` and the `pwcsName` free are [`crate::stream_name`]'s.
+/// falls back to streaming. The `Stat` and the `pwcsName` free are [`crate::host::stream_name`]'s.
 ///
 /// TEST-ONLY, deliberately. Nothing in production may depend on this, because for the streams
 /// the shell actually hands our handlers it always returns `None` (they report a bare leaf
@@ -123,7 +123,7 @@ pub(super) unsafe fn stream_stat(stream: &IStream) -> (Option<u64>, Option<Strin
 /// [`stream_extension`]; anything wanting to avoid buffering wants the stream itself.
 #[cfg(test)]
 pub(super) unsafe fn stream_path(stream: &IStream) -> Option<String> {
-    let s = crate::stream_name(stream)?;
+    let s = crate::host::stream_name(stream)?;
     let p = std::path::Path::new(&s);
     // ABSOLUTE, then existing — in that order, and the absolute check is not cosmetic.
     // Streams routinely report only a LEAF NAME rather than a path: `SHCreateStreamOnFileEx`

@@ -17,7 +17,7 @@ SITES = int(sys.argv[sys.argv.index("--sites") + 1]) if "--sites" in sys.argv el
 SRC = ROOT / "src"
 
 LAYERS = [
-    ("base", "safety settings formats i18n fsutil dib licence_state unixtime parallel guids hex clipboard "
+    ("base", "host safety settings formats i18n fsutil dib licence_state unixtime parallel guids hex clipboard "
              "sqlite_prim checkerpx failmemo shellcmd upload_config upload_history testcorpus"),
     ("codecs", "container decode video vstream streamsrc mp4 mkv flv mpeg12 vcodec vp9 pdf ocr jpegtran "
                "app_image fuzz"),
@@ -41,16 +41,41 @@ def files_of(m):
     return out
 
 
-PATH = re.compile(r"\b(crate|super)::(\{[^;]*?\}|\w+)", re.S)
+def inline_mod_spans(code):
+    """(start, end) of every inline `mod name { ... }` body: a `super::` inside one names the
+    file's own module, not lib.rs."""
+    spans = []
+    for hit in re.finditer(r"\bmod\s+\w+\s*\{", code):
+        depth, i = 1, hit.end()
+        while depth and i < len(code):
+            depth += {"{": 1, "}": -1}.get(code[i], 0)
+            i += 1
+        spans.append((hit.end(), i))
+    return spans
+
+
+# A `#[macro_export]` macro is named `crate::name!` wherever it is defined; its layer is the
+# module that defines it.
+MACRO_HOME = {}
+for m in LEVEL:
+    for f in files_of(m):
+        for name in re.findall(r"#\[macro_export\]\s*macro_rules!\s*(\w+)",
+                               f.read_text(encoding="utf-8", errors="replace")):
+            MACRO_HOME[name] = m
+
+PATH = re.compile(r"\b(crate|super)::(\{[^;]*?\}|\w+)(!?)", re.S)
 violations = defaultdict(list)
 for m, level in LEVEL.items():
     for f in files_of(m):
         text = f.read_text(encoding="utf-8", errors="replace")
         code = re.sub(r"//[^\n]*", lambda x: " " * len(x.group(0)), text)
+        nested = inline_mod_spans(code)
         for hit in PATH.finditer(code):
             kind, what = hit.group(1), hit.group(2)
-            if kind == "super" and f.parent != SRC:
+            if kind == "super" and (f.parent != SRC or any(a <= hit.start() < b for a, b in nested)):
                 continue
+            if what in MACRO_HOME and what not in LEVEL:
+                what = MACRO_HOME[what]
             heads = re.findall(r"(?:^|[{,])\s*(\w+)", what) if what.startswith("{") else [what]
             line = code.count("\n", 0, hit.start()) + 1
             for head in heads:

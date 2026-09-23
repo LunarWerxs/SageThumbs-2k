@@ -93,7 +93,7 @@ pub fn upload_hosts(open: bool) -> Result<String, String> {
             use windows::core::{w, PCWSTR};
             use windows::Win32::UI::Shell::ShellExecuteW;
             use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            let file = crate::wide(&p);
+            let file = crate::host::wide(&p);
             ShellExecuteW(
                 None,
                 w!("open"),
@@ -153,7 +153,7 @@ pub fn upload(path: &str, copy: bool) -> Result<String, String> {
     let app_exe = exe
         .parent()
         .ok_or("this exe has no parent directory")?
-        .join(crate::APP_EXE);
+        .join(crate::host::APP_EXE);
     if !app_exe.exists() {
         return Err(format!(
             "{} not found beside st2k.exe — `upload` needs both installed together.",

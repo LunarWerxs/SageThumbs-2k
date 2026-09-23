@@ -138,7 +138,7 @@ use crate::decode;
 
 // Don't flash a console window when we spawn `st2k.exe` from the shell host
 // (`explorer.exe`/`dllhost.exe` are GUI processes — a child console would pop).
-use crate::CREATE_NO_WINDOW;
+use crate::host::CREATE_NO_WINDOW;
 
 mod clipboard;
 mod foldericon;
@@ -246,7 +246,7 @@ fn owner_hwnd(owner: Option<isize>) -> Option<windows::Win32::Foundation::HWND> 
 /// reveal new-folder output — so the shell's `IContextMenu::InvokeCommand` /
 /// `IExplorerCommand::Invoke` returns immediately instead of blocking explorer.exe's UI
 /// thread for the (possibly many-file, many-second) batch. The worker holds a
-/// [`crate::ModuleRef`] (so the DLL can't unload mid-action) and initializes its own STA
+/// [`crate::host::ModuleRef`] (so the DLL can't unload mid-action) and initializes its own STA
 /// COM apartment (verbs may touch WIC / the shell); it owns clones of every input, so it
 /// keeps NO reference to the COM object that launched it. `owner` is the parent HWND (as
 /// `isize`) for the error MessageBox, or `None`.

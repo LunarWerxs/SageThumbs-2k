@@ -123,7 +123,7 @@ impl Drop for Preview {
 
 #[implement(IShellExtInit, IContextMenu3)]
 pub struct ContextMenu {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     paths: RefCell<Vec<String>>,
     preview: RefCell<Option<Preview>>,
     /// Preview decode started from `IShellExtInit::Initialize` for either visible
@@ -157,7 +157,7 @@ impl Default for ContextMenu {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             paths: RefCell::new(Vec::new()),
             preview: RefCell::new(None),
             preview_job: RefCell::new(None),

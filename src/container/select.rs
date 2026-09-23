@@ -224,7 +224,7 @@ fn demote_brackets(s: &str) -> String {
 }
 
 fn wide(s: &str) -> Vec<u16> {
-    crate::wide(s)
+    crate::host::wide(s)
 }
 
 #[cfg(test)]

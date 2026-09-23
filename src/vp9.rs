@@ -108,7 +108,7 @@ mod tests {
             return; // corpus-gated, like the other sample-backed tests
         };
         let got = vp9_frame(&mut Cursor::new(&bytes), 0.30);
-        match crate::sibling_of_dll(crate::CLI_EXE) {
+        match crate::host::sibling_of_dll(crate::host::CLI_EXE) {
             Some(exe) if exe.exists() => {
                 let img = got.expect("the helper is present, so Profile 2 must decode");
                 assert!(

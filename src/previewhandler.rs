@@ -59,7 +59,8 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
 use crate::streamsrc::{self, StreamSource};
-use crate::{decode, safety, settings, stream_name};
+use crate::host::stream_name;
+use crate::{decode, safety, settings};
 
 /// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`
 /// hosts one pane, so a couple of slots cover a decode still running past its budget when
@@ -139,7 +140,7 @@ struct RenderData {
     IPreviewHandlerVisuals
 )]
 pub struct PreviewHandler {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     stream: RefCell<Option<IStream>>,
     site: RefCell<Option<IUnknown>>,
     parent: Cell<isize>, // host parent HWND (as isize, so the struct stays Cell-friendly)
@@ -166,7 +167,7 @@ impl Default for PreviewHandler {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             stream: RefCell::new(None),
             site: RefCell::new(None),
             parent: Cell::new(0),
@@ -485,7 +486,7 @@ impl PreviewHandler_Impl {
         }
         let r = self.rect.get();
         let (win_w, win_h) = rect_extent(&r);
-        let hinst_isize = crate::dll_hmodule().0 as isize;
+        let hinst_isize = crate::host::dll_hmodule().0 as isize;
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
         // Create + OWN the preview window on a DEDICATED UI thread whose own GetMessage loop pumps
         // its messages — including the cross-process WM_DESTROY when the dialog closes — so teardown
@@ -498,7 +499,7 @@ impl PreviewHandler_Impl {
             .name("st2k-preview-ui".to_string())
             .spawn(move || {
                 #[allow(clippy::default_constructed_unit_structs)]
-                let _module = crate::ModuleRef::default();
+                let _module = crate::host::ModuleRef::default();
                 // Held for the whole window lifetime, released after the loop below ends and
                 // BEFORE `_module` drops: the class must be gone before the DLL can be.
                 class_acquire();

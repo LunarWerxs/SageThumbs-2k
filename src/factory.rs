@@ -18,7 +18,7 @@ use crate::thumbprovider::ThumbnailProvider;
 
 #[implement(IClassFactory)]
 pub struct ClassFactory {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     clsid: GUID,
 }
 
@@ -27,7 +27,7 @@ impl ClassFactory {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn new(clsid: GUID) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             clsid,
         }
     }
@@ -70,9 +70,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
     fn LockServer(&self, flock: BOOL) -> Result<()> {
         safety::guard(|| {
             if flock.as_bool() {
-                crate::dll_add_ref();
+                crate::host::dll_add_ref();
             } else {
-                crate::dll_release();
+                crate::host::dll_release();
             }
             Ok(())
         })

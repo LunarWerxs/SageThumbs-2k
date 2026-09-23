@@ -343,7 +343,7 @@ fn a_real_stream_decodes_when_the_helper_exists() {
         return;
     };
     let got = mpeg_frame(&mut Cursor::new(&bytes), 0.30);
-    match crate::sibling_of_dll(crate::CLI_EXE) {
+    match crate::host::sibling_of_dll(crate::host::CLI_EXE) {
         Some(exe) if exe.exists() => {
             let img = got.expect("the helper is present, so MPEG-1 must decode");
             assert_eq!((img.width(), img.height()), (640, 360));

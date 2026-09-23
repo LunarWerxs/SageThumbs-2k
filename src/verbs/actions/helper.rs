@@ -11,13 +11,13 @@ use super::*;
 /// The `st2k.exe` CLI helper that ships next to our DLL, if it's actually there.
 ///
 /// The installer drops `st2k.exe` in the same directory as `sagethumbs2k.dll`, so
-/// we resolve it from the DLL's OWN path ([`crate::module_path`]) — **never**
+/// we resolve it from the DLL's OWN path ([`crate::host::module_path`]) — **never**
 /// `current_exe()`, which in the shell host is `explorer.exe`/`dllhost.exe`. Returns
 /// `Some` only when the file exists; `None` (helper missing — tests, or a DLL-only
 /// install) makes every routed verb fall back to its in-process path. See the
 /// module docs for the rationale.
 pub(super) fn st2k_exe() -> Option<PathBuf> {
-    crate::sibling_of_dll(crate::CLI_EXE)
+    crate::host::sibling_of_dll(crate::host::CLI_EXE)
 }
 
 /// Outcome of a routed `st2k` helper run. The three cases are deliberately

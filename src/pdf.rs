@@ -12,7 +12,7 @@
 //! regardless of the caller, and isolates COM init/uninit. The caller `recv_timeout`s
 //! that worker under a HOST-SIDE budget ([`PDF_TIMEOUT`]) — the four internal async ops
 //! are each capped at ~30 s, so a malformed/encrypted PDF could otherwise park the
-//! in-process shell thumbnail thread for ~120 s. The worker holds a [`crate::ModuleRef`]
+//! in-process shell thumbnail thread for ~120 s. The worker holds a [`crate::host::ModuleRef`]
 //! so that a render which outlives the budget can't let the DLL unload mid-run.
 
 use std::time::Duration;
@@ -34,14 +34,14 @@ use windows_future::{AsyncStatus, IAsyncAction, IAsyncOperation};
 /// accepted trade-off, same as `decode_svg`).
 const PDF_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Run `f` on the current thread inside a fresh MTA COM apartment, holding a [`crate::ModuleRef`]
+/// Run `f` on the current thread inside a fresh MTA COM apartment, holding a [`crate::host::ModuleRef`]
 /// DLL pin for the whole call. WinRT's blocking waits can deadlock in an STA and we can't assume
 /// the caller's apartment (see the module docs), so every detached worker wraps its body in this.
 /// The apartment is unbalanced again before returning, and only if this call initialized it.
 /// Shared with `crate::video`'s Media Foundation workers.
 pub(crate) fn with_mta_apartment<T>(f: impl FnOnce() -> T) -> T {
     #[allow(clippy::default_constructed_unit_structs)]
-    let _module = crate::ModuleRef::default();
+    let _module = crate::host::ModuleRef::default();
     // S_OK / S_FALSE both add a ref to balance; RPC_E_CHANGED_MODE does not.
     let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     let out = f();

@@ -334,7 +334,7 @@ pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
 
 /// Open the file with its default app (the preview item's click action).
 pub(crate) fn open_with_default(path: &str) {
-    let wide = crate::wide(path);
+    let wide = crate::host::wide(path);
     unsafe {
         let ret = ShellExecuteW(
             None,

@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
     std::process::Command::new("schtasks.exe")
         .args(args)
-        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
         .output()
 }
 
@@ -132,6 +132,6 @@ pub(crate) fn spawn_due_check() {
     };
     let _ = std::process::Command::new(exe)
         .arg("--update-check")
-        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
         .spawn();
 }

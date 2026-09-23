@@ -75,7 +75,7 @@ static PROBE_POOL: safety::LeasePool<MAX_ACTIVE_PROBES> = safety::LeasePool::new
 /// an MTA host fail cleanly instead of racing the borrow flag.
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
-    _ref: crate::ModuleRef,
+    _ref: crate::host::ModuleRef,
     path: Mutex<Option<String>>,
     /// Built lazily from the file on the first query, then cached for this instance.
     props: Mutex<Option<Vec<(PROPERTYKEY, PROPVARIANT)>>>,
@@ -85,7 +85,7 @@ impl Default for PropertyStore {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: crate::host::ModuleRef::default(),
             path: Mutex::new(None),
             props: Mutex::new(None),
         }
@@ -340,7 +340,7 @@ fn pv_lpwstr(s: &str) -> PROPVARIANT {
 /// wrong canonical type for the index — these must be a string vector (one element here, since our
 /// extractors yield a single value). `InitPropVariantFromStringVector` copies the strings.
 fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
-    let wide = crate::wide(s);
+    let wide = crate::host::wide(s);
     let arr = [PCWSTR(wide.as_ptr())];
     unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
 }
@@ -504,7 +504,7 @@ mod tests {
         *com.get().props.lock().unwrap() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
 
         let init: IInitializeWithFile = com.to_interface();
-        let w = crate::wide(r"C:\second\file.jpg");
+        let w = crate::host::wide(r"C:\second\file.jpg");
         let pc = PCWSTR(w.as_ptr());
         unsafe { init.Initialize(pc, 0) }.expect("Initialize should succeed");
 

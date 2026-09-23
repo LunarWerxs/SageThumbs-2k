@@ -44,7 +44,7 @@ const CONTAINERS: [(&str, &str); 3] = [
 
 /// Full path to the companion EXE, which is what the verb runs.
 fn app_exe() -> Option<String> {
-    crate::sibling_of_dll(crate::APP_EXE).map(|p| p.to_string_lossy().into_owned())
+    crate::host::sibling_of_dll(crate::host::APP_EXE).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Write (or rewrite) the verb under every container class.

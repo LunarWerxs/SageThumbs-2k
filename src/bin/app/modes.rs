@@ -506,7 +506,7 @@ pub(super) fn detach_rebuild_thumbnail_cache() {
     };
     let spawned = std::process::Command::new(&exe)
         .arg("--rebuild-thumbnail-cache-now")
-        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+        .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
         .spawn();
     if spawned.is_err() {
         let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();

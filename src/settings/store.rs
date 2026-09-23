@@ -60,7 +60,7 @@ pub fn ini_path() -> Option<&'static PathBuf> {
         }
         // `module_path()` is the DLL inside the shell host and the EXE otherwise —
         // never `current_exe()`, which in the shell host is explorer.exe/dllhost.exe.
-        let module = crate::module_path().ok()?;
+        let module = crate::host::module_path().ok()?;
         let beside = PathBuf::from(module).parent()?.join(INI_NAME);
         beside.is_file().then_some(beside)
     })

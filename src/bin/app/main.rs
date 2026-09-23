@@ -133,7 +133,7 @@ fn schedule_unelevated_heal() {
     let run = |args: &[&str]| {
         std::process::Command::new("schtasks.exe")
             .args(args)
-            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+            .creation_flags(sagethumbs2k_core::host::CREATE_NO_WINDOW)
             .output()
     };
     // `/sc once /st 00:00` only satisfies schtasks' mandatory-schedule syntax — the task

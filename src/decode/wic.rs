@@ -126,7 +126,7 @@ unsafe fn wic_frame_from_filename(
     factory: &IWICImagingFactory,
     path: &str,
 ) -> Result<IWICBitmapFrameDecode> {
-    let wide = crate::wide(path);
+    let wide = crate::host::wide(path);
     let decoder = factory.CreateDecoderFromFilename(
         windows::core::PCWSTR(wide.as_ptr()),
         None,
