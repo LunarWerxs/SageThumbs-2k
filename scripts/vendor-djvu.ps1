@@ -94,7 +94,7 @@ try {
             Write-Host "              'diff --git a/ b/' headers, which git reads as repo-root paths. Rewrite the" -ForegroundColor Yellow
             Write-Host "              headers as 'diff -ruN pristine/djvu-rs/... patched/djvu-rs/...' (see jxl-patches)." -ForegroundColor Yellow
         } else {
-            Write-Host "              The upstream source moved under the patch, or -Version is not 0.32.1." -ForegroundColor Yellow
+            Write-Host "              The upstream source moved under the patch at djvu-rs $Version." -ForegroundColor Yellow
             Write-Host "              Re-check the hunks: git apply -p2 --reject $patchPath" -ForegroundColor Yellow
             Write-Host "              ...then regenerate the patch from the fixed tree. Do NOT hand-edit the vendored copy." -ForegroundColor Yellow
         }

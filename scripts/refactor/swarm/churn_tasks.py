@@ -1,28 +1,36 @@
 """Build the zswarm task file for the churn-hotspots family: one task per untested hot file.
 
-Usage: python churn_tasks.py [--exclude a.rs,b.rs] [--only a.rs,b.rs] [--out PATH]
+Usage: python churn_tasks.py [--report DIR] [--exclude a.rs,b.rs] [--only a.rs,b.rs] [--out PATH]
+
+The files come from the Architect's own report (the "Churned-and-untested" list in
+`.arkitect/reports/<run>/check-churn-hotspots-*.md`, newest run by default), so the list is never
+stale: the family regrows as files churn, and a hard-coded list here went out of date within two
+days (2026-09-22). A `.rs` file gets the Rust prompt, a `.py` file the generic Python prompt, and
+the three files with a prompt of their own (gen-site.mjs, compare-renders.py, build.rs) get that.
 """
 import argparse
+import glob
 import json
 import os
+import re
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-RUST_FILES = [
-    "src/previewhandler.rs",
-    "src/bin/app/preview/content.rs",
-    "src/bin/app/preview/shot.rs",
-    "src/thumbprovider.rs",
-    "src/bin/app/preview/mod.rs",
-    "src/bin/app/preview/webview.rs",
-    "src/bin/app/screenshot/spacehook.rs",
-    "src/bin/app/preview/window/clipboard.rs",
-    "src/bin/app/settings_dlg/nudge.rs",
-    "src/bin/app/tags_to_folders.rs",
-    "src/bin/app/files_to_folder.rs",
-    "src/bin/app/settings_dlg/menuitems.rs",
-    "src/bin/app/win/pickers.rs",
-]
+
+def newest_report_dir():
+    dirs = sorted(d for d in glob.glob(os.path.join(ROOT, ".arkitect", "reports", "*")) if os.path.isdir(d))
+    return dirs[-1] if dirs else ""
+
+
+def churned_untested(report_dir):
+    """The paths under the report's `## Churned-and-untested` heading, in its order."""
+    hits = sorted(glob.glob(os.path.join(report_dir, "check-churn-hotspots-*.md")))
+    if not hits:
+        return []
+    with open(hits[0], encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    section = text.split("## Churned-and-untested", 1)[-1].split("\n## ", 1)[0]
+    return re.findall(r"^- `([^`]+)`", section, re.M)
 
 SCHEMA = {
     "type": "object",
@@ -83,27 +91,55 @@ def wanted(name, excluded, only):
     return name not in excluded and (not only or name in only)
 
 
+GENERIC_PY_PROMPT = """You are adding REAL tests to `{file}` in SageThumbs 2K (the cwd is the repo root; files are UTF-8 with LF line endings). The Architect flags it as a churn hotspot with no co-located test: hot code nobody tests. The convention it checks for is a sibling named `test_<name>.py`, so the file to create is `{test}`.
+Do this, in order:
+1. Read the whole script. Its pure parts (functions that take values and return values: parsers of command output or text, path and name builders, table lookups, classification, argument validation, report formatters) are the targets. Anything that runs cargo, st2k, magick, git, a network call, or walks the real corpus is NOT a target.
+2. Write `{test}` with the standard library's `unittest`, loading the target by path: `importlib.util.spec_from_file_location("<module>", Path(__file__).with_name("<script file name>"))`. If the module imports a third-party package at top level, import it inside `setUpClass` guarded by `unittest.SkipTest` when that package is missing. If importing the module runs work at top level (argv parsing, file writes), do NOT import it that way: move that top-level work into `def main()` behind `if __name__ == "__main__": main()` first, changing nothing else about what the script does when run. Each test pins a behaviour a reader would want protected (a boundary, an empty input, a classification edge, an error path); aim for 4 to 8 tests. Build any input the tests need in memory or under `tempfile`.
+3. Add `if __name__ == "__main__": unittest.main()` and run `python {test}` until it passes.
+Do not modify `{file}` except for the entry-point guard above or a one-line change that makes a function reachable from a test (say which). Never run cargo, the corpus, or the script's own main flow. Do not touch any other file. Answer through submit_result with: status (done | skipped), tests_added (test names), extracted (functions you had to change, or []), reason ("" or why skipped)."""
+
+SPECIAL = {
+    "scripts/gen-site.mjs": MJS_PROMPT,
+    "scripts/compare-renders.py": PY_PROMPT,
+    "src/build.rs": BUILD_PROMPT,
+}
+
+
+def task_for(path):
+    """The task for one flagged file, or None for a kind this builder has no prompt for."""
+    tid = re.sub(r"\.(rs|py|mjs)$", "", path).replace("/", "_")
+    if path in SPECIAL:
+        return {"id": tid, "prompt": SPECIAL[path]}
+    if path.endswith(".rs"):
+        return {"id": tid, "prompt": RUST_PROMPT.format(file=path)}
+    if path.endswith(".py"):
+        head, name = os.path.split(path)
+        test = f"{head}/test_{name}" if head else f"test_{name}"
+        return {"id": tid, "prompt": GENERIC_PY_PROMPT.format(file=path, test=test)}
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--report", default="", help="an .arkitect/reports/<run> dir (default: the newest)")
     ap.add_argument("--exclude", default="")
     ap.add_argument("--only", default="")
     ap.add_argument("--out", default=os.path.join(ROOT, "tmp/churn-tasks.json"))
     a = ap.parse_args()
     excluded = set(x for x in a.exclude.split(",") if x)
     only = set(x for x in a.only.split(",") if x)
+    report = a.report or newest_report_dir()
+    print("report", os.path.basename(report) or "(none)")
 
-    tasks = [
-        {"id": f.replace("/", "_").replace(".rs", ""), "prompt": RUST_PROMPT.format(file=f)}
-        for f in RUST_FILES
-        if wanted(f, excluded, only)
-    ]
-    for name, tid, prompt in [
-        ("scripts/gen-site.mjs", "scripts_gen-site", MJS_PROMPT),
-        ("scripts/compare-renders.py", "scripts_compare-renders", PY_PROMPT),
-        ("src/build.rs", "src_build", BUILD_PROMPT),
-    ]:
-        if wanted(name, excluded, only):
-            tasks.append({"id": tid, "prompt": prompt})
+    tasks = []
+    for path in churned_untested(report):
+        if not wanted(path, excluded, only):
+            continue
+        task = task_for(path)
+        if task is None:
+            print("  no prompt for", path)
+            continue
+        tasks.append(task)
 
     job = {"defaults": {"cwd": ROOT, "tools": "all", "schema": SCHEMA, "max_turns": 40, "timeout_s": 1500, "model": "deepseek-flash-or"}, "tasks": tasks}
     with open(a.out, "w", encoding="utf-8") as fh:

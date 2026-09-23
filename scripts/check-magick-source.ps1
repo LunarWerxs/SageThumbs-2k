@@ -116,7 +116,7 @@ if ($versionInfo.FileVersion -cne [string]$pin.identity.fileVersion) {
 # matches the host architecture: an x64 machine cannot run an ARM64 binary at all. Rather
 # than drop the check, defer it to the arm64 CI job, which runs on native ARM hardware.
 # What still holds locally is strictly stronger than a printed version string: the PE
-# FileVersion above, plus the 195-file/byte-count/SHA-256 inventory below, which pins the
+# FileVersion above, plus the file-count/byte-count/SHA-256 inventory below, which pins the
 # exact upstream bytes. Never "fix" a cross-architecture skip by weakening the inventory.
 $hostArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
 if ($Architecture -cne $hostArch) {

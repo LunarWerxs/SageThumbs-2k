@@ -145,22 +145,21 @@ def leave_alone(path):
     return any(p in path for p in LEAVE_ALONE)
 
 
+def parse_rows(text, pattern, field):
+    """One {"path", field} row per `pattern` match (group 1 the path, group 2 the value),
+    minus the leave-alone files."""
+    return [{"path": m.group(1), field: m.group(2)}
+            for m in re.finditer(pattern, text, re.M) if not leave_alone(m.group(1))]
+
+
 def parse_mi(text):
     """`- \\`scripts/x.py\\` - MI **0.0**` under the PRODUCTION heading."""
-    out = []
-    for m in re.finditer(r"^- `([^`]+)` - MI \*\*([0-9.]+)\*\*", text, re.M):
-        if not leave_alone(m.group(1)):
-            out.append({"path": m.group(1), "score": m.group(2)})
-    return out
+    return parse_rows(text, r"^- `([^`]+)` - MI \*\*([0-9.]+)\*\*", "score")
 
 
 def parse_oversized(text):
     """`- WARNING path - 1244 lines (>= 800)`."""
-    out = []
-    for m in re.finditer(r"^- WARNING (\S+) - (\d+) lines", text, re.M):
-        if not leave_alone(m.group(1)):
-            out.append({"path": m.group(1), "lines": m.group(2)})
-    return out
+    return parse_rows(text, r"^- WARNING (\S+) - (\d+) lines", "lines")
 
 
 def parse_dup(text):

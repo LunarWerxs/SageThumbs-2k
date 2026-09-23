@@ -22,6 +22,6 @@
     "upstreamSha256": "40e6a8f5b63295bb1473f4fcc749264169cc4d667059bdde11e6873ff188761c",
     "obtainedOn": "2026-09-22",
     "note": "SAME upstream release as the x64 pin (7.1.2-31). The ARM64 asset is an Inno installer rather than an installable-here package, so the payload was extracted with innoextract and mirrored to %ProgramFiles%\\ImageMagick-7.1.2-Q16-HDRI-arm64 to match the x64 resolution rule. The extracted tree is the SAME 198-file set as x64, which is why the inventory algorithm is unchanged.",
-    "runtimeIdentityCheck": "DEFERRED TO CI. check-magick-source.ps1 confirms the runtime version line by executing magick.exe, which an x64 host cannot do for an ARM64 binary. The 195-file SHA-256 inventory and the PE FileVersion still pin identity locally, and both are stronger than a printed version string; the executed check runs natively in the arm64 CI job."
+    "runtimeIdentityCheck": "DEFERRED TO CI. check-magick-source.ps1 confirms the runtime version line by executing magick.exe, which an x64 host cannot do for an ARM64 binary. The SHA-256 file inventory and the PE FileVersion still pin identity locally, and both are stronger than a printed version string; the executed check runs natively in the arm64 CI job."
   }
 }

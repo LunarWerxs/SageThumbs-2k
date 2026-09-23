@@ -341,9 +341,9 @@ if ($bundleMagick) {
     # Release input is PINNED. Never package whichever ImageMagick directory happens to
     # sort first: patch releases change imports/exports and can make a previously safe trim
     # silently incomplete. check-magick-source verifies the reported identity plus a
-    # deterministic inventory hash of all 195 files eligible to enter this bundle.
+    # deterministic inventory hash of every file eligible to enter this bundle.
     # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-31 release and the
-    # same 195-file set, so only the bundle bytes differ; the inventory algorithm is shared.
+    # same file set, so only the bundle bytes differ; the inventory algorithm is shared.
     $magickPinPath = if ($Architecture -eq 'arm64') {
         Join-Path $root 'scripts\packaging\imagemagick-source-arm64.json'
     } else {
