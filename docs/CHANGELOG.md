@@ -57,7 +57,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   change you had not saved yet.
 - **3D scans in PLY format thumbnail correctly.** Binary PLY files that store a colour or a
   normal beside each point, which is what most 3D scanners and photogrammetry tools write, drew
-  as a jumble of triangles; they now draw as the model.
+  as a jumble of triangles; they now draw as the model. A binary PLY with a face of more than 64
+  corners (a cylinder's cap saved as one polygon) no longer loses every face after it.
+- **Damaged or deliberately malformed files can no longer crash or stall the thumbnail
+  process.** A handful of crafted JPEG XL, 7-Zip, RAR, TIFF, Photoshop, STL and TGA files could
+  make it run out of memory or keep it busy for minutes; each is now refused or cut off, and a
+  normal file draws exactly as before.
 - **Screenshot editor: Delete, then Undo, brings the shape back.** Undo after deleting an
   annotation used to remove a second, different annotation instead. The toolbar's Undo and
   Ctrl+Z now do exactly the same thing, and the editor stays open if handing the capture to
