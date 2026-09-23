@@ -20,7 +20,7 @@ const MAX_FRAMES: usize = 512;
 const MAX_DIM: u32 = 8192;
 /// The decode pipeline's own allocation ceiling, so the viewer's animation budget can never
 /// drift from the thumbnail budget.
-const MAX_TOTAL_BYTES: u64 = sagethumbs2k_core::decode::limits::MAX_ALLOC;
+const MAX_TOTAL_BYTES: u64 = st2k_codecs::decode::limits::MAX_ALLOC;
 
 /// Decode an animated GIF/APNG/animated-WebP to `(rgba frame, delay ms)` pairs. Returns `None`
 /// for non-animated / single-frame / unsupported / over-budget input, so the caller falls back

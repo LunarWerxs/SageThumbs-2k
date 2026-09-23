@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the synthetic DICOM fixtures used by scripts\\check-dicom.ps1.
 
-These guard the .dcm decode path (src/decode.rs: looks_like_dicom -> `dcm:-`
+These guard the .dcm decode path (crates/codecs/src/decode.rs: looks_like_dicom -> `dcm:-`
 + `-auto-level`). We ship SYNTHETIC files, never real patient data:
 
   color_stripes.dcm  120x120 RGB, six known vertical hue stripes. The hue check

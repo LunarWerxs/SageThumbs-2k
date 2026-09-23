@@ -381,7 +381,7 @@ pub(super) fn strip_one(exe: Option<&Path>, p: &str) -> bool {
             }
             RunOutcome::SpawnFailed => strip_one(None, p),
         },
-        None => match crate::strip::strip_metadata(p) {
+        None => match st2k_codecs::strip::strip_metadata(p) {
             Ok(()) => true,
             Err(e) => {
                 st2k_base::safety::log(&format!("Strip metadata failed for {p}: {e:?}"));

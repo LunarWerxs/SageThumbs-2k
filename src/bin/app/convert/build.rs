@@ -153,7 +153,7 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         );
     }
     // Magick-backed exotic targets, only when ImageMagick is present (full install).
-    if sagethumbs2k_core::decode::magick_available() {
+    if st2k_codecs::decode::magick_available() {
         for (name, _) in CV_MAGICK_FORMATS {
             let w = wide(name);
             SendMessageW(

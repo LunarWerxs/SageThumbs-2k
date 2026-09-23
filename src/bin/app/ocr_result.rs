@@ -3,7 +3,7 @@
 //! Spawned by the capture overlay's **OCR** button / **Ctrl+T** as
 //! `SageThumbs2K.exe --ocr <png>`, where `<png>` is the throwaway capture of the
 //! selected region. We read that file once, delete it immediately, hand the bytes to
-//! the in-box WinRT recognizer (`sagethumbs2k_core::ocr`), put the result on the
+//! the in-box WinRT recognizer (`st2k_codecs::ocr`), put the result on the
 //! clipboard, and show it in an **editable** window — OCR misreads the occasional
 //! character, and fixing it here beats pasting it wrong. **Copy** re-copies whatever
 //! the edit currently holds, so an edit is honoured. Modeled on `upload_result.rs`.
@@ -41,9 +41,7 @@ pub(crate) unsafe fn run_ocr(path: &str) {
     // The HRESULT is carried out as a plain `i32` alongside the message: `windows::core::Error`
     // isn't `Send`, and `with_busy_pill` runs the work on a worker thread.
     let outcome = crate::screenshot::with_busy_pill(t("ocr_busy"), move || match bytes {
-        Ok(b) => {
-            sagethumbs2k_core::ocr::recognize_bytes(b).map_err(|e| (e.code().0, format!("{e:?}")))
-        }
+        Ok(b) => st2k_codecs::ocr::recognize_bytes(b).map_err(|e| (e.code().0, format!("{e:?}"))),
         Err(e) => Err((0, format!("couldn't read the capture — {e}"))),
     });
     surface(outcome);
@@ -62,17 +60,16 @@ pub(crate) unsafe fn run_ocr_keep(path: &str, page: Option<u32>) {
     let outcome = crate::screenshot::with_busy_pill(t("ocr_busy"), move || {
         // A PDF page by path first: the rasterizer reads what it needs, so a document past
         // the input ceiling is recognized too.
-        let by_path =
-            page.and_then(|n| sagethumbs2k_core::pdf::render_page_counted_path(&path, n, 2400));
+        let by_path = page.and_then(|n| st2k_codecs::pdf::render_page_counted_path(&path, n, 2400));
         let png = match by_path {
             Some((png, _pages)) => png,
             None => {
-                let bytes = sagethumbs2k_core::decode::read_capped(&path)
+                let bytes = st2k_codecs::decode::read_capped(&path)
                     .map_err(|e| (0, format!("couldn't read {path} — {e}")))?;
                 to_png(&bytes, page).ok_or((0, format!("couldn't decode {path}")))?
             }
         };
-        sagethumbs2k_core::ocr::recognize_bytes(png).map_err(|e| (e.code().0, format!("{e:?}")))
+        st2k_codecs::ocr::recognize_bytes(png).map_err(|e| (e.code().0, format!("{e:?}")))
     });
     surface(outcome);
 }
@@ -85,11 +82,11 @@ fn to_png(bytes: &[u8], page: Option<u32>) -> Option<Vec<u8>> {
     if let Some(n) = page {
         // Cap generously: OCR accuracy tracks resolution, and the engine's own ceiling
         // (checked inside `recognize`) is the real limit.
-        if let Some((png, _pages)) = sagethumbs2k_core::pdf::render_page_counted(bytes, n, 2400) {
+        if let Some((png, _pages)) = st2k_codecs::pdf::render_page_counted(bytes, n, 2400) {
             return Some(png);
         }
     }
-    let img = sagethumbs2k_core::decode::decode_full(bytes).ok()?;
+    let img = st2k_codecs::decode::decode_full(bytes).ok()?;
     encode_png(|buf| img.write_to(&mut std::io::Cursor::new(buf), image::ImageFormat::Png))
 }
 
@@ -118,9 +115,7 @@ fn outcome_message_key(outcome: &Result<String, (i32, String)>) -> Option<&'stat
     match outcome {
         Ok(text) if !text.trim().is_empty() => None,
         Ok(_) => Some("ocr_none"),
-        Err((code, _)) if *code == sagethumbs2k_core::ocr::OCR_IMAGE_TOO_LARGE.0 => {
-            Some("ocr_too_large")
-        }
+        Err((code, _)) if *code == st2k_codecs::ocr::OCR_IMAGE_TOO_LARGE.0 => Some("ocr_too_large"),
         Err(_) => Some("ocr_failed"),
     }
 }
@@ -167,7 +162,7 @@ fn show_ocr_result(text: &str) {
 /// language pack at all.
 pub(crate) unsafe fn run_shot_ocr(out: &str, file: Option<&str>) -> bool {
     let text = match file.map(std::fs::read) {
-        Some(Ok(bytes)) => sagethumbs2k_core::ocr::recognize_bytes(bytes).unwrap_or_default(),
+        Some(Ok(bytes)) => st2k_codecs::ocr::recognize_bytes(bytes).unwrap_or_default(),
         _ => String::new(),
     };
     let text = if text.trim().is_empty() {
@@ -267,7 +262,7 @@ mod tests {
     #[test]
     fn an_oversized_image_gets_the_too_large_key() {
         let outcome: Result<String, (i32, String)> = Err((
-            sagethumbs2k_core::ocr::OCR_IMAGE_TOO_LARGE.0,
+            st2k_codecs::ocr::OCR_IMAGE_TOO_LARGE.0,
             "image too large".into(),
         ));
         assert_eq!(outcome_message_key(&outcome), Some("ocr_too_large"));

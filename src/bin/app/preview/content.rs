@@ -186,8 +186,7 @@ fn display_scaled_first_paint(path: &str) -> Option<DecodedRgba> {
     // its own domain. JPEG can (68 ms against 270 ms for full, measured); PNG cannot, so WIC
     // decodes the whole thing and resamples (605 ms against 690 ms), which meant this pre-pass
     // was doing a SECOND full decode of every large PNG for a first paint barely any earlier.
-    let decoded =
-        sagethumbs2k_core::decode::wic_scaled_from_path_if_codec_scales(path, display_edge());
+    let decoded = st2k_codecs::decode::wic_scaled_from_path_if_codec_scales(path, display_edge());
     if inited {
         unsafe { CoUninitialize() };
     }
@@ -220,7 +219,7 @@ fn display_scaled_first_paint(path: &str) -> Option<DecodedRgba> {
 /// `None` when there is nothing better to show: not such a container, the document is not
 /// meaningfully bigger than what is already on screen, or neither route produced more.
 fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<DecodedRgba> {
-    let (rw, rh) = sagethumbs2k_core::real_dims(head)?;
+    let (rw, rh) = st2k_codecs::container::real_dims(head)?;
     // Only pay for a second decode when the document is clearly bigger than what we drew.
     if rw <= (shown.0.max(1) as u32).saturating_mul(3) / 2
         && rh <= (shown.1.max(1) as u32).saturating_mul(3) / 2
@@ -233,7 +232,7 @@ fn sharper_composite(path: &str, head: &[u8], shown: (i32, i32)) -> Option<Decod
         return None;
     }
     let big = std::fs::metadata(path)
-        .is_ok_and(|m| m.len() > sagethumbs2k_core::decode::limits::MAX_INPUT_BYTES);
+        .is_ok_and(|m| m.len() > st2k_codecs::decode::limits::MAX_INPUT_BYTES);
     let more = |img: image::RgbaImage| {
         (img.width() as i32 > shown.0 || img.height() as i32 > shown.1).then_some(img)
     };
@@ -270,8 +269,7 @@ const STORED_COMPOSITE_EDGE: u32 = 8192;
 
 /// The composite Photoshop stored at the end of the file, read by offset (issue #46).
 fn stored_composite(path: &str) -> Option<image::RgbaImage> {
-    sagethumbs2k_core::decode::psd_composite_scaled(path, STORED_COMPOSITE_EDGE)
-        .map(|img| img.to_rgba8())
+    st2k_codecs::decode::psd_composite_scaled(path, STORED_COMPOSITE_EDGE).map(|img| img.to_rgba8())
 }
 
 /// ImageMagick's flattening of the document, from the whole file.
@@ -288,7 +286,7 @@ fn flattened_composite(path: &str, (rw, rh): (u32, u32)) -> Option<image::RgbaIm
     // the ones the thumbnail ceiling refused, with nothing in the log, because every way
     // this pass could give up was a bare `?`. Each step now says why it stopped, in the same
     // verbose log the reporter was already reading.
-    let whole = match sagethumbs2k_core::decode::read_full_fidelity(path) {
+    let whole = match st2k_codecs::decode::read_full_fidelity(path) {
         Ok(bytes) => bytes,
         Err(e) => {
             st2k_base::safety::log_debugf!(
@@ -297,7 +295,7 @@ fn flattened_composite(path: &str, (rw, rh): (u32, u32)) -> Option<image::RgbaIm
             return None;
         }
     };
-    match sagethumbs2k_core::decode::decode_full(&whole) {
+    match st2k_codecs::decode::decode_full(&whole) {
         Ok(img) => Some(img.to_rgba8()),
         Err(e) => {
             st2k_base::safety::log_debugf!(
@@ -489,7 +487,7 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
-    let mut entries = sagethumbs2k_core::list_archive(&bytes)?;
+    let mut entries = st2k_codecs::container::list_archive(&bytes)?;
     entries.sort_by(|a, b| {
         b.2.cmp(&a.2) // directories (is_dir=true) first
             .then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()))

@@ -85,7 +85,7 @@ mod rar;
 #[cfg(test)]
 pub(crate) use rar::{covers_seek as rar_covers_seek, fuzz_seed as rar_fuzz_seed};
 mod rhino;
-pub(crate) mod select;
+pub mod select;
 mod sevenz;
 // Seattle FilmWorks (.sfw) and its PhotoWorks album (.pwp) - a JPEG with renumbered markers
 // and no Huffman tables, unwrapped back into one.
@@ -95,7 +95,7 @@ mod sixel;
 mod skp;
 mod spla;
 mod tarfmt;
-pub(crate) mod util;
+pub mod util;
 // Valve Texture Format (.vtf) - the full-resolution level through the DDS decoders.
 mod vtf;
 // GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
@@ -594,7 +594,7 @@ pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
 /// `decode_full` is the EXPENSIVE tier (it can spawn an ImageMagick subprocess), so a caller
 /// that must stay cheap for a bulk probe (e.g. `fileops::page_dims_from_head`, run once per
 /// CBZ page) should keep calling [`real_dims`] alone instead of this.
-pub(crate) fn real_or_decoded_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+pub fn real_or_decoded_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     real_dims(bytes).or_else(|| {
         crate::decode::decode_full(bytes)
             .ok()

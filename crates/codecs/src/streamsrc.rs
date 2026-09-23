@@ -40,7 +40,7 @@ use rawsniff::*;
 mod istream;
 use istream::*;
 mod videosrc;
-pub(crate) use istream::{read_full, stream_extension, StreamHead};
+pub use istream::{read_full, stream_extension, StreamHead};
 use videosrc::*;
 // The decode hub needs one of the sniffs directly: a TIFF whose IFD0 is only a
 // reduced-resolution copy must not be answered by the `image` tier. See its doc comment.
@@ -112,6 +112,9 @@ pub enum StreamSource {
 /// `target_edge` is the caller's requested output edge; the streaming EXR tier
 /// consumes it, as do the head-preview fast path, the streamed XCF flatten and
 /// the oversized WIC rescue (a smaller target lets each skip more of the file).
+///
+/// # Safety
+/// `stream` must be a live COM `IStream` on a thread where COM is initialised.
 pub unsafe fn stream_source(
     stream: &IStream,
     cfg: &ThumbSettings,

@@ -483,14 +483,14 @@ const WAIT_BUDGET: u32 = 30_000; // ~30 s at 1 ms/poll
 /// Block until a WinRT `IAsyncOperation<T>` finishes, then return its result.
 /// (windows-future's event-based `.join()` lives on a private trait, so we poll
 /// `Status()` — fine on our dedicated render thread.)
-pub(crate) fn block_op<T: RuntimeType>(op: &IAsyncOperation<T>) -> Result<T> {
+pub fn block_op<T: RuntimeType>(op: &IAsyncOperation<T>) -> Result<T> {
     wait_until_settled(|| op.Status())?;
     op.GetResults()
 }
 
 /// Block until a WinRT `IAsyncAction` finishes. Shared with the lock-screen verb, which
 /// waits on `LockScreen::SetImageFileAsync` the same way.
-pub(crate) fn block_action(op: &IAsyncAction) -> Result<()> {
+pub fn block_action(op: &IAsyncAction) -> Result<()> {
     wait_until_settled(|| op.Status())?;
     op.GetResults()
 }

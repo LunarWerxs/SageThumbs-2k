@@ -1385,6 +1385,7 @@ dependencies = [
  "roxmltree",
  "ruzstd",
  "sagethumbs2k-base",
+ "sagethumbs2k-codecs",
  "serde_json",
  "sevenz-rust2",
  "tiff",
@@ -1410,6 +1411,38 @@ dependencies = [
  "serde_json",
  "windows",
  "windows-registry",
+]
+
+[[package]]
+name = "sagethumbs2k-codecs"
+version = "3.3.0"
+dependencies = [
+ "base64",
+ "bcdec_rs",
+ "djvu-rs",
+ "exr",
+ "flate2",
+ "image",
+ "img-parts",
+ "jxl-oxide",
+ "kamadak-exif",
+ "lofty",
+ "moxcms",
+ "percent-encoding",
+ "rars",
+ "resvg",
+ "roxmltree",
+ "ruzstd",
+ "sagethumbs2k-base",
+ "serde_json",
+ "sevenz-rust2",
+ "tiff",
+ "windows",
+ "windows-core",
+ "windows-future",
+ "windows-implement",
+ "zip",
+ "zune-jpeg",
 ]
 
 [[package]]

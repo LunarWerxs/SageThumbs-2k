@@ -1,4 +1,4 @@
-"""Twin HEICs of ONE scene for the HDR test in src/decode/tests/colour.rs: the PQ / BT.2020
+"""Twin HEICs of ONE scene for the HDR test in crates/codecs/src/decode/tests/colour.rs: the PQ / BT.2020
 10-bit picture (the shape an HDR-base HEIC is; iPhones write HLG, same code path), and its
 sRGB / BT.709 control. Same scene as the JPEG XL / AVIF twins, and now literally the same
 code: `hdr_scene.render_rows` draws it once, because the samples must reach the encoder at 16

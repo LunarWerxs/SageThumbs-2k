@@ -1,4 +1,4 @@
-"""Twin 16-bit TIFFs of ONE scene for the HDR test in src/decode/tests/colour.rs: the PQ /
+"""Twin 16-bit TIFFs of ONE scene for the HDR test in crates/codecs/src/decode/tests/colour.rs: the PQ /
 BT.2020 picture tagged with a real BT.2020-PQ ICC profile (the way an HDR TIFF from a colour
 pipeline is tagged; TIFF has no cICP), and its sRGB / BT.709 control with no profile.
 

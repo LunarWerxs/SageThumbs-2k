@@ -138,7 +138,7 @@ pub(super) fn write_reencoded_to(
 /// the lossless JPEG path needs their COMPOSITION: the stored pixels of an
 /// `Orientation=6` phone photo lie on their side and the viewer rotates them, so a
 /// "rotate right" request must act on what the viewer shows, not on the stored grid.
-/// Composing the two picks the single [`crate::jpegtran::Op`] that turns the stored
+/// Composing the two picks the single [`st2k_codecs::jpegtran::Op`] that turns the stored
 /// grid into the requested result, after which the tag is reset to 1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct Dihedral {
@@ -201,8 +201,8 @@ impl Dihedral {
     }
 
     /// The jpegtran operation with this effect; `None` for the identity.
-    pub(super) fn to_op(self) -> Option<crate::jpegtran::Op> {
-        use crate::jpegtran::Op;
+    pub(super) fn to_op(self) -> Option<st2k_codecs::jpegtran::Op> {
+        use st2k_codecs::jpegtran::Op;
         Some(match (self.transpose, self.flip_h, self.flip_v) {
             (false, false, false) => return None,
             (false, true, false) => Op::FlipH,
@@ -234,13 +234,13 @@ pub(super) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
 pub(super) fn lossless_jpeg_transform(bytes: &[u8], t: Transform) -> Option<Vec<u8>> {
     let stored = Dihedral::from_exif_orientation(exif_orientation(bytes).unwrap_or(1));
     let out = match stored.then(Dihedral::from_transform(t)).to_op() {
-        Some(op) => crate::jpegtran::transform(bytes, op)?,
+        Some(op) => st2k_codecs::jpegtran::transform(bytes, op)?,
         // The request exactly undoes the stored orientation: the stored grid already IS
         // the result, so the bytes are kept as they are and only the tag changes. A
         // multi-picture index is declined for the same reason `transform` declines it:
         // the EXIF rewrite below can change the segment's length.
         None => {
-            if crate::jpegtran::has_multi_picture_index(bytes) {
+            if st2k_codecs::jpegtran::has_multi_picture_index(bytes) {
                 return None;
             }
             bytes.to_vec()
@@ -252,7 +252,7 @@ pub(super) fn lossless_jpeg_transform(bytes: &[u8], t: Transform) -> Option<Vec<
 /// A273: after a lossless rotate/flip, reset the EXIF Orientation tag to 1 and drop the
 /// IFD1 thumbnail.
 ///
-/// `crate::jpegtran::transform` keeps APPn/EXIF segments byte-for-byte verbatim while
+/// `st2k_codecs::jpegtran::transform` keeps APPn/EXIF segments byte-for-byte verbatim while
 /// physically transforming the DCT grid (that's the whole point — zero requantize loss), so
 /// the tag still describes the SOURCE grid and the embedded thumbnail still shows the source
 /// framing. This branch returns straight to the caller before `carry` is ever consulted

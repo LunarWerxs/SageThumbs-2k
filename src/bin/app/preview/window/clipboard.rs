@@ -113,14 +113,14 @@ pub(in crate::preview) fn navigated_shown_image_rgba(
     anim_frame: Option<usize>,
 ) -> Option<(i32, i32, Vec<u8>)> {
     if let Some(page) = pdf_page {
-        let png = sagethumbs2k_core::pdf::render_page_counted_path(path, page, 1600);
+        let png = st2k_codecs::pdf::render_page_counted_path(path, page, 1600);
         let img = png.and_then(|(png, _)| image::load_from_memory(&png).ok())?;
         let rgba = img.to_rgba8();
         return Some((rgba.width() as i32, rgba.height() as i32, rgba.into_raw()));
     }
     if let Some(frame) = anim_frame {
         let ext = lower_extension(path);
-        let frames = sagethumbs2k_core::decode::read_preview_capped(path)
+        let frames = st2k_codecs::decode::read_preview_capped(path)
             .ok()
             .and_then(|b| crate::preview::anim::decode_animation(&b, &ext))?;
         let (d, _) = frames.get(frame)?;

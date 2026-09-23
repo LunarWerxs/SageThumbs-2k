@@ -120,7 +120,7 @@ fn max_file_size_detail(bytes: u64) -> String {
     if bytes == u64::MAX {
         format!(
             "Unlimited (the provider still caps a single read at {} MB)",
-            crate::decode::limits::MAX_INPUT_BYTES / (1024 * 1024)
+            st2k_codecs::decode::limits::MAX_INPUT_BYTES / (1024 * 1024)
         )
     } else {
         format!("{} MB (larger files are skipped)", bytes / (1024 * 1024))
@@ -149,7 +149,7 @@ pub(super) fn check_engine(r: &mut Report) {
             }
         }
     };
-    match crate::decode::decode_preview(png) {
+    match st2k_codecs::decode::decode_preview(png) {
         Ok(img) => r.line(
             S::Ok,
             "Decode self-test",
@@ -164,7 +164,7 @@ pub(super) fn check_engine(r: &mut Report) {
     // Video thumbnails ride the OS Media Foundation codecs; the "N"/"KN" editions ship
     // without MF entirely, and then every video keeps its default icon while everything
     // above reports healthy. One line so that shape is visible in every pasted report.
-    if crate::video::media_foundation_available() {
+    if st2k_codecs::video::media_foundation_available() {
         r.line(
             S::Ok,
             "Media Foundation",
@@ -249,7 +249,7 @@ fn report_os_codec(r: &mut Report, codec: st2k_base::formats::OsCodec, exts: &[&
         OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
         OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
     };
-    if crate::decode::os_codec_available(codec) {
+    if st2k_codecs::decode::os_codec_available(codec) {
         if codec == OsCodec::Heif {
             // The WIC container-decoder lookup above proves HEIC/HEIF CONTAINERS parse,
             // not that the HEVC pixels inside decode - that needs the separate "HEVC
@@ -258,7 +258,7 @@ fn report_os_codec(r: &mut Report, codec: st2k_base::formats::OsCodec, exts: &[&
             // same way `video_codec_note` does for a video HEVC stream - a real Media
             // Foundation decoder-presence query (`vcodec::decoder_installed`), not a guess.
             use windows::Win32::Media::MediaFoundation::MFVideoFormat_HEVC;
-            match crate::vcodec::decoder_installed(MFVideoFormat_HEVC) {
+            match st2k_codecs::vcodec::decoder_installed(MFVideoFormat_HEVC) {
                 Some(true) => r.line(
                     S::Ok,
                     label,
@@ -274,7 +274,7 @@ fn report_os_codec(r: &mut Report, codec: st2k_base::formats::OsCodec, exts: &[&
                 // Windows cannot (2026-09-19 audit F23 measured real corpus files
                 // rendering that way), so a missing Store extension is a slower route on
                 // such a copy, and a genuine gap only on a Compact one.
-                Some(false) if crate::decode::magick_available() => r.line(
+                Some(false) if st2k_codecs::decode::magick_available() => r.line(
                     S::Info,
                     label,
                     &format!(

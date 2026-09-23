@@ -846,7 +846,7 @@ if (-not (Test-Path "$OutDir\huge.jp2")) {
 }
 
 # --- 9c) Tiny LOSSLESS JPEG 2000 exactness fixtures ----------------------------
-# The native reduced-resolution JP2 decoder (src/decode/jp2) is verified by BIT-EXACT
+# The native reduced-resolution JP2 decoder (crates/codecs/src/decode/jp2) is verified by BIT-EXACT
 # comparison against these: reversible 5/3 means a correct decoder must reproduce the
 # source PNG perfectly, so one differing byte is a decoder bug, not noise. Plasma content
 # matters: smooth gradients are insensitive to the zero-coding H/V swap and would pass a
@@ -927,7 +927,7 @@ if ($py -and (Test-Path $xcfGen)) {
 #
 #   cargo test --release --lib write_djvu_corpus_fixtures -- --ignored --nocapture
 #
-# (see src\container\djvu.rs). They need no entry in _expected-colors.txt: what makes them
+# (see crates\codecs\src\container\djvu.rs). They need no entry in _expected-colors.txt: what makes them
 # testable is gate 4, check-render-sanity.ps1, which flags a tile with no detail in it.
 foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu')) {
     if (-not (Test-Path (Join-Path $OutDir $djvuFixture))) {
@@ -953,7 +953,7 @@ foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu
 #
 #   cargo test --release --lib write_pdf_corpus_fixture -- --ignored --nocapture
 #
-# (see src\pdf.rs). Page one is the same blue every decoy fixture uses, so the existing
+# (see crates\codecs\src\pdf.rs). Page one is the same blue every decoy fixture uses, so the existing
 # thumbnail colour gate covers it with no special case; pages two to four are what
 # pdf::tests::every_page_of_a_multipage_pdf_renders_as_itself asserts against.
 $multiPdf = Join-Path $OutDir 'sample-multipage.pdf'

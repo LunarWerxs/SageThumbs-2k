@@ -11,12 +11,12 @@ import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-SKIP_FILE_PARTS = ("tests/", "tests.rs", "uia", "nudge_engine.rs", "src/fuzz/", "fuzzseed")
+SKIP_FILE_PARTS = ("tests/", "tests.rs", "uia", "nudge_engine.rs", "crates/codecs/src/fuzz/", "fuzzseed")
 SKIP_FUNCS = {
     ("crates/base/src/licence_state.rs", "from_json"),
-    ("src/decode/jp2/mq.rs", "cleanup_pass"),
-    ("src/decode/magick/encode.rs", "wait_for_magick_child"),
-    ("src/fuzz/surfaces.rs", "deep_session_over_the_new_parsers"),
+    ("crates/codecs/src/decode/jp2/mq.rs", "cleanup_pass"),
+    ("crates/codecs/src/decode/magick/encode.rs", "wait_for_magick_child"),
+    ("crates/codecs/src/fuzz/surfaces.rs", "deep_session_over_the_new_parsers"),
     ("src/verbs/actions.rs", "run_action"),
     ("src/mcp.rs", "dispatch_tool"),
 }

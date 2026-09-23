@@ -379,7 +379,7 @@ fn psd_with_distinct_preview_and_composite() -> Vec<u8> {
 #[test]
 fn a_large_request_gets_the_psd_composite_not_the_baked_preview() {
     let _settings = settings_lock();
-    if !sagethumbs2k_core::decode::magick_available() {
+    if !st2k_codecs::decode::magick_available() {
         // Loud, because a skip that reads as a pass is worse than no test at all.
         eprintln!(
             "SKIPPED a_large_request_gets_the_psd_composite_not_the_baked_preview: no ImageMagick"

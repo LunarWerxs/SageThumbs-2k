@@ -5,7 +5,7 @@ use super::*;
 /// One head read and one `Stat` per stream, taken at the top of the cascade and handed to
 /// every probe. Before this each probe seeked, read and rewound its own copy of the same
 /// first bytes and called `Stat` again for the same size and name.
-pub(crate) struct StreamHead {
+pub struct StreamHead {
     /// The first bytes of the stream: at most [`HEAD_BYTES`], fewer for a shorter stream
     /// (or none when the stream refuses the read).
     pub(super) bytes: Vec<u8>,
@@ -144,7 +144,10 @@ pub(super) unsafe fn stream_path(stream: &IStream) -> Option<String> {
 /// name be an absolute, currently-existing path.  Virtual shell sources often
 /// report only a display name; that is still enough for a conservative format
 /// gate, whereas [`stream_path`] intentionally rejects it for direct file I/O.
-pub(crate) unsafe fn stream_extension(stream: &IStream) -> Option<String> {
+///
+/// # Safety
+/// `stream` must be a live COM `IStream` on a thread where COM is initialised.
+pub unsafe fn stream_extension(stream: &IStream) -> Option<String> {
     stream_stat(stream).1
 }
 
@@ -190,7 +193,10 @@ pub(super) unsafe fn stream_prefix_from(
 
 /// Read exactly `buf.len()` bytes starting at the stream's current position (looping over
 /// short reads). None if the stream ends early or a read fails.
-pub(crate) unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
+///
+/// # Safety
+/// `stream` must be a live COM `IStream` on a thread where COM is initialised.
+pub unsafe fn read_full(stream: &IStream, buf: &mut [u8]) -> Option<()> {
     (fill_from_current(stream, buf)? == buf.len()).then_some(())
 }
 

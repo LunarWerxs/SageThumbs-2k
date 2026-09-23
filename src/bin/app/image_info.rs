@@ -21,7 +21,7 @@ thread_local! {
 
 /// Gather verbose metadata for `path` and show it in a scrollable, copyable window.
 pub fn run_image_info(path: &str) {
-    let text = sagethumbs2k_core::read_info_verbose(path);
+    let text = st2k_codecs::strip::read_info_verbose(path);
     INFO.with(|i| *i.borrow_mut() = text);
     unsafe {
         // Title reuses the context-menu verb's key — same phrase, already translated

@@ -471,8 +471,8 @@ mod tests {
     // Paths relative to THIS file (src/container/sevenz.rs) -> repo tests/. Both are
     // tiny SOLID .7z archives (one folder, >1 substream). Regenerate with
     // tests/fixtures/sevenz/make_fixtures.py if the format assumptions ever change.
-    const SOLID_ORDER: &[u8] = include_bytes!("../../tests/fixtures/sevenz/solid_order.7z");
-    const SOLID_BURIED: &[u8] = include_bytes!("../../tests/fixtures/sevenz/solid_buried.7z");
+    const SOLID_ORDER: &[u8] = include_bytes!("../../../../tests/fixtures/sevenz/solid_order.7z");
+    const SOLID_BURIED: &[u8] = include_bytes!("../../../../tests/fixtures/sevenz/solid_buried.7z");
 
     /// Registry-default cover prefs, for tests that don't care about the values.
     fn default_prefs() -> CoverPrefs {

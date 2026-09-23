@@ -303,7 +303,7 @@ fn explorer_asked_us_note(r: &mut Report, p: &Path, ext: &str) {
 fn video_codec_note(r: &mut Report, path: &str) {
     // Without Media Foundation there are no video thumbnails at all, whatever the codec.
     // check_engine already prints the global warning; this is the per-file FAIL with a fix.
-    if !crate::video::media_foundation_available() {
+    if !st2k_codecs::video::media_foundation_available() {
         r.fail_with_fix(
             "Media Foundation",
             "NOT present on this Windows (\"N\"/\"KN\" editions omit it) — video thumbnails \
@@ -317,7 +317,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
         return; // the Read-file check below reports this with its own message
     };
     let mut file = std::io::BufReader::new(file);
-    let Some(info) = crate::vcodec::identify(&mut file) else {
+    let Some(info) = st2k_codecs::vcodec::identify(&mut file) else {
         r.line(
             S::Info,
             "Video codec",
@@ -361,7 +361,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
         );
         return;
     }
-    match info.subtype.map(crate::vcodec::decoder_installed) {
+    match info.subtype.map(st2k_codecs::vcodec::decoder_installed) {
         Some(Some(true)) => r.line(
             S::Ok,
             "Video codec",
@@ -405,7 +405,7 @@ fn video_codec_note(r: &mut Report, path: &str) {
     // An embedded poster (a Matroska attachment or an MP4 `covr` item) means a thumbnail
     // exists even with no codec at all, which is the whole answer for an HEVC library on a
     // machine without the Store extension. Say so, and say which rule is currently in force.
-    if crate::vcodec::cover_art(&mut file).is_some() {
+    if st2k_codecs::vcodec::cover_art(&mut file).is_some() {
         let detail = if st2k_base::settings::prefer_cover_art() {
             "present, and Settings prefers it, so this is the thumbnail you get"
         } else {
@@ -599,7 +599,7 @@ pub(super) fn probe_file(
 
     // The decisive step: actually run the thumbnail decoder on THIS file's bytes, the
     // same preview-fidelity path Explorer's provider uses.
-    match crate::decode::read_preview_capped(path) {
+    match st2k_codecs::decode::read_preview_capped(path) {
         Err(e) => r.fail_with_fix(
             "Read file",
             &format!("could not read the bytes: {e}"),
@@ -612,7 +612,7 @@ pub(super) fn probe_file(
 /// Decodes the file's bytes and reports the decode outcome: a thumbnail that can be
 /// produced, a video with no frame, or a failure with the matching hint.
 fn report_decode(r: &mut Report, path: &str, bytes: &[u8], is_video: bool) {
-    match crate::decode::decode_preview(bytes) {
+    match st2k_codecs::decode::decode_preview(bytes) {
         Ok(img) => {
             r.line(
                 S::Ok,
@@ -672,7 +672,7 @@ fn report_decode(r: &mut Report, path: &str, bytes: &[u8], is_video: bool) {
             // Registered + enabled, but the pixels won't come out. Point at the
             // likely reason: the long-tail formats decode only through the bundled
             // ImageMagick, whose coders lag newer file-format versions.
-            let magick = crate::decode::magick_available();
+            let magick = st2k_codecs::decode::magick_available();
             let hint = if magick {
                 "ImageMagick is present but its coder could not decode this file \
                  (often a newer version of the format than the coder supports)"

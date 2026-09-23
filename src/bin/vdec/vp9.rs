@@ -1,5 +1,5 @@
 //! The `st2k vp9-frame` decode core: one raw VP9 keyframe → PNG. The CHILD side of
-//! `sagethumbs2k_core::vp9::vp9_frame` (see [`super`] for the shared containment story).
+//! `st2k_codecs::vp9::vp9_frame` (see [`super`] for the shared containment story).
 //!
 //! The parent already did the container work — `mkv::vp9_keyframe` walked the WebM/MKV
 //! Cues for the representative keyframe and stripped the Matroska block framing — so what
@@ -24,8 +24,8 @@
 //!    lookup; the one declined layout is `CS_RGB` (a profile-1/3 sRGB stream — the plane
 //!    order convention differs and real-world files are practically nonexistent).
 
-use sagethumbs2k_core::flv::Bits;
-use sagethumbs2k_core::vp9::MAX_DIM;
+use st2k_codecs::flv::Bits;
+use st2k_codecs::vp9::MAX_DIM;
 use vp9dec::PlaneData;
 
 // VP9 color_space values (spec §7.2.2). Only the ones this module branches on are named.
@@ -160,7 +160,7 @@ fn frame_geometry(frame: &vp9dec::Frame) -> Result<(usize, usize, usize, usize, 
 /// The frame marker + profile prologue (spec §6.2): the two fields common to every VP9
 /// frame, keyframe or not.
 ///
-/// Bit reads go through `sagethumbs2k_core::flv::Bits` — the same MSB-first, bounds-checked
+/// Bit reads go through `st2k_codecs::flv::Bits` — the same MSB-first, bounds-checked
 /// reader `flv.rs`'s SPS parser uses — rather than a private duplicate that could drift from
 /// it independently.
 fn parse_frame_marker_and_profile(b: &mut Bits) -> Result<u8, String> {
@@ -398,8 +398,7 @@ mod tests {
                 eprintln!("corpus_vp9_vectors_decode: no {name} — skipping");
                 continue;
             };
-            let Some(frame) =
-                sagethumbs2k_core::vp9::keyframe_bytes(&mut Cursor::new(&bytes), 0.30)
+            let Some(frame) = st2k_codecs::vp9::keyframe_bytes(&mut Cursor::new(&bytes), 0.30)
             else {
                 // sample.webm may legitimately be VP8 — the codec gate declining it is
                 // correct behaviour, not a failure of this test.

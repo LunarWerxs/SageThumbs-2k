@@ -6,7 +6,7 @@ use super::*;
 ///
 /// **Measured, in a live window**: a 210 page document indexes its first 200 in ~82 s, or ~410 ms
 /// a page. That is four times what one page costs in isolation (~100 ms, see
-/// [`sagethumbs2k_core::pdf::OCR_RENDER_WIDTH`]) because the same session thread is also drawing
+/// [`st2k_codecs::pdf::OCR_RENDER_WIDTH`]) because the same session thread is also drawing
 /// the pages and thumbnails the reader is looking at, and the reader wins those.
 ///
 /// So this is a bound on the WORST case rather than a target: nearly every PDF anyone presses
@@ -18,7 +18,7 @@ pub(in crate::preview) const MAX_INDEX_PAGES: usize = 200;
 /// The searchable text of a PDF, built one page at a time in the background.
 ///
 /// `Windows.Data.Pdf` rasterizes and exposes no text layer at all, so the text has to be READ off
-/// the rendered page by [`sagethumbs2k_core::ocr`]. That is the in-box `Windows.Media.Ocr`
+/// the rendered page by [`st2k_codecs::ocr`]. That is the in-box `Windows.Media.Ocr`
 /// engine, so this costs no bundled bytes and no new dependency, which is what makes it the right
 /// trade here: a pure-Rust extractor would be more accurate on a born-digital PDF but would have
 /// to earn room in the installer's size budget.
@@ -176,8 +176,8 @@ pub(in crate::preview) unsafe fn start_indexing(hwnd: HWND) {
                 return; // the reader moved on; the rest of the document is not worth reading
             }
             let text = session
-                .render_to_width(page, sagethumbs2k_core::pdf::OCR_RENDER_WIDTH)
-                .and_then(|png| sagethumbs2k_core::ocr::recognize_bytes(png).ok());
+                .render_to_width(page, st2k_codecs::pdf::OCR_RENDER_WIDTH)
+                .and_then(|png| st2k_codecs::ocr::recognize_bytes(png).ok());
             let payload: Box<TextPayload> = Box::new((gen, page, text));
             let raw = Box::into_raw(payload);
             if PostMessageW(

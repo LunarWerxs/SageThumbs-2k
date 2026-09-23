@@ -161,7 +161,7 @@ fn run_child(verb: &str, input_cap: usize, frame_png: fn(&[u8]) -> Result<Vec<u8
 pub fn run_flv() -> i32 {
     run_child(
         "flv-frame",
-        sagethumbs2k_core::flv::FLASH_INPUT_CAP,
+        st2k_codecs::flv::FLASH_INPUT_CAP,
         flv::frame_png,
     )
 }
@@ -169,11 +169,7 @@ pub fn run_flv() -> i32 {
 /// Entry point for `st2k vp9-frame`: returns the process exit code.
 #[cfg(feature = "vp9-video")]
 pub fn run_vp9() -> i32 {
-    run_child(
-        "vp9-frame",
-        sagethumbs2k_core::vp9::VP9_INPUT_CAP,
-        vp9::frame_png,
-    )
+    run_child("vp9-frame", st2k_codecs::vp9::VP9_INPUT_CAP, vp9::frame_png)
 }
 
 /// Entry point for `st2k mpeg-frame`: returns the process exit code.
@@ -181,7 +177,7 @@ pub fn run_vp9() -> i32 {
 pub fn run_mpeg() -> i32 {
     run_child(
         "mpeg-frame",
-        sagethumbs2k_core::mpeg12::MPEG_INPUT_CAP,
+        st2k_codecs::mpeg12::MPEG_INPUT_CAP,
         mpeg::frame_png,
     )
 }

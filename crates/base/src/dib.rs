@@ -129,6 +129,25 @@ pub fn swap_rb_opaque(src: &[u8], dst: &mut [u8]) -> usize {
     px
 }
 
+/// Serialize the fixed `#[repr(C)]` BITMAPINFOHEADER prologue of a packed CF_DIB (40 bytes,
+/// little-endian, no padding) onto the end of `dib`. `header` is the caller's already-computed
+/// `size_of::<BITMAPINFOHEADER>()`, which it keeps for its own capacity and length checks.
+/// Positive `h` = bottom-up DIB (the CF_DIB convention). Shared by the clipboard verb's
+/// `build_dib` and the screenshot tool's copy.
+pub fn push_cf_dib_header(dib: &mut Vec<u8>, w: i32, h: i32, header: usize) {
+    dib.extend_from_slice(&(header as u32).to_le_bytes()); // biSize
+    dib.extend_from_slice(&w.to_le_bytes()); // biWidth
+    dib.extend_from_slice(&h.to_le_bytes()); // biHeight (positive = bottom-up)
+    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
+    dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+    dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

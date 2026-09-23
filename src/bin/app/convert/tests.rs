@@ -362,7 +362,7 @@ fn cv_magick_formats_matches_the_authoritative_extension_list() {
     let dialog_exts: std::collections::HashSet<&str> =
         CV_MAGICK_FORMATS.iter().map(|(_, ext)| *ext).collect();
     let authoritative: std::collections::HashSet<&str> =
-        sagethumbs2k_core::decode::magick_output_extensions()
+        st2k_codecs::decode::magick_output_extensions()
             .iter()
             .copied()
             .collect();

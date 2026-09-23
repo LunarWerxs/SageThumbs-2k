@@ -43,7 +43,7 @@ fn magick_limits_match_policy_xml() {
     // runtime — pin it here. Change a magick `-limit` and you must change
     // scripts/packaging/imagemagick-policy.xml to match (and vice-versa).
     let policy = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
         "/scripts/packaging/imagemagick-policy.xml"
     ))
     .expect("imagemagick-policy.xml must be readable");

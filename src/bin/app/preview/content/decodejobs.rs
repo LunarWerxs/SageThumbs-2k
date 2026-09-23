@@ -153,7 +153,7 @@ pub(in super::super) unsafe fn spawn_decode(hwnd: HWND, path: String, gen: u64) 
         // Shared, never copied: the decode moves it into its worker and the sharpen pass needs
         // the same buffer afterwards. Cloning it instead cost a full copy of the file per
         // preview (measured: ~120 MB on a 24 MP PNG, for nothing).
-        let bytes = sagethumbs2k_core::decode::read_preview_capped(&path)
+        let bytes = st2k_codecs::decode::read_preview_capped(&path)
             .ok()
             .map(std::sync::Arc::new);
         if animated_ext && try_post_animation(hwnd, gen, bytes.as_deref().map(Vec::as_slice), &ext)

@@ -102,7 +102,7 @@ pub(super) unsafe fn load_sync_pdf(
     // `--wait-ms` is what lets a shot wait for the scrolling view on purpose.
     super::super::pdfview::spawn_open(hwnd, path.to_string(), st.decode_gen.get());
     let pg = opts.pdf_page.unwrap_or(0);
-    let done = sagethumbs2k_core::pdf::render_page_counted_path(path, pg, 1600)
+    let done = st2k_codecs::pdf::render_page_counted_path(path, pg, 1600)
         .and_then(|(png, count)| image::load_from_memory(&png).ok().map(|img| (img, count)))
         .map(|(img, count)| {
             let rgba = img.to_rgba8();
@@ -126,7 +126,7 @@ pub(super) unsafe fn load_sync_pdf(
 /// `load_sync`'s animated-frame branch: decode the animation and show frame `fr`, falling back
 /// to the still-frame path if decoding fails or yields nothing (not actually animated).
 pub(super) unsafe fn load_sync_frame(st: &ViewerState, path: &str, fr: usize) {
-    let frames = sagethumbs2k_core::decode::read_preview_capped(path)
+    let frames = st2k_codecs::decode::read_preview_capped(path)
         .ok()
         .and_then(|b| super::super::anim::decode_animation(&b, &ext_of(path)));
     if let Some(frames) = frames {

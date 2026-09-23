@@ -22,7 +22,7 @@ pub(in super::super) unsafe fn spawn_md_img(hwnd: HWND, src: String, gen: u64) {
                 .map(|img| {
                     // Same display-cap policy as local markdown images (bounds the cached DIB).
                     // `reduce_to_fit` never enlarges, so it carries its own no-op case.
-                    let img = sagethumbs2k_core::decode::reduce_to_fit(img, 2048, 4096);
+                    let img = st2k_codecs::decode::reduce_to_fit(img, 2048, 4096);
                     rgba8_full(img)
                 });
         let payload: Box<(u64, String, Option<DecodedRgba>)> = Box::new((gen, src, decoded));
@@ -41,7 +41,7 @@ pub(in super::super) unsafe fn spawn_decode_pdf(hwnd: HWND, path: String, page: 
         if abandoned_logged(gen, "PDF page render") {
             return;
         }
-        let rendered = sagethumbs2k_core::pdf::render_page_counted_path(&path, page, 1600);
+        let rendered = st2k_codecs::pdf::render_page_counted_path(&path, page, 1600);
         let (rgba, count) = match rendered {
             Some((png, count)) => {
                 let d = image::load_from_memory(&png).ok().map(rgba8_full);
@@ -65,7 +65,7 @@ pub(super) fn read_and_decode(path: &str) -> Option<DecodedRgba> {
     if let Some(img) = streamed_decode(path) {
         return Some(img);
     }
-    let bytes = sagethumbs2k_core::decode::read_preview_capped(path).ok()?;
+    let bytes = st2k_codecs::decode::read_preview_capped(path).ok()?;
     decode_loaded(std::sync::Arc::new(bytes))
 }
 
@@ -78,7 +78,7 @@ pub(super) fn streamed_decode(path: &str) -> Option<DecodedRgba> {
     if is_photoshop(path) {
         return None;
     }
-    use sagethumbs2k_core::decode;
+    use st2k_codecs::decode;
     // A file past the input ceiling is read as large as the viewer would show it whole; the
     // streamed EXR/XCF decode keeps its own, smaller edge (its cost grows with the edge).
     let img = decode::decode_streamed_format(path, decode::EXR_PATH_EDGE)
@@ -139,7 +139,7 @@ pub(super) fn decode_preview_budgeted(
     let worker_ticket = ticket.clone();
     std::thread::spawn(move || {
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let out = sagethumbs2k_core::decode::decode_preview(&bytes).ok();
+        let out = st2k_codecs::decode::decode_preview(&bytes).ok();
         if inited {
             unsafe { CoUninitialize() };
         }
@@ -157,7 +157,7 @@ pub(super) fn decode_preview_budgeted(
 
 /// Does `path` start with Photoshop's `8BPS` signature? A peek at its head, never the file.
 fn is_photoshop(path: &str) -> bool {
-    sagethumbs2k_core::decode::file_head_is(path, |head| head.starts_with(b"8BPS"))
+    st2k_codecs::decode::file_head_is(path, |head| head.starts_with(b"8BPS"))
 }
 
 /// A Photoshop document's header (signature, channels, canvas size), for a document the
@@ -166,5 +166,5 @@ fn is_photoshop(path: &str) -> bool {
 /// is, which is all [`super::sharper_composite`] needs to go and read that composite by path
 /// (issue #46: such a document was left on the error card).
 pub(in super::super) fn photoshop_header(path: &str) -> Option<Vec<u8>> {
-    sagethumbs2k_core::decode::file_head(path, 64).filter(|head| head.starts_with(b"8BPS"))
+    st2k_codecs::decode::file_head(path, 64).filter(|head| head.starts_with(b"8BPS"))
 }

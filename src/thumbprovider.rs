@@ -7,7 +7,7 @@
 //!
 //! The stream → decodable-source cascade (video frame-grab tiers, seek-only
 //! audio album art, streamed archive covers, the head-preview prefix rescue,
-//! the bounded whole-file read) lives in [`crate::streamsrc`], shared with the
+//! the bounded whole-file read) lives in [`st2k_codecs::streamsrc`], shared with the
 //! preview-pane handler.
 
 use core::cell::RefCell;
@@ -26,9 +26,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows_implement::implement;
 
-use crate::decode;
-use crate::streamsrc::{self, StreamSource};
 use st2k_base::{dib, failmemo, safety, settings};
+use st2k_codecs::decode;
+use st2k_codecs::streamsrc::{self, StreamSource};
 
 #[implement(IThumbnailProvider, IInitializeWithStream)]
 pub struct ThumbnailProvider {

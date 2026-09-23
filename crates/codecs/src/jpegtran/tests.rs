@@ -311,7 +311,7 @@ fn color_transform_is_valid_and_close() {
 //     -define jpeg:restart-interval=2 tests/fixtures/jpegtran/restart_420.jpg
 #[test]
 fn handles_real_jpeg_with_restart_markers() {
-    let bytes = include_bytes!("../../tests/fixtures/jpegtran/restart_420.jpg");
+    let bytes = include_bytes!("../../../../tests/fixtures/jpegtran/restart_420.jpg");
     // 48×32 is MCU-aligned for 4:2:0, so it MUST be in scope for the lossless
     // transform (a None here would mean the restart-marker path is being skipped,
     // silently losing this coverage — assert it's actually exercised).

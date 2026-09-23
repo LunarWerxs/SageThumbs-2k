@@ -122,8 +122,8 @@ pub(super) fn fixture_video(name: &str) -> Vec<u8> {
 /// may lack it, so the decode tests skip rather than fail there.
 pub(super) fn mpeg4_part2_decoder_present() -> bool {
     use windows::Win32::Media::MediaFoundation::MFVideoFormat_MP4V;
-    sagethumbs2k_core::video::media_foundation_available()
-        && sagethumbs2k_core::vcodec::decoder_installed(MFVideoFormat_MP4V) == Some(true)
+    st2k_codecs::video::media_foundation_available()
+        && st2k_codecs::vcodec::decoder_installed(MFVideoFormat_MP4V) == Some(true)
 }
 
 /// ffmpeg's `testsrc` pattern is colourful: require real variety, the way the shell-surface

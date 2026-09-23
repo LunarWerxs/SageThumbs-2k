@@ -13,7 +13,7 @@ use super::*;
 /// other stdout-is-a-wire-format child verbs is NOT the shape here: this one IS
 /// listed, since it's a documented part of the Clipboard routing contract.
 pub fn clip_pixels(input: &str) -> Result<Vec<u8>, String> {
-    let bytes = crate::decode::read_full_fidelity_capped(input).map_err(|e| e.to_string())?;
+    let bytes = st2k_codecs::decode::read_full_fidelity_capped(input).map_err(|e| e.to_string())?;
     // By PATH, not bytes: a name-selected coder (SCT, ...) and a RAW that needs its named
     // coder both depend on the extension reaching the decoder (2026-09-19 audit F06).
     let img = decode::decode_full_for_path(&bytes, input)

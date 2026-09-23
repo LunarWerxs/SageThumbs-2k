@@ -59,8 +59,8 @@ const MAX_REMOTE_BYTES: usize = 4 * 1024 * 1024;
 
 /// The decode pipeline's own ceilings, shared so the banner's canvas probe and budget can
 /// never drift from the thumbnail path's.
-const CORE_MAX_DIM: u32 = sagethumbs2k_core::decode::limits::MAX_DIM;
-const CORE_MAX_ALLOC: u64 = sagethumbs2k_core::decode::limits::MAX_ALLOC;
+const CORE_MAX_DIM: u32 = st2k_codecs::decode::limits::MAX_DIM;
+const CORE_MAX_ALLOC: u64 = st2k_codecs::decode::limits::MAX_ALLOC;
 
 /// The banner's own, deliberately smaller multi-frame budget — the sponsor art is a small
 /// fixed-size control, not the general decode path, so it never needs the full budget above.
@@ -511,7 +511,7 @@ fn sponsor_image(url: &str, w: u32, h: u32) -> Option<SponsorImage> {
     let (frames, delay_ms) = if let Some((fr, d)) = decode_gif_frames_sized(&img_bytes, w, h) {
         (fr, d)
     } else {
-        let handle = sagethumbs2k_core::app_image::image_to_hbitmap_sized(&img_bytes, w, h)?;
+        let handle = st2k_codecs::app_image::image_to_hbitmap_sized(&img_bytes, w, h)?;
         (vec![handle], 0)
     };
     (!frames.is_empty()).then_some(SponsorImage { frames, delay_ms })
@@ -659,8 +659,7 @@ fn decode_gif_frames_sized(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<isize>, 
         let resized = image::DynamicImage::ImageRgba8(buf)
             .resize_exact(w, h, image::imageops::FilterType::Triangle)
             .to_rgba8();
-        let Some(hbmp) = sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, resized.as_raw())
-        else {
+        let Some(hbmp) = st2k_codecs::app_image::rgba_to_hbitmap(w, h, resized.as_raw()) else {
             handles.into_iter().for_each(free_hbitmap);
             return None;
         };

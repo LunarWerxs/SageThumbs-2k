@@ -112,6 +112,14 @@ def main():
                 if m:
                     for name in re.findall(r"`(\w+)`", m.group(1)):
                         fields.add((m.group(2), name))
+            elif code in ("E0364", "E0365") and (named := re.match(r"`(\w+)` is only public within", text)):
+                # No note points at the item: find its restricted-visibility definition.
+                for f in files:
+                    lines = f.read_text(encoding="utf-8").split("\n")
+                    for i, l in enumerate(lines):
+                        if re.match(rf"\s*pub\s*\([^)]*\)\s+(?:(?:const|async|unsafe)\s+)*"
+                                    rf"(?:fn|struct|enum|union|const|static|type|trait|mod)\s+{named.group(1)}\b", l):
+                            edits[str(f.relative_to(ROOT))].add(i)
             elif code in ("private_interfaces", "private_bounds", "E0364", "E0365"):
                 for ch in msg.get("children", []):
                     for sp in ch.get("spans", []):

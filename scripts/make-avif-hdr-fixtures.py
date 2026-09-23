@@ -1,4 +1,4 @@
-"""Twin AVIFs of ONE scene for the HDR test in src/decode/tests/colour.rs: the PQ / BT.2020
+"""Twin AVIFs of ONE scene for the HDR test in crates/codecs/src/decode/tests/colour.rs: the PQ / BT.2020
 10-bit picture issue #39 describes, and its sRGB / BT.709 control.
 
     python scripts/make-avif-hdr-fixtures.py tests/fixtures/avif

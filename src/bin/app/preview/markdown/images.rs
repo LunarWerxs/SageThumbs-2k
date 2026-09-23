@@ -307,10 +307,10 @@ fn local_src_path(src: &str, dir: Option<&Path>) -> Option<PathBuf> {
 /// display-capped DIB composited over `bg`. Shared by the local-file, remote-fetch, and
 /// notebook-attachment paths. `None` on any decode/alloc failure.
 pub(crate) unsafe fn decode_bytes_to_dib(bytes: &[u8], bg: u32) -> Option<RenderData> {
-    let img = sagethumbs2k_core::decode::decode_preview(bytes).ok()?;
+    let img = st2k_codecs::decode::decode_preview(bytes).ok()?;
     // Bound the cached DIB (README art displays ≤ content width; 2048 keeps HiDPI crisp).
     // `reduce_to_fit` never enlarges, so it carries its own no-op case.
-    let img = sagethumbs2k_core::decode::reduce_to_fit(img, 2048, 4096);
+    let img = st2k_codecs::decode::reduce_to_fit(img, 2048, 4096);
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
     let hbmp = crate::preview::content::make_dib(w, h, rgba.as_raw(), bg)?;

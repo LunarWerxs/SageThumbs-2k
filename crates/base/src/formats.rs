@@ -177,15 +177,15 @@ pub fn is_archive(ext: &str) -> bool {
 /// is missing - the consequence is always "this format keeps its default icon", not a crash.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OsCodec {
-    /// Video frames are grabbed via the OS Media Foundation codecs (`src/video.rs`); missing
+    /// Video frames are grabbed via the OS Media Foundation codecs (`crates/codecs/src/video.rs`); missing
     /// on Windows "N"/"KN" editions without the Media Feature Pack.
     MediaFoundation,
     /// JPEG XR / HD Photo (jxr/wdp/hdp/wmp) - one codec, decoded via WIC's built-in WMPhoto
-    /// codec (`src/decode/wic.rs`). No bundled decoder backs this up.
+    /// codec (`crates/codecs/src/decode/wic.rs`). No bundled decoder backs this up.
     WmPhoto,
     /// HEIC/HEIF and the AVC-coded sibling AVCI - decoded via the OS's HEIF WIC codec (the
     /// "HEIF Image Extensions" / "HEVC Video Extensions" Store package on a clean Windows
-    /// install). Confirmed from `src/decode/wic.rs`'s own module doc, which lists "HEIC/HEIF,
+    /// install). Confirmed from `crates/codecs/src/decode/wic.rs`'s own module doc, which lists "HEIC/HEIF,
     /// AVIF, camera RAW, JPEG 2000, JPEG XR" as the formats WIC (not a bundled crate) decodes;
     /// there is no in-process HEIF decoder anywhere in this tree, so a HEIC/HEIF file decodes
     /// only if that OS codec is present - exactly the same shape as the WMPhoto trio, just a

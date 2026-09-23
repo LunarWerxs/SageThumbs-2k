@@ -562,8 +562,7 @@ pub(crate) unsafe fn load_art(
         .and_then(|p| p.parent().map(|d| d.join(override_name)))
         .and_then(|f| std::fs::read(f).ok());
     let data = from_file.as_deref().unwrap_or(default_png);
-    sagethumbs2k_core::app_image::image_to_hbitmap_sized(data, w, h)
-        .map(|h| HBITMAP(h as *mut c_void))
+    st2k_codecs::app_image::image_to_hbitmap_sized(data, w, h).map(|h| HBITMAP(h as *mut c_void))
 }
 
 /// How many pid-suffixed names to try before giving up on the temp-icon fallback (mirrors

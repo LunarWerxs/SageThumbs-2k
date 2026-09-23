@@ -273,7 +273,10 @@ impl PropertyStore_Impl {
 
 /// Push the audio-tag properties (artist, album, title, track, genre, year, duration,
 /// bitrate) onto `out`; empty or non-positive tags contribute nothing.
-fn push_audio_props(out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>, tags: crate::strip::AudioTags) {
+fn push_audio_props(
+    out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>,
+    tags: st2k_codecs::strip::AudioTags,
+) {
     if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
         out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
     }
@@ -355,7 +358,7 @@ fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
 /// zone), or the displayed time would be shifted by the local UTC offset. With the conversion, the
 /// Details pane shows the original wall-clock — matching Windows' own photo property handler.
 fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
-    let (d, t) = crate::strip::split_exif_datetime(s)?;
+    let (d, t) = st2k_codecs::strip::split_exif_datetime(s)?;
     let local = exif_systemtime(&d, &t)?;
     if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
         return None; // a camera that never had its clock set writes 0000:00:00
@@ -384,7 +387,7 @@ fn exif_systemtime(d: &[&str], t: &[&str]) -> Option<SYSTEMTIME> {
     Some(local)
 }
 
-/// Run the header/metadata-only file probe ([`crate::strip::read_info_bounded`] + audio tags) on
+/// Run the header/metadata-only file probe ([`st2k_codecs::strip::read_info_bounded`] + audio tags) on
 /// a detached worker, returning only if it finishes within [`PROBE_BUDGET`], so the calling
 /// shell thread blocks for at most 250 ms. This deliberately does not initialize COM: the
 /// bounded image probe never invokes WIC, WinRT, ImageMagick, or a pixel decode.
@@ -393,7 +396,9 @@ fn exif_systemtime(d: &[&str], t: &[&str]) -> Option<SYSTEMTIME> {
 /// Built on [`safety::spawn_budgeted`] (shared with `previewhandler.rs`'s decode and `ocr.rs`'s
 /// recognizer) — see that function's doc for the ModuleRef-pin / slot-guard / spawn-failure
 /// contract this relies on.
-fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
+fn probe_budgeted(
+    path: String,
+) -> Option<(st2k_codecs::strip::ImageInfo, st2k_codecs::strip::AudioTags)> {
     // Acquired here (not inside the worker closure) and moved into `op` below, so
     // `spawn_budgeted`'s spawn-failure path drops it (and so releases the slot) exactly like a
     // normal worker exit would — see that function's doc.
@@ -403,14 +408,14 @@ fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip
         let _lease = lease;
         let is_audio = property_path_is_audio(&path);
         let tags = if is_audio {
-            crate::strip::read_audio_tags(&path)
+            st2k_codecs::strip::read_audio_tags(&path)
         } else {
-            crate::strip::AudioTags::default()
+            st2k_codecs::strip::AudioTags::default()
         };
         let info = if is_audio {
-            crate::strip::ImageInfo::default()
+            st2k_codecs::strip::ImageInfo::default()
         } else {
-            crate::strip::read_info_bounded(&path)
+            st2k_codecs::strip::read_info_bounded(&path)
         };
         (info, tags)
     })
@@ -535,14 +540,14 @@ mod tests {
                 // Mirrors probe_budgeted's worker body exactly, for a non-audio extension.
                 let is_audio = property_path_is_audio(&path);
                 let _tags = if is_audio {
-                    crate::strip::read_audio_tags(&path)
+                    st2k_codecs::strip::read_audio_tags(&path)
                 } else {
-                    crate::strip::AudioTags::default()
+                    st2k_codecs::strip::AudioTags::default()
                 };
                 let _info = if is_audio {
-                    crate::strip::ImageInfo::default()
+                    st2k_codecs::strip::ImageInfo::default()
                 } else {
-                    crate::strip::read_info_bounded(&path)
+                    st2k_codecs::strip::read_info_bounded(&path)
                 };
                 let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
                 let already_inited = hr == S_FALSE;

@@ -30,8 +30,7 @@ pub(super) unsafe fn lw_logo_hbitmap(w: u32, h: u32) -> Option<HBITMAP> {
         image::Rgba([color_r(base), color_g(base), color_b(base), 255]),
     );
     image::imageops::overlay(&mut out, &logo, 0, 0);
-    sagethumbs2k_core::app_image::rgba_to_hbitmap(w, h, out.as_raw())
-        .map(|h| HBITMAP(h as *mut c_void))
+    st2k_codecs::app_image::rgba_to_hbitmap(w, h, out.as_raw()).map(|h| HBITMAP(h as *mut c_void))
 }
 
 /// The GitHub mark at `px`², tinted `fg` and composited over `fill` (the pill face),
@@ -50,7 +49,7 @@ pub(super) unsafe fn github_icon_hbitmap(px: u32, fill: COLORREF, fg: COLORREF) 
         let mix = |dst: u8, on: u8| ((on as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
         *o = image::Rgba([mix(fr, gr), mix(fgc, gg), mix(fb, gb), 255]);
     }
-    sagethumbs2k_core::app_image::rgba_to_hbitmap(out.width(), out.height(), out.as_raw())
+    st2k_codecs::app_image::rgba_to_hbitmap(out.width(), out.height(), out.as_raw())
         .map(|h| HBITMAP(h as *mut c_void))
 }
 

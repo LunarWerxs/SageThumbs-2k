@@ -651,6 +651,6 @@ fn clamp_requested_size_bounds_to_max_dim_but_leaves_zero_alone() {
     assert_eq!(clamp_requested_size(500), 500);
     assert_eq!(
         clamp_requested_size(50_000_000),
-        crate::decode::limits::MAX_DIM
+        st2k_codecs::decode::limits::MAX_DIM
     );
 }

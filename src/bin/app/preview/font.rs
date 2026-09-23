@@ -39,7 +39,7 @@ impl Drop for TempFont {
 /// directory would have the rebuilt font bytes written straight THROUGH it into whatever it
 /// really points at. The name is predictable — the pid is public and the counter restarts at 0
 /// each process — so refusing an existing name is the actual guard here, not the name's
-/// obscurity. Mirrors `sagethumbs2k_core::decode::magick`'s `NamedTemp`, which solved the same
+/// obscurity. Mirrors `st2k_codecs::decode::magick`'s `NamedTemp`, which solved the same
 /// problem for its own coder staging; that struct is private to its crate/module so this is a
 /// second, matching implementation rather than a shared one.
 fn claim_temp_ttf(sfnt: &[u8]) -> Option<std::path::PathBuf> {
@@ -217,7 +217,7 @@ pub(super) unsafe fn render_specimen(
     // Bounded read: an unadorned `std::fs::read` had no ceiling at all, so a hostile
     // multi-GB file dropped on the preview would buffer wholesale before any font
     // parsing even started. Shares the same DoS budget every other by-path decode uses.
-    let bytes = sagethumbs2k_core::decode::read_capped(path).ok()?;
+    let bytes = st2k_codecs::decode::read_capped(path).ok()?;
     // A WOFF is an sfnt with deflated tables. Windows' loader only takes a PATH,
     // so the rebuilt font goes to a temp file that is deleted before we return.
     let unwrapped = super::woff::is_woff(&bytes).then(|| super::woff::to_sfnt(&bytes));

@@ -11,7 +11,7 @@ The scene: a grey ramp across the top half, six 0.6-scaled colour patches across
 linear light relative to a 203-nit diffuse white (so 1.0 = 203 nits and a correct render puts
 the ramp's top near sRGB white). `render_rows` returns it twice - once through PQ with BT.2020
 primaries, once through the sRGB transfer with BT.709 - which is exactly the twin-file shape
-`src/decode/tests/colour.rs` asserts on.
+`crates/codecs/src/decode/tests/colour.rs` asserts on.
 
 Import it as a sibling (`from hdr_scene import ...`); `sys.path[0]` is the running script's own
 directory, which is `scripts/`. The generators keep their own names and command lines, so
@@ -22,7 +22,7 @@ import struct
 
 W, H = 320, 200
 
-# BT.709 linear -> BT.2020 linear, the inverse of `primaries_to_bt709` in src/decode/cicp.rs.
+# BT.709 linear -> BT.2020 linear, the inverse of `primaries_to_bt709` in crates/codecs/src/decode/cicp.rs.
 M709_2020 = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.0880, 0.8956]]
 
 

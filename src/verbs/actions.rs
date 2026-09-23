@@ -101,8 +101,8 @@
 //! `resize_file` use — so the routed and in-process outputs match. (It used to pin
 //! level 6 here, so a PNG output diverged in byte size whenever the setting ≠ 6.)
 
-use crate::decode::read_full_fidelity_capped;
 use core::ffi::c_void;
+use st2k_codecs::decode::read_full_fidelity_capped;
 use std::iter::once;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
@@ -135,7 +135,7 @@ use super::fileops::{
     sort_by_date_taken, sort_by_dimensions,
 };
 use super::menu::{CompressSize, EmailSize, RenamePattern, Transform, VerbAction, WallpaperMode};
-use crate::decode;
+use st2k_codecs::decode;
 
 // Don't flash a console window when we spawn `st2k.exe` from the shell host
 // (`explorer.exe`/`dllhost.exe` are GUI processes — a child console would pop).
@@ -579,7 +579,7 @@ fn handle_combine_to_cbz(paths: &[String]) -> ActionReport {
 /// `VerbAction::Ocr`.
 fn handle_ocr(paths: &[String]) -> ActionReport {
     first_image_action(paths, "OCR", "couldn't read text from the image", |p| {
-        crate::ocr::ocr_to_clipboard(p)
+        st2k_codecs::ocr::ocr_to_clipboard(p)
     })
 }
 

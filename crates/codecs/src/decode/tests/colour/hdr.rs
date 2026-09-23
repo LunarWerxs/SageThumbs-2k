@@ -202,7 +202,7 @@ fn every_hdr_capable_format_has_a_twin_pair_under_test() {
 fn hdr_pq_tiff_with_an_icc_profile_is_tone_mapped_not_colour_managed() {
     use crate::decode::decode_full;
     // The profile itself is recognised as PQ / BT.2020 both by its tag and by its curve.
-    let icc = include_bytes!("../../../../tests/fixtures/tiff/bt2020-pq.icc");
+    let icc = include_bytes!("../../../../../../tests/fixtures/tiff/bt2020-pq.icc");
     let profile = moxcms::ColorProfile::new_from_slice(icc).expect("a real ICC profile");
     let cicp = icc_hdr_cicp(&profile).expect("the PQ profile is recognised as HDR");
     assert_eq!((cicp.primaries, cicp.transfer), (9, 16));

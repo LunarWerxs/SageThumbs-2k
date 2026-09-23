@@ -141,7 +141,7 @@ fn sort_by_dimensions_buckets_by_size() {
 
 #[test]
 fn expands_tag_template() {
-    use crate::strip::AudioTags;
+    use st2k_codecs::strip::AudioTags;
     let t = AudioTags {
         artist: Some("A".into()),
         album: Some("B".into()),

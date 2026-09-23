@@ -3,7 +3,7 @@
 //! encode-to-file path, and the per-file convert / transform / resize / email
 //! entry points the menu actions and the CLI dispatch to.
 
-use crate::decode::read_full_fidelity_capped;
+use st2k_codecs::decode::read_full_fidelity_capped;
 use std::{
     io::{Seek, Write},
     path::{Path, PathBuf},
@@ -15,7 +15,7 @@ use windows::Win32::Foundation::E_FAIL;
 
 use super::menu::{EmailSize, Transform};
 use super::outcome::OmitCause;
-use crate::decode;
+use st2k_codecs::decode;
 
 /// A conversion target: the image-crate format and the file extension to use.
 #[derive(Clone, Copy)]

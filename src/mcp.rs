@@ -644,7 +644,7 @@ fn clamp_requested_size(v: u64) -> u32 {
     if v == 0 {
         0
     } else {
-        v.min(crate::decode::limits::MAX_DIM)
+        v.min(st2k_codecs::decode::limits::MAX_DIM)
     }
 }
 

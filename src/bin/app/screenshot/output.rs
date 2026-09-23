@@ -15,7 +15,7 @@ pub(super) unsafe fn copy_dib_to_clipboard(top_down_bgra: &[u8], w: i32, h: i32)
     let row = (w * 4) as usize;
     let total = header + row * h as usize;
     let mut dib = Vec::with_capacity(total);
-    sagethumbs2k_core::push_cf_dib_header!(dib, w, h, header);
+    st2k_base::dib::push_cf_dib_header(&mut dib, w, h, header);
 
     // Emit rows bottom-up from the top-down source.
     for y in (0..h as usize).rev() {

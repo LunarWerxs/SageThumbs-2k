@@ -17,52 +17,14 @@
 // gate is reserved for the code that shares the shell's address space.
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
-pub mod app_image;
 mod badge;
-mod command;
-mod container;
-/// Windows code-page decoding (`MultiByteToWideChar`) for archive entry names and the app's
-/// text preview alike: one copy of the call.
-pub use container::decode_codepage;
-/// Archive entry listing for the Quick preview viewer (no extraction).
-pub use container::list_archive;
-// The read-only CFB reader, for the app EXE's Outlook-.msg preview (`preview::mailmsg`).
-// Hidden like `ocr`: an implementation detail shared across the workspace, not API.
-#[doc(hidden)]
-pub use container::ole;
-/// True document dimensions for containers whose extracted cover is only a small baked-in
-/// preview (PSD/PSB). The Quick preview uses it to decide whether the fast preview it just
-/// painted is worth replacing with the real composite — see `preview::content`.
-pub use container::real_dims;
-/// First index of `needle` in `hay` — the guarded byte search shared with the app EXE's mail
-/// preview (`preview::mailmsg`), hidden like `ole`: an internal helper, not API.
-#[doc(hidden)]
-pub use container::util::find;
 pub mod cli;
+mod command;
 mod contextmenu;
-pub mod decode;
 pub mod doctor;
 mod factory;
-// `pub` (hidden) because the `st2k` bin's `flv-frame` child verb reuses the FLV tag walk
-// (`flv::scan_flash_keyframe`) — one parser, so the parent's probe and the child's
-// extraction can never disagree about what counts as the first Flash-codec keyframe.
-#[doc(hidden)]
-pub mod flv;
 pub mod foldermenu;
-// Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.
-#[cfg(test)]
-mod fuzz;
-mod isobmff;
-mod jpegtran;
 pub mod mcp;
-mod mkv;
-mod mp4;
-pub mod mpeg12;
-// In-box WinRT OCR (`Windows.Media.Ocr`). `pub` so the companion `SageThumbs2K` app bin
-// can read text out of a screen capture it already holds in memory, `doc(hidden)` because
-// it isn't a stable public API — same arrangement as `parallel` below.
-#[doc(hidden)]
-pub mod ocr;
 // The transparency checkerboard, re-exported from the classic menu tile's painter so the app bin's
 // Quick preview draws the SAME backdrop, from the SAME `settings::preview_checker()` toggle. One
 // implementation, so the two surfaces cannot drift apart. `doc(hidden)` for the same reason as the
@@ -74,30 +36,17 @@ pub mod checker {
     /// the Explorer thumbnail bitmap. See [`st2k_base::checkerpx`].
     pub use st2k_base::checkerpx::compose_under;
 }
-pub mod pdf;
 pub mod prebuild;
 mod previewhandler;
 mod propstore;
 pub mod register;
-mod streamsrc;
-mod strip;
 mod thumbprovider;
 mod topdf;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
 #[doc(hidden)]
 pub mod typeoverlay;
 mod verbs;
-// `pub` only so the app EXE's preview player can ask `media_foundation_available()`
-// before touching the delay-loaded MF imports; the decode entry points stay internal.
-pub mod vcodec;
-pub mod video;
-// Hidden like `flv`: public only so the `st2k vp9-frame` child (a separate bin crate) and
-// its tests can reach the shared caps + keyframe extraction — not a stable API.
-#[doc(hidden)]
-pub mod vp9;
-mod vstream;
 
-pub use strip::read_info_verbose;
 pub use topdf::{combine_to_pdf, combine_to_pdf_paged};
 pub use verbs::{
     convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in,
@@ -109,6 +58,7 @@ pub use verbs::{
 
 use core::ffi::c_void;
 use st2k_base::{guids, host, safety};
+use st2k_codecs::{decode, ocr, video};
 use std::time::Duration;
 
 use windows::core::{Interface, GUID, HRESULT};
@@ -337,7 +287,7 @@ mod unload_guard_tests {
     fn wedged_host_exit_needs_every_condition() {
         use super::{should_exit_wedged_host, WedgedHostView, WEDGED_HOST_IDLE};
         use std::time::Duration;
-        let grace = crate::video::STRAND_GRACE;
+        let grace = st2k_codecs::video::STRAND_GRACE;
         let ok = || WedgedHostView {
             refs: 2,
             stranded: 2,

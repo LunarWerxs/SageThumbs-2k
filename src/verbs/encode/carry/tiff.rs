@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::container::util::{tiff_u16, tiff_u32};
+use st2k_codecs::container::util::{tiff_u16, tiff_u32};
 
 /// TIFF tags with a home of their own in [`Carried`]: the XMP packet, the IPTC record
 /// and the ICC profile.

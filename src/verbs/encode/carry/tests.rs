@@ -128,7 +128,7 @@ fn ifd1_is_unlinked_but_not_truncated_when_ifd0_data_follows_it() {
 /// XMP `mime` item is the packet itself. Both must come out, orientation reset.
 #[test]
 fn reads_exif_and_xmp_items_from_a_heic() {
-    use crate::isobmff::testutil::synth;
+    use st2k_codecs::isobmff::testutil::synth;
     let mut exif_item = 0u32.to_be_bytes().to_vec();
     exif_item.extend_from_slice(&tiff_with_orientation(6));
     let xmp_item = b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF/></x:xmpmeta>";
@@ -190,7 +190,7 @@ fn convert_carries_exif_and_neutralises_orientation() {
     )
     .unwrap();
 
-    let info = crate::strip::read_info(out.to_str().unwrap());
+    let info = st2k_codecs::strip::read_info(out.to_str().unwrap());
     assert_eq!(
         info.make.as_deref(),
         Some("SageT"),
@@ -546,7 +546,7 @@ fn magick_branch_grafts_carried_metadata_onto_the_intermediate_png() {
     // End-to-end: the real convert_file magick branch must still produce a
     // valid AVIF once the carry step is wired in (skipped, with a printed
     // reason, when ImageMagick is not installed).
-    if !crate::decode::magick_available() {
+    if !st2k_codecs::decode::magick_available() {
         eprintln!(
             "SKIPPED magick_branch_grafts_carried_metadata_onto_the_intermediate_png \
              (end-to-end half): no ImageMagick"

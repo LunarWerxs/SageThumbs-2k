@@ -4,7 +4,7 @@
     python scripts/make-wic-probes.py --verify   # decode them and check they still say what
                                                  # `decode/wicprobe.rs` expects (no rewrite)
 
-These are the files `src/decode/wicprobe.rs` compiles into the binary to measure what
+These are the files `crates/codecs/src/decode/wicprobe.rs` compiles into the binary to measure what
 Microsoft's AV1 WIC codec does with colour on the machine it is running on. See that module for
 why a measured answer replaced a hand-written table (issue #9, twice).
 
@@ -43,14 +43,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "assets", "wicprobe")
 S = 16
 
-# Must match EXPECT_COLOUR / EXPECT_MONO in src/decode/wicprobe.rs.
+# Must match EXPECT_COLOUR / EXPECT_MONO in crates/codecs/src/decode/wicprobe.rs.
 COLOUR = [(255, 0, 0), (0, 255, 0), (128, 128, 128), (222, 178, 145)]
 MONO = [32, 96, 160, 224]
 
 # The PQ probe's patches, in LINEAR light relative to a 203-nit diffuse white, BT.709
 # primaries: the same red, green and skin as COLOUR, with the grey at half of white so the
 # tone map has a curve to be wrong about. The file carries them PQ-encoded in BT.2020 (see
-# `pq_chart`); what the Rust side expects back is EXPECT_PQ in src/decode/wicprobe.rs, which
+# `pq_chart`); what the Rust side expects back is EXPECT_PQ in crates/codecs/src/decode/wicprobe.rs, which
 # `--verify` derives and prints so the two can be compared by eye.
 PQ_LINEAR = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.5, 0.5, 0.5), None]  # None: skin, from COLOUR
 
@@ -68,7 +68,7 @@ CASES = [
 
 # The BT.709 -> BT.2020 matrix and the three transfer functions are `hdr_scene.py`'s, shared
 # with the JPEG XL and HEIC twin generators so a probe and a fixture cannot drift apart on what
-# PQ or sRGB mean. M709_2020 is the inverse of `primaries_to_bt709` in src/decode/cicp.rs.
+# PQ or sRGB mean. M709_2020 is the inverse of `primaries_to_bt709` in crates/codecs/src/decode/cicp.rs.
 
 
 def pq_linear_patches():
@@ -86,7 +86,7 @@ def pq_signal_patches():
 
 
 def tone_mapped_patches():
-    """What `tone_map_float` in src/decode/color.rs makes of each PQ patch: Reinhard, then the
+    """What `tone_map_float` in crates/codecs/src/decode/color.rs makes of each PQ patch: Reinhard, then the
     sRGB curve, then `(x * 255 + 0.5)` floored - the same arithmetic, so EXPECT_PQ is derived
     here rather than typed from a calculator."""
     def tone(c):
@@ -190,7 +190,7 @@ def verify(tmp):
             ok = False
         print(f"  {flag} {stem:<20} dav1d worst error {worst:5.1f}  "
               f"{os.path.getsize(p):>4} bytes")
-    print("  EXPECT_PQ in src/decode/wicprobe.rs must read:",
+    print("  EXPECT_PQ in crates/codecs/src/decode/wicprobe.rs must read:",
           [list(p) for p in tone_mapped_patches()])
     print("probes verified" if ok else "PROBES FAILED VERIFICATION")
     return 0 if ok else 1

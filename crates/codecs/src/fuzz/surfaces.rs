@@ -128,19 +128,19 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         // one tier, all tiny, all real.
         (
             "jxl-jpeg420",
-            include_bytes!("../../tests/fixtures/jxl/jpeg420_transcode.jxl").to_vec(),
+            include_bytes!("../../../../tests/fixtures/jxl/jpeg420_transcode.jxl").to_vec(),
         ),
         (
             "jxl-jpeg422",
-            include_bytes!("../../tests/fixtures/jxl/jpeg422_transcode.jxl").to_vec(),
+            include_bytes!("../../../../tests/fixtures/jxl/jpeg422_transcode.jxl").to_vec(),
         ),
         (
             "jxl-modular-icc",
-            include_bytes!("../../tests/fixtures/jxl/adobergb_modular.jxl").to_vec(),
+            include_bytes!("../../../../tests/fixtures/jxl/adobergb_modular.jxl").to_vec(),
         ),
         (
             "jxl-hdr-pq",
-            include_bytes!("../../tests/fixtures/jxl/scene-pq2020.jxl").to_vec(),
+            include_bytes!("../../../../tests/fixtures/jxl/scene-pq2020.jxl").to_vec(),
         ),
         // The MPEG-1/2 shapes `mpeg12` walks: a bare MPEG-2 and MPEG-1 elementary stream (two
         // GOPs, an I and a P picture, extensions), the MPEG-1 SYSTEM wrapping (MPEG-1 pack +
@@ -284,7 +284,7 @@ pub(super) fn every_new_surface_seed_reaches_its_parser() {
         ("jxl-hdr-pq", "scene-pq2020.jxl"),
     ] {
         let bytes = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
                 .join("tests")
                 .join("fixtures")
                 .join("jxl")

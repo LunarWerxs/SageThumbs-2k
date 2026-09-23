@@ -36,17 +36,17 @@ fn h264_444_is_refused_before_media_foundation_is_asked_and_420_still_decodes() 
     // Phase 1: the 4:4:4 clip. No frame, no MF grab, and quickly - the old behaviour on a
     // declining decoder was one 8 s worker timeout per tier.
     let bytes = fixture("h264-high444-320x240.mp4");
-    let reason = core::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(&bytes))
+    let reason = st2k_codecs::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(&bytes))
         .expect("the fixture must be identified as High 4:4:4 Predictive");
     assert!(reason.contains("244"), "{reason}");
 
-    let grabs_before = core::video::mf_grab_attempts();
+    let grabs_before = st2k_codecs::video::mf_grab_attempts();
     let started = Instant::now();
     let probed = core::probe_cover(&bytes);
     let took = started.elapsed();
     assert_eq!(probed, None, "a 4:4:4 clip must yield no frame");
     assert_eq!(
-        core::video::mf_grab_attempts(),
+        st2k_codecs::video::mf_grab_attempts(),
         grabs_before,
         "Media Foundation must not have been asked at all (issue #35)"
     );
@@ -56,23 +56,23 @@ fn h264_444_is_refused_before_media_foundation_is_asked_and_420_still_decodes() 
     // OS actually has the decoder (a Server image may not), and it must go THROUGH MF.
     let bytes = fixture("h264-high-320x240.mp4");
     assert_eq!(
-        core::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(&bytes)),
+        st2k_codecs::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(&bytes)),
         None,
         "High 8-bit 4:2:0 must not be refused"
     );
-    let decoder_present = core::video::media_foundation_available()
-        && core::vcodec::identify(&mut std::io::Cursor::new(&bytes))
+    let decoder_present = st2k_codecs::video::media_foundation_available()
+        && st2k_codecs::vcodec::identify(&mut std::io::Cursor::new(&bytes))
             .and_then(|info| info.subtype)
-            .and_then(core::vcodec::decoder_installed)
+            .and_then(st2k_codecs::vcodec::decoder_installed)
             == Some(true);
     if !decoder_present {
         eprintln!("no H.264 decoder on this Windows - the decode half is skipped");
         return;
     }
-    let grabs_before = core::video::mf_grab_attempts();
+    let grabs_before = st2k_codecs::video::mf_grab_attempts();
     let dims = core::probe_cover(&bytes);
     assert!(
-        core::video::mf_grab_attempts() > grabs_before,
+        st2k_codecs::video::mf_grab_attempts() > grabs_before,
         "the 4:2:0 clip must have reached Media Foundation"
     );
     assert_eq!(

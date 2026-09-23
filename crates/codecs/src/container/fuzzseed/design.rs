@@ -88,7 +88,7 @@ pub(super) fn synthetic_dwg() -> Vec<u8> {
 /// the file's own bytes, so a crafted file can turn the tree into a cycle — the exact thing a
 /// hand-assembled fixture would be least likely to model.
 pub(super) fn synthetic_clip() -> Vec<u8> {
-    let db: &[u8] = include_bytes!("../../../tests/fixtures/sqlite/sample.db");
+    let db: &[u8] = include_bytes!("../../../../../tests/fixtures/sqlite/sample.db");
     let mut out = b"CSFCHUNK".to_vec();
     out.extend_from_slice(&[0u8; 8]);
     out.extend_from_slice(&24u64.to_be_bytes()); // pointer to the first chunk

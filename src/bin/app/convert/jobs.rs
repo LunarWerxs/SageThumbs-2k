@@ -31,7 +31,7 @@ pub(super) unsafe fn read_resize_jobs(hwnd: HWND) -> Vec<(Resize, Option<String>
 /// (which only floors with `.max(1)`, no ceiling) and attempts a multi-GB
 /// allocation; release runs panic="abort", so an allocation failure aborts the
 /// WHOLE process mid-batch.
-pub(super) const MAX_TYPED_RESIZE_DIM: u32 = sagethumbs2k_core::decode::limits::MAX_DIM;
+pub(super) const MAX_TYPED_RESIZE_DIM: u32 = st2k_codecs::decode::limits::MAX_DIM;
 
 /// Parse one typed resize-dimension field, clamped to [`MAX_TYPED_RESIZE_DIM`].
 /// Pulled out of `read_resize` as a plain function (no `HWND`) so the clamp is

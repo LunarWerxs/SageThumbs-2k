@@ -201,8 +201,8 @@ fn shown_image_rgba(
     if let Some(shown) = super::window::navigated_shown_image_rgba(path, pdf_page, anim_frame) {
         return Some(shown);
     }
-    let bytes = sagethumbs2k_core::decode::read_full_fidelity(path).ok()?;
-    let img = sagethumbs2k_core::decode::decode_full(&bytes).ok()?;
+    let bytes = st2k_codecs::decode::read_full_fidelity(path).ok()?;
+    let img = st2k_codecs::decode::decode_full(&bytes).ok()?;
     let rgba = img.to_rgba8();
     Some((rgba.width() as i32, rgba.height() as i32, rgba.into_raw()))
 }

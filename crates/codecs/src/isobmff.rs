@@ -325,16 +325,20 @@ pub fn color_profile(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// Synthetic HEIC builders shared by this module's tests, `strip::isobmff`'s (which rewrites
 /// the items) and `verbs::encode::carry`'s (which reads them back out).
-#[cfg(test)]
-pub(crate) mod testutil {
-    pub(crate) fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+#[cfg(any(test, feature = "testkit"))]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test fixture builders: a fixture that cannot be built is a broken test"
+)]
+pub mod testutil {
+    pub fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
         v.extend_from_slice(kind);
         v.extend_from_slice(body);
         v
     }
 
-    pub(crate) fn infe(id: u16, kind: &[u8; 4], content_type: Option<&[u8]>) -> Vec<u8> {
+    pub fn infe(id: u16, kind: &[u8; 4], content_type: Option<&[u8]>) -> Vec<u8> {
         let mut b = vec![2u8, 0, 0, 0]; // version 2, flags
         b.extend_from_slice(&id.to_be_bytes());
         b.extend_from_slice(&0u16.to_be_bytes()); // protection index
@@ -354,7 +358,7 @@ pub(crate) mod testutil {
     /// iloc body's LENGTH does not depend on the offset values it holds, so a
     /// throwaway first pass gives the real payload base, and the second pass
     /// writes the true offsets into an identically-sized box.
-    pub(crate) fn synth(
+    pub fn synth(
         payloads: &[(u16, &[u8])],
         extra_infe: &[Vec<u8>],
     ) -> (Vec<u8>, Vec<(u16, usize)>) {

@@ -58,14 +58,14 @@ use super::*;
 const TOLERANCE: f32 = 4.0;
 
 /// The probe images: 32x32, four 16x16 flat patches, lossless 4:4:4.
-const P8_BT709: &[u8] = include_bytes!("../../assets/wicprobe/avif-8bit-bt709.avif");
-const P8_BT601: &[u8] = include_bytes!("../../assets/wicprobe/avif-8bit-bt601.avif");
-const P8_NOCOLR: &[u8] = include_bytes!("../../assets/wicprobe/avif-8bit-nocolr.avif");
-const P10_BT709: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt709.avif");
-const P10_BT601: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-bt601.avif");
-const P10_MONO: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-mono.avif");
-const P10_PQ2020: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-pq2020.avif");
-const P10_NOCOLR: &[u8] = include_bytes!("../../assets/wicprobe/avif-10bit-nocolr.avif");
+const P8_BT709: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-8bit-bt709.avif");
+const P8_BT601: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-8bit-bt601.avif");
+const P8_NOCOLR: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-8bit-nocolr.avif");
+const P10_BT709: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-10bit-bt709.avif");
+const P10_BT601: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-10bit-bt601.avif");
+const P10_MONO: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-10bit-mono.avif");
+const P10_PQ2020: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-10bit-pq2020.avif");
+const P10_NOCOLR: &[u8] = include_bytes!("../../../../assets/wicprobe/avif-10bit-nocolr.avif");
 
 /// What the four patches of a colour probe must come back as, in sRGB.
 ///

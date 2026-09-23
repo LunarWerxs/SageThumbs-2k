@@ -68,7 +68,10 @@ pub(super) const CLSID_STD_GLOBAL_INTERFACE_TABLE: GUID =
 /// The process-wide Global Interface Table (a COM singleton; creating it is a lookup).
 /// Shared with `command.rs`, which parks the modern menu's `IShellItemArray` in it so the
 /// selection walk happens on the verb's worker instead of the shell thread.
-pub(crate) unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
+///
+/// # Safety
+/// COM must be initialised on the calling thread.
+pub unsafe fn global_interface_table() -> Option<IGlobalInterfaceTable> {
     CoCreateInstance(
         &CLSID_STD_GLOBAL_INTERFACE_TABLE,
         None,
@@ -164,7 +167,7 @@ where
 /// the hand-off [`frame_from_block_stream`] uses, for any decoder that must read the shell's
 /// stream off the calling thread (the OS PDF rasterizer runs on a WinRT worker). On timeout the
 /// worker is left to finish and `None` comes back at once, with a log line naming `what`.
-pub(crate) fn with_stream_on_worker<T, F>(
+pub fn with_stream_on_worker<T, F>(
     shell: &IStream,
     timeout: Duration,
     what: &'static str,

@@ -17,7 +17,7 @@
 //!
 //! # Layout is known before anything is rasterized
 //!
-//! [`sagethumbs2k_core::pdf::PdfSession`] reports every page's size on open, without drawing
+//! [`st2k_codecs::pdf::PdfSession`] reports every page's size on open, without drawing
 //! any of them. That is what makes the scrollbar honest from the first frame: the document's
 //! full height is known immediately, so the thumb never resizes and the view never jumps as
 //! pages arrive. Pages rasterize lazily as they scroll into view, and a page still in flight
@@ -45,7 +45,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use sagethumbs2k_core::pdf::{PageSize, PdfSession};
+use st2k_codecs::pdf::{PageSize, PdfSession};
 
 use super::content::{self, RenderData};
 use super::window::{state, ContentKind, ViewerState, WM_APP_PDFTILE};

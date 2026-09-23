@@ -70,7 +70,7 @@ pub(super) unsafe fn on_app_load_resolved(hwnd: HWND, lparam: LPARAM) {
 
 /// `WM_APP_PDFDOC`: the opened PDF session for the continuous view landed.
 pub(super) unsafe fn on_app_pdfdoc(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let boxed = Box::from_raw(lparam.0 as *mut (u64, sagethumbs2k_core::pdf::PdfSession));
+    let boxed = Box::from_raw(lparam.0 as *mut (u64, st2k_codecs::pdf::PdfSession));
     let (gen, session) = *boxed;
     let st = &*state(hwnd);
     // A session for a file we have already navigated away from is dropped here,

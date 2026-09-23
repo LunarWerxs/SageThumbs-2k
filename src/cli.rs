@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::E_FAIL;
 
-use crate::{decode, ocr, strip, topdf, verbs};
+use crate::{topdf, verbs};
 use st2k_base::{formats, settings};
+use st2k_codecs::{decode, ocr, strip};
 
 mod actions;
 mod batch;

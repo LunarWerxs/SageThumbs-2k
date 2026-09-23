@@ -188,7 +188,7 @@ fn video_frame_thumbnail_comes_from_a_real_decoded_frame() {
         st2k_base::formats::capability("mp4").os_codec,
         Some(st2k_base::formats::OsCodec::MediaFoundation)
     );
-    if !sagethumbs2k_core::video::media_foundation_available() {
+    if !st2k_codecs::video::media_foundation_available() {
         eprintln!("skipping: Media Foundation absent on this machine");
         return;
     }

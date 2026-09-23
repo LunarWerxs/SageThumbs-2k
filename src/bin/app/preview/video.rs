@@ -115,7 +115,7 @@ pub(super) unsafe fn create(
     // mfplat is delay-loaded (see the build scripts): on a Windows edition without Media
     // Foundation, calling MFStartup would raise a structured exception under `panic = "abort"`.
     // No player here just means the file shows as a card instead of playing.
-    if !sagethumbs2k_core::video::media_foundation_available() {
+    if !st2k_codecs::video::media_foundation_available() {
         return None;
     }
     // CoCreateInstance(CLSID_MF_MEDIA_ENGINE_CLASS_FACTORY) below wants a COM-initialized
@@ -371,7 +371,7 @@ impl Drop for VideoPlayer {
 // ---- save the frame currently on screen (`Btn::SavePage` / Ctrl+S, extended to video) ----
 
 /// The current position as a fraction of duration, for
-/// `sagethumbs2k_core::video::frame_from_block_stream_file`'s `frac` seek argument. `0.0` —
+/// `st2k_codecs::video::frame_from_block_stream_file`'s `frac` seek argument. `0.0` —
 /// the clip's first frame — when the duration isn't known yet (metadata still loading) or is
 /// degenerate, rather than dividing by zero.
 pub(super) fn position_frac(current: f64, duration: f64) -> f64 {
@@ -415,7 +415,7 @@ pub(super) fn frame_save_filename(stem: &str, current: f64) -> String {
 /// avoid.
 pub(super) fn save_current_frame(path: String, frac: f64, dest: String) {
     std::thread::spawn(move || {
-        let ok = sagethumbs2k_core::video::frame_from_block_stream_file(&path, frac)
+        let ok = st2k_codecs::video::frame_from_block_stream_file(&path, frac)
             .and_then(|img| img.save(&dest).ok())
             .is_some();
         if !ok {

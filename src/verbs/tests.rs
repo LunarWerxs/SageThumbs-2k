@@ -525,7 +525,7 @@ fn converts_to_native_long_tail_formats_with_correct_signatures() {
 #[test]
 #[ignore = "needs ImageMagick (bundled on a full install, or on PATH); run with --ignored"]
 fn converts_psd_via_magick() {
-    if !crate::decode::magick_available() {
+    if !st2k_codecs::decode::magick_available() {
         return;
     }
     let dir = std::env::temp_dir().join(format!("st2k_magenc_{}", std::process::id()));
@@ -603,7 +603,7 @@ fn atomic_write_replaces_an_existing_destination_without_temp_debris() {
 
 #[test]
 fn tag_rename_base_formats() {
-    use crate::strip::AudioTags;
+    use st2k_codecs::strip::AudioTags;
     let full = AudioTags {
         artist: Some("Daft Punk".into()),
         album: Some("Discovery".into()),
@@ -656,7 +656,7 @@ fn read_audio_tags_roundtrips_via_lofty() {
     tag.set_title("The Song".to_string());
     tag.save_to_path(&wav, WriteOptions::default()).unwrap();
 
-    let t = crate::strip::read_audio_tags(wav.to_str().unwrap());
+    let t = st2k_codecs::strip::read_audio_tags(wav.to_str().unwrap());
     assert_eq!(t.artist.as_deref(), Some("The Artist"));
     assert_eq!(t.title.as_deref(), Some("The Song"));
     let _ = std::fs::remove_dir_all(&dir);

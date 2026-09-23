@@ -1,5 +1,5 @@
 //! The `st2k mpeg-frame` decode core: one MPEG-1/2 intra-picture unit → PNG. The CHILD side
-//! of `sagethumbs2k_core::mpeg12::mpeg_frame` (see [`super`] for the shared containment
+//! of `st2k_codecs::mpeg12::mpeg_frame` (see [`super`] for the shared containment
 //! story).
 //!
 //! The parent already did the container work — `mpeg12::intra_slice_bytes` demuxed the
@@ -25,8 +25,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{decode_video_sequence, PictureCodingType};
-use sagethumbs2k_core::flv::Bits;
-use sagethumbs2k_core::mpeg12::MPEG_MAX_DIM;
+use st2k_codecs::flv::Bits;
+use st2k_codecs::mpeg12::MPEG_MAX_DIM;
 
 // `matrix_coefficients` (Table 6-9 / ITU-T H.273) values this module branches on.
 const MC_BT709: u8 = 1;
@@ -154,7 +154,7 @@ fn find_start_code(es: &[u8], from: usize, want: impl Fn(u8) -> bool) -> Option<
 /// `sequence_extension`'s two high bits each (§6.2.2.3) when one follows, and the optional
 /// `sequence_display_extension`'s colour description (§6.2.2.4).
 ///
-/// Bit reads go through `sagethumbs2k_core::flv::Bits` — the same MSB-first, bounds-checked
+/// Bit reads go through `st2k_codecs::flv::Bits` — the same MSB-first, bounds-checked
 /// reader the SPS and VP9 header parsers use — rather than a private duplicate.
 fn parse_sequence_layer(unit: &[u8]) -> Result<SeqHeader, String> {
     let seq = find_start_code(unit, 0, |c| c == 0xB3).ok_or("no sequence header")?;
@@ -379,7 +379,7 @@ mod tests {
                 .join(name);
             let bytes =
                 std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let unit = sagethumbs2k_core::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
+            let unit = st2k_codecs::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
                 .unwrap_or_else(|| panic!("{name}: no intra unit"));
             let png = frame_png(&unit).unwrap_or_else(|e| panic!("{name}: {e}"));
             let img = image::load_from_memory(&png).expect("the child must answer with a PNG");
@@ -421,7 +421,7 @@ mod tests {
             eprintln!("a_field_coded_stream_is_refused_by_the_decoder_upstream: no corpus");
             return;
         };
-        let unit = sagethumbs2k_core::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
+        let unit = st2k_codecs::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
             .expect("the demux still has to produce the field pair");
         let pictures = (0..unit.len().saturating_sub(4))
             .filter(|&i| unit[i..i + 4] == [0x00, 0x00, 0x01, 0x00])
@@ -471,7 +471,7 @@ mod tests {
                 eprintln!("corpus_mpeg_streams_decode: no {name} — skipping");
                 continue;
             };
-            let unit = sagethumbs2k_core::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
+            let unit = st2k_codecs::mpeg12::intra_slice_bytes(&mut Cursor::new(&bytes), 0.30)
                 .unwrap_or_else(|| panic!("{name}: no intra unit"));
             let png = frame_png(&unit).unwrap_or_else(|e| panic!("{name}: {e}"));
             let img = image::load_from_memory(&png).expect("child output should be a valid PNG");

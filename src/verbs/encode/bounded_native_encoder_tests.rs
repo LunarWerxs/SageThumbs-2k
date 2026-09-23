@@ -752,7 +752,7 @@ fn transform_file_pixel_fallback_carries_exif_through_rotation() {
     std::fs::write(&input, png_with_exif(12, 8, &tiff_with_make())).unwrap();
 
     let edited = transform_file(input.to_str().unwrap(), Transform::Right90).unwrap();
-    let info = crate::strip::read_info(edited.to_str().unwrap());
+    let info = st2k_codecs::strip::read_info(edited.to_str().unwrap());
     assert_eq!(
         info.make.as_deref(),
         Some("SageT"),

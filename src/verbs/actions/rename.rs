@@ -92,7 +92,7 @@ pub(crate) fn rename_one(path: &str, pattern: RenamePattern) -> Result<bool> {
 fn rename_base(path: &str, pattern: RenamePattern) -> Option<String> {
     match pattern {
         RenamePattern::DateTaken | RenamePattern::CameraDate => {
-            let meta = crate::strip::read_capture(path);
+            let meta = st2k_codecs::strip::read_capture(path);
             let time = meta.time?;
             Some(match pattern {
                 RenamePattern::CameraDate => match meta.camera {
@@ -103,7 +103,7 @@ fn rename_base(path: &str, pattern: RenamePattern) -> Option<String> {
             })
         }
         RenamePattern::ArtistTitle | RenamePattern::TrackTitle => {
-            tag_base(pattern, &crate::strip::read_audio_tags(path))
+            tag_base(pattern, &st2k_codecs::strip::read_audio_tags(path))
         }
     }
 }
@@ -111,7 +111,10 @@ fn rename_base(path: &str, pattern: RenamePattern) -> Option<String> {
 /// Format an audio-tag rename base. A title is required (it's the anchor); the
 /// artist / track prefix is added when present. Pure, so it's unit-testable
 /// without a real tagged file.
-pub(crate) fn tag_base(pattern: RenamePattern, t: &crate::strip::AudioTags) -> Option<String> {
+pub(crate) fn tag_base(
+    pattern: RenamePattern,
+    t: &st2k_codecs::strip::AudioTags,
+) -> Option<String> {
     let title = t.title.clone()?;
     Some(match pattern {
         RenamePattern::ArtistTitle => match &t.artist {
@@ -329,7 +332,7 @@ fn pattern_modified_date(path: &str) -> Option<String> {
 /// `{date}`'s value for `path`: the same capture date [`RenamePattern::DateTaken`]
 /// uses when present, else the file's modified date.
 fn pattern_date(path: &str) -> Option<String> {
-    if let Some(t) = crate::strip::read_capture(path).time {
+    if let Some(t) = st2k_codecs::strip::read_capture(path).time {
         if let Some((date, _)) = t.split_once(' ') {
             return Some(date.to_string());
         }

@@ -3,7 +3,7 @@
 //! dependencies; the output was verified to load in the OS `Windows.Data.Pdf`
 //! engine (the same one our thumbnailer uses).
 
-use crate::decode::read_full_fidelity_capped;
+use st2k_codecs::decode::read_full_fidelity_capped;
 use std::io::Write;
 use std::path::Path;
 
@@ -12,11 +12,11 @@ use image::{DynamicImage, RgbImage};
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
-use crate::decode;
 use crate::verbs::{
     flatten_onto_white, partition, refusal, write_atomic, Combined, OmitCause, Omitted, OnOmit,
 };
 use st2k_base::settings::PdfPage;
+use st2k_codecs::decode;
 
 /// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
 /// `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view pixel is
@@ -197,7 +197,7 @@ pub(crate) fn file_name_key(p: &str) -> Vec<u16> {
 /// which output format you picked.
 fn natural_sort_paths(paths: &[String]) -> Vec<String> {
     let mut keyed: Vec<(Vec<u16>, &String)> = paths.iter().map(|p| (file_name_key(p), p)).collect();
-    keyed.sort_by(|a, b| crate::container::select::cmp_logical_keys(&a.0, &b.0));
+    keyed.sort_by(|a, b| st2k_codecs::container::select::cmp_logical_keys(&a.0, &b.0));
     keyed.into_iter().map(|(_, p)| p.clone()).collect()
 }
 

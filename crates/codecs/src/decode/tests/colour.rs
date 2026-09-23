@@ -635,8 +635,9 @@ fn a_colr_less_avif_takes_its_hdr_signal_from_the_sequence_header() {
     use crate::decode::avifmf::primary_av1_payload;
     use crate::decode::color::{av1_obus_color_config, avif_wic_class_of, isobmff_hdr_cicp};
     use crate::decode::wicprobe::WicClass;
-    const P10_NOCOLR: &[u8] = include_bytes!("../../../assets/wicprobe/avif-10bit-nocolr.avif");
-    const P8_NOCOLR: &[u8] = include_bytes!("../../../assets/wicprobe/avif-8bit-nocolr.avif");
+    const P10_NOCOLR: &[u8] =
+        include_bytes!("../../../../../assets/wicprobe/avif-10bit-nocolr.avif");
+    const P8_NOCOLR: &[u8] = include_bytes!("../../../../../assets/wicprobe/avif-8bit-nocolr.avif");
 
     // A reduced still-picture sequence header, profile 1 (4:4:4), 32x32, 10-bit, with
     // color_description_present = 1 naming BT.2020 / PQ / BT.2020nc, full range.

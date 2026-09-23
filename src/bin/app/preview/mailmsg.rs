@@ -16,8 +16,8 @@
 
 use super::content::read_capped;
 use super::docconv::md_cell;
-use sagethumbs2k_core::find;
-use sagethumbs2k_core::ole;
+use st2k_codecs::container::ole;
+use st2k_codecs::container::util::find;
 
 /// Extensions this module answers for.
 pub(super) fn is_mail_ext(ext: &str) -> bool {

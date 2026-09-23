@@ -672,7 +672,7 @@ fn transparent_psd_falls_back_to_the_whole_file() {
 /// MaxSize instead of falling into the old cap-bypassing CB7 rescue.
 #[test]
 fn nameless_oversized_7z_is_not_streamed_past_max_size() {
-    const ARCHIVE: &[u8] = include_bytes!("../../tests/fixtures/sevenz/solid_order.7z");
+    const ARCHIVE: &[u8] = include_bytes!("../../../../tests/fixtures/sevenz/solid_order.7z");
     let path = std::env::temp_dir().join(format!("st2k_generic_cap_{}.7z", std::process::id()));
     std::fs::write(&path, ARCHIVE).expect("write fixture");
     let wide: Vec<u16> = path

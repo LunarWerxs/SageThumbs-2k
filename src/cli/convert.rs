@@ -144,15 +144,17 @@ fn archive_covers(input: &str) -> Option<Vec<Vec<u8>>> {
     let mut head = [0u8; 8];
     f.read_exact(&mut head).ok()?;
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0)).ok()?;
-    let prefs = crate::container::select::CoverPrefs::from_settings();
+    let prefs = st2k_codecs::container::select::CoverPrefs::from_settings();
     let size = f.metadata().ok()?.len();
-    if crate::container::archive_needs_buffer(&head) && size <= decode::limits::MAX_INPUT_BYTES {
+    if st2k_codecs::container::archive_needs_buffer(&head)
+        && size <= decode::limits::MAX_INPUT_BYTES
+    {
         // RAR buffers whole inside the ceiling (`rars` accepts no reader), the same bounded
         // read as the normal path; past it, the seek path walks its block headers.
         let bytes = decode::read_preview_capped(input).ok()?;
-        crate::container::archive_covers(&bytes, want, &prefs)
+        st2k_codecs::container::archive_covers(&bytes, want, &prefs)
     } else {
-        crate::container::archive_covers_seek(&mut f, &head, want, &prefs)
+        st2k_codecs::container::archive_covers_seek(&mut f, &head, want, &prefs)
     }
 }
 

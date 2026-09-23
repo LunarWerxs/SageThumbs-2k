@@ -2,7 +2,7 @@
 """Write real GIMP XCF v011 files at any canvas size and layer count.
 
 WHY THIS EXISTS. The corpus had exactly two `.xcf` samples, 1.8 KB and 206 KB, both a
-handful of layers. That is the whole of what `src/container/xcf.rs` was ever tested
+handful of layers. That is the whole of what `crates/codecs/src/container/xcf.rs` was ever tested
 against, and it is why a user could report on 2026-08-17 that "xcf don't work anymore
 with new versions for big files" and there was nothing in the repo able to reproduce or
 refute it. Authoring a big layered `.xcf` by hand means installing GIMP and painting;

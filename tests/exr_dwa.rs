@@ -8,7 +8,7 @@
 use std::io::Cursor;
 
 use exr::prelude::{pixel_vec::PixelVec, *};
-use sagethumbs2k_core::decode;
+use st2k_codecs::decode;
 
 fn dwa_image(compression: Compression) -> Vec<u8> {
     let pixels = vec![

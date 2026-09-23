@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR,
 use super::actions::is_image;
 use super::encode::{reserve, write_atomic, OutSlot};
 use super::outcome::{Combined, OmitCause, Omitted, OnOmit};
-use crate::decode::read_full_fidelity_capped;
+use st2k_codecs::decode::read_full_fidelity_capped;
 
 /// Windows reserved device names — invalid as a full component AND as the part before
 /// the first `.` (`CON.txt` is exactly as blocked as bare `CON`), case-insensitively.
@@ -99,7 +99,7 @@ fn page_dims_from_head(path: &str) -> Option<(u32, u32)> {
         .with_guessed_format()
         .ok()
         .and_then(|r| r.into_dimensions().ok())
-        .or_else(|| crate::container::real_dims(&head))
+        .or_else(|| st2k_codecs::container::real_dims(&head))
 }
 
 /// Build the `ComicInfo.xml` sidecar for a CBZ.
@@ -431,7 +431,7 @@ pub(crate) fn dims(path: &str) -> Option<(u32, u32)> {
     // Container header probe (PSD canvas size) first, falling back to the full-fidelity
     // decode (may spawn ImageMagick) — the same chain `strip::read_info_impl` uses, shared
     // via `real_or_decoded_dims` rather than hand-copied here.
-    crate::container::real_or_decoded_dims(&bytes)
+    st2k_codecs::container::real_or_decoded_dims(&bytes)
 }
 
 /// Whether an already-performed attempt to `create_dir` means THIS caller now owns the
@@ -533,10 +533,10 @@ fn move_into_buckets(images: &[&String], buckets: Vec<Option<String>>) -> (usize
 
 /// The `YYYY-MM-DD` folder name for `path`'s EXIF capture date, or `None` when the
 /// file has none. Shares the exact date source `RenamePattern::DateTaken` uses
-/// (`crate::strip::read_capture`) rather than re-parsing EXIF here — that field is
+/// (`st2k_codecs::strip::read_capture`) rather than re-parsing EXIF here — that field is
 /// already formatted `"YYYY-MM-DD HH.MM.SS"`, so this just takes the date half.
 fn date_taken_folder_name(path: &str) -> Option<String> {
-    let time = crate::strip::read_capture(path).time?;
+    let time = st2k_codecs::strip::read_capture(path).time?;
     time.split_once(' ').map(|(date, _)| date.to_string())
 }
 
@@ -553,7 +553,7 @@ pub fn sort_by_date_taken(paths: &[String]) -> (usize, usize) {
 /// `$album`, `$title`, `$track` (zero-padded). A missing tag becomes `missing`.
 pub(crate) fn expand_template(
     template: &str,
-    tags: &crate::strip::AudioTags,
+    tags: &st2k_codecs::strip::AudioTags,
     missing: &str,
 ) -> String {
     let or = |o: &Option<String>| o.clone().unwrap_or_else(|| missing.to_string());
@@ -627,7 +627,7 @@ pub fn tags_to_folders(
     let mut touched = false;
     let mut moved_from: Vec<PathBuf> = Vec::new();
     for p in files {
-        let tags = crate::strip::read_audio_tags(p);
+        let tags = st2k_codecs::strip::read_audio_tags(p);
         let Some(rel) = template_relpath(&expand_template(template, &tags, missing)) else {
             skipped += 1;
             continue;

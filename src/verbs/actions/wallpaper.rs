@@ -143,8 +143,9 @@ pub(super) fn apply_lock_screen(path: &Path) -> Result<()> {
     use windows::System::UserProfile::LockScreen;
 
     let hpath = HSTRING::from(path.to_string_lossy().as_ref());
-    let file: StorageFile = crate::pdf::block_op(&StorageFile::GetFileFromPathAsync(&hpath)?)?;
-    crate::pdf::block_action(&LockScreen::SetImageFileAsync(&file)?)
+    let file: StorageFile =
+        st2k_codecs::pdf::block_op(&StorageFile::GetFileFromPathAsync(&hpath)?)?;
+    st2k_codecs::pdf::block_action(&LockScreen::SetImageFileAsync(&file)?)
 }
 
 /// Prepare and apply in one call, in-process. Production goes through the routed

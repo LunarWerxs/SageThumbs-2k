@@ -78,7 +78,7 @@ pub(super) fn le16(b: &[u8], o: usize) -> Option<u16> {
 /// and the EPS preview sniff (`container::eps`), which had three hand-copies of this read.
 /// The offset is `checked_add`-bounded so a crafted value near `usize::MAX` cannot overflow
 /// the slice range (the copies that used a bare `o + 2` relied on a wrap to an empty range).
-pub(crate) fn tiff_u16(b: &[u8], little: bool, o: usize) -> Option<u16> {
+pub fn tiff_u16(b: &[u8], little: bool, o: usize) -> Option<u16> {
     let s = b.get(o..o.checked_add(2)?)?;
     Some(if little {
         u16::from_le_bytes([s[0], s[1]])
@@ -89,7 +89,7 @@ pub(crate) fn tiff_u16(b: &[u8], little: bool, o: usize) -> Option<u16> {
 
 /// Read a little- or big-endian `u32` at byte offset `o`, or `None` when the bytes run
 /// short. See [`tiff_u16`] for why the offset is `checked_add`-bounded.
-pub(crate) fn tiff_u32(b: &[u8], little: bool, o: usize) -> Option<u32> {
+pub fn tiff_u32(b: &[u8], little: bool, o: usize) -> Option<u32> {
     let s = b.get(o..o.checked_add(4)?)?;
     Some(if little {
         u32::from_le_bytes([s[0], s[1], s[2], s[3]])

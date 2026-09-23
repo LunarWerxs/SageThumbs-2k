@@ -59,7 +59,7 @@ unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
 /// so the array outlives the shell's `Invoke` call; the worker revokes it.
 unsafe fn park_selection(items: &Ref<'_, IShellItemArray>) -> Option<u32> {
     let arr = items.ok().ok()?;
-    let git = crate::video::global_interface_table()?;
+    let git = st2k_codecs::video::global_interface_table()?;
     git.RegisterInterfaceInGlobal(arr, &IShellItemArray::IID)
         .ok()
 }
@@ -75,7 +75,7 @@ impl ParkedCookie {
     fn revoke(&mut self) {
         if let Some(cookie) = self.0.take() {
             unsafe {
-                if let Some(git) = crate::video::global_interface_table() {
+                if let Some(git) = st2k_codecs::video::global_interface_table() {
                     let _ = git.RevokeInterfaceFromGlobal(cookie);
                 }
             }
@@ -95,7 +95,7 @@ unsafe fn paths_from_global(mut cookie: ParkedCookie) -> Vec<String> {
     let Some(entry) = cookie.0 else {
         return Vec::new();
     };
-    let Some(git) = crate::video::global_interface_table() else {
+    let Some(git) = st2k_codecs::video::global_interface_table() else {
         return Vec::new();
     };
     let mut raw: *mut c_void = std::ptr::null_mut();

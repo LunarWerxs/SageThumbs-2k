@@ -6,7 +6,7 @@
 //! (via `IInitializeWithStream`), a parent `HWND` + bounds (`SetWindow`), and a
 //! themed background colour (`SetBackgroundColor`); on `DoPreview` we acquire the
 //! stream through the SAME streaming cascade the thumbnail path uses
-//! ([`crate::streamsrc`] — video frame-grab tiers, seek-only album art, streamed
+//! ([`st2k_codecs::streamsrc`] — video frame-grab tiers, seek-only album art, streamed
 //! archive covers, the head-preview rescue, the bounded whole-file read) and
 //! decode with the same tiered decoder (`decode::decode_preview` — so all
 //! registered formats, ebook/comic covers, audio waveforms, etc. work here too),
@@ -58,10 +58,10 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
-use crate::decode;
-use crate::streamsrc::{self, StreamSource};
 use st2k_base::host::stream_name;
 use st2k_base::{safety, settings};
+use st2k_codecs::decode;
+use st2k_codecs::streamsrc::{self, StreamSource};
 
 /// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`
 /// hosts one pane, so a couple of slots cover a decode still running past its budget when

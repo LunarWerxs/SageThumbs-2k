@@ -1,0 +1,51 @@
+[package]
+name = "sagethumbs2k-codecs"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SageThumbs 2K library, codecs layer"
+
+[lib]
+name = "st2k_codecs"
+
+[dependencies]
+base64 = "0.23"
+bcdec_rs = "0.2"
+djvu-rs = { version = "0.35.0", default-features = false, features = ["std"] }
+kamadak-exif = "0.6"
+exr = { version = "=1.74.2", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+image = { workspace = true }
+img-parts = "0.4"
+jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+lofty = "0.25"
+moxcms = "0.8"
+percent-encoding = "2"
+rars = "0.9.4"
+resvg = { version = "0.48", default-features = false }
+roxmltree = "0.21"
+ruzstd = "0.9"
+serde_json = "1"
+sevenz-rust2 = { version = "0.23", default-features = false }
+tiff = { version = "0.11", default-features = false }
+windows = { workspace = true }
+# The `#[implement]` macro expands to `windows_core::` paths.
+windows-core = "0.62"
+windows-future = "0.3"
+windows-implement = "0.60"
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zune-jpeg = "0.5"
+st2k_base = { package = "sagethumbs2k-base", path = "../base" }
+
+[dev-dependencies]
+# Test-only 7z writer: builds non-solid/duplicate-name archives in memory for the extraction
+# tests. The dependency above stays decode-only (`compress` never ships).
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
+
+[features]
+# Test fixtures and seams the layers above use from their own tests (a crate's `cfg(test)`
+# items do not exist when it is built as another crate's dependency). Never on in a
+# shipping build: only the [dev-dependencies] of the crates above turn it on.
+testkit = []

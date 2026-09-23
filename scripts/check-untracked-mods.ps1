@@ -55,7 +55,7 @@ $rootBasenames = @('mod.rs', 'lib.rs', 'main.rs')
 # the sake of the two real build scripts at `crates/*/build.rs`, so the FOUR ordinary modules also
 # named `build.rs` (`src/build.rs`, `src/bin/app/{about,convert,settings_dlg}/build.rs`) had their
 # children looked for beside them instead of inside `build/`; and `tests` in $rootParents made
-# `src/decode/tests/colour.rs` - a module named `tests`, not Cargo's integration-test directory -
+# `crates/codecs/src/decode/tests/colour.rs` - a module named `tests`, not Cargo's integration-test directory -
 # read as a crate root too. Both were FALSE REDS on a tree that compiles from a fresh clone.
 $rootParents = @('bin', 'tests', 'benches', 'examples')
 # Package roots: every directory holding a tracked Cargo.toml ('' for the workspace root).

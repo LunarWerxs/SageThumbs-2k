@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Regenerate the tiny SOLID .7z fixtures used by src/container/sevenz.rs tests.
+"""Regenerate the tiny SOLID .7z fixtures used by crates/codecs/src/container/sevenz.rs tests.
 
-These guard the solid-archive cover scan (src/container/sevenz.rs: `solid_covers`),
+These guard the solid-archive cover scan (crates/codecs/src/container/sevenz.rs: `solid_covers`),
 which picks covers by PHYSICAL order and bounds decode with a peek budget so
 clicking a huge project .7z can't spike Explorer's CPU/disk. Both archives are
 SOLID (one folder, >1 substream). Content is a raw marker per entry: extract_seek_n

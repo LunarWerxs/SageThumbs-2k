@@ -1,5 +1,5 @@
 <#
-  Twin JPEG XRs of ONE scene for the HDR test in src/decode/tests/colour.rs: the linear scRGB
+  Twin JPEG XRs of ONE scene for the HDR test in crates/codecs/src/decode/tests/colour.rs: the linear scRGB
   float picture Windows itself writes for HDR screenshots (128bppRGBAFloat, 80 nits = 1.0), and
   its 8-bit sRGB control. Same scene as the JPEG XL / AVIF twins (a grey ramp over six colour
   patches, diffuse white at 203 nits), written through WIC's own JPEG XR encoder via WPF, which

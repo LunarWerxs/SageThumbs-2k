@@ -1,6 +1,6 @@
 //! The `st2k flv-frame` decode core: FLV bytes → first VP6/Sorenson-Spark keyframe as PNG.
 //!
-//! This is the CHILD side of `sagethumbs2k_core::flv::flash_frame` (see the parent module
+//! This is the CHILD side of `st2k_codecs::flv::flash_frame` (see the parent module
 //! [`super`] for the shared containment story — memory cap, stdin/stdout, why these
 //! decoders can never run in the shell). The decoders here — nihav (VP6) and h263-rs
 //! (Sorenson), the exact crates Ruffle ships as the Flash codecs — PANIC on malformed
@@ -15,7 +15,7 @@
 //! studio-swing BT.601, so `h263_rs_yuv::bt601` (which expands 16..235 to full range) is
 //! the faithful conversion for BOTH, whatever nihav's format tag nominally says.
 
-use sagethumbs2k_core::flv::{scan_flash_keyframe, FlashCodec, FlashScan, FLASH_MAX_DIM};
+use st2k_codecs::flv::{scan_flash_keyframe, FlashCodec, FlashScan, FLASH_MAX_DIM};
 
 /// The testable core: FLV bytes → PNG bytes of the first VP6/Sorenson keyframe.
 pub(super) fn frame_png(flv: &[u8]) -> Result<Vec<u8>, String> {

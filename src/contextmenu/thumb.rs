@@ -90,9 +90,9 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
         return None;
     }
     let file = std::fs::File::open(path).ok()?;
-    let bytes = crate::decode::read_bounded(file, meta.len()).ok()?;
-    let img = crate::decode::decode_menu_preview(&bytes).ok()?;
-    let (ow, oh) = crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
+    let bytes = st2k_codecs::decode::read_bounded(file, meta.len()).ok()?;
+    let img = st2k_codecs::decode::decode_menu_preview(&bytes).ok()?;
+    let (ow, oh) = st2k_codecs::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
     // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
     // normal/tall ones stay capped at the 88px height.
     //
@@ -104,7 +104,7 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
     // That is a visible layout change, not a quality one, so it is not smuggled in
     // with a filter swap.
     let thumb = if img.width() > PREVIEW_WIDE || img.height() > PREVIEW_BOX {
-        crate::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
+        st2k_codecs::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
     } else {
         img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX)
     };

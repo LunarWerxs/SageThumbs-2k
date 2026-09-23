@@ -216,7 +216,7 @@ fn sanitize_component_rejects_reserved_device_names_case_insensitively() {
 /// is substituted at most once, and only the template's own text is scanned.
 #[test]
 fn expand_template_does_not_re_expand_a_substituted_value() {
-    let tags = crate::strip::AudioTags {
+    let tags = st2k_codecs::strip::AudioTags {
         artist: Some("$title".to_string()),
         title: Some("Real Title".to_string()),
         ..Default::default()

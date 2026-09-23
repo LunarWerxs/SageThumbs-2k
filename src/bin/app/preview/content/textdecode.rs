@@ -1,6 +1,6 @@
 // Windows code-page decoding lives in the core (the archive-name decoder): one copy of the
 // `MultiByteToWideChar` call for both.
-use sagethumbs2k_core::decode_codepage;
+use st2k_codecs::container::decode_codepage;
 
 /// Read a text/code file for preview: cap at 5 MB, reject binaries, decode (BOM-aware, lossy),
 /// truncate absurdly long lines, and mark a capped file. `None` if unreadable or binary.
