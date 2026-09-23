@@ -567,3 +567,56 @@ pub(super) fn format_exif_datetime(s: &str) -> Option<String> {
         d[0], d[1], d[2], t[0], t[1], t[2]
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("st2k-info-{}-{name}", std::process::id()));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    /// The head sniff reads at most 64 bytes and refuses a file too short to hold any of the
+    /// signatures it is used for (26 bytes), rather than handing back a stub to misread.
+    #[test]
+    fn head_prefix_caps_at_64_bytes_and_refuses_a_stub() {
+        let long = temp_file("long.bin", &[7u8; 200]);
+        assert_eq!(
+            head_prefix(long.to_str().unwrap()).map(|b| b.len()),
+            Some(64)
+        );
+        let short = temp_file("short.bin", &[7u8; 25]);
+        assert_eq!(head_prefix(short.to_str().unwrap()), None);
+        let exact = temp_file("exact.bin", &[7u8; 26]);
+        assert_eq!(
+            head_prefix(exact.to_str().unwrap()).map(|b| b.len()),
+            Some(26)
+        );
+        for p in [long, short, exact] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn head_prefix_is_none_for_a_missing_file() {
+        let missing =
+            std::env::temp_dir().join(format!("st2k-info-{}-missing.bin", std::process::id()));
+        assert_eq!(head_prefix(missing.to_str().unwrap()), None);
+    }
+
+    /// A never-set camera clock writes zeros; any one zero date field is enough to refuse it,
+    /// and a non-digit time field is refused too, so no filename is built from a bogus stamp.
+    #[test]
+    fn a_date_with_any_zero_field_or_a_non_digit_time_is_refused() {
+        assert_eq!(format_exif_datetime("2023:00:05 10:00:00"), None);
+        assert_eq!(format_exif_datetime("2023:05:00 10:00:00"), None);
+        assert_eq!(format_exif_datetime("0000:05:05 10:00:00"), None);
+        assert_eq!(format_exif_datetime("2023:05:05 1a:00:00"), None);
+        assert_eq!(
+            format_exif_datetime("2023:05:05 10:20:30").as_deref(),
+            Some("2023-05-05 10.20.30")
+        );
+    }
+}
