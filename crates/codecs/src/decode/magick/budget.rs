@@ -52,6 +52,14 @@ pub(super) const METAFILE_MAGICK_TIME_LIMIT: &str = "18";
 
 pub(super) const METAFILE_MAGICK_TIMEOUT: Duration = Duration::from_secs(18);
 
+/// One thread. The CPU budget above is summed over the child's threads, and ImageMagick's
+/// worker threads spend most of a metafile render waiting on each other: the corpus's
+/// `real.xls` thumbnail WMF (3832x2153) took 2.6 s of CPU in 1.35 s on its default threads and
+/// 0.72 s of CPU in 0.76 s on one (measured 2026-09-23). At 2.6 s a busy machine pushed it past
+/// the 3 s budget and Quick preview drew nothing, now and then; on one thread the same budget
+/// still kills a hostile program, and all of it goes on the work.
+pub(super) const METAFILE_MAGICK_THREAD_LIMIT: &str = "1";
+
 pub(super) const METAFILE_MAGICK_CPU_BUDGET: Duration = Duration::from_secs(3);
 
 /// How often the watchdog wakes to re-check the child while waiting for its output.
@@ -72,7 +80,7 @@ pub(super) const RASTER_BUDGET: MagickBudget = MagickBudget {
 };
 
 /// Metafiles, which get a much tighter CPU budget (see [`METAFILE_MAGICK_CPU_BUDGET`]);
-/// [`add_metafile_magick_limits`] sets their memory/map/elapsed caps.
+/// [`add_metafile_magick_limits`] sets their memory/map/elapsed caps and the one thread.
 pub(super) const METAFILE_BUDGET: MagickBudget = MagickBudget {
     cpu: METAFILE_MAGICK_CPU_BUDGET,
     wall: METAFILE_MAGICK_TIMEOUT,
@@ -147,5 +155,8 @@ pub(super) fn add_metafile_magick_limits(cmd: &mut Command) {
         "-limit",
         "time",
         METAFILE_MAGICK_TIME_LIMIT,
+        "-limit",
+        "thread",
+        METAFILE_MAGICK_THREAD_LIMIT,
     ]);
 }

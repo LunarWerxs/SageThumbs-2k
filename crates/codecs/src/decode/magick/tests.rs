@@ -5,7 +5,7 @@ use super::{
     magick_output_extensions, magick_output_supported, magick_stdin_spec, output_coder, EncodeWait,
     FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES,
     METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
-    METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
+    METAFILE_MAGICK_THREAD_LIMIT, METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
 };
 use std::collections::HashMap;
 use std::process::Command;
@@ -184,8 +184,13 @@ fn metafile_limits_override_the_shared_magick_budget() {
             "-limit",
             "time",
             METAFILE_MAGICK_TIME_LIMIT,
+            "-limit",
+            "thread",
+            METAFILE_MAGICK_THREAD_LIMIT,
         ]
     );
+    // One thread: the CPU budget is thread-summed, and a metafile render's threads mostly wait.
+    assert_eq!(METAFILE_MAGICK_THREAD_LIMIT, "1");
     // Metafiles keep their much tighter CPU budget; only the elapsed-time backstop is
     // widened, so a busy machine cannot fail a metafile that needed 0.1 s of real work.
     assert_eq!(

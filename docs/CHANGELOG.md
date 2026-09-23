@@ -83,7 +83,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   thumbnail: a transport stream (`.ts`, `.m2ts`, `.mts`) with empty space after its last frame
   used to get none.
 - **Older Excel workbooks (`.xls`) show their preview in the preview pane** instead of an empty
-  pane, and **HEIF and AVIF image sequences** read only their first picture for a thumbnail
+  pane, and no longer come up empty now and then in Quick preview on a busy PC. **HEIF and
+  AVIF image sequences** read only their first picture for a thumbnail
   instead of every frame, which took long enough to leave the preview pane blank.
 - **Closing Settings while a sync upload is finishing** hides the window at once instead of
   leaving it frozen for a few seconds, and the welcome window's "Get started" no longer freezes
