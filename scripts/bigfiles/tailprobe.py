@@ -21,9 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image, ImageChops
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-CORPUS = os.path.abspath(os.path.join(ROOT, "..", "test-corpus"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import CORPUS, HERE, ROOT  # noqa: E402,F401
 DEFAULT_ST2K = None  # the release st2k.exe in cargo's target directory (see `main`)
 
 
@@ -83,7 +82,7 @@ def main():
     if a.st2k is None:
         from bigfiles import TARGET
         a.st2k = os.path.join(TARGET, "st2k.exe")
-    os.makedirs(os.path.dirname(a.out), exist_ok=True)
+    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     work = tempfile.mkdtemp(prefix="st2k-tailprobe-", dir=os.environ.get("ST2K_SCRATCH"))
     try:
         with ThreadPoolExecutor(a.jobs) as pool:

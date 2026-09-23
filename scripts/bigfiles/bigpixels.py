@@ -37,6 +37,11 @@ LIMIT = {"webp": (16383, 2409)}
 CODER = {"tiff64": "TIFF64"}
 HEAVY = (11000, 9500)
 HEAVY_REF = (1100, 950)
+# One channel: two bytes a sample (PGM MAXVAL 65535, FITS BITPIX 16) on a bigger canvas, so these
+# too are past the 256 MiB ceiling (11000x9500 at one byte a pixel is only 100 MB).
+GREY = {"pgm", "fits"}
+HEAVY_GREY = (13000, 11000)
+HEAVY_GREY_REF = (1300, 1100)
 HEAVY_FORMATS = ["ppm", "pgm", "pam", "pfm", "fits", "tga", "bmp", "tif", "farbfeld", "tiff64"]
 
 
@@ -75,7 +80,7 @@ def heavy_row(w, h, y, grey=False):
 BOTTOM_UP = {"bmp", "pfm", "fits"}
 HEADERS = {
     "ppm": lambda w, h: f"P6\n{w} {h}\n255\n".encode(),
-    "pgm": lambda w, h: f"P5\n{w} {h}\n255\n".encode(),
+    "pgm": lambda w, h: f"P5\n{w} {h}\n65535\n".encode(),
     "pam": lambda w, h: f"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n".encode(),
     "pfm": lambda w, h: f"PF\n{w} {h}\n-1.0\n".encode(),
     "farbfeld": lambda w, h: b"farbfeld" + struct.pack(">II", w, h),
@@ -102,6 +107,8 @@ def encode_row(ext, r, w):
         return (r.astype("<f4") / 255.0).tobytes()
     if ext == "fits":
         return (r.astype(np.int32) * 257 - 32768).astype(">i2").tobytes()
+    if ext == "pgm":
+        return (r.astype(">u2") * 257).tobytes()
     return r.tobytes()
 
 
@@ -110,7 +117,7 @@ def write_heavy(ext, size, out):
     w, h = size
     if ext in ("tif", "tiff64"):
         return write_tiff(size, out, big=ext == "tiff64")
-    grey = ext in ("pgm", "fits")
+    grey = ext in GREY
     order = range(h - 1, -1, -1) if ext in BOTTOM_UP else range(h)
     n = 0
     with open(out, "wb") as f:
@@ -179,8 +186,9 @@ def make(out_dir):
         # the width, and the format's own reader (and display rules: FITS's stretch) is what
         # draws both.
         ref = os.path.join(out_dir, f"heavy-ref.{ext}")
-        write_heavy(ext, HEAVY, big)
-        write_heavy(ext, HEAVY_REF, ref)
+        size, ref_size = (HEAVY_GREY, HEAVY_GREY_REF) if ext in GREY else (HEAVY, HEAVY_REF)
+        write_heavy(ext, size, big)
+        write_heavy(ext, ref_size, ref)
         pairs.append((f"{ext}~heavy", big, ref))
     return pairs
 
