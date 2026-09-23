@@ -134,7 +134,10 @@ def tests(filt=None):
 
 def wait_for_release():
     """A release being cut from this checkout holds the tree (scripts/release-lock.ps1)."""
-    subprocess.run(["pwsh", "-NoProfile", "-File", os.path.join(ROOT, "scripts", "release-lock.ps1")])
+    # It waits while a release holds the tree and exits 0 once it is free; anything else (pwsh
+    # missing, the script failing) must stop the gate rather than let it build under a release.
+    if subprocess.run(["pwsh", "-NoProfile", "-File", os.path.join(ROOT, "scripts", "release-lock.ps1")]).returncode:
+        sys.exit("release-lock.ps1 failed: not building while the release lock cannot be read")
 
 
 def main():
