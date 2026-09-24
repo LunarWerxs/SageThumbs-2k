@@ -402,3 +402,7 @@ Made by [LunarWerx Studios](https://lunarwerx.com): also see [RepoYeti](https://
 
 <sub>Made with 🦀 for people who have too many weird files.</sub>
 </div>
+
+## ⭐ Star history
+
+<a href="https://www.star-history.com/?repos=lunarwerxs%2Fsagethumbs-2k&type=date&legend=bottom-right"><img src="https://api.star-history.com/svg?repos=lunarwerxs%2Fsagethumbs-2k&type=Date&theme=dark&legend=bottom-right" width="100%" alt="SageThumbs 2K GitHub stars over time"></a>
