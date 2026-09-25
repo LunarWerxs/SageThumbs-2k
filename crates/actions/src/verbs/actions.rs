@@ -316,6 +316,7 @@ pub fn run_action(action: VerbAction, paths: &[String]) -> ActionReport {
         VerbAction::Wallpaper(mode) => handle_wallpaper(paths, mode),
         VerbAction::LockScreen => handle_lock_screen(paths),
         VerbAction::CombineToPdf => handle_combine_to_pdf(paths),
+        VerbAction::CombineToSearchablePdf => handle_combine_to_searchable_pdf(paths),
         VerbAction::CombineToCbz => handle_combine_to_cbz(paths),
         VerbAction::Ocr => handle_ocr(paths),
         VerbAction::ImageInfo => handle_image_info(paths),
@@ -507,6 +508,25 @@ fn handle_combine_to_pdf(paths: &[String]) -> ActionReport {
         "couldn't build the PDF",
         |imgs, out| {
             crate::topdf::combine_to_pdf(
+                imgs,
+                out,
+                st2k_base::settings::jpeg_quality(),
+                super::OnOmit::Report,
+            )
+            .map(|combined| combined.omitted.len())
+        },
+    )
+}
+
+/// `VerbAction::CombineToSearchablePdf`: the same combine plus an invisible OCR text layer.
+fn handle_combine_to_searchable_pdf(paths: &[String]) -> ActionReport {
+    combine_action(
+        paths,
+        "pdf",
+        "Combine to searchable PDF",
+        "couldn't build the searchable PDF",
+        |imgs, out| {
+            crate::topdf::combine_to_pdf_searchable(
                 imgs,
                 out,
                 st2k_base::settings::jpeg_quality(),

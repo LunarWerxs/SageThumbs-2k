@@ -80,11 +80,12 @@ pub(super) fn tool_defs() -> Value {
         },
         {
             "name": "pdf",
-            "description": "Combine one or more images into a single PDF (one image per page). 'output' must be a .pdf path and must not be one of the inputs (any spelling, case or hard link of an input is refused before anything is written). Returns JSON: {output, status: 'ok'|'partial', requested, combined, omitted: [{input, cause: 'unreadable'|'undecodable'|'unencodable', detail}]}; an input that cannot be used is left out and listed under 'omitted' unless 'strict' is true, in which case the call fails and writes nothing.",
+            "description": "Combine one or more images into a single PDF (one image per page); with 'searchable' each page is OCR'd by the Windows engine and given an invisible text layer, so the PDF's text can be searched, selected and copied. 'output' must be a .pdf path and must not be one of the inputs (any spelling, case or hard link of an input is refused before anything is written). Returns JSON: {output, status: 'ok'|'partial', requested, combined, omitted: [{input, cause: 'unreadable'|'undecodable'|'unencodable', detail}]}; an input that cannot be used is left out and listed under 'omitted' unless 'strict' is true, in which case the call fails and writes nothing.",
             "inputSchema": { "type": "object", "properties": {
                 "output": str_prop("destination .pdf path"),
                 "inputs": { "type": "array", "items": { "type": "string" }, "description": "image paths, in page order" },
-                "strict": { "type": "boolean", "description": "fail and write nothing if any input would be left out (default false = build from the usable inputs and list the rest)" }
+                "strict": { "type": "boolean", "description": "fail and write nothing if any input would be left out (default false = build from the usable inputs and list the rest)" },
+                "searchable": { "type": "boolean", "description": "OCR every page and add an invisible, searchable text layer (default false); fails if no page could be recognised, e.g. no Windows OCR language installed" }
             }, "required": ["output", "inputs"] }
         },
         {

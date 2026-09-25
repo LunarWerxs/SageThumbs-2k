@@ -100,6 +100,8 @@ pub enum VerbAction {
     /// Set as the Windows lock screen background (`Windows.System.UserProfile.LockScreen`).
     LockScreen,
     CombineToPdf,
+    /// Combine into one PDF with an invisible OCR text layer, so it can be searched and copied.
+    CombineToSearchablePdf,
     /// Combine the selected images into one CBZ (zip) comic archive.
     CombineToCbz,
     Ocr,
@@ -215,6 +217,10 @@ pub const MENU: &[MenuItem] = &[
     ),
     MenuItem::Verb("menu_convert_dialog", VerbAction::ConvertDialog),
     MenuItem::Verb("menu_combine_pdf", VerbAction::CombineToPdf),
+    MenuItem::Verb(
+        "menu_combine_pdf_searchable",
+        VerbAction::CombineToSearchablePdf,
+    ),
     MenuItem::Verb("menu_combine_cbz", VerbAction::CombineToCbz),
     // Video-only verb: the sole leaf video_top_level() surfaces besides the
     // file-agnostic ones. Lives at top level (not nested) like Combine ▸ PDF/CBZ, so

@@ -172,6 +172,11 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Combine into PDF**: selected images → one PDF (one image per page, sized to the
   image). Optionally with a **page margin** (Settings ▸ Saving), and the engine also
   supports fitting onto A4 or Letter, centred, never enlarging a small image.
+- **Combine into searchable PDF (OCR)**: the same PDF, plus an invisible text layer. Each
+  page is read by Windows' own OCR engine and every word is laid exactly over its pixels,
+  so any PDF viewer can search the document and select or copy its text while it still
+  looks exactly like the images. Also `st2k pdf --searchable` and the MCP `pdf` tool's
+  `searchable` argument.
 - **Combine into CBZ (comic)**: selected images → one `.cbz` comic archive (a ZIP,
   stored uncompressed), pages natural-sorted by name (page 2 before page 10). A
   **`ComicInfo.xml`** goes in as the first entry with the page count and each page's
@@ -834,7 +839,9 @@ genuinely-outstanding work.)*
 > `cbz` also report which inputs they left out and why (unreadable, undecodable, or
 > unencodable) instead of silently skipping them, accept `--strict` to fail and write
 > nothing rather than a partial file, and `--json` returns that same detail as JSON; the
-> MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument.
+> MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument. `pdf
+> --searchable` (MCP: `searchable`) OCRs every page and adds an invisible text layer so the
+> PDF is searchable and its text can be selected and copied.
 
 **Idea:** because SageThumbs already bundles real image
 capabilities (361-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the

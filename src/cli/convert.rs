@@ -244,6 +244,8 @@ pub struct CombineOpts {
     pub strict: bool,
     /// Return the [`verbs::Combined`] JSON instead of text (`--json`; always on over MCP).
     pub json: bool,
+    /// `pdf` only: OCR each page and add an invisible text layer (`--searchable`).
+    pub searchable: bool,
 }
 
 impl CombineOpts {
@@ -296,7 +298,12 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
     require_combine_inputs(output, inputs, "pdf")?;
     // Same JPEG quality the right-click Combine-to-PDF verb uses (the user's configured
     // setting) — a hardcoded 85 silently diverged from the menu path for no reason.
-    let combined = topdf::combine_to_pdf(
+    let combine = if opts.searchable {
+        topdf::combine_to_pdf_searchable
+    } else {
+        topdf::combine_to_pdf
+    };
+    let combined = combine(
         inputs,
         Path::new(output),
         st2k_base::settings::jpeg_quality(),
@@ -312,6 +319,9 @@ pub fn pdf(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String,
 /// just its CLI/MCP front door, which never existed even though the PDF sibling
 /// always had one. Same destination and omission contract as [`pdf`].
 pub fn cbz(output: &str, inputs: &[String], opts: CombineOpts) -> Result<String, String> {
+    if opts.searchable {
+        return Err("--searchable applies to pdf only".to_string());
+    }
     require_combine_inputs(output, inputs, "cbz")?;
     let combined = verbs::combine_to_cbz(inputs, Path::new(output), opts.on_omit())
         .map_err(|e| format!("cbz build failed: {}", e.message()))?;

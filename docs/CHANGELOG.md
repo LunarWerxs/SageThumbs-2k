@@ -7,6 +7,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Searchable PDFs:** the new right-click **Combine into searchable PDF (OCR)**, `st2k pdf
+  --searchable` and the MCP `pdf` tool's `searchable` option read every page with Windows'
+  own OCR and add an invisible text layer, so scans and photos turned into a PDF can be
+  searched, and their text selected and copied, in any PDF viewer.
+
 ## 3.3.0
 
 **TL;DR**

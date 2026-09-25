@@ -24,7 +24,7 @@
 
 /// One recognized word and its box.
 #[derive(Clone, Debug)]
-pub(crate) struct WordBox {
+pub struct WordBox {
     pub text: String,
     /// Left edge, device px.
     pub x: f32,

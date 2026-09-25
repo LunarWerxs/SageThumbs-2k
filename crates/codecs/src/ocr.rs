@@ -22,6 +22,9 @@ use crate::pdf::{block_op, stream_with_bytes};
 
 mod table;
 
+// Public so the searchable-PDF writer (`st2k_actions::topdf`) can lay each word over its pixels.
+pub use table::WordBox;
+
 /// Recognize text in the image at `path` and put it on the clipboard. Errors
 /// (no text found, no OCR language pack, unreadable image) leave the clipboard
 /// untouched.
@@ -66,11 +69,24 @@ pub const OCR_IMAGE_TOO_LARGE: windows::core::HRESULT =
 /// return `Err(E_FAIL)` here anyway (the difference was only whether a debug line got logged;
 /// now both log it, which additionally fixes the previously-SILENT spawn-failure case).
 pub fn recognize_bytes(bytes: Vec<u8>) -> Result<String> {
+    on_ocr_worker(bytes, recognize)
+}
+
+/// Recognize image `bytes` and return each line's words with their boxes in the SOURCE
+/// image's pixel space (the pre-recognition upscale undone). For callers that place text
+/// over the picture itself: the searchable-PDF text layer (`st2k_actions::topdf`). Same
+/// worker, budget and bomb guard as [`recognize_bytes`]; lines with no words are dropped.
+pub fn recognize_word_lines(bytes: Vec<u8>) -> Result<Vec<Vec<WordBox>>> {
+    on_ocr_worker(bytes, recognize_lines)
+}
+
+/// Run `op` over `bytes` on the budgeted MTA worker described at [`recognize_bytes`].
+fn on_ocr_worker<T: Send + 'static>(bytes: Vec<u8>, op: fn(&[u8]) -> Result<T>) -> Result<T> {
     // Fresh MTA thread (blocking WinRT waits can deadlock in an STA; we can't assume the
     // caller's apartment).
     let out = st2k_base::safety::spawn_budgeted("st2k-ocr-recognize", OCR_TIMEOUT, move || {
         let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let out = recognize(&bytes);
+        let out = op(&bytes);
         if inited {
             unsafe { CoUninitialize() };
         }
@@ -219,6 +235,43 @@ fn collect_lines(result: &OcrResult) -> (String, Vec<Vec<table::WordBox>>) {
 }
 
 fn recognize(bytes: &[u8]) -> Result<String> {
+    let (result, _) = run_engine(bytes)?;
+    let (mut out, word_lines) = collect_lines(&result);
+    if let Some(tsv) = table::assemble(&word_lines) {
+        return Ok(tsv);
+    }
+    if out.is_empty() {
+        out = result.Text()?.to_string();
+    }
+    Ok(out)
+}
+
+/// The word boxes of every recognized line, mapped back to the source image's pixels.
+fn recognize_lines(bytes: &[u8]) -> Result<Vec<Vec<WordBox>>> {
+    let (result, scale) = run_engine(bytes)?;
+    let (_, word_lines) = collect_lines(&result);
+    Ok(unscale_lines(word_lines, scale))
+}
+
+/// Undo [`upscale_factor`]'s enlargement on every box, so a caller drawing over the ORIGINAL
+/// image gets its own coordinates back, and drop the lines that carry no words.
+fn unscale_lines(mut lines: Vec<Vec<WordBox>>, scale: u32) -> Vec<Vec<WordBox>> {
+    lines.retain(|line| !line.is_empty());
+    if scale > 1 {
+        let s = scale as f32;
+        for word in lines.iter_mut().flatten() {
+            word.x /= s;
+            word.y /= s;
+            word.w /= s;
+            word.h /= s;
+        }
+    }
+    lines
+}
+
+/// Decode `bytes`, apply the bomb guard and the small-text upscale, and run the engine.
+/// Returns the engine's result and the upscale factor its coordinates are in.
+fn run_engine(bytes: &[u8]) -> Result<(OcrResult, u32)> {
     let decoder = decode_source(bytes)?;
 
     // Bomb guard, and it MUST come before the pixel decode. The header alone declares the
@@ -255,15 +308,7 @@ fn recognize(bytes: &[u8]) -> Result<String> {
 
     let engine = create_ocr_engine()?;
     let result = block_op(&engine.RecognizeAsync(&bmp)?)?;
-
-    let (mut out, word_lines) = collect_lines(&result);
-    if let Some(tsv) = table::assemble(&word_lines) {
-        return Ok(tsv);
-    }
-    if out.is_empty() {
-        out = result.Text()?.to_string();
-    }
-    Ok(out)
+    Ok((result, scale))
 }
 
 /// Put UTF-16 `text` on the clipboard as CF_UNICODETEXT, via the one shared,
@@ -373,6 +418,26 @@ mod tests {
             1080,
             crate::decode::limits::MAX_DIM
         ));
+    }
+
+    /// The searchable-PDF text layer draws each word over the ORIGINAL picture, so the boxes
+    /// must come back out of the engine's upscaled space: a 3x upscale left in would put every
+    /// invisible word three times too far from its pixels (and three times too big).
+    #[test]
+    fn word_boxes_are_mapped_back_to_source_pixels() {
+        let word = |x: f32| WordBox {
+            text: "w".into(),
+            x,
+            y: 30.0,
+            w: 60.0,
+            h: 15.0,
+        };
+        let lines = unscale_lines(vec![vec![word(90.0)], Vec::new()], 3);
+        assert_eq!(lines.len(), 1, "a line with no words must be dropped");
+        let w = &lines[0][0];
+        assert_eq!((w.x, w.y, w.w, w.h), (30.0, 10.0, 20.0, 5.0));
+        let same = unscale_lines(vec![vec![word(90.0)]], 1);
+        assert_eq!(same[0][0].x, 90.0, "no upscale means no change");
     }
 
     /// Degenerate dimensions must be rejected outright, not treated as "fits everything".

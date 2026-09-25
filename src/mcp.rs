@@ -510,6 +510,7 @@ fn combine_opts(args: &Value) -> Result<cli::CombineOpts, String> {
     Ok(cli::CombineOpts {
         strict: want_bool(args, "strict")?.unwrap_or(false),
         json: true,
+        searchable: want_bool(args, "searchable")?.unwrap_or(false),
     })
 }
 

@@ -42,7 +42,11 @@ USAGE:
   st2k folder-icon <in>                         set <in> as its containing folder's icon (hidden .ico +
                                                 desktop.ini); powers the routed context menu verb
   st2k ocr       <in>                           recognize text → stdout
-  st2k pdf       <out.pdf> <in> [in...] [--strict] [--json]   combine images into one PDF
+  st2k pdf       <out.pdf> <in> [in...] [--strict] [--json] [--searchable]
+                                                combine images into one PDF; --searchable OCRs
+                                                each page (Windows' own engine) and adds an
+                                                invisible text layer, so the PDF can be searched
+                                                and its text selected and copied
   st2k cbz       <out.cbz> <in> [in...] [--strict] [--json]   combine images into one CBZ (comic-book zip)
                                                 an input that can't be read or decoded is left out and
                                                 listed (one 'omitted' line each); --strict fails instead
@@ -109,6 +113,8 @@ const BOOL_FLAGS: &[&str] = &[
     "--open",
     // pdf/cbz: fail instead of writing a partial file (2026-09-05 audit, F31).
     "--strict",
+    // pdf: add an invisible OCR text layer so the output is searchable.
+    "--searchable",
     // upload: also put the resulting URL on the clipboard (printing it is the default).
     "--copy",
 ];
@@ -396,11 +402,13 @@ fn run_register(verb: &str, pos: &[&String], rest: &[String]) -> Result<String, 
     cli::register_portable(off, status)
 }
 
-/// `pdf`/`cbz` share one argument shape: `<out> <in...> [--strict] [--json]`.
+/// `pdf`/`cbz` share one argument shape: `<out> <in...> [--strict] [--json]`, plus
+/// `--searchable` (pdf only; `cbz` refuses it).
 fn combine_opts(rest: &[String]) -> cli::CombineOpts {
     cli::CombineOpts {
         strict: has_flag(rest, "--strict"),
         json: has_flag(rest, "--json"),
+        searchable: has_flag(rest, "--searchable"),
     }
 }
 

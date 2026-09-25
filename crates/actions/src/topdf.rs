@@ -2,13 +2,19 @@
 //! as a baseline JPEG via the `/DCTDecode` filter (one image per page). Zero new
 //! dependencies; the output was verified to load in the OS `Windows.Data.Pdf`
 //! engine (the same one our thumbnailer uses).
+//!
+//! A searchable combine ([`combine_to_pdf_searchable`]) also OCRs each page with the in-box
+//! Windows engine and lays the words over the picture as invisible text (see `textlayer`).
+
+mod textlayer;
 
 use st2k_codecs::decode::read_full_fidelity_capped;
+use st2k_codecs::ocr::WordBox;
 use std::io::Write;
 use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, RgbImage};
+use image::RgbImage;
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 
@@ -18,21 +24,25 @@ use crate::verbs::{
 use st2k_base::settings::PdfPage;
 use st2k_codecs::decode;
 
-/// Decode → flatten onto white → baseline-JPEG bytes (3-component DeviceRGB).
-/// `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view pixel is
-/// RGBA in image 0.25) guarantees a JPEG-valid 3-channel stream.
-fn image_to_baseline_jpeg(img: &DynamicImage, quality: u8) -> Result<(Vec<u8>, u32, u32)> {
-    let rgb: RgbImage = flatten_onto_white(img).to_rgb8();
-    let (w, h) = (rgb.width(), rgb.height());
+/// The page flattened onto white → baseline-JPEG bytes (3-component DeviceRGB).
+/// An `RgbImage` from `.to_rgb8()` (NOT `encode_image` on a `DynamicImage`, whose view
+/// pixel is RGBA in image 0.25) guarantees a JPEG-valid 3-channel stream.
+fn rgb_to_baseline_jpeg(rgb: &RgbImage, quality: u8) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     JpegEncoder::new_with_quality(&mut buf, quality)
-        .encode_image(&rgb)
+        .encode_image(rgb)
         .map_err(|e| Error::new(E_FAIL, format!("jpeg encode for pdf: {e}")))?;
-    Ok((buf, w, h))
+    Ok(buf)
 }
 
-/// One decoded page: baseline JPEG bytes plus pixel width and height.
-type Page = (Vec<u8>, u32, u32);
+/// One decoded page: baseline JPEG bytes, pixel width and height, and the recognised words
+/// (`None` for a plain combine, or when recognition failed on this page).
+struct Page {
+    jpeg: Vec<u8>,
+    w: u32,
+    h: u32,
+    words: Option<Vec<Vec<WordBox>>>,
+}
 
 /// A writer that counts the bytes passed through it, so the xref table's object
 /// offsets are known while the PDF is streamed rather than read off a `Vec`'s length.
@@ -56,9 +66,19 @@ impl<W: Write> Write for Counted<W> {
 /// bytes are freed as soon as they have been written: the decode stage kept only JPEG
 /// bytes to bound memory, and holding a second full copy of all of them while the
 /// document is assembled undid that on a hundreds-of-pages combine.
-fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> std::io::Result<()> {
+///
+/// `searchable` appends the shared glyphless font after the pages and names it in every
+/// page's resources, so each page's recognised words can be drawn as invisible text.
+fn write_pdf<W: Write>(
+    w: &mut Counted<W>,
+    pages: Vec<Page>,
+    page: PdfPage,
+    searchable: bool,
+) -> std::io::Result<()> {
     let n = pages.len();
-    let total = 2 + n * 3; // 1=Catalog, 2=Pages, then page/content/image per image
+    let font = searchable.then_some(3 + n * 3);
+    // 1=Catalog, 2=Pages, then page/content/image per image, then the font's objects.
+    let total = 2 + n * 3 + font.map_or(0, |_| textlayer::FONT_OBJS);
     let mut off = vec![0usize; total + 1];
 
     w.write_all(b"%PDF-1.7\n")?;
@@ -76,9 +96,12 @@ fn write_pdf<W: Write>(w: &mut Counted<W>, pages: Vec<Page>, page: PdfPage) -> s
         kids.join(" ")
     )?;
 
-    for (i, (jpeg, iw, ih)) in pages.into_iter().enumerate() {
-        write_page(w, &mut off, i, &jpeg, iw, ih, page)?;
-        // `jpeg` drops here: one page's compressed bytes at a time.
+    for (i, p) in pages.into_iter().enumerate() {
+        write_page(w, &mut off, i, &p, page, font)?;
+        // `p` drops here: one page's compressed bytes at a time.
+    }
+    if let Some(first) = font {
+        textlayer::write_font(w, &mut off, first)?;
     }
 
     write_xref(w, &off, total)
@@ -91,25 +114,38 @@ fn mark(off: &mut [usize], i: usize, pos: usize) {
     }
 }
 
-/// Page `i`'s three objects: the Page, its content stream (one `cm` + `Do`), and the JPEG
-/// image XObject.
+/// Page `i`'s three objects: the Page, its content stream (one `cm` + `Do`, then the
+/// invisible text when `font` names the text-layer font), and the JPEG image XObject.
 fn write_page<W: Write>(
     w: &mut Counted<W>,
     off: &mut [usize],
     i: usize,
-    jpeg: &[u8],
-    iw: u32,
-    ih: u32,
+    p: &Page,
     page: PdfPage,
+    font: Option<usize>,
 ) -> std::io::Result<()> {
+    let (jpeg, iw, ih) = (&p.jpeg, p.w, p.h);
     let (pw, ph, dx, dy, dw, dh) = place(page, iw as f64, ih as f64);
     let (pg, ct, im) = (3 + i * 3, 4 + i * 3, 5 + i * 3);
+    let font_res = font.map_or(String::new(), |f| format!(" /Font << /F1 {f} 0 R >>"));
 
     mark(off, pg, w.pos);
-    write!(w, "{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >> >> /Contents {ct} 0 R >>\nendobj\n")?;
+    write!(w, "{pg} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw} {ph}] /Resources << /XObject << /Im0 {im} 0 R >>{font_res} >> /Contents {ct} 0 R >>\nendobj\n")?;
 
     // The `cm` matrix is scale-x, 0, 0, scale-y, translate-x, translate-y.
-    let content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
+    let mut content = format!("q\n{dw} 0 0 {dh} {dx} {dy} cm\n/Im0 Do\nQ\n");
+    if let (Some(_), Some(lines)) = (font, &p.words) {
+        let (iw, ih) = (iw as f64, ih as f64);
+        let frame = textlayer::Frame {
+            dx,
+            dy,
+            dw,
+            dh,
+            iw,
+            ih,
+        };
+        content.push_str(&textlayer::text_ops(lines, frame));
+    }
     mark(off, ct, w.pos);
     write!(w, "{ct} 0 obj\n<< /Length {} >>\nstream\n", content.len())?;
     w.write_all(content.as_bytes())?;
@@ -204,17 +240,49 @@ fn natural_sort_paths(paths: &[String]) -> Vec<String> {
 /// Decode one input to a PDF page, or say exactly why it could not be. Each failure is also
 /// logged with its path (`read_full_fidelity_capped` logs its own), so a dropped page can be
 /// traced in the doctor log.
-fn decode_page(p: &str, quality: u8) -> std::result::Result<Page, Omitted> {
+fn decode_page(p: &str, quality: u8, searchable: bool) -> std::result::Result<Page, Omitted> {
     let bytes =
         read_full_fidelity_capped(p).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))?;
     let img = decode::decode_full_for_output(&bytes).map_err(|e| {
         st2k_base::safety::log(&format!("pdf: cannot decode {p}: {e}"));
         Omitted::new(p, OmitCause::Undecodable, e)
     })?;
-    image_to_baseline_jpeg(&img, quality).map_err(|e| {
+    drop(bytes);
+    let rgb: RgbImage = flatten_onto_white(&img).to_rgb8();
+    drop(img);
+    let words = if searchable {
+        recognize_page(p, &rgb)
+    } else {
+        None
+    };
+    let jpeg = rgb_to_baseline_jpeg(&rgb, quality).map_err(|e| {
         st2k_base::safety::log(&format!("pdf: cannot encode {p}: {e}"));
         Omitted::new(p, OmitCause::Unencodable, e)
+    })?;
+    Ok(Page {
+        jpeg,
+        w: rgb.width(),
+        h: rgb.height(),
+        words,
     })
+}
+
+/// OCR the exact pixels the page embeds (handed over as a PNG, so EXIF orientation or a
+/// container quirk can never put the words somewhere other than the picture), or `None` when
+/// recognition fails: the page still goes in, just without text, and the failure is logged.
+fn recognize_page(p: &str, rgb: &RgbImage) -> Option<Vec<Vec<WordBox>>> {
+    let mut png = Vec::new();
+    if let Err(e) = rgb.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png) {
+        st2k_base::safety::log(&format!("pdf: cannot prepare {p} for OCR: {e}"));
+        return None;
+    }
+    match st2k_codecs::ocr::recognize_word_lines(png) {
+        Ok(lines) => Some(lines),
+        Err(e) => {
+            st2k_base::safety::log(&format!("pdf: OCR failed on {p}: {e}"));
+            None
+        }
+    }
 }
 
 /// The `E_FAIL` a combine aborts with: `headline` plus one line per left-out input. Shared by
@@ -246,6 +314,40 @@ pub fn combine_to_pdf_paged(
     page: PdfPage,
     on_omit: OnOmit,
 ) -> Result<Combined> {
+    combine(paths, out, quality, page, on_omit, false)
+}
+
+/// [`combine_to_pdf`], plus an invisible OCR text layer on every page, so the PDF can be
+/// searched, selected and copied in any viewer while it still looks exactly like the images.
+/// Recognition uses the in-box Windows engine (`Windows.Media.Ocr`, the user's profile
+/// languages). A page it cannot read goes in without text; if it could read none of them
+/// (typically no OCR language installed) the call fails and writes nothing, since the
+/// caller asked for searchable output and would otherwise get a silently plain PDF.
+pub fn combine_to_pdf_searchable(
+    paths: &[String],
+    out: &Path,
+    quality: u8,
+    on_omit: OnOmit,
+) -> Result<Combined> {
+    combine(
+        paths,
+        out,
+        quality,
+        st2k_base::settings::pdf_page(),
+        on_omit,
+        true,
+    )
+}
+
+/// The shared body of [`combine_to_pdf_paged`] and [`combine_to_pdf_searchable`].
+fn combine(
+    paths: &[String],
+    out: &Path,
+    quality: u8,
+    page: PdfPage,
+    on_omit: OnOmit,
+    searchable: bool,
+) -> Result<Combined> {
     if let Some(alias) = st2k_base::fsutil::aliased_input(out, paths.iter().map(String::as_str)) {
         return Err(Error::new(
             E_FAIL,
@@ -263,11 +365,17 @@ pub fn combine_to_pdf_paged(
     // pass would peak at N x decoded-image size on a hundreds-of-pages comic
     // combine. Per-worker COM init + the global magick cap are handled inside the
     // pool / decoder.
-    let attempts = st2k_base::parallel::map(&paths, |_, p| decode_page(p, quality));
+    let attempts = st2k_base::parallel::map(&paths, |_, p| decode_page(p, quality, searchable));
     let (pages, omitted) = partition(attempts);
     if pages.is_empty() {
         let headline = format!("pdf: none of the {} inputs could be decoded", paths.len());
         return Err(refuse(headline, &omitted));
+    }
+    if searchable && pages.iter().all(|p| p.words.is_none()) {
+        return Err(Error::new(
+            E_FAIL,
+            "pdf: text recognition failed on every page (is a Windows OCR language installed?)",
+        ));
     }
     if on_omit == OnOmit::Fail && !omitted.is_empty() {
         let headline = format!(
@@ -289,7 +397,7 @@ pub fn combine_to_pdf_paged(
             inner: std::io::BufWriter::new(file),
             pos: 0,
         };
-        write_pdf(&mut w, pages, page)
+        write_pdf(&mut w, pages, page, searchable)
             .map_err(|e| Error::new(E_FAIL, format!("write {}: {e}", tmp.display())))?;
         // Explicit flush: BufWriter::drop discards flush errors, and a disk-full on the
         // final block must fail the write rather than rename a truncated PDF into place.
@@ -421,6 +529,68 @@ mod tests {
             "combined PDF should render via Windows.Data.Pdf (three attempts)"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A text layer must not cost the page its picture or break the file: the glyphless font,
+    /// the ToUnicode CMap and the `3 Tr` words ride along in a PDF the OS engine still
+    /// renders, every object sits where the xref says (a miscounted font object would send a
+    /// strict viewer to the wrong bytes), and the word is the UTF-16 the identity CMap maps
+    /// back to text. Fixed word boxes, so no OCR language needs to be installed.
+    #[test]
+    fn a_text_layered_pdf_renders_and_its_xref_is_exact() {
+        let rgb = image::RgbImage::from_pixel(60, 40, image::Rgb([200, 200, 200]));
+        let words = vec![vec![WordBox {
+            text: "Hello".into(),
+            x: 5.0,
+            y: 10.0,
+            w: 40.0,
+            h: 12.0,
+        }]];
+        let page = Page {
+            jpeg: rgb_to_baseline_jpeg(&rgb, 85).unwrap(),
+            w: 60,
+            h: 40,
+            words: Some(words),
+        };
+        let mut w = Counted {
+            inner: Vec::new(),
+            pos: 0,
+        };
+        write_pdf(&mut w, vec![page], PdfPage::Tight, true).unwrap();
+        let bytes = w.inner;
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("3 Tr") && text.contains("<00480065006C006C006F> Tj"));
+        assert!(
+            text.contains("/Font << /F1 6 0 R >>"),
+            "font follows the page's 3 objects"
+        );
+        assert!(text.contains("/FontFile2") && text.contains("/ToUnicode"));
+
+        // Offsets are BYTE offsets: check them against `bytes`, never the lossy text.
+        let xref = text.rfind("xref\n").unwrap();
+        let rows: Vec<&str> = text[xref..].lines().skip(3).take(11).collect();
+        assert_eq!(
+            rows.len(),
+            11,
+            "catalog, pages, 3 page objects, 6 font objects"
+        );
+        for (k, row) in rows.iter().enumerate() {
+            let at: usize = row[..10].parse().unwrap();
+            let want = format!("{} 0 obj", k + 1);
+            assert!(bytes[at..].starts_with(want.as_bytes()), "{want} misplaced");
+        }
+
+        // Same calm-retry rule as `combines_two_images_into_a_renderable_pdf`.
+        let rendered = (0..3).any(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            decode::decode_full_for_output(&bytes).is_ok()
+        });
+        assert!(
+            rendered,
+            "a text-layered PDF should render via Windows.Data.Pdf"
+        );
     }
 
     /// `combine_to_pdf_paged` used to swallow undecodable inputs with no count kept anywhere

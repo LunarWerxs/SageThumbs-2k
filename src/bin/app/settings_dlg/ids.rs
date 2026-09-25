@@ -299,6 +299,7 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1150, "menu_convert_into"),
     (1151, "menu_convert_dialog"),
     (1152, "menu_combine_pdf"),
+    (1270, "menu_combine_pdf_searchable"), // 1270: the next free id past 1269
     (1153, "menu_combine_cbz"),
     (1154, "menu_resize"),
     (1155, "menu_email"),
