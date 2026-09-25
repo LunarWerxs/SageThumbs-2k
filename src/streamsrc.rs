@@ -322,7 +322,7 @@ unsafe fn try_video_source(
     // to seek into. That is a property of the fallback, not a bug to fix here.
     let probe = probe_container_tiers(stream, mf, at, who);
     let mf = probe.mf;
-    let frame = mp4_mkv_or_else_tiers(stream, head, probe.clip_bytes, mf, within_max, at);
+    let frame = mp4_mkv_or_else_tiers(stream, head, probe.clip_bytes, mf, within_max, at, who);
     if let Some(frame) = frame {
         return Some(Ok(resolve_decoded_frame(
             frame,
@@ -431,17 +431,39 @@ unsafe fn mp4_mkv_or_else_tiers(
     mf: bool,
     within_max: bool,
     at: f64,
+    who: &str,
 ) -> Option<image::DynamicImage> {
+    // ISSUE #35 twin (see `probe_container_tiers`): `mf` above is derived only from the
+    // mp4/mkv mini-clip, which is always `None` for a real .flv, so it says nothing about
+    // THIS track's profile. Build the FLV remux once, up front — like the mp4/mkv
+    // mini-clip — and fold its own profile check into the SAME `mf` every tier below
+    // respects, not just this tier's own call: without that, a refused FLV profile still
+    // reached the block-stream / prefix / tail-remux fallbacks further down this chain,
+    // each gated only on the stale `mf` that never learned about the FLV track at all.
+    let flv_clip = if clip_bytes.is_none() {
+        crate::flv::keyframe_mini_mp4(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+    } else {
+        None
+    };
+    let flv_mf_refused = flv_clip
+        .as_deref()
+        .and_then(|clip| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(clip)));
+    if let Some(reason) = &flv_mf_refused {
+        safety::log(&format!("{who}: {reason}; FLV remux skipped (issue #35)"));
+    }
+    let mf = mf && flv_mf_refused.is_none();
+
     clip_bytes
         .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
+        // FLV (H.264 only): already profile-checked above (folded into `mf`), so a run
+        // that reaches this point is clear to decode.
         .or_else(|| {
-            tier_if(mf, || {
-                crate::flv::keyframe_mini_mp4(&mut IStreamReader {
-                    stream: stream.clone(),
-                })
+            flv_clip
+                .filter(|_| mf)
                 .and_then(crate::video::frame_from_owned_bytes)
-            })
         })
         .or_else(|| {
             // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
