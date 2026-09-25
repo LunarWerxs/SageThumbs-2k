@@ -148,9 +148,18 @@ pub(crate) fn try_video_tier(
 
     // ISSUE #35, the by-bytes twin of the gate in `streamsrc::try_video_source`: a track
     // whose H.264 profile Windows' decoder does not implement (4:4:4 / 4:2:2 / 10-bit) is
-    // never handed to Media Foundation, on any tier. Read off the mini-clip already in RAM.
+    // never handed to Media Foundation, on any tier. Read off the mini-clip already in RAM
+    // for MP4/MKV, or, since a real .flv never produces one, off the FLV remux built here
+    // for that reason, so its profile check folds into the SAME `mf` every tier below
+    // respects (the raw-buffer MF fallback included, not just the FLV tier's own call).
+    let flv_clip = if mini.is_none() {
+        crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes))
+    } else {
+        None
+    };
     let mf_refused = mini
         .as_deref()
+        .or(flv_clip.as_deref())
         .and_then(|m| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(m)));
     if let Some(reason) = &mf_refused {
         st2k_base::safety::log(&format!(
@@ -164,7 +173,7 @@ pub(crate) fn try_video_tier(
     let content =
         crate::mpeg12::ts_content_len(&mut std::io::Cursor::new(bytes), bytes, bytes.len() as u64)
             .map_or(bytes, |n| &bytes[..n as usize]);
-    if let Some(frame) = frame_by_bytes(content, mini, mf, at) {
+    if let Some(frame) = frame_by_bytes(content, mini, flv_clip, mf, at) {
         return Some(Ok(rotated_as_displayed(
             frame,
             bytes,
@@ -194,16 +203,22 @@ pub(crate) fn try_video_tier(
 /// order: the container's own keyframe mini-clip through Media Foundation (`mf`), then the
 /// FLV remux, the out-of-process Flash decoder, MF over the raw buffer, and last the
 /// out-of-process VP9 and MPEG-1/2 decoders. `at` is the user's `VideoOffset` mark.
-fn frame_by_bytes(bytes: &[u8], mini: Option<Vec<u8>>, mf: bool, at: f64) -> Option<DynamicImage> {
+/// `flv_clip` is the FLV remux the caller already built and profile-checked into `mf`.
+fn frame_by_bytes(
+    bytes: &[u8],
+    mini: Option<Vec<u8>>,
+    flv_clip: Option<Vec<u8>>,
+    mf: bool,
+    at: f64,
+) -> Option<DynamicImage> {
     mini.filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
         // FLV (H.264 only): MF has no FLV demuxer, so without this remux the container
         // never opens at all. No index to honour `at` with — first keyframe (see `flv`).
+        // Already profile-checked by the caller (issue #35, folded into `mf`).
         .or_else(|| {
-            if !mf {
-                return None;
-            }
-            crate::flv::keyframe_mini_mp4(&mut std::io::Cursor::new(bytes))
+            flv_clip
+                .filter(|_| mf)
                 .and_then(crate::video::frame_from_owned_bytes)
         })
         // FLV, VP6/Sorenson (issue #26): NO Windows decoder exists for these, so the

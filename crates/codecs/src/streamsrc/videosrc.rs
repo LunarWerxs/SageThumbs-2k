@@ -130,7 +130,7 @@ pub(super) unsafe fn try_video_source(
     // to seek into. That is a property of the fallback, not a bug to fix here.
     let probe = probe_container_tiers(stream, mf, at, who);
     let mf = probe.mf;
-    let frame = mp4_mkv_or_else_tiers(stream, head, probe.clip_bytes, mf, within_max, at);
+    let frame = mp4_mkv_or_else_tiers(stream, head, probe.clip_bytes, mf, within_max, at, who);
     if let Some(frame) = frame {
         return Some(Ok(resolve_decoded_frame(
             frame,

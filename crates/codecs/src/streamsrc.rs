@@ -365,17 +365,38 @@ unsafe fn mp4_mkv_or_else_tiers(
     mf: bool,
     within_max: bool,
     at: f64,
+    who: &str,
 ) -> Option<image::DynamicImage> {
+    // ISSUE #35 twin (see `probe_container_tiers`): `mf` there is derived only from the
+    // mp4/mkv mini-clip, which is always `None` for a real .flv, so it says nothing about
+    // THIS track's profile. Build the FLV remux once, up front, and fold its own profile
+    // check into the SAME `mf` every tier below respects: otherwise a refused FLV profile
+    // still reached the block-stream / prefix / tail-remux fallbacks further down, each
+    // gated only on an `mf` that never learned about the FLV track.
+    let flv_clip = if mf && clip_bytes.is_none() {
+        crate::flv::keyframe_mini_mp4(&mut IStreamReader {
+            stream: stream.clone(),
+        })
+    } else {
+        None
+    };
+    let flv_refused = flv_clip
+        .as_deref()
+        .and_then(|clip| crate::vcodec::mf_undecodable_reason(&mut std::io::Cursor::new(clip)));
+    if let Some(reason) = &flv_refused {
+        safety::log(&format!(
+            "{who}: {reason}; every Media Foundation tier skipped (issue #35)"
+        ));
+    }
+    let mf = mf && flv_refused.is_none();
     clip_bytes
         .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
+        // 2b. FLV (H.264 only), already profile-checked above.
         .or_else(|| {
-            tier_if(mf, || {
-                crate::flv::keyframe_mini_mp4(&mut IStreamReader {
-                    stream: stream.clone(),
-                })
+            flv_clip
+                .filter(|_| mf)
                 .and_then(crate::video::frame_from_owned_bytes)
-            })
         })
         .or_else(|| {
             // 2c. FLV, VP6/Sorenson (issue #26): no Windows decoder exists, so the frame is
