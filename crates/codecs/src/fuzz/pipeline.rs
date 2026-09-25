@@ -112,7 +112,7 @@ fn read_shape(s: &mut ByteStream<'_>, max_pixels: u32) -> Shape {
     let height = 1 + u32::from(s.u16()) % tallest;
     // One image in four is a single flat colour, which is what lets a check assert the OUTPUT
     // and not just survival: no resize of a flat image may change its colour.
-    let flat = s.u8() % 4 == 0;
+    let flat = s.u8().is_multiple_of(4);
     Shape {
         layout,
         width,
@@ -225,7 +225,10 @@ fn describe(c: &Case) -> String {
 fn check_tile(what: &str, t: &crate::decode::Decoded, edge: u32) -> Result<(), String> {
     let (w, h) = (t.width, t.height);
     if t.rgba.len() != w as usize * h as usize * 4 {
-        return Err(format!("{what}: a {w}x{h} tile carries {} bytes", t.rgba.len()));
+        return Err(format!(
+            "{what}: a {w}x{h} tile carries {} bytes",
+            t.rgba.len()
+        ));
     }
     if w == 0 || h == 0 || w > edge || h > edge {
         return Err(format!("{what}: a {w}x{h} tile for a {edge}-pixel box"));
@@ -242,7 +245,13 @@ fn drifted(px: &[u8], want: [u8; 4]) -> bool {
 
 /// A flat image comes out the colour it went in, whatever filter or scale ran.
 fn check_flat(what: &str, t: &crate::decode::Decoded, want: [u8; 4]) -> Result<(), String> {
-    match t.rgba.chunks_exact(4).position(|px| drifted(px, want)) {
+    match t
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .position(|px| drifted(px, want))
+    {
         Some(i) => Err(format!(
             "{what}: flat {want:?} came out as {:?} at pixel {i}",
             &t.rgba[i * 4..i * 4 + 4]
@@ -281,10 +290,14 @@ fn check_reduce(c: &Case) -> Result<(), String> {
     let (ow, oh) = (out.width(), out.height());
     let (bw, bh) = (c.fit_box.0.max(1), c.fit_box.1.max(1));
     if ow == 0 || oh == 0 || ow > bw || oh > bh {
-        return Err(format!("reduce_to_fit: {w}x{h} into {bw}x{bh} gave {ow}x{oh}"));
+        return Err(format!(
+            "reduce_to_fit: {w}x{h} into {bw}x{bh} gave {ow}x{oh}"
+        ));
     }
     if w <= bw && h <= bh && (ow, oh) != (w, h) {
-        return Err(format!("reduce_to_fit: {w}x{h} fits {bw}x{bh} yet gave {ow}x{oh}"));
+        return Err(format!(
+            "reduce_to_fit: {w}x{h} fits {bw}x{bh} yet gave {ow}x{oh}"
+        ));
     }
     Ok(())
 }
@@ -398,7 +411,9 @@ fn encode_case(
     b.push(u8::from(!flat));
     // Sample material: a quiet NaN, negative infinity and 1.0 as big-endian floats, then
     // assorted bytes, so the float layouts meet non-finite samples on the named cases too.
-    b.extend([0x7F, 0xC0, 0x00, 0x00, 0xFF, 0x80, 0x00, 0x00, 0x3F, 0x80, 0x00, 0x00]);
+    b.extend([
+        0x7F, 0xC0, 0x00, 0x00, 0xFF, 0x80, 0x00, 0x00, 0x3F, 0x80, 0x00, 0x00,
+    ]);
     b.extend([0x10, 0xC7, 0x5A]);
     b
 }
