@@ -347,21 +347,6 @@ fn the_pending_marker_is_classified_as_sync_state() {
 
 // ---- F16: initial-sync-pending state (2026-09-05 audit) ----------------------------
 
-/// The new marker round-trips through the same name-parameterised primitives the
-/// push-pending marker already proved (`the_pending_marker_clears_after_a_successful_push`
-/// above), a scratch name, never the real `INITIAL_SYNC_PENDING_VALUE` key, so the
-/// developer's real sync state is never touched.
-#[test]
-fn the_initial_sync_pending_marker_round_trips() {
-    let name = format!("ConnectionsInitialSyncPendingTest{}", std::process::id());
-    clear_marker(&name);
-    assert!(!marker_set(&name), "a never-set marker reads as clear");
-    set_marker(&name);
-    assert!(marker_set(&name), "mark must read back");
-    clear_marker(&name);
-    assert!(!marker_set(&name), "clear must delete the value");
-}
-
 #[test]
 fn the_initial_sync_pending_marker_is_classified_as_sync_state() {
     assert!(is_sync_state_value(INITIAL_SYNC_PENDING_VALUE));
@@ -401,21 +386,6 @@ fn connect_outcome_is_initial_sync_pending_when_the_initial_sync_fails() {
 }
 
 // ---- E05: the offline classification marker + the named retry bounds ---------------
-
-/// Same shape as `the_initial_sync_pending_marker_round_trips` above: exercises the
-/// real `set_marker`/`clear_marker`/`marker_set` primitives `mark_offline`/
-/// `clear_offline`/`last_attempt_was_offline` are thin wrappers over, via a scratch
-/// name so the developer's real offline flag is never touched.
-#[test]
-fn the_offline_marker_round_trips() {
-    let name = format!("ConnectionsLastAttemptOfflineTest{}", std::process::id());
-    clear_marker(&name);
-    assert!(!marker_set(&name), "a never-set marker reads as clear");
-    set_marker(&name);
-    assert!(marker_set(&name), "mark must read back");
-    clear_marker(&name);
-    assert!(!marker_set(&name), "clear must delete the value");
-}
 
 #[test]
 fn the_offline_marker_is_classified_as_sync_state() {

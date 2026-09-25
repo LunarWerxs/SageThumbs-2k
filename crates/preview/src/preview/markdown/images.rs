@@ -349,53 +349,35 @@ mod resolve_src_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `..` walks the src out of the document folder — refused, not silently resolved to the
-    /// escaped file.
+    /// Every src spelling that leaves the document folder is refused, not silently resolved to
+    /// the escaped file. The drive-absolute and rooted rows name the REAL `secret.png` one level
+    /// up, so a refusal cannot come from the target simply not existing:
+    /// - `..` walks the src out of the document folder;
+    /// - a drive-relative src (`C:x.png`, no root separator) would make `Path::join` silently
+    ///   REPLACE `dir` per its own documented semantics, so it is refused before `join`;
+    /// - a drive-absolute src points straight past `dir`;
+    /// - a rooted-but-no-prefix src (`\windows\x.png`) would make `Path::join` replace
+    ///   everything but `dir`'s own drive prefix;
+    /// - a UNC src, either slash spelling: the pre-decode string guard in `load_img` normally
+    ///   catches these first, but `resolve_src` itself must refuse them too.
     #[test]
-    fn resolve_src_refuses_a_traversal_out_of_the_document_folder() {
+    fn resolve_src_refuses_every_escape_from_the_document_folder() {
         let root = scratch_dir();
         let dir = root.join("doc");
-        assert!(resolve_src("../secret.png", Some(&dir)).is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A drive-relative src (`C:x.png`, no root separator) would make `Path::join` silently
-    /// REPLACE `dir` per its own documented semantics — refused before it ever reaches `join`.
-    #[test]
-    fn resolve_src_refuses_a_drive_relative_src() {
-        let root = scratch_dir();
-        let dir = root.join("doc");
-        assert!(resolve_src("C:secret.png", Some(&dir)).is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A drive-absolute src points straight past `dir` — refused.
-    #[test]
-    fn resolve_src_refuses_a_drive_absolute_src() {
-        let root = scratch_dir();
-        let dir = root.join("doc");
-        assert!(resolve_src("C:\\Windows\\x.png", Some(&dir)).is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A rooted-but-no-prefix src (`\windows\x.png`) would make `Path::join` replace
-    /// everything but `dir`'s own drive prefix, per its documented semantics — refused.
-    #[test]
-    fn resolve_src_refuses_a_root_only_src() {
-        let root = scratch_dir();
-        let dir = root.join("doc");
-        assert!(resolve_src("\\windows\\x.png", Some(&dir)).is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A UNC src, either slash spelling, is refused — the pre-decode string guard in
-    /// `load_img` normally catches these first, but `resolve_src` itself must refuse them too.
-    #[test]
-    fn resolve_src_refuses_unc_srcs_both_spellings() {
-        let root = scratch_dir();
-        let dir = root.join("doc");
-        assert!(resolve_src("\\\\attacker\\share\\x.png", Some(&dir)).is_none());
-        assert!(resolve_src("//attacker/share/x.png", Some(&dir)).is_none());
+        let secret = root.join("secret.png");
+        let absolute = secret.to_string_lossy().into_owned();
+        let rooted: PathBuf = secret.components().skip(1).collect();
+        let rooted = rooted.to_string_lossy().into_owned();
+        for src in [
+            "../secret.png",
+            "C:secret.png",
+            absolute.as_str(),
+            rooted.as_str(),
+            "\\\\attacker\\share\\x.png",
+            "//attacker/share/x.png",
+        ] {
+            assert!(resolve_src(src, Some(&dir)).is_none(), "{src} resolved");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

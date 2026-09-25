@@ -467,10 +467,21 @@ mod pattern_tests {
         }
     }
 
+    /// Every placeholder, padded and unpadded counters, and the `{{`/`}}` literal-brace escape.
     #[test]
-    fn expands_name_and_ext() {
-        let c = ctx("vacation", "jpg", 1);
-        assert_eq!(expand_pattern("{name}.{ext}", &c).unwrap(), "vacation.jpg");
+    fn expands_each_placeholder() {
+        for (name, ext, n, pattern, want) in [
+            ("vacation", "jpg", 1, "{name}.{ext}", "vacation.jpg"),
+            ("f", "png", 7, "{n}", "7"),
+            ("f", "png", 7, "{n:3}", "007"),
+            ("f", "png", 7, "{n:1}", "7"),
+            ("f", "jpg", 1, "{date}", "2026-01-02"),
+            ("f", "jpg", 1, "{w}x{h}", "1920x1080"),
+            ("f", "jpg", 1, "{{{name}}}", "{f}"),
+        ] {
+            let c = ctx(name, ext, n);
+            assert_eq!(expand_pattern(pattern, &c).unwrap(), want, "{pattern}");
+        }
     }
 
     /// Audit concern 2 (2026-09-19): a name-only pattern must not cost a decode per file.
@@ -550,26 +561,6 @@ mod pattern_tests {
     }
 
     #[test]
-    fn expands_counter_unpadded_and_padded() {
-        let c = ctx("f", "png", 7);
-        assert_eq!(expand_pattern("{n}", &c).unwrap(), "7");
-        assert_eq!(expand_pattern("{n:3}", &c).unwrap(), "007");
-        assert_eq!(expand_pattern("{n:1}", &c).unwrap(), "7");
-    }
-
-    #[test]
-    fn expands_date() {
-        let c = ctx("f", "jpg", 1);
-        assert_eq!(expand_pattern("{date}", &c).unwrap(), "2026-01-02");
-    }
-
-    #[test]
-    fn expands_width_and_height() {
-        let c = ctx("f", "jpg", 1);
-        assert_eq!(expand_pattern("{w}x{h}", &c).unwrap(), "1920x1080");
-    }
-
-    #[test]
     fn missing_dims_expand_to_empty_not_an_error() {
         let mut c = ctx("f", "jpg", 1);
         c.w = None;
@@ -582,12 +573,6 @@ mod pattern_tests {
         let mut c = ctx("f", "jpg", 1);
         c.date = None;
         assert_eq!(expand_pattern("{date}", &c).unwrap(), "");
-    }
-
-    #[test]
-    fn literal_braces_are_escaped_with_doubling() {
-        let c = ctx("f", "jpg", 1);
-        assert_eq!(expand_pattern("{{{name}}}", &c).unwrap(), "{f}");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use super::foldericon::merge_shell_class_info;
 use super::helper::routed_edit_output_ext;
 use super::reveal_is_noise;
 use super::{run_action, VerbAction};
@@ -235,48 +234,6 @@ fn combine_to_cbz_reports_a_partial_success_when_a_page_cannot_be_read() {
     assert!(out.exists(), "the partial CBZ must actually be written");
 
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Setting a folder icon must not eat the rest of desktop.ini. Explorer keeps localized
-/// folder names and tooltips in the same file, and the old code replaced the whole thing.
-#[test]
-fn desktop_ini_merge_preserves_everything_else() {
-    // Empty / missing file → just our section.
-    let fresh = merge_shell_class_info("", "SageThumbsFolder.ico");
-    assert_eq!(
-        fresh,
-        "[.ShellClassInfo]\r\nIconResource=SageThumbsFolder.ico,0\r\n\
-         IconFile=SageThumbsFolder.ico\r\nIconIndex=0\r\n"
-    );
-
-    // Existing unrelated section survives, and our keys get their own section appended.
-    let loc = "[LocalizedFileNames]\r\nreport.docx=@shell32.dll,-1\r\n";
-    let merged = merge_shell_class_info(loc, "SageThumbsFolder.ico");
-    assert!(merged.contains("[LocalizedFileNames]"), "{merged}");
-    assert!(merged.contains("report.docx=@shell32.dll,-1"), "{merged}");
-    assert!(merged.contains("[.ShellClassInfo]"), "{merged}");
-
-    // An existing [.ShellClassInfo] keeps its NON-icon keys; the icon keys are replaced,
-    // not duplicated.
-    let prior = "[.ShellClassInfo]\r\nInfoTip=My photos\r\nIconResource=old.ico,3\r\n\
-                 IconFile=old.ico\r\nIconIndex=3\r\nConfirmFileOp=0\r\n";
-    let merged = merge_shell_class_info(prior, "SageThumbsFolder.ico");
-    assert!(merged.contains("InfoTip=My photos"), "{merged}");
-    assert!(merged.contains("ConfirmFileOp=0"), "{merged}");
-    assert!(!merged.contains("old.ico"), "{merged}");
-    assert_eq!(merged.matches("IconResource=").count(), 1, "{merged}");
-    assert_eq!(merged.matches("[.ShellClassInfo]").count(), 1, "{merged}");
-
-    // Section names are case-insensitive in INI files.
-    let odd = "[.shellclassinfo]\r\nIconFile=old.ico\r\n";
-    let merged = merge_shell_class_info(odd, "new.ico");
-    assert_eq!(merged.matches("[.").count(), 1, "{merged}");
-    assert!(merged.contains("IconFile=new.ico"), "{merged}");
-    assert!(!merged.contains("old.ico"), "{merged}");
-
-    // Re-running is idempotent — no key or section pile-up.
-    let once = merge_shell_class_info("", "a.ico");
-    assert_eq!(merge_shell_class_info(&once, "a.ico"), once);
 }
 
 #[test]

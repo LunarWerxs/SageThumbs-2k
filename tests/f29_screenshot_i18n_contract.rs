@@ -7,10 +7,12 @@
 //!
 //! 1. **Literal removal** - the exact English sentences these five files used to hardcode must
 //!    be GONE from the source (a translator fixing the locale tables cannot fix code that still
-//!    ignores them). `tools.rs` gets a narrower rule: its hint-strip words must vanish from the
-//!    localized `hint_label` function specifically, while the deliberately-unlocalized
-//!    `label()` (the `--screenshot-automation` window-title identifier `tests/screenshot_automation.rs`
-//!    parses) keeps them - see that function's doc comment for why.
+//!    ignores them). `no_new_hardcoded_display_strings` enforces that for every display literal
+//!    in the five files, not just the old ones. `tools.rs` gets a narrower rule: its hint-strip
+//!    words must vanish from the localized `hint_label` function specifically, while the
+//!    deliberately-unlocalized `label()` (the `--screenshot-automation` window-title identifier
+//!    `tests/screenshot_automation.rs` parses) keeps them - see that function's doc comment for
+//!    why.
 //! 2. **Real translation, not a copy** - for a sample of the new keys, `assets/locales/fr.toml`
 //!    must carry a DIFFERENT value than `assets/locales/en.toml`. A locale file that just
 //!    copy-pasted the English text would pass every other gate (key parity, placeholder parity,
@@ -62,68 +64,6 @@ fn assert_literals_absent(rel: &str, literals: &[&str]) {
              this string to come from the locale table instead"
         );
     }
-}
-
-#[test]
-fn toolbar_tooltips_no_longer_hardcode_english() {
-    assert_literals_absent(
-        "crates/screenshot/src/screenshot/toolbar.rs",
-        &[
-            "Rectangle (R) — drag to draw",
-            "Ellipse (O) — drag to draw",
-            "Arrow (A) — drag tail to head",
-            "Line (L) — drag to draw",
-            "Pen (P) — freehand draw",
-            "Text (T) — click then type",
-            "Number (N) — click to drop 1, 2, 3…",
-            "Highlight (H) — translucent marker",
-            "Pixelate (B) — blur/blockify a region",
-            "Invert (I) — invert a region's colours",
-            "Pick colour (E) — click a pixel to copy its hex",
-            "Move (M) — drag a shape",
-            "Colour (K) — cycle the palette",
-            "Undo (Ctrl+Z)",
-            "Redo (Ctrl+Y / Ctrl+Shift+Z)",
-            "Copy to the clipboard (Ctrl+C / Enter)",
-            "Copy text (OCR) (Ctrl+T) — read the words in the region",
-            "Save a PNG (Ctrl+S)",
-            "Upload & copy the link (Ctrl+U)",
-            "Close (Esc)",
-        ],
-    );
-}
-
-#[test]
-fn selection_hint_strip_no_longer_hardcodes_english() {
-    // Precise old CODE shapes (a quoted literal immediately where the removed source had one),
-    // not bare words - a bare "Ctrl-drag moves" or "Shift snaps 45°" could coincidentally match
-    // a doc comment or a test fixture using an unrelated marker string, which would make this
-    // test cry wolf on unrelated, legitimate text.
-    assert_literals_absent(
-        "crates/screenshot/src/screenshot/overlay/paint.rs",
-        &[
-            "Ctrl-drag moves  ·  Enter copy  ·  Ctrl+T text  ·  Ctrl+S save  ·  Esc close",
-            "\"  ·  F8 snap 45° ON\"",
-            "\"  ·  F8 snap 45° OFF\"",
-            "\"  ·  Shift snaps 45°\"",
-            "format!(\"size {}\", s.thickness)",
-            "format!(\"text {}\", -s.text_font.lfHeight)",
-        ],
-    );
-}
-
-#[test]
-fn text_flyout_captions_no_longer_hardcode_english() {
-    assert_literals_absent(
-        "crates/screenshot/src/screenshot/toolbar/textflyout.rs",
-        &[
-            "[x]  Bold",
-            "[  ]  Bold",
-            "[x]  Underline",
-            "[  ]  Underline",
-            "Font\\u{2026} (more)",
-        ],
-    );
 }
 
 #[test]

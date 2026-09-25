@@ -276,7 +276,7 @@ fn decode_utf16le(b: &[u8]) -> Option<String> {
 ///
 /// Output is CRLF, matching what Explorer writes. Section matching is case-insensitive because
 /// INI section names are.
-pub(super) fn merge_shell_class_info(prior: &str, ico_name: &str) -> String {
+fn merge_shell_class_info(prior: &str, ico_name: &str) -> String {
     let icon_keys = [
         format!("IconResource={ico_name},0"),
         format!("IconFile={ico_name}"),

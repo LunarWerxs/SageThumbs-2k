@@ -10,12 +10,29 @@ fn cells(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| (*s).to_string()).collect()
 }
 
-/// Everything 1.4's default layout: Name / Path / Size / Date Modified.
+/// Every column layout resolves to the focused file: Everything 1.4's default (Name / Path /
+/// Size / Date Modified); "Full Path & Name", which has no separate directory cell to join
+/// with; and a reordered layout, since columns are reorderable and the rule must not assume
+/// the path sits at index 1.
 #[test]
-fn default_columns_resolve_to_the_focused_file() {
-    let row = cells(&["sample.png", "D:\\corpus", "6 KB", "01/02/2026 03:04"]);
-    let got = resolve_result_row(&row, |p| p == "D:\\corpus\\sample.png");
-    assert_eq!(got.as_deref(), Some("D:\\corpus\\sample.png"));
+fn every_column_layout_resolves_to_the_focused_file() {
+    for (row, want) in [
+        (
+            &["sample.png", "D:\\corpus", "6 KB", "01/02/2026 03:04"][..],
+            "D:\\corpus\\sample.png",
+        ),
+        (
+            &["D:\\corpus\\sample.png", "6 KB"][..],
+            "D:\\corpus\\sample.png",
+        ),
+        (
+            &["sample.png", "6 KB", "01/02/2026", "\\\\nas\\share\\pics"][..],
+            "\\\\nas\\share\\pics\\sample.png",
+        ),
+    ] {
+        let got = resolve_result_row(&cells(row), |p| p == want);
+        assert_eq!(got.as_deref(), Some(want), "{row:?}");
+    }
 }
 
 /// THE regression this rule exists for. A Path cell is itself an existing directory, so a
@@ -29,22 +46,6 @@ fn a_path_cell_that_exists_does_not_win_over_the_join() {
         p == "C:\\Users\\me\\AppData\\Local" || p == "C:\\Users\\me\\AppData\\Local\\Temp"
     });
     assert_eq!(got.as_deref(), Some("C:\\Users\\me\\AppData\\Local\\Temp"));
-}
-
-/// A user who shows "Full Path & Name" has no separate directory cell to join with.
-#[test]
-fn a_single_full_path_column_resolves_on_its_own() {
-    let row = cells(&["D:\\corpus\\sample.png", "6 KB"]);
-    let got = resolve_result_row(&row, |p| p == "D:\\corpus\\sample.png");
-    assert_eq!(got.as_deref(), Some("D:\\corpus\\sample.png"));
-}
-
-/// Columns are reorderable, and the rule must not assume the path sits at index 1.
-#[test]
-fn the_directory_cell_can_be_any_column() {
-    let row = cells(&["sample.png", "6 KB", "01/02/2026", "\\\\nas\\share\\pics"]);
-    let got = resolve_result_row(&row, |p| p == "\\\\nas\\share\\pics\\sample.png");
-    assert_eq!(got.as_deref(), Some("\\\\nas\\share\\pics\\sample.png"));
 }
 
 /// Nothing on disk matches (a deleted result, or an ETP/FTP row) → no path, not a guess.

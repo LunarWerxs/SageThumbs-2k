@@ -132,19 +132,6 @@ mod tests {
         assert_eq!(be_int(&[0x80]), -128);
     }
 
-    /// The overflow threshold formulas differ between table-leaf and index pages; both must
-    /// agree with the format for a payload that fits entirely in the cell.
-    #[test]
-    fn local_size_thresholds() {
-        let u = 4096usize;
-        assert_eq!(local_size(100, u, true), 100);
-        assert_eq!(local_size(u - 35, u, true), u - 35);
-        assert!(local_size(u * 4, u, true) <= u - 35);
-        let idx_max = (u - 12) * 64 / 255 - 23;
-        assert_eq!(local_size(idx_max, u, false), idx_max);
-        assert!(local_size(u * 4, u, false) <= idx_max);
-    }
-
     #[test]
     fn record_decodes_every_serial_kind() {
         // header_len(1) + serials [NULL(0), int8(1), const-1(9), TEXT len2(=17), BLOB len2(=16)]

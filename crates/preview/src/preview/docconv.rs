@@ -579,33 +579,41 @@ fn consume_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 mod tests {
     use super::*;
 
+    /// Quoted fields (a delimiter and a doubled quote inside quotes), a literal `|` escaped so
+    /// it cannot split a markdown cell, CRLF line ends that must not leave a `\r` in the last
+    /// cell of a row, and the `#` row-number column leading the header and every data row.
     #[test]
-    fn csv_basic_and_quotes() {
-        let md = delimited_table("a,b\n\"x,1\",\"say \"\"hi\"\"\"\n", b',');
-        assert!(md.contains("| a | b |"));
-        assert!(md.contains("| x,1 | say \"hi\" |"));
-        assert!(md.contains("| --- | --- |"));
-    }
-
-    #[test]
-    fn csv_pipe_escape_and_crlf() {
-        let md = delimited_table("h1,h2\r\nval|ue,two\r\n", b',');
-        assert!(md.contains("val\\|ue"));
+    fn delimited_table_renders_each_row_shape() {
+        for (text, want) in [
+            (
+                "a,b\n\"x,1\",\"say \"\"hi\"\"\"\n",
+                &["| a | b |", "| x,1 | say \"hi\" |", "| --- | --- |"][..],
+            ),
+            (
+                "h1,h2\r\nval|ue,two\r\n",
+                &["| # | h1 | h2 |", "| 1 | val\\|ue | two |"][..],
+            ),
+            (
+                "a,b\n1,2\n3,4\n",
+                &[
+                    "| # | a | b |",
+                    "| --- | --- | --- |",
+                    "| 1 | 1 | 2 |",
+                    "| 2 | 3 | 4 |",
+                ][..],
+            ),
+        ] {
+            let md = delimited_table(text, b',');
+            for w in want {
+                assert!(md.contains(w), "{w:?} missing from:\n{md}");
+            }
+        }
     }
 
     #[test]
     fn csv_sniffs_semicolon() {
         assert_eq!(sniff_delim("a;b;c\n1;2;3"), b';');
         assert_eq!(sniff_delim("a,b\n"), b',');
-    }
-
-    #[test]
-    fn row_number_column_leads_header_and_data() {
-        let md = delimited_table("a,b\n1,2\n3,4\n", b',');
-        assert!(md.contains("| # | a | b |"));
-        assert!(md.contains("| --- | --- | --- |"));
-        assert!(md.contains("| 1 | 1 | 2 |"));
-        assert!(md.contains("| 2 | 3 | 4 |"));
     }
 
     #[test]
