@@ -353,27 +353,19 @@ unsafe fn probe_container_tiers(stream: &IStream, mf: bool, at: f64, who: &str) 
     }
 }
 
-/// Tiers 2b through 6: the tier-1/2 mini-clip (if any) decoded, then FLV remux, the
-/// out-of-process Flash decode, MF's own demuxer over a block-caching stream, the
-/// head-prefix and tail-remux fallbacks, and finally out-of-process VP9 profile 2/3.
-/// `clip_bytes` is [`ContainerProbe::clip_bytes`] and `mf` is its (possibly downgraded)
-/// `mf` flag - see `probe_container_tiers` and the tier comments in `try_video_source`.
-unsafe fn mp4_mkv_or_else_tiers(
+/// ISSUE #35 twin (see `probe_container_tiers`): the `mf` that function returns is derived only
+/// from the mp4/mkv mini-clip, which is always `None` for a real .flv, so it says nothing about
+/// THIS track's profile. Build the FLV remux once, up front (only when `build`), and fold its own
+/// profile check into the SAME `mf` every later tier respects: otherwise a refused FLV profile
+/// still reached the block-stream / prefix / tail-remux fallbacks, each gated only on an `mf`
+/// that never learned about the FLV track. Returns the remux and the (possibly downgraded) `mf`.
+fn flv_clip_profile_checked(
     stream: &IStream,
-    head: &StreamHead,
-    clip_bytes: Option<Vec<u8>>,
+    build: bool,
     mf: bool,
-    within_max: bool,
-    at: f64,
     who: &str,
-) -> Option<image::DynamicImage> {
-    // ISSUE #35 twin (see `probe_container_tiers`): `mf` there is derived only from the
-    // mp4/mkv mini-clip, which is always `None` for a real .flv, so it says nothing about
-    // THIS track's profile. Build the FLV remux once, up front, and fold its own profile
-    // check into the SAME `mf` every tier below respects: otherwise a refused FLV profile
-    // still reached the block-stream / prefix / tail-remux fallbacks further down, each
-    // gated only on an `mf` that never learned about the FLV track.
-    let flv_clip = if mf && clip_bytes.is_none() {
+) -> (Option<Vec<u8>>, bool) {
+    let flv_clip = if build {
         crate::flv::keyframe_mini_mp4(&mut IStreamReader {
             stream: stream.clone(),
         })
@@ -388,7 +380,24 @@ unsafe fn mp4_mkv_or_else_tiers(
             "{who}: {reason}; every Media Foundation tier skipped (issue #35)"
         ));
     }
-    let mf = mf && flv_refused.is_none();
+    (flv_clip, mf && flv_refused.is_none())
+}
+
+/// Tiers 2b through 6: the tier-1/2 mini-clip (if any) decoded, then FLV remux, the
+/// out-of-process Flash decode, MF's own demuxer over a block-caching stream, the
+/// head-prefix and tail-remux fallbacks, and finally out-of-process VP9 profile 2/3.
+/// `clip_bytes` is [`ContainerProbe::clip_bytes`] and `mf` is its (possibly downgraded)
+/// `mf` flag - see `probe_container_tiers` and the tier comments in `try_video_source`.
+unsafe fn mp4_mkv_or_else_tiers(
+    stream: &IStream,
+    head: &StreamHead,
+    clip_bytes: Option<Vec<u8>>,
+    mf: bool,
+    within_max: bool,
+    at: f64,
+    who: &str,
+) -> Option<image::DynamicImage> {
+    let (flv_clip, mf) = flv_clip_profile_checked(stream, mf && clip_bytes.is_none(), mf, who);
     clip_bytes
         .filter(|_| mf)
         .and_then(crate::video::frame_from_owned_bytes)
