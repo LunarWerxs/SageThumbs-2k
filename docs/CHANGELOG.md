@@ -15,6 +15,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   searched, and their text selected and copied, in any PDF viewer. Pages OCR could not read
   still go in without text, and the CLI (`no text:` line) and JSON (`pages_without_text`)
   say how many.
+- **Hardening.** The step every decoded picture goes through before it becomes a thumbnail or
+  a preview (shrinking, enlarging, rotating, and the contact sheet for archives) is now fuzzed
+  with images that are always valid, in every pixel format and shape, and checked for the right
+  size and colour rather than only for crashes. The deep fuzz sessions now run every night
+  instead of only before a release.
 
 ## 3.3.0
 

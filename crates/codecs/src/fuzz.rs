@@ -23,6 +23,14 @@
 //! `decode::decode_menu_preview`, the same cascade minus those out-of-process tiers, so our
 //! native JXL/DDS/container decoders get mutated real files too.
 //!
+//! Behind the decoders: `pipeline` reads its fuzz bytes as an image that is always valid (any
+//! sample layout, any shape up to 2048x1, flat or noisy, NaN floats included) and runs it
+//! through the fitting code every decoded picture reaches next - the thumbnail fits, the shared
+//! `reduce_to_fit`, the display rotation and the archive contact sheet - asserting their size
+//! and flat-colour contracts, not just the absence of a panic. Its deep session runs nightly,
+//! beside the full-depth synthetic sweep and the deep parser session, in
+//! `.github/workflows/fuzz-nightly.yml`.
+//!
 //! Determinism: a fixed-seed xorshift PRNG (no `rand`, and `Date`/`Instant`-free per repo
 //! rules), so a failure is always reproducible and CI is stable.
 
@@ -42,6 +50,9 @@ use surfaces::*;
 // The corpus session is self-contained (its tests live in the child), so nothing is imported
 // from it here.
 mod corpus;
+// The second kind of target: bytes read as an always-valid image and run through the
+// thumbnail/preview fitting code behind the decoders. Self-contained like `corpus`.
+mod pipeline;
 
 /// Builds the always-on seed set: synthetic container seeds, `container::fuzzseed`/new-surface
 /// seeds, header stubs, and a few random buffers.

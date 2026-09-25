@@ -1,0 +1,70 @@
+# Nightly deep fuzzing of the codecs crate, in release.
+#
+# Why this exists: the always-on fuzz gate (`fuzz::parsers_survive_mutation_of_synthetic_seeds`
+# and `fuzz::pipeline::thumbnail_pipeline_keeps_its_contract_on_always_valid_images`) runs on
+# every push, but it is sized to cost seconds. Depth lives in three #[ignore]d sessions that
+# until now ran only when someone remembered to start them by hand:
+#   - the full-depth sweep over the synthetic seeds (every parser, deep truncation);
+#   - the deep session over the newer parsers (stacked mutations and cross-seed grafts);
+#   - the deep session over the thumbnail pipeline, whose inputs are always-valid images, so
+#     every second of it goes to the fit/reduce/rotate/contact-sheet code behind the decoders.
+# Running them on a schedule turns "fuzzed before a release, if remembered" into "fuzzed every
+# night", and a red run carries the reproducing input in its log (each session prints it).
+#
+# Release profile on purpose: debug fuzzing is ~7x slower (see fuzz.rs), and the per-push
+# "validation stays debug" contract in scripts/test-architecture-release-contract.ps1 is about
+# ci.yml, which this file does not touch. No test-corpus exists on a runner, so the sessions
+# fuzz their synthetic seeds; the corpus pass stays a local, by-hand run.
+#
+# Dispatch by hand with a longer budget:  gh workflow run fuzz-nightly.yml -f seconds=1800
+name: Nightly fuzz
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Time budget per deep session, in seconds'
+        required: false
+        default: '900'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ST2K_FUZZ_SECS: ${{ github.event.inputs.seconds || '900' }}
+
+jobs:
+  deep-fuzz:
+    name: deep fuzz sessions (codecs, release)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
+      - name: Toolchain
+        run: rustup show
+
+      # Same hand-maintained pin as ci.yml (see the note there on why there is no dependabot).
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build the codecs test binary
+        run: cargo test --release --locked -p sagethumbs2k-codecs --lib --no-run
+
+      # One step per session, so a red run names the session that failed and the others
+      # still report. `if: !cancelled()` keeps a failure in one from skipping the rest.
+      - name: Full-depth sweep over the synthetic seeds
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::full_depth_sweep_over_the_synthetic_seeds -- --ignored --nocapture
+
+      - name: Deep session over the newer parsers
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::surfaces::deep_session_over_the_new_parsers -- --ignored --nocapture
+
+      - name: Deep session over the thumbnail pipeline (always-valid images)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::pipeline::deep_session_over_the_thumbnail_pipeline -- --ignored --nocapture
