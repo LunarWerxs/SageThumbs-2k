@@ -56,12 +56,12 @@ collapses are deliberate:
 | 2 | Portable settings export omits the sign-in (credential, identity, licence certificate) and import preserves it; the export also lands cleanly in an installed copy's registry (F04, F05) | portable | standard | same | one | AUTOMATED | `tests/settings_io_portable.rs::portable_export_omits_credentials_and_import_preserves_them` |
 | 3 | A fresh portable copy's first-run welcome window adds the thumbnails opt-in row | portable | standard | same | one | AUTOMATED | `tests/first_run_shot.rs::portable_welcome_adds_the_thumbnails_row` |
 | 4 | A portable copy launched elevated still resolves its ini beside the EXE, never HKLM or the administrator's HKCU | portable | admin | same | one | MANUAL | Manual procedure 1 |
-| 5 | A portable copy stored on a removable or network drive that goes offline mid-session: a setting write fails silently | portable | standard | same | one | UNSUPPORTED | `src/settings.rs`, `portable::update` doc comment: "every public setter here is best-effort"; a failed write is only logged via `crate::safety::log_debug`, with no user-facing error and no detection that the backing drive went offline |
-| 6 | The sync-pending marker actually clears after a successful push, so Settings does not silently re-push forever (F06) | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client.rs::tests::finish_push_worker_only_clears_the_marker_on_a_successful_last_finish` |
-| 7 | Every registry setting is classified as syncing or never-syncing, so a newly added setting cannot silently stop syncing | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client.rs::tests::every_setting_is_classified` |
+| 5 | A portable copy stored on a removable or network drive that goes offline mid-session: a setting write fails silently | portable | standard | same | one | UNSUPPORTED | `crates/base/src/settings.rs`, `portable::update` doc comment: "every public setter here is best-effort"; a failed write is only logged via `crate::safety::log_debug`, with no user-facing error and no detection that the backing drive went offline |
+| 6 | The sync-pending marker actually clears after a successful push, so Settings does not silently re-push forever (F06) | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client/tests.rs::finish_push_worker_only_clears_the_marker_on_a_successful_last_finish` |
+| 7 | Every registry setting is classified as syncing or never-syncing, so a newly added setting cannot silently stop syncing | installed | standard | same | one | AUTOMATED | `src/bin/app/sync_client/tests.rs::every_setting_is_classified` |
 | 8 | The diagnostics report warns that an elevated process's HKCU checks read the administrator's hive, not the interactive user's | installed | admin | same | one | MANUAL | Manual procedure 2 |
-| 9 | Two racing writers each writing the shared licence history preserve their own change instead of the second silently discarding the first (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license.rs::tests::two_concurrent_sessions_through_the_lock_both_preserve_their_change` |
-| 10 | A licence-history lock that times out writes nothing, rather than clobbering the newer history the other writer wrote (F18) | installed | standard | same | two threads | AUTOMATED | `src/bin/app/license.rs::tests::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history` |
+| 9 | Two racing writers each writing the shared licence history preserve their own change instead of the second silently discarding the first (F18) | installed | standard | same | two threads | AUTOMATED | `crates/appkit/src/license/tests/history.rs::two_concurrent_sessions_through_the_lock_both_preserve_their_change` |
+| 10 | A licence-history lock that times out writes nothing, rather than clobbering the newer history the other writer wrote (F18) | installed | standard | same | two threads | AUTOMATED | `crates/appkit/src/license/tests/history.rs::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history` |
 | 11 | A second interactive user (RDP session) sees their own independent settings, unaffected by the console user's changes | installed | standard | alternate admin | two | MANUAL | Manual procedure 3 |
 | 12 | The modern (Win11) context-menu package registers as the original signed-in user during an elevated install, never SYSTEM or the administrator (F08) | installed | admin | same | one | AUTOMATED | `scripts/test-installer-lint.ps1::Test-ModernMenuRegistersAsOriginalUser` |
 | 13 | Uninstall/upgrade removes only the exact certificate thumbprint that was installed, never a wildcard-subject sweep of `TrustedPeople` (F09) | installed | admin | same | one | AUTOMATED | `scripts/test-installer-lint.ps1::Test-ExactThumbprintCertRemoval` |
@@ -152,8 +152,8 @@ real ARM64 hardware, since nothing in CI installs the packaged app there.
 
 ### Procedure 6: two real logon sessions share the licence history lock (row 20)
 
-Guards: the automated tests at `license.rs::tests::two_concurrent_sessions_through_the_lock_both_preserve_their_change`
-and `license.rs::tests::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history`
+Guards: the automated tests at `license/tests/history.rs::two_concurrent_sessions_through_the_lock_both_preserve_their_change`
+and `license/tests/history.rs::a_lock_that_times_out_writes_nothing_rather_than_clobbering_newer_history`
 only spawn two threads inside one process under one logon session (the code's own comment
 above those tests explains that a real second logon session cannot be created in a test).
 This procedure exercises the case those tests cannot: two genuinely separate Windows

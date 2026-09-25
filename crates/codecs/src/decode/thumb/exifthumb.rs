@@ -1,0 +1,221 @@
+//! The EXIF side of a thumbnail: the embedded IFD1 preview and the orientation tag.
+
+use super::*;
+use crate::container::util::{tiff_u16, tiff_u32};
+
+/// Decode a JPEG's embedded EXIF thumbnail (if any), applying the file's EXIF
+/// orientation so it matches the full image. Best-effort: any malformation or
+/// absence yields None and the caller does a full decode.
+pub(in super::super) fn embedded_thumbnail(bytes: &[u8]) -> Option<DynamicImage> {
+    let jpeg = exif_thumbnail_jpeg(bytes)?;
+    let img = decode_with_image(jpeg).ok()?;
+    Some(apply_exif_orientation(img, bytes))
+}
+
+/// Find the embedded thumbnail JPEG inside a JPEG's APP1/"Exif\0\0" segment and
+/// return a slice of `bytes` covering that thumbnail's own JPEG stream.
+pub(in super::super) fn exif_thumbnail_jpeg(bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.get(0..2)? != [0xFF, 0xD8] {
+        return None; // not a JPEG → no EXIF thumbnail to find
+    }
+    let mut i = 2usize;
+    loop {
+        let (marker, body_start, seg_end) = jpeg_segment(bytes, i)?;
+        // Match the "Exif\0\0" id ONLY within this segment's own body — never
+        // read past seg_end. Confining it here also guarantees body_start+6 <=
+        // seg_end whenever it matches, so the slice below can't be start>end
+        // (which would panic — and under panic=abort that aborts the host).
+        if marker == 0xE1 && bytes.get(body_start..seg_end)?.starts_with(b"Exif\0\0") {
+            return tiff_thumbnail(bytes.get(body_start + 6..seg_end)?);
+        }
+        i = seg_end;
+    }
+}
+
+/// Parse one JPEG marker segment starting at `i`, returning `(marker, body_start, seg_end)`.
+/// `None` means the caller is past the metadata headers (truncated input, a byte that is not
+/// a marker, or the EOI / start-of-scan marker) — the point at which no EXIF thumbnail can
+/// follow. The segment length includes its own two length bytes, so `seg_len < 2` is malformed.
+pub(super) fn jpeg_segment(bytes: &[u8], i: usize) -> Option<(u8, usize, usize)> {
+    // Each marker is 0xFF <marker> <len-hi> <len-lo> ...
+    if *bytes.get(i)? != 0xFF {
+        return None;
+    }
+    let marker = *bytes.get(i + 1)?;
+    if marker == 0xD9 || marker == 0xDA {
+        return None; // EOI / start-of-scan: past the metadata headers
+    }
+    // A fill byte: this 0xFF only pads, and the one after it starts the real marker, so step
+    // ONE byte (two would swallow that marker's own 0xFF and end the walk).
+    if marker == 0xFF {
+        return Some((marker, i + 1, i + 1));
+    }
+    // Standalone markers — TEM, RSTn, SOI — have no length bytes to read. Step over just the
+    // marker (an empty body) so the next iteration lands on the real marker instead of
+    // treating two of its bytes as a segment length.
+    if marker == 0x01 || (0xD0..=0xD8).contains(&marker) {
+        return Some((marker, i + 2, i + 2));
+    }
+    let seg_len = u16::from_be_bytes([*bytes.get(i + 2)?, *bytes.get(i + 3)?]) as usize;
+    if seg_len < 2 {
+        return None;
+    }
+    let body_start = i + 4;
+    let seg_end = i + 2 + seg_len;
+    if seg_end > bytes.len() {
+        return None;
+    }
+    Some((marker, body_start, seg_end))
+}
+
+/// Walk the TIFF block (IFD0 → IFD1) for the thumbnail offset (0x0201) and
+/// length (0x0202), returning the embedded JPEG slice. All offsets are relative
+/// to the TIFF header (`tiff[0]`). Fully bounds-checked — never panics.
+pub(in super::super) fn tiff_thumbnail(tiff: &[u8]) -> Option<&[u8]> {
+    let (le, ifd0) = tiff_header(tiff)?;
+    let (off, len) = ifd1_thumbnail_range(tiff, le, ifd0)?;
+    let end = off.checked_add(len)?;
+    let thumb = tiff.get(off..end)?;
+    // Sanity: a real embedded thumbnail is itself a JPEG.
+    if thumb.get(0..2)? == [0xFF, 0xD8] {
+        Some(thumb)
+    } else {
+        None
+    }
+}
+
+/// Read a TIFF header's byte order and its IFD0 offset, rejecting anything that is not a
+/// big/little-endian TIFF (the `42` magic) or is too short to hold the header.
+pub(super) fn tiff_header(tiff: &[u8]) -> Option<(bool, usize)> {
+    let le = match tiff.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    if tiff_u16(tiff, le, 2)? != 42 {
+        return None;
+    }
+    let ifd0 = tiff_u32(tiff, le, 4)? as usize;
+    Some((le, ifd0))
+}
+
+/// Walk IFD0's IFD1 pointer and then IFD1's own entry table for the thumbnail offset (0x0201)
+/// and length (0x0202), returning that `(offset, length)` pair. All offsets are relative to the
+/// TIFF header (`tiff[0]`).
+pub(super) fn ifd1_thumbnail_range(tiff: &[u8], le: bool, ifd0: usize) -> Option<(usize, usize)> {
+    // IFD1 pointer follows IFD0's entries.
+    let n0 = tiff_u16(tiff, le, ifd0)? as usize;
+    let ifd1 = tiff_u32(tiff, le, ifd0 + 2 + n0 * 12)? as usize;
+    if ifd1 == 0 {
+        return None;
+    }
+
+    let n1 = tiff_u16(tiff, le, ifd1)? as usize;
+    scan_ifd1_entries(tiff, le, ifd1, n1)
+}
+
+/// Scan IFD1's `n1`-entry table for the thumbnail offset (0x0201) and length (0x0202) tags.
+fn scan_ifd1_entries(tiff: &[u8], le: bool, ifd1: usize, n1: usize) -> Option<(usize, usize)> {
+    let (mut off, mut len) = (None, None);
+    for e in 0..n1 {
+        let entry = ifd1 + 2 + e * 12;
+        match tiff_u16(tiff, le, entry)? {
+            0x0201 => off = Some(tiff_u32(tiff, le, entry + 8)? as usize), // JPEGInterchangeFormat
+            0x0202 => len = Some(tiff_u32(tiff, le, entry + 8)? as usize), // …Length
+            _ => {}
+        }
+    }
+    Some((off?, len?))
+}
+
+/// Map the 8 EXIF orientation values onto `image` transforms. Phone JPEGs
+/// commonly use value 6 (rotate 90° CW). `rotate90` here is clockwise.
+pub(in super::super) fn apply_exif_orientation(img: DynamicImage, bytes: &[u8]) -> DynamicImage {
+    match exif_orientation(bytes) {
+        Some(2) => img.fliph(),
+        Some(3) => img.rotate180(),
+        Some(4) => img.flipv(),
+        Some(5) => img.rotate90().fliph(),
+        Some(6) => img.rotate90(),
+        Some(7) => img.rotate270().fliph(),
+        Some(8) => img.rotate270(),
+        _ => img,
+    }
+}
+
+/// EXIF Orientation (tag `0x0112`) straight out of IFD0, walking only the entry table
+/// with the existing [`tiff_u16`]/[`tiff_u32`] helpers — the bounded, zero-copy sibling of
+/// [`tiff_thumbnail`]'s IFD1 walk, for the one question this call site actually needs
+/// answered. `exif::Reader::read_from_container` reads a TIFF-magic buffer whole to
+/// answer this same one-tag question, and every camera RAW this handler is hooked for
+/// IS a TIFF container, so this is what keeps a 150 MB scanner TIFF (or a multi-GB RAW)
+/// from paying that internal cost just to orient a thumbnail. Fully bounds-checked —
+/// never panics on a truncated or hostile IFD.
+pub(super) fn tiff_ifd0_orientation(tiff: &[u8]) -> Option<u32> {
+    let (le, ifd0) = tiff_header(tiff)?;
+    ifd0_orientation(tiff, le, ifd0)
+}
+
+/// Orientation (tag `0x0112`) from IFD0's entry table, walking it with the bounded [`tiff_u16`]
+/// helpers. `None` when the table has no Orientation entry or is truncated.
+pub(super) fn ifd0_orientation(tiff: &[u8], le: bool, ifd0: usize) -> Option<u32> {
+    let n0 = tiff_u16(tiff, le, ifd0)? as usize;
+    for e in 0..n0 {
+        let entry = ifd0.checked_add(2)?.checked_add(e.checked_mul(12)?)?;
+        if tiff_u16(tiff, le, entry)? != 0x0112 {
+            continue;
+        }
+        // Orientation is SHORT (type 3) and left-justified in the 4-byte value field in
+        // both endiannesses, the same read `rawsniff.rs`'s NewSubfileType entry uses.
+        return tiff_u16(tiff, le, entry.checked_add(8)?).map(u32::from);
+    }
+    None
+}
+
+pub(crate) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
+    // Magic-gate before handing the bytes to `exif::Reader`: it only reads EXIF from
+    // JPEG / TIFF / PNG / WebP / HEIF, returning an error (→ None) for anything else.
+    // Skipping the reader setup for the formats it can't read (GIF/BMP/ICO/QOI/TGA/
+    // PNM/DDS/…) is behavior-identical and saves a parse attempt on every such
+    // thumbnail. (PNG/WebP/HEIF stay in — they CAN carry an EXIF orientation.)
+    if !has_exif_container(bytes) {
+        return None;
+    }
+    // TIFF magic (classic and camera-RAW TIFF containers): read Orientation directly out
+    // of IFD0 rather than handing the whole buffer to `exif::Reader` — see
+    // `tiff_ifd0_orientation`. JPEG/PNG/WebP/HEIF keep the general-purpose reader.
+    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        return tiff_ifd0_orientation(bytes);
+    }
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(bytes))
+        .ok()?;
+    let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+    field.value.get_uint(0)
+}
+
+/// True if `bytes` is one of the containers `exif::Reader` can read (JPEG, TIFF,
+/// PNG, WebP, HEIF/HEIC/AVIF) — the only formats that can carry an EXIF orientation.
+pub(in super::super) fn has_exif_container(b: &[u8]) -> bool {
+    b.len() >= 12
+        && (b.starts_with(&[0xFF, 0xD8])                       // JPEG
+            || b.starts_with(b"II*\0")                         // TIFF little-endian
+            || b.starts_with(b"MM\0*")                         // TIFF big-endian
+            || b.starts_with(&[0x89, b'P', b'N', b'G'])        // PNG (eXIf chunk)
+            || (b.starts_with(b"RIFF") && &b[8..12] == b"WEBP") // WebP
+            || &b[4..8] == b"ftyp") // ISOBMFF: HEIF/HEIC/AVIF
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 0xFF fill byte is one byte: stepping two would swallow the next marker's own 0xFF and
+    /// end the walk before the APP1 segment that carries the EXIF thumbnail.
+    #[test]
+    fn a_fill_byte_steps_one_byte_and_the_next_marker_still_parses() {
+        let bytes = [0xFF, 0xD8, 0xFF, 0xFF, 0xE1, 0x00, 0x04, 0xAA, 0xBB];
+        assert_eq!(jpeg_segment(&bytes, 2), Some((0xFF, 3, 3)));
+        assert_eq!(jpeg_segment(&bytes, 3), Some((0xE1, 7, 9)));
+    }
+}

@@ -37,16 +37,15 @@ $installer = Get-Item -LiteralPath $InstallerPath -ErrorAction Stop
 Assert-ReleasePeMetadata -Path $installer.FullName -Version $Version -Description 'SageThumbs 2K Setup'
 $sha256 = Get-ReleaseSha256 -Path $installer.FullName
 
+$body = Format-ReleaseNotesBody -Section $section -Version $Version
 $notes = @"
-## What's changed
+$body
 
-$section
+## Downloads
 
-## Verified installer
+Every file below is code-signed by LUNARWERX LLC; the SHA-256 lets you check a download is the one published here.
 
-- **File:** ``$($installer.Name)``
-- **Size:** $($installer.Length) bytes
-- **SHA-256:** ``$sha256``
+- **x64 installer:** ``$($installer.Name)`` · SHA-256 ``$sha256``
 "@
 
 $outputDirectory = Split-Path $OutputPath -Parent

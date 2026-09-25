@@ -113,7 +113,22 @@ body:
       render: text
 
   - type: textarea
+    id: sample
+    attributes:
+      label: The file it happens with
+      description: |
+        **Please attach one file that shows the problem** — this is what decides how fast it gets
+        fixed. Without it we can only guess at how it was saved, and a guess is what makes the same
+        report come back after the "fix". Drag it straight into this box. GitHub refuses most
+        image and document extensions, so put it in a `.zip` first (right-click ▸ Send to ▸
+        Compressed folder). Keep it small, make sure it's yours to share and has nothing private
+        in it, and say which program and version made it. If it's about "every file of this type",
+        one typical file is enough. If it's not about a file at all, write "no file".
+    validations:
+      required: true
+
+  - type: textarea
     id: extra
     attributes:
       label: Anything else?
-      description: Screenshots, a sample file, or anything you think matters. Drag files straight in.
+      description: Screenshots or anything you think matters. Drag files straight in.

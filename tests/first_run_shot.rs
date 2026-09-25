@@ -101,12 +101,14 @@ fn portable_welcome_adds_the_thumbnails_row() {
     let _ = std::fs::remove_dir_all(scratch("portable"));
 }
 
-/// Page 2 carries THREE opt-ins now, which is one more than `DLG_H` was sized for, so
-/// `flip_to_page2` grows the window. If that resize is ever dropped, the third row and the
-/// button end up sharing the same strip of pixels — and because the controls are still
-/// created, nothing errors and no other test notices. The height IS the assertion.
+/// Page 2 carries two opt-ins since 2026-09-15 (it carried three, and grew the window by a
+/// reserved row to fit them), the same count page 1 shows an installed copy, so it fits the
+/// window it inherits and `flip_to_page2` only grows for a translation that needs another
+/// line. The width must not move between pages, and page 2 must never come out SHORTER than
+/// page 1: `fit_window` never shrinks, so a smaller capture would mean the flip rebuilt the
+/// window rather than re-used it. Equal is the expected English result.
 #[test]
-fn page_two_grows_to_fit_its_third_opt_in() {
+fn page_two_fits_the_window_page_one_leaves_it() {
     let page1 = shot_window("p1", false, "firstrun");
     let page2 = shot_window("p2", false, "firstrun2");
 
@@ -115,10 +117,9 @@ fn page_two_grows_to_fit_its_third_opt_in() {
 
     assert_eq!(w1, w2, "width must not change between pages");
     assert!(
-        h2 > h1,
-        "page 2 must be taller than page 1 to fit its third opt-in \
-         (page 1 {w1}x{h1}, page 2 {w2}x{h2}): equal heights mean the page-2 fit pass is not \
-         running and the last row is drawn under the Get started button"
+        h2 >= h1,
+        "page 2 must be at least as tall as page 1 \
+         (page 1 {w1}x{h1}, page 2 {w2}x{h2}): the flip re-uses the window and only grows it"
     );
 
     let _ = std::fs::remove_dir_all(scratch("p1"));

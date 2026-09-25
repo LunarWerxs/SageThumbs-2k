@@ -23,7 +23,7 @@
 use core::mem::ManuallyDrop;
 use std::sync::Mutex;
 
-use windows::core::{Error, Result, PCWSTR, PWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     E_FAIL, E_INVALIDARG, E_POINTER, FILETIME, PROPERTYKEY, STG_E_ACCESSDENIED, SYSTEMTIME,
 };
@@ -36,7 +36,6 @@ use windows::Win32::Storage::EnhancedStorage::{
     PKEY_Photo_CameraModel, PKEY_Photo_DateTaken, PKEY_Title, PKEY_Video_FrameHeight,
     PKEY_Video_FrameWidth,
 };
-use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::Com::StructuredStorage::{
     InitPropVariantFromFileTime, InitPropVariantFromStringVector, PROPVARIANT, PROPVARIANT_0,
     PROPVARIANT_0_0, PROPVARIANT_0_0_0,
@@ -48,7 +47,7 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
 };
 use windows_implement::implement;
 
-use crate::safety;
+use st2k_base::safety;
 
 /// Hard wall-clock cap on one in-process metadata query (see
 /// [`PropertyStore_Impl::build_props`]).  Explorer and SearchIndexer call property handlers on
@@ -76,7 +75,7 @@ static PROBE_POOL: safety::LeasePool<MAX_ACTIVE_PROBES> = safety::LeasePool::new
 /// an MTA host fail cleanly instead of racing the borrow flag.
 #[implement(IPropertyStore, IInitializeWithFile)]
 pub struct PropertyStore {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     path: Mutex<Option<String>>,
     /// Built lazily from the file on the first query, then cached for this instance.
     props: Mutex<Option<Vec<(PROPERTYKEY, PROPVARIANT)>>>,
@@ -86,7 +85,7 @@ impl Default for PropertyStore {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             path: Mutex::new(None),
             props: Mutex::new(None),
         }
@@ -102,6 +101,12 @@ impl IInitializeWithFile_Impl for PropertyStore_Impl {
             // null-check first).
             if pszfilepath.is_null() {
                 return Err(Error::from(E_POINTER));
+            }
+            // The business-licence lock (see `licence_state`): a locked copy declines to
+            // initialise, so the Details pane and the columns simply show nothing for the
+            // formats we own - the same thing the shell does when no handler is registered.
+            if st2k_base::licence_state::shell_locked() {
+                return Err(Error::from(E_FAIL));
             }
             let path = unsafe { pszfilepath.to_string() }.map_err(|_| Error::from(E_FAIL))?;
             // A host is free to re-Initialize one PropertyStore instance across several files
@@ -207,8 +212,8 @@ impl PropertyStore_Impl {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         let is_video = matches!(
-            crate::formats::category(&ext),
-            crate::formats::Category::Video
+            st2k_base::formats::category(&ext),
+            st2k_base::formats::Category::Video
         );
 
         // Image dimensions + EXIF camera (same probe "Image info" uses, under the decode guards).
@@ -254,38 +259,7 @@ impl PropertyStore_Impl {
         }
 
         // Audio tags (lofty + our ASF parser) — probed alongside `info` above. Empty for non-audio.
-        if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
-        }
-        if let Some(album) = tags.album.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_AlbumTitle, pv_lpwstr(&album)));
-        }
-        if let Some(title) = tags.title.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Title, pv_lpwstr(&title)));
-        }
-        if let Some(track) = tags.track.filter(|&t| t > 0) {
-            out.push((PKEY_Music_TrackNumber, PROPVARIANT::from(track)));
-        }
-        if let Some(genre) = tags.genre.filter(|s| !s.is_empty()) {
-            out.push((PKEY_Music_Genre, pv_lpwstr_vec(&genre))); // multi-value key
-        }
-        if let Some(year) = tags.year.filter(|&y| y > 0) {
-            out.push((PKEY_Media_Year, PROPVARIANT::from(year)));
-        }
-        // System.Media.Duration is in 100-nanosecond units (VT_UI8); ms × 10 000.
-        if tags.duration_ms > 0 {
-            out.push((
-                PKEY_Media_Duration,
-                PROPVARIANT::from(tags.duration_ms.saturating_mul(10_000)),
-            ));
-        }
-        // System.Audio.EncodingBitrate is bits-per-second (VT_UI4); kbps × 1000.
-        if tags.bitrate_kbps > 0 {
-            out.push((
-                PKEY_Audio_EncodingBitrate,
-                PROPVARIANT::from(tags.bitrate_kbps.saturating_mul(1000)),
-            ));
-        }
+        push_audio_props(&mut out, tags);
 
         safety::log_debugf!(
             "PropStore::build_props: dims {}x{} -> {} props",
@@ -297,6 +271,46 @@ impl PropertyStore_Impl {
     }
 }
 
+/// Push the audio-tag properties (artist, album, title, track, genre, year, duration,
+/// bitrate) onto `out`; empty or non-positive tags contribute nothing.
+fn push_audio_props(
+    out: &mut Vec<(PROPERTYKEY, PROPVARIANT)>,
+    tags: st2k_codecs::strip::AudioTags,
+) {
+    if let Some(artist) = tags.artist.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_Artist, pv_lpwstr_vec(&artist))); // multi-value key
+    }
+    if let Some(album) = tags.album.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_AlbumTitle, pv_lpwstr(&album)));
+    }
+    if let Some(title) = tags.title.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Title, pv_lpwstr(&title)));
+    }
+    if let Some(track) = tags.track.filter(|&t| t > 0) {
+        out.push((PKEY_Music_TrackNumber, PROPVARIANT::from(track)));
+    }
+    if let Some(genre) = tags.genre.filter(|s| !s.is_empty()) {
+        out.push((PKEY_Music_Genre, pv_lpwstr_vec(&genre))); // multi-value key
+    }
+    if let Some(year) = tags.year.filter(|&y| y > 0) {
+        out.push((PKEY_Media_Year, PROPVARIANT::from(year)));
+    }
+    // System.Media.Duration is in 100-nanosecond units (VT_UI8); ms × 10 000.
+    if tags.duration_ms > 0 {
+        out.push((
+            PKEY_Media_Duration,
+            PROPVARIANT::from(tags.duration_ms.saturating_mul(10_000)),
+        ));
+    }
+    // System.Audio.EncodingBitrate is bits-per-second (VT_UI4); kbps × 1000.
+    if tags.bitrate_kbps > 0 {
+        out.push((
+            PKEY_Audio_EncodingBitrate,
+            PROPVARIANT::from(tags.bitrate_kbps.saturating_mul(1000)),
+        ));
+    }
+}
+
 /// Build a `VT_LPWSTR` PROPVARIANT — the canonical type for single-string `System.*` properties.
 /// `PROPVARIANT::from(&str)` makes a `VT_BSTR`; the Details pane coerces and displays that, but the
 /// Windows SEARCH INDEXER rejects `VT_BSTR` for these keys, so property/`kind:` search never finds
@@ -305,38 +319,23 @@ impl PropertyStore_Impl {
 /// its own integer `From` impls; there is no single-string `InitPropVariantFromString` in this
 /// crate version, only the vector form.)
 fn pv_lpwstr(s: &str) -> PROPVARIANT {
-    let wide = crate::wide(s);
-    // Overflow-safe byte count, matching command.rs::alloc_pwstr's guard: can't actually
-    // overflow for any real string, but keep the allocation provably sound rather than
-    // wrapping into an under-sized CoTaskMemAlloc.
-    let Some(bytes) = checked_utf16_byte_len(wide.len()) else {
+    // The wide-string allocation (overflow-checked `len * 2`, CoTaskMemAlloc, null check,
+    // copy) lives in the one shared `st2k_base::host::alloc_pwstr`, also used by the
+    // context-menu verbs. A failure there means "no property": emit an empty variant.
+    let Ok(pwsz) = st2k_base::host::alloc_pwstr(s) else {
         return PROPVARIANT::default();
     };
-    unsafe {
-        let p = CoTaskMemAlloc(bytes) as *mut u16;
-        if p.is_null() {
-            return PROPVARIANT::default();
-        }
-        core::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
-        PROPVARIANT {
-            Anonymous: PROPVARIANT_0 {
-                Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
-                    vt: VT_LPWSTR,
-                    wReserved1: 0,
-                    wReserved2: 0,
-                    wReserved3: 0,
-                    Anonymous: PROPVARIANT_0_0_0 { pwszVal: PWSTR(p) },
-                }),
-            },
-        }
+    PROPVARIANT {
+        Anonymous: PROPVARIANT_0 {
+            Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+                vt: VT_LPWSTR,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: PROPVARIANT_0_0_0 { pwszVal: pwsz },
+            }),
+        },
     }
-}
-
-/// Overflow-safe UTF-16 byte length (`len * size_of::<u16>()`, checked). Split out from
-/// `pv_lpwstr` so the arithmetic itself is unit-testable without needing a near-`usize::MAX`
-/// element `Vec<u16>` just to exercise the overflow branch.
-fn checked_utf16_byte_len(len: usize) -> Option<usize> {
-    len.checked_mul(2)
 }
 
 /// Build a `VT_VECTOR | VT_LPWSTR` PROPVARIANT for the multi-value string keys. System.Music.Artist
@@ -344,7 +343,7 @@ fn checked_utf16_byte_len(len: usize) -> Option<usize> {
 /// wrong canonical type for the index — these must be a string vector (one element here, since our
 /// extractors yield a single value). `InitPropVariantFromStringVector` copies the strings.
 fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
-    let wide = crate::wide(s);
+    let wide = st2k_base::host::wide(s);
     let arr = [PCWSTR(wide.as_ptr())];
     unsafe { InitPropVariantFromStringVector(Some(&arr)) }.unwrap_or_default()
 }
@@ -359,12 +358,21 @@ fn pv_lpwstr_vec(s: &str) -> PROPVARIANT {
 /// zone), or the displayed time would be shifted by the local UTC offset. With the conversion, the
 /// Details pane shows the original wall-clock — matching Windows' own photo property handler.
 fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
-    let (date, time) = s.split_once(' ')?;
-    let d: Vec<&str> = date.split([':', '-', '/']).collect();
-    let t: Vec<&str> = time.split([':', '.']).collect();
-    if d.len() != 3 || t.len() < 3 {
-        return None;
+    let (d, t) = st2k_codecs::strip::split_exif_datetime(s)?;
+    let local = exif_systemtime(&d, &t)?;
+    if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
+        return None; // a camera that never had its clock set writes 0000:00:00
     }
+    let mut utc = SYSTEMTIME::default();
+    unsafe { TzSpecificLocalTimeToSystemTime(None, &local, &mut utc) }.ok()?;
+    let mut ft = FILETIME::default();
+    unsafe { SystemTimeToFileTime(&utc, &mut ft) }.ok()?;
+    unsafe { InitPropVariantFromFileTime(&ft) }.ok()
+}
+
+/// Assemble the `SYSTEMTIME` from the split EXIF date/time components; `None` if any of them
+/// fails to parse as a number.
+fn exif_systemtime(d: &[&str], t: &[&str]) -> Option<SYSTEMTIME> {
     let num = |x: &str| x.trim().parse::<u16>().ok();
     let local = SYSTEMTIME {
         wYear: num(d[0])?,
@@ -376,17 +384,10 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
         wDayOfWeek: 0,
         wMilliseconds: 0,
     };
-    if local.wYear == 0 || local.wMonth == 0 || local.wDay == 0 {
-        return None; // a camera that never had its clock set writes 0000:00:00
-    }
-    let mut utc = SYSTEMTIME::default();
-    unsafe { TzSpecificLocalTimeToSystemTime(None, &local, &mut utc) }.ok()?;
-    let mut ft = FILETIME::default();
-    unsafe { SystemTimeToFileTime(&utc, &mut ft) }.ok()?;
-    unsafe { InitPropVariantFromFileTime(&ft) }.ok()
+    Some(local)
 }
 
-/// Run the header/metadata-only file probe ([`crate::strip::read_info_bounded`] + audio tags) on
+/// Run the header/metadata-only file probe ([`st2k_codecs::strip::read_info_bounded`] + audio tags) on
 /// a detached worker, returning only if it finishes within [`PROBE_BUDGET`], so the calling
 /// shell thread blocks for at most 250 ms. This deliberately does not initialize COM: the
 /// bounded image probe never invokes WIC, WinRT, ImageMagick, or a pixel decode.
@@ -395,7 +396,9 @@ fn datetime_to_propvariant(s: &str) -> Option<PROPVARIANT> {
 /// Built on [`safety::spawn_budgeted`] (shared with `previewhandler.rs`'s decode and `ocr.rs`'s
 /// recognizer) — see that function's doc for the ModuleRef-pin / slot-guard / spawn-failure
 /// contract this relies on.
-fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip::AudioTags)> {
+fn probe_budgeted(
+    path: String,
+) -> Option<(st2k_codecs::strip::ImageInfo, st2k_codecs::strip::AudioTags)> {
     // Acquired here (not inside the worker closure) and moved into `op` below, so
     // `spawn_budgeted`'s spawn-failure path drops it (and so releases the slot) exactly like a
     // normal worker exit would — see that function's doc.
@@ -405,14 +408,14 @@ fn probe_budgeted(path: String) -> Option<(crate::strip::ImageInfo, crate::strip
         let _lease = lease;
         let is_audio = property_path_is_audio(&path);
         let tags = if is_audio {
-            crate::strip::read_audio_tags(&path)
+            st2k_codecs::strip::read_audio_tags(&path)
         } else {
-            crate::strip::AudioTags::default()
+            st2k_codecs::strip::AudioTags::default()
         };
         let info = if is_audio {
-            crate::strip::ImageInfo::default()
+            st2k_codecs::strip::ImageInfo::default()
         } else {
-            crate::strip::read_info_bounded(&path)
+            st2k_codecs::strip::read_info_bounded(&path)
         };
         (info, tags)
     })
@@ -423,7 +426,9 @@ fn property_path_is_audio(path: &str) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
-        .is_some_and(|ext| crate::formats::category(&ext) == crate::formats::Category::Audio)
+        .is_some_and(|ext| {
+            st2k_base::formats::category(&ext) == st2k_base::formats::Category::Audio
+        })
 }
 
 #[cfg(test)]
@@ -432,16 +437,16 @@ mod tests {
 
     /// `checked_utf16_byte_len` must catch the overflow instead of silently wrapping into an
     /// under-sized `CoTaskMemAlloc` — the plain `len * 2` this replaced would wrap (release
-    /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr` a buffer
-    /// too small for the UTF-16 copy that follows.
+    /// builds run with `overflow-checks` off) rather than error, handing `pv_lpwstr`'s
+    /// `host::alloc_pwstr` a buffer too small for the UTF-16 copy that follows.
     #[test]
     fn checked_utf16_byte_len_catches_overflow_instead_of_wrapping() {
         assert_eq!(
-            checked_utf16_byte_len(usize::MAX),
+            st2k_base::host::checked_utf16_byte_len(usize::MAX),
             None,
             "a byte length that can't fit in usize must be rejected, not wrapped"
         );
-        assert_eq!(checked_utf16_byte_len(4), Some(8));
+        assert_eq!(st2k_base::host::checked_utf16_byte_len(4), Some(8));
     }
 
     #[test]
@@ -491,7 +496,7 @@ mod tests {
         *com.get().props.lock().unwrap() = Some(vec![(PKEY_Title, PROPVARIANT::default())]);
 
         let init: IInitializeWithFile = com.to_interface();
-        let w = crate::wide(r"C:\second\file.jpg");
+        let w = st2k_base::host::wide(r"C:\second\file.jpg");
         let pc = PCWSTR(w.as_ptr());
         unsafe { init.Initialize(pc, 0) }.expect("Initialize should succeed");
 
@@ -535,14 +540,14 @@ mod tests {
                 // Mirrors probe_budgeted's worker body exactly, for a non-audio extension.
                 let is_audio = property_path_is_audio(&path);
                 let _tags = if is_audio {
-                    crate::strip::read_audio_tags(&path)
+                    st2k_codecs::strip::read_audio_tags(&path)
                 } else {
-                    crate::strip::AudioTags::default()
+                    st2k_codecs::strip::AudioTags::default()
                 };
                 let _info = if is_audio {
-                    crate::strip::ImageInfo::default()
+                    st2k_codecs::strip::ImageInfo::default()
                 } else {
-                    crate::strip::read_info_bounded(&path)
+                    st2k_codecs::strip::read_info_bounded(&path)
                 };
                 let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
                 let already_inited = hr == S_FALSE;

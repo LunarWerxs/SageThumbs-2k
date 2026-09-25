@@ -14,27 +14,23 @@
 #![cfg(windows)]
 
 mod common;
+#[path = "com_roundtrip/video.rs"]
+mod video;
 
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use windows::core::{s, Error, Interface, Result, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, HMODULE};
+use windows::core::{Error, Interface, Result, GUID, HRESULT, PCWSTR};
+use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HBITMAP};
-use windows::Win32::System::Com::{
-    CoInitializeEx, IClassFactory, IStream, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
 use windows::Win32::UI::Shell::{
     IThumbnailProvider, SHCreateMemStream, WTSAT_ARGB, WTSAT_UNKNOWN, WTS_ALPHATYPE,
 };
 
 const CLSID_THUMBNAIL_PROVIDER: GUID = GUID::from_u128(0x7B2E6A14_9C3D_4F8A_B1E7_2A5D9F0C6E31);
-
-type DllGetClassObjectFn =
-    unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
 
 /// A returned thumbnail: width, height, tightly-packed BGRA bytes, alpha tag.
 struct Thumb {
@@ -107,35 +103,7 @@ unsafe fn get_thumbnail_from_stream(stream: &IStream, cx: u32) -> Result<Thumb> 
     // whether the DLL is built with panic=unwind (debug) or panic=abort (release).
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    let path = common::dll_path();
-    assert!(
-        path.exists(),
-        "cdylib not built at {path:?} — run `cargo build` first"
-    );
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
-
-    let proc =
-        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
-    let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-
-    // Class factory, exactly as the shell does it.
-    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-    dll_get_class_object(
-        &CLSID_THUMBNAIL_PROVIDER,
-        &IClassFactory::IID,
-        &mut factory_ptr,
-    )
-    .ok()?;
-    assert!(!factory_ptr.is_null(), "null class factory");
-    let factory = IClassFactory::from_raw(factory_ptr);
-
-    // Create the object asking for the initializer interface.
-    let init: IInitializeWithStream = factory.CreateInstance(None)?;
+    let init: IInitializeWithStream = common::create_instance(&CLSID_THUMBNAIL_PROVIDER)?;
 
     // Feed the bytes as an IStream, exactly as the shell does.
     init.Initialize(stream, 0)?;
@@ -411,7 +379,7 @@ fn psd_with_distinct_preview_and_composite() -> Vec<u8> {
 #[test]
 fn a_large_request_gets_the_psd_composite_not_the_baked_preview() {
     let _settings = settings_lock();
-    if !sagethumbs2k_core::decode::magick_available() {
+    if !st2k_codecs::decode::magick_available() {
         // Loud, because a skip that reads as a pass is worse than no test at all.
         eprintln!(
             "SKIPPED a_large_request_gets_the_psd_composite_not_the_baked_preview: no ImageMagick"
@@ -435,6 +403,54 @@ fn a_large_request_gets_the_psd_composite_not_the_baked_preview() {
     assert!(
         g > r && g > b,
         "a 1024 px request must render the merged composite (green), got BGRA {:?}",
+        [b, g, r]
+    );
+}
+
+/// **Issue #46, at the Explorer thumbnail.** The same document as above, grown past the
+/// 256 MiB input ceiling by a layer section full of nothing - which is where a real big
+/// document's size lives. Past the ceiling the whole file can no longer be buffered, and the
+/// tile used to fall back to the baked preview blown up; the stored composite must still be
+/// reached, read by offset off the FILE stream Explorer hands over.
+#[test]
+fn an_oversized_psd_still_gets_its_composite_when_the_preview_cannot_serve() {
+    use std::io::{Seek, SeekFrom, Write};
+    use windows::Win32::System::Com::{STGM_READ, STGM_SHARE_DENY_NONE};
+    use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
+    let _settings = settings_lock();
+
+    let psd = psd_with_distinct_preview_and_composite();
+    // The empty layer-section length sits right after the resources; grow that section.
+    let resources = u32::from_be_bytes(psd[30..34].try_into().unwrap()) as usize;
+    let layers_at = 34 + resources;
+    let gap: u64 = 300 << 20;
+    let path = std::env::temp_dir().join(format!("st2k-oversized-{}.psd", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&psd[..layers_at]).unwrap();
+        f.write_all(&(gap as u32).to_be_bytes()).unwrap();
+        f.seek(SeekFrom::Current(gap as i64)).unwrap();
+        f.write_all(&psd[layers_at + 4..]).unwrap();
+    }
+    let wide = common::to_wide(path.as_os_str());
+    let stream: IStream = unsafe {
+        SHCreateStreamOnFileEx(
+            PCWSTR(wide.as_ptr()),
+            STGM_READ.0 | STGM_SHARE_DENY_NONE.0,
+            0,
+            false,
+            None,
+        )
+    }
+    .expect("file stream");
+    let t = unsafe { get_thumbnail_from_stream(&stream, 1024) };
+    drop(stream);
+    let _ = std::fs::remove_file(&path);
+    let t = t.expect("an oversized PSD must still thumbnail");
+    let [b, g, r, _] = t.px(t.w / 2, 2);
+    assert!(
+        g > r && g > b,
+        "past the input ceiling the stored composite (green) must answer, got BGRA {:?}",
         [b, g, r]
     );
 }
@@ -470,7 +486,7 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
     use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
     use windows_registry::CURRENT_USER;
 
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.png");
+    let corpus = st2k_base::testcorpus::dir().join("sample.png");
     if !corpus.exists() {
         eprintln!("skipping: no ../test-corpus/sample.png");
         return;
@@ -491,25 +507,8 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
         )
         .expect("file stream");
 
-        let path_dll = common::dll_path();
-        let wide_dll: Vec<u16> = path_dll
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let module: HMODULE = LoadLibraryW(PCWSTR(wide_dll.as_ptr())).expect("LoadLibrary");
-        let proc = GetProcAddress(module, s!("DllGetClassObject")).expect("DllGetClassObject");
-        let dll_get_class_object: DllGetClassObjectFn = std::mem::transmute(proc);
-        let mut factory_ptr: *mut c_void = std::ptr::null_mut();
-        dll_get_class_object(
-            &CLSID_THUMBNAIL_PROVIDER,
-            &IClassFactory::IID,
-            &mut factory_ptr,
-        )
-        .ok()
-        .expect("class object");
-        let factory = IClassFactory::from_raw(factory_ptr);
-        let init: IInitializeWithStream = factory.CreateInstance(None).expect("create");
+        let init: IInitializeWithStream =
+            common::create_instance(&CLSID_THUMBNAIL_PROVIDER).expect("create");
         init.Initialize(&stream, 0).expect("Initialize");
         let provider: IThumbnailProvider = init.cast().expect("QI");
         let mut hbmp = HBITMAP::default();
@@ -663,227 +662,3 @@ use windows::Win32::System::Com::{
     STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
 use windows_implement::implement;
-
-/// An in-memory read-only `IStream` that is deliberately NOT free-threaded: it aggregates no
-/// free-threaded marshaler, so a thread in another apartment is handed a PROXY and every one
-/// of its reads marshals back to the apartment that created the stream. That is the property
-/// Explorer's thumbnail stream has, and the property the issue #35 worker must survive:
-/// created on an STA thread, it can only be read from a worker while that STA thread pumps.
-/// `SHCreateMemStream` would prove nothing here, since it may be free-threaded and hand the
-/// worker a direct pointer.
-#[implement(IStream)]
-struct ApartmentStream {
-    bytes: Vec<u8>,
-    pos: Mutex<u64>,
-}
-
-impl ApartmentStream {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self {
-            bytes,
-            pos: Mutex::new(0),
-        }
-    }
-}
-
-impl ISequentialStream_Impl for ApartmentStream_Impl {
-    fn Read(&self, pv: *mut c_void, cb: u32, pcbread: *mut u32) -> HRESULT {
-        if pv.is_null() {
-            return E_POINTER;
-        }
-        let mut pos = self.pos.lock().unwrap();
-        let start = (*pos as usize).min(self.bytes.len());
-        let n = (cb as usize).min(self.bytes.len() - start);
-        unsafe { std::ptr::copy_nonoverlapping(self.bytes.as_ptr().add(start), pv as *mut u8, n) };
-        *pos += n as u64;
-        if !pcbread.is_null() {
-            unsafe { *pcbread = n as u32 };
-        }
-        if n == cb as usize {
-            S_OK
-        } else {
-            S_FALSE
-        }
-    }
-    fn Write(&self, _pv: *const c_void, _cb: u32, _pcbwritten: *mut u32) -> HRESULT {
-        STG_E_ACCESSDENIED
-    }
-}
-
-impl IStream_Impl for ApartmentStream_Impl {
-    fn Seek(&self, dlibmove: i64, dworigin: STREAM_SEEK, plibnewposition: *mut u64) -> Result<()> {
-        let mut pos = self.pos.lock().unwrap();
-        let base: i128 = match dworigin {
-            STREAM_SEEK_SET => 0,
-            STREAM_SEEK_CUR => *pos as i128,
-            STREAM_SEEK_END => self.bytes.len() as i128,
-            _ => return Err(Error::from(E_INVALIDARG)),
-        };
-        let np = base + dlibmove as i128;
-        if np < 0 {
-            return Err(Error::from(E_INVALIDARG));
-        }
-        *pos = np as u64;
-        if !plibnewposition.is_null() {
-            unsafe { *plibnewposition = *pos };
-        }
-        Ok(())
-    }
-    fn Stat(&self, pstatstg: *mut STATSTG, _grfstatflag: &STATFLAG) -> Result<()> {
-        if pstatstg.is_null() {
-            return Err(Error::from(E_POINTER));
-        }
-        unsafe {
-            *pstatstg = STATSTG {
-                r#type: STGTY_STREAM.0 as u32,
-                cbSize: self.bytes.len() as u64,
-                ..Default::default()
-            };
-        }
-        Ok(())
-    }
-    fn SetSize(&self, _libnewsize: u64) -> Result<()> {
-        Err(Error::from(E_NOTIMPL))
-    }
-    fn CopyTo(
-        &self,
-        _pstm: windows::core::Ref<'_, IStream>,
-        _cb: u64,
-        _pcbread: *mut u64,
-        _pcbwritten: *mut u64,
-    ) -> Result<()> {
-        Err(Error::from(E_NOTIMPL))
-    }
-    fn Commit(&self, _grfcommitflags: &STGC) -> Result<()> {
-        Ok(())
-    }
-    fn Revert(&self) -> Result<()> {
-        Ok(())
-    }
-    fn LockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: &LOCKTYPE) -> Result<()> {
-        Err(Error::from(E_NOTIMPL))
-    }
-    fn UnlockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: u32) -> Result<()> {
-        Err(Error::from(E_NOTIMPL))
-    }
-    fn Clone(&self) -> Result<IStream> {
-        Err(Error::from(E_NOTIMPL))
-    }
-}
-
-fn fixture_video(name: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("video")
-        .join(name);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The AVI fixture is MPEG-4 Part 2, an inbox decoder on consumer Windows. A Server image
-/// may lack it, so the decode tests skip rather than fail there.
-fn mpeg4_part2_decoder_present() -> bool {
-    use windows::Win32::Media::MediaFoundation::MFVideoFormat_MP4V;
-    sagethumbs2k_core::video::media_foundation_available()
-        && sagethumbs2k_core::vcodec::decoder_installed(MFVideoFormat_MP4V) == Some(true)
-}
-
-/// ffmpeg's `testsrc` pattern is colourful: require real variety, the way the shell-surface
-/// proof script does, so a quietly failing handler's flat grey tile cannot pass.
-fn assert_testsrc_frame(t: &Thumb) {
-    assert!(t.w > 0 && t.h > 0, "empty thumbnail");
-    let mut seen = std::collections::HashSet::new();
-    for y in (0..t.h).step_by((t.h / 16).max(1)) {
-        for x in (0..t.w).step_by((t.w / 16).max(1)) {
-            let [b, g, r, _] = t.px(x, y);
-            seen.insert((r / 32, g / 32, b / 32));
-        }
-    }
-    assert!(
-        seen.len() >= 4,
-        "thumbnail is effectively blank ({} distinct sampled colours)",
-        seen.len()
-    );
-}
-
-/// An AVI has no MP4/MKV index our own parsers read, so through the shell it can ONLY
-/// thumbnail via the block-stream tier: Media Foundation seeking its own index over our
-/// block cache. The stream is created on this STA thread, so the worker holds a proxy and
-/// each of its reads is dispatched HERE, which only happens while this thread pumps. A
-/// thumbnail coming back at all therefore proves the pumping wait; a non-pumping wait would
-/// deadlock into the 8 s budget and this would fail on both the result and the clock.
-#[test]
-fn video_avi_thumbnails_via_the_block_stream_worker_from_an_sta_bound_stream() {
-    let _settings = settings_lock();
-    if !mpeg4_part2_decoder_present() {
-        eprintln!("no MPEG-4 Part 2 decoder on this Windows - skipped");
-        return;
-    }
-    let started = Instant::now();
-    let stream: IStream = ApartmentStream::new(fixture_video("mpeg4-160x120.avi")).into();
-    let t = unsafe { get_thumbnail_from_stream(&stream, 96) }
-        .expect("the AVI must thumbnail through the shell handshake from an STA-bound stream");
-    assert!(
-        started.elapsed() < Duration::from_secs(6),
-        "took {:?}: the worker's marshaled reads were not being served",
-        started.elapsed()
-    );
-    assert_testsrc_frame(&t);
-}
-
-/// The thumbnail host (dllhost) is an MTA: the worker gets the same pointer back from the
-/// table and the wait is a plain wait. Same file, same tier, the other threading model.
-#[test]
-fn video_avi_thumbnails_via_the_block_stream_worker_on_an_mta_thread() {
-    let _settings = settings_lock();
-    if !mpeg4_part2_decoder_present() {
-        eprintln!("no MPEG-4 Part 2 decoder on this Windows - skipped");
-        return;
-    }
-    let bytes = fixture_video("mpeg4-160x120.avi");
-    let t = std::thread::spawn(move || {
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-            .ok()
-            .expect("MTA init");
-        let stream: IStream = ApartmentStream::new(bytes).into();
-        unsafe { get_thumbnail_from_stream(&stream, 96) }
-    })
-    .join()
-    .expect("worker thread")
-    .expect("the AVI must thumbnail through the shell handshake from an MTA thread");
-    assert_testsrc_frame(&t);
-}
-
-/// The reporter's file shape: H.264 in a profile the Windows decoder does not implement.
-/// Through the real shell handshake the DLL must decline at once, with the always-on log
-/// line that names why, instead of handing the stream to a decoder that (on Windows 10)
-/// wedges. Timing is the assertion that no decoder was asked: every path that asks one is
-/// bounded by an 8 s budget, and the old behaviour paid that budget twice.
-#[test]
-fn video_h264_444_is_refused_at_once_through_the_shell_handshake() {
-    let _settings = settings_lock();
-    let bytes = fixture_video("h264-high444-320x240.mp4");
-    let log = sagethumbs2k_core::safety::log_file();
-    let before = log
-        .as_ref()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len() as usize)
-        .unwrap_or(0);
-    let started = Instant::now();
-    let r = unsafe { get_thumbnail(&bytes, 96) };
-    let took = started.elapsed();
-    assert!(r.is_err(), "a 4:4:4 clip must not thumbnail");
-    assert!(
-        took < Duration::from_secs(2),
-        "the refusal took {took:?}; an 8 s wait means a decoder was asked after all"
-    );
-    if let Some(p) = log {
-        let text = std::fs::read(&p).unwrap_or_default();
-        let from = if before <= text.len() { before } else { 0 };
-        let tail = String::from_utf8_lossy(&text[from..]);
-        assert!(
-            tail.contains("issue #35"),
-            "the always-on refusal line must land in the log; new lines were: {tail}"
-        );
-    }
-}

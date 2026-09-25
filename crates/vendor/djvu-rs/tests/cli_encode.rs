@@ -136,6 +136,35 @@ fn encode_creates_djvu_file() {
 }
 
 #[test]
+fn encode_explicit_smmr_bilevel_codec() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.png");
+    let output = dir.path().join("out.djvu");
+    write_test_png(&input, 64, 48);
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--quality",
+            "lossless",
+            "--bilevel-codec",
+            "smmr",
+        ])
+        .assert()
+        .success();
+
+    let bytes = std::fs::read(&output).unwrap();
+    let doc = djvu_rs::djvu_document::DjVuDocument::parse(&bytes).unwrap();
+    let page = doc.page(0).unwrap();
+    assert!(page.raw_chunk(b"Smmr").is_some());
+    assert!(page.raw_chunk(b"Sjbz").is_none());
+}
+
+#[test]
 fn encode_default_dpi_is_300() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("in.png");
@@ -292,6 +321,105 @@ fn encode_quality_binarization_flags_affect_layered_mask() {
     );
 }
 
+/// Left half: dark text bars on white. Right half: a uniform mid-tone field
+/// the fixed threshold wrongly claims as ink but the block classifier routes
+/// to the background (continuous-tone signature: mid-tone, no sharp edges).
+fn write_text_photo_png(path: &Path, w: u32, h: u32) {
+    let file = std::fs::File::create(path).unwrap();
+    let writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, w, h);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let mut data = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let v = if x < w / 2 {
+                // 4px-tall dark bars every 16 rows: text-like strokes.
+                if y % 16 < 4 && x % 16 < 12 { 20 } else { 255 }
+            } else {
+                105
+            };
+            data.extend_from_slice(&[v, v, v]);
+        }
+    }
+    writer.write_image_data(&data).unwrap();
+}
+
+#[test]
+fn encode_quality_block_classify_clears_photo_ink() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("text_photo.png");
+    let plain_output = dir.path().join("plain.djvu");
+    let classified_output = dir.path().join("classified.djvu");
+    write_text_photo_png(&input, 128, 64);
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input.to_str().unwrap(),
+            "-o",
+            plain_output.to_str().unwrap(),
+            "--quality",
+            "quality",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input.to_str().unwrap(),
+            "-o",
+            classified_output.to_str().unwrap(),
+            "--quality",
+            "quality",
+            "--block-classify",
+            "--adaptive-bg-subsample",
+        ])
+        .assert()
+        .success();
+
+    let plain = mask_ink_pixels(&plain_output);
+    let classified = mask_ink_pixels(&classified_output);
+    // The fixed threshold claims the whole mid-tone half (128*64/2 = 4096 px)
+    // as ink; the classifier must clear that half while keeping the bars.
+    assert!(
+        plain >= 4096,
+        "plain mask should include the mid-tone field: {plain}"
+    );
+    assert!(
+        classified < plain / 2,
+        "classifier should clear the photo half: {classified} vs {plain}"
+    );
+    assert!(classified > 0, "text bars must survive classification");
+}
+
+#[test]
+fn encode_lossless_rejects_block_classify() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("text_photo.png");
+    let output = dir.path().join("out.djvu");
+    write_text_photo_png(&input, 128, 64);
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--quality",
+            "lossless",
+            "--block-classify",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--block-classify"));
+}
+
 #[test]
 fn encode_quality_fixed_binarization_keeps_default_output() {
     let dir = tempfile::tempdir().unwrap();
@@ -388,7 +516,7 @@ fn encode_lossless_rejects_segmentation_flags() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "--binarization and --bg-inpaint require --quality quality or --quality archival",
+            "require --quality quality or --quality archival",
         ));
 }
 
@@ -516,6 +644,33 @@ fn encode_empty_directory_fails() {
         .stderr(predicates::str::contains("no image files found"));
 }
 
+/// Step 5 (encoder peak-memory plan): a directory page that fails to decode
+/// must still surface a useful message naming the problem, unchanged by the
+/// switch from an eager `Vec<Pixmap>` loop to the lazy streaming encode
+/// entry point (`EncodeError::PageSource` is unwrapped back to the original
+/// ingestion error text at the CLI layer, with no extra prefix).
+#[test]
+fn encode_directory_bad_page_reports_decode_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let input_dir = dir.path().join("pages");
+    std::fs::create_dir(&input_dir).unwrap();
+    write_test_png(&input_dir.join("a.png"), 8, 8);
+    std::fs::write(input_dir.join("b.png"), b"not a png").unwrap();
+    let output = dir.path().join("out.djvu");
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input_dir.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Invalid PNG signature"));
+}
+
 #[test]
 fn encode_missing_input_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -532,4 +687,39 @@ fn encode_missing_input_fails() {
         ])
         .assert()
         .failure();
+}
+
+/// Indexed PNG with palette + tRNS must encode through the expanded ingest path.
+#[test]
+fn encode_indexed_png_creates_valid_djvu() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("palette.png");
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 32, 32);
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_palette(vec![255, 255, 255, 0, 0, 0]);
+        encoder.set_trns(vec![255, 128]);
+        let mut writer = encoder.write_header().unwrap();
+        let pixels = vec![0u8; 32 * 32];
+        writer.write_image_data(&pixels).unwrap();
+    }
+    let output = dir.path().join("out.djvu");
+
+    Command::cargo_bin("djvu")
+        .unwrap()
+        .args([
+            "encode",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--dpi",
+            "100",
+        ])
+        .assert()
+        .success();
+
+    let bytes = std::fs::read(&output).unwrap();
+    assert_eq!(&bytes[..4], b"AT&T");
 }

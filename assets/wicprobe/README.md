@@ -1,11 +1,11 @@
 # AVIF colour probes
 
-Six ~360-byte AVIF files that ship inside the binary. `src/decode/wicprobe.rs` decodes them
+Eight ~360-byte AVIF files that ship inside the binary. `crates/codecs/src/decode/wicprobe.rs` decodes them
 through Windows' own AV1 codec on the first AVIF of each process and compares the result with
 what they are known to contain, so the decision "can WIC be trusted with this file's colour"
 is a measurement of the codec that is installed rather than a table someone wrote down once.
 
-Read `src/decode/wicprobe.rs` for the history. The short version: the table it replaced was
+Read `crates/codecs/src/decode/wicprobe.rs` for the history. The short version: the table it replaced was
 measured against AV1 Video Extension 2.0.24.0, Microsoft shipped 2.0.30.0, two rows changed,
 and the fix for issue #9 quietly turned back into issue #9 for most AVIF on the web.
 
@@ -17,10 +17,15 @@ and the fix for issue #9 quietly turned back into issue #9 for most AVIF on the 
 | `avif-10bit-bt709.avif` | 10-bit, `nclx` matrix 1 |
 | `avif-10bit-bt601.avif` | 10-bit, `nclx` matrix 6 |
 | `avif-10bit-mono.avif` | 10-bit monochrome: no chroma planes, so no matrix to misread |
+| `avif-10bit-pq2020.avif` | 10-bit PQ / BT.2020: the HDR shape (issue #39), which the codec returns as linear floats |
+| `avif-10bit-nocolr.avif` | 10-bit with no `colr` box (the BT.709 file, box renamed), once "always ImageMagick", now measured |
 
 Each is 32x32: four 16x16 flat patches whose values are duplicated as constants in
 `wicprobe.rs`, encoded LOSSLESS in 4:4:4 so the encoder contributes no error of its own and the
-grader can sample patch centres without a resampling artefact reaching the number.
+grader can sample patch centres without a resampling artefact reaching the number. The PQ
+probe is graded AFTER the HDR path (the codec's float hand-off, our rescale and tone map), so
+its constants are tone-mapped sRGB - 188 for full white, not 255 - and `--verify` derives
+them from the same arithmetic and prints them beside the dav1d check.
 
 Regenerate (needs ffmpeg with libaom-av1 on PATH):
 

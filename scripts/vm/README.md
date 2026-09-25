@@ -4,7 +4,7 @@ Two ways to test SageThumbs 2K on a machine that has never seen it. Use these to
 reproduce "not working on a fresh install" reports and to sanity-check installer
 behavior (SmartScreen, Defender) without touching your dev box.
 
-## 1. Windows Sandbox — instant, throwaway (`test-sandbox.ps1`)
+## 1. Windows Sandbox - instant, throwaway (`test-sandbox.ps1`)
 
 ```powershell
 pwsh scripts\vm\test-sandbox.ps1
@@ -23,25 +23,28 @@ installer rather than picking the newest item in `dist\`. Close it and everythin
 this Win11 machine it is a Win11 guest. The modern-menu-on-Win10 and N/KN-edition bugs
 would NOT show up here.
 
-## 2. Hyper-V Windows 10 VM — the real Win10 target
+## 2. Hyper-V Windows 10 VM - the real Win10 target
 
 The Sandbox is Win11 (it mirrors the host), so it CANNOT reproduce Windows 10. issue #5's
 reporter is on Win10 Home 22H2, so this builds exactly that and runs the same clean-room
 test on it.
 
-**Get the ISO once** (put it at `D:\isos\Win10_22H2_x64.iso`):
+`<scratch>` below is `$env:ST2K_VM_SCRATCH` if set, else the folder that holds the cargo
+build cache (`scripts/vm/_vmscratch.ps1` resolves it; every script defaults to it).
+
+**Get the ISO once** (put it at `<scratch>\isos\Win10_22H2_x64.iso`):
 ```powershell
 # official MS consumer ISO URL via Fido, then download:
-Invoke-WebRequest 'https://github.com/pbatard/Fido/raw/master/Fido.ps1' -OutFile D:\isos\Fido.ps1
-$u = powershell -ExecutionPolicy Bypass -File D:\isos\Fido.ps1 -Win 10 -Rel 22H2 -Ed 'Home/Pro' -Lang English -Arch x64 -GetUrl
-Start-BitsTransfer -Source $u -Destination D:\isos\Win10_22H2_x64.iso
+Invoke-WebRequest 'https://github.com/pbatard/Fido/raw/master/Fido.ps1' -OutFile <scratch>\isos\Fido.ps1
+$u = powershell -ExecutionPolicy Bypass -File <scratch>\isos\Fido.ps1 -Win 10 -Rel 22H2 -Ed 'Home/Pro' -Lang English -Arch x64 -GetUrl
+Start-BitsTransfer -Source $u -Destination <scratch>\isos\Win10_22H2_x64.iso
 ```
 
-**`run-win10-test.ps1`** — fully automated, elevated x64-release test. It requires the
+**`run-win10-test.ps1`** - fully automated, elevated x64-release test. It requires the
 exact x64 installer and cannot qualify the ARM64 shell extension in an x64 Explorer:
 ```powershell
 # elevated PowerShell:
-.\scripts\vm\run-win10-test.ps1 -Iso D:\isos\Win10_22H2_x64.iso
+.\scripts\vm\run-win10-test.ps1 -Iso <scratch>\isos\Win10_22H2_x64.iso
 .\scripts\vm\run-win10-test.ps1 -Resume     # reuse an already-applied VHDX (skips the ~12 min DISM apply)
 ```
 It partitions a VHDX, DISM-applies "Windows 10 Home" (index 1), writes UEFI boot files, and
@@ -49,7 +52,7 @@ drops `autounattend-win10.xml` at `Windows\Panther\unattend.xml` so first boot i
 unattended (local admin `vmadmin`, auto-logon). No DVD boot, no "press any key", no WinPE
 Setup UI. Then it drives the test over **PowerShell Direct** (no guest network needed):
 silent-install the built installer, `st2k doctor`, thumbnail a modern `.xcf` + a `.zip`, and
-copy the results back to `D:\isos\win10-test-results\` (a PASS/FAIL + the produced PNGs).
+copy the results back to `<scratch>\isos\win10-test-results\` (a PASS/FAIL + the produced PNGs).
 Pass `-Keep` to leave the VM up (`vmconnect localhost st2k-win10`); default tears it down.
 A FAILED run keeps the applied VHDX so the next attempt can `-Resume`; only a PASS reclaims it.
 
@@ -69,7 +72,7 @@ ARM64 hardware with the architecture-selecting Sandbox/clean-room path; the x64 
 not an ARM substitute.
 
 Note the twist worth remembering: issue #5's actual bug (modern GIMP `.xcf`) was **not**
-OS-specific at all. It failed identically on Windows 11 — the bundled ImageMagick cannot read
+OS-specific at all. It failed identically on Windows 11 - the bundled ImageMagick cannot read
 XCF written by GIMP 2.10/3, and `magick.exe` returns
 `not enough pixel data @ error/xcf.c/ReadXCFImage/1495` on either OS. The reporter's VM was
 Win10 by coincidence, and the genuinely Win10-specific bugs earlier in the same thread (the
@@ -78,14 +81,50 @@ The clean-room run stays in the checklist anyway, because what actually went wro
 discounting a clean-VM reproduction against "hundreds of installs, no complaints." A 90-second
 automated run removes the temptation to make that argument.
 
-(`new-win10-vm.ps1` is the older interactive variant — creates the VM + boots the ISO for a
+(`new-win10-vm.ps1` is the older interactive variant - creates the VM + boots the ISO for a
 hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.)
 
-### Three traps that cost hours here — all fixed in the script, don't re-discover them
+### The two-account lifecycle proof (`run-win10-lifecycle.ps1`, 2026-09-19)
+
+The 2026-09-19 release audit left two installer claims that only a machine with TWO accounts
+and a reboot can prove (F11 and F13). This script builds the same Win10 VM, adds a standard
+user `stduser` beside the admin `vmadmin`, and drives both scenarios over PowerShell Direct:
+
+```powershell
+# elevated PowerShell, after build-release.ps1 has put the installer under test in dist\:
+.\scripts\vm\run-win10-lifecycle.ps1            # -Resume reuses an applied VHDX; -Keep leaves the VM up
+```
+
+- **F11**: `stduser` owns the console (auto-logon), the install and the uninstall run
+  ELEVATED as `vmadmin` from a PowerShell Direct session. The per-user shell state (the folder
+  verb under `Software\Classes\Directory\shell`) must land in `stduser`'s hive and not in
+  `vmadmin`'s, and the uninstall must clear `stduser`'s.
+- **F13**: the previous release is installed, its DLL held open, and the version under test
+  installed over it (a deferred, locked-DLL swap). The SYSTEM `ONSTART` task
+  `SageThumbs2K-Reregister` must exist, the guest reboots with the STANDARD user signing in,
+  the DLL on disk must be the new version, and a clean reinstall must remove the task.
+
+Verdicts and every measured value go to `<scratch>\isos\win10-lifecycle-results\lifecycle-results.json`.
+
+Three things this proof caught the first times it ran, all fixed in `installer.iss` that day:
+`schtasks /Create /RU <other user> /NP` PROMPTS for a password (a hang inside a hidden
+Exec), so the per-user broker is a `Register-ScheduledTask` with an Interactive logon type
+now; Inno's own `runasoriginaluser` reaches the console user only when that user
+personally started Setup, so every per-user `[Run]` step checks for a console user other
+than the elevated account first and routes through the same broker; and the "still running
+the old version" notice was a plain `MsgBox`, which `/SUPPRESSMSGBOXES` does not cover - a
+silent install with a locked DLL sat on it for twelve minutes (it is `SuppressibleMsgBox`
+now). Windows 10 HOME has no `query.exe`, so the console user is read from
+`Win32_ComputerSystem.UserName`; and the F13 upgrade passes `/NOCLOSEAPPLICATIONS`, because
+a silent Setup otherwise closes the holder through the Restart Manager and the installer's
+own swap-aside renames a merely LOADED DLL out of the way, so the stale path only fires
+for a handle held without delete sharing that nothing closed.
+
+### Three traps that cost hours here - all fixed in the script, don't re-discover them
 
 1. **Never use the HOST's `bcdboot` for a Windows 10 image.** On a Win11 24H2+ host with Secure
    Boot on and the 2023 PCA in the Secure Boot DB, `bfsvc` decides it must service the "Ex"
-   (2023-signed) boot binaries and looks for `<win>\Boot\EFI_EX\bootmgfw_EX.efi` — a file
+   (2023-signed) boot binaries and looks for `<win>\Boot\EFI_EX\bootmgfw_EX.efi` - a file
    Windows 10 never shipped. It fails with `Failed to validate boot manager checksum … 0xc1`
    and **exit 193**, leaving a VM that boots to *"The boot loader did not load an operating
    system."* `BFSVC_USE_EX_BINS` is **not** an environment variable (it still logs `:y` when you
@@ -93,7 +132,7 @@ hands-on install. Prefer `run-win10-test.ps1` for the automated end-to-end test.
    applied image and run **the image's own** bcdboot. Works first try.
 2. **`diskpart assign letter=` cannot letter the ESP.** It is a *hidden* system partition, and
    diskpart refuses every letter with the very misleading `The specified drive letter is not
-   free to be assigned` — which reads like a host-wide drive-letter outage and sends you off
+   free to be assigned` - which reads like a host-wide drive-letter outage and sends you off
    restarting VDS and enabling automount for nothing. `Add-PartitionAccessPath -AssignDriveLetter`
    assigns it without complaint.
 3. **Verify a drive letter via the partition's `AccessPaths`, never `Test-Path`.** A letter that

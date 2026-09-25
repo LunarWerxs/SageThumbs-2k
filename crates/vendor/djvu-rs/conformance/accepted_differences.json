@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "differences": [
+    {
+      "id": "native-render-channel-tolerance-4",
+      "category": "render-tolerance",
+      "threshold": {
+        "channel_tolerance": 4,
+        "max_mismatch_pct": 0.8,
+        "max_mean_abs_diff": 0.2
+      },
+      "rationale": "IW44 / YCbCr rounding and filter differences versus DjVuLibre at native resolution; documented in tests/diff_tolerance.md and enforced by conformance/corpus.json."
+    },
+    {
+      "id": "colorbook-page0-ubuntu-3.5.28",
+      "category": "render-tolerance",
+      "fixture": "tests/fixtures/colorbook.djvu",
+      "page": 0,
+      "rationale": "Pinned Ubuntu DjVuLibre 3.5.28 reports ~0.75% mismatch on colorbook page 0; the gate uses max_mismatch_pct 0.8 so the published baseline stays fail-closed without silent skips."
+    },
+    {
+      "id": "text-hierarchy-observational",
+      "category": "semantic-tolerance",
+      "rationale": "text_hierarchy plane is required and published, but zone-tree equality is not yet a fail-closed gate: parent-text fill and word/char segmentation still diverge versus DjVuLibre print-txt on OCR pages (ccitt_2, colorbook)."
+    },
+    {
+      "id": "metadata-meta-vs-print-meta",
+      "category": "semantic-source",
+      "rationale": "djvu-rs metadata() reads METa/METz; DjVuLibre print-meta exposes annotation-carried file metadata. The conformance corpus currently has neither payload, so both signatures are empty and match. Divergences outside that contract must be filed separately."
+    }
+  ]
+}

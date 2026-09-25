@@ -25,6 +25,16 @@
 //!   const refined = page.render_progressive(150, n);
 //!   ctx.putImageData(new ImageData(refined, page.width_at(150), page.height_at(150)), 0, 0);
 //! }
+//!
+//! // Tile-first render (#691): only composite what is on screen
+//! const ts = 256;
+//! for (let row = 0; row < page.tile_rows(150, ts); row++) {
+//!   for (let col = 0; col < page.tile_cols(150, ts); col++) {
+//!     const tile = page.render_tile(150, ts, col, row); // WasmPixmap
+//!     ctx.putImageData(new ImageData(tile.view(), tile.width(), tile.height()),
+//!                      col * ts, row * ts);
+//!   }
+//! }
 //! ```
 
 use std::sync::Arc;
@@ -34,6 +44,7 @@ use wasm_bindgen::prelude::*;
 use crate::{
     djvu_document::DjVuDocument,
     djvu_render::{render_coarse, render_progressive},
+    djvu_tile,
 };
 
 // ── WasmPixmap — Rust-owned pixel buffer (#611) ──────────────────────────────
@@ -170,7 +181,11 @@ impl WasmDocument {
     /// Throws a JavaScript `Error` if the bytes are not a valid DjVu file.
     pub fn from_bytes(data: Vec<u8>) -> Result<WasmDocument, JsError> {
         let backing: crate::djvu_document::Backing = Arc::new(data);
-        let doc = DjVuDocument::parse_backed(backing).map_err(|e| JsError::new(&e.to_string()))?;
+        let doc = DjVuDocument::parse_backed_with_options(
+            backing,
+            &crate::resource_limits::ParseOptions::default(),
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(WasmDocument {
             inner: Arc::new(doc),
         })
@@ -429,6 +444,118 @@ impl WasmPage {
         out.data.clear();
         out.data.extend_from_slice(&pm.data);
         Ok(())
+    }
+
+    // ── Tile-first rendering (#691, contract in docs/tile-rendering.md) ──────
+
+    /// Number of tile columns at `target_dpi` for `tile_size`-pixel tiles.
+    ///
+    /// Tiles live in display space: tile `(col, row)` starts at canvas pixel
+    /// `(col * tile_size, row * tile_size)`; edge tiles are clipped, never
+    /// padded, so blitting every tile covers the canvas exactly once.
+    pub fn tile_cols(&self, target_dpi: u32, tile_size: u32) -> Result<u32, JsError> {
+        self.tile_layout(target_dpi, tile_size)
+            .map(|layout| layout.cols())
+    }
+
+    /// Number of tile rows at `target_dpi` for `tile_size`-pixel tiles.
+    pub fn tile_rows(&self, target_dpi: u32, tile_size: u32) -> Result<u32, JsError> {
+        self.tile_layout(target_dpi, tile_size)
+            .map(|layout| layout.rows())
+    }
+
+    /// Render one full-quality tile, returning a [`WasmPixmap`] whose
+    /// `width()`/`height()` give the (possibly clipped) tile dimensions.
+    ///
+    /// Byte-identical to the matching rectangle of [`render`](Self::render);
+    /// assembled from the page's composited-tile cache (cache state never
+    /// changes bytes, only latency).
+    ///
+    /// Throws on decode error or a grid violation.
+    pub fn render_tile(
+        &self,
+        target_dpi: u32,
+        tile_size: u32,
+        col: u32,
+        row: u32,
+    ) -> Result<WasmPixmap, JsError> {
+        let page = crate::foreign::page(&self.doc, self.index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let opts = crate::foreign::render_opts_for_dpi(page, target_dpi as f32);
+        let pm = djvu_tile::render_tile_cached(page, &opts, tile_size, col, row)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(WasmPixmap {
+            data: pm.data,
+            width: pm.width,
+            height: pm.height,
+        })
+    }
+
+    /// Render one tile at progressive quality step `chunk_n` (BG44 chunks
+    /// `0..=chunk_n` only), byte-identical to the tile's rectangle of
+    /// [`render_progressive`](Self::render_progressive) with the same
+    /// `chunk_n`. Partial-quality tiles are never cached.
+    ///
+    /// On bilevel pages (no BG44 data) `chunk_n = 0` is the full render.
+    /// Throws on decode error, a grid violation, or `chunk_n` out of range.
+    pub fn render_tile_progressive(
+        &self,
+        target_dpi: u32,
+        tile_size: u32,
+        col: u32,
+        row: u32,
+        chunk_n: u32,
+    ) -> Result<WasmPixmap, JsError> {
+        let page = crate::foreign::page(&self.doc, self.index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let opts = crate::foreign::render_opts_for_dpi(page, target_dpi as f32);
+        let controls = djvu_tile::TileRenderControls {
+            quality_step: Some(chunk_n as usize),
+            ..Default::default()
+        };
+        let pm = djvu_tile::render_tile_with(page, &opts, tile_size, col, row, &controls)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(WasmPixmap {
+            data: pm.data,
+            width: pm.width,
+            height: pm.height,
+        })
+    }
+
+    /// Render one full-quality tile into a caller-owned [`WasmPixmap`]
+    /// (#611 pattern): a pan/zoom session reuses one Rust-side allocation
+    /// per on-screen tile slot instead of allocating per frame.
+    pub fn render_tile_into_pixmap(
+        &self,
+        target_dpi: u32,
+        tile_size: u32,
+        col: u32,
+        row: u32,
+        out: &mut WasmPixmap,
+    ) -> Result<(), JsError> {
+        let page = crate::foreign::page(&self.doc, self.index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let opts = crate::foreign::render_opts_for_dpi(page, target_dpi as f32);
+        let pm = djvu_tile::render_tile_cached(page, &opts, tile_size, col, row)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        out.width = pm.width;
+        out.height = pm.height;
+        out.data.clear();
+        out.data.extend_from_slice(&pm.data);
+        Ok(())
+    }
+}
+
+impl WasmPage {
+    fn tile_layout(
+        &self,
+        target_dpi: u32,
+        tile_size: u32,
+    ) -> Result<djvu_tile::TileLayout, JsError> {
+        let page = crate::foreign::page(&self.doc, self.index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let opts = crate::foreign::render_opts_for_dpi(page, target_dpi as f32);
+        djvu_tile::TileLayout::new(page, &opts, tile_size).map_err(|e| JsError::new(&e.to_string()))
     }
 }
 

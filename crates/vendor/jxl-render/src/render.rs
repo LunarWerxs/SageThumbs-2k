@@ -75,6 +75,16 @@ pub(crate) fn render_frame<S: Sample>(
 
     if lf_only {
         // The LF image is the finished 1:8 result; every stage below assumes 1:1 geometry.
+        //
+        // Its chroma planes are still at the frame's JPEG subsampling, though: a 4:2:0
+        // transcode carries Cb and Cr at half the LF luma's width and height, and the YCbCr
+        // conversion needs three planes of one size. Upsample them to the luma exactly as
+        // the 1:1 path does below, against the LF image's own region rather than the frame's.
+        if frame_header.do_ycbcr {
+            if let Some(&(lf_region, _)) = fb.regions_and_shifts().first() {
+                fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
+            }
+        }
         // It carries colour channels only, so give it the extra channels the caller's pixel
         // format promises, with alpha opaque.
         fb.append_opaque_extra_channels(&image_header.metadata.ec_info)?;

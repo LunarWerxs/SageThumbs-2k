@@ -30,21 +30,13 @@ const ENV_VAR: &str = "ST2K_UPDATE_SIGNING_KEY";
 /// length, non-ASCII, non-hex - worked byte-wise so a malformed key or `.sig` file can never
 /// panic this on a bad char boundary (same shape as `update.rs::parse_sig_hex`).
 fn parse_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    let bytes = s.trim().as_bytes();
-    if bytes.len() != N * 2 || !bytes.is_ascii() {
-        return None;
-    }
-    let mut out = [0u8; N];
-    for i in 0..N {
-        let hi = (bytes[i * 2] as char).to_digit(16)?;
-        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
-        out[i] = ((hi << 4) | lo) as u8;
-    }
-    Some(out)
+    // The shared decoder deliberately does not trim; an environment variable may carry a
+    // trailing newline from however it was set, so the trim belongs here.
+    st2k_base::hex::decode::<N>(s.trim())
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    st2k_base::hex::encode(bytes)
 }
 
 fn sign_files(files: &[String]) -> bool {

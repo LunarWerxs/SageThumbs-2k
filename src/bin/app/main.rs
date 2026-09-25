@@ -17,9 +17,10 @@
 //! per-extension flags we just wrote) elevated, exactly as the original did.
 //!
 //! This file is the facade / entry point. The UI is split into submodules:
-//! `win` (shared Win32 primitives), `dark` (dark mode), `sponsors` (the remote
-//! banner), `settings_dlg` (the main window), `about`, `convert`,
-//! `files_to_folder`, `rename_dlg`, `tags_to_folders`, and `eyedropper`.
+//! `settings_dlg` (the main window), `modes` (the command-line dispatch), `about`,
+//! `convert`, `files_to_folder`, `rename_dlg` and `tags_to_folders`, among others.
+//! The shared Win32 primitives (`win`), dark mode (`dark`) and the remote banner
+//! (`sponsors`) live in `st2k_appkit`, and the eyedropper in `st2k_screenshot`.
 // `not(test)`: under `cargo test` we need the console subsystem so the harness can
 // print results; the shipped binary stays a GUI ("windows") subsystem app.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
@@ -28,24 +29,12 @@
 mod about;
 mod convert;
 mod convert_report;
-mod cred_store;
-mod dark;
-mod dialog_hook;
 mod doctor_report;
-mod explorer_selection;
-mod eyedropper;
 mod feedback;
 mod files_to_folder;
 mod first_run;
-mod gdip;
-mod gif_frames;
-mod hotkey;
-mod http;
 mod image_info;
-/// Offline licence certificates: the signed, network-free FLOOR under `license`'s relay
-/// check. Never a replacement for it — see that module's own docs for why both exist.
-mod licence_cert;
-mod license;
+mod modes;
 /// The "you could be signed in" prompt: app glue (persistence, identity, the decision).
 mod nudge;
 /// The shared LunarWerx decision engine, vendored VERBATIM. Never edit it here — see `nudge.rs`.
@@ -58,30 +47,16 @@ mod nudge;
 #[allow(dead_code, reason = "verbatim vendored copy; see the module doc above")]
 mod nudge_engine;
 mod oauth;
-mod ocr_result;
 mod prebuild_dlg;
-mod preview;
 mod rename_dlg;
-mod screenshot;
 mod settings_dlg;
 mod settings_io;
-mod sponsors;
 mod sync_client;
 mod tags_to_folders;
-/// Shared UI Automation scaffolding for a surface built from real child windows (the Settings
-/// nav rail today): each item overrides its own `WM_GETOBJECT` on top of its native provider
-/// rather than growing a virtual fragment tree. See the module doc for what a second surface
-/// (one with no child windows of its own, e.g. an owner-drawn toolbar) would need instead.
-mod uia;
-mod update;
-mod upload_result;
-mod win;
-
-use core::ffi::c_void;
+use modes::*;
 
 use windows::core::w;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     InitCommonControlsEx, ICC_BAR_CLASSES, ICC_LINK_CLASS, ICC_LISTVIEW_CLASSES,
@@ -89,15 +64,17 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::i18n;
+use st2k_appkit::{explorer_selection, license, win};
+use st2k_base::i18n;
+use st2k_screenshot::ocr_result;
 
 use crate::convert::run_convert_dialog;
-use crate::dark::{dark_bg_brush, dark_control, dark_titlebar, init_dark_app, is_dark};
-use crate::eyedropper::run_eyedropper;
 use crate::files_to_folder::run_files_to_folder_dialog;
 use crate::rename_dlg::run_rename_with_pattern_dialog;
 use crate::tags_to_folders::run_tags_to_folders_dialog;
-use crate::win::{app_icon, t};
+use st2k_appkit::dark::{dark_control, dark_titlebar, init_dark_app, is_dark};
+use st2k_appkit::win::t;
+use st2k_screenshot::eyedropper::run_eyedropper;
 
 /// Is this process running with an ELEVATED (admin) token? The installer's post-install
 /// [Run] steps carry `runasoriginaluser`, but when Setup itself was launched pre-elevated
@@ -107,11 +84,11 @@ use crate::win::{app_icon, t};
 /// non-elevated Settings window's `WM_RELOAD` forever (hotkey changes silently stop
 /// applying), and every capture helper it spawns runs as admin too.
 ///
-/// The token check itself lives in the core crate (`prebuild::is_elevated`), which needs the
+/// The token check itself lives in the base crate (`host::is_elevated`); the pre-build needs the
 /// same answer for a different reason: the thumbnail cache is per user, so an elevated
 /// pre-build would fill the administrator's cache instead. One implementation, two callers.
 unsafe fn is_elevated() -> bool {
-    sagethumbs2k_core::prebuild::is_elevated()
+    st2k_base::host::is_elevated()
 }
 
 /// De-elevate the heal through a ONE-SHOT `LIMITED` scheduled task: the task starts
@@ -120,20 +97,20 @@ unsafe fn is_elevated() -> bool {
 /// `heal_if_wanted` path below. A scheduled task needs no running Explorer — which is
 /// down at this exact moment (Restart Manager only restarts it AFTER the [Run] section) —
 /// so the shell-token de-elevation trick would not work here. Best-effort with logging;
-/// on any schtasks failure fall back to healing elevated (worse than a clean heal, but
-/// far better than leaving the hotkeys dead until next logon).
+/// if the task cannot be created, or schtasks is unavailable, fall back to healing elevated
+/// (worse than a clean heal, but far better than leaving the hotkeys dead until next logon).
 fn schedule_unelevated_heal() {
     use std::os::windows::process::CommandExt;
     const TASK: &str = "SageThumbs2K_HealHotkeys";
     let Ok(exe) = std::env::current_exe() else {
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
         return;
     };
     let tr = format!("\"{}\" --heal-hotkeys", exe.display());
     let run = |args: &[&str]| {
         std::process::Command::new("schtasks.exe")
             .args(args)
-            .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
+            .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
             .output()
     };
     // `/sc once /st 00:00` only satisfies schtasks' mandatory-schedule syntax — the task
@@ -150,18 +127,18 @@ fn schedule_unelevated_heal() {
             let _ = run(&["/delete", "/f", "/tn", TASK]);
         }
         Ok(o) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "heal: schtasks create failed ({}): {} — healing elevated instead",
                 o.status,
                 String::from_utf8_lossy(&o.stderr).trim()
             ));
-            crate::screenshot::heal_if_wanted();
+            st2k_screenshot::screenshot::heal_if_wanted();
         }
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "heal: schtasks unavailable ({e}) — healing elevated instead"
             ));
-            crate::screenshot::heal_if_wanted();
+            st2k_screenshot::screenshot::heal_if_wanted();
         }
     }
 }
@@ -174,7 +151,7 @@ fn heal_after_install() {
     if unsafe { is_elevated() } {
         schedule_unelevated_heal();
     } else {
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
     }
 }
 
@@ -201,12 +178,14 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         // network call running out of a process whose whole job was one `cmd` line.
         "--rebuild-thumbnail-cache",
         "--rebuild-thumbnail-cache-now",
-        // The hidden dev measurement flags: console-output-only, no window, no side effects —
+        // The hidden dev measurement flags: no window, and no side effect beyond the file they
+        // are told to write (`--probe-preview`'s picture) —
         // a network call spawned mid-benchmark would be a stray side effect in a mode whose
         // whole point is a clean, repeatable number.
         "--bench-preview",
         "--bench-nav",
         "--bench-mash",
+        "--probe-preview",
         // Documented as read-only and side-effect-free ("prints what a global hotkey would
         // act on right now... and exits"); it must stay that way even under `--after-ms`.
         "--explorer-selection",
@@ -226,7 +205,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
 
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
-    sagethumbs2k_core::safety::install_panic_hook("app");
+    st2k_base::safety::install_panic_hook("app");
     unsafe {
         let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
 
@@ -261,67 +240,13 @@ fn main() {
         // in which case it spawns the detached `--update-check` one-shot and returns; this
         // process never waits on the network and needn't outlive the toast.
         if update_piggyback_wanted(&args) {
-            crate::update::spawn_due_check();
+            st2k_appkit::update::spawn_due_check();
         }
 
-        // Every headless / one-shot CLI mode, checked in the same relative order the
-        // original single if-chain used (a flag's precedence over another matters when an
-        // invocation names more than one), just split into topical dispatchers so each one
-        // stays small. Each returns `true` when it already handled the launch (including
-        // via `std::process::exit`, for the modes that always exit rather than fall
-        // through), meaning this process should return without ever building a window.
-        if dispatch_diagnostic_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_update_modes(&args) {
-            return;
-        }
-        if dispatch_convert_and_shot_modes(hinst, dark, &args) {
-            return;
-        }
-        if dispatch_file_and_capture_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_screenshot_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_folder_modes(hinst, &args) {
-            return;
-        }
-        if dispatch_heal_modes(&args) {
-            return;
-        }
-        // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
-        // drop thumbcache_*.db.
-        //
-        // A fresh install genuinely needs this, which is not obvious. Registering the provider
-        // does not invalidate anything Explorer already cached, and for every one of our
-        // formats it HAS cached something: the generic icon it drew before we existed. Those
-        // entries keep being served, so the user installs a thumbnailer, sees no thumbnails,
-        // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
-        // cache for.
-        //
-        // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
-        // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
-        // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
-        // shell). Never silent-by-default: setup only runs this if the box is ticked.
-        if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
-            // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
-            // taskkill, then polls for the taskbar to come back). This flag is invoked
-            // synchronously from the installer's postinstall [Run] step, which by default
-            // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
-            // with the actual work and return immediately, rather than making the installer
-            // (or whatever else launched us this way) sit through it.
-            detach_rebuild_thumbnail_cache();
-            return;
-        }
-        // The detached half of the above: does the real (blocking) work and exits. Not
-        // reachable from a normal launch — only from the re-spawn just above.
-        if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
-            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-            return;
-        }
-        if dispatch_user_state_modes(&args) {
+        // Every headless / one-shot CLI mode, in the same relative order the original
+        // single if-chain used (a flag's precedence over another matters when an
+        // invocation names more than one) — see `dispatch_cli_launch_modes`.
+        if dispatch_cli_launch_modes(hinst, dark, &args) {
             return;
         }
 
@@ -336,7 +261,7 @@ fn main() {
         // if it's enabled (or a custom hotkey is bound) but not running — e.g. it was
         // killed, or a prior logon never brought it up — restart it now so
         // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
 
         // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
         // caption gear opens Settings straight on the Quick preview page. It used to be parsed
@@ -353,568 +278,78 @@ fn main() {
     }
 }
 
-/// Hidden, side-effect-free UI integration route (`--screenshot-automation`) plus the
-/// hidden dev measurement flags (`--bench-preview` / `--bench-nav` / `--bench-mash`).
-/// Checked first: the automation route takes precedence over every other output-capable
-/// mode even in a malformed mixed invocation, preserving its privacy/safety contract —
-/// synthetic full-screen pixels only, with clipboard, file, dialog, and upload paths
-/// fenced inside the overlay. Returns `true` if a flag fired (caller should return).
-unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]) -> bool {
-    if args.iter().any(|a| a == "--screenshot-automation") {
-        crate::screenshot::run_capture_automation(hinst);
+/// Runs every headless / one-shot CLI mode in the original precedence order, returning
+/// `true` when one already handled the launch (including modes that always exit rather
+/// than fall through), meaning the caller must return without ever building a window.
+unsafe fn dispatch_cli_launch_modes(hinst: HINSTANCE, dark: bool, args: &[String]) -> bool {
+    if dispatch_diagnostic_modes(hinst, args) {
         return true;
     }
-    // `--bench-preview <dir>`: times the Quick preview's REAL decode path over a folder —
-    // a cold pass, then a warm pass off the cache — so the arrow-key stepping cost is a
-    // number rather than an impression. Console output, no window, no side effects.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-preview") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
-        crate::preview::run_bench(&dir);
+    if dispatch_update_modes(args) {
         return true;
     }
-    // `--bench-nav <dir> <steps>`: the same measurement one level up — real viewer window,
-    // real WM_KEYDOWN arrow presses, timed from keypress to painted.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-nav") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
-        let steps = args
-            .get(pos + 2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(20);
-        crate::preview::run_nav_bench(hinst, &dir, steps);
+    if dispatch_convert_and_shot_modes(hinst, dark, args) {
         return true;
     }
-    // `--bench-mash <dir> <keys>`: the HELD arrow key, pressed without waiting for each
-    // paint, so several decodes really are in flight at once. `ST2K_NO_CANCEL=1` switches
-    // abandonment off for an A/B on the same binary.
-    if let Some(pos) = args.iter().position(|a| a == "--bench-mash") {
-        let dir = args.get(pos + 1).cloned().unwrap_or_default();
-        let keys = args
-            .get(pos + 2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(20);
-        crate::preview::run_mash_bench(hinst, &dir, keys);
+    if dispatch_file_and_capture_modes(hinst, args) {
         return true;
     }
-    false
-}
-
-/// The update-plumbing CLI flags: `--update-check` (the throttled one-shot the Scheduled
-/// Task runs, and the piggyback in `main` spawns), `--update-selftest <setup.exe>` (the CI
-/// / release-gate smoke test), `--first-run-seen` (suppress the welcome window on an
-/// upgrade), and `--update-task [remove]` (register/drop the per-user Scheduled Task).
-/// Returns `true` if a flag fired (caller should return).
-unsafe fn dispatch_update_modes(args: &[String]) -> bool {
-    if args.iter().any(|a| a == "--update-check") {
-        crate::update::run_one_shot_check();
+    if dispatch_screenshot_modes(hinst, args) {
         return true;
     }
-    if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
-        let ok = args
-            .get(pos + 1)
-            .is_some_and(|p| crate::update::run_selftest(std::path::Path::new(p)));
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.iter().any(|a| a == "--first-run-seen") {
-        crate::first_run::mark_shown();
+    if dispatch_folder_modes(hinst, args) {
         return true;
     }
-    if let Some(pos) = args.iter().position(|a| a == "--update-task") {
-        if args.get(pos + 1).map(String::as_str) == Some("remove") {
-            crate::update::remove_update_task();
-        } else {
-            crate::update::sync_update_task();
-        }
+    if dispatch_heal_modes(args) {
+        return true;
+    }
+    // Optional postinstall step (a checkbox on setup's last page): restart Explorer and
+    // drop thumbcache_*.db.
+    //
+    // A fresh install genuinely needs this, which is not obvious. Registering the provider
+    // does not invalidate anything Explorer already cached, and for every one of our
+    // formats it HAS cached something: the generic icon it drew before we existed. Those
+    // entries keep being served, so the user installs a thumbnailer, sees no thumbnails,
+    // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
+    // cache for.
+    //
+    // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
+    // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
+    // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
+    // shell). Never silent-by-default: setup only runs this if the box is ticked.
+    if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
+        // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
+        // taskkill, then polls for the taskbar to come back). This flag is invoked
+        // synchronously from the installer's postinstall [Run] step, which by default
+        // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
+        // with the actual work and return immediately, rather than making the installer
+        // (or whatever else launched us this way) sit through it.
+        detach_rebuild_thumbnail_cache();
+        return true;
+    }
+    // The detached half of the above: does the real (blocking) work and exits. Not
+    // reachable from a normal launch — only from the re-spawn just above.
+    if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
+        let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
+        return true;
+    }
+    if dispatch_user_state_modes(args) {
         return true;
     }
     false
 }
 
-/// Builds the `ShotOpts` for `--shot --window preview`: `--file <path>` input (synthetic
-/// gradient if absent), plus optional headless state forcing — `--hot N` (button N
-/// hovered), `--focus N` (caption-toolbar button N keyboard-focused, same `N` numbering as
-/// `--hot`), `--focus-transport N` (transport-strip button N keyboard-focused), `--pinned`,
-/// `--pdf-page N`, `--frame N` (animation frame), `--play` (video strip), `--source` (raw
-/// text of a normally-rendered file), and the rest.
-fn build_shot_preview_opts(args: &[String]) -> crate::preview::ShotOpts {
-    let val = |name: &str| {
-        args.iter()
-            .position(|a| a == name)
-            .and_then(|p| args.get(p + 1))
-    };
-    crate::preview::ShotOpts {
-        file: val("--file").cloned(),
-        hot: val("--hot").and_then(|s| s.parse().ok()),
-        focus: val("--focus").and_then(|s| s.parse().ok()),
-        focus_transport: val("--focus-transport").and_then(|s| s.parse().ok()),
-        pinned: args.iter().any(|a| a == "--pinned"),
-        pdf_page: val("--pdf-page").and_then(|s| s.parse().ok()),
-        frame: val("--frame").and_then(|s| s.parse().ok()),
-        play: args.iter().any(|a| a == "--play"),
-        dpi: val("--dpi").and_then(|s| s.parse().ok()),
-        scroll: val("--scroll").and_then(|s| s.parse().ok()),
-        wheel: val("--wheel").and_then(|s| s.parse().ok()),
-        wheel_ctrl: args.iter().any(|a| a == "--ctrl"),
-        wheel_shift: args.iter().any(|a| a == "--shift"),
-        sel: val("--sel").and_then(|s| {
-            let (a, b) = s.split_once(',')?;
-            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-        }),
-        find: val("--find").cloned(),
-        wait_ms: val("--wait-ms").and_then(|s| s.parse().ok()),
-        source: args.iter().any(|a| a == "--source"),
-        toggle_source: args.iter().any(|a| a == "--toggle-source"),
-        toggle_theme: args.iter().any(|a| a == "--toggle-theme"),
-        size: val("--size").and_then(|s| {
-            let (w, h) = s.split_once(['x', 'X'])?;
-            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-        }),
-    }
-}
-
-/// The default (`settings`) window of `--shot`: builds the requested tab (or drives the
-/// settings-wide search headlessly when `--search <needle>` is present, optionally picking
-/// the first hit with a trailing `!`) and renders it.
-unsafe fn run_shot_settings_window(
-    hinst: HINSTANCE,
-    dark: bool,
-    out: &str,
-    args: &[String],
-) -> bool {
-    let tab = args
-        .iter()
-        .position(|a| a == "--tab")
-        .and_then(|p| args.get(p + 1))
+/// Parses a `--<flag> <dir> [<n>]` diagnostic argument: the directory that follows
+/// `flag`, plus the numeric argument after that (defaulting to 20). `None` when `flag`
+/// is absent.
+fn bench_flag_args(args: &[String], flag: &str) -> Option<(String, usize)> {
+    let pos = args.iter().position(|a| a == flag)?;
+    let dir = args.get(pos + 1).cloned().unwrap_or_default();
+    let count = args
+        .get(pos + 2)
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    if let Some(needle) = args
-        .iter()
-        .position(|a| a == "--search")
-        .and_then(|p| args.get(p + 1))
-    {
-        settings_dlg::run_shot_search(hinst, dark, out, needle)
-    } else {
-        settings_dlg::run_shot(hinst, dark, out, tab)
-    }
-}
-
-/// The body of `--shot <out.png> [--tab N] [--window settings|convert|eyedropper|...]`:
-/// picks the window named by `--window` (default `settings`) and renders it INVISIBLY
-/// (off-screen) to `out`. `pos` is the index of the `--shot` flag itself.
-///
-/// `--dpi N` (any window, not just `preview`) forces the headless-shot DPI override BEFORE
-/// the window is built, so a locale/layout regression test can capture the same dialog at
-/// 96 and 192 without a physical high-DPI monitor (2026-09-05 audit finding F36 wants both
-/// covered for the Convert and first-run windows, which previously had no `--dpi` wiring at
-/// all). `preview`'s own `ShotOpts.dpi` re-applies the same value, which is harmless: `set_dpi_override`
-/// is an idempotent store, not a toggle.
-unsafe fn run_shot_mode(hinst: HINSTANCE, dark: bool, args: &[String], pos: usize) -> bool {
-    if let Some(dpi) = args
-        .iter()
-        .position(|a| a == "--dpi")
-        .and_then(|p| args.get(p + 1))
-        .and_then(|s| s.parse::<i32>().ok())
-    {
-        crate::win::set_dpi_override(dpi);
-    }
-    let window = args
-        .iter()
-        .position(|a| a == "--window")
-        .and_then(|p| args.get(p + 1))
-        .map(String::as_str)
-        .unwrap_or("settings");
-    let Some(out) = args.get(pos + 1) else {
-        return false;
-    };
-    match window {
-        "convert" => crate::convert::run_shot_convert(out),
-        // The Convert dialog's failure report, over canned failures: it only appears when a
-        // batch actually fails, which a shot cannot arrange.
-        "convert-report" => crate::convert_report::run_shot_convert_report(out),
-        "eyedropper" => crate::eyedropper::run_shot_eyedropper(out),
-        "feedback" => crate::feedback::run_shot_feedback(out),
-        "about" => crate::about::run_shot_about(out),
-        "doctor" => crate::doctor_report::run_shot_doctor(out),
-        "firstrun" => crate::first_run::run_shot_first_run(out),
-        "firstrun2" => crate::first_run::run_shot_first_run2(out),
-        // The OCR result window, over canned text (no recognizer run) — or the
-        // real text of `--file <img>` when you want to see an actual scan.
-        "ocr" => {
-            let file = args
-                .iter()
-                .position(|a| a == "--file")
-                .and_then(|p| args.get(p + 1));
-            crate::ocr_result::run_shot_ocr(out, file.map(String::as_str))
-        }
-        "preview" => {
-            let opts = build_shot_preview_opts(args);
-            crate::preview::run_shot_preview(hinst, dark, out, &opts)
-        }
-        _ => run_shot_settings_window(hinst, dark, out, args),
-    }
-}
-
-/// `--convert <listfile>` (the batch-convert dialog), `--shot-gif <out.gif>` (walks every
-/// Settings tab and encodes a regenerable README/site walkthrough GIF, checked before
-/// `--shot` by exact match so the shorter flag never swallows it), and `--shot` itself (see
-/// [`run_shot_mode`]). Returns `true` if a flag fired (caller should return).
-unsafe fn dispatch_convert_and_shot_modes(hinst: HINSTANCE, dark: bool, args: &[String]) -> bool {
-    if let Some(pos) = args.iter().position(|a| a == "--convert") {
-        if let Some(listfile) = args.get(pos + 1) {
-            run_convert_dialog(hinst, listfile);
-        }
-        return true;
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--shot-gif") {
-        let ok = args
-            .get(pos + 1)
-            .is_some_and(|out| settings_dlg::run_shot_gif(hinst, dark, out));
-        std::process::exit(i32::from(!ok));
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--shot") {
-        let ok = run_shot_mode(hinst, dark, args, pos);
-        std::process::exit(i32::from(!ok));
-    }
-    false
-}
-
-/// The read-only diagnostic and file-verb CLI flags: `--explorer-selection`,
-/// `--eyedropper`, `--prebuild <folder>`, `--image-info <path>`, `--ocr <png>`,
-/// `--ocr-keep <path> [--page N]` and `--preview [path]`. Returns `true` if a flag fired
-/// (caller should return).
-unsafe fn dispatch_file_and_capture_modes(hinst: HINSTANCE, args: &[String]) -> bool {
-    // `--explorer-selection` prints what a global hotkey would act on right now — one path
-    // per line, nothing when there is no selection — and exits. This exists because "I
-    // pressed the hotkey and nothing happened" is otherwise unanswerable: it separates "the
-    // hotkey never fired" from "the hotkey fired but Explorer reported no selection".
-    if args.iter().any(|a| a == "--explorer-selection") {
-        // `--after-ms N` waits first. Necessary, not a convenience: the resolver reads the
-        // FOREGROUND Explorer window, and launching this console tool makes the CONSOLE the
-        // foreground window — so without a delay it always reports "nothing".
-        let wait = args
-            .iter()
-            .position(|a| a == "--after-ms")
-            .and_then(|p| args.get(p + 1))
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        if wait > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(wait.min(60_000)));
-        }
-        if let explorer_selection::PreviewTarget::Path(p) = explorer_selection::preview_target() {
-            println!("{p}");
-        }
-        return true;
-    }
-    // Eyedropper mode: `--eyedropper` (spawned by the DLL verb) opens the
-    // system-wide screen color picker.
-    if args.iter().any(|a| a == "--eyedropper") {
-        run_eyedropper(hinst);
-        return true;
-    }
-    // Pre-build thumbnails: `--prebuild <folder>` (the folder right-click entry) walks the
-    // folder and fills Explorer's thumbnail cache, showing progress.
-    if let Some(pos) = args.iter().position(|a| a == "--prebuild") {
-        if let Some(dir) = args.get(pos + 1) {
-            // A DRIVE ROOT arrives here as `E:"` — see `prebuild::unmangle_shell_path` for
-            // why the shell's own quoting does that and why it cannot be fixed in the
-            // registry string. Repairing it here also heals installs that already wrote
-            // the old command.
-            let dir = sagethumbs2k_core::prebuild::unmangle_shell_path(dir);
-            prebuild_dlg::run_prebuild(&dir);
-        }
-        return true;
-    }
-    // Image info: `--image-info <path>` (spawned by the DLL's Image info verb) shows
-    // a verbose, copyable metadata dump for the file.
-    if let Some(pos) = args.iter().position(|a| a == "--image-info") {
-        if let Some(path) = args.get(pos + 1) {
-            image_info::run_image_info(path);
-        }
-        return true;
-    }
-    // Screen OCR: `--ocr <png>` (spawned by the capture overlay's OCR button /
-    // Ctrl+T) reads the text out of the throwaway capture, copies it, and shows it.
-    if let Some(pos) = args.iter().position(|a| a == "--ocr") {
-        if let Some(path) = args.get(pos + 1) {
-            ocr_result::run_ocr(path);
-        }
-        return true;
-    }
-    // Screen OCR on a file the user owns: `--ocr-keep <path> [--page N]` (the Quick
-    // preview's OCR toolbar button). Unlike `--ocr` it does NOT delete its input. Checked
-    // before `--ocr` (exact match, so they don't overlap).
-    if let Some(pos) = args.iter().position(|a| a == "--ocr-keep") {
-        if let Some(path) = args.get(pos + 1) {
-            let page = args
-                .iter()
-                .position(|a| a == "--page")
-                .and_then(|p| args.get(p + 1))
-                .and_then(|s| s.parse::<u32>().ok());
-            ocr_result::run_ocr_keep(path, page);
-        }
-        return true;
-    }
-    // Quick preview: `--preview [path]` launches the single-instance QuickLook-style
-    // viewer. A second launch forwards its path to the running viewer and exits.
-    if let Some(pos) = args.iter().position(|a| a == "--preview") {
-        let path = args
-            .get(pos + 1)
-            .filter(|p| !p.starts_with("--"))
-            .map(String::as_str);
-        crate::preview::run_preview(hinst, path);
-        return true;
-    }
-    false
-}
-
-/// The screenshot-related CLI flags: `--screenshot-instant`, `--screenshot-ocr`,
-/// `--screenshot`, `--screenshot-daemon`, `--hotkey-action`, `--upload <png>`,
-/// `--upload-keep <listfile>` and `--screenshot-toggle`. Returns `true` if a flag fired
-/// (caller should return).
-unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]) -> bool {
-    // Instant capture: grabs the whole screen straight to the clipboard + a PNG, no
-    // overlay. Checked before `--screenshot` (exact match, so they don't overlap).
-    if args.iter().any(|a| a == "--screenshot-instant") {
-        crate::screenshot::capture_instant();
-        return true;
-    }
-    // Screen OCR mode: opens the same overlay, but the first finished region drag reads
-    // its text and closes — no editor. Checked before `--screenshot` (exact match).
-    if args.iter().any(|a| a == "--screenshot-ocr") {
-        crate::screenshot::run_capture_ocr(hinst);
-        return true;
-    }
-    // Screenshot mode: opens the Flameshot-style capture + annotation overlay
-    // (region -> draw -> copy/save). Wired to a hotkey by the opt-in tray daemon.
-    if args.iter().any(|a| a == "--screenshot") {
-        crate::screenshot::run_capture(hinst);
-        return true;
-    }
-    // Screenshot daemon: runs the opt-in tray helper that registers the global hotkey and
-    // spawns captures. Launched at logon only after the user enables it in Settings.
-    if args.iter().any(|a| a == "--screenshot-daemon") {
-        crate::screenshot::run_daemon(hinst);
-        return true;
-    }
-    // Custom action hotkey: spawned by the daemon when the user's assigned chord fires;
-    // runs whichever action they bound in Settings > Screenshots.
-    if args.iter().any(|a| a == "--hotkey-action") {
-        crate::hotkey::run_hotkey_action(hinst);
-        return true;
-    }
-    // Upload mode: POSTs a capture to a keyless host and copies the URL to the clipboard.
-    if let Some(pos) = args.iter().position(|a| a == "--upload") {
-        if let Some(path) = args.get(pos + 1) {
-            crate::screenshot::run_upload(path);
-        }
-        return true;
-    }
-    // Upload-keep mode: uploads the USER files listed to the keyless host and copies the
-    // link(s) to the clipboard, WITHOUT deleting the originals (only `--upload` deletes,
-    // since its file is a throwaway capture). Exact-match above means `--upload` never
-    // swallows this longer flag. An optional trailing `--url-to <file>` is how `st2k upload`
-    // reuses this same path headlessly: see `run_upload_keep`'s doc comment for the contract.
-    if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
-        if let Some(listfile) = args.get(pos + 1) {
-            let url_to = args
-                .iter()
-                .position(|a| a == "--url-to")
-                .and_then(|p| args.get(p + 1))
-                .map(String::as_str);
-            crate::screenshot::run_upload_keep(listfile, url_to);
-        }
-        return true;
-    }
-    // Toggle the screenshot hotkey on/off (HKCU autostart + the tray daemon).
-    if args.iter().any(|a| a == "--screenshot-toggle") {
-        crate::screenshot::set_enabled(!crate::screenshot::is_enabled());
-        return true;
-    }
-    false
-}
-
-/// `--files-to-folder <listfile>`, `--rename-with-pattern <listfile>`, and
-/// `--tags-to-folders <listfile>` (all spawned by DLL verbs over a multi-file
-/// selection). Returns `true` if a flag fired (caller should return).
-unsafe fn dispatch_folder_modes(hinst: HINSTANCE, args: &[String]) -> bool {
-    if let Some(pos) = args.iter().position(|a| a == "--files-to-folder") {
-        if let Some(listfile) = args.get(pos + 1) {
-            run_files_to_folder_dialog(hinst, listfile);
-        }
-        return true;
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--rename-with-pattern") {
-        if let Some(listfile) = args.get(pos + 1) {
-            run_rename_with_pattern_dialog(hinst, listfile);
-        }
-        return true;
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--tags-to-folders") {
-        if let Some(listfile) = args.get(pos + 1) {
-            run_tags_to_folders_dialog(hinst, listfile);
-        }
-        return true;
-    }
-    false
-}
-
-/// The install-time heal flags: `--updated <ver>` (launched by the installer's [Run] step
-/// right after a SILENT self-update finishes — heals the hotkey daemon the installer had
-/// to kill, then pops a non-blocking "you're now on <ver>" toast) and `--heal-hotkeys` (run
-/// after EVERY install, including manual/silent reinstalls that never pass `/UPDATED`).
-/// Returns `true` if a flag fired (caller should return).
-unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
-    if let Some(pos) = args.iter().position(|a| a == "--updated") {
-        heal_after_install();
-        let ver = args
-            .get(pos + 1)
-            .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
-        crate::update::show_updated_toast(ver);
-        offer_thumbnail_refresh(ver);
-        return true;
-    }
-    if args.iter().any(|a| a == "--heal-hotkeys") {
-        heal_after_install();
-        return true;
-    }
-    false
-}
-
-/// Re-spawn this EXE with `--rebuild-thumbnail-cache-now` (detached — no wait, no window)
-/// and return, so a caller invoking `--rebuild-thumbnail-cache` synchronously (the
-/// installer's postinstall [Run] step) is not blocked for the ~30s
-/// `restart_explorer_clearing_cache` can take. If the re-spawn itself fails, fall back to
-/// doing the work directly rather than silently skipping what the postinstall checkbox
-/// promised.
-fn detach_rebuild_thumbnail_cache() {
-    use std::os::windows::process::CommandExt;
-    let Ok(exe) = std::env::current_exe() else {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-        return;
-    };
-    let spawned = std::process::Command::new(&exe)
-        .arg("--rebuild-thumbnail-cache-now")
-        .creation_flags(sagethumbs2k_core::CREATE_NO_WINDOW)
-        .spawn();
-    if spawned.is_err() {
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-    }
-}
-
-/// After a silent self-update relaunch, a decoder/format fix shows no difference for any
-/// file Explorer already thumbnailed — only clearing `thumbcache_*.db` does, and until now
-/// the only UI for that was a postinstall checkbox `/UPDATED` deliberately skips (see G88 /
-/// review #88: "silent self-update never invalidates the thumbcache"). Records
-/// `CacheStaleSince=<ver>` in HKCU so the state is visible even if the toast is missed or
-/// dismissed unread, offers a one-click fix, and clears the marker once the refresh
-/// actually completes. The restart runs INSIDE the click handler, on this thread: this is
-/// the short-lived relaunch process `show_updated_toast` pops its balloon from, and it exits
-/// the moment the toast returns, so a detached worker would be torn down mid-restart, its
-/// verify loop and explorer.exe fallback with it. Blocking here for the ~30 s cycle costs
-/// nothing: the process has no other work, and the restart takes the tray icon with it.
-unsafe fn offer_thumbnail_refresh(ver: &str) {
-    let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", ver);
-    crate::win::notify_toast_action(
-        "Refresh thumbnails now?",
-        "New thumbnails won't appear for files Explorer already cached until the cache is \
-         cleared. Click to refresh thumbnails now (restarts Explorer).",
-        std::time::Duration::from_secs(8),
-        || {
-            let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
-            let _ = sagethumbs2k_core::settings::set_string("CacheStaleSince", "");
-        },
-    );
-}
-
-/// `--queue-cache-rebuild` (the installer, running this as the ORIGINAL user): queue a
-/// one-shot `--rebuild-thumbnail-cache` in this user's RunOnce for the next sign-in. The
-/// installer asks for it when the DLL swap is waiting on a restart; written from the
-/// elevated installer itself the value would land in whichever admin's hive answered the
-/// UAC prompt, not the user's.
-fn queue_cache_rebuild() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let cmd = format!("\"{}\" --rebuild-thumbnail-cache", exe.display());
-    if let Ok(k) =
-        windows_registry::CURRENT_USER.create(r"Software\Microsoft\Windows\CurrentVersion\RunOnce")
-    {
-        let _ = k.set_string("SageThumbs2KRebuildCache", &cmd);
-    }
-}
-
-/// `--sync-user-shell` / `--remove-user-shell` (register.rs's per-user shell hooks, run
-/// `runasoriginaluser` by the installer so they land in the interactive user's hive rather
-/// than the elevated [Code] process's), `--remove-user-state` (uninstall-time: wipe this
-/// user's HKCU settings, leave the reinstall tombstone, and drop the daemon's autostart
-/// entry), and the deployment-script pair `--export-settings <file>` / `--import-settings
-/// <file>` (round-trip the whole settings tree to/from a JSON file headlessly — the same
-/// `settings_io` the Diagnostics ▸ Export/Import buttons use, without opening a window).
-/// Those two exit the process directly (0 success, 1 failure — a missing path argument is
-/// a failure, same as an I/O error) rather than returning, matching `--update-selftest`'s
-/// shape in [`dispatch_update_modes`]. Returns `true` if a flag fired (caller should
-/// return).
-unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
-    if args.iter().any(|a| a == "--sync-user-shell") {
-        if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
-            sagethumbs2k_core::safety::log(&format!("--sync-user-shell failed: {e}"));
-        }
-        return true;
-    }
-    if args.iter().any(|a| a == "--remove-user-shell") {
-        sagethumbs2k_core::register::remove_user_shell();
-        return true;
-    }
-    if args.iter().any(|a| a == "--remove-user-state") {
-        remove_user_state();
-        return true;
-    }
-    if args.iter().any(|a| a == "--queue-cache-rebuild") {
-        queue_cache_rebuild();
-        return true;
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--export-settings") {
-        // Atomic (2026-09-05 audit, F13): a straight `fs::write` here could truncate a
-        // prior backup at the same path on a failed overwrite. See
-        // `settings_io::export_settings_to_path`.
-        let ok = args.get(pos + 1).is_some_and(|path| {
-            crate::settings_io::export_settings_to_path(std::path::Path::new(path)).is_ok()
-        });
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    if let Some(pos) = args.iter().position(|a| a == "--import-settings") {
-        let ok = args.get(pos + 1).is_some_and(|path| {
-            std::fs::read_to_string(path)
-                .ok()
-                .and_then(|text| crate::settings_io::import_settings(&text).ok())
-                .is_some()
-        });
-        std::process::exit(if ok { 0 } else { 1 });
-    }
-    false
-}
-
-/// The body of `--remove-user-state`: for the CURRENT user only, wipe every trace of us
-/// that an elevated, machine-wide uninstall step cannot reach — this app never runs
-/// elevated by itself (see [`is_elevated`]'s doc above), so the installer must invoke this
-/// `runasoriginaluser` for it to land in the right hive at all.
-///
-/// Wipes `HKCU\Software\SageThumbs2K` entirely, then re-leaves the reinstall tombstone —
-/// the same "wipe the root, then leave one value behind" shape
-/// [`sagethumbs2k_core::settings::clear_tombstone`]'s doc comment describes the machine-wide
-/// uninstaller performing — via the general string setter (which targets the exact same
-/// key `tombstone_version`/`clear_tombstone` read and clear), and drops the screenshot
-/// daemon's logon autostart entry. `RUN_KEY`/`RUN_NAME` mirror the private constants in
-/// `screenshot::enable` (that module owns the daemon's own add/remove of the same value;
-/// its consts aren't `pub`, so the literal is repeated here — keep both in sync).
-unsafe fn remove_user_state() {
-    let _ = windows_registry::CURRENT_USER.remove_tree(sagethumbs2k_core::settings::ROOT);
-    let _ = sagethumbs2k_core::settings::set_string("Tombstone", env!("CARGO_PKG_VERSION"));
-
-    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const RUN_NAME: &str = "SageThumbs2KScreenshot";
-    if let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) {
-        let _ = k.remove_value(RUN_NAME);
-    }
+        .unwrap_or(20);
+    Some((dir, count))
 }
 
 /// If another instance is already up (or mid-boot), activate ITS window instead of
@@ -931,7 +366,7 @@ unsafe fn activate_existing_instance(want_tab: Option<usize>) -> bool {
             }
             // If the foreground grab is refused the window stays hidden behind whatever
             // is in front, and the menu item reads as dead.
-            crate::win::force_foreground(existing);
+            st2k_appkit::win::force_foreground(existing);
             if let Some(tab) = want_tab {
                 let _ = PostMessageW(
                     Some(existing),
@@ -975,7 +410,7 @@ unsafe fn handle_single_instance(want_tab: Option<usize>) -> bool {
         // window), which is the bug: a failure here means "unknown", not "no". Log it (this
         // used to be silent) and proceed best-effort rather than either claim.
         Err(e) => {
-            sagethumbs2k_core::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "single-instance mutex could not be created/opened ({e}) — cannot verify \
                  whether another instance is already running"
             ));
@@ -994,22 +429,8 @@ unsafe fn create_and_show_settings_window(
     want_tab: Option<usize>,
 ) -> HWND {
     let class = w!("SageThumbs2KOptions");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(settings_dlg::wndproc),
-        hInstance: hinst,
-        lpszClassName: class,
-        hIcon: app_icon().unwrap_or_default(),
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // Dark window background when the system is dark; otherwise the
-        // classic button-face system color ((COLOR_BTNFACE + 1) as HBRUSH).
-        hbrBackground: if dark {
-            dark_bg_brush()
-        } else {
-            HBRUSH(16isize as *mut c_void)
-        },
-        ..Default::default()
-    };
-    RegisterClassW(&wc);
+    // The palette's window tone in BOTH themes (feedback, 3.1.1) - `register_app_class`.
+    win::register_app_class(class, Some(settings_dlg::wndproc), hinst);
 
     // HISTORICAL (v2, before the nav-rail): WS_THICKFRAME let the user drag the window
     // TALLER; that machinery still exists in `settings_dlg::mod::on_resize` (harmless — it
@@ -1083,61 +504,8 @@ unsafe fn create_and_show_settings_window(
 
     // The one-shot licensing notices: the persistent nag banner (Business, unlicensed) is
     // page chrome the window already carries; these are the notices that speak up ONCE, the
-    // moment the window is about to appear. `Silent` (Personal, or a licensed Business
-    // install) says nothing, ever — see `license.rs`'s standing "fail toward Personal/free"
-    // rule.
-    match license_snap.posture {
-        license::Posture::Silent => {}
-        license::Posture::BusinessNag => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            if license::nag_due(now) {
-                // The toast pumps its own message loop for as long as it lingers; on its
-                // own thread it cannot hold up the Settings window being built here.
-                // Say WHERE a licence comes from, not only that one is needed: the 2026-09-04
-                // audit found no surface inside the product ever named the shop.
-                let body = format!(
-                    "{} {}",
-                    t("licence_nag_toast_body"),
-                    t("licence_buy_pointer")
-                );
-                std::thread::spawn(move || {
-                    crate::win::notify_toast(
-                        "SageThumbs 2K",
-                        &body,
-                        std::time::Duration::from_secs(6),
-                    );
-                });
-                license::note_nag_shown(now);
-            }
-        }
-        license::Posture::DowngradeNoticeOnce => {
-            crate::win::message_box(
-                hwnd,
-                &t("licence_downgrade_notice").replace("{key}", &license_snap.key_prefix),
-                "SageThumbs 2K",
-            );
-            license::acknowledge_downgrade();
-        }
-        license::Posture::DeauthorizedLoud => {
-            // Every Settings open until re-licensed — this one has no acknowledgement to
-            // record, unlike the downgrade notice above. Leads with WHY when the relay said
-            // (a seat the holder ejected reads very differently from a licence that ended),
-            // and ends with where a new one comes from.
-            let notice =
-                t("licence_deauthorized_notice").replace("{key}", &license_snap.key_prefix);
-            let why = settings_dlg::licence_reason_line(&license_snap.last_reason)
-                .map(|w| format!("{w} "))
-                .unwrap_or_default();
-            crate::win::message_box(
-                hwnd,
-                &format!("{why}{notice} {}", t("licence_buy_pointer")),
-                "SageThumbs 2K",
-            );
-        }
-    }
+    // moment the window is about to appear. See `show_licensing_notices`.
+    show_licensing_notices(hwnd, &license_snap);
 
     // Land on the requested page before the window is shown, so it never flashes General
     // first. The layout builder ends with `switch_category(hwnd, 0)`; this re-selects.
@@ -1149,119 +517,85 @@ unsafe fn create_and_show_settings_window(
     hwnd
 }
 
-/// The classic Win32 message pump, run until `WM_QUIT`.
-unsafe fn run_message_loop(hwnd: HWND) {
-    let mut msg = MSG::default();
-    loop {
-        // GetMessageW returns -1 on error, 0 on WM_QUIT, >0 otherwise.
-        // as_bool() (`!= 0`) would treat -1 as "keep going" and then spin on
-        // a MSG it never populated — branch on the raw value instead.
-        let r = GetMessageW(&mut msg, None, 0, 0).0;
-        if r == 0 || r == -1 {
-            break;
+/// Shows the one-shot licensing notices for `snap`'s posture (the sign-in/business nag
+/// banners are separate page chrome). `Silent` (Personal, or a licensed Business install)
+/// says nothing, ever — see `license.rs`'s standing "fail toward Personal/free" rule.
+unsafe fn show_licensing_notices(hwnd: HWND, snap: &license::LicenceSnapshot) {
+    match snap.posture {
+        license::Posture::Silent => {}
+        license::Posture::DowngradeNoticeOnce => {
+            // A machine that once redeemed a key names it; one that only ran the evaluation
+            // has no key to name and gets the sentence written for that.
+            let key = if snap.key_prefix.is_empty() {
+                "licence_downgrade_notice_nokey"
+            } else {
+                "licence_downgrade_notice"
+            };
+            st2k_appkit::win::message_box(
+                hwnd,
+                &t(key).replace("{key}", &snap.key_prefix),
+                "SageThumbs 2K",
+            );
+            license::acknowledge_downgrade();
         }
-        if !IsDialogMessageW(hwnd, &msg).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        posture => {
+            // Every other posture wants a reminder, spaced by `nag_due`: a day apart while
+            // the evaluation runs (or for a copy that once held a key), and on EVERY open once
+            // it is urgent - the evaluation over, the shell stopped, a revocation with a lock
+            // date. The sentence is the shared `licence_reminder_body`, so the tray balloon
+            // and the daily one-shot say the same thing, and it ends with where a licence
+            // comes from (the 2026-09-04 audit found no surface inside the product ever
+            // named the shop).
+            let now = snap.now_unix;
+            if license::nag_due(now, posture) {
+                let body = format!(
+                    "{} {}",
+                    license::licence_reminder_body(snap),
+                    t("licence_buy_pointer")
+                );
+                if posture.is_urgent() {
+                    st2k_appkit::win::message_box(hwnd, &body, "SageThumbs 2K");
+                } else {
+                    // The toast pumps its own message loop for as long as it lingers; on
+                    // its own thread it cannot hold up the Settings window being built here.
+                    std::thread::spawn(move || {
+                        st2k_appkit::win::notify_toast(
+                            "SageThumbs 2K",
+                            &body,
+                            std::time::Duration::from_secs(6),
+                        );
+                    });
+                }
+                license::note_nag_shown(now);
+            }
         }
     }
+}
+
+/// The classic Win32 message pump, run until `WM_QUIT`: the same dialog pump every
+/// top-level dialog runs.
+unsafe fn run_message_loop(hwnd: HWND) {
+    win::pump_until_quit(hwnd);
 }
 
 /// The Settings page `--tab N` asks for, or `None` when the flag is absent, malformed, or names
 /// a page that does not exist. Out-of-range is deliberately `None` rather than clamped: a number
 /// past the end means the caller's idea of the page list disagrees with this build's, and
 /// silently landing on the last page would hide that.
+///
+/// The page may be named instead of numbered (`--tab nav_quickpreview`): a caller below the
+/// Settings window (the viewer's caption gear, the licence reminders) names the page it wants
+/// and this build's nav table decides where that page is.
 fn wanted_tab(args: &[String]) -> Option<usize> {
-    args.iter()
+    let v = args
+        .iter()
         .position(|a| a == "--tab")
-        .and_then(|p| args.get(p + 1))
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|p| args.get(p + 1))?;
+    v.parse::<usize>()
+        .ok()
+        .or_else(|| settings_dlg::page_named(v))
         .filter(|&t| t < settings_dlg::NAV_CATEGORY_COUNT)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{update_piggyback_wanted, wanted_tab};
-
-    fn argv(rest: &[&str]) -> Vec<String> {
-        std::iter::once("SageThumbs2K.exe".to_string())
-            .chain(rest.iter().map(|s| (*s).to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn piggyback_covers_ordinary_launches_and_spares_the_headless_ones() {
-        // The whole point of the piggyback: an install where the resident helper was never
-        // enabled still gets update checks, from whatever the user actually opens.
-        for ordinary in [
-            vec![],
-            vec!["--convert", "list.txt"],
-            vec!["--preview", "a.png"],
-            vec!["--eyedropper"],
-            vec!["--files-to-folder", "list.txt"],
-            vec!["--rename-with-pattern", "list.txt"],
-        ] {
-            assert!(
-                update_piggyback_wanted(&argv(&ordinary)),
-                "{ordinary:?} should fire the update check"
-            );
-        }
-
-        // Headless captures must stay deterministic and side-effect free, the automation
-        // route has a synthetic-pixels-only contract, the daemon owns its own timer, and the
-        // one-shot must never spawn itself.
-        for excluded in [
-            vec!["--shot", "out.png"],
-            vec!["--shot", "out.png", "--window", "preview"],
-            vec!["--shot-gif", "out.gif"],
-            vec!["--screenshot-automation"],
-            vec!["--screenshot-daemon"],
-            vec!["--update-check"],
-            vec!["--update-task"],
-            vec!["--update-task", "remove"],
-            vec!["--update-selftest", "setup.exe"],
-            vec!["--updated", "1.7.0"],
-            vec!["--heal-hotkeys"],
-            vec!["--rebuild-thumbnail-cache"],
-            vec!["--rebuild-thumbnail-cache-now"],
-            vec!["--bench-preview", "C:\\pics"],
-            vec!["--bench-nav", "C:\\pics", "20"],
-            vec!["--bench-mash", "C:\\pics", "20"],
-            vec!["--explorer-selection"],
-            vec!["--explorer-selection", "--after-ms", "300"],
-            vec!["--sync-user-shell"],
-            vec!["--remove-user-shell"],
-            vec!["--remove-user-state"],
-            vec!["--export-settings", "out.json"],
-            vec!["--import-settings", "in.json"],
-        ] {
-            assert!(
-                !update_piggyback_wanted(&argv(&excluded)),
-                "{excluded:?} must NOT fire the update check"
-            );
-        }
-    }
-
-    /// `--tab N` backs the Quick preview caption's Settings gear, so a launch that carries it
-    /// has to land on that page. It was parsed only inside `--shot` until 2026-08-24, which
-    /// meant a normal launch silently opened page 0 and a live probe reported a clean pass
-    /// against a control that did not exist.
-    #[test]
-    fn tab_flag_selects_a_real_settings_page() {
-        let quick = crate::settings_dlg::quick_preview_page();
-        assert_eq!(
-            wanted_tab(&argv(&["--tab", &quick.to_string()])),
-            Some(quick)
-        );
-        assert_eq!(wanted_tab(&argv(&["--tab", "0"])), Some(0));
-        // Absent, malformed, or with nothing after it: open normally, never panic.
-        assert_eq!(wanted_tab(&argv(&[])), None);
-        assert_eq!(wanted_tab(&argv(&["--tab"])), None);
-        assert_eq!(wanted_tab(&argv(&["--tab", "not-a-number"])), None);
-        assert_eq!(wanted_tab(&argv(&["--tab", "-1"])), None);
-        // Past the end is REFUSED rather than clamped: it means the caller's page list and
-        // this build's disagree, and quietly opening the last page would hide that.
-        let past_end = crate::settings_dlg::NAV_CATEGORY_COUNT;
-        assert_eq!(wanted_tab(&argv(&["--tab", &past_end.to_string()])), None);
-    }
-}
+mod tests;

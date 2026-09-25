@@ -1,11 +1,13 @@
 //! Embed VERSIONINFO into sagethumbs2k.dll so right-click -> Properties -> Details
 //! shows a file version (critical for telling which build a given dllhost.exe loaded).
 //!
-//! The SDK-rc lookup + VERSIONINFO `.rc` template live in the shared `build-support` crate
-//! (a `[build-dependencies]`-only crate under `crates/build-support`, so none of it reaches
-//! the shipped DLL) - build scripts can't share code across crates any other way. Best-effort:
-//! if OUT_DIR/windres is unavailable, emit a `cargo:warning` and move on - the DLL just lacks
-//! a version (REPORTED, never fatal).
+//! The SDK-rc lookup, the windres dispatch and the VERSIONINFO `.rc` template live in the
+//! shared `build-support` crate (a `[build-dependencies]`-only crate under
+//! `crates/build-support`, so none of it reaches the shipped DLL) - build scripts can't share
+//! code across crates any other way. Best-effort: if the `.rc` cannot be written, or windres
+//! is unavailable on x64, emit a `cargo:warning` and move on - the DLL just lacks a version
+//! (REPORTED, never fatal). The one refusal is ARM64 without the SDK `rc.exe`, which has no
+//! fallback compiler at all.
 
 fn main() {
     delay_load_media_foundation();
@@ -42,38 +44,22 @@ fn main() {
         &ver,
         build_support::FileType::Dll,
     );
-    if std::fs::write(format!("{out}/dll_version.rc"), rc).is_err() {
-        println!("cargo:warning=DLL VERSIONINFO: couldn't write dll_version.rc; DLL will have no version");
-        return;
-    }
-    let input = format!("{out}/dll_version.rc");
-    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
-        let res = format!("{out}/dll_version.res");
-        if build_support::compile_with_windows_sdk_rc(&input, &res) {
-            println!("cargo:rustc-link-arg={res}");
-            return;
-        }
-        panic!(
+    use build_support::RcFailure;
+    match build_support::compile_rc(&out, "dll_version", &rc) {
+        // This crate is cdylib-only, so `-arg` reaches the DLL (no bins to confuse).
+        Ok(arg) => println!("cargo:rustc-link-arg={arg}"),
+        Err(RcFailure::NoSdkRc) => panic!(
             "ARM64 resource compilation requires Windows SDK rc.exe; refusing a \
              version-metadata-free shell DLL"
-        );
-    } else {
-        let obj = format!("{out}/dll_version.o");
-        for windres in ["windres", "x86_64-w64-mingw32-windres"] {
-            let status = std::process::Command::new(windres)
-                .args(["-I", &out, &input, "-O", "coff", "-o", &obj])
-                .status();
-            if matches!(status, Ok(s) if s.success()) {
-                // This crate is cdylib-only, so `-arg` reaches the DLL (no bins to confuse).
-                println!("cargo:rustc-link-arg={obj}");
-                return;
-            }
+        ),
+        Err(RcFailure::Write(why)) => {
+            println!("cargo:warning=DLL VERSIONINFO: {why}; DLL will have no version")
         }
+        Err(RcFailure::Windres(why)) => println!(
+            "cargo:warning=DLL VERSIONINFO: sagethumbs2k.dll will have no file version.\n  \
+             {why}\n  Install binutils/llvm-windres (or put it on PATH) to enable it."
+        ),
     }
-    println!(
-        "cargo:warning=DLL VERSIONINFO: windres unavailable; sagethumbs2k.dll will have no \
-         file version. Install binutils/llvm-windres to enable it."
-    );
 }
 
 /// Delay-load Media Foundation (`mfplat.dll` / `mfreadwrite.dll`).
@@ -92,7 +78,8 @@ fn main() {
 /// be found raises a STRUCTURED EXCEPTION, and this crate builds with `panic = "abort"` --
 /// an unguarded call would kill the host process instead of degrading.
 ///
-/// (Mirrored in the other package's build script: build scripts cannot share code.)
+/// (Mirrored in the other package's build script, which scopes each flag to its two bins;
+/// here they stay package-wide.)
 fn delay_load_media_foundation() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
@@ -102,4 +89,8 @@ fn delay_load_media_foundation() {
     }
     // /DELAYLOAD is inert without the helper that performs the deferred resolution.
     println!("cargo:rustc-link-arg=delayimp.lib");
+    // The package-wide `-arg` above also reaches this crate's test harness, whose
+    // dead-code elimination may remove every MF import: the benign
+    // "delay-load DLL ignored; no imports found" case.
+    println!("cargo:rustc-link-arg=/IGNORE:4199");
 }

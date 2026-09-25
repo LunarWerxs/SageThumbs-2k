@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # actions: write lets the dispatch-publish-packages job below start
+  # publish-packages.yml via `gh workflow run` (workflow_dispatch).
+  actions: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -16,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -27,11 +32,51 @@ jobs:
           # pushing the vX.Y.Z tag, which triggers publish.yml independently of this
           # workflow (see RELEASING.md), so the PAT is no longer on the release path.
           # Tradeoff: GitHub does not run workflows on events created by GITHUB_TOKEN,
-          # so the release PR shows BLOCKED on never-run checks — nudge it
-          # (close/reopen) or admin-merge to land the version bump, then push the tag.
+          # so the release PR would show BLOCKED on never-run required checks. The
+          # dispatch-ci job below fixes that: workflow_dispatch is exempt from the
+          # recursion guard, and a run dispatched on the release branch reports its
+          # check runs against the branch tip — which is the PR head commit — so the
+          # required checks satisfy the ruleset without an admin bypass.
+          #
+          # The same GITHUB_TOKEN restriction means the vX.Y.Z tag this action pushes
+          # does NOT trigger publish-packages.yml's `push: tags:` filter (PyPI + npm)
+          # — GitHub skips workflow runs for push events authored by GITHUB_TOKEN.
+          # workflow_dispatch is explicitly exempt from that recursion guard (GitHub
+          # docs: "workflow_dispatch and repository_dispatch events always create
+          # workflow runs"), so the dispatch-publish-packages job below fires
+          # publish-packages.yml via `gh workflow run ... workflow_dispatch` instead of
+          # relying on the tag push, using nothing but this workflow's own GITHUB_TOKEN.
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # A release PR opened by GITHUB_TOKEN never fires `pull_request` workflows, so
+  # without this job none of the five required checks ever report and every release
+  # needs an admin bypass of the branch ruleset (#800). Dispatching ci.yml on the
+  # release branch produces those same check runs on the PR head commit.
+  dispatch-ci:
+    name: Dispatch CI for the release PR
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger ci.yml on the release branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ needs.release-please.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # Read the branch at run time rather than with fromJSON() in `env:` — a
+          # missing field there fails the job, here it degrades to a warning.
+          BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.headBranchName // empty')
+          if [ -z "$BRANCH" ]; then
+            echo "::warning::release-please reported no head branch; skipping the CI dispatch"
+            exit 0
+          fi
+          echo "Dispatching ci.yml on $BRANCH"
+          gh workflow run ci.yml \
+            --repo "${{ github.repository }}" \
+            --ref "$BRANCH"
 
   publish:
     needs: release-please
@@ -87,3 +132,24 @@ jobs:
               sleep 10
             done
           done
+
+  dispatch-publish-packages:
+    name: Dispatch publish-packages (PyPI + npm)
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      # publish-packages.yml also listens for `push: tags:`, but the tag this
+      # workflow just created was pushed by GITHUB_TOKEN, so that push event never
+      # fires it (see the comment on the release-please step above). Start it
+      # explicitly instead — workflow_dispatch is exempt from that guard, so this
+      # works with the job's own GITHUB_TOKEN and needs no personal access token.
+      - name: Trigger publish-packages.yml for ${{ needs.release-please.outputs.tag_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish-packages.yml \
+            --repo "${{ github.repository }}" \
+            -f "tag=$TAG"

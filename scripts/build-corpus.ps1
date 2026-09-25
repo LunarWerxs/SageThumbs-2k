@@ -213,6 +213,24 @@ if (Test-Path $bmpPrev) {
 # Adobe XD: ZIP keyed off the "sparkler" mimetype, with a top-level thumbnail.png.
 New-Zip "$OutDir\sample.xd" @{ 'mimetype' = 'application/vnd.adobe.sparkler.project+dcxucf'; 'thumbnail.png' = $png }
 if (Test-Path $jpgPrev) { Remove-Item $jpgPrev -Force -EA SilentlyContinue }
+# JPEG XL made by cjxl's default lossless transcode of a 4:2:0 JPEG (issue #43). It keeps the
+# JPEG's YCbCr planes and chroma subsampling, which is the shape every phone photo has once it
+# goes through cjxl, and the shape the 1:8 thumbnail path mishandled. 2048x1536 so that path
+# engages at a 256 px request. `sample.jxl` above stays magick's own encode. Needs cjxl
+# (winget `libjxl.libjxl`); skipped without it, and the committed unit-test fixtures are the
+# gate that runs everywhere.
+$cjxl = (Get-Command cjxl -EA SilentlyContinue).Source
+if (-not $cjxl) { $cjxl = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\libjxl.libjxl_*\*\bin\cjxl.exe" -EA SilentlyContinue | Select-Object -First 1).FullName }
+if ($cjxl) {
+    $jpg420 = "$OutDir\_jpeg420.jpg"
+    & $magick $base -resize '2048x1536!' -sampling-factor 4:2:0 -quality 60 $jpg420 2>$null
+    if (Test-Path $jpg420) {
+        & $cjxl $jpg420 "$OutDir\jxl-jpeg420.jxl" --quiet 2>$null
+        Remove-Item $jpg420 -Force -EA SilentlyContinue
+    }
+} else {
+    Write-Host "[corpus] cjxl not found; jxl-jpeg420.jxl not regenerated (the committed copy stays)"
+}
 # Office documents (container/office.rs — magick faked all of these before):
 # ODF detect = a `mimetype` entry containing "opendocument", preview at the
 # spec-mandated Thumbnails/thumbnail.png; OOXML detect = [Content_Types].xml,
@@ -828,7 +846,7 @@ if (-not (Test-Path "$OutDir\huge.jp2")) {
 }
 
 # --- 9c) Tiny LOSSLESS JPEG 2000 exactness fixtures ----------------------------
-# The native reduced-resolution JP2 decoder (src/decode/jp2) is verified by BIT-EXACT
+# The native reduced-resolution JP2 decoder (crates/codecs/src/decode/jp2) is verified by BIT-EXACT
 # comparison against these: reversible 5/3 means a correct decoder must reproduce the
 # source PNG perfectly, so one differing byte is a decoder bug, not noise. Plasma content
 # matters: smooth gradients are insensitive to the zero-coding H/V swap and would pass a
@@ -854,7 +872,7 @@ Write-Host "[corpus] tiny lossless jp2 exactness fixtures present"
 # (pclr maps index 0 -> white), 2550x3301. It pins the palette path - a decoder that
 # renders raw indices paints this blank white page solid black. It is checked in-tree
 # by hand; nothing regenerates it (and nothing should - its exact box layout is the fixture).
-if (-not (Test-Path "$OutDir	iny-bilevel.jp2")) { Write-Host "  (tiny-bilevel.jp2 missing - restore it from the repo/issue #11 attachment)" -ForegroundColor Yellow }
+if (-not (Test-Path "$OutDir\tiny-bilevel.jp2")) { Write-Host "  (tiny-bilevel.jp2 missing - restore it from the repo/issue #11 attachment)" -ForegroundColor Yellow }
 
 # --- 9z) BIG layered GIMP files, with a KNOWN flattened colour -----------------
 # The corpus had two .xcf samples, 1.8 KB and 206 KB, and that gap shipped a bug: 2.0.0's
@@ -909,7 +927,7 @@ if ($py -and (Test-Path $xcfGen)) {
 #
 #   cargo test --release --lib write_djvu_corpus_fixtures -- --ignored --nocapture
 #
-# (see src\container\djvu.rs). They need no entry in _expected-colors.txt: what makes them
+# (see crates\codecs\src\container\djvu.rs). They need no entry in _expected-colors.txt: what makes them
 # testable is gate 4, check-render-sanity.ps1, which flags a tile with no detail in it.
 foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu')) {
     if (-not (Test-Path (Join-Path $OutDir $djvuFixture))) {
@@ -935,7 +953,7 @@ foreach ($djvuFixture in @('sample-djvu-photo.djvu', 'sample-djvu-thumbnail.djvu
 #
 #   cargo test --release --lib write_pdf_corpus_fixture -- --ignored --nocapture
 #
-# (see src\pdf.rs). Page one is the same blue every decoy fixture uses, so the existing
+# (see crates\codecs\src\pdf.rs). Page one is the same blue every decoy fixture uses, so the existing
 # thumbnail colour gate covers it with no special case; pages two to four are what
 # pdf::tests::every_page_of_a_multipage_pdf_renders_as_itself asserts against.
 $multiPdf = Join-Path $OutDir 'sample-multipage.pdf'
@@ -1176,6 +1194,20 @@ if (Test-Path $decoyGen) {
 
 Set-Content -Path "$OutDir\_expected-colors.txt" -Value $expectedColors -Encoding ascii
 Write-Host ("[corpus] _expected-colors.txt: {0} samples with a known correct colour" -f (($expectedColors | Where-Object { $_ -match "`t" }).Count))
+
+# --- 9y) REAL-WORLD samples: a file somebody else's software wrote, per extension ------
+# Everything above proves the readers survive what ImageMagick and this script write. The
+# files people actually have came out of Photoshop, a camera, a slicer or a 1994 paint program,
+# and that is where the bugs live. scripts\corpus-real.json pins one such file per registered
+# extension (URL + SHA-256, or a written waiver) and scripts\fetch-real-samples.py fetches what
+# is missing and refuses what does not match its digest; regression.ps1 fails when any is
+# missing, changed or no longer renders. They sit beside the generated ones as real.<ext>: the
+# generated sample proves the PICTURE is right (known corner colours), the real one proves the
+# reader on a file it did not write. Best-effort here like every other download.
+if (-not $SkipDownloads) {
+    if ($py) { & $py "$PSScriptRoot\fetch-real-samples.py" --corpus $OutDir | Out-Host }
+    else { Write-Host "  (real samples: need python; run scripts\fetch-real-samples.py when it is available)" -ForegroundColor Yellow }
+}
 
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has

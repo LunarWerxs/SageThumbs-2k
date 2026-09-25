@@ -27,7 +27,7 @@ measures the hardware rather than the software.
 * **x** is ours ÷ Windows, and it is **the column to trust**: the two sides of each row are
   measured seconds apart, so background load hits both equally and cancels. The absolute
   milliseconds are honest but wander with whatever else the machine is doing.
-* Ratios over a few milliseconds of absolute difference are not worth reading — a 7x on a
+* Ratios over a few milliseconds of absolute difference are not worth reading - a 7x on a
   3 ms decode is 3 ms.
 * Sizes: **small** 320×240 (0.08 MP), **medium** 1600×1200 (1.9 MP), **large** 4000×3000
   (12 MP), all the same source picture. **single** means the format cannot be synthesised,
@@ -37,7 +37,7 @@ measures the hardware rather than the software.
 
 * 374 samples measured across 230 formats.
 * 103 have a Windows equivalent; **44 of those are at least as fast as Windows**.
-* 271 have no Windows equivalent at all — for those, this is the only record that exists.
+* 271 have no Windows equivalent at all - for those, this is the only record that exists.
 * Median ratio where a comparison exists: **1.21x**.
 
 ## Every format

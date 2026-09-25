@@ -1,0 +1,673 @@
+//! Generic file/folder operations shared by the folder-mover verbs: collision-free
+//! move/copy, name sanitizing, the skwire-style "files → folder", "dimensions →
+//! folders", and "tags → folders" sorters, plus the combine-to-CBZ archiver.
+
+use core::ffi::c_void;
+use std::iter::once;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+use windows::core::{Error, Result, PCWSTR};
+use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::UI::Shell::{SHChangeNotify, StrCmpLogicalW, SHCNE_UPDATEDIR, SHCNF_PATHW};
+
+use super::actions::is_image;
+use super::encode::{reserve, write_atomic, OutSlot};
+use super::outcome::{Combined, OmitCause, Omitted, OnOmit};
+use st2k_codecs::decode::read_full_fidelity_capped;
+
+/// Windows reserved device names — invalid as a full component AND as the part before
+/// the first `.` (`CON.txt` is exactly as blocked as bare `CON`), case-insensitively.
+const RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A cleaned component is a reserved device name if its part before the first `.`
+/// case-insensitively matches one of the DOS device names above (a folder or file
+/// literally named `Con`, or `Con.txt`, fails to create opaquely otherwise).
+fn is_reserved_name(s: &str) -> bool {
+    let stem = s.split('.').next().unwrap_or(s);
+    RESERVED_NAMES.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
+/// Strip characters Windows forbids in a filename, and trailing dots/spaces
+/// (which Explorer also rejects). Never returns empty, never a reserved device name.
+pub(crate) fn sanitize_component(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            c if (c as u32) < 0x20 => '-',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).trim();
+    if cleaned.is_empty() || is_reserved_name(cleaned) {
+        "image".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// `combined.<ext>` (deduped) next to the first selected file, ATOMICALLY reserved.
+///
+/// Goes through [`super::encode::reserve`] rather than a `while cand.exists()` loop: two Combine
+/// runs fired at the same folder in quick succession both compute the identical free name, and
+/// the second `write_atomic` rename then lands on top of the first's finished file. `reserve`
+/// claims the name with `create_new`, so the second run walks on to `combined (2).<ext>`. Hold
+/// the returned slot until the write completes — dropping it early releases the reservation.
+pub(crate) fn combined_path(first: &str, ext: &str) -> super::encode::OutSlot {
+    let dir = Path::new(first)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    super::encode::reserve(|n| {
+        if n == 0 {
+            dir.join(format!("combined.{ext}"))
+        } else {
+            dir.join(format!("combined ({}).{ext}", n + 1))
+        }
+    })
+}
+
+/// Natural (logical) compare of two pre-encoded file-name keys — so page2 sorts
+/// before page10, matching Explorer (Win32 `StrCmpLogicalW`). Used to order CBZ
+/// pages. Inputs are the NUL-terminated buffers from `crate::topdf::file_name_key`.
+fn natural_key_cmp(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
+    unsafe { StrCmpLogicalW(PCWSTR(a.as_ptr()), PCWSTR(b.as_ptr())) }.cmp(&0)
+}
+
+/// Bytes read from the head of a page when probing its dimensions for
+/// `ComicInfo.xml`. Every raster header we care about sits far inside this: the
+/// only one that scans is JPEG (to its SOF marker), and 64 KiB clears a normal
+/// one comfortably. Deliberately NOT a whole-file read - a 300-page CBZ would
+/// otherwise be read twice end to end just to fill in two optional attributes.
+const PAGE_PROBE_BYTES: usize = 64 * 1024;
+
+/// Width/height of a page from its header alone, or `None` if the prefix does not
+/// carry them (the `ImageWidth`/`ImageHeight` attributes are optional, so a page
+/// we can't measure cheaply simply goes without).
+fn page_dims_from_head(path: &str) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    f.take(PAGE_PROBE_BYTES as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    image::ImageReader::new(std::io::Cursor::new(&head))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .or_else(|| st2k_codecs::container::real_dims(&head))
+}
+
+/// Build the `ComicInfo.xml` sidecar for a CBZ.
+///
+/// Comic readers - Kavita, Komga, YACReader, ComicRack's descendants - all read
+/// this file for page count and per-page facts; without it they have to guess by
+/// unzipping. `Image` is a **0-based** index into the page order. `Type` is left
+/// off every page but the first, because `Story` is the schema default and
+/// repeating it just makes the file bigger.
+///
+/// Nothing user-supplied reaches this string: only integers and fixed tokens, so
+/// there is no text to XML-escape and no injection surface. Keep it that way if a
+/// future version starts writing a `<Title>` from the file name.
+fn comic_info_xml(dims: &[Option<(u32, u32)>]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<ComicInfo ");
+    s.push_str("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ");
+    s.push_str("xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\r\n");
+    let _ = writeln!(s, "  <PageCount>{}</PageCount>\r", dims.len());
+    s.push_str("  <Pages>\r\n");
+    for (i, d) in dims.iter().enumerate() {
+        let _ = write!(s, "    <Page Image=\"{i}\"");
+        if i == 0 {
+            s.push_str(" Type=\"FrontCover\"");
+        }
+        if let Some((w, h)) = d {
+            let _ = write!(s, " ImageWidth=\"{w}\" ImageHeight=\"{h}\"");
+        }
+        s.push_str(" />\r\n");
+    }
+    s.push_str("  </Pages>\r\n</ComicInfo>\r\n");
+    s
+}
+
+/// Combine the selected images into one CBZ (a ZIP of images, the standard comic
+/// archive). Pages are natural-sorted by file name and stored **uncompressed**
+/// (images are already compressed; STORE avoids a pointless re-deflate). Written
+/// to a temp file + renamed so a failed write leaves no partial `.cbz`.
+///
+/// A `ComicInfo.xml` goes in as the **first** entry, which is what the community
+/// CBZ RFC asks for so a reader can pull metadata without scanning the whole
+/// central directory. It is the one deflated entry: it is text, and it is small.
+///
+/// Returns the [`Combined`] result: every one of `imgs` that couldn't be read (deleted between
+/// selection and combine, a permission error, or past `read_full_fidelity_capped`'s size cap)
+/// is listed in `omitted` with its cause rather than silently left out of the archive. This
+/// used to propagate the FIRST such failure straight out of the write, aborting the whole
+/// archive instead of building one from whatever pages WERE readable, and then reported the
+/// rest as a bare count (2026-09-05 audit, F31). `OnOmit::Fail` writes nothing when the list
+/// would be non-empty.
+///
+/// Refuses an `out` that is one of `imgs` before reading anything (2026-09-05 audit, F30):
+/// the write replaces the destination, so an alias would destroy a source.
+pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Combined> {
+    if let Some(alias) = st2k_base::fsutil::aliased_input(out, imgs.iter().map(String::as_str)) {
+        return Err(Error::new(
+            E_FAIL,
+            format!(
+                "cbz: output {} is the same file as input {alias}; refusing to overwrite a source",
+                out.display()
+            ),
+        ));
+    }
+
+    // Pre-encode each file name to UTF-16 ONCE (the sort key), then natural-sort
+    // by the cached buffers — `StrCmpLogicalW` never re-allocates per comparison.
+    let mut keyed: Vec<(Vec<u16>, &String)> = imgs
+        .iter()
+        .map(|p| (crate::topdf::file_name_key(p), p))
+        .collect();
+    keyed.sort_by(|a, b| natural_key_cmp(&a.0, &b.0));
+    let sorted: Vec<&String> = keyed.into_iter().map(|(_, p)| p).collect();
+
+    // Read every page UP FRONT (in parallel — mirrors `combine_to_pdf_paged`), so a
+    // page that can't be read drops out here instead of aborting the zip write
+    // already in progress, and is recorded with the read error as its cause.
+    let reads = st2k_base::parallel::map(&sorted, |_, p| {
+        read_full_fidelity_capped(p.as_str()).map_err(|e| Omitted::new(p, OmitCause::Unreadable, e))
+    });
+    let mut omitted = Vec::new();
+    let mut pages: Vec<(&String, Vec<u8>)> = Vec::with_capacity(sorted.len());
+    for (p, r) in sorted.into_iter().zip(reads) {
+        match r {
+            Ok(bytes) => pages.push((p, bytes)),
+            Err(o) => omitted.push(o),
+        }
+    }
+    if pages.is_empty() {
+        let headline = format!("cbz: none of the {} inputs could be read", imgs.len());
+        return Err(crate::topdf::refuse(headline, &omitted));
+    }
+    if on_omit == OnOmit::Fail && !omitted.is_empty() {
+        let headline = format!(
+            "cbz: refusing to write a partial archive (strict): {} of {} inputs cannot be used",
+            omitted.len(),
+            imgs.len()
+        );
+        return Err(crate::topdf::refuse(headline, &omitted));
+    }
+
+    // Header-only probe, before anything is written: the sidecar has to be the
+    // FIRST zip entry, so the per-page facts must all be known up front. Only over
+    // the pages that actually survived the read above — a dropped page has no row.
+    let dims: Vec<Option<(u32, u32)>> = pages
+        .iter()
+        .map(|(p, _)| page_dims_from_head(p.as_str()))
+        .collect();
+
+    write_atomic(out, |tmp| write_cbz_archive(tmp, &pages, &dims))?;
+    Ok(Combined {
+        output: out.to_path_buf(),
+        used: pages.len(),
+        omitted,
+    })
+}
+
+/// Write the CBZ zip to `tmp`: `ComicInfo.xml` first (deflated), then every page STORED.
+fn write_cbz_archive(
+    tmp: &Path,
+    pages: &[(&String, Vec<u8>)],
+    dims: &[Option<(u32, u32)>],
+) -> Result<()> {
+    use std::io::Write;
+
+    let file = std::fs::File::create(tmp).map_err(|_| Error::from(E_FAIL))?;
+    let mut zw = zip::ZipWriter::new(file);
+    let opts =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zw.start_file(
+        "ComicInfo.xml",
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .map_err(|_| Error::from(E_FAIL))?;
+    zw.write_all(comic_info_xml(dims).as_bytes())
+        .map_err(|_| Error::from(E_FAIL))?;
+    for (i, (p, bytes)) in pages.iter().enumerate() {
+        let stem = Path::new(p.as_str())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("page");
+        // Zero-padded index prefix keeps page order stable in any reader.
+        let name = format!("{:03}_{stem}", i + 1);
+        zw.start_file(name, opts).map_err(|_| Error::from(E_FAIL))?;
+        zw.write_all(bytes).map_err(|_| Error::from(E_FAIL))?;
+    }
+    zw.finish().map_err(|_| Error::from(E_FAIL))?;
+    Ok(())
+}
+
+/// Atomically reserve a collision-free destination for `stem[.ext]` (`src`'s
+/// extension) inside `dir` (`name (2).ext` if taken), or `None` if the natural
+/// (uncounted) name is already `src` itself (nothing to reserve — the caller
+/// treats that as "already in place"). Each candidate past the first is claimed
+/// with `create_new` ([`reserve`]) instead of a `while dest.exists()` check, so
+/// an external writer (Explorer, another `st2k`, an AV scan) landing a file in the
+/// gap between the check and the move/copy/rename can never collide with us — the
+/// single race-prone picker this replaces. Shared with
+/// [`super::actions::rename_one`] (in-place rename has the identical race: the
+/// target dir just happens to equal `src`'s own parent).
+pub(crate) fn reserve_dest(src: &Path, dir: &Path, stem: &str) -> Result<Option<OutSlot>> {
+    let ext = src.extension().and_then(|e| e.to_str()).map(str::to_string);
+    let natural = match &ext {
+        Some(e) => dir.join(format!("{stem}.{e}")),
+        None => dir.join(stem),
+    };
+    if st2k_base::fsutil::same_path(&natural, src) {
+        return Ok(None); // already in place, no rename/move needed
+    }
+    let (stem, dir) = (stem.to_string(), dir.to_path_buf());
+    Ok(Some(reserve(move |n| {
+        // n=0 is the plain name; a collision then counts "(2), (3), …" (Explorer's
+        // own duplicate-naming convention — the first colliding copy is "(2)", not
+        // "(1)"), so a collision at n bumps to count n+1.
+        let nm = match (&ext, n) {
+            (Some(e), 0) => format!("{stem}.{e}"),
+            (Some(e), n) => format!("{stem} ({}).{e}", n + 1),
+            (None, 0) => stem.clone(),
+            (None, n) => format!("{stem} ({})", n + 1),
+        };
+        dir.join(nm)
+    })))
+}
+
+/// Reserve a collision-free destination slot for `src` inside `dir`, taking the stem
+/// from `src`'s own file name. `Ok(None)` means `src` already IS the target path, so
+/// the caller has nothing to move or copy.
+fn reserve_src_slot(src: &Path, dir: &Path) -> Result<Option<OutSlot>> {
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    reserve_dest(src, dir, stem)
+}
+
+/// Move `src` into directory `dir`, dodging name collisions. `dir` must exist.
+/// Retries briefly past a transient Explorer lock. Cross-volume is a copy-then-delete.
+fn move_into(src: &Path, dir: &Path) -> Result<PathBuf> {
+    let Some(slot) = reserve_src_slot(src, dir)? else {
+        return Ok(src.to_path_buf());
+    };
+    // `rename` overwrites the reserved placeholder atomically; only release the slot
+    // from its zero-byte-cleanup drop AFTER that succeeds, so a failed rename still
+    // leaves the empty placeholder to be cleaned up, and a legitimately empty `src`
+    // isn't mistaken for an abandoned reservation and deleted right after landing.
+    // Across volumes it is a copy-then-delete (`move_file_replacing`); a failure there can
+    // leave a partial copy in the placeholder, which `OutSlot`'s zero-byte drop cannot see,
+    // so it is removed here explicitly - the source is never touched by a failed move.
+    // Keep `{e}` rather than mapping to a bare E_FAIL: it's the only place a caller
+    // could learn WHY a file didn't move (locked, permission denied, disk full).
+    if let Err(e) = st2k_base::fsutil::move_file_replacing(src, slot.path()) {
+        if slot.created() {
+            cleanup_failed_dest(slot.path());
+        }
+        return Err(Error::new(E_FAIL, format!("move {}: {e}", src.display())));
+    }
+    Ok(slot.release())
+}
+
+/// Copy `src` into directory `dir`, dodging name collisions. `dir` must exist.
+fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf> {
+    let Some(slot) = reserve_src_slot(src, dir)? else {
+        return Ok(src.to_path_buf()); // copying onto itself → nothing to do
+    };
+    if std::fs::copy(src, slot.path()).is_err() {
+        // A copy that fails partway (disk full, revoked permission) can leave the
+        // reserved placeholder non-empty but truncated. `OutSlot`'s Drop only cleans up
+        // a still-ZERO-byte placeholder (its normal job: an untouched reservation), so a
+        // partial write wouldn't be caught by it. Remove the destination explicitly here
+        // instead of relying on Drop to notice a partial write it structurally can't see.
+        if slot.created() {
+            cleanup_failed_dest(slot.path());
+        }
+        return Err(Error::from(E_FAIL));
+    }
+    Ok(slot.release())
+}
+
+/// Remove a copy/write destination after a failed attempt, unconditionally — regardless
+/// of how many bytes landed there. See `copy_into`'s call site for why this can't be left
+/// to `OutSlot`'s Drop (which only removes an EMPTY placeholder).
+fn cleanup_failed_dest(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Tell the shell to refresh `dir` (so a new subfolder / moved file appears, or a
+/// changed folder icon repaints). Shared with `verbs::actions::foldericon`, hence
+/// `pub(super)`.
+pub(super) fn refresh_dir(dir: &Path) {
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(once(0)).collect();
+    unsafe {
+        SHChangeNotify(
+            SHCNE_UPDATEDIR,
+            SHCNF_PATHW,
+            Some(wide.as_ptr() as *const c_void),
+            None,
+        );
+    }
+}
+
+/// Create a fresh folder named `folder_name` (sanitized, deduped) next to the
+/// first selected file and move every selected file into it. Shared by the DLL's
+/// single-file path and the companion app's multi-file dialog. Returns `(folder,
+/// moved, skipped)` — a caller used to see only `Ok(dir)` once AT LEAST ONE file
+/// moved, which read as full success even when some of `paths` were locked or on
+/// another volume; the counts let it report the real outcome instead.
+pub fn files_to_folder(paths: &[String], folder_name: &str) -> Result<(PathBuf, usize, usize)> {
+    if paths.is_empty() {
+        return Err(Error::from(E_FAIL));
+    }
+    let name = sanitize_component(folder_name);
+    let parent = Path::new(&paths[0])
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    // A *fresh* folder (dedupe) — "create a folder & move files in", never silently
+    // merge into an unrelated existing folder. `create_dir` (non-recursive, `parent` is
+    // known to exist already) instead of a `while dir.exists() { … } create_dir_all`
+    // check-then-create: the old shape had a TOCTOU gap between the exists() check and
+    // the create — a folder landing there (another `st2k`, Explorer, an AV scan) made
+    // `create_dir_all` silently succeed as a no-op INTO that folder, exactly the "never
+    // silently merge" this function promises not to do. `create_dir` instead errors
+    // AlreadyExists, which we treat the same as a losing `exists()` check: try the next
+    // candidate name. Same atomic-claim pattern as this file's own `reserve()`.
+    let mut dir = parent.join(&name);
+    let mut n = 2u32;
+    loop {
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                dir = parent.join(format!("{name} ({n})"));
+                n += 1;
+            }
+            Err(_) => return Err(Error::from(E_FAIL)),
+        }
+    }
+
+    // Count successful moves AND failures — a total failure (permissions, cross-volume,
+    // locked files) still surfaces as an Err below (the 0-moved check), but a PARTIAL
+    // failure used to be silently reported as full success (`Ok(dir)` regardless of how
+    // many of `paths` actually landed). Callers build the user-facing report off both
+    // counts now.
+    let mut moved = 0usize;
+    let mut skipped = 0usize;
+    for p in paths {
+        if move_into(Path::new(p), &dir).is_ok() {
+            moved += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+    refresh_dir(&parent);
+    if moved == 0 {
+        // Nothing landed in the new folder — clean up the empty dir we just made.
+        let _ = std::fs::remove_dir(&dir);
+        return Err(Error::from(E_FAIL));
+    }
+    Ok((dir, moved, skipped))
+}
+
+/// Read an image's pixel dimensions: a cheap header read first, falling back to a
+/// full decode for formats the `image` crate can't probe (HEIC/RAW/containers). Shared
+/// with the rename engine's `{w}`/`{h}` placeholders.
+pub(crate) fn dims(path: &str) -> Option<(u32, u32)> {
+    if let Ok(r) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
+        if let Ok(d) = r.into_dimensions() {
+            return Some(d);
+        }
+    }
+    let bytes = read_full_fidelity_capped(path).ok()?;
+    // Container header probe (PSD canvas size) first, falling back to the full-fidelity
+    // decode (may spawn ImageMagick) — the same chain `strip::read_info_impl` uses, shared
+    // via `real_or_decoded_dims` rather than hand-copied here.
+    st2k_codecs::container::real_or_decoded_dims(&bytes)
+}
+
+/// Whether an already-performed attempt to `create_dir` means THIS caller now owns the
+/// directory it names, and so is responsible for removing it again if what it wanted the
+/// directory for then fails. `Ok(())` means we created it just now; `AlreadyExists` (or any
+/// other error) means we did not - either another actor got there first, or the directory
+/// never came to exist at all, and either way it is not ours to clean up.
+///
+/// Pulled out as a pure function (2026-09-05 audit, F14) so the ownership decision itself is
+/// unit-testable without touching a filesystem: the prior code decided ownership from a
+/// separate `!dir.exists()` check taken BEFORE the create, which raced against any other
+/// actor (another `st2k` call, Explorer, an AV scan) creating the same bucket in between -
+/// the loser of that race still believed it owned the directory and could remove it out from
+/// under the winner's use of it.
+fn owns_new_dir(create_result: &std::io::Result<()>) -> bool {
+    create_result.is_ok()
+}
+
+/// Atomically claim `dir` as a fresh bucket. Returns `(usable, owned_by_this_call)`:
+/// `usable` says the directory exists and callers may move into it; `owned_by_this_call` says
+/// THIS call is the one that created it, so a later failure is this call's to clean up.
+///
+/// `create_dir` (non-recursive) IS the ownership claim, not a `!dir.exists()` check followed
+/// by a separate create: `create_dir` either creates the directory and hands back `Ok(())`, or
+/// fails `AlreadyExists` if it was already there - one atomic OS call, no window in which
+/// another actor's create can land unseen (2026-09-05 audit, F14). The recursive form is used
+/// only as a fallback when the PARENT itself is missing (not the case a sibling image's own
+/// folder can hit, since that parent already exists); a create performed in that fallback still
+/// counts as ownership.
+fn claim_bucket_dir(dir: &Path) -> (bool, bool) {
+    let result = std::fs::create_dir(dir);
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+        return (true, false);
+    }
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        let fallback = std::fs::create_dir_all(dir);
+        return (fallback.is_ok(), owns_new_dir(&fallback));
+    }
+    (result.is_ok(), owns_new_dir(&result))
+}
+
+/// The shape every bucket sort shares: keep the image selections, probe each one's bucket
+/// name (`bucket`) IN PARALLEL, then hand the probed names to the serial move pass
+/// [`move_into_buckets`] and return its (moved, skipped).
+///
+/// The probe is parallel because it can fall back to a full decode (up to an ImageMagick
+/// subprocess per exotic RAW/HEIC file), which every other multi-file verb already fans
+/// out via `parallel::map`. The moves stay serial in `move_into_buckets`: they're cheap,
+/// and two files with equal buckets share a target dir (no create/move races).
+fn sort_by_bucket(
+    paths: &[String],
+    bucket: impl Fn(&str) -> Option<String> + Sync,
+) -> (usize, usize) {
+    let images: Vec<&String> = paths.iter().filter(|p| is_image(p.as_str())).collect();
+    let buckets = st2k_base::parallel::map(&images, |_, p| bucket(p.as_str()));
+    move_into_buckets(&images, buckets)
+}
+
+/// Move each selected image into a `WIDTHxHEIGHT` subfolder of its own parent
+/// folder (skwire "Dimensions 2 Folders"). Returns (moved, skipped).
+pub fn sort_by_dimensions(paths: &[String]) -> (usize, usize) {
+    sort_by_bucket(paths, |p| dims(p).map(|(w, h)| format!("{w}x{h}")))
+}
+
+/// The serial half every bucket sort shares: move each probed image into `<parent>/<bucket>`,
+/// claiming the bucket directory first and removing a bucket this call created when the move
+/// into it fails; an image whose probe answered `None` is skipped and counted. Every parent
+/// folder touched is refreshed once at the end. Returns (moved, skipped).
+fn move_into_buckets(images: &[&String], buckets: Vec<Option<String>>) -> (usize, usize) {
+    let mut moved = 0usize;
+    let mut skipped = 0usize;
+    let mut touched: Vec<PathBuf> = Vec::new();
+    for (p, bucket) in images.iter().zip(buckets) {
+        let src = Path::new(p.as_str());
+        let parent = src.parent().unwrap_or_else(|| Path::new("."));
+        let Some(name) = bucket else {
+            skipped += 1;
+            continue;
+        };
+        let dir = parent.join(name);
+        let (usable, bucket_is_new) = claim_bucket_dir(&dir);
+        if usable && move_into(src, &dir).is_ok() {
+            moved += 1;
+            if !touched.iter().any(|t| t == parent) {
+                touched.push(parent.to_path_buf());
+            }
+        } else {
+            skipped += 1;
+            if bucket_is_new {
+                let _ = std::fs::remove_dir(&dir);
+            }
+        }
+    }
+    for dir in &touched {
+        refresh_dir(dir);
+    }
+    (moved, skipped)
+}
+
+/// The `YYYY-MM-DD` folder name for `path`'s EXIF capture date, or `None` when the
+/// file has none. Shares the exact date source `RenamePattern::DateTaken` uses
+/// (`st2k_codecs::strip::read_capture`) rather than re-parsing EXIF here — that field is
+/// already formatted `"YYYY-MM-DD HH.MM.SS"`, so this just takes the date half.
+fn date_taken_folder_name(path: &str) -> Option<String> {
+    let time = st2k_codecs::strip::read_capture(path).time?;
+    time.split_once(' ').map(|(date, _)| date.to_string())
+}
+
+/// Move each selected image into a `YYYY-MM-DD` subfolder of its own parent folder,
+/// named from its EXIF capture date (mirrors [`sort_by_dimensions`] exactly — same
+/// parallel probe / serial move / collision handling / cleanup-on-failure shape). A
+/// file with no capture date is skipped and counted, same as an unreadable image
+/// there. Returns (moved, skipped).
+pub fn sort_by_date_taken(paths: &[String]) -> (usize, usize) {
+    sort_by_bucket(paths, date_taken_folder_name)
+}
+
+/// Expand a folder-name template against one file's tags. Tokens: `$artist`,
+/// `$album`, `$title`, `$track` (zero-padded). A missing tag becomes `missing`.
+pub(crate) fn expand_template(
+    template: &str,
+    tags: &st2k_codecs::strip::AudioTags,
+    missing: &str,
+) -> String {
+    let or = |o: &Option<String>| o.clone().unwrap_or_else(|| missing.to_string());
+    let artist = or(&tags.artist);
+    let album = or(&tags.album);
+    let title = or(&tags.title);
+    let track = tags
+        .track
+        .map(|n| format!("{n:02}"))
+        .unwrap_or_else(|| missing.to_string());
+    let subs = [
+        ("$artist", artist.as_str()),
+        ("$album", album.as_str()),
+        ("$title", title.as_str()),
+        ("$track", track.as_str()),
+    ];
+
+    // A single left-to-right scan over the TEMPLATE only, not four chained `.replace()`
+    // calls over the growing output string — chaining re-scans an already-substituted
+    // value for the NEXT placeholder, so a tag whose text happens to literally contain
+    // e.g. "$title" gets re-expanded by the later call. Each token is matched at most
+    // once per template position, against the template's own text.
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    'scan: while !rest.is_empty() {
+        for (token, value) in subs {
+            if let Some(stripped) = rest.strip_prefix(token) {
+                out.push_str(value);
+                rest = stripped;
+                continue 'scan;
+            }
+        }
+        // No token starts here: copy one char and advance. `chars().next()` is `None`
+        // only when `rest` is empty, which the loop guard already excludes — `break`
+        // rather than `unwrap`/`expect` (this crate denies both) to stay total anyway.
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) => out.push(c),
+            None => break,
+        }
+        rest = chars.as_str();
+    }
+    out
+}
+
+/// Turn an expanded template into a relative folder path: split on `/` or `\`
+/// (so `$artist\$album` nests), sanitize each segment, drop empties. None if
+/// nothing usable remains.
+fn template_relpath(expanded: &str) -> Option<PathBuf> {
+    let mut rel = PathBuf::new();
+    for part in expanded.split(['/', '\\']) {
+        let p = part.trim();
+        if !p.is_empty() {
+            rel.push(sanitize_component(p));
+        }
+    }
+    (!rel.as_os_str().is_empty()).then_some(rel)
+}
+
+/// Sort audio files into `dest/<template>/…` folders by their tags (skwire
+/// "Tags 2 Folders"). `move_files` chooses move vs copy. Returns (done, skipped).
+pub fn tags_to_folders(
+    files: &[String],
+    dest: &Path,
+    template: &str,
+    missing: &str,
+    move_files: bool,
+) -> (usize, usize) {
+    let mut done = 0usize;
+    let mut skipped = 0usize;
+    let mut touched = false;
+    let mut moved_from: Vec<PathBuf> = Vec::new();
+    for p in files {
+        let tags = st2k_codecs::strip::read_audio_tags(p);
+        let Some(rel) = template_relpath(&expand_template(template, &tags, missing)) else {
+            skipped += 1;
+            continue;
+        };
+        let dir = dest.join(rel);
+        if std::fs::create_dir_all(&dir).is_err() {
+            skipped += 1;
+            continue;
+        }
+        let src = Path::new(p);
+        let ok = if move_files {
+            move_into(src, &dir).is_ok()
+        } else {
+            copy_into(src, &dir).is_ok()
+        };
+        if ok {
+            done += 1;
+            touched = true;
+            note_parent(&mut moved_from, src);
+        } else {
+            skipped += 1;
+        }
+    }
+    if touched {
+        refresh_dir(dest);
+    }
+    // A move also changed the folders the files left, so Explorer is told about those too.
+    if move_files {
+        moved_from.iter().for_each(|dir| refresh_dir(dir));
+    }
+    (done, skipped)
+}
+
+/// Remember `src`'s folder, once.
+fn note_parent(dirs: &mut Vec<PathBuf>, src: &Path) {
+    let parent = src.parent().unwrap_or_else(|| Path::new("."));
+    if !dirs.iter().any(|d| d == parent) {
+        dirs.push(parent.to_path_buf());
+    }
+}
+
+#[cfg(test)]
+mod tests;

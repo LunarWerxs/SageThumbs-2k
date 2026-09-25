@@ -358,7 +358,7 @@ if ($imageMagickBundled) {
 
 # Re-run the pinned-source identity/inventory gate and the staged dependency-closure check for
 # BOTH architectures - a payload built on this x64 host only, per the ARM64 pin's own
-# `provenance.runtimeIdentityCheck` note: the 195-file SHA-256 inventory and the PE
+# `provenance.runtimeIdentityCheck` note: the pinned SHA-256 file inventory and the PE
 # FileVersion identify an ARM64 binary just as surely as an x64 one, and neither reads it, so
 # this x64 verifier needs no emulation to run them. Only the REAL DECODE smoke test
 # (test-staged-regression.ps1, which executes st2k.exe against samples) stays x64-only - it

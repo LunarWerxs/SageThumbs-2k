@@ -1,6 +1,12 @@
 <#
-  vendor-jxl.ps1 - regenerate crates/vendor/jxl-render and crates/vendor/jxl-oxide from the
-  pristine crates.io sources plus our patches.
+  vendor-jxl.ps1 - regenerate crates/vendor/jxl-render, crates/vendor/jxl-oxide and
+  crates/vendor/jxl-frame from the pristine crates.io sources plus our patches.
+
+  jxl-frame carries a different patch from the other two: a malformed TOC asked for a group past
+  its entries and indexed out of bounds, a panic that aborts the shell under panic = "abort"
+  (found by the deep fuzz session, 2026-09-23; regression fixture
+  tests/fixtures/jxl/toc-group-past-entries.jxl). Drop it when an upstream release stops
+  panicking on that file, independently of the LF-only patch below.
 
       pwsh scripts\vendor-jxl.ps1                 # regenerate at the pinned versions
       pwsh scripts\vendor-jxl.ps1 -Check          # verify the tree matches; changes nothing
@@ -34,6 +40,7 @@ param(
     # or the patch is being applied to a different codebase than the one that was tested.
     [string]$Render = '0.12.4',
     [string]$Oxide = '0.12.6',
+    [string]$Frame = '0.13.3',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
     [switch]$Check,
     # Refuse to skip. Without this, a `-Check` run that cannot find the pristine sources
@@ -54,7 +61,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path $PSScriptRoot -Parent
 $patchDir = Join-Path $root 'crates\vendor\jxl-patches'
-$crates = [ordered]@{ 'jxl-render' = $Render; 'jxl-oxide' = $Oxide }
+$crates = [ordered]@{ 'jxl-render' = $Render; 'jxl-oxide' = $Oxide; 'jxl-frame' = $Frame }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is required (for git apply)' }
 

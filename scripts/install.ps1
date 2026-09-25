@@ -60,7 +60,10 @@ function Copy-Artifact([string]$Source, [string]$DestinationDirectory) {
         Copy-Item -LiteralPath $Source -Destination $dest -Force -ErrorAction Stop
         return
     } catch {
-        # In use. Fall through; the rename path below rethrows if it is something else.
+        # Only "in use" takes the rename path (a sharing violation, access denied on a running
+        # image, or a user-mapped section). Anything else - a missing source above all - is a
+        # real error: renaming the good destination aside first would just leave a gap.
+        if ($_.Exception.HResult -notin @(-2147024864, -2147024891, -2147023672)) { throw }
     }
     $aside = "$dest.old-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
     Move-Item -LiteralPath $dest -Destination $aside -Force -ErrorAction Stop
@@ -188,16 +191,12 @@ foreach ($artifact in $InstalledArtifacts) {
     Assert-PeArchitecture (Join-Path $BuildDir $artifact) $spec
 }
 Remove-StrandedCopies $prog
-Copy-Artifact "$BuildDir\sagethumbs2k.dll" $prog
-# The bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly.
-Copy-Artifact "$BuildDir\SageThumbs2K.exe" $prog
-# The CLI / MCP server (`st2k --mcp`). The dist installer ships it; the dev
-# install used to omit it, leaving a live CLI check running stale code.
-Copy-Artifact "$BuildDir\st2k.exe" $prog
-# The Open/Save-dialog hook, loaded into OTHER processes by SetWindowsHookExW (see
-# crates/dlghook/Cargo.toml). The app looks for it beside its own EXE, so leaving the previous
-# installer's copy in place is how a dev box ends up injecting stale code into Word.
-Copy-Artifact "$BuildDir\st2k_dlghook.dll" $prog
+# The same $InstalledArtifacts list the -ValidateOnly check reads (see its comment above):
+# the DLL, the app EXE (the bin target is `SageThumbs2K`), the CLI / MCP server, and the
+# Open/Save-dialog hook the app loads into OTHER processes from beside its own EXE.
+foreach ($artifact in $InstalledArtifacts) {
+    Copy-Artifact (Join-Path $BuildDir $artifact) $prog
+}
 Copy-Item "$root\scripts\packaging\AppxManifest.xml" $prog -Force
 Copy-Item "$root\scripts\packaging\Assets" $prog -Recurse -Force
 # The legacy x64 loose package stays neutral for update compatibility. ARM64

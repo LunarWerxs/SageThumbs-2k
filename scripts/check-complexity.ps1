@@ -76,6 +76,16 @@ param(
     # nonexistent path to prove the "neither engine resolves" outcome for real, without
     # deleting the tracked script.
     [string]$VendoredScript = (Join-Path $PSScriptRoot 'complexity-scan.py'),
+    # THE WARN-BAND RATCHET. The band (15..29) was printed and never enforced, which is exactly
+    # how it regrew: `complexity-scan.py`'s own header records the backlog going 0 -> 19 in a
+    # week with every visible gate green. This file holds the highest band size each ENGINE is
+    # allowed to report, so the count can only fall. Keyed by engine because the two engines do
+    # not have to agree on a score, and a ceiling seeded from one would be a false red on the
+    # other; an engine with no entry is reported as NOT ratcheted rather than silently passing.
+    [string]$WarnCeilingFile = (Join-Path $PSScriptRoot 'complexity-warn-ceiling.json'),
+    # Re-seed this engine's ceiling to what the tree measures right now. Only ever run this
+    # after the count has gone DOWN - re-seeding upward is how a ratchet becomes a rubber stamp.
+    [switch]$WriteWarnCeiling,
     # Self-test: prove every exit code for real, against real subprocesses (both engines where
     # available) and known fixtures - not by asserting the code path, by observing the exit
     # code a fresh subprocess actually returns. Same convention as check-render-sanity.ps1's
@@ -141,14 +151,69 @@ function Invoke-ComplexityEngine {
 # The real check, factored out so -ProveItFails can drive it via a fresh subprocess (proving the
 # actual CLI contract, not just an internal function call) exactly like the plain invocation
 # below does.
+# The warn-band ratchet. Returns 0 when the band is at or under this engine's ceiling (or when
+# the engine has no ceiling to compare against, which is REPORTED, never silently passed), and 1
+# when the band has grown. A band that has SHRUNK is a pass that names the command to re-seed -
+# the number is not lowered automatically, because a gate that edits its own floor cannot be
+# read later as evidence of anything.
+function Test-WarnBandRatchet {
+    param(
+        [Parameter(Mandatory)][string]$CeilingFile,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$EngineKey,
+        [Parameter(Mandatory)][string]$EngineLabel,
+        [Parameter(Mandatory)][int]$Count,
+        [Parameter(Mandatory)][string]$Band,
+        [switch]$Write
+    )
+    $data = [ordered]@{}
+    if (Test-Path -LiteralPath $CeilingFile) {
+        try {
+            $raw = Get-Content -LiteralPath $CeilingFile -Raw | ConvertFrom-Json
+            foreach ($p in $raw.PSObject.Properties) { $data[$p.Name] = $p.Value }
+        } catch {
+            Write-Host "check-complexity: $CeilingFile is not readable JSON ($($_.Exception.Message)) - the warn band is NOT ratcheted." -ForegroundColor Red
+            return 3
+        }
+    }
+    if ($Write) {
+        if (-not $EngineKey) {
+            Write-Host "check-complexity: -WriteWarnCeiling needs an engine that actually measured something." -ForegroundColor Red
+            return 3
+        }
+        $data['$note'] = 'The highest warn-band (see --help) count each complexity engine may report. Ratchet DOWN only: re-seeding upward turns the gate into a rubber stamp. Re-seed with: pwsh scripts\check-complexity.ps1 -WriteWarnCeiling'
+        $data[$EngineKey] = $Count
+        ([pscustomobject]$data | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $CeilingFile -Encoding utf8
+        Write-Host "check-complexity: wrote the $EngineKey warn-band ceiling as $Count to $(Split-Path -Leaf $CeilingFile)." -ForegroundColor Cyan
+        return 0
+    }
+    if (-not $EngineKey -or -not $data.Contains($EngineKey)) {
+        Write-Host "check-complexity: no warn-band ceiling recorded for '$EngineKey' - the band ($Band) is measured at $Count but NOT ratcheted. Seed it with: pwsh scripts\check-complexity.ps1 -WriteWarnCeiling" -ForegroundColor Yellow
+        return 0
+    }
+    $ceiling = [int]$data[$EngineKey]
+    if ($Count -gt $ceiling) {
+        Write-Host "check-complexity: the warn band GREW - $Count finding(s) in $Band via $EngineLabel, against a ceiling of $ceiling ($($Count - $ceiling) more)." -ForegroundColor Red
+        Write-Host "  Nothing here blocks a release on its own, and that is exactly why it regrew from 0 to 19 in a week before this ratchet existed." -ForegroundColor Yellow
+        Write-Host "  Split the function you just added, or extract the branch you just nested. The ceiling only ever moves DOWN." -ForegroundColor Yellow
+        return 1
+    }
+    if ($Count -lt $ceiling) {
+        Write-Host "check-complexity: the warn band SHRANK - $Count in $Band against a ceiling of $ceiling. Lower it: pwsh scripts\check-complexity.ps1 -WriteWarnCeiling" -ForegroundColor Cyan
+    }
+    return 0
+}
+
 function Invoke-CheckComplexity {
     param(
         [Parameter(Mandatory)][string]$MeasureRoot,
         [Parameter(Mandatory)][int]$GateValue,
         [Parameter(Mandatory)][int]$WarnValue,
         [Parameter(Mandatory)][string]$Key,
-        [Parameter(Mandatory)][string]$VendoredScriptPath
+        [Parameter(Mandatory)][string]$VendoredScriptPath,
+        [Parameter(Mandatory)][string]$CeilingFile,
+        [switch]$WriteCeiling
     )
+    $EngineKey = ''
     if (-not (Test-Path -LiteralPath $MeasureRoot -PathType Container)) {
         Write-Host "check-complexity: -Root does not exist: $MeasureRoot" -ForegroundColor Red
         return 3
@@ -159,6 +224,7 @@ function Invoke-CheckComplexity {
         Write-Host "check-complexity: measuring $MeasureRoot (key '$Key') via ODIN's probe.py (reference) - $probePath" -ForegroundColor DarkGray
         $result = Invoke-ComplexityEngine -ScriptPath $probePath -EngineArgs @($Key, '--json', '--warnings', '--root', $MeasureRoot)
         $engineLabel = 'odin probe.py'
+        $engineKey = 'odin'
     } else {
         if ($env:ODIN_ROOT) {
             Write-Host "check-complexity: `$env:ODIN_ROOT is set to '$env:ODIN_ROOT' and has no probe.py there (authoritative - no machine-default tried)." -ForegroundColor Yellow
@@ -173,6 +239,7 @@ function Invoke-CheckComplexity {
         Write-Host "  (this is the engine every CI run uses - GitHub can never clone the private odin checkout)" -ForegroundColor DarkGray
         $result = Invoke-ComplexityEngine -ScriptPath $vendoredPath -EngineArgs @('--json', '--warnings', '--root', $MeasureRoot)
         $engineLabel = 'the vendored scripts\complexity-scan.py'
+        $engineKey = 'vendored'
     }
 
     if ($result.Status -eq 'MissingTool') {
@@ -189,7 +256,9 @@ function Invoke-CheckComplexity {
     foreach ($w in $warnBand) {
         Write-Host ("  WARN  {0,3}  {1}:{2}  {3}  ({4})" -f $w.score, $w.file, $w.line, $w.function, $w.metric) -ForegroundColor DarkYellow
     }
+    $ratchet = Test-WarnBandRatchet -CeilingFile $CeilingFile -EngineKey $EngineKey -EngineLabel $engineLabel -Count $warnBand.Count -Write:$WriteCeiling -Band "$WarnValue..$($GateValue - 1)"
     if ($overGate.Count -eq 0) {
+        if ($ratchet -ne 0) { return $ratchet }
         Write-Host "check-complexity: clean via $engineLabel - 0 finding(s) at or over the gate ($GateValue); $($warnBand.Count) in the warn band ($WarnValue..$($GateValue - 1))." -ForegroundColor Green
         return 0
     }
@@ -208,7 +277,8 @@ if ($ProveItFails) {
     $missingVendored = Join-Path $work 'no-such-scanner.py'
     $passFixture = Join-Path $work 'pass\src'
     $failFixture = Join-Path $work 'fail\src'
-    New-Item -ItemType Directory -Force -Path $emptyOdin, $passFixture, $failFixture | Out-Null
+    $bandFixture = Join-Path $work 'band\src'
+    New-Item -ItemType Directory -Force -Path $emptyOdin, $passFixture, $failFixture, $bandFixture | Out-Null
     try {
         # A trivial function: no branches at all, cognitive/cyclomatic both effectively 1.
         Set-Content -LiteralPath (Join-Path $passFixture 'trivial.rs') -Encoding utf8 -Value @(
@@ -322,6 +392,33 @@ if ($ProveItFails) {
             -MeasureRoot (Split-Path $failFixture -Parent) -Env @{ ODIN_ROOT = $emptyOdin }
         Invoke-SelfTestCase -Name 'neither engine resolves' -Expect 2 `
             -MeasureRoot (Split-Path $passFixture -Parent) -Env @{ ODIN_ROOT = $emptyOdin } -ExtraArgs @('-VendoredScript', $missingVendored)
+
+        # THE WARN-BAND RATCHET, all four outcomes, against a fixture that sits IN the band
+        # (a flat chain of branches: well past the warn line of 15, nowhere near the gate of
+        # 30, so it can never be confused with the over-gate cases above). The ceilings are 0
+        # and 999 rather than the fixture's exact score on purpose: this proves the comparison,
+        # not the engine's arithmetic, which the vendored scanner's own --self-test already pins.
+        $bandRs = @('fn flat_chain(v: i32) -> i32 {', '    let mut n = 0;')
+        foreach ($i in 1..18) { $bandRs += "    if v == $i { n += $i; }" }
+        $bandRs += @('    n', '}')
+        Set-Content -LiteralPath (Join-Path $bandFixture 'band.rs') -Encoding utf8 -Value $bandRs
+        $bandRoot = Split-Path $bandFixture -Parent
+        $ceilGrew = Join-Path $work 'ceiling-zero.json'
+        $ceilRoom = Join-Path $work 'ceiling-roomy.json'
+        $ceilNone = Join-Path $work 'ceiling-empty.json'
+        $ceilJunk = Join-Path $work 'ceiling-junk.json'
+        Set-Content -LiteralPath $ceilGrew -Encoding utf8 -Value '{ "vendored": 0, "odin": 0 }'
+        Set-Content -LiteralPath $ceilRoom -Encoding utf8 -Value '{ "vendored": 999, "odin": 999 }'
+        Set-Content -LiteralPath $ceilNone -Encoding utf8 -Value '{}'
+        Set-Content -LiteralPath $ceilJunk -Encoding utf8 -Value 'not json {{'
+        Invoke-SelfTestCase -Name 'warn band over its ceiling' -Expect 1 `
+            -MeasureRoot $bandRoot -Env @{ ODIN_ROOT = $emptyOdin } -ExtraArgs @('-WarnCeilingFile', $ceilGrew)
+        Invoke-SelfTestCase -Name 'warn band under its ceiling' -Expect 0 `
+            -MeasureRoot $bandRoot -Env @{ ODIN_ROOT = $emptyOdin } -ExtraArgs @('-WarnCeilingFile', $ceilRoom)
+        Invoke-SelfTestCase -Name 'warn band with no ceiling for this engine (reported, not a fail)' -Expect 0 `
+            -MeasureRoot $bandRoot -Env @{ ODIN_ROOT = $emptyOdin } -ExtraArgs @('-WarnCeilingFile', $ceilNone)
+        Invoke-SelfTestCase -Name 'warn-band ceiling file unreadable' -Expect 3 `
+            -MeasureRoot $bandRoot -Env @{ ODIN_ROOT = $emptyOdin } -ExtraArgs @('-WarnCeilingFile', $ceilJunk)
     } finally {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -333,4 +430,4 @@ if ($ProveItFails) {
     exit 0
 }
 
-exit (Invoke-CheckComplexity -MeasureRoot $Root -GateValue $Gate -WarnValue $Warn -Key $OdinKey -VendoredScriptPath $VendoredScript)
+exit (Invoke-CheckComplexity -MeasureRoot $Root -GateValue $Gate -WarnValue $Warn -Key $OdinKey -VendoredScriptPath $VendoredScript -CeilingFile $WarnCeilingFile -WriteCeiling:$WriteWarnCeiling)

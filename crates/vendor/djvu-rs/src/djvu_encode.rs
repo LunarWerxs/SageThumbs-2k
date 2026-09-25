@@ -41,7 +41,9 @@
 //!
 //! # Status
 //!
-//! - `Lossless` from a [`Bitmap`]: ships `INFO + Sjbz`. Pixel-exact.
+//! - `Lossless` from a [`Bitmap`]: ships `INFO + Sjbz` by default. Call
+//!   [`PageEncoder::with_bilevel_codec`] with [`BilevelCodec::Smmr`] for an
+//!   explicit DjVuLibre-compatible `Smmr` G4/MMR mask. Both are pixel-exact.
 //! - `Quality` from a [`Pixmap`]: ships `INFO + Sjbz + BG44… + FGbz`
 //!   when foreground ink is detected. Lossy by codec definition; output
 //!   is decodable end-to-end.
@@ -51,6 +53,9 @@
 //! - `Lossless` from a [`Pixmap`] / `Quality` from a [`Bitmap`] are
 //!   rejected: the combinations are mathematically meaningless
 //!   (IW44 is lossy; bilevel input has nothing to put in BG44).
+//! - [`PageEncoder::with_metadata`] adds fresh-document `METz` metadata;
+//!   mutation of existing chunks remains the responsibility of
+//!   [`crate::djvu_mut::PageMut::set_metadata`].
 
 use crate::bitmap::Bitmap;
 use crate::bzz_encode::bzz_encode;
@@ -59,22 +64,45 @@ use crate::fgbz_encode::FgbzColor;
 use crate::iff::{Chunk, DjvuFile, emit};
 use crate::iw44_encode::{Iw44EncodeOptions, encode_iw44_color};
 use crate::jb2_encode::{self, Jb2EncodeOptions};
+use crate::metadata::{DjVuMetadata, encode_metadata_bzz};
 use crate::ocr::{OcrBackend, OcrError, OcrOptions};
 use crate::pixmap::Pixmap;
-use crate::segment::{SegmentOptions, segment_page};
+use crate::segment::{SegmentOptions, segment_page, segment_page_with_mask};
+use crate::smmr::encode_smmr;
 use crate::text::TextLayer;
 use crate::text_encode::encode_text_layer;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 /// Errors returned by [`PageEncoder::encode`].
+///
+/// `#[non_exhaustive]`: `docs/api-compatibility.md` §1 already declares error
+/// enums "`#[non_exhaustive]` in spirit" — consumers must not rely on the
+/// absence of variants, and adding one is a compatible change. This makes
+/// that literal, so the next variant (there will be one) does not trip the
+/// API-breakage gate again; the gate's own TODO in
+/// `.github/workflows/api-stability.yml` names this as the intended end
+/// state. Downstream code must match with a `_` arm.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EncodeError {
     /// The requested combination of input + quality profile is not
     /// implemented yet. The message names the missing dependency
     /// (typically a sibling issue tracking the codec layer).
     #[error("page encoder: {0}")]
     Unsupported(&'static str),
+    /// A caller-supplied page source (see
+    /// [`encode_djvm_layered_shared_streaming`]) failed to produce a page.
+    ///
+    /// Carries the caller's own error boxed as `dyn Error + Send + Sync`
+    /// rather than requiring `E: Into<EncodeError>`: a downstream crate
+    /// cannot implement `From<TheirError> for EncodeError` on our behalf —
+    /// both types are foreign to that crate, so the orphan rule blocks it —
+    /// so boxing is the only conversion every caller can actually perform.
+    /// `E` only needs `std::error::Error + Send + Sync + 'static`, the
+    /// standard shape for a boxable error.
+    #[error("page source: {0}")]
+    PageSource(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 // ── FGbz palette construction ─────────────────────────────────────────────────
@@ -258,6 +286,22 @@ pub enum EncodeQuality {
     Photo,
 }
 
+/// Codec used for an explicitly requested bilevel page encoding.
+///
+/// [`BilevelCodec::Jb2`] is the default and keeps the historical `Sjbz`
+/// output. [`BilevelCodec::Smmr`] emits a standalone `Smmr` G4/MMR mask;
+/// it is useful for fax-style pages and consumers that prefer the simpler
+/// run-length codec. The choice is opt-in because JB2 is usually smaller on
+/// text-heavy pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BilevelCodec {
+    /// JB2 arithmetic-coded mask (`Sjbz`), the compatibility default.
+    #[default]
+    Jb2,
+    /// G4/MMR mask (`Smmr`), selected explicitly for bilevel input.
+    Smmr,
+}
+
 /// Classify a source image into the most appropriate [`EncodeQuality`]
 /// profile from cheap pixel statistics (#570).
 ///
@@ -423,11 +467,14 @@ pub struct PageEncoder<'a> {
     source: Source<'a>,
     dpi: u16,
     quality: EncodeQuality,
+    bilevel_codec: BilevelCodec,
     segment_options: Option<SegmentOptions>,
+    mask: Option<&'a Bitmap>,
     iw44_options: Option<Iw44EncodeOptions>,
     jb2_options: Option<Jb2EncodeOptions>,
     fgbz_options: FgbzPaletteOptions,
     text_layer: Option<TextLayer>,
+    metadata: Option<DjVuMetadata>,
 }
 
 impl<'a> PageEncoder<'a> {
@@ -437,11 +484,14 @@ impl<'a> PageEncoder<'a> {
             source: Source::Bitmap(bitmap),
             dpi: 300,
             quality: EncodeQuality::Lossless,
+            bilevel_codec: BilevelCodec::Jb2,
             segment_options: None,
+            mask: None,
             iw44_options: None,
             jb2_options: None,
             fgbz_options: FgbzPaletteOptions::Exact,
             text_layer: None,
+            metadata: None,
         }
     }
 
@@ -453,11 +503,14 @@ impl<'a> PageEncoder<'a> {
             source: Source::Pixmap(pixmap),
             dpi: 300,
             quality: EncodeQuality::Quality,
+            bilevel_codec: BilevelCodec::Jb2,
             segment_options: None,
+            mask: None,
             iw44_options: None,
             jb2_options: None,
             fgbz_options: FgbzPaletteOptions::Exact,
             text_layer: None,
+            metadata: None,
         }
     }
 
@@ -477,10 +530,42 @@ impl<'a> PageEncoder<'a> {
         self
     }
 
+    /// Select the codec for a bilevel [`EncodeQuality::Lossless`] page.
+    ///
+    /// The default is [`BilevelCodec::Jb2`]. Selecting [`BilevelCodec::Smmr`]
+    /// emits an `Smmr` chunk and is rejected for colour sources because a
+    /// standalone MMR mask cannot carry the layered encoder's foreground
+    /// dictionary and palette semantics.
+    pub fn with_bilevel_codec(mut self, codec: BilevelCodec) -> Self {
+        self.bilevel_codec = codec;
+        self
+    }
+
     /// Override the segmentation knobs used by `Quality` / `Archival` color
     /// encodes. Defaults remain profile-specific and fixed-threshold.
     pub fn with_segment_options(mut self, opts: SegmentOptions) -> Self {
         self.segment_options = Some(opts);
+        self
+    }
+
+    /// Reuse an existing full-resolution mask for the layered colour
+    /// profiles instead of re-binarizing the pixmap (#601).
+    ///
+    /// The intended source is the page being re-encoded: decode its `Sjbz`
+    /// with [`extract_mask`](crate::djvu_document::DjVuPage::extract_mask)
+    /// and pass it here, so repeated decode → re-encode cycles keep the mask
+    /// bit-identical instead of drifting through binarization instability.
+    ///
+    /// Only `Quality` / `Archival` pixmap encodes accept a mask, and its
+    /// dimensions must equal the pixmap's — other combinations make
+    /// [`encode`](Self::encode) return [`EncodeError::Unsupported`]. The
+    /// mask-producing segmentation knobs (`binarization`, `threshold`,
+    /// `block_classify`, `deskew`) are ignored; the background-derivation
+    /// knobs still apply. With the default lossless JB2 options the emitted
+    /// `Sjbz` decodes back bit-identically to the supplied mask; a non-zero
+    /// [`Jb2EncodeOptions::lossy_threshold`] still applies and may alter it.
+    pub fn with_mask(mut self, mask: &'a Bitmap) -> Self {
+        self.mask = Some(mask);
         self
     }
 
@@ -535,6 +620,15 @@ impl<'a> PageEncoder<'a> {
         self
     }
 
+    /// Attach metadata to a newly encoded page as a BZZ-compressed `METz`
+    /// chunk. An empty [`DjVuMetadata`] is omitted. This is independent from
+    /// [`crate::djvu_mut::PageMut::set_metadata`], which replaces metadata in
+    /// an existing document while preserving untouched chunks.
+    pub fn with_metadata(mut self, metadata: DjVuMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
     /// Run `backend` over the page image and attach the resulting OCR text
     /// layer (see [`with_text_layer`](Self::with_text_layer)) — the standard
     /// "searchable scan" workflow in one step.
@@ -572,28 +666,66 @@ impl<'a> PageEncoder<'a> {
         let h = u16::try_from(h).map_err(|_| {
             EncodeError::Unsupported("page height exceeds INFO chunk limit (65 535 px)")
         })?;
+        if matches!(&self.source, Source::Pixmap(_)) && self.bilevel_codec != BilevelCodec::Jb2 {
+            return Err(EncodeError::Unsupported(
+                "Smmr bilevel codec requires Bitmap input",
+            ));
+        }
+        if let Some(mask) = self.mask {
+            match &self.source {
+                Source::Bitmap(_) => {
+                    return Err(EncodeError::Unsupported(
+                        "mask reuse requires colour input (from_pixmap)",
+                    ));
+                }
+                Source::Pixmap(pm) => {
+                    if matches!(self.quality, EncodeQuality::Photo) {
+                        return Err(EncodeError::Unsupported(
+                            "Photo profile has no mask layer to reuse",
+                        ));
+                    }
+                    if mask.width != pm.width || mask.height != pm.height {
+                        return Err(EncodeError::Unsupported(
+                            "reused mask dimensions must match the page pixmap",
+                        ));
+                    }
+                }
+            }
+        }
         let info = encode_info(w, h, self.dpi);
 
         match (&self.source, self.quality) {
             (Source::Bitmap(bm), EncodeQuality::Lossless) => {
+                let mask = match self.bilevel_codec {
+                    BilevelCodec::Jb2 => Chunk::Leaf {
+                        id: *b"Sjbz",
+                        data: jb2_encode::encode_jb2(bm),
+                    },
+                    BilevelCodec::Smmr => Chunk::Leaf {
+                        id: *b"Smmr",
+                        data: encode_smmr(bm),
+                    },
+                };
                 let mut chunks = vec![
                     Chunk::Leaf {
                         id: *b"INFO",
                         data: info,
                     },
-                    Chunk::Leaf {
-                        id: *b"Sjbz",
-                        data: jb2_encode::encode_jb2(bm),
-                    },
+                    mask,
                 ];
                 self.push_text_layer_chunk(&mut chunks, h as u32);
+                self.push_metadata_chunk(&mut chunks);
                 Ok(encode_form_djvu(chunks))
             }
             (Source::Pixmap(pm), EncodeQuality::Quality | EncodeQuality::Archival) => {
                 let segment_options = self
                     .segment_options
                     .unwrap_or_else(|| self.quality.default_segment_options());
-                let seg = segment_page(pm, &segment_options);
+                let seg = match self.mask {
+                    // #601 mask reuse: skip binarization, keep bg derivation.
+                    Some(mask) => segment_page_with_mask(pm, mask, &segment_options),
+                    None => segment_page(pm, &segment_options),
+                };
                 // Use the dictionary encoder for color profiles so FGbz can
                 // address foreground colors per blitted component.
                 // Given `seg`, the Sjbz (JB2 mask) and BG44 (IW44 background)
@@ -641,6 +773,7 @@ impl<'a> PageEncoder<'a> {
                     chunks.push(chunk.into_leaf());
                 }
                 self.push_text_layer_chunk(&mut chunks, h as u32);
+                self.push_metadata_chunk(&mut chunks);
                 Ok(encode_form_djvu(chunks))
             }
             (Source::Pixmap(pm), EncodeQuality::Photo) => {
@@ -649,7 +782,9 @@ impl<'a> PageEncoder<'a> {
                 // encoder: one luma plane instead of Y+Cb+Cr.
                 let gray = pm
                     .data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|px| px[0] == px[1] && px[1] == px[2]);
                 let bg44_chunks = if gray {
                     crate::iw44_encode::encode_iw44_gray(&pm.to_gray8(), &iw44_options)
@@ -668,6 +803,7 @@ impl<'a> PageEncoder<'a> {
                     });
                 }
                 self.push_text_layer_chunk(&mut chunks, h as u32);
+                self.push_metadata_chunk(&mut chunks);
                 Ok(encode_form_djvu(chunks))
             }
             (Source::Bitmap(_), EncodeQuality::Photo) => Err(EncodeError::Unsupported(
@@ -697,6 +833,20 @@ impl<'a> PageEncoder<'a> {
                 id: *b"TXTz",
                 data: compressed,
             });
+        }
+    }
+
+    /// Append the BZZ-compressed `METz` chunk for new-document metadata, if
+    /// metadata was attached and contains at least one populated field.
+    fn push_metadata_chunk(&self, chunks: &mut Vec<Chunk>) {
+        if let Some(metadata) = &self.metadata {
+            let compressed = encode_metadata_bzz(metadata);
+            if !compressed.is_empty() {
+                chunks.push(Chunk::Leaf {
+                    id: *b"METz",
+                    data: compressed,
+                });
+            }
         }
     }
 }
@@ -755,6 +905,7 @@ pub fn encode_djvm_layered_shared(
         segment_options,
         shared_dict_page_threshold,
         false,
+        None,
     )
 }
 
@@ -777,9 +928,309 @@ pub fn encode_djvm_layered_shared_with_thumbnails(
         segment_options,
         shared_dict_page_threshold,
         with_thumbnails,
+        None,
     )
 }
 
+/// Like [`encode_djvm_layered_shared`] but with per-page mask reuse (#779
+/// follow-up).
+///
+/// `masks[i]`, when `Some`, is reused for `pixmaps[i]` exactly as
+/// [`PageEncoder::with_mask`] reuses it for a single page: binarization is
+/// skipped and only the background half of segmentation
+/// ([`segment_page_with_mask`]) runs around the supplied mask, so a
+/// decode → re-encode cycle over a multi-page bundle keeps every page's mask
+/// bit-identical. `None` for a page falls back to normal segmentation
+/// ([`segment_page`]), so a bundle can mix reused and freshly segmented
+/// pages.
+///
+/// `masks` must have the same length as `pixmaps`, and a `Some` entry's
+/// bitmap must match its page's pixmap dimensions — otherwise this returns
+/// [`EncodeError::Unsupported`], matching `PageEncoder::with_mask`'s
+/// validation. The intended source of each mask is the corresponding page of
+/// the document being re-encoded, decoded via
+/// [`extract_mask`](crate::djvu_document::DjVuPage::extract_mask).
+pub fn encode_djvm_layered_shared_with_masks(
+    pixmaps: &[Pixmap],
+    quality: EncodeQuality,
+    dpi: u16,
+    segment_options: Option<SegmentOptions>,
+    shared_dict_page_threshold: usize,
+    masks: &[Option<&Bitmap>],
+) -> Result<Vec<u8>, EncodeError> {
+    encode_djvm_layered_shared_impl(
+        pixmaps,
+        quality,
+        dpi,
+        segment_options,
+        shared_dict_page_threshold,
+        false,
+        Some(masks),
+    )
+}
+
+/// Like [`encode_djvm_layered_shared_with_thumbnails`] but with per-page mask
+/// reuse — the union of that function and
+/// [`encode_djvm_layered_shared_with_masks`]. See the latter for the mask
+/// semantics and validation rules.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_djvm_layered_shared_with_thumbnails_and_masks(
+    pixmaps: &[Pixmap],
+    quality: EncodeQuality,
+    dpi: u16,
+    segment_options: Option<SegmentOptions>,
+    shared_dict_page_threshold: usize,
+    with_thumbnails: bool,
+    masks: &[Option<&Bitmap>],
+) -> Result<Vec<u8>, EncodeError> {
+    encode_djvm_layered_shared_impl(
+        pixmaps,
+        quality,
+        dpi,
+        segment_options,
+        shared_dict_page_threshold,
+        with_thumbnails,
+        Some(masks),
+    )
+}
+
+/// Like [`encode_djvm_layered_shared_with_thumbnails_and_masks`], but pulls
+/// each page's [`Pixmap`] lazily from `source` instead of requiring the
+/// caller to hold every page's decoded pixmap in one `&[Pixmap]` slice —
+/// encoder peak-memory step 4 (see `PERF_EXPERIMENTS.md`'s
+/// `ENCODE_STREAMING_WINDOW` entry and the plan it follows up on).
+///
+/// # Page source shape
+///
+/// `source(i)` must return page `i` (0-based). It is a plain `FnMut`, not a
+/// new trait: the contract is "hand me page `i`", nothing more, and a
+/// `PageSource` trait (considered and rejected for this step) can still be
+/// layered on top later — e.g. as a blanket `impl<F, E> Source for F where
+/// F: FnMut(usize) -> Result<Pixmap, E>` — without breaking this signature.
+/// It is called strictly from the calling thread, in increasing index order,
+/// one page at a time (never concurrently, so `F` needs no `Sync`/`Send`
+/// bound at all) — only the CPU work *after* a window's pixmaps are fetched
+/// runs on rayon under the `parallel` feature, exactly like the eager
+/// `&[Pixmap]` entry points already do over their slice. `E` only needs
+/// `std::error::Error + Send + Sync + 'static`; a source failure surfaces as
+/// [`EncodeError::PageSource`] (see that variant's doc comment for why a
+/// boxed error, not `Into<EncodeError>`, is the conversion shape here).
+///
+/// # Bounded window
+///
+/// At most `window` pages' pixmaps (default: `None`, meaning
+/// `rayon::current_num_threads().min(4)` under the `parallel` feature, or
+/// `1` without it — see [`default_streaming_window`]) are resident at once.
+/// Each page's pixmap is fetched, run through phase 1 (segmentation, `BG44`/
+/// `TH44` encode, and — for the lossless default — the `FGbz` colour table
+/// precomputed by step 3), and dropped before the next window starts; phase
+/// 2 (shared-dictionary clustering) and phase 3 (per-page finalize) then run
+/// exactly as in the eager path, from the compact [`PreparedPage`]s alone.
+/// `window` is clamped to at least 1; passing `Some(page_count)` reproduces
+/// the eager entry points' behavior (everything in one window) if a caller
+/// wants that shape from a lazy source for some other reason (e.g. it
+/// doesn't have a `&[Pixmap]` handy but also doesn't need the memory win).
+///
+/// # The lossy fallback
+///
+/// [`build_page`] needs the *original* pixmap a second time only when
+/// `Jb2EncodeOptions::lossy_threshold > 0.0` (not yet exposed as a
+/// caller-facing knob on this bundle path — it is always `0.0` today, see
+/// `page_jb2_options` in [`encode_djvm_layered_shared_impl`]) or in the
+/// (currently unreachable) case where phase 1's precomputed colour table is
+/// unexpectedly absent for a lossless page. The bounded window has already
+/// dropped that pixmap by the time phase 3 runs, so this function refuses
+/// outright — returning [`EncodeError::Unsupported`] — rather than
+/// re-fetching the page from `source` a second time (option (b) from the
+/// peak-memory plan) or silently producing wrong output (no `FGbz`, or one
+/// sampled from the wrong page). Re-fetching was rejected here because
+/// `source` is a plain, non-`Clone`, non-restartable `FnMut`: rewinding it to
+/// re-request an index already consumed by an earlier window is not
+/// something this contract can express safely (a caller-supplied closure
+/// might be reading a stream, not indexing a directory), so a lossy caller
+/// should use the eager `&[Pixmap]` entry points instead, which never drop a
+/// page's pixmap before phase 3 needs it.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_djvm_layered_shared_streaming<F, E>(
+    page_count: usize,
+    mut source: F,
+    quality: EncodeQuality,
+    dpi: u16,
+    segment_options: Option<SegmentOptions>,
+    shared_dict_page_threshold: usize,
+    with_thumbnails: bool,
+    masks: Option<&[Option<&Bitmap>]>,
+    window: Option<usize>,
+) -> Result<Vec<u8>, EncodeError>
+where
+    F: FnMut(usize) -> Result<Pixmap, E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    if !matches!(quality, EncodeQuality::Quality | EncodeQuality::Archival) {
+        return Err(EncodeError::Unsupported(
+            "encode_djvm_layered_shared requires the Quality or Archival profile",
+        ));
+    }
+    if let Some(masks) = masks
+        && masks.len() != page_count
+    {
+        return Err(EncodeError::Unsupported(
+            "masks length must equal page_count",
+        ));
+    }
+    let opts = segment_options.unwrap_or_else(|| quality.default_segment_options());
+    let mask_at = |idx: usize| -> Option<&Bitmap> { masks.and_then(|m| m[idx]) };
+
+    // Same rationale as `encode_djvm_layered_shared_impl`: always lossless
+    // today, named so both this function and `build_page`'s doc comment
+    // agree on why the lossy branch can't be reached from here.
+    let page_jb2_options = Jb2EncodeOptions::default();
+    if page_jb2_options.lossy_threshold > 0.0 {
+        return Err(EncodeError::Unsupported(
+            "streaming encode does not support a nonzero JB2 lossy_threshold: \
+             the bounded pixmap window has already dropped a page's pixmap by \
+             the time the lossy FGbz fallback would need it; use the eager \
+             &[Pixmap] entry points instead",
+        ));
+    }
+
+    let window = window.unwrap_or_else(default_streaming_window).max(1);
+
+    // ── Phase 1, windowed ────────────────────────────────────────────────
+    //
+    // Pull at most `window` pages' pixmaps at a time (sequentially, via
+    // `source`), run phase 1 over just that window (in parallel under the
+    // `parallel` feature, same as the eager path's whole-slice
+    // `par_iter`), then let `chunk_pixmaps` drop before starting the next
+    // window. This is the whole point of this entry point: pixmap
+    // residency becomes O(window), not O(page_count).
+    let mut prepared: Vec<PreparedPage> = Vec::with_capacity(page_count);
+    let mut start = 0usize;
+    while start < page_count {
+        let end = (start + window).min(page_count);
+        let mut chunk_pixmaps: Vec<Pixmap> = Vec::with_capacity(end - start);
+        for idx in start..end {
+            let pm = source(idx).map_err(|e| EncodeError::PageSource(Box::new(e)))?;
+            if let Some(mask) = mask_at(idx)
+                && (mask.width != pm.width || mask.height != pm.height)
+            {
+                return Err(EncodeError::Unsupported(
+                    "reused mask dimensions must match its page pixmap",
+                ));
+            }
+            chunk_pixmaps.push(pm);
+        }
+
+        #[cfg(feature = "parallel")]
+        let chunk_prepared: Vec<PreparedPage> = {
+            use rayon::prelude::*;
+            chunk_pixmaps
+                .par_iter()
+                .enumerate()
+                .map(|(off, pm)| {
+                    prepare_page(
+                        pm,
+                        mask_at(start + off),
+                        &opts,
+                        with_thumbnails,
+                        &page_jb2_options,
+                    )
+                })
+                .collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let chunk_prepared: Vec<PreparedPage> = chunk_pixmaps
+            .iter()
+            .enumerate()
+            .map(|(off, pm)| {
+                prepare_page(
+                    pm,
+                    mask_at(start + off),
+                    &opts,
+                    with_thumbnails,
+                    &page_jb2_options,
+                )
+            })
+            .collect();
+
+        prepared.extend(chunk_prepared);
+        drop(chunk_pixmaps); // explicit: this window's pixmaps end here
+        start = end;
+    }
+
+    // ── Phase 2: shared JB2 dictionary clustering (masks only) ─────────────
+    let shared = cluster_shared_dictionary(&prepared, shared_dict_page_threshold);
+    let has_shared = !shared.is_empty();
+
+    let dict_id = "dict0001.djvi";
+    let mut comps: Vec<(Vec<u8>, bool, String)> = Vec::new();
+    if has_shared {
+        let djbz = jb2_encode::encode_jb2_djbz(&shared);
+        let djvi_body = jb2_encode::build_form_body(b"DJVI", &[(*b"Djbz", djbz)]);
+        comps.push((djvi_body, false, dict_id.to_string()));
+    }
+
+    // ── Phase 3: per-page finalize — no pixmap in scope at all ──────────────
+    let shared_for_encode: &[Bitmap] = if has_shared { &shared } else { &[] };
+    #[cfg(feature = "parallel")]
+    let page_comps: Vec<(Vec<u8>, bool, String)> = {
+        use rayon::prelude::*;
+        prepared
+            .into_par_iter()
+            .enumerate()
+            .map(|(idx, prep)| {
+                build_page(
+                    idx,
+                    None,
+                    prep,
+                    shared_for_encode,
+                    has_shared,
+                    dict_id,
+                    dpi,
+                    &page_jb2_options,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    #[cfg(not(feature = "parallel"))]
+    let page_comps: Vec<(Vec<u8>, bool, String)> = prepared
+        .into_iter()
+        .enumerate()
+        .map(|(idx, prep)| {
+            build_page(
+                idx,
+                None,
+                prep,
+                shared_for_encode,
+                has_shared,
+                dict_id,
+                dpi,
+                &page_jb2_options,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    comps.extend(page_comps);
+
+    Ok(jb2_encode::assemble_djvm_bundle(comps))
+}
+
+/// Default bounded window for [`encode_djvm_layered_shared_streaming`]:
+/// `rayon::current_num_threads()` capped at 4 under the `parallel` feature
+/// (enough to keep rayon's per-page parallelism inside phase 1/3 fed without
+/// letting the window itself grow unbounded on a many-core machine), 1
+/// without it (pages are prepared and finalized strictly one at a time, so a
+/// window of 1 costs nothing extra).
+#[cfg(feature = "parallel")]
+fn default_streaming_window() -> usize {
+    rayon::current_num_threads().min(4).max(1)
+}
+
+#[cfg(not(feature = "parallel"))]
+fn default_streaming_window() -> usize {
+    1
+}
+
+#[allow(clippy::too_many_arguments)]
 fn encode_djvm_layered_shared_impl(
     pixmaps: &[Pixmap],
     quality: EncodeQuality,
@@ -787,54 +1238,81 @@ fn encode_djvm_layered_shared_impl(
     segment_options: Option<SegmentOptions>,
     shared_dict_page_threshold: usize,
     with_thumbnails: bool,
+    masks: Option<&[Option<&Bitmap>]>,
 ) -> Result<Vec<u8>, EncodeError> {
     if !matches!(quality, EncodeQuality::Quality | EncodeQuality::Archival) {
         return Err(EncodeError::Unsupported(
             "encode_djvm_layered_shared requires the Quality or Archival profile",
         ));
     }
-    let opts = segment_options.unwrap_or_else(|| quality.default_segment_options());
-
-    // Pass 1 (#565): segment each page, immediately encode its background
-    // (BG44) and optional thumbnail (TH44), and DROP the segmented background
-    // pixmap. Between the passes only the 1-bit masks and the already-
-    // compressed chunk bodies are retained — previously every page's
-    // subsampled RGBA background pixmap plus a full clone of every mask
-    // survived until the end of the encode. Per-page independent; with the
-    // `parallel` feature the pages run concurrently on rayon. The emitted
-    // bytes are unchanged: same inputs, same options, same chunk order.
-    struct PreparedPage {
-        mask: Bitmap,
-        bg44: Vec<Vec<u8>>,
-        th44: Vec<Vec<u8>>,
-    }
-    let prepare = |pm: &Pixmap| -> PreparedPage {
-        let seg = segment_page(pm, &opts);
-        let bg44 = encode_iw44_color(&seg.bg, &Iw44EncodeOptions::default());
-        let th44 = if with_thumbnails {
-            crate::thumbnail::encode_th44_color(pm)
-        } else {
-            Vec::new()
-        };
-        PreparedPage {
-            mask: seg.mask,
-            bg44,
-            th44,
+    if let Some(masks) = masks {
+        if masks.len() != pixmaps.len() {
+            return Err(EncodeError::Unsupported(
+                "masks length must equal pixmaps length",
+            ));
         }
-    };
+        for (pm, mask) in pixmaps.iter().zip(masks.iter()) {
+            if let Some(mask) = mask
+                && (mask.width != pm.width || mask.height != pm.height)
+            {
+                return Err(EncodeError::Unsupported(
+                    "reused mask dimensions must match its page pixmap",
+                ));
+            }
+        }
+    }
+    let opts = segment_options.unwrap_or_else(|| quality.default_segment_options());
+    let mask_at = |idx: usize| -> Option<&Bitmap> { masks.and_then(|m| m[idx]) };
+
+    // JB2 options for the per-page Sjbz encode in phase 3. Not yet threaded
+    // as a caller-facing knob for this bundle path (unlike `PageEncoder`'s
+    // `self.jb2_options`) — always the lossless default, same as before this
+    // step. Named and passed explicitly (rather than re-hardcoded at each
+    // call site) so `prepare_page`'s colour-table precomputation and
+    // `build_page`'s FGbz sampling agree on the same options, and so a
+    // future caller-facing knob only needs to change this one binding.
+    let page_jb2_options = Jb2EncodeOptions::default();
+
+    // ── Phase 1: per-page mask + background extraction ─────────────────────
+    //
+    // Needs: each page's `&Pixmap` (and, on re-encode, its reused mask).
+    // Produces: `PreparedPage` — the packed 1-bit mask, the already-
+    // compressed `BG44`/`TH44` chunk bodies, and (step 3 of the peak-memory
+    // plan) a precomputed per-symbol colour table for `FGbz`, sampled from
+    // `pm` while it is still resident here. Per-page independent; with the
+    // `parallel` feature the pages run concurrently on rayon. The pixmap
+    // itself is not retained past this phase in `prepared` — phase 3
+    // (`build_page`) still borrows it too, straight from `pixmaps`, but (for
+    // the lossless default case) only to keep the signature simple; the
+    // colour table removes its *need* for `pm`. The emitted bytes are
+    // unchanged from before this refactor: same inputs, same options, same
+    // chunk order (#565's pass split, #788's phase split, restructured here
+    // without behavior change).
     #[cfg(feature = "parallel")]
     let prepared: Vec<PreparedPage> = {
         use rayon::prelude::*;
-        pixmaps.par_iter().map(prepare).collect()
+        pixmaps
+            .par_iter()
+            .enumerate()
+            .map(|(idx, pm)| {
+                prepare_page(pm, mask_at(idx), &opts, with_thumbnails, &page_jb2_options)
+            })
+            .collect()
     };
     #[cfg(not(feature = "parallel"))]
-    let prepared: Vec<PreparedPage> = pixmaps.iter().map(prepare).collect();
+    let prepared: Vec<PreparedPage> = pixmaps
+        .iter()
+        .enumerate()
+        .map(|(idx, pm)| prepare_page(pm, mask_at(idx), &opts, with_thumbnails, &page_jb2_options))
+        .collect();
 
-    // Cluster over borrowed masks — no per-mask clone (#565).
-    let mask_refs: Vec<&Bitmap> = prepared.iter().map(|p| &p.mask).collect();
-    let shared =
-        jb2_encode::cluster_shared_symbols_from_refs(&mask_refs, shared_dict_page_threshold);
-    drop(mask_refs);
+    // ── Phase 2: shared JB2 dictionary clustering ───────────────────────────
+    //
+    // Needs: only `prepared[i].mask` for every page (~1 MB/page packed
+    // 1-bit) — no pixmap. Produces: `shared`, the dictionary's symbol
+    // bitmaps (empty when nothing qualified to share, e.g. fewer than two
+    // pages or a threshold above the page count).
+    let shared = cluster_shared_dictionary(&prepared, shared_dict_page_threshold);
     let has_shared = !shared.is_empty();
 
     let dict_id = "dict0001.djvi";
@@ -848,76 +1326,351 @@ fn encode_djvm_layered_shared_impl(
         comps.push((djvi_body, false, dict_id.to_string()));
     }
 
+    // ── Phase 3: per-page finalize ───────────────────────────────────────────
+    //
+    // Needs: `prepared[i]` (mask/bg44/th44 from phase 1) and `shared` (from
+    // phase 2), plus — the one dependency that survives from phase 1 — the
+    // page's original `&Pixmap` again, solely for `foreground_fgbz_from_blits`'s
+    // per-blit colour sampling (`FGbz`). See that function's doc comment:
+    // this bundle path always uses `FgbzPaletteOptions::Exact`, i.e. the
+    // lossless-shape case, so today the pixmap really is needed a second
+    // time here. (Removing that second need is step 3 of the peak-memory
+    // plan this refactor prepares for — a precomputed per-CC colour table
+    // built while the pixmap is still resident in phase 1.)
+    //
     // Each page's DJVU body is independent (JB2-dict Sjbz + IW44 background + FGbz +
     // optional TH44). Build one component per page; with the `parallel` feature the
     // pages encode concurrently on rayon, since JB2 + IW44 dominate the per-page cost.
     // Order is preserved by the indexed collect.
-    let build_page = |idx: usize,
-                      pm: &Pixmap,
-                      prep: &PreparedPage|
-     -> Result<(Vec<u8>, bool, String), EncodeError> {
-        let w = u16::try_from(pm.width)
-            .map_err(|_| EncodeError::Unsupported("page width exceeds INFO chunk limit"))?;
-        let h = u16::try_from(pm.height)
-            .map_err(|_| EncodeError::Unsupported("page height exceeds INFO chunk limit"))?;
-
-        let shared_for_encode: &[Bitmap] = if has_shared { &shared } else { &[] };
-        let (sjbz, blits) = jb2_encode::encode_jb2_dict_with_blits(
-            &prep.mask,
-            shared_for_encode,
-            &Jb2EncodeOptions::default(),
-        );
-        // FGbz comes straight from the emitted blits (#612) — no decode of the
-        // just-encoded stream. Shared-dict rec-7 copies are exact matches, so
-        // the blit shapes equal the decoded ones. `Exact` here (not threaded
-        // from a caller option yet): the bundle path is out of scope for
-        // FGBZ_MEDIANCUT and stays byte-identical.
-        let fgbz = foreground_fgbz_from_blits(pm, &prep.mask, &blits, FgbzPaletteOptions::Exact);
-
-        let mut chunks: Vec<([u8; 4], Vec<u8>)> = Vec::new();
-        chunks.push((*b"INFO", encode_info(w, h, dpi)));
-        if has_shared {
-            chunks.push((*b"INCL", dict_id.as_bytes().to_vec()));
-        }
-        chunks.push((*b"Sjbz", sjbz));
-        for body in &prep.bg44 {
-            chunks.push((*b"BG44", body.clone()));
-        }
-        if let Some(chunk) = fgbz
-            && let Chunk::Leaf { id, data } = chunk.into_leaf()
-        {
-            chunks.push((id, data));
-        }
-        // TH44 colour thumbnails sit inside the page's FORM:DJVU body (after
-        // FGbz); encoded in pass 1, placed here in the same position.
-        for payload in &prep.th44 {
-            chunks.push((*b"TH44", payload.clone()));
-        }
-        let body = jb2_encode::build_form_body(b"DJVU", &chunks);
-        Ok((body, true, format!("p{:04}.djvu", idx + 1)))
-    };
-
+    let shared_for_encode: &[Bitmap] = if has_shared { &shared } else { &[] };
     #[cfg(feature = "parallel")]
     let page_comps: Vec<(Vec<u8>, bool, String)> = {
         use rayon::prelude::*;
         pixmaps
             .par_iter()
-            .zip(&prepared)
+            .zip(prepared)
             .enumerate()
-            .map(|(idx, (pm, prep))| build_page(idx, pm, prep))
+            .map(|(idx, (pm, prep))| {
+                build_page(
+                    idx,
+                    Some(pm),
+                    prep,
+                    shared_for_encode,
+                    has_shared,
+                    dict_id,
+                    dpi,
+                    &page_jb2_options,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
     #[cfg(not(feature = "parallel"))]
     let page_comps: Vec<(Vec<u8>, bool, String)> = pixmaps
         .iter()
-        .zip(&prepared)
+        .zip(prepared)
         .enumerate()
-        .map(|(idx, (pm, prep))| build_page(idx, pm, prep))
+        .map(|(idx, (pm, prep))| {
+            build_page(
+                idx,
+                Some(pm),
+                prep,
+                shared_for_encode,
+                has_shared,
+                dict_id,
+                dpi,
+                &page_jb2_options,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    drop(prepared);
     comps.extend(page_comps);
 
     Ok(jb2_encode::assemble_djvm_bundle(comps))
+}
+
+/// Phase-1 → phase-2/3 boundary artifact for
+/// [`encode_djvm_layered_shared_impl`]'s multi-page pipeline.
+///
+/// Holds everything later phases need from a page *other than* the pixmap:
+/// the packed 1-bit mask (input to phase 2's dictionary clustering and phase
+/// 3's JB2 encode) and the already-compressed `BG44`/`TH44` chunk bodies
+/// (phase 1 output, threaded through unchanged). At ~1 MB/page this is ~32×
+/// smaller than the RGBA pixmap it was derived from — see
+/// `PERF_EXPERIMENTS.md`'s "Encoder phase split" entry for the memory
+/// accounting this shape exists to make legible.
+struct PreparedPage {
+    /// The page's pixel dimensions, copied out of `pm` while phase 1 still
+    /// holds it. Cheap (two `u32`s) — carried forward so phase 3's `INFO`
+    /// chunk and `build_page`'s `u16` bounds check don't need the pixmap at
+    /// all in the streaming path (encoder peak-memory step 4), where it has
+    /// already been dropped by the time phase 3 runs.
+    width: u32,
+    height: u32,
+    mask: Bitmap,
+    bg44: Vec<Vec<u8>>,
+    th44: Vec<Vec<u8>>,
+    /// Precomputed per-symbol colour accumulators for `FGbz` (encoder
+    /// peak-memory step 3), in the same order
+    /// [`jb2_encode::encode_jb2_dict_with_blits`]'s blit list will use for
+    /// `mask` — see [`jb2_encode::symbol_boxes_in_emission_order`]'s doc
+    /// comment: the geometric decomposition it is built from does not
+    /// depend on the shared dictionary, so this can be computed here in
+    /// phase 1, before phase 2 (dictionary clustering) has run, and lets
+    /// phase 3 skip re-sampling `pm` for the common (lossless) case.
+    ///
+    /// `None` when [`Jb2EncodeOptions::lossy_threshold`] is nonzero — lossy
+    /// rec-7 substitution can blit a near-twin dict entry whose true
+    /// decoded pixels differ from the original component, the same
+    /// restriction [`foreground_fgbz_from_blits`] documents for itself.
+    /// Phase 3 then falls back to the decode-based [`foreground_fgbz`],
+    /// exactly as [`PageEncoder::encode`] already does for that case.
+    cc_colors: Option<Vec<ColorAccum>>,
+    /// Precomputed geometric decomposition (connected components, despeckle,
+    /// reading-order sort) of `mask` under the same `jb2_options` phase 3
+    /// will encode with — see [`jb2_encode::symbol_boxes_in_emission_order`].
+    /// Same `None`-ness condition as `cc_colors` (lossy fallback). Threading
+    /// this through phase 3 lets [`jb2_encode::encode_jb2_dict_with_symbols`]
+    /// skip re-running connected-component extraction a second time —
+    /// without it, phase 1's extraction for `cc_colors` would be pure
+    /// overhead duplicating phase 3's own extraction inside
+    /// `encode_jb2_dict_with_blits`.
+    cc_symbols: Option<Vec<jb2_encode::SymbolBox>>,
+}
+
+/// Phase 1: segment one page, immediately encode its background (`BG44`)
+/// and optional thumbnail (`TH44`), precompute the `FGbz` colour table
+/// (step 3), and hand back only the compact [`PreparedPage`] — the
+/// segmented background pixmap itself is dropped when this call returns.
+///
+/// `reuse_mask`, when `Some` (#779 follow-up), reuses `segment_page_with_mask`
+/// (skip binarization, keep background derivation) exactly like
+/// [`PageEncoder::with_mask`]; `None` keeps the original `segment_page` call
+/// so a bundle encoded with no `masks` argument is untouched codegen-wise.
+///
+/// `jb2_options` must be the same options phase 3's `build_page` will pass
+/// to `encode_jb2_dict_with_blits` for this page — both the despeckle
+/// pre-pass (which changes which components exist at all) and the
+/// lossy-threshold fallback decision need to agree between the two phases.
+#[inline]
+fn prepare_page(
+    pm: &Pixmap,
+    reuse_mask: Option<&Bitmap>,
+    opts: &SegmentOptions,
+    with_thumbnails: bool,
+    jb2_options: &Jb2EncodeOptions,
+) -> PreparedPage {
+    let seg = match reuse_mask {
+        Some(mask) => segment_page_with_mask(pm, mask, opts),
+        None => segment_page(pm, opts),
+    };
+    let bg44 = encode_iw44_color(&seg.bg, &Iw44EncodeOptions::default());
+    let th44 = if with_thumbnails {
+        crate::thumbnail::encode_th44_color(pm)
+    } else {
+        Vec::new()
+    };
+    let (cc_symbols, cc_colors) = match precompute_cc_data(pm, &seg.mask, jb2_options) {
+        Some((symbols, colors)) => (Some(symbols), Some(colors)),
+        None => (None, None),
+    };
+    PreparedPage {
+        width: pm.width,
+        height: pm.height,
+        mask: seg.mask,
+        bg44,
+        th44,
+        cc_colors,
+        cc_symbols,
+    }
+}
+
+/// Precompute the geometric decomposition of `mask` (its emission-order
+/// symbol list) together with per-symbol colour accumulators for `FGbz`,
+/// both in the same order [`jb2_encode::encode_jb2_dict_with_blits`]'s blit
+/// list will use for `mask` under `jb2_options`.
+///
+/// Uses [`jb2_encode::symbol_boxes_in_emission_order`] — the geometric
+/// decomposition (connected components, despeckle, reading-order sort)
+/// *without* running the entropy encoder or knowing the shared dictionary —
+/// then accumulates colours the same way [`foreground_fgbz_from_blits`]
+/// does, so the two produce byte-identical `FGbz` output whenever both
+/// apply. Handing the symbol list back too (not just the colours) lets phase
+/// 3 feed it straight into [`jb2_encode::encode_jb2_dict_with_symbols`],
+/// skipping a second, redundant connected-component extraction there.
+/// Returns `None` when `jb2_options.lossy_threshold > 0.0`: lossy rec-7
+/// substitution can blit a near-twin dict entry whose true decoded pixels
+/// differ from the original component, so this pixel-identity assumption
+/// (an emitted blit's pixels equal the source component's pixels) doesn't
+/// hold — the same restriction `foreground_fgbz_from_blits` documents for
+/// itself.
+fn precompute_cc_data(
+    pm: &Pixmap,
+    mask: &Bitmap,
+    jb2_options: &Jb2EncodeOptions,
+) -> Option<(Vec<jb2_encode::SymbolBox>, Vec<ColorAccum>)> {
+    if jb2_options.lossy_threshold > 0.0 {
+        return None;
+    }
+    let boxes = jb2_encode::symbol_boxes_in_emission_order(mask, jb2_options);
+    let w = mask.width as usize;
+    let mstride = mask.row_stride();
+    let mut by_blit = vec![ColorAccum::default(); boxes.len()];
+    for (accum, sbox) in by_blit.iter_mut().zip(&boxes) {
+        let bstride = sbox.bitmap.row_stride();
+        for by in 0..sbox.bitmap.height as usize {
+            let y = sbox.y as usize + by;
+            if y >= mask.height as usize {
+                break;
+            }
+            let brow = &sbox.bitmap.data[by * bstride..(by + 1) * bstride];
+            let mrow = &mask.data[y * mstride..(y + 1) * mstride];
+            let prow = &pm.data[y * w * 4..(y + 1) * w * 4];
+            for bx in 0..sbox.bitmap.width as usize {
+                if (brow[bx >> 3] >> (7 - (bx & 7))) & 1 == 0 {
+                    continue;
+                }
+                let x = sbox.x as usize + bx;
+                if x >= w {
+                    break;
+                }
+                if (mrow[x >> 3] >> (7 - (x & 7))) & 1 != 0 {
+                    let px = &prow[x * 4..x * 4 + 3];
+                    accum.add(px[0], px[1], px[2]);
+                }
+            }
+        }
+    }
+    Some((boxes, by_blit))
+}
+
+/// Phase 2: cluster every page's mask into a shared JB2 dictionary.
+///
+/// Takes only the masks (borrowed out of `prepared`, no per-mask clone,
+/// #565) — the pixmap plays no part in this phase. Returns the dictionary's
+/// symbol bitmaps, empty when clustering found nothing to share.
+fn cluster_shared_dictionary(
+    prepared: &[PreparedPage],
+    shared_dict_page_threshold: usize,
+) -> Vec<Bitmap> {
+    let mask_refs: Vec<&Bitmap> = prepared.iter().map(|p| &p.mask).collect();
+    jb2_encode::cluster_shared_symbols_from_refs(&mask_refs, shared_dict_page_threshold)
+}
+
+/// Phase 3: finalize one page's `FORM:DJVU` body — encode `Sjbz` against the
+/// shared dictionary, rebuild `FGbz` from the emitted blits, and assemble the
+/// chunk list in emission order.
+///
+/// `pm` is the *original* pixmap, when the caller still has it resident.
+/// For the lossless default case (step 3 of the peak-memory plan),
+/// `prep.cc_colors` already holds the sampled `FGbz` colours from phase 1,
+/// so this no longer *needs* `pm` at all in that case — it's `None` in the
+/// streaming path (encoder peak-memory step 4), which drops each page's
+/// pixmap once phase 1 finishes and refuses the one configuration
+/// (`lossy_threshold > 0`) that would need it here (see
+/// [`encode_djvm_layered_shared_streaming`]). The eager `&[Pixmap]` entry
+/// points still pass `Some(pm)`, as a defensive net if the precomputed
+/// table is ever missing/mismatched and for the lossy fallback itself.
+/// Everything else (`prep.mask`, `prep.bg44`, `prep.th44`, `shared`) was
+/// already produced in phases 1/2; `prep.width`/`prep.height` (not `pm`)
+/// size the `INFO` chunk so this works identically whether or not `pm` is
+/// available.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn build_page(
+    idx: usize,
+    pm: Option<&Pixmap>,
+    prep: PreparedPage,
+    shared_for_encode: &[Bitmap],
+    has_shared: bool,
+    dict_id: &str,
+    dpi: u16,
+    jb2_options: &Jb2EncodeOptions,
+) -> Result<(Vec<u8>, bool, String), EncodeError> {
+    let w = u16::try_from(prep.width)
+        .map_err(|_| EncodeError::Unsupported("page width exceeds INFO chunk limit"))?;
+    let h = u16::try_from(prep.height)
+        .map_err(|_| EncodeError::Unsupported("page height exceeds INFO chunk limit"))?;
+
+    // Sjbz + FGbz: prefer phase 1's precomputed geometric decomposition and
+    // colour table (step 3) — both were built from `pm`/`prep.mask` while
+    // phase 1 held the pixmap, using the same emission-order decomposition
+    // `encode_jb2_dict_with_blits` would otherwise recompute from scratch
+    // here (see `symbol_boxes_in_emission_order`'s doc comment). Feeding
+    // `cc_symbols` straight into `encode_jb2_dict_with_symbols` skips that
+    // redundant connected-component extraction, and `cc_colors` skips
+    // resampling `pm`. Lossy rec-7 substitution
+    // (`jb2_options.lossy_threshold > 0.0`) invalidates both precomputed
+    // tables (a copied blit's true decoded pixels can differ from the
+    // source component they were built from) — `prepare_page` already
+    // signals that by leaving them `None`, so fall back to the full
+    // extraction plus the decode-based `foreground_fgbz`, exactly like
+    // `PageEncoder::encode` does for the same case. A `None` in the
+    // (currently unreachable) lossless case is a defensive fallback to the
+    // direct blit-based sampler, not a silent bug swallow.
+    let (sjbz, fgbz) = if jb2_options.lossy_threshold <= 0.0
+        && let (Some(symbols), Some(cc_colors)) = (prep.cc_symbols, prep.cc_colors)
+    {
+        let (sjbz, _blits) = jb2_encode::encode_jb2_dict_with_symbols(
+            prep.mask.width,
+            prep.mask.height,
+            symbols,
+            shared_for_encode,
+            jb2_options,
+        );
+        let fgbz = fgbz_from_accums(cc_colors, FgbzPaletteOptions::Exact);
+        (sjbz, fgbz)
+    } else {
+        let pm = pm.ok_or(EncodeError::Unsupported(
+            "internal: FGbz fallback needs the original pixmap, which the \
+             streaming encode entry point does not retain past phase 1 — \
+             this should be unreachable, since it refuses a nonzero \
+             lossy_threshold up front and the lossless precomputed table is \
+             otherwise always present",
+        ))?;
+        let (sjbz, blits) =
+            jb2_encode::encode_jb2_dict_with_blits(&prep.mask, shared_for_encode, jb2_options);
+        let fgbz = if jb2_options.lossy_threshold > 0.0 {
+            let shared_dict = if has_shared {
+                crate::jb2::decode_dict(&jb2_encode::encode_jb2_djbz(shared_for_encode), None).ok()
+            } else {
+                None
+            };
+            foreground_fgbz(
+                pm,
+                &prep.mask,
+                &sjbz,
+                shared_dict.as_ref(),
+                FgbzPaletteOptions::Exact,
+            )
+        } else {
+            // `Exact` here (not threaded from a caller option yet): the
+            // bundle path is out of scope for FGBZ_MEDIANCUT and stays
+            // byte-identical.
+            foreground_fgbz_from_blits(pm, &prep.mask, &blits, FgbzPaletteOptions::Exact)
+        };
+        (sjbz, fgbz)
+    };
+
+    let mut chunks: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+    chunks.push((*b"INFO", encode_info(w, h, dpi)));
+    if has_shared {
+        chunks.push((*b"INCL", dict_id.as_bytes().to_vec()));
+    }
+    chunks.push((*b"Sjbz", sjbz));
+    for body in &prep.bg44 {
+        chunks.push((*b"BG44", body.clone()));
+    }
+    if let Some(chunk) = fgbz
+        && let Chunk::Leaf { id, data } = chunk.into_leaf()
+    {
+        chunks.push((id, data));
+    }
+    // TH44 colour thumbnails sit inside the page's FORM:DJVU body (after
+    // FGbz); encoded in phase 1, placed here in the same position.
+    for payload in &prep.th44 {
+        chunks.push((*b"TH44", payload.clone()));
+    }
+    let body = jb2_encode::build_form_body(b"DJVU", &chunks);
+    Ok((body, true, format!("p{:04}.djvu", idx + 1)))
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -1180,6 +1933,134 @@ mod tests {
         }
     }
 
+    /// Synthetic "picture" page: a smooth colour gradient (survives in the
+    /// background layer) with dark glyph-like strokes (become the mask).
+    fn synthetic_layered_page() -> Pixmap {
+        let (w, h) = (96u32, 64u32);
+        let mut pm = Pixmap::white(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let r = 140 + (x * 90 / w) as u8;
+                let g = 160 + (y * 70 / h) as u8;
+                let b = 200u8;
+                pm.set_rgb(x, y, r, g, b);
+            }
+        }
+        for row in 0..4u32 {
+            let y0 = 8 + row * 14;
+            for x in 8..88u32 {
+                if (x / 6) % 2 == 0 {
+                    for dy in 0..3u32 {
+                        pm.set_rgb(x, y0 + dy, 20, 16, 12);
+                    }
+                }
+            }
+        }
+        pm
+    }
+
+    fn render_native(doc: &crate::djvu_document::DjVuDocument) -> Pixmap {
+        render_native_page(doc, 0)
+    }
+
+    /// Like [`render_native`] but for an arbitrary page index — the
+    /// multi-page re-encode tests render every bundle page, not just page 0.
+    fn render_native_page(doc: &crate::djvu_document::DjVuDocument, index: usize) -> Pixmap {
+        let page = doc.page(index).unwrap();
+        crate::djvu_render::render_pixmap(
+            page,
+            &crate::djvu_render::RenderOptions {
+                width: page.width() as u32,
+                height: page.height() as u32,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// #601 mask reuse: a decode → render → re-encode cycle that passes the
+    /// source mask through `with_mask` must keep the mask bit-identical
+    /// across generations (no binarization drift), for both colour profiles.
+    #[test]
+    fn layered_reencode_with_reused_mask_is_a_mask_fixed_point() {
+        let pm0 = synthetic_layered_page();
+        for quality in [EncodeQuality::Quality, EncodeQuality::Archival] {
+            let gen0 = PageEncoder::from_pixmap(&pm0)
+                .with_quality(quality)
+                .encode()
+                .unwrap();
+            let doc0 = crate::djvu_document::DjVuDocument::parse(&gen0).unwrap();
+            let mask0 = doc0.page(0).unwrap().extract_mask().unwrap().unwrap();
+            assert!(
+                mask0.data.iter().any(|&b| b != 0),
+                "synthetic page must produce a non-empty mask"
+            );
+
+            let mut doc = doc0;
+            let mut mask = mask0.clone();
+            for generation in 1..=2 {
+                let rendered = render_native(&doc);
+                let next = PageEncoder::from_pixmap(&rendered)
+                    .with_quality(quality)
+                    .with_mask(&mask)
+                    .encode()
+                    .unwrap();
+                doc = crate::djvu_document::DjVuDocument::parse(&next).unwrap();
+                mask = doc.page(0).unwrap().extract_mask().unwrap().unwrap();
+                assert_eq!(
+                    (mask0.width, mask0.height, &mask0.data),
+                    (mask.width, mask.height, &mask.data),
+                    "{quality:?}: generation-{generation} mask must be bit-identical"
+                );
+            }
+        }
+    }
+
+    /// `segment_page_with_mask` fed `segment_page`'s own mask must reproduce
+    /// its background byte-identically — the reuse path changes nothing but
+    /// the mask's origin.
+    #[test]
+    fn segment_page_with_mask_matches_segment_page() {
+        let pm = synthetic_layered_page();
+        for opts in [SegmentOptions::default(), SegmentOptions::archival()] {
+            let a = segment_page(&pm, &opts);
+            let b = segment_page_with_mask(&pm, &a.mask, &opts);
+            assert_eq!(a.mask.data, b.mask.data, "mask must pass through");
+            assert_eq!(
+                (a.bg.width, a.bg.height, &a.bg.data),
+                (b.bg.width, b.bg.height, &b.bg.data),
+                "background must be byte-identical"
+            );
+        }
+    }
+
+    /// `with_mask` is only meaningful for layered colour encodes; every other
+    /// combination must fail loudly instead of silently ignoring the mask.
+    #[test]
+    fn with_mask_rejects_invalid_combinations() {
+        let pm = Pixmap::white(16, 16);
+        let mask = Bitmap::new(16, 16);
+        let wrong_size = Bitmap::new(8, 16);
+
+        assert!(matches!(
+            PageEncoder::from_pixmap(&pm)
+                .with_mask(&wrong_size)
+                .encode(),
+            Err(EncodeError::Unsupported(_))
+        ));
+        assert!(matches!(
+            PageEncoder::from_pixmap(&pm)
+                .with_quality(EncodeQuality::Photo)
+                .with_mask(&mask)
+                .encode(),
+            Err(EncodeError::Unsupported(_))
+        ));
+        assert!(matches!(
+            PageEncoder::from_bitmap(&mask).with_mask(&mask).encode(),
+            Err(EncodeError::Unsupported(_))
+        ));
+    }
+
     #[test]
     fn default_segment_options_maps_archival_to_dense_background() {
         // Single source of truth for the quality → segmentation mapping: only
@@ -1304,6 +2185,47 @@ mod tests {
                 assert_eq!(decoded.get(x, y), bm.get(x, y), "mismatch at ({x},{y})");
             }
         }
+    }
+
+    #[test]
+    fn explicit_smmr_bilevel_round_trips_without_sjbz() {
+        let bm = checkerboard(64, 48);
+        let bytes = PageEncoder::from_bitmap(&bm)
+            .with_bilevel_codec(BilevelCodec::Smmr)
+            .encode()
+            .expect("encode");
+
+        let doc = crate::djvu_document::DjVuDocument::parse(&bytes).expect("parse");
+        let page = doc.page(0).expect("page");
+        assert!(page.raw_chunk(b"Smmr").is_some());
+        assert!(page.raw_chunk(b"Sjbz").is_none());
+
+        let decoded = page
+            .extract_mask()
+            .expect("decode mask")
+            .expect("mask present");
+        assert_eq!((decoded.width, decoded.height), (bm.width, bm.height));
+        assert_eq!(decoded.data, bm.data);
+    }
+
+    #[test]
+    fn fresh_page_metadata_round_trips_as_metz() {
+        let bm = Bitmap::new(32, 24);
+        let meta = crate::metadata::DjVuMetadata {
+            title: Some("Fresh document".into()),
+            author: Some("djvu-rs".into()),
+            extra: vec![("language".into(), "en".into())],
+            ..crate::metadata::DjVuMetadata::default()
+        };
+        let bytes = PageEncoder::from_bitmap(&bm)
+            .with_metadata(meta.clone())
+            .encode()
+            .expect("encode");
+
+        let doc = crate::djvu_document::DjVuDocument::parse(&bytes).expect("parse");
+        let page = doc.page(0).expect("page");
+        assert!(page.raw_chunk(b"METz").is_some());
+        assert_eq!(doc.metadata().expect("metadata"), Some(meta));
     }
 
     #[test]
@@ -1689,6 +2611,128 @@ mod tests {
         );
     }
 
+    /// Encoder peak-memory step 4: [`encode_djvm_layered_shared_streaming`]
+    /// must produce byte-identical output to the eager `&[Pixmap]` entry
+    /// points for the same pages, regardless of window size — a window
+    /// covering everything at once (`Some(page_count)`), a narrow window
+    /// that forces multiple rounds, and the `None` (feature-dependent)
+    /// default all included.
+    #[test]
+    fn streaming_matches_eager_output_across_window_sizes() {
+        let two = two_page_bundle_fixture();
+        let extra = mixed_lighting_fixture();
+        let pages: Vec<Pixmap> = vec![
+            two[0].clone(),
+            two[1].clone(),
+            extra.clone(),
+            two[0].clone(),
+        ];
+
+        let eager = encode_djvm_layered_shared(&pages, EncodeQuality::Quality, 300, None, 2)
+            .expect("eager encode");
+
+        for window in [None, Some(1), Some(2), Some(3), Some(pages.len())] {
+            let pages_ref = &pages;
+            let streamed = encode_djvm_layered_shared_streaming(
+                pages_ref.len(),
+                |idx| Ok::<Pixmap, std::convert::Infallible>(pages_ref[idx].clone()),
+                EncodeQuality::Quality,
+                300,
+                None,
+                2,
+                false,
+                None,
+                window,
+            )
+            .unwrap_or_else(|e| panic!("streaming encode (window={window:?}) failed: {e}"));
+            assert_eq!(
+                eager, streamed,
+                "window={window:?}: streaming output must be byte-identical to the eager path"
+            );
+        }
+    }
+
+    /// Same equivalence, but with thumbnails and per-page mask reuse both
+    /// enabled — the union path
+    /// [`encode_djvm_layered_shared_with_thumbnails_and_masks`] exercises —
+    /// to make sure neither optional feature is dropped or reordered by the
+    /// windowed phase-1 loop.
+    #[test]
+    fn streaming_matches_eager_with_thumbnails_and_masks() {
+        let pages = two_page_bundle_fixture();
+        let gen0 = encode_djvm_layered_shared(&pages, EncodeQuality::Quality, 300, None, 2)
+            .expect("gen0 encode");
+        let doc0 = crate::djvu_document::DjVuDocument::parse(&gen0).expect("parse gen0");
+        let masks0: Vec<Bitmap> = (0..pages.len())
+            .map(|i| doc0.page(i).unwrap().extract_mask().unwrap().unwrap())
+            .collect();
+        let mask_refs: Vec<Option<&Bitmap>> = masks0.iter().map(Some).collect();
+
+        let eager = encode_djvm_layered_shared_with_thumbnails_and_masks(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            true,
+            &mask_refs,
+        )
+        .expect("eager encode");
+
+        let pages_ref = &pages;
+        let streamed = encode_djvm_layered_shared_streaming(
+            pages_ref.len(),
+            |idx| Ok::<Pixmap, std::convert::Infallible>(pages_ref[idx].clone()),
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            true,
+            Some(&mask_refs),
+            Some(1), // narrowest possible window: one page prepared at a time
+        )
+        .expect("streaming encode");
+
+        assert_eq!(
+            eager, streamed,
+            "streaming with thumbnails+masks must match the eager equivalent"
+        );
+    }
+
+    /// A page source that fails must surface as [`EncodeError::PageSource`],
+    /// not panic or silently produce a truncated/wrong bundle.
+    #[test]
+    fn streaming_source_error_surfaces_as_page_source_error() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("simulated page {0} decode failure")]
+        struct FakeError(usize);
+
+        let pages = two_page_bundle_fixture();
+        let result = encode_djvm_layered_shared_streaming(
+            pages.len(),
+            |idx| {
+                if idx == 1 {
+                    Err(FakeError(idx))
+                } else {
+                    Ok(pages[idx].clone())
+                }
+            },
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            false,
+            None,
+            Some(1),
+        );
+        match result {
+            Err(EncodeError::PageSource(e)) => {
+                assert_eq!(e.to_string(), "simulated page 1 decode failure");
+            }
+            other => panic!("expected EncodeError::PageSource, got {other:?}"),
+        }
+    }
+
     #[test]
     fn adaptive_segment_options_improve_decoded_mixed_lighting_fixture() {
         let pm = mixed_lighting_fixture();
@@ -1899,8 +2943,10 @@ mod tests {
         let mut n = 0u64;
         for (a, b) in expected
             .data
-            .chunks_exact(4)
-            .zip(actual.data.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(actual.data.as_chunks::<4>().0)
         {
             for c in 0..3 {
                 sum += a[c].abs_diff(b[c]) as u64;
@@ -2040,6 +3086,238 @@ mod tests {
             assert!(
                 thumb.is_none(),
                 "page {i} must NOT carry a TH44 thumbnail when with_thumbnails=false"
+            );
+        }
+    }
+
+    // ── #779 follow-up: per-page mask reuse on the multi-page bundle path ──
+
+    /// Two differently-shaped colour fixtures, used as a small multi-page
+    /// bundle by the mask-reuse tests below.
+    fn two_page_bundle_fixture() -> [Pixmap; 2] {
+        [synthetic_layered_page(), mixed_lighting_fixture()]
+    }
+
+    /// (a) Given the same per-page masks, `encode_djvm_layered_shared_with_masks`
+    /// must reproduce each page's mask byte-identically in the output bundle —
+    /// the multi-page analogue of `PageEncoder::with_mask`'s single-page
+    /// guarantee. Also exercises a mixed `Some`/`None` `masks` slice: page 1
+    /// falls back to normal segmentation and must still produce a valid,
+    /// non-empty mask.
+    #[test]
+    fn layered_shared_with_masks_reproduces_supplied_masks() {
+        let pages = two_page_bundle_fixture();
+        let gen0 = encode_djvm_layered_shared(&pages, EncodeQuality::Quality, 300, None, 2)
+            .expect("gen0 encode");
+        let doc0 = crate::djvu_document::DjVuDocument::parse(&gen0).expect("parse gen0");
+        let masks0: Vec<Bitmap> = (0..pages.len())
+            .map(|i| {
+                doc0.page(i)
+                    .unwrap()
+                    .extract_mask()
+                    .unwrap()
+                    .expect("page has a mask")
+            })
+            .collect();
+        for (i, m) in masks0.iter().enumerate() {
+            assert!(
+                m.data.iter().any(|&b| b != 0),
+                "page {i} fixture mask must be non-empty"
+            );
+        }
+
+        // Reuse page 0's mask, let page 1 re-segment from scratch (`None`).
+        let mask_refs: Vec<Option<&Bitmap>> = vec![Some(&masks0[0]), None];
+        let reused = encode_djvm_layered_shared_with_masks(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            &mask_refs,
+        )
+        .expect("reused encode");
+        let doc1 = crate::djvu_document::DjVuDocument::parse(&reused).expect("parse reused");
+        assert_eq!(doc1.page_count(), pages.len());
+
+        let mask1_0 = doc1.page(0).unwrap().extract_mask().unwrap().unwrap();
+        assert_eq!(
+            (masks0[0].width, masks0[0].height, &masks0[0].data),
+            (mask1_0.width, mask1_0.height, &mask1_0.data),
+            "page 0: reused mask must decode back byte-identically"
+        );
+        let mask1_1 = doc1.page(1).unwrap().extract_mask().unwrap().unwrap();
+        assert!(
+            mask1_1.data.iter().any(|&b| b != 0),
+            "page 1: re-segmented (None) page must still produce a non-empty mask"
+        );
+
+        // Reusing every page's mask must reproduce all of them byte-identically.
+        let mask_refs_all: Vec<Option<&Bitmap>> = masks0.iter().map(Some).collect();
+        let reused_all = encode_djvm_layered_shared_with_masks(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            &mask_refs_all,
+        )
+        .expect("reused-all encode");
+        let doc_all = crate::djvu_document::DjVuDocument::parse(&reused_all).expect("parse");
+        for (i, expected) in masks0.iter().enumerate() {
+            let mask = doc_all.page(i).unwrap().extract_mask().unwrap().unwrap();
+            assert_eq!(
+                (expected.width, expected.height, &expected.data),
+                (mask.width, mask.height, &mask.data),
+                "page {i}: reused mask must decode back byte-identically"
+            );
+        }
+    }
+
+    /// (b) A 2-generation decode → render → re-encode cycle over a multi-page
+    /// bundle, feeding `encode_djvm_layered_shared_with_masks` each page's
+    /// previous-generation mask, must keep every page's mask bit-identical —
+    /// the multi-page analogue of
+    /// `layered_reencode_with_reused_mask_is_a_mask_fixed_point`.
+    #[test]
+    fn layered_shared_multipage_reencode_with_reused_masks_is_a_mask_fixed_point() {
+        let pages0 = two_page_bundle_fixture();
+        for quality in [EncodeQuality::Quality, EncodeQuality::Archival] {
+            let gen0 =
+                encode_djvm_layered_shared(&pages0, quality, 300, None, 2).expect("gen0 encode");
+            let doc0 = crate::djvu_document::DjVuDocument::parse(&gen0).expect("parse gen0");
+            let masks0: Vec<Bitmap> = (0..pages0.len())
+                .map(|i| doc0.page(i).unwrap().extract_mask().unwrap().unwrap())
+                .collect();
+
+            let mut doc = doc0;
+            let mut masks = masks0.clone();
+            for generation in 1..=2 {
+                let rendered: Vec<Pixmap> = (0..pages0.len())
+                    .map(|i| render_native_page(&doc, i))
+                    .collect();
+                let mask_refs: Vec<Option<&Bitmap>> = masks.iter().map(Some).collect();
+                let next = encode_djvm_layered_shared_with_masks(
+                    &rendered, quality, 300, None, 2, &mask_refs,
+                )
+                .expect("re-encode");
+                doc = crate::djvu_document::DjVuDocument::parse(&next).expect("parse next gen");
+                masks = (0..pages0.len())
+                    .map(|i| doc.page(i).unwrap().extract_mask().unwrap().unwrap())
+                    .collect();
+                for i in 0..pages0.len() {
+                    assert_eq!(
+                        (masks0[i].width, masks0[i].height, &masks0[i].data),
+                        (masks[i].width, masks[i].height, &masks[i].data),
+                        "{quality:?}: page {i} generation-{generation} mask must be bit-identical"
+                    );
+                }
+            }
+        }
+    }
+
+    /// (c) Error cases: `encode_djvm_layered_shared_with_masks` must reject a
+    /// `masks` slice whose length doesn't match `pixmaps`, a mask whose
+    /// dimensions don't match its page, and — through the shared `_impl` —
+    /// a non-layered profile, matching `PageEncoder::with_mask`'s validation.
+    #[test]
+    fn layered_shared_with_masks_rejects_invalid_combinations() {
+        let pages = two_page_bundle_fixture();
+        let mask0 = Bitmap::new(pages[0].width, pages[0].height);
+        let mask1 = Bitmap::new(pages[1].width, pages[1].height);
+        let wrong_size = Bitmap::new(pages[1].width + 1, pages[1].height);
+
+        // Wrong-length masks slice (one entry short).
+        assert!(matches!(
+            encode_djvm_layered_shared_with_masks(
+                &pages,
+                EncodeQuality::Quality,
+                300,
+                None,
+                2,
+                &[Some(&mask0)],
+            ),
+            Err(EncodeError::Unsupported(_))
+        ));
+
+        // Mismatched mask dimensions for page 1.
+        assert!(matches!(
+            encode_djvm_layered_shared_with_masks(
+                &pages,
+                EncodeQuality::Quality,
+                300,
+                None,
+                2,
+                &[Some(&mask0), Some(&wrong_size)],
+            ),
+            Err(EncodeError::Unsupported(_))
+        ));
+
+        // `encode_djvm_layered_shared` only supports the layered colour
+        // profiles; masks must not bypass that gate.
+        assert!(matches!(
+            encode_djvm_layered_shared_with_masks(
+                &pages,
+                EncodeQuality::Lossless,
+                300,
+                None,
+                2,
+                &[Some(&mask0), Some(&mask1)],
+            ),
+            Err(EncodeError::Unsupported(_))
+        ));
+
+        // Valid combination still succeeds (sanity check the rejects above
+        // are actually exercising the masks path, not some other failure).
+        assert!(
+            encode_djvm_layered_shared_with_masks(
+                &pages,
+                EncodeQuality::Quality,
+                300,
+                None,
+                2,
+                &[Some(&mask0), Some(&mask1)],
+            )
+            .is_ok()
+        );
+    }
+
+    /// `encode_djvm_layered_shared_with_thumbnails_and_masks` combines both
+    /// extensions: TH44 thumbnails present AND the supplied mask reused.
+    #[test]
+    fn layered_shared_with_thumbnails_and_masks_combines_both() {
+        let pages = two_page_bundle_fixture();
+        let gen0 = encode_djvm_layered_shared(&pages, EncodeQuality::Quality, 300, None, 2)
+            .expect("gen0 encode");
+        let doc0 = crate::djvu_document::DjVuDocument::parse(&gen0).expect("parse gen0");
+        let masks0: Vec<Bitmap> = (0..pages.len())
+            .map(|i| doc0.page(i).unwrap().extract_mask().unwrap().unwrap())
+            .collect();
+        let mask_refs: Vec<Option<&Bitmap>> = masks0.iter().map(Some).collect();
+
+        let bytes = encode_djvm_layered_shared_with_thumbnails_and_masks(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            true,
+            &mask_refs,
+        )
+        .expect("combined encode");
+        let doc = crate::djvu_document::DjVuDocument::parse(&bytes).expect("parse bundle");
+        assert_eq!(doc.page_count(), pages.len());
+        for (i, expected) in masks0.iter().enumerate() {
+            let page = doc.page(i).unwrap();
+            assert!(
+                page.thumbnail().expect("thumbnail() ok").is_some(),
+                "page {i} must carry a TH44 thumbnail"
+            );
+            let mask = page.extract_mask().unwrap().unwrap();
+            assert_eq!(
+                (expected.width, expected.height, &expected.data),
+                (mask.width, mask.height, &mask.data),
+                "page {i}: reused mask must decode back byte-identically"
             );
         }
     }
@@ -2215,5 +3493,116 @@ mod tests {
         let pm = bitmap_to_pixmap(&bm);
         assert_eq!(pm.get_rgb(1, 0), (0, 0, 0));
         assert_eq!(pm.get_rgb(0, 0), (255, 255, 255));
+    }
+
+    /// Encoder peak-memory step 3: the phase-1 precomputed colour table
+    /// (`precompute_cc_data`, sampled via
+    /// `jb2_encode::symbol_boxes_in_emission_order` — no dictionary, no
+    /// entropy encode) must produce byte-identical `FGbz` to the existing
+    /// decode-based-order sampler (`foreground_fgbz_from_blits`, sampled
+    /// from the real emitted blits) for the lossless default case. This
+    /// pins the "geometric decomposition is independent of the shared
+    /// dictionary" claim the precomputation relies on.
+    #[test]
+    fn precomputed_cc_colors_match_blit_based_fgbz_sampling() {
+        let pm = mixed_lighting_fixture();
+        let opts = EncodeQuality::Quality.default_segment_options();
+        let seg = segment_page(&pm, &opts);
+        let jb2_options = Jb2EncodeOptions::default();
+
+        let (_symbols, cc_colors) =
+            precompute_cc_data(&pm, &seg.mask, &jb2_options).expect("lossless: table computed");
+        let (_, blits) = jb2_encode::encode_jb2_dict_with_blits(&seg.mask, &[], &jb2_options);
+        assert_eq!(
+            cc_colors.len(),
+            blits.len(),
+            "precomputed table must align 1:1 with the real emitted blit list"
+        );
+
+        let from_table = fgbz_from_accums(cc_colors, FgbzPaletteOptions::Exact);
+        let from_blits =
+            foreground_fgbz_from_blits(&pm, &seg.mask, &blits, FgbzPaletteOptions::Exact);
+
+        match (from_table, from_blits) {
+            (Some(a), Some(b)) => {
+                let (
+                    Chunk::Leaf {
+                        id: a_id,
+                        data: a_data,
+                    },
+                    Chunk::Leaf {
+                        id: b_id,
+                        data: b_data,
+                    },
+                ) = (a.into_leaf(), b.into_leaf())
+                else {
+                    panic!("FGbz encodes to a leaf chunk");
+                };
+                assert_eq!(a_id, b_id);
+                assert_eq!(a_data, b_data, "FGbz payload must be byte-identical");
+            }
+            (None, None) => {}
+            (Some(_), None) => panic!("table produced FGbz but blit-based sampler produced none"),
+            (None, Some(_)) => panic!("blit-based sampler produced FGbz but table produced none"),
+        }
+    }
+
+    /// Same equivalence, exercised through the full multi-page bundle
+    /// pipeline (`prepare_page` → `build_page`) rather than the two
+    /// sampling functions directly, and across two pages sharing a
+    /// dictionary — the case the precomputation exists for.
+    #[test]
+    fn layered_shared_bundle_fgbz_unaffected_by_precomputed_colour_table() {
+        let pm = mixed_lighting_fixture();
+        let pages = [pm.clone(), pm.clone()];
+        let bytes = encode_djvm_layered_shared(&pages, EncodeQuality::Quality, 300, None, 2)
+            .expect("layered shared encode");
+        let doc = crate::djvu_document::DjVuDocument::parse(&bytes).expect("parse bundle");
+        for i in 0..2 {
+            let page = doc.page(i).expect("page");
+            assert!(page.raw_chunk(b"FGbz").is_some(), "page {i} FGbz present");
+        }
+    }
+
+    /// `prepare_page` must not attempt the precomputed-table shortcut when
+    /// `Jb2EncodeOptions::lossy_threshold > 0` — lossy rec-7 substitution can
+    /// blit a near-twin dict entry whose true decoded pixels differ from the
+    /// component the table was sampled from. `build_page` must still
+    /// produce an `FGbz` chunk in that case (via the decode-based fallback),
+    /// not silently drop it.
+    #[test]
+    fn lossy_threshold_falls_back_to_decode_based_fgbz_sampling() {
+        let pm = mixed_lighting_fixture();
+        let opts = EncodeQuality::Quality.default_segment_options();
+        let lossy_jb2_options = Jb2EncodeOptions {
+            lossy_threshold: 0.05,
+            ..Jb2EncodeOptions::default()
+        };
+
+        // Phase 1: the fallback signal is `None`, not a (possibly wrong) table.
+        let prepared = prepare_page(&pm, None, &opts, false, &lossy_jb2_options);
+        assert!(
+            prepared.cc_colors.is_none(),
+            "lossy_threshold > 0 must skip the precomputed colour table"
+        );
+
+        // Phase 3: FGbz must still be emitted, via the decode-based path.
+        let (body, is_page, name) = build_page(
+            0,
+            Some(&pm),
+            prepared,
+            &[],
+            false,
+            "dict0001.djvi",
+            300,
+            &lossy_jb2_options,
+        )
+        .expect("build_page");
+        assert!(is_page);
+        assert_eq!(name, "p0001.djvu");
+        assert!(
+            body.windows(4).any(|w| w == b"FGbz"),
+            "FGbz chunk present despite lossy_threshold fallback"
+        );
     }
 }

@@ -269,6 +269,62 @@ Read this before doing either again.
   (e.g. `foo.rs` → `foo/bar.rs`) silently breaks any `include_bytes!("../asset.bin")`-style path
   in it; add the extra `../` the new depth requires. This fails at compile time with a missing-
   file error, but it's easy to miss in a large diff.
+- **Six more, all from the 2026-09-20 pass that split 42 files in one session** (the
+  instruments are in `scripts/refactor/`; each script's docstring is its manual):
+  1. **A crate root's children sit BESIDE it.** `src/bin/cli.rs` declaring `mod tests;` looks
+     for `src/bin/tests.rs`, which Cargo would auto-discover as a binary named `tests`. It
+     carries `#[path = "cli/tests.rs"]` instead.
+  2. **A child named like an extern crate shadows that crate for everything under it.**
+     `decode/thumb/exif.rs` made `exif::Reader` resolve to the module (through `use super::*`),
+     not to the `exif` crate. It is `exifthumb.rs`.
+  3. **A trait impl's methods take no visibility.** The "widen the inherent methods" pass above
+     must skip `impl Trait for Type` blocks, or every method is an `E0449`.
+  4. **When the hub names everything through re-exports, its `use child::*` is unused - and
+     deleting it takes the TESTS' access with it.** A `tests.rs` that reached a private helper
+     through the glob then needs `#[cfg(test)] use child::helper;` in the hub.
+  5. **`clippy::items_after_test_module`:** an inline `#[cfg(test)] mod probe { }` that moves
+     with a cluster must end up LAST in the new file.
+  6. **Macro invocations are not items.** A `thread_local!` between two functions stays behind
+     when the functions move, and any doc comment or `#[allow]` that sat above the NEXT item
+     ends up attached to it. Move it by hand, with the code that uses it.
+- **Four more from the second pass (2026-09-20, another 14 files):**
+  7. **A child named like a SIBLING module shadows it for the whole hub.** `about/update.rs`
+     made `update::UpdateCheck` resolve to the child (through `use update::*`), not to
+     `crate::update`; `fuzzseed/ole.rs` and `fuzzseed/apk.rs` did the same to
+     `container::{ole, apk}`. Same trap as the extern-crate one, one level closer. They are
+     `checker`, `oleseed`, `apkseed`.
+  8. **A `super::x` path in a moved item is now one level short.** `daemon/hotkeys.rs` read
+     `super::spacehook` and found `daemon`, not `screenshot`. A hub that itself does
+     `use super::*` HIDES this (navrail's children kept resolving `super::restyle` through the
+     glob), which is why it only bit in daemon. `extract_items.py` now deepens the path.
+  9. **A test that reads its module's SOURCE (`include_str!("mod.rs")`) follows the text, not
+     the symbol.** `settings_dlg/tests.rs` scans the IDOK arm of `on_command_dialog` for the
+     hotkey-conflict guard; moving that fn to `commands.rs` left the scan searching a file it
+     was no longer in. Grep for `include_str!` before moving a function out of a hub.
+  10. **Clippy's "unused import" for a re-export is TWO answers folded into one.** With
+     `--all-targets`, a `pub(super) use child::name` that only the tests reach is reported
+     unused by the non-test build and used by the test build, and the log shows one line.
+     `fix_unused_imports.py <clippy.log>` settles it: the first pass gives every flagged
+     statement `#[cfg(test)]`, a second clippy run flags the ones nobody uses at all, and the
+     second pass deletes those. `mark_test_files.py` also scans UNTRACKED files now - a split's
+     new files are exactly the ones that need the marker, and `git ls-files` did not see them.
+  11. **Clippy on the default feature set is not the release build.** `preview/loader/web.rs`
+     is `#[cfg(feature = "html-preview")]` through and through; the default build sees an empty
+     module, reports its imports unused, and the settler removes them - then the release build
+     (WITH the feature) fails on the missing names twenty minutes into the push preflight. A
+     child whose every item is gated is gated as a whole at the `mod` line, and the clippy gate
+     runs the app bin with `--features html-preview` too (`scripts/refactor/gate.py clippy`).
+  12. **A settler cannot tell "unused" from "unresolved downstream".** When a worker dropped
+     `refusal` from `topdf.rs`'s import list while its new helper still called it, the hub's
+     `pub(crate) use outcome::refusal` became "unused" in the same run and the settler deleted
+     it too. Read the real errors (`E0425`, `E0603`) before the unused-import lines; the gate
+     script prints them last for that reason.
+- **A test-only file says `#![cfg(test)]` itself.** A file declared as `#[cfg(test)] mod tests;`
+  carries no sign of being test code, so any per-file reader (a duplication or complexity
+  scanner, a reviewer opening it cold) counts it as production code; moving tests out of their
+  parents RAISED the duplication count until the files said so. `scripts/refactor/mark_test_files.py`
+  finds every such file, and every child of a whole-file test module, and adds the attribute.
+  A no-op for the compiler.
 - **The const-shadowing-a-glob trap:** a local `const` in the original file that happened to
   shadow a name from a `windows::*` (or other) glob import stops being unambiguous once that
   file is split and the const gets re-exported through the parent-hub `use child::*`. The name
@@ -564,6 +620,89 @@ A gate that covers most of a job is worse than no gate, because it is trusted. I
 step to `build-test` in `ci.yml`, add it to `scripts/preflight.ps1` in the same position, or
 change the comment to stop claiming a mirror it no longer is.
 
+**The same rule, learned much more expensively on 2026-09-20: a hand-typed mirror does not stay
+a mirror, so DERIVE it.** `preflight.ps1` and `scripts/refactor/gate.py` each held a literal
+list of eleven `consistency`-job script names, typed when the job had eleven steps. The job grew
+to twenty-two. Neither list did, and nobody noticed, because both gates still printed a
+confident "11/11 clean" - the drift is invisible from the inside, which is exactly what a
+hard-coded copy of someone else's list buys you. Among the eleven steps the local gates had
+never heard of was `check-registration-symmetry.ps1`, which had just gone stale against a
+refactor, so `main` carried four commits of red CI on a PUBLIC repo while every desk gate read
+green. `scripts/ci-consistency-steps.ps1` now parses the job out of `ci.yml` and both callers
+consume it; it refuses (exit 2) rather than report a list it could not parse, because a gate
+that reports zero steps as "clean" is the failure it exists to prevent.
+
+Two PowerShell traps that script paid for on its first run, both of which produce a WORKING
+script that does the wrong thing:
+
+- **`$parts[1..($parts.Count - 1)]` counts DOWN when `Count` is 1.** `1..0` is a descending
+  range, so a step with no arguments got `@($null, 'check-complexity.ps1')` - its own filename
+  handed back as a positional parameter. Guard the length: `if ($n -gt 1) { ... } else { @() }`.
+- **`$args` is an automatic variable.** Assigning to it and then splatting `@args` does not do
+  what you wrote. Name it anything else.
+
+And one that the session's own review caught before it could rot: the derived runner must invoke
+each step with **`pwsh -Command "& '<script>'; if (Test-Path variable:\LASTEXITCODE) { exit
+$LASTEXITCODE }"`, never `pwsh -File`**. GitHub's `shell: pwsh` appends `exit $LASTEXITCODE`, so a
+script that ENDS on a failed native command without calling `exit` fails on CI while `-File`
+reports the script's own clean exit. The hand-typed loop that was being replaced had this right;
+the replacement lost it, which would have been a gate claiming a fidelity it did not have - the
+exact defect this whole change exists to remove, reintroduced one layer down.
+
+## A CONCURRENT SESSION CAN REWRITE `Cargo.lock` UNDER A RELEASE, AND IT LOOKS LIKE YOUR CODE (2026-09-20)
+
+3.2.0's first release run built x64 clean through `[4/4] done` and then died on the ARM64 leg with
+**153 compile errors**, every one of them in COM code nobody had touched: `the trait bound
+IExplorerCommand: windows_core::Interface is not satisfied`, `no associated function named
+matches found for type _`, and helpfully suggesting `use crypto_common::KeyInit`. It reads exactly
+like a broken refactor of `#[implement]`.
+
+It was not. The first error carried the whole diagnosis in one line: *"there are multiple different
+versions of crate `windows_core` in the dependency graph"* - **0.100.0 and 0.62.2**. This repo pins
+`windows` / `windows-core` at 0.62 and `windows-implement` at 0.60 precisely because the
+`#[implement]` macro expands to `windows_core::` paths, so two `windows_core` in one graph makes
+every generated impl target the wrong trait. The 0.100 family is not in the committed `Cargo.lock`
+and the build ran `--locked`, so it could only have come from a lock that was rewritten **between
+the x64 and ARM64 legs of the same run**, by something outside it. `git status` after the failure
+showed exactly one modified file: `Cargo.lock`.
+
+**Diagnosis in one minute, not one hour:**
+
+1. `grep -n '^error' <log> | head -1` and read THAT error, not the 153 downstream ones. "Multiple
+   different versions of crate X" is a resolution fault, never a code fault.
+2. `git status --porcelain` - a modified `Cargo.lock` after a `--locked` build is the answer.
+3. `git checkout -- Cargo.lock`, then re-run the leg alone:
+   `cargo check --release --locked --target aarch64-pc-windows-msvc -p sagethumbs2k --features
+   webp-lossy,html-preview,hdr-capture,flash-video,vp9-video,mpeg-video` (~60 s warm). Clean means
+   the tree was always fine.
+
+These trees are shared with other agent sessions (CLAUDE.md 6.1.1). Before believing any local red,
+ask whether someone else is editing this repo - and before a release, prefer a moment when nothing
+else is. The same class already cost a run at the provenance gate on 2026-09-15.
+
+## The gate runs on the one machine that HAS the corpus, so it cannot see a test that needs it
+
+`..\test-corpus` is a sibling of the repo, never in git, so a CI checkout has none. On
+2026-09-19 four tests read `real.ai` with an `unwrap()`, passed the pre-push gate, and painted
+three CI runs red in a row - a class the mirror above is structurally blind to, because every
+step it mirrors runs on the machine that has the files.
+
+Two things closed it, and both are load-bearing. **The path is spelled in ONE place,
+`crates/base/src/testcorpus.rs`** (`dir()`, `read()`, `path()`, `real_dir()`); a test in that module scans
+`src/` and `tests/` for any other spelling and fails on it. **The gate makes the corpus
+vanish:** `ST2K_CORPUS_ABSENT=1` makes every accessor answer a path that does not exist, and
+`ST2K_CORPUS_TOUCH_LOG` records the calling test's name (libtest names the thread after the
+test), so `preflight.ps1` runs the suite once with the log on and then re-runs exactly the
+recorded tests with the corpus absent - the CI shape, proven before the push in seconds. The
+step refuses to pass when fewer tests ran than were recorded (a garbled log would otherwise
+read as green). A test that reads a sample says `let Some(bytes) = testcorpus::read("x") else
+{ return };` and prints NOT MEASURED when it skips; it never unwraps the read.
+
+The same day's second gate of this kind: `installer.iss` is now COMPILED by ISCC in gate mode
+(`/DGateCompile=1`, stored not compressed, output discarded) against the last staged payload,
+one second, because the static lints read the script and only the compiler compiles it - a
+Pascal type mismatch in the `[Code]` section had passed every local gate that morning.
+
 ## Explorer's own settings lie to the registry, and the performance profile lies twice
 
 Two traps that cost hours on a real machine (2026-08-05), both of which make a registry read
@@ -757,6 +896,34 @@ gate into a lie, which is strictly worse than the honest gap the manifest alread
 One real trap while generating samples: `magick in.png out.sf3` silently writes a PNG into a
 file named `.sf3`. Only `magick in.png SF3:out.sf3` invokes the SF3 writer. Always run
 `magick identify` on a generated fixture and check it reports the format you asked for.
+
+### A generated sample proves the reader survives its own writer, and nothing else (2026-09-17)
+
+Measured by rendering the whole corpus and checking corners: 150 of its 396 samples were the
+one synthetic base picture written out by ImageMagick, another ~60 were byte-copies of a
+neighbour under a second extension, and 24 extensions had no file at all. Every one of those
+gates was green. The first time real files were fed in - one per extension from upstream test
+suites (Pillow, TwelveMonkeys, metadata-extractor-images, Tika, POI, OpenImageIO, FFmpeg's FATE
+suite, lofty-rs, sembiance's legacy-format archive) - three registered formats turned out never
+to have rendered a file from the real program: Scitex `.sct` (ImageMagick's magic table has the
+`CT` tag at offset 0, real files carry it at offset 80), Seattle FilmWorks `.sfw` (the coder
+cannot create its temp file on Windows) and Alias `.pix` (the coder returns nothing for real
+Alias files). None of them could have been found by any amount of running the green gates.
+
+So the corpus now carries `real.<ext>` beside `sample.<ext>`: a file some OTHER program wrote,
+pinned by URL and SHA-256 in `scripts/corpus-real.json`, fetched and verified by
+`scripts/fetch-real-samples.py`, and required by `regression.ps1` (`--check --rendered`: present,
+unchanged, and at least one per extension rendered this run). `check-consistency.ps1` §8 makes
+it a CI failure to register an extension with neither a pinned real sample nor a written waiver
+that says what was searched. Aliases are allowed only between spellings of ONE format
+(`.blend1` is a `.blend`; `.jfif` is a `.jpg`) and say so in the manifest; a copy of a `.dng`
+under `.pxn` is exactly the renamed stand-in the paragraph above forbids.
+
+Two things about finding such files, so nobody re-learns them: index the recursive git trees of
+the upstream suites (one API call per repo, 70k files) and try candidates per extension until
+st2k renders one - it is mechanical, and it took one evening for 186 formats; and GitHub code
+search by extension is useless for binary formats, because it indexes text files only (every
+`.cbz` hit was an HTML page named like a comic).
 
 ## Verifying a decode through the CLI does not verify it through Explorer
 
@@ -1006,6 +1173,26 @@ portable scanner, and two of its habits decide whether a split counts:
    function usually produces a coordinator (a marker-dispatch loop, a per-line `handle_line`)
    whose own complexity lands in the 20s-40s with zero nesting. Measure it; land every new
    helper comfortably under the line, not merely smaller than before.
+3. **A `?` inside a loop carries the nesting penalty** (2026-09-20). Cognitive complexity adds
+   the nesting depth to every branch, and a `?` is a branch, so seven `?`s in a per-pixel body
+   two loops deep scored 28 on a function that reads as nothing (`encode_ppm_streaming`), and
+   `write_pdf`'s per-page block did the same. Move the loop body into a function at nesting
+   zero (`write_ppm_pixel`, `write_page`): the `?`s cost 1 each there and the loop costs 2. The
+   same shape hides in `for` loops over records (`dwg::extract` -> `preview_records`) and in
+   closures assigned inside a function (`tiff_ifd0_is_reduced`'s `num`, now the free
+   `tiff_num`). When a small function scores 25+, look for the `?`s under a loop before
+   anything else. What does NOT move: a dispatcher's cyclomatic score is its arm count
+   (`run_action` at 26 is 26 verbs), a flat twelve-field mapper with twelve `?`s
+   (`History::from_json`) is what the metric misreads rather than a problem, and a test that
+   spells out its expectation as an if-chain is deliberately a second encoding. Leave those.
+4. **A bool that stands in for a `break` has a sense, and the caller must read it the way the
+   loop did** (2026-09-20). Lifting a loop body into a helper turns `break` into `return false`
+   (or `true`), and the one caller in the fifth session's 160-file swarm that got the sense
+   backwards (`waveform::scan_aiff_chunk` reports `false` to stop; the loop broke on `true`)
+   compiled, passed clippy on both feature sets, and failed exactly one test - the fuzz-surface
+   check that every synthetic seed reaches its parser, which is why that test exists. Before
+   trusting a split, trace one iteration that used to break and one that used to continue
+   through the new call; the review-swarm prompt in CLAUDE.md 2.3 asks for that trace by name.
 
 **Win32 wndproc dispatchers are their own project.** They are large, stateful, side-effect-
 heavy message loops; the mechanical method (one `on_<message>` helper per non-trivial arm,
@@ -1013,6 +1200,21 @@ the match reduced to dispatch) is safe, but nothing in build, tests or clippy dr
 window messages through the OS loop, so a split wndproc is proven only by a human
 click-through of the window it serves. Do it in a dedicated session, never as a casual
 extract-and-move pass, and add the click-through to the release checklist.
+
+**The warn band is ratcheted now (2026-09-20), and it had to be.** The gate fails at 30 and
+PRINTS everything in 15..29, which for months gated on nothing - `scripts/complexity-scan.py`'s
+own header records the backlog regrowing from 0 to 19 in a week with every visible gate green,
+and by that evening the band was 538. `scripts/complexity-warn-ceiling.json` holds the highest
+band size each engine may report, `check-complexity.ps1` fails when the count grows, and the CI
+job already runs that script, so the band can only fall. Two things follow. **Splitting a
+function can make the band WORSE** (one finding at 29 becomes two at 16), so measure after, not
+before: `pwsh scripts\check-complexity.ps1` prints the count. And when the count drops, lower
+the ceiling in the same change - `pwsh scripts\check-complexity.ps1 -WriteWarnCeiling` - because
+a ceiling left high is a gate that quietly stops meaning anything. The ceiling is keyed by
+ENGINE (odin's probe.py versus the vendored scanner) since the two need not agree on a score;
+an engine with no ceiling is reported as unratcheted rather than silently passed, and an
+unreadable ceiling file is "cannot measure" (exit 3), never a pass. All four outcomes are in
+`-ProveItFails`.
 
 ## `git apply` run inside a vendored subdirectory silently skips a git-style patch
 
@@ -1049,3 +1251,99 @@ The fix lives in the vendor PATCH (`crates/vendor/djvu-patches/djvu-rs.patch`): 
 vendored crate to `crate-type = ["rlib"]`. We only ever link the rlib; the cdylib was 650 KB
 of wasted link per build even when it did not collide. When vendoring any crate, read its
 `[lib]` first and trim `cdylib`/`dylib` in the patch; do not wait for the collision.
+
+## The developer box is a DIFFERENT PROGRAM from the shipped one, twice over (2026-09-17)
+
+Two dependencies are resolved at RUNTIME by looking beside the binary and then falling back to
+whatever the machine happens to have installed. On this box both fallbacks succeed, so a whole
+class of fault renders perfectly here and shows the stock icon on every install. It cost one
+release run per fault before either was noticed, and then a third to prove the fixes.
+
+**ImageMagick.** `decode/magick.rs::magick_exe()` prefers a bundle beside the running binary and
+falls back to any `C:\Program Files\ImageMagick*`. The shipped bundle deliberately omits the
+rsvg/cairo/pango stack (docs/MAGICK.md, "Reviewed omissions": resvg replaces it). So a file that
+should be served by one of our own tiers can silently start falling through to ImageMagick, and
+a format whose magick coder needs an absent delegate can be advertised for years without ever
+drawing anything. Both happened: an SVG whose root element sits behind a licence comment (the
+1 KB sniff window missed `<svg` at byte 3460) and `.pes`, whose coder renders stitches through
+RSVG and therefore never produced a thumbnail in any released build.
+
+**Media Foundation.** MPEG-2 in a program or transport stream is decoded by MF only when the
+Store "MPEG-2 Video Extension" is installed. It is installed here, so MF answers for those files
+long before our own tier is reached, and a test that merely asserts "a thumbnail appeared" passes
+while proving nothing about the decoder it was written for.
+
+**Both have an escape hatch, and a test that measures one of these tiers MUST use it:**
+
+* `ST2K_NO_MAGICK=1` - behave like a machine with no ImageMagick at all.
+* `ST2K_NO_MF=1` - behave like a machine with no Media Foundation at all.
+
+Both are read on every call rather than cached, so a test can flip them mid-process, and both are
+honoured by `st2k.exe` itself: `ST2K_NO_MF=1 st2k thumbnail <file> out.png` answers "would a user
+without the codec pack see this" in one command.
+
+**The three gates that encode this, fastest first:**
+
+```powershell
+pwsh scripts\check-staged-sample.ps1 real.svg   # seconds: named files through the SHIPPED payload
+pwsh scripts\check-magick-reliance.ps1          # ~10 s: whole corpus, ImageMagick switched off
+pwsh scripts\test-staged-regression.ps1         # ~3 min: the full sweep through the shipped payload
+```
+
+`check-magick-reliance.ps1` runs inside `preflight.ps1`, directly behind the release EXE it
+tests, and diffs the survivors against `scripts/magick-free-baseline.txt`; a file that used to
+stand on our own decoders and now needs ImageMagick has silently changed tier. `check-staged-sample.ps1`
+flattens the staged bundle the way the installer lays it out, because the stage keeps magick in a
+SUBDIRECTORY that `magick_exe()` cannot see - run in place, it would fall back to Program Files
+and mask the very thing being measured.
+
+**The rule that generalises past these two:** when the product ships its own copy of a dependency
+and the developer box has a fatter one installed, "it works here" is not evidence. Test against
+the payload, not the machine, and give every such lookup a switch that turns the fallback off.
+
+
+## The library is four crates and the app three more, and a path names the crate that OWNS the item (2026-09-23)
+
+The library was one crate of ~100k lines, so any edit re-analysed all of it and rebuilt one test
+binary holding every module's tests. It is now `crates/base` (`st2k_base`), `crates/codecs`
+(`st2k_codecs`), `crates/actions` (`st2k_actions`) and the core crate (`sagethumbs2k_core`: the COM
+surfaces, the CLI/MCP, `lib.rs`), each naming only the ones below it. The app binary's parts
+are crates too: `crates/appkit` (`st2k_appkit`: `win`, `dark`, `http`, the licence and the
+updater), `crates/preview` (`st2k_preview`: Quick preview) and `crates/screenshot`
+(`st2k_screenshot`: the capture tool, the eyedropper, the OCR window, uploads, hotkeys), under the
+binary (`src/bin/app`: Settings, the dialogs, `main`). None of them may depend on the core
+package, which holds the binaries (that would be a cycle); `crate_layers.py . --app` checks
+what is still in `src/bin/app`. What to know when you touch it:
+
+- **Name the owner, never a re-export.** `st2k_base::settings::PdfPage`, not a copy re-exported
+  through the core. The split deleted every such shim; adding one back makes two paths to one item
+  and a rename that only updates one of them.
+- **A crate's `#[cfg(test)]` items do not exist for any other crate** (the rule the section above
+  found for the app binary, now true between the layers too). A test fixture or seam an upper
+  crate's tests need sits behind that crate's **`testkit`** feature
+  (`#[cfg(any(test, feature = "testkit"))]`), which only the upper crates' `[dev-dependencies]`
+  turn on. Keep that surface small: every testkit item is compiled into every test build of the
+  workspace, and outside `cfg(test)` clippy's `unwrap_used` applies, so a testkit fixture carries
+  its own `#[allow]` with a reason.
+- **An upward reference is now a build error, not a style problem**: a dependency cycle between
+  crates is impossible to write. For the modules still in the core crate,
+  `python scripts/refactor/crate_layers.py .` checks the same rule.
+- **A test that reads the running EXE's own resources** (the version stamp) only passes in the
+  binary's test build, the one the build script links the resources into; it lives in
+  `src/bin/app/tests.rs`, not in the crate that owns the reader.
+- **Test the whole workspace, not the core package.** `cargo test -p sagethumbs2k` runs only the
+  core's tests now; a bare `cargo test` at the root runs every default member, and every layer is
+  one. A job that must name packages names all four (see `release-profile-tests.yml`).
+- **A relative `include_bytes!` / `include_str!` is relative to the FILE**, so moving a file into
+  `crates/<layer>/src` moves every asset path two levels further away, and
+  `env!("CARGO_MANIFEST_DIR")` now names the layer's folder, not the repo. Tests that read repo
+  files go through `st2k_base::testcorpus::workspace()` / `library_sources()`, or spell the repo
+  root as `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")`.
+- **A `#[macro_export]` macro whose only reason was "these two private modules cannot name each
+  other's fn" is a plain `pub fn` now** (`magick_png_bytes`, `push_cf_dib_header`,
+  `top_down_bmi`): a crate boundary is exactly what a `pub fn` crosses.
+
+The instruments are banked in `scripts/refactor/`: `lift_layer.py` (moves a layer, repoints every
+path, fixes include paths), `widen_pub.py` (makes `pub` exactly what the compiler says the layers
+above use), `private_mods.py` (keeps private every module nothing outside names) and
+`repath_layer.py` (the scripts, workflows and docs that spell the old `src/...` paths).

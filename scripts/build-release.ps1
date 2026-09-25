@@ -12,6 +12,7 @@
           pwsh scripts\build-release.ps1 -NoImageMagick          # x64, engine payload SKIPPED (CI only)
           pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 (same full payload as x64)
           pwsh scripts\build-release.ps1 -Portable               # x64 portable zip
+          pwsh scripts\build-release.ps1 -RequireSigned          # refuse to build unless signing is configured
   Output: dist\SageThumbs2K-Setup-<ver>[-arm64].exe
           dist\SageThumbs2K-Portable-<ver>[-arm64].zip   (with -Portable)
 #>
@@ -29,11 +30,21 @@ param(
     # storage from HKCU to that file. Deliberately does NOT ship the shell extension: a
     # thumbnail/context-menu handler only loads if its COM class is registered, so there is
     # no such thing as a portable one. See PORTABLE.txt (written below) for the full scope.
-    [switch]$Portable
+    [switch]$Portable,
+    # Signing was ASKED for: refuse up front, before any build minute is spent, when no signer
+    # is configured (sign-release.ps1 -Configured), instead of the default one-line "unsigned"
+    # notice. ST2K_SIGN_REQUIRED=1 means the same, for callers that set environment only.
+    [switch]$RequireSigned
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+if ($RequireSigned -or $env:ST2K_SIGN_REQUIRED -eq '1') {
+    & "$PSScriptRoot\packaging\sign-release.ps1" -Configured
+    if ($LASTEXITCODE) {
+        throw 'signing was required (-RequireSigned / ST2K_SIGN_REQUIRED=1) but no signer is configured: set ST2K_SIGN_MCP, or ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure credential (docs/RELEASE-SECURITY.md)'
+    }
+}
 $targetRoot = & "$PSScriptRoot\_targetdir.ps1"
 $targetTriple = if ($Architecture -eq 'arm64') {
     'aarch64-pc-windows-msvc'
@@ -59,7 +70,7 @@ $stageRelative = "stage\$Architecture"
 $outputSuffix = if ($Architecture -eq 'arm64') { '-arm64' } else { '' }
 # ARM64 used to be forced engine-less here because there was no approved ImageMagick payload
 # for it. There is now: scripts\packaging\imagemagick-source-arm64.json pins the SAME upstream
-# 7.1.2-29 release as x64, so both architectures build Full unless -NoImageMagick is passed.
+# 7.1.2-31 release as x64, so both architectures build Full unless -NoImageMagick is passed.
 
 function Import-Arm64BuildEnvironment {
     $vcvarsCandidates = @()
@@ -195,6 +206,24 @@ if (-not $SkipBuild) {
     # the whole workspace at once (cargo rejects `--features` across >1 package).
     # `html-preview` links webview2-com into the EXEs only (the slim DLL build never requests it,
     # so the shell-extension cdylib stays free of it — verify with `cargo tree -p sagethumbs2k-dll`).
+    # ⚠ THE LOCKFILE MUST BE THE COMMITTED ONE, AND SOMEBODY ELSE MAY HAVE MOVED IT (2026-09-20).
+    # These trees are shared with other agent sessions. 3.2.0's first release run built x64 clean
+    # and then died on the ARM64 leg with 153 compile errors in COM code nobody had touched,
+    # because `Cargo.lock` was rewritten BETWEEN the two legs and pulled a second `windows-core`
+    # (0.100 beside the pinned 0.62) into the graph - which makes every `#[implement]` expansion
+    # target the wrong trait. `--locked` does not catch that: a rewritten lock is still a VALID
+    # lock. So compare against `git`'s copy and say what happened, rather than spending an hour
+    # reading 153 downstream errors (DEVELOPMENT_GOTCHAS, "A concurrent session can rewrite
+    # Cargo.lock under a release").
+    Push-Location $root
+    try {
+        $lockDrift = @(& git status --porcelain -- Cargo.lock 2>&1) | Where-Object { $_ }
+        if ($lockDrift) {
+            throw "Cargo.lock is modified in the working tree ($($lockDrift -join '; ')). A release must build the COMMITTED lock: another session almost certainly rewrote it. Run ``git checkout -- Cargo.lock`` and start again."
+        }
+    }
+    finally { Pop-Location }
+
     Write-Host "[1/4] cargo build $($exeBuildArgs -join ' ')  (rlib + EXEs)" -ForegroundColor Green
     Push-Location $root
     try { cargo build @exeBuildArgs; if ($LASTEXITCODE) { throw "cargo build failed" } } finally { Pop-Location }
@@ -226,7 +255,7 @@ if (-not $SkipBuild) {
     try {
         $dllTree = @(& cargo tree -p sagethumbs2k-dll --locked 2>&1)
         if ($LASTEXITCODE) { throw "cargo tree -p sagethumbs2k-dll failed (exit $LASTEXITCODE)" }
-        foreach ($forbidden in 'vp9dec', 'nihav', 'h263') {
+        foreach ($forbidden in 'vp9dec', 'nihav', 'h263', 'oxideav') {
             if ($dllTree -match $forbidden) {
                 throw "Containment violation: '$forbidden' is linked into sagethumbs2k-dll (run ``cargo tree -p sagethumbs2k-dll`` to see the path)"
             }
@@ -257,16 +286,30 @@ New-Item -ItemType Directory $stage -Force | Out-Null
 # The portable zip carries the same slim DLL: `st2k register` points HKCU at it, which is how
 # a no-install copy gets Explorer thumbnails at all. Under -SkipBuild this is whatever the
 # preceding installer pass built for this architecture, which is exactly what we want.
-Copy-Item "$targetRel\sagethumbs2k.dll" $stage
+# Under -SkipBuild the PORTABLE payload is taken from the installer stage that release.ps1 has
+# just re-hashed and validated, never from the mutable cargo output directory: a same-version
+# default-feature build run in between (a `git push` does exactly that) would otherwise put
+# unverified EXEs without html-preview/hdr-capture/webp-lossy into the zip while the signed
+# installer still passed its hashes (2026-09-19 audit F12). A fresh build copies its own output.
+$binSrc = $targetRel
+if ($SkipBuild -and $Portable) {
+    $installerStage = Join-Path $root "scripts\packaging\stage\$Architecture"
+    if (-not (Test-Path (Join-Path $installerStage 'SageThumbs2K.exe'))) {
+        throw "-SkipBuild -Portable needs the validated installer stage at $installerStage (run the installer build for this architecture first)"
+    }
+    $binSrc = $installerStage
+    Write-Host "  portable payload: taken from the validated installer stage ($installerStage)" -ForegroundColor DarkGray
+}
+Copy-Item "$binSrc\sagethumbs2k.dll" $stage
 # The cargo bin target is `SageThumbs2K`, so it builds as `SageThumbs2K.exe` directly
 # (build.rs redirects its PDB to avoid the case-collision with the DLL — see Cargo.toml).
-Copy-Item "$targetRel\SageThumbs2K.exe" $stage
-Copy-Item "$targetRel\st2k.exe" $stage  # the command-line / AI-agent tool
+Copy-Item "$binSrc\SageThumbs2K.exe" $stage
+Copy-Item "$binSrc\st2k.exe" $stage  # the command-line / AI-agent tool
 # The Open/Save-dialog selection reader. A SEPARATE tiny cdylib because it is loaded into
 # other applications by a WH_CALLWNDPROC hook (see dlghook/Cargo.toml) - the app looks for it
 # beside its own exe and simply has no dialog support when it is absent, so shipping it is
 # what turns the feature on.
-Copy-Item "$targetRel\st2k_dlghook.dll" $stage
+Copy-Item "$binSrc\st2k_dlghook.dll" $stage
 # Sign the shipped PE files IN THE STAGE, before the installer, the portable zip and the
 # MSIX pick them up, so every artifact carries the same signed bytes (issue #30; the owner
 # reopened code signing on 2026-09-01, docs/RELEASE-SECURITY.md). Until the Azure Artifact
@@ -309,9 +352,9 @@ if ($bundleMagick) {
     # Release input is PINNED. Never package whichever ImageMagick directory happens to
     # sort first: patch releases change imports/exports and can make a previously safe trim
     # silently incomplete. check-magick-source verifies the reported identity plus a
-    # deterministic inventory hash of all 195 files eligible to enter this bundle.
-    # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-29 release and the
-    # same 195-file set, so only the bundle bytes differ; the inventory algorithm is shared.
+    # deterministic inventory hash of every file eligible to enter this bundle.
+    # One pin PER ARCHITECTURE. Both describe the same upstream 7.1.2-31 release and the
+    # same file set, so only the bundle bytes differ; the inventory algorithm is shared.
     $magickPinPath = if ($Architecture -eq 'arm64') {
         Join-Path $root 'scripts\packaging\imagemagick-source-arm64.json'
     } else {
@@ -487,8 +530,12 @@ if ($bundleMagick) {
 
     # EXR/HDR/Farbfeld input + output are native Rust tiers now. PAM itself is
     # native too, but PFM shares ImageMagick's PNM module, so that module must stay.
+    # ase (Aseprite, which our own decoder renders), c2pa (provenance metadata, not a picture) and
+    # wbinfo (Amiga icons, no registered extension) arrived with 7.1.2-30/31. Kept, each would only
+    # be new, unreviewed parser surface reachable by magic bytes from a file we hand magick.
     $dropCoder = @(
-        'exr','hdr','farbfeld','webp','svg','msvg','video','mpeg','url','clipboard','pango'
+        'exr','hdr','farbfeld','webp','svg','msvg','video','mpeg','url','clipboard','pango',
+        'ase','c2pa','wbinfo'
     ) + @($policyOnlyCoderModules.Keys)
     foreach ($c in $dropCoder) { [System.IO.File]::Delete("$stage\magick\modules\coders\IM_MOD_RL_$($c)_.dll") }
 
@@ -500,13 +547,12 @@ if ($bundleMagick) {
     # so an IM upgrade adapts automatically after the source pin + regression corpus are
     # deliberately updated. We compare the generated stub's export inventory to upstream
     # before accepting it. See docs/MAGICK.md.
-    # STUBS ARE x86-ONLY. gendef/gcc/dlltool come from MinGW, which emits x86_64 PEs no
+    # MINGW STUBS ARE x86-ONLY. gendef/gcc/dlltool come from MinGW, which emits x86_64 PEs no
     # matter what we are targeting: the first ARM64 Full build replaced GENUINE ARM64
-    # freetype/glib/raqm with x64 stubs, which an ARM64 process cannot load at all. Until
-    # someone builds these stubs with the ARM64 toolchain, ARM64 ships the real upstream
-    # text-stack DLLs. That costs a few MB and is strictly correct; a broken bundle is not
-    # a trade worth making for size. The staged-architecture assertion below is what caught
-    # this, and it stays regardless.
+    # freetype/glib/raqm with x64 stubs, which an ARM64 process cannot load at all. That is
+    # why ARM64 builds its stubs with the MSVC ARM64 toolchain (cl/link) instead; a broken
+    # bundle is not a trade worth making for size. The staged-architecture assertion below
+    # is what caught the x64-stub mistake, and it stays regardless.
     # Export extraction (gendef) is architecture-independent; only the compile/link half
     # is toolchain-specific, so ARM64 stubs with MSVC and x64 keeps gcc/windres.
     $stubWork = Join-Path $stage 'magick\_stubwork'
@@ -653,8 +699,9 @@ if ($bundleMagick) {
         'CORE_RL_harfbuzz_.dll'
     )
     # This candidate list is only unreferenced BECAUSE stubbing removed the code that
-    # imported it. ARM64 does not stub (MinGW stubs are x86-only), so those DLLs are
-    # genuinely still referenced there and the helper correctly refuses to delete them.
+    # imported it. The helper deletes a candidate only if nothing in the bundle still imports
+    # it, on either architecture (ARM64 stubs with MSVC, x64 with MinGW), so a DLL a stub
+    # still references stays.
     # Run the prune (this precondition it was written for always holds: this whole stage
     # only ever runs where stubbing already ran, above).
     & "$PSScriptRoot\prune-magick-unreferenced.ps1" -BundlePath "$stage\magick" -ObjdumpPath $peInspector -Candidate $unreferencedRuntime
@@ -707,9 +754,13 @@ if ($Architecture -cne $hostArchNow) { $bundleCheckArgs['SkipSmoke'] = $true }
     # The staged regression RUNS the staged st2k.exe over the corpus, so it can only
     # execute when the staged binaries match the host. Cross-building ARM64 on an x64
     # host would report every format "broken" purely because the process cannot
-    # start. Skipping it here does not drop the gate: the arm64 CI job runs on native
-    # ARM hardware and exercises the same binaries there. Never let this skip apply to
-    # a same-architecture build, which is the case that catches real staging breakage.
+    # start. Never let this skip apply to a same-architecture build, which is the case
+    # that catches real staging breakage.
+    # ⚠ This used to claim "the arm64 CI job runs on native ARM hardware and exercises the same
+    # binaries there", which is NOT true and was corrected 2026-09-17: the arm64-native job
+    # builds and tests, but the corpus is a gitignored sibling directory it never checks out,
+    # so every corpus-gated test skips there. What DOES cover the decoders on ARM64 is the
+    # committed fixtures (tests/fixtures/video, tests/fixtures/jxl), which is why they exist.
     if ($Architecture -cne $hostArchNow) {
         Write-Host "      staged corpus regression DEFERRED: $Architecture payload on an $hostArchNow host (runs natively in the arm64 CI job)" -ForegroundColor Yellow
     } else {
@@ -753,20 +804,20 @@ if ($Portable) {
     }
 
     # The marker IS the config file. Its presence next to the EXE is the entire portable
-    # switch (src/settings.rs `store`), so an empty one means "factory defaults, stored here".
+    # switch (crates/base/src/settings.rs `store`), so an empty one means "factory defaults, stored here".
     #
     # That also makes the filename load-bearing across two languages, and getting it wrong
     # fails SILENTLY: the app finds no marker, quietly uses HKCU, and the zip looks fine while
     # doing the one thing it promised not to. So take the name from the Rust const rather than
     # trusting a literal here to stay in sync with it.
     $iniConst = [regex]::Match(
-        # The hub plus its children (src/settings/*.rs; INI_NAME lives in store.rs since the
+        # The hub plus its children (crates/base/src/settings/*.rs; INI_NAME lives in store.rs since the
         # 2026-09-08 split, and this read went red the day it moved).
-        ((@(Get-Content "$root\src\settings.rs" -Raw) + @(Get-ChildItem "$root\src\settings" -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })) -join "`n"),
+        ((@(Get-Content "$root\crates\base\src\settings.rs" -Raw) + @(Get-ChildItem "$root\crates\base\src\settings" -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })) -join "`n"),
         '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"'
     )
     if (-not $iniConst.Success) {
-        throw "couldn't read INI_NAME out of src\settings.rs - the portable marker name is " +
+        throw "couldn't read INI_NAME out of crates\base\src\settings.rs - the portable marker name is " +
               "defined there and must not be duplicated as a literal in this script"
     }
     $iniName = $iniConst.Groups[1].Value
@@ -838,7 +889,8 @@ if ($Portable) {
     # all (the emulation goes the other way), so cross-building the ARM64 zip would fail this
     # check for a reason that says nothing about the payload. Skipping is the honest outcome,
     # but say so loudly: an unsmoked zip is exactly the one to hand to an ARM64 machine first.
-    # OS architecture, not this PROCESS's bitness (matches the check at line ~394 and
+    # OS architecture, not this PROCESS's bitness (matches `$hostArchNow` in the ImageMagick
+    # prune and `$hostArchFmt` before ISCC, and
     # install.ps1's Assert-NativeArm64Host): an x64 PowerShell process running natively on
     # genuine ARM64 Windows reports 'AMD64' via $env:PROCESSOR_ARCHITECTURE and would wrongly
     # skip a smoke test that host can actually run.
@@ -904,47 +956,42 @@ if ($LASTEXITCODE) { throw "installer.iss [Code] lint failed (see above)" }
 # Pascal copy can actually be EXECUTED against the shared table - CI reports that leg as SKIP.
 & "$PSScriptRoot\check-email-rule.ps1"
 if ($LASTEXITCODE) { throw "email-rule implementations disagree (see above)" }
-$iscc = @(
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) {
-    # Fall back to the registry (Inno can install to a non-standard location).
-    # Most Uninstall keys have NO DisplayName/InstallLocation at all, and
-    # release-manifest-lib.ps1 turns on StrictMode, under which touching a missing
-    # property is a terminating error rather than $null. So probe the property bag
-    # instead of dotting straight into it: the un-guarded version crashed here before
-    # it could ever reach the per-user install this machine actually has, which would
-    # have taken out the x64 release build too, not just ARM64.
-    foreach ($r in 'HKLM:\SOFTWARE\WOW6432Node','HKLM:\SOFTWARE','HKCU:\SOFTWARE') {
-        $hit = Get-ChildItem "$r\Microsoft\Windows\CurrentVersion\Uninstall" -EA SilentlyContinue |
-            ForEach-Object { Get-ItemProperty $_.PSPath -EA SilentlyContinue } |
-            Where-Object {
-                $props = $_.PSObject.Properties
-                $props['DisplayName'] -and $props['InstallLocation'] -and
-                    $props['DisplayName'].Value -match 'Inno Setup' -and
-                    $props['InstallLocation'].Value
-            } |
-            ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
-            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if ($hit) { $iscc = $hit; break }
-    }
-}
-if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found. Install with: winget install JRSoftware.InnoSetup" }
+# The one lookup (standard folders, then the registry for a per-user or non-standard
+# install), shared with the pre-push gate's compile of the same script.
+$iscc = Find-ReleaseInnoSetupCompiler
+if (-not $iscc) { throw "ISCC.exe not found. Install $ReleaseInnoSetupInstallHint" }
 Write-Host "      ISCC: $iscc" -ForegroundColor DarkGray
 New-Item -ItemType Directory "$root\dist" -Force | Out-Null
 # Derive the LIVE format count from the just-built CLI and hand it to the installer
 # (never hardcode the count — it's whatever FORMATS.len() returns; the old literal
 # "316" in installer.iss was a drift bomb waiting for the next format addition).
 $fmtCount = ''
-if ($Architecture -eq 'x64') {
-    $fmtLine = & "$targetRel\st2k.exe" formats 2>$null | Select-Object -First 1
-    # A crash/failure here must fail the release loudly, not silently leave $fmtCount empty:
-    # an empty count skips /DFmtCount below and installer.iss falls back to its stale "300+"
-    # literal, which would ship silently wrong instead of failing the build.
-    if ($LASTEXITCODE -ne 0) { throw "st2k.exe formats failed (exit $LASTEXITCODE) while deriving the installer's live format count" }
-    if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+# The count is FORMATS.len(), the same table in every build, so a cross-built ARM64 installer
+# asks the host-native st2k.exe (the ImageMagick prune above does the same). It used to skip
+# the probe on ARM64 entirely and ship installer.iss's "300+" literal in every ARM64 installer.
+$fmtProbe = "$targetRel\st2k.exe"
+$hostArchFmt = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+if ($Architecture -cne $hostArchFmt) {
+    $fmtProbe = @(
+        (Join-Path $targetRoot 'release\st2k.exe')
+        (Join-Path $targetRoot 'debug\st2k.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $fmtProbe) {
+        throw "Cross-building $Architecture on an $hostArchFmt host: need a host-native st2k.exe " +
+              "to read the installer's live format count. Run 'cargo build --release' first."
+    }
 }
+# Output and exit code are captured BEFORE the first line is taken: `| Select-Object -First 1`
+# stops the pipeline early, which can leave $LASTEXITCODE unset or stale, and then the guard
+# below did not reliably fire. A crash/failure here must fail the release loudly, not silently
+# leave $fmtCount empty: an empty count skips /DFmtCount below and installer.iss falls back to
+# its stale "300+" literal, which would ship silently wrong instead of failing the build.
+$fmtOut = @(& $fmtProbe formats 2>$null)
+$fmtCode = $LASTEXITCODE
+if ($fmtCode -ne 0) { throw "st2k.exe formats failed (exit $fmtCode) while deriving the installer's live format count" }
+$fmtLine = $fmtOut | Select-Object -First 1
+if ($fmtLine -match '^(\d+)\s') { $fmtCount = $Matches[1] }
+else { throw "st2k.exe formats printed no leading count ('$fmtLine'), so the installer's format count cannot be derived" }
 $compactOnly = if ($NoImageMagick) { '1' } else { '0' }
 $isccArgs = @(
     "/DAppVer=$ver",

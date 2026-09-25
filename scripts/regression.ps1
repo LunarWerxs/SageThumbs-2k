@@ -91,6 +91,8 @@ param(
     [switch]$AllowInconclusiveGates
 )
 $ErrorActionPreference = 'Continue'
+# A release being cut from this checkout holds the tree: wait for it (scripts\release-lock.ps1).
+& (Join-Path $PSScriptRoot 'release-lock.ps1')
 
 # Shared "ran a checker, classify the outcome" primitives - see its header for why exit 2 is
 # not the same as exit 0. Dot-sourced (not called as a script) so its functions land in this
@@ -157,11 +159,13 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
 # genuinely-unrenderable file (legacy-OLE doc/…) just fails again in a few ms. This makes
 # the gate deterministic without touching the production timeout.
 #
-# Only a file whose EXTENSION is in the baseline is retried. The known no-thumbnail set
-# (lnk, m2v, mpeg, mpg, vob and their kin: no embedded preview, no decoder) fails on the first
-# pass every run for the same reason it failed last release, and retrying those printed
-# "first pass: 7 failure(s); retrying" on a gate that had nothing wrong with it, which two
-# sessions read as a load flake before anyone checked which files they were (2026-09-09).
+# Only a file whose EXTENSION is in the baseline is retried. The known no-thumbnail set (`lnk`
+# and its kin: no embedded preview, no decoder) fails on the first pass every run for the same
+# reason it failed last release, and retrying those printed "first pass: 7 failure(s); retrying"
+# on a gate that had nothing wrong with it, which two sessions read as a load flake before
+# anyone checked which files they were (2026-09-09). ⚠ That list USED to name m2v/mpeg/mpg/vob;
+# since 2026-09-17 those decode through our own MPEG-1/2 tier and are IN the baseline, so a miss
+# on one of them is a real regression and must not be explained away by this comment.
 # No baseline yet (a fresh clone about to -UpdateBaseline) retries everything, as before.
 $firstPassMisses = @($results | Where-Object { -not $_.Ok })
 $baselineExts = @()
@@ -436,6 +440,28 @@ if ($magick) {
 if ($LASTEXITCODE) {
     Write-Host "[regression] FAIL — DICOM content check failed (colour/contrast regressed)." -ForegroundColor Red
     $contentGateFailed = $true
+}
+
+# --- REAL-SAMPLE guard: every registered extension's real-world file is here and drew ------
+# scripts\corpus-real.json pins one file somebody else's software wrote per extension (URL +
+# SHA-256), or a written waiver. check-consistency.ps1 proves the manifest covers FORMATS
+# without needing a corpus; this proves the corpus still holds those files unchanged and that
+# at least one per extension rendered in the sweep above. Until 2026-09-17 most of the corpus
+# was ImageMagick's own output, which proved the reader survives what ImageMagick writes and
+# nothing about the files people have. Same python + exit-code contract as the known-colour gate.
+$realPy = (Get-Command python -EA SilentlyContinue).Source
+if ($realPy) {
+    & $realPy "$PSScriptRoot\fetch-real-samples.py" --check --corpus $Corpus --rendered $render | Out-Host
+    $realVerdict = Get-GateVerdict -Name 'real samples (fetch-real-samples.py --check)' -ExitCode $LASTEXITCODE
+} else {
+    $realVerdict = New-InconclusiveGate -Name 'real samples (fetch-real-samples.py --check)' -Reason 'python not available'
+}
+$script:requiredGateVerdicts += $realVerdict
+if ($realVerdict.Status -eq 'fail') {
+    Write-Host "[regression] FAIL - a pinned real sample is missing, changed, or did not render (see above); run scripts\fetch-real-samples.py to restore the files." -ForegroundColor Red
+    $script:contentGateFailed = $true
+} elseif ($realVerdict.Status -eq 'pass') {
+    Write-Host "[regression] real samples: every pinned file present, unchanged, and rendered" -ForegroundColor Green
 }
 
 # Whether a required gate ran at all is a SEPARATE question from whether the baseline sweep

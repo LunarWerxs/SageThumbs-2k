@@ -84,7 +84,7 @@ fn most_colorful_window(pm: &Pixmap, win: u32) -> (u32, u32, u32, u32) {
 fn crop(pm: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> Pixmap {
     let w = x1 - x0;
     let h = y1 - y0;
-    let mut out = Pixmap::new(w, h, 0, 0, 0, 255);
+    let mut out = Pixmap::try_new(w, h, 0, 0, 0, 255).expect("fits the pixmap limit");
     for y in 0..h {
         for x in 0..w {
             let (r, g, b) = pm.get_rgb(x0 + x, y0 + y);
@@ -99,7 +99,7 @@ fn crop(pm: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> Pixmap {
 fn distinct_colors(pm: &Pixmap) -> usize {
     use std::collections::HashSet;
     let mut set = HashSet::new();
-    for px in pm.data.chunks_exact(4) {
+    for px in pm.data.as_chunks::<4>().0 {
         set.insert((px[0], px[1], px[2]));
     }
     set.len()

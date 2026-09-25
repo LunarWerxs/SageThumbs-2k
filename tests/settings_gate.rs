@@ -187,6 +187,23 @@ fn lock_settings() -> std::sync::MutexGuard<'static, ()> {
     SETTINGS_GATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Point the DLL's business-licence reads at a scratch home and force Business mode, so the
+/// lock (`licence_state::shell_locked`) can be exercised with no HKLM write and no touch of
+/// the real `%ProgramData%` breadcrumb. Both variables are read ONCE per process by the DLL
+/// (exactly like `ST2K_SETTINGS_ROOT`), so EVERY test in this file sets them before its first
+/// `get_thumbnail`, whichever test happens to load the DLL first. An empty scratch home reads
+/// as "not locked", so the tests that never write a breadcrumb see the same provider they
+/// always did.
+fn redirect_licence_to_scratch() -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!("st2k_gate_licence_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    unsafe {
+        common::set_test_env("ST2K_LICENCE_HOME", &home);
+        common::set_test_env("ST2K_LICENCE_MODE", "business");
+    }
+    home
+}
+
 #[test]
 fn settings_gate_the_provider() {
     let _serial = lock_settings();
@@ -195,6 +212,7 @@ fn settings_gate_the_provider() {
     // once. Only the ROOT PATH is cached; the provider still re-reads the VALUES per
     // GetThumbnail (see settings::thumb_settings), so flipping them between calls takes effect.
     unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
     reset_scratch(); // clean slate — no stale values from a prior aborted run
 
     let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
@@ -247,6 +265,7 @@ fn settings_gate_the_provider() {
 #[ignore = "needs ST2K_TIME_FILE; a measurement tool, not a gate"]
 fn time_one_file() {
     let _serial = lock_settings();
+    redirect_licence_to_scratch();
     let Ok(path) = std::env::var("ST2K_TIME_FILE") else {
         panic!("set ST2K_TIME_FILE to the file to time");
     };
@@ -296,6 +315,7 @@ fn time_one_file() {
 fn oversized_file_backed_stream_is_rescued() {
     let _serial = lock_settings();
     unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
     reset_scratch();
 
     // Uncompressed BMP: comfortably over the 1 MB cap set below, and a format the OS
@@ -343,4 +363,149 @@ fn oversized_file_backed_stream_is_rescued() {
         junk_from_file.is_err(),
         "an over-cap file the OS codecs cannot decode must still be refused"
     );
+}
+
+/// The business-licence lock through the real COM handshake (`licence_state::shell_locked`
+/// inside `GetThumbnail`): a Business copy whose 7-day evaluation and 3-day notice have both
+/// run out declines like the master switch does; the same copy one day short of the lock is
+/// still served; and a redeemed key on record is served again on the very next call, with no
+/// restart of the host. The breadcrumb is the one the DLL reads (its path is redirected by
+/// `redirect_licence_to_scratch`), written through the same `write_history` the app uses.
+#[test]
+fn the_business_licence_lock_gates_the_provider() {
+    use st2k_base::licence_state::{write_history, History, LOCK_GRACE_SECS, TRIAL_SECS};
+    let _serial = lock_settings();
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    let home = redirect_licence_to_scratch();
+    reset_scratch();
+    let crumb = home.join("license-history.json");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let small = encode(solid(80, 60, [10, 200, 30, 255]), ImageFormat::Png);
+    let never_licensed = |trial_started_unix: u64| History {
+        was_business: true,
+        trial_started_unix,
+        ..Default::default()
+    };
+
+    // An evaluation whose notice period ran out a minute ago.
+    assert!(write_history(
+        &crumb,
+        &never_licensed(now - TRIAL_SECS - LOCK_GRACE_SECS - 60)
+    ));
+    let locked = unsafe { get_thumbnail(&small, 64) };
+    // The same clock a day before the lock lands: on notice, still served.
+    assert!(write_history(
+        &crumb,
+        &never_licensed(now - TRIAL_SECS - LOCK_GRACE_SECS + 24 * 60 * 60)
+    ));
+    let on_notice = unsafe { get_thumbnail(&small, 64) };
+    // A redeemed key on record, with a long-expired evaluation clock beside it.
+    assert!(write_history(
+        &crumb,
+        &History {
+            was_business: true,
+            last_status: "active".into(),
+            last_positive_unix: now,
+            key_prefix: "esk_TEST".into(),
+            trial_started_unix: now - 400 * 24 * 60 * 60,
+            ..Default::default()
+        }
+    ));
+    let licensed = unsafe { get_thumbnail(&small, 64) };
+
+    let _ = std::fs::remove_file(&crumb);
+    reset_scratch();
+
+    assert!(
+        locked.is_err(),
+        "a locked business copy must decline (E_FAIL)"
+    );
+    assert!(
+        on_notice.is_ok(),
+        "the notice period still serves every thumbnail"
+    );
+    assert!(
+        licensed.is_ok(),
+        "a redeemed key unlocks the very next thumbnail"
+    );
+}
+
+/// The MPEG-1/2 tier through the REAL COM handshake, which is the only way to reach
+/// `streamsrc`'s stream cascade (tier 7, `mpeg12::mpeg_frame`).
+///
+/// Why this test exists rather than another corpus row: the corpus regression renders BY PATH
+/// (`st2k thumbnail <file>`), so it exercises `decode.rs`'s by-bytes cascade and never touches
+/// the shell-IStream one. The two cascades are maintained in parallel by hand and have drifted
+/// before, which is the whole reason `streamsrc` carries a "the by-bytes twin of this gate"
+/// comment on every tier. The FLV and VP9 tiers have the same shape and are covered here only
+/// by the installed-Explorer script, which needs a registered DLL; this runs in CI.
+///
+/// The three files are the shapes Media Foundation cannot open on ANY Windows, so the answer
+/// does not depend on whether the machine has the Store MPEG-2 extension: an MPEG-1 system
+/// stream, a bare MPEG-1 elementary stream, and a bare MPEG-2 one. Corpus-gated like every
+/// other sample-backed test; the helper `st2k.exe` sits beside the cdylib in the same profile,
+/// so a build that produced the DLL produced it too.
+#[test]
+fn the_mpeg_tier_answers_through_the_shell_stream_cascade() {
+    let _serial = lock_settings();
+    unsafe { common::set_test_env("ST2K_SETTINGS_ROOT", TEST_ROOT) };
+    redirect_licence_to_scratch();
+    reset_scratch();
+    put("EnableThumbs", 1);
+
+    let corpus = st2k_base::testcorpus::dir();
+    let mut proved = 0;
+    // ST2K_NO_MF=1 makes this process behave like a machine with NO Media Foundation, which
+    // is what this test has to be: with the Store MPEG-2 Video Extension installed (as it is
+    // on the machine this was written on) MF answers for a transport stream long before our
+    // tier is reached, so without this the assertions below would pass while proving nothing
+    // about our own decoder. It is the same masking `check-magick-reliance.ps1` exists for.
+    unsafe { common::set_test_env("ST2K_NO_MF", "1") };
+
+    // The transport shapes ride the SAME tier since 2026-09-17, and they are the ones the
+    // stream cascade can get wrong on its own: a transport stream has no magic at offset
+    // zero, so the shape is read from a probe of the head, and this is the only place that
+    // probe runs against a real IStream rather than a Cursor.
+    for name in [
+        "sample.mpeg",
+        "real.m1v",
+        "real-es.m2v",
+        "sample.ts",
+        "sample.m2ts",
+        "sample.mts",
+    ] {
+        let Ok(bytes) = std::fs::read(corpus.join(name)) else {
+            continue; // corpus-gated, like the other sample-backed tests
+        };
+        let got = unsafe { get_thumbnail(&bytes, 96) };
+        assert!(
+            got.is_ok(),
+            "{name} must thumbnail through the shell stream cascade: {got:?}"
+        );
+        proved += 1;
+    }
+
+    // A stream that claims the pack-header magic and holds nothing else must be DECLINED,
+    // not crashed on: the gate is the magic, and the demux is what has to survive the rest.
+    let mut liar = vec![0x00, 0x00, 0x01, 0xBA];
+    liar.extend(std::iter::repeat_n(0x5Au8, 64 * 1024));
+    let junk = unsafe { get_thumbnail(&liar, 96) };
+
+    reset_scratch();
+    // Give Media Foundation back before the settings lock drops, or every later test in this
+    // process would run against a machine that suddenly has no video codecs.
+    unsafe { common::remove_test_env("ST2K_NO_MF") };
+    assert!(
+        junk.is_err(),
+        "a file that only claims to be an MPEG program stream must be refused"
+    );
+    if corpus.join("sample.mpeg").exists() {
+        assert!(
+            proved > 0,
+            "the corpus is present but no MPEG shape decoded"
+        );
+    }
 }

@@ -36,6 +36,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      # Cheap, and the only place this reports on the release PR — publish-packages.yml
+      # skips that PR on purpose (see the resolve job there).
+      - name: Package versions track the crate version
+        run: bash scripts/check_package_versions.sh
+
       - name: Clippy (all targets)
         run: cargo clippy --all-targets -- -D warnings
 
@@ -73,13 +78,13 @@ jobs:
       # main: all 452 tests in one pass — slow PDF/IW44 run in parallel with fast ones
       - name: Test (all)
         if: github.ref == 'refs/heads/main'
-        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff
 
       # PR / other branch: fast tests only (~440 tests, skip 200s PDF + large IW44)
       - name: Test (fast — skip slow PDF + IW44)
         if: github.ref != 'refs/heads/main'
         run: >
-          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli
+          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff
           --filter-expr 'not (binary(pdf_conversion) or test(iw44_new_decode_big))'
 
       # nextest does not run doctests; this compiles every ```rust block in
@@ -89,6 +94,34 @@ jobs:
 
       - name: Build (no_std check)
         run: cargo build --no-default-features
+
+  # ── Parallel feature visibility (#721) ───────────────────────────────────────
+  # Not a required merge gate: the default Test (stable) job omits `parallel`,
+  # so rayon::join decode paths and thread-local structural counters were
+  # previously untested in CI. Keep this job visible but non-blocking.
+  test-parallel:
+    name: Test (parallel feature)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: parallel
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - name: Test (fast — cli+parallel)
+        run: >
+          cargo nextest run --profile ci --workspace --exclude djvu-py
+          --features cli,parallel
+          --filter-expr 'not (binary(pdf_conversion) or test(iw44_new_decode_big))'
 
   # beta: push to main only — rarely catches different issues from stable
   test-beta:
@@ -269,6 +302,39 @@ jobs:
       - name: Test (ocr-tesseract integration)
         run: cargo test --test ocr_tesseract --features cli,ocr-tesseract
 
+  # ── Neural OCR (ocr-onnx) with pinned model weights (#693) ──────────────────
+  # Non-required (informational), skipped on PRs like ocr-tesseract: fetches the
+  # SHA-256-pinned PP-OCRv4 weights (the only place they are ever downloaded)
+  # and runs the ocr_onnx test tree including the model-gated inference tests
+  # that skip silently elsewhere.
+  ocr-onnx-models:
+    name: OCR (onnx models)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ocr-onnx-models
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: models/ocr
+          key: ocr-models-${{ hashFiles('docs/ocr-model-manifest.toml') }}
+
+      - name: Fetch pinned model weights
+        run: bash scripts/fetch_ocr_models.sh
+
+      - name: Test (ocr-onnx incl. model-gated inference)
+        run: cargo test --features ocr-onnx ocr_onnx
+
   # ── Python bindings (djvu-py) ────────────────────────────────────────────────
   # Non-required (informational): builds the extension module via maturin into
   # a uv-managed venv and runs the pytest suite covering the public API surface,
@@ -356,7 +422,7 @@ jobs:
       # sequentially; nextest runs them in parallel like the Test (stable) job,
       # cutting several minutes off the collect step.
       - name: Collect coverage
-        run: cargo llvm-cov nextest --profile ci --workspace --features cli --no-report
+        run: cargo llvm-cov nextest --profile ci --workspace --features cli,tiff --no-report
 
       - name: Coverage summary
         run: |

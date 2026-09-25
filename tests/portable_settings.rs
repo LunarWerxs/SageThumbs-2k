@@ -12,7 +12,7 @@
 
 mod common;
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
 /// A snapshot of `HKCU\Software\SageThumbs2K` — root values plus one level of subkeys —
 /// rendered as sorted `path\name=value` strings so two snapshots compare with `assert_eq!`

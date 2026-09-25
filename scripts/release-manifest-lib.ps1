@@ -41,10 +41,13 @@ function Get-ReleaseFeatureList {
         [string]$Package
     )
     switch ($Package) {
-        # `flash-video` is named EXPLICITLY even though Cargo.toml has it in `default`: this
-        # string is compared for exact equality against the arguments the build actually ran,
-        # and it went missing once when the FLV work landed (see write-release-manifest.ps1).
-        'sagethumbs2k'     { 'webp-lossy,html-preview,hdr-capture,flash-video' }
+        # `flash-video`, `vp9-video` and `mpeg-video` are named EXPLICITLY even though
+        # Cargo.toml has all three in `default`: this string is compared for exact equality
+        # against the arguments the build actually ran, and it went missing once when the FLV
+        # work landed (see write-release-manifest.ps1). Naming them is also what makes the
+        # manifest record which out-of-process decoders a shipped build actually carries -
+        # a default flipped off would otherwise change the payload silently.
+        'sagethumbs2k'     { 'webp-lossy,html-preview,hdr-capture,flash-video,vp9-video,mpeg-video' }
         'sagethumbs2k-dll' { 'webp-lossy,dll-i18n-subset' }
     }
 }
@@ -494,21 +497,37 @@ function Get-ReleaseVerificationOnlyPaths {
     )
 }
 
+# Paths a commit may touch without changing WHAT A TEST RUN PROVES. Deliberately NARROWER than
+# the artifact list above (2026-09-19 audit F10): a workflow file, a check script or a test
+# script IS the validation, so an older green run says nothing about a commit that changed one
+# - in particular, a commit that ADDS a required check must not be proven by a run from before
+# the check existed. verify.ps1 and preflight.ps1 stay: they run on the developer's machine,
+# not in the run being reused.
+function Get-ReleaseValidationOnlyPaths {
+    return @(
+        '^docs/', '^README\.md$', '^LICENSE', '^SECURITY\.md$',
+        '^scripts/release\.ps1$', '^scripts/release-manifest-lib\.ps1$',
+        '^scripts/verify\.ps1$', '^scripts/preflight\.ps1$'
+    )
+}
+
 # $true when $From is an ancestor of $To (or the same commit) and every path changed between
-# them is verification-only. Returns $false for anything else, including a git failure: a
+# them is in $Allowed (the artifact-reuse list by default; pass the validation list to decide
+# whether a RUN carries over). Returns $false for anything else, including a git failure: a
 # range this cannot read is a range that does not qualify.
 function Test-ReleaseVerificationOnlyRange {
     param(
         [Parameter(Mandatory)] [string]$Root,
         [Parameter(Mandatory)] [string]$From,
-        [Parameter(Mandatory)] [string]$To
+        [Parameter(Mandatory)] [string]$To,
+        [string[]]$Allowed = (Get-ReleaseVerificationOnlyPaths)
     )
     if ($From -ceq $To) { return $true }
     $null = & git -C $Root merge-base --is-ancestor $From $To 2>$null
     if ($LASTEXITCODE -ne 0) { return $false }
     $changed = @(& git -C $Root diff --name-only "$From..$To" 2>$null)
     if ($LASTEXITCODE -ne 0) { return $false }
-    $allowed = Get-ReleaseVerificationOnlyPaths
+    $allowed = $Allowed
     foreach ($path in $changed) {
         if (-not ($allowed | Where-Object { $path -match $_ })) { return $false }
     }
@@ -521,6 +540,50 @@ function Test-ReleaseVerificationOnlyRange {
 # was not queued/in_progress, so a run that GitHub reported as 'waiting' ended the release
 # with "finished ''" while the suite was still running (3.0.1, 2026-09-10). Returns the
 # conclusion string, or "still <status>" when the budget runs out.
+# The run OUR dispatch started, identified by what it is rather than by when it appeared.
+# Until 2026-09-19 `release.ps1` took the first workflow_dispatch run created after the
+# dispatch time, so a second dispatch of the same workflow - another machine, a re-run of
+# the script, a hand dispatch from the Actions tab - could be picked and waited on instead
+# (audit concern 1): the release would then be gated on somebody else's commit. A run counts
+# only when its headSha IS the commit being released, it was created no earlier than the
+# dispatch, and (when the workflow carries the tag in its run name) its title names the tag.
+function Select-ReleaseDispatchedRun {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Runs,
+        [Parameter(Mandatory)] [string]$Sha,
+        [Parameter(Mandatory)] [string]$DispatchedAt,
+        [string]$TitleContains = ''
+    )
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $since = [DateTimeOffset]::Parse($DispatchedAt, $culture)
+    $picked = @($Runs | Where-Object {
+        $_ -and [string]$_.headSha -ceq $Sha -and
+        (-not $TitleContains -or ([string]$_.displayTitle).Contains($TitleContains))
+    } | ForEach-Object {
+        $created = try { [DateTimeOffset]::Parse([string]$_.createdAt, $culture) } catch { $null }
+        if ($null -ne $created -and $created -ge $since) {
+            [pscustomobject]@{ databaseId = [string]$_.databaseId; created = $created }
+        }
+    } | Sort-Object created)
+    if ($picked.Count) { return [string]$picked[0].databaseId }
+    return $null
+}
+
+function Find-ReleaseDispatchedRun {
+    param(
+        [Parameter(Mandatory)] [string]$Workflow,
+        [Parameter(Mandatory)] [string]$Sha,
+        [Parameter(Mandatory)] [string]$DispatchedAt,
+        [string]$TitleContains = ''
+    )
+    # No space after a comma in --json (see release.ps1's CI lookup for why).
+    $raw = & gh run list --workflow $Workflow --event workflow_dispatch --limit 10 `
+        --json databaseId,headSha,createdAt,displayTitle 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
+    $runs = @($raw | ConvertFrom-Json)
+    return Select-ReleaseDispatchedRun -Runs $runs -Sha $Sha -DispatchedAt $DispatchedAt -TitleContains $TitleContains
+}
+
 function Wait-ReleaseRunConclusion {
     param(
         [Parameter(Mandatory)] [string]$RunId,
@@ -557,17 +620,29 @@ function Find-ReleaseProvingRun {
     $raw = & gh @args 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
     $runs = @($raw | ConvertFrom-Json | Sort-Object createdAt -Descending)
+    $asResult = { param($run) @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion } }
+    # A completed run on THIS commit is the last word (2026-09-19 audit F10): green proves it,
+    # and a FAILED one must never be talked over by an older green ancestor - the failure is the
+    # newest fact about these binaries. Only when this commit has no completed run does the
+    # ancestor rule below apply.
+    $exact = @($runs | Where-Object { [string]$_.headSha -ceq $Sha -and $_.status -eq 'completed' })
+    $exactGreen = @($exact | Where-Object { $_.conclusion -eq 'success' })
+    if ($exactGreen.Count) { return (& $asResult $exactGreen[0]) }
+    if ($exact.Count) { return (& $asResult $exact[0]) }
     # A GREEN qualifying run beats a live one, even when the live one is on this very commit:
     # the push that carries a script-only fix starts its own CI run, and waiting on that run
     # is exactly the 30 minutes the ancestor rule exists to save (3.0.1's relaunch waited on it).
+    # An ANCESTOR's run carries over only across validation-only commits (the narrower list):
+    # a commit that touched a workflow, a check or a test changed what a run proves.
+    $validationOnly = Get-ReleaseValidationOnlyPaths
     foreach ($wantGreen in $true, $false) {
         foreach ($run in $runs) {
             $green = $run.status -eq 'completed' -and $run.conclusion -eq 'success'
             $live = $run.status -ne 'completed'
             if ($wantGreen -and -not $green) { continue }
             if (-not $wantGreen -and -not $live) { continue }
-            if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha)) { continue }
-            return @{ Id = [string]$run.databaseId; HeadSha = [string]$run.headSha; Status = [string]$run.status; Conclusion = [string]$run.conclusion }
+            if (-not (Test-ReleaseVerificationOnlyRange -Root $Root -From ([string]$run.headSha) -To $Sha -Allowed $validationOnly)) { continue }
+            return (& $asResult $run)
         }
     }
     return $null
@@ -672,9 +747,10 @@ function Assert-ReleaseMsixIdentity {
 # Two signing modes, decided by whether a bundled certificate is given:
 #
 # * -CertificatePath (the self-signed development/test package): the signer must BE that
-#   exact certificate, and it is verified against a temporary LocalMachine\TrustedPeople
-#   entry, the same non-root store the self-signed installer populates (needs elevation
-#   unless the certificate is already trusted there). The package's Publisher must equal
+#   exact certificate, and it is verified against a LocalMachine\TrustedPeople entry, the same
+#   non-root store the self-signed installer populates. From an elevated shell the entry is
+#   added temporarily and removed again; from a non-elevated one it is re-added PERSISTENTLY
+#   through one elevated child (a release upgrade removes it by design), and stays. The package's Publisher must equal
 #   that certificate's subject.
 function Test-ReleaseElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -803,18 +879,33 @@ function Assert-ReleaseMsixPackage {
         $trustedPeople.Close()
         if ($trusted.Count -eq 0) {
             if (-not (Test-ReleaseElevated)) {
-                throw ("the self-signed certificate {0} is not in LocalMachine\TrustedPeople and " +
-                    "this shell is not elevated, so it cannot be trusted temporarily. Trust it " +
-                    "once from an elevated PowerShell: Import-Certificate -FilePath '{1}' " +
-                    "-CertStoreLocation Cert:\LocalMachine\TrustedPeople") -f
-                    $expectedCertificate.Thumbprint, $CertificatePath
+                # Every chain-signed installer upgrade removes the dev certificate from the
+                # machine store by design (2026-09-09), so this gate loses its anchor on the
+                # release box after every release it cuts. Re-trust it through ONE elevated
+                # child rather than telling a person to; where elevation is refused or a
+                # prompt is declined, the original instruction stands.
+                $import = "Import-Certificate -FilePath '$CertificatePath' -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null"
+                try {
+                    $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+                        -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $import)
+                    if ($elevated.ExitCode -ne 0) { throw "elevated import exited $($elevated.ExitCode)" }
+                    Write-Host "[msix] re-trusted the dev certificate $($expectedCertificate.Thumbprint) in LocalMachine\TrustedPeople (elevated child)" -ForegroundColor Yellow
+                } catch {
+                    throw ("the self-signed certificate {0} is not in LocalMachine\TrustedPeople and " +
+                        "this shell is not elevated, so it cannot be trusted temporarily (an elevated " +
+                        "import was attempted and failed: {2}). Trust it once from an elevated " +
+                        "PowerShell: Import-Certificate -FilePath '{1}' " +
+                        "-CertStoreLocation Cert:\LocalMachine\TrustedPeople") -f
+                        $expectedCertificate.Thumbprint, $CertificatePath, $_.Exception.Message
+                }
+            } else {
+                $trustedPeople.Open(
+                    [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
+                )
+                $trustedPeople.Add($expectedCertificate)
+                $addedTemporaryTrust = $true
+                $trustedPeople.Close()
             }
-            $trustedPeople.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            $trustedPeople.Add($expectedCertificate)
-            $addedTemporaryTrust = $true
-            $trustedPeople.Close()
         }
 
         $verifyOutput = @(& $tool verify /pa /all /v $Path 2>&1)
@@ -955,5 +1046,261 @@ function Get-ReleaseChangelogSection {
         $section -match '(?i)[<\[{]{1,2}\s*placeholder\s*[>\]}]{1,2}') {
         throw "changelog section $Version still contains placeholder text"
     }
+    # Licensing never LEADS a release note (owner directive, Michael, 2026-09-11, minutes after
+    # 3.0.2 published with three licence bullets on top: "it's a free software for 99% of our
+    # users, this affects literally one user"). The first bullet is what every user reads when
+    # the updater prompts them, so a section that opens with a licence or renewal item is
+    # refused here, before the exporter can publish it; licence items go last, as one short line.
+    $firstBullet = [regex]::Match($section, '(?m)^-[ ]+(.+)$').Groups[1].Value
+    if ($firstBullet -match '(?i)\blicen[cs]|\brenew') {
+        throw "changelog section $Version opens with a licensing item; lead with what every user gets and keep licensing to one short line at the end"
+    }
     return $section
+}
+
+# The written TL;DR of a changelog section: a `**TL;DR**` line, its headline bullets, then a
+# bold-only line (`**Everything in 3.3.0**`) that starts the detail. Returns the TL;DR's
+# bullet lines (continuations folded) and the section with that block and both marker lines
+# removed; `Tldr` is empty when the section has none.
+function Split-ReleaseNotesTldr {
+    param([Parameter(Mandatory)][string]$Section)
+    $lines = @($Section -split "\r?\n")
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\*\*TL;DR\*\*\s*$') { $start = $i; break } }
+    if ($start -lt 0) { return [pscustomobject]@{ Tldr = @(); Rest = $Section } }
+    $tldr = New-Object System.Collections.Generic.List[string]
+    $end = $lines.Count
+    for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+        if ($lines[$j] -match '^\*\*[^*]+\*\*\s*$') { $end = $j; break }
+        if ($lines[$j] -match '^-[ ]+\S') { $tldr.Add($lines[$j].TrimEnd()) }
+        elseif ($lines[$j] -match '^\s+\S' -and $tldr.Count) { $tldr[$tldr.Count - 1] += ' ' + $lines[$j].Trim() }
+    }
+    $before = if ($start -gt 0) { @($lines[0..($start - 1)]) } else { @() }
+    $after = @($lines | Select-Object -Skip ($end + 1))
+    return [pscustomobject]@{ Tldr = @($tldr); Rest = (($before + $after) -join "`n") }
+}
+
+# Release-day gate (release.ps1 [1/6]): a section with more than two changes must carry a
+# written TL;DR. The bold leads cannot stand in for one - half of 3.3.0's were fragments
+# ("DDS textures whose sides are not powers of two"), and a headline has to read on its own.
+function Assert-ReleaseNotesTldr {
+    param([Parameter(Mandatory)][string]$Section, [Parameter(Mandatory)][string]$Version)
+    $split = Split-ReleaseNotesTldr -Section $Section
+    $changes = @([regex]::Matches($split.Rest, '(?m)^-[ ]+\S')).Count
+    if ($changes -gt 2 -and -not $split.Tldr.Count) {
+        throw ("changelog section $Version has $changes changes and no TL;DR: open it with a ``**TL;DR**`` line, " +
+            "one short headline bullet per change that matters, then ``**Everything in $Version**`` before the full list")
+    }
+}
+
+# A changelog bullet's headline: its bold lead (`- **Big files look sharp.** Detail` -> `Big
+# files look sharp`), else its first sentence. Trailing `.`/`:` go; the TL;DR adds its own bold.
+# Only the fallback for a section with no written TL;DR (see Split-ReleaseNotesTldr).
+function Get-ReleaseNotesHeadline {
+    param([Parameter(Mandatory)][string]$Bullet)
+    $text = ($Bullet -replace '^-[ ]+', '').Trim()
+    if ($text -match '^\*\*(.+?)\*\*') { $lead = $Matches[1] }
+    elseif ($text -match '^(.+?[.!?])(\s|$)') { $lead = $Matches[1] }
+    else { $lead = $text }
+    return $lead.Trim().TrimEnd('.', ':').Trim()
+}
+
+# The public release body's layout, derived from the flat changelog section (which stays the
+# one source): the logo, a centred intro when the section opens with a paragraph, a TL;DR of
+# one headline per change with the full list folded under "Read more" (see below), emoji on the
+# `### New` / `### Changed` / `### Fixed` headings with a rule between them, and the section's
+# lines otherwise verbatim - the 3.0.0 notes were laid out this way BY HAND after publishing.
+# Nothing is dropped: every non-blank line of the section must survive into the output (the
+# three headings in their emoji form), or this throws. release.ps1 appends the installer,
+# portable and scan blocks after it and the Discord line last.
+function Format-ReleaseNotesBody {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Section,
+
+        [Parameter(Mandatory)]
+        [string]$Version
+    )
+    $emoji = @{ 'New' = '🆕 New'; 'Changed' = '🔁 Changed'; 'Fixed' = '🩹 Fixed' }
+    $split = Split-ReleaseNotesTldr -Section $Section
+    $lines = @($split.Rest -split "\r?\n")
+    $intro = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(###|- )') {
+        if ($lines[$i].Trim()) { $intro.Add($lines[$i].Trim()) }
+        $i++
+    }
+    # ⚠ UNWRAP THE BULLETS (owner report, 2026-09-20, reading v3.2.0's notes on a phone: "hard to
+    # read ... due to all the hard line breaks"). docs/CHANGELOG.md is hard-wrapped at ~95 columns
+    # for reading in an editor, and GitHub renders a RELEASE BODY with `breaks: true` - every one
+    # of those newlines becomes a real `<br>`. On a desktop that merely looks odd; on a phone the
+    # 95-column wrap lands inside an already-narrow column and each bullet comes out as a ragged
+    # staircase. So a bullet's continuation lines are folded back into ONE line here and the
+    # renderer does the wrapping, which is the only thing that knows how wide the screen is.
+    # The changelog file itself is untouched - it is read in an editor and stays wrapped.
+    $body = New-Object System.Collections.Generic.List[string]
+    $sawHeading = $false
+    $fenced = $false
+    $pending = $null
+    for (; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        # Never fold anything inside a fenced block: its line breaks ARE the content.
+        if ($line -match '^\s*```') {
+            if ($null -ne $pending) { $body.Add($pending); $pending = $null }
+            $fenced = -not $fenced
+            $body.Add($line)
+            continue
+        }
+        if ($fenced) { $body.Add($line); continue }
+        if ($line -match '^###[ ]+(New|Changed|Fixed)\s*$') {
+            if ($null -ne $pending) { $body.Add($pending); $pending = $null }
+            if ($sawHeading) { $body.Add(''); $body.Add('---'); $body.Add('') }
+            $body.Add("### $($emoji[$Matches[1]])")
+            $sawHeading = $true
+            continue
+        }
+        # A continuation line: indented, not blank, and not the start of its own bullet.
+        if ($null -ne $pending -and $line -match '^\s+\S' -and $line -notmatch '^\s*[-*+][ ]') {
+            $pending = $pending + ' ' + $line.Trim()
+            continue
+        }
+        if ($null -ne $pending) { $body.Add($pending); $pending = $null }
+        if ($line -match '^\s*[-*+][ ]') { $pending = $line.TrimEnd(); continue }
+        $body.Add($line)
+    }
+    if ($null -ne $pending) { $body.Add($pending) }
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('<div align="center">')
+    $out.Add(('<img src="https://raw.githubusercontent.com/LunarWerxs/SageThumbs-2k/v' + $Version +
+        '/assets/logo-master.png" width="96" alt="SageThumbs 2K logo">'))
+    $out.Add('</div>')
+    $out.Add('')
+    if ($intro.Count) {
+        $out.Add('<p align="center">' + ($intro -join ' ') + '</p>')
+        $out.Add('')
+        $out.Add('---')
+        $out.Add('')
+    }
+    # A TL;DR of headlines, then the full list folded away (Michael, 2026-09-23, on the 3.3.0
+    # page: "Split this into 2... bullet point headline things... then a read more", and when a
+    # first cut showed only two headlines: "your tldr is WAAAAAAY too short"). One headline per
+    # bullet - its bold lead - so every change is on the page in one line and the detail is one
+    # click away; nothing extra to write, nothing to forget. Licence items stay out of it (they
+    # are one short line at the end of the detail, and never lead). A section of two bullets or
+    # fewer is already short, and is shown whole.
+    # The changelog's written TL;DR is used as is (release.ps1 refuses a long section without
+    # one); the bold leads are only the fallback for a hand export of an older section.
+    $bullets = @($body | Where-Object { $_ -match '^-[ ]+\S' })
+    if ($split.Tldr.Count -or $bullets.Count -gt 2) {
+        $out.Add('## TL;DR')
+        $out.Add('')
+        if ($split.Tldr.Count) {
+            foreach ($t in $split.Tldr) { $out.Add($t) }
+        } else {
+            foreach ($b in $bullets) {
+                if ($b -match '(?i)\blicen[cs]') { continue }
+                $out.Add('- **' + (Get-ReleaseNotesHeadline $b) + '**')
+            }
+        }
+        $out.Add('')
+        $out.Add('<details>')
+        $out.Add("<summary><b>Read more: everything in $Version</b></summary>")
+        $out.Add('')
+        foreach ($l in $body) { $out.Add($l) }
+        $out.Add('')
+        $out.Add('</details>')
+    } else {
+        $out.Add("## What's changed")
+        $out.Add('')
+        foreach ($l in $body) { $out.Add($l) }
+    }
+    $text = ($out -join "`n").TrimEnd()
+    foreach ($line in @($lines) + @($split.Tldr)) {
+        $t = $line.Trim()
+        if (-not $t) { continue }
+        $want = if ($t -match '^###[ ]+(New|Changed|Fixed)\s*$') { "### $($emoji[$Matches[1]])" } else { $t }
+        if (-not $text.Contains($want)) {
+            throw "release notes layout dropped a changelog line: $t"
+        }
+    }
+    return $text
+}
+
+# The open items of the repo's one work queue (docs/todo/TODO.md): every `### ` heading AND
+# every top-level `- ` bullet under its "Needs a person" and "Technical debt" parts, i.e.
+# everything before the "Conditional watches" part. Watches and standing decisions are not
+# work. release.ps1 refuses to cut a release while this returns anything (owner directive,
+# Michael, 2026-09-11: nothing is deferred past a release).
+#
+# Bullets count since 2026-09-18: until then only `###` headings did, and the first item filed
+# as a bullet (a dashboard token the owner has to decide on) sailed past the gate unseen - a
+# release was one command from shipping over an item that by the owner's rule blocks it. A
+# bullet's item text is its bold lead when it has one, else the line itself.
+function Get-ReleaseOpenTodoItems {
+    param(
+        [Parameter(Mandatory)]
+        [string]$TodoPath
+    )
+    if (-not (Test-Path -LiteralPath $TodoPath -PathType Leaf)) {
+        throw "work queue not found: $TodoPath"
+    }
+    $open = New-Object System.Collections.Generic.List[string]
+    $inWork = $false
+    foreach ($line in (Get-Content -LiteralPath $TodoPath)) {
+        if ($line -match '^##[ ]+(\d+)\.[ ]+(.+?)\s*$') {
+            $title = $Matches[2]
+            $inWork = ($title -match '^(Needs a person|Technical debt)\b')
+            continue
+        }
+        if (-not $inWork) { continue }
+        if ($line -match '^###[ ]+(.+?)\s*$') {
+            $open.Add($Matches[1])
+        }
+        elseif ($line -match '^-[ ]+\*\*(.+?)\*\*') {
+            $open.Add($Matches[1])
+        }
+        elseif ($line -match '^-[ ]+(\S.*?)\s*$') {
+            $open.Add($Matches[1])
+        }
+    }
+    # No unary comma: `return ,$array` hands the caller a ONE-element array holding the array,
+    # which `@(...)` then counts as a single item. A plain array unrolls, and `@()` at the call
+    # site re-wraps zero or one item correctly.
+    return $open.ToArray()
+}
+
+# Where Inno Setup 7's compiler is on this machine, or $null. The ONE lookup, shared by the
+# release build (which compiles the installer for real), the pre-push gate (which compiles it
+# in gate mode to prove the [Code] section still compiles) and check-email-rule.ps1's Pascal
+# leg. The standard locations first, then the registry, because Inno can install per-user or to
+# a non-standard folder. Inno Setup 7 ONLY: it installs beside 6 rather than replacing it, so a
+# machine can have both, and every installer must come out of the one compiler the pipeline was
+# tested with. A machine with only Inno Setup 6 gets $null and the caller's install hint.
+$ReleaseInnoSetupInstallHint = 'Inno Setup 7 (https://jrsoftware.org/isdl.php; a per-user install is fine)'
+function Find-ReleaseInnoSetupCompiler {
+    $iscc = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if ($iscc) { return $iscc }
+    # Most Uninstall keys have NO DisplayName/InstallLocation at all, and this library turns
+    # on StrictMode, under which touching a missing property is a terminating error rather
+    # than $null. So probe the property bag instead of dotting straight into it: the
+    # un-guarded version crashed here before it could ever reach the per-user install this
+    # machine actually has.
+    foreach ($r in 'HKLM:\SOFTWARE\WOW6432Node', 'HKLM:\SOFTWARE', 'HKCU:\SOFTWARE') {
+        $hit = Get-ChildItem "$r\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
+            Where-Object {
+                $props = $_.PSObject.Properties
+                $props['DisplayName'] -and $props['InstallLocation'] -and
+                    $props['DisplayName'].Value -match '^Inno Setup version 7\.' -and
+                    $props['InstallLocation'].Value
+            } |
+            ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if ($hit) { return $hit }
+    }
+    return $null
 }

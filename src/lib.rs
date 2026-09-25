@@ -17,178 +17,35 @@
 // gate is reserved for the code that shares the shell's address space.
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
-pub mod app_image;
-// `pub` only because `settings::ThumbSettings` carries a `badge::BadgeStyle` field; the
-// module is an internal drawing detail, not a stable API.
-#[doc(hidden)]
-pub mod badge;
-pub mod clipboard;
-mod command;
-mod container;
-/// Archive entry listing for the Quick preview viewer (no extraction).
-pub use container::list_archive;
-// The read-only CFB reader, for the app EXE's Outlook-.msg preview (`preview::mailmsg`).
-// Hidden like `ocr`: an implementation detail shared across the workspace, not API.
-#[doc(hidden)]
-pub use container::ole;
-/// True document dimensions for containers whose extracted cover is only a small baked-in
-/// preview (PSD/PSB). The Quick preview uses it to decide whether the fast preview it just
-/// painted is worth replacing with the real composite — see `preview::content`.
-pub use container::real_dims;
+mod badge;
 pub mod cli;
+mod command;
 mod contextmenu;
-pub mod decode;
-mod dib;
 pub mod doctor;
 mod factory;
-// Bounded, process-local memory of thumbnail decode failures (a circuit breaker), so a
-// hostile or broken file already known to fail is not re-decoded on every redraw.
-mod failmemo;
-// `pub` (hidden) because the `st2k` bin's `flv-frame` child verb reuses the FLV tag walk
-// (`flv::scan_flash_keyframe`) — one parser, so the parent's probe and the child's
-// extraction can never disagree about what counts as the first Flash-codec keyframe.
-#[doc(hidden)]
-pub mod flv;
 pub mod foldermenu;
-pub mod formats;
-// `pub` (hidden) so the app EXE's settings export path (`settings_io::export_settings_to_path`,
-// 2026-09-05 audit, F13) can reuse `write_atomically` rather than growing its own copy -
-// same arrangement as `ocr`/`parallel`: an internal helper, not a stable public API.
-#[doc(hidden)]
-pub mod fsutil;
-// Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.
-#[cfg(test)]
-mod fuzz;
-mod guids;
-mod jpegtran;
 pub mod mcp;
-mod mkv;
-mod mp4;
-// In-box WinRT OCR (`Windows.Media.Ocr`). `pub` so the companion `SageThumbs2K` app bin
-// can read text out of a screen capture it already holds in memory, `doc(hidden)` because
-// it isn't a stable public API — same arrangement as `parallel` below.
-#[doc(hidden)]
-pub mod ocr;
-// The transparency checkerboard, re-exported from the classic menu tile's painter so the app bin's
-// Quick preview draws the SAME backdrop, from the SAME `settings::preview_checker()` toggle. One
-// implementation, so the two surfaces cannot drift apart. `doc(hidden)` for the same reason as the
-// rest of these: an internal surface, not a stable public API.
-#[doc(hidden)]
-pub mod checker {
-    /// The pixel-space twin, for the one surface that has no device context to draw on:
-    /// the Explorer thumbnail bitmap. See [`crate::checkerpx`].
-    pub use crate::checkerpx::compose_under;
-    pub use crate::contextmenu::paint::{checker_shades, fill_checker};
-}
-mod checkerpx;
-// Internal batch thread pool (Convert dialog / Combine / multi-file context-menu
-// verbs). `pub` so the companion `SageThumbs2K` app bin can drive it, `doc(hidden)`
-// because it isn't a stable public API — just a shared helper across our own crates.
-pub mod i18n;
-#[doc(hidden)]
-pub mod parallel;
-pub mod pdf;
 pub mod prebuild;
 mod previewhandler;
+// The Details-pane property handler (`IPropertyStore`), one of the COM surfaces.
 mod propstore;
 pub mod register;
-pub mod safety;
-pub mod settings;
-pub mod shellcmd;
-// Shared read-only SQLite low-level primitives (varint/serial-size/overflow local-size) — one
-// copy used by both `container::clip` and the app EXE's `preview::dbdoc`. `pub` (hidden) for the
-// same reason as `ocr`/`parallel`/`flv`: `dbdoc` lives in the companion binary crate and needs
-// `sagethumbs2k_core::sqlite_prim` to reach it.
-#[doc(hidden)]
-pub mod sqlite_prim;
-mod streamsrc;
-mod strip;
 mod thumbprovider;
 // Explorer's own file-type icon overlay, and how to make it stop covering our badge.
-mod topdf;
 #[doc(hidden)]
 pub mod typeoverlay;
-pub mod upload_config;
-mod verbs;
-// `pub` only so the app EXE's preview player can ask `media_foundation_available()`
-// before touching the delay-loaded MF imports; the decode entry points stay internal.
-pub mod vcodec;
-pub mod video;
-// Hidden like `flv`: public only so the `st2k vp9-frame` child (a separate bin crate) and
-// its tests can reach the shared caps + keyframe extraction — not a stable API.
-#[doc(hidden)]
-pub mod vp9;
-mod vstream;
-
-pub use strip::read_info_verbose;
-/// Conversion API surfaced for the companion app's Convert… dialog.
-pub use topdf::{combine_to_pdf, combine_to_pdf_paged, PdfPage};
-pub use verbs::{
-    convert_file_opts, convert_file_opts_named, convert_image_to_pdf_in, convert_to_magick_in,
-    convert_to_magick_in_named, copy_rgba_to_clipboard, copy_to_clipboard, default_menu_tokens,
-    files_to_folder, rename_by_pattern, rename_pattern_preview, resize_file, run_action,
-    tags_to_folders, BatchReport, Combined, ConvertOpts, Corner, FileOutcome, FileStatus,
-    OmitCause, Omitted, OnOmit, Resize, Target, Transform, VerbAction, Watermark, MENU_SEP_TOKEN,
-};
-
-/// Is ImageMagick available? Gates the magick-backed Convert targets (PSD/DDS/…),
-/// which are hidden on a compact install.
-pub fn magick_available() -> bool {
-    decode::magick_available()
-}
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use st2k_base::{guids, host, safety};
+use st2k_codecs::{decode, ocr, video};
+use std::time::Duration;
 
-use windows::core::{Error, Interface, GUID, HRESULT};
-use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, E_FAIL, E_POINTER, HMODULE, S_FALSE, S_OK,
-};
+use windows::core::{Interface, GUID, HRESULT};
+use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::IClassFactory;
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
-
-/// Live-object + lock count. `DllCanUnloadNow` returns S_OK only at zero.
-static MODULE_REFS: AtomicI64 = AtomicI64::new(0);
-/// This DLL's HMODULE, captured in DllMain, used to resolve our own path.
-static HMODULE_PTR: AtomicIsize = AtomicIsize::new(0);
 
 const DLL_PROCESS_ATTACH: u32 = 1;
 const DLL_PROCESS_DETACH: u32 = 0;
-
-/// Uptime at the most recent add-ref, in ms: the last time anyone asked this host for an
-/// object. Read by [`dll_can_unload_now`]'s wedged-host exit, which must never fire while
-/// the host is still being used.
-static LAST_ADD_REF_MS: AtomicU64 = AtomicU64::new(0);
-
-/// Time since this module first counted a reference (a monotonic clock that needs no
-/// system-time assumptions, for the idle measurement above).
-fn uptime() -> Duration {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now).elapsed()
-}
-
-pub fn dll_add_ref() {
-    MODULE_REFS.fetch_add(1, Ordering::SeqCst);
-    LAST_ADD_REF_MS.store(uptime().as_millis() as u64, Ordering::Relaxed);
-}
-
-pub fn dll_release() {
-    // Clamp at zero: a stray/unbalanced release must NOT push the count negative,
-    // or it could cancel a live object's reference and let the DLL unload while in
-    // use. `fetch_update` leaves a zero count untouched and only ever decrements.
-    let prev = MODULE_REFS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-        if n > 0 {
-            Some(n - 1)
-        } else {
-            None // already zero — refuse to underflow
-        }
-    });
-    debug_assert!(
-        prev.is_ok(),
-        "MODULE_REFS underflow: unbalanced LockServer(FALSE)/release"
-    );
-}
 
 /// Test/diagnostics hook: decode a file's bytes the same way the thumbnail
 /// provider does (incl. ebook/comic cover extraction) and report the size.
@@ -218,27 +75,6 @@ pub fn ocr_probe(path: &str) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
-/// RAII module-reference guard. Constructing one (via `Default`) bumps the
-/// live-object count; dropping it releases. Each COM coclass carries a
-/// `_ref: ModuleRef` field instead of hand-writing an add-ref in its
-/// constructor and a matching `impl Drop` — six identical pairs collapse to
-/// this one type. (The factory's `LockServer` count is a separate add/release
-/// path and intentionally does NOT use this.)
-pub struct ModuleRef;
-
-impl Default for ModuleRef {
-    fn default() -> Self {
-        dll_add_ref();
-        ModuleRef
-    }
-}
-
-impl Drop for ModuleRef {
-    fn drop(&mut self) {
-        dll_release();
-    }
-}
-
 // COM entry-point IMPLEMENTATIONS. These used to be the `#[no_mangle] extern "system"`
 // `Dll*` exports directly; they now live as plain `pub fn`s here (the rlib `core`),
 // and the thin `sagethumbs2k` cdylib crate (`dll/`) wraps each in a `#[no_mangle]`
@@ -255,7 +91,7 @@ impl Drop for ModuleRef {
 /// inside a long-lived `explorer.exe` leaked one GDI object.
 pub fn dll_main(hmodule: isize, reason: u32, reserved: *mut c_void) {
     if reason == DLL_PROCESS_ATTACH {
-        HMODULE_PTR.store(hmodule, Ordering::SeqCst);
+        host::set_module(hmodule);
     } else if reason == DLL_PROCESS_DETACH && reserved.is_null() {
         contextmenu::free_menu_logo();
     }
@@ -265,7 +101,7 @@ pub fn dll_can_unload_now() -> HRESULT {
     // == 0 (not <= 0): the count is now clamped at zero in `dll_release`, so it can
     // never go negative; testing `<= 0` would fail dangerous on a hypothetical
     // underflow by reporting "safe to unload" while an object is still live.
-    let refs = MODULE_REFS.load(Ordering::SeqCst);
+    let refs = host::live_refs();
     if refs == 0 {
         return S_OK;
     }
@@ -281,9 +117,7 @@ pub fn dll_can_unload_now() -> HRESULT {
         refs,
         stranded: video::stranded_workers(),
         oldest_strand: video::oldest_strand_age(),
-        idle_for: uptime().saturating_sub(Duration::from_millis(
-            LAST_ADD_REF_MS.load(Ordering::Relaxed),
-        )),
+        idle_for: host::idle_for(),
         host: current_host_exe(),
     };
     if should_exit_wedged_host(&view) {
@@ -378,7 +212,7 @@ pub fn dll_get_class_object(
 
 pub fn dll_register_server() -> HRESULT {
     safety::guard_hr(
-        || match module_path().and_then(|p| register::register(&p)) {
+        || match host::module_path().and_then(|p| register::register(&p)) {
             Ok(()) => S_OK,
             Err(e) => e.code(),
         },
@@ -390,83 +224,6 @@ pub fn dll_unregister_server() -> HRESULT {
         Ok(()) => S_OK,
         Err(e) => e.code(),
     })
-}
-
-/// `CREATE_NO_WINDOW` process-creation flag. Every helper we spawn from a GUI/shell
-/// host (magick, st2k, self) passes it so no console window flashes. Defined here
-/// once — a mistyped copy (`0x0080_0000`) would pop a console inside Explorer. (The
-/// `windows` crate's `Threading` feature IS enabled now — for `CreateMutexW` — but
-/// `std::process::CommandExt::creation_flags` wants a bare `u32` anyway.)
-pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-/// NUL-terminated UTF-16 for Win32 `*W` APIs. Was independently re-typed as
-/// `s.encode_utf16().chain(once(0)).collect()` across half a dozen files (command /
-/// contextmenu / propstore / actions / cli / container::select) — one shared helper
-/// means the pattern can't drift and reads as intent at the call site. (The app bin
-/// has its own `win::wide` twin; bins keep using that one.)
-pub fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(core::iter::once(0)).collect()
-}
-
-/// File names of the artifacts this crate builds, all installed side-by-side. The
-/// co-located layout is an install contract; keeping the names here means a rename
-/// is one edit and a typo can't silently break a spawn/icon lookup with no error.
-pub(crate) const APP_EXE: &str = "SageThumbs2K.exe";
-pub(crate) const CLI_EXE: &str = "st2k.exe";
-
-/// Resolve a sibling file next to OUR DLL (whatever directory the install used).
-/// Uses [`module_path`] — NEVER `current_exe()`, which inside the shell host is
-/// `explorer.exe`/`dllhost.exe`. Returns the path only if it actually exists, so a
-/// DLL-only install (no companion EXE) cleanly yields `None`.
-pub(crate) fn sibling_of_dll(name: &str) -> Option<std::path::PathBuf> {
-    let dll = module_path().ok()?;
-    let p = std::path::Path::new(&dll).parent()?.join(name);
-    p.exists().then_some(p)
-}
-
-/// This DLL's `HMODULE` (captured in `DllMain`), for use as the `hInstance` of
-/// windows/classes we create — e.g. the preview handler's child window.
-pub(crate) fn dll_hmodule() -> HMODULE {
-    HMODULE(HMODULE_PTR.load(Ordering::SeqCst) as *mut c_void)
-}
-
-pub(crate) fn module_path() -> windows::core::Result<String> {
-    unsafe {
-        let h = HMODULE(HMODULE_PTR.load(Ordering::SeqCst) as *mut c_void);
-        let mut buf = vec![0u16; 260];
-        loop {
-            let n = GetModuleFileNameW(Some(h), &mut buf) as usize;
-            if n == 0 {
-                return Err(Error::from_thread()); // GetLastError; includes HMODULE-missing
-            }
-            // n < len is the documented "it fit" signal; n == len means truncated.
-            if n < buf.len() {
-                return Ok(String::from_utf16_lossy(&buf[..n]));
-            }
-            if buf.len() >= 32_768 {
-                return Err(Error::from(E_FAIL));
-            }
-            buf.resize((buf.len() * 2).min(32_768), 0);
-        }
-    }
-}
-
-/// Best-effort backing file name/path of a shell-supplied `IStream` (via `IStream::Stat`,
-/// which fills `pwcsName` under `STATFLAG_DEFAULT`).
-///
-/// Shared by the preview handler (which logs it, so a "white preview" report names the exact
-/// file) and the thumbnail provider (which needs the extension for the optional format
-/// badge). `pwcsName` is a CoTaskMem allocation we own and must free.
-pub(crate) unsafe fn stream_name(stream: &windows::Win32::System::Com::IStream) -> Option<String> {
-    use windows::Win32::System::Com::{STATFLAG_DEFAULT, STATSTG};
-    let mut stat = STATSTG::default();
-    stream.Stat(&mut stat, STATFLAG_DEFAULT).ok()?;
-    if stat.pwcsName.is_null() {
-        return None;
-    }
-    let s = stat.pwcsName.to_string().ok();
-    windows::Win32::System::Com::CoTaskMemFree(Some(stat.pwcsName.0 as *const core::ffi::c_void));
-    s
 }
 
 #[cfg(test)]
@@ -484,7 +241,7 @@ mod unload_guard_tests {
         let (ended_tx, ended_rx) = mpsc::channel();
         std::thread::spawn(move || {
             #[allow(clippy::default_constructed_unit_structs)]
-            let module = super::ModuleRef::default(); // exactly what the budgeted workers now do
+            let module = st2k_base::host::ModuleRef::default(); // exactly what the budgeted workers now do
             started_tx.send(()).unwrap();
             release_rx.recv().unwrap(); // hold the ref open until the test releases us
             drop(module);
@@ -509,7 +266,7 @@ mod unload_guard_tests {
     fn wedged_host_exit_needs_every_condition() {
         use super::{should_exit_wedged_host, WedgedHostView, WEDGED_HOST_IDLE};
         use std::time::Duration;
-        let grace = crate::video::STRAND_GRACE;
+        let grace = st2k_codecs::video::STRAND_GRACE;
         let ok = || WedgedHostView {
             refs: 2,
             stranded: 2,

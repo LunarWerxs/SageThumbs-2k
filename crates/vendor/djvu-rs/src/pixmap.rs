@@ -6,7 +6,7 @@
 //! by the render paths (it has no DjVu semantics, so it belongs with the pixmap
 //! type rather than on the render interface).
 
-pub use djvu_pixmap::{GrayPixmap, Pixmap};
+pub use djvu_pixmap::{GrayPixmap, Pixmap, PixmapError};
 
 // `vec!` / `Vec` are not in the no_std prelude; bring them in from `alloc` (the
 // std prelude already provides them). Matches the cfg-gated import pattern used
@@ -40,16 +40,22 @@ fn lanczos3_kernel(x: f32) -> f32 {
 /// 2. Vertical pass: `dst_w × src_h` → `dst_w × dst_h` output.
 ///
 /// Only RGBA pixmaps are handled (alpha is passed through unchanged at 255).
-pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
+///
+/// # Errors
+///
+/// [`PixmapError`] when the intermediate `dst_w × src_h` buffer or the
+/// `dst_w × dst_h` output exceeds [`Pixmap::MAX_PIXELS`]. The caller decides
+/// whether that is a render limit or a bug in its own size arithmetic.
+pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, PixmapError> {
     let src_w = src.width;
     let src_h = src.height;
 
     // Short-circuit: nothing to scale.
     if src_w == dst_w && src_h == dst_h {
-        return src.clone();
+        return Ok(src.clone());
     }
     if dst_w == 0 || dst_h == 0 {
-        return Pixmap::white(dst_w.max(1), dst_h.max(1));
+        return Pixmap::try_white(dst_w.max(1), dst_h.max(1));
     }
 
     // ── Horizontal pass ───────────────────────────────────────────────────────
@@ -95,7 +101,7 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
         })
         .collect();
 
-    let mut mid = Pixmap::new(dst_w, src_h, 255, 255, 255, 255);
+    let mut mid = Pixmap::try_new(dst_w, src_h, 255, 255, 255, 255)?;
 
     // Per-output-row horizontal filter. Rows are independent (each reads its own
     // `src` row + the shared `hcols`, writes its own `mid` row), so the loop
@@ -151,7 +157,7 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
     // `mid` is read sequentially instead of striding by `dst_w*4` per sy. The
     // per-column sum is over the same `sy` values in the same order, so the result
     // is bit-identical to the column-major version.
-    let mut out = Pixmap::new(dst_w, dst_h, 255, 255, 255, 255);
+    let mut out = Pixmap::try_new(dst_w, dst_h, 255, 255, 255, 255)?;
 
     // Per-output-row vertical filter, writing directly into `out_row`. Output
     // rows are independent; the only per-row mutable state is the three column
@@ -212,12 +218,28 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Pixmap {
         }
     }
 
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #815: an output above `Pixmap::MAX_PIXELS` is refused, not returned
+    /// as an empty pixmap.
+    #[test]
+    fn scale_lanczos3_refuses_oversized_output() {
+        let src = Pixmap::white(2, 2);
+        let err = scale_lanczos3(&src, 10000, 10000).unwrap_err();
+        assert!(matches!(
+            err,
+            PixmapError::TooLarge {
+                width: 10000,
+                height: 10000,
+                ..
+            }
+        ));
+    }
 
     /// `lanczos3_kernel(0)` == 1.0 (unity at origin).
     #[test]
@@ -237,7 +259,7 @@ mod tests {
     #[test]
     fn scale_lanczos3_correct_dimensions() {
         let src = Pixmap::white(100, 80);
-        let dst = scale_lanczos3(&src, 50, 40);
+        let dst = scale_lanczos3(&src, 50, 40).expect("fits the pixmap limit");
         assert_eq!(dst.width, 50);
         assert_eq!(dst.height, 40);
     }
@@ -245,8 +267,8 @@ mod tests {
     /// `scale_lanczos3` returns a clone when source and target match.
     #[test]
     fn scale_lanczos3_noop_when_same_size() {
-        let src = Pixmap::new(4, 4, 200, 100, 50, 255);
-        let dst = scale_lanczos3(&src, 4, 4);
+        let src = Pixmap::try_new(4, 4, 200, 100, 50, 255).expect("fits the pixmap limit");
+        let dst = scale_lanczos3(&src, 4, 4).expect("fits the pixmap limit");
         assert_eq!(dst.width, 4);
         assert_eq!(dst.height, 4);
         assert_eq!(dst.data, src.data);
@@ -256,12 +278,12 @@ mod tests {
     #[test]
     fn scale_lanczos3_preserves_solid_color() {
         // Solid red 20×20 → 10×10
-        let src = Pixmap::new(20, 20, 200, 0, 0, 255);
-        let dst = scale_lanczos3(&src, 10, 10);
+        let src = Pixmap::try_new(20, 20, 200, 0, 0, 255).expect("fits the pixmap limit");
+        let dst = scale_lanczos3(&src, 10, 10).expect("fits the pixmap limit");
         assert_eq!(dst.width, 10);
         assert_eq!(dst.height, 10);
         // All output pixels should be close to red (200, 0, 0).
-        for chunk in dst.data.chunks_exact(4) {
+        for chunk in dst.data.as_chunks::<4>().0 {
             let (r, g, b) = (chunk[0], chunk[1], chunk[2]);
             assert!(
                 (r as i32 - 200).abs() <= 5 && g <= 5 && b <= 5,
@@ -274,11 +296,11 @@ mod tests {
     fn scale_lanczos3_zero_dst_dimension_returns_white_fallback() {
         let src = Pixmap::white(10, 10);
         // dst_w=0 → Pixmap::white(max(0,1)=1, 5)
-        let dst = scale_lanczos3(&src, 0, 5);
+        let dst = scale_lanczos3(&src, 0, 5).expect("fits the pixmap limit");
         assert_eq!(dst.width, 1);
         assert_eq!(dst.height, 5);
         // dst_h=0 → Pixmap::white(8, max(0,1)=1)
-        let dst2 = scale_lanczos3(&src, 8, 0);
+        let dst2 = scale_lanczos3(&src, 8, 0).expect("fits the pixmap limit");
         assert_eq!(dst2.width, 8);
         assert_eq!(dst2.height, 1);
     }

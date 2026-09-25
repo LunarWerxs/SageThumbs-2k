@@ -26,11 +26,10 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
-use crate::win::{
-    combo_sel, ctl, get_edit_text, open_url, run_dialog, set_clipboard_text, t, wide,
-    wm_dpichanged, wstr_to_string, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK,
-    URL_GITHUB,
+use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
+use st2k_appkit::win::{
+    combo_sel, ctl, get_edit_text, open_notify_link, open_url, run_dialog, set_clipboard_text, t,
+    wide, wm_dpichanged, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK, URL_GITHUB,
 };
 
 /// Where a submitted message goes. Same host as the sponsor manifest / update check.
@@ -104,10 +103,10 @@ pub(crate) unsafe fn show_feedback(owner: HWND) {
 /// `PrintWindow`ed like every other app-window shot, so the layout is verifiable
 /// without opening a window or touching the network.
 pub(crate) unsafe fn run_shot_feedback(out: &str) -> bool {
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KFeedback"),
             wndproc: Some(feedback_wndproc),
             title: t("fb_title"),
@@ -223,8 +222,8 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     );
     // `ctl` themes edits with DarkMode_CFD, which leaves a LIGHT vertical scrollbar;
     // DarkMode_Explorer renders it dark (the face/text stay dark via WM_CTLCOLOREDIT).
-    if crate::dark::is_dark() {
-        crate::dark::dark_control(msg, w!("DarkMode_Explorer"));
+    if st2k_appkit::dark::is_dark() {
+        st2k_appkit::dark::dark_control(msg, w!("DarkMode_Explorer"));
     }
 
     // Optional reply address — muted label, because it must not read as required.
@@ -304,19 +303,19 @@ fn build_body(cat: &str, msg: &str, contact: &str) -> String {
     let contact: String = contact.chars().take(MAX_CONTACT).collect();
     // The developer's own test box (HKCU DevMachine=1) tags the request, so test
     // submissions are distinguishable from real ones. Empty on every real install.
-    let dev = if sagethumbs2k_core::settings::is_dev_machine() {
+    let dev = if st2k_base::settings::is_dev_machine() {
         "&dev=1"
     } else {
         ""
     };
-    let enc = crate::http::form_enc;
+    let enc = st2k_appkit::http::form_enc;
     format!(
         "cat={}&msg={}&contact={}&v={}&os={}{}",
         enc(cat),
         enc(&msg),
         enc(&contact),
         enc(env!("CARGO_PKG_VERSION")),
-        enc(&crate::sponsors::os_tag()),
+        enc(&st2k_appkit::sponsors::os_tag()),
         dev,
     )
 }
@@ -361,6 +360,12 @@ fn looks_like_email(s: &str) -> bool {
     if domain.starts_with('-') || domain.ends_with('-') {
         return false;
     }
+    valid_email_host(domain)
+}
+
+/// Checks the host half of an email domain: a dot that is neither first nor last, no
+/// empty labels, and a TLD of two or more letters.
+fn valid_email_host(domain: &str) -> bool {
     // The domain needs a dot that is neither first nor last, no empty labels, and a TLD of
     // two or more letters — which is what rules out `me@localhost` and `me@1`.
     let Some((host, tld)) = domain.rsplit_once('.') else {
@@ -420,7 +425,7 @@ unsafe fn on_send(hwnd: HWND) {
     // the (thread-safe) post. A window torn down first just makes the post a no-op.
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let ok = crate::http::request(
+        let ok = st2k_appkit::http::request(
             "POST",
             FEEDBACK_URL,
             "Content-Type: application/x-www-form-urlencoded",
@@ -484,15 +489,7 @@ extern "system" fn feedback_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
-        // The intro + the "optional" email note read as supporting text, not as
-        // labels — muted BEFORE the generic static coloring claims them.
-        if msg == WM_CTLCOLORSTATIC {
-            let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
-            if id == ID_HEAD || id == ID_EMAIL_LBL {
-                return dark_ctlcolor_dim(wparam);
-            }
-        }
-        if let Some(r) = dark_ctlcolor(msg, wparam) {
+        if let Some(r) = try_ctlcolor(msg, wparam, lparam) {
             return r;
         }
         match msg {
@@ -513,22 +510,12 @@ extern "system" fn feedback_wndproc(
                 let nmhdr = lparam.0 as *const NMHDR;
                 let code = (*nmhdr).code;
                 if code == NM_CLICK || code == NM_RETURN {
-                    let link = lparam.0 as *const NMLINK;
-                    let url = wstr_to_string(&(*link).item.szUrl);
-                    if !url.is_empty() {
-                        open_url(&url);
-                    }
+                    open_notify_link(lparam.0 as *const NMLINK);
                 }
                 LRESULT(0)
             }
             WM_COMMAND => {
-                match (wparam.0 & 0xFFFF) as i32 {
-                    IDOK => on_send(hwnd),
-                    IDCANCEL => {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                    _ => {}
-                }
+                handle_command(hwnd, wparam);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -544,6 +531,31 @@ extern "system" fn feedback_wndproc(
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+/// The colour-message pre-dispatch: dim the supporting-text statics before the generic
+/// dark control colouring claims them, then let the shared dark handler try.
+unsafe fn try_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    // The intro + the "optional" email note read as supporting text, not as
+    // labels — muted BEFORE the generic static coloring claims them.
+    if msg == WM_CTLCOLORSTATIC {
+        let id = GetDlgCtrlID(HWND(lparam.0 as *mut c_void));
+        if id == ID_HEAD || id == ID_EMAIL_LBL {
+            return Some(dark_ctlcolor_dim(wparam));
+        }
+    }
+    dark_ctlcolor(msg, wparam)
+}
+
+/// Routes a WM_COMMAND id: OK sends the form, Cancel closes the dialog.
+unsafe fn handle_command(hwnd: HWND, wparam: WPARAM) {
+    match st2k_appkit::win::command_id(wparam) {
+        IDOK => on_send(hwnd),
+        IDCANCEL => {
+            let _ = DestroyWindow(hwnd);
+        }
+        _ => {}
     }
 }
 
@@ -641,8 +653,8 @@ mod tests {
 
     #[test]
     fn feedback_endpoint_and_issue_link_are_https() {
-        assert!(crate::http::split_https(FEEDBACK_URL).is_some());
-        assert!(crate::http::split_https(&issues_url()).is_some());
+        assert!(st2k_appkit::http::split_https(FEEDBACK_URL).is_some());
+        assert!(st2k_appkit::http::split_https(&issues_url()).is_some());
         assert!(issues_url().ends_with("/issues/new"));
     }
 }

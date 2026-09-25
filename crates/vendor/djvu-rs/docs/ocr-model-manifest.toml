@@ -1,0 +1,94 @@
+# OCR model manifest (#693).
+#
+# Pinned neural OCR model artifacts for the `ocr-onnx` feature. Weights are
+# NEVER committed to this repository and NEVER downloaded implicitly at build
+# or run time — fetch them explicitly with `scripts/fetch_ocr_models.sh`
+# (default destination: `models/ocr/`, gitignored and excluded from the
+# published crate).
+#
+# The Rust loader (`djvu_rs::ocr_onnx::manifest`) embeds this file at compile
+# time and refuses to load any model file whose byte size or SHA-256 does not
+# match its entry here — a mismatch is a hard, typed error, not a warning.
+# Bumping a model version therefore always means a PR that changes this file.
+#
+# Field contract (all fields required per entry):
+#   name    — stable manifest key used by the Rust API (never renamed casually)
+#   file    — canonical local file name under the models directory
+#   url     — direct download URL pinned to an immutable commit (never a branch)
+#   commit  — upstream repository commit the URL is pinned to
+#   size    — exact byte size of the artifact
+#   sha256  — lowercase hex SHA-256 of the exact bytes
+#   opset   — ONNX opset the graph declares (ai.onnx domain)
+#   license — SPDX identifier of the model weights' license
+#
+# Sources:
+# - PP-OCRv4 mobile det/rec: PaddleOCR models converted to ONNX by the
+#   RapidOCR project (https://huggingface.co/SWHL/RapidOCR, Apache-2.0).
+# - Cyrillic PP-OCRv5 mobile rec: official PaddlePaddle ONNX export
+#   (https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx,
+#   Apache-2.0). Its `inference.yml` config is pinned as a sibling artifact:
+#   it embeds the CTC character dictionary the recognizer decodes against
+#   (`opset = 0` marks it as a non-ONNX artifact).
+# All ONNX graphs are verified to load and run under tract-onnx 0.22 (see the
+# `ocr_onnx::detect` / `ocr_onnx::recognize` tests).
+
+[[model]]
+name = "ppocr-v4-mobile-det"
+file = "ch_PP-OCRv4_det_infer.onnx"
+url = "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx"
+commit = "1cfba2e90fc938db55889873735088de210cc173"
+size = 4745517
+sha256 = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+opset = 12
+license = "Apache-2.0"
+
+# Spike-verified under tract 0.22 but not wired into the pipeline yet: its
+# character dictionary has no pinned artifact (the upstream repo publishes
+# only the weights). Kept pinned for the planned Latin/Chinese extension.
+[[model]]
+name = "ppocr-v4-mobile-rec"
+file = "ch_PP-OCRv4_rec_infer.onnx"
+url = "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx"
+commit = "1cfba2e90fc938db55889873735088de210cc173"
+size = 10857958
+sha256 = "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+opset = 12
+license = "Apache-2.0"
+
+[[model]]
+name = "ppocr-v5-cyrillic-rec"
+file = "cyrillic_PP-OCRv5_mobile_rec.onnx"
+url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/resolve/2cef88145434beb8afa9dd82d77d799eb1ad7b29/inference.onnx"
+commit = "2cef88145434beb8afa9dd82d77d799eb1ad7b29"
+size = 8048799
+sha256 = "5371ee1ddaa7983cc62d0818d99e982b6804638c85e4f960d59a574094e172e5"
+opset = 7
+license = "Apache-2.0"
+
+# Deterministic metrics-corpus font (not an ONNX graph, opset = 0): PT Sans
+# regular from the official google/fonts mirror (SIL OFL 1.1; designed for
+# Russian, covers Latin + Cyrillic). Used by the synthetic CER/WER/IoU corpus
+# (`ocr_onnx::corpus`); pinned like every other artifact so the corpus
+# renders identically everywhere.
+[[model]]
+name = "metrics-font-pt-sans"
+file = "PT_Sans-Web-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/038b637da7b3fd956a4ed93ffc607c3d5e4ce172/ofl/ptsans/PT_Sans-Web-Regular.ttf"
+commit = "038b637da7b3fd956a4ed93ffc607c3d5e4ce172"
+size = 442960
+sha256 = "9cc831490532009bae2b3ce0d39c62adfc889060beb421593bfd9d2396d0f10a"
+opset = 0
+license = "OFL-1.1"
+
+# Companion config of ppocr-v5-cyrillic-rec (not an ONNX graph, opset = 0):
+# `PostProcess.CTCLabelDecode.character_dict` inside it is the pinned CTC
+# dictionary (850 chars; decode indices = blank, dict..., space).
+[[model]]
+name = "ppocr-v5-cyrillic-rec-config"
+file = "cyrillic_PP-OCRv5_mobile_rec.yml"
+url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/resolve/2cef88145434beb8afa9dd82d77d799eb1ad7b29/inference.yml"
+commit = "2cef88145434beb8afa9dd82d77d799eb1ad7b29"
+size = 6991
+sha256 = "5c76cc91fa98410178a09f498db10050d0ec1634a660053d3005ab7be581f501"
+opset = 0
+license = "Apache-2.0"

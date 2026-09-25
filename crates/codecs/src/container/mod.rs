@@ -1,0 +1,790 @@
+//! Ebook / comic-archive cover extraction — the native-Rust port of DarkThumbs.
+//!
+//! The shell hands us a byte stream with no extension, so we CONTENT-SNIFF the
+//! container by its magic bytes and pull out the cover image. The cover bytes
+//! then flow back through the normal tiered decoder (`decode::decode_full` ->
+//! `decode_image`), so we add zero new image-decode code — only cover *finding*.
+//!
+//! Everything here runs in Explorer's thumbnail host under `panic = "abort"`, so
+//! every parser works on `&[u8]` with checked slicing and bounded allocation; on
+//! any malformed input we return `None` and the shell shows the default icon.
+
+use image::DynamicImage;
+
+/// Combined `Read + Seek` for dynamic dispatch. Funneling every `lofty` read through one
+/// `&mut dyn ReadSeek` instead of a fresh monomorphization per concrete reader type (Cursor /
+/// the shell IStream / `BufReader<File>` plus lofty's internal `Take`/`Unsynchronized` wrappers,
+/// ~9 copies) trims ~400 KB off the DLL with identical behavior. Used by the audio cover
+/// extractor ([`audio`]) and [`crate::strip::read_audio_tags`].
+pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
+impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
+
+mod affinity;
+// Windows animated cursors (.ani) - the first shown frame, which is a whole .cur/.ico file.
+mod ani;
+mod creative;
+use creative::*;
+pub(crate) mod ai;
+mod aseprite;
+mod bgcode;
+mod solidworks;
+// Shared checked box-header size arithmetic for every ISO-BMFF-family box walker
+// in the tree (mp4.rs, streamsrc/mp4remux.rs, decode/{color,magick}.rs, strip/isobmff.rs).
+pub(crate) mod boxhdr;
+// Android packages (.apk) + split-bundle wrappers (.xapk/.apks/.apkm) — the
+// manifest-declared launcher icon, resolved through binary XML + resources.arsc.
+mod apk;
+mod audio;
+mod blend;
+mod icns;
+// Cinema 4D (.c4d) — carve the embedded document/scene preview JPEG.
+mod c4d;
+// CorelDRAW (.cdr/.cdt) / Corel Exchange (.cmx) — RIFF DISP preview DIB → BMP.
+mod cdr;
+mod clip;
+// Contact-sheet compositor for generic archive thumbnails (2-4 images, one tile).
+pub(crate) mod collage;
+// DjVu (.djvu) cover decode — via the maintained pure-Rust `djvu-rs` crate (see djvu.rs).
+mod djvu;
+// A DDS header in front of one texture surface, for the game-texture containers below.
+mod ddswrap;
+mod dwg;
+// AutoCAD drawing exchange (.dxf) - the THUMBNAILIMAGE section's DIB preview.
+mod dxf;
+mod eps;
+pub(crate) use eps::is_eps;
+mod epub;
+mod fb2;
+mod gcode;
+mod indd;
+// Amiga / Deluxe Paint IFF ILBM (.iff/.ilbm/.lbm) — a real planar-bitmap decoder.
+mod ilbm;
+// Khronos KTX 1 textures (.ktx) - mip level 0 through the DDS decoders.
+mod ktx;
+mod max;
+mod mobi;
+// Shared entry-name decoding (Shift-JIS / CP437 fallback for a name with no UTF-8 flag),
+// used by zipfmt and rar so a Japanese or DOS-era archive listing doesn't come back mojibake.
+mod names;
+pub use names::decode_codepage;
+mod office;
+pub mod ole;
+// NuGet (.nupkg) and VSIX (.vsix) packages - the icon the manifest names.
+mod package;
+mod pdn;
+// Alias/Wavefront PIX (.pix) - run-length pixels with no signature; recognised by the runs
+// adding up to the picture exactly at end-of-file, then decoded natively.
+mod pix;
+mod project;
+mod psd;
+// Photoshop's stored composite, read by offset whatever the document's size (issue #46).
+mod psdmerged;
+mod psp;
+mod rar;
+/// The RAR block-header walk and its seed, by name for the fuzzer (`crate::fuzz`).
+#[cfg(test)]
+pub(crate) use rar::{covers_seek as rar_covers_seek, fuzz_seed as rar_fuzz_seed};
+mod rhino;
+pub mod select;
+mod sevenz;
+/// The largest 7z end header the archive probe lets through (see `sevenz::header_is_safe`).
+pub(crate) use sevenz::MAX_HEADER_BYTES as SEVENZ_MAX_HEADER_BYTES;
+// Seattle FilmWorks (.sfw) and its PhotoWorks album (.pwp) - a JPEG with renumbered markers
+// and no Huffman tables, unwrapped back into one.
+mod sfw;
+// DEC SIXEL (.six/.sixel) - the terminal image format, decoded natively.
+mod sixel;
+mod skp;
+mod spla;
+mod tarfmt;
+pub mod util;
+// Valve Texture Format (.vtf) - the full-resolution level through the DDS decoders.
+mod vtf;
+// GIMP XCF (.xcf) — native decoder; ImageMagick can't read the modern v011 format.
+mod xcf;
+
+/// Decode a GIMP `.xcf` from a seekable source without buffering the file.
+///
+/// Exposed because `.xcf` is the one format where the whole-file ceiling is not a nuisance but
+/// a wall: it bakes in no preview to carve out of a prefix, and Windows has no codec for it, so
+/// every other oversized-file rescue declines and a big GIMP file gets the stock icon. Its own
+/// decoder is a walk over absolute file offsets, so it can read only the pieces it needs.
+///
+/// `target_edge` is the longest side the caller can actually use. Passing it lets the decoder
+/// flatten on a REDUCED grid instead of building the full canvas and throwing it away, which
+/// on a big layered file is the difference between ten seconds and twenty milliseconds. `None`
+/// keeps the full-resolution path for callers that want real pixels.
+pub(crate) fn xcf_from_reader<R: std::io::Read + std::io::Seek>(
+    src: R,
+    target_edge: Option<u32>,
+) -> Option<image::DynamicImage> {
+    xcf::extract_seek(src, target_edge)
+}
+
+/// A Photoshop document's picture - its merged composite, or its flattened layers when it was
+/// saved without one - read off `src` by offset and shrunk to at most `target_edge` on its long
+/// side as it is read, so the file's size does not matter (issue #46). `None` for a document
+/// it does not read (see `psdmerged`); the caller keeps its route.
+pub(crate) fn psd_merged_from_reader<R: std::io::Read + std::io::Seek>(
+    src: R,
+    target_edge: u32,
+) -> Option<image::DynamicImage> {
+    psdmerged::from_reader(src, target_edge)
+}
+
+/// [`xcf_from_reader`] for bytes already in hand.
+pub(crate) fn xcf_from_bytes_scaled(
+    bytes: &[u8],
+    target_edge: Option<u32>,
+) -> Option<image::DynamicImage> {
+    xcf::extract_scaled(bytes, target_edge)
+}
+
+/// Decode a DjVu cover for a caller that knows the longest side it can use.
+///
+/// Unlike [`xcf_from_bytes_scaled`] this is NOT about doing less work: a DjVu render costs what
+/// its JB2 mask and IW44 background cost, whatever size they are composited into, and shrinking
+/// the render only degrades the picture (see `djvu::RENDER_CAP`). The target is here to answer
+/// one question the decoder cannot answer without it - is the file's baked TH44 thumbnail big
+/// enough to serve THIS request? It is capped at 128 px, so it answers a 96 px icon view for
+/// almost nothing and must be rendered past for anything larger. `extract_cover` carries no
+/// target, so it has to assume the largest, which is right for Convert and wasteful for a
+/// 96 px tile. `None` here means the same.
+pub(crate) fn djvu_from_bytes_scaled(
+    bytes: &[u8],
+    target_edge: Option<u32>,
+) -> Option<image::DynamicImage> {
+    djvu::extract_scaled(bytes, target_edge)
+}
+
+// Waveform thumbnails for raw-PCM audio (WAV/AIFF) with no embedded cover art.
+mod magic;
+mod waveform;
+mod zipfmt;
+use magic::*;
+pub(crate) use magic::{is_7z, looks_like_djvu, looks_like_raster, looks_like_xcf};
+pub use magic::{is_generic_archive_magic, looks_like_audio};
+// Synthetic, structurally-valid seeds + direct fuzz entry points for the extractors above.
+// Test-only. Lives inside `container` because the format modules are private to it — see the
+// module docs for why CI needed this at all.
+#[cfg(test)]
+pub(crate) mod fuzzseed;
+// Test-only re-export so `crate::fuzz` can aim at the APK sub-parsers directly (a zip's CRC
+// check stops any mutation from reaching them through `apk::extract` — see `fuzz::inner_targets`).
+// The format modules themselves stay private to `container`.
+#[cfg(test)]
+pub(crate) use apk::fuzzapi as apk_fuzzapi;
+
+/// A cover: either raw image-file bytes (re-decoded by the image tiers) or
+/// already-decoded pixels (DjVu, which is not a standalone image file).
+pub enum CoverOut {
+    Bytes(Vec<u8>),
+    Image(DynamicImage),
+}
+
+/// Max bytes we'll read for one cover entry (DarkThumbs' CBXMEM cap, 32 MiB).
+pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
+
+/// Upper bound on the entries any archive listing or cover pick may return (shared by
+/// [`list_archive`] and every `pick_covers` listing: zip/7z/rar). It is passed INTO each
+/// format reader, so the reader itself stops collecting at the cap: a crafted directory that
+/// declares millions of entries never becomes millions of `String` allocations, in the
+/// viewer's UI thread or in the thumbnail host.
+pub(crate) const MAX_LIST_ENTRIES: usize = 50_000;
+
+/// List an archive's entries — `(name, uncompressed_size, is_dir)` — WITHOUT extracting anything
+/// (central-directory / header read only, so no decompression-bomb risk). Dispatches by signature
+/// across ZIP-family, 7-Zip, and RAR. The count is capped so a pathological archive with millions
+/// of tiny entries can't stall the viewer. `None` if `bytes` isn't a recognized archive.
+pub fn list_archive(bytes: &[u8]) -> Option<Vec<(String, u64, bool)>> {
+    let entries = if is_zip(bytes) {
+        zipfmt::list_bytes(bytes, MAX_LIST_ENTRIES)?
+    } else if is_7z(bytes) {
+        sevenz::list(bytes, MAX_LIST_ENTRIES)?
+    } else if is_rar(bytes) {
+        rar::list(bytes, MAX_LIST_ENTRIES)?
+    } else {
+        return None;
+    };
+    Some(
+        entries
+            .into_iter()
+            .map(|e| (e.name, e.size, e.is_dir))
+            .collect(),
+    )
+}
+
+/// Album art from a seekable reader (the shell's IStream). lofty seeks to the
+/// metadata, so we read only what's needed to reach the picture — no whole-file
+/// read, hence no size cap on audio.
+pub fn audio_art_from_reader<R: std::io::Read + std::io::Seek>(reader: R) -> Option<Vec<u8>> {
+    audio::extract_reader(reader)
+}
+
+pub use audio::AudioTags;
+
+/// Artist/album/title/track from an ASF/WMA file (lofty can't read ASF, so the
+/// `strip::read_audio_tags` lofty path would return nothing). `None` for non-ASF
+/// input → the caller falls back to lofty for every other audio format.
+pub(crate) fn audio_asf_tags<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+) -> Option<AudioTags> {
+    audio::asf_tags(reader)
+}
+
+/// Does `head` open a container whose baked-in preview lives in the FIRST bytes of
+/// the file — so a bounded head prefix is enough to thumbnail it, no matter how big
+/// the file is? Blender writes the `TEST` thumbnail block right after the file
+/// header (offset ~100), and Photoshop's image-resources section (resource 1036,
+/// the baked JPEG preview) sits just past the fixed header — both LONG before the
+/// scene/layer data that makes these files routinely blow past the thumbnail
+/// provider's MaxSize cap. (Compressed .blend has no `BLENDER` magic and correctly
+/// stays excluded.) Used by the provider's oversized-file path and the CLI preview
+/// verbs to rescue exactly these formats from the size skip.
+pub fn has_head_preview(head: &[u8]) -> bool {
+    head.starts_with(b"BLENDER") // .blend / .blend1..32 (TEST block)
+        || head.starts_with(b"8BPS") // PSD + PSB (image resource 1036)
+        // gzip / zstd: a COMPRESSED .blend hides its BLENDER magic behind the
+        // wrapper, but the TEST block still sits at the head of the decompressed
+        // stream (see `blend_compressed_head`). This over-accepts other oversized
+        // gzip/zstd files, but the attempt is bounded (16 MiB prefix + capped
+        // inflate) and a miss lands on the default icon exactly as before.
+        || head.starts_with(&[0x1F, 0x8B])
+        || head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+}
+
+/// If `bytes` open a gzip or zstd stream whose DECOMPRESSED head is a Blender file
+/// (the "Compress" save option — gzip historically, zstd since Blender 3.0), return
+/// a bounded decompressed prefix for `blend::extract`. The inner magic is peeked
+/// FIRST (12 bytes) so non-Blender gzip payloads (`.svgz`/`.emz`) skip the big
+/// inflate. Truncation-tolerant: the input may itself be a bounded prefix of an
+/// oversized file, so a mid-stream EOF keeps whatever decompressed so far — the
+/// TEST block lives in the first kilobytes, far inside any such prefix. Output is
+/// capped (decompression-bomb guard) and the caller feeds it straight to
+/// `blend::extract`, never back through `extract_cover` — no recursion.
+fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    const HEAD_MAX: usize = 16 * 1024 * 1024;
+    let mut reader: Box<dyn Read + '_> = if bytes.starts_with(&[0x1F, 0x8B]) {
+        Box::new(flate2::read::GzDecoder::new(bytes))
+    } else if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        Box::new(ruzstd::decoding::StreamingDecoder::new(bytes).ok()?)
+    } else {
+        return None;
+    };
+    let mut magic = [0u8; 12];
+    reader.read_exact(&mut magic).ok()?;
+    if !magic.starts_with(b"BLENDER") {
+        return None;
+    }
+    let mut out = magic.to_vec();
+    let mut chunk = vec![0u8; 1 << 16];
+    while out.len() < HEAD_MAX {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            // Truncated input (a bounded prefix of an oversized file): keep what
+            // we have — the thumbnail block is at the head.
+            Err(_) => break,
+        }
+    }
+    Some(out)
+}
+
+/// If `bytes` is a recognized ebook/comic container, return its cover image.
+///
+/// Sniffed in four groups, tried in order (same overall priority as before the
+/// split — see each group's own doc comment for why a group's internal order
+/// matters, e.g. APK-before-zip and PSD-falls-through-to-the-magick-tier).
+pub fn extract_cover(bytes: &[u8]) -> Option<CoverOut> {
+    try_generic_archive_cover(bytes)
+        .or_else(|| try_creative_app_cover(bytes))
+        .or_else(|| try_ebook_and_cad_cover(bytes))
+        .or_else(|| try_misc_cover(bytes))
+}
+
+/// Generic archive containers: APK/zip/7z/rar.
+fn try_generic_archive_cover(bytes: &[u8]) -> Option<CoverOut> {
+    // ZIP family: Android packages (and their split-bundle wrappers) FIRST, then
+    // EPUB / CBZ / FBZ / any zip of images. The archive is opened and its central
+    // directory parsed exactly ONCE and shared between the APK dispatch check and
+    // whichever extractor claims it — `apk::looks_like_apk` used to open its own
+    // `ZipArchive` for the check and `apk::extract`/`zipfmt::extract` opened a
+    // second one for the real read, parsing the same directory twice per file.
+    if is_zip(bytes) {
+        let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+            return None;
+        };
+        // Android packages and their split-bundle wrappers: the REAL launcher icon
+        // via AndroidManifest.xml / resources.arsc. Must stay BEFORE the generic
+        // zip branch — an APK is a zip, and the generic image-pick would grab an
+        // arbitrary res/ drawable instead of the declared icon. A `.apk`-suffixed
+        // entry that turns out not to be a real wrapper (nothing resolvable behind
+        // it) falls through to the generic zip cover pick below instead of losing
+        // the cover entirely.
+        if apk::archive_is_apk(&mut zip) {
+            if let Some(icon) = apk::extract_from_archive(&mut zip) {
+                return Some(CoverOut::Bytes(icon));
+            }
+        }
+        return zipfmt::extract_from_archive(&mut zip).map(CoverOut::Bytes);
+    }
+    // 7-Zip: CB7.
+    if is_7z(bytes) {
+        return sevenz::extract(bytes).map(CoverOut::Bytes);
+    }
+    // RAR 4.x ("Rar!\x1A\x07\x00") and 5.x ("Rar!\x1A\x07\x01\x00"): CBR. Pure-Rust
+    // `rars` — always available now (no feature gate).
+    if bytes.starts_with(b"Rar!\x1A\x07") {
+        return rar::extract(bytes).map(CoverOut::Bytes);
+    }
+    None
+}
+
+/// Ebook/comic and CAD/office containers: Mobi, CBT, FB2, SketchUp, DWG,
+/// Rhino, InDesign, and OLE2 (3ds Max / legacy Office).
+fn try_ebook_and_cad_cover(bytes: &[u8]) -> Option<CoverOut> {
+    // Kindle / Mobipocket: PalmDB type+creator "BOOKMOBI" at offset 60.
+    if bytes.len() > 68 && &bytes[60..68] == b"BOOKMOBI" {
+        return mobi::extract(bytes).map(CoverOut::Bytes);
+    }
+    // TAR-based comic (CBT): "ustar" magic at offset 257.
+    if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
+        return tarfmt::extract(bytes).map(CoverOut::Bytes);
+    }
+    // FictionBook 2: XML containing "<FictionBook".
+    if fb2::looks_like_fb2(bytes) {
+        return fb2::extract(bytes).map(CoverOut::Bytes);
+    }
+    // SketchUp .skp: "SketchUp Model" header → carve the embedded thumbnail PNG.
+    if skp::looks_like_skp(bytes) {
+        return skp::extract(bytes).map(CoverOut::Bytes);
+    }
+    // AutoCAD .dwg: "AC10xx" header → preview section (PNG / DIB→BMP / WMF).
+    if dwg::looks_like_dwg(bytes) {
+        return dwg::extract(bytes).map(CoverOut::Bytes);
+    }
+    // Rhino .3dm: "3D Geometry File Format" → zlib-inflated DIB preview.
+    if rhino::looks_like_3dm(bytes) {
+        return rhino::extract(bytes).map(CoverOut::Bytes);
+    }
+    // Adobe InDesign .indd: master-GUID header → base64 JPEG in the XMP packet.
+    if indd::looks_like_indd(bytes) {
+        return indd::extract(bytes).map(CoverOut::Bytes);
+    }
+    // OLE2 compound file (3ds Max .max, legacy Office/Visio/Publisher): the
+    // \x05SummaryInformation thumbnail. `extract` returns a CoverOut directly
+    // (raw RGB → pixels, or a CF_DIB → BMP bytes).
+    // SolidWorks (OLE-era files): the `PreviewPNG` stream. Before the 3ds Max arm, which
+    // claims EVERY compound file for its SummaryInformation thumbnail; this one only answers
+    // when that specific stream exists and falls through otherwise.
+    if let Some(png) = solidworks::extract(bytes) {
+        return Some(CoverOut::Bytes(png));
+    }
+    if max::looks_like_max(bytes) {
+        return max::extract(bytes);
+    }
+    None
+}
+
+/// Everything else: audio album art, then the G-code last resort.
+fn try_misc_cover(bytes: &[u8]) -> Option<CoverOut> {
+    // Animated cursors (RIFF `ACON`), Valve and Khronos textures: all magic-keyed, and each
+    // answers with its own picture or `None`.
+    if ani::looks_like_ani(bytes) {
+        return ani::extract(bytes).map(CoverOut::Bytes);
+    }
+    if vtf::looks_like_vtf(bytes) {
+        return vtf::extract(bytes).map(CoverOut::Bytes);
+    }
+    if ktx::looks_like_ktx(bytes) {
+        return ktx::extract(bytes).map(CoverOut::Bytes);
+    }
+    // Audio with embedded album art (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/…).
+    if audio::looks_like_audio(bytes) {
+        return audio::extract(bytes).map(CoverOut::Bytes);
+    }
+    // PrusaSlicer binary G-code: the slicer's preview stored as whole image blocks.
+    if bgcode::looks_like_bgcode(bytes) {
+        return bgcode::extract(bytes).map(CoverOut::Bytes);
+    }
+    // AutoCAD DXF: the preview section at the end of the text (the drawing is never parsed).
+    if dxf::looks_like_dxf(bytes) {
+        return dxf::extract(bytes).map(CoverOut::Bytes);
+    }
+    // DEC SIXEL: a terminal control string, possibly after a little printable chatter.
+    if sixel::looks_like_sixel(bytes) {
+        return sixel::extract(bytes).map(CoverOut::Image);
+    }
+    // 3D-printer G-code with an embedded base64 PNG preview (text scan; bails
+    // fast on binary, so it's a cheap last resort).
+    if let Some(png) = gcode::extract(bytes) {
+        return Some(CoverOut::Bytes(png));
+    }
+    // Alias PIX, dead last: it has no magic, so everything with a signature has had its turn
+    // by now. The header test is ten bytes; only a file whose run lengths add up to exactly
+    // width x height on its final byte is decoded (see `pix.rs`).
+    if pix::looks_like_alias_pix(bytes) {
+        return pix::extract(bytes).map(CoverOut::Image);
+    }
+    None
+}
+
+/// Stream a cover from an OVERSIZED container (past the in-memory size cap) using a
+/// seekable reader — the shell's IStream — so a multi-hundred-MB file thumbnails
+/// without ever buffering it. ZIP-family and 7-Zip archives seek to the central
+/// directory + one cover entry; Clip Studio `.clip` seeks to the embedded SQLite
+/// database at the file's tail and reads only that (a big canvas's bulk is layer
+/// raster chunks we never touch). A CBR walks its RAR block headers and reads only the cover's
+/// entry (`rar::covers_seek`). `head` is the
+/// first bytes (already peeked) for the magic sniff.
+pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    head: &[u8],
+    prefs: &select::CoverPrefs,
+) -> Option<Vec<u8>> {
+    // ZIP family: CBZ / ZIP (and any zip of images).
+    if is_zip(head) {
+        // APK FIRST, exactly as in the buffered path above. An Android package IS a zip, so
+        // without this an oversized one takes the generic cover pick and shows an arbitrary
+        // bundled drawable instead of its launcher icon. Oversized is not the rare case here:
+        // `.xapk`/`.apks` split bundles for big games are precisely the ones that pass
+        // `limits::MAX_INPUT_BYTES` and reach this path rather than the buffered one.
+        // The already-open archive is shared with `extract_from_archive` instead of being
+        // re-parsed, and a `.apk`-suffixed entry that turns out not to be a real wrapper
+        // falls through to the generic pick below instead of losing the cover entirely.
+        let Ok(mut zip) = zip::ZipArchive::new(reader) else {
+            return None;
+        };
+        if apk::archive_is_apk(&mut zip) {
+            if let Some(icon) = apk::extract_from_archive(&mut zip) {
+                return Some(icon);
+            }
+        }
+        return zipfmt::cover_from_reader(zip.into_inner(), prefs);
+    }
+    // 7-Zip: CB7.
+    if is_7z(head) {
+        return sevenz::extract_seek(reader, prefs);
+    }
+    // RAR: CBR. The block headers are walked and only the cover's entry is read.
+    if is_rar(head) {
+        return rar::covers_seek(reader, 1, prefs)
+            .and_then(|mut covers| (!covers.is_empty()).then(|| covers.swap_remove(0)));
+    }
+    // Clip Studio Paint: the preview PNG from the tail CHNKSQLi database.
+    if head.starts_with(b"CSFCHUNK") {
+        return clip::extract_seek(reader);
+    }
+    None
+}
+
+/// How much of a big file's end is read for a preview written there (a DXF's `THUMBNAILIMAGE`
+/// section: up to 4 MiB of image as hex lines).
+pub const SEEK_TAIL_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The cover of a file too big to hold, for the formats whose preview is found by OFFSET
+/// rather than by reading from the start: a compound file's streams (SolidWorks, 3ds Max,
+/// legacy Office, Visio, Publisher) through its FAT, a DOS EPS's preview through its header,
+/// a DXF's preview section at its end. Each reads only what it needs, so the file's size costs
+/// nothing; the same extractors answer for a small file, so the two draw the same picture.
+pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Option<CoverOut> {
+    use std::io::{Read, SeekFrom};
+    if ole::looks_like_ole(head) {
+        if let Some(png) = solidworks::extract_from(&mut r) {
+            return Some(CoverOut::Bytes(png));
+        }
+        return max::extract_from(&mut r);
+    }
+    if head.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
+        return eps::dos_eps_cover_from_reader(&mut r);
+    }
+    if dxf::looks_like_dxf(head) {
+        let len = r.seek(SeekFrom::End(0)).ok()?;
+        let at = len.saturating_sub(SEEK_TAIL_BYTES);
+        r.seek(SeekFrom::Start(at)).ok()?;
+        let mut tail = Vec::new();
+        r.by_ref()
+            .take(SEEK_TAIL_BYTES)
+            .read_to_end(&mut tail)
+            .ok()?;
+        return dxf::extract_tail(head, &tail).map(CoverOut::Bytes);
+    }
+    None
+}
+
+/// Does streaming this archive need the FULL in-memory buffer? Only RAR: `rars`
+/// accepts no `Read + Seek` source, while zip/7z read the entry list and the
+/// picked entries directly off a seekable reader.
+pub fn archive_needs_buffer(head: &[u8]) -> bool {
+    is_rar(head)
+}
+
+/// Up to `want` cover images from a GENERIC archive buffer (.zip/.rar/.7z), for
+/// the contact-sheet thumbnail — cover-named images first, then natural-sorted
+/// pages ([`select::pick_covers`]). Listing is header/central-directory only;
+/// extraction is bounded per entry ([`MAX_COVER`]) and, for solid archives, one
+/// budgeted sequential pass. `None` when the archive holds no readable image —
+/// the caller fails the thumbnail and Explorer shows the stock icon.
+pub fn archive_covers(
+    bytes: &[u8],
+    want: usize,
+    prefs: &select::CoverPrefs,
+) -> Option<Vec<Vec<u8>>> {
+    if is_zip(bytes) {
+        return zipfmt::covers_from_reader(std::io::Cursor::new(bytes), want, prefs);
+    }
+    if is_7z(bytes) {
+        return sevenz::extract_seek_n(std::io::Cursor::new(bytes), want, prefs);
+    }
+    if is_rar(bytes) {
+        return rar::extract_n(bytes, want, prefs);
+    }
+    None
+}
+
+/// Streaming [`archive_covers`] over a seekable reader (the shell's IStream or an
+/// open `File`): the entry LIST comes from the central directory / archive header
+/// (zip stores it at the tail — one seek, a few KB), then only the picked entries
+/// are read. A multi-GB zip of photos costs its directory plus 4 images. A RAR walks its block
+/// headers instead (`rar::covers_seek`); inside the input ceiling the shell still reads a RAR
+/// whole ([`archive_needs_buffer`]), the route this was checked against.
+pub fn archive_covers_seek<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    head: &[u8],
+    want: usize,
+    prefs: &select::CoverPrefs,
+) -> Option<Vec<Vec<u8>>> {
+    if is_zip(head) {
+        return zipfmt::covers_from_reader(reader, want, prefs);
+    }
+    if is_7z(head) {
+        return sevenz::extract_seek_n(reader, want, prefs);
+    }
+    if is_rar(head) {
+        return rar::covers_seek(reader, want, prefs);
+    }
+    None
+}
+
+/// REAL pixel dimensions of the underlying document, for container formats whose
+/// extracted cover is only a small baked-in preview (PSD/PSB today). Captions /
+/// info displays show these instead of the preview's dimensions — a 4700×800 PSD
+/// must not read "160 × 26 px" just because its thumbnail does.
+pub fn real_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"8BPS") {
+        return psd::header_dims(bytes);
+    }
+    // JPEG 2000 has no `image`-crate probe, so "Image info" used to fall all the way
+    // through to a full decode and then report the DECODED size. That decode is capped at
+    // 4096 px, so a 9958x7686 scan confidently reported itself as 4096x3161 — a wrong
+    // number, not merely a slow one. Reading the codestream's SIZ marker answers it exactly,
+    // from the header, with no decode at all.
+    if let Some(d) = crate::decode::jp2_dimensions(bytes) {
+        return Some(d);
+    }
+    None
+}
+
+/// [`real_dims`], falling back to a full decode's dimensions when the cheap header probe
+/// doesn't recognise the format. This exact two-step fallback — the container header probe,
+/// then a full [`crate::decode::decode_full`] — used to be hand-copied verbatim at every
+/// dims-probing call site that needed it (`strip::read_info_impl`, `strip::read_info_verbose`,
+/// `verbs::fileops::dims`); one shared implementation here so a future change to the chain
+/// can't update some copies and miss others.
+///
+/// `decode_full` is the EXPENSIVE tier (it can spawn an ImageMagick subprocess), so a caller
+/// that must stay cheap for a bulk probe (e.g. `fileops::page_dims_from_head`, run once per
+/// CBZ page) should keep calling [`real_dims`] alone instead of this.
+pub fn real_or_decoded_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    real_dims(bytes).or_else(|| {
+        crate::decode::decode_full(bytes)
+            .ok()
+            .map(|i| (i.width(), i.height()))
+    })
+}
+
+/// True when a PSD/PSB document is transparent (its merged composite has an alpha
+/// channel). The baked-in preview (resource 1036) is a JPEG with no alpha, so the
+/// thumbnail/preview path renders the real layer composite for these instead of a
+/// flat white preview. See [`psd::has_alpha`].
+pub fn psd_has_alpha(bytes: &[u8]) -> bool {
+    psd::has_alpha(bytes)
+}
+
+/// Long edge of the preview a PSD/PSB bakes into resource 1036, measured without decoding
+/// it. `None` when there is none, or none we can measure. See [`psd::preview_dims`].
+pub fn psd_preview_long_edge(bytes: &[u8]) -> Option<u32> {
+    psd::preview_dims(bytes).map(|(w, h)| w.max(h))
+}
+
+/// The baked preview's own JPEG bytes, for a caller that needs to look at its PIXELS rather
+/// than its size — `decode` compares it against a rendered composite before preferring one
+/// over the other. Named apart from the internal extractor so the intent is visible at the
+/// call site: this is the picture we would otherwise have shown.
+pub fn psd_baked_preview(bytes: &[u8]) -> Option<Vec<u8>> {
+    psd::extract(bytes)
+}
+
+/// Long edge of a head-baked preview, **but only for containers where reading the WHOLE file
+/// would offer a better picture than that preview** (issue #33).
+///
+/// This is the question [`crate::streamsrc`]'s head-preview fast path has to answer before it
+/// commits to a bounded prefix, and it is narrower than "how big is the preview". A `None`
+/// means *do not second-guess the prefix* — and Blender and DWG answer `None` deliberately,
+/// not by omission: their baked preview is the only picture in the file, so declining it would
+/// buy the identical image for the price of reading the whole document. Photoshop is the one
+/// member because a PSD carries a merged composite behind its ~160 px thumbnail, and
+/// [`crate::decode`] can render it.
+pub fn upgradable_head_preview_edge(bytes: &[u8]) -> Option<u32> {
+    if !bytes.starts_with(b"8BPS") {
+        return None;
+    }
+    psd_preview_long_edge(bytes)
+}
+
+/// Head-preview prefix sizing: how many leading bytes are enough to extract
+/// this container's baked preview, or None when there's no bounded-prefix fast
+/// path and the caller should read the whole file. `ext` is the file's lowercase
+/// extension when the caller can recover one (G-code has no magic bytes, so it is
+/// reachable ONLY by extension); magic-identified formats ignore it.
+///
+/// The members, and why each is safe to shorten:
+///   * PSD/PSB — exact: header + Color Mode Data + the Image Resources section
+///     ([`psd::preview_prefix_len`], which also bows out for transparent documents
+///     that need the full file for their composite).
+///   * `.dwg` — exact: the header seeker names the preview section, whose record
+///     table names each payload ([`dwg::preview_prefix_len`]).
+///   * plain `.blend` — the `blanket` cap; its TEST thumbnail sits ~100 bytes in.
+///   * `.gcode`/`.gco` — [`gcode::SCAN_LIMIT`], which [`gcode::extract`] already
+///     clamps to, so the shortened read is byte-identical to the whole-file one.
+///
+/// Deliberately EXCLUDED: the gzip/zstd wrappers that [`has_head_preview`]
+/// over-accepts for the OVERSIZED rescue (under the cap they'd cost every ordinary
+/// .gz/.svgz an extra bounded inflate for nothing), and every format whose preview
+/// needs a tail index, a full scan, or a real pixel decode — a bounded prefix
+/// cannot help those, and guessing one would just add a wasted read.
+pub fn head_preview_len<R: std::io::Read + std::io::Seek>(
+    head: &[u8],
+    ext: Option<&str>,
+    r: &mut R,
+    blanket: u64,
+) -> Option<u64> {
+    if head.starts_with(b"8BPS") {
+        return psd::preview_prefix_len(r);
+    }
+    if head.starts_with(b"BLENDER") {
+        return Some(blanket);
+    }
+    if dwg::looks_like_dwg(head) {
+        return dwg::preview_prefix_len(r);
+    }
+    if matches!(ext, Some("gcode" | "gco")) {
+        return Some(gcode::SCAN_LIMIT as u64);
+    }
+    None
+}
+
+/// The ordered decide-and-commit shared by BOTH head-preview fast paths:
+/// [`crate::decode`]'s `head_preview_file_fast` (by path) and [`crate::streamsrc`]'s
+/// `head_preview_fast` (by `IStream`). Sizes the bounded prefix ([`head_preview_len`],
+/// clamped to `blanket`), refuses one that would be the whole file, then commits only
+/// when the caller's mech-specific `read_prefix` yields bytes that [`extract_cover`]
+/// finds a preview in AND that preview can serve `target_edge` (via
+/// [`crate::decode::embedded_preview_serves`]; `ANY_PREVIEW` means every preview
+/// qualifies). Keeping the ordering in one place is what stops the two front ends
+/// drawing different pictures of the same file.
+///
+/// `read_prefix` performs the actual prefix read — a `File` handle here, a shell
+/// stream there — and is handed the (already rewound) reader and the byte count.
+/// The reader is parked back at 0 before [`read_prefix`] runs, because
+/// [`head_preview_len`] seeks the shared stream around.
+pub(crate) fn head_preview_prefix<R, F>(
+    head: &[u8],
+    ext: Option<&str>,
+    r: &mut R,
+    size: u64,
+    blanket: u64,
+    target_edge: u32,
+    read_prefix: F,
+) -> Option<Vec<u8>>
+where
+    R: std::io::Read + std::io::Seek,
+    F: FnOnce(&mut R, u64) -> Option<Vec<u8>>,
+{
+    let wanted = head_preview_len(head, ext, r, blanket);
+    // The length probe seeks the SHARED stream around; park it back at 0 before the
+    // prefix read. Every downstream consumer re-seeks anyway — this is insurance for
+    // future ones that might not.
+    let _ = r.seek(std::io::SeekFrom::Start(0));
+    let wanted = wanted?.min(blanket);
+    if wanted >= size {
+        return None; // prefix would be the whole file — the normal read is equivalent
+    }
+    let prefix = read_prefix(r, wanted)?;
+    extract_cover(&prefix)?;
+    if let Some(edge) = upgradable_head_preview_edge(&prefix) {
+        if !crate::decode::embedded_preview_serves(edge, target_edge) {
+            return None;
+        }
+    }
+    Some(prefix)
+}
+
+/// Raster-image extensions we accept as an archive cover. A curated subset of the
+/// formats our decoder can read (NOT all of `formats::FORMATS` — most FORMATS
+/// entries, e.g. ebook/audio/document types, are not valid cover images). Mirrors
+/// DarkThumbs' IsImage set (common.cpp) — including ICO, the camera-RAW types,
+/// JPEG-XR and HEIF that our WIC tier reads.
+///
+/// Kept as a const (not inlined in a `match`) so the set is greppable and the
+/// `cover_exts_are_known_formats` test can assert it against `FORMATS`. Every
+/// entry must be in `FORMATS` except the documented [`COVER_ONLY_EXCEPTIONS`].
+pub(crate) const COVER_IMAGE_EXTS: &[&str] = &[
+    "bmp", "ico", "gif", "jpg", "jpe", "jfif", "jpeg", "png", "tif", "tiff", "svg", "webp", "jxr",
+    "nrw", "nef", "dng", "cr2", "heif", "heic", "avif", "jxl",
+    // JPEG-2000 — decodes only on the full (ImageMagick/openjpeg) install, so
+    // `select::pick_cover` treats these as a LAST RESORT: a .jp2 page never shadows a
+    // sibling .jpg that the compact (no-magick) install could actually render.
+    "jp2", "j2k", "jpf", "jpx", "jpm",
+];
+
+/// Cover extensions we accept that are intentionally NOT standalone `FORMATS`
+/// entries: WIC can decode them as an archive cover, but we don't hook the bare
+/// file type in Explorer. Keep this list as small as possible — if one of these
+/// later joins `FORMATS`, the test forces it out of here. (Consumed only by the
+/// drift tests, hence `allow(dead_code)` in non-test builds.)
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const COVER_ONLY_EXCEPTIONS: &[&str] = &[
+    // (Currently empty: `jxr` graduated into FORMATS as a hooked JPEG XR format, so it
+    // now satisfies the cover-set check via FORMATS directly. Any future WIC-decodable
+    // cover type that we deliberately DON'T hook as a standalone format goes here.)
+];
+
+/// Does `name` (a path inside an archive) have a raster-image extension we accept
+/// as a cover? See [`COVER_IMAGE_EXTS`].
+pub(crate) fn is_image_name(name: &str) -> bool {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    COVER_IMAGE_EXTS.contains(&ext.as_str())
+}
+
+/// Test-only re-export so the `decode` oversized-path tests can build synthetic
+/// `.clip` files without reaching into the private `clip` module.
+#[cfg(test)]
+pub(crate) use clip::testutil as clip_testutil;
+
+#[cfg(test)]
+pub(crate) use blend::testutil as blend_testutil;
+#[cfg(test)]
+pub(crate) use dwg::testutil as dwg_testutil;
+/// Test-only re-exports so the `decode`/`streamsrc` head-preview fast-path tests
+/// can build synthetic PSD/DWG files without reaching into the private modules.
+#[cfg(test)]
+pub(crate) use psd::testutil as psd_testutil;
+
+/// Shared embedded-JPEG span scanner — see [`util::jpeg_span_len`]. Re-exported so
+/// `decode` and the container extractors (PSP, C4D) don't each hand-roll their own.
+pub(crate) use util::{jpeg_sof_is_decodable, jpeg_span_frame, jpeg_span_len};
+
+#[cfg(test)]
+mod tests;

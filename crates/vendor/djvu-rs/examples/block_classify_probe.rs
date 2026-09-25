@@ -70,7 +70,7 @@ fn main() {
     // bright): keeps it continuous-tone while giving the fixed threshold
     // something to (wrongly) claim as ink.
     let mut photo = photo;
-    for px in photo.data.chunks_exact_mut(4) {
+    for px in photo.data.as_chunks_mut::<4>().0 {
         px[0] = (px[0] as u32 * 6 / 10) as u8;
         px[1] = (px[1] as u32 * 6 / 10) as u8;
         px[2] = (px[2] as u32 * 6 / 10) as u8;

@@ -7,7 +7,7 @@
       it builds/renders locally because the file is on disk, then breaks on a clean checkout.)
 
    2. FORMAT COUNT - the count in the README shields badge and docs/FEATURES.md must match the
-      number of entries in src/formats.rs `FORMATS`.
+      number of entries in crates/base/src/formats.rs `FORMATS`.
 
     3. VERSION - scripts/packaging/AppxManifest.xml must carry the Cargo.toml version (the MSIX version
       is a hand-written literal that has silently drifted before).
@@ -36,8 +36,12 @@ $tracked = @{}
 & git -C $root ls-files | ForEach-Object { $tracked[$_] = $true }
 
 # --- 1) referenced assets must be git-tracked ---------------------------------
-# include_bytes!/include_str! - path is relative to the .rs file that references it.
-Get-ChildItem (Join-Path $root 'src') -Recurse -Filter *.rs | ForEach-Object {
+# include_bytes!/include_str! - path is relative to the .rs file that references it. Every crate's
+# sources: the core's src/ and each workspace crate's crates/<name>/src, found rather than named, so
+# a crate added later is covered (the named list missed the three app crates split out 2026-09-23,
+# including the one that embeds the toolbar icon font).
+$rustRoots = @(Join-Path $root 'src') + @(Get-ChildItem (Join-Path $root 'crates') -Directory | ForEach-Object { Join-Path $_.FullName 'src' }) | Where-Object { Test-Path $_ }
+Get-ChildItem $rustRoots -Recurse -Filter *.rs | ForEach-Object {
   $dir = $_.DirectoryName; $name = $_.Name
   foreach ($m in [regex]::Matches((Get-Content $_.FullName -Raw), 'include_(?:bytes|str)!\(\s*"([^"]+)"')) {
     $abs = [System.IO.Path]::GetFullPath((Join-Path $dir $m.Groups[1].Value))
@@ -57,10 +61,10 @@ foreach ($doc in $docs) {
   }
 }
 
-# --- 2) format count: src/formats.rs FORMATS vs README badge + FEATURES --------
+# --- 2) format count: crates/base/src/formats.rs FORMATS vs README badge + FEATURES --------
 # FORMATS entries are ("ext", "Friendly name") tuples; the category sub-lists are bare
 # &[&str] (no tuple) so this pattern counts FORMATS only. (Cross-checked == `st2k formats`.)
-$count = ([regex]::Matches((Get-Content (Join-Path $root 'src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
+$count = ([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
 if ($count -lt 250) {
   $fail.Add("FORMATS count parse looks wrong ($count) - the regex in this script needs fixing")
 }
@@ -163,8 +167,12 @@ if ($featSection.Success) {
 }
 if (-not $declared.Count) { $recipeFail += 'could not parse Cargo.toml [features]' }
 
-# EXE-only by construction: each links a stack the shell DLL must never load.
-$exeOnly = @('html-preview', 'hdr-capture', 'flash-video')
+# EXE-only by construction: each links a stack the shell DLL must never load - webview2,
+# the D3D11/DXGI capture stack, and the three pure-Rust video decoders that either panic on
+# malformed input or are 0.x crates (nihav/h263, vp9dec, oxideav-mpeg12video). They reach the
+# shipped EXE through Cargo's `default` set; the DLL package opts out with
+# `default-features = false`, and naming them here keeps the recipe from ever adding one back.
+$exeOnly = @('html-preview', 'hdr-capture', 'flash-video', 'vp9-video', 'mpeg-video')
 
 foreach ($pkg in @('sagethumbs2k', 'sagethumbs2k-dll')) {
   $recipe = @((Get-ReleaseFeatureList -Package $pkg) -split ',' | Where-Object { $_ })
@@ -282,7 +290,9 @@ foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
 # and reopened. Seven of them had drifted this way (ID_PDF_MARGIN, ID_KEEP_METADATA,
 # ID_PREVIEW_MD_REMOTE, ID_EDIT_UPLOAD_HOSTS, the two html-preview toggles) before this check.
 $dlgDir   = Join-Path $root 'src\bin\app\settings_dlg'
-$buildSrc = Get-Content (Join-Path $dlgDir 'build.rs') -Raw
+# build.rs is a hub since 2026-09-20: one build_<section> fn per settings page, in build\*.rs
+$buildSrc = @(Join-Path $dlgDir 'build.rs') + @(Get-ChildItem (Join-Path $dlgDir 'build') -Filter '*.rs' | Sort-Object Name | ForEach-Object { $_.FullName }) |
+  ForEach-Object { Get-Content $_ -Raw } | Out-String
 $locSrc   = Get-Content (Join-Path $dlgDir 'localize.rs') -Raw
 
 # Which id owns the visible translated string:
@@ -345,8 +355,17 @@ if ($fitSkipped) {
   $RAIL_MAX  = 126
   $SYNC_BTN_MAX    = 140
   $SYNC_STATUS_MAX = 348
+  # All ELEVEN pages. The Licence page was missing from this list from the day it was added,
+  # which is how its blurb shipped ellipsised in English ("...and its curr…") with the gate
+  # green (found 2026-09-15 on a capture; fixed by shortening the blurb and listing the page).
   $navKeys = @('nav_general','nav_appearance','nav_filetypes','nav_ebook','nav_menu',
-               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup')
+               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup',
+               'nav_licence')
+  # The Licence page's three doors share one `Row::Btn3`: (PANE_W 528 - 2 * 8) / 3 = 170 per
+  # button. The owner-drawn button centres its label and clips only past the rect, so the
+  # budget is the rect less 4px of breathing room a side; Russian's "Move my licence…" sits at
+  # 156, which is why this is not the 16px of padding the sync button assumes.
+  $BTN3_MAX = 162
   $blurbKeys = $navKeys | ForEach-Object { $_ -replace '^nav_', 'blurb_' }
   $overflow = 0
   foreach ($f in (Get-ChildItem $localeDir -Filter *.toml | Sort-Object Name)) {
@@ -388,6 +407,28 @@ if ($fitSkipped) {
         $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${SYNC_STATUS_MAX}px sync-status budget - it will run under the button")
       }
     }
+    foreach ($k in @('btn_licence_check_now','btn_licence_move','btn_licence_buy')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt $BTN3_MAX) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the ${BTN3_MAX}px three-button-row budget on the Licence page - the label will be cut off")
+      }
+    }
+    # The Licence page's prospect line is a full-width `Row::Status` (PANE_W 528); a single-line
+    # STATIC clips silently past that, which is how its first cut shipped a capture reading
+    # "US$49 per". BOTH sentences that row can carry are measured: since the monthly plan
+    # (2026-09-16) the control shows `licence_work_hint` on a Personal copy and
+    # `licence_monthly_hint` on a Business one, and a budget that only knew about the first
+    # would let the second ship cut off in exactly the way this check exists to prevent.
+    foreach ($k in @('licence_work_hint','licence_monthly_hint')) {
+      if (-not $loc.Map.ContainsKey($k)) { continue }
+      $w = [System.Windows.Forms.TextRenderer]::MeasureText($loc.Map[$k], $fitFont, [System.Drawing.Size]::new(10000, 200), $fitFlags).Width
+      if ($w -gt 520) {
+        $overflow++
+        $fail.Add("locales/$($f.Name) $k is ${w}px, over the 520px full-row budget on the Licence page - it will be cut off")
+      }
+    }
   }
 }
 
@@ -399,7 +440,8 @@ if ($fitSkipped) {
 # exactly like a fresh home install, and the insistent notice would silently never fire.
 # These pins are that test: each one names the invariant that rots the feature if broken.
 $iss = Get-Content -Raw "$root/scripts/packaging/installer.iss"
-$dirLine = ($iss -split "?
+$dirLine = ($iss -split "
+?
 ") | Where-Object { $_ -match 'commonappdata..SageThumbs2K' -and $_ -notmatch '^\s*;' } | Select-Object -First 1
 if (-not $dirLine) {
   $fail.Add("installer.iss: the {commonappdata}\SageThumbs2K [Dirs] entry is gone - the licence breadcrumb has no home")
@@ -412,14 +454,30 @@ if ($iss -notmatch [regex]::Escape("RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Sof
 }
 # The uninstaller must never be taught to delete the breadcrumb. Scan the whole file for
 # any uninstall directive that names it, so the pin holds wherever such a line is added.
-foreach ($bad in ($iss -split "?
+foreach ($bad in ($iss -split "
+?
 ") | Where-Object { $_ -match 'license-history' -and $_ -match '(?i)uninstalldelete|Type:\s*files|Type:\s*filesandordirs' }) {
   $fail.Add("installer.iss: an uninstall directive names license-history - the breadcrumb MUST survive uninstall: $($bad.Trim())")
 }
-# And the Rust side must agree with the installer on where history lives.
-$lic = Get-Content -Raw "$root/src/bin/app/license.rs"
-if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("license.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
-if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("license.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
+# And the Rust side must agree with the installer on where history lives. Since 2026-09-13 the
+# breadcrumb reader lives in the CORE crate (crates/base/src/licence_state.rs) so the shell handlers can
+# read the business-licence lock from inside explorer.exe; the app's license.rs re-exports it.
+$lic = Get-Content -Raw "$root/crates/base/src/licence_state.rs"
+if ($lic -notmatch [regex]::Escape("license-history.json")) { $fail.Add("licence_state.rs no longer references license-history.json - installer and app disagree on the breadcrumb") }
+if ($lic -notmatch [regex]::Escape('join("SageThumbs2K")')) { $fail.Add("licence_state.rs breadcrumb path no longer matches the installer-created {commonappdata}\SageThumbs2K directory") }
+# The installer's "was this a business machine?" confirmation greps the pretty-printed
+# breadcrumb for two literals; both sides must keep writing / reading exactly those.
+foreach ($literal in '"was_business": true', '"downgrade_acknowledged": true') {
+  if ($iss -notmatch [regex]::Escape($literal)) { $fail.Add("installer.iss: the Personal-on-a-business-machine confirmation no longer greps for $literal") }
+}
+if ($lic -notmatch [regex]::Escape('"was_business": self.was_business')) { $fail.Add("licence_state.rs: the breadcrumb no longer serializes was_business under that name - the installer greps for it") }
+if ($lic -notmatch [regex]::Escape('"downgrade_acknowledged": self.downgrade_acknowledged')) { $fail.Add("licence_state.rs: the breadcrumb no longer serializes downgrade_acknowledged under that name - the installer greps for it") }
+# The shell honours the lock: every in-process surface consults it, and nothing may quietly
+# drop one (a surface that keeps serving a stopped copy is the lock's only failure mode).
+# (the menu gate moved to settings/thumbs/menu.rs on 2026-09-20 when thumbs.rs was split)
+foreach ($surface in 'src/thumbprovider.rs', 'src/previewhandler.rs', 'src/propstore.rs', 'crates/base/src/settings/thumbs/menu.rs') {
+  if ((Get-Content -Raw "$root/$surface") -notmatch [regex]::Escape('licence_state::shell_locked()')) { $fail.Add("$surface no longer consults licence_state::shell_locked() - a stopped business copy would keep serving through it") }
+}
 
 # --- 7) no script hardcodes this dev machine's target-dir redirect ------------
 # One machine's own .cargo/config.toml target-dir redirect (a dot-prefixed scratch directory
@@ -441,6 +499,94 @@ Get-ChildItem $root/scripts -Recurse -File -Include *.ps1, *.py, *.mjs |
     }
   }
 
+# --- 8) every registered extension names a REAL sample, or says in writing why not ---
+# The test corpus is a sibling folder CI never sees, so the corpus itself cannot be checked
+# here. What CAN be: scripts/corpus-real.json, the manifest that pins a real-world file (one
+# some other program wrote) to every registered extension. Without this, adding a row to
+# FORMATS costs nothing and proves nothing - which is how `sct` sat registered without one
+# real Scitex file ever having rendered, until the first real ones arrived on 2026-09-17 and
+# none of them did. Now a new extension fails CI until it has a real sample pinned, or a
+# waiver whose reason someone has to write down and someone else gets to read.
+$realManifest = Join-Path $root 'scripts\corpus-real.json'
+if (-not (Test-Path $realManifest)) {
+  $fail.Add('scripts/corpus-real.json is missing - the real-sample manifest every registered extension is checked against')
+} else {
+  $real = Get-Content $realManifest -Raw | ConvertFrom-Json -AsHashtable
+  $registered = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  $known = @{}
+  foreach ($s in $real.samples) {
+    $known[$s.file] = $true
+    $kinds = @('url', 'alias_of', 'gzip_of', 'zip_of' | Where-Object { $s.ContainsKey($_) })
+    if ($kinds.Count -ne 1) { $fail.Add("corpus-real.json: $($s.file) needs exactly one of url / alias_of / gzip_of / zip_of") }
+    elseif ($kinds[0] -eq 'url') {
+      if ("$($s.sha256)" -notmatch '^[0-9A-Fa-f]{64}$') { $fail.Add("corpus-real.json: $($s.file) has no SHA-256 pin - an unpinned download can change under the gate") }
+    } elseif (-not "$($s.why)".Trim()) { $fail.Add("corpus-real.json: $($s.file) is derived from $($s[$kinds[0]]) without a 'why'") }
+  }
+  foreach ($f in $real.existing.Keys) { $known[$f] = $true }
+  foreach ($ext in $registered) {
+    $covered = $real.coverage.ContainsKey($ext)
+    $waived = $real.waived.ContainsKey($ext)
+    if ($covered -and $waived) { $fail.Add("corpus-real.json: .$ext is both covered and waived - pick one") }
+    elseif (-not $covered -and -not $waived) {
+      $fail.Add("corpus-real.json: .$ext is registered in FORMATS but has no real sample pinned and no waiver. Find a file another program wrote (scripts\fetch-real-samples.py explains where), or add a 'waived' entry that says why none exists.")
+    } elseif ($covered) {
+      foreach ($f in $real.coverage[$ext]) {
+        if (-not $known.ContainsKey($f)) { $fail.Add("corpus-real.json: coverage for .$ext names '$f', which is neither a pinned sample nor an 'existing' one") }
+        if (-not $f.ToLower().EndsWith(".$ext")) { $fail.Add("corpus-real.json: coverage for .$ext names '$f', which does not carry that extension") }
+      }
+    } elseif ("$($real.waived[$ext])".Trim().Length -lt 40) {
+      $fail.Add("corpus-real.json: the waiver for .$ext is too short to be a reason - say what was searched and why no real file exists")
+    }
+  }
+  foreach ($ext in @($real.coverage.Keys) + @($real.waived.Keys)) {
+    if ($registered -notcontains $ext) { $fail.Add("corpus-real.json: .$ext is covered or waived but is not in FORMATS any more - delete the stale entry") }
+  }
+}
+
+# --- 9) every registered extension says how it is grown past the size gates ------------------
+# scripts/bigfiles/big-files.json is the big-file gate's manifest (scripts/bigfiles/bigfiles.py).
+# Issue #46 found a 300 MB Photoshop document left on its baked preview in Quick preview: no
+# check had ever handed any surface a file past the 256 MiB input ceiling. Each extension now
+# names the ballast strategy that grows its real sample WITHOUT changing its picture, or waives
+# with a reason. So a new format cannot be registered without deciding what happens to a user
+# who has a big one, and the gate then measures that decision on every surface.
+$bigManifest = Join-Path $root 'scripts\bigfiles\big-files.json'
+$ballastPy = Join-Path $root 'scripts\bigfiles\ballast.py'
+if (-not (Test-Path $bigManifest) -or -not (Test-Path $ballastPy)) {
+  $fail.Add('scripts/bigfiles/big-files.json or ballast.py is missing - the big-file gate''s manifest every registered extension is checked against')
+} else {
+  $big = Get-Content $bigManifest -Raw | ConvertFrom-Json -AsHashtable
+  # The strategy names are the keys of ballast.py's STRATEGIES table, read off the source.
+  $table = [regex]::Match((Get-Content $ballastPy -Raw), '(?s)STRATEGIES = \{(.*?)\}').Groups[1].Value
+  $strategies = @([regex]::Matches($table, '"([a-z0-9-]+)"\s*:') | ForEach-Object { $_.Groups[1].Value })
+  if ($strategies.Count -lt 3) { $fail.Add('could not read the STRATEGIES table out of scripts/bigfiles/ballast.py') }
+  $registeredBig = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  foreach ($ext in $registeredBig) {
+    $e = $big[$ext]
+    if ($null -eq $e) {
+      $fail.Add("big-files.json: .$ext is registered in FORMATS but has no big-file entry. Name the ballast strategy that grows its sample without changing its picture (scripts\bigfiles\ballast.py), or a 'waive' that says why no big twin of it can exist.")
+      continue
+    }
+    $hasStrategy = $e.ContainsKey('strategy')
+    $hasWaiver = $e.ContainsKey('waive')
+    if ($hasStrategy -eq $hasWaiver) { $fail.Add("big-files.json: .$ext needs exactly one of 'strategy' / 'waive'") }
+    elseif ($hasStrategy -and $strategies -notcontains $e.strategy) { $fail.Add("big-files.json: .$ext names strategy '$($e.strategy)', which ballast.py does not have") }
+    elseif ($hasWaiver -and "$($e.waive)".Trim().Length -lt 40) { $fail.Add("big-files.json: the waiver for .$ext is too short to be a reason") }
+    # A waiver for one size only (the gate reports those twins as SKIP with the reason).
+    if ($e.ContainsKey('waive_sizes')) {
+      foreach ($size in $e.waive_sizes.Keys) {
+        if (@('300M', '2.2G', '5G') -notcontains $size) { $fail.Add("big-files.json: .$ext waives size '$size', which the gate does not grow") }
+        elseif ("$($e.waive_sizes[$size])".Trim().Length -lt 40) { $fail.Add("big-files.json: the $size waiver for .$ext is too short to be a reason") }
+      }
+    }
+  }
+  foreach ($ext in $big.Keys) {
+    if ($registeredBig -notcontains $ext) { $fail.Add("big-files.json: .$ext has an entry but is not in FORMATS any more - delete the stale entry") }
+  }
+}
+
 # --- report -------------------------------------------------------------------
 if ($fail.Count) {
   Write-Host "[consistency] FAILED ($($fail.Count)):" -ForegroundColor Red
@@ -449,3 +595,7 @@ if ($fail.Count) {
 }
 $fitNote = if ($fitSkipped) { 'text fit NOT measured' } else { 'every nav label and blurb measures inside its box' }
 Write-Host "[consistency] OK - assets tracked, format count = $count, version $ver consistent, $localeCount locales at $($en.Map.Count)-key parity, $($built.Count) Settings controls relabel live, $fitNote." -ForegroundColor Green
+
+# A stale $LASTEXITCODE from a probe above must not read as this script failing: the OK line
+# above IS the verdict. CI runs `shell: pwsh` steps that fail on whatever code is left behind.
+exit 0

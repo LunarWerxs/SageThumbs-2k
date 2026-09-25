@@ -16,6 +16,8 @@
 
 use std::path::PathBuf;
 
+pub mod locales;
+
 /// The Windows `VERSIONINFO` `FILETYPE` field. The three original build scripts differed
 /// only here: `src/build.rs` emits `VFT_APP` for its two EXE bin targets, while both DLL
 /// build scripts (`crates/dll`, `crates/dlghook`) emit `VFT_DLL`.
@@ -56,7 +58,7 @@ pub fn versioninfo_rc(
     }
     let (maj, min, pat) = (nums[0], nums[1], nums[2]);
     let file_type = file_type.rc_value();
-    // \r\n in the .rc string keeps rc.exe/windres happy; the version string shown
+    // The .rc is emitted with LF-only line endings; the version string shown
     // in Properties is the human-readable cargo version (incl. any -pre suffix).
     format!(
         "1 VERSIONINFO\n\
@@ -85,6 +87,76 @@ pub fn versioninfo_rc(
          \x20 END\n\
          END\n",
     )
+}
+
+/// Why [`compile_rc`] produced nothing, by cause, so a build script can keep a different
+/// policy per cause (the shell DLL warns on a missing windres but refuses on ARM64 without
+/// the SDK compiler; the hook DLL refuses on all of them).
+#[derive(Debug)]
+pub enum RcFailure {
+    /// The `.rc` could not be written to `OUT_DIR` (the message names the file and the error).
+    Write(String),
+    /// ARM64 needs the Windows SDK `rc.exe` and none was found.
+    NoSdkRc,
+    /// Every windres candidate failed; one reason per line, in the order they were tried.
+    Windres(String),
+}
+
+impl std::fmt::Display for RcFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RcFailure::Write(why) | RcFailure::Windres(why) => f.write_str(why),
+            RcFailure::NoSdkRc => {
+                f.write_str("ARM64 resource compilation requires Windows SDK rc.exe")
+            }
+        }
+    }
+}
+
+/// Write `rc_text` to `<out_dir>/<stem>.rc` and compile it to something the linker takes:
+/// on ARM64 an SDK `rc.exe` `.res` (GNU windres on an x64 host emits x64 COFF even for ARM
+/// targets), otherwise a windres COFF object, or the SDK `.res` when no windres runs (see the
+/// note at the end). `Ok` is the path for `cargo:rustc-link-arg`.
+/// `Windres` carries every reason it did not happen, one per line, because "windres
+/// unavailable" as the answer to all of them once sent a session an hour down the wrong road
+/// when windres was installed, on PATH and ran fine by hand. The DLL build scripts each
+/// carried this.
+pub fn compile_rc(out_dir: &str, stem: &str, rc_text: &str) -> Result<String, RcFailure> {
+    let input = format!("{out_dir}/{stem}.rc");
+    if let Err(e) = std::fs::write(&input, rc_text) {
+        return Err(RcFailure::Write(format!("couldn't write {input}: {e}")));
+    }
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        let res = format!("{out_dir}/{stem}.res");
+        return if compile_with_windows_sdk_rc(&input, &res) {
+            Ok(res)
+        } else {
+            Err(RcFailure::NoSdkRc)
+        };
+    }
+    let obj = format!("{out_dir}/{stem}.o");
+    let mut why: Vec<String> = Vec::new();
+    for windres in ["windres", "x86_64-w64-mingw32-windres"] {
+        match std::process::Command::new(windres)
+            .args(["-I", out_dir, &input, "-O", "coff", "-o", &obj])
+            .status()
+        {
+            Ok(s) if s.success() => return Ok(obj),
+            Ok(s) => why.push(format!("{windres}: ran but exited {s}")),
+            Err(e) => why.push(format!("{windres}: could not run it ({e})")),
+        }
+    }
+    // windres is a MinGW tool, absent from a plain MSVC box (rustup + VS Build Tools): an x64
+    // developer build of the app once shipped an exe with NO icon and NO VERSIONINFO that way,
+    // Explorer showing a blank version where the release shows 3.0.1 (measured 2026-09-11 on a
+    // box with the SDK but no MinGW). The SDK rc.exe the ARM64 leg uses compiles the identical
+    // .rc, so it is tried before giving up; `link.exe` takes the `.res` on x64 as well.
+    let res = format!("{out_dir}/{stem}.res");
+    if compile_with_windows_sdk_rc(&input, &res) {
+        return Ok(res);
+    }
+    why.push("SDK rc.exe: none found, or it failed".to_string());
+    Err(RcFailure::Windres(why.join("\n  ")))
 }
 
 /// Compile an architecture-neutral Windows `.res` with the SDK resource compiler.

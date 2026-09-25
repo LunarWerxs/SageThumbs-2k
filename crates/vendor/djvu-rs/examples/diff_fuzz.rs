@@ -1010,7 +1010,7 @@ fn ddjvu_error_class(stderr: &str) -> String {
 
 fn diff_stats_rgba(w: usize, h: usize, lhs_rgba: &[u8], rhs_rgba: &[u8]) -> DiffStats {
     let mut rhs_rgb = Vec::with_capacity(w * h * 3);
-    for pixel in rhs_rgba.chunks_exact(4) {
+    for pixel in rhs_rgba.as_chunks::<4>().0 {
         rhs_rgb.extend_from_slice(&pixel[..3]);
     }
     diff_stats(w, h, lhs_rgba, &rhs_rgb)
@@ -1314,9 +1314,8 @@ fn main() {
                         // actually trying to render (djvudump alone can't
                         // tell us this; see the module doc for the confirmed
                         // INFO/BG44-size-mismatch case that motivates it).
-                        let their_level: u8;
                         let mut ppm_rgb: Option<(usize, usize, Vec<u8>)> = None;
-                        if have_ddjvu {
+                        let their_level: u8 = if have_ddjvu {
                             let out_ppm = tmp_dir.join(format!("{file_stem}_{m:05}.ppm"));
                             let rendered = ddjvu_render(
                                 &cfg.ddjvu_bin,
@@ -1330,16 +1329,16 @@ fn main() {
                                 let ppm_bytes = std::fs::read(&out_ppm).unwrap_or_default();
                                 let _ = std::fs::remove_file(&out_ppm);
                                 ppm_rgb = parse_ppm(&ppm_bytes);
-                                their_level = if ppm_rgb.is_some() { 2 } else { 1 };
+                                if ppm_rgb.is_some() { 2 } else { 1 }
                             } else {
-                                their_level = 1;
+                                1
                             }
                         } else {
                             // No ddjvu available: can't distinguish level 1 vs
                             // 2 on their side, so don't over-claim — treat any
                             // struct-ok our_level as an uneventful match.
-                            their_level = our_level;
-                        }
+                            our_level
+                        };
 
                         match our_level.cmp(&their_level) {
                             std::cmp::Ordering::Less => Class::OurRenderFail,

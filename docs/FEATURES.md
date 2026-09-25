@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 334 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 361 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0).
 
@@ -18,20 +18,20 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**334 registered extensions, in seven categories** (also how the Options list is
+**361 registered extensions, in seven categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (202) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif, psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), exr, ico, **icns** (Apple), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) |
+| **Image** (222) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
-| **Document** (43) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), **ggb** (GeoGebra) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
+| **Document** (46) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm + vstx/vssx** (Visio drawings, templates and stencils: a stencil shows a preview only when Visio saved one with it, which most do not), **pub** (Publisher), **ggb** (GeoGebra), **xmind** (XMind mind maps: the map picture XMind saves) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
 | **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
-| **Video** (22) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Two codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here) and **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed). `.mpg/.mpeg` still need MPEG-1/2 support Windows does not always carry, and keep the default icon without it. |
+| **Video** (26) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Three codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). |
 | **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
 
-*Counts sum to **334** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **361** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -56,9 +56,17 @@ art, any RAW/HEIC the OS codec is missing, and a deep set of **art / CAD / 3D / 
 project files** whose baked-in preview we extract directly (no rendering, no
 codecs, so they work without touching ImageMagick at all): **Photoshop**
 `.psd/.psb`, **Affinity** `.afphoto/.afdesign/.afpub`, **Clip Studio** `.clip`,
-**Krita** `.kra`, **OpenRaster** `.ora`, **Blender** `.blend`, **3MF** `.3mf`,
-**FreeCAD** `.fcstd`, **Autodesk Fusion 360** `.f3d`, **Paint.NET** `.pdn`, and
-3D-printer **G-code** `.gcode`. *No Windows tool
+**Krita** `.kra`, **OpenRaster** `.ora`, **Pixelorama** `.pxo`, **Blender** `.blend`, **3MF** `.3mf`,
+**FreeCAD** `.fcstd`, **Autodesk Fusion 360** `.f3d`, **Paint.NET** `.pdn`,
+**SolidWorks** `.sldprt/.sldasm/.slddrw` (the `PreviewPNG` stream; files saved by 2015+
+releases use a wrapper that is not a compound file and keep the stock icon), **Minecraft
+Bedrock** `.mcworld/.mctemplate/.mcpack/.mcaddon` (the game's own world photo or pack icon),
+and 3D-printer **G-code** `.gcode` plus PrusaSlicer's binary **`.bgcode`** (whole image blocks
+rather than base64 in comments; the largest PNG wins, and a QOI-only file is re-encoded).
+Two more carry no preview at all and are RENDERED instead: **Aseprite** `.aseprite/.ase`
+(frame 0 composited from its own layers and cels - RGBA, grayscale and indexed, layer and cel
+opacity, group visibility) and **SpriteLoop** `.spla` (frame 0 of the first animation, drawn
+from the part images and the rig's own transforms). *No Windows tool
 thumbnails most of these: PSD now works without ImageMagick, and `.clip`'s preview
 is read straight out of its embedded SQLite database (no extra dependency), even for
 canvases past the size limit, where only that small tail database is read, never the
@@ -75,8 +83,10 @@ image named "cover" preferred, junk like `__MACOSX` and `Thumbs.db` skipped. The
 comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
 images actually shown. Generic archives identified by filename honor **Max file size** before
 the directory is parsed; an oversized 7z is also refused when the shell supplies a name-less
-stream. This is especially important for large project backups on network shares. Oversized
-ZIP-family comics can still stream one cover without reading the whole archive. Within the
+stream. This is especially important for large project backups on network shares. Past the
+256 MB in-memory limit an archive is never loaded whole: a ZIP or 7z reads its directory and
+the picked images, and a RAR (or `.cbr` comic) walks its entry headers and reads only the
+cover's entry. Within the
 limit, 7z reads are buffered to avoid tiny remote round trips, extraction uses one CPU thread,
 and picked images share an 8 MiB total budget. Solid 7z must decode
 front-to-back, so SageThumbs uses the first eligible images in physical order and enforces the
@@ -106,6 +116,16 @@ even gets its GPS location, which Windows itself leaves blank.) It's **read-only
 writes back to your files) and **crash-isolated** behind the same panic boundary as the
 thumbnail provider, so a malformed file can't take down Explorer.
 
+**Very big files get their real picture.** A file past 256 MB is never loaded whole, on any
+surface (Explorer tile, preview pane, Quick preview, `st2k`), and still shows what the same
+file shows at a normal size: a Photoshop document's full picture (or, saved without
+"Maximize compatibility", its layers flattened), a PDF's or Illustrator file's first page or
+artboards, an Office, Visio, Publisher, 3ds Max or SolidWorks thumbnail, a RAR or 7z comic's
+cover, a 3D model, a FITS image, a huge TIFF/BigTIFF, PPM, PGM or TGA scan read a row at a
+time, and, for everything else, the picture in the file's first 16 MB when that is where it
+sits. A picture that runs past that point is never drawn from its first rows. Checked before
+every release by growing a real sample of every supported format past each size limit.
+
 **Big preview in the reading pane:** a companion **preview handler** (`IPreviewHandler`)
 renders the image LARGE in Explorer's preview/reading pane (and the file-open dialog's
 preview) for the same 300+ formats: ebook/comic covers, RAW, HEIC, PSD/`.blend`, audio
@@ -127,7 +147,7 @@ are deliberately left out of this menu (thumbnail and preview only).
 
 **Multi-file jobs run in parallel.** When the selection has several files, Convert /
 Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a tiny
-dependency-free scoped thread pool (`src/parallel.rs`), 6–15× faster than the old
+dependency-free scoped thread pool (`crates/base/src/parallel.rs`), 6–15× faster than the old
 one-at-a-time pass, with no rayon weight added to the in-Explorer DLL. Each worker
 initializes COM, which incidentally fixed HEIC/RAW silently failing in the Convert path.
 
@@ -233,13 +253,20 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
 - **Copy as data URI**: base64-encodes the file and copies a `data:<mime>;base64,…`
   URI to the clipboard as text, ready to paste into CSS/HTML/JSON.
 - **Upload (copy link)**: uploads the selected image(s) to a keyless, no-account
-  host (**catbox.moe** by default; overridable via the `ScreenshotUploadUrl` registry
-  value) and copies the resulting link(s) to the clipboard. Multi-select uploads every
-  selected image and copies all the links. A small **"Uploading…" indicator** shows
-  while the transfer runs, so a multi-second upload never looks like a dead click.
-  Upload hosts are third-party, best-effort services: availability and retention are not
-  guaranteed, and catbox may reject traffic from datacentres or VPNs. SageThumbs shows the
-  host's failure reason when an upload is refused.
+  host and copies the resulting link(s) to the clipboard. The built-in hosts are tried in
+  order until one takes the file, and the list is yours to edit (Settings ▸ Screenshots ▸
+  *Edit upload hosts…*, or `st2k upload-hosts`). Multi-select uploads every selected image
+  and copies all the links. A small **"Uploading…" indicator** shows while the transfer
+  runs, so a multi-second upload never looks like a dead click.
+  **Every link says when it expires.** Hosts keep files for anything from a few hours to
+  years, so the result window shows under each link when its host deletes it, and
+  **Recent uploads** (the button in that window, Settings ▸ Screenshots, the tray menu, or
+  `st2k upload-history`) lists every link you uploaded with the time it has left, or when it
+  expired. The expiry comes from each host's published policy at the moment of upload; a
+  custom host of your own shows none.
+  Upload hosts are third-party, best-effort services: availability is not guaranteed, and
+  some may reject traffic from datacentres or VPNs. SageThumbs shows the host's failure
+  reason when an upload is refused.
 - **Set as folder icon**: makes the selected image the icon of its containing
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer (the same mechanism as Explorer's own
@@ -560,7 +587,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
   button restores the default. Applies to both the classic and the modern Win11 menus.
 - **Ebook & comic covers:** sort archive pages naturally, prefer a "cover" image,
-  skip scanlation filler (credits/logos). **Contact-sheet thumbnails for ZIP/RAR/7z**:
+  skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
   on by default, showing a collage of up to four images pulled from a plain archive;
   switch it off for a single first-image thumbnail, classic CBXShell-style.
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
@@ -660,14 +687,27 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   clipboard so nothing is lost.
 - **Licence:** shows whether the copy is running as personal or business, a field to enter
   and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
-  business copy with no key redeemed yet, this is also where the reminder lives, alongside the
-  launch notice and the strip across every Settings page. The line shows one of: no key
-  entered, licensed (with the last verified date), revoked (with why, when known), personal
-  use, or - on a machine currently relying on its offline certificate rather than a live
-  check - an early warning once that certificate is nearing its own expiry. A failed check
-  never moves the "last verified" date forward.
-- **Updates window and renewal:** a commercial licence is US$49 per installation, one-time,
-  and is perpetual with 12 months of updates. The Licence page shows when that window ends
+  business copy with no key redeemed yet, this is also where the evaluation lives, alongside
+  the launch notice and the strip across every Settings page (days left, an **Open licence**
+  button and a **Buy a licence…** button). The line shows one of: the evaluation and its days
+  left, the evaluation ended and the date thumbnails stop, stopped (a key is required), no key
+  entered, licensed (with the last verified date), revoked (with why, when known, and when the
+  copy stops), personal use, or - on a machine currently relying on its offline certificate
+  rather than a live check - an early warning once that certificate is nearing its own expiry.
+  A failed check never moves the "last verified" date forward.
+- **The business evaluation:** a copy installed for business use works in full for 7 days,
+  then asks for a key for 3 more days, then stops drawing thumbnails, previews and the Details
+  pane and hides its right-click menu on that computer until a key is redeemed; the Quick
+  preview and the folder pre-build say why instead of opening. A tray balloon (with the
+  resident helper) or a notification (from the daily background check) says how long is left
+  and opens the Licence page when clicked. Redeeming a key restores everything with the next
+  thumbnail. A copy that once held a key is never stopped by a network outage, only by a
+  revocation, and then with the same 3 days of notice. `st2k doctor` reports the state.
+- **Updates window and renewal:** a commercial licence is sold two ways per installation -
+  US$2.99 a month, or US$49 once. The monthly plan carries every release published while it is
+  live and stops entitling the machine when it ends, so none of the window machinery below
+  applies to it. The rest of this bullet is the ONE-TIME plan: perpetual, with 12 months of
+  updates. The Licence page shows when that window ends
   ("Updates until \<date\>", or "Updates ended \<date\>" once it has passed), and a **Renew
   updates (US$29)** button appears in the last 60 days and stays available afterwards. Once
   the window has ended the app stops OFFERING builds published after it, and says so with the
@@ -694,7 +734,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   J2K, …), and every install carries it. The measured magick-only set (the formats that
   depend on it): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans
   (cin/dpx/cal/cals/fits/fts/pcd), Windows metafiles (wmf/emf/emz/wmz), Visio
-  (vsd/vsdx/vsdm), legacy-Office OLE previews (max), classic bitmaps
+  (vsd/vsdx/vsdm/vstx/vssx), legacy-Office OLE previews (max), classic bitmaps
   (pcx/dcx/dib/ras/sun/sgi/xbm/xpm/xv/wpg/pdb), scientific floats
   (pfm/phm/fl32/mat/vicar/viff/vips/pgx/ph), miff/mng/tiff64, and **DWAA/DWAB-
   compressed OpenEXR** (uncompressed/ZIP/PIZ/RLE/B44 EXR decode pure-Rust; the
@@ -706,7 +746,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   iPhone HEIC uses, and CMYK JPEGs are converted through their embedded CMYK profile.
   HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
   linear light and tone-mapped like EXR and Radiance files, so they render with the right
-  curve instead of washed out.
+  curve instead of washed out; HDR AVIF and HEIC (a PQ or HLG `nclx` signal) take the same
+  tone map, whether Windows' own codec or the bundled ImageMagick decoded them.
 - **Accessible Settings:** the category rail reports a name, a role and the current selection to
   UI Automation, so Narrator and NVDA can navigate it. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
   transform), no C colour-engine dependency.
@@ -736,10 +777,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   invokes ImageMagick's text, caption or font-rendering surfaces.
 - **Personal-or-business question on every interactive install.** The installer asks how
   you'll use SageThumbs 2K: personal (free, every feature, non-commercial) or business
-  (needs a commercial licence under the PolyForm Noncommercial license). Your answer is
-  written machine-wide and stays in effect across silent self-updates; changing it means
-  running the installer interactively again. See section 4's Licence settings for
-  redeeming a business seat key.
+  (needs a commercial licence under the PolyForm Noncommercial license; a 7-day evaluation
+  starts on install). Your answer is written machine-wide and stays in effect across silent
+  self-updates; changing it means running the installer interactively again, and choosing
+  Personal on a computer that was set up for business use asks once whether you are sure.
+  See section 4's Licence settings for redeeming a business seat key.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
   cleanly unregisters on uninstall.
 - **Portable zip**, both architectures, no installer and no administrator rights. Unpack it
@@ -795,7 +837,7 @@ genuinely-outstanding work.)*
 > MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument.
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (334-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (361-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -804,7 +846,7 @@ bundle anything new**; only surface existing functions.
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
    (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
-   the 334 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   the 361 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
    ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
    a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
    `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
@@ -812,7 +854,7 @@ bundle anything new**; only surface existing functions.
    flag on the Options app.)
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **15** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 334
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 361
    formats to a PNG **image block**) so an AI agent can actually *see* the file,
    **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
    **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not

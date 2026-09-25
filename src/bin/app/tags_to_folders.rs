@@ -1,24 +1,21 @@
 //! The DLL's "Sort into folders ▸ By audio tag" verb on an audio selection
 //! (`--tags-to-folders <listfile>`). Dialog: destination, a `$artist - $album`
 //! folder-name template, and copy-vs-move. The sort engine is in the lib
-//! (`sagethumbs2k_core::tags_to_folders`).
+//! (`st2k_actions::verbs::tags_to_folders`).
 
-use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
+use windows::Win32::UI::Controls::PBS_MARQUEE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{
-    checked, ctl, get_edit_text, pick_folder, read_listfile, run_dialog, set_edit_text, t, wide,
-    wm_dpichanged, BM_SETCHECK_MSG, BUTTON, EDIT, IDCANCEL, IDOK, STATIC,
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{
+    checked, ctl, edit_field, get_edit_text, label, pick_folder, read_listfile, run_dialog,
+    set_edit_text, t, wide, BM_SETCHECK_MSG, BUTTON, IDCANCEL, IDOK,
 };
 
 const CID_TTF_DEST: i32 = 5101;
@@ -67,64 +64,56 @@ extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_CREATE => on_create(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
             WM_TTF_DONE => on_ttf_done(hwnd),
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            // Mirror IDCANCEL's deferred close: a sort started on the worker
-            // thread must not be torn out from under it by an unconditional
-            // DestroyWindow.
-            WM_CLOSE => {
-                request_close(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            // DPI, the deferred close a running sort needs, destroy, default.
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
+}
+
+/// The folder holding the first selected file, if there is one.
+fn first_file_folder() -> Option<String> {
+    TTF_FILES
+        .get()
+        .and_then(|f| f.first())
+        .and_then(|p| parent_folder(p))
+}
+
+/// The parent folder of `path` as a lossy UTF-8 string, or `None` when `path` has no
+/// parent — a bare drive root, or an empty path.
+fn parent_folder(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The field's text, trimmed, or `fallback` when the field holds only whitespace (or is
+/// empty): the dialog pre-fills every field, so a cleared one means "use the default",
+/// never "use an empty string".
+fn ttf_field_or(field: &str, fallback: &str) -> String {
+    let value = field.trim();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// The y (96-DPI design px) of the dialog's button row: the physical client bottom
+/// scaled back to design px, less the 12px bottom margin and the 30px the row is tall.
+/// The caller floors the DPI at 96, so this never divides below 1:1.
+fn button_row_y(client_bottom_px: i32, dpi: i32) -> i32 {
+    client_bottom_px * 96 / dpi - 12 - 30
 }
 
 /// `WM_CREATE`: lay out the destination/template/missing-token edits, the move/copy radio
 /// pair, and the sort/cancel button row anchored to the real client bottom.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-    let lbl = WINDOW_STYLE(0);
+    let hinst = crate::files_to_folder::module_instance();
     // Default destination = the first file's folder.
-    let default_dest = TTF_FILES
-        .get()
-        .and_then(|f| f.first())
-        .and_then(|p| std::path::Path::new(p).parent())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let default_dest = first_file_folder().unwrap_or_default();
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("ttf_destination"),
-        lbl,
-        16,
-        18,
-        90,
-        18,
-        -1,
-        hinst,
-    );
-    let dest = ctl(
-        hwnd,
-        EDIT,
-        &default_dest,
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        110,
-        16,
-        268,
-        24,
-        CID_TTF_DEST,
-        hinst,
-    );
-    let _ = dest;
+    label(hwnd, hinst, t("ttf_destination"), 16, 18, 90, 18);
+    edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
     ctl(
         hwnd,
         BUTTON,
@@ -138,66 +127,29 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         hinst,
     );
 
-    ctl(
+    label(hwnd, hinst, t("ttf_template"), 16, 56, 90, 18);
+    edit_field(
         hwnd,
-        STATIC,
-        t("ttf_template"),
-        lbl,
-        16,
-        56,
-        90,
-        18,
-        -1,
         hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
         t("ttf_template_default"),
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         110,
         54,
         318,
         24,
         CID_TTF_TEMPLATE,
-        hinst,
     );
-    ctl(
-        hwnd,
-        STATIC,
-        t("ttf_tokens"),
-        lbl,
-        110,
-        82,
-        318,
-        16,
-        -1,
-        hinst,
-    );
+    label(hwnd, hinst, t("ttf_tokens"), 110, 82, 318, 16);
 
-    ctl(
+    label(hwnd, hinst, t("ttf_missing"), 16, 112, 90, 18);
+    edit_field(
         hwnd,
-        STATIC,
-        t("ttf_missing"),
-        lbl,
-        16,
-        112,
-        90,
-        18,
-        -1,
         hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
         t("ttf_missing_default"),
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         110,
         110,
         160,
         24,
         CID_TTF_MISSING,
-        hinst,
     );
 
     let mv = ctl(
@@ -250,37 +202,14 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-    let by = rc.bottom * 96 / dpi - 12 - 30;
-    ctl(
-        hwnd,
-        BUTTON,
-        t("ttf_sort"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        244,
-        by,
-        92,
-        30,
-        IDOK,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_cancel"),
-        WS_TABSTOP,
-        342,
-        by,
-        88,
-        30,
-        IDCANCEL,
-        hinst,
-    );
+    let by = button_row_y(rc.bottom, dpi);
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, by, 92, 342);
     LRESULT(0)
 }
 
 /// `WM_COMMAND`: dispatch by control/menu id.
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
+    let id = st2k_appkit::win::command_id(wparam);
     match id {
         CID_TTF_BROWSE => {
             if let Some(dir) = pick_folder(hwnd) {
@@ -302,80 +231,75 @@ unsafe fn on_command_ok(hwnd: HWND) {
     if TTF_RUNNING.load(Ordering::Relaxed) {
         return;
     }
-    let mut dest = get_edit_text(hwnd, CID_TTF_DEST).trim().to_string();
-    if dest.is_empty() {
-        dest = TTF_FILES
-            .get()
-            .and_then(|f| f.first())
-            .and_then(|p| std::path::Path::new(p).parent())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".".to_string());
-    }
-    let mut template = get_edit_text(hwnd, CID_TTF_TEMPLATE).trim().to_string();
-    if template.is_empty() {
-        template = t("ttf_template_default").to_string();
-    }
-    let mut missing = get_edit_text(hwnd, CID_TTF_MISSING).trim().to_string();
-    if missing.is_empty() {
-        missing = t("ttf_missing_default").to_string();
-    }
+    let dest = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_DEST),
+        &first_file_folder().unwrap_or_else(|| ".".to_string()),
+    );
+    let template = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_TEMPLATE),
+        t("ttf_template_default"),
+    );
+    let missing = ttf_field_or(
+        &get_edit_text(hwnd, CID_TTF_MISSING),
+        t("ttf_missing_default"),
+    );
     let move_files = checked(hwnd, CID_TTF_MOVE);
     let Some(files) = TTF_FILES.get().cloned() else {
         return;
     };
 
-    for id in [
-        CID_TTF_DEST,
-        CID_TTF_BROWSE,
-        CID_TTF_TEMPLATE,
-        CID_TTF_MISSING,
-        CID_TTF_MOVE,
-        CID_TTF_COPY,
-        IDOK,
-    ] {
-        if let Ok(ctrl) = GetDlgItem(Some(hwnd), id) {
-            let _ = EnableWindow(ctrl, false);
-        }
-    }
-    if let Ok(prog) = GetDlgItem(Some(hwnd), CID_TTF_PROGRESS) {
-        let _ = ShowWindow(prog, SW_SHOW);
-        SendMessageW(prog, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
-    }
-    TTF_RUNNING.store(true, Ordering::Relaxed);
+    crate::files_to_folder::start_batch(
+        hwnd,
+        &TTF_RUNNING,
+        &[
+            CID_TTF_DEST,
+            CID_TTF_BROWSE,
+            CID_TTF_TEMPLATE,
+            CID_TTF_MISSING,
+            CID_TTF_MOVE,
+            CID_TTF_COPY,
+            IDOK,
+        ],
+        CID_TTF_PROGRESS,
+        WM_TTF_DONE,
+        move || {
+            let (done, skipped) = st2k_actions::verbs::tags_to_folders(
+                &files,
+                std::path::Path::new(&dest),
+                &template,
+                &missing,
+                move_files,
+            );
+            *TTF_RESULT.lock().unwrap() = Some((done, skipped, move_files));
+        },
+    );
+}
 
-    let raw = hwnd.0 as usize;
-    std::thread::spawn(move || {
-        let (done, skipped) = sagethumbs2k_core::tags_to_folders(
-            &files,
-            std::path::Path::new(&dest),
-            &template,
-            &missing,
-            move_files,
-        );
-        *TTF_RESULT.lock().unwrap() = Some((done, skipped, move_files));
-        let _ = PostMessageW(
-            Some(HWND(raw as *mut c_void)),
-            WM_TTF_DONE,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    });
+/// The locale key of the finished-sort prompt, chosen by whether the batch moved or copied.
+fn ttf_done_key(move_files: bool) -> &'static str {
+    if move_files {
+        "ttf_done_moved"
+    } else {
+        "ttf_done_copied"
+    }
+}
+
+/// Fills the `{done}` and `{skipped}` placeholders of a finished-sort prompt.
+fn ttf_done_message(prompt: &str, done: usize, skipped: usize) -> String {
+    prompt
+        .replace("{done}", &done.to_string())
+        .replace("{skipped}", &skipped.to_string())
 }
 
 /// `WM_TTF_DONE`: report the done/skipped counts the worker thread produced, then close.
 unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
     TTF_RUNNING.store(false, Ordering::Relaxed);
     if let Some((done, skipped, move_files)) = TTF_RESULT.lock().unwrap().take() {
-        let key = if move_files {
-            "ttf_done_moved"
-        } else {
-            "ttf_done_copied"
-        };
-        let m = wide(
-            &t(key)
-                .replace("{done}", &done.to_string())
-                .replace("{skipped}", &skipped.to_string()),
-        );
+        let m = wide(&ttf_done_message(
+            t(ttf_done_key(move_files)),
+            done,
+            skipped,
+        ));
         let cap = wide("SageThumbs 2K");
         MessageBoxW(
             Some(hwnd),
@@ -388,17 +312,69 @@ unsafe fn on_ttf_done(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
-/// Close the dialog, or defer the close if a sort is still running. There is no
-/// per-file cancellation checkpoint inside `tags_to_folders` (it is one lib call,
-/// not a loop this dialog drives) — Cancel while running just refuses to close
-/// early, so `on_ttf_done`'s `DestroyWindow` is the one that actually tears the
-/// window down, instead of destroying it out from under the worker thread mid-sort.
+/// Close the dialog, or defer the close if a sort is still running — same
+/// reasoning as `files_to_folder.rs::request_close`.
 unsafe fn request_close(hwnd: HWND) {
-    if TTF_RUNNING.load(Ordering::Relaxed) {
-        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
-            let _ = EnableWindow(b, false);
-        }
-    } else {
-        let _ = DestroyWindow(hwnd);
+    crate::files_to_folder::close_or_defer(hwnd, &TTF_RUNNING);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttf_field_or_keeps_a_trimmed_value() {
+        assert_eq!(ttf_field_or("  C:\\music \t", "fallback"), "C:\\music");
+    }
+
+    #[test]
+    fn ttf_field_or_falls_back_when_nothing_was_typed() {
+        assert_eq!(ttf_field_or("   \n", "Unknown"), "Unknown");
+        assert_eq!(ttf_field_or("", "Unknown"), "Unknown");
+    }
+
+    #[test]
+    fn ttf_done_message_fills_both_placeholders() {
+        let got = ttf_done_message("Moved {done} file(s).\n{skipped} skipped.", 3, 2);
+        assert_eq!(got, "Moved 3 file(s).\n2 skipped.");
+    }
+
+    #[test]
+    fn ttf_done_message_fills_placeholders_in_either_order() {
+        assert_eq!(
+            ttf_done_message("{skipped} skipped, {done} moved", 4, 1),
+            "1 skipped, 4 moved"
+        );
+    }
+
+    #[test]
+    fn ttf_done_message_renders_a_zero_count_without_leaving_a_brace() {
+        let got = ttf_done_message("{done} done, {skipped} skipped", 0, 0);
+        assert_eq!(got, "0 done, 0 skipped");
+    }
+
+    #[test]
+    fn ttf_done_key_names_the_move_prompt() {
+        assert_eq!(ttf_done_key(true), "ttf_done_moved");
+        assert_eq!(ttf_done_key(false), "ttf_done_copied");
+    }
+
+    #[test]
+    fn parent_folder_keeps_the_folder() {
+        assert_eq!(
+            parent_folder("C:\\media\\song.mp3"),
+            Some("C:\\media".to_string())
+        );
+    }
+
+    #[test]
+    fn parent_folder_has_none_for_a_drive_root() {
+        assert_eq!(parent_folder("C:\\"), None);
+    }
+
+    #[test]
+    fn button_row_y_scales_the_client_bottom_back_to_design_px() {
+        assert_eq!(button_row_y(300, 96), 258);
+        assert_eq!(button_row_y(300, 192), 108);
     }
 }

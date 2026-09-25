@@ -37,6 +37,14 @@ out of 255, and visually indistinguishable.
   framebuffer (three f32 planes, ~264 MB on a 66 MP frame).
 - `render.rs` returns before the restoration filters, feature rendering and upsampling, all of
   which assume 1:1 geometry. **This is why the mode is an approximation and opt-in.**
+- The one 1:1 stage it does NOT skip: a `do_ycbcr` frame's chroma planes are upsampled to the
+  LF luma before the LF image is returned (`upsample_jpeg` against the LF region). A
+  JPEG-transcoded frame keeps the JPEG's subsampling, so its Cb and Cr LF planes are half-size,
+  and the YCbCr conversion downstream requires three planes of one size. Missing until
+  2026-09-16 (issue #43): every 4:2:0 or 4:2:2 transcode - which is every phone photo run
+  through cjxl - panicked with "Grid size mismatch" on the reduced path, while 4:4:4 and
+  non-JPEG files were fine. The 39 conformance files carry no subsampled JPEG reconstruction,
+  which is why nothing went red. `tests/fixtures/jxl/jpeg4{20,22}_transcode.jxl` now do.
 - `JxlImage::render_size` reports what a frame will actually produce, and the `image`-crate
   integration's `dimensions()` follows it, so `DynamicImage::from_decoder` allocates the right
   buffer.

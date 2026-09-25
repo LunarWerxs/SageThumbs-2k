@@ -8,15 +8,17 @@ use core::cell::Cell;
 use core::ffi::c_void;
 
 use windows::core::{Error, Interface, Ref, Result, BOOL, GUID, HRESULT, PWSTR};
-use windows::Win32::Foundation::{E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, S_FALSE, S_OK};
-use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree, IBindCtx};
+use windows::Win32::Foundation::{E_NOTIMPL, E_POINTER, S_FALSE, S_OK};
+use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
 use windows::Win32::UI::Shell::{
     IEnumExplorerCommand, IEnumExplorerCommand_Impl, IExplorerCommand, IExplorerCommand_Impl,
     IShellItemArray, ECF_DEFAULT, ECF_HASSUBCOMMANDS, ECS_ENABLED, ECS_HIDDEN, SIGDN_FILESYSPATH,
 };
 use windows_implement::implement;
 
-use crate::{safety, settings, verbs};
+use st2k_actions::verbs;
+use st2k_base::host::alloc_pwstr;
+use st2k_base::{safety, settings};
 
 /// COM's documented `IExplorerCommand::GetState` signal for "this would be slow and
 /// `fOkToBeSlow` said not to block — ask again once it's OK to be slow" (`Urlmon`'s
@@ -25,21 +27,21 @@ use crate::{safety, settings, verbs};
 /// one constant.
 const E_PENDING: HRESULT = HRESULT(0x8000_000A_u32 as i32);
 
-/// Allocate a NUL-terminated wide string with CoTaskMemAlloc; the shell frees it.
-fn alloc_pwstr(s: &str) -> Result<PWSTR> {
-    let wide = crate::wide(s);
-    // Overflow-safe byte count (len * size_of::<u16>()); can't actually overflow for
-    // any real string, but keep the allocation provably sound rather than wrapping.
-    let bytes = wide
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
-    let p = unsafe { CoTaskMemAlloc(bytes) } as *mut u16;
-    if p.is_null() {
-        return Err(Error::from(E_OUTOFMEMORY));
-    }
-    unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len()) };
-    Ok(PWSTR(p))
+/// The companion EXE's app icon as the modern menu's `"<module>,-<resid>"` reference
+/// (resource 1). Installed next to the DLL — if it isn't there, no icon (`E_NOTIMPL`),
+/// never an error.
+fn app_icon_ref() -> Result<PWSTR> {
+    safety::guard_val(|| {
+        let exe = st2k_base::host::sibling_of_dll(st2k_base::host::APP_EXE)
+            .ok_or_else(|| Error::from(E_NOTIMPL))?;
+        alloc_pwstr(&format!("{},-1", exe.display()))
+    })
+}
+
+/// The `E_NOTIMPL` failure shared by the COM members that have no value to report
+/// (`GetToolTip`, `GetCanonicalName`), for both result types they declare.
+fn not_implemented<T>() -> Result<T> {
+    Err(Error::from(E_NOTIMPL))
 }
 
 /// Extract filesystem paths from a shell selection (the IShellItemArray the
@@ -57,22 +59,50 @@ unsafe fn items_to_paths(items: Ref<'_, IShellItemArray>) -> Vec<String> {
 /// so the array outlives the shell's `Invoke` call; the worker revokes it.
 unsafe fn park_selection(items: &Ref<'_, IShellItemArray>) -> Option<u32> {
     let arr = items.ok().ok()?;
-    let git = crate::video::global_interface_table()?;
+    let git = st2k_codecs::video::global_interface_table()?;
     git.RegisterInterfaceInGlobal(arr, &IShellItemArray::IID)
         .ok()
 }
 
+/// RAII owner of a [`park_selection`] cookie. It revokes the table entry on drop unless
+/// [`ParkedCookie::revoke`] already did, so a cookie whose worker never starts (the
+/// `spawn` in `run_action_detached_with` failed, dropping the closure) is still revoked
+/// instead of leaking the array's reference for explorer.exe's lifetime.
+struct ParkedCookie(Option<u32>);
+
+impl ParkedCookie {
+    /// Revoke the entry now (whatever happens next) and disarm the drop.
+    fn revoke(&mut self) {
+        if let Some(cookie) = self.0.take() {
+            unsafe {
+                if let Some(git) = st2k_codecs::video::global_interface_table() {
+                    let _ = git.RevokeInterfaceFromGlobal(cookie);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ParkedCookie {
+    fn drop(&mut self) {
+        self.revoke();
+    }
+}
+
 /// The worker half of [`park_selection`]: fetch the array back out of the table, revoke
 /// the entry (whatever happens next), and walk it here. An empty Vec if the fetch fails.
-unsafe fn paths_from_global(cookie: u32) -> Vec<String> {
-    let Some(git) = crate::video::global_interface_table() else {
+unsafe fn paths_from_global(mut cookie: ParkedCookie) -> Vec<String> {
+    let Some(entry) = cookie.0 else {
+        return Vec::new();
+    };
+    let Some(git) = st2k_codecs::video::global_interface_table() else {
         return Vec::new();
     };
     let mut raw: *mut c_void = std::ptr::null_mut();
     let fetched = git
-        .GetInterfaceFromGlobal(cookie, &IShellItemArray::IID, &mut raw)
+        .GetInterfaceFromGlobal(entry, &IShellItemArray::IID, &mut raw)
         .is_ok();
-    let _ = git.RevokeInterfaceFromGlobal(cookie);
+    cookie.revoke();
     if !fetched || raw.is_null() {
         safety::log("command: selection could not be fetched from the interface table");
         return Vec::new();
@@ -179,8 +209,8 @@ unsafe fn selection_is_audio_only(items: &Ref<'_, IShellItemArray>) -> bool {
 /// Enabled only when the selection contains a supported image — mirrors the
 /// classic `IContextMenu` gate (`contextmenu.rs`) so the modern Win11 menu
 /// behaves the same. `ECS_HIDDEN` removes the verb from the flyout entirely.
-/// The enabled/hidden verdict shared by both `IExplorerCommand::GetState` impls: the
-/// verb shows only when the menu is enabled AND the selection holds a supported image.
+/// The enabled/hidden verdict for the flyout verbs: the verb shows only when the
+/// menu is enabled AND the selection holds a supported image.
 /// `gate` is a snapshot (see [`settings::MenuGate`]), not a fresh registry read here —
 /// the caller re-fetches it each `GetState` call, so a settings change is still
 /// honored without a new command object, but without a separate open per flag.
@@ -235,22 +265,22 @@ fn quick_root_visible(quick_verbs_on: bool, item_shown: bool) -> bool {
 /// attributes in `scripts/packaging/AppxManifest.xml`.
 const QUICK_VERBS: &[(GUID, &str, &str)] = &[
     (
-        crate::guids::CLSID_QUICK_CONVERT_INTO,
+        st2k_base::guids::CLSID_QUICK_CONVERT_INTO,
         "menu_convert_into",
         "SageThumbs2KConvertInto",
     ),
     (
-        crate::guids::CLSID_QUICK_CONVERT_DIALOG,
+        st2k_base::guids::CLSID_QUICK_CONVERT_DIALOG,
         "menu_convert_dialog",
         "SageThumbs2KConvertDialog",
     ),
     (
-        crate::guids::CLSID_QUICK_RESIZE,
+        st2k_base::guids::CLSID_QUICK_RESIZE,
         "menu_resize",
         "SageThumbs2KResize",
     ),
     (
-        crate::guids::CLSID_QUICK_ROTATE,
+        st2k_base::guids::CLSID_QUICK_ROTATE,
         "menu_rotate",
         "SageThumbs2KRotate",
     ),
@@ -275,7 +305,7 @@ pub fn quick_root_item(clsid: GUID) -> Option<&'static verbs::MenuItem> {
 
 #[implement(IExplorerCommand)]
 pub struct ExplorerCommand {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     /// Cached "selection contains an image" verdict. The shell may call
     /// `GetState` repeatedly on one command instance and the selection is fixed
     /// for the object's lifetime, so we iterate the array at most once.
@@ -288,10 +318,31 @@ impl Default for ExplorerCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             has_image: Cell::new(None),
         }
     }
+}
+
+/// Map a raw top-level verb list ([`verbs::ordered_top_level`] /
+/// [`verbs::condensed_top_level`]) to modern-menu commands: drop the separators, honor the
+/// per-item visibility snapshot, and build one [`MenuCommand`] per item. All are top-level
+/// (`top_level: true`) so `GetState` can hide the image-only ones on an audio-only
+/// selection; `condensed` picks the always-enabled file-agnostic gate flag for the items
+/// shown on an unsupported selection.
+fn top_level_commands(
+    entries: Vec<(&'static verbs::MenuItem, u32)>,
+    vis: &settings::MenuVisibility,
+    condensed: bool,
+    gate: settings::MenuGate,
+) -> Vec<IExplorerCommand> {
+    entries
+        .into_iter()
+        .map(|(it, _)| it)
+        .filter(|it| !matches!(it, verbs::MenuItem::Separator))
+        .filter(|it| vis.shown(it.title()))
+        .map(|it| MenuCommand::new(it, true, condensed, gate).into())
+        .collect()
 }
 
 impl IExplorerCommand_Impl for ExplorerCommand_Impl {
@@ -299,23 +350,16 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
         safety::guard_val(|| alloc_pwstr("SageThumbs 2K"))
     }
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        safety::guard_val(|| {
-            // The companion EXE carries the app icon as resource 1; the modern
-            // menu takes "<module>,-<resid>" icon references. Installed next to
-            // the DLL — if it isn't there, no icon (E_NOTIMPL), never an error.
-            let exe =
-                crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
-            alloc_pwstr(&format!("{},-1", exe.display()))
-        })
+        app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetCanonicalName(&self) -> Result<GUID> {
         // No stable canonical verb name (we'd return GUID_NULL); report
         // not-implemented to match the rest of the surface instead of an
         // S_OK + null GUID the shell would treat as meaningful.
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
@@ -371,29 +415,14 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
             // (and no-op) on an unsupported file.
             let condensed = self.has_image.get() != Some(true) && gate.all_file_types;
             let items: Vec<IExplorerCommand> = if condensed {
-                verbs::condensed_top_level()
-                    .into_iter()
-                    .map(|(it, _)| it)
-                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
-                    .filter(|it| vis.shown(it.title()))
-                    // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
-                    .map(|it| MenuCommand::new(it, true, true, gate).into())
-                    .collect()
+                // Condensed items are file-agnostic → always enabled (the `true` condensed flag).
+                top_level_commands(verbs::condensed_top_level(), &vis, true, gate)
             } else {
                 // `ordered_top_level()` (not raw `MENU`) so the user's drag-reorder in Settings
                 // also applies to the modern flyout, matching the classic handler. Leaf indices
                 // aren't used here (IExplorerCommand dispatches the action directly), so the `_`
                 // start-index is discarded.
-                verbs::ordered_top_level()
-                    .into_iter()
-                    .map(|(it, _)| it)
-                    .filter(|it| !matches!(it, verbs::MenuItem::Separator))
-                    // Per-item visibility: hide top-level entries the user unticked in Settings.
-                    .filter(|it| vis.shown(it.title()))
-                    // These ARE the top-level items — `top_level: true` so `GetState` can hide
-                    // the image-only ones on an audio-only selection.
-                    .map(|it| MenuCommand::new(it, true, false, gate).into())
-                    .collect()
+                top_level_commands(verbs::ordered_top_level(), &vis, false, gate)
             };
             Ok(SubCommandEnum::new(items).into())
         })
@@ -404,7 +433,7 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
 
 #[implement(IExplorerCommand)]
 pub struct MenuCommand {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     item: &'static verbs::MenuItem,
     /// True when this command is a TOP-LEVEL flyout entry (created by the root's
     /// `EnumSubCommands`), false when it's a child created by a group's own
@@ -455,7 +484,7 @@ impl MenuCommand {
         gate: settings::MenuGate,
     ) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             item,
             top_level,
             condensed,
@@ -474,7 +503,7 @@ impl MenuCommand {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn quick_root(item: &'static verbs::MenuItem) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             item,
             top_level: true,
             condensed: false,
@@ -494,43 +523,21 @@ impl MenuCommand {
     /// again once it's OK to be slow rather than stalling its own thread once per
     /// top-level item on a large selection.
     unsafe fn state(&self, items: &Ref<'_, IShellItemArray>, slow_ok: bool) -> Result<u32> {
-        let has_image = match self.has_image.get() {
-            Some(v) => v,
-            None if !slow_ok => return Err(Error::from(E_PENDING)),
-            None => {
-                let v = selection_has_image(items);
-                self.has_image.set(Some(v));
-                v
-            }
-        };
+        let has_image = cached_verdict(&self.has_image, slow_ok, items, selection_has_image)?;
         let base = state_for(self.gate, has_image);
         if base != ECS_ENABLED.0 as u32 {
             return Ok(base); // menu off or unsupported selection — already hidden
         }
         if self.top_level && !verbs::top_level_audio_ok(self.item.title()) {
-            let audio_only = match self.audio_only.get() {
-                Some(v) => v,
-                None if !slow_ok => return Err(Error::from(E_PENDING)),
-                None => {
-                    let v = selection_is_audio_only(items);
-                    self.audio_only.set(Some(v));
-                    v
-                }
-            };
+            let audio_only =
+                cached_verdict(&self.audio_only, slow_ok, items, selection_is_audio_only)?;
             if audio_only {
                 return Ok(ECS_HIDDEN.0 as u32);
             }
         }
         if self.top_level && !verbs::top_level_video_ok(self.item.title()) {
-            let video_only = match self.video_only.get() {
-                Some(v) => v,
-                None if !slow_ok => return Err(Error::from(E_PENDING)),
-                None => {
-                    let v = selection_is_video_only(items);
-                    self.video_only.set(Some(v));
-                    v
-                }
-            };
+            let video_only =
+                cached_verdict(&self.video_only, slow_ok, items, selection_is_video_only)?;
             if video_only {
                 return Ok(ECS_HIDDEN.0 as u32);
             }
@@ -539,9 +546,28 @@ impl MenuCommand {
     }
 }
 
+/// Cached per-selection verdict: returns `cell`'s value, or runs `walk` and caches its
+/// result on a miss — unless `!slow_ok`, when it defers with `E_PENDING` instead.
+fn cached_verdict(
+    cell: &Cell<Option<bool>>,
+    slow_ok: bool,
+    items: &Ref<'_, IShellItemArray>,
+    walk: unsafe fn(&Ref<'_, IShellItemArray>) -> bool,
+) -> Result<bool> {
+    match cell.get() {
+        Some(v) => Ok(v),
+        None if !slow_ok => Err(Error::from(E_PENDING)),
+        None => {
+            let v = unsafe { walk(items) };
+            cell.set(Some(v));
+            Ok(v)
+        }
+    }
+}
+
 impl IExplorerCommand_Impl for MenuCommand_Impl {
     fn GetTitle(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        safety::guard_val(|| alloc_pwstr(crate::i18n::t(self.item.title())))
+        safety::guard_val(|| alloc_pwstr(st2k_base::i18n::t(self.item.title())))
     }
     fn GetIcon(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
         // A top-level quick verb carries the app icon (like the root command) so it's
@@ -549,19 +575,15 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
         if !self.quick_root {
             return Err(Error::from(E_NOTIMPL));
         }
-        safety::guard_val(|| {
-            let exe =
-                crate::sibling_of_dll(crate::APP_EXE).ok_or_else(|| Error::from(E_NOTIMPL))?;
-            alloc_pwstr(&format!("{},-1", exe.display()))
-        })
+        app_icon_ref()
     }
     fn GetToolTip(&self, _items: Ref<'_, IShellItemArray>) -> Result<PWSTR> {
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetCanonicalName(&self) -> Result<GUID> {
         // No stable canonical verb name; not-implemented (was S_OK + GUID_NULL),
         // matching the root command and the rest of the COM surface.
-        Err(Error::from(E_NOTIMPL))
+        not_implemented()
     }
     fn GetState(&self, items: Ref<'_, IShellItemArray>, slow: BOOL) -> Result<u32> {
         safety::guard_val(|| {
@@ -605,6 +627,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
                 // so the error MessageBox (if any) is a top-level dialog.
                 match unsafe { park_selection(&items) } {
                     Some(cookie) => {
+                        let cookie = ParkedCookie(Some(cookie));
                         let hint = unsafe { items.ok().and_then(|a| a.GetCount()) }.unwrap_or(0);
                         verbs::run_action_detached_with(
                             *action,
@@ -653,7 +676,7 @@ impl IExplorerCommand_Impl for MenuCommand_Impl {
 
 #[implement(IEnumExplorerCommand)]
 pub struct SubCommandEnum {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     items: Vec<IExplorerCommand>,
     pos: Cell<usize>,
 }
@@ -663,7 +686,7 @@ impl SubCommandEnum {
     #[allow(clippy::default_constructed_unit_structs)]
     fn new(items: Vec<IExplorerCommand>) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             items,
             pos: Cell::new(0),
         }
@@ -728,66 +751,4 @@ impl IEnumExplorerCommand_Impl for SubCommandEnum_Impl {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The modern quick verbs MUST be the same set, in the same order, as the classic
-    /// `quick_items()` — i.e. [`QUICK_VERBS`] keys == [`verbs::QUICK_KEYS`]. If `QUICK_KEYS`
-    /// changes (a quick verb added/removed/reordered) without updating the CLSID table + the
-    /// manifest verbs, the two menus would silently diverge — this turns that into a CI failure.
-    #[test]
-    fn quick_verbs_match_quick_keys() {
-        let keys: Vec<&str> = QUICK_VERBS.iter().map(|(_, k, _)| *k).collect();
-        assert_eq!(
-            keys,
-            verbs::QUICK_KEYS,
-            "QUICK_VERBS keys must equal verbs::QUICK_KEYS"
-        );
-    }
-
-    /// Every quick-verb CLSID resolves to a real top-level `MENU` item, and `is_quick_clsid`
-    /// recognizes it; a non-quick CLSID does not.
-    #[test]
-    fn quick_clsids_resolve_to_menu_items() {
-        for (clsid, key, _) in QUICK_VERBS {
-            assert!(is_quick_clsid(*clsid), "is_quick_clsid missed {key}");
-            let item = quick_root_item(*clsid).unwrap_or_else(|| panic!("no MENU item for {key}"));
-            assert_eq!(
-                item.title(),
-                *key,
-                "quick_root_item returned the wrong MENU node for {key}"
-            );
-        }
-        assert!(!is_quick_clsid(crate::guids::CLSID_EXPLORER_COMMAND));
-        assert!(quick_root_item(crate::guids::CLSID_EXPLORER_COMMAND).is_none());
-    }
-
-    /// A quick verb's GetState must hide it when EITHER gate is off, not just the
-    /// master "Quick verbs on the main menu" toggle. Before this, the quick_root
-    /// branch never consulted `menu_visibility()` at all, so hiding e.g. "Resize" in
-    /// Settings' "Menu items" list left it visible in the Win11 compact flyout.
-    #[test]
-    fn quick_root_visibility_requires_both_the_master_toggle_and_the_per_item_setting() {
-        assert!(quick_root_visible(true, true));
-        assert!(
-            !quick_root_visible(false, true),
-            "master toggle off must hide a quick verb even if its own setting is shown"
-        );
-        assert!(
-            !quick_root_visible(true, false),
-            "the per-item 'Menu items' hide must hide a quick verb, not just the master toggle"
-        );
-        assert!(!quick_root_visible(false, false));
-    }
-
-    /// The quick-verb CLSIDs are all distinct (a copy-paste dup would make two verbs activate
-    /// the same coclass and silently collapse to one item).
-    #[test]
-    fn quick_clsids_are_distinct() {
-        for (i, (a, _, _)) in QUICK_VERBS.iter().enumerate() {
-            for (b, _, _) in &QUICK_VERBS[i + 1..] {
-                assert_ne!(a, b, "duplicate quick-verb CLSID");
-            }
-        }
-    }
-}
+mod tests;

@@ -1,0 +1,48 @@
+[package]
+name = "sagethumbs2k-actions"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SageThumbs 2K library, actions layer"
+
+# cargo-machete reads crate NAMES, so it misses `kamadak-exif` (imported as `exif`).
+# It is used.
+[package.metadata.cargo-machete]
+ignored = ["kamadak-exif"]
+
+[lib]
+name = "st2k_actions"
+
+[dependencies]
+base64 = "0.23"
+kamadak-exif = "0.6"
+exr = { version = "=1.74.2", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+image = { workspace = true }
+img-parts = "0.4"
+lofty = "0.25"
+serde_json = "1"
+tiff = { version = "0.11", default-features = false }
+# Lossy WebP encode (image-webp only does lossless), via libwebp/cc — the ONLY C
+# dependency in the build. OPTIONAL behind the `webp-lossy` feature (off by default)
+# so the default build is pure-Rust and needs no C compiler. The release installer
+# opts in (build-release.ps1); without it, a lossy-WebP request degrades to lossless
+# WebP (via the `image` crate). MIT OR Apache-2.0.
+webp = { version = "0.3", default-features = false, optional = true }
+windows = { workspace = true }
+windows-registry = "0.6"
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+st2k_base = { package = "sagethumbs2k-base", path = "../base" }
+st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs" }
+
+[dev-dependencies]
+# The lower layers' test seams and fixtures (their `testkit` feature), for this crate's tests.
+st2k_base = { package = "sagethumbs2k-base", path = "../base", features = ["testkit"] }
+st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs", features = ["testkit"] }
+
+[features]
+# Lossy WebP encode via libwebp (C). Off by default so the default build is pure Rust; the
+# release build turns it on through the root and DLL crates' feature of the same name.
+webp-lossy = ["dep:webp"]

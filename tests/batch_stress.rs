@@ -6,20 +6,23 @@
 //! checked that outputs *existed*, not that they were *right*, and a 1-in-100
 //! failure never shows up in a three-file test.
 //!
-//! Our batch path is a hand-rolled scoped thread pool (`src/parallel.rs`) with
+//! Our batch path is a hand-rolled scoped thread pool (`crates/base/src/parallel.rs`) with
 //! output names reserved serially before the parallel pass, so the same class of
 //! race is plausible here. This test therefore runs a few hundred files through
 //! it and asserts the DIMENSIONS of every single output, plus that no two files
 //! collided on a name.
 //!
-//! Sizes deliberately vary per file so a mixed-up result cannot coincidentally
-//! look correct, and one file is a deliberately unreadable dud: a batch must
+//! Every source is its own colour (and its own width), and each output's colour and height are
+//! checked, so a mixed-up result - file i's picture written under file j's name - cannot
+//! coincidentally look correct (the sizes alone could not tell: every source is 2:1, so every
+//! output is the same 64x32). One file is a deliberately unreadable dud: a batch must
 //! report that one failure without disturbing its neighbours.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sagethumbs2k_core::{parallel, resize_file, Resize};
+use st2k_actions::{verbs::resize_file, verbs::Resize};
+use st2k_base::parallel;
 
 /// Enough files to expose a 1-in-100 race, small enough to stay a fast test.
 const COUNT: usize = 300;
@@ -72,13 +75,21 @@ fn every_output_of_a_large_batch_has_the_requested_size() {
         let src_h = src_w / 2;
         let scale = f64::from(FIT) / f64::from(src_w.max(src_h));
         let expect_w = ((f64::from(src_w) * scale).round() as u32).max(1);
+        let expect_h = ((f64::from(src_h) * scale).round() as u32).max(1);
 
-        let (w, h) =
-            image::image_dimensions(out).unwrap_or_else(|e| panic!("output {i} unreadable: {e}"));
+        let img = image::open(out).unwrap_or_else(|e| panic!("output {i} unreadable: {e}"));
+        let (w, h) = (img.width(), img.height());
         // The long edge is the contract; allow a pixel of rounding on both.
         assert!(
-            w.abs_diff(expect_w) <= 1,
-            "file {i}: width {w}, expected about {expect_w} (source {src_w}x{src_h})"
+            w.abs_diff(expect_w) <= 1 && h.abs_diff(expect_h) <= 1,
+            "file {i}: {w}x{h}, expected about {expect_w}x{expect_h} (source {src_w}x{src_h})"
+        );
+        let px = img.to_rgb8().get_pixel(w / 2, h / 2).0;
+        assert!(
+            px[0].abs_diff((i % 256) as u8) <= 1
+                && px[1].abs_diff(90) <= 1
+                && px[2].abs_diff(160) <= 1,
+            "file {i}: colour {px:?} is another file's picture"
         );
         assert!(
             w.max(h) <= FIT,

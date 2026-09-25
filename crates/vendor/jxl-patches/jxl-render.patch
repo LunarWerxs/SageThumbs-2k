@@ -1,6 +1,6 @@
 diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
---- pristine/jxl-render/src/image.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/image.rs	2026-08-20 12:46:43.465797900 -0500
+--- pristine/jxl-render/src/image.rs	2026-09-16 22:19:28.311010500 -0500
++++ patched/jxl-render/src/image.rs	2026-09-16 22:22:00.516920100 -0500
 @@ -592,6 +592,36 @@
          self.color_channels = count;
      }
@@ -39,8 +39,8 @@ diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
          for (ec_idx, ec_info) in ec_info.iter().enumerate() {
              if !matches!(ec_info.ty, jxl_image::ExtraChannelType::Alpha { .. }) {
 diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
---- pristine/jxl-render/src/lib.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/lib.rs	2026-08-20 12:47:43.411220700 -0500
+--- pristine/jxl-render/src/lib.rs	2026-09-16 22:19:28.330341900 -0500
++++ patched/jxl-render/src/lib.rs	2026-09-16 22:22:00.516920100 -0500
 @@ -6,7 +6,10 @@
      ColorEncodingWithProfile, ColorManagementSystem, ColorTransform, ColourEncoding, ColourSpace,
      EnumColourEncoding, RenderingIntent, TransferFunction,
@@ -160,8 +160,8 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  
              match state {
 diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
---- pristine/jxl-render/src/render.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/render.rs	2026-08-20 12:46:43.467579400 -0500
+--- pristine/jxl-render/src/render.rs	2026-09-16 22:19:28.352273400 -0500
++++ patched/jxl-render/src/render.rs	2026-09-16 22:22:00.516920100 -0500
 @@ -18,6 +18,7 @@
      image_region: Region,
      pool: JxlThreadPool,
@@ -189,12 +189,22 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
              );
              match (result, reference_frames.lf) {
                  (Ok(grid), _) => grid,
-@@ -67,6 +73,14 @@
+@@ -67,6 +73,24 @@
          }
      };
  
 +    if lf_only {
 +        // The LF image is the finished 1:8 result; every stage below assumes 1:1 geometry.
++        //
++        // Its chroma planes are still at the frame's JPEG subsampling, though: a 4:2:0
++        // transcode carries Cb and Cr at half the LF luma's width and height, and the YCbCr
++        // conversion needs three planes of one size. Upsample them to the luma exactly as
++        // the 1:1 path does below, against the LF image's own region rather than the frame's.
++        if frame_header.do_ycbcr {
++            if let Some(&(lf_region, _)) = fb.regions_and_shifts().first() {
++                fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
++            }
++        }
 +        // It carries colour channels only, so give it the extra channels the caller's pixel
 +        // format promises, with alpha opaque.
 +        fb.append_opaque_extra_channels(&image_header.metadata.ec_info)?;
@@ -205,8 +215,8 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
          fb.upsample_jpeg(color_padded_region, image_header.metadata.bit_depth)?;
      }
 diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mod.rs
---- pristine/jxl-render/src/vardct/mod.rs	2006-07-23 20:21:28.000000000 -0500
-+++ patched/jxl-render/src/vardct/mod.rs	2026-08-20 12:46:43.468158600 -0500
+--- pristine/jxl-render/src/vardct/mod.rs	2026-09-16 22:19:28.341369200 -0500
++++ patched/jxl-render/src/vardct/mod.rs	2026-09-16 22:22:00.519966600 -0500
 @@ -51,6 +51,7 @@
      cache: &mut RenderCache<S>,
      region: Region,

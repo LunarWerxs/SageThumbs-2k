@@ -93,11 +93,12 @@ pub(super) fn sync_button_label() -> String {
 /// "never claims a completed sync that did not happen" invariant is one thing to test
 /// rather than a property of scattered `t()` calls.
 ///
-/// `Off`/`Connecting` are never returned by [`derive_sync_state`] (the persistent signals
-/// it reads have no notion of "mid sign-in"), `Connecting` is only ever constructed
+/// `Connecting` is never returned by [`derive_sync_state`] (the persistent signals
+/// it reads have no notion of "mid sign-in"), it is only ever constructed
 /// directly, for the transient overlay `begin_connect`/`begin_retry_initial_sync` show
-/// while their worker thread is running. Everything else is reachable from
-/// [`derive_sync_state`] given the right [`SyncSignals`].
+/// while their worker thread is running. Everything else, `Off` included (returned
+/// whenever `signed_in` is false), is reachable from [`derive_sync_state`] given the
+/// right [`SyncSignals`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SyncState {
     /// Not signed in.
@@ -106,8 +107,7 @@ pub(super) enum SyncState {
     Connecting,
     /// Authenticated, but the first sync never completed AND the last attempt reached the
     /// server (it answered with a rejection, or hasn't been retried since a rejection).
-    /// `error` carries the server's own message when one is known this session.
-    InitialSyncPending { error: Option<String> },
+    InitialSyncPending,
     /// The last automatic attempt (an initial sync retry, or a Save's push) never reached
     /// the server at all, no HTTP response came back at all (DNS/TCP/TLS/timeout via
     /// `http::request` returning `None`), as opposed to [`SyncState::InitialSyncPending`]
@@ -159,9 +159,7 @@ pub(super) fn derive_sync_state(signals: &SyncSignals) -> SyncState {
         return SyncState::Offline;
     }
     if signals.initial_sync_pending {
-        return SyncState::InitialSyncPending {
-            error: signals.error.clone(),
-        };
+        return SyncState::InitialSyncPending;
     }
     if signals.push_pending {
         return SyncState::SavedLocally {
@@ -186,9 +184,7 @@ pub(super) fn render_sync_state(state: &SyncState) -> (String, bool) {
     match state {
         SyncState::Off => (t("sync_state_off").to_string(), false),
         SyncState::Connecting => (t("sync_state_connecting").to_string(), false),
-        SyncState::InitialSyncPending { .. } => {
-            (t("sync_state_initial_pending").to_string(), false)
-        }
+        SyncState::InitialSyncPending => (t("sync_state_initial_pending").to_string(), false),
         SyncState::Offline => (t("sync_state_offline").to_string(), false),
         SyncState::SavedLocally { error: Some(e) } => {
             (t("sync_state_pending_err").replace("{error}", e), false)
@@ -353,7 +349,7 @@ pub(super) fn spawn_sync(hwnd: HWND, op: SyncOp) {
             }
             SyncOp::Disconnect => SyncEvent::Disconnected(crate::sync_client::disconnect()),
         };
-        post_sync(target, event);
+        post_boxed_event(target, WM_APP_SYNC, event);
     });
 }
 
@@ -364,8 +360,9 @@ pub(super) fn spawn_sync_pull(hwnd: HWND) {
     }
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        post_sync(
+        post_boxed_event(
             target,
+            WM_APP_SYNC,
             SyncEvent::Pulled(crate::sync_client::pull_on_open()),
         );
     });
@@ -383,35 +380,45 @@ pub(super) fn spawn_sync_push(hwnd: HWND) {
     std::thread::spawn(move || {
         let result = crate::sync_client::push();
         crate::sync_client::finish_push_worker(result.is_ok());
-        post_sync(target, SyncEvent::Pushed(result));
+        post_boxed_event(target, WM_APP_SYNC, SyncEvent::Pushed(result));
     });
 }
 
-/// Post a boxed `SyncEvent` to the window; reclaim the box if the window is already gone.
-pub(super) fn post_sync(target: isize, event: SyncEvent) {
-    let raw = Box::into_raw(Box::new(event));
-    unsafe {
-        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            Some(HWND(target as *mut core::ffi::c_void)),
-            WM_APP_SYNC,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        );
-        if posted.is_err() {
-            drop(Box::from_raw(raw));
-        }
-    }
+/// The UI half of a successful connect (or initial-sync retry): the pull has just landed in
+/// the settings store, so every control is reloaded from it BEFORE the user can Save.
+///
+/// Until 2026-09-19 this arm only refreshed the sync row: the open dialog's controls still
+/// showed the pre-pull values, so a Save wrote them straight back over the pull and pushed
+/// them to the account (audit F07: second PC, sign in, Save = the other PC's settings
+/// overwritten). `Pulled(Ok(true))` had always reloaded; this route now does the same.
+/// Split from the message box so the regression test can drive it headlessly.
+pub(super) unsafe fn on_connected_synced(hwnd: HWND) {
+    super::values::refresh_from_settings(hwnd);
+    refresh_sync_ui(hwnd);
+    // However they got here — the banner, the sync button, or credentials this machine
+    // already had — the sign-in campaign is finished. Retire it so it is never asked
+    // again, including if they later sign out.
+    crate::nudge::mark_signed_in();
+}
+
+/// Settle the status line after a failed push/pull: `Offline` when the attempt never
+/// reached the server at all, otherwise `SavedLocally` carrying the server's own `error`
+/// message. Shared by the `Pulled(Err)` and `Pushed(Err)` arms so the two classify an
+/// identical failure identically.
+unsafe fn set_sync_failure_status(hwnd: HWND, error: String) {
+    let state = if crate::sync_client::last_attempt_was_offline() {
+        SyncState::Offline
+    } else {
+        SyncState::SavedLocally { error: Some(error) }
+    };
+    set_sync_status(hwnd, Some(render_sync_state(&state)));
 }
 
 /// Apply a finished sync op to the UI (runs on the message thread).
 pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
     match event {
         SyncEvent::Connected(Ok(crate::sync_client::ConnectOutcome::Synced { label })) => {
-            refresh_sync_ui(hwnd);
-            // However they got here — the banner, the sync button, or credentials this machine
-            // already had — the sign-in campaign is finished. Retire it so it is never asked
-            // again, including if they later sign out.
-            crate::nudge::mark_signed_in();
+            on_connected_synced(hwnd);
             msg(
                 hwnd,
                 &t("sync_signed_in").replace("{who}", &label),
@@ -434,9 +441,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             let state = if crate::sync_client::last_attempt_was_offline() {
                 SyncState::Offline
             } else {
-                SyncState::InitialSyncPending {
-                    error: Some(error.clone()),
-                }
+                SyncState::InitialSyncPending
             };
             set_sync_status(hwnd, Some(render_sync_state(&state)));
             crate::nudge::mark_signed_in();
@@ -488,12 +493,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
                     // instead of `set_sync_status(hwnd, None)`, which re-derives from the
                     // persisted markers alone and, before this fix, read as caught-up
                     // whenever neither pending marker happened to be set.
-                    let state = if crate::sync_client::last_attempt_was_offline() {
-                        SyncState::Offline
-                    } else {
-                        SyncState::SavedLocally { error: Some(error) }
-                    };
-                    set_sync_status(hwnd, Some(render_sync_state(&state)));
+                    set_sync_failure_status(hwnd, error);
                 }
             }
         }
@@ -506,12 +506,7 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
             // E05 audit: a push that never reached the server at all is `Offline`, not
             // `SavedLocally` with a server-shaped error message, the two used to be the
             // same rendered line no matter which one actually happened.
-            let state = if crate::sync_client::last_attempt_was_offline() {
-                SyncState::Offline
-            } else {
-                SyncState::SavedLocally { error: Some(error) }
-            };
-            set_sync_status(hwnd, Some(render_sync_state(&state)));
+            set_sync_failure_status(hwnd, error);
         }
         SyncEvent::Disconnected(outcome) => {
             refresh_sync_ui(hwnd);
@@ -533,231 +528,4 @@ pub(super) unsafe fn handle_sync_event(hwnd: HWND, event: SyncEvent) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signed_out_state_ignores_pending_markers() {
-        assert_eq!(sync_row_state(false, true, true), SyncRowState::SignedOut);
-    }
-
-    #[test]
-    fn initial_sync_pending_takes_priority_over_push_pending() {
-        assert_eq!(
-            sync_row_state(true, true, true),
-            SyncRowState::InitialSyncPending
-        );
-    }
-
-    #[test]
-    fn push_pending_without_initial_pending_is_its_own_state() {
-        assert_eq!(sync_row_state(true, false, true), SyncRowState::PushPending);
-    }
-
-    #[test]
-    fn fully_synced_when_signed_in_with_no_pending_markers() {
-        assert_eq!(sync_row_state(true, false, false), SyncRowState::Synced);
-    }
-
-    /// F16 (2026-09-05 audit): before this fix, the ONLY signal available to the button, the
-    /// status line, and the click handler was `is_signed_in()`, so an authenticated-but-not-
-    /// yet-synced account was indistinguishable from a fully synced one: the status line said
-    /// "Synced" and the button said "Stop syncing" while a message box, from the very same
-    /// event, said "sign-in failed". Against that old shape there was no `InitialSyncPending`
-    /// state to return at all (the equivalent logic collapsed straight to `Synced` whenever
-    /// `is_signed_in()` was true), so this test fails there and passes now.
-    #[test]
-    fn an_authenticated_but_unsynced_account_never_reads_as_fully_synced() {
-        let state = sync_row_state(true, true, false);
-        assert_ne!(
-            state,
-            SyncRowState::Synced,
-            "must not silently claim to be caught up"
-        );
-        assert_eq!(state, SyncRowState::InitialSyncPending);
-    }
-
-    // ---- E05: SyncState, the status-line source of truth --------------------------------
-
-    fn signals(
-        signed_in: bool,
-        initial_sync_pending: bool,
-        push_pending: bool,
-        offline: bool,
-    ) -> SyncSignals {
-        SyncSignals {
-            signed_in,
-            initial_sync_pending,
-            push_pending,
-            offline,
-            error: None,
-            who: None,
-            updated_from_other_device: false,
-        }
-    }
-
-    #[test]
-    fn signed_out_derives_off_regardless_of_stale_markers() {
-        assert_eq!(
-            derive_sync_state(&signals(false, true, true, true)),
-            SyncState::Off
-        );
-    }
-
-    /// Against pre-E05 code (`SyncRowState`, no `Offline` variant at all) this is simply
-    /// `InitialSyncPending`, the whole point of this test is that a transport failure and
-    /// a server rejection, both surfacing as "the initial sync hasn't finished", must now
-    /// render two DIFFERENT lines.
-    #[test]
-    fn initial_sync_pending_splits_into_offline_or_pending_by_reachability() {
-        assert_eq!(
-            derive_sync_state(&signals(true, true, false, true)),
-            SyncState::Offline
-        );
-        assert_eq!(
-            derive_sync_state(&signals(true, true, false, false)),
-            SyncState::InitialSyncPending { error: None }
-        );
-    }
-
-    #[test]
-    fn push_pending_splits_into_offline_or_saved_locally_by_reachability() {
-        assert_eq!(
-            derive_sync_state(&signals(true, false, true, true)),
-            SyncState::Offline
-        );
-        assert_eq!(
-            derive_sync_state(&signals(true, false, true, false)),
-            SyncState::SavedLocally { error: None }
-        );
-    }
-
-    /// E05 follow-up audit: `offline` must win even when NEITHER pending marker is set, a
-    /// pull that failed to reach the server sets no marker of its own (only a push/initial-
-    /// sync failure does). Against the old nested shape this fell straight through to
-    /// `Synced` below, rendering "up to date" right after a sync attempt that never left
-    /// this machine.
-    #[test]
-    fn offline_wins_even_with_no_pending_markers_set() {
-        assert_eq!(
-            derive_sync_state(&signals(true, false, false, true)),
-            SyncState::Offline
-        );
-    }
-
-    #[test]
-    fn no_pending_markers_derives_synced_with_the_given_who() {
-        let mut s = signals(true, false, false, false);
-        s.who = Some("ann@example.com".to_string());
-        assert_eq!(
-            derive_sync_state(&s),
-            SyncState::Synced {
-                who: Some("ann@example.com".to_string()),
-                updated_from_other_device: false,
-            }
-        );
-    }
-
-    /// `Connecting` is never derived, it's constructed directly by `begin_connect`/
-    /// `begin_retry_initial_sync` for the transient overlay. Reachable all the same: this
-    /// is what "every variant reachable from hand-built inputs" means for a variant with
-    /// no signals of its own.
-    #[test]
-    fn connecting_is_constructed_directly_and_renders_as_its_own_line() {
-        assert_eq!(
-            render_sync_state(&SyncState::Connecting),
-            (t("sync_state_connecting").to_string(), false)
-        );
-    }
-
-    /// The invariant the whole audit item is about: none of the three "not caught up yet"
-    /// states may render the green "Synced" text, whatever their payload.
-    #[test]
-    fn offline_initial_pending_and_saved_locally_never_render_as_synced() {
-        let synced_text = t("sync_state_synced").to_string();
-        let updated_text = t("sync_state_updated").to_string();
-        let synced_as_example = t("sync_state_synced_as").replace("{who}", "ann@example.com");
-        for state in [
-            SyncState::Offline,
-            SyncState::InitialSyncPending { error: None },
-            SyncState::InitialSyncPending {
-                error: Some("boom".to_string()),
-            },
-            SyncState::SavedLocally { error: None },
-            SyncState::SavedLocally {
-                error: Some("boom".to_string()),
-            },
-        ] {
-            let (text, green) = render_sync_state(&state);
-            assert_ne!(
-                text, synced_text,
-                "{state:?} must not render the plain synced line"
-            );
-            assert_ne!(
-                text, updated_text,
-                "{state:?} must not render the updated line"
-            );
-            assert_ne!(
-                text, synced_as_example,
-                "{state:?} must not render the synced-as line"
-            );
-            assert!(!green, "{state:?} must not tint green");
-        }
-    }
-
-    #[test]
-    fn offline_renders_its_own_locale_key() {
-        assert_eq!(
-            render_sync_state(&SyncState::Offline),
-            (t("sync_state_offline").to_string(), false)
-        );
-    }
-
-    #[test]
-    fn saved_locally_with_error_renders_the_error_text() {
-        assert_eq!(
-            render_sync_state(&SyncState::SavedLocally {
-                error: Some("syncing too often, retry after 5 seconds".to_string())
-            }),
-            (
-                t("sync_state_pending_err")
-                    .replace("{error}", "syncing too often, retry after 5 seconds"),
-                false
-            )
-        );
-    }
-
-    /// Matches the pre-E05 behavior exactly (the Pulled(Ok(true)) branch always showed the
-    /// plain "updated" line, ignoring the account name), `who` must not leak in here.
-    #[test]
-    fn updated_from_other_device_wins_over_who() {
-        assert_eq!(
-            render_sync_state(&SyncState::Synced {
-                who: Some("ann@example.com".to_string()),
-                updated_from_other_device: true,
-            }),
-            (t("sync_state_updated").to_string(), true)
-        );
-    }
-
-    #[test]
-    fn synced_renders_green_with_or_without_a_who() {
-        assert_eq!(
-            render_sync_state(&SyncState::Synced {
-                who: None,
-                updated_from_other_device: false,
-            }),
-            (t("sync_state_synced").to_string(), true)
-        );
-        assert_eq!(
-            render_sync_state(&SyncState::Synced {
-                who: Some("ann@example.com".to_string()),
-                updated_from_other_device: false,
-            }),
-            (
-                t("sync_state_synced_as").replace("{who}", "ann@example.com"),
-                true
-            )
-        );
-    }
-}
+mod tests;

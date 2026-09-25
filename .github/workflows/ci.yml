@@ -27,7 +27,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
       # which rustup installs on first cargo invocation. No setup action needed.
@@ -124,7 +124,7 @@ jobs:
       # subprocess tier had zero CI coverage: named_coders.rs and preview_capping.rs each
       # check `magick_available()` and self-skip with a loud eprintln! when it is absent
       # (so they silently never ran here), and magick_subprocess_decodes is #[ignore]d
-      # outright because it needs the binary. Same pinned 7.1.2-29 release the x64/ARM64
+      # outright because it needs the binary. Same pinned 7.1.2-31 release the x64/ARM64
       # packaging already trusts (scripts/packaging/imagemagick-source.json's provenance
       # block) - downloaded and SHA-256-verified before a silent install, never trusted on
       # a version string alone.
@@ -133,7 +133,10 @@ jobs:
         run: |
           $pin = Get-Content -Raw 'scripts\packaging\imagemagick-source.json' | ConvertFrom-Json
           $installer = Join-Path $env:RUNNER_TEMP $pin.provenance.upstreamAsset
-          Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $pin.provenance.upstreamSha256) {
             throw "ImageMagick installer hash mismatch: expected $($pin.provenance.upstreamSha256), got $hash"
@@ -196,10 +199,15 @@ jobs:
   self-update-smoke:
     name: self-update smoke (install · in-place upgrade)
     runs-on: windows-latest
+    # id-token: write lets the OPT-IN signing steps below log in to Azure by OIDC federation,
+    # so no signing secret is ever stored in this repository. Nothing else uses it.
+    permissions:
+      contents: read
+      id-token: write
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show
       # Same rationale and lookup as build-test: build.rs embeds VERSIONINFO via windres,
@@ -232,21 +240,93 @@ jobs:
           & $windres --version
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The runner image ships Inno Setup; install it only if that ever changes.
-      - name: Ensure Inno Setup
+      # The installer is compiled by Inno Setup 7 (scripts/release-manifest-lib.ps1 finds no
+      # other). The runner image ships Inno Setup 6 and Chocolatey lags, so install the pinned
+      # upstream release per-user, refusing a download whose SHA-256 is not the pinned one.
+      - name: Ensure Inno Setup 7
         shell: pwsh
         run: |
-          $iscc = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $iscc) { choco install innosetup --no-progress -y }
+          if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe") { return }
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.0-x64.exe'
+          # A runner's network can fail one fetch (a TLS name mismatch on 2026-09-23 held a
+          # release run); retry before failing the job. The pinned hash below still decides.
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe' -OutFile $exe; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
+          $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne '0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f') {
+            throw "innosetup-7.1.0-x64.exe SHA-256 mismatch: $sha"
+          }
+          $p = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Inno Setup 7 install exited $($p.ExitCode)" }
       # The real release pipeline, minus the two payloads irrelevant to updating:
       # ImageMagick (the updater behaves identically with or without it) and the signed package (needs
       # the Windows SDK signing chain; the classic-menu installer upgrades identically).
       - name: Build an engine-less installer via the release pipeline
         shell: pwsh
         run: ./scripts/build-release.ps1 -NoImageMagick -NoModernMenu
+      # CODE SIGNING, OPT-IN (issue #30). Shipped releases are built and signed locally by
+      # release.ps1; this signs the CI-built installer through Azure Artifact Signing so the
+      # signed shape is exercised on a clean runner too. Off unless the repository variable
+      # ST2K_CI_SIGN is 'true'. On, it needs the non-secret variables AZURE_CLIENT_ID,
+      # AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ST2K_SIGN_ENDPOINT, ST2K_SIGN_ACCOUNT and
+      # ST2K_SIGN_PROFILE, plus a federated credential on that app registration trusting this
+      # repository's main branch. It never runs for pull requests (forks get no OIDC token).
+      # Requested but not configured is a FAILED job, never a silently unsigned installer.
+      - name: Code signing (opt-in) - off
+        if: vars.ST2K_CI_SIGN != 'true' || github.event_name == 'pull_request'
+        shell: pwsh
+        run: Write-Host "::notice::installer left UNSIGNED in CI (repository variable ST2K_CI_SIGN is not 'true', or this is a pull request)"
+      - name: Code signing (opt-in) - configuration
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ST2K_SIGN_ENDPOINT: ${{ vars.ST2K_SIGN_ENDPOINT }}
+          ST2K_SIGN_ACCOUNT: ${{ vars.ST2K_SIGN_ACCOUNT }}
+          ST2K_SIGN_PROFILE: ${{ vars.ST2K_SIGN_PROFILE }}
+        run: |
+          $missing = @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID',
+            'ST2K_SIGN_ENDPOINT', 'ST2K_SIGN_ACCOUNT', 'ST2K_SIGN_PROFILE') |
+            Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
+          if ($missing) { throw "ST2K_CI_SIGN is 'true' but these repository variables are unset: $($missing -join ', ')" }
+      - name: Code signing (opt-in) - Azure login (OIDC)
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Code signing (opt-in) - sign the installer
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0 (formerly trusted-signing-action)
+        with:
+          endpoint: ${{ vars.ST2K_SIGN_ENDPOINT }}
+          signing-account-name: ${{ vars.ST2K_SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ST2K_SIGN_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-azure-cli-credential: false
+      - name: Code signing (opt-in) - verify
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem dist/SageThumbs2K-Setup-*.exe)
+          if (-not $setup) { throw 'No built installer found in dist/.' }
+          foreach ($f in $setup) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) {
+              throw "$($f.Name) is not validly signed and timestamped: $($sig.Status) $($sig.StatusMessage)"
+            }
+            Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject), timestamped"
+          }
       - name: Install, then self-update in place
         shell: pwsh
         run: |
@@ -264,8 +344,13 @@ jobs:
     runs-on: windows-11-arm
     env:
       RUSTFLAGS: -C target-feature=+crt-static
+      # rust-toolchain.toml names the x64 host toolchain, which rustup on this ARM64 runner
+      # refuses ("target tuple in channel name"), so every plain `rustc`/`cargo` here - the
+      # cache action's `rustc -vV` probe included - must resolve to the native toolchain.
+      # Without this the cache action failed on every run and the job rebuilt from scratch.
+      RUSTUP_TOOLCHAIN: stable-aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # rust-toolchain.toml pins the x64 host for the primary job. Select an
       # explicit ARM64 toolchain here so Cargo neither cross-compiles through
@@ -346,13 +431,13 @@ jobs:
           Copy-Item (Join-Path $target 'SageThumbs2K.exe') $drop
           # Take the marker filename from the Rust const; a literal here could drift, and the
           # failure mode is silent (no marker found means it quietly uses HKCU and passes).
-          # The settings module is a hub plus children (src/settings.rs + src/settings/*.rs since
+          # The settings module is a hub plus children (crates/base/src/settings.rs + crates/base/src/settings/*.rs since
           # 2026-09-08; INI_NAME lives in store.rs). Scan all of them so a later move cannot turn
           # this proof into a false red the way the split did.
-          $settingsSrc = @(Get-Content ./src/settings.rs -Raw) + @(Get-ChildItem ./src/settings -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })
+          $settingsSrc = @(Get-Content ./crates/base/src/settings.rs -Raw) + @(Get-ChildItem ./crates/base/src/settings -Filter *.rs | ForEach-Object { Get-Content $_.FullName -Raw })
           $iniName = [regex]::Match(($settingsSrc -join "`n"),
             '(?m)^\s*pub const INI_NAME:\s*&str\s*=\s*"([^"]+)"').Groups[1].Value
-          if (-not $iniName) { throw 'Could not read INI_NAME from src/settings.rs or src/settings/*.rs' }
+          if (-not $iniName) { throw 'Could not read INI_NAME from crates/base/src/settings.rs or crates/base/src/settings/*.rs' }
           # Values no default would ever produce, so a match cannot be a coincidence.
           Set-Content (Join-Path $drop $iniName) -Value @('[Settings]', 'Width=137', 'Height=137', 'MaxSize=42')
 
@@ -403,41 +488,44 @@ jobs:
               -TargetDir $target `
               -ArtifactDir (Join-Path $env:RUNNER_TEMP 'arm64-shell-surfaces')
 
-  # Cargo.toml publishes 1.93 as the minimum supported Rust version. The main job
+  # Cargo.toml publishes 1.95 as the minimum supported Rust version. The main job
   # intentionally follows current stable, so exercise the lower bound separately
   # instead of letting source/API drift make the declared MSRV fictional.
   msrv:
-    name: MSRV (Rust 1.93)
+    name: MSRV (Rust 1.95)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Rust 1.93 MSVC
-        run: rustup toolchain install 1.93.0-x86_64-pc-windows-msvc --profile minimal
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust 1.95 MSVC
+        run: rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal
       - name: Check workspace at MSRV (no features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked --workspace
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked --workspace
       # A no-features check only proves the FLOOR of the API surface, not what actually ships.
       # build-test always builds with these feature combinations (:90-93 above); an MSRV-
       # incompatible API reachable only behind one of them would pass the bare check above and
-      # only break for a real user building at the 1.93 floor, since build-test itself floats
-      # on whatever `stable` currently resolves to (rust-toolchain.toml) and never pins 1.93.
+      # only break for a real user building at the 1.95 floor, since build-test itself floats
+      # on whatever `stable` currently resolves to (rust-toolchain.toml) and never pins 1.95.
       - name: Check sagethumbs2k at MSRV (shipping features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
       - name: Check sagethumbs2k-dll at MSRV (shipping features)
-        run: cargo +1.93.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+        run: cargo +1.95.0-x86_64-pc-windows-msvc check --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
 
   # Drift guard (no build needed): every asset referenced by include_bytes!/include_str!
   # or a README/docs <img> must be git-tracked; the README badge + FEATURES format count
-  # must match src/formats.rs FORMATS; the AppxManifest version must match Cargo.toml.
+  # must match crates/base/src/formats.rs FORMATS; the AppxManifest version must match Cargo.toml.
   # Catches the "referenced-but-not-committed" + version/count drift classes that have
   # broken releases — fails fast, before anything ships. See scripts/check-consistency.ps1.
   consistency:
     name: consistency (assets · counts · version)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
+      - name: support-script unit tests (scripts/test_*.py, scripts/*.test.mjs)
+        shell: pwsh
+        run: ./scripts/test-script-tests.ps1
       - name: release-size policy tests
         shell: pwsh
         run: ./scripts/test-release-size.ps1
@@ -556,7 +644,7 @@ jobs:
     name: vendored exr (DWA patch)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show
       - name: Cache cargo
@@ -574,7 +662,7 @@ jobs:
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
       # use on this Linux runner ("target triple in channel name"). cargo-deny only
       # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
@@ -582,7 +670,7 @@ jobs:
       - name: Drop windows-only toolchain pin (Linux runner)
         run: rm -f rust-toolchain.toml
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           # Checks the committed Cargo.lock (advisories + licenses) against
           # deny.toml's allowlist over the full (now fully-permissive) graph.

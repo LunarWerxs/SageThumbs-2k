@@ -10,15 +10,15 @@ use windows_implement::implement;
 
 use crate::command::{self, ExplorerCommand};
 use crate::contextmenu::ContextMenu;
-use crate::guids;
 use crate::previewhandler::PreviewHandler;
 use crate::propstore::PropertyStore;
-use crate::safety;
 use crate::thumbprovider::ThumbnailProvider;
+use st2k_base::guids;
+use st2k_base::safety;
 
 #[implement(IClassFactory)]
 pub struct ClassFactory {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     clsid: GUID,
 }
 
@@ -27,7 +27,7 @@ impl ClassFactory {
     #[allow(clippy::default_constructed_unit_structs)]
     pub fn new(clsid: GUID) -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             clsid,
         }
     }
@@ -55,22 +55,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
                 return Err(Error::from(CLASS_E_NOAGGREGATION));
             }
 
-            let unknown: IUnknown = match self.clsid {
-                guids::CLSID_THUMBNAIL_PROVIDER => ThumbnailProvider::default().into(),
-                guids::CLSID_EXPLORER_COMMAND => ExplorerCommand::default().into(),
-                guids::CLSID_CONTEXT_MENU => ContextMenu::default().into(),
-                guids::CLSID_PREVIEW_HANDLER => PreviewHandler::default().into(),
-                guids::CLSID_PROPERTY_STORE => PropertyStore::default().into(),
-                // A modern-menu quick verb (Convert into / Convert… / Resize / Rotate):
-                // construct a top-level MenuCommand over the MENU item that CLSID maps to.
-                clsid if command::is_quick_clsid(clsid) => match command::quick_root_item(clsid) {
-                    Some(item) => command::MenuCommand::quick_root(item).into(),
-                    // The CLSID pattern is recognized but maps to no MENU item: this class
-                    // is not available, not merely "doesn't support the requested interface".
-                    None => return Err(Error::from(CLASS_E_CLASSNOTAVAILABLE)),
-                },
-                _ => return Err(Error::from(E_NOINTERFACE)),
-            };
+            let unknown: IUnknown = unknown_for_clsid(&self.clsid)?;
 
             // A null riid reaches windows-core's QueryInterface, which does not null-check
             // it itself — matching the guard `dll_get_class_object` already applies before
@@ -85,12 +70,32 @@ impl IClassFactory_Impl for ClassFactory_Impl {
     fn LockServer(&self, flock: BOOL) -> Result<()> {
         safety::guard(|| {
             if flock.as_bool() {
-                crate::dll_add_ref();
+                st2k_base::host::dll_add_ref();
             } else {
-                crate::dll_release();
+                st2k_base::host::dll_release();
             }
             Ok(())
         })
+    }
+}
+
+/// Builds the in-proc COM object `clsid` maps to, or the COM error that CLSID returns.
+fn unknown_for_clsid(clsid: &GUID) -> Result<IUnknown> {
+    match *clsid {
+        guids::CLSID_THUMBNAIL_PROVIDER => Ok(ThumbnailProvider::default().into()),
+        guids::CLSID_EXPLORER_COMMAND => Ok(ExplorerCommand::default().into()),
+        guids::CLSID_CONTEXT_MENU => Ok(ContextMenu::default().into()),
+        guids::CLSID_PREVIEW_HANDLER => Ok(PreviewHandler::default().into()),
+        guids::CLSID_PROPERTY_STORE => Ok(PropertyStore::default().into()),
+        // A modern-menu quick verb (Convert into / Convert… / Resize / Rotate):
+        // construct a top-level MenuCommand over the MENU item that CLSID maps to.
+        clsid if command::is_quick_clsid(clsid) => match command::quick_root_item(clsid) {
+            Some(item) => Ok(command::MenuCommand::quick_root(item).into()),
+            // The CLSID pattern is recognized but maps to no MENU item: this class
+            // is not available, not merely "doesn't support the requested interface".
+            None => Err(Error::from(CLASS_E_CLASSNOTAVAILABLE)),
+        },
+        _ => Err(Error::from(E_NOINTERFACE)),
     }
 }
 

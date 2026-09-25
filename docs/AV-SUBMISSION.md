@@ -312,7 +312,7 @@ matched - the gate keeps its teeth for anything we cannot justify.
 
 ## There is no regression to bisect: the Microsoft verdict predates 1.0.0 (2026-08-05)
 
-The obvious theory — "some version started tripping this, find that commit and revert it" —
+The obvious theory - "some version started tripping this, find that commit and revert it" - 
 is FALSE, and it was tested rather than argued. Every archived installer in `dist\` was
 looked up on VirusTotal by hash (no re-upload, just its stored verdicts):
 
@@ -334,7 +334,7 @@ looked up on VirusTotal by hash (no re-upload, just its stored verdicts):
 
 Read it carefully, because it settles several things at once:
 
-1. **1.0.0 — the very first release ever scanned — already carried `Wacatac.B!ml`.** There is
+1. **1.0.0 - the very first release ever scanned - already carried `Wacatac.B!ml`.** There is
    no "before" to go back to. No commit introduced this.
 2. **It ALTERNATES** (1.3.4 clean, 1.3.8 flagged, 1.5.0 clean, 1.6.0 flagged) across releases
    whose installer construction is identical. No code change toggles on and off like that.
@@ -344,7 +344,7 @@ Read it carefully, because it settles several things at once:
 4. **1.2.2 is the cleanest release this project has ever shipped (1/75).** An earlier note in
    this repo described 1.2.2 as the start of a "standing pattern"; that was the earliest row
    in the old detection table being mistaken for the beginning of the problem. It was the
-   opposite — a low point, not a starting point.
+   opposite - a low point, not a starting point.
 
 CONCLUSION: `Wacatac`/`Wacapew` `!ml` here is a low-prevalence-new-file verdict, not a
 reaction to anything in our code. Do not go looking for the offending commit; there isn't
@@ -354,7 +354,7 @@ prevalence, not source.
 ## MEASURED: what actually changes the detections, and what does not (2026-08-05)
 
 Three x64 installers built from the SAME staged payload, all scanned on VirusTotal the same
-day, so the engine set and signatures are constant. This is evidence, not theory — do not
+day, so the engine set and signatures are constant. This is evidence, not theory - do not
 re-litigate these knobs without new measurements.
 
 | build | VT | engines |
@@ -366,13 +366,13 @@ re-litigate these knobs without new measurements.
 Conclusions:
 
 1. **Completing the installer's VERSIONINFO did NOT reduce detections.** The hypothesis was
-   reasonable — this repo previously moved a payload stub DLL from 6/64 to 1/69 purely by
-   adding a VERSIONINFO resource (see `build-release.ps1`) — but it does NOT replicate for
+   reasonable - this repo previously moved a payload stub DLL from 6/64 to 1/69 purely by
+   adding a VERSIONINFO resource (see `build-release.ps1`) - but it does NOT replicate for
    the Inno setup stub. The metadata change is kept anyway because it is simply CORRECT (the
    installer claimed `lunarwerx` while every payload PE says `LunarWerx`, and
    OriginalFilename/copyright were blank), not because it buys detections.
 2. **Payload entropy is real but cheap-to-lose.** Dropping to `zip/1` removed Skyhigh's
-   `ObfuscatedPoly` verdict outright — that engine is scoring the entropy-8.0 overlay. It
+   `ObfuscatedPoly` verdict outright - that engine is scoring the entropy-8.0 overlay. It
    costs 12.8 MB -> 24.8 MB, nearly doubling every download, to silence ONE engine that has
    never been the thing quarantining users. NOT taken. Revisit only if Skyhigh's verdict
    starts appearing in user reports.
@@ -385,7 +385,7 @@ The free levers that DO exist, in order of value: submit each release to WDSI be
 announcing it; keep publishing through channels that accrue prevalence (GitHub Releases,
 winget); and tell users plainly what they will see and how to verify the hash.
 
-## 2026-08-04: the threshold was crossed — SUBMIT for 1.7.4
+## 2026-08-04: the threshold was crossed - SUBMIT for 1.7.4
 
 Issue #12 (screenshot attached there) shows real Defender on a real machine QUARANTINING the
 1.7.4 x64 installer as **`Trojan:Win32/Wacatac.B!ml`**, severity Severe, during a winget
@@ -394,7 +394,7 @@ Issue #12 (screenshot attached there) shows real Defender on a real machine QUAR
 **Correction to the doctrine below:** a clean LOCAL scan does not clear us. The end-user hit
 comes from Defender's CLOUD-delivered ML layer ("block at first sight"), which fires on a
 low-reputation hash at download/install time and does not reproduce in a local
-`MpCmdRun -Scan` — our scan of the same bytes with signatures 1.455.499.0 was clean the same
+`MpCmdRun -Scan` - our scan of the same bytes with signatures 1.455.499.0 was clean the same
 day users were quarantined. So: an end-user report WITH a Defender threat name IS grounds to
 submit, even when `av-defender-check.ps1` prints CLEAN.
 

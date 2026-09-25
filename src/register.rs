@@ -28,14 +28,26 @@ use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 use windows_registry::{Key, CURRENT_USER, LOCAL_MACHINE};
+mod propstore;
+use propstore::*;
+mod displaced;
+use displaced::*;
+mod user;
+pub(crate) use displaced::{displaced_handlers, displaced_key_ext};
+pub(crate) use propstore::perceived_type_is_ours;
+use user::*;
+pub use user::{
+    dll_beside_exe, register_user, unregister_user, user_registration_is_here,
+    user_registration_path,
+};
 
-use crate::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
-use crate::guids::{
+use st2k_base::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
+use st2k_base::guids::{
     CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
     CLSID_THUMBNAIL_PROVIDER_STR, PREVHOST_APPID, PREVIEW_HANDLER_CATEGORY, THUMB_HANDLER_CATEGORY,
 };
-use crate::safety::{log, log_error};
-use crate::settings::{self, FormatEnabledSnapshot};
+use st2k_base::safety::{log, log_error};
+use st2k_base::settings::{self, FormatEnabledSnapshot};
 
 const NAME: &str = "SageThumbs 2K Thumbnail Provider";
 const CM_NAME: &str = "SageThumbs 2K Context Menu";
@@ -50,73 +62,22 @@ const CONTEXT_MENU_KEY: &str = "*\\shellex\\ContextMenuHandlers\\SageThumbs2K";
 /// The machine-wide list mapping an extension to its IPropertyStore handler CLSID.
 const PROPERTY_HANDLERS: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\PropertySystem\PropertyHandlers";
-/// Hover info-tip layout. ONE combined list serves every category: the shell only shows
-/// properties the store actually returns a value for, so an image surfaces Dimensions/Camera,
-/// audio surfaces Artist/Title, video its duration — all from the same list. (InfoTip omits
-/// empty properties automatically, so no `*` prefix is needed here.)
-const PROP_INFOTIP: &str =
-    "prop:System.ItemTypeText;System.Image.Dimensions;System.Photo.CameraModel;System.Media.Duration;System.Music.Artist;System.Title;System.Size";
 /// The Properties▸Details *tab* layout. Comprehensive — every property the store can emit:
 /// Dimensions/BitDepth/DPI/DateTaken/GPS for images, Artist/Genre/Year/Duration/Bitrate for
 /// audio, frame size for video. Includes `System.DateCreated` (the pane list already had it —
 /// the two were inconsistent before).
 const PROP_FULLDETAILS: &str = "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Image.BitDepth;System.Image.HorizontalResolution;System.Image.VerticalResolution;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Photo.DateTaken;System.GPS.LatitudeDecimal;System.GPS.LongitudeDecimal;System.Video.FrameWidth;System.Video.FrameHeight;System.Media.Duration;System.Audio.EncodingBitrate;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Music.Genre;System.Media.Year;System.Size;System.DateCreated;System.DateModified";
-/// The BOTTOM details pane layout (`System.PropList.PreviewDetails`). DISTINCT from `FullDetails`
-/// (the Properties▸Details *tab*) and `InfoTip` (the hover tooltip): the pane Explorer shows
-/// under a selected file reads THIS list, and a format with no PreviewDetails (psd/raw/epub/…)
-/// falls back to the bare date/size default — so our handler's dimensions never surfaced there
-/// even though `GetValue` returned them. Metadata fields are `*`-prefixed (shown only when the
-/// store returns a value), so a PSD shows Dimensions/DateTaken while an audio file shows
-/// Artist/Duration/Genre from the same combined list; Size + dates are unprefixed (always present).
-const PROP_PREVIEWDETAILS: &str = "prop:*System.Image.Dimensions;*System.Image.BitDepth;*System.Image.HorizontalResolution;*System.Image.VerticalResolution;*System.Photo.CameraManufacturer;*System.Photo.CameraModel;*System.Photo.DateTaken;*System.GPS.LatitudeDecimal;*System.GPS.LongitudeDecimal;*System.Video.FrameWidth;*System.Video.FrameHeight;*System.Media.Duration;*System.Audio.EncodingBitrate;*System.Music.Artist;*System.Music.AlbumTitle;*System.Title;*System.Music.TrackNumber;*System.Music.Genre;*System.Media.Year;System.Size;System.DateCreated;System.DateModified";
 /// `System.PropList.AdditionalProperties` — the per-type column set Explorer offers in the
 /// "Choose columns…" / right-click-header picker for these formats. Without it our properties
 /// are reachable only via "All properties", so a folder of PSDs/RAWs never *offers* Dimensions/
 /// DateTaken as a sortable column. This makes the docs' "sortable/groupable columns" claim real.
 const PROP_ADDITIONAL: &str = "prop:System.Image.Dimensions;System.Image.BitDepth;System.Photo.DateTaken;System.Photo.CameraModel;System.Media.Duration;System.Audio.EncodingBitrate;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Music.Genre;System.Media.Year";
-/// The four `SystemFileAssociations\.<ext>` property-list values and the string this build
-/// writes into each. ONE table feeds both [`hook_ext_propstore`] (what gets written) and
-/// [`remove_owned_prop_lists`] (what may be removed), so the two can never disagree about which
-/// value names are ours.
-const PROP_LISTS: [(&str, &str); 4] = [
-    ("InfoTip", PROP_INFOTIP),
-    ("FullDetails", PROP_FULLDETAILS),
-    ("PreviewDetails", PROP_PREVIEWDETAILS),
-    ("AdditionalProperties", PROP_ADDITIONAL),
-];
-/// Property-list strings EARLIER builds wrote that no `PROP_*` constant above matches any more.
-/// Unhook used to delete the four list values unconditionally whenever the handler binding was
-/// ours, on the assumption that nobody else writes those value names for a format we own
-/// (2026-09-05 audit, F35). That assumption fails the moment a user or another product edits one
-/// of the lists while we stay the property handler: disabling the format or uninstalling threw
-/// their customisation away. A value is now removed only when its content is one THIS code
-/// wrote, which needs every string it has ever written and not just today's: an install that
-/// upgraded from 0.6.0 without ever re-hooking still carries these two, and matching only the
-/// current constants would orphan them on uninstall.
-/// MAINTENANCE RULE: when a `PROP_*` constant above changes, append the string it replaced here,
-/// or the upgrade-then-uninstall path leaks the old value.
-const LEGACY_PROP_LISTS: &[&str] = &[
-    // 0.6.0 InfoTip (the first release with a property handler); 0.7.0 added CameraModel and
-    // Duration and the string has not changed since.
-    "prop:System.ItemTypeText;System.Image.Dimensions;System.Music.Artist;System.Title;System.Size",
-    // 0.6.0 FullDetails; 0.7.0 grew it to today's list. 0.6.0 wrote no PreviewDetails or
-    // AdditionalProperties at all, so those two names have only ever carried today's strings.
-    "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Size;System.DateModified",
-];
 /// Marker value written next to a `PerceivedType` WE set, so [`unhook_perceived_type`] can remove
 /// ours without clobbering a value Windows or another app owns.
 const PERCEIVED_TYPE_MARK: &str = "SageThumbs2K.PerceivedTypeOwner";
 /// The machine-wide list the preview pane consults for registered handlers.
 const PREVIEW_HANDLERS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers";
 const APPROVED: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
-/// Where we remember a thumbnail handler that occupied a `shellex` slot BEFORE we took it,
-/// keyed by the exact classes-relative key path we overwrote. Unlike the preview/property
-/// handlers (which step aside for an incumbent — Windows' built-ins are richer there), the
-/// thumbnail provider IS the product and does take the slot. But taking it must be REVERSIBLE:
-/// without this record, `unhook`/uninstall deleted our value and left the slot empty forever, so
-/// a user who had Icaros/Adobe/a codec pack thumbnailing a format never got it back —
-/// uninstalling SageThumbs did not undo the damage. Machine-wide, mirroring the HKLM registration.
-const DISPLACED: &str = r"SOFTWARE\SageThumbs2K\DisplacedThumbHandlers";
 /// Image formats whose `PerceivedType=image` is safe to stamp: WIC (and so Photos) opens them,
 /// so the verbs Windows attaches to that type (Rotate, Print, Set as background, Edit with
 /// Photos) work. The rest of the Image category (PSD, KRA, XCF, …) would get the same verbs
@@ -223,25 +184,7 @@ pub fn register(dll_path: &str) -> Result<()> {
     // failing key (transient lock, locked-down subtree) must NOT abort the whole
     // register and skip the context-menu setup + shell-notify below, but it IS
     // counted, and a pass that wrote nothing fails the call at the end.
-    let mut thumbs = Pass::default();
-    for (ext, _) in FORMATS {
-        if fmt.enabled(ext) {
-            hook_ext(&classes, ext, &mut thumbs);
-        } else {
-            unhook_ext(&classes, ext);
-        }
-    }
-    let thumbs_failed = thumbs.report("thumbnail shellex pass");
-
-    // Sweep away stale hooks from extensions OLDER builds registered but we've since dropped
-    // (they're no longer in FORMATS, so the loop above never touches their keys → an upgrade
-    // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
-    // so this never unhooks a live format. Best-effort, one pass per (re-)register.
-    for ext in REMOVED_EXTENSIONS {
-        unhook_ext_and_prune(&classes, ext);
-        unhook_ext_preview_and_prune(&classes, ext);
-        unhook_ext_propstore(&classes, ext);
-    }
+    let thumbs_failed = sweep_format_hooks(&classes, &fmt);
 
     // The classic IContextMenu handler's COM server (for classic-menu machines:
     // StartAllBack, ExplorerPatcher, or the {86ca1aa0…} tweak). Registered under
@@ -288,6 +231,32 @@ pub fn register(dll_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Hook every enabled format's thumbnail shellex and unhook the disabled ones, then sweep
+/// away stale hooks from extensions older builds registered. Best-effort per key; returns
+/// true when the pass attempted something and wrote nothing.
+fn sweep_format_hooks(classes: &Key, fmt: &FormatEnabledSnapshot) -> bool {
+    let mut thumbs = Pass::default();
+    for (ext, _) in FORMATS {
+        if fmt.enabled(ext) {
+            hook_ext(classes, ext, &mut thumbs);
+        } else {
+            unhook_ext(classes, ext);
+        }
+    }
+    let thumbs_failed = thumbs.report("thumbnail shellex pass");
+
+    // Sweep away stale hooks from extensions OLDER builds registered but we've since dropped
+    // (they're no longer in FORMATS, so the loop above never touches their keys → an upgrade
+    // would leave orphan shellex entries pointing at our CLSID). Disjoint from FORMATS (tested),
+    // so this never unhooks a live format. Best-effort, one pass per (re-)register.
+    for ext in REMOVED_EXTENSIONS {
+        unhook_ext_propstore(classes, ext);
+        unhook_ext_and_prune(classes, ext);
+        unhook_ext_preview_and_prune(classes, ext);
+    }
+    thumbs_failed
+}
+
 /// Bring the CURRENT user's per-user shell pieces in line with their settings: the folder
 /// right-click entry ([`crate::foldermenu`]) and the suppression of Explorer's own type-icon
 /// overlay ([`crate::typeoverlay`]). Both live in HKCU, which the elevated machine-wide
@@ -316,212 +285,6 @@ pub fn remove_user_shell() {
     crate::typeoverlay::remove_all();
     crate::foldermenu::remove_all();
     notify_shell();
-}
-
-/// Register the IPropertyStore coclass: its COM server (threaded "Both" — it also loads in the
-/// MTA SearchIndexer), the per-extension `PropertyHandlers\.<ext>` binding, and a combined
-/// info-tip / full-details property list so the values actually surface in Explorer.
-fn register_property_handler(
-    classes: &Key,
-    dll_path: &str,
-    approved: &Key,
-    fmt: &FormatEnabledSnapshot,
-) -> Result<()> {
-    register_inproc_server(
-        classes,
-        CLSID_PROPERTY_STORE_STR,
-        PS_NAME,
-        dll_path,
-        approved,
-    )?;
-    let clsid_key = classes.create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"))?;
-    // Property handlers prefer "Both" (the shared helper defaults to Apartment).
-    clsid_key
-        .create("InprocServer32")?
-        .set_string("ThreadingModel", "Both")?;
-    // The handler initialises with `IInitializeWithFile` (its extractors need the real path).
-    // Windows loads property handlers in its isolated property host by default, and a
-    // file-initialised handler is not loaded there unless it declares this value, so without
-    // it the indexer never asked us for anything. Removed with the CLSID tree in `unregister`.
-    clsid_key.set_u32("DisableProcessIsolation", 1)?;
-    for (ext, _) in FORMATS {
-        if fmt.enabled(ext) {
-            let _ = hook_ext_propstore(classes, ext);
-        } else {
-            unhook_ext_propstore(classes, ext);
-        }
-    }
-    Ok(())
-}
-
-/// `(HKLM PropertyHandlers\.<ext>, classes-relative SystemFileAssociations\.<ext>)` for one
-/// extension.
-fn propstore_keys(ext: &str) -> (String, String) {
-    (
-        format!("{PROPERTY_HANDLERS}\\.{ext}"),
-        format!("SystemFileAssociations\\.{ext}"),
-    )
-}
-
-/// Bind one extension to our property handler + write its property lists — but ONLY where the
-/// slot is empty or already ours. We must NEVER replace Windows' (or another product's) richer
-/// property handler: jpg/png/heic/mp3/mp4/mkv/flac/… all have a built-in handler that knows far
-/// more than we do, so they keep it. Our value is the formats with NO property handler at all
-/// (PSD/RAW/EPUB/comics/CAD/Krita/SVG/…), where dimensions in the Details pane is a pure win.
-fn hook_ext_propstore(classes: &Key, ext: &str) -> Result<()> {
-    let (handler, assoc) = propstore_keys(ext);
-    let existing = LOCAL_MACHINE
-        .open(&handler)
-        .ok()
-        .and_then(|k| k.get_string("").ok());
-    if !matches!(
-        existing.as_deref(),
-        None | Some("") | Some(CLSID_PROPERTY_STORE_STR)
-    ) {
-        return Ok(()); // a real handler already owns this extension — leave it alone
-    }
-    LOCAL_MACHINE
-        .create(&handler)?
-        .set_string("", CLSID_PROPERTY_STORE_STR)?;
-    let a = classes.create(&assoc)?;
-    // A third-party app can write these SystemFileAssociations values directly, without ever
-    // registering a property handler — so the `handler` guard above (which only looked at
-    // PropertyHandlers\.<ext>) can't see it. Fill each value only where it's genuinely empty,
-    // so such a value is never clobbered.
-    for (name, value) in PROP_LISTS {
-        set_assoc_value_if_empty(&a, name, value);
-    }
-    set_perceived_type(classes, ext);
-    Ok(())
-}
-
-/// Write `name` on `key` only when it's currently absent/empty — mirrors [`set_perceived_type`]'s
-/// "fill an empty slot, never overwrite" rule for the property-list values written above.
-fn set_assoc_value_if_empty(key: &Key, name: &str, value: &str) {
-    let already = key.get_string(name).ok();
-    if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
-        return; // a value is already present (Windows or another app) — leave it
-    }
-    let _ = key.set_string(name, value);
-}
-
-/// The `PerceivedType` we stamp for `ext`, or `None` for a format we leave unclassified.
-/// Image formats WIC cannot open get `None` (see [`WIC_IMAGE_EXTS`]).
-fn perceived_type_for(ext: &str) -> Option<&'static str> {
-    Some(match crate::formats::category(ext) {
-        Category::Audio => "audio",
-        Category::Video => "video",
-        Category::Ebook | Category::Document => "document",
-        Category::Raw => "image",
-        Category::Image if WIC_IMAGE_EXTS.contains(&ext) => "image",
-        Category::Image => return None,
-        // In practice Windows itself already stamps .zip/.rar/.7z as "compressed",
-        // so the already-present guard in `set_perceived_type` usually skips these anyway.
-        Category::Archive => "compressed",
-    })
-}
-
-/// Set `.<ext>`'s `PerceivedType` so `kind:` search + library grouping can classify the
-/// formats Windows otherwise doesn't know (kra/ora/blend/epub/djvu/svg/xcf/…). Written ONLY when
-/// absent — we never overwrite a value Windows or another app already set — and marked with
-/// [`PERCEIVED_TYPE_MARK`] so [`unhook_perceived_type`] removes exactly the values we wrote
-/// (on every disable and uninstall) and nothing another app set later.
-fn set_perceived_type(classes: &Key, ext: &str) {
-    let key = format!(".{ext}");
-    let already = classes
-        .open(&key)
-        .ok()
-        .and_then(|k| k.get_string("PerceivedType").ok());
-    if matches!(already.as_deref(), Some(s) if !s.is_empty()) {
-        return; // a value is already present (Windows or another app) — leave it
-    }
-    let Some(pt) = perceived_type_for(ext) else {
-        return;
-    };
-    if let Ok(k) = classes.create(&key) {
-        if k.set_string("PerceivedType", pt).is_ok() {
-            // Marker so unhook can remove OUR PerceivedType without clobbering one another app
-            // sets later (we only ever fill an empty slot, but can't otherwise prove ownership).
-            let _ = k.set_string(PERCEIVED_TYPE_MARK, "1");
-        }
-    }
-}
-
-/// Whether the `PerceivedType` on `.<ext>` is one WE wrote (see [`set_perceived_type`], which
-/// only ever fills an empty slot and marks what it filled).
-///
-/// [`crate::typeoverlay`] needs this: Explorer draws no corner icon on a type it perceives as
-/// an image, so where WE are the reason it perceives one, we are the reason the icon the user
-/// used to see went away — and putting it back is a correction, not an addition. Where WINDOWS
-/// perceives it (every format it decodes itself), there was never an icon and adding one would
-/// be a change nobody asked for.
-pub(crate) fn perceived_type_is_ours(ext: &str) -> bool {
-    windows_registry::CLASSES_ROOT
-        .open(format!(".{ext}"))
-        .ok()
-        .and_then(|k| k.get_string(PERCEIVED_TYPE_MARK).ok())
-        .is_some()
-}
-
-/// Remove the `PerceivedType` we set — but ONLY where our [`PERCEIVED_TYPE_MARK`] marker proves it
-/// was ours, so a value Windows or another app owns is never clobbered.
-fn unhook_perceived_type(classes: &Key, ext: &str) {
-    let key = format!(".{ext}");
-    // `create`, not `open`: `open` hands back a read-only handle in this crate and
-    // `remove_value` on it silently no-ops (see the note on `restore_displaced`), which left
-    // PerceivedType/the marker behind on every uninstall/disable.
-    if let Ok(k) = classes.create(&key) {
-        if k.get_string(PERCEIVED_TYPE_MARK).is_ok() {
-            let _ = k.remove_value("PerceivedType");
-            let _ = k.remove_value(PERCEIVED_TYPE_MARK);
-        }
-    }
-}
-
-/// Remove our property-handler binding + the prop lists, but ONLY where they're still ours
-/// (never clobber a handler / info-tip another product set).
-fn unhook_ext_propstore(classes: &Key, ext: &str) {
-    let (handler, assoc) = propstore_keys(ext);
-    let was_ours = LOCAL_MACHINE
-        .open(&handler)
-        .ok()
-        .and_then(|k| k.get_string("").ok())
-        .as_deref()
-        == Some(CLSID_PROPERTY_STORE_STR);
-    if was_ours {
-        let _ = LOCAL_MACHINE.remove_tree(&handler);
-        // Gated on `was_ours` so we never touch lists under a foreign handler; which of the four
-        // values then go is decided per value by their content (see `remove_owned_prop_lists`).
-        // `create`, not `open`: same read-only-handle trap as `unhook_perceived_type` above,
-        // `open`'s handle makes `remove_value` a silent no-op, so these four values survived
-        // every uninstall/disable.
-        if let Ok(k) = classes.create(&assoc) {
-            remove_owned_prop_lists(&k);
-        }
-    }
-    unhook_perceived_type(classes, ext);
-}
-
-/// True when `value` is a property list THIS code wrote, in this or any earlier build.
-fn is_owned_prop_list(value: &str) -> bool {
-    PROP_LISTS.iter().any(|(_, ours)| *ours == value) || LEGACY_PROP_LISTS.contains(&value)
-}
-
-/// Remove, from a writable association key, each of the [`PROP_LISTS`] values whose content is
-/// still one we wrote (any build, see [`LEGACY_PROP_LISTS`]). A value a user or another product
-/// has since changed, added, or stored as a non-string type is left in place: it is their
-/// customisation, not our litter (2026-09-05 audit, F35). `hook_ext_propstore` only ever fills an
-/// EMPTY slot, so there is nothing displaced to restore here; leaving the foreign value is the
-/// whole of the undo. Any other value on the key is never touched.
-fn remove_owned_prop_lists(assoc: &Key) {
-    for (name, _) in PROP_LISTS {
-        let Ok(current) = assoc.get_string(name) else {
-            continue; // absent, or not a string we could have written
-        };
-        if is_owned_prop_list(&current) {
-            let _ = assoc.remove_value(name);
-        }
-    }
 }
 
 /// Register the IPreviewHandler coclass: its COM server, the surrogate `AppID`
@@ -573,6 +336,17 @@ fn register_preview_handler(
     Ok(())
 }
 
+/// Write the `CLSID\{clsid}` (friendly name) and `InprocServer32` (dll path, Apartment
+/// threading) keys for one in-proc COM server under `classes`, without an Approved entry.
+/// Shared by the machine-wide and the per-user registration paths, which configure alike.
+fn write_inproc_server(classes: &Key, clsid: &str, name: &str, dll_path: &str) -> Result<()> {
+    let base = format!("CLSID\\{clsid}");
+    classes.create(&base)?.set_string("", name)?;
+    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
+    inproc.set_string("", dll_path)?;
+    inproc.set_string("ThreadingModel", "Apartment")
+}
+
 /// Register one in-proc COM server: `CLSID\{guid}` (friendly name) +
 /// `InprocServer32` (dll path, Apartment threading) + the Approved entry.
 /// All of our coclasses configure identically through here.
@@ -583,11 +357,7 @@ fn register_inproc_server(
     dll_path: &str,
     approved: &Key,
 ) -> Result<()> {
-    let base = format!("CLSID\\{clsid_str}");
-    classes.create(&base)?.set_string("", name)?;
-    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
-    inproc.set_string("", dll_path)?;
-    inproc.set_string("ThreadingModel", "Apartment")?;
+    write_inproc_server(classes, clsid_str, name, dll_path)?;
     approved.set_string(clsid_str, name)?;
     Ok(())
 }
@@ -627,110 +397,6 @@ fn hook_ext(classes: &Key, ext: &str, pass: &mut Pass) {
 /// [`hook_ext`], [`hook_ext_preview`], and [`register_user`]'s per-user loop.
 fn set_shellex_key(root: &Key, path: &str, clsid: &str) -> Result<()> {
     root.create(path)?.set_string("", clsid)
-}
-
-/// Note the handler currently in `path` under [`DISPLACED`] so unhooking can restore it.
-///
-/// No-ops when the slot is empty or already ours — which is what makes a re-register
-/// idempotent: the SECOND register sees our own CLSID and leaves the original record intact
-/// rather than overwriting it with ourselves (which would silently discard the thing we are
-/// meant to give back). If a third product takes the slot from us and we re-register later,
-/// recording that one is correct: restore returns the slot to whoever held it last.
-fn remember_displaced(classes: &Key, path: &str) {
-    remember_displaced_in(classes, LOCAL_MACHINE, path);
-}
-
-/// [`remember_displaced`] against an explicit pair of hives, so the machine-wide path and the
-/// PORTABLE per-user path share one implementation. The per-user path must record into HKCU:
-/// a zip has no HKLM write access, and it evicts incumbents from `HKCU\Software\Classes` just
-/// as destructively as the installer does from HKLM. (`SOFTWARE\...` resolves under either
-/// hive — the registry is case-insensitive, and HKCU keeps the record beside the settings.)
-fn remember_displaced_in(classes: &Key, records: &Key, path: &str) {
-    let Some(existing) = classes.open(path).ok().and_then(|k| k.get_string("").ok()) else {
-        return; // no key, or no default value — nothing was there to displace
-    };
-    if existing.is_empty() || existing.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR) {
-        return;
-    }
-    if let Ok(k) = records.create(DISPLACED) {
-        let _ = k.set_string(path, &existing);
-    }
-}
-
-/// Put back the handler we displaced when we took `path`, then forget the record.
-///
-/// Only ever called once OUR value has already been removed, so the slot is empty and this
-/// cannot clobber a live third-party registration. Restoring also leaves the key non-empty,
-/// which is what stops [`prune_empty_parents`] from deleting the chain out from under it.
-/// TRAP, verified live rather than assumed: `Key::open` hands back a READ-ONLY handle, so
-/// `remove_value` on it silently no-ops. Reading the record through `open` is fine, but
-/// clearing it needs the writable handle `create` returns (`create` opens an existing key).
-/// With the read-only handle the slot WAS restored and the record survived anyway, so
-/// `st2k doctor` kept reporting a handler we no longer displaced.
-fn restore_displaced(classes: &Key, path: &str) {
-    restore_displaced_in(classes, LOCAL_MACHINE, path);
-}
-
-/// [`restore_displaced`] against an explicit pair of hives — the twin of
-/// [`remember_displaced_in`], shared by the machine-wide and portable per-user paths.
-fn restore_displaced_in(classes: &Key, records: &Key, path: &str) {
-    let Ok(prev) = records.open(DISPLACED).and_then(|k| k.get_string(path)) else {
-        return; // no list, or nothing recorded for this slot
-    };
-    // The record is the ONLY copy of the displaced product's CLSID. Dropping it when the
-    // write-back failed would leave the slot empty AND destroy the means to ever put it right,
-    // which is the exact harm this whole mechanism exists to prevent. So the delete is
-    // conditional on the restore actually landing; a failed one keeps the record, and the next
-    // uninstall, repair or `doctor` run can still recover from it.
-    let restored = if prev.is_empty() {
-        true // nothing was in the slot to begin with, so the record has served its purpose
-    } else {
-        classes
-            .create(path)
-            .and_then(|k| k.set_string("", &prev))
-            .is_ok()
-    };
-    if restored {
-        if let Ok(writable) = records.create(DISPLACED) {
-            let _ = writable.remove_value(path);
-        }
-    }
-}
-
-/// The `.<ext>` component of a recorded [`DISPLACED`] key path, for callers that want to
-/// report by format rather than by registry path. Lives here, beside [`thumb_keys`] which
-/// produces those paths, so the two layouts cannot drift apart — `displaced_key_ext_matches`
-/// pins them together for every registered format.
-pub(crate) fn displaced_key_ext(path: &str) -> Option<&str> {
-    path.split('\\').find(|c| c.starts_with('.'))
-}
-
-/// Every extension whose thumbnail slot we took from someone else, as
-/// `(key path, displaced CLSID)`. Read-only; `st2k doctor` reports these so a user whose
-/// thumbnails changed after install can see exactly what we replaced.
-pub(crate) fn displaced_handlers() -> Vec<(String, String)> {
-    // Both hives: an installed copy records under HKLM, a portable one under HKCU, and the
-    // doctor has no business caring which kind of install the person running it has.
-    let mut out = Vec::new();
-    for root in [&LOCAL_MACHINE, &CURRENT_USER] {
-        let Ok(list) = root.open(DISPLACED) else {
-            continue;
-        };
-        let Ok(values) = list.values() else {
-            continue;
-        };
-        // Re-read each name with `get_string` rather than matching on the iterator's value
-        // enum — one less API shape to stay pinned to, and a non-string leftover is skipped
-        // either way.
-        for (name, _) in values {
-            if let Ok(clsid) = list.get_string(&name) {
-                if !clsid.is_empty() {
-                    out.push((name, clsid));
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Remove one extension's thumbnail `shellex` keys — but only the ones that
@@ -805,12 +471,23 @@ fn prune_empty_parents(classes: &Key, path: &str) {
 /// CLSID, then hand the slot back to whoever we took it from. A foreign handler
 /// in that slot is left untouched.
 fn remove_if_ours(classes: &Key, path: &str) {
+    if remove_if_ours_leaf(classes, path) {
+        restore_displaced(classes, path);
+    }
+}
+
+/// Remove the `shellex` leaf at `path` when its default value is OUR CLSID, and nothing
+/// otherwise. Returns whether we owned (and therefore removed) the slot, so each caller can
+/// restore it through its OWN records hive — machine-wide via [`restore_displaced`], per-user
+/// via [`restore_displaced_in`] — and the per-user path can gate its parent-chain prune on it.
+fn remove_if_ours_leaf(classes: &Key, path: &str) -> bool {
     if let Ok(key) = classes.open(path) {
         if key.get_string("").ok().as_deref() == Some(CLSID_THUMBNAIL_PROVIDER_STR) {
             let _ = classes.remove_tree(path);
-            restore_displaced(classes, path);
+            return true;
         }
     }
+    false
 }
 
 /// Undo [`register`] machine-wide. The per-user pieces of THIS (elevated) account are also
@@ -965,613 +642,7 @@ pub fn is_registered() -> bool {
 //   * the modern Win11 flyout, which needs the signed package in a machine store.
 // Thumbnails and the classic right-click menu are what a zip can actually deliver.
 
-/// `HKCU\Software\Classes` — the per-user half of `HKEY_CLASSES_ROOT`.
-fn user_classes() -> Result<Key> {
-    CURRENT_USER.create(r"Software\Classes")
-}
-
-/// Register the thumbnail provider + classic context menu for THIS USER ONLY, pointing at
-/// `dll_path`. No elevation, and it never touches the machine-wide hive, so it cannot
-/// disturb an installed copy.
-pub fn register_user(dll_path: &str) -> Result<()> {
-    let classes = user_classes()?;
-    for (clsid, name) in [
-        (CLSID_THUMBNAIL_PROVIDER_STR, NAME),
-        (CLSID_CONTEXT_MENU_STR, CM_NAME),
-    ] {
-        let base = format!("CLSID\\{clsid}");
-        classes.create(&base)?.set_string("", name)?;
-        let inproc = classes.create(format!("{base}\\InprocServer32"))?;
-        inproc.set_string("", dll_path)?;
-        inproc.set_string("ThreadingModel", "Apartment")?;
-    }
-
-    // Same per-extension layout as the machine-wide path, so precedence behaves identically.
-    // Best-effort per extension: one locked-down key must not abort the rest, but every
-    // outcome is counted and a pass that wrote nothing fails the call (see `register`).
-    let fmt = settings::format_enabled_snapshot();
-    let mut thumbs = Pass::default();
-    for (ext, _) in FORMATS {
-        if fmt.enabled(ext) {
-            for path in thumb_keys(ext) {
-                // Same non-destructive claim as the machine-wide path: note whoever held this
-                // slot in the user's own hive so `remove_user_if_ours` can hand it straight
-                // back. Portable mode is still a real install from the shell's point of view.
-                remember_displaced_in(&classes, CURRENT_USER, &path);
-                thumbs.note(
-                    &path,
-                    set_shellex_key(&classes, &path, CLSID_THUMBNAIL_PROVIDER_STR),
-                );
-            }
-        } else {
-            remove_user_if_ours(&classes, ext);
-        }
-    }
-    let thumbs_failed = thumbs.report("per-user thumbnail shellex pass");
-    // Sweep stale hooks from extensions older builds registered but we've since dropped —
-    // mirrors register()/unregister()/unregister_user(), all three of which already do this.
-    // Without it, a portable copy upgraded past a dropped extension keeps a stale HKCU
-    // shellex entry for it forever (the FORMATS loop above never touches it again).
-    for ext in REMOVED_EXTENSIONS {
-        remove_user_if_ours(&classes, ext);
-    }
-
-    if let Err(e) = set_shellex_key(&classes, CONTEXT_MENU_KEY, CLSID_CONTEXT_MENU_STR) {
-        log_error(&format!(
-            "register_user: context menu key {CONTEXT_MENU_KEY}: hr={:#010x}",
-            e.code().0
-        ));
-    }
-
-    notify_shell();
-    if thumbs_failed {
-        return Err(Error::from(E_FAIL));
-    }
-    Ok(())
-}
-
-/// Undo [`register_user`]. Removes only keys whose value is OUR CLSID, so a handler another
-/// product owns is never collateral damage, and leaves the machine-wide hive alone. The
-/// per-user shell pieces go first, mirroring [`unregister`]: after the documented "run
-/// `--off`, then delete the folder", a leftover folder verb would point at an EXE that is
-/// gone and a leftover `TypeOverlay` would keep suppressing another program's icon.
-pub fn unregister_user() -> Result<()> {
-    remove_user_shell();
-    unregister_user_classes()
-}
-
-/// The class-key half of [`unregister_user`]: the per-user CLSIDs and `shellex` hooks, and
-/// nothing under the user's settings or shell pieces. Also what the machine-wide [`register`]
-/// runs to clear a portable registration that would shadow it, where taking the folder verb
-/// and overlay suppression away too would be wrong.
-fn unregister_user_classes() -> Result<()> {
-    let classes = user_classes()?;
-    for (ext, _) in FORMATS {
-        remove_user_if_ours(&classes, ext);
-    }
-    for ext in REMOVED_EXTENSIONS {
-        remove_user_if_ours(&classes, ext);
-    }
-    if let Ok(k) = classes.open(CONTEXT_MENU_KEY) {
-        if k.get_string("").ok().as_deref() == Some(CLSID_CONTEXT_MENU_STR) {
-            let _ = classes.remove_tree(CONTEXT_MENU_KEY);
-        }
-    }
-    let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
-    let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
-    // The same final sweep the machine-wide `unregister` does, and for the same reason: a slot
-    // a THIRD product has since taken over from us is no longer "ours", so `remove_user_if_ours`
-    // skips it and its record is never restored or removed. Without this the portable path
-    // leaves records behind that nothing would ever clean up again.
-    let _ = CURRENT_USER.remove_tree(DISPLACED);
-    notify_shell();
-    Ok(())
-}
-
-/// Drop one extension's per-user thumbnail hooks, ours only, and prune the containers we
-/// created on the way in. Without the prune, turning the feature off leaves an empty
-/// `.<ext>\shellex` behind for every one of the 300+ formats — litter in the user's own hive
-/// that looks like a half-removed handler to anyone who goes looking.
-fn remove_user_if_ours(classes: &Key, ext: &str) {
-    for path in thumb_keys(ext) {
-        let ours = classes
-            .open(&path)
-            .ok()
-            .and_then(|k| k.get_string("").ok())
-            .as_deref()
-            == Some(CLSID_THUMBNAIL_PROVIDER_STR);
-        if !ours {
-            continue;
-        }
-        let _ = classes.remove_tree(&path);
-        // Hand the slot back to whoever we took it from. This also leaves the key non-empty,
-        // which is what stops the prune below from deleting the chain out from under it.
-        restore_displaced_in(classes, CURRENT_USER, &path);
-        // Walk back up: `<assoc>\shellex`, then `<assoc>`. Stop at the first parent that
-        // still holds something, so a foreign handler or a populated key is never collateral.
-        let Some(shellex) = path.rsplit_once('\\').map(|(parent, _)| parent) else {
-            continue;
-        };
-        if !user_key_is_empty(classes, shellex) {
-            continue;
-        }
-        let _ = classes.remove_tree(shellex);
-        if let Some(assoc) = shellex.rsplit_once('\\').map(|(parent, _)| parent) {
-            if user_key_is_empty(classes, assoc) {
-                let _ = classes.remove_tree(assoc);
-            }
-        }
-    }
-}
-
-/// No subkeys and no values. Missing counts as NOT empty so a failed open never licenses a
-/// delete (mirrors `is_empty_key`, which guards the machine-wide path the same way).
-fn user_key_is_empty(classes: &Key, path: &str) -> bool {
-    let Ok(key) = classes.open(path) else {
-        return false;
-    };
-    let no_subkeys = key
-        .keys()
-        .map(|mut it| it.next().is_none())
-        .unwrap_or(false);
-    let no_values = key
-        .values()
-        .map(|mut it| it.next().is_none())
-        .unwrap_or(false);
-    no_subkeys && no_values
-}
-
-/// The DLL path currently registered for THIS USER, if any.
-///
-/// Returns the path rather than a bool because the portable build has to answer a question a
-/// bool cannot: whether the registration points at *this* copy. A user who unzips a second
-/// copy, or moves the folder, leaves keys aimed at a DLL that is no longer there, and the
-/// symptom is thumbnails silently not appearing.
-pub fn user_registration_path() -> Option<String> {
-    user_classes()
-        .ok()?
-        .open(format!(
-            "CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}\\InprocServer32"
-        ))
-        .ok()?
-        .get_string("")
-        .ok()
-        .filter(|p| !p.is_empty())
-}
-
-/// The shell-extension DLL a portable copy registers: the one sitting beside the running exe.
-///
-/// The caller still has to check it EXISTS. A partially-unpacked (or pruned) zip is exactly the
-/// case worth naming in an error message rather than reporting as a generic failure.
-pub fn dll_beside_exe() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("sagethumbs2k.dll"))
-}
-
-/// Is the per-user registration pointing at THIS copy's DLL?
-///
-/// Compares the PATH, not mere presence: a registration left behind by a copy that has since
-/// been moved or deleted reads as "on" while drawing no thumbnails at all, which is the single
-/// most confusing state a portable user can land in.
-pub fn user_registration_is_here() -> bool {
-    let (Some(registered), Some(here)) = (user_registration_path(), dll_beside_exe()) else {
-        return false;
-    };
-    // The keys can outlive the file they name — antivirus quarantine, a half-deleted unzip, a
-    // manual cleanup that left the exes. The path still matches in that case, so a pure string
-    // compare would report "on" for a handler Windows cannot load and no thumbnail will ever
-    // come from. Requiring the DLL to actually BE there makes the answer mean what it says.
-    if !here.is_file() {
-        return false;
-    }
-    // Case-insensitive: the registry keeps whatever case was written and Windows paths are not
-    // case-sensitive, so a pure case difference is the same file.
-    registered.eq_ignore_ascii_case(&here.to_string_lossy())
-}
-
 #[cfg(test)]
-mod displaced_tests {
-    use super::*;
-
-    /// The doctor reports displaced handlers BY FORMAT, which means parsing the extension back
-    /// out of the key path `hook_ext` recorded. Both halves live in this file precisely so they
-    /// can be pinned together: if `thumb_keys` ever changes shape, this fails instead of the
-    /// report silently going blank (a `find` that matches nothing returns `None`, which the
-    /// doctor skips — a failure mode with no symptom at all).
-    #[test]
-    fn displaced_key_ext_matches_thumb_keys() {
-        for (ext, _) in crate::formats::FORMATS {
-            for path in thumb_keys(ext) {
-                assert_eq!(
-                    displaced_key_ext(&path),
-                    Some(format!(".{ext}").as_str()),
-                    "could not recover .{ext} from {path}"
-                );
-            }
-        }
-    }
-
-    /// The `SystemFileAssociations` twin must not collide with the bare-extension key: they are
-    /// stored as two separate value names under `DISPLACED`, so a collision would mean one of
-    /// the two displaced handlers is silently forgotten and never restored.
-    #[test]
-    fn thumb_keys_are_distinct_per_extension() {
-        let mut seen = std::collections::BTreeSet::new();
-        for (ext, _) in crate::formats::FORMATS {
-            for path in thumb_keys(ext) {
-                assert!(seen.insert(path.clone()), "duplicate displaced key {path}");
-            }
-        }
-    }
-}
-
+mod displaced_tests;
 #[cfg(test)]
-mod registry_write_tests {
-    use super::*;
-
-    /// A scratch stand-in for the classes root these helpers write into, removed when the guard
-    /// drops, so these tests can exercise real registry writes without touching the machine's
-    /// own associations (mirrors the `Scratch` pattern in `typeoverlay.rs`).
-    struct Scratch(String);
-
-    impl Scratch {
-        fn new(name: &str) -> (Self, Key) {
-            let path = format!(r"Software\SageThumbs2K-test\register-{name}");
-            let key = CURRENT_USER.create(&path).expect("scratch key");
-            (Scratch(path), key)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = CURRENT_USER.remove_tree(&self.0);
-        }
-    }
-
-    /// `hook_ext`/`hook_ext_preview` used to `?` inside their per-key loop (opus-SG-06 / A054):
-    /// a failure on the FIRST key returned `Err` before the second (higher-priority, per the
-    /// module doc) key was ever attempted. `set_shellex_key` is the shared best-effort
-    /// replacement all three call sites now use; prove it keeps going past a key that can't be
-    /// created — a 300-char key-name segment exceeds the registry's documented 255-character
-    /// key-name limit, so `create` genuinely fails for it, without needing elevation or
-    /// touching a real hive.
-    #[test]
-    fn set_shellex_key_keeps_writing_later_keys_after_an_earlier_one_fails_to_create() {
-        let (_guard, root) = Scratch::new("short-circuit");
-        let unwritable = "x".repeat(300);
-        let good = "good-sibling";
-
-        let outcomes: Vec<bool> = [unwritable.as_str(), good]
-            .iter()
-            .map(|name| set_shellex_key(&root, name, "TEST-CLSID").is_ok())
-            .collect();
-        assert_eq!(
-            outcomes,
-            [false, true],
-            "the failure must be handed back (so the pass can count and log it), not swallowed"
-        );
-
-        assert!(
-            root.open(&unwritable).is_err(),
-            "sanity: the 300-char segment must genuinely have failed to create, or this test \
-             proves nothing about the old short-circuit"
-        );
-        let k = root
-            .open(good)
-            .expect("the good key after an invalid earlier sibling must still be written");
-        assert_eq!(k.get_string("").as_deref(), Ok("TEST-CLSID"));
-    }
-
-    /// The ordinary case: a writable path round-trips through `set_shellex_key`.
-    #[test]
-    fn set_shellex_key_round_trips_on_a_writable_path() {
-        let (_guard, root) = Scratch::new("roundtrip");
-        set_shellex_key(&root, "child\\grandchild", "TEST-CLSID").expect("write");
-        let k = root.open("child\\grandchild").expect("key created");
-        assert_eq!(k.get_string("").as_deref(), Ok("TEST-CLSID"));
-    }
-
-    /// A pass that attempted keys and wrote none is the "clean install, no thumbnails, no
-    /// log line" failure `register` used to report as S_OK; a pass with a partial failure is
-    /// logged but is not a failure of the pass as a whole.
-    #[test]
-    fn a_pass_that_wrote_nothing_is_reported_as_failed() {
-        let (_guard, root) = Scratch::new("pass-tally");
-        let unwritable = "y".repeat(300);
-
-        let mut all_failed = Pass::default();
-        all_failed.note(&unwritable, set_shellex_key(&root, &unwritable, "X"));
-        assert!(all_failed.report("test pass: all failed"));
-        assert_eq!((all_failed.written, all_failed.failed), (0, 1));
-        assert!(
-            all_failed.first_failure.is_some(),
-            "the first HRESULT is kept for the log"
-        );
-
-        let mut partial = Pass::default();
-        partial.note(&unwritable, set_shellex_key(&root, &unwritable, "X"));
-        partial.note("ok", set_shellex_key(&root, "ok", "X"));
-        assert!(!partial.report("test pass: partial"));
-        assert_eq!((partial.written, partial.failed), (1, 1));
-
-        let empty = Pass::default();
-        assert!(!empty.report("test pass: nothing attempted"));
-    }
-
-    /// `PerceivedType=image` pulls Windows' image verbs (Rotate, Print, Set as background)
-    /// onto a type; those fail on formats WIC cannot open, so the Image category is stamped
-    /// only for the WIC-openable extensions. Camera RAW and the other categories keep their
-    /// classification.
-    #[test]
-    fn perceived_type_is_image_only_where_wic_can_open_it() {
-        assert_eq!(perceived_type_for("png"), Some("image"));
-        assert_eq!(perceived_type_for("heic"), Some("image"));
-        assert_eq!(
-            perceived_type_for("cr2"),
-            Some("image"),
-            "camera RAW keeps image"
-        );
-        assert_eq!(perceived_type_for("psd"), None, "WIC cannot open a PSD");
-        assert_eq!(perceived_type_for("xcf"), None);
-        assert_eq!(perceived_type_for("flac"), Some("audio"));
-        for ext in WIC_IMAGE_EXTS {
-            assert!(
-                matches!(
-                    crate::formats::category(ext),
-                    crate::formats::Category::Image | crate::formats::Category::Raw
-                ) || !crate::formats::is_known(ext),
-                ".{ext} is listed as WIC-openable but is not an image format"
-            );
-        }
-    }
-
-    /// A054's companion in the property-store path (A055): `set_assoc_value_if_empty` must fill
-    /// a genuinely blank value while leaving one a third-party app already set alone, even
-    /// though our caller's only ownership signal (the PropertyHandlers\.<ext> guard) can't see
-    /// that value at all.
-    #[test]
-    fn set_assoc_value_if_empty_fills_blanks_but_never_clobbers_a_foreign_value() {
-        let (_guard, classes) = Scratch::new("propstore-guard");
-        let k = classes.create("Assoc").expect("create");
-        k.set_string("InfoTip", "set by some other app")
-            .expect("set");
-        drop(k);
-
-        let k = classes.create("Assoc").expect("writable handle");
-        set_assoc_value_if_empty(&k, "InfoTip", "our default infotip");
-        set_assoc_value_if_empty(&k, "FullDetails", "our default fulldetails");
-
-        assert_eq!(
-            k.get_string("InfoTip").as_deref(),
-            Ok("set by some other app"),
-            "a pre-existing foreign value must survive"
-        );
-        assert_eq!(
-            k.get_string("FullDetails").as_deref(),
-            Ok("our default fulldetails"),
-            "a genuinely empty slot must still get filled"
-        );
-    }
-
-    /// A056's defect class, reproduced against a safe scratch key instead of the real
-    /// `CLASSES_ROOT` paths `unhook_perceived_type`/`unhook_ext_propstore` actually touch:
-    /// `Key::open` in this crate hands back a read-only handle, so `remove_value` through it
-    /// silently no-ops, while `Key::create` re-opens the SAME existing key with write access
-    /// and `remove_value` through THAT handle actually removes it. This is exactly the swap
-    /// those two functions needed.
-    #[test]
-    fn a_read_only_open_handle_cannot_remove_a_value_but_a_create_handle_can() {
-        let (_guard, classes) = Scratch::new("open-vs-create");
-        let k = classes.create("Marked").expect("create");
-        k.set_string("Marker", "1").expect("set");
-        drop(k);
-
-        let ro = classes.open("Marked").expect("open (read-only)");
-        let _ = ro.remove_value("Marker");
-        drop(ro);
-        assert_eq!(
-            classes
-                .open("Marked")
-                .unwrap()
-                .get_string("Marker")
-                .as_deref(),
-            Ok("1"),
-            "a read-only handle's remove_value must not have taken effect"
-        );
-
-        let rw = classes.create("Marked").expect("create (writable)");
-        rw.remove_value("Marker")
-            .expect("remove_value via a writable handle must succeed");
-        assert!(
-            classes
-                .open("Marked")
-                .unwrap()
-                .get_string("Marker")
-                .is_err(),
-            "the value must actually be gone now"
-        );
-    }
-
-    /// A160: `register_user`'s per-extension loop only ever walks `FORMATS`, so a stale hook
-    /// left by a dropped extension needed its own sweep, mirroring `register`/`unregister`/
-    /// `unregister_user`. This proves the underlying removal call the new sweep relies on —
-    /// `remove_user_if_ours` — actually clears a hook it owns and leaves a foreign one alone
-    /// (register_user() itself is not called here: it walks the real, live `FORMATS` list
-    /// against the real `HKCU\Software\Classes`, which would mutate this machine's actual
-    /// thumbnail associations for 300+ extensions as a side effect of running the test suite).
-    #[test]
-    fn remove_user_if_ours_clears_our_stale_hook_but_leaves_a_foreign_one() {
-        let (_guard, classes) = Scratch::new("removed-ext-sweep");
-        // `remove_user_if_ours` calls `thumb_keys`, which is a fixed real-extension-shaped
-        // path — reuse it verbatim against the scratch root instead of duplicating its shape.
-        for path in thumb_keys("zzzstaletestext") {
-            classes
-                .create(&path)
-                .and_then(|k| k.set_string("", CLSID_THUMBNAIL_PROVIDER_STR))
-                .expect("seed our stale hook");
-        }
-        for path in thumb_keys("zzzforeigntestext") {
-            classes
-                .create(&path)
-                .and_then(|k| k.set_string("", "{some-other-vendor-clsid}"))
-                .expect("seed a foreign hook");
-        }
-
-        remove_user_if_ours(&classes, "zzzstaletestext");
-        remove_user_if_ours(&classes, "zzzforeigntestext");
-
-        for path in thumb_keys("zzzstaletestext") {
-            assert!(
-                classes.open(&path).is_err(),
-                "our own stale hook at {path} must be gone"
-            );
-        }
-        for path in thumb_keys("zzzforeigntestext") {
-            let k = classes.open(&path).expect("foreign hook key must survive");
-            assert_eq!(k.get_string("").as_deref(), Ok("{some-other-vendor-clsid}"));
-        }
-    }
-
-    /// Seed an association key exactly as a completed registration by THIS build leaves it.
-    fn seed_current_prop_lists(k: &Key) {
-        for (name, value) in PROP_LISTS {
-            k.set_string(name, value).expect("seed our list");
-        }
-    }
-
-    /// 2026-09-05 audit, F35 (a): `unhook_ext_propstore` deleted all four property-list values
-    /// whenever the handler binding was ours, so a list a user or another product had changed
-    /// AFTER we registered died with our uninstall or with a plain format disable. Register,
-    /// then let the user re-point the hover tip, retype another list as a DWORD, and add an
-    /// unrelated value on the same key: all three must survive while our two untouched lists go.
-    /// Against the pre-fix code the edited InfoTip and the DWORD are both removed.
-    #[test]
-    fn remove_owned_prop_lists_keeps_lists_changed_after_we_wrote_them() {
-        let (_guard, classes) = Scratch::new("proplist-changed");
-        let k = classes.create("Assoc").expect("create");
-        seed_current_prop_lists(&k);
-        k.set_string("InfoTip", "prop:System.Size;System.DateModified")
-            .expect("user edit");
-        k.set_u32("AdditionalProperties", 1).expect("retyped value");
-        k.set_string("ContentViewModeForBrowse", "prop:~System.ItemNameDisplay")
-            .expect("unrelated value");
-
-        remove_owned_prop_lists(&k);
-
-        assert_eq!(
-            k.get_string("InfoTip").as_deref(),
-            Ok("prop:System.Size;System.DateModified"),
-            "a list the user changed after registration must survive"
-        );
-        assert_eq!(
-            k.get_u32("AdditionalProperties"),
-            Ok(1),
-            "a value we could not have written (wrong type) must survive"
-        );
-        assert_eq!(
-            k.get_string("ContentViewModeForBrowse").as_deref(),
-            Ok("prop:~System.ItemNameDisplay"),
-            "an unrelated value on the same key must never be touched"
-        );
-        for name in ["FullDetails", "PreviewDetails"] {
-            assert!(
-                k.get_string(name).is_err(),
-                "our unchanged {name} must still be removed"
-            );
-        }
-    }
-
-    /// F35 (b), the "we wrote it, nobody changed it" case the fix must preserve exactly: every
-    /// list as this build writes it is removed, and a value we never write is not.
-    #[test]
-    fn remove_owned_prop_lists_removes_the_unchanged_lists_this_build_wrote() {
-        let (_guard, classes) = Scratch::new("proplist-ours");
-        let k = classes.create("Assoc").expect("create");
-        seed_current_prop_lists(&k);
-        k.set_string("ContentViewModeForBrowse", "prop:~System.ItemNameDisplay")
-            .expect("unrelated value");
-
-        remove_owned_prop_lists(&k);
-
-        for (name, _) in PROP_LISTS {
-            assert!(k.get_string(name).is_err(), "our {name} must be gone");
-        }
-        assert_eq!(
-            k.get_string("ContentViewModeForBrowse").as_deref(),
-            Ok("prop:~System.ItemNameDisplay"),
-            "the unrelated value must survive a clean unhook too"
-        );
-    }
-
-    /// F35 (c): an install that upgraded from 0.6.0 still carries that release's InfoTip and
-    /// FullDetails strings, because the later hook fills only EMPTY slots and never rewrote
-    /// them. They are ours and must go, while a PreviewDetails the user added in between (0.6.0
-    /// wrote none, so the upgrade hook skipped it) is theirs and must stay. The literals are
-    /// deliberately NOT read from `LEGACY_PROP_LISTS`: dropping an entry from that table must
-    /// fail this test. A fix that matched only today's constants would orphan both legacy values.
-    #[test]
-    fn remove_owned_prop_lists_recognises_the_lists_an_older_build_wrote() {
-        let (_guard, classes) = Scratch::new("proplist-legacy");
-        let k = classes.create("Assoc").expect("create");
-        k.set_string(
-            "InfoTip",
-            "prop:System.ItemTypeText;System.Image.Dimensions;System.Music.Artist;System.Title;System.Size",
-        )
-        .expect("0.6.0 InfoTip");
-        k.set_string(
-            "FullDetails",
-            "prop:System.Image.Dimensions;System.Image.HorizontalSize;System.Image.VerticalSize;System.Photo.CameraManufacturer;System.Photo.CameraModel;System.Music.Artist;System.Music.AlbumTitle;System.Title;System.Music.TrackNumber;System.Size;System.DateModified",
-        )
-        .expect("0.6.0 FullDetails");
-        k.set_string(
-            "PreviewDetails",
-            "prop:*System.Image.Dimensions;System.Size",
-        )
-        .expect("user-added list");
-
-        remove_owned_prop_lists(&k);
-
-        assert!(
-            k.get_string("InfoTip").is_err(),
-            "the 0.6.0 InfoTip is ours and must be removed"
-        );
-        assert!(
-            k.get_string("FullDetails").is_err(),
-            "the 0.6.0 FullDetails is ours and must be removed"
-        );
-        assert_eq!(
-            k.get_string("PreviewDetails").as_deref(),
-            Ok("prop:*System.Image.Dimensions;System.Size"),
-            "a list the user added between releases must survive"
-        );
-    }
-
-    /// The ownership predicate behind F35: every string this build writes and every string an
-    /// older build wrote is ours; the empty string, a foreign list and a one-token edit of our
-    /// own list are not. Also pins the maintenance rule on `LEGACY_PROP_LISTS`: it holds
-    /// REPLACED strings only, so an entry equal to a current constant means someone appended the
-    /// new value instead of the one it displaced.
-    #[test]
-    fn owned_prop_list_predicate_covers_every_build_and_nothing_else() {
-        for (name, ours) in PROP_LISTS {
-            assert!(is_owned_prop_list(ours), "today's {name} must be ours");
-        }
-        for legacy in LEGACY_PROP_LISTS {
-            assert!(
-                is_owned_prop_list(legacy),
-                "legacy list must be ours: {legacy}"
-            );
-            assert!(
-                !PROP_LISTS.iter().any(|(_, cur)| cur == legacy),
-                "LEGACY_PROP_LISTS holds replaced strings only, not a current one: {legacy}"
-            );
-        }
-        assert!(!is_owned_prop_list(""));
-        assert!(!is_owned_prop_list("prop:System.Size"));
-        let edited = format!("{PROP_INFOTIP};System.Rating");
-        assert!(
-            !is_owned_prop_list(&edited),
-            "one appended property makes the list the user's"
-        );
-    }
-}
+mod registry_write_tests;

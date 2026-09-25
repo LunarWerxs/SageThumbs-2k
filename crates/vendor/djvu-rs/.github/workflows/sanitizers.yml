@@ -1,0 +1,103 @@
+name: Sanitizers
+
+# Scheduled sanitizer / interpreter / 32-bit gates (#696). Like Fuzz and
+# Benchmarks, these are deliberately NOT merge-gating: they are slow and run on
+# a schedule (plus every push to main and on demand), with their robustness
+# value coming from catching UB and portability bugs over time, not from
+# blocking individual PRs.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * 1'  # every Monday at 04:00 UTC, after the fuzz run
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  miri:
+    name: Miri (undefined behaviour interpreter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+      # Scope: the container/buffer crates whose byte-slice and offset
+      # arithmetic is exactly what Miri's strict-provenance checking validates,
+      # and whose suites finish in under a minute under the interpreter. The
+      # decode-heavy crates (djvu-bzz, djvu-jb2) and the SIMD-heavy djvu-iw44
+      # (which Miri cannot interpret at all) run their unsafe paths tens of
+      # times slower under Miri — for hours — so their unsafe surface is
+      # covered by the native-speed AddressSanitizer job instead. djvu-zp has
+      # no `unsafe` at all.
+      - name: Miri test the container and buffer crates
+        run: >
+          cargo +nightly miri test
+          -p djvu-iff -p djvu-bitmap -p djvu-pixmap
+        env:
+          # disable-isolation: the crate test suites read checked-in fixture
+          # files, which Miri's default isolated mode forbids.
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-disable-isolation
+
+  asan:
+    name: AddressSanitizer (library tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: asan
+      # -Zbuild-std instruments the standard library too, so allocations made
+      # inside std are tracked. Library tests only: the CLI/integration tests
+      # re-run the same code paths and would double the wall time.
+      - name: ASan library tests
+        run: >
+          cargo +nightly test --lib
+          --workspace --exclude djvu-py --exclude djvu-rs-fuzz
+          --features cli
+          -Zbuild-std --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          RUSTDOCFLAGS: -Zsanitizer=address
+
+  bits32:
+    name: 32-bit (i686) tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install 32-bit toolchain support
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib
+      - name: Install Rust stable with i686 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bits32
+      # usize is 32 bits here: catches pointer-width assumptions, offset
+      # truncation, and allocation-size overflows that 64-bit CI never sees.
+      - name: Library tests on i686
+        run: >
+          cargo test --lib
+          --workspace --exclude djvu-py --exclude djvu-rs-fuzz
+          --features cli
+          --target i686-unknown-linux-gnu

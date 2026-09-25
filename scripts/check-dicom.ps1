@@ -1,5 +1,5 @@
 <#
-  check-dicom.ps1 — CONTENT guard for the .dcm decode path (src/decode.rs:
+  check-dicom.ps1 — CONTENT guard for the .dcm decode path (crates/codecs/src/decode.rs:
   looks_like_dicom -> `dcm:-` + `-auto-level`). The corpus regression only checks
   that a .dcm produces *some* non-empty thumbnail; this asserts the pixels are
   actually RIGHT, so a silent colour/contrast regression fails the gate.

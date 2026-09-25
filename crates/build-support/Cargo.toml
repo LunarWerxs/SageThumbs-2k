@@ -8,3 +8,8 @@ license = "PolyForm-Noncommercial-1.0.0"
 description = "Shared Windows resource-compilation helpers for this workspace's build scripts (build-dependency only, never a runtime dependency)"
 
 [lib]
+
+[dependencies]
+# Build-time only: parse locales/*.toml into a static table (the same version the
+# root crate pins in [build-dependencies]). No runtime TOML parser ships.
+toml = "1"

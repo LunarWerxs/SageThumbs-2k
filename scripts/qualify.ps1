@@ -90,7 +90,7 @@ function Get-References([string]$evidence) {
         $tail = $parts[1]
         $funcParts = $tail -split '::'
         $func = $funcParts[$funcParts.Count - 1]
-        if ($path.EndsWith('.rs') -and ($path.StartsWith('tests/') -or $path.StartsWith('src/'))) {
+        if ($path.EndsWith('.rs') -and ($path.StartsWith('tests/') -or $path.StartsWith('src/') -or $path.StartsWith('crates/'))) {
             $refs += [pscustomobject]@{ Kind = 'rust'; File = $path; Func = $func }
         } elseif ($path.EndsWith('.ps1') -and $path.StartsWith('scripts/')) {
             $refs += [pscustomobject]@{ Kind = 'ps1'; File = $path; Func = $func }
@@ -149,18 +149,31 @@ $passCount = 0
 
 foreach ($run in $rustRuns) {
     $cargoArgs = @('test')
+    $filter = $run.Func
     if ($run.File.StartsWith('tests/')) {
-        $testBin = [System.IO.Path]::GetFileNameWithoutExtension($run.File)
-        $cargoArgs += @('--test', $testBin)
+        # A tests/*.rs file is either a module of the shared `integration` executable (listed in
+        # tests/integration.rs's suite!, and then the file is the filter's module prefix) or,
+        # when it needs a process to itself, its own `[[test]]` executable under its own name.
+        $testModule = [System.IO.Path]::GetFileNameWithoutExtension($run.File)
+        $suite = Join-Path $root 'tests\integration.rs'
+        if ((Test-Path -LiteralPath $suite) -and (Select-String -LiteralPath $suite -Pattern "^\s+$testModule,\s*$" -Quiet)) {
+            $cargoArgs += @('--test', 'integration')
+            $filter = "${testModule}::$($run.Func)"
+        } else {
+            $cargoArgs += @('--test', $testModule)
+        }
     } elseif ($run.File.StartsWith('src/bin/app/')) {
         $cargoArgs += @('--bin', 'SageThumbs2K')
+    } elseif ($run.File -match '^crates/(base|codecs|actions|appkit|preview|screenshot)/') {
+        # A library layer is its own crate (2026-09-23); its tests run in its own package.
+        $cargoArgs += @('-p', "sagethumbs2k-$($Matches[1])", '--lib')
     } else {
         $cargoArgs += @('-p', 'sagethumbs2k', '--lib')
     }
     # No `--exact`: the bin/lib crate tests live inside a `mod tests` whose full path
     # (module-prefixed) this script does not re-derive, and a substring filter on these
     # long, distinctive function names cannot collide with an unrelated test.
-    $cargoArgs += @($run.Func)
+    $cargoArgs += @($filter)
 
     Write-Host "[qualify] row $($run.Row): cargo $($cargoArgs -join ' ')" -ForegroundColor Yellow
     Push-Location $root

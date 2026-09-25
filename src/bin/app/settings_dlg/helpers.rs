@@ -3,13 +3,13 @@
 use super::*;
 
 // ===================== Shared owner-draw helpers =========================
-// The owner-draw painting lives in the `restyle` and `scroll` submodules and runs
+// The owner-draw painting lives in the `restyle` submodule and runs
 // in BOTH themes — light mode is a recolored clone of dark (the palette fns like
 // `SURFACE`/`BORDER`/`INPUT_BG` are theme-aware), NOT the native light dialog, so
 // the entry points are NOT `is_dark()`-gated. (A few genuinely dark-only bits — e.g.
 // the native dark item-view theme — still check `is_dark()` at their own call site.)
 // These few small helpers stay in the parent because more than one cluster needs
-// them: `s` and `fill` are used by both `restyle` and `scroll`, and `control_text` /
+// them: `s` and `fill` are used by every owner-draw painter, and `control_text` /
 // `is_button_class` back the button/header painters.
 
 /// 96-DPI design pixels → device pixels for this window's DPI.
@@ -75,22 +75,17 @@ pub(super) unsafe fn theme_checkbox_list(list: HWND) {
 // ---- Small ListView check helpers --------------------------------------
 
 pub(super) unsafe fn set_check(list: HWND, item: i32, on: bool) {
-    let st = LVITEMW {
-        state: LIST_VIEW_ITEM_STATE_FLAGS(if on { CHECKED } else { UNCHECKED }),
-        stateMask: LVIS_STATEIMAGEMASK,
-        ..Default::default()
-    };
-    SendMessageW(
-        list,
-        LVM_SETITEMSTATE,
-        Some(WPARAM(item as usize)),
-        Some(LPARAM(&st as *const _ as isize)),
-    );
+    set_state_image(list, item, if on { CHECKED } else { UNCHECKED });
 }
 /// Remove a row's checkbox glyph (state image 0) — used for the menu list's divider rows.
 pub(super) unsafe fn clear_checkbox(list: HWND, item: i32) {
+    set_state_image(list, item, 0);
+}
+/// Write a row's state-image bits (`LVIS_STATEIMAGEMASK`): the checked / unchecked / no-glyph
+/// setters above differ only in the value.
+unsafe fn set_state_image(list: HWND, item: i32, state: u32) {
     let st = LVITEMW {
-        state: LIST_VIEW_ITEM_STATE_FLAGS(0),
+        state: LIST_VIEW_ITEM_STATE_FLAGS(state),
         stateMask: LVIS_STATEIMAGEMASK,
         ..Default::default()
     };

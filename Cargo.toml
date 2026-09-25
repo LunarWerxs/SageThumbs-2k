@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/dll", "crates/dlghook", "crates/build-support"]
-exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/djvu-rs"]
+members = ["crates/screenshot", "crates/preview", "crates/appkit", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook", "crates/build-support"]
+exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/jxl-frame", "crates/vendor/djvu-rs"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
 # (st2k_dlghook.dll): the Open/Save-dialog selection reader, which is a SEPARATE tiny
 # cdylib because it gets loaded into other applications — see crates/dlghook/Cargo.toml.
-default-members = [".", "crates/dll", "crates/dlghook"]
+default-members = [".", "crates/screenshot", "crates/preview", "crates/appkit", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook"]
 resolver = "2"
 
 # exr 1.74.2 added DWAA/DWAB encode/decode support, but stores two lazily-filled
@@ -32,25 +32,50 @@ exr = { path = "crates/vendor/exr" }
 # next run overwrites it and the change is lost with nothing to say so.
 jxl-render = { path = "crates/vendor/jxl-render" }
 jxl-oxide = { path = "crates/vendor/jxl-oxide" }
-# DjVu decode, patched for a fuzzer-found panic: a mutated INFO chunk can declare a page
-# width larger than the bilevel mask it ships, and djvu-rs 0.27.0's render fallback loop
-# clamped the source column to the page width only, then indexed the (narrower) mask row -
-# `index out of bounds` inside Explorer's thumbnail host, which runs `panic = "abort"`. The
-# vendored crate is the exact crates.io 0.27.0 source plus the documented patch in
-# crates/vendor/djvu-patches/README.md. The same patch trims upstream's `crate-type` to
-# rlib-only: a PATH crate that is cdylib+rlib is the cargo#6313 collision (see `[lib]` below),
-# and it broke `cargo test --release --lib --tests` with E0463 the day this landed.
-# Remove this override after upstream ships the fix.
+# jxl-frame, patched so a malformed TOC is a decode error instead of a panic: a fuzzed .jxl
+# asked for a group past its TOC's entries and indexed out of bounds (toc.rs), which aborts the
+# shell under `panic = "abort"`. Found by Dredd's deep fuzz session, 2026-09-23; upstream's
+# newest release (0.13.3) still has it. Same generator and rules as the two lines above, and
+# drop it the same way once an upstream release no longer panics on
+# tests/fixtures/jxl/toc-group-past-entries.jxl.
+jxl-frame = { path = "crates/vendor/jxl-frame" }
+# DjVu decode. The fuzzer-found panic this vendoring originally existed for - a mutated
+# INFO chunk declaring a page wider than the bilevel mask it ships, walking past the mask
+# row inside `composite_rows_bilevel_one`'s fallback loop and hitting `index out of bounds`
+# inside Explorer's thumbnail host, which runs `panic = "abort"` - shipped upstream in
+# 0.32.1 (2026-09-10). The vendored crate is now the exact crates.io 0.35.0 source with
+# only one remaining hunk: trimming upstream's `crate-type` to rlib-only. A PATH crate that
+# is cdylib+rlib is the cargo#6313 collision (see `[lib]` below) and broke
+# `cargo test --release --lib --tests` with E0463. See crates/vendor/djvu-patches/README.md.
+# Remove this override once upstream drops the `cdylib` crate-type (or cargo#6313 is fixed).
 djvu-rs = { path = "crates/vendor/djvu-rs" }
 
 # Shared version for the rlib (`sagethumbs2k`) + the cdylib wrapper (`sagethumbs2k-dll`),
 # build-release.ps1 reads this line; keep it in sync with
 # scripts/packaging/AppxManifest.xml's <Identity Version> when bumping a release.
+# Shared by every crate of the library and the binaries, so they build one copy with one
+# feature set.
+[workspace.dependencies]
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
+] }
+
 [workspace.package]
-version = "3.0.2"
-rust-version = "1.93"   # sevenz-rust2 0.21.4 is the highest MSRV in the locked default graph
+version = "3.3.0"
+rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the note below
+# Raised from 1.93 on 2026-09-20, on the owner's word. The old floor was set by
+# sevenz-rust2 (the comment said 0.21.4; the lock had moved to 0.22.2, which also declares
+# 1.93 - so the number was right and its evidence was stale). What it cost: the entire
+# windows-* 0.100 family declares 1.95, so FIVE majors could not be taken at all. The sweep
+# measured that on 2026-09-20 - cargo check, cargo test and the msrv leg all red together -
+# and recorded the batch in Odin's holds.yaml rather than rediscovering it every run.
+# 1.95 is the lowest floor that admits them. When raising again, change .github/workflows/
+# ci.yml's msrv job in the same commit: it pins the toolchain by exact version four times.
 
 [package]
+# Integration tests share ONE executable (tests/integration.rs, see its header).
+# Those that need a process to themselves are [[test]]s at the end of this file.
+autotests = false
 name = "sagethumbs2k"
 version.workspace = true
 edition = "2021"
@@ -99,18 +124,23 @@ name = "st2k"
 path = "src/bin/cli.rs"
 
 [dependencies]
+# The screenshot layer of the app, its own crate.
+st2k_screenshot = { package = "sagethumbs2k-screenshot", path = "crates/screenshot" }
+# The preview layer of the app, its own crate.
+st2k_preview = { package = "sagethumbs2k-preview", path = "crates/preview" }
+# The appkit layer of the app, its own crate.
+st2k_appkit = { package = "sagethumbs2k-appkit", path = "crates/appkit" }
+# The actions layer of the library, its own crate.
+st2k_actions = { package = "sagethumbs2k-actions", path = "crates/actions" }
+# The codecs layer of the library, its own crate.
+st2k_codecs = { package = "sagethumbs2k-codecs", path = "crates/codecs" }
+# The base layer of the library, its own crate.
+st2k_base = { package = "sagethumbs2k-base", path = "crates/base" }
+windows = { workspace = true }
 # Default features off (they'd pull the heavy AVIF encoder rav1e); we enable just
 # the codecs we use. AVIF/HEIC *decode* comes via WIC; exotic convert-to targets
 # (PSD/DDS/JP2/…) are encoded through the bundled ImageMagick, not `image`.
-image = { version = "0.25", default-features = false, features = [
-    "png", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "pnm", "tga", "dds", "hdr", "exr", "ff", "qoi",
-] }
-# DDS block decoding (BC1–BC7, including BC6H HDR). `image`'s own DDS decoder — and
-# Windows' WIC DDS codec — stop at DXT1/3/5, and ImageMagick can't read BC4/BC5-signed/
-# BC6H at all, so modern game textures needed this. MIT, `no_std`, ZERO dependencies,
-# safe Rust, and fuzzed against the original C `bcdec` for identical output. The
-# container half (headers, DXGI dispatch, bomb guards) is ours in `decode/dds.rs`.
-bcdec_rs = "0.2"
+image = { workspace = true }
 # Direct access to the already-vendored EXR writer lets the Convert path stream
 # f32 tiles from DynamicImage without allocating a second full-size RGBA32F frame.
 # Keep Rayon off: the non-parallel writer has a fixed, bounded working set.
@@ -119,51 +149,22 @@ exr = { version = "=1.74.2", default-features = false }
 # Adobe RGB) thumbnails into sRGB so they aren't over-saturated (and don't get cached
 # wrong). NOT a new dependency — `image` (and `jxl-oxide`) ALREADY pull moxcms 0.8
 # transitively, so naming it here shares the same compiled crate = zero added bytes.
+# KEEP THIS ON THE MINOR `image` USES: a 0.8 -> 0.9 bump (2026-09-14) put a second
+# moxcms in the lock and in every binary until `image` itself moves to 0.9; cargo deny
+# lists it as a duplicate the moment the two drift apart again.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
 moxcms = "0.8"
-# CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
-# → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
-# `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and
-# color-manage CMYK→sRGB via moxcms above. Re-exports `zune_core` (ColorSpace/DecoderOptions).
-zune-jpeg = "0.5"
 kamadak-exif = "0.6"
 # JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from
 # the shell-extension DLL (which never touches the mcp module).
 serde_json = "1"
-# Quick preview: markdown -> block/inline events for the viewer's in-process GDI renderer
-# (VIEWER / EXE-only). Pure-Rust, MIT, small — chosen over a WebView2 host to keep the binary
-# lean + the render `--shot`-verifiable. Referenced ONLY from `src/bin/app/preview/**`, so LTO
-# dead-strips it from the DLL. default-features off drops the `getopts` CLI bits.
-pulldown-cmark = { version = "0.13", default-features = false }
-# Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
-# Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
-img-parts = "0.4"
-# Lossy WebP encode (image-webp only does lossless), via libwebp/cc — the ONLY C
-# dependency in the build. OPTIONAL behind the `webp-lossy` feature (off by default)
-# so the default build is pure-Rust and needs no C compiler. The release installer
-# opts in (build-release.ps1); without it, a lossy-WebP request degrades to lossless
-# WebP (via the `image` crate). MIT OR Apache-2.0.
-webp = { version = "0.3", default-features = false, optional = true }
-# Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
-# default-features off: we render with `usvg::Options::default()` and never load a
-# fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
-# the `raster-images` (<image>-tag) decoder. Shapes/paths/gradients still render.
-resvg = { version = "0.48", default-features = false }
 windows-registry = "0.6"
 # NOT unused despite what cargo-machete says: the `#[implement]` macro from
 # windows-implement EXPANDS to code that references `windows_core::` paths, so the
 # direct dep must stay or every COM coclass fails its IUnknownImpl bound.
 windows-core = "0.62"
 windows-implement = "0.60"
-# WinRT async plumbing (IAsyncOperation/IAsyncAction/AsyncStatus) for the OS PDF
-# renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
-windows-future = "0.3"
-# WebView2 COM bindings for the Quick preview HTML host — OPTIONAL, gated behind the
-# `html-preview` feature (EXE-only; see [features]). 0.39 uses the same `windows` 0.62
-# the project already has (verified single-crate). Not bundled: the Edge engine ships
-# with Win11; only WebView2Loader.dll (~150 KB) rides alongside the EXE.
-webview2-com = { version = "0.39", optional = true }
 
 # --- Ebook / comic-archive cover extraction (the DarkThumbs port) ---
 # All pure-Rust, MIT/Apache. We only ever READ zip members, so we want inflate
@@ -181,73 +182,22 @@ webview2-com = { version = "0.39", optional = true }
 # nor any `deflate-flate2-zlib*` variant is reachable from what we ask for, so the
 # C-free/no-zopfli property this comment exists to protect still holds.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-# Autodesk Fusion 360 `.f3d` stores its preview PNG as a zstd-compressed ZIP entry,
-# which the `zip` crate can't inflate without the zstd C lib. `ruzstd` is a pure-Rust,
-# decode-only zstd implementation (MIT OR Apache-2.0) — keeps the build C-free.
-ruzstd = "0.9"
 base64 = "0.23"
 # Offline licence certificates (EXE-only; see `src/bin/app/licence_cert.rs`). Pay signs
 # them Ed25519, and Windows CANNOT verify that: CNG has no Ed25519 before Windows 10
 # build 20348 / Server 2022, and the installer's floor is `MinVersion=10.0`, so the OS
 # crypto API this project already uses for SHA-256 and RNG cannot do it on a machine we
 # support. Hence a crate rather than one more `BCrypt*` call. Pure-Rust, no C, verify-only
-# for us. `default-features = false` drops the SIGNING half's `rand_core`/`zeroize` — we
-# never mint a certificate, we only check one. LTO dead-strips it from the shell-extension
-# DLL, which never touches the licence module.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# for us. `default-features = false` drops the SIGNING half's `rand_core`/`zeroize` (plus
+# the perf-only `fast` precomputed-tables feature) — we never mint a certificate, we only
+# check one. 3.0.0 (2026-07-06) dropped the `std` feature entirely now that its error type
+# lives in `core` (no behavioural change to verification — confirmed against the 3.0.0
+# changelog and a source diff of `verify`/`verify_strict`: the only change is an internal
+# multipart-message plumbing refactor for the new `MultipartVerifier` impl), so there is no
+# feature left to name; the crate is no_std-by-default without one. LTO dead-strips it from
+# the shell-extension DLL, which never touches the licence module.
+ed25519-dalek = { version = "3", default-features = false }
 percent-encoding = "2"
-# 7-Zip (cb7 + generic .7z) — pure-Rust. `default-features = false` is LOAD-BEARING:
-# 0.21's default set pulls `bzip2` (C) and the LZMA *encoder*; with it off we get
-# only the pure-Rust LZMA/LZMA2/BCJ/Delta DECODE path (`lzma-rust2` is a non-optional
-# dep), keeping the build C-free (no bzip2/zstd/brotli/lz4). 0.21 (from 0.13) is the
-# version that BOUNDS the header's declared entry count (`bounded_count`), so a crafted
-# `.7z` can no longer abort us with a capacity-overflow allocation during header parse.
-sevenz-rust2 = { version = "0.21", default-features = false }
-# Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
-# Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
-lofty = "0.25"
-# RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
-# proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
-# real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),
-# so `.cbr` now works in the DEFAULT build and there's no longer a non-permissive piece
-# anywhere. Reads from memory, so no `tempfile` spill is needed either.
-#
-# rars 0.6.0 made `rayon` a MANDATORY (non-optional) dependency of its own Cargo.toml,
-# so there is no longer a `parallel` feature to turn off: rayon links into every crate
-# that pulls `rars`, including the shell DLL (`cargo tree -p sagethumbs2k-dll -i rayon`
-# confirms it). No pool is actually spun up today: `container/rar.rs::extract_n` calls
-# the sequential `ArchiveReader::extract_to`, never `extract_to_parallel_buffered` (the
-# only rars API that touches rayon); a guard test in rar.rs keeps it that way. The
-# exposure is binary size plus a future call-site regression, not a live pool inside
-# Explorer. Revisit (pin/patch) if upstream ships a release with `rayon` optional again.
-rars = "0.6"
-# DjVu (.djvu) cover decode — the maintained pure-Rust `djvu-rs` codec (MIT, C-free,
-# fuzzed). Replaced our hand-rolled zp/iw44/jb2/djvu stack (2026-06-14): deletes ~2,400
-# lines of our own arithmetic-coder/wavelet/bilevel code + gains full multipage support.
-# `std` is REQUIRED: the render pipeline needs it at runtime (a no_std build compiles but
-# silently decodes nothing). It necessarily brings decode-side `png 0.17` + `zune-jpeg`
-# (the app's image stack uses `png 0.18`, so deny.toml documents that unavoidable duplicate).
-# Historically `std` ALSO dragged in the writer stack — `zip`/`zopfli` + `jpeg-encoder`
-# (PDF/TIFF/EPUB/image EXPORT we never call) — and because Cargo unifies features, its
-# `zip[deflate]` even forced `zopfli` back into OUR
-# deliberately-zopfli-free `zip` below. Fixed upstream in 0.26.0 (issue #509): `std` is now
-# DECODE-ONLY; the writer deps live under `pdf`/`epub`/`cli`, which we don't enable. So the
-# bump to 0.26 sheds `jpeg-encoder` + `zopfli` (+ its runtime `bumpalo`) from the DLL and
-# restores our C-free/no-zopfli `zip`. Decode-only otherwise (no image/tiff/epub/jpeg
-# export, no OCR/async/cli/parallel/serde/mmap).
-djvu-rs = { version = "0.27", default-features = false, features = ["std"] }
-# JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
-# jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
-# it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
-# this tier jxl silently fails to thumbnail on a clean install. The `image` feature
-# yields a DynamicImage via the ImageDecoder trait (gray/RGB/alpha, 8/16-bit, float).
-# `default-features = false` DROPS the `rayon` feature on purpose: rayon would land a
-# global thread pool inside explorer.exe (the same reason parallel.rs hand-rolls its
-# pool). The optional `lcms2` (a C ICC binding) stays off — thumbnails don't need CMS.
-# NOTE: jxl-oxide is Rust edition 2024 and needs Rust 1.85; the workspace's effective
-# MSRV is higher because of sevenz-rust2 (see `rust-version` above).
-jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 
 # --- FLV Flash codecs: VP6 + Sorenson Spark (issue #26) ---
 # Pure-Rust decoders for the two pre-H.264 FLV codecs, the exact crates Ruffle ships
@@ -277,12 +227,27 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
 # `st2k vp9-frame` child process, never the shell DLL. Acceptance check:
 # `cargo tree -p sagethumbs2k-dll` must never list vp9dec.
 vp9dec = { version = "0.1.1", optional = true }
+# --- MPEG-1 / MPEG-2 video (VideoCD-era .mpg, bare .m1v/.m2v, .vob without the Store add-on) ---
+# Media Foundation has NO source for an MPEG-1 system stream or a bare MPEG video elementary
+# stream on any Windows, and opens an MPEG-2 program stream only with the Store "MPEG-2 Video
+# Extension" (measured 2026-09-17: every corpus MPEG-1 and bare-ES sample failed every MF tier
+# with the extension installed). `oxideav-mpeg12video` is a clean-room pure-Rust MPEG-1/2
+# decoder (MIT, MSRV 1.80, no `unsafe` in the decoder crate; its one dependency `oxideav-core`
+# pulls bytemuck / serde_json / thiserror), verified here on the corpus's MPEG-1 SS, MPEG-2 PS
+# and bare ES streams plus the FATE matrixbench stream, and fuzzed with 20k unit mutations
+# (0 panics, worst case 135 ms). It decodes a WHOLE elementary stream to frames, so the core
+# side (`src/mpeg12.rs`, our own bounded demux) hands it exactly one intra picture.
+# OPTIONAL behind the EXE-only `mpeg-video` feature, the same containment as `flash-video`
+# and `vp9-video` above: a 0.0.x decoder runs ONLY in the throwaway `st2k mpeg-frame` child
+# under the 512 MiB job cap, never the shell DLL. Acceptance check:
+# `cargo tree -p sagethumbs2k-dll` must never list oxideav.
+oxideav-mpeg12video = { version = "0.0.13", optional = true }
 
-nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", optional = true }
-h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
-h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a33900d0988eaa8739bef43970f867d", optional = true }
+nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+nihav_duck = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
+h263-rs = { git = "https://github.com/ruffle-rs/h263-rs", rev = "52df51a3587068d46f1289355301160b7df455fc", version = "0.1", optional = true }
+h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "52df51a3587068d46f1289355301160b7df455fc", version = "0.1", optional = true }
 
 [features]
 
@@ -293,24 +258,14 @@ h263-rs-yuv = { git = "https://github.com/ruffle-rs/h263-rs", rev = "e4e8b8303a3
 # the feature off for the DLL build its `windows` dependency is compiled without
 # them. Measured: enabling this for the DLL too blew the Rust payload budget by
 # 681 KB for code that could never run there.
-hdr-capture = [
-    "windows/Win32_Graphics_Dxgi",
-    "windows/Win32_Graphics_Dxgi_Common",
-    "windows/Win32_Graphics_Direct3D",
-    "windows/Win32_Graphics_Direct3D11",
-    "windows/Win32_System_WinRT_Direct3D11",
-    "windows/Win32_System_WinRT_Graphics_Capture",
-    "windows/Graphics_Capture",
-    "windows/Graphics_DirectX",
-    "windows/Graphics_DirectX_Direct3D11",
-]
+hdr-capture = ["st2k_screenshot/hdr-capture"]
 
 # (`.cbr`/RAR is now always-on via the pure-Rust `rars` crate — no feature gate.)
 # `flash-video` is DEFAULT-ON so a plain dev `cargo build`/`cargo test` exercises the FLV
 # VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
 # `default-features = false` (its effective feature set was empty before this and is
 # unchanged). See the `flash-video` entry below for why the DLL must never enable it.
-default = ["flash-video", "vp9-video"]
+default = ["flash-video", "vp9-video", "mpeg-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -318,7 +273,7 @@ default = ["flash-video", "vp9-video"]
 # project already uses (single crate). The Evergreen runtime ships with Win11, so nothing
 # heavy is bundled — just the ~150 KB WebView2Loader.dll alongside the EXE. Runtime is
 # ALSO gated behind default-OFF Settings toggles (preview_html / preview_url_live).
-html-preview = ["dep:webview2-com"]
+html-preview = ["st2k_preview/html-preview"]
 # FLV VP6 / Sorenson Spark decode for the hidden `st2k flv-frame` child verb. EXE-ONLY,
 # same containment as `html-preview`: the decoder crates are referenced ONLY from
 # `src/bin/vdec/` (the st2k console binary), and the DLL package opts out via
@@ -344,21 +299,28 @@ flash-video = [
 # spawns the sibling st2k.exe, and a build without this feature answers that spawn with a
 # clean non-zero exit (no thumbnail — exactly the pre-support behaviour for Profile 2/3).
 vp9-video = ["dep:vp9dec"]
+# MPEG-1/2 intra-picture decode for the hidden `st2k mpeg-frame` child verb. EXE-ONLY, the
+# exact `flash-video` / `vp9-video` containment: `oxideav-mpeg12video` is referenced ONLY
+# from `src/bin/vdec/` (the st2k console binary), and the DLL package opts out via
+# `default-features = false` on its core dependency, so the 0.0.x decoder never links into
+# the shell-extension cdylib (acceptance check: `cargo tree -p sagethumbs2k-dll` lists no
+# oxideav). The core rlib needs no cfg: it just spawns the sibling st2k.exe, and a build
+# without this feature answers that spawn with a clean non-zero exit (no thumbnail — exactly
+# the pre-support behaviour for these streams).
+mpeg-video = ["dep:oxideav-mpeg12video"]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
-webp-lossy = ["dep:webp"]
+webp-lossy = ["st2k_actions/webp-lossy"]
 # Builds the shell-extension DLL with ONLY the `menu_*` translation keys instead of
 # the full 36-language LOCALES table, shrinking the cdylib by ~0.2–0.28 MB (it loads
 # into Explorer and only looks up `menu_*` strings). The release pipeline enables it
 # for a SECOND `cargo build --lib` that produces the slim DLL; the EXEs/CLI keep the
 # full table. NEVER use on the default build — it would strip the app's dialog strings.
-dll-i18n-subset = []
+dll-i18n-subset = ["st2k_base/dll-i18n-subset"]
 
 [dev-dependencies]
-# Test-only 7z writer: build non-solid/duplicate-name archives in memory so the
-# exact-index, aggregate-budget extraction path has end-to-end coverage. The
-# shipped dependency above remains decode-only (`compress` is not in release).
-sevenz-rust2 = { version = "0.21", default-features = false, features = ["compress"] }
+# The app layers' test helpers (their `testkit` feature), for the binary's own tests.
+st2k_appkit = { package = "sagethumbs2k-appkit", path = "crates/appkit", features = ["testkit"] }
 
 [build-dependencies]
 # The SDK-rc lookup + VERSIONINFO .rc template shared with crates/dll and crates/dlghook's
@@ -380,12 +342,13 @@ toml = "1"
 # windres is already a build requirement here (the file icon), with a graceful
 # cargo:warning fallback if it's missing.
 
-[dependencies.windows]
+[workspace.dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_WinRT", # CreateRandomAccessStreamOverStream: the PDF rasterizer reads a file too big to hold off its stream
     "Win32_System_Variant", # PROPVARIANT + the IMFSourceReader seek methods (Get/SetCurrentPosition) for the video frame-grab offset
 
     "Win32_Networking_WinInet", # InternetOpenUrlW: HTTPS-only, size-capped fetch of the remote ad manifest + images
@@ -456,3 +419,108 @@ codegen-units = 1
 # an in-process shell extension. There's no scripted enforcement of the convention beyond
 # clippy's arithmetic lints + code review; a real audit tool for "unchecked arithmetic on
 # attacker-influenced values" is a static-analysis project of its own, not a Cargo.toml key.
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# These keep an executable of their own, because each needs a process or a crate root to
+# itself: process-global state (a loaded DLL, settings, locale), a timing bound or startup
+# race that failed under the merged suite's parallelism, or src/ files compiled in with
+# #[path]. Everything else is in tests/integration.rs.
+
+[[test]]
+name = "batch_stress"
+path = "tests/batch_stress.rs"
+
+[[test]]
+name = "big_files"
+path = "tests/big_files.rs"
+
+[[test]]
+name = "com_roundtrip"
+path = "tests/com_roundtrip.rs"
+
+[[test]]
+name = "context_menu_latency"
+path = "tests/context_menu_latency.rs"
+
+[[test]]
+name = "convert_shot"
+path = "tests/convert_shot.rs"
+
+[[test]]
+name = "doctor_bundle_scrub_portable"
+path = "tests/doctor_bundle_scrub_portable.rs"
+
+[[test]]
+name = "doctor_bundle_scrub_registry"
+path = "tests/doctor_bundle_scrub_registry.rs"
+
+[[test]]
+name = "explorer_command"
+path = "tests/explorer_command.rs"
+
+[[test]]
+name = "f29_screenshot_i18n_contract"
+path = "tests/f29_screenshot_i18n_contract.rs"
+
+[[test]]
+name = "first_run_shot"
+path = "tests/first_run_shot.rs"
+
+[[test]]
+name = "packaged_load"
+path = "tests/packaged_load.rs"
+
+[[test]]
+name = "portable_settings"
+path = "tests/portable_settings.rs"
+
+[[test]]
+name = "prevhost_pane"
+path = "tests/prevhost_pane.rs"
+
+[[test]]
+name = "preview_async_load"
+path = "tests/preview_async_load.rs"
+
+[[test]]
+name = "preview_handler"
+path = "tests/preview_handler.rs"
+
+[[test]]
+name = "preview_outline_locale_shot"
+path = "tests/preview_outline_locale_shot.rs"
+
+[[test]]
+name = "preview_theme_toggle"
+path = "tests/preview_theme_toggle.rs"
+
+[[test]]
+name = "preview_wndproc_drive"
+path = "tests/preview_wndproc_drive.rs"
+
+[[test]]
+name = "property_store"
+path = "tests/property_store.rs"
+
+[[test]]
+name = "screenshot_automation"
+path = "tests/screenshot_automation.rs"
+
+[[test]]
+name = "settings_gate"
+path = "tests/settings_gate.rs"
+
+[[test]]
+name = "settings_io_portable"
+path = "tests/settings_io_portable.rs"
+
+[[test]]
+name = "shell_thumbnail_api"
+path = "tests/shell_thumbnail_api.rs"
+
+[[test]]
+name = "video_profile_gate"
+path = "tests/video_profile_gate.rs"

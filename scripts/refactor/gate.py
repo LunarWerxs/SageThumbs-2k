@@ -1,0 +1,163 @@
+"""The refactor gate as ONE command, so the model is not the loop.
+
+Measured 2026-09-20 over this repo's 13 biggest sessions: 30,000 model turns at ~5.6 s each
+(47 h), 42 h of tool waits, and every clippy -> settle -> clippy round trip cost two turns and a
+warm clippy run. This script runs the whole round trip itself:
+
+  gate.py clippy            clippy (workspace, all targets) + the app bin WITH html-preview (the
+                            release build's feature set), settling the hub's unused re-exports
+                            with fix_unused_imports.py between runs, up to three rounds. Exit 0
+                            when both builds are clean; the remaining errors otherwise.
+  gate.py commit <plan.json>   one commit per hub: [[hub, child-or-dir, ...], ...] with the
+                            standard "<hub>: <what> (N lines -> M)" message ("what" = plan[hub]
+                            when the plan is {hub: [what, paths...]}).
+  gate.py consistency       CI's consistency scripts, DERIVED from the workflow, the way CI runs them (a non-zero
+                            LASTEXITCODE fails the step even when every assertion passed).
+  gate.py tests [filter]    the workspace suite, or only the tests matching `filter` (the
+                            tests for what you touched - the pre-push preflight runs the whole
+                            suite anyway, so a local full run before a push is the duplication
+                            that cost four 15-minute runs on 2026-09-20).
+  gate.py all <plan.json>   clippy, then consistency, then commit - the pre-push shape.
+  gate.py prepush           clippy + consistency, nothing else: everything a preflight fails
+                            on that a minute catches. Then push; the preflight is the suite.
+
+Everything heavy still belongs under fairjob on the shared box; this script is what fairjob runs.
+
+usage: gate.py <clippy|commit|consistency|tests|all|prepush> [plan.json | test filter]
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+CLIPPY = [
+    ["cargo", "clippy", "--workspace", "--all-targets", "--message-format", "short", "--", "-D", "warnings"],
+    ["cargo", "clippy", "-p", "sagethumbs2k", "--bin", "SageThumbs2K", "--features", "html-preview", "--message-format", "short", "--", "-D", "warnings"],
+]
+# ⚠ NEVER TYPE THIS LIST OUT (2026-09-20). It was eleven hand-copied script names while CI's
+# consistency job had grown to twenty-two, so `gate.py prepush` reported "11/11 clean" on a tree
+# whose `check-registration-symmetry.ps1` had been red for four commits on a PUBLIC repo.
+# `scripts/ci-consistency-steps.ps1` parses the workflow and prints exactly what CI runs, in
+# CI's order, and exits 2 rather than hand back a list it could not parse.
+CI_STEPS = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/ci-consistency-steps.ps1"]
+ERR = re.compile(r"^(?:src|crates|tests)[^ ]*: (?:error|warning)", re.M)
+
+
+def run(cmd, log=None):
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = p.stdout + p.stderr
+    if log:
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(out)
+    return p.returncode, out
+
+
+def clippy(rounds=3):
+    log = os.path.join(ROOT, "tmp", "gate-clippy.log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    for r in range(1, rounds + 1):
+        open(log, "w").close()
+        codes = [run(c, log)[0] for c in CLIPPY]
+        text = open(log, encoding="utf-8").read()
+        errors = sorted(set(ERR.findall(text)))
+        unused = [l for l in text.split("\n") if "unused import" in l]
+        print(f"clippy round {r}: exit {codes}, {len(errors)} distinct error lines, {len(unused)} unused-import lines")
+        if all(c == 0 for c in codes):
+            return 0
+        if not unused:
+            break
+        subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "refactor", "fix_unused_imports.py"), ROOT, log, "--apply"], cwd=ROOT)
+        subprocess.run("git diff --name-only -- '*.rs' | xargs rustfmt --edition 2021", cwd=ROOT, shell=True, capture_output=True)
+    for l in sorted(set(re.findall(r"^(?:src|crates|tests)[^\n]*", text, re.M)))[:40]:
+        print("  " + l[:200])
+    return 1
+
+
+def lines(path, rev=None):
+    if rev:
+        return subprocess.run(["git", "show", f"{rev}:{path}"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.count("\n")
+    return open(os.path.join(ROOT, path), encoding="utf-8", errors="replace").read().count("\n")
+
+
+def commit(plan_path):
+    plan = json.load(open(plan_path, encoding="utf-8"))
+    entries = plan.items() if isinstance(plan, dict) else ((p[0], p[1:]) for p in plan)
+    trailer = "\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+    for hub, rest in entries:
+        what, paths = (rest[0], rest[1:]) if isinstance(plan, dict) else ("split into children", rest)
+        paths = [hub] + list(paths)
+        subprocess.run(["git", "add", "--"] + paths, cwd=ROOT, check=True, capture_output=True)
+        msg = f"{hub}: {what} ({lines(hub, 'HEAD')} lines -> {lines(hub)}){trailer}"
+        r = subprocess.run(["git", "commit", "-q", "-m", msg, "--"] + paths, cwd=ROOT, capture_output=True, text=True)
+        print(("ok   " if not r.returncode else "FAIL ") + hub + ("" if not r.returncode else " " + r.stderr[-200:]))
+    return 0
+
+
+def consistency():
+    listing = subprocess.run(CI_STEPS, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if listing.returncode:
+        print("consistency: could not derive CI's step list -", (listing.stdout + listing.stderr).strip()[-300:])
+        return 1
+    steps = [s.strip() for s in listing.stdout.splitlines() if s.strip()]
+    bad = 0
+    for step in steps:
+        cmd = ["pwsh", "-NoProfile", "-Command", f"./scripts/{step} *> $null; if (Test-Path variable:\\LASTEXITCODE) {{ exit $LASTEXITCODE }}"]
+        code = subprocess.run(cmd, cwd=ROOT).returncode
+        if code:
+            bad += 1
+            print(f"FAIL {step} (exit {code}) - run it by hand for the detail")
+    print(f"consistency: {len(steps) - bad}/{len(steps)} clean")
+    return 1 if bad else 0
+
+
+def tests(filt=None):
+    import time
+    cmd = ["cargo", "test", "--workspace"] + ([filt] if filt else [])
+    t0 = time.monotonic()
+    code, out = run(cmd)
+    wall = time.monotonic() - t0
+    passed = failed = 0
+    for l in out.split("\n"):
+        m = re.match(r"test result: \w+\. (\d+) passed; (\d+) failed", l)
+        if m:
+            passed += int(m.group(1)); failed += int(m.group(2))
+        elif l.lstrip().startswith("Finished "):
+            print("  " + l.strip())  # compile + link time: the part the build knobs move
+    print(f"tests: exit {code}, {passed} passed, {failed} failed, {wall:.0f}s wall")
+    for l in out.split("\n"):
+        if l.startswith("test ") and l.endswith("FAILED") or "panicked at" in l:
+            print("  " + l[:200])
+    return code
+
+
+def wait_for_release():
+    """A release being cut from this checkout holds the tree (scripts/release-lock.ps1)."""
+    # It waits while a release holds the tree and exits 0 once it is free; anything else (pwsh
+    # missing, the script failing) must stop the gate rather than let it build under a release.
+    if subprocess.run(["pwsh", "-NoProfile", "-File", os.path.join(ROOT, "scripts", "release-lock.ps1")]).returncode:
+        sys.exit("release-lock.ps1 failed: not building while the release lock cannot be read")
+
+
+def main():
+    what = sys.argv[1] if len(sys.argv) > 1 else "clippy"
+    wait_for_release()
+    if what == "clippy":
+        return clippy()
+    if what == "commit":
+        return commit(sys.argv[2])
+    if what == "consistency":
+        return consistency()
+    if what == "tests":
+        return tests(sys.argv[2] if len(sys.argv) > 2 else None)
+    if what == "prepush":
+        return clippy() or consistency()
+    if what == "all":
+        return clippy() or consistency() or commit(sys.argv[2])
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

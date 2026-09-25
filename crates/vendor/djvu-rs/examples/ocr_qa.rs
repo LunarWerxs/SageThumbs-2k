@@ -404,7 +404,13 @@ mod tests {
 
     impl OcrBackend for MockBackend {
         fn recognize(&self, pixmap: &Pixmap, _options: &OcrOptions) -> Result<TextLayer, OcrError> {
-            let dark = pixmap.data.chunks_exact(4).filter(|p| p[0] < 128).count();
+            let dark = pixmap
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[0] < 128)
+                .count();
             Ok(TextLayer {
                 text: format!("dark={dark}"),
                 zones: Vec::new(),

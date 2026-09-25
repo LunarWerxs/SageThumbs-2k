@@ -40,7 +40,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Toolchain
         run: rustup show
@@ -95,7 +95,10 @@ jobs:
         run: |
           $pin = Get-Content -Raw 'scripts\packaging\imagemagick-source.json' | ConvertFrom-Json
           $installer = Join-Path $env:RUNNER_TEMP $pin.provenance.upstreamAsset
-          Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest -Uri $pin.provenance.upstreamUrl -OutFile $installer; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $pin.provenance.upstreamSha256) {
             throw "ImageMagick installer hash mismatch: expected $($pin.provenance.upstreamSha256), got $hash"
@@ -116,5 +119,16 @@ jobs:
       # `--tests` DOES include the library and binary unit tests: Cargo's documented target
       # selection builds every target with `test = true` in test mode. A comment in
       # preflight.ps1 once claimed the opposite and was wrong (2026-09-05 audit, F21).
-      - name: Unit and integration tests (release profile)
-        run: cargo test --release --locked --lib --tests
+      #
+      # The FEATURES ARE NAMED AGAIN HERE, because a build does not carry its feature selection
+      # into the next Cargo invocation (2026-09-19 audit F09): `cargo test` with the default set
+      # rebuilt the EXE without webp-lossy/html-preview/hdr-capture, so the HTML-route and HDR
+      # test cases vanished from the inventory and every `CARGO_BIN_EXE_*` integration test ran
+      # against a binary nobody ships. The four library packages (the core+EXE package and the
+      # base / codecs / actions layers it is built from) are named, and the features are
+      # qualified by the package that has them; the slim DLL above is not a test target and is
+      # not rebuilt; the dialog hook has its own step.
+      - name: Unit and integration tests (release profile, shipped EXE features)
+        run: cargo test --release --locked -p sagethumbs2k -p sagethumbs2k-base -p sagethumbs2k-codecs -p sagethumbs2k-actions --lib --tests --features sagethumbs2k/webp-lossy,sagethumbs2k/html-preview,sagethumbs2k/hdr-capture
+      - name: Dialog hook tests (release profile)
+        run: cargo test --release --locked -p sagethumbs2k-dlghook

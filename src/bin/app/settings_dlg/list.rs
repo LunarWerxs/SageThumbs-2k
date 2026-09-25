@@ -25,7 +25,11 @@ unsafe fn lv_next(list: HWND, start: i32, flags: u32) -> i32 {
 unsafe fn bulk_set_selected(list: HWND, target: bool) {
     let mut i = lv_next(list, -1, LVNI_SELECTED);
     while i >= 0 {
-        set_check(list, i, target);
+        // Divider rows carry [`SEP_PARAM`], not a toggle index, and must never acquire a
+        // checkbox glyph — same treatment as [`rebuild_rows`].
+        if super::menu_row_toggle(list, i).is_some() {
+            set_check(list, i, target);
+        }
         i = lv_next(list, i, LVNI_SELECTED);
     }
 }
@@ -87,7 +91,7 @@ pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
     }
     // Foreground + WM_NULL bracket: the documented fix for the "menu shows then
     // immediately vanishes" quirk. Owner is the top-level dialog, not the list.
-    crate::win::force_foreground(owner);
+    st2k_appkit::win::force_foreground(owner);
     let cmd = TrackPopupMenu(
         menu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
@@ -188,12 +192,9 @@ unsafe fn set_insert_mark(list: HWND, row: i32, after: bool) {
     invalidate_mark_band(list, row, after);
 }
 
-/// Invalidate (erase) the ~4px band around a mark line so a stale line there is wiped
-/// and the rows under it repaint cleanly.
-unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
-    if anchor < 0 {
-        return;
-    }
+/// The mark line's y on the anchor row (its top, or its bottom when `after`) plus the
+/// list's client rect whose `left`/`right` the line spans.
+unsafe fn mark_y_and_client(list: HWND, anchor: i32, after: bool) -> (i32, RECT) {
     let mut ir = RECT::default(); // .left = LVIR_BOUNDS (0)
     SendMessageW(
         list,
@@ -204,6 +205,16 @@ unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
     let y = if after { ir.bottom } else { ir.top };
     let mut cr = RECT::default();
     let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
+    (y, cr)
+}
+
+/// Invalidate (erase) the ~4px band around a mark line so a stale line there is wiped
+/// and the rows under it repaint cleanly.
+unsafe fn invalidate_mark_band(list: HWND, anchor: i32, after: bool) {
+    if anchor < 0 {
+        return;
+    }
+    let (y, cr) = mark_y_and_client(list, anchor, after);
     let band = RECT {
         left: cr.left,
         top: y - 2,
@@ -220,21 +231,11 @@ unsafe fn draw_insert_line(list: HWND) {
     use windows::Win32::Graphics::Gdi::{
         CreateSolidBrush, DeleteObject, FillRect, GetDC, ReleaseDC, HGDIOBJ,
     };
-    use windows::Win32::UI::Controls::LVM_GETITEMRECT;
     let (anchor, after) = INSERT_MARK.with(|m| m.get());
     if anchor < 0 {
         return;
     }
-    let mut ir = RECT::default(); // .left = LVIR_BOUNDS (0)
-    SendMessageW(
-        list,
-        LVM_GETITEMRECT,
-        Some(WPARAM(anchor as usize)),
-        Some(LPARAM(&mut ir as *mut _ as isize)),
-    );
-    let y = if after { ir.bottom } else { ir.top };
-    let mut cr = RECT::default();
-    let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
+    let (y, cr) = mark_y_and_client(list, anchor, after);
     let line = RECT {
         left: cr.left + 2,
         top: y - 1,
@@ -242,7 +243,7 @@ unsafe fn draw_insert_line(list: HWND) {
         bottom: y + 1,
     };
     let hdc = GetDC(Some(list));
-    let br = CreateSolidBrush(crate::dark::ACCENT());
+    let br = CreateSolidBrush(st2k_appkit::dark::ACCENT());
     FillRect(hdc, &line, br);
     let _ = DeleteObject(HGDIOBJ(br.0));
     ReleaseDC(Some(list), hdc);
@@ -253,17 +254,7 @@ unsafe fn draw_insert_line(list: HWND) {
 /// menu builder normalizes identically + adds its own divider before Settings). Keeps the
 /// list truly WYSIWYG — no confusing double/edge dividers that the menu wouldn't show.
 pub(super) fn normalize_rows(rows: &[(isize, bool)]) -> Vec<(isize, bool)> {
-    let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
-    for &(p, c) in rows {
-        if p == SEP_PARAM && (out.is_empty() || out.last().unwrap().0 == SEP_PARAM) {
-            continue;
-        }
-        out.push((p, c));
-    }
-    while out.last().map(|r| r.0) == Some(SEP_PARAM) {
-        out.pop();
-    }
-    out
+    normalize_rows_tracking(rows, None).0
 }
 
 /// Snapshot every row as `(lParam-key, checked)` in current display order.
@@ -379,26 +370,25 @@ unsafe fn finish_menu_drag(list: HWND, x: i32, y: i32) {
     // tracking where the JUST-DROPPED row (not merely "a row with the same key") ends up. A
     // plain lParam-key lookup can't tell dividers apart — every one shares SEP_PARAM — so it
     // always resolves to the FIRST divider in the list rather than the one just dragged (A266).
-    let (rows, sel_idx) = normalize_rows_tracking(&rows, dest);
+    let (rows, sel_idx) = normalize_rows_tracking(&rows, Some(dest));
     rebuild_rows(list, &rows, sel_idx);
 }
 
-/// Like [`normalize_rows`], but also reports where the row at input index `track` ended up in
+/// [`normalize_rows`], the single implementation of the divider rules, with an optional input
+/// index `track`: when `Some(track)`, also reports where the row at that input index ended up in
 /// the output, or `None` if normalization dropped that exact row (it collapsed into an earlier
-/// divider, or it was a trailing divider that got trimmed). Kept as a private twin rather than
-/// changing [`normalize_rows`] itself, which `settings_dlg/mod.rs` also calls and has no
-/// per-row tracking need.
+/// divider, or it was a trailing divider that got trimmed).
 fn normalize_rows_tracking(
     rows: &[(isize, bool)],
-    track: usize,
+    track: Option<usize>,
 ) -> (Vec<(isize, bool)>, Option<usize>) {
     let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
     let mut tracked = None;
     for (i, &(p, c)) in rows.iter().enumerate() {
         if p == SEP_PARAM && (out.is_empty() || out.last().unwrap().0 == SEP_PARAM) {
-            continue; // dropped: a leading/duplicate divider, same rule as normalize_rows
+            continue; // dropped: a leading/duplicate divider
         }
-        if i == track {
+        if track == Some(i) {
             tracked = Some(out.len());
         }
         out.push((p, c));
@@ -454,33 +444,50 @@ pub(super) unsafe extern "system" fn list_subclass(
         // commit on release (capture routes these here). Idle → fall through to default.
         // While a drag is active, repaint the rows normally, then draw our accent
         // drop-indicator line on top (the native insertion mark crashes in report view).
-        WM_PAINT if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let res = DefSubclassProc(h, msg, w, l);
-            draw_insert_line(h);
-            return res;
-        }
-        WM_MOUSEMOVE if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-            let (row, after) = insert_point(h, x, y);
-            set_insert_mark(h, row, after);
-            return LRESULT(0);
-        }
-        WM_LBUTTONUP if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-            finish_menu_drag(h, x, y);
-            return LRESULT(0);
-        }
-        WM_CAPTURECHANGED if DRAG_SRC.with(|s| s.get()) >= 0 => {
-            // Capture pulled away (Esc / another window) — cancel cleanly.
-            DRAG_SRC.with(|s| s.set(-1));
-            set_insert_mark(h, -1, false);
+        WM_PAINT | WM_MOUSEMOVE | WM_LBUTTONUP | WM_CAPTURECHANGED
+            if DRAG_SRC.with(|s| s.get()) >= 0 =>
+        {
+            if let Some(res) = on_drag_msg(h, msg, w, l) {
+                return res;
+            }
         }
         // WM_CONTEXTMENU is handled in the dialog proc (it bubbles to the parent).
         _ => {}
     }
     DefSubclassProc(h, msg, w, l)
+}
+
+/// `list_subclass`'s drag-active messages: repaint the rows normally then draw the accent
+/// drop-indicator line, move/release to commit the reorder, or cancel on capture-loss.
+/// `Some(res)` means the subclass should return `res`; `None` falls through to `DefSubclassProc`.
+unsafe fn on_drag_msg(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
+    match msg {
+        WM_PAINT => {
+            let res = DefSubclassProc(h, msg, w, l);
+            draw_insert_line(h);
+            Some(res)
+        }
+        WM_MOUSEMOVE => {
+            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+            let (row, after) = insert_point(h, x, y);
+            set_insert_mark(h, row, after);
+            Some(LRESULT(0))
+        }
+        WM_LBUTTONUP => {
+            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+            finish_menu_drag(h, x, y);
+            Some(LRESULT(0))
+        }
+        WM_CAPTURECHANGED => {
+            // Capture pulled away (Esc / another window) — cancel cleanly.
+            DRAG_SRC.with(|s| s.set(-1));
+            set_insert_mark(h, -1, false);
+            None
+        }
+        _ => None,
+    }
 }
 
 /// `list_subclass`'s `WM_NOTIFY` handling: a finished column drag (floor + refit), the
@@ -689,7 +696,7 @@ mod menu_drag_reorder_tests {
             (SEP_PARAM, false), // dropped here, index 3
             (2, true),
         ];
-        let (out, sel) = normalize_rows_tracking(&rows, 3);
+        let (out, sel) = normalize_rows_tracking(&rows, Some(3));
         assert_eq!(
             out, rows,
             "no adjacent/edge dividers here, so nothing collapses"
@@ -713,7 +720,7 @@ mod menu_drag_reorder_tests {
             (SEP_PARAM, false), // dropped here, index 2, collapses into index 1
             (1, true),
         ];
-        let (out, sel) = normalize_rows_tracking(&rows, 2);
+        let (out, sel) = normalize_rows_tracking(&rows, Some(2));
         assert_eq!(out, vec![(0, true), (SEP_PARAM, false), (1, true)]);
         assert_eq!(
             sel, None,
@@ -727,7 +734,7 @@ mod menu_drag_reorder_tests {
     #[test]
     fn tracks_none_when_the_dropped_row_is_itself_trimmed_as_trailing() {
         let rows = vec![(0, true), (SEP_PARAM, false)];
-        let (out, sel) = normalize_rows_tracking(&rows, 1);
+        let (out, sel) = normalize_rows_tracking(&rows, Some(1));
         assert_eq!(out, vec![(0, true)]);
         assert_eq!(
             sel, None,
@@ -740,7 +747,7 @@ mod menu_drag_reorder_tests {
     #[test]
     fn tracks_a_plain_item_row_unchanged() {
         let rows = vec![(SEP_PARAM, false), (0, true), (1, false)];
-        let (out, sel) = normalize_rows_tracking(&rows, 1);
+        let (out, sel) = normalize_rows_tracking(&rows, Some(1));
         // The leading divider is dropped, shifting index 1 down to output index 0.
         assert_eq!(out, vec![(0, true), (1, false)]);
         assert_eq!(sel, Some(0));

@@ -82,6 +82,8 @@ $corpus = Join-Path (Split-Path $root -Parent) 'test-corpus'   # sibling of proj
 # get a target dir that does not exist on it.
 $target = & (Join-Path $PSScriptRoot '_targetdir.ps1')
 Set-Location $root
+# A release being cut from this checkout holds the tree: wait for it (scripts\release-lock.ps1).
+& (Join-Path $PSScriptRoot 'release-lock.ps1')
 
 $script:timings = @()
 function Stage([string]$name, [scriptblock]$body) {
@@ -248,6 +250,25 @@ if ($Fast) {
     Stage 'cargo test (all)' { cargo test --quiet 2>&1 | Where-Object { $_ -match 'test result|FAILED|error' } | Write-Host }
 }
 
+# ---- corpus variants: which AUTHORING variants the corpus holds -------------------------
+# (2026-09-19.) Issues #44 and #45 shipped through fifty releases because every corpus pass
+# graded the same PDF-compatible, single-artboard Illustrator files; the hole was in the
+# sample set, by save-time option. `corpus-variants.py` classifies every sample by those
+# options (Illustrator, Photoshop PSD/PSB, PDF, EPS, TIFF) and its gate fails only when a
+# variant the committed baseline lists has DISAPPEARED from the corpus (a sample deleted by
+# mistake). Variants with no sample print as MISSING - coverage gaps, said out loud, never
+# folded into green. Exit 2 is NOT MEASURED (no corpus on this machine, or no baseline).
+Stage 'corpus variants (none lost since the baseline; gaps printed)' {
+    $lines = & python (Join-Path $root 'scripts\corpus-variants.py') --gate 2>&1 | ForEach-Object { "$_" }
+    $rc = $LASTEXITCODE
+    $lines | Where-Object { $_ -match 'MISSING|corpus-variants:' } | ForEach-Object { Write-Host "[verify]   $_" -ForegroundColor $(if ($_ -match 'FAIL') { 'Red' } elseif ($_ -match 'MISSING') { 'Yellow' } else { 'DarkGray' }) }
+    if ($rc -eq 2) {
+        Write-Host '[verify] corpus variants NOT MEASURED (no corpus or no baseline on this machine)' -ForegroundColor Yellow
+        $rc = 0
+    }
+    $global:LASTEXITCODE = $rc
+}
+
 # ---- corpus samples with expectations -------------------------------------
 if ($Samples) {
     Stage "samples: $Samples" {
@@ -373,6 +394,16 @@ if ($Release) {
     Stage 'theme shots' {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-theme-shots.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'check-theme-shots.ps1 failed' }
+    }
+    # The REAL Settings window (normal launch path, real message loop, invisible), every page
+    # and every field, plus a live toggle: the stills above cannot see a field nobody framed or
+    # a repaint nobody asked for, and both shipped past them (ROADMAP 2026-09-18). Exit 2 =
+    # could not run (no Pillow, a Settings window already open), a skip, not a failure.
+    Stage 'settings live' {
+        $liveExe = Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release\SageThumbs2K.exe'
+        & python (Join-Path $PSScriptRoot 'check-settings-live.py') --exe $liveExe
+        if ($LASTEXITCODE -eq 1) { throw 'check-settings-live.py failed' }
+        $global:LASTEXITCODE = 0
     }
     # Did this release change any PICTURE? Nothing else in the ladder can ask that: the
     # render sweep only wants a non-empty PNG, so a decoder that succeeds at drawing the

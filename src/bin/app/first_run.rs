@@ -16,14 +16,14 @@
 
 use core::ffi::c_void;
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::{dark_ctlcolor, dark_ctlcolor_dim};
-use crate::win::{
+use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim};
+use st2k_appkit::win::{
     check, checked, ctl, dpi_scale, run_dialog, t, wm_dpichanged, BUTTON, IDOK, STATIC,
 };
 
@@ -56,8 +56,8 @@ const ID_THUMBS_SUB: i32 = 107;
 const ID_P2_HEAD: i32 = 110;
 const ID_P_COVERS: i32 = 111;
 const ID_P_COVERS_SUB: i32 = 112;
-const ID_P_SCANLATION: i32 = 113;
-const ID_P_SCANLATION_SUB: i32 = 114;
+// 113/114 were the "skip credit pages" row, retired from this window on 2026-09-15 when the
+// setting went default-on (it lives in Settings, Ebook/comic, only).
 const ID_P2_SUB: i32 = 115;
 const ID_P_BADGE: i32 = 116;
 const ID_P_BADGE_SUB: i32 = 117;
@@ -73,22 +73,15 @@ const DLG_H: i32 = 340;
 /// Extra height the portable-only thumbnails row needs (checkbox + its two-line caption).
 const THUMBS_ROW_H: i32 = 68;
 
-/// One page-2 opt-in: the checkbox plus its two-line caption. Page 2 carries three of these,
-/// which is one more than [`DLG_H`] was sized for, so [`flip_to_page2`] grows the window by
-/// exactly this much. An INSTALLED copy is the case that needs it — a portable one is already
-/// this tall for the thumbnails row and stays put.
-const PAGE2_ROW_H: i32 = 68;
-
-/// Window height page 2 needs. Page 1 keeps [`dlg_h`], so an installed copy's first screen
-/// stays compact instead of opening with a row of empty space under it.
-fn page2_h() -> i32 {
-    DLG_H + PAGE2_ROW_H
-}
+// Page 2 carries two opt-ins, the same count page 1 shows an installed copy, so it needs no
+// height of its own beyond [`dlg_h`]: [`flip_to_page2`] measures its rows and grows the
+// window only if a translation genuinely needs more (it did carry a third row, and a
+// reserved row's height, until 2026-09-15).
 
 /// Does this copy get the thumbnails row? Only a portable one: an installed build registered
 /// the handler machine-wide at setup, so offering it again would be a switch that does nothing.
 fn offers_thumbnails() -> bool {
-    sagethumbs2k_core::settings::portable()
+    st2k_base::settings::portable()
 }
 
 // ---- Measured row heights (2026-09-05 audit finding F36) ----------------------------
@@ -104,8 +97,8 @@ fn offers_thumbnails() -> bool {
 // shipped locales it needs 45 in 26 of them, and the headless capture agrees: the German
 // portable welcome stops at "und in den Einstellungen" and never draws "schalten Sie es
 // wieder aus." `fr_shot_sub` is the same defect at 18px (needs 30 in 28 locales), page 2's
-// `fr2_badge_sub` at 32 (needs 45 in four), and `fr2_scanlation`'s own checkbox label runs
-// past the 400px row in Bulgarian and Greek.
+// `fr2_badge_sub` at 32 (needs 45 in four), and the since-retired `fr2_scanlation` checkbox
+// label ran past the 400px row in Bulgarian and Greek.
 //
 // So no row here carries a fixed height any more. Each is measured for the language actually
 // loaded, floored at the height English was laid out in (so an English build is unchanged),
@@ -137,10 +130,10 @@ const BOTTOM_BLOCK: i32 = 12 + BTN_H + 16;
 
 /// Height `text` needs in this window wrapped to `col_w`, never below `min_h`.
 ///
-/// `hwnd` may be `HWND::default()`: [`crate::win::wrapped_text_h`] then measures at the
+/// `hwnd` may be `HWND::default()`: [`st2k_appkit::win::wrapped_text_h`] then measures at the
 /// headless-shot DPI override, or 96, which is what [`dlg_h`] needs before any window exists.
 unsafe fn block_h(hwnd: HWND, text: &str, col_w: i32, min_h: i32) -> i32 {
-    crate::win::wrapped_text_h(hwnd, text, col_w).max(min_h)
+    st2k_appkit::win::wrapped_text_h(hwnd, text, col_w).max(min_h)
 }
 
 /// The window's text column in design px: the real client area less both margins, or the
@@ -210,7 +203,7 @@ struct SwitchRow {
 /// Place one [`SwitchRow`] at `y` and answer with the `y` the next row starts at.
 ///
 /// The checkbox is BS_MULTILINE: at one line that renders identically to the plain style it
-/// replaces, and it is what lets a label like Bulgarian's `fr2_scanlation` (418px against a
+/// replaces, and it is what let a label like Bulgarian's since-retired `fr2_scanlation` (418px against a
 /// 400px row) wrap onto a second line instead of losing its tail.
 unsafe fn place_switch_row(hwnd: HWND, hinst: HINSTANCE, y: i32, row: &SwitchRow) -> i32 {
     let w = content_w(hwnd);
@@ -247,27 +240,24 @@ unsafe fn place_switch_row(hwnd: HWND, hinst: HINSTANCE, y: i32, row: &SwitchRow
     y
 }
 
+/// `hwnd`'s client area in 96-DPI design px, as `(width, height)`. `GetClientRect` answers in
+/// physical px, so each side is divided back by the window's DPI.
+pub(crate) unsafe fn client_size_px(hwnd: HWND) -> (i32, i32) {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let unit = dpi_scale(hwnd, 100).max(1);
+    (
+        (rc.right - rc.left) * 100 / unit,
+        (rc.bottom - rc.top) * 100 / unit,
+    )
+}
+
 /// Where the Next / Get started button belongs, in design px, for the client area as it is
 /// NOW. Shared by the page-1 build (which creates it) and [`reanchor_button`] (which moves
 /// it after the window grows), so the two can never place it differently.
 unsafe fn button_rect(hwnd: HWND) -> (i32, i32) {
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    let cw = (rc.right - rc.left) * 100 / unit;
-    let ch = (rc.bottom - rc.top) * 100 / unit;
+    let (cw, ch) = client_size_px(hwnd);
     (cw - MARGIN - BTN_W, ch - BTN_H - 16)
-}
-
-/// Design-px height of the window frame: the difference between the WINDOW height
-/// [`DLG_H`]/[`page2_h`] speak in and the CLIENT height the rows are laid out in.
-unsafe fn nonclient_h(hwnd: HWND) -> i32 {
-    let mut wr = RECT::default();
-    let mut rc = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut wr);
-    let _ = GetClientRect(hwnd, &mut rc);
-    let unit = dpi_scale(hwnd, 100).max(1);
-    ((wr.bottom - wr.top) - (rc.bottom - rc.top)) * 100 / unit
 }
 
 /// Grow the window until `client_h` design px fit inside its client area. Never shrinks: a
@@ -301,7 +291,7 @@ unsafe fn fit_window(hwnd: HWND, client_h: i32) {
 
 /// Has the welcome window already been shown on this account?
 pub(crate) fn already_shown() -> bool {
-    sagethumbs2k_core::settings::get_dword_opt(FIRST_RUN_SHOWN).unwrap_or(0) != 0
+    st2k_base::settings::get_dword_opt(FIRST_RUN_SHOWN).unwrap_or(0) != 0
 }
 
 /// Record that the welcome has been dealt with. Also the `--first-run-seen` entry point:
@@ -309,7 +299,7 @@ pub(crate) fn already_shown() -> bool {
 /// because someone who already had SageThumbs installed has already made these choices and
 /// must not be greeted like a new user.
 pub(crate) fn mark_shown() {
-    let _ = sagethumbs2k_core::settings::set_dword(FIRST_RUN_SHOWN, 1);
+    let _ = st2k_base::settings::set_dword(FIRST_RUN_SHOWN, 1);
 }
 
 /// Show the welcome window and block until it is dismissed. No-op if it has run before.
@@ -344,22 +334,16 @@ unsafe fn sync_prtscn(hwnd: HWND) {
     }
 }
 
-/// Page 2's three opt-ins, in order. Same shape as page 1's rows, so the same placement
-/// code measures and lays them out.
-const PAGE2_ROWS: [SwitchRow; 3] = [
+/// Page 2's two opt-ins, in order. Same shape as page 1's rows, so the same placement
+/// code measures and lays them out. Both are matters of taste (a poster over a frame, a mark
+/// on the picture); the credit-page skip that used to sit between them is on by default since
+/// 2026-09-15 and offered only in Settings.
+const PAGE2_ROWS: [SwitchRow; 2] = [
     SwitchRow {
         id: ID_P_COVERS,
         key: "fr2_covers",
         sub_id: ID_P_COVERS_SUB,
         sub_key: "fr2_covers_sub",
-        sub_min_h: SUB_H_MIN,
-        gap: 14,
-    },
-    SwitchRow {
-        id: ID_P_SCANLATION,
-        key: "fr2_scanlation",
-        sub_id: ID_P_SCANLATION_SUB,
-        sub_key: "fr2_scanlation_sub",
         sub_min_h: SUB_H_MIN,
         gap: 14,
     },
@@ -373,7 +357,7 @@ const PAGE2_ROWS: [SwitchRow; 3] = [
     },
 ];
 
-/// Build page 2: three more opt-ins, page-1 style. Created lazily when Next is clicked.
+/// Build page 2: two more opt-ins, page-1 style. Created lazily when Next is clicked.
 /// Answers with the client height its rows need, which [`flip_to_page2`] then fits the
 /// window to.
 unsafe fn build_page2(hwnd: HWND, hinst: HINSTANCE) -> i32 {
@@ -452,16 +436,15 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
-    // Grow to the height page 2 is expected to need FIRST, so the rows below are measured
-    // and placed against the client area they will actually live in, then again to whatever
-    // those rows really came to. The second pass is what carries a translation that needs an
-    // extra wrapped line (audit F36).
-    fit_window(hwnd, page2_h() - nonclient_h(hwnd));
+    // Page 2 has as many rows as page 1 shows an installed copy, so the window it inherits
+    // already fits it; measure the rows against that client area and grow only for a
+    // translation that needs an extra wrapped line (audit F36). `fit_window` never shrinks,
+    // so a portable copy, whose page 1 is a row taller, keeps its height with a little air.
     let needed = build_page2(hwnd, hinst);
     fit_window(hwnd, needed);
     reanchor_button(hwnd);
     if let Ok(b) = GetDlgItem(Some(hwnd), IDOK) {
-        let txt = crate::win::wide(t("fr_go"));
+        let txt = st2k_appkit::win::wide(t("fr_go"));
         let _ = SetWindowTextW(b, windows::core::PCWSTR(txt.as_ptr()));
     }
     ON_PAGE_2.with(|p| p.set(true));
@@ -469,12 +452,9 @@ unsafe fn flip_to_page2(hwnd: HWND, hinst: HINSTANCE) {
 
 /// Apply the page-2 switches. Each maps 1:1 to the Settings row that owns it.
 unsafe fn apply_persona(hwnd: HWND) {
-    use sagethumbs2k_core::settings as s;
+    use st2k_base::settings as s;
     if checked(hwnd, ID_P_COVERS) {
         let _ = s::set_prefer_cover_art(true);
-    }
-    if checked(hwnd, ID_P_SCANLATION) {
-        let _ = s::set_dword("ContainerSkipScanlation", 1);
     }
     // Offered here rather than defaulted on, because it MODIFIES the picture the user asked to
     // see. Two separate reports (#17, #22) asked for a way to tell file types apart in a folder
@@ -491,7 +471,9 @@ unsafe fn apply_persona(hwnd: HWND) {
     if checked(hwnd, ID_P_BADGE) {
         let _ = s::set_corner_mark(s::CornerMark::Badge);
         sagethumbs2k_core::typeoverlay::sync(true);
-        let _ = sagethumbs2k_core::shellcmd::restart_explorer_clearing_cache();
+        // Detached: the Explorer restart takes 3-33 s, and run inline it froze this window
+        // on "Get started" for all of it.
+        crate::modes::detach_rebuild_thumbnail_cache();
     }
 }
 
@@ -630,21 +612,21 @@ unsafe fn apply(hwnd: HWND) {
         }
     }
     if checked(hwnd, ID_PREVIEW) {
-        let _ = sagethumbs2k_core::settings::set_preview_enabled(true);
+        let _ = st2k_base::settings::set_preview_enabled(true);
     }
     if checked(hwnd, ID_SHOT) {
         if checked(hwnd, ID_PRTSCN) {
-            let _ = sagethumbs2k_core::settings::set_screenshot_hotkey(PRTSCN_ONLY);
+            let _ = st2k_base::settings::set_screenshot_hotkey(PRTSCN_ONLY);
             release_windows_prtscn();
         }
         // Last: `set_enabled` reconciles the autostart entry AND starts the daemon, which
         // reads the hotkey settings at startup — so the hotkey has to be persisted first
         // or the fresh daemon would register Ctrl+PrtScn and ignore the choice above.
-        crate::screenshot::set_enabled(true);
+        st2k_screenshot::screenshot::set_enabled(true);
     } else if checked(hwnd, ID_PREVIEW) {
         // Quick preview alone still needs the resident helper (it owns the Space hook);
         // `heal_if_wanted` is what notices the feature is now wanted and brings it up.
-        crate::screenshot::heal_if_wanted();
+        st2k_screenshot::screenshot::heal_if_wanted();
     }
 }
 
@@ -661,28 +643,36 @@ fn release_windows_prtscn() {
 /// than through the generic static coloring?
 fn is_dim_caption(id: i32) -> bool {
     id == ID_HEAD
+        || id == ID_P2_HEAD
         || id == ID_PREVIEW_SUB
         || id == ID_SHOT_SUB
         || id == ID_THUMBS_SUB
         || id == ID_P_COVERS_SUB
-        || id == ID_P_SCANLATION_SUB
         || id == ID_P_BADGE_SUB
         || id == ID_P2_SUB
 }
 
+/// `WM_CREATE` shared by the small modal windows: resolve this module's `HINSTANCE` and
+/// hand it to `build`, or fail the message if that lookup fails.
+///
+/// # Safety
+/// Calls `build`, which receives and owns raw window handles.
+pub(crate) unsafe fn create_with(hwnd: HWND, build: unsafe fn(HWND, HINSTANCE)) -> LRESULT {
+    let Ok(module) = GetModuleHandleW(None) else {
+        return LRESULT(-1);
+    };
+    build(hwnd, module.into());
+    LRESULT(0)
+}
+
 /// `WM_CREATE`: build the dialog's controls.
 unsafe fn on_first_run_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = match GetModuleHandleW(None) {
-        Ok(h) => h.into(),
-        Err(_) => return LRESULT(-1),
-    };
-    build(hwnd, hinst);
-    LRESULT(0)
+    create_with(hwnd, build)
 }
 
 /// `WM_COMMAND`: the Print-Screen sync checkbox and the OK/Next button.
 unsafe fn on_first_run_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    match (wparam.0 & 0xFFFF) as i32 {
+    match st2k_appkit::win::command_id(wparam) {
         ID_SHOT => sync_prtscn(hwnd),
         IDOK => {
             if ON_PAGE_2.with(|p| p.get()) {
@@ -748,17 +738,30 @@ extern "system" fn first_run_wndproc(
 /// before capturing; page-1 choices are NOT applied (the flip path that applies them is
 /// the button handler, deliberately not exercised here).
 pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
-    crate::win::capture_shot_window(
+    shot_first_run(out, w!("SageThumbs2KFirstRunShot2"), |hwnd, hinst| unsafe {
+        flip_to_page2(hwnd, hinst)
+    })
+}
+
+/// Shared body of the two headless first-run captures: build the window of class `class`
+/// (title and design size from the dialog's own constants), run `after_create` for the
+/// one thing that page needs done to the fresh window, and capture to `out`.
+unsafe fn shot_first_run(
+    out: &str,
+    class: PCWSTR,
+    after_create: impl FnOnce(HWND, HINSTANCE),
+) -> bool {
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
-            class: w!("SageThumbs2KFirstRunShot2"),
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
+            class,
             wndproc: Some(first_run_wndproc),
             title: t("fr_title"),
             design_w: DLG_W,
             design_h: dlg_h(),
         },
-        |hwnd, hinst| unsafe { flip_to_page2(hwnd, hinst) },
+        after_create,
         20,
         8,
         false,
@@ -768,204 +771,8 @@ pub(crate) unsafe fn run_shot_first_run2(out: &str) -> bool {
 /// Headless capture (`--shot <out.png> --window firstrun`) so the layout is verifiable
 /// without opening a window or touching any setting.
 pub(crate) unsafe fn run_shot_first_run(out: &str) -> bool {
-    crate::win::capture_shot_window(
-        out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
-            class: w!("SageThumbs2KFirstRunShot"),
-            wndproc: Some(first_run_wndproc),
-            title: t("fr_title"),
-            design_w: DLG_W,
-            design_h: dlg_h(),
-        },
-        |_hwnd, _hinst| {},
-        20,
-        8,
-        false,
-    )
+    shot_first_run(out, w!("SageThumbs2KFirstRunShot"), |_hwnd, _hinst| {})
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Design-px height one string needs in the window's full-width column, pinned to 96
-    /// DPI. Pinned rather than measured through `block_h`, whose answer follows the
-    /// process-wide shot-DPI override that a sibling test in `scaling.rs` flips underneath
-    /// this one; see `win::design_wrapped_text_h`. The floor is applied here, so this asks
-    /// exactly the question `block_h` asks.
-    fn head_h(text: &str) -> i32 {
-        need(text, unsafe { content_w(HWND::default()) }, INTRO_H_MIN)
-    }
-
-    /// [`head_h`] for an arbitrary column and floor.
-    fn need(text: &str, col_w: i32, min_h: i32) -> i32 {
-        unsafe { crate::win::design_wrapped_text_h(text, col_w) }.max(min_h)
-    }
-
-    /// Every shipped locale's `fr_intro`/`fr_intro_portable` stays within a sane band:
-    /// never below the design floor (a terse translation must not shrink the box) and never
-    /// past a generous ceiling (which would mean the measurement itself is broken, e.g.
-    /// wrapping to the wrong column). Iterates the baked locale table rather than eyeballing
-    /// a screenshot of two or three of them, the acceptance bar this finding sets.
-    #[test]
-    fn every_locale_intro_line_stays_within_a_sane_height_band() {
-        // Generous: catches a broken measurement, not a long sentence.
-        const SANE_MAX: i32 = INTRO_H_MIN * 4;
-        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
-            for key in ["fr_intro", "fr_intro_portable"] {
-                let Some((_, text)) = pairs.iter().find(|(k, _)| *k == key) else {
-                    continue;
-                };
-                let h = head_h(text);
-                assert!(
-                    (INTRO_H_MIN..=SANE_MAX).contains(&h),
-                    "{code}/{key}: measured height {h}px is outside the sane [{INTRO_H_MIN}, \
-                     {SANE_MAX}] band for {text:?}"
-                );
-            }
-        }
-    }
-
-    /// Has teeth: a version of `block_h` that ignores its `text` argument and always returns
-    /// the floor, i.e. the exact pre-fix behavior of a flat height regardless of the active
-    /// language, fails this immediately. A paragraph nearly three times the length of the
-    /// longest shipped intro line cannot possibly wrap into the two-line floor.
-    #[test]
-    fn a_measured_block_grows_for_a_paragraph_the_old_fixed_height_could_not_hold() {
-        let long = "SageThumbs is already adding thumbnails to Explorer, and this sentence \
-            keeps going well past the point where two ordinary lines could possibly hold it, \
-            because the whole point of measuring is to stop assuming a length in advance.";
-        let h = head_h(long);
-        assert!(
-            h > INTRO_H_MIN,
-            "a paragraph this long must measure taller than the old fixed {INTRO_H_MIN}px \
-             box; got {h}px, the row heights have stopped measuring and gone back to guessing"
-        );
-    }
-
-    /// A short synthetic string must sit exactly at the floor: the measurement is not
-    /// supposed to pad a one-line sentence, only to grow the box for a genuinely longer one.
-    #[test]
-    fn a_measured_block_floors_a_short_string_at_the_design_minimum() {
-        assert_eq!(head_h("Short."), INTRO_H_MIN);
-    }
-
-    /// `dlg_h()` must grow by exactly the same amount the intro measures for the ACTIVE
-    /// language, not a second, independently-tuned number: this is the arithmetic that
-    /// reserves the window space `build()`'s control then actually uses.
-    #[test]
-    fn dlg_h_grows_by_exactly_the_measured_intro_extra() {
-        let extra = intro_extra_h();
-        assert_eq!(
-            dlg_h(),
-            (if offers_thumbnails() {
-                DLG_H + THUMBS_ROW_H
-            } else {
-                DLG_H
-            }) + extra,
-            "dlg_h() must reserve exactly intro_extra_h() beyond the base layout height"
-        );
-    }
-
-    /// The heart of F36 in this window, over all 36 shipped locales rather than the two a
-    /// screenshot samples: walk the SAME row tables `build`/`build_page2` walk, add up what
-    /// each row's copy really measures to, and check the page against two bounds.
-    ///
-    /// The ceiling is the assertion that can fail on real copy. Rows are measured now, so
-    /// "does the text fit its box" is true by construction; what a measured layout CAN still
-    /// get wrong is needing a window taller than a modest screen, which `fit_window` would
-    /// deliver silently. The second half is the teeth: it records, per locale, every row
-    /// whose copy exceeds the flat box that row used to be given, and fails when that list
-    /// is empty, since a list of none would mean this test no longer proves the measured
-    /// rows do anything.
-    #[test]
-    fn every_locale_first_run_page_fits_a_reasonable_window() {
-        // 340 shipped for years; twice that still opens on a 768px-tall laptop screen. A
-        // page past it means a translation, or the measurement, has gone wrong.
-        const SANE_MAX_CLIENT_H: i32 = 680;
-        let w = unsafe { content_w(HWND::default()) };
-        let mut grew_past_the_old_box: Vec<String> = Vec::new();
-
-        // Page 1 in its PORTABLE shape, the taller of the two and the one the finding cites,
-        // then page 2 with its three opt-ins. Each entry is (heading key, rows, closing key).
-        let pages: [(&str, &[&SwitchRow], &str); 2] = [
-            (
-                "fr_intro_portable",
-                &[&PAGE1_THUMBS_ROW, &PAGE1_PREVIEW_ROW, &PAGE1_SHOT_ROW],
-                "fr_prtscn",
-            ),
-            (
-                "fr2_head",
-                &[&PAGE2_ROWS[0], &PAGE2_ROWS[1], &PAGE2_ROWS[2]],
-                "fr2_sub",
-            ),
-        ];
-
-        for (code, pairs) in sagethumbs2k_core::i18n::LOCALES {
-            let value = |key: &str| {
-                pairs
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .map(|(_, v)| *v)
-                    .unwrap_or("")
-            };
-            for (head_key, rows, tail_key) in pages {
-                let mut y = 16 + need(value(head_key), w, SWITCH_H_MIN) + 12;
-                for row in rows {
-                    let label_h = need(value(row.key), w - CHK_GLYPH_W, SWITCH_H_MIN);
-                    let sub_h = need(value(row.sub_key), w - INDENT, row.sub_min_h);
-                    if label_h > SWITCH_H_MIN {
-                        grew_past_the_old_box.push(format!("{code}/{}", row.key));
-                    }
-                    if sub_h > row.sub_min_h {
-                        grew_past_the_old_box.push(format!("{code}/{}", row.sub_key));
-                    }
-                    y += label_h + 2 + sub_h + row.gap;
-                }
-                // Page 1 closes with the indented PrtScn switch, page 2 with its footer
-                // line; both are one measured block, so one term covers either.
-                y += need(value(tail_key), w - INDENT - CHK_GLYPH_W, SWITCH_H_MIN);
-                let client_h = y + BOTTOM_BLOCK;
-                assert!(
-                    client_h <= SANE_MAX_CLIENT_H,
-                    "{code}/{head_key}: the measured rows come to {client_h}px of client \
-                     height, past the {SANE_MAX_CLIENT_H}px this window should ever need"
-                );
-            }
-        }
-
-        assert!(
-            !grew_past_the_old_box.is_empty(),
-            "expected some shipped locale to need more than the pre-fix flat boxes; if none \
-             do, this test can no longer prove the measured rows do anything"
-        );
-    }
-
-    /// Every row's caption renders muted. A row names its caption in one place (its
-    /// [`SwitchRow`]) and is given its colour in another ([`is_dim_caption`]), with nothing
-    /// linking the two, so a row added to a page still builds, still lays out and still
-    /// renders. It just draws its caption in the full-strength foreground beside its muted
-    /// neighbours, which reads as emphasis nobody chose. `fr2_badge_sub` shipped that way,
-    /// and no size-based capture could see it; this is the guard.
-    #[test]
-    fn every_switch_row_caption_is_a_dim_caption() {
-        let rows: [&SwitchRow; 6] = [
-            &PAGE1_THUMBS_ROW,
-            &PAGE1_PREVIEW_ROW,
-            &PAGE1_SHOT_ROW,
-            &PAGE2_ROWS[0],
-            &PAGE2_ROWS[1],
-            &PAGE2_ROWS[2],
-        ];
-        for row in rows {
-            assert!(
-                is_dim_caption(row.sub_id),
-                "the caption under `{}` (id {}) is missing from `is_dim_caption`, so it \
-                 renders in the normal foreground while the captions around it stay muted",
-                row.key,
-                row.sub_id
-            );
-        }
-    }
-}
+mod tests;

@@ -34,6 +34,7 @@ use crate::text_encode::encode_text_layer;
 /// seam: no encoder panics and none silently truncates — the overflowing
 /// count is surfaced to the caller instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EncodeError {
     /// A `NAVM` bookmark node has more children than the `u8` child-count
     /// field can express (limit 255).

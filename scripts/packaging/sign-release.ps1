@@ -9,6 +9,12 @@
                          (it MUST be the region the account lives in; a wrong region is a 403)
     ST2K_SIGN_ACCOUNT    the Artifact Signing account name
     ST2K_SIGN_PROFILE    the certificate profile name (Public Trust for a shipped installer)
+  OR, instead of those three, sign through an MCP server's `sign_artifact` tool (the "mcp"
+  backend, preferred when set; see sign-via-mcp.mjs). The server holds the credential and
+  leases it into signtool itself, so the build process never carries the client secret:
+    ST2K_SIGN_MCP        JSON array, the server's command line, e.g. ["node","C:/.../loader.mjs"]
+    ST2K_SIGN_MCP_INSTANCE    optional: the vaulted signing credential's instance name
+    ST2K_SIGN_EXPECT_SUBJECT  optional: refuse unless the signer subject contains this
   Optional:
     ST2K_SIGN_DLIB       path to Azure.CodeSigning.Dlib.dll; otherwise it is looked up in the
                          NuGet cache and under tools\artifact-signing (see Resolve-Dlib).
@@ -31,8 +37,11 @@
   -Configured says yes. Without configuration it prints one yellow line and exits 0, so the
   release flow never assumes a certificate exists.
 
-  EXIT CODES: 0 signed and verified (or nothing configured with -AllowUnsigned, or -WhatIf);
-  1 a verdict (a sign or verify failure, a missing tool); 2 -Configured said "no".
+  EXIT CODES: 0 signed and verified (or nothing configured with -AllowUnsigned, or -WhatIf
+  on a machine where signing IS configured - -WhatIf runs after the configuration gate, so
+  without configuration it exits 1 like a real signing run would);
+  1 a verdict (a sign or verify failure, a missing tool, no configuration); 2 -Configured
+  said "no".
 #>
 [CmdletBinding()]
 param(
@@ -100,9 +109,18 @@ function Get-SignConfig {
     }
 }
 
-function Test-SignConfigured {
+# Which backend signs: 'mcp' (ST2K_SIGN_MCP) wins over 'signtool' (the three names), and
+# $null means not configured. Decided in one place so -Configured, -Status and a real run
+# can never disagree about it.
+function Get-SignBackend {
+    if ($env:ST2K_SIGN_MCP) { return 'mcp' }
     $c = Get-SignConfig
-    return [bool]($c.Endpoint -and $c.Account -and $c.Profile)
+    if ($c.Endpoint -and $c.Account -and $c.Profile) { return 'signtool' }
+    return $null
+}
+
+function Test-SignConfigured {
+    return [bool](Get-SignBackend)
 }
 
 # The verify step reads the signature back through Windows itself, so a signtool that
@@ -128,12 +146,13 @@ if ($Status) {
     $tool = Resolve-SignTool
     $dlib = Resolve-Dlib
     Write-Host "[sign-release] configuration"
+    Write-Host ("  backend   {0}" -f $(switch (Get-SignBackend) { 'mcp' { "mcp: $env:ST2K_SIGN_MCP (the server holds the credential)" } 'signtool' { 'signtool + Azure dlib (credential from the AZURE_* environment)' } default { '(none)' } }))
     Write-Host ("  endpoint  {0}" -f $(if ($c.Endpoint) { $c.Endpoint } else { '(ST2K_SIGN_ENDPOINT unset)' }))
     Write-Host ("  account   {0}" -f $(if ($c.Account) { $c.Account } else { '(ST2K_SIGN_ACCOUNT unset)' }))
     Write-Host ("  profile   {0}" -f $(if ($c.Profile) { $c.Profile } else { '(ST2K_SIGN_PROFILE unset)' }))
     Write-Host ("  signtool  {0}" -f $(if ($tool) { $tool } else { 'NOT FOUND (install the Windows 10/11 SDK)' }))
     Write-Host ("  dlib      {0}" -f $(if ($dlib) { $dlib } else { 'NOT FOUND (nuget install Microsoft.ArtifactSigning.Client -OutputDirectory tools\artifact-signing)' }))
-    Write-Host ("  verdict   {0}" -f $(if ((Test-SignConfigured) -and $tool -and $dlib) { 'READY to sign' } elseif (Test-SignConfigured) { 'configured, but tooling is missing' } else { 'not configured: releases ship unsigned' }))
+    Write-Host ("  verdict   {0}" -f $(if ((Get-SignBackend) -eq 'mcp') { 'READY to sign through the MCP server (proven only by a real signing run)' } elseif ((Test-SignConfigured) -and $tool -and $dlib) { 'READY to sign' } elseif (Test-SignConfigured) { 'configured, but tooling is missing' } else { 'not configured: releases ship unsigned' }))
     exit 0
 }
 
@@ -190,11 +209,30 @@ $files = @(foreach ($p in $Path) {
 
 if (-not (Test-SignConfigured)) {
     if ($AllowUnsigned) {
-        Write-Host ("  unsigned: ST2K_SIGN_ENDPOINT / ST2K_SIGN_ACCOUNT / ST2K_SIGN_PROFILE are not set, so {0} file(s) ship without a signature (docs/RELEASE-SECURITY.md, issue #30)" -f $files.Count) -ForegroundColor Yellow
+        Write-Host ("  unsigned: neither ST2K_SIGN_MCP nor ST2K_SIGN_ENDPOINT / ST2K_SIGN_ACCOUNT / ST2K_SIGN_PROFILE is set, so {0} file(s) ship without a signature (docs/RELEASE-SECURITY.md, issue #30)" -f $files.Count) -ForegroundColor Yellow
         exit 0
     }
-    Write-Host "  FAIL  signing is not configured (ST2K_SIGN_ENDPOINT / ST2K_SIGN_ACCOUNT / ST2K_SIGN_PROFILE); pass -AllowUnsigned to ship unsigned on purpose" -ForegroundColor Red
+    Write-Host "  FAIL  signing is not configured (ST2K_SIGN_MCP, or ST2K_SIGN_ENDPOINT / ST2K_SIGN_ACCOUNT / ST2K_SIGN_PROFILE); pass -AllowUnsigned to ship unsigned on purpose" -ForegroundColor Red
     exit 1
+}
+
+if ((Get-SignBackend) -eq 'mcp') {
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { Write-Host "  FAIL  ST2K_SIGN_MCP is set but node is not on PATH, so the MCP signer cannot run" -ForegroundColor Red; exit 1 }
+    $client = Join-Path $PSScriptRoot 'sign-via-mcp.mjs'
+    if ($WhatIf) {
+        Write-Host "  would run: `"$($node.Source)`" `"$client`" $($files -join ' ')"
+        Write-Host "  server:    $env:ST2K_SIGN_MCP"
+        exit 0
+    }
+    Write-Host ("[sign-release] Azure Artifact Signing through the MCP server: {0} file(s)" -f $files.Count) -ForegroundColor Green
+    & $node.Source $client @files
+    if ($LASTEXITCODE) { Write-Host "  FAIL  the MCP signer did not report every file signed and verified (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
+    # The server already verified; read every signature back through Windows HERE too, so a
+    # server that misreports can never put an unsigned file into a release.
+    $expect = if ($env:ST2K_SIGN_EXPECT_SUBJECT) { [regex]::Escape($env:ST2K_SIGN_EXPECT_SUBJECT) } else { $null }
+    foreach ($f in $files) { Assert-Signed $f $expect -RequireTrusted }
+    exit 0
 }
 
 $tool = Resolve-SignTool

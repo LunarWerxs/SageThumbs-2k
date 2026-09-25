@@ -1,0 +1,44 @@
+[package]
+name = "sagethumbs2k-screenshot"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SageThumbs 2K app, screenshot layer"
+
+# cargo-machete reads crate NAMES, so it misses `windows-core`, named only by the
+# `#[implement]` macro's expansion. It is used.
+[package.metadata.cargo-machete]
+ignored = ["windows-core"]
+
+[lib]
+name = "st2k_screenshot"
+
+[dependencies]
+image = { workspace = true }
+windows = { workspace = true }
+# The `#[implement]` macro (the capture overlay's UI Automation providers) expands to
+# `windows_core::` paths.
+windows-core = "0.62"
+windows-registry = "0.6"
+st2k_base = { package = "sagethumbs2k-base", path = "../base" }
+st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs" }
+st2k_actions = { package = "sagethumbs2k-actions", path = "../actions" }
+st2k_appkit = { package = "sagethumbs2k-appkit", path = "../appkit" }
+st2k_preview = { package = "sagethumbs2k-preview", path = "../preview" }
+
+[features]
+# HDR screenshots (Windows Graphics Capture + D3D11 + DXGI). APP-ONLY: these windows-rs
+# namespaces add ~900 KB to every binary that links them; the root's `hdr-capture` turns this on.
+hdr-capture = [
+    "windows/Win32_Graphics_Dxgi",
+    "windows/Win32_Graphics_Dxgi_Common",
+    "windows/Win32_Graphics_Direct3D",
+    "windows/Win32_Graphics_Direct3D11",
+    "windows/Win32_System_WinRT_Direct3D11",
+    "windows/Win32_System_WinRT_Graphics_Capture",
+    "windows/Graphics_Capture",
+    "windows/Graphics_DirectX",
+    "windows/Graphics_DirectX_Direct3D11",
+]

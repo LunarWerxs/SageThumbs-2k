@@ -1,123 +1,112 @@
-name: Differential vs DjVuLibre
+name: DjVu conformance
 
-# Compares djvu-rs page renders against `ddjvu` for a small fixed corpus on a
-# weekly schedule. The harness lives at examples/diff_djvulibre.rs; the same
-# binary is documented in tests/diff_tolerance.md.
-#
-# Why a separate workflow:
-# - DjVuLibre install + render is too slow for per-PR gating (#192 Option B).
-# - The fuzz.yml workflow runs in-process libfuzzer; subprocess `ddjvu` would
-#   dominate iteration time there.
-#
-# This is the CI-integration item from #192's DoD. A future Option-C
-# pre-rendered corpus would replace the subprocess call with a static
-# byte compare and let the diff move into fuzz.yml.
+# Reproducible differential gate and public history:
+# https://matyushkin.github.io/djvu-rs/dev/conformance/
 
 on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'examples/diff_djvulibre.rs'
+      - 'examples/conformance_semantic.rs'
+      - 'examples/interop_encode.rs'
+      - 'scripts/conformance_report.py'
+      - 'scripts/test_conformance_report.py'
+      - 'scripts/run_conformance.sh'
+      - 'conformance/**'
+      - 'fuzz/corpus-regressions/diff_fuzz/**'
+      - '.github/workflows/diff.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'examples/diff_djvulibre.rs'
+      - 'examples/conformance_semantic.rs'
+      - 'examples/interop_encode.rs'
+      - 'scripts/conformance_report.py'
+      - 'scripts/test_conformance_report.py'
+      - 'scripts/run_conformance.sh'
+      - 'conformance/**'
+      - 'fuzz/corpus-regressions/diff_fuzz/**'
   schedule:
-    - cron: '0 4 * * 1'   # every Monday at 04:00 UTC (one hour after fuzz)
+    - cron: '0 4 * * 1'
   workflow_dispatch:
-    inputs:
-      tolerance:
-        description: 'Per-channel tolerance (0..255)'
-        required: false
-        default: '4'
-      width:
-        description: 'Render width in px'
-        required: false
-        default: '1024'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  diff:
-    name: ddjvu pixel diff
+  conformance:
+    name: Differential conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install DjVuLibre
+      - name: Install pinned DjVuLibre
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends djvulibre-bin
+          banner="$(ddjvu --help 2>&1 | head -1)"
+          package="$(dpkg-query --show --showformat='${Version}' djvulibre-bin)"
+          test "$banner" = 'DDJVU --- DjVuLibre-3.5.28'
+          echo "DJVULIBRE_ID=$banner (Ubuntu $package)" >> "$GITHUB_ENV"
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: diff-djvulibre
+          key: conformance-ubuntu
 
-      - name: Build diff harness
-        run: cargo build --release --features cli --example diff_djvulibre
-
-      # Native-resolution corpus. Files where djvu-rs is currently
-      # bit-perfect or near-bit-perfect against ddjvu — see
-      # tests/diff_tolerance.md for the empirical baseline.
-      #
-      # No known native-resolution exclusions remain for the tracked #279 pages:
-      # colorbook.djvu p0 now measures 0.267% mismatch / mean Δ 0.071, and
-      # navm_fgbz.djvu p4 measures 0.027% mismatch / mean Δ 0.003.
-      #
-      # Width 99999 caps to native page width; small fixtures render at
-      # their native dimensions. This is the only mode in which the diff
-      # measures *decoder* differences instead of resampling differences.
-      - name: Run diff
-        env:
-          TOL: ${{ github.event.inputs.tolerance || '4' }}
-          WIDTH: ${{ github.event.inputs.width || '99999' }}
+      - name: Restore published history
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
         run: |
-          {
-            ./target/release/examples/diff_djvulibre \
-              --width "$WIDTH" --tolerance "$TOL" \
-              tests/fixtures/boy.djvu \
-              tests/fixtures/boy_jb2.djvu \
-              tests/fixtures/chicken.djvu \
-              tests/fixtures/ccitt_2.djvu \
-              tests/fixtures/links.djvu \
-              tests/fixtures/problem_page.djvu \
-              tests/fixtures/big-scanned-page.djvu \
-              tests/fixtures/navm_fgbz.djvu
-            ./target/release/examples/diff_djvulibre \
-              --width "$WIDTH" --tolerance "$TOL" --max-pages 1 \
-              tests/fixtures/colorbook.djvu
-          } | tee diff_results.jsonl
+          curl --fail --silent --show-error --location \
+            https://matyushkin.github.io/djvu-rs/dev/conformance/history.json \
+            --output previous_history.json
 
-      # CI gate: any page over the per-codec ceiling fails. See
-      # tests/diff_tolerance.md. Tight thresholds because every file in
-      # the CI corpus is bit-perfect or comfortably within the native gate today.
-      - name: Check thresholds
+      - name: Run conformance gate
         run: |
-          python3 - <<'PYEOF'
-          import json, sys
-          PAGE_CEILING_PCT = 0.5      # strict native-resolution gate
-          MEAN_DELTA_CEILING = 0.2
-          fails = []
-          for line in open("diff_results.jsonl"):
-              if not line.strip():
-                  continue
-              d = json.loads(line)
-              if d["mismatch_pct"] > PAGE_CEILING_PCT or \
-                 d["mean_abs_diff"] > MEAN_DELTA_CEILING:
-                  fails.append(d)
-          if fails:
-              for f in fails:
-                  print(f"FAIL {f['file']} p{f['page']}: "
-                        f"{f['mismatch_pct']:.2f}% mismatched, "
-                        f"mean Δ={f['mean_abs_diff']:.2f}, "
-                        f"max Δ={f['max_abs_diff']}")
-              sys.exit(1)
-          print("All pages within documented tolerance")
-          PYEOF
+          if test -s previous_history.json; then
+            export CONFORMANCE_HISTORY_INPUT=previous_history.json
+          fi
+          export CONFORMANCE_OUT_DIR=conformance_site
+          export DJVULIBRE_ID
+          bash scripts/run_conformance.sh
 
-      - name: Upload jsonl artifact
+      - name: Upload conformance artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diff-results
-          path: diff_results.jsonl
-          retention-days: 30
+          name: conformance-results
+          path: |
+            diff_results.jsonl
+            semantic_results.jsonl
+            writer_results.txt
+            writer_status.txt
+            conformance_site/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish dashboard
+        if: github.event_name != 'pull_request' && success()
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: conformance_site
+          destination_dir: dev/conformance
+          keep_files: true

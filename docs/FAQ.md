@@ -62,6 +62,34 @@ skipped on purpose and instantly, because the Windows 10 decoder hangs on such f
 than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
 yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
 
+MPEG files need nothing installed. Windows has no decoder path at all for MPEG-1 system
+streams (VideoCD-era `.mpg`, and what most late-1990s cameras recorded) or for bare MPEG video
+streams (`.m1v`, `.m2v`), and it opens DVD-style `.vob` files and recordings (`.ts`, `.m2ts`,
+`.mts`, or a broadcast capture named `.mpg`) only with the Store's **MPEG-2 Video Extension**;
+SageThumbs 2K draws all of those itself whenever Windows declines, so that extension is
+optional (with it installed, Windows draws those frames a little faster). Two cases still
+want it: MPEG-2 video inside a Matroska file, and an interlaced recording that stores each
+frame as two half-pictures, where the frame comes from Windows' own decoder.
+
+</details>
+
+<details>
+<summary><b>My PNG, GIF or BMP thumbnails look different since I installed it, on the desktop too</b></summary>
+
+That is SageThumbs 2K drawing them. It registers for the picture formats Windows can already
+show (PNG, GIF, BMP, TIFF, WebP and more), not only the ones Windows cannot, and the desktop is
+just another Explorer view, so its thumbnails follow the same rules as every folder. JPEG is
+usually still drawn by Windows, which keeps its own JPEG thumbnailer pinned to that file type.
+
+A small picture sits at its real size in the middle of the tile, exactly as Windows shows it.
+Versions before 3.0.5 enlarged it to fill the tile, which is the difference most people
+noticed. Colours can shift a little on a file that carries a colour profile, because SageThumbs
+honours the profile.
+
+To hand a format back to Windows: Settings, File types, untick it, then Settings, Advanced,
+**Rebuild thumbnail cache**. Windows draws that format again from the next browse, on the
+desktop included.
+
 </details>
 
 <details>
@@ -232,8 +260,11 @@ their dividers into whatever order you want. The menu mirrors your list exactly.
 <details>
 <summary><b>Windows says "Windows protected your PC"</b></summary>
 
-That is SmartScreen reacting to a new installer that has not built up a download reputation. If
-you got the file from our GitHub releases page, click **More info**, then **Run anyway**.
+That is SmartScreen reacting to a new installer that has not built up a download reputation.
+Every release since 3.0.0 is code-signed by LUNARWERX LLC (right-click the file, Properties,
+Digital Signatures), which is what makes the screen rarer and shorter-lived; a brand-new release
+can still meet it for its first days. If you got the file from our GitHub releases page, click
+**More info**, then **Run anyway**.
 
 </details>
 
@@ -300,8 +331,11 @@ trace behind.
 <details>
 <summary><b>How do I uninstall?</b></summary>
 
-Normal Windows uninstall (Settings, Apps). It removes the registrations too. For the portable
-copy, unregister first (Settings, Advanced), then delete the folder.
+Normal Windows uninstall (Settings, Apps). It removes the registrations too. Windows keeps the
+thumbnails it cached while SageThumbs was installed; the uninstaller asks whether to clear that
+cache at the next restart (unticked keeps everything, and Windows' Disk Cleanup can clear it any
+time later). Unattended uninstalls leave it alone unless the command carries `/RESETTHUMBCACHE`.
+For the portable copy, unregister first (Settings, Advanced), then delete the folder.
 
 ---
 
@@ -355,9 +389,13 @@ works.
 <summary><b>Can I use this at work?</b></summary>
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a commercial licence: US$49 per Windows installation, perpetual, with 12 months of
-updates. Buy it at <https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs>
-(card via Stripe); one seat key per installation arrives by email the moment payment completes
+needs a commercial licence per Windows installation, sold two ways: US$2.99 a month at
+<https://go.lunarwerx.com/sagethumbs/buy/monthly>
+(cancel whenever you like at <https://go.lunarwerx.com/sagethumbs/manage>, signing in with the
+email you paid with), or US$49 once at
+<https://go.lunarwerx.com/sagethumbs/buy>
+for a perpetual licence with 12 months of updates (card via Stripe); one seat key per
+installation arrives by email the moment payment completes
 (the checkout page calls it a "redemption code": same thing, it starts with `esk_`).
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
@@ -370,10 +408,14 @@ Redeem it yourself, see below. For volume or site licences, purchase orders or b
 It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. The installer asks
 up front whether a copy is for personal or business use, and that answer only changes by
 reinstalling, there's no toggle for it in Settings. A portable copy has no installer to ask,
-and counts as business use as soon as a key is redeemed on it. A business copy has every
-feature the moment it's installed, key or not, it just reminds you to add one: a notice when
-you launch it, and a strip across the Settings window, on every page, that stays until you do.
-Once a key is redeemed, the licence check runs quietly in the background and tolerates about a
-week offline before the reminders start again.
+and counts as business use as soon as a key is redeemed on it. A business copy starts a
+**7-day evaluation** with every feature working; a strip across the Settings window shows the
+days left, with buttons to enter a key or buy one. When the 7 days are up it asks for a key for
+**3 more days**, and after that thumbnails, previews, the Details pane and the right-click menu
+stop on that computer until a key is entered (`st2k doctor` says so in plain words). Entering a
+key at any point puts everything back at once. Once a key is redeemed, the licence check runs
+quietly in the background and tolerates about a week offline before the reminders start again;
+a copy that once held a key is never stopped by a network outage. Choosing Personal on a
+computer that was set up for business use asks once whether you are sure.
 
 </details>

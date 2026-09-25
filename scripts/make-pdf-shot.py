@@ -24,11 +24,12 @@ and this is safe to run at any time.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from st2k_exe import find_exe
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -440,36 +441,9 @@ def build_pdf(path: Path) -> None:
     path.write_bytes(bytes(out))
 
 
-def find_exe(argv: list[str]) -> Path:
-    """The app EXE: an explicit argument, then the configured target dir, then the install.
-    Mirrors make-collage.py so both scripts resolve the binary the same way."""
-    candidates: list[Path] = []
-    if len(argv) > 1:
-        candidates.append(Path(argv[1]))
-    try:
-        meta = json.loads(
-            subprocess.run(
-                ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        candidates.append(Path(meta["target_directory"]) / "release" / "SageThumbs2K.exe")
-    except Exception:
-        pass
-    candidates.append(ROOT / "target" / "release" / "SageThumbs2K.exe")
-    candidates.append(Path(r"C:\Program Files\SageThumbs2K\SageThumbs2K.exe"))
-    for c in candidates:
-        if c.is_file():
-            return c
-    sys.exit("SageThumbs2K.exe not found. Build it first, or pass its path as an argument.")
-
-
 def main() -> None:
     assert_single_hit()
-    exe = find_exe(sys.argv)
+    exe = find_exe(sys.argv, label="make-pdf-shot")
     print(f"pdf shot: exe={exe}")
 
     out_png = ROOT / "assets" / "screenshots" / "preview-pdf.png"
@@ -489,7 +463,7 @@ def main() -> None:
             "--pdf-page", str(FIND_PAGE),
             "--find", FIND_TERM,
             "--size", f"{SHOT_W}x{SHOT_H}",
-            "--wait-ms", "600",
+            "--wait-ms", "8500",
         ]
         res = subprocess.run(args, capture_output=True, text=True)
         if res.returncode != 0 or not out_png.is_file():

@@ -43,8 +43,8 @@
 use std::cell::RefCell;
 
 use super::*;
-use crate::gdip;
 use crate::nudge_engine::{Ask, Cadence, Outcome};
+use st2k_appkit::gdip;
 use windows::Win32::Graphics::Gdi::{DT_CALCRECT, DT_WORDBREAK};
 
 /// Design-pixel height of the whole strip, including the gaps above and below the card.
@@ -161,7 +161,7 @@ fn body_h() -> i32 {
 
 /// Measure the wrapped body at the card's real inner width, in 96-dpi design px.
 ///
-/// Measured with the 96-dpi [`crate::win::gui_font`] against a SCREEN DC, and both halves of that
+/// Measured with the 96-dpi [`st2k_appkit::win::gui_font`] against a SCREEN DC, and both halves of that
 /// are deliberate. Every number in this file is a design pixel that the layout pass then scales,
 /// so measuring at design scale is what keeps one answer right at 100%, 125% and 150%. And it has
 /// to be a screen DC because there is no window yet: this measurement is what decides how tall to
@@ -171,7 +171,7 @@ pub(super) unsafe fn measure_body_h(body: &str) -> i32 {
     if hdc.is_invalid() {
         return BODY_H_MIN;
     }
-    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font().0));
+    let old = SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font().0));
     let mut text = wide(body);
     let n = text.len().saturating_sub(1);
     let mut rc = RECT {
@@ -201,14 +201,14 @@ pub(super) unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
     if hdc.is_invalid() {
         return floor;
     }
-    let old = SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    let old = SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_for(hwnd).0));
     let text = wide(label);
     let n = text.len().saturating_sub(1);
     let mut sz = SIZE::default();
     let _ = GetTextExtentPoint32W(hdc, &text[..n], &mut sz);
     SelectObject(hdc, old);
     ReleaseDC(Some(hwnd), hdc);
-    (crate::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
+    (st2k_appkit::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
 }
 
 /// Whether a banner is live for this window.
@@ -257,6 +257,14 @@ unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
         ID_NUDGE_DISCORD,
         btn_w(hwnd, discord_label(), BTN_W_DISCORD),
     ));
+    clamp_row(&mut row, pane_w);
+    row
+}
+
+/// Scale a row of button widths back so that the row plus its gaps fits inside `pane_w`, keeping
+/// the widths in proportion. A no-op when the row already fits, which is the ordinary case for
+/// English; the clamp is a backstop for a translation nobody has looked at.
+fn clamp_row(row: &mut [(i32, i32)], pane_w: i32) {
     let gaps = (row.len().saturating_sub(1)) as i32 * BTN_GAP;
     let avail = pane_w - 2 * PAD - gaps;
     let total: i32 = row.iter().map(|(_, w)| *w).sum();
@@ -265,7 +273,27 @@ unsafe fn button_row(hwnd: HWND, pane_w: i32) -> Vec<(i32, i32)> {
             *w = (*w * avail) / total;
         }
     }
-    row
+}
+
+/// Where each button in the row lands, in design px: `(id, x, y, w, h)`, right-aligned inside the
+/// card and sharing its bottom row. Laid out right-to-left from the card's inner edge so the
+/// primary action is the one nearest the corner the eye lands on.
+pub(super) fn button_rects(
+    strip_top: i32,
+    pane_x: i32,
+    pane_w: i32,
+    card_h: i32,
+    row: &[(i32, i32)],
+) -> Vec<(i32, i32, i32, i32, i32)> {
+    let by = strip_top + card_h - BTN_H - 12;
+    let mut right = pane_x + pane_w - PAD;
+    let mut out = Vec::with_capacity(row.len());
+    for (id, w) in row {
+        right -= *w;
+        out.push((*id, right, by, *w, BTN_H));
+        right -= BTN_GAP;
+    }
+    out
 }
 
 /// Position the card and its three buttons. `strip_top` is the top of the reserved strip in design
@@ -288,19 +316,23 @@ pub(super) unsafe fn place(
 
     // Right-aligned inside the card, bottom row, laid out right-to-left from the card's inner edge
     // so the primary action is the one nearest the corner the eye lands on.
-    let by = strip_top + card_h - BTN_H - 12;
-    let mut right = pane_x + pane_w - PAD;
-    for (id, w) in button_row(hwnd, pane_w) {
-        right -= w;
-        put(id, right, by, w, BTN_H);
-        right -= BTN_GAP;
+    let row = button_row(hwnd, pane_w);
+    let rects = button_rects(strip_top, pane_x, pane_w, card_h, &row);
+    for (id, x, y, w, h) in &rects {
+        put(*id, *x, *y, *w, *h);
+    }
+    raise_above(hwnd, &rects.iter().map(|r| r.0).collect::<Vec<_>>());
+}
 
-        // Raise each button above the card EXPLICITLY. The buttons overlap an owner-draw STATIC
-        // and the layout pass positions everything with SWP_NOZORDER, so whichever way the shell
-        // happened to order the siblings at creation is what decides whether they are visible at
-        // all - and it ordered them UNDER the card, which rendered as a blank panel with no
-        // buttons in it and no error anywhere.
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+/// Raise each of `ids` above its siblings EXPLICITLY. The buttons overlap an owner-draw STATIC and
+/// the layout pass positions everything with SWP_NOZORDER, so whichever way the shell happened to
+/// order the siblings at creation is what decides whether they are visible at all - and it ordered
+/// them UNDER the card, which rendered as a blank panel with no buttons in it and no error anywhere.
+///
+/// The ids are raised in the order given; that order decides the resulting stacking among them.
+pub(super) unsafe fn raise_above(parent: HWND, ids: &[i32]) {
+    for &id in ids {
+        if let Ok(c) = GetDlgItem(Some(parent), id) {
             let _ = SetWindowPos(
                 c,
                 Some(HWND_TOP),
@@ -344,6 +376,43 @@ fn tint() -> COLORREF {
     navrail::blend(ACCENT(), DARK_BG(), weight)
 }
 
+/// Paint the card's tinted rounded panel and its border onto the DC, then switch it into the
+/// shared text mode. Returns the inner padding in device px.
+///
+/// Shared with the `biznag` strip, which draws the same card shape with a different tint.
+pub(super) unsafe fn paint_panel(hwnd: HWND, d: &DRAWITEMSTRUCT, fill_c: COLORREF) -> i32 {
+    let hdc = d.hDC;
+    let rc = d.rcItem;
+    let bw = s(hwnd, 1).max(1);
+    let r = s(hwnd, 8);
+    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+    let border_c = BORDER();
+    gdip::with_aa(hdc, |g| {
+        let b = gdip::brush(fill_c);
+        gdip::fill_round(g, b, rc.left, rc.top, w, h, r);
+        gdip::drop_brush(b);
+        let p = gdip::pen(border_c, bw);
+        gdip::stroke_round(g, p, rc.left, rc.top, w, h, r);
+        gdip::drop_pen(p);
+    });
+
+    SetBkMode(hdc, TRANSPARENT);
+    s(hwnd, PAD)
+}
+
+/// Draw one wrapped, left-aligned run of body text into `tr`, with exactly the flags
+/// [`measure_body_h`] measures against and [`draw_card`] draws with. Shared with the `biznag`
+/// strip, whose body text is drawn identically.
+pub(super) unsafe fn draw_body(hdc: HDC, text: &mut [u16], tr: &mut RECT) {
+    let n = text.len().saturating_sub(1);
+    DrawTextW(
+        hdc,
+        &mut text[..n],
+        tr,
+        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+    );
+}
+
 /// Draw the card: a tinted rounded panel, a bold headline, and the body wrapped beside the buttons.
 pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     let hdc = d.hDC;
@@ -360,26 +429,11 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
         return;
     };
 
-    let bw = s(hwnd, 1).max(1);
-    let r = s(hwnd, 8);
-    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-    let fill_c = tint();
-    let border_c = BORDER();
-    gdip::with_aa(hdc, |g| {
-        let b = gdip::brush(fill_c);
-        gdip::fill_round(g, b, rc.left, rc.top, w, h, r);
-        gdip::drop_brush(b);
-        let p = gdip::pen(border_c, bw);
-        gdip::stroke_round(g, p, rc.left, rc.top, w, h, r);
-        gdip::drop_pen(p);
-    });
-
-    SetBkMode(hdc, TRANSPARENT);
-    let pad = s(hwnd, PAD);
+    let pad = paint_panel(hwnd, d, tint());
 
     let mut head = wide(&headline);
     let hn = head.len().saturating_sub(1);
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_header(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_header(hwnd).0));
     SetTextColor(hdc, DARK_TEXT());
     let mut hr = RECT {
         left: rc.left + pad,
@@ -399,8 +453,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
     // instead - the first attempt - leaves ~180px for a 90-character sentence and clips it
     // mid-word. Giving the buttons their own row is what buys the text its width.
     let mut text = wide(&body);
-    let tn = text.len().saturating_sub(1);
-    SelectObject(hdc, HGDIOBJ(crate::win::gui_font_for(hwnd).0));
+    SelectObject(hdc, HGDIOBJ(st2k_appkit::win::gui_font_for(hwnd).0));
     SetTextColor(hdc, HEADER_TEXT());
     let mut tr = RECT {
         left: rc.left + pad,
@@ -408,12 +461,7 @@ pub(super) unsafe fn draw_card(hwnd: HWND, d: &DRAWITEMSTRUCT) {
         right: rc.right - pad,
         bottom: rc.bottom - s(hwnd, BTN_H + 18),
     };
-    DrawTextW(
-        hdc,
-        &mut text[..tn],
-        &mut tr,
-        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-    );
+    draw_body(hdc, &mut text, &mut tr);
 }
 
 /// Handle a click on one of the banner's buttons. Returns whether the id belonged to the banner.
@@ -457,4 +505,127 @@ pub(super) unsafe fn on_command(hwnd: HWND, id: i32) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nudge_engine::Campaign;
+
+    /// A minimal ask. The copy is irrelevant here; only [`Ask::can_snooze_month`] and the mere
+    /// presence of an ask are read by this file.
+    fn ask_with(can_snooze_month: bool) -> Ask {
+        Ask {
+            campaign: Campaign::SignIn,
+            trigger: "settings-changed".to_string(),
+            ordinal: 1,
+            headline: "HEADLINE".into(),
+            body: "BODY".into(),
+            action_label: "ACTION".into(),
+            can_snooze_month,
+            url: String::new(),
+        }
+    }
+
+    /// The ordinary case: an English row is already inside the card, so the clamp must leave every
+    /// width exactly as measured. A clamp that nudged them would shrink a row nobody complained
+    /// about.
+    #[test]
+    fn a_row_that_already_fits_is_left_untouched() {
+        let mut row = [(ID_NUDGE_ACTION, 92), (ID_NUDGE_LATER, 80)];
+        clamp_row(&mut row, 528);
+        assert_eq!(row, [(ID_NUDGE_ACTION, 92), (ID_NUDGE_LATER, 80)]);
+    }
+
+    /// The backstop: translated labels that overrun the card are scaled back so the row - not
+    /// just the widest button - fits in the space left after the padding and the gaps.
+    #[test]
+    fn an_overlong_row_is_scaled_back_to_fit() {
+        let mut row = [(ID_NUDGE_ACTION, 200), (ID_NUDGE_LATER, 100)];
+        clamp_row(&mut row, 100);
+        // avail = 100 - 2*14 - 8 = 64; widths become 200*64/300 and 100*64/300.
+        assert_eq!(row, [(ID_NUDGE_ACTION, 42), (ID_NUDGE_LATER, 21)]);
+    }
+
+    /// The row is right-aligned from the card's inner edge, sharing one baseline-height and one
+    /// gap. If the sign of any of those minus signs flipped, the buttons would leave the card or
+    /// overlap, and the layout pass would not complain.
+    #[test]
+    fn the_primary_action_keeps_the_cards_right_edge() {
+        let row = [
+            (ID_NUDGE_ACTION, 92),
+            (ID_NUDGE_LATER, 80),
+            (ID_NUDGE_DISCORD, 104),
+        ];
+        let rects = button_rects(100, 10, 528, 116, &row);
+
+        assert_eq!(rects.len(), 3);
+        let (action, later, discord) = (rects[0], rects[1], rects[2]);
+        assert_eq!(action.0, ID_NUDGE_ACTION);
+        assert_eq!(
+            action.1 + action.3,
+            10 + 528 - PAD,
+            "action left the right edge"
+        );
+        assert_eq!(action.1 - (later.1 + later.3), BTN_GAP);
+        assert_eq!(later.1 - (discord.1 + discord.3), BTN_GAP);
+        let by = 100 + 116 - BTN_H - 12;
+        for (_, _, y, _, h) in rects {
+            assert_eq!(y, by);
+            assert_eq!(h, BTN_H);
+        }
+    }
+
+    /// Clamp then lay out: however long the labels, the composed result stays inside the card.
+    /// This is what the clamp is FOR - without it the leftmost button slides off the padded edge.
+    #[test]
+    fn a_clamped_row_stays_inside_the_card() {
+        let pane_w = 528;
+        let mut row = [
+            (ID_NUDGE_ACTION, 400),
+            (ID_NUDGE_LATER, 350),
+            (ID_NUDGE_MONTH, 380),
+            (ID_NUDGE_DISCORD, 360),
+        ];
+        clamp_row(&mut row, pane_w);
+        let rects = button_rects(100, 0, pane_w, 116, &row);
+
+        let rightmost = rects[0];
+        let leftmost = *rects.last().unwrap();
+        assert_eq!(rightmost.1 + rightmost.3, pane_w - PAD);
+        assert!(leftmost.1 >= PAD, "leftmost button slid past the padding");
+    }
+
+    /// The measured card can grow with a long translation but must never shrink below the design
+    /// size the English copy needs, or the body would clip - in one locale, on screen, with nothing
+    /// in the code to show it.
+    #[test]
+    fn card_height_never_falls_below_the_design_floor() {
+        ASK.with(|a| *a.borrow_mut() = None);
+        CARD_H_MEMO.with(|c| c.set(0));
+        assert_eq!(card_h(), BODY_TOP + BODY_H_MIN + BTN_H + 18);
+        assert_eq!(strip_h(), card_h() + 16);
+    }
+
+    /// With no ask on screen the banner costs the window nothing. A non-zero answer here would
+    /// create the Settings window taller than its content for a card that never gets drawn.
+    #[test]
+    fn extra_height_is_zero_without_a_banner() {
+        ASK.with(|a| *a.borrow_mut() = None);
+        assert!(!showing());
+        assert_eq!(extra_height(), 0);
+    }
+
+    /// Whether the third button exists is the engine's answer, carried verbatim. Re-deriving "is
+    /// this the fourth ask" here would let the UI and the engine disagree, and a wrong answer still
+    /// renders a perfectly valid-looking banner.
+    #[test]
+    fn showing_month_reports_the_engines_answer() {
+        ASK.with(|a| *a.borrow_mut() = Some(ask_with(false)));
+        assert!(showing());
+        assert!(!showing_month());
+        ASK.with(|a| *a.borrow_mut() = Some(ask_with(true)));
+        assert!(showing_month());
+        ASK.with(|a| *a.borrow_mut() = None);
+    }
 }

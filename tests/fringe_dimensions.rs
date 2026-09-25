@@ -21,7 +21,7 @@
 //! ratio preserved. "It returned an error" is an acceptable answer for a hostile size; "it
 //! panicked" and "it returned a mis-shaped tile" are not.
 
-use sagethumbs2k_core::decode;
+use st2k_codecs::decode;
 
 /// A deterministic PNG at exactly `w` x `h`.
 ///

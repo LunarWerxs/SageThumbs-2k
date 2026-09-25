@@ -1,0 +1,612 @@
+//! The Windows Imaging Component tier: OS codecs for the formats the `image` crate
+//! cannot read (HEIC/HEIF, AVIF, camera RAW, JPEG 2000, JPEG XR).
+//!
+//! Bounded by pixel count rather than allocation size (see [`super::limits::MAX_PIXELS`]):
+//! WIC decodes in its own memory and hands back one final frame we copy out, so the
+//! meaningful guard is how many pixels we copy.
+
+use super::*;
+
+/// A fresh `IWICImagingFactory` for this call. Deliberately NOT cached per thread: a COM
+/// object outlives nothing past `CoUninitialize` on the thread that created it, and the
+/// worker threads here initialise and tear down their apartment per job (the tests do
+/// the same), so a cached factory was a dangling pointer the first decode after a
+/// teardown dereferenced (an access violation in the thumbnail host). The class-object
+/// lookup costs microseconds against a decode; it is not the hot part.
+fn wic_factory() -> Result<IWICImagingFactory> {
+    unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+}
+
+/// Wrap `bytes` in a fresh memory stream (which COPIES them - see
+/// [`wic_decode_bytes_if_codec_scales`]) and hand back frame 0 of it.
+///
+/// `OnDemand`, matching the by-path twins: nothing on these paths reads WIC's cached metadata
+/// graph (EXIF comes from `kamadak-exif` over the raw bytes, ICC from `GetColorContexts`, a
+/// frame API, or for a TIFF one tag asked for by name after decoding, `wic_tiff_icc`), so
+/// eagerly parsing every EXIF/XMP/MakerNote block before the dimension guard even runs is pure
+/// loss. A by-bytes caller may also decide it cannot help and return without
+/// decoding, so the loss would be paid on top of the normal decode the caller then runs.
+unsafe fn wic_frame_from_bytes(
+    factory: &IWICImagingFactory,
+    bytes: &[u8],
+) -> Result<IWICBitmapFrameDecode> {
+    let stream = SHCreateMemStream(Some(bytes)).ok_or_else(|| Error::from(E_FAIL))?;
+    let decoder = factory.CreateDecoderFromStream(
+        &stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
+    decoder.GetFrame(0)
+}
+
+/// Decode via Windows Imaging Component using whatever codecs the OS has
+/// installed — this is what gives HEIC/HEIF, AVIF, camera RAW (with the
+/// Microsoft Raw Image Extension), and JPEG 2000 without bundling C/LGPL Rust
+/// crates. Output is straight (non-premultiplied) RGBA8 so it flows through
+/// the same resize/orientation/DIB path as the `image` tier.
+pub(super) fn wic_fallback(bytes: &[u8], thumbnail_cx: Option<u32>) -> Result<DynamicImage> {
+    unsafe { wic_decode_with_thumbnail(bytes, thumbnail_cx) }
+}
+
+/// Is a WIC codec registered for `container_format`? `st2k doctor` uses this to report on
+/// the OS-codec-dependent formats (audit E03: JPEG XR / HD Photo, HEIC/HEIF) without
+/// decoding anything - this is the same component lookup `CreateDecoderFromStream` does
+/// internally to pick a decoder, asked directly instead of waiting for a real decode to
+/// fail. `CreateDecoder` looks the format up by GUID against every registered WIC decoder
+/// (inbox + Store-installed codec extensions), so a missing "HEIF Image Extensions" or
+/// "Image Extension for JPEG XR" package answers `false` here exactly as it would fail a
+/// real decode - no bytes, no file, no network.
+pub(super) fn wic_container_codec_available(container_format: &windows::core::GUID) -> bool {
+    let Ok(factory) = wic_factory() else {
+        return false;
+    };
+    unsafe { factory.CreateDecoder(container_format, std::ptr::null()) }.is_ok()
+}
+
+/// WIC decode without a target edge, retained for focused tests.
+#[cfg(test)]
+pub(super) unsafe fn wic_decode(bytes: &[u8]) -> Result<DynamicImage> {
+    wic_decode_with_thumbnail(bytes, None)
+}
+
+pub(super) unsafe fn wic_decode_with_thumbnail(
+    bytes: &[u8],
+    thumbnail_cx: Option<u32>,
+) -> Result<DynamicImage> {
+    // The host thread has COM initialized; in unit tests we CoInitialize first.
+    let factory: IWICImagingFactory = wic_factory()?;
+    let frame = wic_frame_from_bytes(&factory, bytes)?;
+    wic_decode_frame(&factory, &frame, thumbnail_cx, bytes)
+}
+
+/// Decode straight off an EXISTING `IStream` -- the one the shell handed the provider.
+///
+/// This is what makes the oversized rescue work in Explorer. A thumbnail provider is
+/// initialised with a stream, and that stream reports only a leaf file NAME, so there is no
+/// path to hand to [`wic_decode_path`]. There does not need to be one: WIC reads a stream
+/// lazily, so pointing it at the shell's own stream gets the same "never buffer the document"
+/// behaviour without knowing where the document lives. Combined with the scale-first ordering
+/// in [`wic_decode_frame`], the codec also decodes at reduced size.
+///
+/// `head` is a bounded prefix used for the ISOBMFF `colr` box and the JPEG APP2 ICC chain,
+/// exactly as in [`wic_decode_path`]; the caller reads it off the same stream and rewinds.
+pub(super) unsafe fn wic_decode_stream(
+    stream: &windows::Win32::System::Com::IStream,
+    thumbnail_cx: Option<u32>,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory = wic_factory()?;
+    // `OnDemand`, matching the by-path/by-bytes twins — see `wic_frame_from_bytes`'s
+    // comment: nothing here reads WIC's cached metadata graph, so parsing it eagerly over
+    // the shell's own (often LRPC-backed) stream before the dimension guard runs is pure
+    // loss, and on this path it is loss paid over IPC rather than local memory.
+    let decoder = factory.CreateDecoderFromStream(
+        stream,
+        std::ptr::null(),
+        WICDecodeMetadataCacheOnDemand,
+    )?;
+    let frame = decoder.GetFrame(0)?;
+    wic_decode_frame(&factory, &frame, thumbnail_cx, head)
+}
+
+/// Open `path` through WIC and hand back frame 0 of it.
+///
+/// `OnDemand`, not `OnLoad`: callers want the pixels, and eagerly slurping every metadata block
+/// is exactly the cost the by-path rescue exists to avoid on a very large file. THE COMMENTS
+/// SAID THIS WHILE THE CODE PASSED `OnLoad` - so the by-path rescue, which exists precisely for
+/// files past the 256 MiB ceiling, was walking and caching the whole metadata graph during
+/// `GetFrame` before the MAX_DIM/MAX_PIXELS guard had even seen the dimensions. It matters most
+/// for [`wic_decode_path_if_codec_scales`], which often decides it cannot help (PNG) and returns
+/// without decoding anything, so any metadata parsed eagerly during `GetFrame` would be pure
+/// loss on top of the full decode the caller then runs. Nothing on these paths walks WIC's
+/// metadata graph (EXIF comes from `kamadak-exif` over the raw bytes, and the ICC profile comes
+/// from `GetColorContexts`, a frame API, or for a TIFF from ONE tag asked for by name after the
+/// decode, `wic_tiff_icc`), so deferring it costs nothing.
+unsafe fn wic_frame_from_filename(
+    factory: &IWICImagingFactory,
+    path: &str,
+) -> Result<IWICBitmapFrameDecode> {
+    let wide = st2k_base::host::wide(path);
+    let decoder = factory.CreateDecoderFromFilename(
+        windows::core::PCWSTR(wide.as_ptr()),
+        None,
+        windows::Win32::Foundation::GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+    )?;
+    decoder.GetFrame(0)
+}
+
+/// Decode straight off the FILE — WIC opens it itself, so nothing buffers the document.
+///
+/// Everything downstream is shared with [`wic_decode_with_thumbnail`]: the same frame path,
+/// the same `IWICBitmapScaler` (which already produces only the requested thumbnail pixels
+/// rather than a full-resolution copy), the same bomb guards and colour management. The ONLY
+/// difference is where the bytes come from, and that is the whole point: a document past
+/// [`super::limits::MAX_INPUT_BYTES`] is refused before any decoder sees it on the buffered
+/// path, so a 500 MB scan or panorama got the stock icon no matter what the OS could do
+/// with it.
+///
+/// `head` is a bounded PREFIX of the file, not the file: `wic_decode_frame` uses those bytes
+/// for the ISOBMFF `colr` box (AVIF/HEIC wide-gamut) and the JPEG APP2 ICC chain, both of
+/// which live near the start. A short read there just means we fall back to WIC's own colour
+/// context, exactly as the non-ISOBMFF formats already do.
+pub(super) unsafe fn wic_decode_path(
+    path: &str,
+    thumbnail_cx: Option<u32>,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory = wic_factory()?;
+    let frame = wic_frame_from_filename(&factory, path)?;
+    wic_decode_frame(&factory, &frame, thumbnail_cx, head)
+}
+
+/// Decode `frame` at a REDUCED size, but only when the codec can genuinely do it itself;
+/// `E_FAIL` otherwise so the caller falls back to a normal decode. See
+/// [`wic_decode_path_if_codec_scales`] for why asking beats guessing. Split out of the by-path
+/// and by-bytes callers, which differ only in how they opened the frame.
+unsafe fn wic_decode_reduced(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+    target_edge: u32,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    if !codec_scales_natively(frame, target_edge) {
+        return Err(Error::from(E_FAIL));
+    }
+    wic_decode_frame(factory, frame, Some(target_edge), head)
+}
+
+/// The same decode, but ONLY if the codec can genuinely produce a reduced size itself.
+///
+/// **Why this exists.** Scaling through WIC is a huge win when the codec does it in its own
+/// domain and no win at all when it cannot. Measured on this machine: a 12 MP JPEG decoded to
+/// 2048 px in 68 ms against 270 ms for a full decode (4x, the DCT trick), while a 24 MP PNG
+/// took 605 ms against 690 ms — because a PNG decoder has no reduced-size mode, so WIC decodes
+/// the whole image and resamples. A caller that runs this as a fast PRE-PASS before a normal
+/// decode therefore doubles the work on PNG while barely moving the first paint.
+///
+/// So ask the codec instead of guessing. `IWICBitmapSourceTransform::GetClosestSize` is its own
+/// answer: hand it the size you want and it writes back the closest it can emit directly. A
+/// JPEG answers with a DCT-scaled size; a PNG hands the full dimensions straight back. That
+/// beats an extension allowlist, which would be wrong the moment a machine has a different
+/// codec installed for the same format, and it beats timing heuristics entirely.
+///
+/// `None` means "not worth it, decode normally" — no transform interface, no reduction offered,
+/// an image already under `target_edge`, or a format WIC declines.
+pub(super) unsafe fn wic_decode_path_if_codec_scales(
+    path: &str,
+    target_edge: u32,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory = wic_factory()?;
+    let frame = wic_frame_from_filename(&factory, path)?;
+    wic_decode_reduced(&factory, &frame, target_edge, head)
+}
+
+/// [`wic_decode_path_if_codec_scales`] over BYTES rather than a path.
+///
+/// The shell's thumbnail provider is handed an `IStream`, never a filename (that is what lets
+/// it run in the isolated host at all), so the by-path variant — the only one that existed —
+/// was unreachable from the surface that draws every thumbnail in Explorer. It was wired into
+/// the Quick preview viewer and nowhere else, which is why a folder of large JPEGs paid a full
+/// decode per tile while the fast path sat there tested and unused.
+///
+/// `SHCreateMemStream` copies the buffer. That is deliberate: `IWICStream::InitializeFromMemory`
+/// borrows, and would need the caller's slice to outlive a COM object whose lifetime WIC owns —
+/// a lifetime bug waiting for the one input that makes the decoder hold on. A copy of an
+/// already-buffered image is nothing next to the decode this avoids.
+pub(super) unsafe fn wic_decode_bytes_if_codec_scales(
+    bytes: &[u8],
+    target_edge: u32,
+    head: &[u8],
+) -> Result<DynamicImage> {
+    let factory: IWICImagingFactory = wic_factory()?;
+    let frame = wic_frame_from_bytes(&factory, bytes)?;
+    wic_decode_reduced(&factory, &frame, target_edge, head)
+}
+
+/// Whether the codec behind `frame` can decode at a REDUCED size natively, rather than
+/// decoding everything and resampling afterwards. See [`wic_decode_path_if_codec_scales`].
+unsafe fn codec_scales_natively(frame: &IWICBitmapFrameDecode, target_edge: u32) -> bool {
+    let Ok(transform) = frame.cast::<IWICBitmapSourceTransform>() else {
+        return false; // codec exposes no transform interface at all
+    };
+    let (mut w, mut h) = (0u32, 0u32);
+    if frame.GetSize(&mut w, &mut h).is_err() || w == 0 || h == 0 {
+        return false;
+    }
+    if w.max(h) <= target_edge {
+        return false; // already small enough — nothing to gain
+    }
+    // Ask "can you reduce AT ALL", not "can you hit exactly this size". `GetClosestSize`
+    // answers with the nearest size it supports, and a JPEG supports only halvings — so
+    // requesting 2048 from a 4000 px image gets 4000 back (2000 being below the request), and
+    // a probe keyed on the exact target rejects the very codec it exists to accept. That
+    // happened; every JPEG silently lost the fast path. Requesting 1x1 asks the real question,
+    // and `IWICBitmapScaler` then picks whichever supported size actually helps.
+    let (mut cw, mut ch) = (1u32, 1u32);
+    if transform.GetClosestSize(&mut cw, &mut ch).is_err() {
+        return false;
+    }
+    // A codec with no reduced-size support hands the full dimensions straight back.
+    cw < w || ch < h
+}
+
+/// What a codec ANSWERS about reduced-size decoding, decoding nothing. See [`ScalingAnswer`].
+///
+/// Test-only: shipping code needs only the verdict [`codec_scales_natively`] derives from
+/// these numbers, but the numbers are what decides which formats the pre-pass should cover,
+/// so the sweep in `super::tests` needs them visible.
+#[cfg(test)]
+pub(super) unsafe fn wic_scaling_answer(bytes: &[u8]) -> ScalingAnswer {
+    let Ok(factory) = CoCreateInstance::<_, IWICImagingFactory>(
+        &CLSID_WICImagingFactory,
+        None,
+        CLSCTX_INPROC_SERVER,
+    ) else {
+        return ScalingAnswer::CannotOpen;
+    };
+    let Some(stream) = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes)) else {
+        return ScalingAnswer::CannotOpen;
+    };
+    let opened = factory
+        .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+        .and_then(|d| d.GetFrame(0));
+    let Ok(frame) = opened else {
+        return ScalingAnswer::CannotOpen;
+    };
+    let (mut w, mut h) = (0u32, 0u32);
+    if frame.GetSize(&mut w, &mut h).is_err() {
+        return ScalingAnswer::CannotOpen;
+    }
+    // No transform interface at all is a DIFFERENT answer from "opened it and it will not
+    // reduce", and conflating the two is how a sweep reports a format as unreadable when WIC
+    // reads it perfectly well. TIFF is the case that exposed this: WIC opens an 80 MB LZW TIFF
+    // without complaint and simply exposes no `IWICBitmapSourceTransform`.
+    let Ok(transform) = frame.cast::<IWICBitmapSourceTransform>() else {
+        return ScalingAnswer::NoTransform { w, h };
+    };
+    let (mut cw, mut ch) = (1u32, 1u32);
+    if transform.GetClosestSize(&mut cw, &mut ch).is_err() {
+        return ScalingAnswer::NoTransform { w, h };
+    }
+    ScalingAnswer::Offers { w, h, cw, ch }
+}
+
+/// The three genuinely different things a codec can say when asked to decode smaller.
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) enum ScalingAnswer {
+    /// WIC has no codec for these bytes (or cannot read the frame header).
+    CannotOpen,
+    /// WIC opens it, but the codec exposes no `IWICBitmapSourceTransform` — so there is no
+    /// reduced-size decode to ask for, though a full decode works fine.
+    NoTransform { w: u32, h: u32 },
+    /// The codec answered. `cw`/`ch` equal to `w`/`h` still means "I will not reduce".
+    Offers { w: u32, h: u32, cw: u32, ch: u32 },
+}
+
+/// Bomb guard for the WIC tier: may we decode a `w` x `h` source for a caller that wants
+/// `thumbnail_cx`? Pure, and a named function rather than an inline conjunction, because the
+/// answer depends on something the obvious one-liner got wrong for two years.
+///
+/// **A full decode and a scaled decode bound different things.** MAX_PIXELS asks "how much
+/// will we materialize", which is the right question when the caller wants every pixel — WIC
+/// hands back one buffer and we copy `w * h * 4` out of it. Ask for a THUMBNAIL and the answer
+/// stops depending on the source: the codec streams into `IWICBitmapScaler` and what we copy
+/// is `cx` squared, a few megabytes whatever arrives. The old guard tested the source against
+/// MAX_DIM/MAX_PIXELS either way, which contradicted the rationale written beside it.
+///
+/// It cost real files, not hypothetical ones. A 24000x14160 PNG is refused here even though
+/// its thumbnail is 256x151, so the by-path rescue that exists precisely for a file that big
+/// returned `None` and the file got the stock icon — after spending ~24 s to find out. See
+/// [`limits::MAX_SCALED_SOURCE_PIXELS`] for the measurement and for why a scaled decode still
+/// needs a ceiling (a decompression bomb costs time even when it costs no memory).
+pub(super) fn wic_source_within_limits(w: u32, h: u32, thumbnail_cx: Option<u32>) -> bool {
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let pixels = (w as u64) * (h as u64);
+    // "Scaling" means the scaler will actually engage — a source already at or under the
+    // requested edge is copied out whole, so it is a full decode wearing a thumbnail's
+    // clothes and gets the full decode's ceiling.
+    if matches!(thumbnail_cx, Some(cx) if w.max(h) > cx) {
+        return pixels <= MAX_SCALED_SOURCE_PIXELS;
+    }
+    w <= MAX_DIM && h <= MAX_DIM && pixels <= MAX_PIXELS
+}
+
+/// The frame scaled by the codec to `thumbnail_cx` on its longer edge when it is larger than
+/// that, or the frame itself. Split out of [`wic_decode_frame`] for the complexity gate only;
+/// the reasoning for scaling FIRST is at the call site.
+unsafe fn scaled_frame_source(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+    (w, h): (u32, u32),
+    thumbnail_cx: Option<u32>,
+) -> Result<IWICBitmapSource> {
+    match thumbnail_cx {
+        Some(cx) if w.max(h) > cx => {
+            let long = w.max(h);
+            let target_w = ((w as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+            let target_h = ((h as u64 * cx as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+            let scaler = factory.CreateBitmapScaler()?;
+            scaler.Initialize(frame, target_w, target_h, WICBitmapInterpolationModeFant)?;
+            scaler.cast()
+        }
+        _ => frame.cast(),
+    }
+}
+
+pub(super) unsafe fn wic_decode_frame(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+    thumbnail_cx: Option<u32>,
+    container_bytes: &[u8],
+) -> Result<DynamicImage> {
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    frame.GetSize(&mut w, &mut h)?;
+    if !wic_source_within_limits(w, h, thumbnail_cx) {
+        return Err(Error::from(E_FAIL));
+    }
+
+    // SCALE FIRST, CONVERT SECOND — and the order is the whole performance story.
+    //
+    // `IWICBitmapScaler` asks its SOURCE for `IWICBitmapSourceTransform`, and a codec that
+    // implements it can decode at a reduced size natively: JPEG does exactly the DCT-domain
+    // trick fast viewers are built on (decode only the coefficients needed for 1/2, 1/4, 1/8),
+    // and several other codecs do their own equivalent. A frame exposes that interface; a
+    // FORMAT CONVERTER does not. So with the converter in between, the scaler could only ever
+    // resize an already-fully-decoded frame — the codec still did all the work, and the
+    // saving was limited to the final `CopyPixels` allocation.
+    //
+    // Scaling first also shrinks the format conversion and the ICC pass, which now run over
+    // the small image instead of the large one.
+    let scaled = scaled_frame_source(factory, frame, (w, h), thumbnail_cx)?;
+
+    // HDR (issue #39). Windows' AV1 and HEVC codecs hand a PQ or HLG picture back as LINEAR
+    // scRGB floats - 64bppRGBAHalf, 80 nits at 1.0, BT.709 primaries, the EOTF and the gamut
+    // conversion already done - and the 32bppRGBA conversion below clips everything above
+    // 80 nits to white, which is how an HDR AVIF thumbnailed as a bleached picture with the
+    // snow burned out. Decided by the FRAME's own pixel format rather than by any colour box:
+    // that is what the codec itself made of the file, so it cannot disagree with the pixels,
+    // and it covers HEIC as readily as AVIF. The floats stay floats and go through the same
+    // tone map an EXR does.
+    if is_wic_float_format(&frame.GetPixelFormat()?) {
+        return wic_scrgb_to_srgb(factory, &scaled);
+    }
+
+    // Convert to straight 32bpp RGBA (dib.rs handles the premultiply). This has to come after
+    // the scaler precisely because the scaler does NOT promise to preserve its source's pixel
+    // format — with Fant it hands back WIC's native BGRA, which read as RGBA swaps red and
+    // blue on every scaled thumbnail. Converting afterwards makes that unrepresentable rather
+    // than something to remember (`wic_thumbnail_scaling_keeps_rgba_channel_order` pins it).
+    let converter = factory.CreateFormatConverter()?;
+    converter.Initialize(
+        &scaled,
+        &GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone,
+        None,
+        0.0,
+        // Palette args are unused for a non-indexed (32bppRGBA) destination;
+        // Custom is the idiomatic "no palette" value.
+        WICBitmapPaletteTypeCustom,
+    )?;
+    let source: IWICBitmapSource = converter.cast()?;
+    // `IWICBitmapScaler` does NOT promise to preserve its source's pixel format, and with
+    // Fant it does not: it hands back WIC's own native 32bpp BGRA order. The buffer below
+    // is handed straight to `RgbaImage::from_raw`, so those bytes are then read as RGBA and
+    // every SCALED WIC thumbnail comes out with red and blue swapped — HEIC, AVIF, JPEG XR,
+    // any Explorer tile smaller than its source. Unscaled decodes were unaffected (no
+    // scaler in the chain), which is exactly why it survived: the full-fidelity paths pass
+    // `thumbnail_cx = None` and stayed correct while the thumbnail path did not.
+    //
+    // The converter above has already normalised the scaler's output to 32bppRGBA, so
+    // `ensure_rgba32` only asserts that contract (in debug builds) rather than converting.
+    let source = ensure_rgba32(source)?;
+    let img = rgba8_from_source(&source)?;
+    // Color-manage to sRGB: HEIC/AVIF/RAW carry their wide-gamut profile (iPhone photos
+    // are Display P3) in a WIC color context. The format converter above is pixel-format
+    // only — NOT color-space — so without this the P3 values render mis-saturated (and
+    // Explorer caches the wrong colors). Reuses the image tier's moxcms `apply_icc_to_srgb`.
+    // AVIF/HEIC keep their profile in the ISOBMFF `colr` box — WIC's AV1/HEVC codecs do
+    // NOT surface it via GetColorContexts (verified: count=0) — so read it ourselves first;
+    // fall back to a WIC color context for the other WIC formats (RAW/JXR).
+    //
+    // JPEG is the same story in a different container: WIC answers with an Exif-flag context
+    // rather than a profile one, so an AdobeRGB or Display P3 photo came through this path as
+    // RAW wide-gamut numbers. Read the APP2 chain ourselves. It is checked BEFORE the WIC
+    // context for the same reason the ISOBMFF box is: the file's own bytes are the source of
+    // truth, and the codec's answer is the fallback.
+    let icc = isobmff_color_icc(container_bytes)
+        .or_else(|| jpeg_icc(container_bytes))
+        .or_else(|| wic_icc(factory, frame))
+        .or_else(|| wic_tiff_icc(frame));
+    Ok(apply_icc_to_srgb(DynamicImage::ImageRgba8(img), icc))
+}
+
+/// The ICC profile of a TIFF frame, through WIC's metadata reader (`/ifd/{ushort=34675}`,
+/// InterColorProfile). Windows' TIFF codec does not offer the tag as a colour context -
+/// measured 2026-09-23 on the corpus's `real.tif`, which carries an Apple display profile:
+/// `GetColorContexts` found none - so every TIFF that WIC decoded came out unmanaged, and
+/// past the input ceiling WIC decodes every TIFF. The big-file gate caught it: a 300 MB
+/// twin rendered 7 levels off its normal-size self, which matches a colour-managed
+/// reference to 0.1. The reader seeks to the tag wherever it sits, so a profile at the far
+/// end of a 5 GB scan costs one read. Profiles past 4 MiB are ignored, as `tiff_icc` does.
+unsafe fn wic_tiff_icc(frame: &IWICBitmapFrameDecode) -> Option<Vec<u8>> {
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    use windows::Win32::System::Variant::{VARENUM, VT_BLOB, VT_UI1, VT_VECTOR};
+    let reader = frame.GetMetadataQueryReader().ok()?;
+    let mut value = PROPVARIANT::default();
+    reader
+        .GetMetadataByName(windows::core::w!("/ifd/{ushort=34675}"), &mut value)
+        .ok()?;
+    let inner = &value.Anonymous.Anonymous;
+    let (len, ptr) = if inner.vt == VT_BLOB {
+        (inner.Anonymous.blob.cbSize, inner.Anonymous.blob.pBlobData)
+    } else if inner.vt == VARENUM(VT_VECTOR.0 | VT_UI1.0) {
+        (inner.Anonymous.caub.cElems, inner.Anonymous.caub.pElems)
+    } else {
+        (0, std::ptr::null_mut())
+    };
+    let bytes = (!ptr.is_null() && len > 0 && len <= 4 << 20)
+        .then(|| std::slice::from_raw_parts(ptr, len as usize).to_vec());
+    let _ = PropVariantClear(&mut value);
+    bytes
+}
+
+/// Size `source`, copy its pixels out and wrap them as an RGBA8 image (the tail of
+/// [`wic_decode_frame`], which has already converted `source` to 32bppRGBA — [`ensure_rgba32`]
+/// just asserts that).
+unsafe fn rgba8_from_source(source: &IWICBitmapSource) -> Result<image::RgbaImage> {
+    let (mut w, mut h) = (0u32, 0u32);
+    source.GetSize(&mut w, &mut h)?;
+    let stride = w.checked_mul(4).ok_or_else(|| Error::from(E_FAIL))?;
+    let mut buf = vec![0u8; (stride as usize) * (h as usize)];
+    source.CopyPixels(std::ptr::null(), stride, &mut buf)?;
+    image::RgbaImage::from_raw(w, h, buf).ok_or_else(|| Error::from(E_FAIL))
+}
+
+/// Assert `source` really is 32bppRGBA.
+///
+/// The one caller is the tail of [`wic_decode_frame`], whose converter has already produced
+/// 32bppRGBA for a buffer that is handed to `RgbaImage::from_raw` — a step that silently
+/// mis-orders channels for any other 32bpp layout. WIC components are free to return a
+/// different pixel format than the one they were given (the Fant scaler returns BGRA), so
+/// the converter's contract is asserted here in debug builds rather than assumed.
+unsafe fn ensure_rgba32(source: IWICBitmapSource) -> Result<IWICBitmapSource> {
+    debug_assert_eq!(source.GetPixelFormat()?, GUID_WICPixelFormat32bppRGBA);
+    Ok(source)
+}
+
+/// Is this a WIC pixel format that carries linear floats or halfs - i.e. the codec has handed
+/// back an HDR picture? See the HDR branch of [`wic_decode_frame`].
+fn is_wic_float_format(format: &windows::core::GUID) -> bool {
+    [
+        GUID_WICPixelFormat64bppRGBAHalf,
+        GUID_WICPixelFormat64bppPRGBAHalf,
+        GUID_WICPixelFormat48bppRGBHalf,
+        GUID_WICPixelFormat128bppRGBAFloat,
+        GUID_WICPixelFormat128bppPRGBAFloat,
+        GUID_WICPixelFormat96bppRGBFloat,
+    ]
+    .contains(format)
+}
+
+/// Linear scRGB floats out of WIC to 8-bit sRGB, through the shared HDR tone map.
+///
+/// Converts whatever the scaler produced (Fant hands back PREMULTIPLIED float) to straight
+/// 128bppRGBAFloat, rescales 1.0 from scRGB's 80 nits to the 203-nit reference white every
+/// other HDR source in this module uses, and tone-maps exactly as an EXR or an HDR PNG is.
+/// Measured on the PQ twin fixture (`tests/fixtures/avif`): the grey ramp's 203-nit white
+/// came back from the codec as 2.53 and lands at 187 of 255, where the JPEG XL and PNG twins
+/// of the same scene already land; the 32bppRGBA conversion it replaces read 255 from the
+/// ramp's midpoint upward. No ICC is applied: scRGB is already BT.709-relative linear light,
+/// and a PQ profile on top of it would be the JPEG XL bug of issue #38 over again.
+unsafe fn wic_scrgb_to_srgb(
+    factory: &IWICImagingFactory,
+    source: &IWICBitmapSource,
+) -> Result<DynamicImage> {
+    let converter = factory.CreateFormatConverter()?;
+    converter.Initialize(
+        source,
+        &GUID_WICPixelFormat128bppRGBAFloat,
+        WICBitmapDitherTypeNone,
+        None,
+        0.0,
+        WICBitmapPaletteTypeCustom,
+    )?;
+    let floats_src: IWICBitmapSource = converter.cast()?;
+    let (mut w, mut h) = (0u32, 0u32);
+    floats_src.GetSize(&mut w, &mut h)?;
+    // 16 bytes a pixel: the same ceiling the 8-bit path gets from `limits`, at four times the
+    // weight. A full-fidelity decode past it is refused rather than clipped; the tiers above
+    // fall through to ImageMagick, which decodes it under its own size cap. A thumbnail never
+    // gets here - the scaler has already brought it down to the requested edge.
+    let bytes = u64::from(w) * u64::from(h) * 16;
+    if w == 0 || h == 0 || bytes > MAX_ALLOC {
+        return Err(Error::from(E_FAIL));
+    }
+    let stride = w * 16;
+    let mut floats = vec![0f32; (w as usize) * (h as usize) * 4];
+    // Copy straight into the float buffer's bytes: `f32` is 4-byte aligned, and the layout WIC
+    // writes (R, G, B, A as little-endian IEEE floats) is the layout `image` reads back.
+    let raw = std::slice::from_raw_parts_mut(floats.as_mut_ptr().cast::<u8>(), floats.len() * 4);
+    floats_src.CopyPixels(std::ptr::null(), stride, raw)?;
+    let mut img = image::Rgba32FImage::from_raw(w, h, floats).ok_or_else(|| Error::from(E_FAIL))?;
+    let scale = super::cicp::SCRGB_WHITE_NITS / super::cicp::REFERENCE_WHITE_NITS;
+    for px in img.pixels_mut() {
+        // Colour only: alpha is coverage, not light.
+        px.0[0] *= scale;
+        px.0[1] *= scale;
+        px.0[2] *= scale;
+    }
+    st2k_base::safety::log_debug("decode: WIC handed back linear scRGB floats (HDR); tone-mapping");
+    Ok(tone_map_float(&DynamicImage::ImageRgba32F(img)))
+}
+
+/// The embedded ICC profile from a WIC frame's first PROFILE-type color context (where
+/// HEIC/AVIF/RAW keep their wide-gamut profile). `None` for an Exif-flag-only context, no
+/// context, or any COM hiccup — best-effort, so a failure just means "no color management".
+pub(super) unsafe fn wic_icc(
+    factory: &IWICImagingFactory,
+    frame: &IWICBitmapFrameDecode,
+) -> Option<Vec<u8>> {
+    let mut count: u32 = 0;
+    frame.GetColorContexts(&mut [], &mut count).ok()?;
+    let count = (count as usize).min(8); // a sane image has 1-2; cap the pathological
+    if count == 0 {
+        return None;
+    }
+    let mut ctxs: Vec<Option<IWICColorContext>> = Vec::with_capacity(count);
+    for _ in 0..count {
+        ctxs.push(Some(factory.CreateColorContext().ok()?));
+    }
+    let mut got = count as u32;
+    frame.GetColorContexts(&mut ctxs, &mut got).ok()?;
+    for ctx in ctxs.into_iter().flatten() {
+        if let Some(buf) = profile_bytes_from_context(&ctx) {
+            return Some(buf);
+        }
+    }
+    None
+}
+
+/// The ICC profile bytes from one WIC color context, or `None` when it is not a usable
+/// PROFILE-type context (an Exif-flag context, a COM hiccup, or an absurd size).
+unsafe fn profile_bytes_from_context(ctx: &IWICColorContext) -> Option<Vec<u8>> {
+    let Ok(kind) = ctx.GetType() else { return None };
+    if kind != WICColorContextProfile {
+        return None; // an Exif color-space FLAG, not an ICC profile — skip
+    }
+    let mut n: u32 = 0;
+    if ctx.GetProfileBytes(&mut [], &mut n).is_err() || n == 0 || n as u64 > 4 * 1024 * 1024 {
+        return None;
+    }
+    let mut buf = vec![0u8; n as usize];
+    if ctx.GetProfileBytes(&mut buf, &mut n).is_ok() {
+        return Some(buf);
+    }
+    None
+}

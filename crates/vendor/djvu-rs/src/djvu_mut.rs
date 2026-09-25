@@ -64,6 +64,7 @@ use crate::text_encode::encode_text_layer;
 
 /// Errors produced by [`DjVuDocumentMut`] operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MutError {
     /// IFF parse error during [`DjVuDocumentMut::from_bytes`].
     #[error("IFF parse error: {0}")]
@@ -85,6 +86,10 @@ pub enum MutError {
     /// rather than a leaf.
     #[error("path ends on a FORM, not a leaf chunk")]
     NotALeaf,
+
+    /// A FORM was needed at the end of the path, but a leaf is there.
+    #[error("path ends on a leaf chunk, not a FORM")]
+    NotAForm,
 
     /// The path is empty — must contain at least one index.
     #[error("path must not be empty")]
@@ -367,6 +372,12 @@ impl DjVuDocumentMut {
         self.file.root.children().len()
     }
 
+    /// Borrow the parsed root chunk for crate-internal structural planning.
+    #[doc(hidden)]
+    pub(crate) fn root_chunk(&self) -> &Chunk {
+        &self.file.root
+    }
+
     /// Return the 4-byte FORM type of the root (e.g. `b"DJVU"`, `b"DJVM"`).
     /// Returns `None` if the root is somehow a leaf — should never happen on
     /// a well-formed input that survived `from_bytes`.
@@ -399,6 +410,84 @@ impl DjVuDocumentMut {
             }
             Chunk::Form { .. } => Err(MutError::NotALeaf),
         }
+    }
+
+    /// Remove the leaf chunk reached by `path`.
+    ///
+    /// The path uses the same root-relative child indices as
+    /// [`Self::replace_leaf`]. Removing a leaf marks the document dirty, so a
+    /// later [`Self::try_into_bytes`] re-emits the IFF tree and recomputes any
+    /// bundled-DJVM directory offsets. FORM containers cannot be removed by
+    /// this method; callers that need to change document topology must use a
+    /// higher-level operation that can preserve the surrounding format
+    /// invariants.
+    pub fn remove_leaf(&mut self, path: &[usize]) -> Result<(), MutError> {
+        if path.is_empty() {
+            return Err(MutError::EmptyPath);
+        }
+        let _ = self.chunk_at_path(path)?;
+
+        let parent_path = &path[..path.len() - 1];
+        let child_index = path[path.len() - 1];
+        {
+            let mut current = &mut self.file.root;
+            for &idx in parent_path {
+                match current {
+                    Chunk::Form { children, .. } => {
+                        current = &mut children[idx];
+                    }
+                    Chunk::Leaf { .. } => unreachable!("validated by chunk_at_path"),
+                }
+            }
+            match current {
+                Chunk::Form { children, .. } => {
+                    if !matches!(children[child_index], Chunk::Leaf { .. }) {
+                        return Err(MutError::NotALeaf);
+                    }
+                    children.remove(child_index);
+                }
+                Chunk::Leaf { .. } => unreachable!("validated by chunk_at_path"),
+            }
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Replace every direct leaf `id` of the FORM at `form_path` (the root
+    /// when the path is empty) with one leaf per entry of `payloads`, placed
+    /// where the first old leaf was. With no old leaf the new ones go last.
+    ///
+    /// The optimizer uses this to install a re-encoded layer: a page's
+    /// `BG44` chunks are replaced as a set, whatever their count before.
+    pub(crate) fn replace_leaves_by_id(
+        &mut self,
+        form_path: &[usize],
+        id: &[u8; 4],
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), MutError> {
+        if !form_path.is_empty() {
+            let _ = self.chunk_at_path(form_path)?;
+        }
+        let mut current = &mut self.file.root;
+        for &idx in form_path {
+            match current {
+                Chunk::Form { children, .. } => {
+                    current = &mut children[idx];
+                }
+                Chunk::Leaf { .. } => unreachable!("validated by chunk_at_path"),
+            }
+        }
+        let Chunk::Form { children, .. } = current else {
+            return Err(MutError::NotAForm);
+        };
+        let is_old = |chunk: &Chunk| matches!(chunk, Chunk::Leaf { id: leaf, .. } if leaf == id);
+        let first = children.iter().position(is_old).unwrap_or(children.len());
+        children.retain(|chunk| !is_old(chunk));
+        for (offset, data) in payloads.into_iter().enumerate() {
+            children.insert(first + offset, Chunk::Leaf { id: *id, data });
+        }
+        self.dirty = true;
+        Ok(())
     }
 
     /// Return the chunk at `path` for inspection (without mutation).
@@ -656,6 +745,39 @@ impl DjVuDocumentMut {
             }
         }
         unreachable!("page_count agreed with bundle but iteration disagreed")
+    }
+
+    /// Replace (or insert) document-level metadata in the root FORM.
+    ///
+    /// An empty value removes both METa and METz. For a bundled DJVM the
+    /// metadata is inserted immediately after DIRM when it is not already
+    /// present, keeping document-level chunks ahead of component FORMs.
+    pub fn set_metadata(&mut self, meta: &DjVuMetadata) {
+        let bytes = encode_metadata_bzz(meta);
+        let insert_at = match &self.file.root {
+            Chunk::Form {
+                secondary_id,
+                children,
+                ..
+            } => {
+                if secondary_id == b"DJVM" {
+                    children
+                        .iter()
+                        .position(|c| matches!(c, Chunk::Leaf { id, .. } if id == b"DIRM"))
+                        .map(|i| i + 1)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        replace_or_insert_form_chunk(&mut self.file.root, b"METa", b"METz", bytes, insert_at);
+        self.dirty = true;
+    }
+
+    /// Remove document-level METa/METz metadata from the root FORM.
+    pub fn remove_metadata(&mut self) {
+        self.set_metadata(&DjVuMetadata::default());
     }
 
     /// Replace, insert, or remove the document's `NAVM` bookmark chunk.
@@ -966,6 +1088,38 @@ fn recompute_dirm_offsets(root: &mut Chunk) -> Result<(), MutError> {
     Ok(())
 }
 
+/// Replace, insert, or remove a paired leaf chunk in a FORM container.
+///
+/// `insert_at` is used only when neither variant exists; `None` appends at the
+/// end of the form. An empty payload removes every copy of either variant so a
+/// malformed document cannot retain a stale compressed/uncompressed twin.
+fn replace_or_insert_form_chunk(
+    form: &mut Chunk,
+    id_a: &[u8; 4],
+    id_z: &[u8; 4],
+    data: Vec<u8>,
+    insert_at: Option<usize>,
+) {
+    let children = match form {
+        Chunk::Form { children, .. } => children,
+        Chunk::Leaf { .. } => unreachable!("chunk-pair helper requires a FORM"),
+    };
+    if data.is_empty() {
+        children.retain(|c| !matches!(c, Chunk::Leaf { id, .. } if id == id_a || id == id_z));
+        return;
+    }
+
+    if let Some(pos) = children
+        .iter()
+        .position(|c| matches!(c, Chunk::Leaf { id, .. } if id == id_a || id == id_z))
+    {
+        children[pos] = Chunk::Leaf { id: *id_z, data };
+    } else {
+        let pos = insert_at.unwrap_or(children.len()).min(children.len());
+        children.insert(pos, Chunk::Leaf { id: *id_z, data });
+    }
+}
+
 /// A mutable handle to one page's `FORM:DJVU` chunk inside a
 /// [`DjVuDocumentMut`]. Returned by [`DjVuDocumentMut::page_mut`].
 ///
@@ -995,11 +1149,23 @@ impl PageMut<'_> {
         Ok(())
     }
 
+    /// Remove both TXTa and TXTz text-layer chunks from the page.
+    pub fn remove_text_layer(&mut self) {
+        self.replace_or_insert_text(Vec::new());
+        *self.dirty = true;
+    }
+
     /// Replace (or insert) the page's annotation chunk with the
     /// BZZ-compressed `ANTz` form of `(annotation, areas)`.
     pub fn set_annotations(&mut self, annotation: &Annotation, areas: &[MapArea]) {
         let bytes = encode_annotations_bzz(annotation, areas);
         self.replace_or_insert(b"ANTa", b"ANTz", bytes);
+        *self.dirty = true;
+    }
+
+    /// Remove both ANTa and ANTz annotation chunks from the page.
+    pub fn remove_annotations(&mut self) {
+        self.replace_or_insert(b"ANTa", b"ANTz", Vec::new());
         *self.dirty = true;
     }
 
@@ -1009,6 +1175,12 @@ impl PageMut<'_> {
     pub fn set_metadata(&mut self, meta: &DjVuMetadata) {
         let bytes = encode_metadata_bzz(meta);
         self.replace_or_insert(b"METa", b"METz", bytes);
+        *self.dirty = true;
+    }
+
+    /// Remove both METa and METz page-metadata chunks.
+    pub fn remove_metadata(&mut self) {
+        self.replace_or_insert(b"METa", b"METz", Vec::new());
         *self.dirty = true;
     }
 
@@ -1027,25 +1199,7 @@ impl PageMut<'_> {
     /// (compressed) for any newly inserted chunk. If `data` is empty, removes
     /// the existing chunk (whichever variant is present) and does not insert.
     fn replace_or_insert(&mut self, id_a: &[u8; 4], id_z: &[u8; 4], data: Vec<u8>) {
-        let children = match self.form {
-            Chunk::Form { children, .. } => children,
-            Chunk::Leaf { .. } => unreachable!("PageMut wraps a FORM"),
-        };
-        let pos = children
-            .iter()
-            .position(|c| matches!(c, Chunk::Leaf { id, .. } if id == id_a || id == id_z));
-        match (pos, data.is_empty()) {
-            (Some(i), true) => {
-                children.remove(i);
-            }
-            (Some(i), false) => {
-                children[i] = Chunk::Leaf { id: *id_z, data };
-            }
-            (None, true) => { /* nothing to remove and nothing to insert */ }
-            (None, false) => {
-                children.push(Chunk::Leaf { id: *id_z, data });
-            }
-        }
+        replace_or_insert_form_chunk(self.form, id_a, id_z, data, None);
     }
 
     /// TXTa / TXTz variant of `replace_or_insert` (kept separate for clarity).

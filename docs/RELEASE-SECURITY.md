@@ -9,9 +9,12 @@ every one of those is a heuristic/ML verdict rather than a signature match.
 The detections are an artifact of wrapping unsigned binaries in a compressed self-extractor.
 They are not a property of the software, and no code change is warranted.
 
-Every release is now scanned **before** it is published (see *The gate* below). Releases up to
-and including v1.2.0 were not, which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on
-SourceForge's listing instead of in our own pipeline.
+Releases from 1.2.1 to 3.0.4 were scanned **before** publication (see *The gate* below, kept as
+history). Since 3.0.5 every binary is code-signed by LUNARWERX LLC and the pre-publication
+scan is retired; the pipeline's remaining antivirus-shaped step is the Authenticode check that
+refuses to publish anything unsigned. Releases up to and including v1.2.0 were never scanned,
+which is why ESET's verdict on 1.1.0/1.1.1 first surfaced on SourceForge's listing instead of
+in our own pipeline.
 
 ## Marking a security release: put `[security-release]` in the notes
 
@@ -31,7 +34,7 @@ How it travels:
 - `scripts/packaging/analytics/worker.js` reads GitHub's `releases/latest` at the edge and
   publishes `latestSecurity: true` in the manifest when the body contains the marker (its
   `SECURITY_RELEASE_MARKER` constant), alongside `latestPublishedAt`.
-- `src/bin/app/update.rs` reads both, and its `is_security_body` applies the identical rule on
+- `crates/appkit/src/update.rs` reads both, and its `is_security_body` applies the identical rule on
   the direct-GitHub fallback path. `update_offer` is the one decision function; its
   `a_security_release_overrides_a_closed_window` test is the rule written down as code.
 - The marker is matched as PLAIN TEXT, never a regex, so `**[security-release]**` and
@@ -325,6 +328,23 @@ connections_execute { local: true, tool_name: "shell", params: {
 } }
 ```
 
+**Preferred since 2026-09-24: the MCP backend, which keeps the secret out of the build
+entirely.** Set `ST2K_SIGN_MCP` to the Connections local MCP server's command line as a JSON
+array (`["node","<Connections>/services/studio/local-mcp/loader.mjs"]`) and, optionally,
+`ST2K_SIGN_EXPECT_SUBJECT=LUNARWERX LLC`; no `ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE` and no
+`AZURE_*` lease are needed. `sign-release.ps1` then hands every file to the server's
+`sign_artifact` tool through `scripts/packaging/sign-via-mcp.mjs`: the server reads the
+account, profile and regional endpoint from Azure, leases the vaulted credential into signtool
+alone, verifies, and `sign-release.ps1` reads each signature back through Windows once more.
+Every caller (the staged binaries, the stubs, the MSIX, and Inno's Setup.exe and uninstaller)
+already goes through `sign-release.ps1`, so nothing else changes. Proven 2026-09-24 on a scratch
+PE: signed by `CN=LUNARWERX LLC`, status Valid, timestamped. `build-release.ps1 -RequireSigned`
+(or `ST2K_SIGN_REQUIRED=1`) refuses to start when no signer is configured; `release.ps1`
+always refuses. CI signing is opt-in: the `self-update-smoke` job signs its installer with
+`azure/artifact-signing-action` over OIDC when the repository variable `ST2K_CI_SIGN` is `true`
+(see the comment in `ci.yml` for the variables and the federated credential it needs); it is
+not configured today, and a CI build is never shipped.
+
 `connections_accounts { service: "microsoft" }` lists the instance names; `artifact-signing`
 is the one created for signing, never `default` (which fronts `vsce` publishing). The lease
 is loud on failure: a missing field returns an error naming the fields it found, rather than
@@ -334,12 +354,17 @@ accumulated reputation (`Microsoft ID Verified CS AOC CA 04` is the one on our p
 reputation is earned per publisher over downloads. The signature is what stops the
 machine-learning "unknown binary" verdicts and lets that counter go up at all.
 
-Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## 3.0.0`
-(the exporter takes exactly that heading); bump `version` in `Cargo.toml` and the
-`Version="…"` attribute in `scripts/packaging/AppxManifest.xml` to `3.0.0` / `3.0.0.0` (the
-consistency check refuses a mismatch); and rewrite the README FAQ answer "Why did Windows or
-my antivirus flag the installer?", which today correctly says the installer is unsigned and
-signing is planned. On release day that becomes: 3.0 and later are signed by LUNARWERX LLC
+Before that call, in order: rename `## Unreleased` in `docs/CHANGELOG.md` to `## <version>`
+(the exporter takes exactly that heading, and refuses a section that has more than one); bump
+`version` in `Cargo.toml` and the `Version="…"` attribute in
+`scripts/packaging/AppxManifest.xml` to `X.Y.Z` / `X.Y.Z.0` (the consistency check refuses a
+mismatch), then refresh `Cargo.lock` so the workspace members' recorded version moves with it.
+The version numbers in the rest of this section are **3.0.0 because that is the release it was
+written for**; they are not the version you are cutting.
+
+The last item was one-off and is DONE: rewriting the README FAQ answer "Why did Windows or
+my antivirus flag the installer?", which before 3.0 said the installer was unsigned and
+signing was planned. On release day that became: 3.0 and later are signed by LUNARWERX LLC
 through Azure Artifact Signing; the machine-learning "unknown binary" verdicts are what the
 signature removes; SmartScreen's reputation prompt can still appear for a while because
 reputation is earned per publisher over downloads, and the More info / Run anyway steps stay.
@@ -477,7 +502,7 @@ signature covers the exact bytes of the file it sits beside; nothing else (not t
 the filename) is signed or checked.
 
 **Where the public key lives.** Baked into the app at compile time: `UPDATE_PUBLIC_KEY` in
-`src/bin/app/update.rs`. The matching private key never ships - it lives only in whoever's
+`crates/appkit/src/update.rs`. The matching private key never ships - it lives only in whoever's
 `.env` holds `ST2K_UPDATE_SIGNING_KEY`, generated once by `examples/update-keygen.rs` and
 never printed or logged by anything in this repo.
 

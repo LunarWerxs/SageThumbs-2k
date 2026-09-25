@@ -1,0 +1,3037 @@
+{
+ "_about": "Real-world samples the test corpus is pinned to, one or more per registered extension. See scripts/fetch-real-samples.py for what each key means and why this exists.",
+ "samples": [
+  {
+   "file": "real.ai",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/ai/BlazRobar%20Thinking%20Head%20Icon%20Set.ai",
+   "sha256": "23B3877A27E285FB36D206DAF338A14952071701E1F39E816B6E9EE165A0B001",
+   "bytes": 242133,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  ai/BlazRobar Thinking Head Icon Set.ai"
+  },
+  {
+   "file": "real.apng",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/iss634.apng",
+   "sha256": "26740FFE297AEBBE2655C60440E41826DDA4B57CB675F53875F45CA13D6185F5",
+   "bytes": 350542,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/iss634.apng"
+  },
+  {
+   "file": "real.avif",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testAVIF_XMP.avif",
+   "sha256": "E2738DDD1BEAD2B2C6C9C229CA565C965903FB7714B522F0496A789C4248C701",
+   "bytes": 1053,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testAVIF_XMP.avif"
+  },
+  {
+   "file": "real.bmp",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/bmp/bmpsuite/q/rgb32-xbgr.bmp",
+   "sha256": "EF1307DE6F5E60E46E46400DDDCFF1B359B506FE8DDCAE81E39D2347DB662E0B",
+   "bytes": 32650,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  bmp/bmpsuite/q/rgb32-xbgr.bmp"
+  },
+  {
+   "file": "real.bw",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/hopper.bw",
+   "sha256": "79FEE2BC7B0EAED8C72EF18EA8B44BE62B08D038CE99DF7B391292CB80D5221B",
+   "bytes": 16896,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/hopper.bw"
+  },
+  {
+   "file": "real.cal",
+   "url": "https://sembiance.com/fileFormatSamples/image/cals/Mech.cal",
+   "sha256": "388BFDE2170F5D629D8EB0BB2A353A03245E1AB3A2263A671D52581A6792D786",
+   "bytes": 55326,
+   "source": "sembiance/cals  cals/Mech.cal"
+  },
+  {
+   "file": "real.cals",
+   "url": "https://sembiance.com/fileFormatSamples/image/cals/example.cals",
+   "sha256": "4A7CDC3538EC8FED31B1FCCEE346D787493A79D61499FE5AE5CF5E576387B2FC",
+   "bytes": 298262,
+   "source": "sembiance/cals  cals/example.cals"
+  },
+  {
+   "file": "real.cdr",
+   "url": "https://sembiance.com/fileFormatSamples/image/corelClipart/homer1.cdr",
+   "sha256": "C876C77F943AA1A8E9CEAC977290F96C8AB7C081060D4EF3A56A9B3230451F89",
+   "bytes": 32580,
+   "source": "sembiance/corelClipart  corelClipart/homer1.cdr"
+  },
+  {
+   "file": "real.cmx",
+   "url": "https://sembiance.com/fileFormatSamples/image/cmx/CM33.CMX",
+   "sha256": "863264F65FCABFB37BAE25AA5477071F1F65123F6DC7C73AC125E1AD627B9F30",
+   "bytes": 16294,
+   "source": "sembiance/cmx  cmx/CM33.CMX"
+  },
+  {
+   "file": "real.cin",
+   "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/d13e98f92b4e75ae7cd949cc5aa1df219560fb93/cineon/checker.cin",
+   "sha256": "3A59C01791B7D3D55CAC744FC63AB703825DA64072790D3AE57D769F19ABE809",
+   "bytes": 90368,
+   "source": "AcademySoftwareFoundation/OpenImageIO-images@d13e98f9  cineon/checker.cin"
+  },
+  {
+   "file": "real.cur",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-bmp/src/test/resources/cur/hand.cur",
+   "sha256": "13E327B334D10B2B24101040EECACE86AAAA2EED03D282FA75A04AA3BEBF69C1",
+   "bytes": 326,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-bmp/src/test/resources/cur/hand.cur"
+  },
+  {
+   "file": "real.cut",
+   "url": "https://sembiance.com/fileFormatSamples/image/drHalo/flag_b24.cut",
+   "sha256": "AFF76E443E9B83A957F00F4211206CD2E6933863C3316BDF428586593A405D3C",
+   "bytes": 2622,
+   "source": "sembiance/drHalo  drHalo/flag_b24.cut"
+  },
+  {
+   "file": "real.dcm",
+   "url": "https://raw.githubusercontent.com/libvips/libvips/bb5b1b63c96a699414157dd20ec933af16d7e6a5/test/test-suite/images/dicom_test_image.dcm",
+   "sha256": "716B87FD350B234A3E1A119654897EEB91FFC86CAFE98414DE5B1FDECCFDD3C9",
+   "bytes": 135424,
+   "source": "libvips/libvips@bb5b1b63  test/test-suite/images/dicom_test_image.dcm"
+  },
+  {
+   "file": "real.dcx",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pcx/src/test/resources/dcx/input.dcx",
+   "sha256": "0C0D2E8567C7C0D9535BE1D711900183C350E91EDEB9DDAD1775991DC7CC29C9",
+   "bytes": 15713,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-pcx/src/test/resources/dcx/input.dcx"
+  },
+  {
+   "file": "real.dds",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-dds/src/test/resources/dds/dds_R8G8B8_mipmap.dds",
+   "sha256": "9BB3A1476C9B97F564C0BE3869A9A3EF6E52D79CE9E99319C9FBCD3BC96C6EDC",
+   "bytes": 262271,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-dds/src/test/resources/dds/dds_R8G8B8_mipmap.dds"
+  },
+  {
+   "file": "real.dib",
+   "url": "https://raw.githubusercontent.com/apache/poi/dca7cda1dc8a64197f7e7e8e7892ba9a0d79c860/test-data/slideshow/clock.dib",
+   "sha256": "5E3A23BB5B8997CC5594374D5F8FE2527E91F3F90BF2729F5197034B93A5BB33",
+   "bytes": 101430,
+   "source": "apache/poi@dca7cda1  test-data/slideshow/clock.dib"
+  },
+  {
+   "file": "real.dpx",
+   "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/d13e98f92b4e75ae7cd949cc5aa1df219560fb93/dpx/dpx_nuke_10bits_rgb.dpx",
+   "sha256": "FEA09C07114A238CFFA8A123963234DF5B0AFC1BB4C01A0654C7441ECCF24AA2",
+   "bytes": 1050624,
+   "source": "AcademySoftwareFoundation/OpenImageIO-images@d13e98f9  dpx/dpx_nuke_10bits_rgb.dpx"
+  },
+  {
+   "file": "real.dxt1",
+   "url": "https://fate-suite.ffmpeg.org/dds/fate_dxt1.dds",
+   "sha256": "996A13BC36B7FB07509533060993CC587A1AD7FE11BA382125A2818756B0878C",
+   "bytes": 4224,
+   "source": "FFmpeg FATE dds/ (DXT1-compressed DirectDraw Surface)"
+  },
+  {
+   "file": "real.dxt5",
+   "url": "https://fate-suite.ffmpeg.org/dds/fate_dxt5.dds",
+   "sha256": "996B8585ECE7D8E6F418A0BE21B7E2F49A9B23D75C662B8205666BA0AD454C6C",
+   "bytes": 4224,
+   "source": "FFmpeg FATE dds/ (DXT5-compressed DirectDraw Surface)"
+  },
+  {
+   "file": "real.emf",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testEMF.emf",
+   "sha256": "BCFD10A975FB3FAC6ADB9B83DF71059FFBC51C409A04D5D0D1F8455A96E36BC8",
+   "bytes": 60400,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testEMF.emf"
+  },
+  {
+   "file": "real.eps",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/eps/illu10_preview.eps",
+   "sha256": "C92DDBA4D12063995467133FC912F96E6C55F781E492736996D1D0E14408566F",
+   "bytes": 405470,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/eps/illu10_preview.eps"
+  },
+  {
+   "file": "real.exr",
+   "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/d13e98f92b4e75ae7cd949cc5aa1df219560fb93/grid-overscan.exr",
+   "sha256": "901365D164F8B14E9E1F3DAFBF018559AAE1EF18A173110D53AC8B0045849E60",
+   "bytes": 139717,
+   "source": "AcademySoftwareFoundation/OpenImageIO-images@d13e98f9  grid-overscan.exr"
+  },
+  {
+   "file": "real.ff",
+   "url": "https://raw.githubusercontent.com/image-rs/image/075e65d618a323e5cb48c1d8710a2eca25d690c6/tests/images/farbfeld/transparency/tbbn0g04.ff",
+   "sha256": "E988B1EE713A1AA81CCDFCCF406AE15CBB7EBF49B7354F49A65F5B18B05E4EB1",
+   "bytes": 8208,
+   "source": "image-rs/image@075e65d6  tests/images/farbfeld/transparency/tbbn0g04.ff"
+  },
+  {
+   "file": "real.fits",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/m13.fits",
+   "sha256": "EB3E208EDBE302CAE0EA45D17AB618930D85847DA3F5E6FFD53D9410EC0A5A45",
+   "bytes": 184320,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/m13.fits"
+  },
+  {
+   "file": "real-extension.fits",
+   "url": "https://raw.githubusercontent.com/astropy/astropy/1337c18ce53e076a7642f1b2d3349d1f5108e20d/astropy/io/fits/tests/data/test0.fits",
+   "sha256": "EA06EE30B28F1EA2E8CA62C5289756763B7F41356D7FA3291DBC346E2ED34E94",
+   "bytes": 57600,
+   "source": "astropy/astropy@1337c18c  astropy/io/fits/tests/data/test0.fits (empty primary + four IMAGE extensions)"
+  },
+  {
+   "file": "real.fts",
+   "url": "https://sembiance.com/fileFormatSamples/image/fits/MOON.FTS",
+   "sha256": "36A7C69C3511C7727D2347DA3D2E9B511F5ABEEC23ECAF3BF8CD321EACD98293",
+   "bytes": 34560,
+   "source": "sembiance/fits  fits/MOON.FTS"
+  },
+  {
+   "file": "real.gif",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/gif/ImageTestSuite/f617c7af7f36296a37ddb419b828099c.gif",
+   "sha256": "C01F851B04D43AC9361F255D9499C0178A0AFA99A19F16F124EAB45AA3F66FA0",
+   "bytes": 475368,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  gif/ImageTestSuite/f617c7af7f36296a37ddb419b828099c.gif"
+  },
+  {
+   "file": "real.hdr",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-hdr/src/test/resources/hdr/memorial_o876.hdr",
+   "sha256": "BBAFAB07A261DE91FF6120449343A0CFD8DC9BC76FE6EC006D846319DF22D2E5",
+   "bytes": 1341352,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-hdr/src/test/resources/hdr/memorial_o876.hdr"
+  },
+  {
+   "file": "real.heic",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/heic/cheers_1440x960.heic",
+   "sha256": "645877C52C5C656E2004B38F9520E717BBC6670541A56C098B9B7F78DE496E8F",
+   "bytes": 41389,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  heic/cheers_1440x960.heic"
+  },
+  {
+   "file": "real.heif",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/heif/Sony%20ILCE-7M4%20%28A7M4%29.heif",
+   "sha256": "6A185AA94B513D966CCADDE95671DFEE8B1DDB9C45EC312752B830EC726D0F4D",
+   "bytes": 8474633,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  heif/Sony ILCE-7M4 (A7M4).heif"
+  },
+  {
+   "file": "real.ico",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/ico/Icon%20%281%29.ico",
+   "sha256": "4C19E1B160923B323CF2201EB7638E106178229B084CA173C0118D9A3D74CECA",
+   "bytes": 250535,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  ico/Icon (1).ico"
+  },
+  {
+   "file": "real.icns",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-icns/src/test/resources/icns/Apple%20Retro.icns",
+   "sha256": "5FE7F041A9D6804EA5268F6076DD782F21FA1AA1CB8ADE2D4CCFAA9DA4E20629",
+   "bytes": 182849,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-icns/src/test/resources/icns/Apple Retro.icns"
+  },
+  {
+   "file": "real.j2c",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jpg2000/balloon.j2c",
+   "sha256": "0D885BFEB454BC0073DC250507860135D229102D7429783B8A1CF9EEE392E482",
+   "bytes": 628385,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jpg2000/balloon.j2c"
+  },
+  {
+   "file": "real.j2k",
+   "url": "https://raw.githubusercontent.com/libvips/libvips/bb5b1b63c96a699414157dd20ec933af16d7e6a5/test/test-suite/images/Bretagne2_4.j2k",
+   "sha256": "57C18D6EB3C9ECCE0F9FE71EC6A5366C639AD3445DFDE13894F6166C50A03100",
+   "bytes": 18908,
+   "source": "libvips/libvips@bb5b1b63  test/test-suite/images/Bretagne2_4.j2k"
+  },
+  {
+   "file": "real.jng",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/jng/input_gray.jng",
+   "sha256": "A47AAF56092420D7A1CC89C7728860621B873CD468D359D6C1BE51506FBEB08B",
+   "bytes": 996,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/jng/input_gray.jng"
+  },
+  {
+   "file": "real.jp2",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jpg2000/balloon.jp2",
+   "sha256": "C3764A441A4F4A678B6B4575022733B91320D54FCD87DA913B6CD2860FAF6FA3",
+   "bytes": 670265,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jpg2000/balloon.jp2"
+  },
+  {
+   "file": "real.jpc",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/openjp2/input.jpc",
+   "sha256": "0D68ABE0C17FEBC127B3C3468BDCD0794DA5460F1BAADEF2C94414D723A5D6DC",
+   "bytes": 6410,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/openjp2/input.jpc"
+  },
+  {
+   "file": "real.jpeg",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pict/src/test/resources/jpeg/89497426-adc19a00-d7ff-11ea-8ad1-0cbcd727b62a.jpeg",
+   "sha256": "8E3B393BB36C6C6A9C50FDB7F339086BFA95CAE3EC90A99B813FD28702FF5A5F",
+   "bytes": 59029,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-pict/src/test/resources/jpeg/89497426-adc19a00-d7ff-11ea-8ad1-0cbcd727b62a.jpeg"
+  },
+  {
+   "file": "real.jpg",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jpg/Kodak%20DC3400.jpg",
+   "sha256": "9573AB76105C14C5AD9D5FC9134D4688691851893F1332A394C125B5E82F90BA",
+   "bytes": 248706,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jpg/Kodak DC3400.jpg"
+  },
+  {
+   "file": "real.jpm",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jpg2000/balloon.jpm",
+   "sha256": "AE749B2C27AF51294C80C8501485EC84FAC36680C708AC3E77CDE499C12B717F",
+   "bytes": 888827,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jpg2000/balloon.jpm"
+  },
+  {
+   "file": "real.jxl",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testJXL_ISOBMFF.jxl",
+   "sha256": "B66CD63CEE975E273C07E679AA930EE9EAC1EE964E450220D1A01D5DAFB70539",
+   "bytes": 83814,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testJXL_ISOBMFF.jxl"
+  },
+  {
+   "file": "real.jxr",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jxr/sunrise-hdr.jxr",
+   "sha256": "68FB1C1BB560B681B3D5E53E4584890F8CBD64FD60EA6E9DBBAF2E41F1990979",
+   "bytes": 7558979,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jxr/sunrise-hdr.jxr"
+  },
+  {
+   "file": "real.wdp",
+   "url": "https://sembiance.com/fileFormatSamples/image/jpegXR/00000089.wdp",
+   "sha256": "D8BB1E8E51F10EE8FFC17953A0F3B8630027DD1CBA5383F6E77098830E8ACEF8",
+   "bytes": 3442,
+   "source": "sembiance/jpegXR  jpegXR/00000089.wdp"
+  },
+  {
+   "file": "real.hdp",
+   "url": "https://sembiance.com/fileFormatSamples/image/jpegXR/00000089.wdp",
+   "sha256": "D8BB1E8E51F10EE8FFC17953A0F3B8630027DD1CBA5383F6E77098830E8ACEF8",
+   "bytes": 3442,
+   "source": "sembiance jpegXR"
+  },
+  {
+   "file": "real.mac",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pict/src/test/resources/mac/MARBLES.MAC",
+   "sha256": "D66F306B0F0EB7604B76B8E8E568163069486BA6AFA492226E63920B0D0516B2",
+   "bytes": 29912,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-pict/src/test/resources/mac/MARBLES.MAC"
+  },
+  {
+   "file": "real.iff",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-iff/src/test/resources/iff/A4000T_HAM8.IFF",
+   "sha256": "16D2A8F15A91FFA2A1B08320E465DD9B380EBB4B19E47FF6BE421C0DA06E1EDA",
+   "bytes": 270026,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-iff/src/test/resources/iff/A4000T_HAM8.IFF"
+  },
+  {
+   "file": "real.ilbm",
+   "url": "https://fate-suite.ffmpeg.org/iff/lms-matriks.ilbm",
+   "sha256": "242418C9E741CCE8A2150267160F974014A3F077BF673113F836AB9C625E1E8E",
+   "bytes": 77648,
+   "source": "fate  iff/lms-matriks.ilbm"
+  },
+  {
+   "file": "real.lbm",
+   "url": "https://fate-suite.ffmpeg.org/iff/ASH.LBM",
+   "sha256": "467881C00F2E6C72E52270A56DBCA366FB93D81935AE2D56E2F5240CCDE1AF97",
+   "bytes": 76502,
+   "source": "fate  iff/ASH.LBM"
+  },
+  {
+   "file": "real.mat",
+   "url": "https://raw.githubusercontent.com/libvips/libvips/bb5b1b63c96a699414157dd20ec933af16d7e6a5/test/test-suite/images/sample.mat",
+   "sha256": "637F00AD674F9885BAADF01C111D74E4420A1ACF4811E4C7747376708F81DCF3",
+   "bytes": 737027,
+   "source": "libvips/libvips@bb5b1b63  test/test-suite/images/sample.mat"
+  },
+  {
+   "file": "real.miff",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/tests/sequence.miff",
+   "sha256": "8E8E526CD48A79617BCE63A12CC09518376C9973AE823116DD6CA6604A39FCEC",
+   "bytes": 185750,
+   "source": "ImageMagick/ImageMagick@7d3a270c  tests/sequence.miff"
+  },
+  {
+   "file": "real.mng",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/png/input.mng",
+   "sha256": "651873AF1F672FE96667D737AFFF98F74AFFBEEB4047BC026F1B09AB6999FA13",
+   "bytes": 12920,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/png/input.mng"
+  },
+  {
+   "file": "real.mpo",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/frozenpond.mpo",
+   "sha256": "EFAA9344F24BBB1D51707F8EB2552D7DE42E5E03588B4A284C5C73305DA9083B",
+   "bytes": 166209,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/frozenpond.mpo"
+  },
+  {
+   "file": "real.ora",
+   "url": "https://raw.githubusercontent.com/mypaint/mypaint/fb6f7d6b12238d125294496b105f5f36e658bc61/tests/smallimage.ora",
+   "sha256": "8EAB0F0FE41FCB10B851125E7E1DB0AFA5DD9C428733D978B0C0A23F11A1C702",
+   "bytes": 64316,
+   "source": "mypaint/mypaint@fb6f7d6b  tests/smallimage.ora"
+  },
+  {
+   "file": "real.kra",
+   "url": "https://raw.githubusercontent.com/KDE/krita/6d9562231d321aebe6f6f14a173a4a63e945b743/libs/image/tests/data/store_test.kra",
+   "sha256": "6641D368D75633EA1294192AC4B8AD69A7316E26F3A143558536854A69E0E2AB",
+   "bytes": 29379,
+   "source": "KDE/krita@6d956223  libs/image/tests/data/store_test.kra"
+  },
+  {
+   "file": "real.3mf",
+   "url": "https://raw.githubusercontent.com/3MFConsortium/3mf-samples/665e20dc4d7777fd4c9702bca86a2d4028440337/examples/material/multiprop-metallic.3mf",
+   "sha256": "88ED6580CAD72FA6FCC34FB839E3E6BD3C986829A26DF03C85765EEE96813346",
+   "bytes": 254629,
+   "source": "3MFConsortium/3mf-samples@665e20dc  examples/material/multiprop-metallic.3mf"
+  },
+  {
+   "file": "real.stl",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testSTL-ascii.stl",
+   "sha256": "66087D5B82F32068647583D1FA26FBF7C73331182CAC3A8AD001CE944CD02EE7",
+   "bytes": 301,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testSTL-ascii.stl"
+  },
+  {
+   "file": "real.obj",
+   "url": "https://raw.githubusercontent.com/assimp/assimp/da2ead9780da06d9993c0412a8e8e65b91573d90/test/models/OBJ/regr_3429812.obj",
+   "sha256": "B7F72AB8EFB4564DB1BF36ABD0448F9097620FAB2AEBCD00E3647CA8876E5ED6",
+   "bytes": 217,
+   "source": "assimp/assimp@da2ead97  test/models/OBJ/regr_3429812.obj"
+  },
+  {
+   "file": "real.ply",
+   "url": "https://raw.githubusercontent.com/mikedh/trimesh/fcf660feb0a14c68fd3945789e8ed77e260f9167/models/metadata.ply",
+   "sha256": "8A658E9D2199EFFB68D45661D92BF78F3325A204B492AAA9DC5B4A0E9BB022B2",
+   "bytes": 240,
+   "source": "mikedh/trimesh@fcf660fe  models/metadata.ply"
+  },
+  {
+   "file": "real.fcstd",
+   "url": "https://raw.githubusercontent.com/FreeCAD/FreeCAD/2c78bd04c29f1b04c8ccbab3b10d8d6a3081c87c/data/examples/AssemblyExample.FCStd",
+   "sha256": "FEF362C529AAE88CB32905AC7DDA5D056832A22AA13CF4089EC9F0DA773EFCB2",
+   "bytes": 173572,
+   "source": "FreeCAD/FreeCAD@2c78bd04  data/examples/AssemblyExample.FCStd"
+  },
+  {
+   "file": "real.gcode",
+   "url": "https://raw.githubusercontent.com/prusa3d/PrusaSlicer/6f510128d7c2e543b62919b74bea7e876f564205/resources/test_data/test_vase.gcode",
+   "sha256": "918379706E63ABAB93FDA7CC8855B7EF52160AED27A7FC336466C11D1CA71933",
+   "bytes": 109623,
+   "source": "prusa3d/PrusaSlicer@6f510128  resources/test_data/test_vase.gcode"
+  },
+  {
+   "file": "real.blend",
+   "url": "https://raw.githubusercontent.com/assimp/assimp/da2ead9780da06d9993c0412a8e8e65b91573d90/test/models/BLEND/SuzanneSubdiv_252.blend",
+   "sha256": "DD3EBFE3D811AB3F10EDDF84FA27BBB108D97A79C79B621DE9F212095E52CBF1",
+   "bytes": 86253,
+   "source": "assimp/assimp@da2ead97  test/models/BLEND/SuzanneSubdiv_252.blend"
+  },
+  {
+   "file": "real.pxo",
+   "url": "https://raw.githubusercontent.com/Orama-Interactive/Pixelorama/da7b68f97806c461abde615d1d847af91921c37b/Misc/example_pxo_files/animated_layer_effect.pxo",
+   "sha256": "02DAF092A63CFC9A798A85C7BDFAB54014E60DE9991FBB180D00D47704C70A6D",
+   "bytes": 5013,
+   "source": "Orama-Interactive/Pixelorama@da7b68f9  Misc/example_pxo_files/animated_layer_effect.pxo"
+  },
+  {
+   "file": "real.aseprite",
+   "url": "https://raw.githubusercontent.com/aseprite/aseprite/80079cd5c903123fdc1ba066a7c6dadb696764c2/tests/sprites/cut_paste.aseprite",
+   "sha256": "6F44171C805B6C593F67C6E3DCFBE29E31A0B6F0FE833C1B0E3B24CADB59889B",
+   "bytes": 348,
+   "source": "aseprite/aseprite@80079cd5  tests/sprites/cut_paste.aseprite"
+  },
+  {
+   "file": "real.bgcode",
+   "url": "https://raw.githubusercontent.com/prusa3d/PrusaSlicer/6f510128d7c2e543b62919b74bea7e876f564205/resources/test_data/test_colors.bgcode",
+   "sha256": "E45B3858058D42CFB2CAD9F62BF81F675CF82E9B618E32A700345B391B7F55C3",
+   "bytes": 1299466,
+   "source": "prusa3d/PrusaSlicer@6f510128  resources/test_data/test_colors.bgcode"
+  },
+  {
+   "file": "real.sldprt",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksPart2013SP2.SLDPRT",
+   "sha256": "51630CCADC48F672A88E4915B5CF1DC387517DB7DAE235E9FE34B1C643B55E7F",
+   "bytes": 1010176,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksPart2013SP2.SLDPRT"
+  },
+  {
+   "file": "real.sldasm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksAssembly2014SP0.SLDASM",
+   "sha256": "7548A39FC1F1320664138A5124FB8FF9783005F664257C6B42BAD4F75B4721C4",
+   "bytes": 238080,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksAssembly2014SP0.SLDASM"
+  },
+  {
+   "file": "real.slddrw",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksDrawing2014SP0.SLDDRW",
+   "sha256": "8C68908BA942B1BE60047F88465AB8AD65048C9A38BFCC233E5441EDED02DFEE",
+   "bytes": 201216,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testsolidworksDrawing2014SP0.SLDDRW"
+  },
+  {
+   "file": "real.pspimage",
+   "url": "https://sembiance.com/fileFormatSamples/image/paintShopPro/runabout.pspimage",
+   "sha256": "F1734FF77CEDA065F6CD7829482871C789D285C99ADAB820889201B9BAACF96E",
+   "bytes": 174615,
+   "source": "sembiance/paintShopPro  paintShopPro/runabout.pspimage"
+  },
+  {
+   "file": "real.psp",
+   "url": "https://sembiance.com/fileFormatSamples/image/paintShopPro/template.psp",
+   "sha256": "89F6D47491FF7CBC06C44A4CCBBC12E88E679228C7471D4AEAC2AEFDD74E5689",
+   "bytes": 1700,
+   "source": "sembiance/paintShopPro  paintShopPro/template.psp"
+  },
+  {
+   "file": "real.tub",
+   "url": "https://sembiance.com/fileFormatSamples/image/paintShopPro/Dog%20in%20Heart%20Balloon%20by%20Lux.tub",
+   "sha256": "CD773FF9736EA33995257850026000FDAAF075B1D1032BFAC3967F72666E9E1B",
+   "bytes": 101766,
+   "source": "sembiance/paintShopPro  paintShopPro/Dog in Heart Balloon by Lux.tub"
+  },
+  {
+   "file": "real.sketch",
+   "url": "https://raw.githubusercontent.com/sketch-hq/sketch-file-format/4493900abbfa49ae82fbcb8ad85cccf2cc2256b0/packages/file/src/__tests__/with-color-variables.sketch",
+   "sha256": "25F08782F870235A33B8589DC812D54C915D7A5928BA3A8EFD9A8C5E964B7204",
+   "bytes": 9127304,
+   "source": "sketch-hq/sketch-file-format@4493900a  packages/file/src/__tests__/with-color-variables.sketch"
+  },
+  {
+   "file": "real.skp",
+   "url": "https://raw.githubusercontent.com/FreeCAD/FreeCAD-library/be5e71491051cef75da46831b6fd77c6313cb497/Medical%20Parts/Surgical%20mask%20strap/files/surgical_mask_strap.skp",
+   "sha256": "4DBD25F2EA8BC7377B65ED5540FA1F4FDB684E6689692D3AEAD3873CCCA1CADC",
+   "bytes": 553630,
+   "source": "FreeCAD/FreeCAD-library@be5e7149  Medical Parts/Surgical mask strap/files/surgical_mask_strap.skp"
+  },
+  {
+   "file": "real.dwg",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/test/resources/test-documents/testDWG-AC1027.dwg",
+   "sha256": "C63D82327430E6759D8E6930E5B457AFB76538CE3311A2ABD15BA12726AC277B",
+   "bytes": 265260,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-cad-module/src/test/resources/test-documents/testDWG-AC1027.dwg"
+  },
+  {
+   "file": "real.max",
+   "url": "https://raw.githubusercontent.com/assimp/assimp/da2ead9780da06d9993c0412a8e8e65b91573d90/test/models/SourceFiles/CameraRollAnim.max",
+   "sha256": "1073BC792CB852A8A862B4BAA1D0CE8CECA60E9D0A14D9D821F40C5CBB45B8BE",
+   "bytes": 212992,
+   "source": "assimp/assimp@da2ead97  test/models/SourceFiles/CameraRollAnim.max"
+  },
+  {
+   "file": "real.apk",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testAPK.apk",
+   "sha256": "C1B43CD0EED5E6576B2FBB38144F7AA065D38E2ED828553806DC623534E2F9A2",
+   "bytes": 11740,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testAPK.apk"
+  },
+  {
+   "file": "real.pam",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pnm/src/test/resources/pam/snail2.pam",
+   "sha256": "E08FD77EB17549940B113136A2FD56076943C1E91E292F2633C080AAE6041020",
+   "bytes": 196671,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-pnm/src/test/resources/pam/snail2.pam"
+  },
+  {
+   "file": "real.pbm",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/netpbm/gimp-export-ascii.pbm",
+   "sha256": "9005FB1DBDD96A956092FC81D0FAF385B3BC41144B03D3D7BE72114E21F35BF1",
+   "bytes": 567,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  netpbm/gimp-export-ascii.pbm"
+  },
+  {
+   "file": "real.pcd",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/hopper.pcd",
+   "sha256": "476E9EE31F95F78C6803A280B287FE1681BA1C3A89358A7496511B24DAE7AE26",
+   "bytes": 788480,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/hopper.pcd"
+  },
+  {
+   "file": "real.pcx",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/pcx/FM_D0010.PCX",
+   "sha256": "CAD84CFD8A4936FA3996AA3566316AAFFAA12D9B4AE5BC3E62DF227765E1CD04",
+   "bytes": 237870,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  pcx/FM_D0010.PCX"
+  },
+  {
+   "file": "real.pdb",
+   "url": "https://sembiance.com/fileFormatSamples/image/palmDatabase/dollar.pdb",
+   "sha256": "F47867509ACC6963E0DF7B6528E13A65BA71028BB6501CB2E6D153E28C2FCC74",
+   "bytes": 3473,
+   "source": "sembiance/palmDatabase  palmDatabase/dollar.pdb"
+  },
+  {
+   "file": "real.pfm",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-pnm/src/test/resources/pfm/memorial.pfm",
+   "sha256": "7408901B58365DD4B974DFA5DD7294E52BFB2FE3671452F3C3E0510EEBBF66F3",
+   "bytes": 4718613,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-pnm/src/test/resources/pfm/memorial.pfm"
+  },
+  {
+   "file": "real.pgm",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/netpbm/gimp-export-ascii.pgm",
+   "sha256": "2F4BEC820E7B7CE8DA0906A810E034DA9786FF8C28AF9C915F11358E0E5C8EAD",
+   "bytes": 1988,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  netpbm/gimp-export-ascii.pgm"
+  },
+  {
+   "file": "real.pgx",
+   "url": "https://raw.githubusercontent.com/uclouvain/openjpeg-data/39524bd3a601d90ed8e0177559400d23945f96a9/baseline/conformance/c1p0_09_0.pgx",
+   "sha256": "174557FCA48A83F7A474D2307984051326350266FEC1ACF623466E8F92BC8A29",
+   "bytes": 644,
+   "source": "uclouvain/openjpeg-data@39524bd3  baseline/conformance/c1p0_09_0.pgx"
+  },
+  {
+   "file": "real.pix",
+   "url": "https://fate-suite.ffmpeg.org/aliaspix/first.pix",
+   "sha256": "35A58CDAF874BD8BDDAC62438CCA47C3DD3A615515FEBAC20663530759820839",
+   "bytes": 63090,
+   "source": "FFmpeg FATE suite  aliaspix/first.pix"
+  },
+  {
+   "file": "real.png",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/png/ImageTestSuite/m1-5efba06832cc674ae5d290ba7ebc2533.png",
+   "sha256": "E8789DA908671CB20229CF2AB940066FAAF4F7ECFC314ED9BCB8EEA39A8F19CB",
+   "bytes": 232282,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  png/ImageTestSuite/m1-5efba06832cc674ae5d290ba7ebc2533.png"
+  },
+  {
+   "file": "real.pnm",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/netpbm/gimp-export-ascii.pnm",
+   "sha256": "C87ACE2E53EA5A21E1445E83D431CE8E3EB6E20110EAA6B12787619B6153B4B0",
+   "bytes": 5860,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  netpbm/gimp-export-ascii.pnm"
+  },
+  {
+   "file": "real.ppm",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/netpbm/gimp-export-ascii.ppm",
+   "sha256": "C87ACE2E53EA5A21E1445E83D431CE8E3EB6E20110EAA6B12787619B6153B4B0",
+   "bytes": 5860,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  netpbm/gimp-export-ascii.ppm"
+  },
+  {
+   "file": "real.psb",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-psd/src/test/resources/psb/rgb-multichannel-no-transparency.psb",
+   "sha256": "6B423E159947687714992629A5CA954A5C7D8EDA731691489DEFB7A3F321C0B2",
+   "bytes": 44596,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-psd/src/test/resources/psb/rgb-multichannel-no-transparency.psb"
+  },
+  {
+   "file": "real.psd",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/psd/10x12x16bit-CMYK.psd",
+   "sha256": "459CFDF192620451DABF1DF2291ACC578D79C0C2089F6C2958EBFCDF364C6FFD",
+   "bytes": 575378,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  psd/10x12x16bit-CMYK.psd"
+  },
+  {
+   "file": "real.qoi",
+   "url": "https://raw.githubusercontent.com/libvips/libvips/bb5b1b63c96a699414157dd20ec933af16d7e6a5/test/test-suite/images/sample.qoi",
+   "sha256": "E5FB4F890A189E45006D04D1B8E4AE0174CEFE9580368170F3ED95CFE18F52FB",
+   "bytes": 298323,
+   "source": "libvips/libvips@bb5b1b63  test/test-suite/images/sample.qoi"
+  },
+  {
+   "file": "real.ras",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/hopper.ras",
+   "sha256": "90C328734961808F4BD926F160FC7013A57235131C79C42D270CCC88555B791A",
+   "bytes": 49184,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/hopper.ras"
+  },
+  {
+   "file": "real.rla",
+   "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/d13e98f92b4e75ae7cd949cc5aa1df219560fb93/rla/ginsu_rgb_nc8.rla",
+   "sha256": "2E472E98EBED0429C32335B1AEF357C0C4F1EDFFDD53982153082337257C431C",
+   "bytes": 72984,
+   "source": "AcademySoftwareFoundation/OpenImageIO-images@d13e98f9  rla/ginsu_rgb_nc8.rla"
+  },
+  {
+   "file": "real.rle",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-bmp/src/test/resources/bmp/blauesglas_8.rle",
+   "sha256": "5732453CDA0AF5E72A73613449555E58E2891FC01722848DF4B5AA1DA3ED8978",
+   "bytes": 75812,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-bmp/src/test/resources/bmp/blauesglas_8.rle"
+  },
+  {
+   "file": "real.scr",
+   "url": "https://sembiance.com/fileFormatSamples/image/zxSCR/Andy%20Green%20-%20Bionic%20Commando%20%282020%29.scr",
+   "sha256": "7FCC446201FC781EEC84201A7C1F254BFBBBE400F1490F3499D5297075ABF82C",
+   "bytes": 6912,
+   "source": "sembiance/zxSCR  zxSCR/Andy Green - Bionic Commando (2020).scr"
+  },
+  {
+   "file": "real.sct",
+   "url": "https://sembiance.com/fileFormatSamples/image/scitexCT/gs_tiled_details.sct",
+   "sha256": "BA9695BE91141AA37229B87337378EDECBE749D0BDE8683CE3BFD12E4FFE6579",
+   "bytes": 198656,
+   "source": "sembiance/scitexCT  scitexCT/gs_tiled_details.sct"
+  },
+  {
+   "file": "real.sfw",
+   "url": "https://sembiance.com/fileFormatSamples/image/seattleFilmWorks/86074_18.sfw",
+   "sha256": "ABDCCF8348A635EBBEDA4AC56380BAFF25BD6B4746DD61877059BA36A6988DA4",
+   "bytes": 12587,
+   "source": "sembiance fileFormatSamples  image/seattleFilmWorks/86074_18.sfw"
+  },
+  {
+   "file": "real.sgi",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-sgi/src/test/resources/sgi/input.sgi",
+   "sha256": "50D77CFF4AA7385F76DB8E76EFE9C935A8CC5D8B02FB0E96916189CDEF755DE7",
+   "bytes": 11683,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-sgi/src/test/resources/sgi/input.sgi"
+  },
+  {
+   "file": "real.sun",
+   "url": "https://fate-suite.ffmpeg.org/sunraster/lena-1bit-raw.sun",
+   "sha256": "699162F6F31302A615AC0AAE331594B1959A142DBF01698CCFC2D0ED854E9D42",
+   "bytes": 32800,
+   "source": "fate  sunraster/lena-1bit-raw.sun"
+  },
+  {
+   "file": "real.svg",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-batik/src/test/resources/svg/batikLogo.svg",
+   "sha256": "AA30C0DADA5DF9BDF9883B46D7E555B48BCB9123AD7D3B227550091CC5AD8CF1",
+   "bytes": 18684,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-batik/src/test/resources/svg/batikLogo.svg"
+  },
+  {
+   "file": "real.svgz",
+   "url": "https://raw.githubusercontent.com/KDE/krita/6d9562231d321aebe6f6f14a173a4a63e945b743/krita/pics/branding/Beta/sc-apps-krita.svgz",
+   "sha256": "4F67296BC4013AC21B03C10DD1F8494A8BF9F188F44185017805F8111F5D3CD0",
+   "bytes": 3841,
+   "source": "KDE/krita@6d956223  krita/pics/branding/Beta/sc-apps-krita.svgz"
+  },
+  {
+   "file": "real.tga",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/tga/POOL_4.TGA",
+   "sha256": "5D69269C7701A81764D1CCF10535EAB76D52EC8FE153AE5EA0734CDE5B6C9CC2",
+   "bytes": 120018,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  tga/POOL_4.TGA"
+  },
+  {
+   "file": "real.tif",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/tif/ImageTestSuite/221209eb0a273029efa18f4c61f6628a.tif",
+   "sha256": "4AFF96C2CDCB8EA56810793F5DA9D35A92EA8FF28E4BAD202F3608B8DBB9BA9A",
+   "bytes": 261718,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  tif/ImageTestSuite/221209eb0a273029efa18f4c61f6628a.tif"
+  },
+  {
+   "file": "real.tiff",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/tif/Epson%20PerfectionV800.tiff",
+   "sha256": "13479F6095FB784D91633BA69DEB1092516820F240C2E11716C1CBC4E1553AAD",
+   "bytes": 819606,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  tif/Epson PerfectionV800.tiff"
+  },
+  {
+   "file": "real.tiff64",
+   "url": "https://sembiance.com/fileFormatSamples/image/bigTIFF/BigTIFF.tif",
+   "sha256": "DDB202145A9BCE7670CC372EE578DE5A53CD52CC8D5AE8A9EBDC9F9C4F4A7E81",
+   "bytes": 12480,
+   "source": "sembiance fileFormatSamples image/bigTIFF"
+  },
+  {
+   "file": "real.tim",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/input.tim",
+   "sha256": "7AF737F7F6FBF0747E73E20B1E0EC406331360874A336BB9CDB7E860468D185E",
+   "bytes": 1088,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/input.tim"
+  },
+  {
+   "file": "real.tm2",
+   "url": "https://sembiance.com/fileFormatSamples/image/tim2/BaLitDu.tm2",
+   "sha256": "72CC273D13C1F8DBB1E06497C524740EBF8E2DBF0100A62BC7AD20FE0C3DDB89",
+   "bytes": 5184,
+   "source": "sembiance/tim2  tim2/BaLitDu.tm2"
+  },
+  {
+   "file": "real.vda",
+   "url": "https://sembiance.com/fileFormatSamples/image/tga/mona.vda",
+   "sha256": "81A5C28332EC24423C71DA60B87EBB9C22D30F636E747D7A6A29611B5B044191",
+   "bytes": 51730,
+   "source": "sembiance/tga  tga/mona.vda"
+  },
+  {
+   "file": "real.vicar",
+   "url": "https://sembiance.com/fileFormatSamples/image/vicar/abydos.vicar",
+   "sha256": "C83E68E5791C08EB2C25D3E6F35BA30635AD21CB8A48C7D44D5D19369D30DD9A",
+   "bytes": 484096,
+   "source": "sembiance/vicar  vicar/abydos.vicar"
+  },
+  {
+   "file": "real.viff",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/input.viff",
+   "sha256": "ECF0B92F20991A761BCF0305B3094D2B445B98946CBB73292CB092E59B45FE57",
+   "bytes": 5012,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/input.viff"
+  },
+  {
+   "file": "real.vips",
+   "url": "https://sembiance.com/fileFormatSamples/image/vips/test.v",
+   "sha256": "29FED27E9B618104ABDC8D14DB4BFF96E01C1B3DE09A92A499DA59C749DFEF35",
+   "bytes": 921664,
+   "source": "sembiance fileFormatSamples image/vips"
+  },
+  {
+   "file": "real.webp",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/webp/Animation%20Lossless.webp",
+   "sha256": "0EB083A30CE2B161E53E6C25EF08C5D5D7624F3937FDB6FFCAF93F452397E38F",
+   "bytes": 261372,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  webp/Animation Lossless.webp"
+  },
+  {
+   "file": "real.wmf",
+   "url": "https://raw.githubusercontent.com/haraldk/TwelveMonkeys/3f75fdb35a7ef4cf0a3f2e62cc11a8e7afe2b653/imageio/imageio-batik/src/test/resources/wmf/test.wmf",
+   "sha256": "A8CB757F015CCF2B37F3E908442BFB0A60DD7E22923CD3ABE22CFC83C7E7D3E4",
+   "bytes": 8186,
+   "source": "haraldk/TwelveMonkeys@3f75fdb3  imageio/imageio-batik/src/test/resources/wmf/test.wmf"
+  },
+  {
+   "file": "real.wpg",
+   "url": "https://raw.githubusercontent.com/ImageMagick/ImageMagick/7d3a270ca2d9542920a1045900dcbb5195f87fe6/PerlMagick/t/input.wpg",
+   "sha256": "91148CE63257421E6F1E6F183D787B8F2031A14036DC6B2933263D2C358984C6",
+   "bytes": 4625,
+   "source": "ImageMagick/ImageMagick@7d3a270c  PerlMagick/t/input.wpg"
+  },
+  {
+   "file": "real.xbm",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/hopper_underscore.xbm",
+   "sha256": "840312C57B82BADB6594321C2E0DCA083FD8EC5E86A001536EA82FB3E5EAC102",
+   "bytes": 12917,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/hopper_underscore.xbm"
+  },
+  {
+   "file": "real.xcf",
+   "url": "https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/d13e98f92b4e75ae7cd949cc5aa1df219560fb93/src/grid/grid.xcf",
+   "sha256": "AC658D43F50256DB87DFBCB2E22E289F4866A34B594B08E9F0F41B895CB463B4",
+   "bytes": 657750,
+   "source": "AcademySoftwareFoundation/OpenImageIO-images@d13e98f9  src/grid/grid.xcf"
+  },
+  {
+   "file": "real.xpm",
+   "url": "https://raw.githubusercontent.com/python-pillow/Pillow/26ddd05bd7c096a61b6e6c6253650428b4bf2470/Tests/images/hopper_rgb.xpm",
+   "sha256": "981DDF960E23F2A3BDEAC823488179EDD200B8D11ADB1ABAF415719DA0C58713",
+   "bytes": 237448,
+   "source": "python-pillow/Pillow@26ddd05b  Tests/images/hopper_rgb.xpm"
+  },
+  {
+   "file": "real.xv",
+   "url": "https://sembiance.com/fileFormatSamples/image/viff/subimage.xv",
+   "sha256": "6061335772248BD4E7CFB5763E1624386FF9AD508CEA460F51FB148F3D68A907",
+   "bytes": 17782,
+   "source": "sembiance/viff  viff/subimage.xv"
+  },
+  {
+   "file": "real.heics",
+   "url": "https://raw.githubusercontent.com/nokiatech/heif_conformance/f17e517f7518984b4450349a88edc09519082c74/conformance_files/C028.heic",
+   "sha256": "2BAFEF3C563913E4653292DA8BE9B21A36FE15E87CDF6510DFAF588FE2E145B0",
+   "bytes": 450805,
+   "source": "nokiatech/heif_conformance@f17e517f  conformance_files/C028.heic (brand msf1: an image sequence)"
+  },
+  {
+   "file": "real.hif",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/heif/Sony%20ILCE-7M4%20%28A7M4%29.HIF",
+   "sha256": "130EC432A61DE1C544CED6E784E579A1476C5DA938636D4509FA99A7E3FB62D3",
+   "bytes": 8474624,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  heif/Sony ILCE-7M4 (A7M4).HIF"
+  },
+  {
+   "file": "real.jpf",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jpg2000/balloon.jpf",
+   "sha256": "6099D2AA43657064E8E26AE037D132C74DDD1FFD25A535E6BCC28C9D7D9DD5B3",
+   "bytes": 628654,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  jpg2000/balloon.jpf"
+  },
+  {
+   "file": "real.pdd",
+   "url": "https://sembiance.com/fileFormatSamples/image/photoDeluxeImage/GRADCAPS.PDD",
+   "sha256": "11522CED8F7E628B7CF90239A72120E30186D0C3A77C4A18BE5F02E0BC9E512F",
+   "bytes": 79567,
+   "source": "sembiance/photoDeluxeImage  photoDeluxeImage/GRADCAPS.PDD"
+  },
+  {
+   "file": "real.k25",
+   "url": "https://sembiance.com/fileFormatSamples/image/kodakK25/DC0007S.K25",
+   "sha256": "9C58631DB32908B282D5353FF2B12EE504DF51BE37AB6280935AF258B280E57A",
+   "bytes": 77888,
+   "source": "sembiance/kodakK25  kodakK25/DC0007S.K25"
+  },
+  {
+   "file": "real.azw3",
+   "url": "https://www.gutenberg.org/cache/epub/11/pg11-images-kf8.mobi",
+   "sha256": "B3C9067848D28F8C0F36ADBB198B306791884319E8B2F8EA7083F844D8876815",
+   "bytes": 255486,
+   "source": "Project Gutenberg #11 (Alice's Adventures in Wonderland), the KF8 / azw3 build"
+  },
+  {
+   "file": "real.epub",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testEPUB_multi-metadata-vals.epub",
+   "sha256": "A1A3772B7E718C6BDDEAD4C9ACDED6C0DD466E5C1C1F6D4F6CAE5484C3E6FE33",
+   "bytes": 571926,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testEPUB_multi-metadata-vals.epub"
+  },
+  {
+   "file": "real.fb2",
+   "url": "https://raw.githubusercontent.com/onyx-intl/boox-opensource/master/code/src/cr3/crengine/Tools/Fb2Linux/example.fb2",
+   "sha256": "6D4036055786606A238359926277698369E0608BCCF58BABDB558E0A47B78E77",
+   "bytes": 100407,
+   "source": "onyx-intl/boox-opensource (CoolReader example book)"
+  },
+  {
+   "file": "real.mobi",
+   "url": "https://raw.githubusercontent.com/bfabiszewski/libmobi/906274205c11944b628da1c553b255acb1af7c55/tests/samples/sample-cp1252.mobi",
+   "sha256": "E77AA8F99D65F12BC7B5D71F272A2A4A8F36FE6D5C00E9B95C8A926B145AD088",
+   "bytes": 108476,
+   "source": "bfabiszewski/libmobi@90627420  tests/samples/sample-cp1252.mobi"
+  },
+  {
+   "file": "real.pdf",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/test/resources/test-documents/testMicrosoftIRMServices.pdf",
+   "sha256": "D2FF3A8CC84E0387792B86E490823851115387FFAB340F599CC5CED338228FDC",
+   "bytes": 290327,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pdf-module/src/test/resources/test-documents/testMicrosoftIRMServices.pdf"
+  },
+  {
+   "file": "real.djvu",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/Sarmatiae_Europeae_Descriptio_1578_-_0242.djvu",
+   "sha256": "3DA404D89255001C2D69F78A19CE49149CD40E1478673C788926FC8D5DEFFBF3",
+   "bytes": 70722,
+   "source": "Wikimedia Commons"
+  },
+  {
+   "file": "real.ggb",
+   "url": "https://media.githubusercontent.com/media/dotnetCarpenter/matematik_c/18e2716a1638672598be2cca3a4f3b72b1f8e37d/modul1B/Opgave3_modul1B.ggb",
+   "sha256": "7043820AB0348486003FEF467D754A796A92FDB1D331C1074D510A268216D3C6",
+   "bytes": 67144,
+   "source": "dotnetCarpenter/matematik_c@18e2716a  modul1B/Opgave3_modul1B.ggb (a GeoGebra Classic save: geogebra.xml + geogebra_thumbnail.png; Git LFS, so the media host)"
+  },
+  {
+   "file": "real.odt",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODTEmbeddedImageLink.odt",
+   "sha256": "247EB4787C97D5D23A16E785BD5D7DE6D72941A57793472037DCC7D981ACBD6B",
+   "bytes": 32873,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODTEmbeddedImageLink.odt"
+  },
+  {
+   "file": "real.ods",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODSMacro.ods",
+   "sha256": "1BBCC2E1753AF18CD94D9C56645F1A5D695EC09C7758FFA0EB45B0F8646C28CA",
+   "bytes": 30726,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODSMacro.ods"
+  },
+  {
+   "file": "real.odp",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODP_NPE.odp",
+   "sha256": "1FBB574D53FAA5B7F5A9DDC139CE770441B321536D57BA03EDB196FF9AED7DE4",
+   "bytes": 431290,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testODP_NPE.odp"
+  },
+  {
+   "file": "real.odg",
+   "url": "https://raw.githubusercontent.com/mypaint/mypaint/fb6f7d6b12238d125294496b105f5f36e658bc61/doc/brush_observers.odg",
+   "sha256": "7030207A69E697658D5914D38854F54150BCF7871FF9F99FA3B585826533A6C7",
+   "bytes": 18373,
+   "source": "mypaint/mypaint@fb6f7d6b  doc/brush_observers.odg"
+  },
+  {
+   "file": "real.pptx",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT_various2.pptx",
+   "sha256": "24F56E909A0597264CA77E340C291382530F08B17BF03EAD33E8C17B389A7938",
+   "bytes": 248937,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT_various2.pptx"
+  },
+  {
+   "file": "real.pptm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.pptm",
+   "sha256": "D8C6E14116EAFECC8C6EFA30AA40D755729D4CD3D97550DC9F77FA3C1562EB5B",
+   "bytes": 36541,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.pptm"
+  },
+  {
+   "file": "real.key",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testKeynote2013.key",
+   "sha256": "8DA93F6B566BC9EB22F4791BBFD5F2179162F39BF80968187B164C33D31824DB",
+   "bytes": 274397,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testKeynote2013.key"
+  },
+  {
+   "file": "real.pages",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testPages2013.pages",
+   "sha256": "1819DD1F4A04FD22018AFCAA3743802F891E092C0974A4193498FB4A1173F2EE",
+   "bytes": 237567,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testPages2013.pages"
+  },
+  {
+   "file": "real.numbers",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testNumbers2013.numbers",
+   "sha256": "74A834857C02D06DBC399AFF8BA475F7708092E42501CC665D7FA489F385831F",
+   "bytes": 179147,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testNumbers2013.numbers"
+  },
+  {
+   "file": "real.indd",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testINDD.indd",
+   "sha256": "1C6DB06A6C78B65E4F2C61244C0D0055361575C7D4EB8E3052F8B4A49926A4B0",
+   "bytes": 880640,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testINDD.indd"
+  },
+  {
+   "file": "real.vsdx",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsdx",
+   "sha256": "558C09C518848C98A815C9684F511D5260585FA0C893F2D570B6284D6A9B29A8",
+   "bytes": 32350,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsdx"
+  },
+  {
+   "file": "real.vsdm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsdm",
+   "sha256": "35A9506B34436F30E00CBEC55C5A61A8ECB1B03F391F7452E6DE86BE5A5A7C81",
+   "bytes": 32360,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsdm"
+  },
+  {
+   "file": "real.vsd",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsd",
+   "sha256": "31DE63A4D06B699C2F4B64D66EFD8C2E6E91EBCFB88F72DD2556026F8CE3807E",
+   "bytes": 45568,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testVISIO.vsd"
+  },
+  {
+   "file": "real.pub",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPUBLISHER.pub",
+   "sha256": "2606F530052A818C7949B88C9BF245DBC0A74DDC6B5A60004F37B387FE4B955D",
+   "bytes": 65536,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPUBLISHER.pub"
+  },
+  {
+   "file": "real.docx",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testDOCX_Thumbnail.docx",
+   "sha256": "28E77040DC0B1DF9CDE900F2A125051B5D9D21B9F90E40569D9127160B04C4F8",
+   "bytes": 13810,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testDOCX_Thumbnail.docx"
+  },
+  {
+   "file": "real.docm",
+   "url": "https://raw.githubusercontent.com/apache/poi/dca7cda1dc8a64197f7e7e8e7892ba9a0d79c860/test-data/document/45690.docm",
+   "sha256": "FB55E9C737E015195FE33F076FABDACA91E44FBDB602E46B6A8D04572ED479F6",
+   "bytes": 49596,
+   "source": "apache/poi@dca7cda1  test-data/document/45690.docm"
+  },
+  {
+   "file": "real.dng",
+   "url": "https://raw.pixls.us/getfile.php/7317/nice/Blackmagic%20-%20Micro%20Cinema%20Camera%20-%2012bit%20(16:9).dng",
+   "sha256": "4C65B8CDA205087CFB94D8931811E53E15EB4DF538AD67C1B4A3E76C1185B277",
+   "bytes": 1228096,
+   "source": "raw.pixls.us  Blackmagic - Micro Cinema Camera - 12bit (16:9).dng (the sample fetch-raw-samples.py pins)"
+  },
+  {
+   "file": "real.doc",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_2006ml.doc",
+   "sha256": "06B4D4EA1AD7DFB75024CCD956EBC316D8D32361E3E5C7617678A0B4A9343F72",
+   "bytes": 265728,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_2006ml.doc"
+  },
+  {
+   "file": "real.xlsx",
+   "url": "https://raw.githubusercontent.com/apache/poi/dca7cda1dc8a64197f7e7e8e7892ba9a0d79c860/test-data/spreadsheet/60289.xlsx",
+   "sha256": "1B9826BF19B72647A212BE454A8AD9808C71DF82B026D1CDC9247544386A7ECE",
+   "bytes": 8570,
+   "source": "apache/poi@dca7cda1  test-data/spreadsheet/60289.xlsx"
+  },
+  {
+   "file": "real.xlsm",
+   "url": "https://raw.githubusercontent.com/apache/poi/dca7cda1dc8a64197f7e7e8e7892ba9a0d79c860/test-data/spreadsheet/62629_target.xlsm",
+   "sha256": "45734B66DA5AE8C5268129B4EC7272D1850AC649AFE1330FCB15B1962877E56C",
+   "bytes": 33015,
+   "source": "apache/poi@dca7cda1  test-data/spreadsheet/62629_target.xlsm"
+  },
+  {
+   "file": "real.xls",
+   "url": "https://raw.githubusercontent.com/apache/poi/dca7cda1dc8a64197f7e7e8e7892ba9a0d79c860/test-data/spreadsheet/44010-SingleChart.xls",
+   "sha256": "ADA058980E702715D28204EF2001ACA2E53C35C2B1D3668F19C7A40AC1886EE0",
+   "bytes": 28672,
+   "source": "apache/poi@dca7cda1  test-data/spreadsheet/44010-SingleChart.xls"
+  },
+  {
+   "file": "real.ppsx",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.ppsx",
+   "sha256": "82DCD905DFEB155D8FFEA9D4F7E69D03A39895148407C32FA971A1ADDBEA5656",
+   "bytes": 36521,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.ppsx"
+  },
+  {
+   "file": "real.ppsm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.ppsm",
+   "sha256": "A59F5F63571880C9E1D153D165847C51122969A0BB8D6F5A3258E694EAF754E4",
+   "bytes": 36545,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.ppsm"
+  },
+  {
+   "file": "real.potm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.potm",
+   "sha256": "4C795CE701A8AE1E796F6732798D0AEBD32422430CCF6C6F2EF3BFE9954A6326",
+   "bytes": 40102,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.potm"
+  },
+  {
+   "file": "real.ppt",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWPSAttachment.ppt",
+   "sha256": "5A40E78B18AA6692676C494C74376076C895427789B51047D8CB722D79F68163",
+   "bytes": 269312,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWPSAttachment.ppt"
+  },
+  {
+   "file": "real.mp3",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01 TempleOS Hymn Risen (Remix).mp3",
+   "sha256": "21C7EF9035CF5C1FB3B07CF6B7B36DEC2EC01062DCE481B6023DA4E917E3B3F2",
+   "bytes": 3618524,
+   "source": "Serial-ATA/lofty-rs benches (a real tagged song with cover art)"
+  },
+  {
+   "file": "real.flac",
+   "url": "https://fate-suite.ffmpeg.org/cover_art/cover_art.flac",
+   "sha256": "595357031E50195BE1BAB918FAE960879ACE6C1191B4D533548ABF83BD2CF97C",
+   "bytes": 32000,
+   "source": "fate  cover_art/cover_art.flac"
+  },
+  {
+   "file": "real.ogg",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.ogg",
+   "sha256": "8247612B07353BCFED4CEFBAFFBE08206AADDF62FCF363A5A1A7E40C4869C742",
+   "bytes": 3324595,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).ogg"
+  },
+  {
+   "file": "real.opus",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.opus",
+   "sha256": "33EF92A44F01E116559FD16211E967D7A90F08139469F81BA39472E4FC1B3D21",
+   "bytes": 3059360,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).opus"
+  },
+  {
+   "file": "real.spx",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.spx",
+   "sha256": "3403941E5310D49ECEBA318BC4315E92B6D8FE012099E7C6D50CA8AB2CB78027",
+   "bytes": 1116463,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).spx"
+  },
+  {
+   "file": "real.m4a",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.m4a",
+   "sha256": "EFCB997F757D64DEE3C7E869EA7333BC4C89F291F181740753A7A6F5715FF717",
+   "bytes": 3756219,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).m4a"
+  },
+  {
+   "file": "real.m4b",
+   "url": "https://raw.githubusercontent.com/quodlibet/mutagen/ada28b2cc92c515f3f26640a6feef6516d195872/tests/data/nero-chapters.m4b",
+   "sha256": "4934DDEE48B881620461F751ABE0863AB09825EB688717A03F557277511E0B4D",
+   "bytes": 80002,
+   "source": "quodlibet/mutagen@ada28b2c  tests/data/nero-chapters.m4b"
+  },
+  {
+   "file": "real.aac",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.aac",
+   "sha256": "160B5B9BAC1D6728E59B7279B3045CD8747B6ACBFF234027C63487799539D58E",
+   "bytes": 3783453,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).aac"
+  },
+  {
+   "file": "real.wma",
+   "url": "https://fate-suite.ffmpeg.org/cover_art/Californication_cover.wma",
+   "sha256": "0D597A103F1D24E54943E764BBFFBDA720B43D7DABE1B79E59D797BDA01D141F",
+   "bytes": 102400,
+   "source": "fate  cover_art/Californication_cover.wma"
+  },
+  {
+   "file": "real.ape",
+   "url": "https://fate-suite.ffmpeg.org/cover_art/luckynight_cover.ape",
+   "sha256": "100B725D6CC70BC8F9DCAEF61169480F7DB353D4D59B95FEFAE9B18A1B958752",
+   "bytes": 54482,
+   "source": "fate  cover_art/luckynight_cover.ape"
+  },
+  {
+   "file": "real.wv",
+   "url": "https://fate-suite.ffmpeg.org/cover_art/luckynight_cover.wv",
+   "sha256": "B24D595D8A191F84B1A0F04F48D46098A96B8AC20A0EFBB4542FE70947C2B0A2",
+   "bytes": 54470,
+   "source": "fate  cover_art/luckynight_cover.wv"
+  },
+  {
+   "file": "real.mpc",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/benches/assets/01%20TempleOS%20Hymn%20Risen%20%28Remix%29.mpc",
+   "sha256": "D9AE2A729A579E0434C0DC01FB9D890A40E4B5922A1EEAA9974E301009147F43",
+   "bytes": 6949454,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  benches/assets/01 TempleOS Hymn Risen (Remix).mpc"
+  },
+  {
+   "file": "real.wav",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testWAV.wav",
+   "sha256": "BE314759F29249B0AD5FB0437FA099D9820DA65EFC055397FFC8A552325AE9B5",
+   "bytes": 3884,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testWAV.wav"
+  },
+  {
+   "file": "real.aiff",
+   "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/c9c96a8d9e4036b8c734891ba982d23554529841/lofty/tests/files/assets/minimal/full_test.aiff",
+   "sha256": "D1267B0E6571AEDEFE79954780CD86CACB53CDC9850FCF54683036BD8D4528FF",
+   "bytes": 275320,
+   "source": "Serial-ATA/lofty-rs@c9c96a8d  lofty/tests/files/assets/minimal/full_test.aiff"
+  },
+  {
+   "file": "real.aif",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testAIFF.aif",
+   "sha256": "D5D183E3A94DC75534E10074791AF36CC42E1E89683A55954B8E4D3861F9FDEC",
+   "bytes": 3894,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testAIFF.aif"
+  },
+  {
+   "file": "real.mp4",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/mp4/with-gps.mp4",
+   "sha256": "E4BC499E4DE81CB769D017A3732DB01E9B9EE61D059970663D5239051041A616",
+   "bytes": 242752,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  mp4/with-gps.mp4"
+  },
+  {
+   "file": "real.m4v",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/m4v/sample_iPod.m4v",
+   "sha256": "D0C3302E6BAB377255F985EBD1E7CB94EFF2293C14D192156D9C5CEB65E3A984",
+   "bytes": 2236480,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  m4v/sample_iPod.m4v"
+  },
+  {
+   "file": "real.mov",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/mov/xmp480qt.mov",
+   "sha256": "F3B996265E69D64695D07F0F2D1AC9D7296E44C907422F16F6FA2EB77DA2E618",
+   "bytes": 324431,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  mov/xmp480qt.mov"
+  },
+  {
+   "file": "real.mkv",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testMKV.mkv",
+   "sha256": "3D2D975B7F81FEC04D467EAC7AE83B907614DCFFB36D01A56A7642FE1C1F02BF",
+   "bytes": 82969,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testMKV.mkv"
+  },
+  {
+   "file": "real.webm",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testWEBM.webm",
+   "sha256": "3AA8CE924C469BFC6AA7D43697B5C00ED3A1FE167312D8258CA01EC335E630A6",
+   "bytes": 39745,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testWEBM.webm"
+  },
+  {
+   "file": "real.avi",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/avi/100_0306.AVI",
+   "sha256": "BB56C4E9EAC93CDD5774BA229293F19DC6CD27FEE31A99113DCD3F761E4B8C65",
+   "bytes": 932454,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  avi/100_0306.AVI"
+  },
+  {
+   "file": "real.wmv",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testWMV.wmv",
+   "sha256": "8AB2F746B2DE388A648797E9E189E72A84B06E9649AA2C2176CA9249A4C60504",
+   "bytes": 113878,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testWMV.wmv"
+  },
+  {
+   "file": "real.asf",
+   "url": "https://raw.githubusercontent.com/Exiv2/exiv2/f4c0e706ca40ebb54d75c76efcc345c9bcdc8d47/test/data/sample_960x540.asf",
+   "sha256": "FD0A400791B59ACB1B61A5E2B0A3B203C1503F5FC0C7B5721CC6CD400D3C6B0D",
+   "bytes": 580053,
+   "source": "Exiv2/exiv2@f4c0e706  test/data/sample_960x540.asf"
+  },
+  {
+   "file": "real.flv",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testFLV.flv",
+   "sha256": "2E6F43B5395B085ECDAC4D6BCB17D2E35FA8958C2167DFEDD2928CCA1B30B924",
+   "bytes": 90580,
+   "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/src/test/resources/test-documents/testFLV.flv"
+  },
+  {
+   "file": "real.mpg",
+   "url": "https://fate-suite.ffmpeg.org/mpeg2/t.mpg",
+   "sha256": "D13177688337E32079EEE871A703420E6CB503743CB6E331C961C0DE0AEA82FF",
+   "bytes": 1349276,
+   "source": "fate  mpeg2/t.mpg"
+  },
+  {
+   "file": "real.m2v",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/m2v/sample_mpeg2.m2v",
+   "sha256": "A45304D30F9EC2B3E52E2A1DFF25A09BC581EB8B22216DF30030840944FF93FB",
+   "bytes": 1345348,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  m2v/sample_mpeg2.m2v"
+  },
+  {
+   "file": "real.3gp",
+   "url": "https://raw.githubusercontent.com/f0rm2l1n/multimedia_av_codec_mirror/8cb0e6b30c1c76cc6940b17b692a98d8f550cd45/test/unittest/resources/demuxer_res/3gp_h264_noaudio.3gp",
+   "sha256": "488A96CD23410E1C52C1034655EF9D6F564DEA8174716F34ACD07C9D1F7B1E03",
+   "bytes": 513845,
+   "source": "f0rm2l1n/multimedia_av_codec_mirror@8cb0e6b3  test/unittest/resources/demuxer_res/3gp_h264_noaudio.3gp (OpenHarmony demuxer test data; ftyp 3gp4, H.264)"
+  },
+  {
+   "file": "real.ts",
+   "url": "https://fate-suite.ffmpeg.org/lcevc/L_H264_640x360p_8bit8bit_2D_dd.ts",
+   "sha256": "F8BA03F69D9E920985311ECF6091D3E8ADE84759EDB100248107F671BE731FCD",
+   "bytes": 40044,
+   "source": "fate  lcevc/L_H264_640x360p_8bit8bit_2D_dd.ts"
+  },
+  {
+   "file": "real.m2ts",
+   "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/m2ts/20190706142908.m2ts",
+   "sha256": "9D7CF415067EC3E79E897EEB602FE0C8757D116FFAD4CFCE980B6F0A0133DF07",
+   "bytes": 5799936,
+   "source": "drewnoakes/metadata-extractor-images@651ad0e6  m2ts/20190706142908.m2ts"
+  },
+  {
+   "file": "real.vob",
+   "url": "https://fate-suite.ffmpeg.org/pcm-dvd/coolitnow-partial.vob",
+   "sha256": "E1130AA0FED483547C6E520804FBC79FB04C7188FA83EECE9796848A18FD082D",
+   "bytes": 1048576,
+   "source": "fate  pcm-dvd/coolitnow-partial.vob"
+  },
+  {
+   "file": "real.ogv",
+   "url": "https://fate-suite.ffmpeg.org/ogg/bear.ogv",
+   "sha256": "C6281B645FC9DDCBA7ECC8EB16C525758CEC498DE9645A5E6BE44F6A8962CE57",
+   "bytes": 59943,
+   "source": "fate  ogg/bear.ogv"
+  },
+  {
+   "file": "real.rar",
+   "url": "https://raw.githubusercontent.com/OSGeo/gdal/a9f9f9ed5485e3d288b757c48c9a99dfd4984773/autotest/gcore/data/byte.tif.rar",
+   "sha256": "7CCED9045C48A908E6A7F984DC5BE00AAA5A6602CCEE60085CE1AF56863034B8",
+   "bytes": 533,
+   "source": "OSGeo/gdal@a9f9f9ed  autotest/gcore/data/byte.tif.rar"
+  },
+  {
+   "file": "real.zip",
+   "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/docs/assets/logos/asf-tika-logos.zip",
+   "sha256": "BB39805CB471565DC9F242E1C2D11096DAB0FBDE8E1556FEA8FF1B550B66B212",
+   "bytes": 446228,
+   "source": "apache/tika@3d4262da  docs/assets/logos/asf-tika-logos.zip"
+  },
+  {
+   "file": "real.cdt",
+   "alias_of": "real.cdr",
+   "why": "CorelDRAW template: a CDR the application opens as untitled"
+  },
+  {
+   "file": "real.dicom",
+   "alias_of": "real.dcm",
+   "why": "DICOM Part 10 file under the long extension"
+  },
+  {
+   "file": "real.farbfeld",
+   "alias_of": "real.ff",
+   "why": "farbfeld under its long extension"
+  },
+  {
+   "file": "real.icb",
+   "alias_of": "real.tga",
+   "why": "Truevision Targa under its Image Capture Board extension"
+  },
+  {
+   "file": "real.icon",
+   "alias_of": "real.ico",
+   "why": "Windows icon under the long extension"
+  },
+  {
+   "file": "real.jfif",
+   "alias_of": "real.jpg",
+   "why": "JFIF is the JPEG interchange container; same bytes as .jpg"
+  },
+  {
+   "file": "real.jpe",
+   "alias_of": "real.jpg",
+   "why": "three-letter DOS spelling of .jpeg"
+  },
+  {
+   "file": "real.jps",
+   "alias_of": "real.jpg",
+   "why": "JPEG Stereo: a plain JPEG holding the two views side by side"
+  },
+  {
+   "file": "real.gco",
+   "alias_of": "real.gcode",
+   "why": "G-code under its three-letter extension"
+  },
+  {
+   "file": "real.ptif",
+   "alias_of": "real.tif",
+   "why": "pyramid TIFF: a TIFF whose further pages are smaller copies of page one, which is what is drawn"
+  },
+  {
+   "file": "real.vst",
+   "alias_of": "real.tga",
+   "why": "Truevision Targa under its Vista board extension"
+  },
+  {
+   "file": "real.heifs",
+   "alias_of": "real.heics",
+   "why": "HEIF image sequence under the codec-neutral spelling of the extension"
+  },
+  {
+   "file": "real.jpx",
+   "alias_of": "real.jpf",
+   "why": "JPEG 2000 Part 2 (JPX): .jpf and .jpx are the same file format"
+  },
+  {
+   "file": "real.rgbe",
+   "alias_of": "real.hdr",
+   "why": "Radiance RGBE under the name of its pixel encoding"
+  },
+  {
+   "file": "real.hdri",
+   "alias_of": "real.hdr",
+   "why": "Radiance RGBE under the generic HDR-image extension"
+  },
+  {
+   "file": "real.cxr",
+   "alias_of": "real.exr",
+   "why": "OpenEXR under the extension ImageMagick registers for it"
+  },
+  {
+   "file": "real.wmp",
+   "alias_of": "real.jxr",
+   "why": "JPEG XR / Windows Media Photo under its original extension"
+  },
+  {
+   "file": "real.emg",
+   "alias_of": "real.emf",
+   "why": "Enhanced Metafile under the extension ImageMagick registers for it"
+  },
+  {
+   "file": "real.tpic",
+   "alias_of": "real.tga",
+   "why": "Truevision Targa under its Mac OS type-code extension"
+  },
+  {
+   "file": "real.psdt",
+   "alias_of": "real.psd",
+   "why": "Photoshop template: a PSD the application opens as untitled"
+  },
+  {
+   "file": "real.indt",
+   "alias_of": "real.indd",
+   "why": "InDesign template: an INDD the application opens as untitled"
+  },
+  {
+   "file": "real.skb",
+   "alias_of": "real.skp",
+   "why": "SketchUp backup: the previous .skp, renamed by SketchUp on save"
+  },
+  {
+   "file": "real.ph",
+   "alias_of": "real.pcd",
+   "why": "Kodak Photo CD image pack under its second registered extension"
+  },
+  {
+   "file": "real.blend1",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend2",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend3",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend4",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend5",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend6",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend7",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend8",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend9",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend10",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend11",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend12",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend13",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend14",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend15",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend16",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend17",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend18",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend19",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend20",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend21",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend22",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend23",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend24",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend25",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend26",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend27",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend28",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend29",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend30",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend31",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.blend32",
+   "alias_of": "real.blend",
+   "why": "Blender renames the previous save to .blend1, .blend2, ... - the bytes are a .blend"
+  },
+  {
+   "file": "real.azw",
+   "alias_of": "real.mobi",
+   "why": "Kindle's name for a Mobipocket file"
+  },
+  {
+   "file": "real.prc",
+   "alias_of": "real.mobi",
+   "why": "Mobipocket in its original Palm resource container extension"
+  },
+  {
+   "file": "real.djv",
+   "alias_of": "real.djvu",
+   "why": "DjVu under its three-letter extension"
+  },
+  {
+   "file": "real.ott",
+   "alias_of": "real.odt",
+   "why": "OpenDocument text template: same package as .odt, different mimetype string"
+  },
+  {
+   "file": "real.ots",
+   "alias_of": "real.ods",
+   "why": "OpenDocument spreadsheet template: same package as .ods"
+  },
+  {
+   "file": "real.otp",
+   "alias_of": "real.odp",
+   "why": "OpenDocument presentation template: same package as .odp"
+  },
+  {
+   "file": "real.potx",
+   "alias_of": "real.pptx",
+   "why": "PowerPoint template: the same OPC package as .pptx with a template content type"
+  },
+  {
+   "file": "real.dotx",
+   "alias_of": "real.docx",
+   "why": "Word template: the same OPC package as .docx with a template content type"
+  },
+  {
+   "file": "real.dotm",
+   "alias_of": "real.docm",
+   "why": "Word macro-enabled template: the same OPC package as .docm"
+  },
+  {
+   "file": "real.dot",
+   "alias_of": "real.doc",
+   "why": "Word 97-2003 template: a .doc that opens as untitled"
+  },
+  {
+   "file": "real.xltx",
+   "alias_of": "real.xlsx",
+   "why": "Excel template: the same OPC package as .xlsx with a template content type"
+  },
+  {
+   "file": "real.xltm",
+   "alias_of": "real.xlsm",
+   "why": "Excel macro-enabled template: the same OPC package as .xlsm"
+  },
+  {
+   "file": "real.xlt",
+   "alias_of": "real.xls",
+   "why": "Excel 97-2003 template: a .xls that opens as untitled"
+  },
+  {
+   "file": "real.pps",
+   "alias_of": "real.ppt",
+   "why": "PowerPoint 97-2003 slideshow: a .ppt that opens in show mode"
+  },
+  {
+   "file": "real.pot",
+   "alias_of": "real.ppt",
+   "why": "PowerPoint 97-2003 template: a .ppt that opens as untitled"
+  },
+  {
+   "file": "real.oga",
+   "alias_of": "real.ogg",
+   "why": "Ogg audio under the audio-only extension"
+  },
+  {
+   "file": "real.aifc",
+   "alias_of": "real.aiff",
+   "why": "AIFF-C: the AIFF container with a compression-type chunk"
+  },
+  {
+   "file": "real.qt",
+   "alias_of": "real.mov",
+   "why": "QuickTime movie under its older extension"
+  },
+  {
+   "file": "real.f4v",
+   "alias_of": "real.mp4",
+   "why": "Flash MP4: an ISO-BMFF file with Adobe's brand"
+  },
+  {
+   "file": "real.mpeg",
+   "alias_of": "real.mpg",
+   "why": "MPEG stream under the long extension"
+  },
+  {
+   "file": "real.3g2",
+   "url": "https://raw.githubusercontent.com/f0rm2l1n/multimedia_av_codec_mirror/3094bf893d68009127a3efa67bbcdf09a55b2be4/test/moduletest/resources/demuxer/3g2_mp4v_simple%40level1_720_480_mp4a_2.3g2",
+   "sha256": "B24FE24D6063BF58D89B28E735225CE2023EC979C7952A2818923228FDB0999A",
+   "bytes": 516852,
+   "source": "f0rm2l1n/multimedia_av_codec_mirror@3094bf89  test/moduletest/resources/demuxer/3g2_mp4v_simple@level1_720_480_mp4a_2.3g2 (OpenHarmony demuxer test data; ftyp 3g2a, MPEG-4 Part 2)"
+  },
+  {
+   "file": "real.mts",
+   "alias_of": "real.m2ts",
+   "why": "AVCHD: .mts on the camera card, .m2ts once imported - the same BDAV stream"
+  },
+  {
+   "file": "real.divx",
+   "alias_of": "real.avi",
+   "why": "DivX-encoded AVI under DivX's own extension"
+  },
+  {
+   "file": "real.emz",
+   "gzip_of": "real.emf",
+   "why": "an .emz is a gzip of the Enhanced Metafile, which is how Office writes it"
+  },
+  {
+   "file": "real.wmz",
+   "gzip_of": "real.wmf",
+   "why": "a .wmz is a gzip of the Windows Metafile, which is how Office writes it"
+  },
+  {
+   "file": "real.fbz",
+   "zip_of": "real.fb2",
+   "why": "an .fbz is a zip holding the FictionBook XML, which is how readers and libraries pack it",
+   "entry": "book.fb2"
+  },
+  {
+   "file": "real.mctemplate",
+   "alias_of": "sample.mcworld",
+   "why": "a Bedrock world template is a world zip (world_icon.jpeg, levelname.txt) plus a manifest.json"
+  },
+  {
+   "file": "real.m1v",
+   "url": "https://sembiance.com/fileFormatSamples/video/mpeg1/ROCKET.MPG",
+   "sha256": "AD11CED0A0B17B07EFCE30168C5146AA70578AFDE738EC043BBA43A597339BC5",
+   "bytes": 104987,
+   "source": "sembiance fileFormatSamples  video/mpeg1/ROCKET.MPG (a 1990s bare MPEG-1 video elementary stream, 160x120)"
+  },
+  {
+   "file": "real-vcd.mpg",
+   "url": "https://samples.ffmpeg.org/MPEG1/zelda%20first%20commercial.mpeg",
+   "sha256": "0C6498334FF4B3EF5962BBBC76875C71F913A5ECB0E1D92F7C0B500A37363DA2",
+   "bytes": 2570244,
+   "source": "samples.ffmpeg.org  MPEG1/zelda first commercial.mpeg (an MPEG-1 SYSTEM stream carrying MPEG-1 video + MP2: the VideoCD-era shape Media Foundation cannot open)"
+  },
+  {
+   "file": "real-es.m2v",
+   "url": "https://samples.ffmpeg.org/MPEG2/test422.m2v",
+   "sha256": "8B1338C09822B59C3401EDFFCABFBA509EB6ECE8E19DDEB26538915591D0A8BD",
+   "bytes": 4959840,
+   "source": "samples.ffmpeg.org  MPEG2/test422.m2v (a bare MPEG-2 4:2:2 video elementary stream, 720x576; real.m2v is a program stream, this is the ES shape)"
+  },
+  {
+   "file": "real.m2p",
+   "url": "https://samples.ffmpeg.org/A-codecs/AC3/theoddbot/a52_dvb_remuxed.m2p",
+   "sha256": "DD419BB97CFFD6D0250A20BFC07660C7967E39F00944B6B89392E68EB048FEE6",
+   "bytes": 16157422,
+   "source": "samples.ffmpeg.org  A-codecs/AC3/theoddbot/a52_dvb_remuxed.m2p (a DVB broadcast remuxed to an MPEG-2 program stream, the shape .m2p names)"
+  },
+  {
+   "file": "real.mpv",
+   "alias_of": "real-es.m2v",
+   "why": "A bare MPEG video elementary stream under the name DVD-authoring tools write: .mpv IS the .m2v shape, no container, and the same bytes decode through the same tier"
+  },
+  {
+   "file": "real.mp2v",
+   "alias_of": "real-es.m2v",
+   "why": "The Windows/DVD-tool spelling of an MPEG-2 video elementary stream - the same bytes as .m2v, named to say the codec is MPEG-2 rather than MPEG-1"
+  },
+  {
+   "file": "real.vssx",
+   "url": "https://raw.githubusercontent.com/bhdicaire/visioStencils/e7ebc3ee33281f767852725ee8eaf8754f4bd69a/Stencils/Computer%20Racks/OpenGear%20OM2248.vssx",
+   "sha256": "6530C661D92238CF044F88C7BC6EDB54F2B8ADBF002B1C0F2B2E385AF3D99559",
+   "bytes": 131565,
+   "source": "bhdicaire/visioStencils@e7ebc3ee  Stencils/Computer Racks/OpenGear OM2248.vssx"
+  },
+  {
+   "file": "real.vstx",
+   "url": "https://raw.githubusercontent.com/bhdicaire/visioStencils/e7ebc3ee33281f767852725ee8eaf8754f4bd69a/Documents/Samples/Expanded%20block%20timeline%20v2024.vstx",
+   "sha256": "4019A045B9119D9224CD0298CD3AD7A63225051401929AC2923FAA8CF3228129",
+   "bytes": 25579,
+   "source": "bhdicaire/visioStencils@e7ebc3ee  Documents/Samples/Expanded block timeline v2024.vstx"
+  },
+  {
+   "file": "real.xmind",
+   "url": "https://raw.githubusercontent.com/tobyqin/xmind2testlink/e0692a07c7cdd1458dfff33f4f82db642b1b9aea/tests/zen%20test%20v1.xmind",
+   "sha256": "8AA282227F58DADDEF588B30C256964A274C29235CF867547073881F8BF37692",
+   "bytes": 40779,
+   "source": "tobyqin/xmind2testlink@e0692a07  tests/zen test v1.xmind"
+  },
+  {
+   "file": "real-xmind8.xmind",
+   "url": "https://raw.githubusercontent.com/tobyqin/xmind2testlink/e0692a07c7cdd1458dfff33f4f82db642b1b9aea/tests/Test%20cases%20by%20xmind%20v1.xmind",
+   "sha256": "E1F0605FF88EAF47A06923637555CEC06C861EB4086E69EE570E713D9A48D556",
+   "bytes": 143572,
+   "source": "tobyqin/xmind2testlink@e0692a07  tests/Test cases by xmind v1.xmind"
+  },
+  {
+   "file": "real.avifs",
+   "url": "https://raw.githubusercontent.com/Link-U/avif-sample-images/c666a368b73006246694919b5dbcc078317af6cc/star-8bpc.avifs",
+   "sha256": "AE35B161DE67A5AFEB195EE401F369C34990F0FF8662F70AB4065BC6931F0A66",
+   "bytes": 15679,
+   "source": "Link-U/avif-sample-images@c666a368  star-8bpc.avifs"
+  },
+  {
+   "file": "real.six",
+   "url": "https://raw.githubusercontent.com/saitoha/libsixel/a0151d940af8bb0733dac77248bd55ae86949e56/images/snake.six",
+   "sha256": "0D7C03729CF08EB756BBA0717081855ED585C3785CC810B5F06A47BB4BA8D724",
+   "bytes": 262914,
+   "source": "saitoha/libsixel@a0151d94  images/snake.six"
+  },
+  {
+   "file": "real-vt340.six",
+   "url": "https://raw.githubusercontent.com/hackerb9/vt340test/9485704b827ec6d40109d1955e9e6c6a485a50c2/sixeltests/colorwheel.six",
+   "sha256": "B4DD25F1725D55B109B9599834CE7F605C6813AC57C1B91AB658CBB25A8D5B95",
+   "bytes": 93905,
+   "source": "hackerb9/vt340test@9485704b  sixeltests/colorwheel.six"
+  },
+  {
+   "file": "real.ani",
+   "url": "https://raw.githubusercontent.com/smileyhead/winClassic-cur-ani/fe4ce532a5914538dc2d17080c4c2c1e38bd562c/Cursors/busy_i.ani",
+   "sha256": "F1DF9DD1B595CE34FE62B268E8A2788C1BCB9ED82A9A520011CDA1529E06BE33",
+   "bytes": 68772,
+   "source": "smileyhead/winClassic-cur-ani@fe4ce532  Cursors/busy_i.ani"
+  },
+  {
+   "file": "real.dxf",
+   "url": "https://raw.githubusercontent.com/mozman/ezdxf/d6f2ac10caeddc712ed1824aaeb3b9c050de4a04/examples_dxf/columns_R2007.dxf",
+   "sha256": "31D4D411982821A3DB75854F90108E15F867ECDD619D526FB3C9BD761B92095C",
+   "bytes": 195808,
+   "source": "mozman/ezdxf@d6f2ac10  examples_dxf/columns_R2007.dxf"
+  },
+  {
+   "file": "real-bricscad.dxf",
+   "url": "https://raw.githubusercontent.com/mozman/ezdxf/d6f2ac10caeddc712ed1824aaeb3b9c050de4a04/examples_dxf/insert_bricscad_level_1.dxf",
+   "sha256": "C2597F95C007852DB2BA82DEDD9558F9318981115DDA82FCCFC0267CA60E5A56",
+   "bytes": 91914,
+   "source": "mozman/ezdxf@d6f2ac10  examples_dxf/insert_bricscad_level_1.dxf"
+  },
+  {
+   "file": "real.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/hotspot.vtf",
+   "sha256": "39412CF3C36420802356D0D439ADA6E57155BC352BDB434CE82B2F0B29546C4A",
+   "bytes": 349801,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/hotspot.vtf"
+  },
+  {
+   "file": "real-dxt5.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/sample_dxt5.vtf",
+   "sha256": "11044EB4E2F3C9E4E2553410A718F52E825EA70E41EA91D482A6BA37D99EE178",
+   "bytes": 5696,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/sample_dxt5.vtf"
+  },
+  {
+   "file": "real-bgra8888.vtf",
+   "url": "https://raw.githubusercontent.com/TeamSpen210/srctools/7dfff9fb77c0abd01bdc7f9c1b93dcc6b553099f/tests/test_vtf/sample_bgra8888.vtf",
+   "sha256": "D5CCDDB73CEB30F3EA1EA9B58272241183233AA6F32ED1576A92399F833A1402",
+   "bytes": 22052,
+   "source": "TeamSpen210/srctools@7dfff9fb  tests/test_vtf/sample_bgra8888.vtf"
+  },
+  {
+   "file": "real.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/hi_mark.ktx",
+   "sha256": "C671CF4E1114A7EB5C53E74AB86A8F443159192F2F15E641BA88514EED6EC503",
+   "bytes": 50856,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/hi_mark.ktx"
+  },
+  {
+   "file": "real-bc2.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/pattern_02_bc2.ktx",
+   "sha256": "92124AA86D4F0386F35DCB8652F0E985CBD023B60A6B6F1B06C2A9F116CE4419",
+   "bytes": 1398268,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/pattern_02_bc2.ktx"
+  },
+  {
+   "file": "real-not4.ktx",
+   "url": "https://media.githubusercontent.com/media/KhronosGroup/KTX-Software/90967979cbb7e9401ee2401ff997f30b4b7507d6/tests/resources/ktx/not4_r8g8b8_srgb.ktx",
+   "sha256": "F99F7D4A88BD2EB3BE9B5841DB55DFD57B3CDCEAE91EA1F90A286919CCC0425C",
+   "bytes": 292448,
+   "source": "KhronosGroup/KTX-Software@90967979  tests/resources/ktx/not4_r8g8b8_srgb.ktx"
+  },
+  {
+   "file": "real.nupkg",
+   "url": "https://www.nuget.org/api/v2/package/Serilog/4.0.0",
+   "sha256": "8FC850E5374BD538DF7468813BD3F21C914C30FBC04C758DD5DB6BAD465994DC",
+   "bytes": 536714,
+   "source": "nuget.org  Serilog 4.0.0"
+  },
+  {
+   "file": "real.vsix",
+   "url": "https://open-vsx.org/api/EditorConfig/EditorConfig/0.16.4/file/EditorConfig.EditorConfig-0.16.4.vsix",
+   "sha256": "E50381AE8F82CAC7388C07476849702DD23D4936983195C99B5346FC3707F321",
+   "bytes": 110722,
+   "source": "open-vsx.org  EditorConfig.EditorConfig 0.16.4"
+  },
+  {
+   "file": "real.sixel",
+   "alias_of": "real.six",
+   "why": "DEC SIXEL under its long extension: the same control string, byte for byte. The only public .sixel files found are a terminal test script with text around its image (csdvrx/sixel-testsuite text-test.sixel) and a crash reproducer (libsixel issue 220)."
+  }
+ ],
+ "existing": {
+  "archive-nonsolid.7z": "written by 7-Zip itself, non-solid (build-corpus.ps1)",
+  "archive-sample.7z": "written by 7-Zip itself (build-corpus.ps1), which is the format's real writer",
+  "blob.PspBrush": "Paint Shop Pro brush, a real content file",
+  "countdown.PspTube": "Paint Shop Pro picture tube, a real content file",
+  "sample-1080p.aseprite": "Aseprite 1080p sprite from GitHub (2026-09-17 format batch)",
+  "sample-avif-alpha.avif": "build-corpus.ps1 pin: https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/simple_osm_tile_alpha.avif",
+  "sample-banner.ase": "legacy .ase Aseprite banner from GitHub (2026-09-17 format batch)",
+  "sample-dds-bc6hs.dds": "build-corpus.ps1 pin: https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/lythwood_room_1k_bc6h_signed.dds",
+  "sample-dds-bc7-real.dds": "build-corpus.ps1 pin: https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc7.dds",
+  "sample-h264.flv": "build-corpus.ps1 pin: https://fate-suite.ffmpeg.org/flv/streamloop.flv",
+  "sample-heic-alpha.heic": "build-corpus.ps1 pin: https://raw.githubusercontent.com/strukturag/libheif/1a3583bcce77de6d3f8701c0758e3954863681ba/tests/data/with-alpha-512x512.heic",
+  "sample-indexed.aseprite": "Aseprite indexed sprite from GitHub (2026-09-17 format batch)",
+  "sample-pdn35.pdn": "build-corpus.ps1 pin: https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/oldPDN3510.pdn",
+  "sample-vp6.flv": "build-corpus.ps1 pin: https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv",
+  "sample-vp9p2.webm": "build-corpus.ps1 pin: https://fate-suite.ffmpeg.org/vp9-test-vectors/vp92-2-20-10bit-yuv420.webm",
+  "sample-vp9p3.webm": "build-corpus.ps1 pin: https://fate-suite.ffmpeg.org/vp9-test-vectors/vp93-2-20-12bit-yuv444.webm",
+  "sample.3dm": "build-corpus.ps1 pin: https://github.com/ladybug-tools/lbt-grasshopper-samples/raw/master/samples/honeybee-energy/Rhino/shoe_box.3dm",
+  "sample.3fr": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2851/nice/Hasselblad - H3D - 16bit (4:3).3FR",
+  "sample.afdesign": "build-corpus.ps1 pin: https://raw.githubusercontent.com/NickBeeuwsaert/AFDesignLoad/master/testDesigns/raster_test.afdesign",
+  "sample.apk": "build-corpus.ps1 pin: https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk",
+  "sample.apkm": "built by build-corpus.ps1 around the real androguard APK as base.apk, the shape APKMirror writes",
+  "sample.apks": "built by build-corpus.ps1 around the real androguard APK as base.apk, the shape SAI writes",
+  "sample.arw": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/1582/nice/Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW",
+  "sample.aseprite": "Aseprite sprite from GitHub (2026-09-17 format batch)",
+  "sample.bgcode": "PrusaSlicer MK4 binary G-code (2026-09-17 format batch)",
+  "sample.blend": "build-corpus.ps1 pin: https://raw.githubusercontent.com/mewspring/blend/master/testdata/block.blend",
+  "sample.cbr": "build-corpus.ps1 pin: https://raw.githubusercontent.com/ssokolow/rar-test-files/master/build/testfile.rar3.cbr",
+  "sample.clip": "build-corpus.ps1 pin: https://raw.githubusercontent.com/dobrokot/clip_to_psd/master/tests/test_export_all_features.clip",
+  "sample.cr2": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2102/nice/Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2",
+  "sample.cr3": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/4659/nice/Canon - EOS R6 - 3:2.CR3",
+  "sample.crw": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2073/nice/Canon - PowerShot G1 - RAW (4:3).crw",
+  "sample.dcm": "build-corpus.ps1 pin: https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm",
+  "sample.dcr": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/1347/nice/Kodak - DCS760C - 12bit (3:2).DCR",
+  "sample.dng": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/7317/nice/Blackmagic - Micro Cinema Camera - 12bit (16:9).dng",
+  "sample.dsf": "mutagen's own DSF test file with a cover embedded by mutagen, a real tagger (build-corpus.ps1)",
+  "sample.dwg": "build-corpus.ps1 pin: https://raw.githubusercontent.com/LibreDWG/libredwg/master/test/test-data/example_2000.dwg",
+  "sample.erf": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2680/nice/Epson - R-D1 - 12bit (3:2).ERF",
+  "sample.fff": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/1640/nice/Hasselblad - H5D-40 - 16bit (4:3).fff",
+  "sample.heic": "build-corpus.ps1 pin: https://raw.githubusercontent.com/strukturag/libheif/master/examples/example.heic",
+  "sample.iiq": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/8010/nice/Phase One - P40+ - IIQ S (4:3).IIQ",
+  "sample.indd": "build-corpus.ps1 pin: https://media.githubusercontent.com/media/caesuric/familiar-quest/39d89aa7a5f98ec3e86d904f9bd483d7f5068931/Art/Unit%20Frame%20Circle.indd",
+  "sample.kdc": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2345/nice/Kodak - KODAK P712 ZOOM DIGITAL CAMERA - NAN.KDC",
+  "sample.max": "build-corpus.ps1 pin: https://media.githubusercontent.com/media/wuye9036/SalviaRenderer/9eefbd4d036f2ff7bf7c03ae5b620865af964d6d/res/Logo3D.max",
+  "sample.mcaddon": "Minecraft Bedrock add-on (2026-09-17 format batch)",
+  "sample.mcpack": "Minecraft Bedrock pack (2026-09-17 format batch)",
+  "sample.mcworld": "Minecraft Bedrock world (2026-09-17 format batch)",
+  "sample.mdc": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/4510/nice/Minolta - RD 175.MDC",
+  "sample.mef": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/562/nice/Mamiya - ZD.MEF",
+  "sample.mobi": "build-corpus.ps1 pin: https://raw.githubusercontent.com/bfabiszewski/libmobi/public/tests/samples/sample-cp1252.mobi",
+  "sample.mos": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/3196/nice/Leaf - Aptus 22 - 16bit (4:3).mos",
+  "sample.mrw": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/7795/nice/Minolta - DiMAGE 5 - 4:3.MRW",
+  "sample.nef": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/4282/nice/Nikon - Nikon COOLSCAN IV ED - uncompressed (4:3).nef",
+  "sample.nrw": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/3381/nice/Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4:3).NRW",
+  "sample.orf": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/5424/nice/Olympus - E-10 - 16bit (4:3).ORF",
+  "sample.ori": "fetch-raw-samples.py: raw.pixls.us, Olympus E-M5 Mark II high-res .ORI",
+  "sample.pdn": "build-corpus.ps1 pin: https://raw.githubusercontent.com/addisonElliott/pypdn/master/tests/data/Untitled2.pdn",
+  "sample.pef": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2239/nice/Pentax - K10D - 12bit 12bit compressed (3:2).PEF",
+  "sample.psb": "build-corpus.ps1 pin: https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test7.psb",
+  "sample.psd": "build-corpus.ps1 pin: https://raw.githubusercontent.com/Agamnentzar/psd-thumbnail-provider/master/Test/test.psd",
+  "sample.pub": "build-corpus.ps1 pin: https://archive.org/download/NouveauMicrosoftPublisherDocument/Nouveau%20Microsoft%20Publisher%20Document.pub",
+  "sample.pxo": "Pixelorama project (2026-09-17 format batch)",
+  "sample.raf": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2726/nice/Fujifilm - FinePix S5000 - 4:3.RAF",
+  "sample.rw2": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/7008/nice/Panasonic - DMC-LX7 - 1:1.RW2",
+  "sample.rwl": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/2811/nice/Leica - D-LUX 5 - 1:1.RWL",
+  "sample.skp": "build-corpus.ps1 pin: https://raw.githubusercontent.com/SketchUp/testup-2/main/tests/SketchUp%20Ruby%20API/TC_Sketchup_DefinitionList/import_files/circle.skp",
+  "sample.sldasm": "OLE-era SolidWorks assembly (2026-09-17 format batch)",
+  "sample.spla": "SpriteLoop package from the spriteloop-defold runtime repo",
+  "sample.sr2": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/3221/nice/Sony - DSC-R1 - 14bit 14bit uncompressed (3:2).SR2",
+  "sample.srf": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/1351/nice/Sony - DSC-F828 - 4:3.SRF",
+  "sample.srw": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/3668/nice/Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW",
+  "sample.sti": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/6942/nice/Sinarback - Sinarback eVolution 75, Sinar p3 / f3 - 16bit (4:3).sti",
+  "sample.vsd": "build-corpus.ps1 pin: https://media.githubusercontent.com/media/microchip-ung/mesa/25e97aadd4a1f27190ee08a6c942042ec0673135/mesa/docs/l3/l3.vsd",
+  "sample.vsdx": "build-corpus.ps1 pin: https://github.com/Structural-Mechanics-CEG/mechanics-figures-source/raw/0acf216e7915cadc2b396bef5037533fef98790a/shear_3/Tekening1.vsdx",
+  "sample.x3f": "fetch-raw-samples.py: https://raw.pixls.us/getfile.php/1116/nice/Sigma - DP1 - 3:2.X3F",
+  "sample.xapk": "built by build-corpus.ps1 around the real androguard APK as base.apk, the shape APKPure writes",
+  "sample.xcf": "build-corpus.ps1 pin: https://gitlab.gnome.org/GNOME/gimp/-/raw/master/app/tests/files/gimp-2-6-file.xcf"
+ },
+ "coverage": {
+  "3dm": [
+   "sample.3dm"
+  ],
+  "3fr": [
+   "sample.3fr"
+  ],
+  "3g2": [
+   "real.3g2"
+  ],
+  "3gp": [
+   "real.3gp"
+  ],
+  "3mf": [
+   "real.3mf"
+  ],
+  "7z": [
+   "archive-sample.7z",
+   "archive-nonsolid.7z"
+  ],
+  "aac": [
+   "real.aac"
+  ],
+  "afdesign": [
+   "sample.afdesign"
+  ],
+  "ai": [
+   "real.ai"
+  ],
+  "aif": [
+   "real.aif"
+  ],
+  "aifc": [
+   "real.aifc"
+  ],
+  "aiff": [
+   "real.aiff"
+  ],
+  "ani": [
+   "real.ani"
+  ],
+  "ape": [
+   "real.ape"
+  ],
+  "apk": [
+   "real.apk",
+   "sample.apk"
+  ],
+  "apkm": [
+   "sample.apkm"
+  ],
+  "apks": [
+   "sample.apks"
+  ],
+  "apng": [
+   "real.apng"
+  ],
+  "arw": [
+   "sample.arw"
+  ],
+  "ase": [
+   "sample-banner.ase"
+  ],
+  "aseprite": [
+   "real.aseprite",
+   "sample-1080p.aseprite",
+   "sample-indexed.aseprite",
+   "sample.aseprite"
+  ],
+  "asf": [
+   "real.asf"
+  ],
+  "avi": [
+   "real.avi"
+  ],
+  "avif": [
+   "real.avif",
+   "sample-avif-alpha.avif"
+  ],
+  "avifs": [
+   "real.avifs"
+  ],
+  "azw": [
+   "real.azw"
+  ],
+  "azw3": [
+   "real.azw3"
+  ],
+  "bgcode": [
+   "real.bgcode",
+   "sample.bgcode"
+  ],
+  "blend": [
+   "real.blend",
+   "sample.blend"
+  ],
+  "blend1": [
+   "real.blend1"
+  ],
+  "blend10": [
+   "real.blend10"
+  ],
+  "blend11": [
+   "real.blend11"
+  ],
+  "blend12": [
+   "real.blend12"
+  ],
+  "blend13": [
+   "real.blend13"
+  ],
+  "blend14": [
+   "real.blend14"
+  ],
+  "blend15": [
+   "real.blend15"
+  ],
+  "blend16": [
+   "real.blend16"
+  ],
+  "blend17": [
+   "real.blend17"
+  ],
+  "blend18": [
+   "real.blend18"
+  ],
+  "blend19": [
+   "real.blend19"
+  ],
+  "blend2": [
+   "real.blend2"
+  ],
+  "blend20": [
+   "real.blend20"
+  ],
+  "blend21": [
+   "real.blend21"
+  ],
+  "blend22": [
+   "real.blend22"
+  ],
+  "blend23": [
+   "real.blend23"
+  ],
+  "blend24": [
+   "real.blend24"
+  ],
+  "blend25": [
+   "real.blend25"
+  ],
+  "blend26": [
+   "real.blend26"
+  ],
+  "blend27": [
+   "real.blend27"
+  ],
+  "blend28": [
+   "real.blend28"
+  ],
+  "blend29": [
+   "real.blend29"
+  ],
+  "blend3": [
+   "real.blend3"
+  ],
+  "blend30": [
+   "real.blend30"
+  ],
+  "blend31": [
+   "real.blend31"
+  ],
+  "blend32": [
+   "real.blend32"
+  ],
+  "blend4": [
+   "real.blend4"
+  ],
+  "blend5": [
+   "real.blend5"
+  ],
+  "blend6": [
+   "real.blend6"
+  ],
+  "blend7": [
+   "real.blend7"
+  ],
+  "blend8": [
+   "real.blend8"
+  ],
+  "blend9": [
+   "real.blend9"
+  ],
+  "bmp": [
+   "real.bmp"
+  ],
+  "bw": [
+   "real.bw"
+  ],
+  "cal": [
+   "real.cal"
+  ],
+  "cals": [
+   "real.cals"
+  ],
+  "cbr": [
+   "sample.cbr"
+  ],
+  "cdr": [
+   "real.cdr"
+  ],
+  "cdt": [
+   "real.cdt"
+  ],
+  "cin": [
+   "real.cin"
+  ],
+  "clip": [
+   "sample.clip"
+  ],
+  "cmx": [
+   "real.cmx"
+  ],
+  "cr2": [
+   "sample.cr2"
+  ],
+  "cr3": [
+   "sample.cr3"
+  ],
+  "crw": [
+   "sample.crw"
+  ],
+  "cur": [
+   "real.cur"
+  ],
+  "cut": [
+   "real.cut"
+  ],
+  "cxr": [
+   "real.cxr"
+  ],
+  "dcm": [
+   "real.dcm",
+   "sample.dcm"
+  ],
+  "dcr": [
+   "sample.dcr"
+  ],
+  "dcx": [
+   "real.dcx"
+  ],
+  "dds": [
+   "real.dds",
+   "sample-dds-bc6hs.dds",
+   "sample-dds-bc7-real.dds"
+  ],
+  "dib": [
+   "real.dib"
+  ],
+  "dicom": [
+   "real.dicom"
+  ],
+  "divx": [
+   "real.divx"
+  ],
+  "djv": [
+   "real.djv"
+  ],
+  "djvu": [
+   "real.djvu"
+  ],
+  "dng": [
+   "real.dng",
+   "sample.dng"
+  ],
+  "doc": [
+   "real.doc"
+  ],
+  "docm": [
+   "real.docm"
+  ],
+  "docx": [
+   "real.docx"
+  ],
+  "dot": [
+   "real.dot"
+  ],
+  "dotm": [
+   "real.dotm"
+  ],
+  "dotx": [
+   "real.dotx"
+  ],
+  "dpx": [
+   "real.dpx"
+  ],
+  "dsf": [
+   "sample.dsf"
+  ],
+  "dwg": [
+   "real.dwg",
+   "sample.dwg"
+  ],
+  "dxf": [
+   "real.dxf",
+   "real-bricscad.dxf"
+  ],
+  "dxt1": [
+   "real.dxt1"
+  ],
+  "dxt5": [
+   "real.dxt5"
+  ],
+  "emf": [
+   "real.emf"
+  ],
+  "emg": [
+   "real.emg"
+  ],
+  "emz": [
+   "real.emz"
+  ],
+  "eps": [
+   "real.eps"
+  ],
+  "epub": [
+   "real.epub"
+  ],
+  "erf": [
+   "sample.erf"
+  ],
+  "exr": [
+   "real.exr"
+  ],
+  "f4v": [
+   "real.f4v"
+  ],
+  "farbfeld": [
+   "real.farbfeld"
+  ],
+  "fb2": [
+   "real.fb2"
+  ],
+  "fbz": [
+   "real.fbz"
+  ],
+  "fcstd": [
+   "real.fcstd"
+  ],
+  "ff": [
+   "real.ff"
+  ],
+  "fff": [
+   "sample.fff"
+  ],
+  "fits": [
+   "real.fits",
+   "real-extension.fits"
+  ],
+  "flac": [
+   "real.flac"
+  ],
+  "flv": [
+   "real.flv",
+   "sample-h264.flv",
+   "sample-vp6.flv"
+  ],
+  "fts": [
+   "real.fts"
+  ],
+  "gco": [
+   "real.gco"
+  ],
+  "gcode": [
+   "real.gcode"
+  ],
+  "ggb": [
+   "real.ggb"
+  ],
+  "gif": [
+   "real.gif"
+  ],
+  "hdp": [
+   "real.hdp"
+  ],
+  "hdr": [
+   "real.hdr"
+  ],
+  "hdri": [
+   "real.hdri"
+  ],
+  "heic": [
+   "real.heic",
+   "sample-heic-alpha.heic",
+   "sample.heic"
+  ],
+  "heics": [
+   "real.heics"
+  ],
+  "heif": [
+   "real.heif"
+  ],
+  "heifs": [
+   "real.heifs"
+  ],
+  "hif": [
+   "real.hif"
+  ],
+  "icb": [
+   "real.icb"
+  ],
+  "icns": [
+   "real.icns"
+  ],
+  "ico": [
+   "real.ico"
+  ],
+  "icon": [
+   "real.icon"
+  ],
+  "iff": [
+   "real.iff"
+  ],
+  "iiq": [
+   "sample.iiq"
+  ],
+  "ilbm": [
+   "real.ilbm"
+  ],
+  "indd": [
+   "real.indd",
+   "sample.indd"
+  ],
+  "indt": [
+   "real.indt"
+  ],
+  "j2c": [
+   "real.j2c"
+  ],
+  "j2k": [
+   "real.j2k"
+  ],
+  "jfif": [
+   "real.jfif"
+  ],
+  "jng": [
+   "real.jng"
+  ],
+  "jp2": [
+   "real.jp2"
+  ],
+  "jpc": [
+   "real.jpc"
+  ],
+  "jpe": [
+   "real.jpe"
+  ],
+  "jpeg": [
+   "real.jpeg"
+  ],
+  "jpf": [
+   "real.jpf"
+  ],
+  "jpg": [
+   "real.jpg"
+  ],
+  "jpm": [
+   "real.jpm"
+  ],
+  "jps": [
+   "real.jps"
+  ],
+  "jpx": [
+   "real.jpx"
+  ],
+  "jxl": [
+   "real.jxl"
+  ],
+  "jxr": [
+   "real.jxr"
+  ],
+  "k25": [
+   "real.k25"
+  ],
+  "kdc": [
+   "sample.kdc"
+  ],
+  "key": [
+   "real.key"
+  ],
+  "kra": [
+   "real.kra"
+  ],
+  "ktx": [
+   "real.ktx",
+   "real-bc2.ktx",
+   "real-not4.ktx"
+  ],
+  "lbm": [
+   "real.lbm"
+  ],
+  "m1v": [
+   "real.m1v"
+  ],
+  "m2p": [
+   "real.m2p"
+  ],
+  "m2ts": [
+   "real.m2ts"
+  ],
+  "m2v": [
+   "real.m2v",
+   "real-es.m2v"
+  ],
+  "m4a": [
+   "real.m4a"
+  ],
+  "m4b": [
+   "real.m4b"
+  ],
+  "m4v": [
+   "real.m4v"
+  ],
+  "mac": [
+   "real.mac"
+  ],
+  "mat": [
+   "real.mat"
+  ],
+  "max": [
+   "real.max",
+   "sample.max"
+  ],
+  "mcaddon": [
+   "sample.mcaddon"
+  ],
+  "mcpack": [
+   "sample.mcpack"
+  ],
+  "mctemplate": [
+   "real.mctemplate"
+  ],
+  "mcworld": [
+   "sample.mcworld"
+  ],
+  "mdc": [
+   "sample.mdc"
+  ],
+  "mef": [
+   "sample.mef"
+  ],
+  "miff": [
+   "real.miff"
+  ],
+  "mkv": [
+   "real.mkv"
+  ],
+  "mng": [
+   "real.mng"
+  ],
+  "mobi": [
+   "real.mobi",
+   "sample.mobi"
+  ],
+  "mos": [
+   "sample.mos"
+  ],
+  "mov": [
+   "real.mov"
+  ],
+  "mp2v": [
+   "real.mp2v"
+  ],
+  "mp3": [
+   "real.mp3"
+  ],
+  "mp4": [
+   "real.mp4"
+  ],
+  "mpc": [
+   "real.mpc"
+  ],
+  "mpeg": [
+   "real.mpeg"
+  ],
+  "mpg": [
+   "real.mpg",
+   "real-vcd.mpg"
+  ],
+  "mpo": [
+   "real.mpo"
+  ],
+  "mpv": [
+   "real.mpv"
+  ],
+  "mrw": [
+   "sample.mrw"
+  ],
+  "mts": [
+   "real.mts"
+  ],
+  "nef": [
+   "sample.nef"
+  ],
+  "nrw": [
+   "sample.nrw"
+  ],
+  "numbers": [
+   "real.numbers"
+  ],
+  "nupkg": [
+   "real.nupkg"
+  ],
+  "obj": [
+   "real.obj"
+  ],
+  "odg": [
+   "real.odg"
+  ],
+  "odp": [
+   "real.odp"
+  ],
+  "ods": [
+   "real.ods"
+  ],
+  "odt": [
+   "real.odt"
+  ],
+  "oga": [
+   "real.oga"
+  ],
+  "ogg": [
+   "real.ogg"
+  ],
+  "ogv": [
+   "real.ogv"
+  ],
+  "opus": [
+   "real.opus"
+  ],
+  "ora": [
+   "real.ora"
+  ],
+  "orf": [
+   "sample.orf"
+  ],
+  "ori": [
+   "sample.ori"
+  ],
+  "otp": [
+   "real.otp"
+  ],
+  "ots": [
+   "real.ots"
+  ],
+  "ott": [
+   "real.ott"
+  ],
+  "pages": [
+   "real.pages"
+  ],
+  "pam": [
+   "real.pam"
+  ],
+  "pbm": [
+   "real.pbm"
+  ],
+  "pcd": [
+   "real.pcd"
+  ],
+  "pcx": [
+   "real.pcx"
+  ],
+  "pdb": [
+   "real.pdb"
+  ],
+  "pdd": [
+   "real.pdd"
+  ],
+  "pdf": [
+   "real.pdf"
+  ],
+  "pdn": [
+   "sample-pdn35.pdn",
+   "sample.pdn"
+  ],
+  "pef": [
+   "sample.pef"
+  ],
+  "pfm": [
+   "real.pfm"
+  ],
+  "pgm": [
+   "real.pgm"
+  ],
+  "pgx": [
+   "real.pgx"
+  ],
+  "ph": [
+   "real.ph"
+  ],
+  "pix": [
+   "real.pix"
+  ],
+  "ply": [
+   "real.ply"
+  ],
+  "png": [
+   "real.png"
+  ],
+  "pnm": [
+   "real.pnm"
+  ],
+  "pot": [
+   "real.pot"
+  ],
+  "potm": [
+   "real.potm"
+  ],
+  "potx": [
+   "real.potx"
+  ],
+  "ppm": [
+   "real.ppm"
+  ],
+  "pps": [
+   "real.pps"
+  ],
+  "ppsm": [
+   "real.ppsm"
+  ],
+  "ppsx": [
+   "real.ppsx"
+  ],
+  "ppt": [
+   "real.ppt"
+  ],
+  "pptm": [
+   "real.pptm"
+  ],
+  "pptx": [
+   "real.pptx"
+  ],
+  "prc": [
+   "real.prc"
+  ],
+  "psb": [
+   "real.psb",
+   "sample.psb"
+  ],
+  "psd": [
+   "real.psd",
+   "sample.psd"
+  ],
+  "psdt": [
+   "real.psdt"
+  ],
+  "psp": [
+   "real.psp"
+  ],
+  "pspbrush": [
+   "blob.PspBrush"
+  ],
+  "pspimage": [
+   "real.pspimage"
+  ],
+  "psptube": [
+   "countdown.PspTube"
+  ],
+  "ptif": [
+   "real.ptif"
+  ],
+  "pub": [
+   "real.pub",
+   "sample.pub"
+  ],
+  "pxo": [
+   "real.pxo",
+   "sample.pxo"
+  ],
+  "qoi": [
+   "real.qoi"
+  ],
+  "qt": [
+   "real.qt"
+  ],
+  "raf": [
+   "sample.raf"
+  ],
+  "rar": [
+   "real.rar"
+  ],
+  "ras": [
+   "real.ras"
+  ],
+  "rgbe": [
+   "real.rgbe"
+  ],
+  "rla": [
+   "real.rla"
+  ],
+  "rle": [
+   "real.rle"
+  ],
+  "rw2": [
+   "sample.rw2"
+  ],
+  "rwl": [
+   "sample.rwl"
+  ],
+  "scr": [
+   "real.scr"
+  ],
+  "sct": [
+   "real.sct"
+  ],
+  "sfw": [
+   "real.sfw"
+  ],
+  "sgi": [
+   "real.sgi"
+  ],
+  "six": [
+   "real.six",
+   "real-vt340.six"
+  ],
+  "sixel": [
+   "real.sixel"
+  ],
+  "skb": [
+   "real.skb"
+  ],
+  "sketch": [
+   "real.sketch"
+  ],
+  "skp": [
+   "real.skp",
+   "sample.skp"
+  ],
+  "sldasm": [
+   "real.sldasm",
+   "sample.sldasm"
+  ],
+  "slddrw": [
+   "real.slddrw"
+  ],
+  "sldprt": [
+   "real.sldprt"
+  ],
+  "spla": [
+   "sample.spla"
+  ],
+  "spx": [
+   "real.spx"
+  ],
+  "sr2": [
+   "sample.sr2"
+  ],
+  "srf": [
+   "sample.srf"
+  ],
+  "srw": [
+   "sample.srw"
+  ],
+  "sti": [
+   "sample.sti"
+  ],
+  "stl": [
+   "real.stl"
+  ],
+  "sun": [
+   "real.sun"
+  ],
+  "svg": [
+   "real.svg"
+  ],
+  "svgz": [
+   "real.svgz"
+  ],
+  "tga": [
+   "real.tga"
+  ],
+  "tif": [
+   "real.tif"
+  ],
+  "tiff": [
+   "real.tiff"
+  ],
+  "tiff64": [
+   "real.tiff64"
+  ],
+  "tim": [
+   "real.tim"
+  ],
+  "tm2": [
+   "real.tm2"
+  ],
+  "tpic": [
+   "real.tpic"
+  ],
+  "ts": [
+   "real.ts"
+  ],
+  "tub": [
+   "real.tub"
+  ],
+  "vda": [
+   "real.vda"
+  ],
+  "vicar": [
+   "real.vicar"
+  ],
+  "viff": [
+   "real.viff"
+  ],
+  "vips": [
+   "real.vips"
+  ],
+  "vob": [
+   "real.vob"
+  ],
+  "vsd": [
+   "real.vsd",
+   "sample.vsd"
+  ],
+  "vsdm": [
+   "real.vsdm"
+  ],
+  "vsdx": [
+   "real.vsdx",
+   "sample.vsdx"
+  ],
+  "vsix": [
+   "real.vsix"
+  ],
+  "vssx": [
+   "real.vssx"
+  ],
+  "vst": [
+   "real.vst"
+  ],
+  "vstx": [
+   "real.vstx"
+  ],
+  "vtf": [
+   "real.vtf",
+   "real-dxt5.vtf",
+   "real-bgra8888.vtf"
+  ],
+  "wav": [
+   "real.wav"
+  ],
+  "wdp": [
+   "real.wdp"
+  ],
+  "webm": [
+   "real.webm",
+   "sample-vp9p2.webm",
+   "sample-vp9p3.webm"
+  ],
+  "webp": [
+   "real.webp"
+  ],
+  "wma": [
+   "real.wma"
+  ],
+  "wmf": [
+   "real.wmf"
+  ],
+  "wmp": [
+   "real.wmp"
+  ],
+  "wmv": [
+   "real.wmv"
+  ],
+  "wmz": [
+   "real.wmz"
+  ],
+  "wpg": [
+   "real.wpg"
+  ],
+  "wv": [
+   "real.wv"
+  ],
+  "x3f": [
+   "sample.x3f"
+  ],
+  "xapk": [
+   "sample.xapk"
+  ],
+  "xbm": [
+   "real.xbm"
+  ],
+  "xcf": [
+   "real.xcf",
+   "sample.xcf"
+  ],
+  "xls": [
+   "real.xls"
+  ],
+  "xlsm": [
+   "real.xlsm"
+  ],
+  "xlsx": [
+   "real.xlsx"
+  ],
+  "xlt": [
+   "real.xlt"
+  ],
+  "xltm": [
+   "real.xltm"
+  ],
+  "xltx": [
+   "real.xltx"
+  ],
+  "xmind": [
+   "real.xmind",
+   "real-xmind8.xmind"
+  ],
+  "xpm": [
+   "real.xpm"
+  ],
+  "xv": [
+   "real.xv"
+  ],
+  "zip": [
+   "real.zip"
+  ]
+ },
+ "waived": {
+  "af": "Affinity 2 universal document: no public sample found. The real .afdesign covers the shared container.",
+  "afphoto": "Affinity Photo document: no public sample found. The real .afdesign covers the container all Affinity apps share.",
+  "afpub": "Affinity Publisher document: no public sample found. The real .afdesign covers the container all Affinity apps share.",
+  "aftemplate": "Affinity template: no public sample found. The real .afdesign covers the shared container.",
+  "avci": "No AVC-coded HEIF file is public: Nokia's conformance set and libheif's examples are all HEVC. The corpus sample is its real HEIC under this extension, which exercises the hook and the shared HEIF reader, not an AVC bitstream.",
+  "bay": "Casio RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind.",
+  "c4d": "Cinema 4D scene: no public scene with an embedded preview found. The corpus sample is built with the real chunk layout around a JPEG preview.",
+  "cap": "Phase One .cap RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (the real .iiq covers the vendor). No sample of any kind.",
+  "cb7": "See .cbz: a 7-Zip archive of page images, written for the corpus by 7-Zip itself.",
+  "cbt": "See .cbz: a TAR of page images, written for the corpus by the in-box tar.exe.",
+  "cbz": "A comic archive is a plain ZIP of page images written by an archiver; the corpus builds its own with a real one. A scanned public-domain comic is 25 MB or more per file for no format coverage the small one lacks; the real .cbr is a third-party RAR.",
+  "dcs": "Kodak DCS RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (real .dcr, .kdc and .k25 cover the vendor). No sample of any kind.",
+  "drf": "Kodak DRF RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind.",
+  "f3d": "Fusion 360 archives: none found under a stable public URL. The corpus sample is built with the real layout, zstd-compressed preview included.",
+  "fl32": "FilmLight's float format. Nothing written by FilmLight's own software is public; the corpus sample comes from ImageMagick, the only other writer.",
+  "jnx": "Garmin BirdsEye tiles are licensed per device, so no redistributable file exists. No sample of any kind.",
+  "livp": "A Live Photo bundle (a zip of the HEIC and the MOV) only comes out of a phone app's export and none is public. The corpus sample is built with that layout around the real HEIC.",
+  "odf": "LibreOffice Math writes an empty thumbnail into every formula file, so a real .odf draws as a blank tile. The corpus sample carries a drawn thumbnail in the same package layout; the real .odt, .ods, .odp and .odg cover the reader.",
+  "phm": "Portable half-float map: ImageMagick is the only writer in circulation; the corpus sample is its output.",
+  "phz": "See .cbz: a ZIP of images under a second extension; the corpus copy is its .cbz.",
+  "procreate": "Procreate (iPad) document: none found under a stable public URL. The corpus sample is built with the real package layout (QuickLook/Thumbnail.png).",
+  "pspframe": "Paint Shop Pro picture frame: these ship only inside Corel's installers. The real .pspimage, .psp, .tub, .PspBrush and .PspTube files cover the reader they share; a renamed one would prove nothing about a frame.",
+  "pspmask": "Paint Shop Pro mask: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files.",
+  "pspselection": "Paint Shop Pro selection: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files.",
+  "pspshape": "Paint Shop Pro preset shape: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files.",
+  "ptx": "Pentax PTX RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (the real .pef covers the vendor). No sample of any kind.",
+  "pwp": "PhotoWorks album: no public file found. The real .sfw covers the picture format inside it, and the album wrapper has its own unit test.",
+  "pxn": "Logitech Fotoman RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind.",
+  "rmf": "Raw Media Format: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind.",
+  "sf3": "Simple File Format family image: no third-party file found; the corpus sample is ImageMagick's output.",
+  "xd": "Adobe XD document: none found under a stable public URL. The corpus sample is built with the real package layout (the sparkler mimetype plus thumbnail.png).",
+  "xlsb": "Excel embeds a thumbnail only when asked, and no public .xlsb carries one. The real .xlsx and .xlsm cover the package reader they share.",
+  "xyze": "Radiance XYZE: no public file found. The real .hdr covers the shared reader; the corpus sample is ImageMagick's output."
+ }
+}

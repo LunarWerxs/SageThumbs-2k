@@ -144,3 +144,18 @@ fn readme_documents_every_feature_flag() {
         "README.md feature table is missing: {missing:?}"
     );
 }
+
+/// The `tiff` feature row must cover export and encode input, not export-only.
+#[test]
+fn readme_tiff_feature_covers_export_and_encode() {
+    let row = README
+        .lines()
+        .find(|line| line.starts_with("| `tiff`"))
+        .expect("README feature table must include a `tiff` row");
+    let has_export = row.contains("export") || row.contains("djvu_to_tiff");
+    let has_encode = row.contains("encode") || row.contains("input");
+    assert!(
+        has_export && has_encode,
+        "README `tiff` feature row must mention export and encode input; got: {row}"
+    );
+}

@@ -1,0 +1,1139 @@
+{
+ "3dm": {
+  "strategy": "tail"
+ },
+ "3fr": {
+  "strategy": "tail",
+  "waive_sizes": {
+   "2.2G": "Only Windows' RAW codec reads this camera's sensor data, and it refuses a file past 2 GiB: measured 2026-09-23, the same twin decodes at 300 MB and is 'The image is unrecognized' (0x88982F60) at 2.2 GB. The head window cannot stand in: the picture's directories sit past 32 MiB. Under 2 GiB every surface draws it."
+  }
+ },
+ "3g2": {
+  "strategy": "isobmff-free"
+ },
+ "3gp": {
+  "strategy": "isobmff-free"
+ },
+ "3mf": {
+  "strategy": "zip-last"
+ },
+ "7z": {
+  "samples": [
+   "archive-sample.7z"
+  ],
+  "strategy": "7z-gap"
+ },
+ "aac": {
+  "strategy": "tail"
+ },
+ "af": {
+  "strategy": "tail"
+ },
+ "afdesign": {
+  "strategy": "tail"
+ },
+ "afphoto": {
+  "strategy": "tail"
+ },
+ "afpub": {
+  "strategy": "tail"
+ },
+ "aftemplate": {
+  "strategy": "tail"
+ },
+ "ai": {
+  "strategy": "pdf-body",
+  "waive_sizes": {
+   "2.2G": "Windows' PDF engine (Windows.Data.Pdf) crashes the whole process on a PDF past 2 GiB (measured 2026-09-23: PdfDocument.LoadFromFileAsync on the 2.2 GB twin, from plain PowerShell, none of our code involved), and it is the only PDF renderer here. So a PDF or Illustrator file past 2 GiB is never handed to it (pdf::MAX_ENGINE_BYTES) and keeps its icon."
+  }
+ },
+ "aif": {
+  "strategy": "tail"
+ },
+ "aifc": {
+  "strategy": "tail"
+ },
+ "aiff": {
+  "strategy": "tail"
+ },
+ "ani": {
+  "strategy": "tail"
+ },
+ "ape": {
+  "strategy": "before-tail-tag"
+ },
+ "apk": {
+  "strategy": "zip-last"
+ },
+ "apkm": {
+  "strategy": "zip-last"
+ },
+ "apks": {
+  "strategy": "zip-last"
+ },
+ "apng": {
+  "strategy": "tail"
+ },
+ "arw": {
+  "strategy": "tail"
+ },
+ "ase": {
+  "samples": [
+   "sample-banner.ase"
+  ],
+  "strategy": "tail"
+ },
+ "aseprite": {
+  "strategy": "tail"
+ },
+ "asf": {
+  "strategy": "tail"
+ },
+ "avci": {
+  "strategy": "isobmff-free"
+ },
+ "avi": {
+  "strategy": "tail"
+ },
+ "avif": {
+  "strategy": "isobmff-free"
+ },
+ "avifs": {
+  "strategy": "isobmff-free"
+ },
+ "azw": {
+  "strategy": "tail"
+ },
+ "azw3": {
+  "strategy": "tail"
+ },
+ "bay": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Casio RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind)."
+ },
+ "bgcode": {
+  "strategy": "tail"
+ },
+ "blend": {
+  "strategy": "tail"
+ },
+ "blend1": {
+  "strategy": "tail"
+ },
+ "blend10": {
+  "strategy": "tail"
+ },
+ "blend11": {
+  "strategy": "tail"
+ },
+ "blend12": {
+  "strategy": "tail"
+ },
+ "blend13": {
+  "strategy": "tail"
+ },
+ "blend14": {
+  "strategy": "tail"
+ },
+ "blend15": {
+  "strategy": "tail"
+ },
+ "blend16": {
+  "strategy": "tail"
+ },
+ "blend17": {
+  "strategy": "tail"
+ },
+ "blend18": {
+  "strategy": "tail"
+ },
+ "blend19": {
+  "strategy": "tail"
+ },
+ "blend2": {
+  "strategy": "tail"
+ },
+ "blend20": {
+  "strategy": "tail"
+ },
+ "blend21": {
+  "strategy": "tail"
+ },
+ "blend22": {
+  "strategy": "tail"
+ },
+ "blend23": {
+  "strategy": "tail"
+ },
+ "blend24": {
+  "strategy": "tail"
+ },
+ "blend25": {
+  "strategy": "tail"
+ },
+ "blend26": {
+  "strategy": "tail"
+ },
+ "blend27": {
+  "strategy": "tail"
+ },
+ "blend28": {
+  "strategy": "tail"
+ },
+ "blend29": {
+  "strategy": "tail"
+ },
+ "blend3": {
+  "strategy": "tail"
+ },
+ "blend30": {
+  "strategy": "tail"
+ },
+ "blend31": {
+  "strategy": "tail"
+ },
+ "blend32": {
+  "strategy": "tail"
+ },
+ "blend4": {
+  "strategy": "tail"
+ },
+ "blend5": {
+  "strategy": "tail"
+ },
+ "blend6": {
+  "strategy": "tail"
+ },
+ "blend7": {
+  "strategy": "tail"
+ },
+ "blend8": {
+  "strategy": "tail"
+ },
+ "blend9": {
+  "strategy": "tail"
+ },
+ "bmp": {
+  "strategy": "tail"
+ },
+ "bw": {
+  "strategy": "tail"
+ },
+ "c4d": {
+  "strategy": "tail"
+ },
+ "cal": {
+  "waive": "A CALS raster's header gives no data length: its Group 4 image runs to the end of the file, so a CALS past 256 MiB is a raster of that size, and ImageMagick's CALS reader (the only one) spends its whole 20 s CPU budget on any window of it (measured on the 300 MB twin). The head window skips it (streamsrc/headwin.rs::reads_to_the_end), so it keeps its icon at no cost. Under 256 MiB it renders as before."
+ },
+ "cals": {
+  "waive": "A CALS raster's header gives no data length: its Group 4 image runs to the end of the file, so a CALS past 256 MiB is a raster of that size, and ImageMagick's CALS reader (the only one) spends its whole 20 s CPU budget on any window of it (measured on the 300 MB twin). The head window skips it (streamsrc/headwin.rs::reads_to_the_end), so it keeps its icon at no cost. Under 256 MiB it renders as before."
+ },
+ "cap": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Phase One .cap RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (the real .iiq covers the vendor). No sample of any kind)."
+ },
+ "cb7": {
+  "strategy": "7z-gap"
+ },
+ "cbr": {
+  "strategy": "rar-last"
+ },
+ "cbt": {
+  "strategy": "tar-last"
+ },
+ "cbz": {
+  "strategy": "zip-last"
+ },
+ "cdr": {
+  "strategy": "tail"
+ },
+ "cdt": {
+  "strategy": "tail"
+ },
+ "cin": {
+  "strategy": "tail"
+ },
+ "clip": {
+  "strategy": "tail"
+ },
+ "cmx": {
+  "strategy": "tail"
+ },
+ "cr2": {
+  "strategy": "tail"
+ },
+ "cr3": {
+  "strategy": "isobmff-free"
+ },
+ "crw": {
+  "strategy": "tail"
+ },
+ "cur": {
+  "strategy": "tail"
+ },
+ "cut": {
+  "strategy": "tail"
+ },
+ "cxr": {
+  "strategy": "tail"
+ },
+ "dcm": {
+  "strategy": "tail"
+ },
+ "dcr": {
+  "strategy": "tail"
+ },
+ "dcs": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Kodak DCS RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (real .dcr, .kdc and .k25 cover the vendor). No sample of any kind)."
+ },
+ "dcx": {
+  "strategy": "tail"
+ },
+ "dds": {
+  "strategy": "tail"
+ },
+ "dib": {
+  "strategy": "tail"
+ },
+ "dicom": {
+  "strategy": "tail"
+ },
+ "divx": {
+  "strategy": "tail"
+ },
+ "djv": {
+  "strategy": "tail"
+ },
+ "djvu": {
+  "strategy": "tail"
+ },
+ "dng": {
+  "strategy": "tail"
+ },
+ "doc": {
+  "strategy": "ole-front"
+ },
+ "docm": {
+  "strategy": "zip-last"
+ },
+ "docx": {
+  "strategy": "zip-last"
+ },
+ "dot": {
+  "strategy": "ole-front"
+ },
+ "dotm": {
+  "strategy": "zip-last"
+ },
+ "dotx": {
+  "strategy": "zip-last"
+ },
+ "dpx": {
+  "strategy": "tail"
+ },
+ "drf": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Kodak DRF RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind)."
+ },
+ "dsf": {
+  "strategy": "tail"
+ },
+ "dwg": {
+  "strategy": "tail"
+ },
+ "dxf": {
+  "strategy": "tail"
+ },
+ "dxt1": {
+  "strategy": "tail"
+ },
+ "dxt5": {
+  "strategy": "tail"
+ },
+ "emf": {
+  "strategy": "tail"
+ },
+ "emg": {
+  "strategy": "tail"
+ },
+ "emz": {
+  "strategy": "tail"
+ },
+ "eps": {
+  "strategy": "eps-postscript"
+ },
+ "epub": {
+  "strategy": "zip-last"
+ },
+ "erf": {
+  "strategy": "tail"
+ },
+ "exr": {
+  "strategy": "tail"
+ },
+ "f3d": {
+  "strategy": "zip-last"
+ },
+ "f4v": {
+  "strategy": "isobmff-free"
+ },
+ "farbfeld": {
+  "strategy": "tail"
+ },
+ "fb2": {
+  "strategy": "tail"
+ },
+ "fbz": {
+  "strategy": "zip-last"
+ },
+ "fcstd": {
+  "strategy": "zip-last"
+ },
+ "ff": {
+  "strategy": "tail"
+ },
+ "fff": {
+  "strategy": "tail",
+  "waive_sizes": {
+   "2.2G": "Only Windows' RAW codec reads this camera's sensor data, and it refuses a file past 2 GiB: measured 2026-09-23, the same twin decodes at 300 MB and is 'The image is unrecognized' (0x88982F60) at 2.2 GB. The head window cannot stand in: the picture's directories sit past 32 MiB. Under 2 GiB every surface draws it."
+  }
+ },
+ "fits": {
+  "samples": [
+   "real.fits",
+   "real-extension.fits"
+  ],
+  "strategy": "fits-hdu"
+ },
+ "fl32": {
+  "strategy": "tail"
+ },
+ "flac": {
+  "strategy": "tail"
+ },
+ "flv": {
+  "strategy": "tail"
+ },
+ "fts": {
+  "strategy": "fits-hdu"
+ },
+ "gco": {
+  "strategy": "tail"
+ },
+ "gcode": {
+  "strategy": "tail"
+ },
+ "ggb": {
+  "strategy": "zip-last"
+ },
+ "gif": {
+  "strategy": "tail"
+ },
+ "hdp": {
+  "strategy": "tail"
+ },
+ "hdr": {
+  "strategy": "tail"
+ },
+ "hdri": {
+  "strategy": "tail"
+ },
+ "heic": {
+  "strategy": "isobmff-free"
+ },
+ "heics": {
+  "strategy": "isobmff-free"
+ },
+ "heif": {
+  "strategy": "isobmff-free"
+ },
+ "heifs": {
+  "strategy": "isobmff-free"
+ },
+ "hif": {
+  "strategy": "isobmff-free"
+ },
+ "icb": {
+  "strategy": "tail"
+ },
+ "icns": {
+  "strategy": "tail"
+ },
+ "ico": {
+  "strategy": "tail"
+ },
+ "icon": {
+  "strategy": "tail"
+ },
+ "iff": {
+  "strategy": "tail"
+ },
+ "iiq": {
+  "strategy": "tail"
+ },
+ "ilbm": {
+  "strategy": "tail"
+ },
+ "indd": {
+  "strategy": "tail"
+ },
+ "indt": {
+  "strategy": "tail"
+ },
+ "j2c": {
+  "strategy": "tail"
+ },
+ "j2k": {
+  "strategy": "tail"
+ },
+ "jfif": {
+  "strategy": "tail"
+ },
+ "jng": {
+  "strategy": "tail"
+ },
+ "jnx": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Garmin BirdsEye tiles are licensed per device, so no redistributable file exists. No sample of any kind)."
+ },
+ "jp2": {
+  "strategy": "tail"
+ },
+ "jpc": {
+  "strategy": "tail"
+ },
+ "jpe": {
+  "strategy": "tail"
+ },
+ "jpeg": {
+  "strategy": "tail"
+ },
+ "jpf": {
+  "strategy": "tail"
+ },
+ "jpg": {
+  "strategy": "tail"
+ },
+ "jpm": {
+  "strategy": "tail"
+ },
+ "jps": {
+  "strategy": "tail"
+ },
+ "jpx": {
+  "strategy": "tail"
+ },
+ "jxl": {
+  "strategy": "tail"
+ },
+ "jxr": {
+  "strategy": "tail"
+ },
+ "k25": {
+  "waive": "A Kodak DC25/DC50 .k25 is a raw that LibRaw identifies partly by its fixed file size: measured, 4 KB of ballast reads the same, 1 MB reads as a different file (256x193, not 256x192). A real .k25 never grows past its fixed size, so no big twin of it can exist."
+ },
+ "kdc": {
+  "strategy": "tail"
+ },
+ "key": {
+  "strategy": "zip-last"
+ },
+ "kra": {
+  "strategy": "zip-last"
+ },
+ "ktx": {
+  "strategy": "tail"
+ },
+ "lbm": {
+  "strategy": "tail"
+ },
+ "livp": {
+  "strategy": "zip-last"
+ },
+ "m1v": {
+  "strategy": "repeat"
+ },
+ "m2p": {
+  "strategy": "repeat"
+ },
+ "m2ts": {
+  "strategy": "repeat"
+ },
+ "m2v": {
+  "strategy": "repeat"
+ },
+ "m4a": {
+  "strategy": "isobmff-free"
+ },
+ "m4b": {
+  "strategy": "isobmff-free"
+ },
+ "m4v": {
+  "strategy": "isobmff-free"
+ },
+ "mac": {
+  "strategy": "tail"
+ },
+ "mat": {
+  "strategy": "tail"
+ },
+ "max": {
+  "strategy": "ole-front"
+ },
+ "mcaddon": {
+  "strategy": "zip-last"
+ },
+ "mcpack": {
+  "strategy": "zip-last"
+ },
+ "mctemplate": {
+  "strategy": "zip-last"
+ },
+ "mcworld": {
+  "strategy": "zip-last"
+ },
+ "mdc": {
+  "waive": "LibRaw identifies a Minolta RD-175 .mdc by its exact file size (the header names no camera), so one byte more is already a different file: no bigger twin of it can exist, and no real RD-175 file is bigger than its fixed size."
+ },
+ "mef": {
+  "strategy": "tail"
+ },
+ "miff": {
+  "strategy": "tail"
+ },
+ "mkv": {
+  "strategy": "tail"
+ },
+ "mng": {
+  "strategy": "tail"
+ },
+ "mobi": {
+  "strategy": "tail"
+ },
+ "mos": {
+  "strategy": "tail"
+ },
+ "mov": {
+  "strategy": "isobmff-free"
+ },
+ "mp2v": {
+  "strategy": "repeat"
+ },
+ "mp3": {
+  "strategy": "tail"
+ },
+ "mp4": {
+  "strategy": "isobmff-free"
+ },
+ "mpc": {
+  "strategy": "before-tail-tag"
+ },
+ "mpeg": {
+  "strategy": "repeat"
+ },
+ "mpg": {
+  "strategy": "repeat"
+ },
+ "mpo": {
+  "strategy": "tail"
+ },
+ "mpv": {
+  "strategy": "repeat"
+ },
+ "mrw": {
+  "strategy": "tail"
+ },
+ "mts": {
+  "strategy": "repeat"
+ },
+ "nef": {
+  "strategy": "tail"
+ },
+ "nrw": {
+  "strategy": "tail"
+ },
+ "numbers": {
+  "strategy": "zip-last"
+ },
+ "nupkg": {
+  "strategy": "zip-last"
+ },
+ "obj": {
+  "strategy": "tail"
+ },
+ "odf": {
+  "strategy": "zip-last"
+ },
+ "odg": {
+  "strategy": "zip-last"
+ },
+ "odp": {
+  "strategy": "zip-last"
+ },
+ "ods": {
+  "strategy": "zip-last"
+ },
+ "odt": {
+  "strategy": "zip-last"
+ },
+ "oga": {
+  "strategy": "tail"
+ },
+ "ogg": {
+  "strategy": "repeat"
+ },
+ "ogv": {
+  "strategy": "repeat"
+ },
+ "opus": {
+  "strategy": "tail"
+ },
+ "ora": {
+  "strategy": "zip-last"
+ },
+ "orf": {
+  "strategy": "tail"
+ },
+ "ori": {
+  "strategy": "tail"
+ },
+ "otp": {
+  "strategy": "zip-last"
+ },
+ "ots": {
+  "strategy": "zip-last"
+ },
+ "ott": {
+  "strategy": "zip-last"
+ },
+ "pages": {
+  "strategy": "zip-last"
+ },
+ "pam": {
+  "strategy": "tail"
+ },
+ "pbm": {
+  "strategy": "tail"
+ },
+ "pcd": {
+  "strategy": "tail"
+ },
+ "pcx": {
+  "strategy": "tail"
+ },
+ "pdb": {
+  "strategy": "tail"
+ },
+ "pdd": {
+  "strategy": "psd-layers"
+ },
+ "pdf": {
+  "strategy": "pdf-body",
+  "waive_sizes": {
+   "2.2G": "Windows' PDF engine (Windows.Data.Pdf) crashes the whole process on a PDF past 2 GiB (measured 2026-09-23: PdfDocument.LoadFromFileAsync on the 2.2 GB twin, from plain PowerShell, none of our code involved), and it is the only PDF renderer here. So a PDF or Illustrator file past 2 GiB is never handed to it (pdf::MAX_ENGINE_BYTES) and keeps its icon."
+  }
+ },
+ "pdn": {
+  "strategy": "tail"
+ },
+ "pef": {
+  "strategy": "tail"
+ },
+ "pfm": {
+  "strategy": "tail"
+ },
+ "pgm": {
+  "strategy": "tail"
+ },
+ "pgx": {
+  "strategy": "tail"
+ },
+ "ph": {
+  "strategy": "tail"
+ },
+ "phm": {
+  "strategy": "tail"
+ },
+ "phz": {
+  "strategy": "zip-last"
+ },
+ "pix": {
+  "waive": "An Alias/Wavefront .pix is recognised by its runs ending exactly on the last byte (the format has no magic), so no ballast can be added without making it a different file; a genuinely big .pix is just a bigger picture, which the pixel sweep (bigpixels.py) covers."
+ },
+ "ply": {
+  "strategy": "tail"
+ },
+ "png": {
+  "strategy": "tail"
+ },
+ "pnm": {
+  "strategy": "tail"
+ },
+ "pot": {
+  "strategy": "ole-front"
+ },
+ "potm": {
+  "strategy": "zip-last"
+ },
+ "potx": {
+  "strategy": "zip-last"
+ },
+ "ppm": {
+  "strategy": "tail"
+ },
+ "pps": {
+  "strategy": "ole-front"
+ },
+ "ppsm": {
+  "strategy": "zip-last"
+ },
+ "ppsx": {
+  "strategy": "zip-last"
+ },
+ "ppt": {
+  "strategy": "ole-front"
+ },
+ "pptm": {
+  "strategy": "zip-last"
+ },
+ "pptx": {
+  "strategy": "zip-last"
+ },
+ "prc": {
+  "strategy": "tail"
+ },
+ "procreate": {
+  "strategy": "zip-last"
+ },
+ "psb": {
+  "samples": [
+   "real.psb",
+   "real-flat.psb",
+   "real-rgb-layers.psb",
+   "real-cmyk.psb",
+   "real-16bit.psb",
+   "real-grey.psb",
+   "real-nocomposite.psb",
+   "real-lab.psb",
+   "real-32bit.psb",
+   "real-indexed.psb"
+  ],
+  "strategy": "psd-layers"
+ },
+ "psd": {
+  "samples": [
+   "real.psd",
+   "real-flat.psd",
+   "real-rgb-layers.psd",
+   "real-cmyk.psd",
+   "real-16bit.psd",
+   "real-grey.psd",
+   "real-nocomposite.psd",
+   "real-lab.psd",
+   "real-32bit.psd"
+  ],
+  "strategy": "psd-layers"
+ },
+ "psdt": {
+  "strategy": "psd-layers"
+ },
+ "psp": {
+  "strategy": "tail"
+ },
+ "pspbrush": {
+  "samples": [
+   "blob.PspBrush"
+  ],
+  "strategy": "tail"
+ },
+ "pspframe": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Paint Shop Pro picture frame: these ship only inside Corel's installers. The real .pspimage, .psp, .tub, .PspBrush and .PspTube files cover the reader they share; a renamed one would prove nothing about a frame)."
+ },
+ "pspimage": {
+  "strategy": "tail"
+ },
+ "pspmask": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Paint Shop Pro mask: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files)."
+ },
+ "pspselection": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Paint Shop Pro selection: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files)."
+ },
+ "pspshape": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Paint Shop Pro preset shape: ships only inside Corel's installers. See .pspframe - the shared reader is covered by five real PSP-family files)."
+ },
+ "psptube": {
+  "samples": [
+   "countdown.PspTube"
+  ],
+  "strategy": "tail"
+ },
+ "ptif": {
+  "strategy": "tail"
+ },
+ "ptx": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Pentax PTX RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (the real .pef covers the vendor). No sample of any kind)."
+ },
+ "pub": {
+  "strategy": "ole-front"
+ },
+ "pwp": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: PhotoWorks album: no public file found. The real .sfw covers the picture format inside it, and the album wrapper has its own unit test)."
+ },
+ "pxn": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Logitech Fotoman RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind)."
+ },
+ "pxo": {
+  "strategy": "zip-last"
+ },
+ "qoi": {
+  "strategy": "tail"
+ },
+ "qt": {
+  "strategy": "isobmff-free"
+ },
+ "raf": {
+  "strategy": "tail"
+ },
+ "rar": {
+  "strategy": "rar-last"
+ },
+ "ras": {
+  "strategy": "tail"
+ },
+ "rgbe": {
+  "strategy": "tail"
+ },
+ "rla": {
+  "strategy": "tail"
+ },
+ "rle": {
+  "strategy": "tail"
+ },
+ "rmf": {
+  "waive": "No real sample exists to grow (corpus-real.json waiver: Raw Media Format: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind)."
+ },
+ "rw2": {
+  "strategy": "tail"
+ },
+ "rwl": {
+  "strategy": "tail"
+ },
+ "scr": {
+  "strategy": "tail"
+ },
+ "sct": {
+  "strategy": "tail"
+ },
+ "sf3": {
+  "strategy": "tail"
+ },
+ "sfw": {
+  "strategy": "tail"
+ },
+ "sgi": {
+  "strategy": "tail"
+ },
+ "six": {
+  "strategy": "tail"
+ },
+ "sixel": {
+  "strategy": "tail"
+ },
+ "skb": {
+  "strategy": "tail"
+ },
+ "sketch": {
+  "strategy": "zip-last"
+ },
+ "skp": {
+  "strategy": "tail"
+ },
+ "sldasm": {
+  "strategy": "ole-front"
+ },
+ "slddrw": {
+  "strategy": "ole-front"
+ },
+ "sldprt": {
+  "strategy": "ole-front"
+ },
+ "spla": {
+  "strategy": "zip-last"
+ },
+ "spx": {
+  "strategy": "tail"
+ },
+ "sr2": {
+  "strategy": "tail"
+ },
+ "srf": {
+  "strategy": "tail"
+ },
+ "srw": {
+  "strategy": "tail"
+ },
+ "sti": {
+  "strategy": "tail",
+  "waive_sizes": {
+   "2.2G": "Only Windows' RAW codec reads this camera's sensor data, and it refuses a file past 2 GiB: measured 2026-09-23, the same twin decodes at 300 MB and is 'The image is unrecognized' (0x88982F60) at 2.2 GB. The head window cannot stand in: the picture's directories sit past 32 MiB. Under 2 GiB every surface draws it."
+  }
+ },
+ "stl": {
+  "strategy": "tail"
+ },
+ "sun": {
+  "strategy": "tail"
+ },
+ "svg": {
+  "waive": "An SVG is one XML document that has to be parsed whole, and past 256 MiB that is refused on purpose: parsing that much XML inside Explorer costs gigabytes. The only grower that keeps the picture (a long comment) is not how real SVGs get big; embedded images and path data are, and no reader can skip those. Checked at 300 MB: no picture on any surface, as in every release before."
+ },
+ "svgz": {
+  "strategy": "tail"
+ },
+ "tga": {
+  "strategy": "tail"
+ },
+ "tif": {
+  "strategy": "tail"
+ },
+ "tiff": {
+  "strategy": "tail"
+ },
+ "tiff64": {
+  "strategy": "tail"
+ },
+ "tim": {
+  "strategy": "tail"
+ },
+ "tm2": {
+  "strategy": "tail"
+ },
+ "tpic": {
+  "strategy": "tail"
+ },
+ "ts": {
+  "strategy": "repeat"
+ },
+ "tub": {
+  "strategy": "tail"
+ },
+ "vda": {
+  "strategy": "tail"
+ },
+ "vicar": {
+  "strategy": "tail"
+ },
+ "viff": {
+  "strategy": "tail"
+ },
+ "vips": {
+  "strategy": "tail"
+ },
+ "vob": {
+  "strategy": "repeat"
+ },
+ "vsd": {
+  "strategy": "ole-front"
+ },
+ "vsdm": {
+  "strategy": "zip-last"
+ },
+ "vsdx": {
+  "strategy": "zip-last"
+ },
+ "vsix": {
+  "strategy": "zip-last"
+ },
+ "vssx": {
+  "strategy": "zip-last"
+ },
+ "vst": {
+  "strategy": "tail"
+ },
+ "vstx": {
+  "strategy": "zip-last"
+ },
+ "vtf": {
+  "strategy": "tail"
+ },
+ "wav": {
+  "strategy": "tail"
+ },
+ "wdp": {
+  "strategy": "tail"
+ },
+ "webm": {
+  "strategy": "tail"
+ },
+ "webp": {
+  "strategy": "tail"
+ },
+ "wma": {
+  "strategy": "tail"
+ },
+ "wmf": {
+  "strategy": "tail"
+ },
+ "wmp": {
+  "strategy": "tail"
+ },
+ "wmv": {
+  "strategy": "tail"
+ },
+ "wmz": {
+  "strategy": "tail"
+ },
+ "wpg": {
+  "strategy": "tail"
+ },
+ "wv": {
+  "strategy": "before-tail-tag"
+ },
+ "x3f": {
+  "strategy": "tail"
+ },
+ "xapk": {
+  "strategy": "zip-last"
+ },
+ "xbm": {
+  "strategy": "tail"
+ },
+ "xcf": {
+  "strategy": "tail"
+ },
+ "xd": {
+  "strategy": "zip-last"
+ },
+ "xls": {
+  "strategy": "ole-front"
+ },
+ "xlsb": {
+  "strategy": "zip-last"
+ },
+ "xlsm": {
+  "strategy": "zip-last"
+ },
+ "xlsx": {
+  "strategy": "zip-last"
+ },
+ "xlt": {
+  "strategy": "ole-front"
+ },
+ "xltm": {
+  "strategy": "zip-last"
+ },
+ "xltx": {
+  "strategy": "zip-last"
+ },
+ "xmind": {
+  "strategy": "zip-last"
+ },
+ "xpm": {
+  "strategy": "tail"
+ },
+ "xv": {
+  "strategy": "tail"
+ },
+ "xyze": {
+  "strategy": "tail"
+ },
+ "zip": {
+  "strategy": "zip-last"
+ }
+}

@@ -46,13 +46,9 @@ static MENU_PREVIEW_SLOTS: [AtomicUsize; MAX_MENU_PREVIEW_WORKERS] =
 fn acquire_menu_preview_slot(now_ms: usize) -> Option<usize> {
     let expiry = now_ms.saturating_add(MENU_PREVIEW_LEASE_MS);
     for (i, slot) in MENU_PREVIEW_SLOTS.iter().enumerate() {
-        let held = slot.load(Ordering::Acquire);
         // Free, or the previous holder's lease has run out and we may take it over.
-        if (held == 0 || held <= now_ms)
-            && slot
-                .compare_exchange(held, expiry, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        {
+        let claimed = st2k_base::try_claim_slot!(slot, now_ms, expiry);
+        if claimed {
             return Some(i);
         }
     }
@@ -79,8 +75,52 @@ impl Drop for MenuPreviewWorker {
     }
 }
 
+/// The worker's whole job: read `path` within the preview budget, decode it with the cheap
+/// in-process tiers, and scale it to the menu tile.
+///
+/// The size is re-checked right before the read, not just once back in Initialize: a file
+/// that grows or gets replaced between that gate and this worker running (download in
+/// progress, rename onto a bigger file) must not be read in full into explorer.exe
+/// unbounded. Same shared budget `build_preview` re-checks. The metadata is still only a
+/// snapshot, so the READ enforces the cap too (`read_bounded`, F03): a file that grows
+/// between the two calls is refused at the limit rather than followed to EOF.
+fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !within_preview_budget(meta.len()) {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let bytes = st2k_codecs::decode::read_bounded(file, meta.len()).ok()?;
+    let img = st2k_codecs::decode::decode_menu_preview(&bytes).ok()?;
+    let (ow, oh) = st2k_codecs::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
+    // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
+    // normal/tall ones stay capped at the 88px height.
+    //
+    // SHRINKING goes through the one shared reduction, so this tile is the same
+    // picture the thumbnail provider draws instead of a second, softer filter.
+    // ENLARGING deliberately stays on `DynamicImage::thumbnail`: the shared
+    // reduction never enlarges, so routing the small case through it would leave a
+    // 32px icon drawn 32px wide in a menu that has always filled the 88px cell.
+    // That is a visible layout change, not a quality one, so it is not smuggled in
+    // with a filter swap.
+    let thumb = if img.width() > PREVIEW_WIDE || img.height() > PREVIEW_BOX {
+        st2k_codecs::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
+    } else {
+        img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX)
+    };
+    let rgba = thumb.to_rgba8();
+    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+    Some(MenuThumb {
+        rgba: rgba.into_raw(),
+        w,
+        h,
+        ow,
+        oh,
+    })
+}
+
 /// Start reading + decoding `path` to a scaled menu thumbnail on a detached worker. Mirrors
-/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `crate::ModuleRef` and inits
+/// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `st2k_base::host::ModuleRef` and inits
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment). Uses only the cheap in-process tiers
 /// (`decode_menu_preview` — container covers, fast image/WIC tiers, and pure-Rust resvg for
 /// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
@@ -104,7 +144,7 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
     // committed to running, not from whenever the new thread happens to get scheduled —
     // see `safety.rs`'s note on why the in-closure form is the weaker one.
     #[allow(clippy::default_constructed_unit_structs)]
-    let module = crate::ModuleRef::default();
+    let module = st2k_base::host::ModuleRef::default();
     let (tx, rx) = std::sync::mpsc::channel();
     let ticket = safety::AbandonTicket::new();
     let worker_ticket = ticket.clone();
@@ -120,48 +160,7 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
                 )
             }
             .is_ok();
-            let out = (|| {
-                // Re-check size right before the read, not just once back in Initialize: a
-                // file that grows or gets replaced between that gate and this worker running
-                // (download in progress, rename onto a bigger file) must not be read in full
-                // into explorer.exe unbounded. Same shared budget `build_preview` re-checks.
-                // The metadata is still only a snapshot, so the READ enforces the cap too
-                // (`read_bounded`, F03): a file that grows between the two calls is refused
-                // at the limit rather than followed to EOF.
-                let meta = std::fs::metadata(&path).ok()?;
-                if !within_preview_budget(meta.len()) {
-                    return None;
-                }
-                let file = std::fs::File::open(&path).ok()?;
-                let bytes = crate::decode::read_bounded(file, meta.len()).ok()?;
-                let img = crate::decode::decode_menu_preview(&bytes).ok()?;
-                let (ow, oh) =
-                    crate::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
-                // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
-                // normal/tall ones stay capped at the 88px height.
-                //
-                // SHRINKING goes through the one shared reduction, so this tile is the same
-                // picture the thumbnail provider draws instead of a second, softer filter.
-                // ENLARGING deliberately stays on `DynamicImage::thumbnail`: the shared
-                // reduction never enlarges, so routing the small case through it would leave a
-                // 32px icon drawn 32px wide in a menu that has always filled the 88px cell.
-                // That is a visible layout change, not a quality one, so it is not smuggled in
-                // with a filter swap.
-                let thumb = if img.width() > PREVIEW_WIDE || img.height() > PREVIEW_BOX {
-                    crate::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
-                } else {
-                    img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX)
-                };
-                let rgba = thumb.to_rgba8();
-                let (w, h) = (rgba.width() as i32, rgba.height() as i32);
-                Some(MenuThumb {
-                    rgba: rgba.into_raw(),
-                    w,
-                    h,
-                    ow,
-                    oh,
-                })
-            })();
+            let out = read_menu_thumb(&path);
             if inited {
                 unsafe { windows::Win32::System::Com::CoUninitialize() };
             }

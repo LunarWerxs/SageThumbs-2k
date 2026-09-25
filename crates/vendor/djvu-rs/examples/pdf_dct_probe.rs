@@ -24,7 +24,7 @@ use std::time::Instant;
 
 fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         out.extend_from_slice(&px[..3]);
     }
     out
@@ -32,7 +32,7 @@ fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
 
 fn rgb_to_pixmap(rgb: &[u8], w: u32, h: u32) -> djvu_rs::Pixmap {
     let mut data = Vec::with_capacity(rgb.len() / 3 * 4);
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         data.extend_from_slice(px);
         data.push(255);
     }

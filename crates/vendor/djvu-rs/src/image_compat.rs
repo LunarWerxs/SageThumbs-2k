@@ -39,6 +39,7 @@ use crate::djvu_render::{RenderError, RenderOptions};
 
 /// Errors from the image-rs integration layer.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ImageCompatError {
     /// The underlying render pipeline failed.
     #[error("render error: {0}")]

@@ -4,6 +4,7 @@
 //! Split out of `contextmenu.rs` 2026-07-31 (pure move).
 
 use super::*;
+use st2k_base::checkerpx::{checker_shades, fill_checker};
 
 /// The actual menu font (`SPI_GETNONCLIENTMETRICS.lfMenuFont`, e.g. Segoe UI on
 /// Win11), so the caption matches the surrounding menu items exactly — the stock
@@ -98,12 +99,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
             None => menu_theme_colors(),
         };
 
-        let mut bmi = BITMAPINFO::default();
-        bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = iw;
-        bmi.bmiHeader.biHeight = -ih; // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
+        let bmi = st2k_base::safety::top_down_bmi(iw, ih);
         let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
         let Ok(dib) = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
             return false;
@@ -143,12 +139,7 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
         };
         let src = core::slice::from_raw_parts(bits as *const u8, n);
         let mut rgba = vec![0u8; n];
-        for i in 0..(iw * ih) as usize {
-            rgba[i * 4] = src[i * 4 + 2]; // R
-            rgba[i * 4 + 1] = src[i * 4 + 1]; // G
-            rgba[i * 4 + 2] = src[i * 4]; // B
-            rgba[i * 4 + 3] = 255;
-        }
+        st2k_base::dib::swap_rb_opaque(src, &mut rgba);
         SelectObject(memdc, oldbmp);
         let _ = DeleteDC(memdc);
         let _ = DeleteObject(dib.into());
@@ -164,13 +155,13 @@ pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
 /// returns the light gray), so a dark menu would get a glaring white preview
 /// block. Detect the real menu theme from the registry instead.
 ///
-/// Reads `AppsUseLightTheme` via the shared [`crate::safety::apps_use_dark_theme`] probe,
+/// Reads `AppsUseLightTheme` via the shared [`st2k_base::safety::apps_use_dark_theme`] probe,
 /// matching `bin/app/dark.rs` and `previewhandler.rs`. It used to read `SystemUsesLightTheme`
 /// — that key is the TASKBAR/Start theme, which is independent: "dark apps + light taskbar" is
 /// a common setup, and there it reported light while Explorer's menu was dark, so the preview
 /// tile was baked white-on-dark (reported from a pt-BR Win11 machine, v1.3.1).
 pub(crate) fn menu_dark() -> bool {
-    crate::safety::apps_use_dark_theme()
+    st2k_base::safety::apps_use_dark_theme()
 }
 
 /// The (bg, fg) baked into the preview tile so it matches the surrounding menu.
@@ -185,80 +176,9 @@ pub(crate) unsafe fn menu_theme_colors() -> (u32, u32) {
     }
 }
 
-/// Two subtle checkerboard shades from a base menu colour: the base nudged a few
-/// levels darker and a few lighter. Their average stays ≈ `bg` (so the menu tone
-/// doesn't shift) and they sit only ~16 levels apart — enough to read as
-/// "transparency here" without competing with the menu. Follows light/dark/accent
-/// automatically since it's derived from whatever `bg` is passed.
-pub fn checker_shades(bg: u32) -> (u32, u32) {
-    let ch = |shift: u32| (bg >> shift) & 0xFF; // COLORREF is 0x00BBGGRR
-    let (r, g, b) = (ch(0), ch(8), ch(16));
-    let darker = |c: u32| c.saturating_sub(8);
-    let lighter = |c: u32| (c + 8).min(255);
-    let pack = |r: u32, g: u32, b: u32| r | (g << 8) | (b << 16);
-    (
-        pack(darker(r), darker(g), darker(b)),
-        pack(lighter(r), lighter(g), lighter(b)),
-    )
-}
-
-/// Fill `rc` with a two-tone checkerboard of `cell`-px squares — the backdrop a thumbnail is
-/// alpha-blended onto, so transparent pixels reveal the pattern instead of disappearing into the
-/// flat background colour.
-///
-/// `cell` is a caller choice because the two surfaces that use this are different sizes: the menu
-/// tile is a ~72px thumbnail where 8px reads as texture, while the Quick preview window is
-/// full-size and wants a DPI-scaled, visibly larger square.
-///
-/// # Safety
-///
-/// `hdc` must be a valid device context that stays alive for the call. Nothing is retained.
-pub unsafe fn fill_checker(
-    hdc: windows::Win32::Graphics::Gdi::HDC,
-    rc: &RECT,
-    c0: u32,
-    c1: u32,
-    cell: i32,
-) {
-    let (left, top) = (rc.left, rc.top);
-    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-    let cell = cell.max(2);
-    let b0 = CreateSolidBrush(COLORREF(c0));
-    let b1 = CreateSolidBrush(COLORREF(c1));
-    FillRect(
-        hdc,
-        &RECT {
-            left,
-            top,
-            right: left + w,
-            bottom: top + h,
-        },
-        b0,
-    );
-    let mut y = 0;
-    while y < h {
-        let mut x = 0;
-        while x < w {
-            if ((x / cell) + (y / cell)) & 1 == 1 {
-                let r = RECT {
-                    left: left + x,
-                    top: top + y,
-                    right: left + (x + cell).min(w),
-                    bottom: top + (y + cell).min(h),
-                };
-                FillRect(hdc, &r, b1);
-            }
-            x += cell;
-        }
-        y += cell;
-    }
-    let _ = DeleteObject(b0.into());
-    let _ = DeleteObject(b1.into());
-}
-
 /// Paint the preview into `rc` of `hdc`: thumbnail centered on top, name + info
 /// lines under, with explicit `bg`/`fg` colors. Used both by the off-screen
-/// compositor ([`preview_hbitmap`]) and the diagnostic PNG renderer.
+/// compositor ([`preview_ddb`]) and the diagnostic PNG renderer.
 pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg: u32) {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, &rc, brush);
@@ -336,7 +256,7 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
 
 /// The preview item's pixel size: wide enough for the thumbnail and the (capped)
 /// caption, tall enough for the image plus the two caption rows. Reported to the menu
-/// from `WM_MEASUREITEM` and reused by the diagnostic PNG so the two can't drift.
+/// from `WM_MEASUREITEM`; the diagnostic PNG repeats the same formula.
 pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
     let text_w = caption_width_of(p);
     (p.w.max(text_w).max(72) + 12, p.h + 48)
@@ -344,7 +264,7 @@ pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
 
 /// Open the file with its default app (the preview item's click action).
 pub(crate) fn open_with_default(path: &str) {
-    let wide = crate::wide(path);
+    let wide = st2k_base::host::wide(path);
     unsafe {
         let ret = ShellExecuteW(
             None,
@@ -360,7 +280,7 @@ pub(crate) fn open_with_default(path: &str) {
         // the pattern `launch_app` already logs for the companion-EXE launch path.
         let se_code = ret.0 as usize;
         if !shell_execute_succeeded(se_code) {
-            crate::safety::log(&format!(
+            st2k_base::safety::log(&format!(
                 "open_with_default: ShellExecuteW failed for {path} (code {se_code})"
             ));
         }

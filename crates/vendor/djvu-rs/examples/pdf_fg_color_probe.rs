@@ -53,7 +53,7 @@ fn parse_ppm(data: &[u8]) -> Option<Pixmap> {
     let h: u32 = std::str::from_utf8(fields[2]).ok()?.parse().ok()?;
     let rgb = data.get(pos..pos + w as usize * h as usize * 3)?;
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         out.extend_from_slice(&[px[0], px[1], px[2], 255]);
     }
     Some(Pixmap {

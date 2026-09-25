@@ -30,7 +30,7 @@ crate-type = ["cdylib"]
 # `flash-video` (the FLV VP6/Sorenson decoder crates for st2k.exe's hidden
 # `flv-frame` verb), and those decoders PANIC on malformed input — under
 # panic=abort inside Explorer that would kill the user's shell. The DLL gets its
-# FLV Flash frames by SPAWNING st2k.exe instead (src/flv.rs::flash_frame).
+# FLV Flash frames by SPAWNING st2k.exe instead (crates/codecs/src/flv.rs::flash_frame).
 # Verify with `cargo tree -p sagethumbs2k-dll`: it must never list nihav/h263.
 #
 # `cargo tree -p sagethumbs2k-dll -i rayon` DOES list rayon: rars 0.6.0 made it a

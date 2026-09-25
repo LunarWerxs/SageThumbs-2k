@@ -43,7 +43,7 @@ fn sha256_hex(data: &[u8]) -> Option<String> {
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    st2k_base::hex::encode(bytes)
 }
 
 /// The repo root's `.env`, resolved from where Cargo says this example's own crate lives -

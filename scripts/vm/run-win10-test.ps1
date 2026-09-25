@@ -2,7 +2,7 @@
   run-win10-test.ps1 — build a REAL Windows 10 VM, unattended-install it, and run the
   clean-room install + decode test on it. ELEVATED (Hyper-V + PowerShell Direct).
 
-      .\scripts\vm\run-win10-test.ps1 -Iso D:\isos\Win10_22H2_x64.iso
+      .\scripts\vm\run-win10-test.ps1 -Iso <scratch>\isos\Win10_22H2_x64.iso   (default; see _vmscratch.ps1)
 
   Why this and not Windows Sandbox: the Sandbox ALWAYS mirrors the host OS (Win11 here),
   so it can't reproduce Windows 10. issue #5's reporter is on Win10 Home 22H2 -> this is it.
@@ -17,12 +17,12 @@
   results back. Nothing here touches the host.
 #>
 param(
-    [string]$Iso = 'D:\isos\Win10_22H2_x64.iso',
+    [string]$Iso = (Join-Path (& "$PSScriptRoot\_vmscratch.ps1") 'isos\Win10_22H2_x64.iso'),
     [string]$Name = 'st2k-win10',
-    [string]$VmRoot = 'D:\Hyper-V',
+    [string]$VmRoot = (Join-Path (& "$PSScriptRoot\_vmscratch.ps1") 'Hyper-V'),
     [int]$MemoryGB = 6,
     [int]$DiskGB = 64,
-    [string]$ResultDir = 'D:\isos\win10-test-results',
+    [string]$ResultDir = (Join-Path (& "$PSScriptRoot\_vmscratch.ps1") 'isos\win10-test-results'),
     [int]$BootTimeoutMin = 25,
     [switch]$Keep,
     [switch]$Resume,

@@ -25,40 +25,39 @@
 // whatever built binary happened to exist, while the version stamped into the page came
 // from Cargo.toml (the source, not the binary) - so a binary older than the source could
 // silently ship a format table that does not match the version the page claims. `--site`
+// arkitect-allow: no-bandaids - build-release.ps1's [site] step runs `node gen-site.mjs <st2k.exe>` with no --site, so the no-flag write target must be site\index.html.
 // makes the write target explicit (defaults to the old staging copy for back-compat) and
 // the executable's OWN reported version is now asserted equal to Cargo.toml's before
 // anything is written. `--check` runs the full pipeline (including that assertion) without
 // writing, so it can gate a deploy without mutating the target file. `--self-test` proves
-// the failure modes without needing a real st2k.exe at all - see runSelfTest() below.
+// the failure modes without needing a real st2k.exe at all - the assertions live in the
+// sibling scripts/gen-site.test.mjs, which --self-test runs under `node --test`.
 //
 // Idempotent: running it twice (for real, against the same st2k.exe + index.html) is a no-op.
 // CRLF-preserving.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const THIS_FILE = fileURLToPath(import.meta.url);
+const TEST_FILE = path.join(path.dirname(THIS_FILE), 'gen-site.test.mjs');
 
 // ---- CLI args ---------------------------------------------------------------
-const argv = process.argv.slice(2);
-const CHECK = argv.includes('--check');
-const SELF_TEST = argv.includes('--self-test');
 /** Split argv into the flags and the one positional (the st2k executable). Pure, so the
  *  self-test can pin it: without `--site`, `siteFlagAt` is -1 and a bare `i !== siteFlagAt + 1`
  *  used to drop argv[0], which is the executable itself, so `node gen-site.mjs path\to\st2k.exe`
  *  silently ignored the path and generated from whatever stale release binary was lying around
  *  (found 2026-09-07 when a page came out with no capability sentences at all). */
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const siteFlagAt = argv.indexOf('--site');
   const SITE_ARG = siteFlagAt >= 0 ? argv[siteFlagAt + 1] : undefined;
   const positional = argv.filter((a, i) =>
     a !== '--check' && a !== '--self-test' && a !== '--site' && (siteFlagAt < 0 || i !== siteFlagAt + 1));
   return { SITE_ARG, ST2K_ARG: positional[0] };
 }
-const { SITE_ARG, ST2K_ARG } = parseArgs(argv);
 
 // ---- resolve the cargo target dir, mirroring scripts/_targetdir.ps1 --------
 function resolveTargetDir() {
@@ -109,7 +108,7 @@ function readCargoVersion(root) {
  *  before this assertion ever checked they described the same build. A stale exe paired
  *  with a bumped Cargo.toml would ship yesterday's format table under today's version number
  *  and nothing would notice. */
-function assertVersionMatch(exeVersion, sourceVersion, exePath) {
+export function assertVersionMatch(exeVersion, sourceVersion, exePath) {
   if (exeVersion !== sourceVersion) {
     throw new Error(
       `gen-site: ${exePath} reports version ${exeVersion}, but the source (Cargo.toml) says ` +
@@ -118,7 +117,7 @@ function assertVersionMatch(exeVersion, sourceVersion, exePath) {
   }
 }
 
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+export const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // EVERY category `st2k formats --json` can emit must appear here. A category missing
 // from this list is silently dropped from the wall AND from the bar, so the bar stops
@@ -164,53 +163,84 @@ const CODEC_NAMES = {
   heif: "the OS's WIC HEIF codec",
   av1: 'the AV1 Video Extension',
 };
+// Codecs the bundled ImageMagick can stand in for on a Full install (see capabilityParts).
+const CODEC_OPTIONAL_WITH_BUNDLE = new Set(['heif', 'av1']);
 
 /** One capability sentence for a category's items, built from the data (never hand-typed
  *  per category) - see the `SOURCE_SENTENCE`/`SOURCE_COUNT_PHRASE`/`CODEC_NAMES` maps
  *  above. Audit E03 #3: an unrecognized `source`/`os_codec` value THROWS rather than
  *  silently rendering an empty sentence or the raw wire token - a renamed vocabulary
  *  string must fail the build, not ship a blank/garbled sentence to the live site. */
-function capabilitySentence(items) {
+export function capabilityParts(items) {
+  return { source: sourceSentence(items), codecs: codecSentences(items) };
+}
+
+/** "Each thumbnail is ..." for a single-source group; "N formats ... ; M formats ..." for a
+ *  mixed one (audit E03 #1: never claim one blanket behaviour for a category whose formats
+ *  don't share it - say how many are which, biggest group first). */
+export function sourceSentence(items) {
   const bySource = {};
   for (const x of items) (bySource[x.source] = bySource[x.source] || []).push(x);
   const sourceKeys = Object.keys(bySource);
-
-  let s;
   if (sourceKeys.length <= 1) {
     const source = items[0] && items[0].source;
-    s = SOURCE_SENTENCE[source];
+    const s = SOURCE_SENTENCE[source];
     if (s === undefined) {
       throw new Error(`gen-site: unknown capability source "${source}" - add it to SOURCE_SENTENCE (and SOURCE_COUNT_PHRASE)`);
     }
-  } else {
-    // Audit E03 #1: never claim one blanket behaviour for a category whose formats don't
-    // share it - say how many are which, biggest group first.
-    const bits = sourceKeys
-      .slice()
-      .sort((a, b) => bySource[b].length - bySource[a].length)
-      .map(src => {
-        const phrase = SOURCE_COUNT_PHRASE[src];
-        if (!phrase) throw new Error(`gen-site: unknown capability source "${src}" - add it to SOURCE_COUNT_PHRASE (and SOURCE_SENTENCE)`);
-        return `${bySource[src].length} ${phrase}`;
-      });
-    s = bits.join('; ') + '.';
+    return s;
   }
+  const bits = sourceKeys
+    .toSorted((a, b) => bySource[b].length - bySource[a].length)
+    .map(src => {
+      const phrase = SOURCE_COUNT_PHRASE[src];
+      if (!phrase) throw new Error(`gen-site: unknown capability source "${src}" - add it to SOURCE_COUNT_PHRASE (and SOURCE_SENTENCE)`);
+      return `${bySource[src].length} ${phrase}`;
+    });
+  return bits.join('; ') + '.';
+}
 
+/** One sentence per Windows codec some of the group's formats use, as an array (one
+ *  paragraph each on the page: the Image group's three notes ran to 60 words joined, and
+ *  the site's copy budget refuses any paragraph over 40). Empty when none. */
+export function codecSentences(items) {
   const byCodec = {};
   for (const x of items) {
     if (x.os_codec) (byCodec[x.os_codec] = byCodec[x.os_codec] || []).push(x.ext);
   }
-  const parts = [];
-  for (const [codec, exts] of Object.entries(byCodec)) {
-    const name = CODEC_NAMES[codec];
-    if (!name) throw new Error(`gen-site: unknown os_codec "${codec}" - add it to CODEC_NAMES`);
-    if (exts.length === items.length) {
-      parts.push(`Every format here needs ${name}.`);
-    } else {
-      parts.push(`.${exts.slice().sort().join(', .')} additionally need${exts.length === 1 ? 's' : ''} ${name}.`);
-    }
+  return Object.entries(byCodec).map(([codec, exts]) => codecSentence(codec, exts, items.length));
+}
+
+/** The sentence for one codec: "Every format here needs/uses ..." when the whole group
+ *  shares it, otherwise ".a, .b additionally need(s)/use(s) ...". */
+export function codecSentence(codec, exts, groupSize) {
+  const name = CODEC_NAMES[codec];
+  if (!name) throw new Error(`gen-site: unknown os_codec "${codec}" - add it to CODEC_NAMES`);
+  // The HEIF and AV1 image routes are the FAST route, not the only one: a Full install
+  // decodes those through the bundled ImageMagick when Windows has no codec (2026-09-19
+  // audit F23, measured on real files). Video and JPEG XR genuinely need theirs.
+  const optional = CODEC_OPTIONAL_WITH_BUNDLE.has(codec);
+  const tail = optional
+    ? `${name} when Windows has it; a Full install decodes ${exts.length === 1 ? 'it' : 'them'} through the bundled decoder otherwise.`
+    : `${name}.`;
+  if (exts.length === groupSize) {
+    return optional ? `Every format here uses ${tail}` : `Every format here needs ${tail}`;
   }
-  return [s, ...parts].filter(Boolean).join(' ');
+  const verb = optional ? 'use' : 'need';
+  return `.${exts.toSorted().join(', .')} additionally ${verb}${exts.length === 1 ? 's' : ''} ${tail}`;
+}
+
+/** One sentence group, for the self-tests and anything else that wants it as text. */
+export function capabilitySentence(items) {
+  return capabilityParagraphs(items).join(' ');
+}
+
+/** What the page renders: how the thumbnails are made, and (separately) which Windows codecs
+ *  some of the formats need. Two paragraphs, not one - the Image group's single caption came
+ *  to 53 words on 2026-09-17 and the site's copy budget (every paragraph <= 40) went red. */
+export function capabilityParagraphs(items) {
+  const { source, codecs } = capabilityParts(items);
+  return [source, ...codecs].filter(Boolean);
 }
 
 /** Builds the bar + fmtwall block from `formats` (the parsed `st2k formats --json` array).
@@ -226,7 +256,7 @@ function capabilitySentence(items) {
  *  capability sentences at all, from a run that exited 0 (that is exactly what a stale
  *  release st2k.exe produced on 2026-09-07). So the absence of the fields is an error naming
  *  the binary, not a blank. */
-function assertCapabilityFields(formats, exePath) {
+export function assertCapabilityFields(formats, exePath) {
   const bad = formats.filter(x =>
     typeof x.source !== 'string' || typeof x.convertible !== 'boolean' ||
     typeof x.preview_listing !== 'boolean' || !('os_codec' in x) ||
@@ -239,7 +269,7 @@ function assertCapabilityFields(formats, exePath) {
   }
 }
 
-function buildFormatWall(formats, CR) {
+export function buildFormatWall(formats, CR) {
   const TOTAL = formats.length;
   const by = {};
   for (const x of formats) (by[x.category] = by[x.category] || []).push(x);
@@ -254,18 +284,18 @@ function buildFormatWall(formats, CR) {
 
   const aria = [], spans = [], groups = [];
   for (const [dc, cat, label, color] of ORDER) {
-    const items = (by[cat] || []).slice().sort((a, b) => a.ext.localeCompare(b.ext));
+    const items = (by[cat] || []).toSorted((a, b) => a.ext.localeCompare(b.ext));
     const n = items.length, pct = TOTAL ? (n / TOTAL * 100).toFixed(1) : '0.0';
     aria.push(n + ' ' + ARIA[dc]);
     spans.push(`      <span style="width:${pct}%;background:${color}"></span>`);
     const chips = items.map(x => `<span class="fc" title="${esc(x.description)}">.${x.ext}</span>`).join(' ');
     const panelId = `fgdesc-${dc}`;
     const descList = items.map(x => `<li><code>.${x.ext}</code> ${esc(x.description)}</li>`).join(CR + '            ');
-    const capSentence = n ? capabilitySentence(items) : '';
+    const capParagraphs = n ? capabilityParagraphs(items) : [];
     groups.push(
       `      <div class="fmtgroup reveal" data-cat="${dc}">${CR}` +
       `        <h3 class="fgh"><span class="sw"></span>${label} <span class="cnt">${n}</span></h3>${CR}` +
-      (capSentence ? `        <p class="fgcap">${esc(capSentence)}</p>${CR}` : '') +
+      capParagraphs.map(p => `        <p class="fgcap">${esc(p)}</p>${CR}`).join('') +
       `        <div class="fgchips">${chips}</div>${CR}` +
       `        <button type="button" class="fgtoggle" aria-expanded="false" aria-controls="${panelId}">Show ${label} format descriptions</button>${CR}` +
       `        <div class="fgdesc" id="${panelId}" hidden>${CR}` +
@@ -283,8 +313,35 @@ function buildFormatWall(formats, CR) {
  *  marker is asserted present (with an expected minimum count) before being rewritten,
  *  and an absent marker is a thrown error, never a silent no-op - a template edit that
  *  moves or renames a marker must fail the run, not ship stale content next to it. */
-function applyAll(html, { block, VERSION, presentCategories }) {
+/** The `fmtgroup` blocks in a format-wall region whose `data-cat` this generator does not
+ *  own (not in ORDER), each as its complete `<div class="fmtgroup ...">...</div>` element,
+ *  in page order. Balanced-tag scan, not a regex: a group nests `<div class="fgdesc">`. */
+export function foreignFormatGroups(region) {
+  const owned = new Set(ORDER.map(([dc]) => dc));
+  const open = /<div class="fmtgroup[^"]*"[^>]*data-cat="([a-z0-9-]+)"[^>]*>/g;
+  const out = [];
+  let m;
+  while ((m = open.exec(region))) {
+    if (owned.has(m[1])) continue;
+    let depth = 0, i = m.index;
+    const tag = /<\/?div\b[^>]*>/g;
+    tag.lastIndex = m.index;
+    let end = -1, t;
+    while ((t = tag.exec(region))) {
+      depth += t[0].startsWith('</') ? -1 : 1;
+      if (depth === 0) { end = t.index + t[0].length; break; }
+    }
+    if (end < 0) throw new Error(`gen-site: unbalanced fmtgroup "${m[1]}" in the existing wall`);
+    out.push(region.slice(m.index, end).replace(/^\s+/, '      '));
+    open.lastIndex = end;
+    i = end;
+  }
+  return out;
+}
+
+export function applyAll(html, { block, VERSION, presentCategories }) {
   const before = html;
+  const CR = html.includes('\r\n') ? '\r\n' : '\n';
 
   const startIdx = html.indexOf('    <div class="bar reveal"');
   // The deployed page may carry either line ending; the CRLF form is tried first because it
@@ -294,7 +351,20 @@ function applyAll(html, { block, VERSION, presentCategories }) {
   if (startIdx < 0 || endIdx < 0) throw new Error('gen-site: could not locate the format-wall region in index.html');
   const region = html.slice(startIdx, endIdx);
   if (!region.includes('fmtwall')) throw new Error('gen-site: safety - located region does not look like the format wall');
-  html = html.slice(0, startIdx) + block + html.slice(endIdx);
+  // Hand-authored groups survive a regeneration. The wall can carry groups this generator
+  // does not own - the "Preview only" group (`data-cat="preview"`, Space-bar-only kinds) was
+  // added by hand on 2026-09-10 and the 3.0.1 version bump silently deleted it, because the
+  // whole region was replaced from `st2k formats --json`. Every `fmtgroup` whose `data-cat`
+  // is not one of ORDER's is carried over verbatim, after the generated ones, and counted in
+  // the eyebrow, which is what `sync-version.mjs` in the site repo checks the wall against.
+  const foreign = foreignFormatGroups(region);
+  const wallEnd = block.lastIndexOf(`${CR}    </div>`);
+  if (wallEnd < 0) throw new Error('gen-site: the generated wall has no closing tag to append to');
+  const merged = foreign.length
+    ? block.slice(0, wallEnd) + CR + foreign.join(CR) + block.slice(wallEnd)
+    : block;
+  html = html.slice(0, startIdx) + merged + html.slice(endIdx);
+  presentCategories += foreign.length;
 
   // version pills + schema softwareVersion (the only scalars kept current; format count and
   // exact installer bytes are intentionally not hard-coded so they cannot drift).
@@ -326,7 +396,7 @@ function applyAll(html, { block, VERSION, presentCategories }) {
 }
 
 // ---- self-test: proves the contract without needing a real st2k.exe --------
-function fixtureHtml({ pills = 2, schema = 1, eyebrow = '6', withBarRegion = true } = {}) {
+export function fixtureHtml({ pills = 2, schema = 1, eyebrow = '6', withBarRegion = true } = {}) {
   const pillTags = Array.from({ length: pills }, () => '<span class="js-app-version">v1.0.0</span>').join('\n');
   const schemaTags = Array.from({ length: schema }, () => '"softwareVersion": "1.0.0",').join('\n');
   const barRegion = withBarRegion
@@ -341,188 +411,56 @@ function fixtureHtml({ pills = 2, schema = 1, eyebrow = '6', withBarRegion = tru
   );
 }
 
-function runSelfTest() {
-  const results = [];
-  const check = (name, fn) => {
-    try { fn(); results.push([name, true, '']); }
-    catch (e) { results.push([name, false, e.message]); }
-  };
+// ---- entry point -----------------------------------------------------------
+function main(argv) {
+  const CHECK = argv.includes('--check');
+  const SELF_TEST = argv.includes('--self-test');
+  const { SITE_ARG, ST2K_ARG } = parseArgs(argv);
 
-  check('the executable argument is honoured with and without --site', () => {
-    assert.equal(parseArgs(['x.exe']).ST2K_ARG, 'x.exe');
-    assert.equal(parseArgs(['x.exe', '--check']).ST2K_ARG, 'x.exe');
-    const both = parseArgs(['--site', 'p.html', 'x.exe']);
-    assert.equal(both.ST2K_ARG, 'x.exe');
-    assert.equal(both.SITE_ARG, 'p.html');
-    const flagLast = parseArgs(['x.exe', '--site', 'p.html']);
-    assert.equal(flagLast.ST2K_ARG, 'x.exe');
-    assert.equal(flagLast.SITE_ARG, 'p.html');
-    assert.equal(parseArgs(['--check']).ST2K_ARG, undefined);
-  });
+  if (SELF_TEST) {
+    // The assertions themselves live in the sibling *.test.mjs (so this churn-hot file has a
+    // co-located test a checker can see). --self-test keeps its old contract: run them under
+    // Node's built-in test runner and exit with its status.
+    const r = spawnSync(process.execPath, ['--test', TEST_FILE], { stdio: 'inherit' });
+    process.exit(r.status === null ? 1 : r.status);
+  }
 
-  check('a binary without the capability fields is refused, never rendered blank', () => {
-    const stale = [{ ext: 'png', category: 'Image', description: 'PNG' }];
-    assert.throws(() => assertCapabilityFields(stale, 'old.exe'), /lack the capability fields.*old\.exe predates them/s);
-    const fresh = [{ ext: 'png', category: 'Image', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }];
-    assert.doesNotThrow(() => assertCapabilityFields(fresh, 'new.exe'));
-    const halfway = [{ ...fresh[0], os_codec: undefined }];
-    assert.throws(() => assertCapabilityFields(halfway, 'x.exe'), /lack the capability fields/);
-  });
+  // ---- real run: resolve inputs, validate, write (or --check) --------------
+  const SITE = SITE_ARG ? path.resolve(SITE_ARG) : path.join(ROOT, 'site', 'index.html');
+  const ST2K = findSt2k(ST2K_ARG);
+  const formats = JSON.parse(execFileSync(ST2K, ['formats', '--json'], { encoding: 'utf8' }));
+  assertCapabilityFields(formats, ST2K);
 
-  check('missing marker (no pills) fails', () => {
-    const html = fixtureHtml({ pills: 0 });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
-    assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /js-app-version pills/);
-  });
+  const VERSION = readCargoVersion(ROOT);
+  const exeVersion = getExeVersion(ST2K);
+  assertVersionMatch(exeVersion, VERSION, ST2K);
 
-  check('missing marker (no softwareVersion) fails', () => {
-    const html = fixtureHtml({ schema: 0 });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
-    assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /softwareVersion/);
-  });
+  // Line endings are DETECTED from the page, not assumed. This used to be a hard-coded
+  // '\r\n', and both the generated block and the end-of-region search below depended on it -
+  // so once the deployed index.html came back as LF-only (which is what a `git pull` of the
+  // deploy repo hands you), the region search found nothing and the whole script died with
+  // "could not locate the format-wall region". The format wall then silently stopped tracking
+  // `st2k formats`, which is the one thing this file exists to prevent.
+  const EXISTING = fs.readFileSync(SITE, 'utf8');
+  const CR = EXISTING.includes('\r\n') ? '\r\n' : '\n';
 
-  check('missing marker (no format-wall region) fails', () => {
-    const html = fixtureHtml({ withBarRegion: false });
-    const { block, presentCategories } = buildFormatWall([{ category: 'Image', ext: 'png', description: 'PNG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null }], '\r\n');
-    assert.throws(() => applyAll(html, { block, VERSION: '1.0.0', presentCategories }), /could not locate the format-wall region/);
-  });
+  const { block, by, TOTAL, presentCategories } = buildFormatWall(formats, CR);
+  const { html, changed } = applyAll(EXISTING, { block, VERSION, presentCategories });
 
-  check('wrong binary version fails', () => {
-    assert.throws(() => assertVersionMatch('2.4.0', '2.5.0', 'fake.exe'), /reports version 2\.4\.0.*says 2\.5\.0/s);
-  });
-  check('matching binary version passes', () => {
-    assertVersionMatch('2.5.0', '2.5.0', 'fake.exe'); // must not throw
-  });
+  if (CHECK) {
+    console.log(`gen-site --check: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
+    console.log(`  site=${SITE}`);
+    console.log(`  formats=${TOTAL} categories_present=${presentCategories}  ` + ORDER.map(o => o[1] + '=' + (by[o[1]] || []).length).join(' '));
+    console.log(changed ? '  WOULD be updated (run without --check to write)' : '  already up to date (no change would be made)');
+    process.exit(0);
+  }
 
-  check('capability sentence names a PARTIAL os_codec dependency by extension', () => {
-    const items = [
-      { ext: 'png', source: 'full_decode', os_codec: null },
-      { ext: 'jxr', source: 'full_decode', os_codec: 'wmphoto' },
-      { ext: 'heic', source: 'full_decode', os_codec: 'heif' },
-    ];
-    const sentence = capabilitySentence(items);
-    assert.match(sentence, /^Each thumbnail is a full decode of the image itself\./);
-    assert.match(sentence, /\.jxr additionally needs the OS's WIC JPEG XR codec\./);
-    assert.match(sentence, /\.heic additionally needs the OS's WIC HEIF codec\./);
-  });
-
-  check('mixed-source group states counts, not a blanket claim', () => {
-    // Audit E03 #1: Image is exactly this shape now - most formats a full decode, a fixed
-    // subset (PSD/EPS/APK/Blender/...) riding a carried preview instead.
-    const items = [
-      { ext: 'png', source: 'full_decode', os_codec: null },
-      { ext: 'jpg', source: 'full_decode', os_codec: null },
-      { ext: 'psd', source: 'embedded_preview', os_codec: null },
-    ];
-    const sentence = capabilitySentence(items);
-    assert.match(sentence, /2 are a full decode of the image itself/);
-    assert.match(sentence, /1 rides? the file's own embedded\/carried preview/);
-    assert.doesNotMatch(sentence, /^Each thumbnail/);
-  });
-
-  check('unknown capability source throws rather than rendering blank', () => {
-    assert.throws(
-      () => capabilitySentence([{ ext: 'zzz', source: 'made_up_source', os_codec: null }]),
-      /unknown capability source "made_up_source"/);
-  });
-
-  check('unknown capability source in a mixed group throws too', () => {
-    assert.throws(
-      () => capabilitySentence([
-        { ext: 'png', source: 'full_decode', os_codec: null },
-        { ext: 'zzz', source: 'made_up_source', os_codec: null },
-      ]),
-      /unknown capability source "made_up_source"/);
-  });
-
-  check('unknown os_codec throws rather than printing the raw token', () => {
-    assert.throws(
-      () => capabilitySentence([{ ext: 'zzz', source: 'full_decode', os_codec: 'made_up_codec' }]),
-      /unknown os_codec "made_up_codec"/);
-  });
-
-  check('av1 os_codec renders its AV1 Video Extension sentence', () => {
-    const sentence = capabilitySentence([{ ext: 'avif', source: 'full_decode', os_codec: 'av1' }]);
-    assert.match(sentence, /Every format here needs the AV1 Video Extension\./);
-  });
-
-  check('unknown category fails', () => {
-    assert.throws(
-      () => buildFormatWall([{ category: 'Nonsense', ext: 'zzz', description: 'made up' }], '\r\n'),
-      /missing from ORDER: Nonsense/);
-  });
-
-  check('healthy run passes and is idempotent', () => {
-    const formats = [
-      { category: 'Image', ext: 'png', description: 'Portable Network Graphics', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Image', ext: 'jpg', description: 'JPEG', source: 'full_decode', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Document', ext: 'pdf', description: 'Portable Document Format', source: 'cover_or_first_page', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Camera RAW', ext: 'cr2', description: 'Canon RAW', source: 'embedded_preview', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Video', ext: 'mp4', description: 'MPEG-4 Video', source: 'video_frame', convertible: true, preview_listing: false, os_codec: 'media_foundation' },
-      { category: 'Audio', ext: 'mp3', description: 'MPEG Audio', source: 'cover_art', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Ebook', ext: 'epub', description: 'EPUB', source: 'cover_or_first_page', convertible: true, preview_listing: false, os_codec: null },
-      { category: 'Archive', ext: 'zip', description: 'Zip archive', source: 'contained_images', convertible: false, preview_listing: true, os_codec: null },
-    ];
-    const html0 = fixtureHtml({ eyebrow: '6' });
-    const wall1 = buildFormatWall(formats, '\r\n');
-    assert.equal(wall1.presentCategories, 7);
-    const run1 = applyAll(html0, { block: wall1.block, VERSION: '9.9.9', presentCategories: wall1.presentCategories });
-    assert.ok(run1.changed, 'first run over stale fixture should change something');
-    assert.match(run1.html, /hundreds of formats, 7 categories/);
-    assert.match(run1.html, /v9\.9\.9/);
-    // Audit E03: the per-category capability sentence is DERIVED from the data, not
-    // hand-typed - the video group must name its Media Foundation dependency.
-    assert.match(run1.html, /Each thumbnail is a representative frame grabbed from the video\.\s*Every format here needs the OS Media Foundation codecs\./);
-    assert.match(run1.html, /Each thumbnail shows the images found inside the archive, not one photo\./);
-
-    const wall2 = buildFormatWall(formats, '\r\n');
-    const run2 = applyAll(run1.html, { block: wall2.block, VERSION: '9.9.9', presentCategories: wall2.presentCategories });
-    assert.equal(run2.html, run1.html, 'a second run over the already-updated file must be a no-op');
-  });
-
-  const failed = results.filter(([, ok]) => !ok);
-  for (const [name, ok, msg] of results) console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : ' - ' + msg}`);
-  console.log(`gen-site --self-test: ${results.length - failed.length}/${results.length} passed`);
-  return failed.length === 0 ? 0 : 1;
-}
-
-if (SELF_TEST) {
-  process.exit(runSelfTest());
-}
-
-// ---- real run: resolve inputs, validate, write (or --check) ----------------
-const SITE = SITE_ARG ? path.resolve(SITE_ARG) : path.join(ROOT, 'site', 'index.html');
-const ST2K = findSt2k(ST2K_ARG);
-const formats = JSON.parse(execFileSync(ST2K, ['formats', '--json'], { encoding: 'utf8' }));
-assertCapabilityFields(formats, ST2K);
-
-const VERSION = readCargoVersion(ROOT);
-const exeVersion = getExeVersion(ST2K);
-assertVersionMatch(exeVersion, VERSION, ST2K);
-
-// Line endings are DETECTED from the page, not assumed. This used to be a hard-coded
-// '\r\n', and both the generated block and the end-of-region search below depended on it -
-// so once the deployed index.html came back as LF-only (which is what a `git pull` of the
-// deploy repo hands you), the region search found nothing and the whole script died with
-// "could not locate the format-wall region". The format wall then silently stopped tracking
-// `st2k formats`, which is the one thing this file exists to prevent.
-const EXISTING = fs.readFileSync(SITE, 'utf8');
-const CR = EXISTING.includes('\r\n') ? '\r\n' : '\n';
-
-const { block, by, TOTAL, presentCategories } = buildFormatWall(formats, CR);
-const { html, changed } = applyAll(EXISTING, { block, VERSION, presentCategories });
-
-if (CHECK) {
-  console.log(`gen-site --check: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
+  fs.writeFileSync(SITE, html);
+  console.log(`gen-site: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
   console.log(`  site=${SITE}`);
   console.log(`  formats=${TOTAL} categories_present=${presentCategories}  ` + ORDER.map(o => o[1] + '=' + (by[o[1]] || []).length).join(' '));
-  console.log(changed ? '  WOULD be updated (run without --check to write)' : '  already up to date (no change would be made)');
-  process.exit(0);
+  console.log(`  version=v${VERSION}`);
+  console.log(changed ? '  index.html updated' : '  index.html already up to date (no change)');
 }
 
-fs.writeFileSync(SITE, html);
-console.log(`gen-site: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
-console.log(`  site=${SITE}`);
-console.log(`  formats=${TOTAL} categories_present=${presentCategories}  ` + ORDER.map(o => o[1] + '=' + (by[o[1]] || []).length).join(' '));
-console.log(`  version=v${VERSION}`);
-console.log(changed ? '  index.html updated' : '  index.html already up to date (no change)');
+if (process.argv[1] && path.resolve(process.argv[1]) === THIS_FILE) main(process.argv.slice(2));

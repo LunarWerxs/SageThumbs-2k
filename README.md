@@ -4,13 +4,13 @@
 
 # SageThumbs 2K
 
-### Thumbnails for everything Windows won't show you.
+### Real thumbnails where Windows shows a blank icon.
 
 A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-room revival of the legendary (but decade-abandoned) [SageThumbs](https://sagethumbs.en.lo4d.com/).
 
 [![Windows 11](https://img.shields.io/badge/Windows%2011-0078D6?logo=windows11&logoColor=white)](#-install)
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
-![Formats](https://img.shields.io/badge/formats-334-2ea44f)
+![Formats](https://img.shields.io/badge/formats-361-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?sort=semver)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
@@ -44,17 +44,17 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 </div>
 
-SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 334 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
+SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 361 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
 
 ---
 
 ## TL;DR
 
-- 🖼️ Explorer thumbnails for **334 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- 🖼️ Explorer thumbnails for **361 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
-- ⚡ **Fast even on big files**: camera RAW thumbnails from its embedded preview instead of a slow demosaic (3–13× quicker), and no format is allowed to hang a folder.
+- ⚡ **Fast even on huge files**: camera RAW thumbnails come from the embedded preview instead of a slow demosaic (3–13× quicker), multi-gigabyte Photoshop files and archives are read straight off the disk, and no file is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.
-- 👁️ **Press Space to preview** any file, QuickLook-style: an instant full-size popup with **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, **multi-page PDF** paging, a **Save button (Ctrl+S)** to save the page or frame you're viewing as a PNG, **font specimens**, **archive listings**, **SQLite databases** (tables, columns and rows, read-only), **email files** (.eml and Outlook .msg: headers, body and the attachment list, with nothing fetched from the web), **3D-print models** (STL/OBJ/PLY, shaded), a **light/dark button on the window itself** (for the dark photo or bright scan that reads better the other way round), arrow-key folder browsing and full-screen (F11). Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
+- 👁️ **Press Space to preview** any file, QuickLook-style: **video & audio play**, code is **syntax-highlighted**, Markdown renders, PDFs page, and **email**, **SQLite databases** and **3D models** open read-only. Works in Explorer, on the Desktop, in **[Everything](https://www.voidtools.com/) search results**, and inside any app's **Open/Save dialog**.
 - 🔤 **Copy text off your screen**: drag a region and the words land on your clipboard, in an editable window so you can fix a misread. Uses Windows' own recognizer, so it adds nothing to the download.
 - 🎛️ **Make the menu yours**: **drag-reorder** (and show/hide) every right-click entry *and* its dividers; the context menu mirrors your layout exactly.
 - 🎨 **Redesigned Settings**: a Win11-style category nav rail with toggle switches, a **search box that finds any setting on any page**, system-following **dark mode**, **36 languages**.
@@ -78,7 +78,7 @@ SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds 
 
 The original **SageThumbs** was a Windows legend. It made Explorer show thumbnails for *hundreds* of formats nothing else could. Then it stopped: no updates since ~2017, built on the proprietary, frozen **GFL** library.
 
-**SageThumbs 2K rebuilds it from scratch in safe Rust** (a maintained decode pipeline, real crash isolation, and a native Windows 11 look) while keeping the one thing that made it great: **thumbnails for everything.**
+**SageThumbs 2K rebuilds it from scratch in safe Rust** (a maintained decode pipeline, real crash isolation, and a native Windows 11 look) while keeping the one thing that made it great: **thumbnails for the files nothing else will show.**
 
 ---
 
@@ -86,22 +86,22 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 |  |  |
 |---|---|
-| 🖼️ **334 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
+| 🖼️ **361 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
 | 📚 **Ebooks & comics** | EPUB, MOBI/AZW (Kindle), FB2, CBZ/CB7/CBR/CBT: real covers in Explorer (a native-Rust [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) port). Plain ZIP/RAR/7Z archives within the configured file-size limit get a contact-sheet thumbnail of the images inside, too |
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
 | 🔊 **Docs & audio** | PDF first page, Microsoft Office (Word/Excel/PowerPoint) & OpenDocument, and album art for MP3/FLAC/Ogg/Opus/M4A/**WMA**/**DSF (DSD)**/… (WMA/ASF and DSD/.dsf via hand-rolled parsers; `lofty` can't read either) |
-| 👁️ **Space-bar preview** | Tap **Space** in Explorer (or on the Desktop) for an instant QuickLook-style popup of the selected file: any supported format at full size, plus **video & audio playback** (with a scrubber + volume), **syntax-highlighted** code, **GitHub-style rendered Markdown**, animated GIF/APNG/WebP, a real **PDF viewer** (continuous scrolling, a clickable page-thumbnail strip, zoom that re-renders sharp, and **Ctrl+F text search** via Windows' built-in OCR), a **Save button** (or **Ctrl+S**) to save the PDF page, animated frame **or the video frame you're paused on** as an image, **printing** (**Ctrl+P**) of whatever you're looking at, **font specimens** (.ttf/.otf/.ttc), **archive listings** (zip/7z/rar), **SQLite databases** (.db/.sqlite: every table's columns and first rows, plus the schema, strictly read-only), a **hex dump** for binaries nothing can render, **folder sizes**, **←/→ folder browsing** and **full-screen (F11)**. The caption toolbar carries a **light/dark toggle for that window alone**, independent of the app theme, and a **gear** that opens the Quick preview settings. Optionally renders local HTML in a locked-down WebView2 (scripts off, no network) when enabled. Off by default; opt in from Settings |
-| 🧰 **Right-click toolkit** | Convert (29 targets) with an optional **watermark**, resize, shrink-for-email, **lossless** JPEG rotate/flip, combine→PDF/CBZ, batch rename from EXIF/tags **or from a pattern you write**, eyedropper, set-as-folder-icon, **set as wallpaper (Fill · Fit · Span · …) or lock screen**, OCR, strip metadata, upload-to-catbox (copy link), **copy as data URI**. A batch that partly fails can be **retried for just the files that failed** |
+| 👁️ **Space-bar preview** | Tap **Space** in Explorer or on the Desktop for an instant full-size preview of any supported format, plus **video & audio playback**, **syntax-highlighted** code, **rendered Markdown**, a **PDF viewer** with page thumbnails and **Ctrl+F search**, **font specimens**, **archive listings**, **SQLite databases** and **email** (read-only), a **hex dump** for anything else, **Save (Ctrl+S)**, **Print (Ctrl+P)**, **←/→ folder browsing** and **F11 full-screen**. Off by default; opt in from Settings |
+| 🧰 **Right-click toolkit** | Convert (29 targets) with an optional **watermark**, resize, shrink-for-email, **lossless** JPEG rotate/flip, combine→PDF/CBZ, batch rename from EXIF/tags **or from a pattern you write**, eyedropper, set-as-folder-icon, **set as wallpaper (Fill · Fit · Span · …) or lock screen**, OCR, strip metadata, upload & copy the link (it shows when the link expires), **copy as data URI**. A batch that partly fails can be **retried for just the files that failed** |
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe`: `thumbnail · convert · batch · rotate · ocr · pdf · cbz · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any supported format to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
-| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 334 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
+| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 361 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
 | 🎨 **Colour management** | Embedded **ICC** profiles and wide-gamut images (**Display P3 / Adobe RGB**) render in correct sRGB instead of over-saturated; AVIF/HEIC read their `colr` box (incl. the iPhone-HEIC CICP Display-P3 signal), and **CMYK JPEGs** are colour-managed through their embedded profile; pure-Rust, no C deps |
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
 | 🌗 **Native Win11 UI** | Redesigned **Settings**: a Win11-style category nav rail (General · Appearance · File types · Ebook/comic · Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup) with toggle switches, Common-Controls v6, a **search box that finds any setting on any page**, **light/dark theme** (follow Windows, or pick your own), 36 languages |
-| 🔤 **Screen OCR** | **Copy text (OCR)** wherever you need it: a button in the screenshot editor (or **Ctrl+T**), a button on the Quick preview toolbar, a one-click tray item, or a global hotkey that goes straight to drag-a-region-get-the-text. The words land on your clipboard *and* in an editable window, so a misread character is fixable before you paste. Small on-screen type is enlarged before it's read, which is what the in-box recognizer needs to see it at all |
+| 🔤 **Screen OCR** | **Copy text (OCR)** from the screenshot editor (**Ctrl+T**), the Quick preview toolbar, the tray or a global hotkey: drag a region and the words land on your clipboard *and* in an editable window, so a misread is fixable before you paste |
 | 💬 **Send feedback** | A box in the About card mails a suggestion, bug report or format request straight to the developer: no GitHub account, no email address required (leave one only if you want a reply). A failed send puts your text on the clipboard so nothing is lost |
 | ⌨️ **Keyboard & screen readers** | The Quick preview's caption toolbar and video controls are reachable with **Tab**, walked with the arrow keys and pressed with Enter or Space, with a visible focus ring; **Escape** returns to the content. Every category in the Settings nav rail reports its name and selected state, so Narrator and NVDA announce where you are |
 | 🔍 **True transparency** | Real premultiplied-ARGB alpha, so Explorer shows the folder background through a transparent PNG instead of a baked-in grey grid. Prefer the classic look? One switch puts the checkerboard back |
@@ -114,28 +114,28 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 ## 🧹 One install, a whole stack gone
 
-There's a checklist of little utilities people reinstall on every new Windows box: a thumbnail/codec pack, a converter, a color picker, a screenshot tool, an EXIF viewer. SageThumbs 2K is one shell extension (plus a single `st2k.exe`) that quietly does all of their jobs, with no accounts to create and no cloud service to sign into.
+One shell extension and one `st2k.exe` do the jobs of the utilities people reinstall on every new Windows box, with no account and no cloud service.
 
 | Instead of installing... | You already have it |
 |---|---|
-| A RAW/PSD/HEIC **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **334 formats**, crash-isolated so a corrupt file can't hang Explorer |
-| A **preview-pane** add-on for RAW/PSD/ebook covers | A built-in large **preview handler** for 334 formats (reading pane and Open dialogs) |
-| A **Space-bar preview** app (QuickLook, Seer) | Tap Space for an instant full-size preview, macOS-style: video plays, code is syntax-highlighted, Markdown renders, PDFs page, SQLite databases open as tables **(new)** |
-| An **EXIF / metadata viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS, dimensions and audio tags as **sortable Explorer columns** |
-| A **batch converter** (XnConvert, IrfanView + plugins, ImageMagick) | Right-click **Convert** to ~29 formats (AVIF, JPEG XL, PSD, DDS, EXR...), batched across every core |
+| A **thumbnail or codec pack** (MysticThumbs, FastPictureViewer, Icaros) | Thumbnails for **hundreds of formats**, crash-isolated |
+| A **preview-pane** add-on | A large **preview handler** in the reading pane and Open dialogs |
+| A **Space-bar preview** app (QuickLook, Seer) | **Tap Space** for an instant full-size preview |
+| An **EXIF viewer** (ExifToolGUI, Opanda IExif) | EXIF, GPS and audio tags as **sortable Explorer columns** |
+| A **batch converter** (XnConvert, IrfanView) | Right-click **Convert** to ~29 formats, batched across every core |
 | A **resizer** (PowerToys Image Resizer) | Right-click **Resize** presets and **Shrink for email** |
-| **jpegtran**, or IrfanView's lossless-rotate plugin | **Lossless JPEG rotate / flip**, zero re-encode |
-| A **color picker** (PowerToys, Just Color Picker, Instant Eyedropper) | A **system-wide eyedropper** with a 10x loupe; copies **hex, rgb(), hsl() or hsv()** (Tab switches) and keeps your **last 10 picks** a keypress away |
-| A **metadata scrubber** (ExifCleaner, BatchPurifier) | Right-click **Strip metadata** (EXIF/IPTC/XMP/GPS), keeps your ICC profile |
-| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Built-in capture: **drag a region or click a window**, an optional **countdown delay** for menus and tooltips, an annotation editor and quick-save |
-| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text (OCR)** four ways: right-click a file, **Ctrl+T** in the screenshot editor, the Quick preview toolbar, or a one-key hotkey / tray click that goes straight to drag-a-region-get-the-text; **captured tables keep their columns** (tabs, so they paste into Excel as cells) |
+| **jpegtran**, or IrfanView's lossless-rotate plugin | **Lossless JPEG rotate / flip** |
+| A **color picker** (PowerToys, Just Color Picker) | A **system-wide eyedropper** with a 10x loupe |
+| A **metadata scrubber** (ExifCleaner, BatchPurifier) | Right-click **Strip metadata**, ICC profile kept |
+| A **screenshot + annotate** app (ShareX, Greenshot, Snagit) | Region or window **capture** with a delay, annotations and quick-save |
+| An **OCR** tool (Capture2Text, PowerToys Text Extractor) | **Copy text** off a file or any region of the screen; tables keep their columns |
 | An **image uploader** (ShareX, Imgur apps) | **Upload (copy link)** to a keyless host, no account |
-| A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ**, natural-sorted |
-| **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server**, so agents get an image toolbox with zero extra installs |
+| A **PDF / CBZ maker** (PDF24, manual 7-Zip) | **Combine into PDF** or **CBZ** |
+| **ImageMagick** for scripts and AI agents | `st2k.exe`: a full CLI **and an MCP server** |
 
-**That's a dozen-plus tools folded into one tiny download** with no separate codec pack to install and every decoder isolated from Explorer. The thumbnailer runs only when Explorer asks it for a thumbnail; the background helper for the screenshot hotkey and Space-bar preview is opt-in, so a default install has nothing resident at all.
+**A dozen-plus tools in one download**, every decoder isolated from Explorer. Nothing stays running unless you turn on the screenshot hotkey or the Space-bar preview.
 
-<sub>Fine print, because we'd rather undersell: a few exotic formats lean on codecs already in Windows (WIC) or the bundled ImageMagick engine rather than pure Rust; SageThumbs 2K is what wires all of it into Explorer. And several tools above (PowerToys, Snipping Tool, ShareX) are free too. The point isn't that they cost money, it's that you no longer have to assemble and run a dozen of them side by side.</sub>
+<sub>Fine print: a few exotic formats lean on codecs already in Windows (WIC) or the bundled ImageMagick; SageThumbs 2K wires them into Explorer. Several tools above are free too; the point is one install instead of a dozen.</sub>
 
 ---
 
@@ -165,7 +165,7 @@ Hit a bug, or a format that won't thumbnail? **[Open an issue](https://github.co
 
 > The installer registers a classic shell extension via `regsvr32` and trusts a self-signed cert for the Win11 modern menu. It's a *classic* extension by design (not an MSIX sandbox) because it spawns ImageMagick as a subprocess.
 
-> **First run / SmartScreen:** SageThumbs 2K is source-available indie software, and the installer isn't signed with a (paid) certificate, so Windows may show a blue **"Windows protected your PC"** screen. That's expected for unsigned indie apps: click **More info → Run anyway**. Every line of the code is right here for you to inspect.
+> **First run / SmartScreen:** every release since 3.0.0 is code-signed by LUNARWERX LLC (right-click the installer, Properties, Digital Signatures). A brand-new signed release can still meet a blue **"Windows protected your PC"** screen while it builds download reputation: click **More info → Run anyway**. Every line of the code is right here for you to inspect.
 
 ### Installer vs. portable zip
 
@@ -206,7 +206,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 - **Crash-proof by design**: a malformed file can't take down Explorer.
 - **Zero runtime dependencies**, pure memory-safe Rust core, installs clean every time.
 - **Zero-warning linting, supply-chain audits, fuzzing, Miri, and a full test + render-regression suite** gate every release.
-- **Hardened against hostile input** and scanned through VirusTotal each release.
+- **Hardened against hostile input** and code-signed by LUNARWERX LLC on every release.
 - **Color-managed** (ICC/wide-gamut → sRGB) and **obsessively tuned** for speed, size, and a native feel.
 
 ---
@@ -214,20 +214,20 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 ## 🗂 Supported formats
 
 <details open>
-<summary><strong>334 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
+<summary><strong>361 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
 
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm
 - **Photoshop / paint**: psd/psb, xcf, **psp/pspimage** (Paint Shop Pro), **iff/ilbm/lbm** (Amiga ILBM / Deluxe Paint), pcx, miff, cut
-- **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), **dds** (game textures: every block format BC1 to BC7, HDR BC6H included, decoded natively), ico, tga, qoi, svg
+- **Common + modern**: png, jpg, gif, bmp, tiff, webp, heic/heif, avif, jp2, jxl, **jxr/wdp/hdp** (JPEG XR / HD Photo), **dds** (game textures: every block format BC1 to BC7, HDR BC6H included, decoded natively), **vtf/ktx** (Valve and Khronos textures, through the same decoders), **six/sixel** (terminal graphics), avifs, ico, tga, qoi, svg
 - **Vector & metafile**: svg/svgz, wmf, emf/emz
 - **Ebook & comics**: epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz/cb7/cbr/cbt
-- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, blend, 3mf, fcstd, gcode, **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange)
-- **Icons**: ico, cur, **icns** (Apple)
-- **Docs & audio**: pdf, **doc/docx/docm, xls/xlsx/xlsm/xlsb, ppt/pptx/pptm/ppsx** (MS Office), odt/ods/odp, **key/pages/numbers** (Apple iWork), **indd/indt** (InDesign), **vsd/vsdx/vsdm** (Visio), **pub** (Publisher), djvu + mp3/flac/ogg/opus/m4a/wma/**dsf** (DSD)/ape/…
-- **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (30% in by default, adjustable in Settings) via the OS **Media Foundation** codecs, plus **FLV** (VP6 / Sorenson Spark) and **HDR VP9** (Profile 2/3, 10- and 12-bit) decoded by SageThumbs itself in a short-lived helper process
+- **Project / design / CAD**: psd, afphoto/afdesign/afpub, clip, kra, ora, **pxo** (Pixelorama), **aseprite/ase** (Aseprite, rendered), **spla** (SpriteLoop, rendered), **sldprt/sldasm/slddrw** (SolidWorks), **mcworld/mctemplate/mcpack/mcaddon** (Minecraft Bedrock), blend, 3mf, fcstd, gcode, **bgcode** (PrusaSlicer binary), **eps** (embedded raster preview only), **sketch, procreate** (digital art), **skp** (SketchUp), **3dm** (Rhino), **dwg** (AutoCAD), **max** (3ds Max), **c4d** (Cinema 4D), **xd** (Adobe XD), **cdr/cdt/cmx** (CorelDRAW / Corel Exchange), **dxf** (AutoCAD preview), **xmind** (mind maps), **nupkg/vsix** (package icons)
+- **Icons**: ico, cur, **ani** (animated cursors), **icns** (Apple)
+- **Docs & audio**: pdf, **doc/docx/docm, xls/xlsx/xlsm/xlsb, ppt/pptx/pptm/ppsx** (MS Office), odt/ods/odp, **key/pages/numbers** (Apple iWork), **indd/indt** (InDesign), **vsd/vsdx/vsdm/vstx/vssx** (Visio), **pub** (Publisher), djvu + mp3/flac/ogg/opus/m4a/wma/**dsf** (DSD)/ape/…
+- **Video**: mkv/webm, mp4/m4v/mov, avi, wmv, flv, mpg/mpeg/m1v/m2v/mpv/mp2v/m2p, vob, 3gp/3g2, ts/m2ts/mts, ogv, divx, …: a representative frame (30% in by default, adjustable in Settings) via the OS **Media Foundation** codecs, plus **FLV** (VP6 / Sorenson Spark), **HDR VP9** (Profile 2/3, 10- and 12-bit) and **MPEG-1/2** (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings) decoded by SageThumbs itself in a short-lived helper process
 
-*(PostScript without an embedded raster preview and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames normally come from Windows' own Media Foundation codecs. Where Windows has no codec (FLV's VP6 and Sorenson Spark, and VP9 Profile 2/3 HDR), SageThumbs decodes the frame itself in a separate short-lived process, so a corrupt file costs one thumbnail rather than disturbing Explorer. Anything neither side can decode, such as MPEG-1/2 without the optional pack, keeps its default icon.)*
+*(PostScript without an embedded raster preview and font-only ImageMagick coders are excluded for safety; PDF uses the in-box OS renderer. Video frames normally come from Windows' own Media Foundation codecs. Where Windows has no codec (FLV's VP6 and Sorenson Spark, VP9 Profile 2/3 HDR, and MPEG-1/2 in program, elementary and transport streams), SageThumbs decodes the frame itself in a separate short-lived process, so a corrupt file costs one thumbnail rather than disturbing Explorer. Anything neither side can decode keeps its default icon.)*
 
 </details>
 
@@ -263,10 +263,13 @@ cargo build --release            # sagethumbs2k.dll + SageThumbs2K.exe + st2k.ex
 <summary><b>Is SageThumbs 2K free?</b></summary>
 
 Yes, for personal use, under the [PolyForm Noncommercial License 1.0.0](#-license). Commercial
-use needs a commercial license: **US$49 per Windows installation, one-time**. Perpetual licence
-with 12 months of updates. Afterwards the app keeps working as it is; another 12 months of
-updates is US$29, bought with your key. Security fixes are delivered to every licensed
-installation regardless. Bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs)
+use needs a commercial license per Windows installation, sold two ways: **US$2.99 a month**,
+cancel any time, or **US$49 once** for a perpetual licence with 12 months of updates. On the
+one-time plan the app keeps working as it is afterwards, and another 12 months of updates is
+US$29, bought with your key; a monthly licence stops entitling the machine when the
+subscription ends. Security fixes are delivered to every licensed installation regardless.
+Bought [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly)
+or [once](https://go.lunarwerx.com/sagethumbs/buy)
 (the checkout page calls what it emails you a "redemption code"; that is the seat key below,
 same thing). For volume or site licenses, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
@@ -274,10 +277,11 @@ A business license comes as a seat key (`esk_...`); redeem it under
 **Settings ▸ Licence** and the app takes it from there. The installer asks whether a copy is
 for personal or business use, and that answer only changes by reinstalling, there's no toggle
 for it in Settings. A portable copy has no installer to ask, and counts as business use as soon
-as a key is redeemed on it. A business copy has every feature the moment it's installed, key or not, it
-just reminds you to add one, and the license check itself runs quietly in the background and
-tolerates being offline for about a week. There's no ads, no paywall, and no subscription tier,
-just a single free download built and maintained by one person.
+as a key is redeemed on it. A business copy starts a 7-day evaluation with every feature; after
+that it asks for a key for 3 more days, then thumbnails, previews and the right-click menu stop
+until one is entered. Once a key is in, the license check runs quietly in the background and
+tolerates being offline for about a week. Personal use has no ads and no paywall, just a single
+free download built and maintained by one person.
 
 </details>
 
@@ -329,9 +333,9 @@ made.
   each other: 2 of 71 with it, 3 of 70 without. The size and contents are not what is being
   scored.
 
-Every release links its own VirusTotal report, so you can see the current ratio and the exact
-engine names for the file you downloaded rather than one popup's opinion. You can also verify
-the SHA-256 on the release page matches what you got.
+Every release is code-signed by LUNARWERX LLC and lists each file's SHA-256, so you can check
+that the file you downloaded is the one published. For the current engine ratio and the exact
+detection names, look that SHA-256 up on VirusTotal rather than trusting one popup's opinion.
 
 If your antivirus quarantines it, reporting it as a false positive to *your* vendor genuinely
 helps, those reports are what clear it for everyone else using that product, and since 3.0
@@ -367,7 +371,7 @@ in Settings works around that, because Windows delivers hotkeys differently than
 <details>
 <summary><b>How many formats does it support, and can more be added?</b></summary>
 
-334 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
+361 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
 `st2k formats` for the live, per-category count. New formats are considered when they can be
 read without a heavy dependency, many "project" file formats bake in a preview image that's
 cheap to extract. Request one through Send Feedback in the app or a GitHub issue.
@@ -377,7 +381,7 @@ cheap to extract. Request one through Send Feedback in the app or a GitHub issue
 </details>
 ## 📜 License
 
-**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**: **US$49 per Windows installation, one-time**. Perpetual licence with 12 months of updates. Afterwards the app keeps working as it is; another 12 months of updates is US$29, bought with your key. Security fixes are delivered to every licensed installation regardless. Bought at [checkout.connections.icu](https://checkout.connections.icu/licence/24544461-9530-4edb-84e5-4f3471876d98?slug=sagethumbs) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy has every feature with no key entered, it just reminds you until you add one, and the background license check tolerates about a week offline. © 2026 Lunarwerx.
+**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**, per Windows installation, sold two ways: **US$2.99 a month** (cancel any time; the machine stops being entitled when the subscription ends) or **US$49 once** for a perpetual licence with 12 months of updates. On the one-time plan the app keeps working as it is afterwards; another 12 months of updates is US$29, bought with your key. Security fixes are delivered to every licensed installation regardless. Bought [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly) or [once](https://go.lunarwerx.com/sagethumbs/buy) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy gets a 7-day evaluation with every feature, then 3 days of reminders, then thumbnails and previews stop until a key is entered; once it is, the background license check tolerates about a week offline. © 2026 Lunarwerx.
 
 SageThumbs 2K is a **clean-room rewrite**, **not** a derivative of the GPLv2 C++ original, and it uses **no GFL**. Every decoder is pure-Rust or an OS codec (RAR/CBR comics use the pure-Rust [`rars`](https://crates.io/crates/rars) crate, no proprietary UnRAR), so the project's own code is entirely original and its dependencies are permissively licensed, which is what lets us license it as we choose. The optional bundled ImageMagick (for the exotic long tail) ships under its own permissive license and runs only as a sandboxed subprocess.
 
@@ -398,3 +402,7 @@ Made by [LunarWerx Studios](https://lunarwerx.com): also see [RepoYeti](https://
 
 <sub>Made with 🦀 for people who have too many weird files.</sub>
 </div>
+
+## ⭐ Star history
+
+<a href="https://www.star-history.com/?repos=lunarwerxs%2Fsagethumbs-2k&type=date&legend=bottom-right"><img src="https://api.star-history.com/svg?repos=lunarwerxs%2Fsagethumbs-2k&type=Date&theme=dark&legend=bottom-right" width="100%" alt="SageThumbs 2K GitHub stars over time"></a>

@@ -12,6 +12,9 @@
 # publishes only on green, so a broken ARM64 payload never becomes downloadable. The
 # `release: published` trigger stays as the record for anything published another way.
 name: ARM64 portable verify
+# The dispatched run is titled with the tag it verifies, so release.ps1 can pick OUR run by
+# commit AND tag rather than by "the first run after we dispatched" (2026-09-19 audit).
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('ARM64 portable verify {0}', inputs.tag) || '' }}
 
 on:
   release:
@@ -76,9 +79,15 @@ jobs:
           # Invoke-WebRequest, not `gh api ... > file`: a pwsh redirection re-encodes the bytes
           # as text. pwsh 7 drops the Authorization header on the cross-host redirect to the
           # asset CDN, which is what that CDN requires.
-          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$assetId" `
-            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'X-GitHub-Api-Version' = '2022-11-28' } `
-            -OutFile $zip -MaximumRedirection 5
+          foreach ($try in 1..4) {
+            try {
+              Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$assetId" `
+                -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'X-GitHub-Api-Version' = '2022-11-28' } `
+                -OutFile $zip -MaximumRedirection 5
+              break
+            }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           if (-not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1MB) { throw "could not download asset $assetId ($asset) from $tag" }
           "zip=$zip" >> $env:GITHUB_ENV
           Write-Host ("downloaded {0:N2} MB" -f ((Get-Item $zip).Length / 1MB))
@@ -160,8 +169,10 @@ jobs:
           # is exactly the "SHA-256 per URL, fail loudly on mismatch" gap check-magick-source.ps1
           # and check-vendored-exr.ps1 already close for their own downloads.
           $flv = Join-Path $env:drop 'probe.flv'
-          Invoke-WebRequest 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv' `
-            -OutFile $flv -UseBasicParsing -TimeoutSec 120
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest 'https://fate-suite.ffmpeg.org/flash-vp6/clip1024.flv' -OutFile $flv -UseBasicParsing -TimeoutSec 120; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           $flvHash = (Get-FileHash -LiteralPath $flv -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($flvHash -ne 'f61d4a1696000cbb6d1e6a8bd7e4682656da3ad017c49fd6d7c47a7f28d8aefe') {
             throw "clip1024.flv hash mismatch: expected f61d4a1696000cbb6d1e6a8bd7e4682656da3ad017c49fd6d7c47a7f28d8aefe, got $flvHash"
@@ -177,8 +188,10 @@ jobs:
           # Android package: binary XML + resources.arsc, parsed IN-PROCESS. Different risk
           # class from the video path, so it gets its own assertion rather than riding along.
           $apk = Join-Path $env:drop 'probe.apk'
-          Invoke-WebRequest 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk' `
-            -OutFile $apk -UseBasicParsing -TimeoutSec 120
+          foreach ($try in 1..4) {
+            try { Invoke-WebRequest 'https://raw.githubusercontent.com/androguard/androguard/0c0af30ca6bd55d3d34aa10d7f32593cd091a483/tests/data/APK/TestActivity.apk' -OutFile $apk -UseBasicParsing -TimeoutSec 120; break }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
           $apkHash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($apkHash -ne '3bb32dd50129690bce850124ea120aa334e708eaa7987cf2329fd1ea0467a0eb') {
             throw "TestActivity.apk hash mismatch: expected 3bb32dd50129690bce850124ea120aa334e708eaa7987cf2329fd1ea0467a0eb, got $apkHash"

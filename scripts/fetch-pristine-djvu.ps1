@@ -3,7 +3,7 @@
   cache, so `vendor-djvu.ps1 -Check` has something real to diff against.
 
       pwsh scripts\fetch-pristine-djvu.ps1                 # the pinned version
-      pwsh scripts\fetch-pristine-djvu.ps1 -Version 0.28.0
+      pwsh scripts\fetch-pristine-djvu.ps1 -Version 0.33.0
 
   WHY THIS EXISTS. See fetch-pristine-jxl.ps1's header for the CI incident this mirrors: once
   the workspace's `[patch.crates-io]` redirects `djvu-rs` to the vendored PATH copy, cargo
@@ -21,7 +21,7 @@ param(
     # Keep this in step with vendor-djvu.ps1's own default. Passing a version this repo does
     # not pin would populate the cache with a tarball the check is not looking for, which would
     # leave the check skipping and looking like this script had failed silently.
-    [string]$Version = '0.27.0'
+    [string]$Version = '0.35.0'
 )
 $ErrorActionPreference = 'Stop'
 

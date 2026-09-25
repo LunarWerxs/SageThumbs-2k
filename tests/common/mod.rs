@@ -20,6 +20,41 @@ pub fn dll_path() -> PathBuf {
         .join("sagethumbs2k.dll")
 }
 
+/// Load the built DLL and create one of its coclasses, asking for the initializer - the
+/// handshake Explorer (thumbnails) and prevhost (the preview pane) both perform:
+/// `LoadLibrary -> DllGetClassObject -> IClassFactory::CreateInstance`.
+///
+/// # Safety
+/// Calls into the DLL through raw COM entry points; the caller must have COM initialised.
+pub unsafe fn create_instance(
+    clsid: &windows::core::GUID,
+) -> windows::core::Result<windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream> {
+    use windows::core::{s, Error, Interface, GUID, HRESULT, PCWSTR};
+    use windows::Win32::Foundation::E_FAIL;
+    use windows::Win32::System::Com::IClassFactory;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    type DllGetClassObjectFn =
+        unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut std::ffi::c_void) -> HRESULT;
+
+    let path = dll_path();
+    assert!(
+        path.exists(),
+        "cdylib not built at {path:?} — run `cargo build` first"
+    );
+    let wide = to_wide(path.as_os_str());
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }?;
+    let proc = unsafe { GetProcAddress(module, s!("DllGetClassObject")) }
+        .ok_or_else(|| Error::from(E_FAIL))?;
+    // SAFETY: `DllGetClassObject` has exactly this signature in every COM server.
+    let dll_get_class_object: DllGetClassObjectFn = unsafe { std::mem::transmute(proc) };
+    let mut factory_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    unsafe { dll_get_class_object(clsid, &IClassFactory::IID, &mut factory_ptr) }.ok()?;
+    assert!(!factory_ptr.is_null(), "null class factory");
+    // SAFETY: a successful DllGetClassObject hands back an owned IClassFactory pointer.
+    let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
+    unsafe { factory.CreateInstance(None) }
+}
+
 /// UTF-16, NUL-terminated — the shape every `PCWSTR`-taking Win32 call in these tests needs.
 pub fn to_wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()

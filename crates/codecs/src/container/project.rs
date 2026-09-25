@@ -1,0 +1,382 @@
+//! Embedded-preview extraction for ZIP-packaged "project files" — art apps and
+//! 3D tools that bake a ready-made PNG/JPEG preview into the package. We just
+//! open the ZIP and slice it out (no rendering, no codecs, no patent exposure —
+//! it's a standard PNG/JPEG):
+//!
+//!   - Krita      `.kra`   → `mergedimage.png` | `preview.png`   (mimetype: krita)
+//!   - OpenRaster `.ora`   → `Thumbnails/thumbnail.png`          (mimetype: openraster)
+//!   - 3MF        `.3mf`   → `Metadata/thumbnail.png` | `.jpg`   (3D printing)
+//!   - FreeCAD    `.fcstd` → `thumbnails/Thumbnail.png`
+//!   - Fusion 360 `.f3d`   → `…/Previews/small.png`              (256² model render, CAD)
+//!   - Sketch     `.sketch`→ `previews/preview.png`              (design)
+//!   - Procreate  `.procreate` → `QuickLook/Thumbnail.png`       (Apple QuickLook)
+//!   - Apple iWork `.key/.pages/.numbers` → `QuickLook/Thumbnail.jpg` | `preview.jpg`
+//!   - CorelDRAW  `.cdr`   → `metadata/thumbnails/thumbnail.bmp` (X4+/2008+, ZIP/OPC;
+//!     older RIFF-based .cdr aren't ZIPs and aren't covered)
+//!   - Adobe XD   `.xd`    → `thumbnail.png` | `preview.png`     (mimetype: sparkler)
+//!   - Visio      `.vsdx/.vsdm/.vstx/.vssx` → `docProps/thumbnail.emf` (EMF, decoded by
+//!     magick; templates carry one, most stencils do not and keep the stock icon)
+//!   - XMind      `.xmind` → `Thumbnails/thumbnail.png`          (XMind 8 and 2020+)
+//!
+//! Most have NO existing Windows thumbnailer. Works on compact installs (no
+//! bundled ImageMagick) since the preview is already a raster image.
+
+use std::io::{Read, Seek};
+
+use zip::ZipArchive;
+
+use super::util::{contains_ci, decodable_image};
+use super::zipfmt::read_named;
+
+/// Extract a project-file preview, or None if this ZIP isn't one (or has none).
+/// Generic over the reader so the oversized-file STREAMED path (the shell's
+/// IStream) gets the same dedicated preview lookup as the in-memory path — the
+/// generic image-pick would otherwise grab an arbitrary layer image (ORA's
+/// `data/layer*.png` natural-sorts before the real composite).
+pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    // Krita / OpenRaster: keyed off their `mimetype` entry (like ODF).
+    if let Some(mt) = read_named(zip, "mimetype") {
+        if let Some(paths) = mimetype_paths(&mt) {
+            return try_paths(zip, paths);
+        }
+    }
+    // Autodesk Fusion 360 `.f3d` (ZIP): a 256×256 model render at
+    // `FusionAssetName[Active]/Previews/small.png`. Matched by SUFFIX so the asset-name
+    // folder prefix and Fusion version don't matter; the `Previews/small.png` tail is
+    // distinctive (Sketch's preview is `previews/preview.png`, so no clash).
+    if let Some(data) = read_suffix(zip, "previews/small.png") {
+        if let Some(img) = decodable_image(data) {
+            return Some(img);
+        }
+    }
+    // Minecraft Bedrock packages (2026-09-17): a world (`.mcworld`/`.mctemplate`) carries
+    // `world_icon.jpeg` at its root; a resource/behavior pack (`.mcpack`) and an add-on
+    // (`.mcaddon`, several packs in folders) carry `pack_icon.png` at the root or one folder
+    // down - hence the suffix match. Both names are the game's own and nothing else uses them,
+    // so a zip with either IS one of these. A pack that ships no icon falls through to the
+    // generic pick, like any other zip of images.
+    for suffix in ["world_icon.jpeg", "pack_icon.png"] {
+        if let Some(data) = read_suffix(zip, suffix) {
+            if let Some(img) = decodable_image(data) {
+                return Some(img);
+            }
+        }
+    }
+    // XMind mind maps (2026-09-22): XMind 8 and XMind 2020+ both save a picture of the map as
+    // `Thumbnails/thumbnail.png`. That path is ODF's and OpenRaster's too, so it is taken only
+    // beside XMind's own parts: `content.json` + `metadata.json` (2020+), or a manifest in
+    // XMind 8's `urn:xmind` namespace. A map's inserted pictures live beside it, which is why
+    // the generic pick would not do.
+    if let Some(img) = xmind_thumbnail(zip) {
+        return Some(img);
+    }
+    // 3MF + FreeCAD + design apps (Sketch / Procreate / Apple iWork): probe the
+    // known preview paths. Each is distinctive enough not to false-positive on
+    // other ZIPs (epub/cbz/office lack them); `preview.jpg` is probed LAST so a
+    // more specific match always wins.
+    try_paths(
+        zip,
+        &[
+            "Metadata/thumbnail.png",
+            "Metadata/thumbnail.jpg",
+            "thumbnails/Thumbnail.png",
+            "thumbnails/thumbnail.png",
+            "previews/preview.png",              // Sketch
+            "QuickLook/Thumbnail.png",           // Procreate
+            "QuickLook/Thumbnail.jpg",           // Apple iWork (Keynote/Pages/Numbers)
+            "metadata/thumbnails/thumbnail.bmp", // CorelDRAW (X4+/2008+, ZIP/OPC)
+            "metadata/thumbnails/page1.bmp",     // CorelDRAW (alternate)
+            "docProps/thumbnail.emf", // Visio .vsdx/.vsdm/.vstx/.vssx (EMF; magick decodes it)
+            "geogebra_thumbnail.png", // GeoGebra .ggb (root-level, distinctive)
+            "preview.jpg",            // Apple iWork (root preview) — least specific, last
+        ],
+    )
+}
+
+/// The preview paths for a `mimetype` we key off (Krita / OpenRaster / Adobe XD /
+/// Pixelorama), or None when this ZIP is not one of those packages.
+fn mimetype_paths(mt: &[u8]) -> Option<&'static [&'static str]> {
+    if contains_ci(mt, b"krita") {
+        return Some(&["mergedimage.png", "preview.png"]);
+    }
+    if contains_ci(mt, b"openraster") {
+        return Some(&["Thumbnails/thumbnail.png", "mergedimage.png"]);
+    }
+    // Adobe XD: mimetype "application/vnd.adobe.sparkler.project…". Top-level
+    // thumbnail.png (small) preferred, preview.png (larger) as fallback.
+    if contains_ci(mt, b"sparkler") {
+        return Some(&["thumbnail.png", "preview.png"]);
+    }
+    // Pixelorama `.pxo` (1.0+, mimetype "application/x-pixelorama"): a root `preview.png`
+    // of the current frame, 256 px on its long edge, nearest-neighbour scaled - written by
+    // Pixelorama expressly so "file managers can later use this as a thumbnail" (its
+    // OpenSave.gd, verified 2026-09-17). Keyed off the mimetype like Krita: a bare root
+    // `preview.png` is not in the generic `try_paths` list above on purpose, since it would claim any
+    // zip that happens to carry one. Pre-1.0 `.pxo` files are zstd streams, not zips, and
+    // never reach this module; they keep the stock icon.
+    if contains_ci(mt, b"pixelorama") {
+        return Some(&["preview.png"]);
+    }
+    None
+}
+
+fn xmind_thumbnail<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
+    if !is_xmind(zip) {
+        return None;
+    }
+    read_named(zip, "Thumbnails/thumbnail.png").and_then(decodable_image)
+}
+
+fn is_xmind<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
+    (zip.by_name("content.json").is_ok() && zip.by_name("metadata.json").is_ok())
+        || read_named(zip, "META-INF/manifest.xml").is_some_and(|m| contains_ci(&m, b"urn:xmind"))
+}
+
+fn try_paths<R: Read + Seek>(zip: &mut ZipArchive<R>, paths: &[&str]) -> Option<Vec<u8>> {
+    for p in paths {
+        if let Some(data) = read_named(zip, p) {
+            if let Some(img) = decodable_image(data) {
+                return Some(img);
+            }
+        }
+    }
+    None
+}
+
+/// Read the first entry whose (lowercased) name ends with `suffix_lc`. For containers
+/// that key the preview off a stable path TAIL rather than a fixed full name — Fusion's
+/// `FusionAssetName[Active]/Previews/small.png` has a varying folder prefix.
+///
+/// Fusion compresses that PNG with **zstd**, which the `zip` crate can't inflate without
+/// a C lib — so we read the entry via the RAW reader (a zstd member is invisible to the
+/// normal `by_index`) and, when it's zstd, inflate it ourselves with the pure-Rust
+/// `ruzstd`. Store/deflate members go back through the crate's normal decompressing read.
+fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Option<Vec<u8>> {
+    // Locate the entry off the already-parsed central directory, not the RAW reader:
+    // `by_index_raw` would seek to and read every entry's local header just to read a
+    // name — a zstd member errors out of the normal `by_index`, but it only has to be
+    // READ via the raw reader (below), not located by it.
+    // Capped like every other central-directory walk in `container/` — a crafted zip can declare
+    // millions of near-empty entries, and each iteration here allocates a lowercased name. This
+    // runs in-process for the classic-menu preview, where the caller's budget only bounds how long
+    // it WAITS: the worker keeps burning CPU in the shell after the caller has given up.
+    let mut hit = None;
+    for (i, n) in zip.file_names().take(super::MAX_LIST_ENTRIES).enumerate() {
+        if n.to_ascii_lowercase().ends_with(suffix_lc) {
+            hit = Some((i, n.to_string()));
+            break;
+        }
+    }
+    let (idx, name) = hit?;
+
+    // Stored / Deflated: the crate's normal decompressing reader handles these.
+    if let Some(d) = read_named(zip, &name) {
+        return Some(d);
+    }
+    // None here means the crate couldn't inflate it — for Fusion that's the zstd-
+    // compressed PNG. Read the raw entry bytes and inflate with the pure-Rust ruzstd.
+    //
+    // Both reads are routed through `crate::decode::read_bounded` (2026-09-05 audit, F15):
+    // they used to `.take(MAX_COVER)` (no `+1`) and hand back whatever came through, so
+    // either a raw compressed entry or a zstd-decompressed output PAST the cap silently
+    // came back as a truncated-but-successful prefix: a partial zstd frame or a partial
+    // PNG handed to the decode tiers as if it were the whole thing, rather than the "too
+    // big, refuse" every other bounded read in this module gives. A 256px Fusion preview
+    // is nowhere near MAX_COVER either way, so this changes nothing for a real file.
+    let f = zip.by_index_raw(idx).ok()?;
+    let raw = crate::decode::read_bounded(f, super::MAX_COVER).ok()?;
+    let dec = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
+    let out = crate::decode::read_bounded(dec, super::MAX_COVER).ok()?;
+    (!out.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+
+    fn tiny_png() -> Vec<u8> {
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+            .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+            for (name, data) in entries {
+                w.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                w.write_all(data).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    fn extract_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        extract(&mut zip)
+    }
+
+    #[test]
+    fn extracts_project_previews_and_ignores_plain_zips() {
+        let png = tiny_png();
+
+        // Krita + OpenRaster: keyed off mimetype.
+        let kra = make_zip(&[
+            ("mimetype", b"application/x-krita"),
+            ("mergedimage.png", &png),
+        ]);
+        assert!(extract_bytes(&kra)
+            .unwrap()
+            .starts_with(&[0x89, b'P', b'N', b'G']));
+        let ora = make_zip(&[
+            ("mimetype", b"image/openraster"),
+            ("Thumbnails/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&ora)
+            .unwrap()
+            .starts_with(&[0x89, b'P', b'N', b'G']));
+
+        // 3MF: no mimetype, preview under Metadata/.
+        let mf = make_zip(&[
+            ("3D/3dmodel.model", b"<model/>"),
+            ("Metadata/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&mf).is_some());
+
+        // FreeCAD path.
+        let fc = make_zip(&[
+            ("Document.xml", b"<doc/>"),
+            ("thumbnails/Thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&fc).is_some());
+
+        // Fusion 360 .f3d: preview under a varying asset-name folder, matched by suffix.
+        let f3d = make_zip(&[
+            ("Components/part.brep", b"x"),
+            ("FusionAssetName[Active]/Previews/small.png", &png),
+        ]);
+        assert!(extract_bytes(&f3d).is_some(), "fusion f3d preview");
+
+        // Sketch: previews/preview.png
+        let sk = make_zip(&[("document.json", b"{}"), ("previews/preview.png", &png)]);
+        assert!(extract_bytes(&sk).is_some(), "sketch preview");
+
+        // Procreate: QuickLook/Thumbnail.png
+        let pr = make_zip(&[
+            ("Document.archive", b"x"),
+            ("QuickLook/Thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&pr).is_some(), "procreate preview");
+
+        // Apple iWork: a root preview.jpg (use png bytes — decodable_image sniffs content).
+        let iwork = make_zip(&[("Index.zip", b"x"), ("preview.jpg", &png)]);
+        assert!(extract_bytes(&iwork).is_some(), "iWork preview");
+
+        // CorelDRAW (X4+ ZIP): metadata/thumbnails/thumbnail.bmp.
+        let cdr = make_zip(&[
+            ("content/riffData.cdr", b"x"),
+            ("metadata/thumbnails/thumbnail.bmp", &png),
+        ]);
+        assert!(extract_bytes(&cdr).is_some(), "coreldraw preview");
+
+        // Adobe XD: keyed off the "sparkler" mimetype.
+        let xd = make_zip(&[
+            ("mimetype", b"application/vnd.adobe.sparkler.project+dcxucf"),
+            ("thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&xd).is_some(), "adobe xd preview");
+
+        // Visio: docProps/thumbnail.emf (a minimal blob carrying the EMF signature).
+        let mut emf = vec![0x01, 0x00, 0x00, 0x00];
+        emf.resize(40, 0);
+        emf.extend_from_slice(b" EMF");
+        let vsdx = make_zip(&[
+            ("[Content_Types].xml", b"<Types/>"),
+            ("docProps/thumbnail.emf", emf.as_slice()),
+        ]);
+        assert!(extract_bytes(&vsdx).is_some(), "visio emf preview");
+
+        // XMind 2020+ and XMind 8: the map picture, keyed off XMind's own parts.
+        let zen = make_zip(&[
+            ("content.json", b"[]"),
+            ("metadata.json", b"{}"),
+            ("resources/attached.png", &png),
+            ("Thumbnails/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&zen).is_some(), "xmind 2020+ thumbnail");
+        let x8 = make_zip(&[
+            (
+                "META-INF/manifest.xml",
+                b"<manifest xmlns=\"urn:xmind:xmap:xmlns:manifest:1.0\"/>",
+            ),
+            ("content.xml", b"<xmap-content/>"),
+            ("Thumbnails/thumbnail.png", &png),
+        ]);
+        assert!(extract_bytes(&x8).is_some(), "xmind 8 thumbnail");
+        // The same path in a zip that is not XMind's is not claimed here.
+        let other = make_zip(&[("Thumbnails/thumbnail.png", &png)]);
+        assert!(
+            extract_bytes(&other).is_none(),
+            "bare Thumbnails/ is no xmind"
+        );
+
+        // A plain image zip (CBZ-style) must NOT be treated as a project file.
+        let cbz = make_zip(&[("001.png", &png)]);
+        assert!(extract_bytes(&cbz).is_none());
+    }
+
+    /// F15 (2026-09-05 audit): `read_suffix`'s zstd path used to `.take(MAX_COVER)` (no
+    /// `+1`) on the decompressed output and hand back whatever came through as a
+    /// successful read, so a Fusion preview whose real decompressed size is PAST the cap
+    /// would silently come back as a truncated `MAX_COVER`-byte prefix (a partially
+    /// decodable PNG) rather than being refused. This exercises the exact
+    /// `crate::decode::read_bounded` application over a real
+    /// `ruzstd::decoding::StreamingDecoder` that `read_suffix` runs its zstd output
+    /// through, using `ruzstd`'s own encoder (already a dependency, no new one added)
+    /// to build a real frame rather than a hand-rolled one.
+    #[test]
+    fn zstd_decode_bound_accepts_exactly_the_cap_and_refuses_one_byte_over() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+
+        let cap = 256u64;
+        let at_cap = vec![9u8; cap as usize];
+        let frame = compress_to_vec(at_cap.as_slice(), CompressionLevel::Fastest);
+        let dec = ruzstd::decoding::StreamingDecoder::new(frame.as_slice()).unwrap();
+        assert_eq!(
+            crate::decode::read_bounded(dec, cap).unwrap(),
+            at_cap,
+            "exactly the cap must be allowed"
+        );
+
+        let over_cap = vec![9u8; (cap + 1) as usize];
+        let frame = compress_to_vec(over_cap.as_slice(), CompressionLevel::Fastest);
+        let dec = ruzstd::decoding::StreamingDecoder::new(frame.as_slice()).unwrap();
+        assert!(
+            crate::decode::read_bounded(dec, cap).is_err(),
+            "output one byte over the cap must be refused, never truncated"
+        );
+    }
+
+    /// A truncated / corrupt zstd frame must fail rather than yielding a partial decode.
+    #[test]
+    fn zstd_decode_rejects_a_truncated_frame() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+
+        let mut frame = compress_to_vec(vec![9u8; 4096].as_slice(), CompressionLevel::Fastest);
+        frame.truncate(frame.len() / 2);
+        let refused = match ruzstd::decoding::StreamingDecoder::new(frame.as_slice()) {
+            Err(_) => true,
+            Ok(dec) => crate::decode::read_bounded(dec, 4096).is_err(),
+        };
+        assert!(
+            refused,
+            "a truncated zstd frame must never yield a partial decode"
+        );
+    }
+}

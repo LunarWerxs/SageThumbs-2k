@@ -8,7 +8,7 @@ that staging directory is also the final flattened runtime layout.
 
 **ARM64 is Full too, since 2026-08-02.** It has its own pin,
 [`imagemagick-source-arm64.json`](../scripts/packaging/imagemagick-source-arm64.json), describing the
-SAME upstream 7.1.2-29 Q16-HDRI release and the same 195-file inventory; only the bundle bytes
+SAME upstream 7.1.2-31 Q16-HDRI release and the same 198-file inventory; only the bundle bytes
 differ. The arm64 asset is an Inno installer rather than something installable on an x64 host,
 so its payload is extracted with `innoextract` into
 `%ProgramFiles%\ImageMagick-7.1.2-Q16-HDRI-arm64`, which keeps the "resolve the pinned
@@ -23,7 +23,7 @@ Two ARM64-specific facts worth knowing before touching this:
   Export EXTRACTION (`gendef`) is architecture-independent and is shared by both.
 - Checks that EXECUTE a binary cannot run cross-architecture, so on an x64 host the magick
   runtime identity check and the bundle smoke test are deferred to the native `arm64` CI job.
-  The 195-file SHA-256 inventory, the dependency closure (via `dumpbin` on ARM64, which was
+  The 198-file SHA-256 inventory, the dependency closure (via `dumpbin` on ARM64, which was
   verified to agree exactly with `objdump` on x64), and the staged-architecture assertion all
   still run locally.
 
@@ -35,7 +35,15 @@ must never hide a missing release dependency.
 
 Production builds accept exactly:
 
-`ImageMagick 7.1.2-29 Q16-HDRI x64 (2026-07-27)`
+`ImageMagick 7.1.2-31 Q16-HDRI x64 (2026-09-03)`
+
+Bumped from `7.1.2-29` on 2026-09-22 for the security advisories published since: heap
+over-writes in `GetVirtualPixels` and the distributed pixel cache, MVG and XMP-profile denial of
+service, a use-after-free in the cairo-less RSVG decoder, and policy bypasses in the MAT, CUT,
+PCD/CUBE/HALD and UHDR coders among them. It adds three coder modules, `ase` (Aseprite
+sprites), `c2pa` (C2PA provenance metadata) and `wbinfo` (Amiga Workbench icons); the build
+drops all three (below) and the reviewed coder set is unchanged. The pinned inventory went
+from 195 files to 198.
 
 Bumped from `7.1.2-25` on 2026-07-31 for the 2026 policy.xml bypass cluster, including
 **CVE-2026-49219** (symlink read of a disallowed file) whose first fix was itself incomplete
@@ -50,12 +58,15 @@ deterministic SHA-256 inventory of every source file eligible to enter the bundl
 - every file under `modules`
 - `License.txt` and `NOTICE.txt`
 
-[`check-magick-source.ps1`](../scripts/check-magick-source.ps1) checks all 195 files,
-47,839,954 bytes, and the aggregate inventory digest before copying anything. Selecting
+[`check-magick-source.ps1`](../scripts/check-magick-source.ps1) checks all 198 files,
+48,354,530 bytes, and the aggregate inventory digest before copying anything. Selecting
 the first `C:\Program Files\ImageMagick*` directory is deliberately forbidden.
 
 An ImageMagick upgrade is therefore an explicit source change: review the new upstream
-package, update the pin, regenerate and inspect the stubs, run the full format regression
+package (list both installers with `innoextract -l` and diff them: every coder module a
+release ADDS reaches the bundle unless `build-release.ps1`'s `$dropCoder` names it, because the
+trim and the policy are both deny-lists; 7.1.2-30/31 added three), update the pin, regenerate
+and inspect the stubs, run the full format regression
 corpus, review the final dependency inventory, and run
 `pwsh scripts/check-magick-dependency-freshness.ps1 -BundlePath scripts/packaging/stage/x64/magick`.
 That last check is an advisory
@@ -148,7 +159,13 @@ vcruntime140_threads.dll
 ```
 
 The SVG stack is handled by resvg; Magick++ and MFC are not used by the command-line
-raster decoder. The following actual coder modules in the pinned package are omitted:
+raster decoder. ⚠ ONE ADVERTISED FORMAT DEPENDED ON THAT STACK AND NOBODY NOTICED UNTIL
+2026-09-17: ImageMagick's PES coder (Brother embroidery) renders stitches by generating SVG
+and handing it to RSVG, so without these DLLs it falls through to an external `rsvg-convert`
+delegate that is not shipped, and `.pes` produced no thumbnail in any install or portable zip.
+It was retired from `FORMATS` rather than re-adding megabytes of SVG stack for one format
+(`formats::REMOVED_EXTENSIONS`). Before adding any format that magick renders via SVG, check
+it against the STAGED bundle, not a developer box with a full ImageMagick installed. The following actual coder modules in the pinned package are omitted:
 
 ```text
 IM_MOD_RL_clipboard_.dll
@@ -175,7 +192,16 @@ IM_MOD_RL_url_.dll
 IM_MOD_RL_video_.dll
 IM_MOD_RL_webp_.dll
 IM_MOD_RL_xps_.dll
+IM_MOD_RL_ase_.dll
+IM_MOD_RL_c2pa_.dll
+IM_MOD_RL_wbinfo_.dll
 ```
+
+The last three arrived with 7.1.2-30/31. ASE reads Aseprite sprites, which our own decoder already
+renders (`container/aseprite.rs`); C2PA reads provenance metadata, not a picture; WBINFO reads
+Amiga Workbench icons (`.info`), which no registered extension reaches. Kept out, each would
+only be new parser surface reachable by magic bytes. Registering `.info` would be a format
+decision, and `wbinfo` would come back with it.
 
 PANGO is a synthetic text-render input, not an advertised file extension, and the
 hardened policy denies it. The build proves both facts before removing that module.
@@ -207,8 +233,8 @@ build. The last two become orphaned only because the retained RAQM DLL is itself
 ## Deterministic text-stack stubs
 
 MagickCore hard-imports GLib, FreeType, and RAQM even though SageThumbs never asks
-ImageMagick to render text. The production build replaces those DLLs—and initially
-generates the related HarfBuzz/Fribidi stubs for export verification—with tiny no-op
+ImageMagick to render text. The production build replaces those DLLs - and initially
+generates the related HarfBuzz/Fribidi stubs for export verification - with tiny no-op
 DLLs. Each generated DLL:
 
 1. derives its export list from the pinned upstream DLL with `gendef`;
@@ -223,14 +249,14 @@ changes installer size/hash by build machine.
 
 ## Bundled dependency versions
 
-Audited 2026-07-31 against the staged bundle, because a vendored image stack is exactly where
+Audited 2026-07-31 against the staged bundle (re-read 2026-09-22 for 7.1.2-31: only libheif moved), because a vendored image stack is exactly where
 an ancient library hides: QuickLook shipped a **2017** zlib inside its exiv2 DLL for years
-(their issue #1975). Ours are all current as of the `7.1.2-29` pin:
+(their issue #1975). Ours are all current as of the `7.1.2-31` pin:
 
 ```text
 brotli      1.2.0   (2025-10-27)     lcms        2.19.1  (2026-05-06)
 bzip2       1.0.8   (2019-07-13)*    lzma        5.8.3   (2026-04-31)
-heif        1.23.1  (2026-06-26)     openjpeg    2.5.4   (2025-09-20)
+heif        1.23.2  (2026-08-25)     openjpeg    2.5.4   (2025-09-20)
 jpeg-turbo  3.2.0   (2025-06-30)     png         1.6.58  (2026-04-15)
 jpeg-xl     0.12.0  (2026-07-01)     raw         0.22.2  (2026-07-16)
 tiff        4.7.2   (2026-06-26)     webp        1.6.0   (2025-07-09)

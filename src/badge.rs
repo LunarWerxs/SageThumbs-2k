@@ -16,10 +16,10 @@
 //! and cannot fail. We only ever draw `A-Z`, `0-9` and `+`, which is every character a format
 //! label can contain.
 
-/// The user's size step for the mark. Lives with the other settings (it is a stored DWORD,
-/// `BadgeSize`); this module only ever reads its [`BadgeSize::divisor`], so the drawing code
-/// stays a pure function of (image, label, style, size).
-pub use crate::settings::BadgeSize;
+/// The user's style and size for the mark live with the other settings (both are stored
+/// DWORDs); this module only reads them, so the drawing code stays a pure function of
+/// (image, label, style, size).
+use st2k_base::settings::{BadgeSize, BadgeStyle};
 
 /// Longest label we will draw. Keeps the badge from eating the tile on a silly extension.
 const MAX_LABEL: usize = 5;
@@ -28,42 +28,15 @@ const MAX_LABEL: usize = 5;
 /// meaningful share of the image and be unreadable anyway. Explorer's smallest tile is 16px.
 const MIN_BADGED_EDGE: u32 = 64;
 
-/// How the corner badge is drawn.
-///
-/// `Text` is the original: a near-black chip with light letters, deliberately colourless so
-/// it never competes with the picture. `Icon` is the one people actually asked for — a
-/// dog-eared page tinted by the format's CATEGORY, so a folder of mixed files is scannable
-/// by colour at a glance and only needs reading when two categories sit side by side.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum BadgeStyle {
-    /// Neutral dark chip, light text.
-    Text,
-    /// Category-coloured page mark with the label inside.
-    #[default]
-    Icon,
-}
-
-impl BadgeStyle {
-    /// `FormatBadgeStyle`: 0 = text, anything else = icon. Unknown values fall to the
-    /// default rather than to "no badge" — a badge was still asked for.
-    pub fn from_dword(v: u32) -> Self {
-        if v == 0 {
-            Self::Text
-        } else {
-            Self::Icon
-        }
-    }
-}
-
 /// The category tint for an extension, as (r, g, b).
 ///
-/// Seven hues, one per [`crate::formats::Category`], picked to stay apart from each other at
+/// Seven hues, one per [`st2k_base::formats::Category`], picked to stay apart from each other at
 /// badge size (roughly 20 px across on a 256 px tile) and to read on both light and dark
 /// thumbnails. They are NOT theme-aware on purpose: the badge is burned into the bitmap the
 /// shell caches, so it cannot follow a theme the user changes later.
 fn category_rgb(ext: &str) -> (u8, u8, u8) {
-    use crate::formats::Category;
-    match crate::formats::category(ext) {
+    use st2k_base::formats::Category;
+    match st2k_base::formats::category(ext) {
         Category::Image => (36, 116, 208),   // blue
         Category::Raw => (124, 77, 200),     // violet
         Category::Ebook => (32, 140, 84),    // green
@@ -237,7 +210,10 @@ fn badge_geometry(
     // The divisor is the ONE thing the user's size choice moves (`BadgeSize::divisor`): 110
     // is that shipped Small, and Medium/Large only divide less. The clamp and the
     // would-dominate return below still apply at every step, so a bigger request can be
-    // refused on a small tile rather than drawn over the picture.
+    // refused on a small tile rather than drawn over the picture. On small tiles the steps
+    // floor to the same scale-1 glyph (the smallest that still draws a letter): Large first
+    // differs from Small at 110px, Medium at 160px. Rounding up instead would enlarge the
+    // badge at every size, including the 256px tiles it was tuned on.
     let scale = (edge / size.divisor()).clamp(1, 8);
     let (gw, gh) = (5 * scale, 7 * scale);
     let gap = scale;
@@ -316,20 +292,30 @@ fn chip_pixel_color(
     Some(match style {
         // Near-black at ~72% so the underlying image still shows through slightly.
         BadgeStyle::Text => ((16, 16, 16), 184),
-        BadgeStyle::Icon => {
-            let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
-            let outline = cx || cy || on_fold_edge;
-            if g.fold > 0 && dx + dy < g.fold {
-                // The folded-back flap: lighter, so it reads as the sheet's underside.
-                (blend_to_white(tint, 150), 245)
-            } else if outline {
-                // A darker rim keeps the mark legible on a same-coloured picture.
-                (shade(tint, 150), 255)
-            } else {
-                (tint, 235)
-            }
-        }
+        BadgeStyle::Icon => icon_chip_color(g, tint, dx, dy, cx, cy),
     })
+}
+
+/// Pick the dog-eared page's pixel colour for [`BadgeStyle::Icon`] from its fold/corner position.
+fn icon_chip_color(
+    g: &BadgeGeom,
+    tint: (u8, u8, u8),
+    dx: u32,
+    dy: u32,
+    cx: bool,
+    cy: bool,
+) -> ((u8, u8, u8), u32) {
+    let on_fold_edge = g.fold > 0 && dx + dy == g.fold;
+    let outline = cx || cy || on_fold_edge;
+    if g.fold > 0 && dx + dy < g.fold {
+        // The folded-back flap: lighter, so it reads as the sheet's underside.
+        (blend_to_white(tint, 150), 245)
+    } else if outline {
+        // A darker rim keeps the mark legible on a same-coloured picture.
+        (shade(tint, 150), 255)
+    } else {
+        (tint, 235)
+    }
 }
 
 /// Paint the chip background over its whole rect, pixel by pixel via [`chip_pixel_color`].
@@ -355,28 +341,33 @@ fn paint_glyphs(rgba: &mut [u8], w: u32, h: u32, g: &BadgeGeom, label: &str) {
     let mut cx = g.x0 + g.pad;
     for ch in label.bytes() {
         if let Some(gl) = glyph(ch) {
-            for (row, bits) in gl.iter().enumerate() {
-                for col in 0..5u32 {
-                    if bits & (1 << (4 - col)) == 0 {
-                        continue;
-                    }
-                    for sy in 0..g.scale {
-                        for sx in 0..g.scale {
-                            put_px(
-                                rgba,
-                                w,
-                                h,
-                                cx + col * g.scale + sx,
-                                g.y0 + g.pad + row as u32 * g.scale + sy,
-                                (245, 245, 245),
-                                255,
-                            );
-                        }
-                    }
+            paint_glyph(rgba, w, h, g, &gl, cx);
+        }
+        cx += g.gw + g.gap;
+    }
+}
+
+/// Blit one glyph bitmap `gl` at x `cx`, scaled by [`BadgeGeom::scale`] as opaque near-white pixels.
+fn paint_glyph(rgba: &mut [u8], w: u32, h: u32, g: &BadgeGeom, gl: &[u8; 7], cx: u32) {
+    for (row, bits) in gl.iter().enumerate() {
+        for col in 0..5u32 {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
+            for sy in 0..g.scale {
+                for sx in 0..g.scale {
+                    put_px(
+                        rgba,
+                        w,
+                        h,
+                        cx + col * g.scale + sx,
+                        g.y0 + g.pad + row as u32 * g.scale + sy,
+                        (245, 245, 245),
+                        255,
+                    );
                 }
             }
         }
-        cx += g.gw + g.gap;
     }
 }
 
@@ -525,8 +516,7 @@ mod visual {
     /// can be LOOKED AT. Pixel assertions prove placement; only eyes prove legibility.
     #[test]
     fn render_sample_sheet() {
-        let src =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-corpus/sample.png");
+        let src = st2k_base::testcorpus::dir().join("sample.png");
         let Ok(img) = image::open(&src) else {
             eprintln!("skipping: no ../test-corpus/sample.png");
             return;

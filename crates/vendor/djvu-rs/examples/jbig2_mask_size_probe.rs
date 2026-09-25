@@ -161,7 +161,6 @@ fn print_row(label: &str, path: &str, totals: &Totals) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let owned_inputs;
     let inputs: Vec<(&str, &str)> = if args.is_empty() {
         vec![
             ("watchmaker", "tests/corpus/watchmaker.djvu"),
@@ -170,11 +169,9 @@ fn main() {
             ("pathogenic", "tests/corpus/pathogenic_bacteria_1896.djvu"),
         ]
     } else {
-        owned_inputs = args
-            .iter()
+        args.iter()
             .map(|path| (path.as_str(), path.as_str()))
-            .collect::<Vec<_>>();
-        owned_inputs
+            .collect::<Vec<_>>()
     };
 
     println!(

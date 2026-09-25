@@ -1,0 +1,387 @@
+//! The inverse discrete wavelet transform (Annex F), 5/3 reversible and 9/7 irreversible.
+//!
+//! Reduced-resolution decoding lives here: to produce the image at resolution level `r` we
+//! stop after `r` reconstruction steps. The subbands above were never decoded, so each
+//! skipped level removes three quarters of the remaining coefficients AND all of the tier-1
+//! work that would have produced them. That is the whole reason this module exists.
+//!
+//! Follows the spec's 2D_SR shape literally: interleave the four subbands onto the reference
+//! grid, filter every row, then filter every column. Doing it in that order (rather than the
+//! fused thing it is tempting to write) is what keeps odd image and tile offsets aligned —
+//! a half-sample error per level compounds into a visible smear over six levels.
+
+/// One subband's coefficients on its own grid.
+#[derive(Clone)]
+pub(super) struct SubBand {
+    pub w: usize,
+    pub h: usize,
+    pub data: Vec<f32>,
+}
+
+impl SubBand {
+    pub fn empty(w: usize, h: usize) -> Self {
+        SubBand {
+            w,
+            h,
+            data: vec![0.0; w.saturating_mul(h)],
+        }
+    }
+    #[inline]
+    fn get(&self, x: usize, y: usize) -> f32 {
+        if x < self.w && y < self.h {
+            self.data[y * self.w + x]
+        } else {
+            0.0
+        }
+    }
+}
+
+/// 9/7 irreversible lifting coefficients (Table F.4).
+const ALPHA: f32 = -1.586_134_3;
+const BETA: f32 = -0.052_980_118;
+const GAMMA: f32 = 0.882_911_1;
+const DELTA: f32 = 0.443_506_85;
+const K: f32 = 1.230_174_1;
+
+/// Symmetric (whole-sample) extension of `v` at absolute position `i`, where `v[0]` sits at
+/// absolute `i0`. This is PSE from Annex F; without it every subband edge ripples.
+#[inline]
+fn ext(v: &[f32], i0: isize, i: isize) -> f32 {
+    let n = v.len() as isize;
+    if n <= 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return v[0];
+    }
+    let mut k = i - i0;
+    let period = 2 * (n - 1);
+    k = k.rem_euclid(period);
+    if k >= n {
+        k = period - k;
+    }
+    v[k as usize]
+}
+
+/// Handle `filtr_1d`'s `n == 1` case: a single sample is low-pass if it sits on an even
+/// index, else it is a lone high-pass coefficient carrying half its value (F.3.7). For the
+/// reversible 5/3 path that halving is INTEGER division truncating toward zero (openjpeg's
+/// `OPJ_S(0) /= 2` in opj_dwt_decode_1_); keeping the .5 here broke bit-exactness on any
+/// image small enough to produce 1-sample bands — an 8x8 image with the encoder's default 5
+/// decomposition levels has several.
+fn lift_single_sample(sig: &mut [f32], i0: usize, reversible: bool) {
+    if !i0.is_multiple_of(2) {
+        sig[0] /= 2.0;
+        if reversible {
+            sig[0] = sig[0].trunc();
+        }
+    }
+}
+
+/// The 5/3 reversible lifting branch of `filtr_1d`: even samples first, then odd, using the
+/// just-updated evens. `scratch` already holds the untouched original signal on entry.
+fn lift_reversible(sig: &mut [f32], i0i: isize, scratch: &[f32]) {
+    let n = sig.len();
+    for (k, slot) in sig.iter_mut().enumerate() {
+        let i = i0i + k as isize;
+        if i % 2 == 0 {
+            let a = ext(scratch, i0i, i - 1);
+            let b = ext(scratch, i0i, i + 1);
+            *slot = scratch[k] - ((a + b + 2.0) / 4.0).floor();
+        }
+    }
+    // The odd pass is done IN PLACE on `sig` (no second scratch buffer): it only ever
+    // needs an EVEN-position neighbor (i-1/i+1 for an odd i), and `ext`'s periodic/mirror
+    // extension can't turn an even query into an odd one — the period `2*(n-1)` is always
+    // even, and folding via `period - k` preserves k's parity — so every neighbor read
+    // here lands on a slot the loop above already finished writing, never one this loop
+    // is about to overwrite.
+    for k in 0..n {
+        let i = i0i + k as isize;
+        if i % 2 != 0 {
+            let a = ext(sig, i0i, i - 1);
+            let b = ext(sig, i0i, i + 1);
+            sig[k] = scratch[k] + ((a + b) / 2.0).floor();
+        }
+    }
+}
+
+/// The 9/7 K scaling (Table F.4), undone in place: a sample on an even absolute index is
+/// multiplied by `K`, one on an odd index divided by it.
+#[inline]
+fn scale_97(sig: &mut [f32], i0i: isize) {
+    for (k, s) in sig.iter_mut().enumerate() {
+        let i = i0i + k as isize;
+        *s = if i % 2 == 0 { *s * K } else { *s / K };
+    }
+}
+
+/// The 9/7 irreversible lifting branch of `filtr_1d`: undo the K scaling, then the four
+/// lifting steps in reverse, each reading from a fresh `scratch` copy of the prior step.
+fn lift_irreversible(sig: &mut [f32], i0i: isize, scratch: &mut Vec<f32>) {
+    scale_97(sig, i0i);
+    for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
+        scratch.clear();
+        scratch.extend_from_slice(sig);
+        for (k, s) in sig.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if (i % 2 == 0) == even_step {
+                let a = ext(scratch, i0i, i - 1);
+                let b = ext(scratch, i0i, i + 1);
+                *s = scratch[k] - coef * (a + b);
+            }
+        }
+    }
+}
+
+/// 1D inverse lifting on an already-interleaved signal whose first sample is at absolute
+/// index `i0`. Parity of the absolute index decides low-pass (even) vs high-pass (odd).
+///
+/// `scratch` is caller-owned SCRATCH SPACE, reused across every row and column of one
+/// [`reconstruct`] call instead of allocating fresh here (A221): the reversible (5/3) branch
+/// used to `.to_vec()`/`.clone()` up to three signal-length buffers per call, and the
+/// irreversible (9/7) branch `.to_vec()`'d once per lifting step (4x per call) — this runs
+/// once per row AND once per column per resolution level, so that was real allocation churn
+/// in the decoder's hottest loop. `scratch.clear()` + `extend_from_slice` reuses the
+/// allocation the caller already grew to fit the largest row/column it will ever pass.
+fn filtr_1d(sig: &mut [f32], i0: usize, reversible: bool, scratch: &mut Vec<f32>) {
+    let n = sig.len();
+    if n == 0 {
+        return;
+    }
+    if n == 1 {
+        lift_single_sample(sig, i0, reversible);
+        return;
+    }
+
+    let i0i = i0 as isize;
+    scratch.clear();
+    scratch.extend_from_slice(sig);
+    // `scratch` is now the untouched original ("src" in the derivation below); `sig` becomes
+    // the working buffer, written in place.
+
+    if reversible {
+        lift_reversible(sig, i0i, scratch);
+    } else {
+        lift_irreversible(sig, i0i, scratch);
+    }
+}
+
+/// Reconstruct one resolution level from an LL band plus its HL/LH/HH detail bands.
+///
+/// `(x0, y0)` is the top-left of the OUTPUT on the reference grid. The output size is
+/// derived from it and the band sizes, so a tile whose origin is odd still lands correctly.
+pub(super) fn reconstruct(
+    ll: &SubBand,
+    hl: &SubBand,
+    lh: &SubBand,
+    hh: &SubBand,
+    x0: usize,
+    y0: usize,
+    reversible: bool,
+) -> SubBand {
+    let w = ll.w + hl.w;
+    let h = ll.h + lh.h;
+    let mut out = SubBand::empty(w, h);
+    if w == 0 || h == 0 {
+        return out;
+    }
+
+    // 2D_INTERLEAVE (F.3.3): even/even from LL, odd/even from HL, even/odd from LH,
+    // odd/odd from HH, indexed relative to each band's own origin.
+    for y in 0..h {
+        for x in 0..w {
+            out.data[y * w + x] = interleave_sample(ll, hl, lh, hh, x0, y0, x, y);
+        }
+    }
+
+    // HOR_SR then VER_SR. One scratch buffer, sized for the larger of the two passes, is
+    // shared by every `filtr_1d` call below instead of each call allocating its own (A221).
+    let mut scratch = Vec::with_capacity(w.max(h));
+    let mut row = vec![0.0f32; w];
+    for y in 0..h {
+        row.copy_from_slice(&out.data[y * w..(y + 1) * w]);
+        filtr_1d(&mut row, x0, reversible, &mut scratch);
+        out.data[y * w..(y + 1) * w].copy_from_slice(&row);
+    }
+    let mut col = vec![0.0f32; h];
+    for x in 0..w {
+        for (y, c) in col.iter_mut().enumerate() {
+            *c = out.data[y * w + x];
+        }
+        filtr_1d(&mut col, y0, reversible, &mut scratch);
+        for (y, c) in col.iter().enumerate() {
+            out.data[y * w + x] = *c;
+        }
+    }
+    out
+}
+
+/// Pick the 2D_INTERLEAVE sample for output position `(x, y)` from the four bands (F.3.3).
+#[allow(clippy::too_many_arguments)] // four bands plus the position and the two parities: the spec's own arity
+fn interleave_sample(
+    ll: &SubBand,
+    hl: &SubBand,
+    lh: &SubBand,
+    hh: &SubBand,
+    x0: usize,
+    y0: usize,
+    x: usize,
+    y: usize,
+) -> f32 {
+    let gx = x0 + x;
+    let gy = y0 + y;
+    let bx = if gx.is_multiple_of(2) {
+        gx / 2 - x0.div_ceil(2)
+    } else {
+        gx / 2 - x0 / 2
+    };
+    let by = if gy.is_multiple_of(2) {
+        gy / 2 - y0.div_ceil(2)
+    } else {
+        gy / 2 - y0 / 2
+    };
+    match (gx.is_multiple_of(2), gy.is_multiple_of(2)) {
+        (true, true) => ll.get(bx, by),
+        (false, true) => hl.get(bx, by),
+        (true, false) => lh.get(bx, by),
+        (false, false) => hh.get(bx, by),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A flat image must survive a round of reconstruction unchanged: all detail bands are
+    /// zero, so the LL value should propagate to every output sample. This catches the
+    /// interleave-parity bugs that otherwise show up only as a subtly smeared thumbnail.
+    #[test]
+    fn flat_ll_reconstructs_flat() {
+        for &(x0, y0) in &[(0usize, 0usize), (1, 0), (0, 1), (3, 5)] {
+            for &reversible in &[true, false] {
+                let ll = SubBand {
+                    w: 4,
+                    h: 4,
+                    data: vec![100.0; 16],
+                };
+                let (hl, lh, hh) = (
+                    SubBand::empty(4, 4),
+                    SubBand::empty(4, 4),
+                    SubBand::empty(4, 4),
+                );
+                let out = reconstruct(&ll, &hl, &lh, &hh, x0, y0, reversible);
+                assert_eq!(out.w, 8);
+                assert_eq!(out.h, 8);
+                for (i, v) in out.data.iter().enumerate() {
+                    assert!(
+                        (*v - 100.0).abs() < 1.5,
+                        "flat reconstruction drifted at {i}: {v} (origin {x0},{y0}, rev={reversible})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A221: `filtr_1d`'s reversible pass used to write its odd-position results into a
+    /// THIRD buffer (`out`, cloned from `even`); it now writes them into `sig` in place,
+    /// reasoning that every neighbor `ext()` reads during that pass lands on an even-position
+    /// slot the first pass already finished (never one this pass is still writing). This test
+    /// is the check on that reasoning: an independent re-implementation of the original
+    /// three-buffer algorithm serves as an oracle, compared bit-for-bit against the in-place
+    /// version across varied signals, origins, and both the reversible and irreversible paths
+    /// — a wrong aliasing assumption here would show up as silently wrong pixels, not a panic.
+    /// A221's reversible-branch reference oracle: reconstructs `filtr_1d`'s reversible pass
+    /// via the original three-buffer algorithm (a separate `even`/`out` buffer per lifting
+    /// step, no in-place aliasing), so it can be compared bit-for-bit against the in-place
+    /// version below.
+    fn reference_reversible(sig: &[f32], i0: usize) -> Vec<f32> {
+        let i0i = i0 as isize;
+        let src = sig.to_vec();
+        let mut even = src.clone();
+        for (k, slot) in even.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if i % 2 == 0 {
+                let a = ext(&src, i0i, i - 1);
+                let b = ext(&src, i0i, i + 1);
+                *slot = src[k] - ((a + b + 2.0) / 4.0).floor();
+            }
+        }
+        let mut out = even.clone();
+        for (k, slot) in out.iter_mut().enumerate() {
+            let i = i0i + k as isize;
+            if i % 2 != 0 {
+                let a = ext(&even, i0i, i - 1);
+                let b = ext(&even, i0i, i + 1);
+                *slot = src[k] + ((a + b) / 2.0).floor();
+            }
+        }
+        out
+    }
+
+    /// A221's irreversible-branch reference oracle: the original four-lifting-step 9/7
+    /// algorithm, each step reading from a fresh copy of `sig` rather than aliasing it.
+    fn reference_irreversible(sig: &[f32], i0: usize) -> Vec<f32> {
+        let i0i = i0 as isize;
+        let mut sig = sig.to_vec();
+        scale_97(&mut sig, i0i);
+        for (even_step, coef) in [(true, DELTA), (false, GAMMA), (true, BETA), (false, ALPHA)] {
+            let src = sig.to_vec();
+            for (k, s) in sig.iter_mut().enumerate() {
+                let i = i0i + k as isize;
+                if (i % 2 == 0) == even_step {
+                    let a = ext(&src, i0i, i - 1);
+                    let b = ext(&src, i0i, i + 1);
+                    *s = src[k] - coef * (a + b);
+                }
+            }
+        }
+        sig
+    }
+
+    /// The A221 reference oracle: the `n <= 1` edge case is shared by both the reversible and
+    /// irreversible original algorithms, so it lives here rather than duplicated in both.
+    fn reference(sig: &[f32], i0: usize, reversible: bool) -> Vec<f32> {
+        let n = sig.len();
+        if n <= 1 {
+            let mut out = sig.to_vec();
+            if n == 1 && !i0.is_multiple_of(2) {
+                out[0] /= 2.0;
+                if reversible {
+                    out[0] = out[0].trunc();
+                }
+            }
+            return out;
+        }
+        if reversible {
+            reference_reversible(sig, i0)
+        } else {
+            reference_irreversible(sig, i0)
+        }
+    }
+
+    #[test]
+    fn filtr_1d_matches_the_original_three_buffer_algorithm() {
+        let signals: &[&[f32]] = &[
+            &[1.0, -2.5, 3.25, 0.0, 7.0, -4.0],
+            &[10.0, 20.0, 30.0, 40.0, 50.0],
+            &[0.5],
+            &[1.0, 2.0],
+            &[3.0, -1.0, 4.0, -1.5, 5.0, 9.0, 2.0],
+        ];
+        let mut scratch = Vec::new();
+        for &s in signals {
+            for i0 in [0usize, 1, 2, 3] {
+                for reversible in [true, false] {
+                    let expected = reference(s, i0, reversible);
+                    let mut got = s.to_vec();
+                    filtr_1d(&mut got, i0, reversible, &mut scratch);
+                    assert_eq!(
+                        got, expected,
+                        "signal={s:?} i0={i0} reversible={reversible}"
+                    );
+                }
+            }
+        }
+    }
+}

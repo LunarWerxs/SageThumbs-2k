@@ -9,7 +9,7 @@
 //! What this file owns:
 //!
 //!   * **Persistence.** One JSON string in the same place every other SageThumbs preference lives
-//!     ([`sagethumbs2k_core::settings`] — HKCU on an installed copy, the portable store otherwise),
+//!     ([`st2k_base::settings`] — HKCU on an installed copy, the portable store otherwise),
 //!     so a portable copy carries the prompt's memory with it and an uninstall takes it away.
 //!   * **Signed-in truth.** The engine asks the host; the host asks [`crate::sync_client`].
 //!   * **Hand-rolled JSON.** No serde derive, because this crate has no serde derive — the app
@@ -144,13 +144,7 @@ fn from_json(v: &Value) -> Option<NudgeState> {
         consecutive_declines: num("consecutive_declines") as u32,
         cadence,
         stopped: None,
-        pending_ask: v.get("pending_ask").and_then(|p| {
-            Some(PendingAsk {
-                at: p.get("at")?.as_u64()?,
-                trigger: p.get("trigger")?.as_str()?.to_string(),
-                campaign: campaign_from(p.get("campaign")?.as_str()?)?,
-            })
-        }),
+        pending_ask: v.get("pending_ask").and_then(pending_ask_from),
         converted: v
             .get("converted")
             .and_then(Value::as_array)
@@ -160,6 +154,15 @@ fn from_json(v: &Value) -> Option<NudgeState> {
                     .collect()
             })
             .unwrap_or_default(),
+    })
+}
+
+/// Build a [`PendingAsk`] from the stored `pending_ask` object, or `None` if it is malformed.
+fn pending_ask_from(p: &Value) -> Option<PendingAsk> {
+    Some(PendingAsk {
+        at: p.get("at")?.as_u64()?,
+        trigger: p.get("trigger")?.as_str()?.to_string(),
+        campaign: campaign_from(p.get("campaign")?.as_str()?)?,
     })
 }
 
@@ -175,12 +178,19 @@ fn now_ms() -> u64 {
 fn config() -> Config {
     let mut cfg = Config::new(APP_ID, APP_NAME);
     cfg.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    // The engine's default base is Connections' own host; this app points the link at its
+    // relay's `/link/<app>` redirect instead (st2k.lunarwerx.com). `connections.icu` was
+    // suspended by its registry on 2026-09-18, and a base compiled into every shipped copy has
+    // to be one whose target can move without a release; the relay forwards the path segment
+    // and the whole query string, so attribution survives the hop. Set HERE, not in the
+    // engine: that file is vendored verbatim and must stay byte-identical to the shared copy.
+    cfg.link_base = "https://st2k.lunarwerx.com/link".to_string();
     cfg
 }
 
 fn load() -> NudgeState {
     let now = now_ms();
-    let parsed = sagethumbs2k_core::settings::get_string_opt(STATE_VALUE)
+    let parsed = st2k_base::settings::get_string_opt(STATE_VALUE)
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|v| from_json(&v));
     match parsed {
@@ -196,7 +206,7 @@ fn load() -> NudgeState {
 }
 
 fn persist(state: &NudgeState) {
-    let _ = sagethumbs2k_core::settings::set_string(STATE_VALUE, &to_json(state).to_string());
+    let _ = st2k_base::settings::set_string(STATE_VALUE, &to_json(state).to_string());
 }
 
 /// A NAMED mutex so every process (the settings EXE, `st2k`, the shell extension host) shares
@@ -212,27 +222,18 @@ impl NudgeLock {
     /// leaked/wedged mutex must never hang a settings write.
     fn acquire() -> Option<Self> {
         use windows::core::w;
-        use windows::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
-        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-        let h = unsafe { CreateMutexW(None, false, w!("Local\\SageThumbs2K.NudgeState")) }.ok()?;
-        match unsafe { WaitForSingleObject(h, 2_000) } {
-            // WAIT_ABANDONED means a previous holder died mid-edit without releasing; we still
-            // got ownership, and `persist` only ever replaces the whole value in one write.
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(NudgeLock(h)),
-            _ => {
-                let _ = unsafe { CloseHandle(h) };
-                None
-            }
-        }
+        // The same bounded wait as the portable-ini store's lock (two tries, logged on timeout).
+        st2k_base::settings::acquire_named_mutex(
+            w!("Local\\SageThumbs2K.NudgeState"),
+            "nudge: NudgeLock wait timed out twice; proceeding unlocked",
+        )
+        .map(NudgeLock)
     }
 }
 
 impl Drop for NudgeLock {
     fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
+        st2k_base::release_mutex_handle!(self.0);
     }
 }
 
@@ -297,9 +298,9 @@ fn localize(mut ask: Ask) -> Ask {
         // never English, which is the failure this whole change exists to remove.
         ("nudge_head_generic", "nudge_body_generic")
     };
-    ask.headline = crate::win::t(head).replace("{app}", APP_NAME);
-    ask.body = crate::win::t(body).replace("{app}", APP_NAME);
-    ask.action_label = crate::win::t("nudge_action").to_string();
+    ask.headline = st2k_appkit::win::t(head).replace("{app}", APP_NAME);
+    ask.body = st2k_appkit::win::t(body).replace("{app}", APP_NAME);
+    ask.action_label = st2k_appkit::win::t("nudge_action").to_string();
     ask
 }
 
@@ -511,7 +512,9 @@ mod tests {
     #[test]
     fn app_id_matches_the_landing_page_slug() {
         assert_eq!(APP_ID, "sagethumbs");
-        assert!(config().link_base.contains("connections.icu"));
+        assert!(config()
+            .link_base
+            .starts_with("https://st2k.lunarwerx.com/link"));
     }
 
     /// Issue #94: the whole point of a NAMED (not process-local) mutex is that a second

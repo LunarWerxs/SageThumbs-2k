@@ -6,7 +6,7 @@
 //! (via `IInitializeWithStream`), a parent `HWND` + bounds (`SetWindow`), and a
 //! themed background colour (`SetBackgroundColor`); on `DoPreview` we acquire the
 //! stream through the SAME streaming cascade the thumbnail path uses
-//! ([`crate::streamsrc`] — video frame-grab tiers, seek-only album art, streamed
+//! ([`st2k_codecs::streamsrc`] — video frame-grab tiers, seek-only album art, streamed
 //! archive covers, the head-preview rescue, the bounded whole-file read) and
 //! decode with the same tiered decoder (`decode::decode_preview` — so all
 //! registered formats, ebook/comic covers, audio waveforms, etc. work here too),
@@ -20,15 +20,16 @@
 
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
+mod window;
+use window::*;
 
 use windows::core::{Error, IUnknown, Interface, Ref, Result, GUID};
 use windows::Win32::Foundation::{
     COLORREF, E_FAIL, E_POINTER, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, PAINTSTRUCT,
-    SRCCOPY,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, HBITMAP,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::Com::IStream;
 use windows::Win32::System::Ole::{IObjectWithSite, IObjectWithSite_Impl};
@@ -41,9 +42,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     GetParent, GetWindowLongPtrW, IsWindow, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCDESTROY,
-    WM_PAINT, WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    RegisterClassW, SetWindowLongPtrW, ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND,
+    WM_NCDESTROY, WM_PAINT, WM_PRINTCLIENT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_VISIBLE,
 };
 use windows_implement::implement;
 
@@ -56,8 +58,10 @@ const WM_PREVIEW_CLOSE: u32 = WM_APP + 1;
 /// would race the UI thread's WM_PAINT (use-after-free of the old RenderData).
 const WM_PREVIEW_RENDER: u32 = WM_APP + 2;
 
-use crate::streamsrc::{self, StreamSource};
-use crate::{decode, safety, settings, stream_name};
+use st2k_base::host::stream_name;
+use st2k_base::{safety, settings};
+use st2k_codecs::decode;
+use st2k_codecs::streamsrc::{self, StreamSource};
 
 /// Decodes this host may have in flight at once (see [`safety::LeasePool`]). `prevhost`
 /// hosts one pane, so a couple of slots cover a decode still running past its budget when
@@ -82,7 +86,13 @@ const CLASS_NAME: windows::core::PCWSTR = windows::core::w!("SageThumbs2KPreview
 /// pane and the letterbox around an aspect-fit image blend in. COLORREF (0x00BBGGRR); 0x202020 ≈
 /// the Win11 dark content surface.
 fn theme_default_bg() -> u32 {
-    if safety::apps_use_dark_theme() {
+    bg_for_dark(safety::apps_use_dark_theme())
+}
+
+/// The OS-theme default background for a light/dark theme. Split out of
+/// [`theme_default_bg`] so the value itself is testable without asking the OS.
+fn bg_for_dark(dark: bool) -> u32 {
+    if dark {
         0x0020_2020
     } else {
         0x00FF_FFFF
@@ -93,6 +103,25 @@ fn theme_default_bg() -> u32 {
 fn colorref_is_light(c: u32) -> bool {
     let (r, g, b) = (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF);
     (r + g + b) / 3 > 128
+}
+
+/// The background to hand the compositor for a host-supplied `host` colour under a
+/// light/dark OS theme: the host's colour ONLY when it agrees with the theme (light
+/// colour in light mode, dark colour in dark mode), otherwise our themed default.
+/// Split out of `SetBackgroundColor`'s decision so the conflict rule is testable.
+fn themed_bg(host: u32, dark: bool) -> u32 {
+    if colorref_is_light(host) != dark {
+        host
+    } else {
+        bg_for_dark(dark)
+    }
+}
+
+/// The width and height of a host `RECT`, clamped at zero: the host calls `SetWindow`
+/// with a degenerate/zero rect before `SetRect` supplies the real pane size, and neither
+/// `MoveWindow` nor `CreateWindowExW` should see a negative extent.
+fn rect_extent(r: &RECT) -> (i32, i32) {
+    ((r.right - r.left).max(0), (r.bottom - r.top).max(0))
 }
 
 /// Per-window paint state, owned via the child window's `GWLP_USERDATA`. Holds the
@@ -112,7 +141,7 @@ struct RenderData {
     IPreviewHandlerVisuals
 )]
 pub struct PreviewHandler {
-    _ref: crate::ModuleRef,
+    _ref: st2k_base::host::ModuleRef,
     stream: RefCell<Option<IStream>>,
     site: RefCell<Option<IUnknown>>,
     parent: Cell<isize>, // host parent HWND (as isize, so the struct stays Cell-friendly)
@@ -139,7 +168,7 @@ impl Default for PreviewHandler {
     #[allow(clippy::default_constructed_unit_structs)]
     fn default() -> Self {
         Self {
-            _ref: crate::ModuleRef::default(),
+            _ref: st2k_base::host::ModuleRef::default(),
             stream: RefCell::new(None),
             site: RefCell::new(None),
             parent: Cell::new(0),
@@ -224,6 +253,13 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
 
     fn DoPreview(&self) -> Result<()> {
         safety::guard(|| {
+            // The business-licence lock (see `licence_state` and the thumbnail provider's
+            // twin check): a locked copy leaves the pane empty, the same terminal state as
+            // an undecodable file, before any window is created for it.
+            if st2k_base::licence_state::shell_locked() {
+                safety::log_debug("DoPreview: refused, business licence lock");
+                return Err(Error::from(E_FAIL));
+            }
             if !self.ensure_window() {
                 return Err(Error::from(E_FAIL));
             }
@@ -239,12 +275,16 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             // Video gets a frame-grab (never buffering a multi-GB movie), audio a
             // seek-only album-art read, oversized archives/.blend/PSD a streamed
             // cover / head prefix — everything else a bounded whole-file read.
+            // The extension names the external decoder's coder for the formats it cannot
+            // sniff (see `decode::decode_preview_capped_named`); read with the stream here.
+            let ext;
             let source = {
                 let borrow = self.stream.borrow();
                 let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
                 if let Some(name) = unsafe { stream_name(stream) } {
                     safety::log_debugf!("DoPreview: file {name}");
                 }
+                ext = unsafe { streamsrc::stream_extension(stream) };
                 // 1024 px matches the PDF/contact-sheet rasterize target below —
                 // crisp at any pane size, and it is what the streaming EXR tier
                 // scales to as it reads.
@@ -252,7 +292,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                     streamsrc::stream_source(
                         stream,
                         &cfg,
-                        crate::safety::PREVIEW_TARGET_EDGE,
+                        st2k_base::safety::PREVIEW_TARGET_EDGE,
                         "DoPreview",
                     )
                 }
@@ -264,13 +304,13 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
             // report can be read from the log without `Debug=1`.
             let decoded = match source {
                 // A video frame arrives already decoded by Media Foundation.
-                Ok(StreamSource::Frame(frame)) => Some(frame),
+                Ok(StreamSource::Frame(frame) | StreamSource::Picture(frame)) => Some(frame),
                 // Decode bytes OFF the host thread under a wall-clock budget so a
                 // slow/exotic decode can't freeze the preview host's message pump.
-                Ok(StreamSource::Bytes(bytes)) => {
+                Ok(StreamSource::Bytes(bytes) | StreamSource::Cover(bytes)) => {
                     let len = bytes.len();
                     safety::log_debugf!("DoPreview: read {len} bytes from stream");
-                    match decode_preview_budgeted(bytes) {
+                    match decode_preview_budgeted(bytes, ext) {
                         Ok(img) => Some(img),
                         Err(why) => {
                             safety::log_error(&format!(
@@ -378,11 +418,7 @@ impl IPreviewHandlerVisuals_Impl for PreviewHandler_Impl {
             // "Agrees with the theme" = light colour in light mode, or dark colour in dark mode,
             // i.e. host-is-light XOR theme-is-dark is false → the two booleans differ. (`a != b`,
             // which clippy prefers over the equivalent `a == !b`.)
-            let bg = if colorref_is_light(color.0) != safety::apps_use_dark_theme() {
-                color.0
-            } else {
-                theme_default_bg()
-            };
+            let bg = themed_bg(color.0, safety::apps_use_dark_theme());
             self.bg.set(bg);
             // Re-composite from the cached pixels (no re-decode) so transparency + the letterbox
             // sit on the chosen colour.
@@ -438,7 +474,7 @@ impl PreviewHandler_Impl {
             }
             // Stale: drop the handle and reap the old UI thread before building a new one,
             // so we never accumulate threads across host recycles.
-            crate::safety::log_debug(
+            st2k_base::safety::log_debug(
                 "preview: child window went stale (host recycled the pane) - rebuilding",
             );
             self.hwnd.set(0);
@@ -454,7 +490,8 @@ impl PreviewHandler_Impl {
             return false;
         }
         let r = self.rect.get();
-        let hinst_isize = crate::dll_hmodule().0 as isize;
+        let (win_w, win_h) = rect_extent(&r);
+        let hinst_isize = st2k_base::host::dll_hmodule().0 as isize;
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
         // Create + OWN the preview window on a DEDICATED UI thread whose own GetMessage loop pumps
         // its messages — including the cross-process WM_DESTROY when the dialog closes — so teardown
@@ -467,8 +504,10 @@ impl PreviewHandler_Impl {
             .name("st2k-preview-ui".to_string())
             .spawn(move || {
                 #[allow(clippy::default_constructed_unit_structs)]
-                let _module = crate::ModuleRef::default();
-                ensure_class();
+                let _module = st2k_base::host::ModuleRef::default();
+                // Held for the whole window lifetime, released after the loop below ends and
+                // BEFORE `_module` drops: the class must be gone before the DLL can be.
+                class_acquire();
                 let hwnd = unsafe {
                     CreateWindowExW(
                         WINDOW_EX_STYLE(0),
@@ -477,8 +516,8 @@ impl PreviewHandler_Impl {
                         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                         r.left,
                         r.top,
-                        (r.right - r.left).max(0),
-                        (r.bottom - r.top).max(0),
+                        win_w,
+                        win_h,
                         Some(HWND(parent_isize as *mut c_void)),
                         None,
                         Some(HINSTANCE(hinst_isize as *mut c_void)),
@@ -502,6 +541,7 @@ impl PreviewHandler_Impl {
                         let _ = tx.send(0);
                     }
                 }
+                class_release();
             });
         let handle = match spawned {
             Ok(h) => h,
@@ -526,20 +566,14 @@ impl PreviewHandler_Impl {
             return;
         }
         let r = self.rect.get();
+        let (w, h) = rect_extent(&r);
         unsafe {
             // MoveWindow + InvalidateRect are cross-thread (COM thread -> UI-thread-owned window),
             // both fine. The host calls SetWindow with a tiny/zero rect FIRST, then SetRect with the
             // real pane size; the dedicated UI thread PUMPS, so the resulting WM_PAINT is delivered
             // and the (already-attached) image repaints at the new size. No forced UpdateWindow
             // needed any more — that was a workaround for prevhost's non-pumping COM thread.
-            _ = MoveWindow(
-                hwnd,
-                r.left,
-                r.top,
-                (r.right - r.left).max(0),
-                (r.bottom - r.top).max(0),
-                true,
-            );
+            _ = MoveWindow(hwnd, r.left, r.top, w, h, true);
             _ = InvalidateRect(Some(hwnd), None, true);
         }
     }
@@ -625,168 +659,6 @@ impl Drop for PreviewHandler {
 
 // ── window class + paint ──────────────────────────────────────────────────────
 
-/// Register our child window class once per process.
-fn ensure_class() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        let wc = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
-            hInstance: HINSTANCE(crate::dll_hmodule().0),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            lpszClassName: CLASS_NAME,
-            ..Default::default()
-        };
-        RegisterClassW(&wc); // ATOM 0 on failure is fine — DefWindowProc still applies
-    });
-}
-
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        WM_PAINT => {
-            // Painting touches only GDI on a validated DIB; still guard so a freak
-            // panic can't unwind across the system-driven callback.
-            let _ = safety::guard_hr(|| {
-                paint(hwnd);
-                windows::Win32::Foundation::S_OK
-            });
-            LRESULT(0)
-        }
-        WM_ERASEBKGND => LRESULT(1), // WM_PAINT fills the whole client itself
-        WM_PRINTCLIENT => {
-            // Render into the caller-supplied DC (PrintWindow / thumbnail capture).
-            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut c_void);
-            let mut rc = RECT::default();
-            _ = GetClientRect(hwnd, &mut rc);
-            // Guarded exactly like the WM_PAINT arm above. This is the SAME `draw` reached
-            // by a different system-driven callback (PrintWindow / thumbnail capture), so
-            // leaving it bare meant a panic that WM_PAINT would have contained instead
-            // unwound across the callback and aborted the host.
-            let _ = safety::guard_hr(|| {
-                draw(hwnd, hdc, &rc);
-                windows::Win32::Foundation::S_OK
-            });
-            LRESULT(0)
-        }
-        WM_NCDESTROY => {
-            let p = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
-            if !p.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                let rd = Box::from_raw(p);
-                _ = DeleteObject(rd.hbmp.into());
-            }
-            // The window is gone — end its dedicated UI thread's message loop. (The thread's
-            // ModuleRef then drops, letting the DLL unload.)
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        // Our own "close" request: the COM thread asks us (the window-owning UI thread) to destroy
-        // the window on THIS thread — a same-thread DestroyWindow the loop services instantly.
-        WM_PREVIEW_CLOSE => {
-            _ = DestroyWindow(hwnd);
-            LRESULT(0)
-        }
-        // Fresh decoded image handed over from the COM thread (lparam = Box<(DecodedRgba, bg)>).
-        // Build the composited DIB + swap the RenderData HERE (this thread owns the window), then
-        // invalidate — the loop pumps WM_PAINT next, so it actually paints (no cross-thread race).
-        WM_PREVIEW_RENDER => {
-            // Drop what we are showing FIRST, unconditionally. A NULL lparam means the new
-            // selection produced no image, and the pane must then go EMPTY: keeping the previous
-            // file's pixels up is exactly what "the preview stopped refreshing" looks like when
-            // the host reuses one handler across selections (issue #11).
-            let old = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderData;
-            if !old.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                let rd = Box::from_raw(old);
-                _ = DeleteObject(rd.hbmp.into());
-            }
-            let p = lparam.0 as *mut (DecodedRgba, u32);
-            if !p.is_null() {
-                let (dec, bg) = *Box::from_raw(p);
-                // `opaque: None`: nothing upstream has scanned the alpha channel, so the
-                // shared compositor works it out itself (the same scan the private copy did).
-                let hbmp =
-                    safety::composite_rgba_over_bg(dec.w as i32, dec.h as i32, &dec.rgba, bg, None);
-                if let Some(hbmp) = hbmp {
-                    let rd = Box::new(RenderData {
-                        hbmp,
-                        iw: dec.w as i32,
-                        ih: dec.h as i32,
-                        bg,
-                    });
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(rd) as isize);
-                }
-            }
-            _ = InvalidateRect(Some(hwnd), None, true);
-            LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
-}
-
-unsafe fn paint(hwnd: HWND) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-    if hdc.is_invalid() {
-        return;
-    }
-    let mut rc = RECT::default();
-    _ = GetClientRect(hwnd, &mut rc);
-    draw(hwnd, hdc, &rc);
-    _ = EndPaint(hwnd, &ps);
-}
-
-/// Paint the (background-filled, aspect-fit) image into `hdc` for the client `rc`.
-/// Shared by `WM_PAINT` and `WM_PRINTCLIENT`.
-unsafe fn draw(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC, rc: &RECT) {
-    let rd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RenderData;
-    // No image yet / decode failed: fill with the themed default rather than hardcoded white.
-    let bg = if rd.is_null() {
-        theme_default_bg()
-    } else {
-        (*rd).bg
-    };
-
-    // Fill the whole client with the host background colour first.
-    let brush = CreateSolidBrush(COLORREF(bg));
-    FillRect(hdc, rc, brush);
-    _ = DeleteObject(brush.into());
-
-    if !rd.is_null() {
-        let rd = &*rd;
-        let cw = rc.right - rc.left;
-        let ch = rc.bottom - rc.top;
-        if cw > 0 && ch > 0 && rd.iw > 0 && rd.ih > 0 {
-            // Aspect-preserving fit (scales up or down — preview panes show small
-            // images large, unlike the never-upscale thumbnail path).
-            let scale = f64::min(cw as f64 / rd.iw as f64, ch as f64 / rd.ih as f64);
-            let dw = ((rd.iw as f64 * scale).round() as i32).max(1);
-            let dh = ((rd.ih as f64 * scale).round() as i32).max(1);
-            let dx = (cw - dw) / 2;
-            let dy = (ch - dh) / 2;
-            let memdc = CreateCompatibleDC(Some(hdc));
-            let old = SelectObject(memdc, rd.hbmp.into());
-            SetStretchBltMode(hdc, HALFTONE);
-            _ = StretchBlt(
-                hdc,
-                dx,
-                dy,
-                dw,
-                dh,
-                Some(memdc),
-                0,
-                0,
-                rd.iw,
-                rd.ih,
-                SRCCOPY,
-            );
-            SelectObject(memdc, old);
-            _ = DeleteDC(memdc);
-        }
-    }
-}
-
 /// Run [`decode::decode_preview_capped`] on a budgeted worker (see
 /// [`safety::spawn_budgeted`]), returning the image only if it finishes within
 /// [`safety::PREVIEW_DECODE_BUDGET`]. The `Err` text names which of the three ways it can
@@ -795,7 +667,10 @@ unsafe fn draw(hwnd: HWND, hdc: windows::Win32::Graphics::Gdi::HDC, rc: &RECT) {
 /// [`DECODE_SLOTS`] lease until it finishes or the lease runs out; the host thread is blocked
 /// for at most the budget. Safe off the apartment thread: `DynamicImage` is `Send` and the
 /// worker touches only the pure decoder, no GDI/HWND state.
-fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::DynamicImage, String> {
+fn decode_preview_budgeted(
+    bytes: Vec<u8>,
+    ext: Option<String>,
+) -> std::result::Result<image::DynamicImage, String> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     // The lease is taken HERE and moved into the worker, so a refused `Builder::spawn` drops
     // it (freeing the slot) exactly like a normal worker exit would. A burst of selections
@@ -834,8 +709,12 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::Dynamic
             // stream cascade scales to). Without it a 76 MP JPEG 2000 spent 15.6s producing
             // a 4096px surface we immediately threw away, blew the budget, and left the pane
             // blank on a perfectly good file (issue #11).
-            let out = decode::decode_preview_capped(&bytes, safety::PREVIEW_TARGET_EDGE)
-                .map_err(|e| e.to_string());
+            let out = decode::decode_preview_capped_named(
+                &bytes,
+                safety::PREVIEW_TARGET_EDGE,
+                ext.as_deref(),
+            )
+            .map_err(|e| e.to_string());
             // `out` is a plain `DynamicImage`; all WIC/MF objects are already dropped inside
             // the decoder, so the apartment holds no live COM ref at teardown.
             if inited {
@@ -850,4 +729,72 @@ fn decode_preview_budgeted(bytes: Vec<u8>) -> std::result::Result<image::Dynamic
             safety::PREVIEW_DECODE_BUDGET
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorref_lightness_splits_at_mid_grey() {
+        // 0x808080 averages exactly 128, which is not "above mid".
+        assert!(!colorref_is_light(0x0080_8080));
+        assert!(colorref_is_light(0x0081_8181));
+        assert!(colorref_is_light(0x00FF_FFFF));
+        assert!(!colorref_is_light(0x0000_0000));
+    }
+
+    #[test]
+    fn host_colour_wins_only_when_it_agrees_with_the_theme() {
+        // Dark theme: a dark host colour is kept...
+        assert_eq!(themed_bg(0x0020_2020, true), 0x0020_2020);
+        // ...but the file dialog's WHITE is refused for the themed dark surface.
+        assert_eq!(themed_bg(0x00FF_FFFF, true), 0x0020_2020);
+        // Light theme: a light host colour is kept, a dark one refused for white.
+        assert_eq!(themed_bg(0x00F0_F0F0, false), 0x00F0_F0F0);
+        assert_eq!(themed_bg(0x0000_0000, false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn host_colour_at_the_lightness_boundary_still_agrees_then_loses() {
+        // 0x808080 is "dark" by our rule: it agrees with a dark theme (kept) and
+        // conflicts with a light one (themed default wins).
+        assert_eq!(themed_bg(0x0080_8080, true), 0x0080_8080);
+        assert_eq!(themed_bg(0x0080_8080, false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn theme_default_is_the_win11_dark_surface_or_white() {
+        assert_eq!(bg_for_dark(true), 0x0020_2020);
+        assert_eq!(bg_for_dark(false), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn rect_extent_is_the_edge_difference_of_a_normal_rect() {
+        assert_eq!(
+            rect_extent(&RECT {
+                left: 5,
+                top: 7,
+                right: 105,
+                bottom: 27,
+            }),
+            (100, 20)
+        );
+    }
+
+    #[test]
+    fn rect_extent_clamps_zero_and_inverted_rects_to_zero() {
+        // The host's first SetWindow hands a zero rect before SetRect supplies the pane.
+        assert_eq!(rect_extent(&RECT::default()), (0, 0));
+        // right < left / bottom < top must not reach MoveWindow as negative extents.
+        assert_eq!(
+            rect_extent(&RECT {
+                left: 40,
+                top: 30,
+                right: 10,
+                bottom: 5,
+            }),
+            (0, 0)
+        );
+    }
 }

@@ -34,6 +34,7 @@ use crate::info::Rotation;
 
 /// Errors from text layer parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TextError {
     /// The binary data is too short to be a valid text layer.
     #[error("text layer data too short")]

@@ -1,0 +1,30 @@
+[package]
+name = "sagethumbs2k-base"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SageThumbs 2K library, base layer"
+build = "build.rs"
+
+[lib]
+name = "st2k_base"
+
+[dependencies]
+serde_json = "1"
+windows = { workspace = true }
+windows-registry = "0.6"
+
+[build-dependencies]
+# Parses assets/locales/*.toml into the generated table (build time only).
+build-support = { path = "../build-support" }
+
+[features]
+# The slim DLL's locale table: only the `menu_*` keys (see the root Cargo.toml's feature of
+# the same name, which forwards here).
+dll-i18n-subset = []
+# Test seams the layers above drive from their own tests (a crate's `cfg(test)` items do not
+# exist when it is built as another crate's dependency). Never on in a shipping build: only
+# the [dev-dependencies] of the crates above turn it on.
+testkit = []

@@ -36,12 +36,14 @@ use tiff::tags::ResolutionUnit;
 use crate::{
     djvu_document::{DjVuDocument, DjVuPage, DocError},
     djvu_render::{self, RenderError, RenderOptions},
+    export_control::{ExportObserver, NoOpObserver},
 };
 
 // ---- Error ------------------------------------------------------------------
 
 /// Errors from TIFF conversion.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TiffError {
     /// Document model error.
     #[error("document error: {0}")]
@@ -54,6 +56,10 @@ pub enum TiffError {
     /// TIFF encoding error.
     #[error("TIFF encoding error: {0}")]
     Encode(String),
+
+    /// Export was cancelled by its observer.
+    #[error("export cancelled")]
+    Cancelled,
 }
 
 impl From<tiff::TiffError> for TiffError {
@@ -133,17 +139,48 @@ pub fn djvu_to_tiff(doc: &DjVuDocument, opts: &TiffOptions) -> Result<Vec<u8>, T
 /// This is the lowest-memory TIFF export entry point: when color rendering is
 /// streamable, rows are passed directly from [`djvu_render::render_streaming`]
 /// into TIFF strips without constructing a full output [`crate::Pixmap`] or an
-/// intermediate full RGB image.
+/// intermediate full RGB image. Bilevel G4 export first makes a sizing pass
+/// that renders and encodes each page only to retain its dimensions, DPI, and
+/// encoded length; it then renders and encodes each page again while writing
+/// its strip and IFD. This keeps only one G4 payload active at a time, at the
+/// cost of doubling G4 render-and-encode CPU. Progress for that mode is
+/// reported only during the second, writing pass.
+///
+/// # Errors
+///
+/// On error, `writer` may contain a partial TIFF; the library does not clean it
+/// up or provide atomic replacement (that policy belongs to the CLI/application
+/// layer).
 pub fn djvu_to_tiff_writer<W: Write + Seek>(
     doc: &DjVuDocument,
     opts: &TiffOptions,
     writer: W,
 ) -> Result<(), TiffError> {
+    let mut observer = NoOpObserver;
+    djvu_to_tiff_writer_with_observer(doc, opts, writer, &mut observer)
+}
+
+/// Convert a DjVu document to TIFF while reporting progress through `observer`.
+///
+/// With the `parallel` feature, cancellation is polled before the parallel
+/// image-build batch. Work already scheduled in that batch may complete before
+/// the cancellation is observed.
+///
+/// On error, `writer` may contain a partial TIFF; the library does not clean it
+/// up or provide atomic replacement (that policy belongs to the CLI/application
+/// layer).
+pub fn djvu_to_tiff_writer_with_observer<W: Write + Seek>(
+    doc: &DjVuDocument,
+    opts: &TiffOptions,
+    writer: W,
+    observer: &mut dyn ExportObserver,
+) -> Result<(), TiffError> {
     if opts.mode == TiffMode::Bilevel && opts.bilevel_compression == TiffBilevelCompression::G4 {
-        return write_bilevel_g4_tiff(doc, writer);
+        return write_bilevel_g4_tiff(doc, writer, observer);
     }
     let mut encoder = TiffEncoder::new(writer)?;
     let indices: Vec<usize> = crate::export_common::page_indices(doc, None).collect();
+    let total = indices.len();
 
     // Building a page's pixel buffer (color: render → RGB; bilevel: JB2 decode →
     // Gray8) is independent and CPU-heavy per page; only appending IFDs to the
@@ -157,6 +194,9 @@ pub fn djvu_to_tiff_writer<W: Write + Seek>(
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
+        if observer.cancelled() {
+            return Err(TiffError::Cancelled);
+        }
         let images: Vec<PageImage> = indices
             .par_iter()
             .map(|&i| {
@@ -165,19 +205,27 @@ pub fn djvu_to_tiff_writer<W: Write + Seek>(
                 build_page_image(&page, opts)
             })
             .collect::<Result<Vec<_>, TiffError>>()?;
-        for img in &images {
+        for (done, img) in images.iter().enumerate() {
+            if observer.cancelled() {
+                return Err(TiffError::Cancelled);
+            }
             write_page_image(&mut encoder, img)?;
+            observer.on_progress(done + 1, total);
         }
     }
 
     #[cfg(not(feature = "parallel"))]
-    for &i in &indices {
+    for (done, &i) in indices.iter().enumerate() {
+        if observer.cancelled() {
+            return Err(TiffError::Cancelled);
+        }
         // #629: cold clone — decode caches drop with the page.
         let page = doc.page(i)?.clone();
         match opts.mode {
             TiffMode::Color => write_color_page(&mut encoder, &page, opts.scale)?,
             TiffMode::Bilevel => write_bilevel_page(&mut encoder, &page)?,
         }
+        observer.on_progress(done + 1, total);
     }
     Ok(())
 }
@@ -415,38 +463,71 @@ fn write_bilevel_page<W: std::io::Write + std::io::Seek>(
 // the 11 tags libtiff expects for a G4 fax image, strip data = the raw
 // `smmr::encode_g4` T.6 payload (1 strip per page). Photometric is
 // min-is-white (0), matching T.6's white-first run convention and our mask's
-// 1 = black.
-fn write_bilevel_g4_tiff<W: Write + Seek>(doc: &DjVuDocument, mut w: W) -> Result<(), TiffError> {
+// 1 = black. To keep the writer memory-bounded, the first pass retains only
+// per-page layout metadata; the second pass re-encodes and emits one strip at
+// a time. The two passes intentionally trade G4 CPU for O(1)-page memory.
+#[derive(Clone, Copy)]
+struct G4PagePlan {
+    width: u32,
+    height: u32,
+    dpi: u32,
+    encoded_len: u32,
+}
+
+#[derive(Clone, Copy)]
+struct G4PageLayout {
+    strip_offset: u32,
+    rational_offset: u32,
+    ifd_offset: u32,
+}
+
+/// Render the page's bilevel mask and encode it as a G4 strip.
+///
+/// The returned metadata is sufficient to plan the TIFF layout. Callers doing
+/// size discovery must drop the payload and retain only the metadata.
+fn encode_bilevel_g4_page(
+    doc: &DjVuDocument,
+    page_index: usize,
+) -> Result<(G4PagePlan, Vec<u8>), TiffError> {
+    // #629: cold clone — the mask decode cache drops with the page.
+    let page = doc.page(page_index)?.clone();
+    let width = page.width() as u32;
+    let height = page.height() as u32;
+    let dpi = page.dpi().max(1) as u32;
+    let mask = page
+        .extract_mask()
+        .map_err(TiffError::Doc)?
+        .filter(|m| m.width >= width && m.height >= height)
+        .unwrap_or_else(|| crate::bitmap::Bitmap::new(width, height));
+    let encoded = crate::smmr::encode_g4(&mask);
+    let plan = G4PagePlan {
+        width,
+        height,
+        dpi,
+        encoded_len: encoded.len() as u32,
+    };
+    Ok((plan, encoded))
+}
+
+fn write_bilevel_g4_tiff<W: Write + Seek>(
+    doc: &DjVuDocument,
+    mut w: W,
+    observer: &mut dyn ExportObserver,
+) -> Result<(), TiffError> {
     let indices: Vec<usize> = crate::export_common::page_indices(doc, None).collect();
 
-    // Encode every page's G4 payload first (parallel when available) — the
-    // IFD chain needs strip offsets, so sizes must be known before layout.
-    let encode_one = |i: usize| -> Result<(u32, u32, u32, Vec<u8>), TiffError> {
-        // #629: cold clone — the mask decode cache drops with the page.
-        let page = doc.page(i)?.clone();
-        let pw = page.width() as u32;
-        let ph = page.height() as u32;
-        let dpi = page.dpi().max(1) as u32;
-        let mask = page
-            .extract_mask()
-            .map_err(TiffError::Doc)?
-            .filter(|m| m.width >= pw && m.height >= ph)
-            .unwrap_or_else(|| crate::bitmap::Bitmap::new(pw, ph));
-        Ok((pw, ph, dpi, crate::smmr::encode_g4(&mask)))
-    };
-    #[cfg(feature = "parallel")]
-    let pages: Vec<(u32, u32, u32, Vec<u8>)> = {
-        use rayon::prelude::*;
-        indices
-            .par_iter()
-            .map(|&i| encode_one(i))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    #[cfg(not(feature = "parallel"))]
-    let pages: Vec<(u32, u32, u32, Vec<u8>)> = indices
-        .iter()
-        .map(|&i| encode_one(i))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Pass 1: discover the exact G4 strip sizes needed to resolve the complete
+    // IFD chain. The encoded payload is dropped after each page, leaving only
+    // small per-page metadata records in memory.
+    let mut plans = Vec::with_capacity(indices.len());
+    for &page_index in &indices {
+        if observer.cancelled() {
+            return Err(TiffError::Cancelled);
+        }
+        let (plan, encoded) = encode_bilevel_g4_page(doc, page_index)?;
+        drop(encoded);
+        plans.push(plan);
+    }
 
     let io = |e: std::io::Error| TiffError::Encode(e.to_string());
 
@@ -454,19 +535,24 @@ fn write_bilevel_g4_tiff<W: Write + Seek>(doc: &DjVuDocument, mut w: W) -> Resul
     const NTAGS: u16 = 11;
     let ifd_size = 2 + NTAGS as u32 * 12 + 4; // count + entries + next-IFD ptr
     let mut offset: u32 = 8;
-    let mut layout = Vec::with_capacity(pages.len()); // (strip_off, rational_off, ifd_off)
-    for (_, _, _, g4) in &pages {
-        let strip_off = offset;
+    let mut layout = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        let strip_offset = offset;
         // XResolution/YResolution rationals (2×8 bytes) live after the strip.
-        let rat_off = (strip_off + g4.len() as u32).div_ceil(2) * 2;
-        let ifd_off = (rat_off + 16).div_ceil(2) * 2;
-        layout.push((strip_off, rat_off, ifd_off));
-        offset = ifd_off + ifd_size;
+        let rational_offset = (strip_offset + plan.encoded_len).div_ceil(2) * 2;
+        let ifd_offset = (rational_offset + 16).div_ceil(2) * 2;
+        layout.push(G4PageLayout {
+            strip_offset,
+            rational_offset,
+            ifd_offset,
+        });
+        offset = ifd_offset + ifd_size;
     }
 
     // Header: little-endian, magic 42, first IFD offset.
     w.write_all(b"II\x2a\x00").map_err(io)?;
-    w.write_all(&layout[0].2.to_le_bytes()).map_err(io)?;
+    w.write_all(&layout[0].ifd_offset.to_le_bytes())
+        .map_err(io)?;
 
     let entry = |tag: u16, typ: u16, count: u32, value: u32| -> [u8; 12] {
         let mut e = [0u8; 12];
@@ -477,49 +563,67 @@ fn write_bilevel_g4_tiff<W: Write + Seek>(doc: &DjVuDocument, mut w: W) -> Resul
         e
     };
 
+    // Pass 2: re-encode and emit one page at a time. We use pass-1 metadata
+    // for the IFD so the output layout remains byte-for-byte unchanged.
     let mut pos: u32 = 8;
-    for (idx, ((pw, ph, dpi, g4), &(strip_off, rat_off, ifd_off))) in
-        pages.iter().zip(&layout).enumerate()
+    for (idx, ((&page_index, plan), page_layout)) in
+        indices.iter().zip(&plans).zip(&layout).enumerate()
     {
-        debug_assert_eq!(pos, strip_off);
-        w.write_all(g4).map_err(io)?;
-        pos += g4.len() as u32;
-        while pos < rat_off {
+        if observer.cancelled() {
+            return Err(TiffError::Cancelled);
+        }
+        let (emitted_plan, encoded) = encode_bilevel_g4_page(doc, page_index)?;
+        debug_assert_eq!(plan.encoded_len, emitted_plan.encoded_len);
+        if plan.encoded_len != emitted_plan.encoded_len {
+            return Err(TiffError::Encode(format!(
+                "G4 encoded length diverged between sizing and emission passes for page {}",
+                idx + 1
+            )));
+        }
+
+        debug_assert_eq!(pos, page_layout.strip_offset);
+        w.write_all(&encoded).map_err(io)?;
+        pos += emitted_plan.encoded_len;
+        while pos < page_layout.rational_offset {
             w.write_all(&[0]).map_err(io)?;
             pos += 1;
         }
         // X/Y resolution rationals (dpi / 1).
         for _ in 0..2 {
-            w.write_all(&dpi.to_le_bytes()).map_err(io)?;
+            w.write_all(&plan.dpi.to_le_bytes()).map_err(io)?;
             w.write_all(&1u32.to_le_bytes()).map_err(io)?;
         }
         pos += 16;
-        while pos < ifd_off {
+        while pos < page_layout.ifd_offset {
             w.write_all(&[0]).map_err(io)?;
             pos += 1;
         }
 
         w.write_all(&NTAGS.to_le_bytes()).map_err(io)?;
         // Types: 3 = SHORT, 4 = LONG, 5 = RATIONAL.
-        w.write_all(&entry(256, 4, 1, *pw)).map_err(io)?; // ImageWidth
-        w.write_all(&entry(257, 4, 1, *ph)).map_err(io)?; // ImageLength
+        w.write_all(&entry(256, 4, 1, plan.width)).map_err(io)?; // ImageWidth
+        w.write_all(&entry(257, 4, 1, plan.height)).map_err(io)?; // ImageLength
         w.write_all(&entry(258, 3, 1, 1)).map_err(io)?; // BitsPerSample
         w.write_all(&entry(259, 3, 1, 4)).map_err(io)?; // Compression = CCITT G4
         w.write_all(&entry(262, 3, 1, 0)).map_err(io)?; // Photometric = WhiteIsZero
-        w.write_all(&entry(273, 4, 1, strip_off)).map_err(io)?; // StripOffsets
+        w.write_all(&entry(273, 4, 1, page_layout.strip_offset))
+            .map_err(io)?; // StripOffsets
         w.write_all(&entry(277, 3, 1, 1)).map_err(io)?; // SamplesPerPixel
-        w.write_all(&entry(278, 4, 1, *ph)).map_err(io)?; // RowsPerStrip
-        w.write_all(&entry(279, 4, 1, g4.len() as u32))
+        w.write_all(&entry(278, 4, 1, plan.height)).map_err(io)?; // RowsPerStrip
+        w.write_all(&entry(279, 4, 1, plan.encoded_len))
             .map_err(io)?; // StripByteCounts
-        w.write_all(&entry(282, 5, 1, rat_off)).map_err(io)?; // XResolution
-        w.write_all(&entry(283, 5, 1, rat_off + 8)).map_err(io)?; // YResolution
+        w.write_all(&entry(282, 5, 1, page_layout.rational_offset))
+            .map_err(io)?; // XResolution
+        w.write_all(&entry(283, 5, 1, page_layout.rational_offset + 8))
+            .map_err(io)?; // YResolution
         let next = if idx + 1 < layout.len() {
-            layout[idx + 1].2
+            layout[idx + 1].ifd_offset
         } else {
             0
         };
         w.write_all(&next.to_le_bytes()).map_err(io)?;
-        pos = ifd_off + ifd_size;
+        pos = page_layout.ifd_offset + ifd_size;
+        observer.on_progress(idx + 1, plans.len());
     }
     w.flush().map_err(io)?;
     Ok(())
@@ -594,6 +698,8 @@ const BILEVEL_GRAY8: [[u8; 8]; 256] = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
     use crate::djvu_render;
 
     fn assets_path() -> std::path::PathBuf {
@@ -605,6 +711,224 @@ mod tests {
         let data = std::fs::read(assets_path().join(filename))
             .unwrap_or_else(|_| panic!("{filename} must exist"));
         DjVuDocument::parse(&data).unwrap_or_else(|e| panic!("parse failed: {e}"))
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        progress: Vec<(usize, usize)>,
+        cancel_after: Option<usize>,
+    }
+
+    impl ExportObserver for RecordingObserver {
+        fn on_progress(&mut self, done: usize, total: usize) {
+            self.progress.push((done, total));
+        }
+
+        fn cancelled(&self) -> bool {
+            self.cancel_after
+                .is_some_and(|after| self.progress.len() >= after)
+        }
+    }
+
+    /// Cancels on a specific call to `cancelled`, allowing the tests to target
+    /// either the G4 sizing pass or its subsequent emission pass.
+    struct CancelOnPollObserver {
+        cancel_on_poll: usize,
+        polls: Cell<usize>,
+        progress: Vec<(usize, usize)>,
+    }
+
+    impl ExportObserver for CancelOnPollObserver {
+        fn on_progress(&mut self, done: usize, total: usize) {
+            self.progress.push((done, total));
+        }
+
+        fn cancelled(&self) -> bool {
+            let polls = self.polls.get() + 1;
+            self.polls.set(polls);
+            polls >= self.cancel_on_poll
+        }
+    }
+
+    fn load_fixture_doc(filename: &str) -> DjVuDocument {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(filename),
+        )
+        .unwrap();
+        DjVuDocument::parse(&data).unwrap_or_else(|e| panic!("parse failed: {e}"))
+    }
+
+    fn g4_options() -> TiffOptions {
+        TiffOptions {
+            mode: TiffMode::Bilevel,
+            bilevel_compression: TiffBilevelCompression::G4,
+            ..Default::default()
+        }
+    }
+
+    fn load_multipage_g4_doc() -> DjVuDocument {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/corpus/cable_1973_100133.djvu"),
+        )
+        .unwrap();
+        DjVuDocument::parse(&data).unwrap()
+    }
+
+    /// Exact pre-#690 G4 writer, retained only to lock the two-pass writer's
+    /// byte layout to the former all-in-memory implementation.
+    fn legacy_all_in_memory_g4_tiff(doc: &DjVuDocument) -> Result<Vec<u8>, TiffError> {
+        let indices: Vec<usize> = crate::export_common::page_indices(doc, None).collect();
+        let mut pages = Vec::with_capacity(indices.len());
+        for page_index in indices {
+            pages.push(encode_bilevel_g4_page(doc, page_index)?);
+        }
+
+        let io = |e: std::io::Error| TiffError::Encode(e.to_string());
+        const NTAGS: u16 = 11;
+        let ifd_size = 2 + NTAGS as u32 * 12 + 4;
+        let mut offset: u32 = 8;
+        let mut layout = Vec::with_capacity(pages.len());
+        for (plan, g4) in &pages {
+            let strip_off = offset;
+            let rat_off = (strip_off + g4.len() as u32).div_ceil(2) * 2;
+            let ifd_off = (rat_off + 16).div_ceil(2) * 2;
+            layout.push((strip_off, rat_off, ifd_off));
+            offset = ifd_off + ifd_size;
+            assert_eq!(plan.encoded_len, g4.len() as u32);
+        }
+
+        let mut w = std::io::Cursor::new(Vec::new());
+        w.write_all(b"II\x2a\x00").map_err(io)?;
+        w.write_all(&layout[0].2.to_le_bytes()).map_err(io)?;
+
+        let entry = |tag: u16, typ: u16, count: u32, value: u32| -> [u8; 12] {
+            let mut e = [0u8; 12];
+            e[0..2].copy_from_slice(&tag.to_le_bytes());
+            e[2..4].copy_from_slice(&typ.to_le_bytes());
+            e[4..8].copy_from_slice(&count.to_le_bytes());
+            e[8..12].copy_from_slice(&value.to_le_bytes());
+            e
+        };
+
+        let mut pos: u32 = 8;
+        for (idx, ((plan, g4), &(strip_off, rat_off, ifd_off))) in
+            pages.iter().zip(&layout).enumerate()
+        {
+            debug_assert_eq!(pos, strip_off);
+            w.write_all(g4).map_err(io)?;
+            pos += g4.len() as u32;
+            while pos < rat_off {
+                w.write_all(&[0]).map_err(io)?;
+                pos += 1;
+            }
+            for _ in 0..2 {
+                w.write_all(&plan.dpi.to_le_bytes()).map_err(io)?;
+                w.write_all(&1u32.to_le_bytes()).map_err(io)?;
+            }
+            pos += 16;
+            while pos < ifd_off {
+                w.write_all(&[0]).map_err(io)?;
+                pos += 1;
+            }
+
+            w.write_all(&NTAGS.to_le_bytes()).map_err(io)?;
+            w.write_all(&entry(256, 4, 1, plan.width)).map_err(io)?;
+            w.write_all(&entry(257, 4, 1, plan.height)).map_err(io)?;
+            w.write_all(&entry(258, 3, 1, 1)).map_err(io)?;
+            w.write_all(&entry(259, 3, 1, 4)).map_err(io)?;
+            w.write_all(&entry(262, 3, 1, 0)).map_err(io)?;
+            w.write_all(&entry(273, 4, 1, strip_off)).map_err(io)?;
+            w.write_all(&entry(277, 3, 1, 1)).map_err(io)?;
+            w.write_all(&entry(278, 4, 1, plan.height)).map_err(io)?;
+            w.write_all(&entry(279, 4, 1, g4.len() as u32))
+                .map_err(io)?;
+            w.write_all(&entry(282, 5, 1, rat_off)).map_err(io)?;
+            w.write_all(&entry(283, 5, 1, rat_off + 8)).map_err(io)?;
+            let next = if idx + 1 < layout.len() {
+                layout[idx + 1].2
+            } else {
+                0
+            };
+            w.write_all(&next.to_le_bytes()).map_err(io)?;
+            pos = ifd_off + ifd_size;
+        }
+        w.flush().map_err(io)?;
+        Ok(w.into_inner())
+    }
+
+    #[test]
+    fn tiff_writer_observer_reports_each_page_in_order() {
+        let doc = load_fixture_doc("vega.djvu");
+        let total = doc.page_count();
+        let mut observer = RecordingObserver::default();
+
+        djvu_to_tiff_writer_with_observer(
+            &doc,
+            &TiffOptions::default(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect("observer export must succeed");
+
+        assert_eq!(
+            observer.progress,
+            (1..=total).map(|done| (done, total)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn tiff_writer_cancellation_stops_after_completed_page() {
+        let doc = load_fixture_doc("vega.djvu");
+        assert!(doc.page_count() > 1, "fixture must contain multiple pages");
+        let mut observer = RecordingObserver {
+            cancel_after: Some(1),
+            ..RecordingObserver::default()
+        };
+
+        let error = djvu_to_tiff_writer_with_observer(
+            &doc,
+            &TiffOptions::default(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect_err("observer must cancel the export");
+
+        assert!(matches!(error, TiffError::Cancelled));
+        assert_eq!(observer.progress.len(), 1);
+    }
+
+    #[test]
+    fn tiff_default_writer_delegates_to_noop_observer() {
+        let doc = load_fixture_doc("vega.djvu");
+        let opts = TiffOptions::default();
+
+        let mut default_cursor = std::io::Cursor::new(Vec::new());
+        djvu_to_tiff_writer(&doc, &opts, &mut default_cursor).unwrap();
+
+        let mut observed_cursor = std::io::Cursor::new(Vec::new());
+        let mut observer = NoOpObserver;
+        djvu_to_tiff_writer_with_observer(&doc, &opts, &mut observed_cursor, &mut observer)
+            .unwrap();
+
+        assert_eq!(observed_cursor.into_inner(), default_cursor.into_inner());
+    }
+
+    #[test]
+    fn tiff_writer_failing_sink_returns_io_error() {
+        let doc = load_fixture_doc("chicken.djvu");
+        let error = djvu_to_tiff_writer(
+            &doc,
+            &TiffOptions::default(),
+            crate::export_test_support::FailingWriter::after(2),
+        )
+        .expect_err("injected sink failure must be returned");
+
+        assert!(
+            matches!(error, TiffError::Encode(message) if message.contains("injected sink failure"))
+        );
     }
 
     fn decode_first_tiff_rgb(tiff_bytes: &[u8]) -> (u32, u32, Vec<u8>) {
@@ -936,5 +1260,90 @@ mod tests {
             ifd = rd32(ifd + 2 + ntags * 12) as usize;
         }
         assert_eq!(pages, doc.page_count(), "one IFD per page");
+    }
+
+    /// #690: the bounded-memory writer preserves the original strip/IFD byte
+    /// layout of the pre-refactor all-in-memory G4 writer.
+    #[test]
+    fn bilevel_g4_two_pass_matches_legacy_all_in_memory_bytes() {
+        let doc = load_multipage_g4_doc();
+        let expected = legacy_all_in_memory_g4_tiff(&doc).unwrap();
+        let actual = djvu_to_tiff(&doc, &g4_options()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    /// #690: G4 reports progress only for pages fully written in pass 2.
+    #[test]
+    fn bilevel_g4_two_pass_reports_each_written_page_in_order() {
+        let doc = load_multipage_g4_doc();
+        let total = doc.page_count();
+        let mut observer = RecordingObserver::default();
+
+        djvu_to_tiff_writer_with_observer(
+            &doc,
+            &g4_options(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect("G4 export must succeed");
+
+        assert_eq!(
+            observer.progress,
+            (1..=total).map(|done| (done, total)).collect::<Vec<_>>()
+        );
+    }
+
+    /// #690: cancellation before a later page in the sizing pass returns
+    /// `Cancelled` before any page is reported as written.
+    #[test]
+    fn bilevel_g4_two_pass_cancels_during_sizing_pass() {
+        let doc = load_multipage_g4_doc();
+        assert!(doc.page_count() > 1, "fixture must contain multiple pages");
+        let mut observer = CancelOnPollObserver {
+            cancel_on_poll: 2,
+            polls: Cell::new(0),
+            progress: Vec::new(),
+        };
+
+        let error = djvu_to_tiff_writer_with_observer(
+            &doc,
+            &g4_options(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect_err("G4 sizing pass must observe cancellation");
+
+        assert!(matches!(error, TiffError::Cancelled));
+        assert_eq!(observer.polls.get(), 2);
+        assert!(observer.progress.is_empty());
+    }
+
+    /// #690: cancellation before a later page in the emission pass preserves
+    /// progress for only the already-written pages.
+    #[test]
+    fn bilevel_g4_two_pass_cancels_during_emission_pass() {
+        let doc = load_multipage_g4_doc();
+        let total = doc.page_count();
+        assert!(total > 1, "fixture must contain multiple pages");
+        let mut observer = CancelOnPollObserver {
+            // `total` sizing polls, then one written page, then cancellation
+            // immediately before the second emission page.
+            cancel_on_poll: total + 2,
+            polls: Cell::new(0),
+            progress: Vec::new(),
+        };
+
+        let error = djvu_to_tiff_writer_with_observer(
+            &doc,
+            &g4_options(),
+            std::io::Cursor::new(Vec::new()),
+            &mut observer,
+        )
+        .expect_err("G4 emission pass must observe cancellation");
+
+        assert!(matches!(error, TiffError::Cancelled));
+        assert_eq!(observer.polls.get(), total + 2);
+        assert_eq!(observer.progress, vec![(1, total)]);
     }
 }

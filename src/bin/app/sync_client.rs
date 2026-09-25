@@ -1,5 +1,6 @@
 //! Connections settings-sync: the allowlisted push/pull between the local HKCU settings
-//! and the per-user cloud document at `studio.connections.icu/v1/app-data/{appId}`.
+//! and the per-user cloud document at `studio.connectionsapi.com/v1/app-data/{appId}`
+//! (the permanent backend domain since 2026-09-18; `connections.icu` was suspended).
 //!
 //! Only an explicit **allowlist** of portable preferences is synced — never machine-local
 //! values (absolute paths, the upload-host config), local-only flags, or secrets. The
@@ -16,14 +17,25 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+mod store;
+use store::*;
+mod markers;
+use markers::*;
+mod allowlist;
+use allowlist::*;
+pub(crate) use markers::{
+    begin_push_worker, finish_push_worker, has_initial_sync_pending, has_pending_push,
+    is_sync_state_value, last_attempt_was_offline, mark_push_pending,
+};
 
 use serde_json::{Map, Value};
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
-use crate::{cred_store, http, oauth};
+use crate::oauth;
+use st2k_appkit::{cred_store, http};
 
-const STORE_BASE: &str = "https://studio.connections.icu/v1/app-data";
+const STORE_BASE: &str = "https://studio.connectionsapi.com/v1/app-data";
 const TIMEOUT_SECS: u64 = 20;
 const MAX_RESP: usize = 128 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
@@ -118,139 +130,6 @@ fn sync_guard() -> MutexGuard<'static, ()> {
     SYNC_LOCK.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-#[derive(Clone, Copy)]
-enum Kind {
-    Dword,
-    Str,
-}
-
-/// The syncable-key allowlist — portable preferences ONLY.
-///
-/// Widened 2026-08-25 from 33 keys to 60. Everything the Quick preview viewer learned since this
-/// list was written — every playback, layout and rendering preference it has — was silently
-/// stranded on one machine, along with the PDF layout, the screenshot tool defaults, the convert
-/// metadata switch and half a dozen others. None of them was excluded on purpose; they simply
-/// arrived after the list did, and "not synced" is what a missing entry means.
-///
-/// [`NEVER_SYNCED`] now names every key that stays behind, with the reason, and the test at the
-/// bottom of this file reads `settings.rs` and fails on any key that is on neither list. That
-/// check is the durable half of this change: widening once only helps until the next setting.
-const ALLOW: &[(&str, Kind)] = &[
-    ("EnableThumbs", Kind::Dword),
-    ("MaxSize", Kind::Dword),
-    ("Width", Kind::Dword),
-    ("Height", Kind::Dword),
-    ("UseEmbedded", Kind::Dword),
-    ("JPEG", Kind::Dword),
-    ("PNG", Kind::Dword),
-    ("EnableMenu", Kind::Dword),
-    ("MenuAllFileTypes", Kind::Dword),
-    ("MenuPreview", Kind::Dword),
-    ("MenuQuickVerbs", Kind::Dword),
-    ("PreviewChecker", Kind::Dword),
-    ("AppTheme", Kind::Dword),
-    ("FormatBadge", Kind::Dword),
-    ("FormatBadgeStyle", Kind::Dword),
-    // How big that badge is drawn. Unlike `CornerMark` below, this touches nothing outside
-    // our own bitmap - no per-ProgID registry, nothing machine-shaped - so a pulled value is
-    // honoured exactly as it was set on the other machine.
-    ("BadgeSize", Kind::Dword),
-    ("ThumbChecker", Kind::Dword),
-    // NOT synced: HideTypeOverlay. It is not just a value - flipping it rewrites
-    // per-ProgID registry keys on THIS machine, and the ProgIDs differ per machine, so a
-    // synced 1 would record a suppression that was never actually applied here.
-    ("PreserveFileDate", Kind::Dword),
-    ("ContainerSort", Kind::Dword),
-    ("ContainerPreferCover", Kind::Dword),
-    ("ContainerSkipScanlation", Kind::Dword),
-    ("CvJpegQuality", Kind::Dword),
-    ("CvWebpQuality", Kind::Dword),
-    ("CvWebpLossless", Kind::Dword),
-    ("CvPngLevel", Kind::Dword),
-    ("CvMagickQuality", Kind::Dword),
-    ("ScreenshotHotkey", Kind::Dword),
-    ("ScreenshotQuickHotkey", Kind::Dword),
-    ("CustomAction", Kind::Dword),
-    ("CustomActionHotkey", Kind::Dword),
-    ("ScreenshotHideTray", Kind::Dword),
-    ("ShotUseSaveDir", Kind::Dword),
-    ("UpdateAutoCheck", Kind::Dword),
-    ("Lang", Kind::Str),
-    ("MenuOrder", Kind::Str),
-    // ── Widened 2026-08-25 ──────────────────────────────────────────────────────────────
-    // The Quick preview viewer, in full. Every one of these is a statement about how you like
-    // to read things, and not one of them travelled before now.
-    ("PreviewEnabled", Kind::Dword),
-    ("PreviewArrowNav", Kind::Dword),
-    ("PreviewHoldPeek", Kind::Dword),
-    ("PreviewCloseOnFocusLoss", Kind::Dword),
-    ("PreviewOpenFront", Kind::Dword),
-    ("PreviewText", Kind::Dword),
-    ("PreviewMarkdown", Kind::Dword),
-    ("PreviewTocOpen", Kind::Dword),
-    ("PreviewMdRemoteImg", Kind::Dword),
-    ("PreviewHtml", Kind::Dword),
-    ("PreviewUrlLive", Kind::Dword),
-    ("PreviewPdfStrip", Kind::Dword),
-    // The Quick-preview extension blocklist (2026-09-08). A free-text preference like
-    // `ShotSaveDir`, and portable in the same sense: "never Quick-preview .insv" is a
-    // statement about the user, not about this machine.
-    ("PreviewBlockedExts", Kind::Str),
-    ("PreviewLoop", Kind::Dword),
-    ("PreviewMuted", Kind::Dword),
-    ("PreviewVolume", Kind::Dword),
-    ("PreviewSpeed", Kind::Dword),
-    // Documents and containers.
-    ("PdfLayout", Kind::Dword),
-    ("PdfMarginPt", Kind::Dword),
-    ("ArchiveCollage", Kind::Dword),
-    // Thumbnails and the convert verbs.
-    ("VideoCoverArt", Kind::Dword),
-    ("VideoOffset", Kind::Dword),
-    ("KeepMetadata", Kind::Dword),
-    ("FolderPrebuildVerb", Kind::Dword),
-    // Screenshot tool defaults (its SAVE FOLDER stays behind — see NEVER_SYNCED).
-    ("ShotDefaultTool", Kind::Dword),
-    ("ShotDelaySec", Kind::Dword),
-    ("EyeFormat", Kind::Dword),
-];
-
-/// Every setting that deliberately does NOT sync, with the reason it doesn't.
-///
-/// Read by `every_setting_is_classified` below, which is the only thing that consumes it at
-/// runtime. Its real job is to be the written-down decision, and to fail the build's test run
-/// when a new setting has no decision yet.
-#[cfg_attr(not(test), allow(dead_code))]
-const NEVER_SYNCED: &[&str] = &[
-    // An absolute path on THIS PC.
-    "ShotSaveDir",
-    // Window geometry.
-    "PreviewWinW",
-    "PreviewWinH",
-    // Local diagnostics and dev-machine flags.
-    "Debug",
-    "DevMachine",
-    // Install state, not a preference.
-    "InstallReported",
-    // Not just a value: flipping it rewrites per-ProgID registry keys on THIS machine, and the
-    // ProgIDs differ per machine — so a synced 1 would record a suppression never applied here.
-    "HideTypeOverlay",
-    // Its successor, and it inherits the reason. `CornerMark` now carries the overlay decision
-    // as well as the badge one (see `settings::CornerMark`), and two of its three values mean
-    // "suppress Explorer's overlay" — which only takes effect when `typeoverlay::sync` runs
-    // against THIS machine's ProgIDs. A pulled value would be recorded and never applied, so
-    // the setting would read as honoured while the corner still showed the other thing. The
-    // badge half used to sync on its own; it cannot any more without lying about the other half.
-    "CornerMark",
-    // The eyedropper's recent-colours list is CONTENT, not a preference, and it only grows.
-    // `EyeFormat` (which format you want them copied in) does sync.
-    "EyeHistory",
-    // The sign-in prompt's own schedule (see the app's `nudge.rs`). Half of it — how long this
-    // copy has been installed, how many times it has been opened — describes one machine, so
-    // syncing the blob would mix two machines' histories into one and make the gate meaningless.
-    "SignInNudge",
-];
-
 // ---- local <-> JSON ------------------------------------------------------
 
 /// Snapshot the currently-stored allowlisted settings into a JSON object. Only values
@@ -284,283 +163,110 @@ fn read_local() -> Map<String, Value> {
 
 /// Apply a remote `settings` object to local storage — but ONLY allowlisted keys with the
 /// expected type. Unknown keys are ignored (forward-compat + a hostile/expanded doc can't
-/// write arbitrary registry values). Returns how many values were applied.
+/// write arbitrary registry values). Returns how many values were applied, or an error
+/// naming every accepted value the LOCAL store refused to take.
 ///
 /// Same portable-redirect reasoning as [`read_local`]: writing straight to `CURRENT_USER`
 /// meant a pulled setting never reached a portable install's actual backing store (the
 /// ini), so `pull_on_open` silently applied zero values there every time.
-fn apply_remote(settings_obj: &Value) -> u32 {
+///
+/// Until 2026-09-19 this only COUNTED the writes that succeeded, and `sync_once` wrapped
+/// the count in `Ok`, so a read-only ini or a registry key the user cannot write reported a
+/// clean sync while nothing had changed locally (audit concern 8). A value the remote
+/// document holds in the wrong shape is still simply rejected - that is the hostile-doc
+/// rule, not a local failure - but a value we accepted and could not write is an error.
+fn apply_remote(settings_obj: &Value) -> Result<u32, String> {
+    apply_remote_with(
+        settings_obj,
+        |name, n| settings::set_dword(name, n).map_err(|e| e.to_string()),
+        |name, s| settings::set_string(name, s).map_err(|e| e.to_string()),
+    )
+}
+
+/// [`apply_remote`] with the two local setters injected, so a test can make the local
+/// store fail without a read-only registry or a second process for the portable ini
+/// (the ini path is resolved once per process).
+fn apply_remote_with(
+    settings_obj: &Value,
+    set_dword: impl Fn(&str, u32) -> Result<(), String>,
+    set_string: impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<u32, String> {
     let Some(obj) = settings_obj.as_object() else {
-        return 0;
+        return Ok(0);
     };
     let mut applied = 0;
+    let mut failed: Vec<String> = Vec::new();
     for (name, kind) in ALLOW {
-        let Some(val) = obj.get(*name) else { continue };
-        let ok = match kind {
-            // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
-            // or corrupted doc) must be REJECTED, not silently truncated and then counted as
-            // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
-            // success, writing a value the remote document never actually held.
-            Kind::Dword => val
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .is_some_and(|n| settings::set_dword(name, n).is_ok()),
-            Kind::Str => val
-                .as_str()
-                .is_some_and(|s| settings::set_string(name, s).is_ok()),
-        };
-        if ok {
-            applied += 1;
+        match apply_entry(name, *kind, obj, &set_dword, &set_string) {
+            Some(Ok(())) => applied += 1,
+            Some(Err(e)) => failed.push(format!("{name} ({e})")),
+            None => {}
         }
     }
-    applied
+    if failed.is_empty() {
+        Ok(applied)
+    } else {
+        Err(format!(
+            "{} pulled setting(s) could not be written to this PC's settings store ({applied} were): {}",
+            failed.len(),
+            failed.join(", ")
+        ))
+    }
+}
+
+/// Apply ONE allowlisted remote entry: look it up on `obj`, reject a wrong-shaped value
+/// (the hostile-doc rule), and run it through the matching injected setter. Returns `None`
+/// when the remote omits the key or holds it in the wrong shape, `Some(Ok)`/`Some(Err)`
+/// with the setter's own result otherwise.
+fn apply_entry(
+    name: &str,
+    kind: Kind,
+    obj: &Map<String, Value>,
+    set_dword: &impl Fn(&str, u32) -> Result<(), String>,
+    set_string: &impl Fn(&str, &str) -> Result<(), String>,
+) -> Option<Result<(), String>> {
+    let val = obj.get(name)?;
+    Some(match kind {
+        // `u32::try_from` rather than `as u32`: an out-of-range remote value (a hostile
+        // or corrupted doc) must be REJECTED, not silently truncated and then counted as
+        // a successful apply - `as u32` on 4294967296 would wrap to 0 and still report
+        // success, writing a value the remote document never actually held.
+        Kind::Dword => set_dword(name, val.as_u64().and_then(|n| u32::try_from(n).ok())?),
+        Kind::Str => set_string(name, val.as_str()?),
+    })
 }
 
 // ---- store transport -----------------------------------------------------
 
-fn store_url() -> String {
-    format!("{STORE_BASE}/{}", oauth::CLIENT_ID)
-}
-
-fn auth_headers(token: &str) -> String {
-    format!("Authorization: Bearer {token}\r\nContent-Type: application/json")
-}
-
-fn auth_headers_with_etag(token: &str, etag: Option<&str>) -> String {
-    match etag {
-        Some(etag) => format!("{}\r\nIf-None-Match: {etag}", auth_headers(token)),
-        None => auth_headers(token),
-    }
-}
-
-fn parse_etag_version(etag: &str) -> Option<u64> {
-    etag.trim()
-        .trim_start_matches("W/")
-        .trim_matches('"')
-        .parse()
-        .ok()
-}
-
-fn clear_cache() {
-    *cache() = None;
-}
-
-/// GET the current doc → `(version, settings)`. A never-written user is `(0, {})`.
-/// Repeated reads are ETag-conditional; 304 reuses the cached document.
-fn store_get(token: &str) -> Result<(u64, Value), String> {
-    let cached = cache().clone();
-    let headers = auth_headers_with_etag(token, cached.as_ref().map(|doc| doc.etag.as_str()));
-    let Some(resp) = sync_http_request("GET", &store_url(), &headers, &[], TIMEOUT_SECS, MAX_RESP)
-    else {
-        mark_offline();
-        return Err("couldn't reach the sync server".to_string());
-    };
-    clear_offline();
-    if resp.status == 304 {
-        return cached
-            .map(|doc| (doc.version, doc.settings))
-            .ok_or_else(|| "the sync server returned 304 without a cached document".to_string());
-    }
-    if resp.status != 200 {
-        return Err(store_error(resp.status, &resp.body));
-    }
-    let json: Value = serde_json::from_slice(&resp.body)
-        .map_err(|_| "the sync server sent an unreadable reply".to_string())?;
-    let version = resp
-        .etag
-        .as_deref()
-        .and_then(parse_etag_version)
-        .unwrap_or_else(|| json.get("version").and_then(Value::as_u64).unwrap_or(0));
-    let settings = json
-        .get("settings")
-        .cloned()
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    *cache() = Some(CachedDoc {
-        version,
-        settings: settings.clone(),
-        etag: resp.etag.unwrap_or_else(|| format!("\"{version}\"")),
-    });
-    Ok((version, settings))
-}
-
-/// POST the local snapshot as an RFC 7386 deep-merge write, retrying on a version
-/// conflict (bounded). Returns the new version.
-fn push_snapshot(token: &str) -> Result<u64, String> {
-    let snapshot = Value::Object(read_local());
-    validate_sync_snapshot(&snapshot)?;
-    let mut base = store_get(token)?.0;
-    let mut conflicts = 0;
-    let mut transient_retries = 0;
-    let mut rate_limit_retries = 0;
-    loop {
-        let body = serde_json::json!({ "settings": snapshot, "baseVersion": base, "merge": true });
-        let bytes = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-        let Some(resp) = sync_http_request(
-            "POST",
-            &store_url(),
-            &auth_headers(token),
-            &bytes,
-            TIMEOUT_SECS,
-            MAX_RESP,
-        ) else {
-            if transient_retries < MAX_PUSH_TRANSIENT_RETRIES {
-                transient_retries += 1;
-                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
-                continue;
-            }
-            mark_offline();
-            return Err("couldn't reach the sync server".to_string());
-        };
-        clear_offline();
-        match resp.status {
-            200 => {
-                let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-                clear_cache();
-                return Ok(json
-                    .get("version")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(base + 1));
-            }
-            409 => {
-                // E05 follow-up audit, review item 5: checked BEFORE incrementing, so
-                // `MAX_PUSH_CONFLICT_RETRIES` really does mean that many RETRIES (this many
-                // 409s get a re-fetch-and-retry) rather than one fewer - the old
-                // post-increment `conflicts >= MAX` gave up after only two retries against a
-                // constant named and documented as three.
-                if conflicts >= MAX_PUSH_CONFLICT_RETRIES {
-                    return Err(
-                        "sync kept conflicting with another device, please try again".to_string(),
-                    );
-                }
-                conflicts += 1;
-                // Stale baseVersion, take the server's current version and retry.
-                let json: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-                base = json
-                    .get("current")
-                    .and_then(|c| c.get("version"))
-                    .and_then(Value::as_u64)
-                    .or_else(|| store_get(token).ok().map(|(v, _)| v))
-                    .unwrap_or(base);
-            }
-            429 if rate_limit_retries < MAX_PUSH_RATE_LIMIT_RETRIES => {
-                rate_limit_retries += 1;
-                sync_sleep(rate_limit_wait(&resp.body));
-            }
-            status if status >= 500 && transient_retries < MAX_PUSH_TRANSIENT_RETRIES => {
-                transient_retries += 1;
-                sync_sleep(Duration::from_secs(1 << (transient_retries - 1)));
-            }
-            _ => return Err(store_error(resp.status, &resp.body)),
-        }
-    }
-}
-
-/// The one place every store call in this module actually reaches the network - GET
-/// (`store_get`), POST (`push_snapshot`'s retry loop), and DELETE (`store_delete`) all go
-/// through this instead of `http::request` directly.
-///
-/// In `#[cfg(test)]` builds it first drains [`SCRIPTED_RESPONSES`] (a thread-local queue set
-/// up with [`script_response`]) before ever touching the real HTTP stack, so a test can
-/// splice in scripted relay behaviour - a 409 conflict, a 429 with `retry_after_seconds`, a
-/// 5xx, a dead connection - and drive the REAL `push_snapshot` retry loop end to end, rather
-/// than a re-implementation of its if-lets (E05 follow-up audit, review item 4a). When the
-/// queue is empty (the common case, and always in a release build) this is exactly
-/// `http::request`.
-fn sync_http_request(
-    method: &str,
-    url: &str,
-    headers: &str,
-    body: &[u8],
-    timeout_secs: u64,
-    max_resp: usize,
-) -> Option<http::Resp> {
-    #[cfg(test)]
-    {
-        if let Some(scripted) = SCRIPTED_RESPONSES.with(|q| q.borrow_mut().pop_front()) {
-            return scripted.map(|(status, body)| http::Resp {
-                status,
-                etag: None,
-                body,
-            });
-        }
-    }
-    http::request(method, url, headers, body, timeout_secs, max_resp)
-}
-
-/// The one place [`push_snapshot`]'s retry loop actually sleeps between attempts. In
-/// `#[cfg(test)]` builds this records the requested duration into [`RECORDED_SLEEPS`]
-/// instead of blocking the thread, so a test can assert the loop computed the RIGHT wait
-/// (a capped 429 `retry_after_seconds`, an exponential transient backoff) without a real
-/// test run actually waiting out up to 30 seconds per case.
-fn sync_sleep(duration: Duration) {
-    #[cfg(test)]
-    RECORDED_SLEEPS.with(|s| s.borrow_mut().push(duration));
-    #[cfg(not(test))]
-    std::thread::sleep(duration);
-}
-
-fn store_delete(token: &str) -> Result<(), String> {
-    let Some(resp) = sync_http_request(
-        "DELETE",
-        &store_url(),
-        &auth_headers(token),
-        &[],
-        TIMEOUT_SECS,
-        MAX_RESP,
-    ) else {
-        mark_offline();
-        return Err("couldn't reach the sync server".to_string());
-    };
-    clear_offline();
-    // 204 = deleted, 404 = already gone — both fine for "disconnect".
-    if matches!(resp.status, 200 | 204 | 404) {
-        clear_cache();
-        Ok(())
-    } else {
-        Err(store_error(resp.status, &resp.body))
-    }
-}
-
-/// Map the documented store status codes to short, friendly messages.
-fn store_error(status: u16, body: &[u8]) -> String {
-    match status {
-        401 => return "your sign-in expired — please sign in again".to_string(),
-        403 => return "this app isn't authorized for that account".to_string(),
-        413 => return "your settings are too large to sync".to_string(),
-        429 => {
-            let seconds = retry_after_seconds(body).unwrap_or(1);
-            return format!("syncing too often — retry after {seconds} seconds");
-        }
-        _ => {}
-    }
-    if let Ok(json) = serde_json::from_slice::<Value>(body) {
-        if let Some(e) = json.get("error").and_then(Value::as_str) {
-            return format!("sync failed: {e}");
-        }
-    }
-    format!("sync failed (HTTP {status})")
-}
-
-fn retry_after_seconds(body: &[u8]) -> Option<u64> {
-    serde_json::from_slice::<Value>(body)
-        .ok()?
-        .get("retry_after_seconds")?
-        .as_u64()
-        .filter(|seconds| *seconds > 0)
-}
-
-fn rate_limit_wait(body: &[u8]) -> Duration {
-    Duration::from_secs(retry_after_seconds(body).unwrap_or(1)).min(MAX_RATE_LIMIT_WAIT)
-}
-
-fn ascii_tail(value: &str, prefix: &str, min: usize, allowed: impl Fn(u8) -> bool) -> bool {
-    value
-        .strip_prefix(prefix)
-        .is_some_and(|tail| tail.len() >= min && tail.bytes().all(allowed))
-}
-
 fn credential_string(value: &str) -> Option<&'static str> {
     let value = value.trim();
+    let alpha_num_dash = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
+
+    if let Some(what) = prefixed_provider_credential(value) {
+        return Some(what);
+    }
+    if value.len() == 39 && ascii_tail(value, "AIza", 35, alpha_num_dash) {
+        return Some("a Google API key");
+    }
+    let jwt = value.split('.').collect::<Vec<_>>();
+    if value.starts_with("ey")
+        && jwt.len() == 3
+        && jwt[0].len() >= 10
+        && jwt[1].len() >= 10
+        && jwt[2].len() >= 5
+        && jwt.iter().all(|part| part.bytes().all(alpha_num_dash))
+    {
+        return Some("a JWT");
+    }
+    if value.contains("-----BEGIN ") && value.contains("PRIVATE KEY-----") {
+        return Some("a private key");
+    }
+    None
+}
+
+/// Recognize a well-known prefixed provider token or key id at the start of `value`
+/// (Stripe/OpenAI/GitHub/Slack tokens, an AWS access key id), or `None`.
+fn prefixed_provider_credential(value: &str) -> Option<&'static str> {
     let alpha_num = |byte: u8| byte.is_ascii_alphanumeric();
     let alpha_num_dash = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
 
@@ -599,22 +305,6 @@ fn credential_string(value: &str) -> Option<&'static str> {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
     {
         return Some("an AWS access key id");
-    }
-    if value.len() == 39 && ascii_tail(value, "AIza", 35, alpha_num_dash) {
-        return Some("a Google API key");
-    }
-    let jwt = value.split('.').collect::<Vec<_>>();
-    if value.starts_with("ey")
-        && jwt.len() == 3
-        && jwt[0].len() >= 10
-        && jwt[1].len() >= 10
-        && jwt[2].len() >= 5
-        && jwt.iter().all(|part| part.bytes().all(alpha_num_dash))
-    {
-        return Some("a JWT");
-    }
-    if value.contains("-----BEGIN ") && value.contains("PRIVATE KEY-----") {
-        return Some("a private key");
     }
     None
 }
@@ -738,115 +428,6 @@ pub(crate) fn is_signed_in() -> bool {
     cred_store::is_signed_in()
 }
 
-// The durable "a Save's push failed, retry it" marker, kept through `settings`' own
-// root-value accessors rather than a direct `CURRENT_USER` open. The direct form got two
-// things wrong at once (2026-09-05 audit, F06/F07): `Key::open` hands back a READ-ONLY key
-// on which `remove_value` fails silently, so a successful push never cleared the marker and
-// every later Settings open re-pushed before pulling; and a portable copy wrote the marker
-// into the borrowed host's HKCU, where it was shared with an installed copy and left behind,
-// instead of into the ini beside the settings it describes. `settings::remove_dword`
-// documents the read-only trap and routes to the ini when portable; these three are
-// name-parameterised so the round-trip is testable against a scratch value name.
-fn set_marker(name: &str) {
-    let _ = settings::set_dword(name, 1);
-}
-
-fn clear_marker(name: &str) {
-    settings::remove_dword(name);
-}
-
-fn marker_set(name: &str) -> bool {
-    settings::get_dword_opt(name).is_some_and(|value| value != 0)
-}
-
-pub(crate) fn mark_push_pending() {
-    set_marker(PENDING_VALUE);
-}
-
-fn clear_push_pending() {
-    clear_marker(PENDING_VALUE);
-}
-
-pub(crate) fn has_pending_push() -> bool {
-    marker_set(PENDING_VALUE)
-}
-
-fn mark_initial_sync_pending() {
-    set_marker(INITIAL_SYNC_PENDING_VALUE);
-}
-
-fn clear_initial_sync_pending() {
-    clear_marker(INITIAL_SYNC_PENDING_VALUE);
-}
-
-/// Whether a sign-in on this machine authenticated but never finished its first sync
-/// (F16, 2026-09-05 audit). The Settings UI reads this to keep the button and the status
-/// line in agreement instead of each guessing from `is_signed_in()` alone.
-pub(crate) fn has_initial_sync_pending() -> bool {
-    marker_set(INITIAL_SYNC_PENDING_VALUE)
-}
-
-/// E05 audit: a THIRD marker, alongside `PENDING_VALUE`/`INITIAL_SYNC_PENDING_VALUE` above,
-/// answering a different question from either: not "is there unsent work" but "did the most
-/// recent attempt even reach the server". `store_get`/`push_snapshot`/`store_delete` set it
-/// the moment `http::request` returns `None` (no response at all - DNS, TCP, TLS, or a
-/// timeout) and clear it the moment ANY response comes back, even a rejection, because a
-/// server that answered "no" is not the same failure as a server nobody could reach. This is
-/// the small classification seam `SyncState::Offline` (`settings_dlg::sync`) reads from,
-/// rather than pattern-matching the English "couldn't reach the sync server" text (see
-/// DEVELOPMENT_GOTCHAS.md, "a string a test parses is an API").
-const OFFLINE_VALUE: &str = "ConnectionsLastAttemptOffline";
-
-fn mark_offline() {
-    set_marker(OFFLINE_VALUE);
-}
-
-fn clear_offline() {
-    clear_marker(OFFLINE_VALUE);
-}
-
-/// Did the most recent sync attempt (initial sync, push, or disconnect's delete) fail to
-/// reach the server at all, as opposed to the server answering with a rejection?
-pub(crate) fn last_attempt_was_offline() -> bool {
-    marker_set(OFFLINE_VALUE)
-}
-
-/// Whether `name` is one of this module's sync-state markers. Retry state, not a
-/// preference, so the settings export/import (`settings_io`) neither exports them nor
-/// lets a backup from another machine set or clear them, in either storage backend.
-pub(crate) fn is_sync_state_value(name: &str) -> bool {
-    name.eq_ignore_ascii_case(PENDING_VALUE)
-        || name.eq_ignore_ascii_case(INITIAL_SYNC_PENDING_VALUE)
-        || name.eq_ignore_ascii_case(OFFLINE_VALUE)
-}
-
-/// Name-parameterised core of [`begin_push_worker`] (E05 follow-up audit, review item 4c):
-/// takes the counter explicitly so a test can drive the real increment/decrement/clear
-/// logic against a throwaway counter and marker name, instead of mirroring the conditional
-/// on its own. The real counter is process-global (there is only one push in-flight tally),
-/// but the DECISION doesn't need to be, and testing it through the real primitive is the
-/// whole point of the split.
-fn begin_push_worker_on(counter: &AtomicUsize) {
-    counter.fetch_add(1, Ordering::AcqRel);
-}
-
-/// Name-parameterised core of [`finish_push_worker`]. `marker_name` is whichever durable
-/// pending marker `success` should clear once `counter` reaches zero.
-fn finish_push_worker_on(counter: &AtomicUsize, marker_name: &str, success: bool) {
-    let remaining = counter.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
-    if success && remaining == 0 {
-        clear_marker(marker_name);
-    }
-}
-
-pub(crate) fn begin_push_worker() {
-    begin_push_worker_on(&PUSH_WORKERS);
-}
-
-pub(crate) fn finish_push_worker(success: bool) {
-    finish_push_worker_on(&PUSH_WORKERS, PENDING_VALUE, success);
-}
-
 /// The name (or, failing that, the relay email) to show in the "Synced as …" row, if
 /// signed in. The `email` claim is an opaque per-app privacy-relay address
 /// (`<hex>@privaterelay.connections.icu`), never the user's real inbox, so `name` is
@@ -905,7 +486,8 @@ fn record_initial_sync_outcome(outcome: &ConnectOutcome) {
 fn sync_once(token: &str) -> Result<bool, String> {
     let (version, settings) = store_get(token)?;
     if version > 0 {
-        Ok(apply_remote(&settings) > 0)
+        // A local write that fails is a failed sync, not a quiet zero (audit concern 8).
+        Ok(apply_remote(&settings)? > 0)
     } else {
         push_snapshot(token)?;
         Ok(false)
@@ -945,7 +527,7 @@ pub(crate) fn connect() -> Result<ConnectOutcome, String> {
     // through. Folded into the returned label rather than a second dialog: the caller
     // (`settings_dlg::sync`) already shows this string in its "signed in" message box(es).
     if settings::portable() {
-        who = format!("{who}\n\n{}", crate::win::t("sync_portable_notice"));
+        who = format!("{who}\n\n{}", st2k_appkit::win::t("sync_portable_notice"));
     }
 
     let outcome = connect_outcome(who, sync_once(&tokens.access_token).map(|_| ()));
@@ -1002,8 +584,7 @@ pub(crate) enum DisconnectOutcome {
     CloudCopyDeleted,
     /// Nothing to delete, this machine had no usable credential to delete with.
     WasNotSignedIn,
-    /// The delete request reached the server and it refused, or never reached the server
-    /// at all, [`last_attempt_was_offline`] tells the two apart if a caller needs to.
+    /// The delete request reached the server and it refused, or never reached the server at all.
     CloudCopyKept,
 }
 
@@ -1079,605 +660,4 @@ pub(crate) fn flush_pending(timeout: Duration) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn allowlist_excludes_machine_local_and_secrets() {
-        let names: Vec<&str> = ALLOW.iter().map(|(n, _)| *n).collect();
-        for banned in [
-            "ShotSaveDir",
-            "Debug",
-            "InstallReported",
-            "DevMachine",
-            "Tombstone",
-            "ModernMenuActive",
-            "RefreshToken",
-        ] {
-            assert!(!names.contains(&banned), "{banned} must NEVER be synced");
-        }
-        for portable in [
-            "EnableThumbs",
-            "MenuOrder",
-            "Lang",
-            "ScreenshotHotkey",
-            "JPEG",
-        ] {
-            assert!(names.contains(&portable), "{portable} should be syncable");
-        }
-    }
-
-    #[test]
-    fn allowlist_has_no_duplicates() {
-        let mut names: Vec<&str> = ALLOW.iter().map(|(n, _)| *n).collect();
-        let total = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), total, "duplicate key in the sync allowlist");
-    }
-
-    #[test]
-    fn apply_remote_ignores_non_allowlisted_and_wrong_types() {
-        // A hostile/expanded doc: an off-list key + a wrong-typed on-list key. `apply_remote`
-        // must not count either (and never writes the off-list key). We assert on the count
-        // rather than touching the real registry for the on-list value.
-        let doc = serde_json::json!({
-            "ShotSaveDir": "C:\\evil\\path",   // off-list → ignored
-            "SomeRandomKey": 1,                 // off-list → ignored
-            "JPEG": "not-a-number"              // on-list but wrong type → not applied
-        });
-        // Only off-list / wrong-typed entries → nothing applies.
-        assert_eq!(apply_remote(&doc), 0);
-    }
-
-    #[test]
-    fn apply_remote_rejects_out_of_range_dword_instead_of_truncating() {
-        // 4294967296 (2^32) is a valid JSON number and a valid u64, but doesn't fit a u32.
-        // The old `as u32` cast wrapped it to 0 and still counted it as applied; `try_from`
-        // must reject it instead, so nothing is written and the count stays 0.
-        let doc = serde_json::json!({ "JPEG": 4294967296u64 });
-        assert_eq!(apply_remote(&doc), 0);
-    }
-
-    #[test]
-    fn credential_values_are_refused_even_when_nested() {
-        let doc = serde_json::json!({
-            "future": {
-                "token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
-            }
-        });
-        let error = validate_sync_snapshot(&doc).unwrap_err();
-        assert!(error.contains("GitHub token"), "{error}");
-        assert!(validate_sync_snapshot(&serde_json::json!({"Lang": "sk"})).is_ok());
-    }
-
-    #[test]
-    fn oversized_snapshots_are_rejected_locally() {
-        let doc = serde_json::json!({"MenuOrder": "x".repeat(MAX_DOCUMENT_BYTES)});
-        let error = validate_sync_snapshot(&doc).unwrap_err();
-        assert!(error.contains("over the 65536-byte limit"), "{error}");
-        assert!(error.contains("MenuOrder"), "{error}");
-    }
-
-    #[test]
-    fn etag_and_rate_limit_contract_fields_are_parsed() {
-        assert_eq!(parse_etag_version("\"42\""), Some(42));
-        assert_eq!(parse_etag_version("W/\"7\""), Some(7));
-        assert_eq!(
-            retry_after_seconds(br#"{"retry_after_seconds":9}"#),
-            Some(9)
-        );
-    }
-
-    /// A037: a rotated refresh token the server already accepted must never be silently
-    /// discarded just because the local DPAPI/HKCU write failed.
-    #[test]
-    fn persist_rotation_errors_when_a_rotated_token_fails_to_save() {
-        let result = persist_rotation(Some("new-token"), |_| false);
-        assert!(
-            result.is_err(),
-            "a failed save of a rotated token must surface an error, not vanish silently"
-        );
-    }
-
-    #[test]
-    fn persist_rotation_succeeds_when_the_store_accepts_the_rotated_token() {
-        assert!(persist_rotation(Some("new-token"), |_| true).is_ok());
-    }
-
-    #[test]
-    fn persist_rotation_is_a_no_op_when_the_server_did_not_rotate_the_token() {
-        // `save` must not even be called when nothing rotated.
-        let result = persist_rotation(None, |_| panic!("save must not run without a rotation"));
-        assert!(result.is_ok());
-    }
-
-    // ---- the classification guard ------------------------------------------------------
-
-    /// The settings module's source, verbatim, embedded at COMPILE time: the hub and its three
-    /// children (`settings.rs` was split into `settings/{store,thumbs,app_prefs}.rs` on
-    /// 2026-09-08, and `the_scan_actually_finds_settings` went red the moment the scan still
-    /// read only the hub, which is exactly the rot that test exists to catch; a new child
-    /// module must be listed here or its keys are invisible to `every_setting_is_classified`).
-    ///
-    /// Reading from disk at runtime would make this test depend on the working directory,
-    /// which differs between `cargo test`, the CI job and a packaged run. `include_str!` resolves
-    /// relative to THIS file, so each path is checked by the compiler and cannot silently miss.
-    const SETTINGS_SRC: &[&str] = &[
-        include_str!("../../settings.rs"),
-        include_str!("../../settings/store.rs"),
-        include_str!("../../settings/thumbs.rs"),
-        include_str!("../../settings/app_prefs.rs"),
-    ];
-
-    /// Every setting name the settings module reads or writes.
-    ///
-    /// Deliberately a dumb scan for `…("Name"` after one of the registry accessors, rather than
-    /// anything clever: a clever matcher that stops matching is indistinguishable from a repo
-    /// with nothing left to classify, and `the_scan_actually_finds_settings` below is what keeps
-    /// that from rotting into a no-op.
-    fn settings_in_source() -> Vec<String> {
-        const ACCESSORS: &[&str] = &[
-            "get_dword(",
-            "get_dword_opt(",
-            "set_dword(",
-            "remove_dword(",
-            "set_dword_tracking_default(",
-            "get_string_opt(",
-            "set_string(",
-        ];
-        let mut names = Vec::new();
-        for (accessor, src) in ACCESSORS
-            .iter()
-            .flat_map(|a| SETTINGS_SRC.iter().map(move |s| (a, *s)))
-        {
-            let mut rest = src;
-            while let Some(at) = rest.find(accessor) {
-                rest = &rest[at + accessor.len()..];
-                let trimmed = rest.trim_start();
-                let Some(body) = trimmed.strip_prefix('"') else {
-                    continue; // a variable, not a literal — nothing to classify from here
-                };
-                let Some(end) = body.find('"') else { continue };
-                let name = &body[..end];
-                if !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    && !names.iter().any(|seen: &String| seen == name)
-                {
-                    names.push(name.to_string());
-                }
-            }
-        }
-        names.sort();
-        names
-    }
-
-    /// A settings key must be either synced or deliberately not — never merely forgotten.
-    ///
-    /// This is the check the 2026-08-25 widening was really about. `ALLOW` was written when the
-    /// app had 33 settings and every one added afterwards defaulted to "does not sync", silently,
-    /// including the entire Quick preview viewer. Nothing was ever red about it. Now a new
-    /// setting fails here until someone files it into one list or the other on purpose.
-    #[test]
-    fn every_setting_is_classified() {
-        let allowed: Vec<&str> = ALLOW.iter().map(|(k, _)| *k).collect();
-        let unclassified: Vec<String> = settings_in_source()
-            .into_iter()
-            .filter(|k| !allowed.contains(&k.as_str()) && !NEVER_SYNCED.contains(&k.as_str()))
-            .collect();
-        assert!(
-            unclassified.is_empty(),
-            "these settings sync neither way — add each to ALLOW or NEVER_SYNCED: {unclassified:?}"
-        );
-    }
-
-    /// The guard above is worth nothing if the scan silently finds nothing, so pin that it works.
-    #[test]
-    fn the_scan_actually_finds_settings() {
-        let found = settings_in_source();
-        assert!(
-            found.len() > 50,
-            "the settings scan found only {} names — the accessor list or the file shape changed",
-            found.len()
-        );
-        for expected in ["EnableThumbs", "ShotSaveDir", "PreviewEnabled", "Lang"] {
-            assert!(
-                found.iter().any(|k| k == expected),
-                "the scan missed {expected}, so it is no longer reading the settings sources correctly"
-            );
-        }
-    }
-
-    /// A key on both lists would make its exclusion meaningless, and nothing else would notice.
-    #[test]
-    fn no_setting_is_on_both_lists() {
-        for (key, _) in ALLOW {
-            assert!(
-                !NEVER_SYNCED.contains(key),
-                "{key} is in ALLOW and NEVER_SYNCED at the same time"
-            );
-        }
-    }
-
-    /// F06: the marker must actually CLEAR. `clear` used to go through a read-only
-    /// `Key::open`, on which `remove_value` fails silently, so a successful push left the
-    /// marker set for good and every later Settings open re-pushed. Round-trips a scratch
-    /// name so the developer's real marker is never touched, and leaves nothing behind.
-    #[test]
-    fn the_pending_marker_clears_after_a_successful_push() {
-        let name = format!("ConnectionsSyncPendingTest{}", std::process::id());
-        clear_marker(&name);
-        assert!(!marker_set(&name), "a never-set marker reads as clear");
-        set_marker(&name);
-        assert!(marker_set(&name), "mark must read back");
-        clear_marker(&name);
-        assert!(
-            !marker_set(&name),
-            "clear must DELETE the value, not fail silently on a read-only key"
-        );
-    }
-
-    /// F06, the actual clearing condition: `finish_push_worker` only clears the pending
-    /// marker when the push that just finished both succeeded AND was the last outstanding
-    /// worker. `the_pending_marker_clears_after_a_successful_push` above only round-trips
-    /// `set_marker`/`clear_marker` directly and never calls `begin_push_worker`/
-    /// `finish_push_worker` at all, so it would stay green even if the `success &&
-    /// remaining == 0` guard were removed or inverted. This drives the worker-accounting
-    /// helpers themselves, against a scratch counter and a scratch marker name so the real
-    /// `PUSH_WORKERS` static and the real marker are never touched.
-    #[test]
-    fn finish_push_worker_only_clears_the_marker_on_a_successful_last_finish() {
-        let name = format!("ConnectionsSyncPendingWorkerTest{}", std::process::id());
-        let counter = AtomicUsize::new(0);
-        clear_marker(&name);
-
-        // A single worker that fails must leave the marker set for retry.
-        set_marker(&name);
-        begin_push_worker_on(&counter);
-        finish_push_worker_on(&counter, &name, false);
-        assert!(
-            marker_set(&name),
-            "a failed push must not clear the pending marker"
-        );
-
-        // A fresh single worker finishing successfully must clear it.
-        begin_push_worker_on(&counter);
-        finish_push_worker_on(&counter, &name, true);
-        assert!(
-            !marker_set(&name),
-            "the last outstanding worker succeeding must clear the pending marker"
-        );
-
-        // Two outstanding workers: the first to finish (even successfully) must not clear
-        // the marker while the other is still outstanding.
-        set_marker(&name);
-        begin_push_worker_on(&counter);
-        begin_push_worker_on(&counter);
-        finish_push_worker_on(&counter, &name, true);
-        assert!(
-            marker_set(&name),
-            "the marker must stay set while another worker is still outstanding"
-        );
-        finish_push_worker_on(&counter, &name, true);
-        assert!(
-            !marker_set(&name),
-            "the marker must clear once the last outstanding worker finishes successfully"
-        );
-
-        clear_marker(&name);
-    }
-
-    /// The marker is state, not a preference: the settings export/import consults this to
-    /// leave it alone, case-insensitively like every registry value name.
-    #[test]
-    fn the_pending_marker_is_classified_as_sync_state() {
-        assert!(is_sync_state_value(PENDING_VALUE));
-        assert!(is_sync_state_value("connectionssyncpending"));
-        assert!(!is_sync_state_value("Theme"));
-        assert!(!is_sync_state_value("ConnectionsSyncPendingX"));
-    }
-
-    // ---- F16: initial-sync-pending state (2026-09-05 audit) ----------------------------
-
-    /// The new marker round-trips through the same name-parameterised primitives the
-    /// push-pending marker already proved (`the_pending_marker_clears_after_a_successful_push`
-    /// above), a scratch name, never the real `INITIAL_SYNC_PENDING_VALUE` key, so the
-    /// developer's real sync state is never touched.
-    #[test]
-    fn the_initial_sync_pending_marker_round_trips() {
-        let name = format!("ConnectionsInitialSyncPendingTest{}", std::process::id());
-        clear_marker(&name);
-        assert!(!marker_set(&name), "a never-set marker reads as clear");
-        set_marker(&name);
-        assert!(marker_set(&name), "mark must read back");
-        clear_marker(&name);
-        assert!(!marker_set(&name), "clear must delete the value");
-    }
-
-    #[test]
-    fn the_initial_sync_pending_marker_is_classified_as_sync_state() {
-        assert!(is_sync_state_value(INITIAL_SYNC_PENDING_VALUE));
-        assert!(is_sync_state_value("connectionsinitialsyncpending"));
-    }
-
-    #[test]
-    fn connect_outcome_is_synced_when_the_initial_sync_succeeds() {
-        match connect_outcome("Ann".to_string(), Ok(())) {
-            ConnectOutcome::Synced { label } => assert_eq!(label, "Ann"),
-            ConnectOutcome::InitialSyncPending { .. } => {
-                panic!("a successful initial sync must not read as pending")
-            }
-        }
-    }
-
-    /// This is the exact contradiction the 2026-09-05 audit (F16) found: `connect()` saves
-    /// the refresh token and identity BEFORE the initial GET/seed, then a failure there
-    /// used to propagate as a plain `Err`, indistinguishable from a failed login, even
-    /// though the credential was already durably stored. Against the pre-fix `connect`,
-    /// there was no `ConnectOutcome` at all (the return type was `Result<String, String>`),
-    /// so this test could not even compile, let alone pass: it fails against that shape and
-    /// passes once a failed initial sync is reported as `InitialSyncPending` rather than a
-    /// bare error that looks like "sign-in failed".
-    #[test]
-    fn connect_outcome_is_initial_sync_pending_when_the_initial_sync_fails() {
-        let outcome = connect_outcome("Ann".to_string(), Err("network unreachable".to_string()));
-        match outcome {
-            ConnectOutcome::InitialSyncPending { label, error } => {
-                assert_eq!(label, "Ann");
-                assert_eq!(error, "network unreachable");
-            }
-            ConnectOutcome::Synced { .. } => {
-                panic!("a failed initial sync must not silently read as fully synced")
-            }
-        }
-    }
-
-    // ---- E05: the offline classification marker + the named retry bounds ---------------
-
-    /// Same shape as `the_initial_sync_pending_marker_round_trips` above: exercises the
-    /// real `set_marker`/`clear_marker`/`marker_set` primitives `mark_offline`/
-    /// `clear_offline`/`last_attempt_was_offline` are thin wrappers over, via a scratch
-    /// name so the developer's real offline flag is never touched.
-    #[test]
-    fn the_offline_marker_round_trips() {
-        let name = format!("ConnectionsLastAttemptOfflineTest{}", std::process::id());
-        clear_marker(&name);
-        assert!(!marker_set(&name), "a never-set marker reads as clear");
-        set_marker(&name);
-        assert!(marker_set(&name), "mark must read back");
-        clear_marker(&name);
-        assert!(!marker_set(&name), "clear must delete the value");
-    }
-
-    #[test]
-    fn the_offline_marker_is_classified_as_sync_state() {
-        assert!(is_sync_state_value(OFFLINE_VALUE));
-        assert!(is_sync_state_value("connectionslastattemptoffline"));
-        assert!(!is_sync_state_value(OFFLINE_VALUE.trim_end_matches('e')));
-    }
-
-    /// The retry bounds are supposed to be STATED facts, not accidents of a hardcoded
-    /// literal buried in a loop, pin the exact numbers so a future edit that quietly
-    /// changes one shows up as a diff to a named test, not a silent behavior change.
-    #[test]
-    fn the_named_retry_bounds_have_the_documented_values() {
-        assert_eq!(MAX_PUSH_TRANSIENT_RETRIES, 2);
-        assert_eq!(MAX_PUSH_CONFLICT_RETRIES, 3);
-        assert_eq!(MAX_PUSH_RATE_LIMIT_RETRIES, 1);
-        assert_eq!(MAX_RATE_LIMIT_WAIT, Duration::from_secs(30));
-    }
-
-    /// The exact invariant `finish_push_worker` relies on ("success clears the marker,
-    /// failure never does"), driven through the REAL [`begin_push_worker_on`]/
-    /// [`finish_push_worker_on`] primitives (E05 follow-up audit, review item 4c) against a
-    /// throwaway counter and marker name, rather than mirroring their conditional in the
-    /// test itself. Against the pre-split shape (a bare `if success && remaining == 0`
-    /// inline in `finish_push_worker`, addressing `PENDING_VALUE` unconditionally) there was
-    /// no name-parameterised function to call here at all.
-    #[test]
-    fn a_failed_push_never_clears_the_pending_marker_only_a_successful_one_does() {
-        let name = format!("ConnectionsSyncPendingMirrorTest{}", std::process::id());
-        let counter = AtomicUsize::new(0);
-        clear_marker(&name);
-        set_marker(&name); // mirrors `mark_push_pending()` after Save
-
-        begin_push_worker_on(&counter);
-        finish_push_worker_on(&counter, &name, false);
-        assert!(
-            marker_set(&name),
-            "a failed push must leave the retry marker set for the next Settings open"
-        );
-
-        begin_push_worker_on(&counter);
-        finish_push_worker_on(&counter, &name, true);
-        assert!(
-            !marker_set(&name),
-            "a successful push with no other worker in flight must clear it"
-        );
-    }
-
-    #[test]
-    fn disconnect_outcome_variants_are_distinguishable() {
-        assert_ne!(
-            DisconnectOutcome::CloudCopyDeleted,
-            DisconnectOutcome::CloudCopyKept
-        );
-        assert_ne!(
-            DisconnectOutcome::WasNotSignedIn,
-            DisconnectOutcome::CloudCopyKept
-        );
-    }
-
-    /// E05 follow-up audit, review item 2: the exact bug, a signed-in machine whose token
-    /// refresh failed (offline, or the sign-in server rejected it) used to report
-    /// `WasNotSignedIn`, the same "nothing to delete" wording as a machine that was never
-    /// signed in at all, even though the cloud copy was never touched. Against the pre-fix
-    /// `disconnect` (no `was_signed_in` capture, `Err(_) => WasNotSignedIn` unconditionally)
-    /// this is exactly the case that read wrong.
-    #[test]
-    fn a_signed_in_machine_whose_token_mint_failed_keeps_the_cloud_copy_not_was_not_signed_in() {
-        assert_eq!(
-            disconnect_outcome(true, None),
-            DisconnectOutcome::CloudCopyKept,
-            "signed in, but no token to delete with, must not read as never-signed-in"
-        );
-    }
-
-    #[test]
-    fn a_machine_that_was_never_signed_in_reports_was_not_signed_in() {
-        assert_eq!(
-            disconnect_outcome(false, None),
-            DisconnectOutcome::WasNotSignedIn
-        );
-    }
-
-    #[test]
-    fn a_successful_delete_reports_cloud_copy_deleted_regardless_of_prior_state() {
-        assert_eq!(
-            disconnect_outcome(true, Some(Ok(()))),
-            DisconnectOutcome::CloudCopyDeleted
-        );
-    }
-
-    /// E05 follow-up audit, review item 1: the exact bug, every sync entry point called
-    /// `access_token()`, which on a dead network returned `Err(...)` WITHOUT ever calling
-    /// `mark_offline()`, so a dead network plus Save rendered `SavedLocally`, never
-    /// `Offline`. Against the pre-fix `access_token` (a bare `oauth::refresh(&rt)?` with no
-    /// classification at all) there was no such mapping to call here.
-    #[test]
-    fn an_unreachable_refresh_classifies_as_offline_with_the_reach_error_text() {
-        assert_eq!(
-            classify_refresh_error(oauth::RefreshOutcome::Unreachable),
-            (true, "couldn't reach the sign-in server".to_string())
-        );
-    }
-
-    /// The other half of item 1: ANY response, including a rejection, must clear the
-    /// offline classification, because a server that answered "no" is not the same failure
-    /// as a server nobody could reach.
-    #[test]
-    fn a_rejected_refresh_classifies_as_not_offline_with_the_servers_own_message() {
-        assert_eq!(
-            classify_refresh_error(oauth::RefreshOutcome::Rejected(
-                "bad refresh token".to_string()
-            )),
-            (false, "bad refresh token".to_string())
-        );
-    }
-
-    #[test]
-    fn a_failed_delete_attempt_keeps_the_cloud_copy() {
-        assert_eq!(
-            disconnect_outcome(true, Some(Err("sync failed (HTTP 500)".to_string()))),
-            DisconnectOutcome::CloudCopyKept
-        );
-    }
-
-    // ---- E05 follow-up audit: fake-server tests driving the REAL push_snapshot loop -----
-
-    /// A GET response for `store_get` carrying the given version and empty settings, plus
-    /// however many scripted responses the caller queues after it, every scenario below
-    /// starts with `push_snapshot` fetching a base version before its retry loop even begins.
-    fn script_base_version(version: u64) {
-        script_response(Some((
-            200,
-            format!(r#"{{"version":{version},"settings":{{}}}}"#).into_bytes(),
-        )));
-    }
-
-    fn conflict_body(current_version: u64) -> Vec<u8> {
-        format!(r#"{{"current":{{"version":{current_version}}}}}"#).into_bytes()
-    }
-
-    /// Item 4a(i): a 409 is retried up to the bound, then the push gives up. Also pins the
-    /// fix for item 5, `MAX_PUSH_CONFLICT_RETRIES` (3) must mean three RETRIES (four total
-    /// conflict responses before giving up), not two. Against the pre-fix `conflicts >= 3`
-    /// checked AFTER incrementing, this test's fourth queued 409 would never be reached ,
-    /// the push gave up on the THIRD one instead.
-    #[test]
-    fn push_retries_a_409_conflict_up_to_the_bound_then_gives_up() {
-        reset_test_network_state();
-        script_base_version(1);
-        for v in 2..=5 {
-            script_response(Some((409, conflict_body(v))));
-        }
-        let err = push_snapshot("tok").unwrap_err();
-        assert!(
-            err.contains("kept conflicting"),
-            "must give up with the conflict message, got {err:?}"
-        );
-    }
-
-    /// The other half of item 5: exactly `MAX_PUSH_CONFLICT_RETRIES` conflicts, then a
-    /// success, must succeed, proving the bound really does grant that many retries rather
-    /// than one fewer.
-    #[test]
-    fn push_succeeds_after_exactly_the_conflict_bound_worth_of_retries() {
-        reset_test_network_state();
-        script_base_version(1);
-        for v in 2..=(1 + u64::from(MAX_PUSH_CONFLICT_RETRIES)) {
-            script_response(Some((409, conflict_body(v))));
-        }
-        script_response(Some((200, br#"{"version":99}"#.to_vec())));
-        assert_eq!(push_snapshot("tok"), Ok(99));
-    }
-
-    /// Item 4a(ii): a 429 honours the relay's `retry_after_seconds`, capped by
-    /// `MAX_RATE_LIMIT_WAIT`, asserted on the computed wait via [`recorded_sleeps`], never
-    /// by actually sleeping.
-    #[test]
-    fn push_honours_retry_after_capped_by_the_rate_limit_ceiling() {
-        reset_test_network_state();
-        script_base_version(1);
-        script_response(Some((429, br#"{"retry_after_seconds":9999}"#.to_vec())));
-        script_response(Some((200, br#"{"version":2}"#.to_vec())));
-        assert_eq!(push_snapshot("tok"), Ok(2));
-        assert_eq!(
-            recorded_sleeps(),
-            vec![MAX_RATE_LIMIT_WAIT],
-            "an outrageous retry_after_seconds must be capped, not honoured verbatim"
-        );
-    }
-
-    #[test]
-    fn push_honours_retry_after_when_it_is_under_the_cap() {
-        reset_test_network_state();
-        script_base_version(1);
-        script_response(Some((429, br#"{"retry_after_seconds":5}"#.to_vec())));
-        script_response(Some((200, br#"{"version":2}"#.to_vec())));
-        assert_eq!(push_snapshot("tok"), Ok(2));
-        assert_eq!(recorded_sleeps(), vec![Duration::from_secs(5)]);
-    }
-
-    /// Item 4a(iii): a 5xx is retried up to `MAX_PUSH_TRANSIENT_RETRIES`, then gives up.
-    #[test]
-    fn push_retries_a_5xx_up_to_the_transient_bound_then_gives_up() {
-        reset_test_network_state();
-        script_base_version(1);
-        for _ in 0..=MAX_PUSH_TRANSIENT_RETRIES {
-            script_response(Some((503, b"{}".to_vec())));
-        }
-        let err = push_snapshot("tok").unwrap_err();
-        assert!(
-            err.contains("sync failed"),
-            "must give up with the store's own error mapping, got {err:?}"
-        );
-    }
-
-    /// Item 4a(iv): no response at all (`None`) is retried as a transient failure and, once
-    /// the bound is exhausted, `push_snapshot` reports the SAME "couldn't reach" wording
-    /// `mark_offline` is paired with everywhere else in this module (see the
-    /// `store_get`/`store_delete` branches, and `access_token`'s own classification test) -
-    /// deliberately NOT asserted here via the real `last_attempt_was_offline()` marker, so
-    /// this test never writes to this machine's actual registry/portable-ini state.
-    #[test]
-    fn push_gives_up_with_the_offline_wording_after_exhausting_transient_retries_on_no_response() {
-        reset_test_network_state();
-        script_base_version(1);
-        for _ in 0..=MAX_PUSH_TRANSIENT_RETRIES {
-            script_response(None);
-        }
-        let err = push_snapshot("tok").unwrap_err();
-        assert_eq!(err, "couldn't reach the sync server");
-    }
-}
+mod tests;

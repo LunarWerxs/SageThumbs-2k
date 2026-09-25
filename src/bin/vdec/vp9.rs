@@ -1,15 +1,16 @@
 //! The `st2k vp9-frame` decode core: one raw VP9 keyframe → PNG. The CHILD side of
-//! `sagethumbs2k_core::vp9::vp9_frame` (see [`super`] for the shared containment story).
+//! `st2k_codecs::vp9::vp9_frame` (see [`super`] for the shared containment story).
 //!
 //! The parent already did the container work — `mkv::vp9_keyframe` walked the WebM/MKV
 //! Cues for the representative keyframe and stripped the Matroska block framing — so what
 //! arrives on stdin is exactly what an encoder wrote for one frame (possibly a VP9
 //! superframe, which `vp9dec` unpacks itself). This module:
 //!
-//! 1. pre-parses the VP9 uncompressed keyframe header WITH ITS OWN ~60-line bit reader —
-//!    dimensions are refused against `decode::limits::MAX_DIM` BEFORE the decoder
-//!    allocates anything, and the header's own `color_space`/`color_range` drive the
-//!    YUV→RGB conversion (the `vp9dec::Frame` struct doesn't carry them);
+//! 1. pre-parses the VP9 uncompressed keyframe header with the shared bounds-checked
+//!    `flv::Bits` MSB-first reader — dimensions are refused against
+//!    `decode::limits::MAX_DIM` BEFORE the decoder allocates anything, and the
+//!    header's own `color_space`/`color_range` drive the YUV→RGB conversion (the
+//!    `vp9dec::Frame` struct doesn't carry them);
 //! 2. decodes via `vp9dec` (pure Rust, all four profiles, verified upstream against the
 //!    official conformance corpus — and here against FFmpeg FATE vectors + 20k fuzz
 //!    mutations before it was adopted);
@@ -23,10 +24,8 @@
 //!    lookup; the one declined layout is `CS_RGB` (a profile-1/3 sRGB stream — the plane
 //!    order convention differs and real-world files are practically nonexistent).
 
-use std::io::Cursor;
-
-use sagethumbs2k_core::flv::Bits;
-use sagethumbs2k_core::vp9::MAX_DIM;
+use st2k_codecs::flv::Bits;
+use st2k_codecs::vp9::MAX_DIM;
 use vp9dec::PlaneData;
 
 // VP9 color_space values (spec §7.2.2). Only the ones this module branches on are named.
@@ -72,35 +71,12 @@ pub(super) fn frame_png(chunk: &[u8]) -> Result<Vec<u8>, String> {
         .next()
         .ok_or("VP9 chunk held no displayable frame")?;
     let (width, height, rgba) = to_rgba(&frame, &hdr)?;
-    let img = image::RgbaImage::from_raw(width, height, rgba)
-        .ok_or("decoded plane sizes do not match the frame dimensions")?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode: {e}"))?;
-    Ok(png)
+    super::encode_png(width, height, rgba)
 }
 
 /// Convert a decoded frame to 8-bit RGBA (see the module docs for the exact rules).
 fn to_rgba(frame: &vp9dec::Frame, hdr: &KeyHeader) -> Result<(u32, u32, Vec<u8>), String> {
-    // The decoder is trusted less than its input: re-check the geometry it reports.
-    if frame.width == 0 || frame.height == 0 || frame.width > MAX_DIM || frame.height > MAX_DIM {
-        return Err(format!(
-            "decoder returned a {}x{} frame (cap {MAX_DIM})",
-            frame.width, frame.height
-        ));
-    }
-    let (w, h) = (frame.width as usize, frame.height as usize);
-    let (ss_x, ss_y) = (frame.subsampling_x as usize, frame.subsampling_y as usize);
-    if ss_x > 1 || ss_y > 1 || frame.bit_depth < 8 || frame.bit_depth > 12 {
-        return Err("implausible subsampling / bit depth from the decoder".into());
-    }
-    let (cw, ch) = ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y);
-    // Verify the plane geometry instead of trusting it — an inconsistency would otherwise
-    // panic on an index below (and this whole process is panic=abort).
-    if frame.y.len() != w * h || frame.u.len() != cw * ch || frame.v.len() != cw * ch {
-        return Err("decoded plane sizes are inconsistent".into());
-    }
+    let (w, h, ss_x, ss_y, cw) = frame_geometry(frame)?;
 
     // Matrix coefficients (Kr, Kb) from the header's color_space; VP9 files habitually
     // say "unknown", which resolves by frame size like every player does.
@@ -151,19 +127,40 @@ fn to_rgba(frame: &vp9dec::Frame, hdr: &KeyHeader) -> Result<(u32, u32, Vec<u8>)
             let r = yy + 2.0 * (1.0 - kr) * cr;
             let b = yy + 2.0 * (1.0 - kb) * cb;
             let g = (yy - kr * r - kb * b) / kg;
-            rgba.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push((b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-            rgba.push(255);
+            super::push_rgb(&mut rgba, r, g, b);
         }
     }
     Ok((frame.width, frame.height, rgba))
 }
 
+/// Re-check the geometry the decoder reports and return the validated plane layout
+/// (w, h, ss_x, ss_y, cw); the luma/chroma sizes are refuted before any RGBA allocation.
+fn frame_geometry(frame: &vp9dec::Frame) -> Result<(usize, usize, usize, usize, usize), String> {
+    // The decoder is trusted less than its input: re-check the geometry it reports.
+    if frame.width == 0 || frame.height == 0 || frame.width > MAX_DIM || frame.height > MAX_DIM {
+        return Err(format!(
+            "decoder returned a {}x{} frame (cap {MAX_DIM})",
+            frame.width, frame.height
+        ));
+    }
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let (ss_x, ss_y) = (frame.subsampling_x as usize, frame.subsampling_y as usize);
+    if ss_x > 1 || ss_y > 1 || frame.bit_depth < 8 || frame.bit_depth > 12 {
+        return Err("implausible subsampling / bit depth from the decoder".into());
+    }
+    let (cw, ch) = ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y);
+    // Verify the plane geometry instead of trusting it — an inconsistency would otherwise
+    // panic on an index below (and this whole process is panic=abort).
+    if frame.y.len() != w * h || frame.u.len() != cw * ch || frame.v.len() != cw * ch {
+        return Err("decoded plane sizes are inconsistent".into());
+    }
+    Ok((w, h, ss_x, ss_y, cw))
+}
+
 /// The frame marker + profile prologue (spec §6.2): the two fields common to every VP9
 /// frame, keyframe or not.
 ///
-/// Bit reads go through `sagethumbs2k_core::flv::Bits` — the same MSB-first, bounds-checked
+/// Bit reads go through `st2k_codecs::flv::Bits` — the same MSB-first, bounds-checked
 /// reader `flv.rs`'s SPS parser uses — rather than a private duplicate that could drift from
 /// it independently.
 fn parse_frame_marker_and_profile(b: &mut Bits) -> Result<u8, String> {
@@ -207,19 +204,25 @@ fn parse_color_config(b: &mut Bits, profile: u8) -> Result<(u8, bool), String> {
         take(1)?; // ten_or_twelve_bit (the decoder re-derives bit depth itself)
     }
     let color_space = take(3)? as u8;
-    let color_range = if color_space != CS_RGB {
-        let range = take(1)? == 1;
-        if profile == 1 || profile == 3 {
-            take(3)?; // subsampling_x, subsampling_y, reserved_zero
-        }
-        range
-    } else {
+    let color_range = parse_color_range(b, profile, color_space)?;
+    Ok((color_space, color_range))
+}
+
+/// The `color_range` bit plus the profile-1/3-only subsampling/reserved bits that follow
+/// it, for a given `color_space` (spec §7.2.2).
+fn parse_color_range(b: &mut Bits, profile: u8, color_space: u8) -> Result<bool, String> {
+    let mut take = |n: u32| b.bits(n).ok_or("truncated VP9 header");
+    if color_space == CS_RGB {
         if profile == 1 || profile == 3 {
             take(1)?; // reserved_zero
         }
-        true // CS_RGB is always full range
-    };
-    Ok((color_space, color_range))
+        return Ok(true); // CS_RGB is always full range
+    }
+    let range = take(1)? == 1;
+    if profile == 1 || profile == 3 {
+        take(3)?; // subsampling_x, subsampling_y, reserved_zero
+    }
+    Ok(range)
 }
 
 /// `frame_width_minus_1` / `frame_height_minus_1` (spec §6.2).
@@ -249,6 +252,7 @@ fn parse_keyframe_header(d: &[u8]) -> Result<KeyHeader, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     /// Bit-pack a VP9 keyframe header prefix: profile-2, 10-bit, BT.709, limited range,
     /// with the given dimensions. Bit-exact to `parse_keyframe_header`'s layout, so these
@@ -387,17 +391,14 @@ mod tests {
     /// when the plain corpus sample.webm is VP9. Skips when the corpus is absent (CI).
     #[test]
     fn corpus_vp9_vectors_decode() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-corpus");
+        let corpus = st2k_base::testcorpus::dir();
         let mut proved = 0;
         for name in ["sample-vp9p2.webm", "sample-vp9p3.webm", "sample.webm"] {
             let Ok(bytes) = std::fs::read(corpus.join(name)) else {
                 eprintln!("corpus_vp9_vectors_decode: no {name} — skipping");
                 continue;
             };
-            let Some(frame) =
-                sagethumbs2k_core::vp9::keyframe_bytes(&mut Cursor::new(&bytes), 0.30)
+            let Some(frame) = st2k_codecs::vp9::keyframe_bytes(&mut Cursor::new(&bytes), 0.30)
             else {
                 // sample.webm may legitimately be VP8 — the codec gate declining it is
                 // correct behaviour, not a failure of this test.

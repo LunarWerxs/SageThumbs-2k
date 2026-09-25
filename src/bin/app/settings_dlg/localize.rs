@@ -100,6 +100,11 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LICENCE_CHECK_NOW, "btn_licence_check_now"),
         (ID_LICENCE_RENEW, "btn_licence_renew"),
         (ID_LICENCE_BUY, "btn_licence_buy"),
+        (ID_LICENCE_MOVE, "btn_licence_move"),
+        // ⛔ ID_LICENCE_WORK_HINT IS DELIBERATELY NOT HERE. Since the monthly plan (2026-09-16)
+        // that row carries one of TWO sentences depending on the copy's mode, so a static pair
+        // would relabel a Business machine with the Personal wording on every language switch.
+        // It is re-texted with the other state-derived lines at the end of this function.
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
@@ -157,6 +162,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_SHOT_USE_DIR, "chk_shot_use_dir"),
         (ID_SHOT_SET_DIR, "btn_set_save_dir"),
         (ID_EDIT_UPLOAD_HOSTS, "btn_edit_upload_hosts"),
+        (ID_UPLOAD_HISTORY, "btn_recent_uploads"),
         (ID_SHOT_RESTART, "btn_restart_hotkey"),
         (ID_LBL_SHOT_ACTION, "lbl_custom_action"),
         (ID_LBL_SHOT_ACTION_HK, "lbl_custom_action_hk"),
@@ -202,30 +208,19 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     #[cfg(not(feature = "html-preview"))]
     let gated: &[(i32, &str)] = &[];
     for &(id, key) in pairs.iter().chain(gated) {
-        crate::win::set_edit_text(hwnd, id, t(key));
+        st2k_appkit::win::set_edit_text(hwnd, id, t(key));
     }
     // Re-text + repaint the owner-draw nav rail and the page header (they read their
     // labels from nav_label()/cat_blurb(), which now follow the active language).
     for i in 0..NCAT as i32 {
-        crate::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
-        if let Ok(nav) = GetDlgItem(Some(hwnd), ID_NAV_BASE + i) {
-            let _ = InvalidateRect(Some(nav), None, true);
-        }
+        st2k_appkit::win::set_edit_text(hwnd, ID_NAV_BASE + i, nav_label(i as usize));
+        invalidate_control(hwnd, ID_NAV_BASE + i);
     }
-    if let Ok(ph) = GetDlgItem(Some(hwnd), ID_PANE_HEADER) {
-        let _ = InvalidateRect(Some(ph), None, true);
-    }
+    invalidate_control(hwnd, ID_PANE_HEADER);
     // The "Menu items" checklist rows relabel from their own menu keys (single col).
-    // Rows may be in a custom drag-reorder, so read each ROW's key from its lParam —
-    // relabeling by fixed toggle index would scramble the labels after a reorder.
-    if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-        let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
-        for row in 0..count {
-            if let Some(ti) = menu_row_toggle(mlist, row) {
-                set_subitem(mlist, row, 0, t(MENU_ITEM_TOGGLES[ti].1));
-            }
-        }
-    }
+    for_each_menu_row(hwnd, |mlist, row, ti| {
+        set_subitem(mlist, row, 0, t(MENU_ITEM_TOGGLES[ti].1))
+    });
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
         // Columns are Extension | Category | How | Description (matching build_controls).
         // The old code relabeled column 1 with the *description* header (wrong index)
@@ -288,9 +283,9 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     rebuild_combo(
         hwnd,
         ID_SHOT_ACTION,
-        crate::hotkey::ACTIONS
+        st2k_screenshot::hotkey::ACTIONS
             .iter()
-            .map(|&(_, key)| crate::hotkey::action_label(key)),
+            .map(|&(_, key)| st2k_screenshot::hotkey::action_label(key)),
     );
     // The credit SysLink's caption ("<promo text> Lunarwerx"): build.rs's ID_PROMO_LINK
     // format string, verbatim, so a language switch doesn't leave this one line English.
@@ -314,6 +309,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     // live language switch leaves them in whatever language was active when they were last set.
     refresh_sync_ui(hwnd);
     set_shot_dir_label(hwnd);
+    // The Licence page's prospect line is the third of the same kind: which sentence it carries
+    // depends on this copy's mode, so the pairs table above cannot seed it (see the ⛔ note where
+    // it used to sit). This re-texts it in the new language and re-applies its visibility.
+    licence_ui::apply_conditional_visibility(hwnd);
 }
 
 pub(super) unsafe fn set_window_title(hwnd: HWND) {
@@ -339,7 +338,7 @@ pub(super) unsafe fn set_column_text(list: HWND, idx: i32, s: &str) {
 
 /// Repeating timer that keeps the hotkey-service status line live while Settings is open, so
 /// it reflects a self-heal or the helper stopping without reopening the dialog.
-/// IDs 1–2 are the sponsor banner timers (see [`crate::sponsors`]); this is the third.
+/// IDs 1–2 are the sponsor banner timers (see [`st2k_appkit::sponsors`]); this is the third.
 pub(super) const TIMER_SHOT_STATUS: usize = 3;
 
 #[cfg(test)]

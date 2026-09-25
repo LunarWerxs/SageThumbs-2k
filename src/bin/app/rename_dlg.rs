@@ -9,23 +9,21 @@
 
 use core::ffi::c_void;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{SetBkColor, SetBkMode, SetTextColor, HDC, TRANSPARENT};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Controls::{PBM_SETMARQUEE, PBS_MARQUEE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sagethumbs2k_core::settings;
+use st2k_base::settings;
 
-use crate::dark::{dark_bg_brush, dark_ctlcolor, DARK_BG};
-use crate::win::{
-    ctl, get_edit_text, read_listfile, run_dialog, set_edit_text, t, wide, wm_dpichanged, BUTTON,
-    EDIT, EM_SETSEL, IDCANCEL, IDOK, STATIC,
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{
+    ctl, edit_field, get_edit_text, label, read_listfile, run_dialog, set_edit_text, t, wide,
+    EM_SETSEL, IDCANCEL, IDOK, STATIC,
 };
 
 const CID_RN_PATTERN: i32 = 5201;
@@ -43,6 +41,8 @@ const DLG_H: i32 = 404;
 
 /// Posted by the worker thread when the rename pass finishes.
 const WM_RN_DONE: u32 = 0x8000 + 42; // WM_APP + 42
+/// Posted by a preview worker when its rows are ready (`RN_PREVIEW` holds them).
+const WM_RN_PREVIEW: u32 = 0x8000 + 43; // WM_APP + 43
 
 /// The HKCU value that persists the last pattern the user typed, restored the next
 /// time the dialog opens. Find/replace are deliberately NOT persisted (they're
@@ -60,6 +60,22 @@ static RN_RUNNING: AtomicBool = AtomicBool::new(false);
 /// three fields rather than storing the type itself — the type isn't re-exported past
 /// the lib's own `verbs` facade, only the function that returns it is.
 static RN_RESULT: Mutex<Option<(usize, usize, Option<String>)>> = Mutex::new(None);
+
+/// The live preview is computed on a worker thread, one per keystroke, and only the newest
+/// one's answer is shown: every `rebuild_preview` bumps this generation, a worker that
+/// finishes behind a newer one drops its rows, and a worker that notices it has been
+/// superseded stops walking early. Until 2026-09-19 the walk ran on the UI thread, every
+/// selected file on every keystroke (audit concern 2); a `{w}` pattern over a folder of
+/// PSDs froze the dialog for the length of the decodes.
+static RN_PREVIEW_GEN: AtomicU32 = AtomicU32::new(0);
+/// A finished preview: its generation, the rows to show, and the first pattern error.
+struct PreviewResult {
+    gen: u32,
+    rows: Vec<String>,
+    error: Option<String>,
+}
+/// The newest finished preview. Read once by `on_rn_preview`.
+static RN_PREVIEW: Mutex<Option<PreviewResult>> = Mutex::new(None);
 
 pub(crate) unsafe fn run_rename_with_pattern_dialog(_hinst: HINSTANCE, listfile: &str) {
     let files = read_listfile(listfile);
@@ -88,16 +104,13 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
         if msg == WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), CID_RN_ERROR).is_ok_and(|s| s.0 as isize == lparam.0)
         {
-            let hdc = HDC(wparam.0 as *mut c_void);
-            SetTextColor(hdc, COLORREF(0x004D_48E5)); // red — same tone the Settings status lines use
-            SetBkColor(hdc, DARK_BG());
-            SetBkMode(hdc, TRANSPARENT);
-            return LRESULT(dark_bg_brush().0 as isize);
+            // The same red the Settings status lines use.
+            return st2k_appkit::dark::dark_ctlcolor_tinted(wparam, st2k_appkit::dark::STATUS_RED);
         }
         if msg == WM_CTLCOLORSTATIC
             && GetDlgItem(Some(hwnd), CID_RN_HINT).is_ok_and(|s| s.0 as isize == lparam.0)
         {
-            return crate::dark::dark_ctlcolor_dim(wparam);
+            return st2k_appkit::dark::dark_ctlcolor_dim(wparam);
         }
         if let Some(r) = dark_ctlcolor(msg, wparam) {
             return r;
@@ -106,56 +119,22 @@ extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             WM_CREATE => on_create(hwnd),
             WM_COMMAND => on_command(hwnd, wparam),
             WM_RN_DONE => on_rn_done(hwnd),
-            WM_DPICHANGED => {
-                wm_dpichanged(hwnd, lparam);
-                LRESULT(0)
-            }
-            // Same deferred-close shape as `files_to_folder.rs`: a rename started on
-            // the worker thread must not be torn out from under it.
-            WM_CLOSE => {
-                request_close(hwnd);
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            WM_RN_PREVIEW => on_rn_preview(hwnd),
+            // DPI, the deferred close a running rename needs, destroy, default.
+            _ => st2k_appkit::win::dialog_tail(hwnd, msg, wparam, lparam, request_close),
         }
     }
 }
 
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+    let hinst = crate::files_to_folder::module_instance();
     let lbl = WINDOW_STYLE(0);
 
     let last_pattern = settings::get_string_opt(SETTING_LAST_PATTERN)
         .unwrap_or_else(|| t("rn_pattern_default").to_string());
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_pattern_label"),
-        lbl,
-        16,
-        16,
-        300,
-        18,
-        -1,
-        hinst,
-    );
-    let pattern_edit = ctl(
-        hwnd,
-        EDIT,
-        &last_pattern,
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        16,
-        36,
-        428,
-        24,
-        CID_RN_PATTERN,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_pattern_label"), 16, 16, 300, 18);
+    let pattern_edit = edit_field(hwnd, hinst, &last_pattern, 16, 36, 428, 24, CID_RN_PATTERN);
     SendMessageW(pattern_edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
     let _ = SetFocus(Some(pattern_edit));
 
@@ -172,67 +151,12 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         hinst,
     );
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_find_label"),
-        lbl,
-        16,
-        88,
-        206,
-        18,
-        -1,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_replace_label"),
-        lbl,
-        238,
-        88,
-        206,
-        18,
-        -1,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
-        "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        16,
-        106,
-        206,
-        24,
-        CID_RN_FIND,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        EDIT,
-        "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        238,
-        106,
-        206,
-        24,
-        CID_RN_REPLACE,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_find_label"), 16, 88, 206, 18);
+    label(hwnd, hinst, t("rn_replace_label"), 238, 88, 206, 18);
+    edit_field(hwnd, hinst, "", 16, 106, 206, 24, CID_RN_FIND);
+    edit_field(hwnd, hinst, "", 238, 106, 206, 24, CID_RN_REPLACE);
 
-    ctl(
-        hwnd,
-        STATIC,
-        t("rn_preview_label"),
-        lbl,
-        16,
-        138,
-        300,
-        18,
-        -1,
-        hinst,
-    );
+    label(hwnd, hinst, t("rn_preview_label"), 16, 138, 300, 18);
     ctl(
         hwnd,
         w!("LISTBOX"),
@@ -281,38 +205,14 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
-    ctl(
-        hwnd,
-        BUTTON,
-        t("rn_rename_btn"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        260,
-        360,
-        90,
-        30,
-        IDOK,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_cancel"),
-        WS_TABSTOP,
-        356,
-        360,
-        88,
-        30,
-        IDCANCEL,
-        hinst,
-    );
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "rn_rename_btn", 260, 360, 90, 356);
 
     rebuild_preview(hwnd);
     LRESULT(0)
 }
 
 unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    let id = (wparam.0 & 0xFFFF) as i32;
-    let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
+    let (id, notify) = st2k_appkit::win::command_parts(wparam);
     match id {
         IDOK => start_rename(hwnd),
         IDCANCEL => request_close(hwnd),
@@ -342,11 +242,47 @@ unsafe fn rebuild_preview(hwnd: HWND) {
     let find = get_edit_text(hwnd, CID_RN_FIND);
     let replace = get_edit_text(hwnd, CID_RN_REPLACE);
 
+    // Nothing can be applied until the newest preview has checked every file.
+    if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
+        let _ = EnableWindow(btn, false);
+    }
+    let gen = RN_PREVIEW_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    let raw = hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let superseded = || RN_PREVIEW_GEN.load(Ordering::Acquire) != gen;
+        let Some((rows, error)) = compute_preview(files, &pattern, &find, &replace, superseded)
+        else {
+            return; // a newer keystroke owns the preview now
+        };
+        *RN_PREVIEW.lock().unwrap() = Some(PreviewResult { gen, rows, error });
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut c_void)),
+            WM_RN_PREVIEW,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+}
+
+/// The preview's rows ("old → new", first [`PREVIEW_ROWS`]) and the first pattern error, for
+/// `files` under `pattern`/`find`/`replace`. Checks EVERY file, not just the shown rows.
+/// `superseded` is polled between files; `None` when it says a newer preview has taken
+/// over, so a long walk is abandoned rather than finished for nobody.
+fn compute_preview(
+    files: &[String],
+    pattern: &str,
+    find: &str,
+    replace: &str,
+    superseded: impl Fn() -> bool,
+) -> Option<(Vec<String>, Option<String>)> {
     let mut rows: Vec<String> = Vec::new();
     let mut error: Option<String> = None;
     for (i, p) in files.iter().enumerate() {
+        if superseded() {
+            return None;
+        }
         let preview =
-            sagethumbs2k_core::rename_pattern_preview(p, (i + 1) as u32, &pattern, &find, &replace);
+            st2k_actions::verbs::rename_pattern_preview(p, (i + 1) as u32, pattern, find, replace);
         match preview {
             Ok(new_name) => {
                 if rows.len() < PREVIEW_ROWS {
@@ -363,30 +299,54 @@ unsafe fn rebuild_preview(hwnd: HWND) {
             }
         }
     }
+    Some((rows, error))
+}
+
+/// `WM_RN_PREVIEW`: show the newest finished preview, ignoring one a later keystroke has
+/// already outdated.
+unsafe fn on_rn_preview(hwnd: HWND) -> LRESULT {
+    let Some(files) = RN_FILES.get() else {
+        return LRESULT(0);
+    };
+    let Some(PreviewResult { gen, rows, error }) = RN_PREVIEW.lock().unwrap().take() else {
+        return LRESULT(0);
+    };
+    if gen != RN_PREVIEW_GEN.load(Ordering::Acquire) {
+        return LRESULT(0);
+    }
     let valid = error.is_none();
 
     set_edit_text(hwnd, CID_RN_ERROR, error.as_deref().unwrap_or(""));
     if let Ok(err_ctl) = GetDlgItem(Some(hwnd), CID_RN_ERROR) {
         let _ = ShowWindow(err_ctl, if valid { SW_HIDE } else { SW_SHOW });
     }
-    if let Ok(list) = GetDlgItem(Some(hwnd), CID_RN_PREVIEW) {
-        let _ = ShowWindow(list, if valid { SW_SHOW } else { SW_HIDE });
-        if valid {
-            SendMessageW(list, LB_RESETCONTENT, None, None);
-            for row in &rows {
-                let w = wide(row);
-                SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-            }
-            if files.len() > rows.len() {
-                let hidden = (files.len() - rows.len()).to_string();
-                let more = t("rn_preview_more").replace("{n}", &hidden);
-                let w = wide(&more);
-                SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
-            }
-        }
-    }
+    apply_preview_list(hwnd, valid, &rows, files.len());
     if let Ok(btn) = GetDlgItem(Some(hwnd), IDOK) {
-        let _ = EnableWindow(btn, valid);
+        let _ = EnableWindow(btn, valid && !RN_RUNNING.load(Ordering::Relaxed));
+    }
+    LRESULT(0)
+}
+
+/// Show or hide the preview listbox and, when `valid`, fill it with the precomputed
+/// `rows` plus a trailing "…N more" row when `file_total` exceeds them.
+unsafe fn apply_preview_list(hwnd: HWND, valid: bool, rows: &[String], file_total: usize) {
+    let Ok(list) = GetDlgItem(Some(hwnd), CID_RN_PREVIEW) else {
+        return;
+    };
+    let _ = ShowWindow(list, if valid { SW_SHOW } else { SW_HIDE });
+    if !valid {
+        return;
+    }
+    SendMessageW(list, LB_RESETCONTENT, None, None);
+    for row in rows {
+        let w = wide(row);
+        SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    if file_total > rows.len() {
+        let hidden = (file_total - rows.len()).to_string();
+        let more = t("rn_preview_more").replace("{n}", &hidden);
+        let w = wide(&more);
+        SendMessageW(list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
     }
 }
 
@@ -421,7 +381,7 @@ unsafe fn start_rename(hwnd: HWND) {
 
     let raw = hwnd.0 as usize;
     std::thread::spawn(move || {
-        let r = sagethumbs2k_core::rename_by_pattern(&files, &pattern, &find, &replace);
+        let r = st2k_actions::verbs::rename_by_pattern(&files, &pattern, &find, &replace);
         *RN_RESULT.lock().unwrap() = Some((r.attempted, r.done, r.note.clone()));
         let _ = PostMessageW(
             Some(HWND(raw as *mut c_void)),
@@ -467,11 +427,62 @@ unsafe fn on_rn_done(hwnd: HWND) -> LRESULT {
 /// Close the dialog, or defer the close if a rename is still running — same
 /// reasoning as `files_to_folder.rs::request_close`.
 unsafe fn request_close(hwnd: HWND) {
-    if RN_RUNNING.load(Ordering::Relaxed) {
-        if let Ok(b) = GetDlgItem(Some(hwnd), IDCANCEL) {
-            let _ = EnableWindow(b, false);
-        }
-    } else {
-        let _ = DestroyWindow(hwnd);
+    crate::files_to_folder::close_or_defer(hwnd, &RN_RUNNING);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worker's half of the live preview (audit concern 2, 2026-09-19): rows for the
+    /// first `PREVIEW_ROWS` files, the pattern checked against EVERY file, and a walk that
+    /// stops the moment a newer keystroke has taken over.
+    #[test]
+    fn compute_preview_checks_every_file_and_caps_the_rows() {
+        let files: Vec<String> = (1..=PREVIEW_ROWS + 5)
+            .map(|i| format!("C:\\nowhere\\pic{i}.png"))
+            .collect();
+        let (rows, error) = compute_preview(&files, "{name}-{n:2}", "", "", || false).unwrap();
+        assert!(error.is_none());
+        assert_eq!(
+            rows.len(),
+            PREVIEW_ROWS,
+            "the list shows at most PREVIEW_ROWS rows"
+        );
+        assert!(
+            rows[0].starts_with("pic1.png") && rows[0].ends_with("pic1-01.png"),
+            "{}",
+            rows[0]
+        );
+        // A find/replace acts on the expanded name.
+        let (rows, _) = compute_preview(&files[..1], "{name}", "pic", "photo", || false).unwrap();
+        assert!(rows[0].ends_with("photo1.png"), "{}", rows[0]);
+    }
+
+    #[test]
+    fn compute_preview_reports_a_pattern_error_and_disables_nothing_else() {
+        let files = vec!["C:\\nowhere\\a.png".to_string()];
+        let (rows, error) = compute_preview(&files, "{nope}", "", "", || false).unwrap();
+        assert!(rows.is_empty());
+        assert!(
+            error.is_some(),
+            "an unknown placeholder is the error the dialog shows"
+        );
+    }
+
+    #[test]
+    fn compute_preview_abandons_a_superseded_walk() {
+        let files: Vec<String> = (1..=10).map(|i| format!("C:\\nowhere\\{i}.png")).collect();
+        let seen = std::cell::Cell::new(0u32);
+        let superseded = || {
+            seen.set(seen.get() + 1);
+            seen.get() > 3
+        };
+        assert!(compute_preview(&files, "{name}", "", "", superseded).is_none());
+        assert!(
+            seen.get() <= 4,
+            "stopped polling once superseded: {}",
+            seen.get()
+        );
     }
 }

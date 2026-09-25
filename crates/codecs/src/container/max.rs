@@ -1,0 +1,146 @@
+//! Autodesk 3ds Max `.max` (and other OLE-compound docs) embedded thumbnail.
+//!
+//! `.max` is an OLE2 compound file. The viewport thumbnail lives in the
+//! `\x05SummaryInformation` property set, property `PIDSI_THUMBNAIL` (PID `0x11`,
+//! type `VT_CF`). 3ds Max writes a CUSTOM payload (clipboard tag `0xFFFFFFFF`):
+//! a small header then top-down 24-bit RGB pixels at offset 98. Legacy Office
+//! instead writes a standard `CF_DIB` (tag `8`), while Visio / Publisher wrap an
+//! EMF / WMF inside the same `0xFFFFFFFF` sentinel — we handle those too, so this
+//! one extractor covers the whole OLE family. No SDK; uses the
+//! pure-Rust [`super::ole`] reader. Verified against a real 3ds Max scene.
+
+use image::{DynamicImage, RgbImage};
+
+use super::ole;
+use super::util::{dib_to_bmp, le16, le32};
+use super::CoverOut;
+
+const PIDSI_THUMBNAIL: u32 = 0x11;
+const VT_CF: u32 = 0x0047;
+const CF_METAFILEPICT: u32 = 3;
+const CF_DIB: u32 = 8;
+const CF_ENHMETAFILE: u32 = 14;
+/// 3ds Max / Visio / Publisher all write the outer clipboard tag as 0xFFFFFFFF and
+/// encode the real format inside the payload — see [`sentinel_payload`].
+const SENTINEL: u32 = 0xFFFF_FFFF;
+/// Same edge cap as every raster decode tier, not a re-picked number.
+const MAX_DIM: u32 = crate::decode::limits::MAX_DIM;
+
+pub fn looks_like_max(head: &[u8]) -> bool {
+    ole::looks_like_ole(head)
+}
+
+/// Find the byte offset of the `PIDSI_THUMBNAIL` property's value, walking the
+/// PropertySet's first section's property list. Section offset is at +44 (after the
+/// 28-byte stream header + the first 16-byte FMTID).
+fn thumbnail_value_offset(s: &[u8]) -> Option<usize> {
+    let section = le32(s, 44)? as usize;
+    let num_props = le32(s, section.checked_add(4)?)? as usize;
+    search_thumbnail_prop(s, section, num_props)
+}
+
+/// Walk the section's property entries (capped at 256) and return the offset of the
+/// `PIDSI_THUMBNAIL` value.
+fn search_thumbnail_prop(s: &[u8], section: usize, num_props: usize) -> Option<usize> {
+    for i in 0..num_props.min(256) {
+        let pair = section.checked_add(8)?.checked_add(i.checked_mul(8)?)?;
+        let pid = le32(s, pair)?;
+        let poff = le32(s, pair.checked_add(4)?)? as usize;
+        if pid == PIDSI_THUMBNAIL {
+            return section.checked_add(poff);
+        }
+    }
+    None
+}
+
+/// Read the `VT_CF` value at `v`: validate the type tag, then return the clipboard tag plus
+/// its data slice.
+fn read_cf_value(s: &[u8], v: usize) -> Option<(u32, &[u8])> {
+    if le32(s, v)? != VT_CF {
+        return None;
+    }
+    let cb = le32(s, v.checked_add(4)?)? as usize; // size of tag + data
+    let tag = le32(s, v.checked_add(8)?)?;
+    let data_len = cb.checked_sub(4)?;
+    let data = s.get(v.checked_add(12)?..v.checked_add(12)?.checked_add(data_len)?)?;
+    Some((tag, data))
+}
+
+/// Extract the embedded thumbnail from an OLE compound file, or None.
+pub fn extract(bytes: &[u8]) -> Option<CoverOut> {
+    from_summary(&ole::read_stream(bytes, SUMMARY)?)
+}
+
+/// [`extract`] straight off a seekable reader: only the sectors the property set needs are
+/// read, so a file past the input ceiling costs no more than a small one.
+pub fn extract_from<R: std::io::Read + std::io::Seek>(r: R) -> Option<CoverOut> {
+    from_summary(&ole::read_stream_from(r, SUMMARY)?)
+}
+
+/// The stream the thumbnail lives in.
+const SUMMARY: &str = "\u{5}SummaryInformation";
+
+/// The thumbnail out of a `SummaryInformation` property set.
+fn from_summary(s: &[u8]) -> Option<CoverOut> {
+    let v = thumbnail_value_offset(s)?;
+    let (tag, data) = read_cf_value(s, v)?;
+
+    match tag {
+        CF_DIB => super::util::decodable_image(dib_to_bmp(data)?).map(CoverOut::Bytes),
+        // Some apps store CF_ENHMETAFILE directly: the data IS the EMF.
+        CF_ENHMETAFILE => super::util::decodable_image(data.to_vec()).map(CoverOut::Bytes),
+        SENTINEL => sentinel_payload(data),
+        _ => None,
+    }
+}
+
+/// The 0xFFFFFFFF clipboard "sentinel": the real format is nested in the payload.
+/// Visio writes CF_ENHMETAFILE(14) + a complete EMF; Publisher writes
+/// CF_METAFILEPICT(3) + an 8-byte METAFILEPICT + a standard WMF; 3ds Max writes its
+/// own raw-RGB header (no nested clipboard id). All three are disambiguated by the
+/// nested id plus a format signature, so the 3ds Max `u32(3)` first field can't be
+/// mistaken for CF_METAFILEPICT.
+fn sentinel_payload(data: &[u8]) -> Option<CoverOut> {
+    let inner = le32(data, 0)?;
+    // Visio: CF_ENHMETAFILE, then the EMF ("·EMF" signature at EMF offset 40).
+    if inner == CF_ENHMETAFILE && data.get(44..48)? == b" EMF" {
+        return super::util::decodable_image(data.get(4..)?.to_vec()).map(CoverOut::Bytes);
+    }
+    // Publisher: CF_METAFILEPICT + 8-byte METAFILEPICT + a standard WMF (METAHEADER
+    // mtType=1, mtHeaderSize=9 at the start).
+    if inner == CF_METAFILEPICT && data.get(12..16)? == [0x01, 0x00, 0x09, 0x00] {
+        return super::util::decodable_image(data.get(12..)?.to_vec()).map(CoverOut::Bytes);
+    }
+    // Otherwise: 3ds Max's custom payload — u32(3), u16(1), u16 W, u16 H, … then
+    // top-down 24-bit RGB at offset 98 (exactly `RgbImage`'s layout: no flip/swap).
+    max_rgb_payload(data)
+}
+
+/// Decode the 3ds Max custom payload: u16 W at +6, u16 H at +8, then top-down 24-bit
+/// RGB pixels at offset 98.
+fn max_rgb_payload(data: &[u8]) -> Option<CoverOut> {
+    let w = le16(data, 6)? as u32;
+    let h = le16(data, 8)? as u32;
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        return None;
+    }
+    let need = (w as usize).checked_mul(h as usize)?.checked_mul(3)?;
+    let px = data.get(98..98usize.checked_add(need)?)?;
+    RgbImage::from_raw(w, h, px.to_vec()).map(|img| CoverOut::Image(DynamicImage::ImageRgb8(img)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_ole() {
+        assert!(!looks_like_max(b"not an ole file"));
+        assert!(extract(b"not an ole file").is_none());
+    }
+
+    // A full CFB round-trip is covered by the live regression against the real
+    // `Logo3D.max` sample; the property-set/payload math here is unit-tested via
+    // that path (a hand-built valid CFB in a unit test would be ~as much code as
+    // the reader itself).
+}

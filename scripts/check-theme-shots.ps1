@@ -20,7 +20,17 @@
     1. the two images DIFFER — a window that ignores the theme produces identical
        bytes, which is exactly the failure mode; and
     2. each one is actually the brightness its name claims, by mean luminance —
-       so a window can't "differ" by one stray pixel and pass.
+       so a window can't "differ" by one stray pixel and pass; and
+    3. (dialogs only) the window has ONE background tone. 3.1.1 shipped every
+       light-mode window painted with the system button-face grey (240) under
+       controls that filled themselves with the palette's 243, so each row showed
+       as a lighter block - reported from the field as "scattered color blocks".
+       Rules 1 and 2 cannot see that: both themes differed and both were the right
+       brightness. A second neutral grey within a few levels of the dominant one,
+       covering a real share of the window, is that bug. The Quick-preview cases
+       are exempt (their CONTENT is legitimately many greys), and so is any page
+       holding a zebra-striped list: do not add Settings' File types tab to a
+       `Tone` case.
 
   Headless: uses the app's own `--shot` modes, no desktop is driven, no window
   appears. Outputs land in a temp folder and are deleted unless -Keep.
@@ -79,6 +89,40 @@ function Get-MeanLuma([string]$path) {
     } finally { $bmp.Dispose() }
 }
 
+# Rule 3: the neutral greys that RIVAL the window's dominant background tone - within
+# $near levels of it and covering at least $share of the capture. Empty means one background.
+# Measured on the 3.1.1 bug: the rival sat 3 levels away at 25-49% of every light window;
+# a correct window's nearest legitimate neighbour (a native disabled field) peaks near 4%.
+function Get-RivalTones([string]$path, [int]$near = 8, [double]$share = 0.08) {
+    $bmp = [System.Drawing.Bitmap]::FromFile($path)
+    try {
+        $hist = @{}; $n = 0
+        for ($y = 0; $y -lt $bmp.Height; $y += 3) {
+            for ($x = 0; $x -lt $bmp.Width; $x += 3) {
+                $c = $bmp.GetPixel($x, $y); $n++
+                if ($c.R -eq $c.G -and $c.G -eq $c.B) {
+                    $k = [int]$c.R
+                    $hist[$k] = 1 + [int]$hist[$k]
+                }
+            }
+        }
+        if ($n -eq 0) { return @() }
+        # Every PAIR of big tones, not "tones near the most common one": in a window that is
+        # mostly one white text box (feedback, OCR) the most common grey is the box, the two
+        # background tones sit 12+ levels below it, and a dominant-relative rule called the
+        # broken 3.1.1 build clean on exactly those two windows.
+        $big = @($hist.GetEnumerator() | Where-Object { ($_.Value / $n) -ge $share } | Sort-Object Key)
+        $found = @()
+        for ($i = 0; $i -lt $big.Count - 1; $i++) {
+            $a = $big[$i]; $b = $big[$i + 1]
+            if (($b.Key - $a.Key) -le $near) {
+                $found += "{0} ({1:P0}) beside {2} ({3:P0})" -f $a.Key, ($a.Value / $n), $b.Key, ($b.Value / $n)
+            }
+        }
+        return $found
+    } finally { $bmp.Dispose() }
+}
+
 function Get-Sha([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
 
 function Invoke-Shot([string]$theme, [string]$outFile, [string[]]$shotArgs) {
@@ -110,7 +154,7 @@ $svg = Join-Path $outDir 'theme-probe.svg'
 </svg>
 '@ | Set-Content -LiteralPath $svg -Encoding UTF8
 $png = Join-Path $root 'assets\logo.png'
-$code = Join-Path $root 'src\bin\app\preview\highlight.rs'
+$code = Join-Path $root 'crates\preview\src\preview\highlight.rs'
 
 $cases = @(
     @{ Name = 'settings'; Args = @('--window', 'settings') }
@@ -167,6 +211,13 @@ foreach ($c in $cases) {
     if ($identical) { $why += 'IDENTICAL (theme ignored)' }
     elseif ($ll -le $dl) { $why += "light ($ll) is not brighter than dark ($dl)" }
     elseif (($ll - $dl) -lt 20) { $why += "barely differs (dark $dl vs light $ll)" }
+    # Rule 3, dialogs only (see the docstring for why the preview cases are exempt).
+    if ($c.Name -notlike 'preview-*') {
+        foreach ($t in @(@{ N = 'dark'; P = $darkPng }, @{ N = 'light'; P = $lightPng })) {
+            $rivals = Get-RivalTones $t.P
+            if ($rivals.Count) { $why += "$($t.N) has two background tones: $($rivals -join ', ')" }
+        }
+    }
 
     $ok = $why.Count -eq 0
     if (-not $ok) { $fail++ }
@@ -193,7 +244,7 @@ Remove-Item Env:\ST2K_SETTINGS_ROOT -ErrorAction SilentlyContinue
 Remove-Item -Path "HKCU:\$shotRoot" -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($fail) {
-    Write-Host "`n[theme] FAIL - $fail of $($cases.Count) surfaces do not follow the theme" -ForegroundColor Red
+    Write-Host "`n[theme] FAIL - $fail of $($cases.Count) surfaces fail a theme rule (see each row)" -ForegroundColor Red
     exit 1
 }
-Write-Host "`n[theme] PASS - all $($cases.Count) surfaces follow light/dark" -ForegroundColor Green
+Write-Host "`n[theme] PASS - all $($cases.Count) surfaces follow light/dark, one background tone each" -ForegroundColor Green

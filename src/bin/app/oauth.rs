@@ -1,6 +1,7 @@
 //! OAuth 2.0 **Authorization Code + PKCE via loopback redirect** (RFC 8252) against
-//! Connections (`accounts.connections.icu`). This is the native-app sign-in for the
-//! optional settings-sync feature.
+//! Connections (`accounts.connectionsapi.com`, the permanent backend domain since
+//! 2026-09-18; `connections.icu` was suspended by its registry). This is the native-app
+//! sign-in for the optional settings-sync feature.
 //!
 //! Fully synchronous — no async runtime. The flow:
 //!   1. mint a PKCE `code_verifier`/`code_challenge` (RNG + SHA-256 via CNG),
@@ -21,14 +22,17 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 
-use crate::http;
+use st2k_appkit::http;
 
 /// This app's public OAuth client id (== its data-locker `appId`). Registered with
 /// Connections 2026-07-05; a public PKCE client, so there is NO client secret here.
 pub(crate) const CLIENT_ID: &str = "c6e85c7caceb03d51c0b389435ed1906";
 
-const AUTHORIZE: &str = "https://accounts.connections.icu/oauth/authorize";
-const TOKEN: &str = "https://accounts.connections.icu/oauth/token";
+// Set explicitly, never from OIDC discovery, and no issuer is pinned: the Connections
+// migration note says discovery may self-describe with a host mid-move and the `iss` value
+// is still settling. The signature check against the token endpoint's own keys is what counts.
+const AUTHORIZE: &str = "https://accounts.connectionsapi.com/oauth/authorize";
+const TOKEN: &str = "https://accounts.connectionsapi.com/oauth/token";
 const SCOPE: &str = "openid profile email photo";
 /// How long to wait for the user to finish signing in before giving up.
 const LOGIN_TIMEOUT_SECS: u64 = 180;
@@ -56,14 +60,6 @@ fn random_bytes(n: usize) -> Option<Vec<u8>> {
     status.is_ok().then_some(buf)
 }
 
-/// SHA-256 via CNG's single-shot helper (same as `update.rs::sha256_hex`, raw bytes).
-fn sha256(data: &[u8]) -> Option<[u8; 32]> {
-    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
-    let mut out = [0u8; 32];
-    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
-    status.is_ok().then_some(out)
-}
-
 /// URL-safe base64 without padding — the encoding PKCE + JWT segments use.
 fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -73,7 +69,7 @@ fn b64url(bytes: &[u8]) -> String {
 /// random bytes; challenge = base64url(SHA-256(verifier)).
 fn pkce() -> Option<(String, String)> {
     let verifier = b64url(&random_bytes(32)?);
-    let challenge = b64url(&sha256(verifier.as_bytes())?);
+    let challenge = b64url(&st2k_appkit::license::sha256(verifier.as_bytes())?);
     Some((verifier, challenge))
 }
 
@@ -109,7 +105,7 @@ pub(crate) fn login() -> Result<Tokens, String> {
     let url = authorize_url(&redirect, &challenge, &state);
     // Open the user's real browser. Best-effort: if it doesn't open, the loopback simply
     // times out below and we surface that.
-    unsafe { crate::win::open_url(&url) };
+    unsafe { st2k_appkit::win::open_url(&url) };
 
     let code = catch_code(&listener, Duration::from_secs(LOGIN_TIMEOUT_SECS), &state)?;
     exchange_code(&code, &redirect, &verifier)
@@ -297,7 +293,7 @@ fn catch_code(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(result) = handle_conn(&mut stream, expected_state) {
+                if let Some(result) = handle_conn(&mut stream, expected_state, deadline) {
                     return result;
                 }
                 // Not our callback → already 404'd inside; keep waiting.
@@ -320,17 +316,24 @@ const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
 /// provider error, or a correlated response with no code), or `None` for anything else
 /// (which was answered with 404) so the caller keeps waiting. See [`route_callback`] for
 /// what counts as ours and why.
-fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<String, String>> {
+fn handle_conn(
+    stream: &mut TcpStream,
+    expected_state: &str,
+    deadline: Instant,
+) -> Option<Result<String, String>> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     // Issue #94/G98: a single `read()` only sees whatever arrived in the first TCP segment —
     // a request split across reads (the callback's query string is long enough to straddle a
     // packet boundary on some networks) 404s here instead of completing sign-in. Loop reads
     // until the header terminator `\r\n\r\n` shows up, the byte cap is hit, the peer closes,
-    // or the read times out (the existing 5s timeout above bounds the whole loop, since a
-    // timed-out `read()` returns an error and the loop just works with what arrived so far).
+    // the overall sign-in deadline passes, or a read times out (the 5s timeout above bounds
+    // each read, while `deadline` bounds the whole loop so a trickle can't starve it).
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
+        if Instant::now() >= deadline {
+            break;
+        }
         match stream.read(&mut chunk) {
             Ok(0) => break, // peer closed
             Ok(n) => {
@@ -360,24 +363,24 @@ fn handle_conn(stream: &mut TcpStream, expected_state: &str) -> Option<Result<St
             // i18n::t reads a process-wide atomic, so it is safe from this loopback thread.
             respond_html(
                 stream,
-                crate::win::t("oauth_canceled_title"),
-                crate::win::t("oauth_close_tab"),
+                st2k_appkit::win::t("oauth_canceled_title"),
+                st2k_appkit::win::t("oauth_close_tab"),
             );
             Some(Err(format!("sign-in was canceled ({err})")))
         }
         Callback::Code(code) => {
             respond_html(
                 stream,
-                crate::win::t("oauth_signed_in_title"),
-                crate::win::t("oauth_close_tab"),
+                st2k_appkit::win::t("oauth_signed_in_title"),
+                st2k_appkit::win::t("oauth_close_tab"),
             );
             Some(Ok(code))
         }
         Callback::NoCode => {
             respond_html(
                 stream,
-                crate::win::t("oauth_failed_title"),
-                crate::win::t("oauth_failed_body"),
+                st2k_appkit::win::t("oauth_failed_title"),
+                st2k_appkit::win::t("oauth_failed_body"),
             );
             Some(Err(
                 "the sign-in response carried no authorization code".to_string()
@@ -524,7 +527,7 @@ mod tests {
             "verifier must be URL-safe, unpadded"
         );
         // The challenge must equal base64url(SHA-256(verifier)) — the relying party recomputes this.
-        let expected = b64url(&sha256(verifier.as_bytes()).unwrap());
+        let expected = b64url(&st2k_appkit::license::sha256(verifier.as_bytes()).unwrap());
         assert_eq!(challenge, expected);
     }
 
@@ -691,7 +694,7 @@ mod tests {
             reply
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let routed = handle_conn(&mut stream, "xyz");
+        let routed = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         // The client is blocked in `read_to_string` until this end closes, so let it go
         // before joining, or the test deadlocks on its own reply.
         drop(stream);
@@ -722,7 +725,7 @@ mod tests {
                 .unwrap();
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let routed = handle_conn(&mut stream, "xyz");
+        let routed = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         writer.join().unwrap();
         match routed {
             Some(Err(msg)) => assert!(msg.contains("canceled"), "got {msg}"),
@@ -748,7 +751,7 @@ mod tests {
             client.write_all(b"\r\n").unwrap();
         });
         let (mut stream, _) = listener.accept().expect("loopback accept");
-        let result = handle_conn(&mut stream, "xyz");
+        let result = handle_conn(&mut stream, "xyz", Instant::now() + Duration::from_secs(5));
         writer.join().unwrap();
         assert_eq!(
             result,

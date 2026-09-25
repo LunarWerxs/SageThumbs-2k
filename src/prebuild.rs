@@ -20,17 +20,18 @@
 //! Rebuild-changed-only and pause/resume are not here. The shell already keys its cache on
 //! path + size + mtime, so the `WTS_INCACHEONLY` probe IS change detection for free; a
 //! separate "changed files" mode would need our own sidecar index to beat it. Pause needs a
-//! gate inside [`crate::parallel`]'s worker loop, which has no such primitive today — v1
+//! gate inside [`st2k_base::parallel`]'s worker loop, which has no such primitive today — v1
 //! offers cancel (Ctrl+C) instead.
 //!
 //! Purging is not here either: no API deletes cache entries for one folder, only the whole
 //! per-user database, which Settings ▸ Advanced ▸ "Rebuild thumbnail cache" already does
 //! (it restarts Explorer, which is not something a batch verb should do behind your back).
 
+use st2k_base::fsutil::parsing_path;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::formats;
+use st2k_base::formats;
 
 /// Files whose thumbnail we will not ask for, and why the count is reported separately.
 #[derive(Default)]
@@ -94,9 +95,9 @@ pub const DEFAULT_SIZES: [u32; 3] = [96, 256, 768];
 /// the 769..=1280 range normalised to a bucket Windows does not keep, and 2560 (newly
 /// reachable since `settings::THUMB_MAX` was raised) clamped down to 1920.
 ///
-/// This only ever affected our own dedup and the "what did I build" report: `one()` passes the
-/// raw size to `IThumbnailCache`, which does its own bucket selection regardless of what we
-/// think the buckets are. So this is an honesty fix, not a behaviour fix — worth having
+/// This only ever affected our own dedup and the "what did I build" report: `one()` is handed
+/// the normalised bucket, and `IThumbnailCache` re-buckets that regardless of what we think the
+/// buckets are. So this is an honesty fix, not a behaviour fix — worth having
 /// precisely because the report is what anyone debugging a missing thumbnail reads first.
 const BUCKETS: [u32; 9] = [16, 32, 48, 96, 256, 768, 1280, 1920, 2560];
 /// The last entry of [`BUCKETS`], spelled as a constant so the clamp below needs no runtime
@@ -291,13 +292,6 @@ pub(crate) const OFFLINE_ATTRS: u32 = 0x0000_1000 | 0x0040_0000 | 0x0004_0000;
 /// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions and symlinks, which the walk does not follow.
 const REPARSE: u32 = 0x0000_0400;
 
-fn attrs(p: &Path) -> u32 {
-    use std::os::windows::fs::MetadataExt;
-    std::fs::symlink_metadata(p)
-        .map(|m| m.file_attributes())
-        .unwrap_or(0)
-}
-
 /// True when `path` is a cloud placeholder (a OneDrive/Dropbox file not yet downloaded to this
 /// machine): a `symlink_metadata` attribute check ONLY, so calling this never itself triggers
 /// hydration. `pub` (not `pub(crate)`): `cli.rs`'s `expand_inputs` cloud guard and
@@ -306,16 +300,16 @@ fn attrs(p: &Path) -> u32 {
 /// definition now, reused everywhere a caller needs to decide "would extracting this file's
 /// thumbnail download the whole thing?" (item C13).
 pub fn is_cloud_placeholder(path: &Path) -> bool {
-    attrs(path) & OFFLINE_ATTRS != 0
+    st2k_base::fsutil::file_attributes(path) & OFFLINE_ATTRS != 0
 }
 
 /// Is this extension one we hook AND the user still has enabled? A format they turned off has
 /// no SageThumbs thumbnail to build, and asking the shell for one just burns a round trip.
-/// Takes a pre-taken [`crate::settings::FormatEnabledSnapshot`] rather than calling
-/// [`crate::settings::format_enabled`] per file: in portable mode that reparses the WHOLE ini
+/// Takes a pre-taken [`st2k_base::settings::FormatEnabledSnapshot`] rather than calling
+/// [`st2k_base::settings::format_enabled`] per file: in portable mode that reparses the WHOLE ini
 /// from disk on every single call, so a 50,000-file prebuild used to do 50,000 full ini parses
 /// to decide what it wanted (item 134).
-fn wanted(p: &Path, snap: &crate::settings::FormatEnabledSnapshot) -> bool {
+fn wanted(p: &Path, snap: &st2k_base::settings::FormatEnabledSnapshot) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| formats::is_known(e) && snap.enabled(&e.to_lowercase()))
@@ -323,7 +317,7 @@ fn wanted(p: &Path, snap: &crate::settings::FormatEnabledSnapshot) -> bool {
 
 /// Collect the supported files under `root`. Non-recursive by default; never follows a
 /// reparse point, and stops at `max_depth` so a junction cycle cannot spin forever. `snap` is
-/// one [`crate::settings::format_enabled_snapshot`] shared across the whole walk — see
+/// one [`st2k_base::settings::format_enabled_snapshot`] shared across the whole walk — see
 /// [`wanted`].
 fn walk(
     root: &Path,
@@ -331,7 +325,7 @@ fn walk(
     depth: u32,
     out: &mut Vec<String>,
     rep: &mut Report,
-    snap: &crate::settings::FormatEnabledSnapshot,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
 ) {
     if depth > opts.max_depth {
         return;
@@ -341,48 +335,37 @@ fn walk(
         return;
     };
     for e in rd.flatten() {
-        let p = e.path();
-        let a = attrs(&p);
-        if a & REPARSE != 0 {
-            continue;
-        }
-        if p.is_dir() {
-            if opts.recurse {
-                walk(&p, opts, depth + 1, out, rep, snap);
-            }
-        } else if p.is_file() && wanted(&p, snap) {
-            if is_cloud_placeholder(&p) {
-                rep.skipped_offline += 1;
-                continue;
-            }
-            out.push(p.to_string_lossy().into_owned());
-        }
+        visit_entry(&e, opts, depth, out, rep, snap);
     }
 }
 
-/// Absolute path in the grammar `SHCreateItemFromParsingName` accepts.
-///
-/// `canonicalize` returns the extended-length form and the parsing-name grammar rejects it, so
-/// strip it back: `\\?\C:\…` -> `C:\…`, and the UNC form `\\?\UNC\server\share` -> the plain
-/// `\\server\share` (stripping only `\\?\` there would leave `UNC\…`, which resolves nowhere).
-///
-/// `pub(crate)`: `doctor.rs`'s `shell_roundtrip` needs the exact same normalization before its
-/// own `SHCreateItemFromParsingName` call, and used to carry a hand-copied duplicate of this
-/// logic (relocated from a fn into an inline block, near-verbatim) rather than importing it.
-pub(crate) fn parsing_path(path: &str) -> String {
-    Path::new(path)
-        .canonicalize()
-        .map(|p| {
-            let s = p.to_string_lossy().into_owned();
-            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-                format!(r"\\{rest}")
-            } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-                rest.to_string()
-            } else {
-                s
-            }
-        })
-        .unwrap_or_else(|_| path.to_string())
+/// Handle one directory entry from [`walk`]: descend into a subdirectory, or record a supported,
+/// non-offline file into `out`. A reparse point or an offline placeholder returns early, which is
+/// the caller's `continue`.
+fn visit_entry(
+    e: &std::fs::DirEntry,
+    opts: &Options,
+    depth: u32,
+    out: &mut Vec<String>,
+    rep: &mut Report,
+    snap: &st2k_base::settings::FormatEnabledSnapshot,
+) {
+    let p = e.path();
+    let a = st2k_base::fsutil::file_attributes(&p);
+    if a & REPARSE != 0 {
+        return;
+    }
+    if p.is_dir() {
+        if opts.recurse {
+            walk(&p, opts, depth + 1, out, rep, snap);
+        }
+    } else if p.is_file() && wanted(&p, snap) {
+        if is_cloud_placeholder(&p) {
+            rep.skipped_offline += 1;
+            return;
+        }
+        out.push(p.to_string_lossy().into_owned());
+    }
 }
 
 /// What happened to one file.
@@ -441,8 +424,7 @@ fn one(path: &str, opts: &Options) -> Outcome {
     use windows::core::HSTRING;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
-        IShellItem, IThumbnailCache, LocalThumbnailCache, SHCreateItemFromParsingName, WTS_EXTRACT,
-        WTS_INCACHEONLY,
+        IShellItem, IThumbnailCache, LocalThumbnailCache, SHCreateItemFromParsingName,
     };
 
     APARTMENT.with(|_| {});
@@ -457,76 +439,92 @@ fn one(path: &str, opts: &Options) -> Outcome {
             CoCreateInstance(&LocalThumbnailCache, None, CLSCTX_INPROC_SERVER)?;
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(abs.as_str()), None)?;
 
-        let (mut built, mut already) = (false, false);
-        let mut missing: Vec<u32> = Vec::new();
-        for &size in &opts.sizes {
-            if !opts.rebuild_all {
-                // Probe first. This never extracts, so a library that is already built costs
-                // one cheap call per size instead of a full re-render.
-                let mut bmp = None;
-                if cache
-                    .GetThumbnail(&item, size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
-                    .is_ok()
-                {
-                    already = true;
-                    continue;
-                }
-            }
-            let mut bmp = None;
-            match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
-                Ok(()) => built = true,
-                // SAY WHICH FILE, WHICH SIZE, AND WHY. A per-size failure only ever landed in
-                // a total count, so "it didn't pre-build my PDFs" (issue #26.3) could not be
-                // told apart from "it never tried", from "the shell refused this one format",
-                // from "this size is not one the view reads". All three look identical in a
-                // summary line, and the reporter and I both ended up guessing.
-                //
-                // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
-                // unless someone has turned diagnostics on to find exactly this.
-                Err(e) => {
-                    crate::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
-                    missing.push(size);
-                }
-            }
-        }
-        // ONE retry for the sizes that did not land, after the rest of this file is done.
-        //
-        // The dominant failure here is a TIMEOUT, not a refusal: several worker threads drive
-        // the OS rasterizer at once, so a bucket can miss its budget purely because it was
-        // unlucky. That matters more since `build_order` put the LARGEST bucket first — the
-        // expensive render is now the one that runs while contention is highest, and it is also
-        // the one whose loss costs the most (lose it and every smaller bucket is derived from
-        // whatever renders next instead). Bounded to one pass so a genuinely unsupported file
-        // costs one extra cheap refusal, not an unbounded loop.
-        if !missing.is_empty() {
-            missing.retain(|&size| {
-                let mut bmp = None;
-                match cache.GetThumbnail(&item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
-                    Ok(()) => {
-                        built = true;
-                        false // landed on the retry — no longer missing
-                    }
-                    Err(e) => {
-                        crate::safety::log_debugf!(
-                            "prebuild: {abs} size {size} still not built after retry: {e}"
-                        );
-                        true
-                    }
-                }
-            });
-        }
+        let (built, already, missing) = build_sizes(&cache, &item, &abs, opts);
         if let Some(o) = verdict(built, already, missing.is_empty()) {
             Ok(o)
         } else {
             // No size produced anything AND none was already cached. Worth a line even at
             // normal verbosity would be too much for a big run, so it stays debug-gated, but
             // it is the one that names a file the user will actually notice.
-            crate::safety::log_debugf!("prebuild: {abs} produced no thumbnail at any size");
+            st2k_base::safety::log_debugf!("prebuild: {abs} produced no thumbnail at any size");
             Ok(Outcome::Failed)
         }
     })();
 
     r.unwrap_or(Outcome::Failed)
+}
+
+/// Drive every requested size bucket for one shell item: probe the cache first (unless
+/// `rebuild_all`), extract what is missing, then retry the sizes that did not land once.
+/// Returns `(built, already, missing)` — the three facts `one` feeds to [`verdict`].
+/// Unsafe for the same reason its caller's block is: it drives COM objects the caller created.
+unsafe fn build_sizes(
+    cache: &windows::Win32::UI::Shell::IThumbnailCache,
+    item: &windows::Win32::UI::Shell::IShellItem,
+    abs: &str,
+    opts: &Options,
+) -> (bool, bool, Vec<u32>) {
+    use windows::Win32::UI::Shell::{WTS_EXTRACT, WTS_INCACHEONLY};
+
+    let (mut built, mut already) = (false, false);
+    let mut missing: Vec<u32> = Vec::new();
+    for &size in &opts.sizes {
+        if !opts.rebuild_all {
+            // Probe first. This never extracts, so a library that is already built costs
+            // one cheap call per size instead of a full re-render.
+            let mut bmp = None;
+            if cache
+                .GetThumbnail(item, size, WTS_INCACHEONLY, Some(&mut bmp), None, None)
+                .is_ok()
+            {
+                already = true;
+                continue;
+            }
+        }
+        let mut bmp = None;
+        match cache.GetThumbnail(item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+            Ok(()) => built = true,
+            // SAY WHICH FILE, WHICH SIZE, AND WHY. A per-size failure only ever landed in
+            // a total count, so "it didn't pre-build my PDFs" (issue #26.3) could not be
+            // told apart from "it never tried", from "the shell refused this one format",
+            // from "this size is not one the view reads". All three look identical in a
+            // summary line, and the reporter and I both ended up guessing.
+            //
+            // Verbose-log gated, so a 40,000 file library does not write 40,000 lines
+            // unless someone has turned diagnostics on to find exactly this.
+            Err(e) => {
+                st2k_base::safety::log_debugf!("prebuild: {abs} size {size} not built: {e}");
+                missing.push(size);
+            }
+        }
+    }
+    // ONE retry for the sizes that did not land, after the rest of this file is done.
+    //
+    // The dominant failure here is a TIMEOUT, not a refusal: several worker threads drive
+    // the OS rasterizer at once, so a bucket can miss its budget purely because it was
+    // unlucky. That matters more since `build_order` put the LARGEST bucket first — the
+    // expensive render is now the one that runs while contention is highest, and it is also
+    // the one whose loss costs the most (lose it and every smaller bucket is derived from
+    // whatever renders next instead). Bounded to one pass so a genuinely unsupported file
+    // costs one extra cheap refusal, not an unbounded loop.
+    if !missing.is_empty() {
+        missing.retain(|&size| {
+            let mut bmp = None;
+            match cache.GetThumbnail(item, size, WTS_EXTRACT, Some(&mut bmp), None, None) {
+                Ok(()) => {
+                    built = true;
+                    false // landed on the retry — no longer missing
+                }
+                Err(e) => {
+                    st2k_base::safety::log_debugf!(
+                        "prebuild: {abs} size {size} still not built after retry: {e}"
+                    );
+                    true
+                }
+            }
+        });
+    }
+    (built, already, missing)
 }
 
 /// Repair the one way Explorer's `"%1"` substitution can hand us a broken path: a DRIVE ROOT.
@@ -560,91 +558,13 @@ pub fn unmangle_shell_path(arg: &str) -> String {
     }
 }
 
-/// True when this process is running elevated.
-///
-/// The thumbnail cache is PER USER (`%LocalAppData%\Microsoft\Windows\Explorer`). Run from an
-/// admin prompt, every thumbnail lands in the administrator's cache and the user sees exactly
-/// no change — the most confusing possible failure, because it reports total success.
-pub fn is_elevated() -> bool {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-            return false;
-        }
-        let mut el = TOKEN_ELEVATION::default();
-        let mut len = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            Some(core::ptr::addr_of_mut!(el).cast()),
-            core::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut len,
-        )
-        .is_ok();
-        let _ = windows::Win32::Foundation::CloseHandle(token);
-        ok && el.TokenIsElevated != 0
-    }
-}
-
-/// True when the process `pid` is running elevated.
-///
-/// Cross-process, and callable from an ORDINARY process, which is the non-obvious part:
-/// opening a higher-integrity process for MEMORY access is refused, but
-/// `PROCESS_QUERY_LIMITED_INFORMATION` plus `TOKEN_QUERY` is granted for the same user, so the
-/// elevation flag can be read directly instead of inferred from something else failing.
-///
-/// Any refusal answers "not elevated". Both callers use this to EXPLAIN a problem, so a wrong
-/// "yes" would invent one; a wrong "no" just leaves things as they were.
-pub fn process_is_elevated(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{
-        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    if pid == 0 {
-        return false;
-    }
-    unsafe {
-        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
-        };
-        let mut token = HANDLE::default();
-        let mut elevated = false;
-        if OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok() {
-            let mut el = TOKEN_ELEVATION::default();
-            let mut len = 0u32;
-            if GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(core::ptr::addr_of_mut!(el).cast()),
-                core::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut len,
-            )
-            .is_ok()
-            {
-                elevated = el.TokenIsElevated != 0;
-            }
-            let _ = CloseHandle(token);
-        }
-        let _ = CloseHandle(process);
-        elevated
-    }
-}
-
 /// Walk `inputs` and fill the shell's thumbnail cache for everything supported inside them.
 ///
 /// `progress` is called with (done, total) roughly as work completes, for a counter or bar.
 /// `cancel`, when supplied and set, stops the run at the next file: the pool has no cancel
 /// primitive, so every remaining item is visited and skipped rather than truly interrupted.
 /// That is instant in practice because skipping is free, and it avoids threading a new
-/// abort path through [`crate::parallel`].
+/// abort path through [`st2k_base::parallel`].
 ///
 /// The caller must still tell the user that the cache is **LRU-capped**: pre-building a whole
 /// 32 TB drive evicts its own early work long before it finishes, so a run can report complete
@@ -659,7 +579,7 @@ pub fn run(
     let mut files: Vec<String> = Vec::new();
     // ONE snapshot for the whole sweep (the walk plus this per-input loop), not one ini
     // reparse per file (item 134).
-    let snap = crate::settings::format_enabled_snapshot();
+    let snap = st2k_base::settings::format_enabled_snapshot();
     for i in inputs {
         let p = Path::new(i);
         if p.is_dir() {
@@ -702,7 +622,7 @@ pub fn run(
     let total = files.len();
     let stopping = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
-    crate::parallel::map_indexed(
+    st2k_base::parallel::map_indexed(
         &files,
         workers,
         |_, path: &String| {
@@ -732,404 +652,4 @@ pub fn run(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A file that landed at SOME sizes and missed others must not report as done. This is the
-    /// whole point of the Partial verdict: the old code collapsed it to Built, so a run claimed
-    /// 100% while Explorer still had to extract the missing bucket on first browse (issue #26).
-    #[test]
-    fn a_missed_size_is_never_reported_as_built() {
-        assert!(matches!(
-            verdict(true, false, false),
-            Some(Outcome::Partial)
-        ));
-        assert!(matches!(
-            verdict(false, true, false),
-            Some(Outcome::Partial)
-        ));
-        assert!(matches!(verdict(true, true, false), Some(Outcome::Partial)));
-    }
-
-    /// The clean outcomes still say what they always said, so the summary a user reads for a
-    /// healthy run is unchanged.
-    #[test]
-    fn a_complete_file_reports_built_or_already() {
-        assert!(matches!(verdict(true, false, true), Some(Outcome::Built)));
-        assert!(matches!(verdict(false, true, true), Some(Outcome::Already)));
-        // Built wins over already: some size needed real work, which is what happened.
-        assert!(matches!(verdict(true, true, true), Some(Outcome::Built)));
-    }
-
-    /// Nothing anywhere is the caller's Failed path, and it must stay distinguishable from
-    /// Partial — "we got some of it" and "we got none of it" are different user-facing answers.
-    #[test]
-    fn nothing_anywhere_is_not_a_partial() {
-        assert!(verdict(false, false, false).is_none());
-        assert!(verdict(false, false, true).is_none());
-    }
-
-    /// PROVE THE PREMISE, don't assume it. Everything above rests on the claim that Windows
-    /// really does turn our registered command into the argument `E:"` for a drive root. That
-    /// is a claim about `CommandLineToArgvW`'s escaping rules, so ask `CommandLineToArgvW`.
-    ///
-    /// Without this, the fix could be repairing a mangling that never happens (and quietly
-    /// corrupting nothing, but also fixing nothing) and every other test here would still pass,
-    /// because they all take the mangled string as a given.
-    #[test]
-    fn windows_really_does_mangle_a_quoted_drive_root() {
-        use windows::core::PCWSTR;
-        use windows::Win32::UI::Shell::CommandLineToArgvW;
-
-        // Exactly what `foldermenu::apply` writes, with `%1` substituted by the shell.
-        let parse = |line: &str| -> Vec<String> {
-            let wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut argc = 0i32;
-            unsafe {
-                let argv = CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut argc);
-                assert!(!argv.is_null(), "CommandLineToArgvW failed on {line}");
-                let out = (0..argc as usize)
-                    .map(|i| (*argv.add(i)).to_string().expect("argv is valid UTF-16"))
-                    .collect();
-                let _ = windows::Win32::Foundation::LocalFree(Some(
-                    windows::Win32::Foundation::HLOCAL(argv.cast()),
-                ));
-                out
-            }
-        };
-
-        let exe = r"C:\Program Files\SageThumbs2K\SageThumbs2K.exe";
-
-        // An ordinary folder: three clean arguments, the path intact. This is why the entry
-        // always worked here.
-        let ok = parse(&format!("\"{exe}\" --prebuild \"E:\\Photos\""));
-        assert_eq!(ok.len(), 3, "ordinary folder should parse cleanly: {ok:?}");
-        assert_eq!(ok[2], r"E:\Photos");
-
-        // A drive root: the trailing `\"` is read as an escaped quote, so the path is
-        // destroyed. THIS is issue #26.1, demonstrated rather than asserted.
-        let broken = parse(&format!("\"{exe}\" --prebuild \"E:\\\""));
-        assert_eq!(
-            broken[2], "E:\"",
-            "the premise of unmangle_shell_path no longer holds: Windows parsed the drive root \
-             as {:?} rather than the expected mangled `E:\"`",
-            broken[2]
-        );
-        assert!(
-            !std::path::Path::new(&broken[2]).exists(),
-            "the mangled argument must be a path that cannot exist, which is why the verb \
-             silently did nothing"
-        );
-
-        // And the repair turns that back into the drive root the user right-clicked.
-        assert_eq!(unmangle_shell_path(&broken[2]), r"E:\");
-    }
-
-    /// A drive root reaches us as `E:"`, because Explorer substituted `E:\` into a quoted
-    /// token and `CommandLineToArgvW` then ate the backslash as a quote escape. This is the
-    /// whole of issue #26.1: the entry worked on every folder and did nothing on a drive.
-    #[test]
-    fn a_mangled_drive_root_is_repaired() {
-        assert_eq!(unmangle_shell_path("E:\""), r"E:\");
-        assert_eq!(unmangle_shell_path("C:\""), r"C:\");
-        // A UNC share root mangles identically and repairs identically.
-        assert_eq!(
-            unmangle_shell_path("\\\\server\\share\""),
-            r"\\server\share\"
-        );
-    }
-
-    /// Ordinary folders are NOT touched. `%1` only produces a trailing backslash for a root,
-    /// so every normal path must come through byte-for-byte — including one ending in a
-    /// quote-free backslash, and one containing the spaces the quoting exists for.
-    #[test]
-    fn ordinary_folder_paths_pass_through_untouched() {
-        for p in [
-            r"E:\Photos",
-            r"C:\Users\sam\My Pictures",
-            r"D:\a b\c d\e",
-            r"E:\Photos\", // already correct: no quote, so nothing to repair
-            "",
-        ] {
-            assert_eq!(unmangle_shell_path(p), p, "must not rewrite {p}");
-        }
-    }
-
-    /// `OFFLINE_ATTRS` must cover all three HSM/cloud-placeholder flags `doctor.rs` enumerates
-    /// (OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS) — a file carrying only RECALL_ON_OPEN
-    /// used to sail past this mask and get hydrated/downloaded by WTS_EXTRACT.
-    #[test]
-    fn offline_attrs_mask_covers_all_three_recall_flags() {
-        const OFFLINE: u32 = 0x0000_1000;
-        const RECALL_ON_OPEN: u32 = 0x0004_0000;
-        const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
-        for (name, flag) in [
-            ("OFFLINE", OFFLINE),
-            ("RECALL_ON_OPEN", RECALL_ON_OPEN),
-            ("RECALL_ON_DATA_ACCESS", RECALL_ON_DATA_ACCESS),
-        ] {
-            assert!(
-                OFFLINE_ATTRS & flag != 0,
-                "OFFLINE_ATTRS must include {name} ({flag:#010x})"
-            );
-        }
-    }
-
-    /// The walk must pick up supported files, honour `recurse`, and never wander into a
-    /// junction — the loop guard that keeps "pre-build my D: drive" from never terminating.
-    #[test]
-    fn walk_is_shallow_by_default_and_deep_on_request() {
-        let root = std::env::temp_dir().join(format!("st2k-prebuild-{}", std::process::id()));
-        let sub = root.join("sub");
-        std::fs::create_dir_all(&sub).expect("scratch tree");
-        std::fs::write(root.join("a.png"), b"x").expect("a");
-        std::fs::write(sub.join("b.png"), b"x").expect("b");
-        std::fs::write(root.join("notes.txt"), b"x").expect("txt");
-
-        let mut rep = Report::default();
-        let snap = crate::settings::format_enabled_snapshot();
-        let mut shallow = Vec::new();
-        walk(&root, &Options::default(), 0, &mut shallow, &mut rep, &snap);
-        assert_eq!(shallow.len(), 1, "non-recursive must stop at the top level");
-        assert!(
-            shallow[0].ends_with("a.png"),
-            "and must skip the unsupported .txt"
-        );
-
-        let mut deep = Vec::new();
-        let opts = Options {
-            recurse: true,
-            ..Default::default()
-        };
-        walk(&root, &opts, 0, &mut deep, &mut rep, &snap);
-        assert_eq!(deep.len(), 2, "recursive must reach the subfolder");
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// The depth cap is the only thing standing between a junction cycle and an endless walk.
-    #[test]
-    fn walk_stops_at_the_depth_cap() {
-        let root = std::env::temp_dir().join(format!("st2k-depth-{}", std::process::id()));
-        let deep = root.join("a").join("b").join("c");
-        std::fs::create_dir_all(&deep).expect("tree");
-        std::fs::write(deep.join("x.png"), b"x").expect("x");
-
-        let mut rep = Report::default();
-        let snap = crate::settings::format_enabled_snapshot();
-        let mut out = Vec::new();
-        let opts = Options {
-            recurse: true,
-            max_depth: 1,
-            ..Default::default()
-        };
-        walk(&root, &opts, 0, &mut out, &mut rep, &snap);
-        assert!(out.is_empty(), "a file below the cap must not be collected");
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A relative path has to become the absolute, non-extended form the shell parses, or
-    /// every item fails with FILE_NOT_FOUND and the run reports a 100% failure rate.
-    #[test]
-    fn parsing_path_is_absolute_and_carries_no_extended_prefix() {
-        let f = std::env::temp_dir().join(format!("st2k-pp-{}.png", std::process::id()));
-        std::fs::write(&f, b"x").expect("write");
-        let got = parsing_path(&f.to_string_lossy());
-        assert!(
-            !got.starts_with(r"\\?\"),
-            "extended prefix must be stripped"
-        );
-        assert!(Path::new(&got).is_absolute(), "must be absolute");
-        let _ = std::fs::remove_file(&f);
-    }
-
-    /// Requested edges must land on real cache buckets, and two requests that resolve to the
-    /// same bucket must collapse — otherwise the run extracts the same thumbnail twice and
-    /// the report claims work that never happened.
-    #[test]
-    fn sizes_snap_to_cache_buckets_and_dedupe() {
-        assert_eq!(
-            normalize_sizes(&[256]),
-            vec![256],
-            "an exact bucket is kept"
-        );
-        assert_eq!(
-            normalize_sizes(&[200]),
-            vec![256],
-            "a request rounds UP to the bucket that will hold it"
-        );
-        assert_eq!(
-            normalize_sizes(&[100, 200, 250]),
-            vec![256],
-            "three requests inside one bucket collapse to a single extraction"
-        );
-        assert_eq!(
-            normalize_sizes(&[768, 96, 256]),
-            vec![96, 256, 768],
-            "order is normalised so the report reads predictably"
-        );
-        assert_eq!(
-            normalize_sizes(&[99_999]),
-            vec![2560],
-            "anything past the top bucket clamps to it rather than being dropped"
-        );
-        // The three buckets the corrected list added or fixed. 1024 is NOT a Windows 10/11
-        // bucket (it was Windows 7's), so a request in that range belongs in 1280 — getting
-        // this wrong made the run report a size Windows does not keep.
-        assert_eq!(normalize_sizes(&[1024]), vec![1280], "1024 is not a bucket");
-        assert_eq!(normalize_sizes(&[1281]), vec![1920]);
-        assert_eq!(
-            normalize_sizes(&[2000]),
-            vec![2560],
-            "the raised thumbnail ceiling must have a bucket to land in"
-        );
-        assert_eq!(normalize_sizes(&[40]), vec![48], "small buckets exist too");
-        assert_eq!(
-            normalize_sizes(&[0]),
-            vec![256],
-            "a zero is not a size; fall back to the default rather than asking for nothing"
-        );
-        assert_eq!(normalize_sizes(&[]), vec![256], "empty falls back too");
-        assert_eq!(
-            normalize_sizes(&DEFAULT_SIZES),
-            DEFAULT_SIZES.to_vec(),
-            "the shipped default must already be canonical, or every run pays to normalise it"
-        );
-    }
-
-    /// THE REGRESSION THAT SHIPPED FOR THE WHOLE LIFE OF THIS FEATURE. One extraction fills
-    /// every smaller bucket, so whichever size is attempted FIRST is the only one that gets a
-    /// real render. Ascending order therefore built 96 and derived the rest, and Explorer threw
-    /// the derived entries away and re-extracted on first browse — after a run that reported
-    /// complete success. Largest-first is the fix; see `build_order` for the measurements.
-    #[test]
-    fn the_largest_bucket_is_always_extracted_first() {
-        assert_eq!(build_order(&[96, 256, 768]), vec![768, 256, 96]);
-        // The shipped default is the case that was broken, so pin it specifically rather than
-        // trusting the general property above.
-        let shipped = build_order(&normalize_sizes(&DEFAULT_SIZES));
-        assert_eq!(
-            shipped.first().copied(),
-            Some(768),
-            "the default run must extract at its LARGEST bucket first, or every bigger view \
-             re-extracts on first browse; got {shipped:?}"
-        );
-        // `normalize_sizes` sorts ascending, so a caller that forgets to reorder gets exactly
-        // the old bug back. Prove the two disagree, or this test proves nothing.
-        assert_ne!(
-            normalize_sizes(&DEFAULT_SIZES),
-            shipped,
-            "build_order must actually reorder; if these ever match, the guard is vacuous"
-        );
-    }
-
-    /// The 2026-09-05 audit's F12, at the one place both front ends now go through. Each row
-    /// is (what the caller supplied, what the policy must answer): `Ok` for a list that is
-    /// entirely understood, `Err(fragment)` for one that is not, where the fragment is what
-    /// the message MUST name so the caller can find the element that did it.
-    #[test]
-    fn the_size_list_policy_parses_every_element_or_names_the_one_that_failed() {
-        let cases: &[(&str, Result<Vec<u32>, &str>)] = &[
-            // Accepted, and unchanged from what the old filter_map did with a clean list.
-            ("96,256,768", Ok(vec![96, 256, 768])),
-            ("256", Ok(vec![256])),
-            // Whitespace around an element is a shell quoting a list, not a mistake.
-            (" 96 , 256 ", Ok(vec![96, 256])),
-            ("\t96\t", Ok(vec![96])),
-            // Bigger than any bucket is still a request that can be honoured; normalize_sizes
-            // clamps it, which is deliberately NOT this function's job.
-            ("99999", Ok(vec![99999])),
-            // The headline case: one bad element used to be dropped and the run went ahead.
-            ("96,typo,768", Err("element 2")),
-            ("typo", Err("element 1")),
-            ("96.5", Err("element 1")),
-            // An empty element, from a stray or trailing comma.
-            ("96,,768", Err("element 2")),
-            ("96,", Err("element 2")),
-            ("", Err("element 1")),
-            // Zero and negatives are not thumbnail edges.
-            ("0", Err("element 1")),
-            ("96,0", Err("element 2")),
-            ("-96", Err("element 1")),
-            // Overflow: one past u32::MAX, told apart from junk text.
-            ("4294967296", Err("too large")),
-            ("99999999999999999999999999", Err("too large")),
-        ];
-        for (spec, want) in cases {
-            let got = parse_size_list_str("--size", spec);
-            match want {
-                Ok(sizes) => assert_eq!(got.as_ref(), Ok(sizes), "--size {spec:?}"),
-                Err(fragment) => {
-                    let err = got.expect_err(&format!("--size {spec:?} must be refused"));
-                    assert!(
-                        err.contains(*fragment),
-                        "--size {spec:?}: message must name {fragment:?}, got {err:?}"
-                    );
-                }
-            }
-        }
-        // An empty SUPPLIED list is refused rather than silently becoming the default: the
-        // caller asked for something specific, so answering with something else is the bug.
-        let err = parse_size_list("'sizes'", std::iter::empty::<&str>()).expect_err("empty list");
-        assert!(err.contains("no sizes given"), "got {err}");
-        assert!(
-            err.contains("96,256,768"),
-            "the message should name the default it is NOT silently using, got {err}"
-        );
-    }
-
-    /// The MCP front end hands each JSON array element over as its compact JSON text, so the
-    /// same parser sees a wrong-typed element as the wrong type it is. Proven here rather
-    /// than only in `mcp.rs`, since it is the policy that has to hold, not one caller.
-    #[test]
-    fn a_json_element_of_the_wrong_type_is_refused_by_the_same_policy() {
-        for (element, fragment) in [
-            ("\"96\"", "not a whole number"),
-            ("true", "not a whole number"),
-            ("null", "not a whole number"),
-            ("[96]", "not a whole number"),
-        ] {
-            let err = parse_size_list("'sizes'", ["96", element])
-                .expect_err("a non-number element must be refused");
-            assert!(
-                err.contains("element 2") && err.contains(fragment),
-                "{element}: got {err}"
-            );
-        }
-    }
-
-    /// Reordering must not lose, duplicate or invent a bucket — the run would then report
-    /// sizes it never attempted.
-    #[test]
-    fn build_order_is_a_permutation_of_its_input() {
-        for req in [
-            vec![96u32, 256, 768],
-            vec![256],
-            vec![16, 32, 48, 96, 256, 768, 1280, 1920, 2560],
-            vec![],
-        ] {
-            let mut got = build_order(&req);
-            let mut want = req.clone();
-            got.sort_unstable();
-            want.sort_unstable();
-            assert_eq!(got, want, "build_order changed the SET for {req:?}");
-            // And every adjacent pair really is descending.
-            let ordered = build_order(&req);
-            assert!(
-                ordered.windows(2).all(|w| w[0] > w[1]),
-                "not descending: {ordered:?}"
-            );
-        }
-    }
-
-    /// A path that does not exist must come back unchanged rather than panicking — the walk
-    /// races with a user deleting files underneath it.
-    #[test]
-    fn parsing_path_passes_through_a_missing_file() {
-        assert_eq!(
-            parsing_path("Z:\\nope\\missing.png"),
-            "Z:\\nope\\missing.png"
-        );
-    }
-}
+mod tests;

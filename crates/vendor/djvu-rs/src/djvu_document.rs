@@ -14,9 +14,12 @@
 //! ## Document kinds
 //!
 //! - **FORM:DJVU** — single-page document
+//! - **FORM:BM44** / **FORM:PM44** — legacy standalone IW44 photo documents
+//!   (grayscale / color); exposed as one-page documents without an INFO chunk
 //! - **FORM:DJVM + DIRM** — bundled multi-page document with an in-file page index
-//! - **FORM:DJVM + DIRM (indirect)** — pages live in separate files; a resolver
-//!   callback `fn(name: &str) -> Result<Vec<u8>, DocError>` is required
+//! - **FORM:DJVM + DIRM (indirect)** — components live in separate files; the
+//!   typed [`ComponentResolver`] contract identifies each page, shared, or
+//!   thumbnail component
 //!
 //! ## Lazy decoding contract
 //!
@@ -33,7 +36,7 @@ use alloc::{
 use crate::{
     annotation::{Annotation, AnnotationError, MapArea},
     bzz::bzz_decode,
-    dirm::{DirmComponentKind, DirmPayload},
+    dirm::{DirmComponent, DirmComponentKind, DirmPayload},
     error::{BzzError, IffError, Iw44Error, Jb2Error},
     iff::{IffChunk, parse_form, parse_form_body},
     info::PageInfo,
@@ -44,13 +47,89 @@ use crate::{
     text::{TextError, TextLayer},
 };
 
+#[cfg(not(feature = "std"))]
+use alloc::sync::Arc;
 #[cfg(feature = "std")]
 use std::sync::Arc;
+
+/// The kind of an external component listed by an indirect `FORM:DJVM`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ComponentKind {
+    /// A renderable `FORM:DJVU` page.
+    Page,
+    /// A shared `FORM:DJVI` component, such as a JB2 symbol dictionary.
+    Shared,
+    /// A `FORM:THUM` thumbnail component.
+    Thumbnail,
+}
+
+/// Stable identity of one component in an indirect `FORM:DJVM` directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ComponentId {
+    /// Resolver key from the DIRM directory.
+    pub name: String,
+    /// DIRM classification for this component.
+    pub kind: ComponentKind,
+}
+
+impl ComponentId {
+    /// Construct a component identity from its resolver key and DIRM kind.
+    pub fn new(name: impl Into<String>, kind: ComponentKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+        }
+    }
+}
+
+/// Typed failures returned by a [`ComponentResolver`].
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum ComponentResolveError {
+    /// The requested component is not available to the resolver.
+    #[error("indirect component {component:?} is missing")]
+    Missing {
+        /// Identity of the missing component.
+        component: ComponentId,
+    },
+
+    /// The resolver could not read or construct the requested component.
+    #[error("failed to resolve indirect component {component:?}: {reason}")]
+    Failed {
+        /// Identity of the component that could not be resolved.
+        component: ComponentId,
+        /// Human-readable resolver detail.
+        reason: String,
+    },
+}
+
+/// Synchronous resolver contract for indirect DJVM components.
+///
+/// The resolver is called once for every DIRM entry, including pages, shared
+/// components, and thumbnails. The typed [`ComponentId`] keeps the component
+/// identity and its DIRM classification together so sync, async, and mutable
+/// adapters can share the same vocabulary as they are added.
+pub trait ComponentResolver {
+    /// Return the complete IFF bytes for one external component.
+    fn resolve(&self, component: &ComponentId) -> Result<Vec<u8>, ComponentResolveError>;
+}
+
+impl<F> ComponentResolver for F
+where
+    F: Fn(&ComponentId) -> Result<Vec<u8>, ComponentResolveError>,
+{
+    fn resolve(&self, component: &ComponentId) -> Result<Vec<u8>, ComponentResolveError> {
+        self(component)
+    }
+}
 
 // ---- Error type -------------------------------------------------------------
 
 /// Errors that can occur when working with the DjVuDocument API.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DocError {
     /// IFF container parse error.
     #[error("IFF error: {0}")]
@@ -83,6 +162,21 @@ pub enum DocError {
     /// An indirect page reference could not be resolved.
     #[error("failed to resolve indirect page '{0}'")]
     IndirectResolve(String),
+
+    /// A typed resolver could not provide one indirect component.
+    #[error("component resolution failed: {0}")]
+    ComponentResolve(#[from] ComponentResolveError),
+
+    /// A resolved component's FORM type disagrees with its DIRM classification.
+    #[error("indirect component {component:?} has FORM:{found:?}, expected kind {expected:?}")]
+    ComponentKindMismatch {
+        /// Identity from the DIRM entry.
+        component: ComponentId,
+        /// FORM type found in the resolved bytes.
+        found: [u8; 4],
+        /// FORM type required by the DIRM kind.
+        expected: ComponentKind,
+    },
 
     /// Page index is out of range.
     #[error("page index {index} is out of range (document has {count} pages)")]
@@ -119,6 +213,10 @@ pub enum DocError {
     /// Metadata parse error.
     #[error("metadata error: {0}")]
     Metadata(#[from] MetadataError),
+
+    /// A configured resource limit was exceeded during document parse/open.
+    #[error("{0}")]
+    ResourceLimit(#[from] crate::resource_limits::ResourceLimitExceeded),
 }
 
 // ---- Bookmark ---------------------------------------------------------------
@@ -133,6 +231,19 @@ pub struct DjVuBookmark {
     pub url: String,
     /// Nested child entries.
     pub children: Vec<DjVuBookmark>,
+}
+
+/// One entry from a document `DIRM` directory (or a synthesized single-page view).
+///
+/// Kind letters follow DjVuLibre `djvused ls`: `P` page, `I` shared/include,
+/// `T` thumbnail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ComponentDirectoryEntry {
+    /// Component classification letter (`P`, `I`, or `T`).
+    pub kind: char,
+    /// Resolver / directory id string.
+    pub id: String,
 }
 
 // ---- Page -------------------------------------------------------------------
@@ -332,7 +443,9 @@ pub struct DjVuPage {
     /// repeated renders reuse the decode.  Populated on first render.
     /// Only available when the `std` feature is enabled (`OnceLock` requires std).
     #[cfg(feature = "std")]
-    render_layers: std::sync::OnceLock<crate::djvu_render::PageLayers>,
+    render_layers: std::sync::OnceLock<Arc<crate::djvu_render::PageLayers>>,
+    /// Resource limits inherited from the parent document at parse time.
+    resource_limits: Option<crate::resource_limits::ResourceLimits>,
 }
 
 impl Clone for DjVuPage {
@@ -347,6 +460,7 @@ impl Clone for DjVuPage {
             // page keeps sharing the single decode (the dict is immutable).
             #[cfg(feature = "std")]
             render_layers: std::sync::OnceLock::new(),
+            resource_limits: self.resource_limits,
         }
     }
 }
@@ -397,6 +511,11 @@ impl DjVuPage {
         self.index
     }
 
+    /// Resource limits inherited from the parent document at parse time.
+    pub fn resource_limits(&self) -> Option<crate::resource_limits::ResourceLimits> {
+        self.resource_limits
+    }
+
     /// Dimensions as `(width, height)`.
     pub fn dimensions(&self) -> (u16, u16) {
         (self.info.width, self.info.height)
@@ -440,10 +559,14 @@ impl DjVuPage {
     /// This resets the cache so the memory is reclaimed; it rebuilds lazily on
     /// the next render of this page. A viewer can call it on pages scrolled
     /// off-screen (or use [`DjVuDocument::retain_render_caches`]) to bound memory.
-    /// Requires `&mut` since the cache uses interior mutability for shared reads.
+    ///
+    /// Takes `&self` since 0.33 (READ_CACHE_BOUNDED), so it can run from inside
+    /// a render. A render already holding a layer keeps it until it finishes.
     #[cfg(feature = "std")]
-    pub fn evict_render_cache(&mut self) {
-        self.render_layers = std::sync::OnceLock::new();
+    pub fn evict_render_cache(&self) {
+        if let Some(layers) = self.render_layers.get() {
+            layers.evict_shared();
+        }
     }
 
     /// C5_COMPRESS: cheaper alternative to [`evict_render_cache`](Self::evict_render_cache)
@@ -459,9 +582,12 @@ impl DjVuPage {
     /// [`evict_render_cache`](Self::evict_render_cache) — see
     /// PERF_EXPERIMENTS.md C5_COMPRESS for why a cheap sub=2→sub=1 "upgrade"
     /// is not possible. No-op if the page was never rendered.
+    ///
+    /// Takes `&self` since 0.33, for the same reason as
+    /// [`evict_render_cache`](Self::evict_render_cache).
     #[cfg(feature = "std")]
-    pub fn downgrade_render_cache(&mut self) {
-        if let Some(layers) = self.render_layers.get_mut() {
+    pub fn downgrade_render_cache(&self) {
+        if let Some(layers) = self.render_layers.get() {
             layers.downgrade();
         }
     }
@@ -550,8 +676,20 @@ impl DjVuPage {
     }
 
     /// Return all BG44 background chunk data slices, in order.
+    ///
+    /// Legacy standalone `FORM:BM44` / `FORM:PM44` documents store the same
+    /// IW44 bitstream under `BM44` / `PM44` chunk ids; those are returned here
+    /// so the existing render pipeline can decode them without a separate path.
     pub fn bg44_chunks(&self) -> Vec<&[u8]> {
-        self.find_chunks(b"BG44")
+        let bg44 = self.find_chunks(b"BG44");
+        if !bg44.is_empty() {
+            return bg44;
+        }
+        let bm44 = self.find_chunks(b"BM44");
+        if !bm44.is_empty() {
+            return bm44;
+        }
+        self.find_chunks(b"PM44")
     }
 
     /// The render-tier layer cache for this page (decoded on first render).
@@ -561,11 +699,18 @@ impl DjVuPage {
     /// [`crate::djvu_render::PageLayers`].
     #[cfg(feature = "std")]
     pub(crate) fn render_layers(&self) -> &crate::djvu_render::PageLayers {
-        let layers = self
-            .render_layers
-            .get_or_init(crate::djvu_render::PageLayers::new);
-        // Stamp the LRU access tick so `enforce_cache_budget` can evict the
-        // least-recently-rendered pages first.
+        let layers = self.render_layers.get_or_init(|| {
+            // Held behind an `Arc` so `crate::render_cache` can keep a weak
+            // reference and sweep this cache when the process goes over its
+            // ceiling. Two threads racing here both build one; the loser is
+            // dropped and its weak entry is pruned by the next sweep.
+            let layers = Arc::new(crate::djvu_render::PageLayers::new());
+            crate::render_cache::register(&layers);
+            layers
+        });
+        // Stamp the page's LRU access tick so `enforce_cache_budget` can evict
+        // the least-recently-rendered pages first. The process-wide governor
+        // ranks individual layers by their own ticks instead (#813).
         layers.bump_access();
         layers
     }
@@ -598,12 +743,12 @@ impl DjVuPage {
     /// full-resolution case) via [`decoded_bg_rgb_s1`](Self::decoded_bg_rgb_s1);
     /// other subsample levels recompute the conversion each call.
     #[cfg(feature = "std")]
-    pub fn decoded_bg44(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44(&self) -> Option<Arc<Iw44Image>> {
         self.render_layers().bg44(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_bg44(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44(&self) -> Option<Arc<Iw44Image>> {
         None
     }
 
@@ -615,13 +760,35 @@ impl DjVuPage {
     ///
     /// Use this instead of [`Self::decoded_bg44`] when `subsample >= 4`.
     #[cfg(feature = "std")]
-    pub fn decoded_bg44_partial(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
         self.render_layers().bg44_partial(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_bg44_partial(&self) -> Option<&Iw44Image> {
+    pub fn decoded_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
         None
+    }
+
+    /// This page's cached RGB conversion for a `subsample > 4` render, when
+    /// the slot holds exactly that subsample. Never decodes.
+    #[cfg(feature = "std")]
+    pub(crate) fn cached_bg_rgb_subhi(&self, subsample: u32) -> Option<Arc<Pixmap>> {
+        self.render_layers.get()?.bg_rgb_subhi(subsample)
+    }
+
+    /// Memoise the RGB conversion for a `subsample > 4` render. The first
+    /// subsample a page is rendered at wins; later ones reconvert.
+    #[cfg(feature = "std")]
+    pub(crate) fn store_bg_rgb_subhi(&self, subsample: u32, px: Arc<Pixmap>) {
+        self.render_layers().store_bg_rgb_subhi(subsample, px);
+    }
+
+    /// This page's first-chunk BG44 image **only if it is already cached** —
+    /// never decodes. See `PageLayers::bg44_partial_cached` for why the
+    /// subsample > 4 render path peeks instead of memoising.
+    #[cfg(feature = "std")]
+    pub(crate) fn cached_bg44_partial(&self) -> Option<Arc<Iw44Image>> {
+        self.render_layers.get()?.bg44_partial_cached()
     }
 
     /// Return the decoded JB2 shared dictionary, decoding and caching on first call.
@@ -817,6 +984,46 @@ impl DjVuPage {
         Ok(None)
     }
 
+    /// Decode the foreground mask directly at 1/4 resolution (2 bits shifted
+    /// off each axis), OR-reducing (max-pooling) instead of allocating a
+    /// full-resolution [`Bitmap`] and downsampling it afterward.
+    ///
+    /// Bit-for-bit identical to `downsample_mask_4x(extract_mask()?)` (see the
+    /// `djvu-jb2` crate's `decode_downsampled` equivalence tests and
+    /// `mask_sub4_matches_extract_mask_then_downsample` below) — it exists to
+    /// skip the full-resolution JB2 canvas allocation for callers that only
+    /// ever need the coarse mask (the thumbnail / heavy-downscale compositor
+    /// path, [`crate::djvu_render::PageLayers::mask_sub4`]).
+    ///
+    /// Returns `Ok(None)` if the page has neither an Sjbz nor an Smmr chunk.
+    ///
+    /// `std`-only: its only caller, [`crate::djvu_render::PageLayers`], is
+    /// itself `std`-only (it caches decoded layers behind `std::sync::OnceLock`),
+    /// and the Smmr fallback below reuses the `std`-only
+    /// [`crate::djvu_render::downsample_mask_4x`].
+    #[cfg(feature = "std")]
+    pub(crate) fn extract_mask_sub4(&self) -> Result<Option<crate::bitmap::Bitmap>, DocError> {
+        if let Some(sjbz) = self.find_chunk(b"Sjbz") {
+            let inline_dict;
+            let dict_ref = if let Some(djbz) = self.find_chunk(b"Djbz") {
+                inline_dict = crate::jb2::decode_dict(djbz, None)?;
+                Some(&inline_dict)
+            } else {
+                self.decoded_shared_dict()
+            };
+            let bm = crate::jb2::decode_downsampled(sjbz, dict_ref, 2)?;
+            return Ok(Some(bm));
+        }
+        if let Some(smmr) = self.find_chunk(b"Smmr") {
+            // No reduced-scale G4/MMR decoder exists; fall back to a full
+            // decode + the same max-pool reduction `mask_sub4` would apply.
+            // Smmr masks are rare in practice (Sjbz is the common case).
+            let bm = crate::smmr::decode_smmr(smmr).map_err(|e| DocError::Smmr(e.to_string()))?;
+            return Ok(Some(crate::djvu_render::downsample_mask_4x(&bm)));
+        }
+        Ok(None)
+    }
+
     /// Decode the IW44 foreground layer (FG44 chunks) if present.
     ///
     /// Returns `Ok(None)` if the page has no FG44 chunks.
@@ -847,12 +1054,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no Sjbz chunk or if decoding fails.
     #[cfg(feature = "std")]
-    pub fn decoded_mask(&self) -> Option<&crate::bitmap::Bitmap> {
+    pub fn decoded_mask(&self) -> Option<Arc<crate::bitmap::Bitmap>> {
         self.render_layers().mask(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_mask(&self) -> Option<&crate::bitmap::Bitmap> {
+    pub fn decoded_mask(&self) -> Option<Arc<crate::bitmap::Bitmap>> {
         None
     }
 
@@ -861,12 +1068,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no FG44 chunks or if decoding fails.
     #[cfg(feature = "std")]
-    pub fn decoded_fg44(&self) -> Option<&Pixmap> {
+    pub fn decoded_fg44(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().fg44(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn decoded_fg44(&self) -> Option<&Pixmap> {
+    pub fn decoded_fg44(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -879,12 +1086,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s1(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s1(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -897,12 +1104,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s2(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s2(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -916,12 +1123,12 @@ impl DjVuPage {
     ///
     /// Returns `None` if the page has no BG44 layer or if decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<Arc<Pixmap>> {
         self.render_layers().bg_rgb_s4(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<&Pixmap> {
+    pub(crate) fn decoded_bg_rgb_s4(&self) -> Option<Arc<Pixmap>> {
         None
     }
 
@@ -932,12 +1139,12 @@ impl DjVuPage {
     /// that repeated palette renders pay neither cost after the first call.
     /// Returns `None` if the page has no Sjbz/Smmr chunk or decoding fails.
     #[cfg(feature = "std")]
-    pub(crate) fn decoded_mask_indexed(&self) -> Option<&(crate::bitmap::Bitmap, Vec<i32>)> {
+    pub(crate) fn decoded_mask_indexed(&self) -> Option<Arc<crate::djvu_render::IndexedMask>> {
         self.render_layers().mask_indexed(self)
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn decoded_mask_indexed(&self) -> Option<&(crate::bitmap::Bitmap, Vec<i32>)> {
+    pub(crate) fn decoded_mask_indexed(&self) -> Option<Arc<crate::djvu_render::IndexedMask>> {
         None
     }
 
@@ -1025,6 +1232,33 @@ pub struct DjVuDocument {
     /// future HTTP-Range fetcher (#196 Phase 3) request exactly the bytes
     /// for a given page.
     page_byte_ranges: Vec<core::ops::Range<u64>>,
+    /// Configurable resource limits supplied at parse/open time.
+    resource_limits: Option<crate::resource_limits::ResourceLimits>,
+}
+
+#[cfg(feature = "std")]
+fn attach_resource_limits(
+    mut document: DjVuDocument,
+    limits: Option<crate::resource_limits::ResourceLimits>,
+) -> DjVuDocument {
+    document.resource_limits = limits;
+    if let Some(limits) = limits {
+        for page in &mut document.pages {
+            page.resource_limits = Some(limits);
+        }
+    }
+    document
+}
+
+#[cfg(feature = "std")]
+fn check_parse_limits(
+    data: &[u8],
+    limits: Option<crate::resource_limits::ResourceLimits>,
+) -> Result<(), DocError> {
+    if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
+        let _ = crate::validate::check_document_limits(data, &limits, "document.parse")?;
+    }
+    Ok(())
 }
 
 impl DjVuDocument {
@@ -1038,7 +1272,52 @@ impl DjVuDocument {
     /// Returns `DocError::NoResolver` if the document is indirect and no resolver
     /// was provided.
     pub fn parse(data: &[u8]) -> Result<Self, DocError> {
-        Self::parse_with_resolver(data, None::<fn(&str) -> Result<Vec<u8>, DocError>>)
+        #[cfg(feature = "std")]
+        {
+            Self::parse_with_options(data, &crate::resource_limits::ParseOptions::default())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Self::parse_with_resolver(data, None::<fn(&str) -> Result<Vec<u8>, DocError>>)
+        }
+    }
+
+    /// Parse a DjVu document with configurable resource limits.
+    ///
+    /// When [`ParseOptions::limits`] is set, header-only estimates are checked
+    /// before the document is fully parsed. The same limits are stored on the
+    /// returned document and inherited by subsequent render calls unless
+    /// overridden via [`render_pixmap_with_limits`](crate::djvu_render::render_pixmap_with_limits).
+    #[cfg(feature = "std")]
+    pub fn parse_with_options(
+        data: &[u8],
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, DocError> {
+        Self::parse_with_resolver_and_options(
+            data,
+            None::<fn(&str) -> Result<Vec<u8>, DocError>>,
+            opts,
+        )
+    }
+
+    /// Parse with an optional resolver and configurable resource limits.
+    #[cfg(feature = "std")]
+    pub fn parse_with_resolver_and_options<R>(
+        data: &[u8],
+        resolver: Option<R>,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, DocError>
+    where
+        R: Fn(&str) -> Result<Vec<u8>, DocError>,
+    {
+        check_parse_limits(data, opts.limits)?;
+        let document = Self::parse_with_resolver(data, resolver)?;
+        Ok(attach_resource_limits(document, opts.limits))
+    }
+
+    /// Configurable resource limits supplied at parse/open time, if any.
+    pub fn resource_limits(&self) -> Option<crate::resource_limits::ResourceLimits> {
+        self.resource_limits
     }
 
     /// Parse from an owned, shared backing store (an owned `Vec<u8>` or an
@@ -1056,20 +1335,36 @@ impl DjVuDocument {
     /// is safe to call for any input. Keep the bundled loop below in sync with
     /// the eager one in [`parse_with_resolver`](Self::parse_with_resolver).
     #[cfg(feature = "std")]
-    pub(crate) fn parse_backed(backing: Backing) -> Result<Self, DocError> {
+    pub(crate) fn parse_backed_with_options(
+        backing: Backing,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, DocError> {
+        check_parse_limits(backing_bytes(&backing), opts.limits)?;
         let data = backing_bytes(&backing);
         let form = parse_form(data)?;
         if &form.form_type != b"DJVM" {
-            return Self::parse(data);
+            return Self::parse_with_resolver_and_options(
+                data,
+                None::<fn(&str) -> Result<Vec<u8>, DocError>>,
+                opts,
+            );
         }
         let Some(dirm_chunk) = form.chunks.iter().find(|c| &c.id == b"DIRM") else {
-            return Self::parse(data);
+            return Self::parse_with_resolver_and_options(
+                data,
+                None::<fn(&str) -> Result<Vec<u8>, DocError>>,
+                opts,
+            );
         };
         let payload = DirmPayload::decode(dirm_chunk.data).map_err(DocError::Malformed)?;
         if !payload.is_bundled() {
             // Indirect: needs a resolver — defer to the eager path (which errors
             // consistently with the previous behaviour).
-            return Self::parse(data);
+            return Self::parse_with_resolver_and_options(
+                data,
+                None::<fn(&str) -> Result<Vec<u8>, DocError>>,
+                opts,
+            );
         }
 
         let entries = payload.components();
@@ -1144,11 +1439,135 @@ impl DjVuDocument {
             page_byte_ranges.clear();
         }
 
+        Ok(attach_resource_limits(
+            DjVuDocument {
+                pages,
+                bookmarks,
+                global_chunks,
+                page_byte_ranges,
+                resource_limits: None,
+            },
+            opts.limits,
+        ))
+    }
+
+    /// Parse a DjVu document using the typed sync component resolver contract.
+    ///
+    /// For an indirect `FORM:DJVM`, the resolver is called once for every DIRM
+    /// entry in declaration order. That includes `Page`, `Shared`, and
+    /// `Thumbnail` components; shared `Djbz` dictionaries referenced by page
+    /// `INCL` chunks are attached to the resulting pages just as they are for
+    /// bundled documents. Single-page and bundled documents do not call the
+    /// resolver.
+    ///
+    /// The older [`Self::parse_with_resolver`] API remains available for
+    /// callers whose resolver is keyed only by a string page name.
+    pub fn parse_with_component_resolver<R>(data: &[u8], resolver: &R) -> Result<Self, DocError>
+    where
+        R: ComponentResolver + ?Sized,
+    {
+        let form = parse_form(data)?;
+        if form.form_type != *b"DJVM" {
+            // Preserve the existing single-page and non-DjVu behavior. The
+            // resolver is intentionally unused for a standalone FORM:DJVU.
+            return Self::parse(data);
+        }
+
+        let dirm_chunk = form
+            .chunks
+            .iter()
+            .find(|c| &c.id == b"DIRM")
+            .ok_or(DocError::MissingChunk("DIRM"))?;
+        let payload = DirmPayload::decode(dirm_chunk.data).map_err(DocError::Malformed)?;
+        if payload.is_bundled() {
+            // Bundled components are already in the index bytes and therefore
+            // do not need an external resolver.
+            return Self::parse(data);
+        }
+
+        let entries = payload.components();
+        let bookmarks = parse_navm_bookmarks(&form.chunks)?;
+        let global_chunks: Vec<RawChunk> = form
+            .chunks
+            .iter()
+            .filter(|c| &c.id != b"FORM")
+            .map(|c| RawChunk {
+                id: c.id,
+                data: c.data.to_vec(),
+            })
+            .collect();
+
+        #[cfg(not(feature = "std"))]
+        use alloc::collections::BTreeMap;
+        #[cfg(feature = "std")]
+        use std::collections::BTreeMap;
+
+        #[cfg(feature = "std")]
+        let mut shared_djbz: BTreeMap<String, Arc<SharedDict>> = BTreeMap::new();
+        #[cfg(not(feature = "std"))]
+        let mut shared_djbz: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut page_components: Vec<(ComponentId, Vec<u8>)> = Vec::new();
+
+        for entry in &entries {
+            let component = component_id_from_dirm(entry);
+            let component_kind = component.kind;
+            let resolved = resolver
+                .resolve(&component)
+                .map_err(DocError::ComponentResolve)?;
+            let resolved_form = parse_form(&resolved)?;
+            let expected = expected_component_form(component_kind);
+            if resolved_form.form_type != expected {
+                return Err(DocError::ComponentKindMismatch {
+                    component,
+                    found: resolved_form.form_type,
+                    expected: component_kind,
+                });
+            }
+
+            match component_kind {
+                ComponentKind::Page => page_components.push((component, resolved)),
+                ComponentKind::Shared => {
+                    // A DJVI may contain annotations or other shared data that
+                    // this page model does not consume yet. Keep the resolver
+                    // contract broad, but index the Djbz form when present.
+                    if let Some(djbz) = resolved_form.chunks.iter().find(|c| &c.id == b"Djbz") {
+                        #[cfg(feature = "std")]
+                        shared_djbz.insert(
+                            component.name,
+                            Arc::new(SharedDict::new(djbz.data.to_vec())),
+                        );
+                        #[cfg(not(feature = "std"))]
+                        shared_djbz.insert(component.name, djbz.data.to_vec());
+                    }
+                }
+                ComponentKind::Thumbnail => {}
+            }
+        }
+
+        let mut pages = Vec::with_capacity(page_components.len());
+        for (page_idx, (_component, resolved)) in page_components.iter().enumerate() {
+            let page_form = parse_form(resolved)?;
+            let shared_for_page = page_form
+                .chunks
+                .iter()
+                .filter(|c| &c.id == b"INCL")
+                .filter_map(|incl| core::str::from_utf8(incl.data.trim_ascii_end()).ok())
+                .find_map(|name| shared_djbz.get(name))
+                .cloned();
+            pages.push(parse_page_from_chunks(
+                &page_form.chunks,
+                page_idx,
+                shared_for_page,
+            )?);
+        }
+
         Ok(DjVuDocument {
             pages,
             bookmarks,
             global_chunks,
-            page_byte_ranges,
+            // Indirect component bytes live outside the index buffer.
+            page_byte_ranges: Vec::new(),
+            resource_limits: None,
         })
     }
 
@@ -1182,6 +1601,19 @@ impl DjVuDocument {
                     bookmarks: vec![],
                     global_chunks,
                     page_byte_ranges,
+                    resource_limits: None,
+                })
+            }
+            b"BM44" | b"PM44" => {
+                let page = parse_legacy_iw44_page(&form.form_type, &form.chunks, 0)?;
+                #[allow(clippy::single_range_in_vec_init)]
+                let page_byte_ranges = vec![0u64..(data.len() as u64)];
+                Ok(DjVuDocument {
+                    pages: vec![page],
+                    bookmarks: vec![],
+                    global_chunks: Vec::new(),
+                    page_byte_ranges,
+                    resource_limits: None,
                 })
             }
             b"DJVM" => {
@@ -1290,7 +1722,13 @@ impl DjVuDocument {
                         // FORM header.
                         if let Some(off) = comp_offsets.get(comp_idx) {
                             let start = *off as usize;
-                            if let Some(size_bytes) = data.get(start + 4..start + 8) {
+                            // `start` is an untrusted DIRM offset; `start + 8`
+                            // overflows `usize` on 32-bit targets for a crafted
+                            // out-of-bounds offset. Guard the header slice.
+                            if let Some(size_bytes) = start
+                                .checked_add(8)
+                                .and_then(|end| data.get(start + 4..end))
+                            {
                                 let size_be =
                                     [size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]];
                                 page_byte_ranges.push(crate::dirm::form_byte_range(*off, size_be));
@@ -1310,6 +1748,7 @@ impl DjVuDocument {
                         bookmarks,
                         global_chunks,
                         page_byte_ranges,
+                        resource_limits: None,
                     })
                 } else {
                     // Indirect: pages must be resolved by name
@@ -1336,6 +1775,7 @@ impl DjVuDocument {
                         // Indirect: per-page bytes live in external files, not the
                         // index buffer — no meaningful range to expose here.
                         page_byte_ranges: Vec::new(),
+                        resource_limits: None,
                     })
                 }
             }
@@ -1415,7 +1855,8 @@ impl DjVuDocument {
             // chain: mask/fg44 are independent of bg; bg_rgb_s1 subsumes the
             // bg44 ZP arithmetic decode (see `PageLayers::bg_rgb_s1`), so this
             // warms every cache slot a native-resolution `render_pixmap` call
-            // reads from.
+            // reads from. (A page too large to hold its background whole
+            // gets no RGB pixmap — #811 — but the bg44 slot is still warmed.)
             let _ = page.decoded_mask();
             let _ = page.decoded_fg44();
             let _ = page.decoded_bg_rgb_s1();
@@ -1451,8 +1892,8 @@ impl DjVuDocument {
     /// `keep`, bounding memory to a working set (e.g. the visible pages plus a
     /// small prefetch window) in a long-lived viewer.
     #[cfg(feature = "std")]
-    pub fn retain_render_caches(&mut self, keep: &[usize]) {
-        for (i, p) in self.pages.iter_mut().enumerate() {
+    pub fn retain_render_caches(&self, keep: &[usize]) {
+        for (i, p) in self.pages.iter().enumerate() {
             if !keep.contains(&i) {
                 p.evict_render_cache();
             }
@@ -1480,7 +1921,7 @@ impl DjVuDocument {
     /// page render to hold memory near a fixed budget. No-op (returns 0) when
     /// already under budget. Evicted caches rebuild lazily and identically.
     #[cfg(feature = "std")]
-    pub fn enforce_cache_budget(&mut self, max_bytes: usize, protect: &[usize]) -> usize {
+    pub fn enforce_cache_budget(&self, max_bytes: usize, protect: &[usize]) -> usize {
         let mut total = self.render_cache_bytes();
         if total <= max_bytes {
             return 0;
@@ -1510,8 +1951,8 @@ impl DjVuDocument {
     /// C5_COMPRESS: like [`downgrade_render_caches`](Self::downgrade_render_caches)
     /// applied to every page — downgrade instead of drop.
     #[cfg(feature = "std")]
-    pub fn downgrade_render_caches(&mut self) {
-        for p in &mut self.pages {
+    pub fn downgrade_render_caches(&self) {
+        for p in &self.pages {
             p.downgrade_render_cache();
         }
     }
@@ -1522,7 +1963,7 @@ impl DjVuDocument {
     /// downgraded — not fully dropped — pages).
     #[cfg(feature = "std")]
     pub fn enforce_cache_budget_with(
-        &mut self,
+        &self,
         max_bytes: usize,
         protect: &[usize],
         opts: CacheBudgetOptions,
@@ -1597,6 +2038,30 @@ impl DjVuDocument {
         }
     }
 
+    /// Component directory from the document `DIRM` chunk.
+    ///
+    /// Returns an empty vector when no `DIRM` is present (typical single-page
+    /// `FORM:DJVU`). Kind letters match DjVuLibre `djvused ls`: `P` page,
+    /// `I` shared/include, `T` thumbnail.
+    pub fn component_directory(&self) -> Result<Vec<ComponentDirectoryEntry>, DocError> {
+        let Some(data) = self.raw_chunk(b"DIRM") else {
+            return Ok(Vec::new());
+        };
+        let payload = DirmPayload::decode(data).map_err(DocError::Malformed)?;
+        Ok(payload
+            .components()
+            .into_iter()
+            .map(|component| ComponentDirectoryEntry {
+                kind: match component.kind {
+                    DirmComponentKind::Page => 'P',
+                    DirmComponentKind::Thumbnail => 'T',
+                    DirmComponentKind::Shared => 'I',
+                },
+                id: component.id,
+            })
+            .collect())
+    }
+
     /// Return the raw bytes of the first document-level chunk with the given
     /// 4-byte ID.
     ///
@@ -1665,6 +2130,20 @@ impl DjVuDocument {
         data: &[u8],
         base_dir: impl AsRef<std::path::Path>,
     ) -> Result<Self, DocError> {
+        Self::parse_from_dir_with_options(
+            data,
+            base_dir,
+            &crate::resource_limits::ParseOptions::default(),
+        )
+    }
+
+    /// Parse an indirect document from a directory with configurable resource limits.
+    #[cfg(feature = "std")]
+    pub fn parse_from_dir_with_options(
+        data: &[u8],
+        base_dir: impl AsRef<std::path::Path>,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, DocError> {
         let base = base_dir.as_ref().to_path_buf();
         let resolver = move |name: &str| -> Result<Vec<u8>, DocError> {
             // Strip any "file://" prefix
@@ -1676,7 +2155,7 @@ impl DjVuDocument {
             };
             std::fs::read(&path).map_err(|_| DocError::IndirectResolve(name.to_string()))
         };
-        Self::parse_with_resolver(data, Some(resolver))
+        Self::parse_with_resolver_and_options(data, Some(resolver), opts)
     }
 }
 
@@ -1743,7 +2222,10 @@ impl MmapDocument {
         // ref) for `advise_page_willneed`.
         let mmap = Arc::new(mmap);
         let backing: Backing = mmap.clone();
-        let doc = DjVuDocument::parse_backed(backing.clone())?;
+        let doc = DjVuDocument::parse_backed_with_options(
+            backing.clone(),
+            &crate::resource_limits::ParseOptions::default(),
+        )?;
         Ok(MmapDocument {
             _backing: backing,
             mmap,
@@ -1877,6 +2359,23 @@ impl core::ops::Deref for MmapDocument {
 
 // ---- Internal parsing helpers -----------------------------------------------
 
+fn component_id_from_dirm(component: &DirmComponent) -> ComponentId {
+    let kind = match component.kind {
+        DirmComponentKind::Page => ComponentKind::Page,
+        DirmComponentKind::Shared => ComponentKind::Shared,
+        DirmComponentKind::Thumbnail => ComponentKind::Thumbnail,
+    };
+    ComponentId::new(component.id.clone(), kind)
+}
+
+fn expected_component_form(kind: ComponentKind) -> [u8; 4] {
+    match kind {
+        ComponentKind::Page => *b"DJVU",
+        ComponentKind::Shared => *b"DJVI",
+        ComponentKind::Thumbnail => *b"THUM",
+    }
+}
+
 /// Parse a `DjVuPage` from the chunks of a FORM:DJVU.
 ///
 /// `shared_djbz` is the raw `Djbz` data from a referenced DJVI component
@@ -1910,6 +2409,7 @@ fn parse_page_lazy(
         index,
         shared_djbz,
         render_layers: std::sync::OnceLock::new(),
+        resource_limits: None,
     })
 }
 
@@ -1941,7 +2441,120 @@ fn parse_page_from_chunks(
         index,
         shared_djbz,
         render_layers: std::sync::OnceLock::new(),
+        resource_limits: None,
     })
+}
+
+/// Build [`PageInfo`] from the first IW44 chunk header of a legacy BM44/PM44
+/// document (no INFO chunk). DjVuLibre reports 100 dpi for these photo forms.
+fn page_info_from_iw44_first_chunk(
+    form_type: &[u8; 4],
+    payload: &[u8],
+) -> Result<PageInfo, DocError> {
+    if payload.len() < 9 {
+        return Err(DocError::Malformed(
+            "legacy IW44 first chunk header truncated",
+        ));
+    }
+    let serial = payload[0];
+    if serial != 0 {
+        return Err(DocError::Malformed(
+            "legacy IW44 first chunk must have serial 0",
+        ));
+    }
+    let majver = payload[2];
+    let is_grayscale = (majver >> 7) != 0;
+    match (form_type, is_grayscale) {
+        (b"BM44", true) | (b"PM44", false) => {}
+        (b"BM44", false) => {
+            return Err(DocError::Malformed(
+                "FORM:BM44 requires a grayscale IW44 bitstream",
+            ));
+        }
+        (b"PM44", true) => {
+            return Err(DocError::Malformed(
+                "FORM:PM44 requires a color IW44 bitstream",
+            ));
+        }
+        _ => {
+            return Err(DocError::Malformed("unexpected legacy IW44 form type"));
+        }
+    }
+    let width = u16::from_be_bytes([payload[4], payload[5]]);
+    let height = u16::from_be_bytes([payload[6], payload[7]]);
+    if width == 0 || height == 0 {
+        return Err(DocError::Malformed("legacy IW44 zero dimension"));
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > 64 * 1024 * 1024 {
+        return Err(DocError::Malformed("legacy IW44 image too large"));
+    }
+    Ok(PageInfo {
+        width,
+        height,
+        dpi: 100,
+        gamma: 2.2,
+        rotation: crate::info::Rotation::None,
+    })
+}
+
+/// Parse a legacy standalone `FORM:BM44` or `FORM:PM44` page.
+fn parse_legacy_iw44_page(
+    form_type: &[u8; 4],
+    chunks: &[IffChunk<'_>],
+    index: usize,
+) -> Result<DjVuPage, DocError> {
+    let expected_id = match form_type {
+        b"BM44" => *b"BM44",
+        b"PM44" => *b"PM44",
+        _ => {
+            return Err(DocError::Malformed(
+                "parse_legacy_iw44_page requires BM44 or PM44",
+            ));
+        }
+    };
+    if chunks.is_empty() {
+        return Err(DocError::MissingChunk(match form_type {
+            b"BM44" => "BM44",
+            _ => "PM44",
+        }));
+    }
+    for chunk in chunks {
+        if chunk.id != expected_id {
+            return Err(DocError::Malformed(
+                "legacy IW44 form contains unexpected chunk id",
+            ));
+        }
+    }
+    let info = page_info_from_iw44_first_chunk(form_type, chunks[0].data)?;
+    let raw_chunks: Vec<RawChunk> = chunks
+        .iter()
+        .map(|c| RawChunk {
+            id: c.id,
+            data: c.data.to_vec(),
+        })
+        .collect();
+    #[cfg(feature = "std")]
+    {
+        Ok(DjVuPage {
+            info,
+            chunks: ChunkStore::Eager(raw_chunks),
+            index,
+            shared_djbz: None,
+            render_layers: std::sync::OnceLock::new(),
+            resource_limits: None,
+        })
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        Ok(DjVuPage {
+            info,
+            chunks: raw_chunks,
+            index,
+            shared_djbz: None,
+            resource_limits: None,
+        })
+    }
 }
 
 #[cfg(not(feature = "std"))]
@@ -1970,6 +2583,7 @@ fn parse_page_from_chunks(
         chunks: raw_chunks,
         index,
         shared_djbz,
+        resource_limits: None,
     })
 }
 
@@ -2101,6 +2715,14 @@ fn read_navm_str(data: &[u8], pos: &mut usize) -> Result<String, DocError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_bytes(name: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("tests/fixtures/{name}")),
+        )
+        .unwrap_or_else(|_| panic!("fixture {name} should exist"))
+    }
 
     /// #624: a page may carry several `INCL` chunks (czech.djvu: shared
     /// annotations + two symbol-dictionary includes). Resolution must scan
@@ -2309,6 +2931,40 @@ mod tests {
             chunks.push(IffChunk { id: **id, data });
         }
         parse_page_from_chunks(&chunks, 0, None).expect("page should build")
+    }
+
+    #[test]
+    fn parse_with_options_rejects_exceeded_page_count_before_decode() {
+        let data = fixture_bytes("boy.djvu");
+        let err = DjVuDocument::parse_with_options(
+            &data,
+            &crate::resource_limits::ParseOptions {
+                limits: Some(crate::resource_limits::ResourceLimits {
+                    max_pages: Some(0),
+                    ..Default::default()
+                }),
+            },
+        )
+        .expect_err("parse should fail on page-count limit");
+        assert!(matches!(err, DocError::ResourceLimit(_)));
+    }
+
+    #[test]
+    fn parse_with_options_stores_limits_for_render_inheritance() {
+        let data = fixture_bytes("boy.djvu");
+        let limits = crate::resource_limits::ResourceLimits {
+            max_render_pixels: Some(100_000),
+            ..Default::default()
+        };
+        let doc = DjVuDocument::parse_with_options(
+            &data,
+            &crate::resource_limits::ParseOptions {
+                limits: Some(limits),
+            },
+        )
+        .expect("parse should succeed");
+        assert_eq!(doc.resource_limits(), Some(limits));
+        assert_eq!(doc.page(0).unwrap().resource_limits(), Some(limits));
     }
 
     #[test]
@@ -2693,6 +3349,66 @@ mod tests {
             bm.width > 0 && bm.height > 0,
             "mask must have non-zero dimensions"
         );
+    }
+
+    /// `extract_mask_sub4` must be bit-for-bit identical to decoding the full
+    /// mask and then max-pool-downsampling it by 4 (round 89 follow-up: this
+    /// is what lets the thumbnail path skip the full-resolution JB2 canvas).
+    #[test]
+    fn mask_sub4_matches_extract_mask_then_downsample() {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/boy_jb2.djvu"),
+        )
+        .expect("boy_jb2.djvu must exist");
+        let doc = DjVuDocument::parse(&data).expect("parse must succeed");
+        let page = doc.page(0).expect("page 0 must exist");
+
+        let full = page
+            .extract_mask()
+            .expect("extract_mask must succeed")
+            .expect("boy_jb2.djvu page must have a JB2 mask");
+        let expected = crate::djvu_render::downsample_mask_4x(&full);
+
+        let actual = page
+            .extract_mask_sub4()
+            .expect("extract_mask_sub4 must succeed")
+            .expect("boy_jb2.djvu page must have a JB2 mask");
+
+        assert_eq!(expected.width, actual.width);
+        assert_eq!(expected.height, actual.height);
+        assert_eq!(expected.data, actual.data, "sub4 mask mismatch");
+    }
+
+    /// Same equivalence check on a page with a shared dictionary (INCL /
+    /// Djbz), which `extract_mask_sub4` resolves the same way `extract_mask`
+    /// does before decoding.
+    #[test]
+    fn mask_sub4_matches_extract_mask_then_downsample_shared_dict() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/DjVu3Spec_bundled.djvu");
+        let data = std::fs::read(&path).expect("DjVu3Spec_bundled.djvu must exist");
+        let doc = DjVuDocument::parse(&data).expect("parse must succeed");
+        let page = doc
+            .pages
+            .iter()
+            .find(|p| p.shared_djbz.is_some())
+            .expect("at least one page must have a shared dict");
+
+        let full = page
+            .extract_mask()
+            .expect("extract_mask must succeed")
+            .expect("page must have a JB2 mask");
+        let expected = crate::djvu_render::downsample_mask_4x(&full);
+
+        let actual = page
+            .extract_mask_sub4()
+            .expect("extract_mask_sub4 must succeed")
+            .expect("page must have a JB2 mask");
+
+        assert_eq!(expected.width, actual.width);
+        assert_eq!(expected.height, actual.height);
+        assert_eq!(expected.data, actual.data, "sub4 mask mismatch");
     }
 
     /// Pages without INCL still render correctly (no regression).
@@ -3282,6 +3998,89 @@ mod tests {
         assert_eq!(page.width(), 181);
     }
 
+    /// The typed resolver sees shared entries as well as pages, and a resolved
+    /// DJVI dictionary is connected to the page through its INCL reference.
+    #[test]
+    fn typed_indirect_resolver_loads_shared_djvi_component() {
+        use std::cell::RefCell;
+
+        use crate::dirm::DirmPayload;
+        use crate::iff::{Chunk, EmitPart};
+
+        let chicken_data =
+            std::fs::read(assets_path().join("chicken.djvu")).expect("chicken.djvu exists");
+
+        // Add an INCL reference to the otherwise ordinary fixture page.
+        let mut page_file = crate::iff::parse(&chicken_data).expect("parse page fixture");
+        match &mut page_file.root {
+            Chunk::Form {
+                secondary_id,
+                children,
+                ..
+            } if secondary_id == b"DJVU" => {
+                children.insert(
+                    1,
+                    Chunk::Leaf {
+                        id: *b"INCL",
+                        data: b"shared.djvi".to_vec(),
+                    },
+                );
+            }
+            _ => panic!("fixture must be FORM:DJVU"),
+        }
+        let page_bytes = crate::iff::emit(&page_file);
+
+        let dict_chunk = Chunk::Leaf {
+            id: *b"Djbz",
+            data: vec![0x01, 0x02],
+        };
+        let shared_bytes = crate::iff::partial_emit(*b"DJVI", &[EmitPart::Chunk(&dict_chunk)])
+            .expect("shared component fits");
+        let thumbnail_bytes = crate::iff::partial_emit(*b"THUM", &[]).expect("thumbnail fits");
+
+        let dirm = DirmPayload::build_indirect(
+            3,
+            &[0x00, 0x01, 0x02],
+            &[
+                "shared.djvi".to_string(),
+                "page.djvu".to_string(),
+                "thumb.thum".to_string(),
+            ],
+        );
+        let dirm_chunk = Chunk::Leaf {
+            id: *b"DIRM",
+            data: dirm.encode(),
+        };
+        let djvm = crate::iff::partial_emit(*b"DJVM", &[EmitPart::Chunk(&dirm_chunk)])
+            .expect("index fits");
+
+        let seen = RefCell::new(Vec::new());
+        let resolver = |component: &ComponentId| {
+            seen.borrow_mut().push(component.clone());
+            match component.name.as_str() {
+                "shared.djvi" => Ok(shared_bytes.clone()),
+                "page.djvu" => Ok(page_bytes.clone()),
+                "thumb.thum" => Ok(thumbnail_bytes.clone()),
+                _ => Err(ComponentResolveError::Missing {
+                    component: component.clone(),
+                }),
+            }
+        };
+
+        let doc = DjVuDocument::parse_with_component_resolver(&djvm, &resolver)
+            .expect("typed indirect parse");
+        assert_eq!(doc.page_count(), 1);
+        assert!(doc.pages[0].shared_djbz.is_some());
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[
+                ComponentId::new("shared.djvi", ComponentKind::Shared),
+                ComponentId::new("page.djvu", ComponentKind::Page),
+                ComponentId::new("thumb.thum", ComponentKind::Thumbnail),
+            ]
+        );
+    }
+
     /// parse_from_dir with a DIRM component named as an absolute path (line 1040).
     #[test]
     fn parse_from_dir_resolves_absolute_component_path() {
@@ -3372,5 +4171,75 @@ mod tests {
             doc.page_byte_range(0).is_none(),
             "page_byte_range must be None when DIRM offset is out of bounds"
         );
+    }
+
+    /// Legacy FORM:BM44 parses as a one-page grayscale IW44 document (#683).
+    #[test]
+    fn legacy_bm44_parses_as_one_page() {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/legacy_bm44.djvu"),
+        )
+        .expect("legacy_bm44.djvu must exist");
+        let doc = DjVuDocument::parse(&data).expect("BM44 must parse");
+        assert_eq!(doc.page_count(), 1);
+        let page = doc.page(0).unwrap();
+        assert_eq!(page.dimensions(), (32, 32));
+        assert_eq!(page.dpi(), 100);
+        assert_eq!(page.bg44_chunks().len(), 3);
+    }
+
+    /// Legacy FORM:PM44 parses as a one-page color IW44 document (#683).
+    #[test]
+    fn legacy_pm44_parses_as_one_page() {
+        let data = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/legacy_pm44.djvu"),
+        )
+        .expect("legacy_pm44.djvu must exist");
+        let doc = DjVuDocument::parse(&data).expect("PM44 must parse");
+        assert_eq!(doc.page_count(), 1);
+        let page = doc.page(0).unwrap();
+        assert_eq!(page.dimensions(), (181, 240));
+        assert_eq!(page.dpi(), 100);
+        assert!(!page.bg44_chunks().is_empty());
+    }
+
+    /// Empty BM44 body is a typed missing-chunk error, not a panic.
+    #[test]
+    fn legacy_bm44_empty_is_typed_error() {
+        let data = crate::iff::partial_emit(*b"BM44", &[]).expect("fits within u32");
+        let err = DjVuDocument::parse(&data).expect_err("empty BM44 must fail");
+        assert!(matches!(err, DocError::MissingChunk("BM44")), "got {err:?}");
+    }
+
+    /// Truncated first IW44 header fails closed.
+    #[test]
+    fn legacy_bm44_truncated_header_is_typed_error() {
+        use crate::iff::{Chunk, EmitPart};
+        let chunk = Chunk::Leaf {
+            id: *b"BM44",
+            data: vec![0, 1, 0x81],
+        };
+        let data = crate::iff::partial_emit(*b"BM44", &[EmitPart::Chunk(&chunk)])
+            .expect("fits within u32");
+        let err = DjVuDocument::parse(&data).expect_err("truncated BM44 must fail");
+        assert!(matches!(err, DocError::Malformed(_)), "got {err:?}");
+    }
+
+    /// FORM:BM44 with a color IW44 bitstream is rejected.
+    #[test]
+    fn legacy_bm44_rejects_color_bitstream() {
+        use crate::iff::{Chunk, EmitPart};
+        // Color major byte 0x01, 8x8.
+        let payload = vec![0, 1, 0x01, 2, 0, 8, 0, 8, 0];
+        let chunk = Chunk::Leaf {
+            id: *b"BM44",
+            data: payload,
+        };
+        let data = crate::iff::partial_emit(*b"BM44", &[EmitPart::Chunk(&chunk)])
+            .expect("fits within u32");
+        let err = DjVuDocument::parse(&data).expect_err("color BM44 must fail");
+        assert!(matches!(err, DocError::Malformed(_)), "got {err:?}");
     }
 }

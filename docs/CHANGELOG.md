@@ -7,21 +7,337 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 3.3.0
+
+**TL;DR**
+
+- **Huge files get a real picture:** Photoshop, PDF, Office, archives, comics, 3D models and
+  scans, even past 256 MB (fixes #46)
+- **12 more file types (361 in all):** game textures, animated cursors, SIXEL, AVIF sequences,
+  DXF, XMind, Visio templates, NuGet and VS Code packages
+- **Damaged or booby-trapped files** can no longer crash or stall thumbnails
+- **Bundled ImageMagick updated** with the latest security fixes
+- **WMA album covers** show in Explorer and the preview pane
+- **FITS astronomy images** show their stars instead of near-black
+- **3D scans (PLY)** draw as the model, not a jumble of triangles
+- **Upload links show when they expire**, plus a new Recent uploads list
+- **Screenshot editor:** Delete, then Undo, brings the shape back
+- **Quick preview fixes** for email, touchpad zoom, Find, huge folders and very tall PDFs
+- **Preview pane fixes:** old Excel files, HEIF/AVIF sequences and six retro image formats now
+  show
+- **Image fixes:** TIFF colour profiles, odd-sized DDS textures, offset JPEG 2000, leaner DjVu
+- **Recordings still being written (.ts)** get a thumbnail
+- **Settings fixes:** "Check for problems" no longer closes Settings, imported shortcuts survive
+  Save, no freeze on close
+- **Uninstall removes its leftover files** from your profile
+- **Plus smaller fixes** for e-book covers, JPEG thumbnails and long paths from Everything
+
+**Everything in 3.3.0**
+
+- **Twelve more file types get thumbnails (361 in all):** Valve game textures (`.vtf`) and
+  Khronos KTX textures (`.ktx`), animated cursors (`.ani`), SIXEL terminal graphics
+  (`.six`/`.sixel`), AVIF image sequences (`.avifs`), the preview AutoCAD and BricsCAD save
+  inside a `.dxf`, XMind mind maps (`.xmind`), Visio templates and stencils (`.vstx`/`.vssx`),
+  and the icon inside NuGet (`.nupkg`) and Visual Studio / VS Code (`.vsix`) packages. A DXF,
+  stencil or package that carries no picture keeps its usual icon.
+- **Big Photoshop files get a sharp picture everywhere.** A `.psd` or `.psb` over about 256 MB
+  showed the small, blurry preview Photoshop saves inside it, in Explorer, the preview pane and
+  Quick preview alike. SageThumbs now reads the full picture straight off the disk, only the
+  parts it needs, so a document of any size is sharp; one saved with "Maximize compatibility"
+  off is drawn from its layers. Reported in #46.
+- **Very big files of many other types get their picture too.** Past about 256 MB, PDF and
+  Illustrator files, EPS, older Word, Excel, PowerPoint, Visio and Publisher files, 3ds Max and
+  SolidWorks files, RAR and 7-Zip archives and comics, 3D models (STL, OBJ, PLY), FITS images,
+  JPEG 2000, and huge TIFF (BigTIFF included), PPM, PGM and TGA scans showed the plain icon, an
+  empty preview pane or nothing in Quick preview. They are now read straight off the disk, only
+  as far as the picture needs.
+- **Windows Media Audio (`.wma`) files show their album cover in Explorer and the preview
+  pane.** They share their container with Windows Media video and were taken for a video
+  with no picture, so the cover never showed there, at any size.
+- **FITS astronomy images show their stars.** SageThumbs reads them itself now, with the
+  contrast stretch astronomy software uses, instead of drawing most of them nearly black, and a
+  file that keeps its picture in a later section shows it too.
+- **TIFF files with a colour profile keep their colours** when Windows' own decoder reads
+  them, which it does for every TIFF past 256 MB; they came out slightly off.
+- **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
+  published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
+  several ways around its safety policy. It only ever runs as a separate, time-limited process.
+- **Large DjVu pages need less memory** to thumbnail, from the updated DjVu decoder.
+- **Smaller fixes:** an e-book whose cover image carries a lazy-loading placeholder shows the
+  real cover; JPEGs with padding bytes before their camera data get their embedded thumbnail
+  again; an empty `.ts` file opens as text in Quick preview instead of as a broken video; Redo
+  with nothing to redo no longer stops Undo from bringing back a deleted annotation; and a file
+  picked in Everything with a very long path is used whole instead of cut short.
+- **Uploaded links now say when they expire.** Each free host deletes files on its own
+  schedule, from 3 hours (uguu.se) to 3-100 days (x0.at), and a link never said which. The
+  upload window now shows each link's expiry, and a new **Recent uploads** list (upload window,
+  Settings > Screenshots, or the tray menu) keeps every link with the time it has left.
+  `st2k upload` prints the expiry too, and `st2k upload-history` lists every link. Suggested
+  by a user.
+- **Closing the "Check for problems" window no longer closes Settings with it**, along with any
+  change you had not saved yet.
+- **3D scans in PLY format thumbnail correctly.** Binary PLY files that store a colour or a
+  normal beside each point, which is what most 3D scanners and photogrammetry tools write, drew
+  as a jumble of triangles; they now draw as the model. A binary PLY with a face of more than 64
+  corners (a cylinder's cap saved as one polygon) no longer loses every face after it.
+- **Damaged or deliberately malformed files can no longer crash or stall the thumbnail
+  process.** A handful of crafted JPEG XL, 7-Zip, RAR, TIFF, Photoshop, STL and TGA files could
+  make it run out of memory or keep it busy for minutes; each is now refused or cut off, and a
+  normal file draws exactly as before.
+- **Screenshot editor: Delete, then Undo, brings the shape back.** Undo after deleting an
+  annotation used to remove a second, different annotation instead. The toolbar's Undo and
+  Ctrl+Z now do exactly the same thing, and the editor stays open if handing the capture to
+  Upload or text recognition fails, so the annotated capture is not lost.
+- **Shortcuts imported from another PC, or brought in by settings sync, survive Save.** A
+  shortcut that is not in the built-in list was replaced by the first one in the list the next
+  time you pressed Save.
+- **Quick preview fixes.** An email whose HTML contains a `<header>` no longer loses everything
+  after it. An HTML file with `%` in its name opens that file. A folder with a huge number of
+  files no longer stalls its info card. A precision touchpad zooms an image one step per notch
+  instead of racing through the zoom levels. Find no longer keeps the previous file's results
+  when you type while the next file loads. A database table that is both long and wide now
+  says both. A very tall PDF page no longer asks for a gigantic picture.
+- **DDS textures whose sides are not powers of two** now take their smaller mip levels from
+  the right place in the file.
+- **JPEG 2000 images that do not start at the corner of their canvas** (an image offset, which
+  some scanners and mapping tools write) drew as noise; they now draw the picture.
+- **The preview pane shows Dr Halo (`.cut`), MacPaint (`.mac`), Wavefront (`.rla`), ZX
+  Spectrum (`.scr`), Scitex CT (`.sct`) and PlayStation (`.tim`) images.** Their thumbnails
+  worked, but the pane stayed empty: these formats carry nothing to recognise them by, and only
+  the thumbnail told the decoder which format it was reading.
+- **A video recording that is still being written, or was preallocated on disk,** gets its
+  thumbnail: a transport stream (`.ts`, `.m2ts`, `.mts`) with empty space after its last frame
+  used to get none.
+- **Older Excel workbooks (`.xls`) show their preview in the preview pane** instead of an empty
+  pane, and no longer come up empty now and then in Quick preview on a busy PC. **HEIF and
+  AVIF image sequences** read only their first picture for a thumbnail
+  instead of every frame, which took long enough to leave the preview pane blank.
+- **Closing Settings while a sync upload is finishing** hides the window at once instead of
+  leaving it frozen for a few seconds, and the welcome window's "Get started" no longer freezes
+  while Explorer restarts to show file-type badges.
+- **Uninstalling also removes the log and the update-check file** from your own profile, and
+  no longer leaves a re-register entry behind when it runs before a pending restart.
+- For the few installations on a business licence: the reminder before the evaluation ends
+  shows again (it opened Quick preview instead).
+
+## 3.2.0
+
+- **Uninstalling keeps Windows' thumbnail cache unless you ask.** Since 3.0.5 the uninstaller
+  cleared the whole cache at the next restart - every thumbnail on the machine, not only the
+  ones SageThumbs drew - and did so without asking, on unattended removals too. It now asks: a
+  box on the uninstall dialog, unticked by default, resets the cache; leaving it unticked keeps
+  everything as it is (thumbnails SageThumbs drew stay until those files change, and Windows'
+  Disk Cleanup can clear them any time). Unattended uninstalls never touch the cache; add
+  `/RESETTHUMBCACHE` to the uninstall command to opt in.
+- **Adobe Illustrator files saved without "Create PDF Compatible File" no longer show a blank
+  page.** Such a file's PDF half is only a page of small print saying it was saved without PDF
+  content, and that page is what showed as a white tile with unreadable text. Files from
+  Illustrator CS4 and earlier carry a small picture of the artwork inside, and that is shown
+  now. Files from Illustrator 2020 and later carry no picture at all, so they get the
+  Illustrator icon instead, and `st2k doctor` says exactly why and how to re-save. Files saved
+  with the option ticked are unchanged. Reported in #45.
+- **Photoshop EPS files saved with "Preview: None" now thumbnail.** Photoshop writes its
+  embedded thumbnail with a marker spelled one way and SageThumbs looked for another; the
+  first real such file showed the mismatch.
+- **An Illustrator file with several artboards shows them all.** Up to four artboards are laid
+  out in one tile, the way a comic archive shows its first pages, instead of the first
+  artboard alone. Ordinary PDFs still show their first page. Requested in #44.
+- **Settings, and every other SageThumbs window, no longer looks patchy in light mode.** The
+  window behind the controls was painted a slightly different grey from the controls
+  themselves, so each row, each label and the sidebar showed as a faint lighter block: obvious
+  on some displays and Windows themes, nearly invisible on others. Every window now uses one
+  background colour. Dark mode was not affected.
+- **A greyed-out text box or drop-down in Settings now looks like one greyed-out field**, not a
+  grey slab inside a white outline, and the "Never preview these extensions:" caption greys
+  with its box while Quick preview is off.
+- **The licence-key box on the Licence page gets the same rounded frame as every other field.**
+  It was a bare white strip beside a rounded button.
+- **The hotkey service's status line on the Screenshots page ("Running", "Stopped") is now
+  translated** in all 36 languages; it was English everywhere.
+- **Strip metadata no longer damages two kinds of file.** An SVG whose metadata quoted a
+  closing tag inside a CDATA block or a comment was cut short and saved malformed; it is now
+  handled correctly, and a rewrite that would not be valid XML is refused instead of saved. A
+  photo that relied on its EXIF rotation came out sideways after stripping; the rotation tag,
+  and nothing else, is now kept.
+- **Convert, Resize and Strip can no longer overwrite another file through their temporary
+  file.** The temporary name was predictable; it is now unique and never reuses a file that
+  already exists.
+- **Screenshot "Save as" can no longer wipe the file it was saving over.** Choosing a name
+  ending in `.jpg` emptied an existing picture and then reported a failure; the save now
+  writes a PNG to a temporary file first and only then replaces the destination, and the
+  dialog keeps the `.png` extension.
+- **Quick Convert and Resize from the right-click menu now honour "Keep metadata"**, as the
+  Convert dialog always did. Shrink for email still produces a clean file.
+- **Scitex `.sct` files convert and copy**, not only thumbnail.
+- **Signing in to settings sync and then pressing Save no longer overwrites the settings that
+  were just pulled from your account** with what was on screen before.
+- **Reset all settings now matches a fresh install** (comic-cover credit skipping stays on).
+- **Portable copies keep folder names containing ` #`, ` ;`, brackets or `=`.** A screenshot
+  folder like `D:\Screenshots #2026` was silently shortened to `D:\Screenshots`, and exporting
+  then importing settings dropped such values entirely.
+- **Set as folder icon keeps the folder's existing `desktop.ini` details** when that file
+  cannot be read at that moment, instead of replacing them.
+- **Set as lock screen no longer replaces the picture your desktop wallpaper uses.**
+- **A mistake in a custom screenshot upload host now stops the upload with an explanation**
+  instead of quietly sending the file to the public default hosts.
+- **`st2k batch` reports an input that does not exist as a failure** instead of leaving it out
+  of the totals.
+- **`st2k doctor` no longer says HEIC/HEIF keep their default icon when the HEVC extension is
+  missing on a Full install**: the bundled decoder handles them, more slowly.
+- **Stability:** two animation/sprite formats (SPLA, Aseprite) can no longer make Explorer
+  hold hundreds of megabytes for one tile, and the preview pane cleans up after itself when
+  its DLL unloads.
+- **Sign-in and settings sync moved to Connections' new permanent address**
+  (`accounts.connectionsapi.com` / `studio.connectionsapi.com`); the previous domain was
+  suspended by its registry on 18 September. Existing sign-ins carry over. The "Move my
+  licence" and sign-in links now go through a LunarWerx redirect, like Buy already did, so a
+  future address change never needs an update.
+
+## 3.1.1
+
+Recorded TV and camcorder files that hold MPEG-2 get thumbnails without a paid Windows add-on,
+and the Appearance page of Settings stops showing things that did not belong on it.
+
+- **Recorded TV, set-top-box and camcorder video (`.ts`, `.m2ts`, `.mts`) no longer needs a
+  paid Windows add-on to show a thumbnail.** Those files usually hold H.264, which Windows
+  decodes on its own; when they hold MPEG-2 instead (most DVB and cable recordings, older
+  camcorders, anything captured from broadcast) Windows shows nothing unless Microsoft's
+  MPEG-2 Video Extension is installed from the Store. SageThumbs now reads those itself, the
+  same way it already read VideoCD `.mpg` and DVD `.vob`. Interlaced recordings, where each
+  frame is stored as two half-pictures, are the one kind still left to Windows.
+- **Settings ▸ Appearance no longer looks half-rendered.** The muted price line that belongs at
+  the bottom of the Licence page was showing at the bottom of every Settings page, and the
+  greyed-out "Format mark size:" label drew with a struck-through look in dark mode. Both were
+  cosmetic; no setting was affected.
+
+## 3.1.0
+
+The JPEG XL crash behind issue #43 is fixed, sixteen more file types get thumbnails, and three
+formats that were listed but never worked on a real file now do.
+
+- **JPEG XL files made from JPEGs get their thumbnails back, and a right-click on one no
+  longer takes Explorer down.** A `.jxl` that `cjxl` made from a JPEG keeps the JPEG's colour
+  layout, and the fast thumbnail path mishandled that layout: no thumbnail in the folder, and
+  Explorer restarting when you right-clicked the file. Every phone photo converted with `cjxl`
+  has that layout, so this was most `.jxl` files people actually have. Reported in issue #43.
+- **Twelve more file types get thumbnails**, including the two asked for through the feedback
+  form. Pixel art and sprites: **Aseprite** (`.aseprite`, `.ase`) is drawn by SageThumbs itself
+  from the layers inside it, the way the editor shows it on open (layer blending is drawn
+  plainly and tile-based layers are left out), and **Pixelorama** (`.pxo`)
+  shows the preview the app saves inside the file. **SpriteLoop** animation packages (`.spla`)
+  are drawn too, since the package holds only the separate body parts: you get the first frame
+  of its first animation, every piece in its place. 3D printing: **PrusaSlicer's new binary
+  G-code** (`.bgcode`) shows the same sliced preview the ordinary `.gcode` files already did.
+  CAD: **SolidWorks** parts, assemblies and drawings (`.sldprt`, `.sldasm`, `.slddrw`) show the
+  preview stored in the file, for the older save format that keeps one; files written by
+  SolidWorks 2015 and newer store no preview any other program can read, so those keep their
+  usual icon. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
+  `.mctemplate`, `.mcpack`, `.mcaddon`) show the world photo or pack icon inside them.
+- **Three formats that were listed but never worked on a real file now do.** Seattle FilmWorks
+  photos (`.sfw`, the 1990s "Pictures on Disk" floppies) and Alias/Wavefront `.pix` images are
+  decoded by SageThumbs itself now, and Scitex `.sct` files reach the right reader. Found by
+  feeding the test corpus real files from other programs for every format it lists.
+- **Old MPEG videos get thumbnails, with nothing to install.** The `.mpg` and `.mpeg` files a
+  VideoCD or a late-1990s camera wrote, raw MPEG video files (`.m1v`, `.m2v`) and DVD `.vob`
+  files are all drawn by SageThumbs itself now, in a separate short-lived process like its
+  Flash and HDR video decoders. Windows cannot open the first three at all, and asks for a
+  Store add-on before it will open a `.vob`; neither is needed any more. `.m1v` is a new file
+  type, and so are `.mpv`, `.mp2v` and `.m2p`, three more names the same old MPEG files are
+  saved under by DVD and capture tools. Recordings that hold MPEG-2 video inside a transport
+  stream or a Matroska file still use Windows' own decoder, so that add-on still matters there.
+- **Brother embroidery files (`.pes`) no longer claim a thumbnail they never produced.** The
+  listing promised one, but drawing those stitches needs a graphics library this app
+  deliberately does not ship, so every install has always shown the ordinary file icon for
+  them. The claim is gone; nothing that used to draw stopped drawing.
+- For the few installations that need a business licence: the Licence page has been tidied
+  up, and there is now a monthly plan, US$2.99 per computer, alongside the one-time US$49.
+  Personal use is unaffected and stays free.
+
+## 3.0.5
+
+Two fixes for what people saw on their own desktop, and one better default: small pictures
+are no longer blown up to fill their tile, uninstalling no longer leaves SageThumbs'
+thumbnails behind, and comic covers skip scanlation credit pages without being asked.
+
+- **Small pictures are shown at their real size, as Windows shows them.** A picture smaller
+  than its thumbnail tile used to be enlarged to fill the tile, so a folder or a desktop of
+  small PNGs, GIFs and BMPs looked blocky or soft next to the way Windows had drawn them. It
+  now sits at its own size in the middle of the tile, exactly like Windows' own thumbnails.
+  A file that only carries a small preview of a much larger picture (a Photoshop document, a
+  book's cover) still fills the tile, and icon files still scale to it.
+- **Uninstalling now clears Windows' thumbnail cache at the next restart.** Windows keeps every
+  thumbnail SageThumbs drew for as long as the file is unchanged, so after an uninstall the
+  desktop and every folder kept showing them. They are removed at the next sign-in and Windows
+  draws its own again.
+- **Comic covers skip scanlation credit pages by default.** A comic archive whose first page
+  is a scanlation group's credits or logo now shows its real cover without anyone having to
+  find the switch first. It was one of the offers on the welcome window's second page; that
+  page is down to the two that genuinely are a matter of taste (film cover art, the file-type
+  badge), and the switch itself stays in Settings, Ebook/comic, for anyone who wants the
+  first page as stored.
+
+## 3.0.4
+
+Two fixes for bugs people reported: iPhone ProRAW photos thumbnail in colour again, and
+Convert no longer quietly writes a tiny file when it is given a very large picture.
+
+- **iPhone ProRAW photos thumbnail in colour again instead of a grey wash**
+  ([#42](https://github.com/LunarWerxs/SageThumbs-2k/issues/42)). A ProRAW `.DNG` stores two
+  pictures one after the other: the colour preview, and Apple's HDR gain map, which is a
+  black-and-white helper image. Whichever of the two was larger used to win, so most of a
+  folder of photographs could come out as bright grey pictures while the rest looked fine.
+  The colour picture is now always preferred, and a camera that really does shoot in black
+  and white still thumbnails from its own preview.
+- **Converting a very large picture no longer writes a tiny one**
+  ([#41](https://github.com/LunarWerxs/SageThumbs-2k/issues/41)). Above a size that depended
+  on how fast the computer was, Convert and Resize gave up on the picture after 20 seconds and
+  quietly used the small preview stored inside the file instead, so a 45-megapixel photo asked
+  to fit 1920x1080 was written out at 107x160 and reported as done. A conversion you asked for
+  now gets the time a file that size needs, and if only a small stand-in preview can be read,
+  the file is listed as failed with both sizes named rather than written out.
+- For the few installations set up for business use: a copy with no licence key now evaluates
+  for 7 days and then asks for one. Personal use is unaffected.
+
+## 3.0.3
+
+The HDR fix from 3.0.2 now covers every format that can carry an HDR picture, the doctor
+explains two more reasons a thumbnail can go missing, and the right-click preview tile is back
+on its strict size guard.
+
+- **HDR HEIC, JPEG XR and TIFF thumbnails render at the right brightness.** The 3.0.2 fix for
+  HDR AVIF now has a proven twin for every container that can carry an HDR picture: an HDR
+  HEIC (PQ or HLG) takes the same path as AVIF, a linear-float JPEG XR (what Windows writes
+  for an HDR screenshot) is tone-mapped instead of clipped to white, and a 16-bit TIFF tagged
+  with a PQ profile is converted through the profile's own HDR signal rather than
+  colour-managed into near-black. The TIFF fix also reads a profile the decoder used to drop.
+- **AVIF files with no colour box take the fast path when the codec measures right**, instead
+  of always going through the bundled ImageMagick, and an AVIF with a gain map or an alpha
+  plane is read by its main picture rather than by whichever colour box came first.
+- **The right-click menu's preview tile keeps the strict size guard.** The tile that is
+  drawn inside Explorer itself had, since a refactor, been allowed the wider ceiling meant
+  for the isolated thumbnail host; it is back on the strict one, and the test that guards it
+  now actually reaches the codec.
+- **The doctor names two more causes of a missing thumbnail.** A folder added to This PC by a
+  tweaker is reported, machine-wide and for the probed file (files browsed through such an
+  entry may never show a picture; open the real folder instead), and the per-file section now
+  says whether Explorer ever asked SageThumbs for that file at all, read off the diagnostics
+  log, so "it never reached us" no longer needs a developer to read the log by hand.
+
 ## 3.0.2
 
-- **The Licence page says which licence you have.** With a business key active it now reads
-  "Business licence" at the top, names the key, and says the licence is active; on a Personal
-  install without one it reads "Personal licence". Previously a Personal install that redeemed a
-  business key still said "installed for personal use" beside a green "licence is active".
-  Redeeming a key now answers with a pop-up, "Your business licence is active", or a clear
-  warning when the key is refused or the licence service cannot be reached.
+- **HDR AVIF thumbnails no longer come out blown out**
+  ([#39](https://github.com/LunarWerxs/SageThumbs-2k/issues/39)). An AVIF whose base image is
+  HDR (PQ transfer, BT.2020 primaries, the same shape as the JPEG XL fixed in 3.0.1) rendered
+  as a bleached picture with every bright area clipped to white: Windows' own AV1 decoder hands
+  an HDR picture back as linear light, and everything brighter than 80 nits was being cut off
+  on the way to 8 bits. Where the bundled ImageMagick decoded the file instead, the raw PQ
+  signal was shown as if it were sRGB, so the same picture came out dark and flat. Both now go
+  through the conversion and tone map an HDR PNG, JPEG XL or EXR does, HDR HEIC included. The
+  SDR twin of the same picture is unchanged.
 
-- **A revoked licence shows as revoked straight away.** When the licence holder takes a
-  computer's seat back, Check now says so and the page shows the revocation, instead of reading
-  "active" for up to a week or, on a Personal install, hiding it behind "no licence needed".
-
-- Licensed installations now see when their updates window ends, and can renew for another
-  12 months from Settings > Licence.
+- For the few installations on a business licence: the Licence page now says which licence you
+  hold, a revoked seat shows as revoked straight away, and it shows when your updates window
+  ends. Personal use is unaffected.
 
 ## 3.0.1
 

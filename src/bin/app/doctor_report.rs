@@ -15,15 +15,15 @@
 
 use core::cell::RefCell;
 
-use windows::core::{w, PCWSTR};
+use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, FF_MODERN, FIXED_PITCH, FW_NORMAL, HFONT, LOGFONTW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::dark::dark_ctlcolor;
-use crate::win::{ctl, run_dialog, t, wide, BUTTON, EDIT, IDOK, ID_RESULT_COPY};
+use st2k_appkit::dark::dark_ctlcolor;
+use st2k_appkit::win::{run_dialog, t};
 
 const ID_EDIT: i32 = 100;
 
@@ -59,10 +59,10 @@ pub(crate) fn run_doctor_report(owner: Option<HWND>) {
 /// anything. It runs the real report, so what it captures is a real machine's real answer.
 pub(crate) unsafe fn run_shot_doctor(out: &str) -> bool {
     REPORT.with(|r| *r.borrow_mut() = sagethumbs2k_core::doctor::report(None));
-    crate::win::capture_shot_window(
+    st2k_appkit::win::capture_shot_window(
         out,
-        crate::dark::is_dark(),
-        crate::win::ShotWindowSpec {
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
             class: w!("SageThumbs2KDoctorShot"),
             wndproc: Some(doctor_wndproc),
             title: t("btn_run_doctor"),
@@ -77,49 +77,18 @@ pub(crate) unsafe fn run_shot_doctor(out: &str) -> bool {
 }
 
 unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
-    let crate::win::ResultLayout {
-        cw,
-        m,
-        btn_w,
-        btn_h,
-        gap,
-        btn_y,
-        close_x,
-        copy_x,
-        ..
-    } = crate::win::result_layout(hwnd);
-    let edit_h = (btn_y - gap - m).max(48);
-
+    let l = st2k_appkit::win::result_layout(hwnd);
     // No ES_AUTOHSCROLL-less wrapping: WS_HSCROLL on a multiline edit turns word wrap OFF,
     // which is what keeps the label column aligned.
-    let edit_style = WINDOW_STYLE((ES_MULTILINE | ES_READONLY) as u32)
-        | WS_VSCROLL
-        | WS_HSCROLL
-        | WS_BORDER
-        | WS_TABSTOP;
-    let edit = ctl(
-        hwnd,
-        EDIT,
-        "",
-        edit_style,
-        m,
-        m,
-        cw - 2 * m,
-        edit_h,
-        ID_EDIT,
-        hinst,
-    );
-    // Same dark-scrollbar re-theme as image_info: `ctl` uses DarkMode_CFD, which leaves a light
-    // scrollbar behind.
-    if crate::dark::is_dark() {
-        crate::dark::dark_control(edit, w!("DarkMode_Explorer"));
-    }
+    let style = WINDOW_STYLE((ES_MULTILINE | ES_READONLY) as u32) | WS_HSCROLL;
+    let edit = REPORT
+        .with(|r| st2k_appkit::win::result_edit(hwnd, hinst, &l, l.m, style, ID_EDIT, &r.borrow()));
     // Consolas at ~12px, DPI-scaled. Built through a LOGFONTW like the rest of `win::scaling`
     // rather than CreateFontW's fourteen positional arguments. `lfPitchAndFamily` is the part
     // that matters: if Consolas is somehow absent, FIXED_PITCH | FF_MODERN still gets us SOME
     // fixed-pitch face rather than silently falling back to a proportional one.
     let mut lf = LOGFONTW {
-        lfHeight: -crate::win::dpi_scale(hwnd, 12),
+        lfHeight: -st2k_appkit::win::dpi_scale(hwnd, 12),
         lfWeight: FW_NORMAL.0 as i32,
         lfPitchAndFamily: FIXED_PITCH.0 | FF_MODERN.0,
         ..Default::default()
@@ -141,39 +110,13 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
             }
         });
     }
-    // Edit controls want CRLF; a lone LF renders as a box.
-    let text = REPORT.with(|r| sagethumbs2k_core::clipboard::to_crlf(&r.borrow()).into_owned());
-    let w = wide(&text);
-    let _ = SetWindowTextW(edit, PCWSTR(w.as_ptr()));
-
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_copy"),
-        WS_TABSTOP,
-        copy_x,
-        btn_y,
-        btn_w,
-        btn_h,
-        ID_RESULT_COPY,
-        hinst,
-    );
-    ctl(
-        hwnd,
-        BUTTON,
-        t("btn_close"),
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        close_x,
-        btn_y,
-        btn_w,
-        btn_h,
-        IDOK,
-        hinst,
-    );
+    st2k_appkit::win::result_buttons(hwnd, hinst, &l);
 }
 
-/// Copy puts the whole report on the clipboard — the point is pasting it into an issue.
-unsafe fn copy_source(_hwnd: HWND) -> String {
+// Copy puts the whole report on the clipboard — the point is pasting it into an issue.
+/// The `copy_source` this dialog hands to `result_wndproc`: its whole per-thread report, which is
+/// what the Copy button puts on the clipboard.
+unsafe fn copy_source(_hwnd: windows::Win32::Foundation::HWND) -> String {
     REPORT.with(|r| r.borrow().clone())
 }
 
@@ -189,7 +132,7 @@ extern "system" fn doctor_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             });
         }
-        if let Some(r) = crate::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
+        if let Some(r) = st2k_appkit::win::result_wndproc(hwnd, msg, wparam, build, copy_source) {
             return r;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)

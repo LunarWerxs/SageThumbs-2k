@@ -66,6 +66,208 @@ try {
         Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
     }
 
+    # Licensing never leads a release note (owner directive 2026-09-11): a section that OPENS
+    # with a licence item is refused, while the same item further down passes, so the gate
+    # cannot cry wolf on the one short licence line a release is allowed to end with.
+    @'
+# Changelog
+
+## 9.8.7
+
+- **The Licence page says which licence you have.** Business installs see their key here.
+- **HDR AVIF thumbnails no longer come out blown out.** Every user gets this one.
+'@ | Set-Content -LiteralPath $changelog -Encoding utf8
+    Assert-Fails 'changelog section that opens with a licensing item' {
+        Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+    }
+    @'
+# Changelog
+
+## 9.8.7
+
+- **HDR AVIF thumbnails no longer come out blown out.** Every user gets this one.
+- For the few installations on a business licence: the Licence page now says which licence
+  you hold. Personal use is unaffected.
+'@ | Set-Content -LiteralPath $changelog -Encoding utf8
+    Assert-Passes 'a licensing line that is not first is allowed' {
+        $section = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version '9.8.7'
+        if ($section -notmatch 'business licence') { throw 'the trailing licence line was lost' }
+    }
+
+    # Nothing is deferred past a release (owner directive 2026-09-11): the work queue's open
+    # items are the headings under its first two parts, watches and decisions are not work, and
+    # an empty queue returns nothing so release.ps1 proceeds.
+    $todo = Join-Path $scratch 'TODO.md'
+    @'
+# work queue
+
+## 1. Needs a person
+
+### Submit the vendor form
+
+- **Rotate the token, or accept it and delete this line** (2026-09-18). Filed as a bullet,
+  the shape the gate was blind to until 2026-09-18; this continuation line is not an item.
+
+## 2. Technical debt
+
+### Fix the thing
+
+- a plain bullet item, no bold lead
+
+### Fix the other thing
+
+## 3. Conditional watches (nothing to build)
+
+### not an item, a watch
+
+- a bullet under watches is not work either
+
+## 4. Decided, do not reopen
+
+### not an item, a decision
+'@ | Set-Content -LiteralPath $todo -Encoding utf8
+    Assert-Passes 'the work-queue gate counts headings AND bullets, and only under the first two parts' {
+        $open = @(Get-ReleaseOpenTodoItems -TodoPath $todo)
+        $want = @('Submit the vendor form', 'Rotate the token, or accept it and delete this line',
+            'Fix the thing', 'a plain bullet item, no bold lead', 'Fix the other thing')
+        if ($open.Count -ne $want.Count -or (Compare-Object $open $want -SyncWindow 0)) {
+            throw "expected the five work items, got: $($open -join ' | ')"
+        }
+    }
+    @'
+# work queue
+
+## 1. Needs a person
+
+## 2. Technical debt
+
+## 3. Conditional watches
+
+### a watch is not work
+'@ | Set-Content -LiteralPath $todo -Encoding utf8
+    Assert-Passes 'an empty work queue does not block a release' {
+        if (@(Get-ReleaseOpenTodoItems -TodoPath $todo).Count -ne 0) { throw 'an empty queue reported items' }
+    }
+    Assert-Fails 'a missing work queue file is an error for the lib, not a silent pass' {
+        Get-ReleaseOpenTodoItems -TodoPath (Join-Path $scratch 'no-such-TODO.md')
+    }
+
+    # The release-notes layout (pipeline item 4): the logo, the intro, emoji headings with rules
+    # between them, and every changelog line surviving verbatim - a layout that drops a line is
+    # refused, because the 3.0.0 notes were re-laid-out by hand and nothing proved they were whole.
+    $laidOut = @'
+An intro sentence that opens the section.
+It continues on a second line.
+
+### New
+
+- **A thing every user gets.** Detail.
+
+### Fixed
+
+- **A fix** ([#1](https://example.invalid/1)). Detail.
+
+- For the few installations on a business licence: one short line. Personal use is unaffected.
+'@
+    Assert-Passes 'the release-notes layout keeps every line and decorates the headings' {
+        $body = Format-ReleaseNotesBody -Section $laidOut -Version '9.8.7'
+        foreach ($must in @(
+                'assets/logo-master.png" width="96"',
+                '<p align="center">An intro sentence that opens the section. It continues on a second line.</p>',
+                '### 🆕 New',
+                '### 🩹 Fixed',
+                '- **A thing every user gets.** Detail.',
+                '- For the few installations on a business licence: one short line. Personal use is unaffected.')) {
+            if (-not $body.Contains($must)) { throw "layout lost: $must" }
+        }
+        if ($body.IndexOf('### 🆕 New') -gt $body.IndexOf('### 🩹 Fixed')) { throw 'section order changed' }
+        if (($body -split "`n" | Where-Object { $_ -eq '---' }).Count -lt 2) { throw 'no rules between the sections' }
+        if ($body -match '### New\s*$' -or $body -match '(?m)^### Fixed\s*$') { throw 'a plain heading survived undecorated' }
+    }
+    Assert-Passes 'a long section gets a headline per change and the whole list under Read more' {
+        $long = "- **First big thing.** Detail one.`n- **Second thing:** detail two`n  wrapped.`n- Third thing without a lead. More.`n- For the few installations on a business licence: one short line."
+        $body = Format-ReleaseNotesBody -Section $long -Version '9.8.7'
+        $fold = $body.IndexOf('<details>')
+        foreach ($head in @('- **First big thing**', '- **Second thing**', '- **Third thing without a lead**')) {
+            $at = $body.IndexOf($head)
+            if ($at -lt 0 -or $at -gt $fold) { throw "no TL;DR headline above the fold: $head" }
+        }
+        if ($body.Substring(0, $fold) -match '(?i)licen[cs]') { throw 'a licence item made the TL;DR' }
+        foreach ($must in @('## TL;DR',
+                '<summary><b>Read more: everything in 9.8.7</b></summary>', '</details>',
+                '- **First big thing.** Detail one.', '- **Second thing:** detail two wrapped.',
+                '- Third thing without a lead. More.')) {
+            if (-not $body.Contains($must)) { throw "layout lost: $must" }
+        }
+        if ($body.IndexOf('## TL;DR') -gt $body.IndexOf('<details>')) { throw 'the TL;DR is not above the fold' }
+        if ($body.Contains("## What's changed")) { throw 'a folded section kept the flat heading' }
+        if ((Get-ReleaseNotesHeadline '- Third thing without a lead. More.') -ne 'Third thing without a lead') {
+            throw 'a bullet without a bold lead did not fall back to its first sentence'
+        }
+    }
+    $written = "**TL;DR**`n`n- **Big thing** in short`n- **Two** in short,`n  wrapped`n`n**Everything in 9.8.7**`n`n- **Big thing.** Long detail.`n- **Two.** Detail.`n- **Three.** Detail."
+    Assert-Passes 'a written TL;DR is used as is, the markers go, the detail folds under Read more' {
+        $body = Format-ReleaseNotesBody -Section $written -Version '9.8.7'
+        $fold = $body.IndexOf('<details>')
+        foreach ($head in @('- **Big thing** in short', '- **Two** in short, wrapped')) {
+            $at = $body.IndexOf($head)
+            if ($at -lt 0 -or $at -gt $fold) { throw "written headline not above the fold: $head" }
+        }
+        if ($body.Contains('**TL;DR**') -or $body.Contains('**Everything in 9.8.7**')) { throw 'a marker line leaked into the body' }
+        if ($body.Contains('- **Three**') -and $body.IndexOf('- **Three**') -lt $fold) { throw 'the fallback headlines ran despite a written TL;DR' }
+        foreach ($must in @('- **Big thing.** Long detail.', '- **Three.** Detail.')) {
+            if ($body.IndexOf($must) -lt $fold) { throw "detail missing below the fold: $must" }
+        }
+    }
+    Assert-Passes 'release.ps1 refuses a long section with no written TL;DR' {
+        $threw = $false
+        try { Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y`n- **C.** z" -Version '9.8.7' } catch { $threw = $true }
+        if (-not $threw) { throw 'three changes and no TL;DR passed' }
+        Assert-ReleaseNotesTldr -Section $written -Version '9.8.7'
+        Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y" -Version '9.8.7'
+        if (-not (Get-Content -Raw (Join-Path $root 'scripts\release.ps1')).Contains('Assert-ReleaseNotesTldr -Section $section')) {
+            throw 'release.ps1 no longer runs the TL;DR gate'
+        }
+    }
+    Assert-Passes 'a section with no intro paragraph gets no intro block' {
+        $body = Format-ReleaseNotesBody -Section "### Fixed`n`n- **Only a fix.** Detail." -Version '9.8.7'
+        if ($body.Contains('<p align="center">')) { throw 'an empty intro was rendered' }
+        if (-not $body.Contains('- **Only a fix.** Detail.')) { throw 'the bullet was lost' }
+    }
+
+    # Main is frozen while a release runs (pipeline item 3): the marker the local pre-commit
+    # hook reads must be written at the clean-tree guard and removed in `finally`.
+    Assert-Passes 'release.ps1 freezes main with a marker and always removes it' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in 'Set-Content -LiteralPath $freeze', "'.git\RELEASE-IN-PROGRESS'") {
+            if (-not $releaseText.Contains($expected)) { throw "release.ps1 lost the freeze marker step: $expected" }
+        }
+        if ($releaseText -notmatch 'finally\s*\{\s*\r?\n\s*Remove-Item -LiteralPath \$freeze') {
+            throw 'release.ps1 no longer removes the freeze marker in its finally block'
+        }
+    }
+
+    # The marker is also a lock on building (Michael, 2026-09-22): it must name its owner with a
+    # token the release hands to its children, and every gate that builds must wait on it.
+    Assert-Passes 'the release marker locks the build gates, and the release holds the key' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in '$env:RELEASE_LOCK_TOKEN = ', 'token=$($env:RELEASE_LOCK_TOKEN)') {
+            if (-not $releaseText.Contains($expected)) { throw "release.ps1 lost the lock token: $expected" }
+        }
+        foreach ($gate in 'scripts\preflight.ps1', 'scripts\verify.ps1', 'scripts\regression.ps1', 'scripts\refactor\gate.py') {
+            $text = Get-Content -LiteralPath (Join-Path $root $gate) -Raw
+            if (-not $text.Contains('release-lock.ps1')) { throw "$gate no longer waits on the release lock" }
+        }
+        # And every one of them still PARSES. The first 3.3.0 run died at its own push because the
+        # line that added this call carried a stray carriage return (a `\r` the Bash tool made
+        # real) and preflight.ps1 no longer parsed; a check for the text alone passed it.
+        foreach ($gate in 'scripts\preflight.ps1', 'scripts\verify.ps1', 'scripts\regression.ps1', 'scripts\release-lock.ps1', 'scripts\release.ps1') {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $gate), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw "$gate does not parse: $($errors[0].Message) (line $($errors[0].Extent.StartLineNumber))" }
+        }
+    }
+
     # Every shape a real unfilled template takes must still fail closed.
     foreach ($marker in @(
             '- TBD before we ship this.',
@@ -191,6 +393,19 @@ Some more filler so the section clears the minimum length check that runs before
         }
     }
 
+    # The x64 installer's second, first-listed name is what lets builds 0.6.3 through 1.3.5
+    # update themselves (their updater takes the first "setup" .exe by name, and from 1.6.0
+    # that was the ARM64 one). Nothing downstream reads it, so nothing else would notice it
+    # vanishing either.
+    Assert-Passes 'release.ps1 uploads the x64 installer under its second, first-listed name' {
+        $releaseText = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
+        foreach ($expected in 'SageThumbs2K-Setup-$ver-amd64.exe', '$releaseAssetPaths += @($x64Alias, "$x64Alias.sig")') {
+            if ($releaseText -notmatch [regex]::Escape($expected)) {
+                throw "release.ps1 no longer publishes the x64 installer's second name: $expected"
+            }
+        }
+    }
+
     Assert-Passes 'portable builds stage outside the installer stage' {
         # Staging wipes and rebuilds its directory, and the portable pass deliberately omits the
         # DLL. If the two ever share a directory again, a portable build inside a release gets to
@@ -246,17 +461,13 @@ Some more filler so the section clears the minimum length check that runs before
                 throw "stage-outcome helper's ValidateSet no longer offers the outcome $word"
             }
         }
-        # The exact stage the audit evidence named: the VirusTotal gate skips (optional) when the
-        # gitignored scanner/config/runtime inputs are absent, and used to print that as freeform
-        # "SKIPPED - ..." prose indistinguishable, at a glance, from a stage that never skips.
-        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'VirusTotal'") {
-            throw "release.ps1 no longer labels the VirusTotal skip as 'SKIPPED (optional)' - a skipped optional stage must be distinguishable from one that ran"
-        }
-        # The VT-inconclusive (queued/timeout) and self-update-smoke skip are the other two
-        # branches the audit's line range covered; keep them labelled too rather than relying on
-        # freeform Yellow prose that reads the same as any other warning.
-        if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'OVERRIDDEN'\s+-Stage\s+'VirusTotal'") {
-            throw "release.ps1 no longer labels the VirusTotal timeout/queued case as an explicit OVERRIDDEN outcome"
+        # The VirusTotal gate this block used to pin (its SKIPPED (optional) and OVERRIDDEN
+        # labels) was retired on 2026-09-15 with the whole antivirus step; the self-update-smoke
+        # skip is the remaining labelled branch from the audit's line range. The retired stage
+        # must not creep back unlabelled either: if a VirusTotal gate ever returns, it returns
+        # with these outcome labels, so the assertion is inverted rather than deleted.
+        if ($releaseText -match "\[4b/6\] VirusTotal scan") {
+            throw "release.ps1 has grown a VirusTotal gate again; it was retired on 2026-09-15 (signed builds), and if it is wanted back it needs its SKIPPED (optional)/OVERRIDDEN labels and this test updated"
         }
         if ($releaseText -notmatch "(?s)Write-ReleaseStageOutcome\s+-Outcome\s+'SKIPPED \(optional\)'\s+-Stage\s+'self-update smoke'") {
             throw "release.ps1 no longer labels the self-update-smoke skip as 'SKIPPED (optional)'"
@@ -559,6 +770,47 @@ Some more filler so the section clears the minimum length check that runs before
                 throw "$name does not use the canonical Cargo build recipe"
             }
         }
+    }
+
+    # 2026-09-19 audit concern 1: the run the release waits on is OUR dispatch, picked by
+    # commit (and tag), never "the first run that appeared after we dispatched".
+    $ours = 'a' * 40
+    $theirs = 'b' * 40
+    $dispatchedAt = '2026-09-19T06:00:00.0000000Z'
+    $runs = @(
+        [pscustomobject]@{ databaseId = 101; headSha = $theirs; createdAt = '2026-09-19T06:00:05Z'; displayTitle = 'ARM64 portable verify v9.9.8' },
+        [pscustomobject]@{ databaseId = 102; headSha = $ours;   createdAt = '2026-09-19T05:59:00Z'; displayTitle = 'ARM64 portable verify v9.9.9' },
+        [pscustomobject]@{ databaseId = 103; headSha = $ours;   createdAt = '2026-09-19T06:00:09Z'; displayTitle = 'ARM64 portable verify v9.9.9' },
+        [pscustomobject]@{ databaseId = 104; headSha = $ours;   createdAt = '2026-09-19T06:00:30Z'; displayTitle = 'ARM64 portable verify v9.9.9' }
+    )
+    Assert-Passes 'dispatched run is picked by commit, not by being the first run after the dispatch' {
+        $id = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt
+        if ($id -ne '103') { throw "expected run 103 (ours, earliest after the dispatch), got '$id'" }
+    }
+    Assert-Passes 'a concurrent dispatch on another commit is never picked' {
+        $id = Select-ReleaseDispatchedRun -Runs @($runs[0]) -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked run $id on somebody else's commit" }
+    }
+    Assert-Passes 'a run on our commit from before the dispatch is not ours' {
+        $id = Select-ReleaseDispatchedRun -Runs @($runs[1]) -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked run $id created before the dispatch" }
+    }
+    Assert-Passes 'the tag in the run title is required when asked for' {
+        $id = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt -TitleContains 'v9.9.9'
+        if ($id -ne '103') { throw "expected 103, got '$id'" }
+        $none = Select-ReleaseDispatchedRun -Runs $runs -Sha $ours -DispatchedAt $dispatchedAt -TitleContains 'v1.0.0'
+        if ($null -ne $none) { throw "picked run $none whose title does not carry the tag" }
+    }
+    Assert-Passes 'an empty run list yields nothing rather than an error' {
+        $id = Select-ReleaseDispatchedRun -Runs @() -Sha $ours -DispatchedAt $dispatchedAt
+        if ($null -ne $id) { throw "picked '$id' from nothing" }
+    }
+    Assert-Passes 'release.ps1 waits on runs found by identity and the ARM64 workflow titles its run with the tag' {
+        $release = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release.ps1') -Raw
+        if ($release -match 'createdAt >= ') { throw 'release.ps1 still picks a dispatched run by timestamp' }
+        if (([regex]::Matches($release, 'Find-ReleaseDispatchedRun ')).Count -lt 2) { throw 'both dispatch sites must use Find-ReleaseDispatchedRun' }
+        $wf = Get-Content -LiteralPath (Join-Path $root '.github/workflows/arm64-portable-verify.yml') -Raw
+        if ($wf -notmatch "run-name:.*inputs\.tag") { throw 'arm64-portable-verify.yml must title a dispatched run with its tag input' }
     }
 
     Write-Host "[release-pipeline-test] ALL GREEN ($script:passed cases)" -ForegroundColor Green

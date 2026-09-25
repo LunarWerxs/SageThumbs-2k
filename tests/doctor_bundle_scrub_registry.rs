@@ -9,7 +9,8 @@
 
 mod common;
 
-use sagethumbs2k_core::{doctor, settings};
+use sagethumbs2k_core::doctor;
+use st2k_base::settings;
 use windows_registry::CURRENT_USER;
 
 const TOKEN: &str = "synthetic-refresh-token-5c2d7e";

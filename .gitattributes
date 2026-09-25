@@ -15,13 +15,14 @@
 # jxl). A Windows checkout with core.autocrlf=true would hand it a CRLF patch instead.
 /crates/vendor/exr-patches/*.patch -text
 
-# Same reasoning as the exr line above, for the two trees the jxl patches are applied to:
+# Same reasoning as the exr line above, for the three trees the jxl patches are applied to:
 # vendor-jxl.ps1 -Check regenerates them from pristine (LF) sources and diffs the result
 # against the committed copy. Without this, a Windows checkout with core.autocrlf=true hands
 # the diff a CRLF-converted committed tree against an LF-regenerated one, and every line
 # reports as drift that has nothing to do with the actual vendored content.
 /crates/vendor/jxl-render/** -text
 /crates/vendor/jxl-oxide/** -text
+/crates/vendor/jxl-frame/** -text
 
 # Same reasoning again, for djvu-rs: the patch and the pristine source it targets are both
 # LF, `git apply -p2` matches context byte for byte, and vendor-djvu.ps1 -Check regenerates

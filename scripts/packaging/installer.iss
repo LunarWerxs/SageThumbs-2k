@@ -73,10 +73,19 @@ OutputBaseFilename=SageThumbs2K-Setup-{#AppVer}{#OutputSuffix}
 ; native codec tree. A 64 MiB dictionary keeps those repeated code regions in one
 ; solid window; /max's 8 MiB window evicts them and adds several megabytes without
 ; changing the installed files. 64 MiB is modest on supported Windows 10/11.
+#ifdef GateCompile
+; The pre-push gate compiles this script for real (the [Code] section has broken the
+; release build after a green push before: a Pascal type mismatch on 2026-09-19 cost a CI
+; round trip) against the last staged payload, and throws the output away. Stored, not
+; compressed, so the compile costs seconds; nothing built this way is ever shipped.
+Compression=none
+SolidCompression=no
+#else
 Compression=lzma2/ultra64
 ; Spend compile time, not runtime compatibility, on a denser match search.
 LZMANumFastBytes=273
 SolidCompression=yes
+#endif
 WizardStyle=modern
 ; Rich VERSIONINFO on Setup.exe - a metadata-less installer is heuristic-AV
 ; false-positive bait (same reason the binaries + magick stubs carry it).
@@ -231,7 +240,8 @@ Name: "{group}\Uninstall SageThumbs 2K"; Filename: "{uninstallexe}"
 ; doesn't - packaged verbs live ONLY in the compact flyout - so that suppression just hid the
 ; quick verbs on every classic-menu-default machine. The classic handler now always shows its
 ; quick verbs (nothing reads this key anymore). Deleted on install so an upgrade from <= 1.3.0
-; doesn't leave a dead value behind; the empty parent key is dropped on uninstall.
+; doesn't leave a dead value behind; the parent key is dropped on uninstall only if it is empty
+; by then, which it is not once the wizard has written LicenseMode or CornerMark beside it.
 Root: HKLM; Subkey: "Software\SageThumbs2K"; ValueType: none; ValueName: "ModernMenuActive"; \
   Flags: deletevalue uninsdeletekeyifempty
 
@@ -248,13 +258,13 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\{#AppDll}"""; \
 ; the flag; three entries below already rely on it for the same reason.
 Filename: "{app}\{#AppExe}"; Parameters: "--sync-user-shell"; \
   StatusMsg: "Setting up the classic context menu..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: ConsoleUserStep('--sync-user-shell')
 ; The DLL swap is waiting on a restart (StaleAfterInstall): queue the per-user thumbnail
 ; cache rebuild for the next sign-in from the ORIGINAL user's own context. Written by the
 ; elevated installer it would land in whichever admin's hive answered the UAC prompt.
 Filename: "{app}\{#AppExe}"; Parameters: "--queue-cache-rebuild"; \
   StatusMsg: "Scheduling a thumbnail refresh for the next sign-in..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: CacheRebuildPending and ConsoleUserStep('--queue-cache-rebuild')
 ; Modern Win11 context menu (signed sparse package), SPLIT IN TWO STEPS since the 2026-09-05
 ; audit (F08 + F09). The old combined step trusted the cert AND registered the per-user
 ; package in ONE elevated PowerShell call. On a machine where a standard user supplied a
@@ -390,10 +400,12 @@ Filename: "powershell.exe"; \
 ; string build-release.ps1 passes in ({#MsixPublisher}), so a same-publisher upgrade keeps
 ; the add-first ordering above. The current user's registration only, which is the one this
 ; runasoriginaluser step can see; uninstall removes every user's.
+; The PowerShell text lives ONCE, in [Code] ModernMenuRegisterScript, so the console-user
+; route (ConsoleUserPsStep) runs the identical command.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -Command ""$d=(Get-ItemProperty -Path 'HKLM:\Software\SageThumbs2K' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){{Get-AppxPackage -Name SageThumbs2K|Where-Object{{$_.Publisher -cne '{#MsixPublisher}'}|Remove-AppxPackage -ErrorAction SilentlyContinue; try{{Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+'\SageThumbs2K.msix') -ExternalLocation $d -ForceUpdateFromAnyVersion}}"""; \
+  Parameters: "-NoProfile -Command ""{code:ModernMenuRegisterScript}"""; \
   StatusMsg: "Registering the modern context menu (this can take a moment)..."; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: ModernMenuUsable and ConsoleUserPsStep
 ; UPGRADE ONLY: suppress the first-run welcome window. Someone who already had SageThumbs
 ; installed has long since decided about Quick preview and the capture hotkey, and greeting
 ; them as a new user would silently re-offer (and, if they clicked through, re-enable)
@@ -402,7 +414,7 @@ Filename: "powershell.exe"; \
 ; written before it starts. runasoriginaluser because the flag lives in the USER's HKCU,
 ; and setup itself is elevated.
 Filename: "{app}\{#AppExe}"; Parameters: "--first-run-seen"; \
-  Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade
+  Flags: runhidden waituntilterminated runasoriginaluser; Check: IsUpgrade and ConsoleUserStep('--first-run-seen')
 ; Restart Explorer and drop thumbcache_*.db, so thumbnails appear for files the user has
 ; ALREADY browsed. Registering the provider does not invalidate anything Explorer cached,
 ; and for every one of our formats it has cached the generic icon it drew before we existed
@@ -429,14 +441,14 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
 ; elevation - a non-elevated Settings window is then UIPI-blocked from ever posting
 ; WM_RELOAD to it, so later hotkey changes would silently stop applying.
 Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
-  Flags: nowait runasoriginaluser; Check: WasSelfUpdate
+  Flags: nowait runasoriginaluser; Check: WasSelfUpdate and ConsoleUserStep('--updated {#AppVer}')
 ; Restart the resident hotkey daemon after EVERY install, silent or not: the setup killed
 ; it (PrepareToInstall / Restart Manager) to replace the EXE, and nothing else brings it
 ; back until the next logon - a user whose hotkeys are on would otherwise find them dead
 ; after any reinstall/upgrade. --heal-hotkeys is a silent, instant no-op when the feature
 ; is off or the daemon is already back. Same runasoriginaluser rationale as above.
 Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
-  Flags: nowait runasoriginaluser
+  Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--heal-hotkeys')
 ; Register the per-user update-check Scheduled Task ("SageThumbs2K.exe --update-check",
 ; daily with a 6h repetition, /rl LIMITED). Before this, the ONLY periodic update check
 ; lived inside the OPT-IN resident screenshot helper - so every install where the user
@@ -447,7 +459,7 @@ Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
 ; the ELEVATED setup context would be owned by the wrong principal and could not toast
 ; into the user's session.
 Filename: "{app}\{#AppExe}"; Parameters: "--update-task"; \
-  Flags: nowait runasoriginaluser
+  Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--update-task')
 
 [UninstallRun]
 ; Drop the update-check Scheduled Task first, while our EXE is still on disk. Harmless if
@@ -487,7 +499,8 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
 
 [UninstallDelete]
 ; Tidy the per-user runtime files Windows would otherwise leave behind (diagnostics log +
-; update-check cache in %LOCALAPPDATA%), so an uninstall leaves nothing stray on disk.
+; update-check cache in %LOCALAPPDATA%). {localappdata} here is the ELEVATED account's profile;
+; the interactive user's own copies are removed by `--remove-user-state` (RunAsOriginalUser).
 Type: files; Name: "{localappdata}\SageThumbs2K.log"
 Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
 ; Any DLL copies parked aside by `SwapAsideInUseDll` on a machine that has not rebooted since.
@@ -500,6 +513,13 @@ Type: files; Name: "{app}\{#AppDll}.old*"
 // and CurStepChanged uses one to hand the install path to the modern-menu [Run] entry.
 function SetEnvironmentVariableW(lpName, lpValue: String): BOOL;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+// Kernel32 import: delete-on-reboot for a file Explorer holds open (ScheduleThumbnailCacheReset).
+// A delete passes NULL as lpNewFileName, which the script engine cannot spell as a String, so
+// that parameter is a Cardinal and the call passes 0.
+function MoveFileExW(lpExistingFileName: String; lpNewFileName: Cardinal; dwFlags: DWORD): BOOL;
+  external 'MoveFileExW@kernel32.dll stdcall';
+const
+  MOVEFILE_DELAY_UNTIL_REBOOT = 4;
 // Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
 var
   WasUpgrade: Boolean;
@@ -691,9 +711,45 @@ begin
   LicensePage.Add('Personal use (free)' + #13#10
     + 'Home, hobby, and other non-commercial use. Every feature included.');
   LicensePage.Add('Business or commercial use' + #13#10
-    + 'For work. Buy a licence at st2k.lunarwerx.com/buy (US$49 per installation, yours'
-    + ' permanently) and enter the key afterwards under Settings > Licence.');
+    + 'For work. Try it for 7 days, then enter a licence key under Settings > Licence'
+    + ' (US$2.99 a month from sagethumbs.lunarwerx.com, or US$49 per installation'
+    + ' and it is yours permanently, from st2k.lunarwerx.com/buy).');
   LicensePage.SelectedValueIndex := LicenseModeInitial;
+end;
+
+// Does the licence breadcrumb say this machine ran under Business mode and has not yet
+// acknowledged a downgrade? No JSON parser here: the app writes the file with serde_json's
+// pretty printer, which emits exactly `"was_business": true` - a literal the app's own test
+// (`licence_state::tests::the_pretty_printed_breadcrumb_carries_the_literals_the_installer_greps_for`)
+// pins, so a serializer change cannot silently blind this check.
+function BreadcrumbSaysWasBusiness: Boolean;
+var
+  S: AnsiString;
+  P: String;
+begin
+  Result := False;
+  P := ExpandConstant('{commonappdata}\SageThumbs2K\license-history.json');
+  if FileExists(P) and LoadStringFromFile(P, S) then
+    Result := (Pos('"was_business": true', String(S)) > 0)
+      and (Pos('"downgrade_acknowledged": true', String(S)) = 0);
+end;
+
+// "Are you certain?" - asked ONCE, at the moment someone picks Personal on a machine that
+// was set up for business use (the HKLM answer says so, or the breadcrumb remembers it and
+// the app has not yet shown its own one-time downgrade notice). Not a wall: No goes back to
+// the page, Yes proceeds and the app's notice fires once more on the next Settings open,
+// after which neither asks again. A silent run never reaches this (no wizard pages).
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = LicensePage.ID) and (LicensePage.SelectedValueIndex = 0)
+     and ((LicenseModeInitial = 1) or BreadcrumbSaysWasBusiness) then
+    Result := MsgBox('This computer was set up for business use of SageThumbs 2K.'
+      + #13#10#13#10
+      + 'Personal use is free only for personal, non-commercial use. If this is a work'
+      + ' computer, go back and keep Business.'
+      + #13#10#13#10
+      + 'Continue with Personal use?', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 // Do not re-ask somebody who has already answered - an upgrade should be quiet. A first
@@ -742,6 +798,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Stale: String;
+  R: Integer;
 begin
   if CurStep = ssInstall then
   begin
@@ -763,6 +820,10 @@ begin
   if CurStep = ssPostInstall then
   begin
     Stale := StaleAfterInstall;
+    // Remove the start-up re-registration task an EARLIER stale install may have left; it is
+    // recreated just below if this install is stale too (2026-09-19 audit F13).
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
+      SW_HIDE, ewWaitUntilTerminated, R);
     if Stale <> '' then
     begin
       // The [Run] regsvr32 above just re-registered whichever DLL was actually on disk at
@@ -781,7 +842,21 @@ begin
       RegWriteStringValue(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
         'SageThumbs2KReregister',
         ExpandConstant('"{sys}\regsvr32.exe" /s "{app}\{#AppDll}"'));
-      MsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
+      // HKLM RunOnce runs only when an ADMINISTRATOR signs in after the restart; on a PC
+      // whose people are standard users the new DLL would sit unregistered for as long as
+      // that takes (2026-09-19 audit F13). A SYSTEM task at the next start runs for anybody,
+      // before any sign-in; it is removed again by the next install that completes cleanly
+      // (below) and by the uninstaller. Re-registering an already registered DLL is a no-op.
+      Exec(ExpandConstant('{sys}\schtasks.exe'),
+        '/Create /TN "SageThumbs2K-Reregister" /RU SYSTEM /SC ONSTART /RL HIGHEST /F /TR "\"'
+          + ExpandConstant('{sys}\regsvr32.exe') + '\" /s \"' + ExpandConstant('{app}\{#AppDll}') + '\""',
+        '', SW_HIDE, ewWaitUntilTerminated, R);
+      // SuppressibleMsgBox, not MsgBox: a plain MsgBox from [Code] ignores
+      // /SUPPRESSMSGBOXES, and a silent install with a locked DLL sat on this box for
+      // twelve minutes in a session with no desktop to show it on (the two-account VM
+      // proof, 2026-09-19). The self-updater's own silent run would have done the same.
+      // Suppressed, it is still written to the Setup log.
+      SuppressibleMsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
         + ' OLD VERSION.'
         + #13#10#13#10
         + 'Windows keeps that file open while File Explorer or another app is using it, and'
@@ -791,11 +866,11 @@ begin
         + ' needed. If the version still has not changed after that, security software is'
         + ' most likely blocking the file - allow the install folder in your antivirus and'
         + ' run this installer again.',
-        mbError, MB_OK);
+        mbError, MB_OK, IDOK);
     end;
     if not RegKeyExists(HKEY_CLASSES_ROOT,
          'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
-      MsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
+      SuppressibleMsgBox('SageThumbs 2K installed its files, but registering the shell extension with'
         + ' Windows did not succeed, so thumbnails and the right-click menu will not appear.'
         + #13#10#13#10
         + 'This is almost always security software blocking or quarantining'
@@ -803,7 +878,7 @@ begin
         + #13#10#13#10
         + 'To fix it: allow the install folder in your antivirus, then open SageThumbs 2K'
         + ' Settings and use Advanced > Repair file associations.',
-        mbError, MB_OK);
+        mbError, MB_OK, IDOK);
   end;
 end;
 
@@ -921,10 +996,16 @@ end;
 
 // The "why are you leaving?" answer collected by the uninstall survey (AskUninstallReason),
 // read by NotifyUninstall. Reason is a short bucket key; Note and Contact are optional text.
+// ResetThumbCache is the survey form's one functional checkbox: whether usPostUninstall may
+// schedule the thumbnail-cache wipe (ScheduleThumbnailCacheReset). It defaults to False and is
+// only ever set by that interactive form or the bare /RESETTHUMBCACHE switch (usPostUninstall
+// CompareTexts the WHOLE argument, so `/RESETTHUMBCACHE=1` does NOT match), so an unattended
+// uninstall keeps the user's cache.
 var
   UninstallReason: String;
   UninstallNote: String;
   UninstallContact: String;
+  ResetThumbCache: Boolean;
 
 // Percent-encode a string for safe use as a URL query value. ASCII only - any non-ASCII
 // char is dropped rather than mis-encoded (the survey note is best-effort, not exact text).
@@ -1031,16 +1112,18 @@ end;
 procedure AskUninstallReason;
 var
   F: TSetupForm;
-  Lbl, NoteLbl, ReadLbl, ContactLbl: TNewStaticText;
+  Lbl, NoteLbl, ReadLbl, ContactLbl, CacheHint: TNewStaticText;
   Radios: array[0..6] of TNewRadioButton;
   Note, Contact: TNewEdit;
+  ResetCache: TNewCheckBox;
   BtnSend, BtnSkip: TNewButton;
   Keys, Texts: array[0..6] of String;
-  i, y: Integer;
+  i, y, R: Integer;
 begin
   UninstallReason := '';
   UninstallNote := '';
   UninstallContact := '';
+  ResetThumbCache := False;
 
   Keys[0] := 'buggy';       Texts[0] := 'It did not work - no thumbnails, errors, or crashes';
   Keys[1] := 'slow';        Texts[1] := 'Too slow or used too much memory / CPU';
@@ -1056,7 +1139,7 @@ begin
   // builds the form via CreateNew (no resource lookup) and works in Setup AND the uninstaller.
   // Client size is a construction arg (read-only afterward since Inno 6.6.0); the two True flags
   // keep both dimensions fixed (no autosize) for this fixed-layout dialog.
-  F := CreateCustomForm(ScaleX(470), ScaleY(420), True, True);
+  F := CreateCustomForm(ScaleX(470), ScaleY(486), True, True);
   try
     F.Caption := 'SageThumbs 2K';
     // Native look: the modern UI font. CreateCustomForm already inits Setup's dialog font;
@@ -1137,6 +1220,30 @@ begin
     SurveyWarn.Font.Color := clRed;
     SurveyWarn.Visible := False;
 
+    // The one functional control on this form: whether to throw away Windows' thumbnail cache
+    // (ScheduleThumbnailCacheReset). UNTICKED by default and read whichever button closes the
+    // form - it is not part of the survey, the survey is just the one dialog an interactive
+    // uninstall shows. The cache holds every thumbnail on the machine, not only ours, so
+    // deleting it is the user's call; issue 9 in docs/ISSUES.md has the reasoning.
+    ResetCache := TNewCheckBox.Create(F);
+    ResetCache.Parent := F;
+    ResetCache.Left := ScaleX(16);
+    ResetCache.Top := y + ScaleY(154);
+    ResetCache.Width := F.ClientWidth - ScaleX(32);
+    ResetCache.Caption := 'Also reset Windows'' thumbnail cache at the next restart';
+    ResetCache.Checked := False;
+
+    CacheHint := TNewStaticText.Create(F);
+    CacheHint.Parent := F;
+    CacheHint.Left := ScaleX(34);
+    CacheHint.Top := y + ScaleY(176);
+    CacheHint.Width := F.ClientWidth - ScaleX(50);
+    CacheHint.AutoSize := False;
+    CacheHint.WordWrap := True;
+    CacheHint.Height := ScaleY(30);
+    CacheHint.Caption := 'Unticked, the thumbnails SageThumbs 2K already drew stay until those ' +
+      'files change. Windows'' Disk Cleanup (Thumbnails) clears them any time later.';
+
     BtnSend := TNewButton.Create(F);
     BtnSend.Parent := F;
     BtnSend.Width := ScaleX(130);
@@ -1163,7 +1270,10 @@ begin
     BtnSkip.ModalResult := mrCancel;
     BtnSkip.Cancel := True;
 
-    if F.ShowModal = mrOk then begin
+    R := F.ShowModal;
+    // Read the checkbox on Send AND Skip: skipping the survey is not "keep my cache".
+    ResetThumbCache := ResetCache.Checked;
+    if R = mrOk then begin
       for i := 0 to 6 do
         if Radios[i].Checked then
           UninstallReason := Keys[i];
@@ -1229,27 +1339,183 @@ end;
 // INTERACTIVE user's standard token regardless of the elevation of the process that created
 // and triggered it. Best-effort: every step is allowed to fail (a missing schtasks.exe, or no
 // interactive session at all - a headless uninstall) without blocking the rest of removal.
+// The interactive CONSOLE user as "DOMAIN\name", asked of the Terminal Services API - not the
+// account this elevated process runs as (see RunAsOriginalUser for why that differs). '' when
+// there is no console session (a headless uninstall) or the API declines.
+function WTSGetActiveConsoleSessionId(): DWORD;
+  external 'WTSGetActiveConsoleSessionId@kernel32.dll stdcall';
+// Returns Boolean, NOT BOOL. Inno's DLL marshaller reads a Boolean return correctly from a
+// WinAPI BOOL, and only a Boolean can be used in the `and` below - declared `: BOOL` the
+// whole thing was a "Type mismatch" that the [Code] LINT never caught and only a real ISCC
+// compile did (2026-09-19 audit item: the WTS block had passed the lint, never a compile).
+function WTSQuerySessionInformationW(hServer: THandle; SessionId: DWORD; InfoClass: Integer;
+  var Buffer: Cardinal; var Bytes: DWORD): Boolean;
+  external 'WTSQuerySessionInformationW@wtsapi32.dll stdcall';
+procedure WTSFreeMemory(Memory: Cardinal);
+  external 'WTSFreeMemory@wtsapi32.dll stdcall';
+procedure RtlMoveMemory(Dest: Cardinal; Source: Cardinal; Length: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
+
+// The WTS query hands back `Buf`, a pointer to a DLL-allocated null-terminated WIDE string,
+// and `Bytes`, its length INCLUDING the terminator. Copy those bytes into a real Inno String
+// with RtlMoveMemory (`CastStringToInteger` gives the destination buffer's address); do NOT
+// `CastIntegerToString(Buf)` - that reinterprets the raw pointer as an Inno string's internal
+// representation, which has a length/refcount prefix an LPWSTR does not, so it reads garbage.
+function WtsSessionString(InfoClass: Integer): String;
+var
+  Buf: Cardinal;
+  Bytes: DWORD;
+  W: String;
+  CharCount: Integer;
+begin
+  Result := '';
+  Buf := 0;
+  Bytes := 0;
+  if WTSQuerySessionInformationW(0, WTSGetActiveConsoleSessionId(), InfoClass, Buf, Bytes)
+    and (Buf <> 0) then
+  begin
+    if Bytes >= 2 then
+    begin
+      CharCount := (Integer(Bytes) div 2) - 1; // drop the null terminator
+      if CharCount > 0 then
+      begin
+        SetLength(W, CharCount);
+        RtlMoveMemory(CastStringToInteger(W), Buf, Cardinal(CharCount * 2));
+        Result := W;
+      end;
+    end;
+    WTSFreeMemory(Buf);
+  end;
+end;
+
+function ConsoleUser(): String;
+var
+  User, Domain: String;
+begin
+  User := WtsSessionString(5);   // WTSUserName
+  Domain := WtsSessionString(7); // WTSDomainName
+  if User = '' then
+    Result := ''
+  else if Domain = '' then
+    Result := User
+  else
+    Result := Domain + '\' + User;
+end;
+
+// Quote S for PowerShell: a single-quoted literal, embedded quotes doubled.
+function PsQuote(const S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
+  Result := '''' + Result + '''';
+end;
+
+// Run <Exe> <Params> as the interactive CONSOLE user, from this ELEVATED context, and wait.
+//
+// The broker is a one-shot Scheduled Task registered through the ScheduledTasks PowerShell
+// API with LogonType Interactive and RunLevel Limited: the Task Scheduler resolves that to
+// the console user's own standard token, no password needed, no prompt. It is NOT
+// `schtasks /Create /RU <user> /NP`: for any account other than the caller's, schtasks
+// still asks "Please enter the run as password" on its console, and inside a hidden Exec
+// with no stdin that prompt is a hang - the uninstaller sat in it for ten minutes on the
+// two-account VM (2026-09-19); with stdin closed it is "Access is denied". The same
+// PowerShell call starts the task, waits (bounded) for the instance to START and then to
+// END - `Get-ScheduledTask`'s State is an enum, never localized text - and unregisters
+// it, so nothing is torn down under a still-running step (the modern-menu registration
+// genuinely takes seconds). No console session at all (a headless install): the command
+// simply runs here, as the elevated user, exactly as an install with nobody at the PC
+// always has.
 procedure RunAsOriginalUser(const Exe, Params: String);
 var
-  TaskName, SchTasks, Args: String;
+  TaskName, Args, Ps: String;
   R: Integer;
 begin
-  SchTasks := ExpandConstant('{sys}\schtasks.exe');
-  TaskName := 'SageThumbs2K-RunAsUser-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
-  // /RL LIMITED is the load-bearing part - see the procedure comment. /TR takes ONE
-  // double-quoted command; the exe path itself needs its own quotes nested inside that via
-  // Inno's \" escape (this repo's own path can contain a space, "SageThumbs 2K").
-  Args := '/Create /TN "' + TaskName + '" /TR "\"' + Exe + '\" ' + Params
-    + '" /SC ONCE /ST 00:00 /RL LIMITED /F';
-  if not Exec(SchTasks, Args, '', SW_HIDE, ewWaitUntilTerminated, R) or (R <> 0) then
+  if ConsoleUser() = '' then
+  begin
+    Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, R);
     Exit;
-  Exec(SchTasks, '/Run /TN "' + TaskName + '"', '', SW_HIDE, ewWaitUntilTerminated, R);
-  // /Run triggers the task and returns immediately, before it finishes - not before it even
-  // STARTS. Give the short-lived CLI call a moment to actually run before tearing the task
-  // down; both operations are themselves best-effort so a slow machine loses nothing worse
-  // than a task definition left behind for the next uninstall's /F to overwrite.
-  Sleep(1500);
-  Exec(SchTasks, '/Delete /TN "' + TaskName + '" /F', '', SW_HIDE, ewWaitUntilTerminated, R);
+  end;
+  TaskName := 'SageThumbs2K-RunAsUser-' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+  // The whole -Command rides inside one pair of double quotes on powershell.exe's command
+  // line, so a double quote inside the task's arguments has to arrive as \" (the C runtime
+  // argv rule powershell.exe follows); inside the single-quoted PowerShell literal it is then
+  // just a character, and the task's Arguments carry a real double quote.
+  Args := Params;
+  StringChangeEx(Args, '"', '\"', True);
+  Ps := '$ErrorActionPreference=''Stop''; '
+    + '$a = New-ScheduledTaskAction -Execute ' + PsQuote(Exe) + ' -Argument ' + PsQuote(Args) + '; '
+    + '$p = New-ScheduledTaskPrincipal -UserId ' + PsQuote(ConsoleUser()) + ' -LogonType Interactive -RunLevel Limited; '
+    + '$n = ' + PsQuote(TaskName) + '; '
+    + 'Register-ScheduledTask -TaskName $n -Action $a -Principal $p -Force | Out-Null; '
+    + 'Start-ScheduledTask -TaskName $n; '
+    + '$d=(Get-Date).AddSeconds(4); while((Get-Date) -lt $d -and (Get-ScheduledTask -TaskName $n).State -ne ''Running''){Start-Sleep -m 150}; '
+    + '$d=(Get-Date).AddSeconds(180); while((Get-Date) -lt $d -and (Get-ScheduledTask -TaskName $n).State -eq ''Running''){Start-Sleep -m 250}; '
+    + 'Unregister-ScheduledTask -TaskName $n -Confirm:$false';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Ps + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, R);
+end;
+
+// ---- Install-side per-user steps reach the CONSOLE user (2026-09-19 audit F11, live) ----
+// Inno's own `runasoriginaluser` reaches the person at the PC only when that person started
+// Setup unelevated and answered UAC with another account's credentials. Started from an
+// already-elevated process - an admin's shell, a remote session, a deployment tool - "the
+// original user" IS the elevated account, and the two-account VM proof put every per-user
+// install step into the administrator's hive while the standard user owned the console (the
+// uninstall side, which goes through RunAsOriginalUser above, targets the console user).
+// So each per-user [Run] entry carries a Check that asks: is there a console user other than
+// the account Setup runs as? Then the step runs as THAT user through the same one-shot task,
+// and the Check returns False so Inno does not run the entry a second time. Nobody at the
+// console, or the console user is this very account: True, and Inno runs the entry itself
+// exactly as before. Each step runs at most once however often Inno evaluates the Check.
+var
+  ConsoleRoutedSteps: String;
+
+function ConsoleUserDiffers(): Boolean;
+var
+  C: String;
+  P: Integer;
+begin
+  Result := False;
+  C := ConsoleUser();
+  if C = '' then
+    Exit;
+  P := Pos('\', C);
+  if P > 0 then
+    C := Copy(C, P + 1, Length(C));
+  Result := CompareText(C, GetUserNameString()) <> 0;
+end;
+
+function ConsoleRoute(const Exe, Params, Key: String): Boolean;
+begin
+  // True = Inno runs the [Run] entry itself; False = it ran (or is running) as the console user.
+  Result := True;
+  if not ConsoleUserDiffers() then
+    Exit;
+  Result := False;
+  if Pos(';' + Key + ';', ConsoleRoutedSteps) > 0 then
+    Exit;
+  ConsoleRoutedSteps := ConsoleRoutedSteps + ';' + Key + ';';
+  RunAsOriginalUser(Exe, Params);
+end;
+
+function ConsoleUserStep(Params: String): Boolean;
+begin
+  Result := ConsoleRoute(ExpandConstant('{app}\{#AppExe}'), Params, Params);
+end;
+
+// The modern-menu registration command, the ONE copy: the [Run] entry expands it through
+// {code:ModernMenuRegisterScript}, and the console-user route passes the same text.
+function ModernMenuRegisterScript(Param: String): String;
+begin
+  Result := '$d=(Get-ItemProperty -Path ''HKLM:\Software\SageThumbs2K'' -Name ModernMenuInstallDir -ErrorAction SilentlyContinue).ModernMenuInstallDir; if($d){Get-AppxPackage -Name SageThumbs2K|Where-Object{$_.Publisher -cne ''{#MsixPublisher}''}|Remove-AppxPackage -ErrorAction SilentlyContinue; try{Add-AppxPackage -Path ($d+''\SageThumbs2K.msix'') -ExternalLocation $d -ForceUpdateFromAnyVersion -ErrorAction Stop}catch{Get-AppxPackage -Name SageThumbs2K|Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path ($d+''\SageThumbs2K.msix'') -ExternalLocation $d -ForceUpdateFromAnyVersion}}';
+end;
+
+function ConsoleUserPsStep(): Boolean;
+begin
+  // Real double quotes here; RunAsOriginalUser escapes them for the broker's command line.
+  Result := ConsoleRoute('powershell.exe',
+    '-NoProfile -Command "' + ModernMenuRegisterScript('') + '"', 'modern-menu');
 end;
 
 // Sweep the Run-key autostart value across EVERY loaded user hive, not just whichever account
@@ -1320,9 +1586,65 @@ begin
       '; the modern-menu package may still be registered for one or more users.');
 end;
 
+// Windows keeps every thumbnail it cached while SageThumbs 2K was installed - each tile we
+// drew, for every file the user browsed - and serves it for as long as the file is unchanged.
+// After an uninstall the desktop and every folder therefore go on showing OUR pictures (our
+// colour handling, our rendering of formats Windows cannot draw) with nothing left on the
+// machine to explain why; an uninstall survey note of 2026-09-15 ("desktop thumbnails got
+// modified as well") is what that residue looks like from the outside. Setup wipes the cache
+// on install for the mirror-image reason (the --rebuild-thumbnail-cache [Run] entry).
+//
+// OPT-IN since 2026-09-20 (Michael's call, docs/ISSUES.md issue 9). From 3.0.5 this ran
+// unconditionally, silent uninstalls included, and someone complained: the cache is one
+// opaque structure holding EVERY thumbnail on the machine - the ordinary JPEGs Windows drew
+// itself long before we existed - and there is no supported way to evict only our entries
+// (IThumbnailCache has no per-item delete; the index and the size buckets are one unit). So
+// it is all or nothing, and the install side already treats the smaller version of this
+// action as a checkbox that refuses to run silently. The uninstall now matches: the survey
+// form's checkbox (unticked by default) or /RESETTHUMBCACHE for unattended removals that
+// want the old behaviour; otherwise the cache is kept and Windows' own Disk Cleanup can
+// clear it later.
+//
+// Explorer holds thumbcache_*.db open, so each file is handed to MoveFileEx with
+// MOVEFILE_DELAY_UNTIL_REBOOT: Windows removes it before the shell starts at the next boot and
+// rebuilds the cache from its own handlers. Deliberately NOT an Explorer restart: killing the
+// shell without asking is the one thing setup's own step refuses to do silently. Every file
+// goes the same way rather than deleting the unlocked ones now: the index and the size buckets
+// are one structure, and Windows should find either all of it or none of it.
+//
+// {localappdata} is the ELEVATED user's profile, the same caveat [UninstallDelete] accepts for
+// SageThumbs2K.log: where a standard user typed a different admin's credentials this clears
+// that admin's cache (harmless) and the standard user's own lingers until Windows evicts it.
+procedure ScheduleThumbnailCacheReset;
+var
+  Dir: String;
+  F: TFindRec;
+begin
+  Dir := ExpandConstant('{localappdata}\Microsoft\Windows\Explorer');
+  if not FindFirst(Dir + '\thumbcache_*.db', F) then
+    Exit;
+  try
+    repeat
+      if (F.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        MoveFileExW(Dir + '\' + F.Name, 0, MOVEFILE_DELAY_UNTIL_REBOOT);
+    until not FindNext(F);
+  finally
+    FindClose(F);
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  TaskR: Integer;
 begin
   if CurUninstallStep = usUninstall then begin
+    // The start-up re-registration task (see CurStepChanged) must not outlive the DLL.
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
+      SW_HIDE, ewWaitUntilTerminated, TaskR);
+    // ...and neither may its HKLM RunOnce twin: an uninstall between a stale install and the
+    // restart that would have run it left a value pointing at the deleted DLL.
+    RegDeleteValue(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+      'SageThumbs2KReregister');
     // Ask why first (interactive uninstalls only), then send the optional survey answer.
     // NotifyUninstall itself stays gated the same way: an unattended/SCCM/Intune uninstall
     // should not phone home OR pop a dialog that has nobody there to answer it.
@@ -1359,5 +1681,19 @@ begin
     // ever runs for one user at a time) is swept here directly - this is a plain value delete
     // with no per-user answer to get wrong, so it does not need RunAsOriginalUser's indirection.
     RemoveRunKeyForAllUsers;
+  end;
+  // After the files are gone and [UninstallRun]'s regsvr32 /u has unhooked every format, so a
+  // cache rebuilt at the next boot can only come from Windows' own handlers. Only when asked:
+  // the survey form's checkbox (AskUninstallReason, interactive only) or the /RESETTHUMBCACHE
+  // switch, the one way an unattended uninstall can opt in. ParamStr, not {param:}, for the
+  // same reason WasSelfUpdate reads /UPDATED that way.
+  if CurUninstallStep = usPostUninstall then begin
+    for TaskR := 1 to ParamCount do
+      if CompareText(ParamStr(TaskR), '/RESETTHUMBCACHE') = 0 then
+        ResetThumbCache := True;
+    if ResetThumbCache then
+      ScheduleThumbnailCacheReset
+    else
+      Log('SageThumbs 2K: keeping the Windows thumbnail cache (reset not requested).');
   end;
 end;

@@ -57,7 +57,13 @@ fn psnr_luma(a: &Pixmap, b: &Pixmap) -> f64 {
     assert_eq!(a.height, b.height);
     let mut mse = 0.0f64;
     let mut n = 0usize;
-    for (ra, rb) in a.data.chunks_exact(4).zip(b.data.chunks_exact(4)) {
+    for (ra, rb) in a
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data.as_chunks::<4>().0)
+    {
         let d = luma(ra[0], ra[1], ra[2]) - luma(rb[0], rb[1], rb[2]);
         mse += d * d;
         n += 1;
@@ -70,7 +76,13 @@ fn psnr_rgb(a: &Pixmap, b: &Pixmap) -> f64 {
     assert_eq!(a.height, b.height);
     let mut mse = 0.0f64;
     let mut n = 0usize;
-    for (ra, rb) in a.data.chunks_exact(4).zip(b.data.chunks_exact(4)) {
+    for (ra, rb) in a
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data.as_chunks::<4>().0)
+    {
         for chan in 0..3 {
             let d = f64::from(ra[chan]) - f64::from(rb[chan]);
             mse += d * d;

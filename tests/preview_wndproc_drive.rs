@@ -1,5 +1,5 @@
 //! A human click-through of the preview window, replaced: drives the REAL preview wndproc
-//! (`src/bin/app/preview/window.rs` + its `window/mouse.rs`/`window/keys.rs` split) through the
+//! (`crates/preview/src/preview/window.rs` + its `window/mouse.rs`/`window/keys.rs` split) through the
 //! actual OS message loop over exactly the paths that split touched and that a green
 //! `cargo build`/`cargo test`/`clippy` cannot prove on their own — the mouse handlers (hover
 //! already covered by `--hot`, so this file adds press/release/capture-changed), the keyboard
@@ -11,7 +11,7 @@
 //!
 //! - Most tests extend the documented headless `--shot --window preview` harness (CLAUDE.md
 //!   §6), which already drives real message paths for hover/find/scroll/resize. Three NEW
-//!   driving flags were added to `src/bin/app/preview/shot.rs` for this file — `--click N`
+//!   driving flags were added to `crates/preview/src/preview/shot.rs` for this file — `--click N`
 //!   (a real `WM_LBUTTONDOWN`+`WM_LBUTTONUP` at toolbar button N's own on-screen rect, not a
 //!   direct `do_action` call), `--drag X1,Y1,X2,Y2,X3,Y3[,interrupt]` (a two-leg mouse drag,
 //!   optionally interrupted by a real `WM_CAPTURECHANGED` between the legs), and

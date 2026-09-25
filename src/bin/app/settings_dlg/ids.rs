@@ -56,12 +56,8 @@ pub(super) const ID_SYNC_BTN: i32 = 1201;
 // Live "● Synced · up to date" status line beside the sync button (green when signed in,
 // muted when signed out) — replaces baking the raw account id into the button label.
 pub(super) const ID_SYNC_STATUS: i32 = 1202;
-// Left-column scroll plumbing: a vertical scrollbar + an opaque mask that hides
-// controls scrolled below the viewport (so the left options can grow/scroll
-// without making the window taller).
-pub(super) const ID_SCROLLBAR: i32 = 1131;
-pub(super) const ID_LEFT_MASK: i32 = 1132;
-// Live search box that filters the supported-file-types list.
+// File-types page: the full-width live search box that filters the
+// supported-file-types list below it as you type.
 pub(super) const ID_SEARCH: i32 = 1133;
 // Screenshot capture service: an enable toggle + a hotkey preset picker (the
 // opt-in tray daemon's global hotkey, configurable here instead of via the tray).
@@ -209,6 +205,22 @@ pub(super) const ID_LICENCE_UPDATES_STATUS: i32 = 1264;
 /// already ended; hidden otherwise, because a button offering to buy something nobody needs
 /// yet is just a nag.
 pub(super) const ID_LICENCE_RENEW: i32 = 1265;
+/// "Move my licence to this computer" - opens the Connections seat portal claim page
+/// (`license::PORTAL_CLAIM_URL`) in the system browser, where the buyer pastes their key and
+/// rebinds it themselves. Always shown: unlike Renew, there is no "not needed yet" state -
+/// any licensed-or-was-licensed machine may want to hand its seat to a new computer. See
+/// `PORTAL_CLAIM_URL`'s doc for the gap this closes.
+pub(super) const ID_LICENCE_MOVE: i32 = 1266;
+/// "Using SageThumbs at work? A business licence is US$49 per computer." - the muted
+/// full-width line under the action row, shown only on a Personal copy without a business
+/// key, where it is the answer to "why would I press Buy" (Michael, 2026-09-15: the page read
+/// as "boring, bland"). It and the Renew button below it are never wanted at once. Built with
+/// its translated text like every other label, so the relabel table carries it;
+/// `licence_ui::apply_conditional_visibility` decides whether it shows.
+pub(super) const ID_LICENCE_WORK_HINT: i32 = 1268;
+/// "Recent uploads…" on the Screenshots page, under "Edit upload hosts…": every uploaded link
+/// with the time it has left before its host deletes it (`upload_history_dlg`).
+pub(super) const ID_UPLOAD_HISTORY: i32 = 1269;
 pub(super) const ID_LICENCE_REDEEM_BTN: i32 = 1251;
 /// Result of the last redeem attempt, beside the button (`Row::BtnStatus`).
 pub(super) const ID_LICENCE_REDEEM_STATUS: i32 = 1252;
@@ -238,6 +250,10 @@ pub(super) const ID_BADGE_SIZE: i32 = 1263;
 // comment for why this whole family sits below 1700 instead of packed against it.
 pub(super) const ID_BIZNAG_CARD: i32 = 1254;
 pub(super) const ID_BIZNAG_ACTION: i32 = 1255;
+/// The strip's second button, "Buy a licence…" (opens `license::BUY_URL`) - 1267 because
+/// 1256-1266 were all taken by the time it was added (2026-09-13); `control_ids_are_unique`
+/// is what catches the next collision.
+pub(super) const ID_BIZNAG_BUY: i32 = 1267;
 /// Show a video's embedded poster instead of a frame from the film. Cover art is used as a
 /// FALLBACK regardless of this switch (a file whose codec Windows lacks has no frame at all);
 /// this makes it the PREFERENCE, which is what a ripped-film library wants.
@@ -303,31 +319,11 @@ pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1258, "menu_lock_screen"),
 ];
 
-/// Capture-hotkey presets offered in the Settings dropdown, each paired with its
-/// packed HOTKEYF/VK value (high byte = HOTKEYF_* modifiers, low byte = virtual
-/// key) — the same packing `settings::screenshot_hotkey` stores. Curated to safe,
-/// non-conflicting chords (no bare letters that would hijack a global key, and
-/// avoiding Win+Shift+S / Alt+PrtScn which the OS already claims).
-pub(crate) const SHOT_PRESETS: &[(&str, u32)] = &[
-    ("Ctrl + PrtScn", (0x02 << 8) | 0x2C),
-    ("PrtScn", 0x2C),
-    ("Ctrl + Shift + S", ((0x02 | 0x01) << 8) | 0x53),
-    ("Ctrl + Shift + A", ((0x02 | 0x01) << 8) | 0x41),
-    ("Ctrl + Shift + 4", ((0x02 | 0x01) << 8) | 0x34),
-    ("Ctrl + Alt + S", ((0x02 | 0x04) << 8) | 0x53),
-    ("F9", 0x78),
-    ("Ctrl + F12", (0x02 << 8) | 0x7B),
-];
+pub(crate) use st2k_screenshot::screenshot::SHOT_PRESETS;
 /// Default chord pre-selected in the quick-save combo when none is saved yet —
 /// deliberately NOT the main `Ctrl + PrtScn` default, so enabling the instant
 /// screenshot doesn't try to grab a chord already owned by the editor hotkey.
 pub(super) const QUICK_DEFAULT_LABEL: &str = "Ctrl + Shift + S";
-
-// Left-column scroll geometry (96-dpi design px). The viewport is the visible
-// band of the left options; content taller than it scrolls.
-pub(super) const LEFT_VIEW_TOP: i32 = 6;
-pub(super) const LEFT_VIEW_BOTTOM: i32 = 442;
-pub(super) const LEFT_RIGHT_EDGE: i32 = 340; // x past which a control is "right column" (not scrolled)
 
 // ===== The "you could be signed in" banner (see `settings_dlg/nudge.rs`) =====
 //
@@ -393,6 +389,9 @@ mod tests {
                     continue;
                 };
                 // Skip anything computed from another constant; only plain literals compare.
+                // Drop a trailing `//` comment first, or the parse fails and the constant is
+                // silently skipped rather than checked.
+                let value = value.split("//").next().unwrap_or(value);
                 let Ok(value) = value.trim().trim_end_matches(';').trim().parse::<i64>() else {
                     continue;
                 };

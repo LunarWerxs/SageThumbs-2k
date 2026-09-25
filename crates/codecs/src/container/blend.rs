@@ -1,0 +1,227 @@
+//! Blender `.blend` embedded thumbnail. Blender bakes a small RGBA screenshot
+//! into a `TEST` file-block — no Blender install, no rendering. We walk the
+//! file-block stream to that block and read its raw pixels.
+//!
+//! Header magic `BLENDER`, then either the legacy 12-byte header (pointer-size
+//! byte `_`=32-bit / `-`=64-bit, endian byte `v`/`V`) or the Blender-5.x 17-byte
+//! v1 header (`17`, always 64-bit little-endian). Multi-byte ints are
+//! little-endian on every real file. Compressed `.blend` (gzip/zstd) has no
+//! `BLENDER` magic → we return None (handled by the normal tiers / icon).
+
+use image::{DynamicImage, RgbaImage};
+
+const MAX_EDGE: u32 = 4096;
+
+/// Extract the embedded thumbnail as decoded pixels, or None.
+pub fn extract(bytes: &[u8]) -> Option<DynamicImage> {
+    if bytes.len() < 12 || &bytes[0..7] != b"BLENDER" {
+        return None;
+    }
+    // Pointer size + where the block stream starts + which block-header variant.
+    let b7 = bytes[7];
+    let (ptr_size, block_start, v1) = if b7 == b'_' {
+        (4usize, 12usize, false)
+    } else if b7 == b'-' {
+        (8, 12, false)
+    } else if &bytes[7..9] == b"17" {
+        (8, 17, true) // Blender 5.x LargeBHead8
+    } else {
+        return None;
+    };
+    let legacy_hdr = 16 + ptr_size; // BHead4 = 20, SmallBHead8 = 24
+
+    scan_blocks(bytes, block_start, v1, legacy_hdr)
+}
+
+/// Walk the file-block stream from `start`, decoding the first `TEST` block that checks out
+/// and stopping at `ENDB`; `None` on a miss or a hard abort (truncated/corrupt stream).
+fn scan_blocks(bytes: &[u8], start: usize, v1: bool, legacy_hdr: usize) -> Option<DynamicImage> {
+    let mut off = start;
+    while off + 8 <= bytes.len() {
+        let (code, len, hdr) = read_block_header(bytes, off, v1, legacy_hdr)?;
+        if code == b"ENDB" {
+            break;
+        }
+        if let Some(img) = block_thumbnail(code, bytes, off, hdr, len)? {
+            return Some(img);
+        }
+        off = off.checked_add(hdr)?.checked_add(len)?;
+    }
+    None
+}
+
+/// Routine for one block: decode it when `code` is `TEST`, else report the soft miss
+/// (`Some(None)`) that keeps the stream walk going. Hard abort stays the outer `None`.
+fn block_thumbnail(
+    code: &[u8],
+    bytes: &[u8],
+    off: usize,
+    hdr: usize,
+    len: usize,
+) -> Option<Option<DynamicImage>> {
+    if code != b"TEST" {
+        return Some(None);
+    }
+    decode_test_block(bytes, off, hdr, len)
+}
+
+/// One block-stream record's header: `(code, block length, header size)`. A `None` here is a
+/// hard abort of the whole search (truncated/corrupt block stream), same as the equivalent
+/// reads used to be inlined in [`extract`] via `?`, before the ENDB/TEST checks that follow.
+fn read_block_header(
+    bytes: &[u8],
+    off: usize,
+    v1: bool,
+    legacy_hdr: usize,
+) -> Option<(&[u8], usize, usize)> {
+    let code = bytes.get(off..off + 4)?;
+    let (len, hdr) = if v1 {
+        // LargeBHead8: code i32, sdna i32, old u64, len i64@16, count i64
+        (
+            i64::from_le_bytes(bytes.get(off + 16..off + 24)?.try_into().ok()?) as usize,
+            32usize,
+        )
+    } else {
+        // BHead4 / SmallBHead8: len i32 at +4
+        (
+            i32::from_le_bytes(bytes.get(off + 4..off + 8)?.try_into().ok()?) as usize,
+            legacy_hdr,
+        )
+    };
+    Some((code, len, hdr))
+}
+
+/// Decode a `TEST` block (found at `off`, header size `hdr`, declared block length `len`) into
+/// its embedded thumbnail.
+///
+/// The outer `Option` mirrors what a `?` failure here used to mean inside [`extract`] itself: a
+/// hard abort of the WHOLE search (truncated/corrupt data), not just this block. `None` means
+/// that; `Some(None)` is a soft miss, this block's own declared dimensions or length don't
+/// check out, and the caller keeps scanning for another `TEST` block; `Some(Some(img))` is the
+/// thumbnail.
+fn decode_test_block(
+    bytes: &[u8],
+    off: usize,
+    hdr: usize,
+    len: usize,
+) -> Option<Option<DynamicImage>> {
+    let body = off.checked_add(hdr)?;
+    let w = i32::from_le_bytes(bytes.get(body..body + 4)?.try_into().ok()?);
+    let h = i32::from_le_bytes(bytes.get(body + 4..body + 8)?.try_into().ok()?);
+    if !(w > 0 && h > 0 && w as u32 <= MAX_EDGE && h as u32 <= MAX_EDGE) {
+        return Some(None);
+    }
+    let (w, h) = (w as u32, h as u32);
+    let px_bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    // Integrity check: the block length is exactly 8 + w*h*4.
+    if len != 8 + px_bytes {
+        return Some(None);
+    }
+    let px = bytes.get(body + 8..body + 8 + px_bytes)?;
+    let img = RgbaImage::from_raw(w, h, px.to_vec())?;
+    // Blender stores this buffer BOTTOM-UP (it comes straight off an OpenGL-style ImBuf), so the
+    // rows have to be reversed or every .blend thumbnails upside down (issue #10). Blender's own
+    // extractor does exactly this: `thumb_data_vertical_flip` in
+    // source/blender/blendthumb/src/blendthumb_extract.cc.
+    Some(Some(DynamicImage::ImageRgba8(
+        image::imageops::flip_vertical(&img),
+    )))
+}
+
+/// Test-only synthetic-`.blend` builder, shared with the `streamsrc` head-preview fast-path
+/// tests (re-exported as `container::blend_testutil`). Lives outside `mod tests` so sibling
+/// modules can reach it under cfg(test), exactly like [`super::psd::testutil`].
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Minimal legacy `.blend` (BHead4) carrying `px` as its TEST thumbnail.
+    pub(crate) fn legacy_blend(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BLENDER");
+        b.push(b'_'); // 32-bit pointers
+        b.push(b'v'); // little-endian
+        b.extend_from_slice(b"277"); // 3 version digits → 12-byte header
+        b.extend_from_slice(b"TEST");
+        // BHead4 (20 bytes): code, len, old(4), sdna, nr / body: width, height, RGBA.
+        b.extend_from_slice(&((8 + w * h * 4) as i32).to_le_bytes());
+        b.extend_from_slice(&[0u8; 12]); // old(4) + sdna(4) + nr(4)
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(px);
+        b.extend_from_slice(b"ENDB");
+        b.extend_from_slice(&[0u8; 16]);
+        b
+    }
+
+    /// Minimal valid legacy .blend (BHead4) with a 4x3 TEST thumbnail, plus an arbitrary
+    /// `tail` after ENDB standing in for the scene data a real file is huge from. (The
+    /// tail's CONTENT is not always filler: the gzip-truncation test needs bytes that
+    /// actually compress to something.)
+    ///
+    /// The thumbnail is deliberately TINY, and that is the point wherever this is used to
+    /// test the issue-#33 size gate: Blender's baked preview is the only picture in the file,
+    /// so no request is ever large enough to justify reading past it.
+    pub(crate) fn synthetic_blend(tail: &[u8]) -> Vec<u8> {
+        let (w, h) = (4u32, 3u32);
+        let px = vec![200u8; (w * h * 4) as usize];
+        let mut b = legacy_blend(w, h, &px);
+        b.extend_from_slice(tail);
+        b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumbnail_rows_are_flipped_to_top_down() {
+        // Issue #10: Blender's TEST buffer is BOTTOM-UP, so the row stored FIRST is the
+        // one that belongs at the BOTTOM of the picture. Store a red first row and a blue
+        // last row; a correct extract puts blue on top.
+        let (w, h) = (2u32, 2u32);
+        let mut px = Vec::new();
+        px.extend_from_slice(&[255, 0, 0, 255].repeat(w as usize)); // stored first = bottom
+        px.extend_from_slice(&[0, 0, 255, 255].repeat(w as usize)); // stored last  = top
+        let img = extract(&testutil::legacy_blend(w, h, &px))
+            .expect("thumbnail")
+            .to_rgba8();
+        assert_eq!(
+            img.get_pixel(0, 0).0,
+            [0, 0, 255, 255],
+            "top row must be blue"
+        );
+        assert_eq!(
+            img.get_pixel(0, 1).0,
+            [255, 0, 0, 255],
+            "bottom row must be red"
+        );
+    }
+
+    #[test]
+    fn extracts_legacy_test_block_thumbnail() {
+        let (w, h) = (4u32, 3u32);
+        let px = vec![200u8; (w * h * 4) as usize];
+        // BHead4 (20 bytes): code, len, old(4), sdna, nr; body: width, height, RGBA.
+        let b = testutil::legacy_blend(w, h, &px);
+
+        let img = extract(&b).expect("thumbnail");
+        assert_eq!((img.width(), img.height()), (4, 3));
+        assert!(extract(b"not a blend file").is_none());
+
+        // The oversized-file rescue hands extract() a bounded HEAD PREFIX of a much
+        // larger file. TEST sits near the head, so a prefix that contains it must
+        // still extract; a prefix cut BEFORE/INSIDE the TEST body must return None
+        // (bounds-checked walk), never panic or mis-decode.
+        let mut padded = b.clone();
+        padded.extend_from_slice(&vec![0u8; 4096]); // simulated giant tail
+        let full_end = b.len() - 20; // prefix that still contains all of TEST
+        assert!(
+            extract(&padded[..full_end]).is_some(),
+            "prefix containing TEST extracts"
+        );
+        assert!(
+            extract(&padded[..40]).is_none(),
+            "prefix truncating TEST is a clean miss"
+        );
+    }
+}

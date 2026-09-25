@@ -33,6 +33,7 @@ use crate::text::{TextLayer, TextZone, TextZoneKind};
 
 /// Errors from text-layer serialization.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TextSerializeError {
     /// Accessing a page failed.
     #[error("document error: {0}")]

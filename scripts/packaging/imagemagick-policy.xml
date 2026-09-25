@@ -15,12 +15,18 @@
        `time` is ImageMagick's ELAPSED-time limit, so it tracks the watchdog's wall-clock
        backstop rather than its 20 s CPU budget: a lower value here would abort a decode
        that is merely waiting for a busy machine to schedule it, which is the bug the CPU
-       budget exists to prevent. Runaway work is still caught by the CPU budget first. -->
+       budget exists to prevent. Runaway work is still caught by the CPU budget first.
+
+       This file is a CEILING, not a setting: a command-line `-limit` above it is clamped to
+       it. So `time` carries the LONGEST backstop any caller uses — the user-chosen Convert
+       of a very large document — while each child still passes its own tighter `-limit
+       time` (an Explorer tile keeps 120). Pinned to decode::limits by
+       `magick_limits_match_policy_xml`. -->
   <policy domain="resource" name="memory" value="512MiB"/>
   <policy domain="resource" name="map" value="1GiB"/>
   <policy domain="resource" name="area" value="512MP"/>
   <policy domain="resource" name="disk" value="2GiB"/>
-  <policy domain="resource" name="time" value="120"/>
+  <policy domain="resource" name="time" value="600"/>
   <policy domain="resource" name="list-length" value="256"/>
 
   <!-- Document / PostScript / vector coders: never needed, historically the

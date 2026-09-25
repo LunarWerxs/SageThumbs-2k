@@ -1,0 +1,39 @@
+diff -ruN pristine/jxl-frame/src/data/toc.rs patched/jxl-frame/src/data/toc.rs
+--- pristine/jxl-frame/src/data/toc.rs	2026-09-23 14:03:27.975184800 -0500
++++ patched/jxl-frame/src/data/toc.rs	2026-09-23 14:03:48.081408200 -0500
+@@ -113,13 +113,19 @@
+         self.groups.len() <= 1
+     }
+ 
++    /// The bitstream index of `kind`'s group, or `usize::MAX` when this TOC has no such group.
++    ///
++    /// SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-frame.patch): a malformed file can
++    /// ask for a group its TOC does not hold (found by fuzzing: an LF or pass group past the
++    /// TOC's entry count indexed `original_to_bitstream` out of bounds, a panic that aborts a
++    /// `panic = "abort"` host). Every caller looks the index up with `.get(idx)`, so an
++    /// out-of-range index is already their "no such group" path; answering one instead of
++    /// panicking turns a crash into a decode error and changes nothing for a valid file.
+     pub fn group_index_bitstream_order(&self, kind: TocGroupKind) -> usize {
+         let original_order = match kind {
+             TocGroupKind::All if self.is_single_entry() => 0,
+-            _ if self.is_single_entry() => {
+-                panic!("Cannot request group type of {kind:?} for single-group frame",)
+-            }
+-            TocGroupKind::All => panic!("Cannot request group type of All for multi-group frame"),
++            _ if self.is_single_entry() => return usize::MAX,
++            TocGroupKind::All => return usize::MAX,
+             TocGroupKind::LfGlobal => 0,
+             TocGroupKind::LfGroup(lf_group_idx) => 1 + lf_group_idx as usize,
+             TocGroupKind::HfGlobal => 1 + self.num_lf_groups,
+@@ -137,7 +143,10 @@
+         if self.original_to_bitstream.is_empty() {
+             original_order
+         } else {
+-            self.original_to_bitstream[original_order]
++            self.original_to_bitstream
++                .get(original_order)
++                .copied()
++                .unwrap_or(usize::MAX)
+         }
+     }
+ 

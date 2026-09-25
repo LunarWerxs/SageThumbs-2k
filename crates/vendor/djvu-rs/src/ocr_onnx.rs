@@ -1,9 +1,27 @@
-//! Experimental ONNX OCR helper via tract (requires `ocr-onnx` feature).
+//! Experimental ONNX OCR via tract (requires `ocr-onnx` feature).
 //!
-//! This is a library-level scaffold for simple CTC-style recognizers: callers
-//! must provide a compatible model, vocabulary, preprocessing expectations, and
-//! output decoding contract. It is intentionally not advertised as a supported
-//! CLI backend until a concrete model family and fixture are documented.
+//! Two layers live here:
+//!
+//! - The concrete PP-OCR pipeline being built under #693 (see
+//!   `docs/neural-ocr-design.md`):
+//!   [`manifest`] — pinned model artifacts with mandatory SHA-256
+//!   verification; [`preprocess`] — deterministic detector preprocessing;
+//!   [`detect`] — DBNet text detection producing page-coordinate boxes;
+//!   [`recognize`] — Cyrillic CTC line recognition against the pinned
+//!   dictionary; [`pipeline`] — the [`pipeline::NeuralOcrBackend`] composition
+//!   wired to the CLI as `--backend onnx`.
+//! - [`OnnxBackend`] — an older generic scaffold for simple CTC-style
+//!   recognizers where the caller provides the model and vocabulary; not a
+//!   CLI backend.
+
+#[cfg(test)]
+mod corpus;
+pub mod detect;
+pub mod manifest;
+pub mod metrics;
+pub mod pipeline;
+pub mod preprocess;
+pub mod recognize;
 
 use std::path::Path;
 

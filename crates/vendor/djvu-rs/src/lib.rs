@@ -166,8 +166,9 @@ pub mod fgbz_encode;
 /// complete `FORM:DJVU` page.
 ///
 /// Provides [`djvu_encode::PageEncoder`] (builder-style entry point),
-/// [`djvu_encode::EncodeQuality`] (Lossless / Quality / Archival
-/// profiles), and [`djvu_encode::EncodeError`].
+/// [`djvu_encode::EncodeQuality`] (Lossless / Quality / Archival / Photo
+/// profiles), [`djvu_encode::BilevelCodec`] (JB2 or explicit Smmr), and
+/// [`djvu_encode::EncodeError`].
 #[cfg(feature = "std")]
 pub mod djvu_encode;
 
@@ -189,12 +190,20 @@ pub mod thumbnail;
 #[cfg(feature = "std")]
 pub mod segment;
 
+/// Encoder ingest policy — alpha, bit-depth down-conversion, and related knobs
+/// (#694). See `docs/encoder-ingestion.md` for the supported input matrix.
+#[cfg(feature = "std")]
+pub mod ingest;
+
 /// PNG file → [`Pixmap`] decoder.
 ///
-/// Provides [`png_io::decode_png_to_pixmap`] for decoding any 8-bit PNG into
-/// the RGBA [`Pixmap`] format used throughout djvu-rs.
+/// Provides [`png_io::decode_png_to_pixmap`] for decoding PNG inputs into the
+/// RGBA [`Pixmap`] format used throughout djvu-rs.
 #[cfg(feature = "std")]
 pub mod png_io;
+
+/// Shared configurable resource limits for parse, render, and validate.
+pub mod resource_limits;
 
 /// New document model — phase 3.
 ///
@@ -210,6 +219,32 @@ pub mod djvu_document;
 #[cfg(feature = "std")]
 pub mod djvu_mut;
 
+/// High-level document optimization planning and safe structural cleanup.
+#[cfg(feature = "std")]
+pub mod optimizer;
+
+/// Versioned, typed document editing operations with validation and atomic
+/// output handoff.
+#[cfg(feature = "std")]
+pub mod editor;
+
+/// Validated dependency graph for bundled `FORM:DJVM` components.
+#[cfg(feature = "std")]
+pub mod component_graph;
+
+/// Layered, non-rendering DjVu document validation.
+///
+/// Structural, dependency, and codec checks are available now. Semantic and
+/// resource layers are reserved for later validator slices so callers can rely
+/// on a stable finding schema from the first release.
+#[cfg(feature = "std")]
+pub mod validate;
+
+/// Semantic comparison of two documents (#696): page properties, text,
+/// annotations, metadata, bookmarks, and the component graph.
+#[cfg(feature = "std")]
+pub mod semantic_diff;
+
 /// Rendering pipeline for [`DjVuPage`] — phase 5.
 ///
 /// Provides `djvu_render::RenderOptions`, `djvu_render::RenderRect`,
@@ -217,6 +252,32 @@ pub mod djvu_mut;
 /// `djvu_render::render_region`, `djvu_render::render_coarse`, and
 /// `djvu_render::render_progressive`.
 pub mod djvu_render;
+
+/// Process-wide ceiling for the page render caches (READ_CACHE_BOUNDED).
+///
+/// Provides `render_cache::budget`, `render_cache::set_budget`,
+/// `render_cache::resident_bytes`, `render_cache::enforce` and
+/// `render_cache::clear`. Since 0.33 the render caches are bounded by default
+/// (`render_cache::DEFAULT_BUDGET`, 256 MiB); `set_budget(usize::MAX)` restores
+/// the unbounded behaviour of earlier releases.
+#[cfg(feature = "std")]
+pub mod render_cache;
+
+/// Tile-first rendering API for viewer engines (#691).
+///
+/// Provides `djvu_tile::TileLayout`, `djvu_tile::TileRect`,
+/// `djvu_tile::render_tile`, and `djvu_tile::render_tile_cached` — a
+/// display-space tile grid over the region renderer, with byte-identical
+/// assembly and order-independent tile pixels — plus tile-granular cache
+/// control (`djvu_tile::tile_cache_usage`, `djvu_tile::set_tile_cache_budget`,
+/// `djvu_tile::clear_tile_cache`, `djvu_tile::invalidate_tile_region`),
+/// progressive quality steps and cooperative cancellation
+/// (`djvu_tile::render_tile_with`, `djvu_tile::TileRenderControls`,
+/// `djvu_tile::TileCancelToken`) and, with the `parallel` feature, bounded
+/// background `djvu_tile::prefetch_tiles` /
+/// `djvu_tile::prefetch_tiles_cancellable`. Contract:
+/// `docs/tile-rendering.md`.
+pub mod djvu_tile;
 
 /// Perceptual image-quality metrics (PSNR, SSIM) for render experiments.
 ///
@@ -271,6 +332,14 @@ mod lenient_text;
 #[cfg(feature = "std")]
 mod export_common;
 
+/// Shared progress reporting and cooperative cancellation for export writers.
+#[cfg(feature = "std")]
+pub mod export_control;
+
+/// Test-only sinks for exercising streaming exporter failure contracts.
+#[cfg(all(test, feature = "std"))]
+pub(crate) mod export_test_support;
+
 /// DjVu to PDF converter — phase 6.
 ///
 /// Converts DjVu documents to PDF preserving structure: rasterized page images,
@@ -317,9 +386,15 @@ pub mod tiff_export;
 ///
 /// Key abstractions: [`djvu_async::LazyDocument`],
 /// [`djvu_async::render_progressive_stream`],
+/// [`djvu_async::render_tile_async`],
+/// [`djvu_async::render_tile_progressive_stream`],
 /// [`djvu_async::load_document_async_streaming`].
 #[cfg(feature = "async")]
 pub mod djvu_async;
+
+/// Async adapters for the synchronous PDF and DJVM streaming writers.
+#[cfg(feature = "async")]
+pub mod export_async;
 
 /// `image::ImageDecoder` integration — allows DjVu pages to be used as
 /// first-class image sources in the `image` crate ecosystem.
@@ -402,7 +477,42 @@ pub mod ffi;
 pub use error::{BzzError, DjVuError, IffError, Iw44Error, Jb2Error};
 
 // Re-export new phase-3 document model
-pub use djvu_document::{DjVuBookmark, DjVuDocument, DjVuPage, DocError};
+pub use djvu_document::{
+    ComponentDirectoryEntry, ComponentId, ComponentKind, ComponentResolveError, ComponentResolver,
+    DjVuBookmark, DjVuDocument, DjVuPage, DocError,
+};
+
+// Re-export the validated editor entry points for callers that do not need to
+// distinguish the module from the rest of the high-level API.
+#[cfg(feature = "std")]
+pub use editor::{
+    DocumentEditor, EDIT_SCHEMA_VERSION, EditError, EditOperation, EditOperationKind, EditPlan,
+    EditRequest, EditTarget, PlannedEdit,
+};
+
+// Re-export the bundled component-graph API for callers that do not need to
+// distinguish the module from the rest of the high-level document API.
+#[cfg(feature = "std")]
+pub use component_graph::{ComponentGraph, ComponentNode, ComponentNodeKind, GraphError};
+
+/// Re-export the semantic diff API for callers that prefer the crate root.
+#[cfg(feature = "std")]
+pub use semantic_diff::{PlaneDiff, PlaneStatus, SemanticDiff, semantic_diff};
+
+pub use resource_limits::{
+    DEFAULT_MAX_RENDER_PIXELS, ParseOptions, ResourceLimitAxis, ResourceLimitExceeded,
+    ResourceLimits,
+};
+/// Re-export the layered validation API for callers that prefer the crate root.
+#[cfg(feature = "std")]
+pub use validate::{
+    Finding, Layer as ValidationLayer, ResourceEstimate, Severity, ValidateOptions,
+    ValidationReport, ValidationSummary,
+};
+
+/// Shared export progress and cancellation types.
+#[cfg(feature = "std")]
+pub use export_control::{ExportObserver, NoOpObserver};
 
 // Re-export new phase-1 page info types
 pub use info::{PageInfo, Rotation};
@@ -420,7 +530,7 @@ pub(crate) mod bitmap;
 pub(crate) mod pixmap;
 
 pub use bitmap::Bitmap;
-pub use pixmap::{GrayPixmap, Pixmap};
+pub use pixmap::{GrayPixmap, Pixmap, PixmapError};
 
 // Re-export text types from the new pipeline
 #[cfg(feature = "std")]
@@ -452,9 +562,17 @@ impl Document {
     /// This method uses `DjVuDocument::parse` which only handles bundled
     /// (self-contained) files; it will return an error for indirect documents.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        Self::open_with_options(path, &crate::resource_limits::ParseOptions::default())
+    }
+
+    /// Open a DjVu file with configurable resource limits.
+    pub fn open_with_options(
+        path: impl AsRef<std::path::Path>,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, Error> {
         let data = std::fs::read(path.as_ref())
             .map_err(|e| Error::FormatError(format!("failed to read file: {}", e)))?;
-        Self::from_bytes(data)
+        Self::from_bytes_with_options(data, opts)
     }
 
     /// Open an indirect DJVM document from disk, resolving component pages
@@ -464,11 +582,19 @@ impl Document {
     /// individual page files (e.g. `page001.djvu`) live alongside the index.
     /// For self-contained (bundled) files, [`Document::open`] is sufficient.
     pub fn open_dir(path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        Self::open_dir_with_options(path, &crate::resource_limits::ParseOptions::default())
+    }
+
+    /// Open an indirect DJVM document with configurable resource limits.
+    pub fn open_dir_with_options(
+        path: impl AsRef<std::path::Path>,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
         let data = std::fs::read(path)
             .map_err(|e| Error::FormatError(format!("failed to read file: {}", e)))?;
         let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
-        let doc = DjVuDocument::parse_from_dir(&data, base_dir)
+        let doc = DjVuDocument::parse_from_dir_with_options(&data, base_dir, opts)
             .map_err(|e| Error::FormatError(e.to_string()))?;
         Ok(Document { doc })
     }
@@ -489,10 +615,34 @@ impl Document {
     /// can construct pages lazily (chunk bytes are materialised on first access
     /// rather than copied at open time; see `DjVuDocument::parse_backed`).
     pub fn from_bytes(data: Vec<u8>) -> Result<Self, Error> {
+        Self::from_bytes_with_options(data, &crate::resource_limits::ParseOptions::default())
+    }
+
+    /// Parse a DjVu document from owned bytes with configurable resource limits.
+    pub fn from_bytes_with_options(
+        data: Vec<u8>,
+        opts: &crate::resource_limits::ParseOptions,
+    ) -> Result<Self, Error> {
         let backing: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> = std::sync::Arc::new(data);
-        let doc =
-            DjVuDocument::parse_backed(backing).map_err(|e| Error::FormatError(e.to_string()))?;
+        let doc = DjVuDocument::parse_backed_with_options(backing, opts)
+            .map_err(|e| Error::FormatError(e.to_string()))?;
         Ok(Document { doc })
+    }
+
+    /// The parsed document this handle owns.
+    ///
+    /// The export entry points — [`crate::pdf::djvu_to_pdf_with_options`],
+    /// [`crate::epub::djvu_to_epub`], [`crate::cbz::djvu_to_cbz`],
+    /// [`crate::tiff_export::djvu_to_tiff`] and their writer forms — all take a
+    /// [`DjVuDocument`]. This hands them the one this `Document` already
+    /// parsed, instead of asking a caller to parse the bytes a second time.
+    pub fn inner(&self) -> &DjVuDocument {
+        &self.doc
+    }
+
+    /// Configurable resource limits supplied at parse/open time, if any.
+    pub fn resource_limits(&self) -> Option<crate::resource_limits::ResourceLimits> {
+        self.doc.resource_limits()
     }
 
     /// Parse the NAVM bookmarks (table of contents).
@@ -662,7 +812,17 @@ impl<'a> Page<'a> {
     /// `bold` / `aa` / `resampling` as needed. This supersedes the bespoke
     /// `render_bold` / `render_aa` / `render_scaled*` methods.
     pub fn render_with(&self, opts: &djvu_render::RenderOptions) -> Result<Pixmap, Error> {
-        djvu_render::render_pixmap(self.page, opts).map_err(Self::render_err)
+        djvu_render::render_pixmap_with_limits(self.page, opts, self.page.resource_limits())
+            .map_err(Self::render_err)
+    }
+
+    /// Render with caller-supplied [`RenderOptions`] and an optional limit override.
+    pub fn render_with_limits(
+        &self,
+        opts: &djvu_render::RenderOptions,
+        limits: Option<crate::resource_limits::ResourceLimits>,
+    ) -> Result<Pixmap, Error> {
+        djvu_render::render_pixmap_with_limits(self.page, opts, limits).map_err(Self::render_err)
     }
 
     /// Page resolution in dots per inch.
@@ -794,10 +954,10 @@ impl<'a> Page<'a> {
                         self.index
                     ))
                 })?;
-                Ok(Self::fit_within(pm, max_w, max_h))
+                Self::fit_within(pm, max_w, max_h)
             }
             ThumbnailStrategy::Auto => match self.thumbnail()? {
-                Some(pm) => Ok(Self::fit_within(pm, max_w, max_h)),
+                Some(pm) => Self::fit_within(pm, max_w, max_h),
                 None => self.render_fit_to_box(max_w, max_h),
             },
         }
@@ -816,11 +976,11 @@ impl<'a> Page<'a> {
     /// so this is a no-op whenever the caller's box is at least that big —
     /// the common case for a thumbnail grid. It is never *upscaled* to fill
     /// a larger box: doing so would add cost without adding real detail.
-    fn fit_within(pm: Pixmap, max_w: u32, max_h: u32) -> Pixmap {
+    fn fit_within(pm: Pixmap, max_w: u32, max_h: u32) -> Result<Pixmap, Error> {
         let max_w = max_w.max(1);
         let max_h = max_h.max(1);
         if pm.width <= max_w && pm.height <= max_h {
-            return pm;
+            return Ok(pm);
         }
         let scale_w = max_w as f64 / pm.width.max(1) as f64;
         let scale_h = max_h as f64 / pm.height.max(1) as f64;
@@ -828,6 +988,7 @@ impl<'a> Page<'a> {
         let tw = ((pm.width as f64 * scale).round() as u32).max(1);
         let th = ((pm.height as f64 * scale).round() as u32).max(1);
         crate::pixmap::scale_lanczos3(&pm, tw, th)
+            .map_err(|e| Self::render_err(djvu_render::RenderError::from(e)))
     }
 
     /// Extract the text layer (TXTz/TXTa) with zone hierarchy.
