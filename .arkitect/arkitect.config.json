@@ -1,5 +1,10 @@
 {
   "$note": "Architect profile for SageThumbs 2K. Run from the Connections checkout: $env:ARCHITECT_NO_SELF_UPDATE='1'; bun <Connections>/packages/connections-arkitect/bin/arkitect.mjs --root . --all (or npx -y connections-arkitect). native-toolchain-gates executes THIS repo's own declared gates (cargo fmt --check, cargo deny check; clippy opt-in via runHeavyGates) and BLOCKS on their failure.",
+  "suite": {
+    "mode": "configured",
+    "profiles": ["portable"]
+  },
+  "$suite": "THE ROSTER THAT FITS THIS REPOSITORY (2026-09-24). A --all run used to execute the whole Architect core here, and a Rust app answered 'no CDK app, no migrations directory, no Lambda handler tree' to dozens of checks forever. The roster is now the portable profile plus the core checks configured under `checks` below, each one a check whose subject this repository really has. Add a core check by configuring it under `checks`; never by disabling others.",
   "update": {
     "autoUpdate": false,
     "$reason": "Runs against the Connections dev checkout's core; self-update from a dev checkout must never rewrite the core's source of truth."
@@ -19,6 +24,10 @@
     "$vendored-file": "src/bin/app/nudge_engine.rs is a line-for-line port of Connections' src/nudge.ts, kept in lockstep with that spec by rule (never restructured here; a drift shows as a failing test on one side), so its size and shape are the spec's - the same standing as crates/vendor. The exclusion registry matches a file path exactly as it matches a directory prefix, so it lists here (2026-09-19)."
   },
   "checks": {
+    "churn-hotspots": { "$reason": "Measures git churn against the Rust and Python source this repository has." },
+    "python-swallowed-exception": { "$reason": "The repository carries Python (62 .py files under scripts and tooling)." },
+    "source-language-coverage": { "$reason": "Reports which of this repository's languages the Architect can read - the question a foreign repository most needs answered." },
+    "dependency-currency": { "$reason": "Reads Cargo.lock against the crates.io index (read-only)." },
     "native-toolchain-gates": {
       "gating": true,
       "gateFailureSeverity": "error"
