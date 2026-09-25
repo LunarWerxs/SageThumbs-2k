@@ -199,6 +199,11 @@ jobs:
   self-update-smoke:
     name: self-update smoke (install · in-place upgrade)
     runs-on: windows-latest
+    # id-token: write lets the OPT-IN signing steps below log in to Azure by OIDC federation,
+    # so no signing secret is ever stored in this repository. Nothing else uses it.
+    permissions:
+      contents: read
+      id-token: write
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
@@ -261,6 +266,67 @@ jobs:
       - name: Build an engine-less installer via the release pipeline
         shell: pwsh
         run: ./scripts/build-release.ps1 -NoImageMagick -NoModernMenu
+      # CODE SIGNING, OPT-IN (issue #30). Shipped releases are built and signed locally by
+      # release.ps1; this signs the CI-built installer through Azure Artifact Signing so the
+      # signed shape is exercised on a clean runner too. Off unless the repository variable
+      # ST2K_CI_SIGN is 'true'. On, it needs the non-secret variables AZURE_CLIENT_ID,
+      # AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ST2K_SIGN_ENDPOINT, ST2K_SIGN_ACCOUNT and
+      # ST2K_SIGN_PROFILE, plus a federated credential on that app registration trusting this
+      # repository's main branch. It never runs for pull requests (forks get no OIDC token).
+      # Requested but not configured is a FAILED job, never a silently unsigned installer.
+      - name: Code signing (opt-in) - off
+        if: vars.ST2K_CI_SIGN != 'true' || github.event_name == 'pull_request'
+        shell: pwsh
+        run: Write-Host "::notice::installer left UNSIGNED in CI (repository variable ST2K_CI_SIGN is not 'true', or this is a pull request)"
+      - name: Code signing (opt-in) - configuration
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ST2K_SIGN_ENDPOINT: ${{ vars.ST2K_SIGN_ENDPOINT }}
+          ST2K_SIGN_ACCOUNT: ${{ vars.ST2K_SIGN_ACCOUNT }}
+          ST2K_SIGN_PROFILE: ${{ vars.ST2K_SIGN_PROFILE }}
+        run: |
+          $missing = @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID',
+            'ST2K_SIGN_ENDPOINT', 'ST2K_SIGN_ACCOUNT', 'ST2K_SIGN_PROFILE') |
+            Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
+          if ($missing) { throw "ST2K_CI_SIGN is 'true' but these repository variables are unset: $($missing -join ', ')" }
+      - name: Code signing (opt-in) - Azure login (OIDC)
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Code signing (opt-in) - sign the installer
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0 (formerly trusted-signing-action)
+        with:
+          endpoint: ${{ vars.ST2K_SIGN_ENDPOINT }}
+          signing-account-name: ${{ vars.ST2K_SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ST2K_SIGN_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-azure-cli-credential: false
+      - name: Code signing (opt-in) - verify
+        if: vars.ST2K_CI_SIGN == 'true' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem dist/SageThumbs2K-Setup-*.exe)
+          if (-not $setup) { throw 'No built installer found in dist/.' }
+          foreach ($f in $setup) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) {
+              throw "$($f.Name) is not validly signed and timestamped: $($sig.Status) $($sig.StatusMessage)"
+            }
+            Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject), timestamped"
+          }
       - name: Install, then self-update in place
         shell: pwsh
         run: |

@@ -167,7 +167,7 @@ try {
     # thing with the build already done.
     pwsh "$root\scripts\packaging\sign-release.ps1" -Configured
     if ($LASTEXITCODE) {
-        throw "code signing is not configured on this machine (ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure lease; docs/RELEASE-SECURITY.md) - a release is never cut unsigned"
+        throw "code signing is not configured on this machine (ST2K_SIGN_MCP, or ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure lease; docs/RELEASE-SECURITY.md) - a release is never cut unsigned"
     }
     # NOTHING IS DEFERRED PAST A RELEASE (owner directive, Michael, 2026-09-11: "We always do
     # everything now... If something is pending a to-do, it should be to-done before we do the

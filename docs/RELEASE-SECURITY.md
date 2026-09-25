@@ -328,6 +328,23 @@ connections_execute { local: true, tool_name: "shell", params: {
 } }
 ```
 
+**Preferred since 2026-09-24: the MCP backend, which keeps the secret out of the build
+entirely.** Set `ST2K_SIGN_MCP` to the Connections local MCP server's command line as a JSON
+array (`["node","<Connections>/services/studio/local-mcp/loader.mjs"]`) and, optionally,
+`ST2K_SIGN_EXPECT_SUBJECT=LUNARWERX LLC`; no `ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE` and no
+`AZURE_*` lease are needed. `sign-release.ps1` then hands every file to the server's
+`sign_artifact` tool through `scripts/packaging/sign-via-mcp.mjs`: the server reads the
+account, profile and regional endpoint from Azure, leases the vaulted credential into signtool
+alone, verifies, and `sign-release.ps1` reads each signature back through Windows once more.
+Every caller (the staged binaries, the stubs, the MSIX, and Inno's Setup.exe and uninstaller)
+already goes through `sign-release.ps1`, so nothing else changes. Proven 2026-09-24 on a scratch
+PE: signed by `CN=LUNARWERX LLC`, status Valid, timestamped. `build-release.ps1 -RequireSigned`
+(or `ST2K_SIGN_REQUIRED=1`) refuses to start when no signer is configured; `release.ps1`
+always refuses. CI signing is opt-in: the `self-update-smoke` job signs its installer with
+`azure/artifact-signing-action` over OIDC when the repository variable `ST2K_CI_SIGN` is `true`
+(see the comment in `ci.yml` for the variables and the federated credential it needs); it is
+not configured today, and a CI build is never shipped.
+
 `connections_accounts { service: "microsoft" }` lists the instance names; `artifact-signing`
 is the one created for signing, never `default` (which fronts `vsce` publishing). The lease
 is loud on failure: a missing field returns an error naming the fields it found, rather than

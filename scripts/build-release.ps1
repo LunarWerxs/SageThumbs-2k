@@ -12,6 +12,7 @@
           pwsh scripts\build-release.ps1 -NoImageMagick          # x64, engine payload SKIPPED (CI only)
           pwsh scripts\build-release.ps1 -Architecture arm64     # ARM64 (same full payload as x64)
           pwsh scripts\build-release.ps1 -Portable               # x64 portable zip
+          pwsh scripts\build-release.ps1 -RequireSigned          # refuse to build unless signing is configured
   Output: dist\SageThumbs2K-Setup-<ver>[-arm64].exe
           dist\SageThumbs2K-Portable-<ver>[-arm64].zip   (with -Portable)
 #>
@@ -29,11 +30,21 @@ param(
     # storage from HKCU to that file. Deliberately does NOT ship the shell extension: a
     # thumbnail/context-menu handler only loads if its COM class is registered, so there is
     # no such thing as a portable one. See PORTABLE.txt (written below) for the full scope.
-    [switch]$Portable
+    [switch]$Portable,
+    # Signing was ASKED for: refuse up front, before any build minute is spent, when no signer
+    # is configured (sign-release.ps1 -Configured), instead of the default one-line "unsigned"
+    # notice. ST2K_SIGN_REQUIRED=1 means the same, for callers that set environment only.
+    [switch]$RequireSigned
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'release-manifest-lib.ps1')
+if ($RequireSigned -or $env:ST2K_SIGN_REQUIRED -eq '1') {
+    & "$PSScriptRoot\packaging\sign-release.ps1" -Configured
+    if ($LASTEXITCODE) {
+        throw 'signing was required (-RequireSigned / ST2K_SIGN_REQUIRED=1) but no signer is configured: set ST2K_SIGN_MCP, or ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE plus the Azure credential (docs/RELEASE-SECURITY.md)'
+    }
+}
 $targetRoot = & "$PSScriptRoot\_targetdir.ps1"
 $targetTriple = if ($Architecture -eq 'arm64') {
     'aarch64-pc-windows-msvc'
