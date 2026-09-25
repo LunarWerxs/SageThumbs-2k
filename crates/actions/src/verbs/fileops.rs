@@ -213,6 +213,7 @@ pub fn combine_to_cbz(imgs: &[String], out: &Path, on_omit: OnOmit) -> Result<Co
         output: out.to_path_buf(),
         used: pages.len(),
         omitted,
+        untexted: 0,
     })
 }
 

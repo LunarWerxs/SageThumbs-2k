@@ -103,7 +103,8 @@ fn leaf_count_snapshot() {
     assert_eq!(
         leaf_count(),
         // Was 53; +1 for menu_save_video_frame (G193, the video-verbs fix).
-        54,
+        // +1 for menu_combine_pdf_searchable.
+        55,
         "MENU leaf count changed — re-check quick_items()/preview-slot math, then update this snapshot",
     );
 }

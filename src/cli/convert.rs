@@ -261,7 +261,8 @@ impl CombineOpts {
 /// Render a composer's result for the caller. The all-good text form is exactly the output
 /// path, as it always was, so a script reading stdout keeps working; a partial result adds
 /// a `partial:` status line and one tab-separated `omitted` line per left-out input, the
-/// same lines a `--strict` refusal carries. The JSON form is [`verbs::Combined::to_json`].
+/// same lines a `--strict` refusal carries; a searchable PDF with pages OCR could not read
+/// adds a `no text:` line. The JSON form is [`verbs::Combined::to_json`].
 fn combined_report(c: &verbs::Combined, opts: CombineOpts) -> String {
     if opts.json {
         return c.to_json().to_string();
@@ -278,6 +279,12 @@ fn combined_report(c: &verbs::Combined, opts: CombineOpts) -> String {
             s.push('\n');
             s.push_str(&o.as_line());
         }
+    }
+    if c.untexted > 0 {
+        s.push_str(&format!(
+            "\nno text: {} of {} pages could not be read by OCR and are not searchable",
+            c.untexted, c.used
+        ));
     }
     s
 }

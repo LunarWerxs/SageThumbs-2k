@@ -386,6 +386,12 @@ fn combine(
         return Err(refuse(headline, &omitted));
     }
     let used = pages.len();
+    // Pages OCR could not read still go in, just unsearchable: counted so the caller says so.
+    let untexted = if searchable {
+        pages.iter().filter(|p| p.words.is_none()).count()
+    } else {
+        0
+    };
 
     // Streamed straight into the temp file through a BufWriter (no second in-memory copy
     // of every page), then renamed into place by the shared atomic writer, which owns
@@ -408,6 +414,7 @@ fn combine(
         output: out.to_path_buf(),
         used,
         omitted,
+        untexted,
     })
 }
 
@@ -566,9 +573,17 @@ mod tests {
         );
         assert!(text.contains("/FontFile2") && text.contains("/ToUnicode"));
 
-        // Offsets are BYTE offsets: check them against `bytes`, never the lossy text.
-        let xref = text.rfind("xref\n").unwrap();
-        let rows: Vec<&str> = text[xref..].lines().skip(3).take(11).collect();
+        // Offsets are BYTE offsets: check them against `bytes`, never the lossy text. The table
+        // is found through the trailer's `startxref` value, not by searching for "xref\n",
+        // which also matches inside `startxref\n` and would land after the table.
+        let start = text.rfind("startxref\n").unwrap() + "startxref\n".len();
+        let xref: usize = text[start..].lines().next().unwrap().parse().unwrap();
+        assert!(
+            bytes[xref..].starts_with(b"xref\n"),
+            "startxref must point at the table"
+        );
+        let table = std::str::from_utf8(&bytes[xref..]).unwrap();
+        let rows: Vec<&str> = table.lines().skip(3).take(11).collect();
         assert_eq!(
             rows.len(),
             11,

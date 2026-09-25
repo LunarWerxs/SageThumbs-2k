@@ -12,7 +12,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Searchable PDFs:** the new right-click **Combine into searchable PDF (OCR)**, `st2k pdf
   --searchable` and the MCP `pdf` tool's `searchable` option read every page with Windows'
   own OCR and add an invisible text layer, so scans and photos turned into a PDF can be
-  searched, and their text selected and copied, in any PDF viewer.
+  searched, and their text selected and copied, in any PDF viewer. Pages OCR could not read
+  still go in without text, and the CLI (`no text:` line) and JSON (`pages_without_text`)
+  say how many.
 
 ## 3.3.0
 

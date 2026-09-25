@@ -107,6 +107,10 @@ pub struct Combined {
     pub used: usize,
     /// The inputs that did not, in the composer's (natural-sorted) order.
     pub omitted: Vec<Omitted>,
+    /// Pages of a searchable PDF that went in without a text layer because OCR failed on
+    /// them. Counted so a caller can tell that part of the document is not searchable
+    /// (otherwise only the doctor log said so); always 0 for a plain PDF or a CBZ.
+    pub untexted: usize,
 }
 
 impl Combined {
@@ -121,14 +125,20 @@ impl Combined {
 
     /// The machine-readable form the MCP tools return and `--json` prints. `status` is the
     /// one field a caller has to look at: `"ok"` means every input is in the output.
+    /// `pages_without_text` appears only when OCR left pages of a searchable PDF without
+    /// text, so every other result keeps its existing shape.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "output": self.output.display().to_string(),
             "status": if self.is_partial() { "partial" } else { "ok" },
             "requested": self.requested(),
             "combined": self.used,
             "omitted": self.omitted.iter().map(Omitted::to_json).collect::<Vec<_>>(),
-        })
+        });
+        if self.untexted > 0 {
+            v["pages_without_text"] = self.untexted.into();
+        }
+        v
     }
 }
 
@@ -382,6 +392,7 @@ mod tests {
             output: PathBuf::from("out.pdf"),
             used: 2,
             omitted: Vec::new(),
+            untexted: 0,
         };
         let v = all_good.to_json();
         assert_eq!(v["status"], "ok");
@@ -396,6 +407,7 @@ mod tests {
                 Omitted::new("bad.png", OmitCause::Undecodable, "not a png"),
                 Omitted::new("gone.png", OmitCause::Unreadable, "os error 2"),
             ],
+            untexted: 0,
         };
         let v = partial.to_json();
         assert_eq!(v["status"], "partial");
@@ -513,6 +525,7 @@ mod tests {
             output: PathBuf::from("out.pdf"),
             used: 1,
             omitted: vec![Omitted::new("bad.png", OmitCause::Undecodable, "x")],
+            untexted: 0,
         };
         for (what, doc) in [
             ("a pdf/cbz report", combined.to_json().to_string()),

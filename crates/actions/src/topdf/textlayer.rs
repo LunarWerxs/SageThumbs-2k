@@ -136,6 +136,11 @@ fn cid_to_gid_map() -> io::Result<Vec<u8>> {
 
 /// The identity ToUnicode CMap: CID n is UTF-16 code unit n. A `bfrange` may only vary its last
 /// byte and a block holds at most 100 ranges, so it is one range per high byte, in blocks.
+///
+/// Known limit: a character outside the BMP (emoji, CJK Extension B) is written as two
+/// surrogate CIDs, each mapping to a lone surrogate. Viewers that join consecutive ToUnicode
+/// values rebuild the pair; others may drop or mangle that character. A 2-byte Identity-H code
+/// cannot carry a pair in one CID, and Windows OCR rarely returns such characters.
 fn to_unicode_cmap() -> String {
     let mut s = String::from(
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
