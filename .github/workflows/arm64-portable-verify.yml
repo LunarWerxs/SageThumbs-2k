@@ -33,6 +33,7 @@ permissions:
 
 jobs:
   verify:
+    timeout-minutes: 60
     name: run the published ARM64 portable zip on ARM64
     runs-on: windows-11-arm
     steps:

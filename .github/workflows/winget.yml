@@ -52,6 +52,7 @@ permissions:
 
 jobs:
   check:
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       # Read-only, against a PUBLIC repository, with the run's own built-in token. Only 404

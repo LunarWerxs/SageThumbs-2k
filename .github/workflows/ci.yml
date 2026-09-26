@@ -18,8 +18,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-test:
+    timeout-minutes: 60
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
     # .cargo/config.toml is intentionally local-only. Keep production binaries
@@ -197,6 +202,7 @@ jobs:
   # Hosted runners are administrators, so the `runas` elevation proceeds without a prompt,
   # and the runner is disposable, so installing machine-wide is fine.
   self-update-smoke:
+    timeout-minutes: 60
     name: self-update smoke (install · in-place upgrade)
     runs-on: windows-latest
     # id-token: write lets the OPT-IN signing steps below log in to Azure by OIDC federation,
@@ -340,6 +346,7 @@ jobs:
   # it builds only the Rust/OS-codec app (no staged ImageMagick payload and no
   # installer publishing) and runs the normal debug-profile test suite natively.
   arm64-native:
+    timeout-minutes: 60
     name: ARM64 native (debug build · test, no engine payload)
     runs-on: windows-11-arm
     env:
@@ -492,6 +499,7 @@ jobs:
   # intentionally follows current stable, so exercise the lower bound separately
   # instead of letting source/API drift make the declared MSRV fictional.
   msrv:
+    timeout-minutes: 60
     name: MSRV (Rust 1.95)
     runs-on: windows-latest
     steps:
@@ -516,6 +524,7 @@ jobs:
   # Catches the "referenced-but-not-committed" + version/count drift classes that have
   # broken releases — fails fast, before anything ships. See scripts/check-consistency.ps1.
   consistency:
+    timeout-minutes: 60
     name: consistency (assets · counts · version)
     runs-on: windows-latest
     steps:
@@ -641,6 +650,7 @@ jobs:
   # Upstream's standalone library intentionally excludes Cargo.lock; application
   # resolution and the root DWA integration test remain locked in build-test.
   vendored-exr:
+    timeout-minutes: 60
     name: vendored exr (DWA patch)
     runs-on: windows-latest
     steps:
@@ -659,6 +669,7 @@ jobs:
   # UnRAR anywhere), so this proves the build is license-clean. Config +
   # allowlist live in deny.toml.
   deny:
+    timeout-minutes: 60
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
     steps:

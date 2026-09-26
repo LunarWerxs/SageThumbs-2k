@@ -33,6 +33,7 @@ env:
 
 jobs:
   release-tests:
+    timeout-minutes: 60
     name: the shipped artifacts, tested
     runs-on: windows-latest
     # Matches ci.yml's build-test: keep production binaries self-contained on a clean runner
