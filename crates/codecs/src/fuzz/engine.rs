@@ -185,14 +185,41 @@ pub(super) fn hammer_n(
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let saved = dump_failing_input(name, label, it, &input);
             return Some(format!(
-                "PANIC in {name} on seed '{label}' iter {it}: {msg} at {}\n  input[{}] head: {head}",
+                "PANIC in {name} on seed '{label}' iter {it}: {msg} at {}\n  input[{}] head: {head}{saved}",
                 last_panic_site(),
                 input.len()
             ));
         }
     }
     None
+}
+
+/// With `ST2K_FUZZ_DUMP=<dir>` set, write a panicking input there whole, so a finding becomes a
+/// regression fixture without replaying the session (the report line carries only 48 bytes, and
+/// a timed session's rounds do not replay). Returns the suffix for the report line.
+fn dump_failing_input(target: &str, label: &str, it: usize, input: &[u8]) -> String {
+    let Some(dir) = std::env::var_os("ST2K_FUZZ_DUMP") else {
+        return String::new();
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let safe = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    let path = dir.join(format!("{}__{}__{it}.bin", safe(target), safe(label)));
+    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, input)) {
+        Ok(()) => format!("\n  saved: {}", path.display()),
+        Err(e) => format!("\n  (could not save to {}: {e})", dir.display()),
+    }
 }
 
 /// Truncate the pristine seed and feed every prefix (no PRNG) — the single most productive

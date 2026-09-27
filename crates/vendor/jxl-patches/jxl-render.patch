@@ -1,6 +1,6 @@
 diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
---- pristine/jxl-render/src/image.rs	2026-09-16 22:19:28.311010500 -0500
-+++ patched/jxl-render/src/image.rs	2026-09-16 22:22:00.516920100 -0500
+--- pristine/jxl-render/src/image.rs	2026-09-27 16:13:24.987268200 -0500
++++ patched/jxl-render/src/image.rs	2026-09-27 16:13:25.107200800 -0500
 @@ -592,6 +592,36 @@
          self.color_channels = count;
      }
@@ -39,8 +39,8 @@ diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
          for (ec_idx, ec_info) in ec_info.iter().enumerate() {
              if !matches!(ec_info.ty, jxl_image::ExtraChannelType::Alpha { .. }) {
 diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
---- pristine/jxl-render/src/lib.rs	2026-09-16 22:19:28.330341900 -0500
-+++ patched/jxl-render/src/lib.rs	2026-09-16 22:22:00.516920100 -0500
+--- pristine/jxl-render/src/lib.rs	2026-09-27 16:13:25.017218200 -0500
++++ patched/jxl-render/src/lib.rs	2026-09-27 16:13:25.086234200 -0500
 @@ -6,7 +6,10 @@
      ColorEncodingWithProfile, ColorManagementSystem, ColorTransform, ColourEncoding, ColourSpace,
      EnumColourEncoding, RenderingIntent, TransferFunction,
@@ -111,7 +111,23 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  }
  
  impl RenderContext {
-@@ -492,6 +525,7 @@
+@@ -431,7 +464,14 @@
+ 
+         let header = frame.header();
+         // Check if LF frame exists
+-        if header.flags.use_lf_frame() && self.lf_frame[header.lf_level as usize] == usize::MAX {
++        // SageThumbs 2K patch: checked, because a level-4 LF frame that claims to use an LF
++        // frame would index past the four slots; there is no level-5 frame for it to use.
++        if header.flags.use_lf_frame()
++            && self
++                .lf_frame
++                .get(header.lf_level as usize)
++                .is_none_or(|&idx| idx == usize::MAX)
++        {
+             return Err(Error::UninitializedLfFrame(header.lf_level));
+         }
+ 
+@@ -492,6 +532,7 @@
          image_region: Region,
          prev_frame_visibility: (usize, usize),
          pool: &JxlThreadPool,
@@ -119,7 +135,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
      ) -> FrameRender<S> {
          if let Some(lf) = &reference_frames.lf {
              tracing::trace!(idx = lf.frame.idx, "Spawn LF frame renderer");
-@@ -526,6 +560,7 @@
+@@ -526,6 +567,7 @@
              image_region,
              pool.clone(),
              prev_frame_visibility,
@@ -127,7 +143,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          );
          match result {
              Ok(grid) => FrameRender::Done(grid),
-@@ -548,6 +583,7 @@
+@@ -548,6 +590,7 @@
          let prev_frame_visibility = self.get_previous_frames_visibility(&frame);
  
          let pool = self.pool.clone();
@@ -135,7 +151,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          Arc::new(move |state, image_region| {
              Self::do_render(
                  &frame,
-@@ -556,6 +592,7 @@
+@@ -556,6 +599,7 @@
                  image_region,
                  prev_frame_visibility,
                  &pool,
@@ -143,7 +159,23 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              )
          })
      }
-@@ -782,6 +819,7 @@
+@@ -741,7 +785,14 @@
+             return Err(Error::IncompleteFrame);
+         }
+ 
+-        let lf_frame_idx = self.lf_frame[header.lf_level as usize];
++        // SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-render.patch): an LF frame of
++        // level 4 is valid and has no slot at [4], so an unchecked index panicked here on every
++        // frame of that level (found by fuzzing). `usize::MAX` already means "no LF frame".
++        let lf_frame_idx = self
++            .lf_frame
++            .get(header.lf_level as usize)
++            .copied()
++            .unwrap_or(usize::MAX);
+         if header.flags.use_lf_frame() {
+             self.spawn_renderer(lf_frame_idx);
+         }
+@@ -782,6 +833,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -151,7 +183,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              );
  
              match state {
-@@ -844,6 +882,7 @@
+@@ -844,6 +896,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -160,8 +192,8 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  
              match state {
 diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
---- pristine/jxl-render/src/render.rs	2026-09-16 22:19:28.352273400 -0500
-+++ patched/jxl-render/src/render.rs	2026-09-16 22:22:00.516920100 -0500
+--- pristine/jxl-render/src/render.rs	2026-09-27 16:13:25.054037800 -0500
++++ patched/jxl-render/src/render.rs	2026-09-27 16:13:25.142154700 -0500
 @@ -18,6 +18,7 @@
      image_region: Region,
      pool: JxlThreadPool,
@@ -215,8 +247,8 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
          fb.upsample_jpeg(color_padded_region, image_header.metadata.bit_depth)?;
      }
 diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mod.rs
---- pristine/jxl-render/src/vardct/mod.rs	2026-09-16 22:19:28.341369200 -0500
-+++ patched/jxl-render/src/vardct/mod.rs	2026-09-16 22:22:00.519966600 -0500
+--- pristine/jxl-render/src/vardct/mod.rs	2026-09-27 16:13:25.036477500 -0500
++++ patched/jxl-render/src/vardct/mod.rs	2026-09-27 16:13:25.102492200 -0500
 @@ -51,6 +51,7 @@
      cache: &mut RenderCache<S>,
      region: Region,
@@ -236,7 +268,25 @@ diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mo
              scope.spawn(|_| {
                  let ret = tracing::trace_span!("Parse HfGlobal").in_scope(|| -> Result<_> {
                      *hf_global = frame.try_parse_hf_global(Some(lf_global)).transpose()?;
-@@ -203,7 +204,11 @@
+@@ -191,6 +192,17 @@
+             }
+ 
+             if !frame_header.flags.skip_adaptive_lf_smoothing() {
++                // SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-render.patch): smoothing
++                // walks the three LF planes as one grid, so subsampled chroma planes failed its
++                // equal-length assertion, a panic (found by fuzzing). libjxl refuses a VarDCT
++                // frame asking for adaptive LF smoothing with non-4:4:4 chroma as malformed.
++                if subsampled {
++                    return Err(crate::Error::Bitstream(
++                        jxl_bitstream::Error::ValidationFailed(
++                            "adaptive LF smoothing with subsampled chroma",
++                        ),
++                    ));
++                }
+                 tracing::trace_span!("Adaptive LF smoothing").in_scope(|| {
+                     adaptive_lf_smoothing(
+                         lf_xyb.as_color_floats_mut(),
+@@ -203,7 +215,11 @@
              lf_xyb
          };
  
@@ -249,7 +299,7 @@ diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mo
              let shifts_cbycr: [_; 3] = std::array::from_fn(|idx| {
                  ChannelShift::from_jpeg_upsampling(frame_header.jpeg_upsampling, idx)
              });
-@@ -218,13 +223,20 @@
+@@ -218,13 +234,20 @@
                      AlignedGrid::with_alloc_tracker(width as usize, height as usize, tracker)?;
                  fb.append_channel_shifted(ImageBuffer::F32(buffer), modular_region, shift);
              }

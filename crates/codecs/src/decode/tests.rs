@@ -161,6 +161,18 @@ const JXL_JPEG422: &[u8] = include_bytes!("../../../../tests/fixtures/jxl/jpeg42
 /// replaying the session's generator; fixed by crates/vendor/jxl-patches/jxl-frame.patch.
 const JXL_TOC_GROUP_PAST_ENTRIES: &[u8] =
     include_bytes!("../../../../tests/fixtures/jxl/toc-group-past-entries.jxl");
+/// Three mutations the nightly deep fuzz session found on 2026-09-27, saved whole by
+/// `ST2K_FUZZ_DUMP`. The first two reach `jxl-color`'s ICC synthesis with a colour encoding
+/// that has no profile (an inverted gamma of 0, a division by zero; the XYB colour space, a
+/// `todo!()`), fixed by crates/vendor/jxl-patches/jxl-color.patch. The third asks for adaptive
+/// LF smoothing on 4:2:0 chroma, whose planes then fail the smoother's equal-length assertion;
+/// fixed in crates/vendor/jxl-patches/jxl-render.patch.
+const JXL_ICC_INVERTED_GAMMA_ZERO: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/icc-inverted-gamma-zero.jxl");
+const JXL_ICC_XYB_COLOUR_SPACE: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/icc-xyb-colour-space.jxl");
+const JXL_LF_SMOOTHING_SUBSAMPLED_CHROMA: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/lf-smoothing-subsampled-chroma.jxl");
 /// The same twin scene as AVIF, 10-bit 4:4:4 lossless: one tagged PQ / BT.2020 (`nclx` 9, 16,
 /// 9, full range), one sRGB / BT.709. The first is the "HDR base" AVIF of issue #39 and the
 /// second its SDR control. Regenerate both with

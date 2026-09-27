@@ -7,6 +7,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **A damaged JPEG XL file can no longer crash the thumbnail host.** The ways a broken `.jxl`
+  could stop the JPEG XL decoder dead (a colour setting with no profile equivalent, an LF frame
+  at the deepest level, smoothing asked for on subsampled colour) are now ordinary decode
+  errors: the file shows the normal icon and the files around it keep their thumbnails.
+
 ## 3.4.0
 
 **TL;DR**

@@ -464,7 +464,14 @@ impl RenderContext {
 
         let header = frame.header();
         // Check if LF frame exists
-        if header.flags.use_lf_frame() && self.lf_frame[header.lf_level as usize] == usize::MAX {
+        // SageThumbs 2K patch: checked, because a level-4 LF frame that claims to use an LF
+        // frame would index past the four slots; there is no level-5 frame for it to use.
+        if header.flags.use_lf_frame()
+            && self
+                .lf_frame
+                .get(header.lf_level as usize)
+                .is_none_or(|&idx| idx == usize::MAX)
+        {
             return Err(Error::UninitializedLfFrame(header.lf_level));
         }
 
@@ -778,7 +785,14 @@ impl RenderContext {
             return Err(Error::IncompleteFrame);
         }
 
-        let lf_frame_idx = self.lf_frame[header.lf_level as usize];
+        // SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-render.patch): an LF frame of
+        // level 4 is valid and has no slot at [4], so an unchecked index panicked here on every
+        // frame of that level (found by fuzzing). `usize::MAX` already means "no LF frame".
+        let lf_frame_idx = self
+            .lf_frame
+            .get(header.lf_level as usize)
+            .copied()
+            .unwrap_or(usize::MAX);
         if header.flags.use_lf_frame() {
             self.spawn_renderer(lf_frame_idx);
         }

@@ -727,8 +727,6 @@ dependencies = [
 [[package]]
 name = "jxl-color"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f316b1358c1711755b3ee8e8cb5c4a1dad12e796233088a7a513440782de80b2"
 dependencies = [
  "jxl-bitstream",
  "jxl-coding",

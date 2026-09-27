@@ -1,0 +1,94 @@
+diff -ruN pristine/jxl-color/src/convert.rs patched/jxl-color/src/convert.rs
+--- pristine/jxl-color/src/convert.rs	2026-09-27 16:31:13.979275900 -0500
++++ patched/jxl-color/src/convert.rs	2026-09-27 16:31:14.079690700 -0500
+@@ -279,6 +279,10 @@
+ 
+                         let from = &from.icc_profile;
+                         let to = colour_encoding_to_icc(&target_encoding);
++                        // SageThumbs 2K patch: empty = no ICC equivalent (see synthesize.rs).
++                        if to.is_empty() {
++                            return Err(Error::UnsupportedColorEncoding);
++                        }
+                         let transform = cms
+                             .prepare_transform(from, &to, rendering_intent)
+                             .map_err(crate::Error::CmsFailure)?;
+@@ -367,6 +371,10 @@
+             ColourEncoding::Enum(encoding) => encoding,
+             ColourEncoding::IccProfile(_) => {
+                 let from = colour_encoding_to_icc(&current_encoding);
++                // SageThumbs 2K patch: empty = no ICC equivalent (see synthesize.rs).
++                if from.is_empty() {
++                    return Err(Error::UnsupportedColorEncoding);
++                }
+                 let to = &to.icc_profile;
+                 let transform = cms
+                     .prepare_transform(&from, to, current_encoding.rendering_intent)
+diff -ruN pristine/jxl-color/src/icc/parse.rs patched/jxl-color/src/icc/parse.rs
+--- pristine/jxl-color/src/icc/parse.rs	2026-09-27 16:31:13.995748700 -0500
++++ patched/jxl-color/src/icc/parse.rs	2026-09-27 16:31:14.075171500 -0500
+@@ -226,7 +226,7 @@
+     data: &'a [u8],
+ }
+ 
+-pub(crate) fn parse_icc_raw(profile: &[u8]) -> Result<IccProfile> {
++pub(crate) fn parse_icc_raw(profile: &[u8]) -> Result<IccProfile<'_>> {
+     if profile.len() < 128 {
+         return Err(Error::IccParseFailure("profile is too short"));
+     }
+diff -ruN pristine/jxl-color/src/icc/synthesize.rs patched/jxl-color/src/icc/synthesize.rs
+--- pristine/jxl-color/src/icc/synthesize.rs	2026-09-27 16:31:13.994101900 -0500
++++ patched/jxl-color/src/icc/synthesize.rs	2026-09-27 16:31:14.076686200 -0500
+@@ -85,6 +85,12 @@
+ }
+ 
+ /// Creates an ICCv4 profile from the given [`EnumColourEncoding`].
++///
++/// SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-color.patch): an encoding with no ICC
++/// equivalent (the XYB or an unknown colour space, an unknown transfer function, a zero gamma)
++/// returns an EMPTY profile instead of panicking. A file's header can declare any of them, and
++/// a panic aborts the thumbnail host (found by fuzzing). `ColorTransform::new` refuses an empty
++/// profile with `UnsupportedColorEncoding`; a CMS rejects it as malformed.
+ pub fn colour_encoding_to_icc(colour_encoding: &EnumColourEncoding) -> Vec<u8> {
+     let &EnumColourEncoding {
+         colour_space,
+@@ -94,8 +100,8 @@
+         rendering_intent,
+     } = colour_encoding;
+ 
+-    if colour_space == ColourSpace::Xyb {
+-        todo!("ICC profile for XYB color space is not supported yet");
++    if matches!(colour_space, ColourSpace::Xyb | ColourSpace::Unknown) {
++        return Vec::new();
+     }
+ 
+     #[rustfmt::skip]
+@@ -196,6 +202,9 @@
+         }
+         TransferFunction::Gamma { g, inverted: true } => {
+             let g = g as u64;
++            if g == 0 {
++                return Vec::new();
++            }
+             let adj = g / 2;
+             let gamma = ((65536u64 * 10000000u64 + adj) / g) as u32;
+             create_para(0, &[gamma])
+@@ -210,7 +219,7 @@
+                 (65536 * 81 + 500) / 1000,
+             ],
+         ),
+-        TransferFunction::Unknown => panic!(),
++        TransferFunction::Unknown => return Vec::new(),
+         TransferFunction::Linear => vec![b'c', b'u', b'r', b'v', 0, 0, 0, 0, 0, 0, 0, 0],
+         TransferFunction::Srgb => create_para(
+             3,
+@@ -270,8 +279,8 @@
+         ColourSpace::Grey => {
+             append_tag_with_data(&mut tags, &mut data, *b"kTRC", &trc);
+         }
+-        ColourSpace::Xyb => todo!(),
+-        ColourSpace::Unknown => panic!("Unknown color space, ICC profile not embedded?"),
++        // Both returned an empty profile at the top (SageThumbs 2K patch).
++        ColourSpace::Xyb | ColourSpace::Unknown => return Vec::new(),
+     }
+ 
+     let data_offset = 128 + 4 + tags.len() as u32 * 12;

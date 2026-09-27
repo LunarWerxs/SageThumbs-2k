@@ -7,18 +7,27 @@
 
 use super::*;
 
-/// A malformed TOC is a decode error on both jxl paths, never a panic: the unpatched
-/// `jxl-frame` 0.13.3 indexed past the TOC for this file, which ends a `panic = "abort"` host.
+/// Every malformed JPEG XL the fuzzer has found is a decode result on both jxl paths, never a
+/// panic, which ends a `panic = "abort"` host. Each file panicked in the unpatched crates:
+/// `jxl-frame` 0.13.3 indexed past a short TOC; `jxl-color` 0.11.0 divided by a zero gamma and
+/// hit `todo!()` on XYB; `jxl-render` 0.12.4 asserted in adaptive LF smoothing on 4:2:0 chroma.
 #[test]
-fn a_jxl_whose_toc_is_short_of_groups_is_refused_not_a_panic() {
-    let full = std::panic::catch_unwind(|| {
-        crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, None)
-    });
-    let reduced = std::panic::catch_unwind(|| {
-        crate::decode::tiers::decode_jxl(JXL_TOC_GROUP_PAST_ENTRIES, Some(256))
-    });
-    assert!(full.is_ok(), "the 1:1 path panicked on a short TOC");
-    assert!(reduced.is_ok(), "the 1:8 path panicked on a short TOC");
+fn fuzz_found_malformed_jxls_are_refused_not_a_panic() {
+    for (name, bytes) in [
+        ("a TOC short of groups", JXL_TOC_GROUP_PAST_ENTRIES),
+        ("an inverted gamma of 0", JXL_ICC_INVERTED_GAMMA_ZERO),
+        ("the XYB colour space", JXL_ICC_XYB_COLOUR_SPACE),
+        (
+            "LF smoothing on 4:2:0 chroma",
+            JXL_LF_SMOOTHING_SUBSAMPLED_CHROMA,
+        ),
+    ] {
+        for (path, target) in [("1:1", None), ("1:8", Some(256))] {
+            let decoded =
+                std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(bytes, target));
+            assert!(decoded.is_ok(), "the {path} path panicked on {name}");
+        }
+    }
 }
 
 /// Issue #43: a JPEG-transcoded jxl keeps the JPEG's chroma subsampling, and the 1:8

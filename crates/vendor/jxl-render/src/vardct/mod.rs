@@ -192,6 +192,17 @@ pub(crate) fn render_vardct<S: Sample>(
             }
 
             if !frame_header.flags.skip_adaptive_lf_smoothing() {
+                // SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-render.patch): smoothing
+                // walks the three LF planes as one grid, so subsampled chroma planes failed its
+                // equal-length assertion, a panic (found by fuzzing). libjxl refuses a VarDCT
+                // frame asking for adaptive LF smoothing with non-4:4:4 chroma as malformed.
+                if subsampled {
+                    return Err(crate::Error::Bitstream(
+                        jxl_bitstream::Error::ValidationFailed(
+                            "adaptive LF smoothing with subsampled chroma",
+                        ),
+                    ));
+                }
                 tracing::trace_span!("Adaptive LF smoothing").in_scope(|| {
                     adaptive_lf_smoothing(
                         lf_xyb.as_color_floats_mut(),

@@ -1,5 +1,5 @@
 <#
-  fetch-pristine-jxl.ps1 - put the PRISTINE crates.io sources for the two vendored JXL crates
+  fetch-pristine-jxl.ps1 - put the PRISTINE crates.io sources for the vendored JXL crates
   into cargo's registry cache, so `vendor-jxl.ps1 -Check` has something real to diff against.
 
       pwsh scripts\fetch-pristine-jxl.ps1                       # the pinned versions
@@ -31,7 +31,8 @@ param(
     # would leave the check skipping and looking like this script had failed silently.
     [string]$Render = '0.12.4',
     [string]$Oxide = '0.12.6',
-    [string]$Frame = '0.13.3'
+    [string]$Frame = '0.13.3',
+    [string]$Color = '0.11.0'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -53,6 +54,7 @@ edition = "2021"
 jxl-render = "=$Render"
 jxl-oxide = "=$Oxide"
 jxl-frame = "=$Frame"
+jxl-color = "=$Color"
 
 [workspace]
 "@
@@ -60,7 +62,7 @@ jxl-frame = "=$Frame"
     New-Item -ItemType Directory -Force (Join-Path $scratch 'src') | Out-Null
     Set-Content -LiteralPath (Join-Path $scratch 'src\lib.rs') -Value '' -Encoding utf8
 
-    Write-Host "[fetch-pristine-jxl] fetching jxl-render $Render, jxl-oxide $Oxide and jxl-frame $Frame from crates.io" -ForegroundColor Cyan
+    Write-Host "[fetch-pristine-jxl] fetching jxl-render $Render, jxl-oxide $Oxide, jxl-frame $Frame and jxl-color $Color from crates.io" -ForegroundColor Cyan
     Push-Location $scratch
     try {
         # Download and extract only. No compilation, so this costs seconds and needs no
@@ -79,7 +81,7 @@ jxl-frame = "=$Frame"
 # than letting the checker skip and report a pass.
 $found = @()
 $missing = @()
-foreach ($pair in @(@('jxl-render', $Render), @('jxl-oxide', $Oxide), @('jxl-frame', $Frame))) {
+foreach ($pair in @(@('jxl-render', $Render), @('jxl-oxide', $Oxide), @('jxl-frame', $Frame), @('jxl-color', $Color))) {
     $name, $ver = $pair
     $hit = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { Join-Path $_.FullName "$name-$ver" } |

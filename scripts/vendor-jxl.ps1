@@ -1,12 +1,18 @@
 <#
-  vendor-jxl.ps1 - regenerate crates/vendor/jxl-render, crates/vendor/jxl-oxide and
-  crates/vendor/jxl-frame from the pristine crates.io sources plus our patches.
+  vendor-jxl.ps1 - regenerate crates/vendor/jxl-render, crates/vendor/jxl-oxide,
+  crates/vendor/jxl-frame and crates/vendor/jxl-color from the pristine crates.io sources plus
+  our patches.
 
   jxl-frame carries a different patch from the other two: a malformed TOC asked for a group past
   its entries and indexed out of bounds, a panic that aborts the shell under panic = "abort"
   (found by the deep fuzz session, 2026-09-23; regression fixture
   tests/fixtures/jxl/toc-group-past-entries.jxl). Drop it when an upstream release stops
-  panicking on that file, independently of the LF-only patch below.
+  panicking on that file, independently of the LF-only patch below. jxl-color's patch is the
+  same kind (2026-09-27, the nightly deep session): a header declaring the XYB or an unknown
+  colour space, an unknown transfer function or a zero gamma reached `todo!()`, `panic!()` and
+  a division by zero while synthesizing an ICC profile; it now yields an empty profile the
+  colour transform refuses. jxl-render's patch also carries two of that night's fixes beside the LF-only mode (a
+  level-4 LF frame indexed past `lf_frame`, and adaptive LF smoothing on subsampled chroma).
 
       pwsh scripts\vendor-jxl.ps1                 # regenerate at the pinned versions
       pwsh scripts\vendor-jxl.ps1 -Check          # verify the tree matches; changes nothing
@@ -41,6 +47,7 @@ param(
     [string]$Render = '0.12.4',
     [string]$Oxide = '0.12.6',
     [string]$Frame = '0.13.3',
+    [string]$Color = '0.11.0',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
     [switch]$Check,
     # Refuse to skip. Without this, a `-Check` run that cannot find the pristine sources
@@ -61,7 +68,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path $PSScriptRoot -Parent
 $patchDir = Join-Path $root 'crates\vendor\jxl-patches'
-$crates = [ordered]@{ 'jxl-render' = $Render; 'jxl-oxide' = $Oxide; 'jxl-frame' = $Frame }
+$crates = [ordered]@{ 'jxl-render' = $Render; 'jxl-oxide' = $Oxide; 'jxl-frame' = $Frame; 'jxl-color' = $Color }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is required (for git apply)' }
 

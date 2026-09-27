@@ -9,7 +9,7 @@
 #   - the deep session over the thumbnail pipeline, whose inputs are always-valid images, so
 #     every second of it goes to the fit/reduce/rotate/contact-sheet code behind the decoders.
 # Running them on a schedule turns "fuzzed before a release, if remembered" into "fuzzed every
-# night", and a red run carries the reproducing input in its log (each session prints it).
+# night", and a red run uploads every panicking input whole as the `fuzz-failures` artifact.
 #
 # Release profile on purpose: debug fuzzing is ~7x slower (see fuzz.rs), and the per-push
 # "validation stays debug" contract in scripts/test-architecture-release-contract.ps1 is about
@@ -35,6 +35,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   ST2K_FUZZ_SECS: ${{ github.event.inputs.seconds || '900' }}
+  # Every panicking input is saved here whole (the log line carries only its first 48 bytes)
+  # and uploaded when the run fails, so a finding is a regression fixture, not a replay job.
+  ST2K_FUZZ_DUMP: ${{ github.workspace }}/fuzz-failures
 
 jobs:
   deep-fuzz:
@@ -68,3 +71,12 @@ jobs:
       - name: Deep session over the thumbnail pipeline (always-valid images)
         if: ${{ !cancelled() }}
         run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::pipeline::deep_session_over_the_thumbnail_pipeline -- --ignored --nocapture
+
+      - name: Upload the panicking inputs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-failures
+          path: fuzz-failures/
+          if-no-files-found: ignore
+          retention-days: 30

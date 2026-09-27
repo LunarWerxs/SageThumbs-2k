@@ -84,3 +84,17 @@ are build inputs; the script is how they are produced.
 **The pinned versions must match what `Cargo.lock` would resolve unpatched** (`jxl-render`
 0.12.4, `jxl-oxide` 0.12.6). Patching a different codebase than the one that was tested is the
 failure this pin exists to prevent.
+
+## The fuzz fixes carried beside it
+
+Three crates also carry panic-to-error fixes found by the deep fuzz sessions. Each exists because
+a panic in the decoder aborts the thumbnail host (`panic = "abort"`), and each is dropped the day
+an upstream release stops panicking on its regression fixture in `tests/fixtures/jxl/`.
+
+| Patch | Panic | Now |
+| --- | --- | --- |
+| `jxl-frame.patch` (2026-09-23) | a TOC asked for a group past its entries (`toc.rs`, index out of bounds) | decode error |
+| `jxl-color.patch` (2026-09-27) | an XYB or unknown colour space, an unknown transfer function or a zero gamma reached `todo!()`, `panic!()` and a division by zero in `colour_encoding_to_icc` | empty profile, which `ColorTransform::new` refuses with `UnsupportedColorEncoding` |
+| `jxl-render.patch` (2026-09-27, beside the LF-only hunks) | an LF frame of level 4 indexed `lf_frame[4]` (a valid frame; the slot does not exist); adaptive LF smoothing ran on subsampled chroma planes and failed its equal-length assertion | the index is checked; smoothing with non-4:4:4 chroma is refused as malformed, as libjxl does |
+
+`jxl-color` is pinned at 0.11.0 in `scripts/vendor-jxl.ps1` like the others.
