@@ -1,6 +1,9 @@
 //! Sizing and placing the window for what it is about to show, and remembering the size the user chose.
 
 use super::*;
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+};
 
 /// Whether entering the `Loading` state should call the full `ensure_shown` (which can
 /// `SetWindowPos` an already-shown window down to the Loading box) rather than just repaint the
@@ -33,7 +36,7 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
         place(hwnd, cw, ch, None); // keep position, just resize
     } else {
         let _ = KillTimer(Some(hwnd), SHOW_TIMER_ID);
-        place(hwnd, cw, ch, center_on_cursor_monitor(cw, ch));
+        place_initial(hwnd, cw, ch);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); // never steals focus (plan §3)
                                                      // Bring the window to the front of the z-order WITHOUT activating it — Explorer stays the
                                                      // foreground window so its arrow-key selection keeps driving the follow-poll.
@@ -176,7 +179,7 @@ unsafe fn user_chosen_size(hwnd: HWND, st: &ViewerState) -> Option<(i32, i32)> {
         }
     }
     let (w, h) = st2k_base::settings::preview_window_size()?;
-    let (_dpi, work) = st2k_appkit::win::cursor_monitor_metrics();
+    let work = sizing_work_area(hwnd, st);
     Some(clamp_remembered_size(
         (sc(w), sc(h)),
         (sc(MIN_W), sc(MIN_H)),
@@ -189,7 +192,7 @@ unsafe fn user_chosen_size(hwnd: HWND, st: &ViewerState) -> Option<(i32, i32)> {
 /// under the minimum window size. Images and video clips are fitted the same way.
 unsafe fn fit_to_work_area(hwnd: HWND, dw: i32, dh: i32, chrome: i32) -> (i32, i32) {
     let sc = |v: i32| st2k_appkit::win::dpi_scale(hwnd, v);
-    let (_dpi, work) = st2k_appkit::win::cursor_monitor_metrics();
+    let work = sizing_work_area(hwnd, &*state(hwnd));
     let cap_w = (work.right - work.left) * 80 / 100;
     let cap_h = (work.bottom - work.top) * 80 / 100 - chrome;
     let scale = f64::min(cap_w as f64 / dw as f64, cap_h as f64 / dh as f64).min(1.0);
@@ -198,9 +201,8 @@ unsafe fn fit_to_work_area(hwnd: HWND, dw: i32, dh: i32, chrome: i32) -> (i32, i
     (w.max(sc(MIN_W)), (h + chrome).max(sc(MIN_H)))
 }
 
-/// Resize (and optionally move) the window so its CLIENT area is `cw`×`ch`. `pos` = top-left
-/// window position, or `None` to keep the current position.
-pub(in super::super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(i32, i32)>) {
+/// The outer WINDOW size that gives a `cw`×`ch` client area under this window's styles.
+unsafe fn window_size_for_client(hwnd: HWND, cw: i32, ch: i32) -> (i32, i32) {
     let mut rc = RECT {
         left: 0,
         top: 0,
@@ -210,60 +212,178 @@ pub(in super::super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(
     let style = WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32);
     let ex = WINDOW_EX_STYLE(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32);
     let _ = AdjustWindowRectEx(&mut rc, style, false, ex);
-    let (ww, wh) = (rc.right - rc.left, rc.bottom - rc.top);
+    (rc.right - rc.left, rc.bottom - rc.top)
+}
+
+/// Move a window rect so it lies inside `work` (a monitor's work area, which excludes the
+/// taskbar), keeping its size; only a rect bigger than the work area is shrunk to it. Pure, so the
+/// rule is testable without a window. This is what keeps a large picture's window from opening or
+/// growing underneath the taskbar: the rect slides up (or left) instead.
+pub(in super::super) fn fit_into_work_area(rect: RECT, work: RECT) -> RECT {
+    let w = (rect.right - rect.left).min(work.right - work.left);
+    let h = (rect.bottom - rect.top).min(work.bottom - work.top);
+    let x = rect.left.clamp(work.left, (work.right - w).max(work.left));
+    let y = rect.top.clamp(work.top, (work.bottom - h).max(work.top));
+    RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    }
+}
+
+/// The work area of the monitor `rc` mostly sits on (the nearest one when it is on none).
+unsafe fn work_area_for_rect(rc: &RECT) -> RECT {
+    let mon = MonitorFromRect(rc, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO {
+        cbSize: core::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetMonitorInfoW(mon, &mut mi).as_bool() {
+        mi.rcWork
+    } else {
+        st2k_appkit::win::cursor_monitor_metrics().1
+    }
+}
+
+/// The work area a size is fitted against: the monitor the window is on once it is showing, the
+/// monitor of the remembered position before that (the window is about to open there), else the
+/// cursor's. `--shot` always uses the cursor's, so a capture never depends on where the developer
+/// last left their own viewer.
+unsafe fn sizing_work_area(hwnd: HWND, st: &ViewerState) -> RECT {
+    if !st.shot {
+        if st.shown.get() {
+            let mut rc = RECT::default();
+            if GetWindowRect(hwnd, &mut rc).is_ok() {
+                return work_area_for_rect(&rc);
+            }
+        } else if let Some(rc) = remembered_rect_on_screen(1, 1) {
+            return work_area_for_rect(&rc);
+        }
+    }
+    st2k_appkit::win::cursor_monitor_metrics().1
+}
+
+/// A `ww`×`wh` window rect at the remembered position, when there is one and it still touches a
+/// connected monitor. A position on a monitor that has since been unplugged is ignored, so the
+/// viewer never opens somewhere nobody can see it.
+unsafe fn remembered_rect_on_screen(ww: i32, wh: i32) -> Option<RECT> {
+    let (x, y) = st2k_base::settings::preview_window_pos()?;
+    let rc = RECT {
+        left: x,
+        top: y,
+        right: x.saturating_add(ww.max(1)),
+        bottom: y.saturating_add(wh.max(1)),
+    };
+    (!MonitorFromRect(&rc, MONITOR_DEFAULTTONULL).is_invalid()).then_some(rc)
+}
+
+/// First show: open where the user last dragged the viewer to, else centred on the cursor's
+/// monitor — either way fitted inside that monitor's work area, so the bottom of a tall picture
+/// never lands under the taskbar.
+unsafe fn place_initial(hwnd: HWND, cw: i32, ch: i32) {
+    let st = &*state(hwnd);
+    let (ww, wh) = window_size_for_client(hwnd, cw, ch);
+    let remembered = if st.shot {
+        None
+    } else {
+        remembered_rect_on_screen(ww, wh)
+    };
+    let want = remembered.unwrap_or_else(|| {
+        let (_dpi, work) = st2k_appkit::win::cursor_monitor_metrics();
+        let x = work.left + (work.right - work.left - ww) / 2;
+        let y = work.top + (work.bottom - work.top - wh) / 2;
+        RECT {
+            left: x,
+            top: y,
+            right: x + ww,
+            bottom: y + wh,
+        }
+    });
+    let fit = fit_into_work_area(want, work_area_for_rect(&want));
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        fit.left,
+        fit.top,
+        fit.right - fit.left,
+        fit.bottom - fit.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+/// Resize (and optionally move) the window so its CLIENT area is `cw`×`ch`. `pos` = an exact
+/// top-left window position (the headless capture parks the window off-screen this way), or
+/// `None` to keep the current position — in which case the grown window is also slid back inside
+/// its monitor's work area, since stepping from a small file to a tall one used to extend the
+/// window straight down under the taskbar.
+pub(in super::super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(i32, i32)>) {
+    let (ww, wh) = window_size_for_client(hwnd, cw, ch);
     match pos {
         Some((x, y)) => {
             let _ = SetWindowPos(hwnd, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         None => {
+            let mut cur = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut cur);
+            let want = RECT {
+                left: cur.left,
+                top: cur.top,
+                right: cur.left + ww,
+                bottom: cur.top + wh,
+            };
+            let fit = fit_into_work_area(want, work_area_for_rect(&want));
             let _ = SetWindowPos(
                 hwnd,
                 None,
-                0,
-                0,
-                ww,
-                wh,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                fit.left,
+                fit.top,
+                fit.right - fit.left,
+                fit.bottom - fit.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
     }
 }
 
-/// Top-left position that centers a `cw`×`ch` client window on the cursor's monitor work area.
-pub(in super::super) unsafe fn center_on_cursor_monitor(cw: i32, ch: i32) -> Option<(i32, i32)> {
-    let (_dpi, work) = st2k_appkit::win::cursor_monitor_metrics();
-    let x = work.left + (work.right - work.left - cw) / 2;
-    let y = work.top + (work.bottom - work.top - ch) / 2;
-    Some((x.max(work.left), y.max(work.top)))
-}
-
-/// Persist the size the user just dragged the frame to, so the next file — and the next preview —
-/// opens at it. Driven by `WM_EXITSIZEMOVE`, and only when `WM_SIZING` actually fired: that pair
-/// is what separates a RESIZE from a plain window MOVE, which must not pin whatever size the
-/// content happened to pick. Stored in logical px (see `settings::preview_window_size`).
-pub(in super::super) unsafe fn remember_size(hwnd: HWND) {
+/// Persist what the user just did to the frame, driven by `WM_EXITSIZEMOVE`: the size when
+/// `WM_SIZING` fired (a RESIZE, so the next file — and the next preview — opens at it; a plain
+/// MOVE must not pin whatever size the content happened to pick), and the position when the
+/// frame was moved or resized at all, so the next preview opens where they put it. The size is
+/// stored in logical px (see `settings::preview_window_size`), the position in device px.
+pub(in super::super) unsafe fn remember_placement(hwnd: HWND) {
     let st = &*state(hwnd);
-    // `replace` consumes the flag either way — a move that follows a resize starts clean.
-    if !st.user_sized.replace(false) || st.shot || st.fullscreen.get().is_some() {
+    // `replace` consumes both flags either way — the next drag starts clean.
+    let sized = st.user_sized.replace(false);
+    let moved = st.user_moved.replace(false);
+    if !(sized || moved) || st.shot || st.fullscreen.get().is_some() {
         return;
     }
-    let mut r = RECT::default();
-    if GetClientRect(hwnd, &mut r).is_err() {
-        return;
+    if sized {
+        let mut r = RECT::default();
+        if GetClientRect(hwnd, &mut r).is_ok() {
+            let size = (
+                st2k_appkit::win::dpi_unscale(hwnd, r.right - r.left),
+                st2k_appkit::win::dpi_unscale(hwnd, r.bottom - r.top),
+            );
+            let _ = st2k_base::settings::set_preview_window_size(Some(size));
+        }
     }
-    let size = (
-        st2k_appkit::win::dpi_unscale(hwnd, r.right - r.left),
-        st2k_appkit::win::dpi_unscale(hwnd, r.bottom - r.top),
-    );
-    let _ = st2k_base::settings::set_preview_window_size(Some(size));
+    let mut w = RECT::default();
+    if GetWindowRect(hwnd, &mut w).is_ok() {
+        let _ = st2k_base::settings::set_preview_window_pos(Some((w.left, w.top)));
+    }
 }
 
-/// Forget the remembered size and re-fit the window to the file it is showing — the caption
-/// double-click. The escape hatch for "I dragged it out once and now everything opens that big".
+/// Forget the remembered size and position and re-fit the window to the file it is showing — the
+/// caption double-click. The escape hatch for "I dragged it out once and now everything opens that
+/// big, over there". The window stays put for now; the next preview opens centred again.
 pub(in super::super) unsafe fn forget_size(hwnd: HWND) {
     let st = &*state(hwnd);
     st.user_sized.set(false);
+    st.user_moved.set(false);
     let _ = st2k_base::settings::set_preview_window_size(None);
+    let _ = st2k_base::settings::set_preview_window_pos(None);
     if st.shot || st.fullscreen.get().is_some() {
         return;
     }

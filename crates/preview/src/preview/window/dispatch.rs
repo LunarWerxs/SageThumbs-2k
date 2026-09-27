@@ -35,12 +35,18 @@ pub(super) unsafe fn on_geometry_msg(
             (*state(hwnd)).user_sized.set(true);
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_MOVING => {
+            // A real frame drag-move — flag it so WM_EXITSIZEMOVE remembers where it landed.
+            (*state(hwnd)).user_moved.set(true);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_EXITSIZEMOVE => {
-            remember_size(hwnd);
+            remember_placement(hwnd);
             LRESULT(0)
         }
         WM_NCLBUTTONDBLCLK => {
-            // Double-click the caption = forget the dragged size and fit this file again.
+            // Double-click the caption = forget the dragged size and position and fit this file
+            // again.
             // DefWindowProc would send SC_MAXIMIZE, which this WS_POPUP window can't honour
             // anyway, so nothing is being taken away.
             if wparam.0 as u32 == HTCAPTION {

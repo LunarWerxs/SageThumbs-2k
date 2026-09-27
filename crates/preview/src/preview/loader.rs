@@ -12,9 +12,9 @@ mod placement;
 #[cfg(feature = "html-preview")]
 mod web;
 #[cfg(test)]
-pub(super) use placement::clamp_remembered_size;
+pub(super) use placement::{clamp_remembered_size, fit_into_work_area};
 pub(super) use placement::{
-    client_size, ensure_shown, forget_size, place, remember_size, should_size_for_loading,
+    client_size, ensure_shown, forget_size, place, remember_placement, should_size_for_loading,
 };
 pub(super) use resolve::{abandon_pending_prepare, apply_resolved, is_load_current, Resolved};
 pub(super) use syncload::load_sync;

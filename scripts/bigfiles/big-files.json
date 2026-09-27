@@ -386,6 +386,12 @@
  "fcstd": {
   "strategy": "zip-last"
  },
+ "fcbak": {
+  "waive": "No real sample of its own: corpus-real.json waives it as a renamed .FCStd, and the .fcstd big twin (zip-last) covers that package."
+ },
+ "fcstd1": {
+  "waive": "No real sample of its own: corpus-real.json waives it as a renamed .FCStd, and the .fcstd big twin (zip-last) covers that package."
+ },
  "ff": {
   "strategy": "tail"
  },

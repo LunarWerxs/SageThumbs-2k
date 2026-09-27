@@ -428,6 +428,10 @@ pub(super) struct ViewerState {
     /// "the size I dragged" stick without a plain window MOVE also pinning a size the user never
     /// chose. While it is set, `loader::client_size` yields to the live drag.
     pub(super) user_sized: Cell<bool>,
+    /// A user drag-MOVE of the frame is in progress (or just finished). Set by `WM_MOVING`, which
+    /// like `WM_SIZING` fires only for a real drag, and consumed by `WM_EXITSIZEMOVE`, which
+    /// persists where the window now sits so the next preview opens there.
+    pub(super) user_moved: Cell<bool>,
     /// Full-screen state: `Some(pre_fullscreen_window_rect)` while borderless-full-screen (F11),
     /// `None` otherwise. Saving the windowed rect lets F11/Esc restore the exact prior geometry.
     pub(super) fullscreen: Cell<Option<RECT>>,
@@ -611,6 +615,7 @@ pub(super) unsafe fn create_viewer(
         src_view: Cell::new(shot.map(|o| o.source).unwrap_or(false)),
         src_capable: Cell::new(false),
         user_sized: Cell::new(false),
+        user_moved: Cell::new(false),
         fullscreen: Cell::new(None),
         busy: Cell::new(false),
         pending_close: Cell::new(false),

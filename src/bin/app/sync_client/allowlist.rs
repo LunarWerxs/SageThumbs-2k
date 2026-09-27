@@ -108,9 +108,12 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
 pub(super) const NEVER_SYNCED: &[&str] = &[
     // An absolute path on THIS PC.
     "ShotSaveDir",
-    // Window geometry.
+    // Window geometry. The position is in this PC's monitor coordinates, which mean nothing on
+    // another machine's screens.
     "PreviewWinW",
     "PreviewWinH",
+    "PreviewWinX",
+    "PreviewWinY",
     // Local diagnostics and dev-machine flags.
     "Debug",
     "DevMachine",

@@ -1,8 +1,12 @@
 #![cfg(test)]
 
-use super::{clamp_remembered_size, is_load_current, should_size_for_loading, source_capable};
+use super::{
+    clamp_remembered_size, fit_into_work_area, is_load_current, should_size_for_loading,
+    source_capable,
+};
 #[cfg(feature = "html-preview")]
 use super::{decide_load_route, parse_url_shortcut, LoadRoute};
+use windows::Win32::Foundation::RECT;
 
 /// 2026-09-05 audit, F10 adversarial review (P1): `resolve_load`'s worker-side `classify`
 /// finds "html" already in `PREVIEW_TEXT_EXTS`, so if `load()` ever again ran the worker
@@ -225,6 +229,41 @@ fn a_remembered_size_is_kept_when_it_fits() {
 fn a_remembered_size_from_a_bigger_screen_shrinks_to_this_one() {
     let got = clamp_remembered_size((3800, 2000), (400, 200), (1920, 1040));
     assert_eq!(got, (1920, 1040));
+}
+
+/// The reported bug: a tall picture opened (or stepped to) low on the screen put the window's
+/// bottom under the taskbar. The rect must slide up into the work area at its full size, and only
+/// a rect taller than the work area itself may shrink.
+#[test]
+fn a_window_reaching_under_the_taskbar_slides_up_into_the_work_area() {
+    let work = RECT {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1032,
+    };
+    let low = RECT {
+        left: 300,
+        top: 400,
+        right: 1300,
+        bottom: 1300,
+    };
+    let got = fit_into_work_area(low, work);
+    assert_eq!(
+        (got.left, got.top, got.right, got.bottom),
+        (300, 132, 1300, 1032)
+    );
+    let huge = RECT {
+        left: -50,
+        top: 100,
+        right: 2100,
+        bottom: 1400,
+    };
+    let got = fit_into_work_area(huge, work);
+    assert_eq!(
+        (got.left, got.top, got.right, got.bottom),
+        (0, 0, 1920, 1032)
+    );
 }
 
 #[test]

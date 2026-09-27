@@ -371,6 +371,8 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "ora",
     "3mf",
     "fcstd",
+    "fcbak",
+    "fcstd1",
     "f3d",
     "sketch",
     "procreate",
@@ -535,6 +537,10 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("obj", "Wavefront 3D model"),
     ("ply", "Polygon File Format 3D model"),
     ("fcstd", "FreeCAD document"),
+    // FreeCAD's backups: a save renames the previous .FCStd to `<name>.<date>.FCBak` (the
+    // default) or `<name>.FCStd1`, so they are the same package with the same preview inside.
+    ("fcbak", "FreeCAD backup document"),
+    ("fcstd1", "FreeCAD backup document"),
     ("f3d", "Autodesk Fusion 360 archive"),
     ("gcode", "3D-printer G-code (sliced)"),
     ("gco", "3D-printer G-code (sliced)"),

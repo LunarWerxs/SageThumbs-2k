@@ -528,6 +528,32 @@ pub fn set_preview_window_size(size: Option<(i32, i32)>) -> windows_registry::Re
     set_dword("PreviewWinH", h.max(0) as u32)
 }
 
+/// Where the user last dragged the viewer to: the WINDOW's top-left in virtual-screen device px
+/// (negative on a monitor left of or above the primary, hence the `i32` round trip through the
+/// DWORD store). `None` until they move one, which is when the viewer goes back to centring
+/// itself on the cursor's monitor. Both values must be present.
+pub fn preview_window_pos() -> Option<(i32, i32)> {
+    let x = get_dword_opt("PreviewWinX")? as i32;
+    let y = get_dword_opt("PreviewWinY")? as i32;
+    Some((x, y))
+}
+
+/// Persist (or, with `None`, forget) the remembered viewer position. Forgetting brings the
+/// centred placement back; the caption double-click forgets it together with the size.
+pub fn set_preview_window_pos(pos: Option<(i32, i32)>) -> windows_registry::Result<()> {
+    match pos {
+        Some((x, y)) => {
+            set_dword("PreviewWinX", x as u32)?;
+            set_dword("PreviewWinY", y as u32)
+        }
+        None => {
+            remove_dword("PreviewWinX");
+            remove_dword("PreviewWinY");
+            Ok(())
+        }
+    }
+}
+
 /// Download web-hosted images referenced by a previewed Markdown file (badges, hotlinked art).
 /// **OFF by default** — fetching an image URL from a previewed document is an outbound request
 /// an attacker-authored README fully controls (classic tracking-pixel shape), so it is strictly

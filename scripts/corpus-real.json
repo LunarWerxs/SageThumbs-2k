@@ -3014,6 +3014,8 @@
   "dcs": "Kodak DCS RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17 (real .dcr, .kdc and .k25 cover the vendor). No sample of any kind.",
   "drf": "Kodak DRF RAW: absent from raw.pixls.us, rawsamples.ch and every suite searched on 2026-09-17. No sample of any kind.",
   "f3d": "Fusion 360 archives: none found under a stable public URL. The corpus sample is built with the real layout, zstd-compressed preview included.",
+  "fcbak": "FreeCAD backup: FreeCAD makes it by renaming the .FCStd a save replaces (App/Document.cpp, UseFCBakExtension, on by default), so it is byte for byte the format the pinned real.fcstd covers.",
+  "fcstd1": "FreeCAD numbered backup (the name FreeCAD uses with UseFCBakExtension off): the same renamed .FCStd, covered by the pinned real.fcstd.",
   "fl32": "FilmLight's float format. Nothing written by FilmLight's own software is public; the corpus sample comes from ImageMagick, the only other writer.",
   "jnx": "Garmin BirdsEye tiles are licensed per device, so no redistributable file exists. No sample of any kind.",
   "livp": "A Live Photo bundle (a zip of the HEIC and the MOV) only comes out of a phone app's export and none is public. The corpus sample is built with that layout around the real HEIC.",
