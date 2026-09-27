@@ -330,9 +330,15 @@ connections_execute { local: true, tool_name: "shell", params: {
 
 **Preferred since 2026-09-24: the MCP backend, which keeps the secret out of the build
 entirely.** Set `ST2K_SIGN_MCP` to the Connections local MCP server's command line as a JSON
-array (`["node","<Connections>/services/studio/local-mcp/loader.mjs"]`) and, optionally,
-`ST2K_SIGN_EXPECT_SUBJECT=LUNARWERX LLC`; no `ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE` and no
-`AZURE_*` lease are needed. `sign-release.ps1` then hands every file to the server's
+array (`["node","<Connections>/services/studio/local-mcp/loader.mjs"]`),
+`ST2K_SIGN_MCP_INSTANCE=artifact-signing` (without it the tool leases the `default` instance,
+which is not a signing credential) and, optionally, `ST2K_SIGN_EXPECT_SUBJECT=LUNARWERX LLC`;
+no `ST2K_SIGN_ENDPOINT/ACCOUNT/PROFILE` and no `AZURE_*` lease are needed. The server reads
+the vault of the Connections workspace its working folder is bound to, and it starts in the
+folder `release.ps1` runs from, so that folder's workspace must hold the credential: a folder
+the MCP has not seen before is auto-bound to a new default project with an empty vault, and
+every file then fails with `service_not_connected` (3.4.0). Re-bind the folder in Studio, or
+make `ST2K_SIGN_MCP` start the server from a folder that is bound correctly. `sign-release.ps1` then hands every file to the server's
 `sign_artifact` tool through `scripts/packaging/sign-via-mcp.mjs`: the server reads the
 account, profile and regional endpoint from Azure, leases the vaulted credential into signtool
 alone, verifies, and `sign-release.ps1` reads each signature back through Windows once more.

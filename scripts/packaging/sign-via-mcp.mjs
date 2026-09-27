@@ -12,8 +12,12 @@
 //
 // CONFIGURATION (none of it secret):
 //   ST2K_SIGN_MCP              JSON array: the server's command line, e.g.
-//                              ["node","C:/path/to/local-mcp/loader.mjs"]
-//   ST2K_SIGN_MCP_INSTANCE     optional: which vaulted signing credential the tool leases
+//                              ["node","C:/path/to/local-mcp/loader.mjs"]. The server starts in
+//                              this process's working directory, and Connections reads the
+//                              vault of whichever workspace that folder is bound to.
+//   ST2K_SIGN_MCP_INSTANCE     which vaulted signing credential the tool leases. Connections
+//                              needs `artifact-signing`: without it the tool asks for `default`,
+//                              which is not a signing credential.
 //   ST2K_SIGN_EXPECT_SUBJECT   optional: refuse unless the signer subject contains this
 //
 // Usage: node sign-via-mcp.mjs <file> [<file> ...]
@@ -49,7 +53,12 @@ if (process.env.ST2K_SIGN_MCP_INSTANCE) params.instance = process.env.ST2K_SIGN_
 if (process.env.ST2K_SIGN_EXPECT_SUBJECT) params.expect_subject = process.env.ST2K_SIGN_EXPECT_SUBJECT;
 params.description = "SageThumbs 2K";
 
-const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+// The server reads each signature back with Windows PowerShell 5.1. Under release.ps1 this
+// process inherits PowerShell 7's PSModulePath, and 5.1 handed that path cannot load
+// Get-AuthenticodeSignature, so a file that signed fine reports as unsigned. Without the
+// variable, 5.1 computes its own.
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PSMODULEPATH"));
+const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
 child.on("error", (e) => fail(`could not start the MCP server (${command.join(" ")}): ${e.message}`));
 child.stderr.on("data", () => {}); // server logs are not ours to parse; drain so it never blocks
 
