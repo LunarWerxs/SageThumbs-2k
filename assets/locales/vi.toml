@@ -755,3 +755,6 @@ dur_m = "{m} phút"
 
 up_no_expiry = "Không có ngày hết hạn (chỉ bị xóa nếu không ai mở trong 2 năm)"
 up_hist_no_expiry = "Không có ngày hết hạn (bị xóa sau 2 năm không mở)"
+
+chk_cloud_thumbs = "Hình thu nhỏ trong OneDrive & thư mục đám mây"
+tip_cloud_thumbs = "Trong thư mục đám mây đã đồng bộ (OneDrive, Synology Drive, Nextcloud…), Windows chỉ hỏi ứng dụng đám mây để lấy hình thu nhỏ, nên không có tùy chọn này thì SageThumbs sẽ không bao giờ có lượt ở đó. Khi bật: tệp đã tải xuống vẫn nhận hình thu nhỏ như ở mọi nơi khác, còn mọi thứ khác, kể cả tệp chỉ có trên điện toán đám mây, vẫn được chuyển cho ứng dụng đám mây. Không bao giờ tải xuống chỉ để vẽ hình thu nhỏ."

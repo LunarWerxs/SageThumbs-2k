@@ -8,6 +8,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows_implement::implement;
 
+use crate::cloudthumb::CloudThumbnailProvider;
 use crate::command::{self, ExplorerCommand};
 use crate::contextmenu::ContextMenu;
 use crate::previewhandler::PreviewHandler;
@@ -83,6 +84,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 fn unknown_for_clsid(clsid: &GUID) -> Result<IUnknown> {
     match *clsid {
         guids::CLSID_THUMBNAIL_PROVIDER => Ok(ThumbnailProvider::default().into()),
+        guids::CLSID_CLOUD_THUMB_PROVIDER => Ok(CloudThumbnailProvider::default().into()),
         guids::CLSID_EXPLORER_COMMAND => Ok(ExplorerCommand::default().into()),
         guids::CLSID_CONTEXT_MENU => Ok(ContextMenu::default().into()),
         guids::CLSID_PREVIEW_HANDLER => Ok(PreviewHandler::default().into()),

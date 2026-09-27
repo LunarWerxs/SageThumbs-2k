@@ -748,3 +748,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Sin fecha de caducidad (solo se elimina si nadie lo abre en 2 años)"
 up_hist_no_expiry = "Sin fecha de caducidad (se elimina tras 2 años sin abrirse)"
+
+chk_cloud_thumbs = "Miniaturas en OneDrive y carpetas de la nube"
+tip_cloud_thumbs = "En una carpeta sincronizada de la nube (OneDrive, Synology Drive, Nextcloud…), Windows solo le pide las miniaturas a la app de la nube, así que sin esta opción a SageThumbs nunca le toca el turno allí. Activado: los archivos descargados obtienen las mismas miniaturas que en cualquier otra parte, y todo lo demás, incluidos los archivos solo en línea, se sigue pasando a la app de la nube. Nunca se descarga nada solo para dibujar una miniatura."

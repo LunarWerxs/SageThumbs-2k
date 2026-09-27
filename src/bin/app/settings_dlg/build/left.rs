@@ -23,6 +23,11 @@ pub(super) unsafe fn build_thumbnails(hwnd: HWND, lc: &mut LeftCol, sty: &Styles
     }
     lc.checkbox(t("chk_enable_thumbs"), sty.cb, 300, ID_ENABLE_THUMBS);
     lc.checkbox(t("chk_prefer_embedded"), sty.cb, 300, ID_USE_EMBEDDED);
+    // Installed copies only, gated like the portable row above and for the same reason: a
+    // control no row visits floats wherever it was created (see `rows::GENERAL_INSTALLED`).
+    if !st2k_base::settings::portable() {
+        lc.checkbox(t("chk_cloud_thumbs"), sty.cb, 300, ID_CLOUD_THUMBS);
+    }
     lc.checkbox(t("chk_badge_icon"), sty.cb, 300, ID_BADGE_ICON);
     lc.checkbox(t("chk_thumb_checker"), sty.cb, 300, ID_THUMB_CHECKER);
     lc.checkbox(t("chk_video_cover_art"), sty.cb, 300, ID_VIDEO_COVER_ART);

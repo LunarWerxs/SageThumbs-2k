@@ -9,6 +9,25 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Thumbnails in OneDrive, Synology Drive and other cloud folders.** Windows asks only the
+  cloud app for a thumbnail of a file in a synced folder, even a fully downloaded one, so
+  Paint.NET, Affinity, PSD and every other SageThumbs format showed a plain icon there
+  (fixes #16). SageThumbs now takes its turn first for files that are on your PC and hands
+  everything else, including online-only files, back to the cloud app; nothing is ever
+  downloaded just to draw a thumbnail. On by default, with a switch in Settings > General,
+  and `st2k doctor` now reports each cloud folder and whether it is linked.
+- **Thumbnails no longer stop after a busy session.** When Explorer gave up on a slow file
+  mid-decode, SageThumbs could lose one of its four ImageMagick slots for good; after a few
+  of those every exotic-format thumbnail stalled, Explorer kept giving up, and only a restart
+  brought them back. A slot whose owner is gone is now taken over at once.
+- **Quick preview stays above the taskbar and remembers where you put it.** A tall picture
+  no longer opens or grows underneath the taskbar, and the window opens where you last
+  dragged it (double-click its title bar to go back to centred).
+- **FreeCAD backups** (`.FCBak`, `.FCStd1`) get the same thumbnail as the `.FCStd` they were
+  saved from (363 file types in all).
+- **`st2k doctor` names the thumbnail handler Windows actually uses** for a file, and says
+  when that handler belongs to another program or is built for a different processor than
+  this PC (an x64-only DLL on an ARM64 PC, #47).
 - **Searchable PDFs:** the new right-click **Combine into searchable PDF (OCR)**, `st2k pdf
   --searchable` and the MCP `pdf` tool's `searchable` option read every page with Windows'
   own OCR and add an invisible text layer, so scans and photos turned into a PDF can be

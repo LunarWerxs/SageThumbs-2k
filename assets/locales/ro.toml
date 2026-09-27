@@ -753,3 +753,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Fără dată de expirare (se elimină doar dacă nimeni nu îl deschide timp de 2 ani)"
 up_hist_no_expiry = "Fără dată de expirare (se elimină după 2 ani fără a fi deschis)"
+
+chk_cloud_thumbs = "Miniaturi în OneDrive și foldere cloud"
+tip_cloud_thumbs = "Pentru folderele cloud sincronizate (OneDrive, Synology Drive, Nextcloud…), Windows cere miniaturile doar aplicației cloud, așa că fără această opțiune SageThumbs nu intervine niciodată acolo. Activat: fișierele descărcate primesc aceleași miniaturi ca oriunde, iar tot restul, inclusiv fișierele disponibile doar online, e tot predat aplicației cloud. Nimic nu se descarcă doar pentru a desena o miniatură."

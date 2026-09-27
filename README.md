@@ -51,6 +51,7 @@ SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds 
 ## TL;DR
 
 - 🖼️ Explorer thumbnails for **363 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- ☁️ **Works in OneDrive, Synology Drive and other cloud folders**, where Windows normally asks only the cloud app for thumbnails. Online-only files are never downloaded just to draw one.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
 - ⚡ **Fast even on huge files**: camera RAW thumbnails come from the embedded preview instead of a slow demosaic (3–13× quicker), multi-gigabyte Photoshop files and archives are read straight off the disk, and no file is allowed to hang a folder.
 - 🧰 **Right-click toolkit:** convert, resize, lossless rotate, combine-to-PDF/CBZ, system-wide eyedropper, OCR, and more; all non-destructive, and **multi-file jobs run in parallel across every core**.

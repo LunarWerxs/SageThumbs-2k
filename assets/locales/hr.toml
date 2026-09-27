@@ -757,3 +757,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Bez datuma isteka (briše se samo ako ga nitko ne otvori 2 godine)"
 up_hist_no_expiry = "Bez datuma isteka (briše se nakon 2 godine bez otvaranja)"
+
+chk_cloud_thumbs = "Sličice u OneDriveu i mapama u oblaku"
+tip_cloud_thumbs = "U sinkroniziranoj mapi u oblaku (OneDrive, Synology Drive, Nextcloud…) Windows traži sličice samo od aplikacije za oblak, pa SageThumbs bez ove opcije ondje nikad ne dođe na red. Uključeno: preuzete datoteke dobivaju iste sličice kao i bilo gdje drugdje, a sve ostalo, uključujući datoteke dostupne samo na mreži, i dalje ide aplikaciji za oblak. Ništa se nikad ne preuzima samo da bi se nacrtala sličica."

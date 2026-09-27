@@ -752,3 +752,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Bez data vypršení (odstraní se, jen když jej nikdo 2 roky neotevře)"
 up_hist_no_expiry = "Bez data vypršení (odstraní se po 2 letech bez otevření)"
+
+chk_cloud_thumbs = "Miniatury v OneDrive a cloudových složkách"
+tip_cloud_thumbs = "V synchronizované cloudové složce (OneDrive, Synology Drive, Nextcloud…) se Windows na miniatury ptají jen cloudové aplikace, takže bez tohoto přepínače se SageThumbs tam nikdy nedostane k jednání. Po zapnutí: stažené soubory dostanou stejné miniatury jako jinde a vše ostatní, včetně online-only souborů, se stejně předá cloudové aplikaci. Nic se nikdy nestáhne jen kvůli jedné miniatuře."

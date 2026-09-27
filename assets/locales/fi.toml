@@ -748,3 +748,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Ei vanhenemispäivää (poistetaan vain, jos kukaan ei avaa sitä 2 vuoteen)"
 up_hist_no_expiry = "Ei vanhenemispäivää (poistetaan, jos sitä ei avata 2 vuoteen)"
+
+chk_cloud_thumbs = "Pienoiskuvat OneDrivessä ja pilvikansioissa"
+tip_cloud_thumbs = "Synkronoidussa pilvisijassa (OneDrive, Synology Drive, Nextcloud…) Windows pyytää pienoiskuvia vain pilvikäytöltä, joten ilman tätä vaihtoehtoa SageThumbs ei saa siellä vuoroaan. Käytössä: ladatut tiedostot saavat samoja pienoiskuvia kuin muualtakin, ja kaikki muu, mukaan lukien vain verkossa olevat tiedostot, siirretään pilvikäytölle. Mikään ei aina ladata pelkästään piirtääkseen pienoiskuvan."

@@ -750,3 +750,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Ingen udløbsdato (fjernes kun, hvis ingen åbner den i 2 år)"
 up_hist_no_expiry = "Ingen udløbsdato (fjernes efter 2 år uden åbning)"
+
+chk_cloud_thumbs = "Miniaturer i OneDrive & skyfoldre"
+tip_cloud_thumbs = "I en synkroniseret skyfolder (OneDrive, Synology Drive, Nextcloud…) beder Windows kun cloud-appen om miniaturer, så uden det får SageThumbs aldrig en tur der. Til: Downloadede filer får de samme miniaturer som andre steder, og resten, herunder kun-online-filer, overgives stadig til cloud-appen. Der downloades aldrig noget bare for at vise en miniatur."

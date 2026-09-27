@@ -758,3 +758,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Ingen utløpsdato (fjernes bare hvis ingen åpner den på 2 år)"
 up_hist_no_expiry = "Ingen utløpsdato (fjernes etter 2 år uten åpning)"
+
+chk_cloud_thumbs = "Miniatyrbilder i OneDrive og skymapper"
+tip_cloud_thumbs = "I et synkronisert skyemappe (OneDrive, Synology Drive, Nextcloud …) ber Windows bare skyappen om miniatyrbilder, og uten denne innstillingen får aldri SageThumbs tak der. PÅ: nedlastede filer får de samme miniatyrbildene som andre steder, mens alt annet,其中包括 filer som kun ligger online, fortsatt sendes til skyappen. Det lastes aldri ned noe bare for å tegne et miniatyrbilde."

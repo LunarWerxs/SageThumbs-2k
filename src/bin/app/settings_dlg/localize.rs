@@ -108,6 +108,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_THUMBS, "grp_thumbnails"),
         (ID_ENABLE_THUMBS, "chk_enable_thumbs"),
         (ID_USE_EMBEDDED, "chk_prefer_embedded"),
+        (ID_CLOUD_THUMBS, "chk_cloud_thumbs"),
         (ID_LBL_CORNER_MARK, "lbl_corner_mark"),
         (ID_LBL_BADGE_SIZE, "lbl_badge_size"),
         (ID_BADGE_ICON, "chk_badge_icon"),

@@ -750,3 +750,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Bez dátumu vypršania (odstráni sa len vtedy, ak ho nikto neotvorí 2 roky)"
 up_hist_no_expiry = "Bez dátumu vypršania (odstráni sa po 2 rokoch bez otvorenia)"
+
+chk_cloud_thumbs = "Miniatúry v OneDrive a cloudových priečinkoch"
+tip_cloud_thumbs = "V synchronizovanom cloudovom priečinku (OneDrive, Synology Drive, Nextcloud…) sa Windows na miniatúry pýta len cloudovej aplikácie, takže bez tejto voľby sa SageThumbs v takomto priečinku vôbec nedostane na rad. Keď je zapnuté: stiahnuté súbory dostanú rovnaké miniatúry ako kdekokoľvek inde a všetko ostatné, vrátane iba online súborov, sa stále odovzdáva cloudovej aplikácii. Nikdy sa nič nestiahne len preto, aby sa nakreslila miniatúra."

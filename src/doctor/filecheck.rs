@@ -11,19 +11,12 @@ use super::*;
 /// shape of the modern-`.xcf` reports (GIMP 2.10+/3.0 writes an XCF version the bundled
 /// ImageMagick's coder can't read). Read-only: opens + decodes the file, writes nothing.
 /// OneDrive (and any Files-On-Demand provider) leaves a *placeholder* on disk: the metadata is
-/// local, the bytes are not, and the first read pulls the whole file down over the network.
-///
-/// That matters here because of HOW MUCH we have to read. Formats with a baked-in preview are
-/// cheap even on a placeholder: `stream_source` reads a bounded prefix or seeks straight to a
-/// cover, so only a slice is ever recalled. The formats with NO such shortcut fall through to
-/// the whole-file read, and on a cloud-only file that means downloading it in full inside
-/// Explorer's thumbnail host, which is slow enough to be indistinguishable from broken and
-/// leaves a cached failure behind. `.xcf` is the sharp edge (a report, 2026-08-05): GIMP writes
-/// no embedded thumbnail, so there is nothing to read but the entire image.
-///
-/// Reported, never "fixed" silently: refusing to hydrate would take thumbnails away from people
-/// whose files ARE downloaded and working today. `std::fs::metadata` reads attributes without
-/// triggering recall, so this check itself never pulls anything down.
+/// local, the bytes are not, and reading them pulls the file down over the network. Our
+/// cloud-folder provider (`crate::cloudthumb`) therefore never reads an online-only file: it
+/// hands it to the cloud app's own provider, so our thumbnail for it appears only once the
+/// bytes are here. Said out loud, because "why is this one blank" has exactly that answer.
+/// `std::fs::metadata` reads attributes without triggering recall, so this check itself never
+/// pulls anything down.
 fn cloud_placeholder_note(r: &mut Report, p: &Path, ext: &str) {
     use std::os::windows::fs::MetadataExt;
 
@@ -50,16 +43,14 @@ fn cloud_placeholder_note(r: &mut Report, p: &Path, ext: &str) {
     // Says what is true in general without claiming anything about THIS file's internals,
     // which would need the header read this check exists to avoid.
     r.fail_with_fix(
-        "Cloud file (OneDrive)",
+        "Cloud file (online-only)",
         &format!(
-            "the bytes are not on this PC yet ({size}). Fetching them happens inside Explorer's \
-             thumbnail host, slow enough to look like nothing is happening, and a format with \
-             no embedded preview (.xcf is one) needs the WHOLE file, not a slice — this one \
-             is .{ext}"
+            "the bytes are not on this PC yet ({size}). SageThumbs never downloads a file just to \
+             draw its thumbnail, so until it is here the cloud app's own thumbnail (if it has one \
+             for .{ext}) is what Explorer shows"
         ),
         "Right-click the file or its folder -> 'Always keep on this device'. Once the bytes are \
-         local the thumbnail appears normally. If it stays blank after downloading, Explorer \
-         cached the earlier failure: clear thumbcache_*.db (see the IconsOnly fix above).",
+         local, SageThumbs draws it like any other file.",
     );
 }
 
@@ -138,97 +129,63 @@ fn shell_roundtrip(r: &mut Report, path: &str) {
                 e.code().0
             ),
             "our half is working, so something between us and Explorer is dropping it. In \
-             order: rebuild the thumbnail cache (Settings > Advanced), then check the note \
-             about this file's folder below — a cloud-synced folder can serve thumbnails \
-             from the sync provider instead of from us. Copying the file to a plain local \
-             folder and re-running this command tells the two apart in one step.",
+             order: read the 'Thumbnail handler' and 'Cloud-synced folder' lines above (another \
+             program's handler, or a cloud folder we are not linked into), then rebuild the \
+             thumbnail cache (Settings > Advanced). Copying the file to a plain local folder and \
+             re-running this command tells the cases apart in one step.",
         ),
     }
 }
 
-/// Whether lowercase `file` is `root` or inside it. A bare prefix match is not enough:
-/// `c:\users\me\onedrive-old\x.jpg` starts with the sync root `c:\users\me\onedrive` but is not
-/// inside it, so the character after the root must be a separator.
-fn is_under_root(file: &str, root: &str) -> bool {
-    let base = root.trim_end_matches('\\');
-    !base.is_empty()
-        && file.starts_with(base)
-        && (file.len() == base.len() || file.as_bytes().get(base.len()) == Some(&b'\\'))
-}
-
-/// Is this file inside a cloud sync root (OneDrive and friends), and does that provider
-/// register its own thumbnail source?
-///
-/// A sync engine built on the Cloud Files API may declare a `ThumbnailProvider` under its
-/// `SyncRootManager` entry, which applies to EVERYTHING under that root rather than to one
-/// file type — so it can pre-empt a per-extension handler like ours for every file in the
-/// folder. That is the leading explanation for "works in a normal folder, generic icon in
-/// OneDrive", and it is invisible from the file itself, so name it here rather than leaving
-/// the user to guess. Purely a registry read; nothing is hydrated and nothing is written.
+/// Is this file inside a cloud sync folder (OneDrive, Synology Drive, ...), and is our
+/// cloud-folder provider linked into that folder's one thumbnail slot? Explorer asks ONLY that
+/// slot for a file there (`register::cloud` has the measurement), so this decides whether our
+/// thumbnail can appear at all. Purely a registry read; nothing is hydrated and nothing is written.
 fn cloud_sync_root_note(r: &mut Report, p: &Path) {
-    const SYNC_ROOTS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
+    use crate::register::cloud;
     let Ok(file) = p.canonicalize() else {
         return;
     };
     let file = file
         .to_string_lossy()
         .trim_start_matches(r"\\?\")
-        .to_lowercase();
-
-    let Ok(roots) = LOCAL_MACHINE.open(SYNC_ROOTS) else {
+        .to_string();
+    let Some(root) = cloud::sync_roots()
+        .into_iter()
+        .find(|root| root.folders.iter().any(|f| cloud::path_is_under(&file, f)))
+    else {
         return;
     };
-    let Ok(names) = roots.keys() else {
-        return;
-    };
-    for name in names {
-        let Ok(root) = roots.open(&name) else {
-            continue;
-        };
-        // Each provider lists its on-disk roots under UserSyncRoots\<user SID>.
-        let Ok(user_roots) = root.open("UserSyncRoots") else {
-            continue;
-        };
-        let Ok(values) = user_roots.values() else {
-            continue;
-        };
-        let hit = values.into_iter().any(|(_, v)| {
-            is_under_root(
-                &file,
-                &String::try_from(v).unwrap_or_default().to_lowercase(),
-            )
-        });
-        if !hit {
-            continue;
-        }
-        let has_provider =
-            root.open("ThumbnailProvider").is_ok() || root.get_string("ThumbnailProvider").is_ok();
-        // The provider id is `<Provider>!<SID>!<account>`; the first field is the readable bit.
-        let provider = name.split('!').next().unwrap_or(&name).to_string();
-        if has_provider {
-            r.fail_with_fix(
-                "Cloud-synced folder",
-                &format!(
-                    "this file is inside a {provider} sync root, and {provider} registers its \
-                     OWN thumbnail source for everything under it — which can take precedence \
-                     over ours for every file in the folder"
-                ),
-                "not something we can override from here. To confirm it is the cause, copy \
-                 the file to a folder outside the sync root and look again: if the thumbnail \
-                 appears there, this is why it does not appear here.",
-            );
-        } else {
-            r.line(
-                S::Warn,
-                "Cloud-synced folder",
-                &format!(
-                    "this file is inside a {provider} sync root. {provider} does not register \
-                     its own thumbnail source, so ours should be used — but a sync root is \
-                     still the first thing to rule out by copying the file elsewhere"
-                ),
-            );
-        }
-        return;
+    let provider = root.provider_name().to_string();
+    if root.is_chained() {
+        r.line(
+            S::Ok,
+            "Cloud-synced folder",
+            &format!(
+                "inside a {provider} sync folder, and SageThumbs is linked into its thumbnail \
+                 slot: downloaded files get our thumbnails, online-only ones get {provider}'s"
+            ),
+        );
+    } else if root.aumid.is_some() && root.provider.is_none() {
+        r.line(
+            S::Warn,
+            "Cloud-synced folder",
+            &format!(
+                "inside a {provider} sync folder. {provider} is a packaged app that draws its own \
+                 thumbnails there, and SageThumbs leaves it alone, so this file shows whatever \
+                 {provider} draws for it"
+            ),
+        );
+    } else {
+        r.fail_with_fix(
+            "Cloud-synced folder",
+            &format!(
+                "inside a {provider} sync folder, where Explorer asks ONLY {provider} for \
+                 thumbnails, and SageThumbs is not linked in there"
+            ),
+            "Settings -> General -> turn on 'Thumbnails in OneDrive & cloud folders' (opening \
+             Settings also re-links a folder the cloud app took back).",
+        );
     }
 }
 
@@ -578,6 +535,7 @@ pub(super) fn probe_file(
         return;
     }
     r.line(S::Ok, &format!(".{ext}"), "a supported format");
+    thumbnail_handler_note(r, &ext);
     cloud_placeholder_note(r, p, &ext);
     cloud_sync_root_note(r, p);
     this_pc_namespace_note(r, p);
@@ -689,9 +647,129 @@ fn report_decode(r: &mut Report, path: &str, bytes: &[u8], is_video: bool) {
     }
 }
 
+/// Which thumbnail handler Windows resolves for `.ext` through the normal association lookup,
+/// and whether this PC can even load it. Issue #47 is the shape this catches: on an ARM64 PC
+/// the shell answered 0x800700C1 (ERROR_BAD_EXE_FORMAT) for an .epub and never asked us,
+/// because some other program had registered an x64-only DLL as the .epub thumbnail handler.
+fn thumbnail_handler_note(r: &mut Report, ext: &str) {
+    const LABEL: &str = "Thumbnail handler";
+    let Some(clsid) = (unsafe { crate::cloudthumb::type_thumbnail_handler(ext) }) else {
+        r.line(
+            S::Warn,
+            LABEL,
+            &format!("Windows resolves NO thumbnail handler for .{ext}"),
+        );
+        return;
+    };
+    if clsid == st2k_base::guids::CLSID_THUMBNAIL_PROVIDER {
+        r.line(
+            S::Ok,
+            LABEL,
+            "SageThumbs 2K (Windows resolves ours for this type)",
+        );
+        return;
+    }
+    let braced = format!("{clsid:?}");
+    let dll = CLASSES_ROOT
+        .open(format!("CLSID\\{{{braced}}}\\InprocServer32"))
+        .and_then(|k| k.get_string(""))
+        .ok();
+    let arch = dll
+        .as_deref()
+        .and_then(|d| std::fs::read(expand_env(d)).ok())
+        .and_then(|b| pe_machine(&b));
+    let who = format!(
+        "{{{braced}}} {}",
+        dll.as_deref().unwrap_or("(no InprocServer32)")
+    );
+    match arch {
+        Some(m) if !machine_loads_here(m) => r.fail_with_fix(
+            LABEL,
+            &format!(
+                "another program's handler wins for .{ext}, and its DLL is built for {} while this \
+                 PC runs {}: Explorer cannot load it (0x800700C1) and never gets to ours — {who}",
+                machine_name(m),
+                std::env::consts::ARCH
+            ),
+            "update or uninstall the program that installed that DLL (its path names it), then \
+             Settings -> Advanced -> 'Repair file associations'.",
+        ),
+        // Not necessarily wrong (Windows' own handler winning for .jpg is by design, see
+        // `register.rs`), so a warning that names it rather than a failure.
+        _ => r.line(
+            S::Warn,
+            LABEL,
+            &format!("another program's handler is used for .{ext}, not ours: {who}"),
+        ),
+    }
+}
+
+/// `%SystemRoot%`-style variables in a registry path, expanded (an InprocServer32 value may be
+/// REG_EXPAND_SZ).
+fn expand_env(path: &str) -> String {
+    let mut out = String::new();
+    let mut rest = path;
+    while let Some(a) = rest.find('%') {
+        let Some(b) = rest[a + 1..].find('%') else {
+            break;
+        };
+        out.push_str(&rest[..a]);
+        let name = &rest[a + 1..a + 1 + b];
+        out.push_str(&std::env::var(name).unwrap_or_else(|_| format!("%{name}%")));
+        rest = &rest[a + 2 + b..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The PE `Machine` field of an executable image, or `None` when `bytes` is not one.
+pub(super) fn pe_machine(bytes: &[u8]) -> Option<u16> {
+    let e_lfanew = u32::from_le_bytes(bytes.get(0x3C..0x40)?.try_into().ok()?) as usize;
+    if bytes.get(..2)? != b"MZ" || bytes.get(e_lfanew..e_lfanew + 4)? != b"PE\0\0" {
+        return None;
+    }
+    Some(u16::from_le_bytes(
+        bytes.get(e_lfanew + 4..e_lfanew + 6)?.try_into().ok()?,
+    ))
+}
+
+const MACHINE_X86: u16 = 0x014C;
+const MACHINE_X64: u16 = 0x8664;
+const MACHINE_ARM64: u16 = 0xAA64;
+
+/// Can a DLL built for `machine` load into a process like this one? (An ARM64X DLL reports
+/// ARM64 and loads into both; an x64 or x86 DLL cannot load into a native ARM64 process.)
+fn machine_loads_here(machine: u16) -> bool {
+    match std::env::consts::ARCH {
+        "aarch64" => machine == MACHINE_ARM64,
+        "x86_64" => machine == MACHINE_X64,
+        "x86" => machine == MACHINE_X86,
+        _ => true,
+    }
+}
+
+fn machine_name(machine: u16) -> &'static str {
+    match machine {
+        MACHINE_X86 => "32-bit x86",
+        MACHINE_X64 => "x64",
+        MACHINE_ARM64 => "ARM64",
+        _ => "another architecture",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The architecture verdict for issue #47 rests on reading a DLL's PE machine correctly:
+    /// this very test binary must read as loadable here, and a non-image as nothing.
+    #[test]
+    fn the_running_image_reads_as_loadable_and_a_non_image_as_nothing() {
+        let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let machine = pe_machine(&me).expect("a PE image");
+        assert!(machine_loads_here(machine), "{machine:#06x}");
+        assert_eq!(pe_machine(b"MZ not really an image"), None);
+    }
 
     /// A file whose bytes are not local (OneDrive placeholder) must be called out, and a
     /// normal local file must NOT be — a false "your file is in the cloud" on every ordinary

@@ -281,6 +281,20 @@ pub fn set_thumb_checker(on: bool) -> windows_registry::Result<()> {
     set_dword("ThumbChecker", u32::from(on))
 }
 
+/// `CloudThumbs` — draw our thumbnails inside cloud sync folders (OneDrive, Synology Drive,
+/// Nextcloud, ...) too. Windows asks only the sync folder's own provider for a file there, so
+/// this is what puts ours in front of it (`register::cloud`); off hands every such folder's slot
+/// back to the provider that owned it. Default ON for an installed copy, OFF for a portable one:
+/// a portable folder deleted without `st2k register --off` would leave every cloud folder's slot
+/// pointing at a DLL that is gone, taking the cloud app's own thumbnails with it.
+pub fn cloud_thumbs() -> bool {
+    get_dword("CloudThumbs", u32::from(!portable())) != 0
+}
+
+pub fn set_cloud_thumbs(on: bool) -> windows_registry::Result<()> {
+    set_dword("CloudThumbs", u32::from(on))
+}
+
 /// `VideoCoverArt` — prefer a video's embedded poster over a frame from the film itself.
 /// Default OFF: see [`ThumbSettings::prefer_cover_art`] for why a frame is the better
 /// default and a poster the better option.

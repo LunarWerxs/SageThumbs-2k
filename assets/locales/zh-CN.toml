@@ -755,3 +755,6 @@ dur_m = "{m} 分"
 
 up_no_expiry = "无到期日期（仅在 2 年未被打开时才会删除）"
 up_hist_no_expiry = "无到期日期（2 年无人打开后删除）"
+
+chk_cloud_thumbs = "OneDrive 与云文件夹中的缩略图"
+tip_cloud_thumbs = "在同步的云文件夹中（OneDrive、Synology Drive、Nextcloud…），Windows 只向云应用请求缩略图，关掉此开关，SageThumbs 在那里就轮不到出镜。开启后：已下载的文件与其他位置一样生成相同缩略图，其余文件（包括仅在线文件）仍会交给云应用处理。不会为了生成缩略图而下载次数任何文件。"

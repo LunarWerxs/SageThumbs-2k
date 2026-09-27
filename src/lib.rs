@@ -19,6 +19,8 @@
 
 mod badge;
 pub mod cli;
+// The provider that sits in a cloud sync folder's one thumbnail slot (`register::cloud`).
+mod cloudthumb;
 mod command;
 mod contextmenu;
 pub mod doctor;
@@ -194,6 +196,7 @@ pub fn dll_get_class_object(
         *ppv = core::ptr::null_mut();
         let clsid = *rclsid;
         if clsid != guids::CLSID_THUMBNAIL_PROVIDER
+            && clsid != guids::CLSID_CLOUD_THUMB_PROVIDER
             && clsid != guids::CLSID_EXPLORER_COMMAND
             && clsid != guids::CLSID_CONTEXT_MENU
             && clsid != guids::CLSID_PREVIEW_HANDLER

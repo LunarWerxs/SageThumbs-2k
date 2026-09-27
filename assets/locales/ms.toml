@@ -756,3 +756,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Tiada tarikh luput (dibuang hanya jika tiada sesiapa membukanya selama 2 tahun)"
 up_hist_no_expiry = "Tiada tarikh luput (dibuang selepas 2 tahun tidak dibuka)"
+
+chk_cloud_thumbs = "Thumbnail dalam OneDrive & folder awan"
+tip_cloud_thumbs = "Dalam folder awan tersinkron (OneDrive, Synology Drive, Nextcloud…), Windows minta thumbnail daripada aplikasi awan sahaja — jadi tanpa ini SageThumbs tidak pernah dapat giliran di sana. On: fail yang dimuat turun dapat thumbnail yang sama seperti mana-mana tempat lain, dan semua yang lain, termasuk fail dalam talian sahaja, masih diserahkan kepada aplikasi awan. Tiada apa-apa dimuat turun hanya untuk lukis thumbnail."

@@ -758,3 +758,6 @@ dur_m = "{m}분"
 
 up_no_expiry = "만료 날짜 없음 (아무도 2년 동안 열지 않으면 삭제됨)"
 up_hist_no_expiry = "만료 날짜 없음 (2년 동안 열지 않으면 삭제됨)"
+
+chk_cloud_thumbs = "OneDrive 및 클라우드 폴더의 썸네일"
+tip_cloud_thumbs = "동기화된 클라우드 폴더(OneDrive, Synology Drive, Nextcloud…)에서는 Windows가 썸네일만 클라우드 앱에 요청하기 때문에, 이 옵션을 켜지 않으면 SageThumbs는 이곳에서 썸네일을 만들 수 없습니다. 켜면: 다운로드된 파일은 어디에서나 동일한 썸네일을 사용하며, 온라인 전용 파일을 포함한 나머지 파일은 계속 클라우드 앱으로 전달됩니다. 썸네일을 만들려고 파일을 다운로드하는 일은 절대 없습니다."

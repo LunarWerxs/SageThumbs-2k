@@ -758,3 +758,6 @@ dur_m = "{m} mnt"
 
 up_no_expiry = "Tanpa tanggal kedaluwarsa (hanya dihapus jika tidak ada yang membukanya selama 2 tahun)"
 up_hist_no_expiry = "Tanpa tanggal kedaluwarsa (dihapus setelah 2 tahun tidak dibuka)"
+
+chk_cloud_thumbs = "Thumbnail di OneDrive & folder cloud"
+tip_cloud_thumbs = "Di folder cloud yang tersinkron (OneDrive, Synology Drive, Nextcloud…), Windows hanya meminta thumbnail ke aplikasi cloud, jadi tanpa ini SageThumbs tidak pernah mendapat giliran di sana. Aktif: file yang diunduh mendapat thumbnail yang sama seperti di tempat lain, dan sisanya, termasuk file yang hanya online, tetap dilewatkan ke aplikasi cloud. Tidak ada yang diunduh hanya untuk menampilkan thumbnail."

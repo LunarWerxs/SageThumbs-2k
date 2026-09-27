@@ -754,3 +754,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Pas de date d'expiration (supprimé uniquement si personne ne l'ouvre pendant 2 ans)"
 up_hist_no_expiry = "Pas de date d'expiration (supprimé après 2 ans sans ouverture)"
+
+chk_cloud_thumbs = "Vignettes dans OneDrive et les autres dossiers cloud"
+tip_cloud_thumbs = "Dans un dossier synchronisé par le cloud (OneDrive, Synology Drive, Nextcloud…), Windows ne demande les vignettes qu'à l'application cloud ; sans cette option, SageThumbs n'a jamais son tour. Une fois activée, les fichiers téléchargés obtiennent les mêmes vignettes qu'ailleurs, et le reste — fichiers en ligne uniquement compris — est toujours transmis à l'application cloud. Rien n'est téléchargé juste pour afficher une vignette."

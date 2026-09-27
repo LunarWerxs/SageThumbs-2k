@@ -108,6 +108,9 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
 pub(super) const NEVER_SYNCED: &[&str] = &[
     // An absolute path on THIS PC.
     "ShotSaveDir",
+    // Not just a value: it rewrites the cloud sync folders' registration on THIS machine, and
+    // which cloud folders exist differs per machine.
+    "CloudThumbs",
     // Window geometry. The position is in this PC's monitor coordinates, which mean nothing on
     // another machine's screens.
     "PreviewWinW",

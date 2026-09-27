@@ -752,3 +752,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Brez datuma poteka (odstranjeno le, če ga nihče ne odpre 2 leti)"
 up_hist_no_expiry = "Brez datuma poteka (odstranjeno po 2 letih neodprto)"
+
+chk_cloud_thumbs = "Sličice v OneDrive in oblačnih mapah"
+tip_cloud_thumbs = "V sinhronizirani oblačni mapi (OneDrive, Synology Drive, Nextcloud …) Windows za sličice vpraša le oblačno aplikacijo, zato SageThumbs brez tega stika tam nikoli ne dobi svoje priložnosti. Vklop: prenesene datoteke dobijo iste sličice kot drugje, vse ostalo, tudi samo v oblaku shranjene datoteke, pa bo oblačni aplikaciji še vedno prepustil. Zaradi risbe sličice se nikoli nič ne prenese."

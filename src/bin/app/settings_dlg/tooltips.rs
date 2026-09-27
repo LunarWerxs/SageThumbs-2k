@@ -14,6 +14,7 @@ use windows::Win32::UI::Controls::TOOLTIP_FLAGS;
 pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_ENABLE_THUMBS, "tip_enable_thumbs"),
     (ID_USE_EMBEDDED, "tip_prefer_embedded"),
+    (ID_CLOUD_THUMBS, "tip_cloud_thumbs"),
     (ID_LBL_CORNER_MARK, "tip_corner_mark"),
     (ID_CORNER_MARK, "tip_corner_mark"),
     (ID_LBL_BADGE_SIZE, "tip_badge_size"),

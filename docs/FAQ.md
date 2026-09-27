@@ -120,11 +120,19 @@ previously stayed stuck on the small thumbnail with nothing in the log to explai
 </details>
 
 <details>
-<summary><b>Thumbnails work in a folder, but the file is blank in OneDrive</b></summary>
+<summary><b>Thumbnails work in a folder, but the file is blank in OneDrive or Synology Drive</b></summary>
+
+Inside a synced cloud folder, Windows asks only the cloud app for thumbnails, even for files
+that are fully downloaded. SageThumbs links itself into that slot (Settings > General >
+**Thumbnails in OneDrive & cloud folders**, on by default) so downloaded files get the same
+thumbnails as anywhere else, and hands everything else back to the cloud app.
 
 If the file is online-only, there are no bytes on the disk to read. Windows will not download a
 file just to draw a thumbnail, and neither will we. Mark the folder **Always keep on this
 device** and the thumbnails appear.
+
+If a cloud folder still shows plain icons, `st2k doctor` lists every cloud folder and whether
+SageThumbs is linked into it; opening Settings re-links one the cloud app took back.
 
 </details>
 

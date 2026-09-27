@@ -18,6 +18,9 @@ pub fn register_user(dll_path: &str) -> Result<()> {
     ] {
         write_inproc_server(&classes, clsid, name, dll_path)?;
     }
+    // The cloud-folder provider too: a per-user class and AppID are enough for the shell to
+    // host it, and this user's own sync folders are theirs to chain without elevation.
+    cloud::register_and_link(&classes, dll_path, None, "register_user");
 
     // Same per-extension layout as the machine-wide path, so precedence behaves identically.
     // Best-effort per extension: one locked-down key must not abort the rest, but every
@@ -90,6 +93,9 @@ pub(super) fn unregister_user_classes() -> Result<()> {
             let _ = classes.remove_tree(CONTEXT_MENU_KEY);
         }
     }
+    // This user's cloud folders go back to their own providers before the class goes away.
+    let _ = cloud::unchain_all();
+    cloud::unregister_class(&classes);
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
     // The same final sweep the machine-wide `unregister` does, and for the same reason: a slot

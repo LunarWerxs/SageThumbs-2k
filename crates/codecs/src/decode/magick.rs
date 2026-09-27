@@ -468,7 +468,7 @@ fn decode_via_magick_spec_alloc(
 
 // `GetProcessTimes` lives in kernel32, which is always linked. Declared here rather than
 // switching on the `windows` crate's `Win32_System_Threading` feature for one call — the
-// same approach `decode::magick_gate` already takes for the semaphore.
+// same approach `decode::magick_gate` already takes for its slot mutexes.
 #[link(name = "kernel32")]
 extern "system" {
     fn GetProcessTimes(

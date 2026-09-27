@@ -32,7 +32,9 @@ mod propstore;
 use propstore::*;
 mod displaced;
 use displaced::*;
+pub mod cloud;
 mod user;
+pub(crate) use cloud::replaced_provider_for as cloud_replaced_provider_for;
 pub(crate) use displaced::{displaced_handlers, displaced_key_ext};
 pub(crate) use propstore::perceived_type_is_ours;
 use user::*;
@@ -43,8 +45,9 @@ pub use user::{
 
 use st2k_base::formats::{Category, FORMATS, REMOVED_EXTENSIONS};
 use st2k_base::guids::{
-    CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
-    CLSID_THUMBNAIL_PROVIDER_STR, PREVHOST_APPID, PREVIEW_HANDLER_CATEGORY, THUMB_HANDLER_CATEGORY,
+    CLSID_CLOUD_THUMB_PROVIDER_STR, CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR,
+    CLSID_PROPERTY_STORE_STR, CLSID_THUMBNAIL_PROVIDER_STR, PREVHOST_APPID,
+    PREVIEW_HANDLER_CATEGORY, THUMB_HANDLER_CATEGORY,
 };
 use st2k_base::safety::{log, log_error};
 use st2k_base::settings::{self, FormatEnabledSnapshot};
@@ -207,6 +210,11 @@ pub fn register(dll_path: &str) -> Result<()> {
         ));
     }
 
+    // The cloud-folder provider (OneDrive, Synology Drive, ...): its surrogate-hosted class, then
+    // every sync folder's thumbnail slot on this machine, when the setting wants it (see
+    // `register::cloud`). Best-effort and logged: a failure here costs cloud folders only.
+    cloud::register_and_link(&classes, dll_path, Some(&approved), "register");
+
     // The preview-pane handler and the property handler (Details pane / info-tip / columns).
     // Neither aborts the other or the shell-notify below; both are reported at the end.
     let preview = register_preview_handler(&classes, dll_path, &approved, &fmt);
@@ -284,6 +292,7 @@ pub fn sync_user_shell() -> Result<()> {
 pub fn remove_user_shell() {
     crate::typeoverlay::remove_all();
     crate::foldermenu::remove_all();
+    cloud::remove_relink_task();
     notify_shell();
 }
 
@@ -511,6 +520,9 @@ pub fn unregister() -> Result<()> {
         unhook_ext_and_prune(&classes, ext);
         unhook_ext_preview_and_prune(&classes, ext);
     }
+    // Hand every cloud folder's thumbnail slot back before the class it points at disappears.
+    let _ = cloud::unchain_all();
+    cloud::unregister_class(&classes);
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_THUMBNAIL_PROVIDER_STR}"));
     let _ = classes.remove_tree(CONTEXT_MENU_KEY);
     let _ = classes.remove_tree(format!("CLSID\\{CLSID_CONTEXT_MENU_STR}"));
@@ -529,6 +541,7 @@ pub fn unregister() -> Result<()> {
         let _ = approved.remove_value(CLSID_CONTEXT_MENU_STR);
         let _ = approved.remove_value(CLSID_PREVIEW_HANDLER_STR);
         let _ = approved.remove_value(CLSID_PROPERTY_STORE_STR);
+        let _ = approved.remove_value(CLSID_CLOUD_THUMB_PROVIDER_STR);
     }
     // The loops above restored (and cleared) every slot we still owned. Anything left in the
     // list is a slot some OTHER product has since taken from us — putting those back would

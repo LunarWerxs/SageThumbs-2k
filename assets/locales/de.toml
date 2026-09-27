@@ -752,3 +752,6 @@ dur_m = "{m} Min."
 
 up_no_expiry = "Kein Ablaufdatum (wird nur entfernt, wenn es 2 Jahre lang niemand öffnet)"
 up_hist_no_expiry = "Kein Ablaufdatum (nach 2 Jahren ohne Öffnen entfernt)"
+
+chk_cloud_thumbs = "Miniaturansichten in OneDrive- und Cloud-Ordnern"
+tip_cloud_thumbs = "In einem synchronisierten Cloud-Ordner (OneDrive, Synology Drive, Nextcloud…) fragt Windows nur die Cloud-App nach Miniaturansichten, ohne diese Option kommt SageThumbs dort also nie zum Zug. Eingeschaltet bekommen heruntergeladene Dateien dieselben Miniaturansichten wie überall sonst, und alles andere, auch reine Online-Dateien, geht weiterhin an die Cloud-App. Für eine Miniaturansicht wird nie etwas heruntergeladen."

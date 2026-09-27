@@ -758,3 +758,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Sem data de expiração (removido apenas se ninguém o abrir por 2 anos)"
 up_hist_no_expiry = "Sem data de expiração (removido após 2 anos sem ser aberto)"
+
+chk_cloud_thumbs = "Miniaturas em OneDrive e pastas na nuvem"
+tip_cloud_thumbs = "Em uma pasta de nuvem sincronizada (OneDrive, Synology Drive, Nextcloud…), só o app de nuvem é perguntado pelas miniaturas, então sem isso o SageThumbs nunca é acionado ali. Ativado: arquivos baixados ganham as mesmas miniaturas de qualquer outro lugar, e o restante, incluindo os arquivos somente online, continua sendo passado para o app de nuvem. Nada é baixado só para desenhar uma miniatura."

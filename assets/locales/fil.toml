@@ -748,3 +748,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Walang petsa ng pag-expire (aalisin lang kung walang magbukas nito sa loob ng 2 taon)"
 up_hist_no_expiry = "Walang petsa ng pag-expire (aalisin pagkatapos ng 2 taon na hindi nabuksan)"
+
+chk_cloud_thumbs = "Mga thumbnail sa OneDrive at mga cloud folder"
+tip_cloud_thumbs = "Sa isang naka-sync na cloud folder (OneDrive, Synology Drive, Nextcloud…), tanging ang cloud app ang hinihingian ng Windows ng mga thumbnail, kaya kung wala nito, hindi kailanman nagkakaroon ng pagkakataon ang SageThumbs doon. Naka-on: ang mga na-download na file ay nakakakuha ng parehong mga thumbnail tulad ng kahit saan pa man, at ang lahat ng iba pa, kabilang ang mga online-only na file, ay ipinapasa pa rin sa cloud app. Walang dina-download kailanman para lamang gumuhit ng thumbnail."

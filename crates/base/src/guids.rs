@@ -51,6 +51,20 @@ pub const CLSID_PREVIEW_HANDLER_STR: &str = "{2C8F1A3D-6B4E-4D9C-A1F2-7E3B5C8D0A
 pub const CLSID_PROPERTY_STORE: GUID = GUID::from_u128(0x5E1A7C92_8F3D_4B6A_A0E4_3C7B9D2F1A68);
 pub const CLSID_PROPERTY_STORE_STR: &str = "{5E1A7C92-8F3D-4B6A-A0E4-3C7B9D2F1A68}";
 
+/// SageThumbs 2K cloud-folder thumbnail provider (IThumbnailProvider + IInitializeWithItem).
+/// A cloud sync folder (OneDrive, Synology Drive, Nextcloud, ...) routes EVERY placeholder file's
+/// thumbnail to the one provider named in its `SyncRootManager` key, never to the per-extension
+/// handlers, so our ordinary provider is never asked there. `register::cloud` puts this class in
+/// that slot and it hands whatever it does not draw itself back to the provider it replaced.
+pub const CLSID_CLOUD_THUMB_PROVIDER: GUID =
+    GUID::from_u128(0x6390342C_15FF_4B5B_AFFE_F371463F6589);
+pub const CLSID_CLOUD_THUMB_PROVIDER_STR: &str = "{6390342C-15FF-4B5B-AFFE-F371463F6589}";
+
+/// The AppID that runs the cloud-folder provider in a COM surrogate (`DllSurrogate` = the default
+/// `dllhost.exe`). The shell activates a sync root's provider out of process, so an in-proc DLL
+/// is only reachable through a surrogate; verified 2026-09-27 against a test sync root.
+pub const CLOUD_THUMB_APPID_STR: &str = "{7199BB14-4ABA-4E84-B8EA-8CDD025419C3}";
+
 // Windows-defined shell-extension category GUIDs. These are not ours; they are the fixed
 // `shellex` subkey names the shell reads a handler CLSID from, and the surrogate AppID the
 // preview host is registered under. One copy here so `register.rs`, `doctor.rs` and the
@@ -111,6 +125,10 @@ mod tests {
             CLSID_PROPERTY_STORE_STR,
             format!("{{{}}}", bare(CLSID_PROPERTY_STORE))
         );
+        assert_eq!(
+            CLSID_CLOUD_THUMB_PROVIDER_STR,
+            format!("{{{}}}", bare(CLSID_CLOUD_THUMB_PROVIDER))
+        );
     }
 
     /// The category and AppID strings are Windows-defined and hand-typed once; a wrong hex
@@ -121,6 +139,7 @@ mod tests {
             THUMB_HANDLER_CATEGORY,
             PREVIEW_HANDLER_CATEGORY,
             PREVHOST_APPID,
+            CLOUD_THUMB_APPID_STR,
         ] {
             assert_eq!(s.len(), 38, "{s}: a braced GUID is 38 chars");
             assert!(s.starts_with('{') && s.ends_with('}'), "{s}");

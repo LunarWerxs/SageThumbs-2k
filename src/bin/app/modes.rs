@@ -51,6 +51,8 @@ pub(super) unsafe fn dispatch_diagnostic_modes(hinst: HINSTANCE, args: &[String]
 /// Returns `true` if a flag fired (caller should return).
 pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--update-check") {
+        // The daily task is also the backstop that re-links cloud folders mid-session.
+        crate::cloud_folders::relink();
         st2k_appkit::update::run_one_shot_check();
         return true;
     }
@@ -571,6 +573,8 @@ pub(super) unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
         if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
             st2k_base::safety::log(&format!("--sync-user-shell failed: {e}"));
         }
+        // The installer's run as the signed-in user: their sync folders and their sign-in task.
+        crate::cloud_folders::sync(st2k_base::settings::cloud_thumbs());
         // The installer runs this as the original user right after the wizard, which is
         // the first moment a copy declared Business can be seen: the evaluation clock
         // starts here, whether or not the user ever opens Settings.
@@ -643,4 +647,15 @@ pub(super) unsafe fn remove_user_state() {
     if let Some(cache) = st2k_appkit::update::cache_path() {
         let _ = std::fs::remove_file(cache);
     }
+}
+
+/// `--cloud-relink`, the sign-in task's one-shot (`register::cloud::sync_relink_task`): put our
+/// provider back in any cloud folder whose client re-registered it at startup. Returns `true`
+/// if it fired (caller should return).
+pub(super) fn dispatch_cloud_modes(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--cloud-relink") {
+        crate::cloud_folders::relink();
+        return true;
+    }
+    false
 }

@@ -137,6 +137,19 @@ blank pane now preview instantly, and your size limit is respected. It runs in W
 **out-of-process preview host** (never inside `explorer.exe`) and is crash-isolated behind
 the same panic boundary, so a malformed file yields an empty pane, never a crash.
 
+**Cloud folders (OneDrive, Synology Drive, Nextcloud, …):** inside a synced folder Windows
+asks only ONE thumbnail provider for every file, the cloud app's, even for files that are
+fully downloaded, so without help none of the formats above would ever show there. SageThumbs
+links a small provider of its own into that slot and keeps a record of the one it replaced.
+For a file whose bytes are on this PC it draws what it would draw anywhere else (ours for our
+formats, Windows' or another program's handler for theirs); everything else, online-only files
+included, goes back to the cloud app's own provider, so nothing is ever downloaded just to draw
+a thumbnail. The link is made at install, re-made at sign-in (a cloud app may put its own
+provider back when it starts) and whenever Settings opens, and removed at uninstall.
+Settings ▸ General ▸ **Thumbnails in OneDrive & cloud folders** turns it off and hands every
+slot back. Packaged cloud apps that draw their own thumbnails (Dropbox, iCloud) are left alone.
+`st2k doctor` lists each cloud folder and whether it is linked.
+
 ---
 
 ## 2. Right-click image toolkit (`SageThumbs 2K ▸`)

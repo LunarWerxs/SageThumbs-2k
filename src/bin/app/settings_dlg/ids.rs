@@ -179,6 +179,9 @@ pub(super) const ID_BADGE_ICON: i32 = 1216;
 /// `ID_MENU_CHECKER`, which is the same idea for the two PREVIEW surfaces — different
 /// surfaces, different mechanisms, so one switch could not honestly drive both.
 pub(super) const ID_THUMB_CHECKER: i32 = 1217;
+/// Draw thumbnails inside cloud sync folders (OneDrive, Synology Drive, ...): puts our provider
+/// in each sync folder's one thumbnail slot, or hands the slots back (`register::cloud`).
+pub(super) const ID_CLOUD_THUMBS: i32 = 1218;
 // ===== Licence page (`settings_dlg/licence_ui.rs`) =====
 // 1246+: the next free block above 1245 (ID_CORNER_MARK), well clear of the nav ids
 // (1700+). "Licence" is the product's own English spelling throughout this file/UI —

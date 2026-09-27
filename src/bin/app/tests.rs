@@ -51,6 +51,7 @@ fn piggyback_covers_ordinary_launches_and_spares_the_headless_ones() {
         vec!["--sync-user-shell"],
         vec!["--remove-user-shell"],
         vec!["--remove-user-state"],
+        vec!["--cloud-relink"],
         vec!["--export-settings", "out.json"],
         vec!["--import-settings", "in.json"],
     ] {

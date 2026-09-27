@@ -758,3 +758,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Geen vervaldatum (wordt alleen verwijderd als niemand het 2 jaar lang opent)"
 up_hist_no_expiry = "Geen vervaldatum (verwijderd als het 2 jaar niet geopend wordt)"
+
+chk_cloud_thumbs = "Miniaturen in OneDrive- en cloudmappen"
+tip_cloud_thumbs = "In een gesyncede cloudmap (OneDrive, Synology Drive, Nextcloud…) vraagt Windows miniaturen alleen aan de cloudapp; zonder deze opdracht krijgt SageThumbs daar nooit zijn beurt. Aan: gedownloade bestanden krijgen overal dezelfde miniaturen, en alles anders — ook alleen online bestanden — wordt nog steeds overgenomen door de cloudapp. Er wordt nooit wat gedownload alleen om een miniature te tekenen."

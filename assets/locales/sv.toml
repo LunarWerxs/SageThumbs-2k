@@ -752,3 +752,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Inget utgångsdatum (tas bara bort om ingen öppnar den på 2 år)"
 up_hist_no_expiry = "Inget utgångsdatum (tas bort efter 2 år utan att öppnas)"
+
+chk_cloud_thumbs = "Miniatyrer i OneDrive & molnmappar"
+tip_cloud_thumbs = "I synkroniserade molnmappar (OneDrive, Synology Drive, Nextcloud…) ber Windows bara molnappen om miniatyrer, så utan det här får SageThumbs aldrig chansen där. På: nedladdade filer får samma miniatyrer som annars, och allt annat, inklusive filer som bara finns online, skickas fortfarande till molnappen. Ingenting laddas ned bara för att rita en miniatyr."

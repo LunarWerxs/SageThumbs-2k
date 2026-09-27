@@ -26,7 +26,7 @@ pub(in super::super) enum Row {
 pub(super) const GENERAL: [Row; 11] = {
     use Row::*;
     [
-        // Portable copies only (installed builds take GENERAL[1..]): the per-user
+        // Portable copies only (installed builds take `GENERAL_INSTALLED`): the per-user
         // Explorer registration, HOME AT LAST. Its Advanced-page comment always said it
         // belonged here by topic and only lived there for space — the badge switches
         // moving to the Appearance page is what finally made the room. First row on
@@ -37,6 +37,27 @@ pub(super) const GENERAL: [Row; 11] = {
         Head(ID_LBL_THUMBS),
         Switch(ID_ENABLE_THUMBS),
         Switch(ID_USE_EMBEDDED),
+        Head(ID_LBL_LIMITS),
+        Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
+        Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
+        Pair(ID_LBL_JPEG, ID_JPEG, 84, 18),
+        Pair(ID_LBL_PNG, ID_PNG, 84, 18),
+        Head(ID_LBL_GENERAL), // "Language & files"
+        Pair(ID_LBL_LANG, ID_LANG, 156, 200),
+    ]
+};
+
+/// General on an installed copy: the portable registration row gives its place to the
+/// cloud-folders switch. That switch is installed-only on purpose, not only for room: a
+/// portable folder deleted without unregistering would leave every cloud folder's thumbnail
+/// slot pointing at a DLL that is gone (`settings::cloud_thumbs` defaults off there too).
+pub(super) const GENERAL_INSTALLED: [Row; 11] = {
+    use Row::*;
+    [
+        Head(ID_LBL_THUMBS),
+        Switch(ID_ENABLE_THUMBS),
+        Switch(ID_USE_EMBEDDED),
+        Switch(ID_CLOUD_THUMBS),
         Head(ID_LBL_LIMITS),
         Pair(ID_LBL_MAXFILE, ID_MAXSIZE, 84, 18),
         Pair(ID_LBL_MAXTHUMB, ID_SIZE, 84, 18),
@@ -125,7 +146,7 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
     use Row::*;
     match ci {
         0 if st2k_base::settings::portable() => &GENERAL,
-        0 => &GENERAL[1..],
+        0 => &GENERAL_INSTALLED,
         1 => &[
             // Appearance: every "what does the tile look like" switch in ONE place.
             // These used to be scattered — the badge trio on General (FIXED and full),

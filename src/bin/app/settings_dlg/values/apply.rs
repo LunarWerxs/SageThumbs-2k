@@ -74,6 +74,14 @@ pub(super) unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
         "UseEmbedded",
         checked(hwnd, ID_USE_EMBEDDED) as u32,
     ));
+    // Cloud folders: not a bitmap change, a registration one. Chain or hand back this user's
+    // sync folders' thumbnail slots now, and keep the sign-in re-link task in step with it.
+    // (A portable copy has no such switch, and an absent control reads as unticked.)
+    let cloud_now = checked(hwnd, ID_CLOUD_THUMBS);
+    if !settings::portable() && cloud_now != settings::cloud_thumbs() {
+        let _ = note(settings::set_cloud_thumbs(cloud_now));
+        crate::cloud_folders::sync(cloud_now);
+    }
     // The format badge is baked INTO the bitmap the shell caches, so flipping it changes
     // nothing the user can see until the thumbnail cache is discarded. Detect the change
     // here and purge, otherwise the first thing every user reports is "I ticked it and

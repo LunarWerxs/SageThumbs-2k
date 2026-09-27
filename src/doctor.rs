@@ -91,11 +91,13 @@ impl Report {
     }
 }
 
+mod cloudcheck;
 mod filecheck;
 mod registration;
 mod settingscheck;
 mod winchecks;
 
+use cloudcheck::*;
 use filecheck::*;
 use registration::*;
 use settingscheck::*;
@@ -190,6 +192,7 @@ pub fn report(file: Option<&str>) -> String {
     check_extensions(&mut r, &snap);
     check_progid_handlers(&mut r, &snap);
     check_displaced(&mut r);
+    check_cloud_folders(&mut r);
     check_settings(&mut r);
     check_licence(&mut r);
     check_space_preview(&mut r);

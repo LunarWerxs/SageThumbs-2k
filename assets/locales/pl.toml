@@ -758,3 +758,6 @@ dur_m = "{m} min"
 
 up_no_expiry = "Brak daty wygaśnięcia (usuwane tylko wtedy, gdy nikt go nie otworzy przez 2 lata)"
 up_hist_no_expiry = "Brak daty wygaśnięcia (usuwane po 2 latach bez otwarcia)"
+
+chk_cloud_thumbs = "Miniatury w OneDrive i folderach chmurowych"
+tip_cloud_thumbs = "W zsynchronizowanym folderze chmurowym (OneDrive, Synology Drive, Nextcloud…) Windows pyta o miniatury tylko aplikację chmury, więc bez tej opcji SageThumbs tam nie zadziała. Po włączeniu: pobrane pliki dostają te same miniatury co wszędzie indziej, a wszystko inne, w tym pliki tylko online, jest nadal przekazywane aplikacji chmury. Nic nigdy nie jest pobierane tylko po to, by narysować miniaturę."

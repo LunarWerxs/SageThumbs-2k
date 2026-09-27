@@ -4,8 +4,8 @@
 
 use super::*;
 use st2k_base::guids::{
-    CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR, CLSID_PROPERTY_STORE_STR,
-    CLSID_THUMBNAIL_PROVIDER_STR, THUMB_HANDLER_CATEGORY,
+    CLSID_CLOUD_THUMB_PROVIDER_STR, CLSID_CONTEXT_MENU_STR, CLSID_PREVIEW_HANDLER_STR,
+    CLSID_PROPERTY_STORE_STR, CLSID_THUMBNAIL_PROVIDER_STR, THUMB_HANDLER_CATEGORY,
 };
 
 /// C9: was a hand-typed local copy of the exact same GUID `register.rs` also hand-typed
@@ -162,6 +162,7 @@ fn check_approved_list(r: &mut Report) {
         ("Approved: context menu", CLSID_CONTEXT_MENU_STR),
         ("Approved: preview handler", CLSID_PREVIEW_HANDLER_STR),
         ("Approved: property handler", CLSID_PROPERTY_STORE_STR),
+        ("Approved: cloud folders", CLSID_CLOUD_THUMB_PROVIDER_STR),
     ] {
         let listed = approved
             .as_ref()
@@ -185,6 +186,11 @@ pub(super) fn check_registration(r: &mut Report) {
         ("Context menu (classic)", CLSID_CONTEXT_MENU_STR, false),
         ("Preview handler", CLSID_PREVIEW_HANDLER_STR, false),
         ("Property handler", CLSID_PROPERTY_STORE_STR, false),
+        (
+            "Cloud-folder provider",
+            CLSID_CLOUD_THUMB_PROVIDER_STR,
+            false,
+        ),
     ];
 
     for (name, clsid, critical) in handlers {

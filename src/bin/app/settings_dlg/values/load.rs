@@ -5,6 +5,7 @@ use super::*;
 pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, settings::thumbnails_enabled());
     check(hwnd, ID_USE_EMBEDDED, settings::use_embedded());
+    check(hwnd, ID_CLOUD_THUMBS, settings::cloud_thumbs());
     set_combo(
         hwnd,
         ID_CORNER_MARK,
@@ -118,6 +119,7 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
 pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_ENABLE_THUMBS, true);
     check(hwnd, ID_USE_EMBEDDED, true); // ON by default — see settings::use_embedded
+    check(hwnd, ID_CLOUD_THUMBS, true); // ON by default — see settings::cloud_thumbs
                                         // Leave the corner to Windows: our mark alters the picture the user asked to see, and
                                         // hiding Explorer's writes into other programs' ProgID keys. Neither without being asked.
     set_combo(

@@ -755,3 +755,6 @@ dur_m = "{m} 分"
 
 up_no_expiry = "無到期日（僅在 2 年未被開啟時才會移除）"
 up_hist_no_expiry = "無到期日（2 年無人開啟後移除）"
+
+chk_cloud_thumbs = "OneDrive 及雲端資料夾中的縮圖"
+tip_cloud_thumbs = "在同步的雲端資料夾（OneDrive、Synology Drive、Nextcloud…）中，Windows 只會向雲端應用程式索取縮圖，所以未開啟此選項時，SageThumbs 在那裡便不會被使用。開啟狀況：已下載的檔案會取得與其它位置相同的縮圖，其餘檔案（包括僅存於線上）仍會交給雲端應用程式處理。絕對不會為了繪製縮圖而下載任何檔案。"

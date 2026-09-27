@@ -27,6 +27,7 @@
 #![allow(non_snake_case)]
 
 mod about;
+mod cloud_folders;
 mod convert;
 mod convert_report;
 mod doctor_report;
@@ -192,6 +193,8 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         // Install/uninstall-time one-shots, same reasoning as `--heal-hotkeys`/`--updated`.
         "--sync-user-shell",
         "--remove-user-shell",
+        // The sign-in re-link one-shot: registry only, and it runs at every sign-in.
+        "--cloud-relink",
         "--remove-user-state",
         "--queue-cache-rebuild",
         // Deployment-script one-shots: console-output-only (an exit code), no window, and
@@ -262,6 +265,9 @@ fn main() {
         // killed, or a prior logon never brought it up — restart it now so
         // the user doesn't have to click "Restart". No-op when it's already running / not wanted.
         st2k_screenshot::screenshot::heal_if_wanted();
+        // The same moment for the cloud sync folders: if a cloud client put its own thumbnail
+        // provider back since sign-in, opening Settings puts ours in front of it again.
+        crate::cloud_folders::relink();
 
         // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
         // caption gear opens Settings straight on the Quick preview page. It used to be parsed
@@ -331,6 +337,9 @@ unsafe fn dispatch_cli_launch_modes(hinst: HINSTANCE, dark: bool, args: &[String
     // reachable from a normal launch — only from the re-spawn just above.
     if args.iter().any(|a| a == "--rebuild-thumbnail-cache-now") {
         let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
+        return true;
+    }
+    if dispatch_cloud_modes(args) {
         return true;
     }
     if dispatch_user_state_modes(args) {
