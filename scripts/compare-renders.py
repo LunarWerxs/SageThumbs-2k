@@ -28,115 +28,16 @@ Pass --target-dir explicitly to point at a target dir `cargo metadata` would not
 """
 
 import argparse
-import concurrent.futures as cf
 import json
 import os
 import subprocess
 import sys
 
-# pip install -r scripts/requirements-dev.txt
-from PIL import Image, ImageChops
+from compare_renders_modes import classify_pair, run_differential_mode, run_expect_mode
 
-# Compared at a common small size so an encoder's own rounding cannot masquerade as a change.
-COMPARE_EDGE = 128
-
-
-def render(exe, src, out, size, timeout):
-    if os.path.exists(out):
-        os.remove(out)
-    try:
-        subprocess.run([exe, "thumbnail", src, out, "--size", str(size)],
-                       capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "timeout"
-    return "ok" if os.path.exists(out) and os.path.getsize(out) > 0 else "none"
-
-
-def as_8bit(im):
-    """Narrow a high-bit-depth image to 8 bits BEFORE Pillow gets to convert it.
-
-    Pillow's `convert("RGBA")` on a 16-bit image CLAMPS at 255 instead of scaling, so a
-    perfectly good 16-bit grey render reads back as pure white and this gate calls it a wrong
-    picture. That is a false RED, which is worse than a missed check: it trains you to explain
-    away the one gate whose whole job is to catch a plausible-looking wrong render.
-
-    Found 2026-09-08, when a 10-bit AVIF started coming back through ImageMagick (whose bundled
-    build is Q16) instead of Windows' codec. Magick correctly detects a flat neutral image as
-    GREYSCALE and writes 16-bit grey; the pixels were exactly right (12352/65535 == 48/255) and
-    this script reported white. Any 16-bit render would have done the same, in any format.
-    """
-    if im.mode in ("I", "I;16", "I;16B", "I;16L", "I;16N", "F"):
-        # Via "I" (32-bit) because point() cannot take a function on the I;16 variants.
-        return im.convert("I").point(lambda v: v * (1 / 256), "L")
-    return im
-
-
-def normalized(path):
-    with Image.open(path) as im:
-        return as_8bit(im).convert("RGBA").resize((COMPARE_EDGE, COMPARE_EDGE), Image.BILINEAR)
-
-
-def mean_delta(a_png, b_png):
-    """Mean absolute per-channel difference. 0 = identical, 255 = maximally different."""
-    hist = ImageChops.difference(normalized(a_png), normalized(b_png)).histogram()
-    weighted = total = 0
-    for channel in range(4):
-        for value, count in enumerate(hist[channel * 256:(channel + 1) * 256]):
-            weighted += value * count
-            total += count
-    return weighted / max(total, 1)
-
-
-def centre(png):
-    with Image.open(png) as im:
-        im = as_8bit(im).convert("RGBA")
-        return im.getpixel((im.width // 2, im.height // 2))
-
-
-def compare_job(job):
-    exe_old, exe_new, src, outdir, size, timeout = job
-    name = os.path.basename(src)
-    a = os.path.join(outdir, f"old__{name}.png")
-    b = os.path.join(outdir, f"new__{name}.png")
-    ra = render(exe_old, src, a, size, timeout)
-    rb = render(exe_new, src, b, size, timeout)
-    if ra != "ok" or rb != "ok":
-        return (name, ra, rb, None)
-    try:
-        return (name, ra, rb, mean_delta(a, b))
-    except Exception as e:                              # an unreadable PNG is itself the news
-        return (name, ra, rb, f"unreadable: {e}")
-
-
-def expect_job(job):
-    exe_new, src, outdir, size, timeout, want, rendered = job
-    name = os.path.basename(src)
-    if rendered is not None:
-        # Reuse what regression.ps1 already rendered rather than paying for it twice. It
-        # names outputs "<stem>_<ext>.png" so same-extension samples cannot race on one path.
-        stem, _, ext = name.rpartition(".")
-        b = os.path.join(rendered, f"{stem}_{ext.lower()}.png")
-        rb = "ok" if os.path.exists(b) and os.path.getsize(b) > 0 else "none"
-    else:
-        b = os.path.join(outdir, f"new__{name}.png")
-        rb = render(exe_new, src, b, size, timeout)
-    if rb != "ok":
-        return (name, want, None, rb)
-    got = centre(b)
-    close = all(abs(g - w) <= 8 for g, w in zip(got[:3], want))
-    return (name, want, got, "ok" if close else "WRONG COLOUR")
-
-
-def load_expected(path):
-    want = {}
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            name, _, rgb = line.partition("\t")
-            want[name.strip()] = tuple(int(v) for v in rgb.strip().split(","))
-    return want
+# Not used here: test_compare-renders.py loads THIS file by path and tests these (and
+# classify_pair) through it, so they stay importable from here after the move.
+from compare_renders_pixels import as_8bit, centre, load_expected, mean_delta
 
 
 def cargo_target_dir():
@@ -199,85 +100,6 @@ def validate_args(ap, a):
 def list_corpus_files(corpus):
     return [os.path.join(corpus, f) for f in sorted(os.listdir(corpus))
             if os.path.isfile(os.path.join(corpus, f)) and not f.startswith("_")]
-
-
-def print_expect_report(job_count, bad, missing):
-    print(f"=== {job_count} files with a known flattened colour, "
-          f"{job_count - len(bad)} correct ===")
-    for name, w, got, verdict in bad:
-        print(f"  {name:<44} want rgb{w}  got {got}  [{verdict}]")
-    # A manifest entry with no sample behind it is a silently EMPTY check, which is the
-    # failure mode this whole file exists to stop. Say so; do not quietly pass.
-    for name in missing:
-        print(f"  {name:<44} NOT IN THE CORPUS (re-run build-corpus.ps1)")
-
-
-def run_expect_mode(a, files):
-    want = load_expected(a.expect)
-    jobs = [(a.new, f, a.out, a.size, a.timeout, want[os.path.basename(f)], a.rendered)
-            for f in files if os.path.basename(f) in want]
-    missing = sorted(set(want) - {os.path.basename(f) for f in files})
-    bad = []
-    with cf.ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        for name, w, got, verdict in pool.map(expect_job, jobs):
-            if verdict != "ok":
-                bad.append((name, w, got, verdict))
-    print_expect_report(len(jobs), bad, missing)
-    return 1 if (bad or missing) else 0
-
-
-def classify_pair(name, ra, rb, delta, threshold):
-    """Sort one compare_job result into its bucket name, or None to count as 'same'."""
-    if ra == "ok" and rb != "ok":
-        return "lost", (name, rb)
-    if ra != "ok" and rb == "ok":
-        return "gained", (name, ra)
-    if ra != "ok":
-        return "skip", None
-    if isinstance(delta, str):
-        return "error", (name, delta)
-    if delta >= threshold:
-        return "changed", (name, delta)
-    return "same", None
-
-
-def run_differential_pool(files, jobs, threshold, worker_count):
-    changed, lost, gained, same, errs = [], [], [], 0, []
-    buckets = {"lost": lost, "gained": gained, "changed": changed, "error": errs}
-    with cf.ThreadPoolExecutor(max_workers=worker_count) as pool:
-        for i, (name, ra, rb, delta) in enumerate(pool.map(compare_job, jobs), 1):
-            if i % 25 == 0:
-                print(f"  ...{i}/{len(files)}", file=sys.stderr, flush=True)
-            kind, entry = classify_pair(name, ra, rb, delta, threshold)
-            if kind == "same":
-                same += 1
-            elif kind != "skip":
-                buckets[kind].append(entry)
-    return changed, lost, gained, same, errs
-
-
-def print_differential_report(total, same, lost, gained, changed, errs):
-    print(f"\n=== {total} samples, {same} pixel-identical ===")
-    print(f"\nLOST a thumbnail ({len(lost)}):")
-    for n, why in sorted(lost):
-        print(f"  {n:<44} new={why}")
-    print(f"\nGAINED a thumbnail ({len(gained)}):")
-    for n, why in sorted(gained):
-        print(f"  {n:<44} old={why}")
-    print(f"\nPICTURE CHANGED ({len(changed)}), worst first:")
-    for n, d in sorted(changed, key=lambda x: -x[1]):
-        print(f"  {n:<44} mean abs delta {d:6.1f}")
-    if errs:
-        print(f"\nUNREADABLE OUTPUT ({len(errs)}):")
-        for n, e in errs:
-            print(f"  {n:<44} {e}")
-
-
-def run_differential_mode(a, files):
-    jobs = [(a.old, a.new, f, a.out, a.size, a.timeout) for f in files]
-    changed, lost, gained, same, errs = run_differential_pool(files, jobs, a.threshold, a.jobs)
-    print_differential_report(len(files), same, lost, gained, changed, errs)
-    return 1 if (lost or changed or errs) else 0
 
 
 def main():
