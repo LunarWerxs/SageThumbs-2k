@@ -7,7 +7,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.4.0
+
+**TL;DR**
+
+- **Thumbnails in OneDrive, Synology Drive and other cloud folders**, even for fully downloaded
+  files (fixes #16)
+- **Thumbnails no longer stop after a busy session** until a restart
+- **Quick preview stays above the taskbar** and opens where you last put it
+- **FreeCAD backups** (`.FCBak`, `.FCStd1`) get thumbnails (363 file types in all)
+- **Searchable PDFs:** combine scans into a PDF you can search and copy text from
+- **`st2k doctor` names the thumbnail handler Windows really uses** for a file
+
+**Everything in 3.4.0**
 
 - **Thumbnails in OneDrive, Synology Drive and other cloud folders.** Windows asks only the
   cloud app for a thumbnail of a file in a synced folder, even a fully downloaded one, so
