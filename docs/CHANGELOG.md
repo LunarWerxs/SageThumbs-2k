@@ -9,6 +9,18 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.4.1
 
+**TL;DR**
+
+- **AVIF thumbnails can no longer freeze Explorer** or your taskbar icons, and no longer need a
+  Store extension
+- **Double-click the Quick preview to go full screen**
+- **No more cut-off buttons or labels**, in any language or display scaling (fixes #48)
+- **EXR and HDR pictures show at their true brightness** instead of looking dim
+- **Olympus and Panasonic portrait photos show upright**
+- **A damaged JPEG XL file can no longer crash the thumbnail host**
+
+**Everything in 3.4.1**
+
 - **AVIF thumbnails can no longer freeze Explorer.** Asking for several AVIF thumbnails at once
   (opening a folder of them, or scrolling quickly) could hang Windows' thumbnail host for good,
   and with it every thumbnail and taskbar icon until you signed out. SageThumbs now reads AVIF
