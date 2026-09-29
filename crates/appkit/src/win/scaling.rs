@@ -95,6 +95,19 @@ pub fn dpi_unscale(hwnd: HWND, v: i32) -> i32 {
     unsafe { MulDiv(v, 96, dpi) }
 }
 
+/// [`dpi_unscale`] rounded UP, for a measured size a control must CONTAIN (text that has to
+/// fit): scaled back with [`dpi_scale`] it is never smaller than `v`. Rounding to nearest lost
+/// up to half a design px, which at 500% is 2 device px: first-run captions measured 162 px
+/// came back as 32 design px, were given 160, and clipped their last line.
+pub fn dpi_unscale_up(hwnd: HWND, v: i32) -> i32 {
+    unscale_up(v, effective_dpi(hwnd))
+}
+
+fn unscale_up(v: i32, dpi: i32) -> i32 {
+    let dpi = i64::from(if dpi <= 0 { 96 } else { dpi });
+    (i64::from(v.max(0)) * 96 + dpi - 1).div_euclid(dpi) as i32
+}
+
 /// Query the `dpi`-sized system message-font metrics via
 /// `SystemParametersInfoForDpi`, or `None` when the query fails. Shared by
 /// [`gui_font_for`] and [`gui_font_variant`], which each fall back to a plain
@@ -305,6 +318,22 @@ mod tests {
             );
         }
         lf
+    }
+
+    /// A measured text size taken to design px and back never shrinks, at any Windows scaling
+    /// step up to 500%: the round trip that cost the first-run captions 2 px at 480 DPI.
+    #[test]
+    fn a_measured_size_survives_the_design_px_round_trip() {
+        for dpi in (96..=480).step_by(24) {
+            for v in 0..2000 {
+                let back = dpi_scale_dpi(unscale_up(v, dpi), dpi);
+                assert!(back >= v, "{v} px at {dpi} dpi came back as {back}");
+                assert!(
+                    back - v <= dpi / 96 + 1,
+                    "{v} px at {dpi} dpi grew to {back}"
+                );
+            }
+        }
     }
 
     /// `gui_font_title`/`gui_font_sized` (and `gui_font_header`, exercised the same

@@ -52,8 +52,8 @@ pub use resultwin::{
     result_buttons, result_edit, result_layout, result_window_proc, result_wndproc, ResultWindow,
 };
 pub use scaling::{
-    dpi_override, dpi_scale, dpi_scale_dpi, dpi_unscale, gui_font, gui_font_for, gui_font_header,
-    gui_font_sized, gui_font_title, set_dpi_override, wm_dpichanged,
+    dpi_override, dpi_scale, dpi_scale_dpi, dpi_unscale, dpi_unscale_up, gui_font, gui_font_for,
+    gui_font_header, gui_font_sized, gui_font_title, set_dpi_override, wm_dpichanged,
 };
 pub use shotwin::{
     capture_and_destroy, capture_shot_window, create_shot_window, force_foreground, force_repaint,

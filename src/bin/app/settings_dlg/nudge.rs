@@ -208,7 +208,7 @@ pub(super) unsafe fn btn_w(hwnd: HWND, label: &str, floor: i32) -> i32 {
     let _ = GetTextExtentPoint32W(hdc, &text[..n], &mut sz);
     SelectObject(hdc, old);
     ReleaseDC(Some(hwnd), hdc);
-    (st2k_appkit::win::dpi_unscale(hwnd, sz.cx) + BTN_PAD).max(floor)
+    (st2k_appkit::win::dpi_unscale_up(hwnd, sz.cx) + BTN_PAD).max(floor)
 }
 
 /// Whether a banner is live for this window.

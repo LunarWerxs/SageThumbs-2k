@@ -8,13 +8,13 @@ use super::*;
 ///
 /// Measures with `gui_font_for(hwnd)` (not the process-lifetime-cached [`gui_font`]), so the
 /// font actually matches `hwnd`'s real current DPI rather than whatever DPI happened to be
-/// active the first time any dialog in this process asked for a font. `dpi_unscale` then
+/// active the first time any dialog in this process asked for a font. `dpi_unscale_up` then
 /// converts that real-DPI pixel width back down to 96-DPI design units before returning —
 /// without it, a caller like the About box would hand `ctl()` an already-DPI-scaled width,
 /// and `ctl()` would scale it AGAIN, sizing the pill wrong on any non-96-DPI monitor. At
 /// 96 DPI both the font and the unscale are identity, so the common case is unchanged.
 pub unsafe fn text_width(hwnd: HWND, s: &str) -> i32 {
-    dpi_unscale(hwnd, text_w_in(gui_font_for(hwnd), s))
+    dpi_unscale_up(hwnd, text_w_in(gui_font_for(hwnd), s))
 }
 
 /// One line of `s` measured in `font`, in that font's OWN pixels. The raw half of
@@ -53,7 +53,7 @@ pub(super) unsafe fn text_w_in(font: HFONT, s: &str) -> i32 {
 /// down, keeping the 96-DPI identity.
 pub unsafe fn wrapped_text_h(hwnd: HWND, s: &str, col_w: i32) -> i32 {
     let col_px = dpi_scale(hwnd, col_w).max(1);
-    dpi_unscale(hwnd, wrapped_h_in(gui_font_for(hwnd), s, col_px))
+    dpi_unscale_up(hwnd, wrapped_h_in(gui_font_for(hwnd), s, col_px))
 }
 
 /// `s` wrapped into a `col_px`-wide column in `font`, in that font's OWN pixels. The raw
