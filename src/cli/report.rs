@@ -301,11 +301,11 @@ mod tests {
             "video_frame",
             "contained_images",
         ];
-        let valid_codecs = ["media_foundation", "wmphoto", "heif", "av1"];
+        let valid_codecs = ["media_foundation", "wmphoto", "heif"];
 
         let mut saw_wmphoto = false;
         let mut saw_heif = false;
-        let mut saw_av1 = false;
+        let mut avif_rows = 0;
         let mut saw_media_foundation = false;
         let mut saw_archive = false;
         for item in items {
@@ -344,12 +344,22 @@ mod tests {
                     match s.as_str() {
                         "wmphoto" => saw_wmphoto = true,
                         "heif" => saw_heif = true,
-                        "av1" => saw_av1 = true,
                         "media_foundation" => saw_media_foundation = true,
                         _ => {}
                     }
                 }
                 other => panic!("os_codec must be null or a string, got {other} on {item}"),
+            }
+            // AVIF is decoded by our own code since 2026-09-29: no Windows add-on needed.
+            if matches!(
+                item.get("ext").and_then(|v| v.as_str()),
+                Some("avif" | "avifs")
+            ) {
+                avif_rows += 1;
+                assert!(
+                    item["os_codec"].is_null(),
+                    "AVIF must need no OS codec: {item}"
+                );
             }
             if source == "contained_images" {
                 saw_archive = true;
@@ -371,7 +381,7 @@ mod tests {
             saw_heif,
             "expected at least one heif os_codec entry (heic/heif/...)"
         );
-        assert!(saw_av1, "expected at least one av1 os_codec entry (avif)");
+        assert_eq!(avif_rows, 2, "expected the avif and avifs rows");
         assert!(
             saw_media_foundation,
             "expected at least one media_foundation entry (video)"
