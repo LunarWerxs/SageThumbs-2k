@@ -348,7 +348,11 @@ plus these viewer-only extras:
   A **button on the strip itself** flips **←/→** to switch files instead of seeking, for anyone
   flipping through a folder of clips rather than watching one. Every control on the strip names
   itself on hover. Audio files (mp3/flac/ogg/…) play through the same transport, with the track's
-  embedded cover art as the backdrop.
+  embedded cover art as the backdrop. When Windows has no decoder for part of a file, the title
+  bar **says which**: "No sound: DTS isn't supported by Windows" (Windows ships no DTS decoder),
+  or "Still frame: HEVC video needs the HEVC Video Extensions from the Microsoft Store". Codec
+  packs such as K-Lite cannot fill that gap, because they plug into DirectShow, not the Media
+  Foundation the preview plays through.
 - **Animated GIF / APNG / animated WebP** play frame-by-frame (respecting each frame's delay).
 - **Font specimens** for `.ttf`/`.otf`/`.ttc` **and `.woff`**: the font's own name, a pangram at
   several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS

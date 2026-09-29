@@ -1451,3 +1451,24 @@ files Explorer gets no thumbnail for while `st2k` renders them fine.
   `dpi_scale`/`gui_font_for`, not `GetDpiForWindow`; code that converts client px with
   `GetDpiForWindow` lays out right for users and wrong in a capture, which reads as a bug that
   is not there (Settings' footer, About, the result windows all did). Use `dpi_scale(hwnd, 96)`.
+
+## A layout audit that passes here can fail on CI: the screen caps the window (2026-09-29)
+
+CI went red on every run for a day while every local run was green. `layout_audit` builds each
+window at `--dpi 192`, and on this desk's 4K screen a 200% Settings window fits. The runners'
+screens are small, and **Windows caps a top-level window at the screen's size**
+(`ptMaxTrackSize`, enforced on create and on every `SetWindowPos`): the 200% window came out
+~390 px tall, the General page ran into the footer, `build_category_rows`' debug assert
+aborted the process, and the audit reported "did not build". Two consequences, both fixed:
+
+- **Every shot window measures at design size on any screen.** `create_shot_window` registers
+  each class through `shot_wndproc`, which forwards to the dialog's own procedure and lifts
+  `ptMaxTrackSize`. A capture off-screen has no reason to fit the monitor.
+- **Reproduce a CI-only layout failure by raising the DPI, not by guessing.** `--audit-layout
+  <out> --dpi 480` makes Settings taller than a 4K screen, which is the runner's situation at
+  200%. It aborted the same way before the fix and audits clean after.
+
+The same 500% run found a second, real bug: measured text went to design px with
+round-to-nearest (`MulDiv`), so 162 px at 500% came back as 32 design px and was given 160,
+clipping the last line. A size a control must CONTAIN goes through `dpi_unscale_up`;
+`text_width` and `wrapped_text_h` use it.
