@@ -7,11 +7,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.4.1
 
-- **The wrong installer now says which one to get.** Running the regular (x64) installer on a
-  Windows on ARM PC, or the ARM64 one on a regular PC, already stopped before installing, but only
-  named a processor type. It now tells you to download the other installer and where to find it.
 - **AVIF thumbnails can no longer freeze Explorer.** Asking for several AVIF thumbnails at once
   (opening a folder of them, or scrolling quickly) could hang Windows' thumbnail host for good,
   and with it every thumbnail and taskbar icon until you signed out. SageThumbs now reads AVIF
@@ -43,6 +40,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   video to fill the screen, and double-click again (or press Esc) to go back. F11 still works
   once the preview has focus. Fit/100% zoom, which used to share the double-click, is on
   **Ctrl+0**.
+- **The wrong installer now says which one to get.** Running the regular (x64) installer on a
+  Windows on ARM PC, or the ARM64 one on a regular PC, already stopped before installing, but only
+  named a processor type. It now tells you to download the other installer and where to find it.
 - **A damaged JPEG XL file can no longer crash the thumbnail host.** The ways a broken `.jxl`
   could stop the JPEG XL decoder dead (a colour setting with no profile equivalent, an LF frame
   at the deepest level, smoothing asked for on subsampled colour) are now ordinary decode

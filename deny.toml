@@ -63,7 +63,7 @@ yanked = "deny"
 [licenses]
 # Allowlist covering the actual DEFAULT-feature graph (derived from Cargo.lock):
 #   MIT / Apache-2.0 ........ the overwhelming majority of the tree
-#   BSD-2-Clause ............ arrayref
+#   BSD-2-Clause ............ arrayref, rav1d (the AV1 decoder inside AVIF)
 #   BSD-3-Clause ............ tiny-skia, tiny-skia-path
 #   Zlib .................... foldhash
 #   Unicode-3.0 ............. unicode-ident (AND component of its SPDX expr)
@@ -87,8 +87,12 @@ confidence-threshold = 0.93
 # scan checks only DEPENDENCY licenses, which remain 100% permissive (MIT/Apache/BSD/…).
 private = { ignore = true }
 
-# (No license exceptions needed: the whole graph is permissive now that RAR/CBR
-# uses the pure-Rust `rars` crate instead of the proprietary UnRAR C++.)
+# One exception, scoped to its crate: `to_method` (a one-trait helper rav1d depends on) is
+# CC0-1.0, a public-domain dedication. Allowed for that crate only, so any OTHER CC0 crate
+# still surfaces for a decision.
+[[licenses.exceptions]]
+crate = "to_method"
+allow = ["CC0-1.0"]
 
 # The three nihav crates (the git-pinned VP6 decoder, see [sources]) declare NO `license`
 # field in their Cargo.tomls; the repository's root COPYING is the literal MIT license
