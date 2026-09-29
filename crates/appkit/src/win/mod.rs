@@ -28,6 +28,7 @@ use st2k_base::i18n;
 mod dacl;
 mod dialogs;
 mod iconfont;
+mod layoutaudit;
 mod pickers;
 mod resultwin;
 mod scaling;
@@ -39,6 +40,7 @@ pub mod window_shot;
 pub use dacl::{create_mutex_user_only, with_user_only_dacl};
 pub use dialogs::{confirm_verbs, confirm_warning, dialog_tail, message_box, run_dialog};
 pub use iconfont::icon_font;
+pub use layoutaudit::{audit_layout, LayoutFinding};
 pub use pickers::{
     desktop_dir, pick_folder, pick_open_file, pick_open_settings, pick_save_png,
     pick_save_settings, set_clipboard_text,
@@ -56,7 +58,7 @@ pub use shotwin::{
 };
 #[cfg(any(test, feature = "testkit"))]
 pub use textmetrics::{design_text_w, design_wrapped_text_h};
-pub use textmetrics::{text_width, wrapped_text_h};
+pub use textmetrics::{fit_button_w, text_width, wrapped_text_h};
 pub use toast::{notify_toast, notify_toast_action};
 
 /// Shorthand for a translated UI string in the active language.

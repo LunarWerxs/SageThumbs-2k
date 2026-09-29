@@ -14,6 +14,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   row sat below the bottom edge with only a sliver showing. Every SageThumbs dialog now grows to
   fit its own buttons and fields, so none of them can cut a control off, at any display scaling
   or text size.
+- **Buttons and labels no longer cut off in other languages.** A check that opens every
+  window in all 36 languages at 100, 150 and 200% scaling found translated text clipped in a
+  dozen places: the Screenshots and Right-click menu buttons in Settings, a Quick preview
+  label, Sort into folders by tag, Files to folder, the Rename button, the Convert report's
+  Open folder, the Send feedback dialog and the About box. Those controls now size
+  themselves to their text, and a long label moves above its field instead of being cut.
+- **Olympus and Panasonic photos taken in portrait now show upright.** Their `.orf` and
+  `.rw2` files mark the rotation the same way every other camera does, under a slightly
+  different file header that SageThumbs did not recognise, so the rotation was ignored.
 - **Double-click the Quick preview to go full screen.** Double-click a picture, a PDF page or a
   video to fill the screen, and double-click again (or press Esc) to go back. F11 still works
   once the preview has focus. Fit/100% zoom, which used to share the double-click, is on

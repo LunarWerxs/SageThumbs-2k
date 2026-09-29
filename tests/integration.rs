@@ -23,6 +23,7 @@ suite! {
     eyedropper_shot,
     format_capability_claims,
     fringe_dimensions,
+    layout_audit,
     preview_db_shot,
     preview_markdown_shot,
     preview_view_source,

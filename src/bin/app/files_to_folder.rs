@@ -126,6 +126,15 @@ pub(crate) unsafe fn ok_cancel_buttons(
     ok_w: i32,
     cancel_x: i32,
 ) {
+    // Each button as wide as its own text needs (`fit_button_w`); the row keeps its right
+    // edge and grows to the left. Rename's own "Rename" was cut off in Finnish, Filipino and
+    // Malay before this.
+    let right = cancel_x + 88;
+    let gap = cancel_x - (x + ok_w);
+    let cancel_w = st2k_appkit::win::fit_button_w(hwnd, t("btn_cancel"), 88, right - 16);
+    let cancel_x = right - cancel_w;
+    let ok_w = st2k_appkit::win::fit_button_w(hwnd, t(ok_key), ok_w, cancel_x - gap - 16);
+    let x = cancel_x - gap - ok_w;
     ctl(
         hwnd,
         BUTTON,
@@ -145,7 +154,7 @@ pub(crate) unsafe fn ok_cancel_buttons(
         WS_TABSTOP,
         cancel_x,
         y,
-        88,
+        cancel_w,
         30,
         IDCANCEL,
         hinst,
@@ -158,13 +167,16 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst = module_instance();
     let n = F2F_FILES.get().map(|f| f.len()).unwrap_or(0);
     let prompt = f2f_prompt(t("f2f_prompt"), n);
-    label(hwnd, hinst, &prompt, 16, 16, 344, 18);
+    // As tall as the prompt wraps to (German needs two lines); the rows under it move down.
+    let prompt_h = st2k_appkit::win::wrapped_text_h(hwnd, &prompt, 344).max(18);
+    let dy = prompt_h - 18;
+    label(hwnd, hinst, &prompt, 16, 16, 344, prompt_h);
     let edit = edit_field(
         hwnd,
         hinst,
         t("f2f_default_name"),
         16,
-        44,
+        44 + dy,
         344,
         26,
         CID_F2F_NAME,
@@ -179,7 +191,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         "",
         WINDOW_STYLE(PBS_MARQUEE),
         16,
-        76,
+        76 + dy,
         344,
         8,
         CID_F2F_PROGRESS,
@@ -187,7 +199,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
-    ok_cancel_buttons(hwnd, hinst, "f2f_create", 176, 92, 104, 286);
+    ok_cancel_buttons(hwnd, hinst, "f2f_create", 176, 92 + dy, 104, 286);
     LRESULT(0)
 }
 

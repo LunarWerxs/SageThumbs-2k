@@ -92,7 +92,7 @@ pub(super) unsafe fn build_about(hwnd: HWND, hinst: HINSTANCE) {
         20,
         100,
         CW - 40,
-        34,
+        36, // 26px bold needs 35: at 34 the descenders were clipped in every language
         -1,
         hinst,
     );

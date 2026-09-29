@@ -343,6 +343,23 @@ fn exif_orientation_reads_tiff_ifd0_directly() {
             "le={le}: exif_orientation must route TIFF magic through the IFD0 walk"
         );
     }
+    // Camera raws that keep TIFF's layout under their own magic: Olympus ORF (`IIRS`, `IIRO`,
+    // big-endian `MMOR`) and Panasonic RW2 (`IIU\0`). Their Orientation was never read, so a
+    // portrait Olympus photo showed sideways (found 2026-09-29 by the corpus shell sweep).
+    for (le, magic) in [
+        (true, *b"RS"),
+        (true, *b"RO"),
+        (false, *b"OR"),
+        (true, *b"U\0"),
+    ] {
+        let mut raw = minimal_tiff_with_orientation(le, 8);
+        raw[2..4].copy_from_slice(&magic);
+        assert_eq!(
+            exif_orientation(&raw),
+            Some(8),
+            "magic {magic:?} must read as TIFF"
+        );
+    }
     // No Orientation tag at all: a bare, entry-less IFD0 must yield None, not panic.
     let mut t = Vec::new();
     t.extend_from_slice(b"II");

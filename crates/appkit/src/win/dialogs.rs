@@ -193,44 +193,35 @@ fn fit_growth(
 }
 
 /// The extent of `hwnd`'s direct child windows in its client coordinates, hidden ones
-/// included (a progress bar or an error label shown later still needs its room). Zero-area
-/// children are skipped. `None` when the window has no children.
+/// included when they start inside the client area (a progress bar or an error label shown
+/// later still needs its room) and left out when they start outside it: a hidden control parked
+/// off to the side is not waiting to be shown there, and counting one grew a Settings capture
+/// to 756 x 1933. Zero-area children are skipped. `None` when the window has no children.
 unsafe fn controls_extent(hwnd: HWND) -> Option<ControlsExtent> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::ScreenToClient;
-    let mut ext: Option<ControlsExtent> = None;
-    let mut child = GetWindow(hwnd, GW_CHILD).ok();
-    while let Some(c) = child.filter(|c| !c.is_invalid()) {
-        let mut r = RECT::default();
-        if GetWindowRect(c, &mut r).is_ok() && r.right > r.left && r.bottom > r.top {
-            let mut tl = POINT {
-                x: r.left,
-                y: r.top,
-            };
-            let mut br = POINT {
-                x: r.right,
-                y: r.bottom,
-            };
-            let _ = ScreenToClient(hwnd, &mut tl);
-            let _ = ScreenToClient(hwnd, &mut br);
-            ext = Some(match ext {
-                None => ControlsExtent {
-                    left: tl.x,
-                    top: tl.y,
-                    right: br.x,
-                    bottom: br.y,
-                },
-                Some(e) => ControlsExtent {
-                    left: e.left.min(tl.x),
-                    top: e.top.min(tl.y),
-                    right: e.right.max(br.x),
-                    bottom: e.bottom.max(br.y),
-                },
-            });
-        }
-        child = GetWindow(c, GW_HWNDNEXT).ok();
-    }
-    ext
+    let mut client = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client);
+    super::layoutaudit::children(hwnd)
+        .into_iter()
+        .filter_map(|c| super::layoutaudit::rect_in_parent(hwnd, c).map(|r| (c, r)))
+        .filter(|&(c, r)| IsWindowVisible(c).as_bool() || starts_inside(r, client))
+        .map(|(_, r)| ControlsExtent {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+        })
+        .reduce(|a, b| ControlsExtent {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        })
+}
+
+/// Whether `r` overlaps `client` at all: a hidden control that does is waiting to be shown
+/// there; one wholly outside is parked.
+fn starts_inside(r: RECT, client: RECT) -> bool {
+    r.left < client.right && r.top < client.bottom && r.right > 0 && r.bottom > 0
 }
 
 /// Grow `hwnd` until every child control sits inside its client area (see [`fit_growth`] for
@@ -417,6 +408,10 @@ mod tests {
 
     type Layout = &'static [(i32, i32, i32, i32)];
 
+    /// A test control at this x or further is created hidden, parked off to the side the way
+    /// Settings parks the controls of the pages it is not showing.
+    const PARKED_X: i32 = 5000;
+
     thread_local! {
         /// The design-px (x, y, w, h) buttons the test dialog's `WM_CREATE` builds.
         static LAYOUT: Cell<Layout> = const { Cell::new(&[]) };
@@ -427,7 +422,7 @@ mod tests {
             if msg == WM_CREATE {
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
                 for (i, &(x, y, w, h)) in LAYOUT.with(Cell::get).iter().enumerate() {
-                    ctl(
+                    let c = ctl(
                         hwnd,
                         BUTTON,
                         "x",
@@ -439,6 +434,9 @@ mod tests {
                         100 + i as i32,
                         hinst,
                     );
+                    if x >= PARKED_X {
+                        let _ = ShowWindow(c, SW_HIDE);
+                    }
                 }
                 return LRESULT(0);
             }
@@ -520,7 +518,13 @@ mod tests {
             "bottom gap {bottom_gap} is narrower than the top margin {top}"
         );
 
-        const ROOMY: Layout = &[(16, 16, 200, 24), (16, 100, 100, 30)];
+        // The last control is hidden and parked far outside: it must not grow the dialog (it
+        // grew a Settings capture to 756 x 1933 once).
+        const ROOMY: Layout = &[
+            (16, 16, 200, 24),
+            (16, 100, 100, 30),
+            (PARKED_X, 3000, 100, 30),
+        ];
         let (size, _, _) = unsafe { open(300, 220, ROOMY) };
         let (dpi, _) = cursor_monitor_metrics();
         assert_eq!(

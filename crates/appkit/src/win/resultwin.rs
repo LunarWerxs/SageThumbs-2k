@@ -13,6 +13,8 @@ use super::*;
 pub struct ResultLayout {
     pub cw: i32,
     pub m: i32,
+    /// The shared button width the row was designed at; each button may be wider, as wide
+    /// as its own text needs (`fit_button_w`).
     pub btn_w: i32,
     pub btn_h: i32,
     pub gap: i32,
@@ -20,7 +22,9 @@ pub struct ResultLayout {
     pub btn_y: i32,
     /// Close sits rightmost, Copy immediately to its left.
     pub(crate) close_x: i32,
+    pub(crate) close_w: i32,
     pub copy_x: i32,
+    pub(crate) copy_w: i32,
 }
 
 /// The window-message half those same three dialogs share: create the controls, run Copy,
@@ -145,7 +149,7 @@ pub unsafe fn result_buttons(hwnd: HWND, hinst: HINSTANCE, l: &ResultLayout) {
         WS_TABSTOP,
         l.copy_x,
         l.btn_y,
-        l.btn_w,
+        l.copy_w,
         l.btn_h,
         ID_RESULT_COPY,
         hinst,
@@ -157,7 +161,7 @@ pub unsafe fn result_buttons(hwnd: HWND, hinst: HINSTANCE, l: &ResultLayout) {
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         l.close_x,
         l.btn_y,
-        l.btn_w,
+        l.close_w,
         l.btn_h,
         IDOK,
         hinst,
@@ -196,10 +200,14 @@ pub extern "system" fn result_window_proc<W: ResultWindow>(
 pub unsafe fn result_layout(hwnd: HWND) -> ResultLayout {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    // `dpi_scale`, not `GetDpiForWindow`: the controls are placed at the DPI it answers, which
+    // a `--dpi` capture overrides and `GetDpiForWindow` does not know about.
+    let dpi = dpi_scale(hwnd, 96).max(96);
     let (m, btn_w, btn_h, gap) = (10, 82, 28, 8);
     let (cw, ch) = (rc.right * 96 / dpi, rc.bottom * 96 / dpi);
-    let close_x = cw - m - btn_w;
+    let close_w = fit_button_w(hwnd, t("btn_close"), btn_w, cw / 3);
+    let copy_w = fit_button_w(hwnd, t("btn_copy"), btn_w, cw / 3);
+    let close_x = cw - m - close_w;
     ResultLayout {
         cw,
         m,
@@ -208,7 +216,9 @@ pub unsafe fn result_layout(hwnd: HWND) -> ResultLayout {
         gap,
         btn_y: ch - m - btn_h,
         close_x,
-        copy_x: close_x - gap - btn_w,
+        close_w,
+        copy_x: close_x - gap - copy_w,
+        copy_w,
     }
 }
 

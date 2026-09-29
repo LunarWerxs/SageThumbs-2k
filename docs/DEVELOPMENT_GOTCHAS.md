@@ -1367,3 +1367,30 @@ roughly the window size, and let the fit take up the slack. Do not re-add per-di
 and capture the dialog with `--shot --window <name>` (add a mode if it has none; the three folder
 dialogs had none, which is how this one went unseen). `win::dialogs::tests` builds a dialog with
 Rename's exact old geometry and fails if any control ends up outside the client area.
+
+## A green suite never looked at a window or a thumbnail through Explorer: two checks that do (2026-09-28)
+
+The suite checks that code runs, decoders survive hostile bytes, and CLI renders match. It never
+checked what a person SEES, which is how issue #48 shipped (above) and how a sweep the same day
+found translated buttons cut off in a dozen windows, Olympus portraits shown sideways, and RAW
+files Explorer gets no thumbnail for while `st2k` renders them fine.
+
+- **Layout.** `ST2K_LAYOUT_AUDIT=<file>` makes every `--shot` capture record what
+  `win::audit_layout` finds: a control past its parent's edge, two visible siblings overlapping,
+  or a label/button whose text needs more room than it has (measured in the control's own font).
+  `tests/layout_audit.rs` runs every window in English at 96 dpi, Bulgarian at 192 and Filipino
+  at 144 on every push (~2 min); `scripts/check-layout.ps1` runs all 36 languages at 96/144/192
+  (~40 min) - run it after changing a layout or adding a translation. Fix a finding by sizing
+  the control to its text (`win::fit_button_w`, `text_width`, `wrapped_text_h`); shorten the
+  one translation only when the layout has no room. Settings' rows are placed by
+  `navrail/place.rs` AFTER the build - that is where its widths live, not in `LeftCol`.
+- **Thumbnails through the shell.** `scripts/check-corpus-corners.ps1` (Windows PowerShell,
+  `-STA`) asks `IShellItemImageFactory` - Explorer's own route, served by whichever handler
+  Windows really picks - for every corpus sample built from `_base.png`, and checks the red,
+  green and blue corner squares are in the right quarters (the badge sits on the fourth). It
+  also renders each with `st2k` and, where ours lacks the corners, asks ImageMagick; one
+  contact sheet frames every sample green/red/orange/grey. It tests the INSTALLED build.
+- **The shot harness must use the DPI the controls use.** A `--dpi` capture overrides
+  `dpi_scale`/`gui_font_for`, not `GetDpiForWindow`; code that converts client px with
+  `GetDpiForWindow` lays out right for users and wrong in a capture, which reads as a bug that
+  is not there (Settings' footer, About, the result windows all did). Use `dpi_scale(hwnd, 96)`.

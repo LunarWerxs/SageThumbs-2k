@@ -197,7 +197,9 @@ struct OcrResult;
 impl ResultWindow for OcrResult {
     unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         let l = result_layout(hwnd);
-        let head_h = 32; // two wrapped lines of the "it's on your clipboard" note
+        // The "it's on your clipboard" note, as tall as it wraps to (at least two lines).
+        let head_h =
+            st2k_appkit::win::wrapped_text_h(hwnd, t("ocr_heading"), l.cw - 2 * l.m).max(32);
         ctl(
             hwnd,
             STATIC,

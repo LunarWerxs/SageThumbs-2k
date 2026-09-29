@@ -219,8 +219,10 @@ pub(crate) unsafe fn run_shot_about(out: &str) -> bool {
             design_h: CH,
         },
         |hwnd, _hinst| unsafe {
-            // Grow the frame so the CLIENT is the design size the controls were placed against.
-            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            // Grow the frame so the CLIENT is the design size the controls were placed against,
+            // at the DPI they were placed at: `dpi_scale` honours a `--dpi` override, which
+            // `GetDpiForWindow` does not (it sized a 144/192 capture for 96 and cut it off).
+            let dpi = st2k_appkit::win::dpi_scale(hwnd, 96).max(96);
             let mut rc = RECT {
                 left: 0,
                 top: 0,

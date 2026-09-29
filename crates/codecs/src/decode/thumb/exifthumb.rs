@@ -84,15 +84,21 @@ pub(in super::super) fn tiff_thumbnail(tiff: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// The header magics of a TIFF-shaped file: TIFF's own `42`, and the camera-raw formats that
+/// keep TIFF's layout (byte order, magic, IFD0 offset) under a magic of their own: Olympus ORF
+/// (`IIRO`, `IIRS`, `MMOR`) and Panasonic RW2/RWL (`IIU\0`). Rejecting those left their
+/// Orientation tag unread, so every portrait ORF showed sideways.
+const TIFF_MAGICS: [u16; 4] = [42, 0x4F52, 0x5352, 0x0055];
+
 /// Read a TIFF header's byte order and its IFD0 offset, rejecting anything that is not a
-/// big/little-endian TIFF (the `42` magic) or is too short to hold the header.
+/// big/little-endian TIFF (one of [`TIFF_MAGICS`]) or is too short to hold the header.
 pub(super) fn tiff_header(tiff: &[u8]) -> Option<(bool, usize)> {
     let le = match tiff.get(0..2)? {
         b"II" => true,
         b"MM" => false,
         _ => return None,
     };
-    if tiff_u16(tiff, le, 2)? != 42 {
+    if !TIFF_MAGICS.contains(&tiff_u16(tiff, le, 2)?) {
         return None;
     }
     let ifd0 = tiff_u32(tiff, le, 4)? as usize;
@@ -184,7 +190,7 @@ pub(crate) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
     // TIFF magic (classic and camera-RAW TIFF containers): read Orientation directly out
     // of IFD0 rather than handing the whole buffer to `exif::Reader` — see
     // `tiff_ifd0_orientation`. JPEG/PNG/WebP/HEIF keep the general-purpose reader.
-    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+    if tiff_header(bytes).is_some() {
         return tiff_ifd0_orientation(bytes);
     }
     let exif = exif::Reader::new()
@@ -199,8 +205,7 @@ pub(crate) fn exif_orientation(bytes: &[u8]) -> Option<u32> {
 pub(in super::super) fn has_exif_container(b: &[u8]) -> bool {
     b.len() >= 12
         && (b.starts_with(&[0xFF, 0xD8])                       // JPEG
-            || b.starts_with(b"II*\0")                         // TIFF little-endian
-            || b.starts_with(b"MM\0*")                         // TIFF big-endian
+            || tiff_header(b).is_some()                        // TIFF and its camera-raw kin
             || b.starts_with(&[0x89, b'P', b'N', b'G'])        // PNG (eXIf chunk)
             || (b.starts_with(b"RIFF") && &b[8..12] == b"WEBP") // WebP
             || &b[4..8] == b"ftyp") // ISOBMFF: HEIF/HEIC/AVIF

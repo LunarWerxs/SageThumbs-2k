@@ -56,7 +56,11 @@ pub(super) fn place_switch_row(
     place_one(place, id, PANE_X + indent, y, PANE_W - indent, 28)
 }
 
-/// `Row::Pair`: a label + a right-aligned field of its own width/height.
+/// `Row::Pair`: a label + a right-aligned field of its own width/height. `stack_h` is 0 when
+/// the label fits beside the field; otherwise the label takes that much height on its own
+/// line(s) above the field, full pane width, and the field drops below it (a translation too
+/// long for the room beside the field was cut off: "Never enable Quick preview for these
+/// extensions:" in 18 languages).
 pub(super) fn place_pair_row(
     place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
     lbl: i32,
@@ -64,16 +68,44 @@ pub(super) fn place_pair_row(
     fw: i32,
     fh: i32,
     y: i32,
+    stack_h: i32,
 ) -> Vec<HWND> {
     let mut placed = Vec::new();
     let lbl_dy = if fh > 40 { 4 } else { 2 };
-    if let Some(c) = place(lbl, PANE_X, y + lbl_dy, 220, 18) {
-        placed.push(c);
-    }
-    if let Some(c) = place(field, PANE_X + PANE_W - fw, y, fw, fh) {
+    let label = if stack_h > 0 {
+        place(lbl, PANE_X, y, PANE_W, stack_h)
+    } else {
+        place(lbl, PANE_X, y + lbl_dy, 220, 18)
+    };
+    placed.extend(label);
+    let field_y = if stack_h > 0 { y + stack_h + 4 } else { y };
+    if let Some(c) = place(field, PANE_X + PANE_W - fw, field_y, fw, fh) {
         placed.push(c);
     }
     placed
+}
+
+/// The window text of `hwnd`'s control `id` (empty when there is none).
+unsafe fn control_text(hwnd: HWND, id: i32) -> String {
+    let Ok(c) = GetDlgItem(Some(hwnd), id) else {
+        return String::new();
+    };
+    let mut buf = [0u16; 512];
+    let n = GetWindowTextW(c, &mut buf);
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// How much taller a `Row::Pair` gets when its label does not fit beside its `fw`-wide field:
+/// 0 when it fits (the 220px label box the row was designed with, less nothing), otherwise
+/// the label's wrapped height at full pane width plus the gap to the field under it.
+unsafe fn pair_stack_h(hwnd: HWND, lbl: i32, fw: i32) -> i32 {
+    let text = control_text(hwnd, lbl);
+    let room = 220.min(PANE_W - fw - 8);
+    if st2k_appkit::win::text_width(hwnd, &text) <= room {
+        0
+    } else {
+        st2k_appkit::win::wrapped_text_h(hwnd, &text, PANE_W).max(18)
+    }
 }
 
 /// `Row::Btn`: a single full-width-or-narrower button.
@@ -213,7 +245,9 @@ pub(super) unsafe fn place_list_fill_row(
 /// caller to push into `cats[ci]`) plus the `y` this row leaves behind — unchanged for
 /// every row except `Row::ListFill`, which grows to fill down to `content_bottom` and
 /// advances `y` past itself (the fixed-row table in `fixed_row_next_y` cannot know that
-/// height ahead of placing it, so it deliberately leaves this row's case out).
+/// height ahead of placing it, so it deliberately leaves this row's case out), and a
+/// `Row::Pair` whose label had to stack above its field, which returns `y` plus the height
+/// it grew by (the caller adds that to the row's fixed advance).
 pub(super) unsafe fn place_row(
     hwnd: HWND,
     place: &impl Fn(i32, i32, i32, i32, i32) -> Option<HWND>,
@@ -222,13 +256,32 @@ pub(super) unsafe fn place_row(
     first: bool,
     content_bottom: i32,
 ) -> (Vec<HWND>, i32) {
+    // A button as wide as its own text needs, never narrower than the row designed it and never
+    // past `max` (the rows were sized against the English text; the layout audit found four of
+    // them cut off in Bulgarian, Greek and French).
+    let fit = |id: i32, w: i32, max: i32| {
+        st2k_appkit::win::fit_button_w(hwnd, &control_text(hwnd, id), w, max)
+    };
     match row {
         Row::Head(id) => (place_head_row(place, id, y, first), y),
         Row::Switch(id) => (place_switch_row(place, id, y), y),
-        Row::Pair(lbl, field, fw, fh) => (place_pair_row(place, lbl, field, fw, fh, y), y),
-        Row::Btn(id, w) => (place_btn_row(place, id, w, y), y),
-        Row::BtnStatus(bid, bw, sid) => (place_btn_status_row(place, bid, bw, sid, y), y),
-        Row::StatusBtn(sid, bid, bw) => (place_status_btn_row(place, sid, bid, bw, y), y),
+        Row::Pair(lbl, field, fw, fh) => {
+            let stack_h = pair_stack_h(hwnd, lbl, fw);
+            let grow = if stack_h > 0 { stack_h + 4 } else { 0 };
+            (
+                place_pair_row(place, lbl, field, fw, fh, y, stack_h),
+                y + grow,
+            )
+        }
+        Row::Btn(id, w) => (place_btn_row(place, id, fit(id, w, PANE_W), y), y),
+        Row::BtnStatus(bid, bw, sid) => {
+            let bw = fit(bid, bw, PANE_W * 2 / 3);
+            (place_btn_status_row(place, bid, bw, sid, y), y)
+        }
+        Row::StatusBtn(sid, bid, bw) => {
+            let bw = fit(bid, bw, PANE_W * 2 / 3);
+            (place_status_btn_row(place, sid, bid, bw, y), y)
+        }
         Row::Status(id) => (place_status_row(place, id, y), y),
         Row::Btn3(a, b, c3) => (place_btn3_row(place, a, b, c3, y), y),
         Row::Wide(id) => (place_wide_row(place, id, y), y),
@@ -272,10 +325,11 @@ pub(super) unsafe fn build_category_rows(
         let fixed_next_y = fixed_row_next_y(row, y, first);
         let (p, new_y) = place_row(hwnd, place, row, y, first, content_bottom);
         placed.extend(p);
-        y = new_y;
-        if let Some(next_y) = fixed_next_y {
-            y = next_y;
-        }
+        // A fixed row advances by its table height plus whatever it grew by on placing.
+        y = match fixed_next_y {
+            Some(next_y) => next_y + (new_y - y),
+            None => new_y,
+        };
         first = false;
     }
     // File Types fills its list to the footer. Every other page is fixed and
@@ -304,7 +358,9 @@ pub(in super::super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
 
     let mut cr = RECT::default();
     let _ = GetClientRect(hwnd, &mut cr);
-    let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96) as i32;
+    // `dpi_scale`, not `GetDpiForWindow`: the DPI the controls are placed at, which a `--dpi`
+    // capture overrides (the window's own DPI put the footer at twice its height there).
+    let dpi = dpi_scale(hwnd, 96).max(96);
     let client_w = (cr.right - cr.left) * 96 / dpi;
     let client_h = (cr.bottom - cr.top) * 96 / dpi;
     let footer_y = client_h - 40;

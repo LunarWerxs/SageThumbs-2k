@@ -221,7 +221,7 @@ cv_watermark_corner_bl = "Nederst til venstre"
 cv_watermark_corner_br = "Nederst til højre"
 cv_watermark_corner_center = "Centreret"
 cv_watermark_scale = "Størrelse:"
-cv_watermark_opacity = "Uigennemsigtighed:"
+cv_watermark_opacity = "Opacitet:"
 
 # Files-to-folder dialog
 f2f_title = "Filer til mappe — SageThumbs 2K"

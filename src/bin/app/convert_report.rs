@@ -160,7 +160,9 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // optional Open-folder button, then Retry. `leftmost` walks left as each is placed.
     let mut leftmost = l.copy_x;
     if CAN_OPEN.with(Cell::get) {
-        leftmost -= l.gap + l.btn_w;
+        // As wide as its text needs: "Open folder" was cut off in seven languages at 82px.
+        let open_w = st2k_appkit::win::fit_button_w(hwnd, t("btn_open_folder"), l.btn_w, l.cw / 3);
+        leftmost -= l.gap + open_w;
         ctl(
             hwnd,
             BUTTON,
@@ -168,7 +170,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
             WS_TABSTOP,
             leftmost,
             l.btn_y,
-            l.btn_w,
+            open_w,
             l.btn_h,
             ID_OPEN_FOLDER,
             hinst,

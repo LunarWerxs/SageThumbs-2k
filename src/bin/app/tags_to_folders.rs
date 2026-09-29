@@ -13,8 +13,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use st2k_appkit::dark::dark_ctlcolor;
 use st2k_appkit::win::{
-    checked, ctl, edit_field, get_edit_text, label, pick_folder, read_listfile, run_dialog,
-    set_edit_text, t, wide, BM_SETCHECK_MSG, BUTTON, IDCANCEL, IDOK,
+    checked, ctl, edit_field, fit_button_w, get_edit_text, label, pick_folder, read_listfile,
+    run_dialog, set_edit_text, t, text_width, wide, wrapped_text_h, BM_SETCHECK_MSG, BUTTON,
+    IDCANCEL, IDOK,
 };
 
 const CID_TTF_DEST: i32 = 5101;
@@ -50,6 +51,8 @@ pub(crate) unsafe fn run_tags_to_folders_dialog(_hinst: HINSTANCE, listfile: &st
 const CLASS: PCWSTR = w!("SageThumbs2KTagsToFolders");
 const DLG_W: i32 = 452;
 const DLG_H: i32 = 270;
+/// The right edge of the field column, in design px.
+const RIGHT: i32 = 428;
 
 /// `--shot --window tags-to-folders`: this dialog over `files_to_folder::shot_files`.
 pub(crate) unsafe fn run_shot_tags_to_folders(out: &str) -> bool {
@@ -107,14 +110,43 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     // Default destination = the first file's folder.
     let default_dest = first_file_folder().unwrap_or_default();
 
-    label(hwnd, hinst, t("ttf_destination"), 16, 18, 90, 18);
-    edit_field(hwnd, hinst, &default_dest, 110, 16, 268, 24, CID_TTF_DEST);
+    // Every position comes off the text, not the English one: the label column is as wide as
+    // its longest label, the tokens hint as tall as its wrapped text (the rows under it move
+    // down by the difference), and each radio as wide as its caption. At 96 dpi in English
+    // this is the layout the numbers used to spell out; the layout audit (2026-09-29) found
+    // the labels, the hint and both radios cut off in up to 18 languages.
+    let (dest, template, missing, tokens) = (
+        t("ttf_destination"),
+        t("ttf_template"),
+        t("ttf_missing"),
+        t("ttf_tokens"),
+    );
+    let lab_w = [dest, template, missing]
+        .iter()
+        .map(|s| text_width(hwnd, s) + 4)
+        .fold(90, i32::max)
+        .min(180);
+    let fx = 16 + lab_w + 4; // the field column
+    let tokens_h = wrapped_text_h(hwnd, tokens, RIGHT - fx).max(16);
+    let dy = tokens_h - 16; // how far the rows under the hint move down
+
+    label(hwnd, hinst, dest, 16, 18, lab_w, 18);
+    edit_field(
+        hwnd,
+        hinst,
+        &default_dest,
+        fx,
+        16,
+        RIGHT - 50 - fx,
+        24,
+        CID_TTF_DEST,
+    );
     ctl(
         hwnd,
         BUTTON,
         "\u{2026}",
         WS_TABSTOP,
-        384,
+        RIGHT - 44,
         15,
         44,
         26,
@@ -122,51 +154,53 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         hinst,
     );
 
-    label(hwnd, hinst, t("ttf_template"), 16, 56, 90, 18);
+    label(hwnd, hinst, template, 16, 56, lab_w, 18);
     edit_field(
         hwnd,
         hinst,
         t("ttf_template_default"),
-        110,
+        fx,
         54,
-        318,
+        RIGHT - fx,
         24,
         CID_TTF_TEMPLATE,
     );
-    label(hwnd, hinst, t("ttf_tokens"), 110, 82, 318, 16);
+    label(hwnd, hinst, tokens, fx, 82, RIGHT - fx, tokens_h);
 
-    label(hwnd, hinst, t("ttf_missing"), 16, 112, 90, 18);
+    label(hwnd, hinst, missing, 16, 112 + dy, lab_w, 18);
     edit_field(
         hwnd,
         hinst,
         t("ttf_missing_default"),
-        110,
-        110,
-        160,
+        fx,
+        110 + dy,
+        160.min(RIGHT - fx),
         24,
         CID_TTF_MISSING,
     );
 
+    let move_w = fit_button_w(hwnd, t("ttf_move"), 110, RIGHT - fx);
     let mv = ctl(
         hwnd,
         BUTTON,
         t("ttf_move"),
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_GROUP | WS_TABSTOP,
-        110,
-        146,
-        110,
+        fx,
+        146 + dy,
+        move_w,
         22,
         CID_TTF_MOVE,
         hinst,
     );
+    let copy_x = fx + move_w + 10;
     ctl(
         hwnd,
         BUTTON,
         t("ttf_copy"),
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_TABSTOP,
-        230,
-        146,
-        110,
+        copy_x,
+        146 + dy,
+        fit_button_w(hwnd, t("ttf_copy"), 110, RIGHT - copy_x),
         22,
         CID_TTF_COPY,
         hinst,
@@ -182,7 +216,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
         "",
         WINDOW_STYLE(PBS_MARQUEE),
         16,
-        180,
+        180 + dy,
         414,
         8,
         CID_TTF_PROGRESS,
@@ -191,7 +225,7 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let _ = ShowWindow(prog, SW_HIDE);
 
     // Under the progress bar; `run_dialog` grows the window if the frame leaves too little room.
-    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, 189, 92, 342);
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, 189 + dy, 92, 342);
     LRESULT(0)
 }
 

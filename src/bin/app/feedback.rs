@@ -22,7 +22,6 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{NMHDR, NMLINK, NM_CLICK, NM_RETURN};
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -126,7 +125,9 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // frame. `ctl` re-scales design px to DPI, so divide the physical rect back to 96.
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    // The DPI the controls are placed at (a `--dpi` capture overrides it; the window's own
+    // DPI would not know).
+    let dpi = st2k_appkit::win::dpi_scale(hwnd, 96).max(96);
     let cw = rc.right * 96 / dpi;
     let ch = rc.bottom * 96 / dpi;
 
@@ -140,7 +141,10 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     let email_h = 24;
     let email_y = btn_y - 16 - email_h;
     let email_lbl_y = email_y - 20;
-    let head_h = 34; // two wrapped lines of the intro
+    // The intro as tall as it wraps to (at least the two lines it was designed for), and the
+    // category label as wide as its text: both were cut off in four languages.
+    let head_h = st2k_appkit::win::wrapped_text_h(hwnd, t("fb_heading"), cw - 2 * m).max(34);
+    let cat_lbl_w = (st2k_appkit::win::text_width(hwnd, t("fb_category")) + 8).clamp(112, 200);
     let row_y = m + head_h + 12;
     let row_h = 24;
     let msg_lbl_y = row_y + row_h + 12;
@@ -168,7 +172,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         lbl,
         m,
         row_y + 4,
-        112,
+        cat_lbl_w,
         18,
         ID_CAT_LBL,
         hinst,
@@ -178,7 +182,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         COMBOBOX,
         "",
         WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
-        m + 120,
+        m + cat_lbl_w + 8,
         row_y,
         200,
         200,

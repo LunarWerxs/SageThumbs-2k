@@ -97,6 +97,19 @@ pub unsafe fn design_wrapped_text_h(s: &str, col_w: i32) -> i32 {
     wrapped_h_in(gui_font(), s, col_w)
 }
 
+/// Room a push button needs around its text, in design px (both sides together).
+const BUTTON_TEXT_PAD: i32 = 24;
+
+/// The width, in design px, of a push button reading `text`: the `w` it was designed at, or
+/// as wide as the text needs if that is more, never past `max_w`. Every fixed button width in
+/// the app was chosen against the English text, and the layout audit (2026-09-29) found longer
+/// translations cut off in a dozen of them.
+pub unsafe fn fit_button_w(hwnd: HWND, text: &str, w: i32, max_w: i32) -> i32 {
+    (text_width(hwnd, text) + BUTTON_TEXT_PAD)
+        .max(w)
+        .min(max_w.max(w))
+}
+
 #[cfg(test)]
 pub(super) mod text_width_tests {
     use super::*;
