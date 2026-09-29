@@ -37,11 +37,41 @@ fn tone_map_rgba32f(
     }
 }
 
-/// Tone-map a 32-bit linear-float HDR image (EXR/Radiance) to 8-bit sRGB, in pure
-/// Rust: the Reinhard global operator `x/(1+x)` compresses the unbounded range,
-/// then a linear→sRGB transfer encodes it for display. Replaces an ImageMagick
-/// subprocess for this whole format class (and lets EXR/HDR work without magick).
+/// The white point [`tone_map_float`] maps to 255: the brightest finite colour sample in the
+/// image (alpha excluded), never below reference white (1.0).
+fn float_white_point(samples: &[f32], channels: usize) -> f32 {
+    samples
+        .chunks_exact(channels)
+        .flat_map(|px| px[..3].iter().copied())
+        .filter(|c| c.is_finite())
+        .fold(1.0, f32::max)
+}
+
+/// One linear-float sample to 8-bit sRGB through the extended Reinhard curve with white
+/// point `white` (see [`tone_map_float`]).
+fn tone_sample(c: f32, white: f32) -> u8 {
+    let c = if c.is_finite() && c > 0.0 { c } else { 0.0 };
+    let tone = (c * (1.0 + c / (white * white)) / (1.0 + c)).min(1.0);
+    let srgb = if tone <= 0.003_130_8 {
+        12.92 * tone
+    } else {
+        1.055 * tone.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8
+}
+
+/// Tone-map a 32-bit linear-float HDR image (EXR/Radiance/HDR JPEG XL, AVIF, TIFF, DDS) to
+/// 8-bit sRGB, in pure Rust, then a linear→sRGB transfer encodes it for display. Replaces an
+/// ImageMagick subprocess for this whole format class (and lets EXR/HDR work without magick).
 /// Non-finite / negative samples are clamped to 0.
+///
+/// The curve is EXTENDED Reinhard, `x(1 + x/W²)/(1 + x)`, with W the image's brightest
+/// sample (at least 1.0): the brightest pixel lands on white and reference white (1.0) lands
+/// where plain Reinhard put it once the picture has real highlights (W = 39 moves it by less
+/// than a level). Plain `x/(1+x)` never reaches white, so a float image with nothing brighter
+/// than reference white - most EXR renders and conversions - came out at 73% brightness
+/// (white at 188 of 255); with W = 1 the curve is the identity and it shows as authored
+/// (decided 2026-09-29, for every HDR source at once).
 ///
 /// Matches the concrete `Rgb32F`/`Rgba32F` variant and iterates its own buffer directly
 /// rather than calling `to_rgba32f()` first: every call site already gates on one of
@@ -49,17 +79,6 @@ fn tone_map_rgba32f(
 /// redundant full-image copy — a second W*H*16B allocation on top of the one this
 /// function itself makes.
 pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
-    let map = |c: f32| -> u8 {
-        let c = if c.is_finite() && c > 0.0 { c } else { 0.0 };
-        let tone = c / (1.0 + c); // Reinhard
-        let srgb = if tone <= 0.003_130_8 {
-            12.92 * tone
-        } else {
-            1.055 * tone.powf(1.0 / 2.4) - 0.055
-        };
-        (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8
-    };
-
     let (w, h) = (img.width(), img.height());
     let mut out = image::RgbaImage::new(w, h);
     let mut any_alpha = false;
@@ -67,18 +86,23 @@ pub(super) fn tone_map_float(img: &DynamicImage) -> DynamicImage {
         // No alpha channel at all: every pixel is opaque, matching what `to_rgba32f()`
         // used to synthesize (a=1.0) for this variant.
         DynamicImage::ImageRgb32F(buf) => {
+            let white = float_white_point(buf.as_raw(), 3);
             for (o, s) in out.pixels_mut().zip(buf.pixels()) {
-                let [r, g, b] = s.0;
-                *o = image::Rgba([map(r), map(g), map(b), 255]);
+                let [r, g, b] = s.0.map(|c| tone_sample(c, white));
+                *o = image::Rgba([r, g, b, 255]);
             }
             any_alpha = true;
         }
-        DynamicImage::ImageRgba32F(buf) => tone_map_rgba32f(&mut out, buf, map, &mut any_alpha),
+        DynamicImage::ImageRgba32F(buf) => {
+            let white = float_white_point(buf.as_raw(), 4);
+            tone_map_rgba32f(&mut out, buf, |c| tone_sample(c, white), &mut any_alpha)
+        }
         // Not reached by any current call site (all gate on the two variants above), but
         // kept total rather than panicking under panic=abort if one ever calls in unguarded.
         other => {
             let src = other.to_rgba32f();
-            tone_map_rgba32f(&mut out, &src, map, &mut any_alpha);
+            let white = float_white_point(src.as_raw(), 4);
+            tone_map_rgba32f(&mut out, &src, |c| tone_sample(c, white), &mut any_alpha);
         }
     }
     // VFX render passes (emission/environment/AOV EXRs) legitimately carry RGB with

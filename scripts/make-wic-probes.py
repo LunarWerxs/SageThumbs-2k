@@ -86,14 +86,18 @@ def pq_signal_patches():
 
 
 def tone_mapped_patches():
-    """What `tone_map_float` in crates/codecs/src/decode/color.rs makes of each PQ patch: Reinhard, then the
-    sRGB curve, then `(x * 255 + 0.5)` floored - the same arithmetic, so EXPECT_PQ is derived
-    here rather than typed from a calculator."""
+    """What `tone_map_float` in crates/codecs/src/decode/color.rs makes of each PQ patch:
+    extended Reinhard with the probe's brightest sample (at least 1.0) as white, then the sRGB
+    curve, then `(x * 255 + 0.5)` floored - the same arithmetic, so EXPECT_PQ is derived here
+    rather than typed from a calculator."""
+    patches = pq_linear_patches()
+    white = max([1.0] + [c for p in patches for c in p])
+
     def tone(c):
         c = max(c, 0.0)
-        t = c / (1.0 + c)
+        t = min(1.0, c * (1.0 + c / (white * white)) / (1.0 + c))
         return max(0, min(255, int(srgb_oetf(t) * 255.0 + 0.5)))
-    return [tuple(tone(c) for c in p) for p in pq_linear_patches()]
+    return [tuple(tone(c) for c in p) for p in patches]
 
 
 def run(cmd):

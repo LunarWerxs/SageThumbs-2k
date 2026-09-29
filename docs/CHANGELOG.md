@@ -21,6 +21,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   Open folder, Convert's watermark Opacity label, the Send feedback dialog and the About box.
   Those controls now size themselves to their text, and a long label moves above its field
   instead of being cut.
+- **EXR and other HDR pictures no longer look dim.** A picture with nothing brighter than
+  normal white (most EXR renders and conversions, and HDR photos without highlights) now shows
+  at its true brightness instead of about three quarters of it, and in an HDR photo with
+  bright highlights the brightest one is now pure white. HDR JPEG XL, AVIF, HEIC and TIFF files
+  of an ordinary scene now look the same as their standard versions.
 - **Olympus and Panasonic photos taken in portrait now show upright.** Their `.orf` and
   `.rw2` files mark the rotation the same way every other camera does, under a slightly
   different file header that SageThumbs did not recognise, so the rotation was ignored.

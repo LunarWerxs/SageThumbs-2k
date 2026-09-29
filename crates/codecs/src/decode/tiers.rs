@@ -128,9 +128,9 @@ fn render_jxl(mut decoder: JxlReader<'_>) -> Result<DynamicImage> {
     // points say which it is; an HDR one goes through the same PQ/HLG-to-display-linear
     // conversion PNG `cICP` uses (`cicp.rs`, reference white at 1.0) and then the float tone
     // map, exactly like an EXR. Measured on the twin fixtures in tests/fixtures/jxl: grey ramp
-    // peak 39 -> 187 of 255, which is where this product puts every HDR source's reference
-    // white (Reinhard at 1.0), the SDR twin sitting at 255. jxl-oxide's own sRGB request was
-    // tried first and gave 189 by a different route; this one shares the PNG path instead.
+    // peak 39 -> 187 of 255 under plain Reinhard, and 255 - level with the SDR twin - since the
+    // tone map became extended Reinhard (2026-09-29). jxl-oxide's own sRGB request was tried
+    // first and gave 189 by a different route; this one shares the PNG path instead.
     let hdr = decoder.rendered_cicp().and_then(|c| {
         let cicp = super::cicp::PngCicp {
             primaries: c[0],

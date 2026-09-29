@@ -1,50 +1,26 @@
 #![cfg(test)]
 
-//! HDR (PQ) samples land at reference white, twin by twin.
+//! HDR (PQ) samples render like their SDR twins, twin by twin.
 
 use super::*;
+
+/// How far the PQ twin's ramp may end from its SDR twin's, in 8-bit levels. Measured
+/// 2026-09-29 across all eight twin decodes: 5 at most (the scaled AVIF thumbnail).
+const RAMP_END_SLACK: u8 = 8;
+/// How far the PQ twin's ramp mean may sit from its SDR twin's, as a fraction of it. Measured
+/// 1.5% at most; #38's dark render sat 16% or more below, #39's clip about 9% above.
+const RAMP_MEAN_SLACK: f64 = 0.05;
 
 /// Issue #38: a JPEG XL whose base image is HDR (PQ transfer, BT.2020 primaries) thumbnailed
 /// almost black - grey ramp peak 39 of 255 on 3.0.0 - while its SDR twin was fine. The 16-bit
 /// integer samples still carried the PQ curve and were colour-managed as if 10000 nits were
 /// white. The tier now routes an HDR file through the PNG `cICP` conversion and the shared
-/// float tone map, so it lands where an EXR or an HDR PNG does: reference white at Reinhard's
-/// 1.0, which is 187 of 255 in sRGB, not 255. That is the house convention for every HDR
-/// source, and the SDR twin is the untouched control at 255.
+/// float tone map, so it renders like its SDR twin (see [`assert_hdr_twin_matches_its_sdr_twin`]).
 #[test]
 fn hdr_pq_jxl_renders_as_bright_as_its_sdr_twin() {
-    fn ramp(bytes: &[u8]) -> (u8, u8, f64) {
-        let img = crate::decode::tiers::decode_jxl(bytes, None).expect("decode the jxl twin");
-        let rgb = img.to_rgb8();
-        let (w, h) = rgb.dimensions();
-        let y = h / 8;
-        let left = rgb.get_pixel(1, y).0[1];
-        let right = rgb.get_pixel(w - 2, y).0[1];
-        let mean = (0..w)
-            .map(|x| f64::from(rgb.get_pixel(x, y).0[1]))
-            .sum::<f64>()
-            / f64::from(w);
-        (left, right, mean)
-    }
-    let (pq_left, pq_right, pq_mean) = ramp(JXL_PQ2020);
-    let (sdr_left, sdr_right, sdr_mean) = ramp(JXL_SDR709);
-    assert!(
-        sdr_right >= 250,
-        "the SDR control's ramp should end near white, got {sdr_right}"
-    );
-    // 187 = sRGB(Reinhard(1.0)); the bug rendered this at 39.
-    assert!(
-        (180..=200).contains(&pq_right),
-        "PQ ramp ends at {pq_right} (SDR twin {sdr_right}): expected reference white at ~187"
-    );
-    assert!(
-        pq_mean >= 0.7 * sdr_mean,
-        "PQ ramp mean {pq_mean:.1} vs SDR {sdr_mean:.1}: the HDR jxl is still rendered dark"
-    );
-    assert!(
-        pq_left <= 24 && sdr_left <= 24,
-        "both ramps start near black ({pq_left}, {sdr_left})"
-    );
+    let jxl =
+        |bytes: &[u8]| crate::decode::tiers::decode_jxl(bytes, None).expect("decode the jxl twin");
+    assert_hdr_twin_matches_its_sdr_twin("jxl tier", &jxl(JXL_PQ2020), &jxl(JXL_SDR709));
 }
 
 /// Issue #39, the routing half, which needs no AV1 codec: an AVIF whose `nclx` names a PQ
@@ -82,9 +58,14 @@ pub(super) fn scene_ramp(img: &image::DynamicImage) -> (u8, u8, f64) {
     (left, right, mean)
 }
 
-/// The assertion the JPEG XL twins already pin (#38), for one decode path of the AVIF twins:
-/// reference white at Reinhard's 1.0 - 187 of 255 - with the SDR control untouched at 255.
-pub(super) fn assert_hdr_twin_lands_at_reference_white(
+/// The assertion every HDR twin pair makes: the PQ (or scRGB) twin renders like its SDR twin.
+/// The twins are ONE scene, and it never goes brighter than reference white, so since the
+/// tone map became extended Reinhard (2026-09-29: the brightest sample is white, and a picture
+/// with no highlights shows as authored) the PQ ramp ends where the SDR one does. Both shipped
+/// bugs still fail it: #38 rendered the ramp dark (39 at white, 148 through magick's raw
+/// signal), #39 clipped everything over 80 nits so the ramp read 255 from its midpoint up,
+/// which lifts the mean far past the SDR twin's.
+pub(super) fn assert_hdr_twin_matches_its_sdr_twin(
     label: &str,
     pq: &image::DynamicImage,
     sdr: &image::DynamicImage,
@@ -95,14 +76,13 @@ pub(super) fn assert_hdr_twin_lands_at_reference_white(
         sdr_right >= 250,
         "{label}: the SDR control's ramp should end near white, got {sdr_right}"
     );
-    // The clipped WIC path read 255 here; the raw-signal magick path read 148.
     assert!(
-        (180..=200).contains(&pq_right),
-        "{label}: PQ ramp ends at {pq_right} (SDR twin {sdr_right}): expected reference white at ~187"
+        pq_right.abs_diff(sdr_right) <= RAMP_END_SLACK,
+        "{label}: PQ ramp ends at {pq_right}, its SDR twin at {sdr_right}"
     );
     assert!(
-        pq_mean >= 0.7 * sdr_mean && pq_mean <= sdr_mean,
-        "{label}: PQ ramp mean {pq_mean:.1} vs SDR {sdr_mean:.1}: still dark, or still clipped"
+        (pq_mean - sdr_mean).abs() <= RAMP_MEAN_SLACK * sdr_mean,
+        "{label}: PQ ramp mean {pq_mean:.1} vs SDR {sdr_mean:.1}: rendered dark, or clipped"
     );
     assert!(
         pq_left <= 24 && sdr_left <= 24,
@@ -126,12 +106,12 @@ fn hdr_pq_avif_renders_as_bright_as_its_sdr_twin() {
         return;
     };
     let pq = decode_full(AVIF_PQ2020).expect("the SDR twin decoded, so the PQ twin must too");
-    assert_hdr_twin_lands_at_reference_white("full decode", &pq, &sdr);
+    assert_hdr_twin_matches_its_sdr_twin("full decode", &pq, &sdr);
     // The thumbnail path scales inside the codec (Fant hands back PREMULTIPLIED float), and it
     // is the path this bug actually shipped on.
     let sdr = decode_preview_capped(AVIF_SDR709, 160).expect("scaled SDR twin");
     let pq = decode_preview_capped(AVIF_PQ2020, 160).expect("scaled PQ twin");
-    assert_hdr_twin_lands_at_reference_white("thumbnail decode", &pq, &sdr);
+    assert_hdr_twin_matches_its_sdr_twin("thumbnail decode", &pq, &sdr);
 }
 
 /// The ImageMagick half of #39 on its own: magick decodes a PQ AVIF to its raw signal (white at
@@ -158,7 +138,7 @@ fn hdr_pq_avif_through_magick_lands_at_reference_white() {
     );
     let pq = crate::decode::finish_magick_output(pq_raw, AVIF_PQ2020, true);
     let sdr = crate::decode::finish_magick_output(sdr_raw, AVIF_SDR709, true);
-    assert_hdr_twin_lands_at_reference_white("magick decode", &pq, &sdr);
+    assert_hdr_twin_matches_its_sdr_twin("magick decode", &pq, &sdr);
 }
 
 /// The transfer-function axis, as a gate: every container that can carry an HDR picture with
@@ -190,7 +170,7 @@ fn every_hdr_capable_format_has_a_twin_pair_under_test() {
         let hdr = decode_full(hdr).unwrap_or_else(|e| {
             panic!("{format}: the SDR twin decoded but the HDR twin did not: {e}")
         });
-        assert_hdr_twin_lands_at_reference_white(format, &hdr, &sdr);
+        assert_hdr_twin_matches_its_sdr_twin(format, &hdr, &sdr);
     }
 }
 
@@ -248,5 +228,5 @@ fn hdr_pq_tiff_with_an_icc_profile_is_tone_mapped_not_colour_managed() {
     // And the picture: the SDR twin unchanged, the PQ twin at reference white.
     let sdr = decode_full(TIFF_SDR709).expect("the SDR TIFF twin decodes anywhere");
     let pq = decode_full(TIFF_PQ2020).expect("the PQ TIFF twin decodes anywhere");
-    assert_hdr_twin_lands_at_reference_white("tiff + PQ icc", &pq, &sdr);
+    assert_hdr_twin_matches_its_sdr_twin("tiff + PQ icc", &pq, &sdr);
 }

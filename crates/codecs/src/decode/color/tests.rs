@@ -53,6 +53,38 @@ fn tone_map_float_matches_concrete_variant_directly() {
     assert_eq!(out.get_pixel(1, 0).0[3], 0, "partial alpha must survive");
 }
 
+/// Float pixels are tone-mapped against the image's own brightest sample (extended Reinhard):
+/// an EXR that never goes past reference white shows as authored - white at 255, mid-grey
+/// 0.5 at sRGB 188 - instead of dimmed to 73% (white at 188), which is how every such EXR
+/// looked until 2026-09-29. A real HDR image keeps reference white where it always was.
+#[test]
+fn a_float_image_within_reference_white_shows_as_authored_and_real_hdr_keeps_its_headroom() {
+    let mut sdr = image::Rgb32FImage::new(3, 1);
+    sdr.put_pixel(0, 0, image::Rgb([1.0f32, 1.0, 1.0]));
+    sdr.put_pixel(1, 0, image::Rgb([0.5f32, 0.5, 0.5]));
+    sdr.put_pixel(2, 0, image::Rgb([0.0f32, 1.0, 0.0]));
+    let out = tone_map_float(&DynamicImage::ImageRgb32F(sdr)).to_rgba8();
+    assert_eq!(out.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    assert_eq!(out.get_pixel(1, 0).0, [188, 188, 188, 255]);
+    assert_eq!(out.get_pixel(2, 0).0, [0, 255, 0, 255]);
+
+    let mut hdr = image::Rgb32FImage::new(2, 1);
+    hdr.put_pixel(0, 0, image::Rgb([1.0f32, 1.0, 1.0]));
+    hdr.put_pixel(1, 0, image::Rgb([39.0f32, 39.0, 39.0]));
+    let out = tone_map_float(&DynamicImage::ImageRgb32F(hdr)).to_rgba8();
+    // 188: where plain Reinhard put reference white too (sRGB of 0.5).
+    assert_eq!(
+        out.get_pixel(0, 0).0[0],
+        188,
+        "reference white under real highlights"
+    );
+    assert_eq!(
+        out.get_pixel(1, 0).0[0],
+        255,
+        "the brightest sample is white"
+    );
+}
+
 /// A genuinely-sRGB embedded profile must short-circuit `apply_icc_to_srgb` to a pure
 /// pass-through (bit-identical output, not merely close) — the whole point of the check
 /// is to skip the moxcms transform entirely for the common case, not just make it cheap.

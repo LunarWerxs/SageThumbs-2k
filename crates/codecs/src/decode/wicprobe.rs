@@ -79,12 +79,13 @@ const EXPECT_COLOUR: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [128, 128, 128], 
 const EXPECT_MONO: [[u8; 3]; 4] = [[32, 32, 32], [96, 96, 96], [160, 160, 160], [224, 224, 224]];
 
 /// The PQ probe's four patches AFTER the HDR path: red, green, a grey at half of diffuse
-/// white and the skin tone, each as 203-nit-relative linear light through Reinhard and the
-/// sRGB curve (`color::tone_map_float`). Full white is 188, not 255, because that is where
-/// this product puts every HDR source's reference white; the clipped path this replaced read
-/// 255 for everything past mid grey (issue #39). Derived, not typed: `make-wic-probes.py
-/// --verify` prints them from the same arithmetic.
-const EXPECT_PQ: [[u8; 3]; 4] = [[188, 0, 0], [0, 188, 0], [156, 156, 156], [174, 151, 129]];
+/// white and the skin tone, each as 203-nit-relative linear light through extended Reinhard
+/// and the sRGB curve (`color::tone_map_float`). Nothing in the probe is brighter than
+/// reference white, so they come out as the SDR colours they are (the skin tone is
+/// `EXPECT_COLOUR`'s); the clipped path this replaced read 255 for everything past mid grey
+/// (issue #39), so the grey patch still tells the two apart. Derived, not typed:
+/// `make-wic-probes.py --verify` prints them from the same arithmetic.
+const EXPECT_PQ: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [188, 188, 188], [222, 178, 145]];
 
 /// The colour-signalling classes Windows has ever treated differently from one another.
 ///

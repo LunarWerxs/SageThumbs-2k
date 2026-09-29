@@ -239,6 +239,7 @@ fn convert_verb_invoke_creates_file() {
         // Don't pop an Explorer window during the test — the Convert verb's success
         // path calls ActionReport::reveal() (explorer /select,<out>); this gates it.
         common::set_test_env("ST2K_NO_REVEAL", "1");
+        common::set_test_env("ST2K_NO_MESSAGE_BOX", "1");
         let cmd = create_command().expect("create");
         // Navigate root -> "Convert into" -> "JPG".
         let subs = collect_subcommands(&cmd);
@@ -276,12 +277,21 @@ fn convert_verb_invoke_creates_file() {
         jpg.Invoke(&arr, None).expect("Invoke");
         // Invoke now dispatches the verb to a DETACHED worker (so the shell thread no longer
         // blocks on the batch), so poll for the output rather than assuming it's done.
+        //
+        // Poll until it OPENS as an image, not merely until it exists (the rotate test below
+        // learned this first): the verb reserves `v.jpg` as an empty placeholder before it
+        // converts, so "exists" was true at once. This test then passed without a conversion
+        // ever finishing, and deleted the folder under the running verb, which failed and put
+        // its "0 of 1 items succeeded" box on the desktop of whoever ran the suite.
         let out = dir.join("v.jpg");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while !out.exists() && std::time::Instant::now() < deadline {
+        let mut opened = image::open(&out);
+        while opened.is_err() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(25));
+            opened = image::open(&out);
         }
-        assert!(out.exists(), "Invoke should have created v.jpg");
+        let jpg_img = opened.expect("Invoke should have written a readable v.jpg");
+        assert_eq!((jpg_img.width(), jpg_img.height()), (16, 16));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -294,6 +304,7 @@ fn convert_verb_invoke_creates_file() {
 fn resize_verb_invoke_creates_file() {
     unsafe {
         common::set_test_env("ST2K_NO_REVEAL", "1");
+        common::set_test_env("ST2K_NO_MESSAGE_BOX", "1");
         let cmd = create_command().expect("create");
         // Navigate root -> "Resize" -> "Scale to 50%".
         let subs = collect_subcommands(&cmd);
@@ -329,12 +340,18 @@ fn resize_verb_invoke_creates_file() {
 
         scale50.Invoke(&arr, None).expect("Invoke");
         // Invoke dispatches to a DETACHED worker; poll for the sibling file.
+        // Until it opens, not until it exists: same empty-placeholder reservation as Convert.
         let out = dir.join("v (resized).png");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while !out.exists() && std::time::Instant::now() < deadline {
+        let mut opened = image::open(&out);
+        while opened.is_err() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(25));
+            opened = image::open(&out);
         }
-        assert!(out.exists(), "Invoke should have created v (resized).png");
+        assert!(
+            opened.is_ok(),
+            "Invoke should have written a readable v (resized).png"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -346,6 +363,7 @@ fn resize_verb_invoke_creates_file() {
 fn rotate_verb_invoke_creates_file() {
     unsafe {
         common::set_test_env("ST2K_NO_REVEAL", "1");
+        common::set_test_env("ST2K_NO_MESSAGE_BOX", "1");
         let cmd = create_command().expect("create");
         // Navigate root -> "Rotate / flip" -> "Rotate right 90°".
         let subs = collect_subcommands(&cmd);

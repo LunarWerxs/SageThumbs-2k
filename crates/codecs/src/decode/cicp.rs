@@ -427,8 +427,9 @@ mod tests {
     }
 
     /// End to end through the `image` tier: the same 16-bit pixel renders as HDR
-    /// reference white (Reinhard puts 1.0 at sRGB ~188) once the chunk is present, and as
-    /// its raw code value (~148) without it. This is the whole point of the module.
+    /// reference white - exactly where an EXR's 1.0 lands through the same tone map - once
+    /// the chunk is present, and as its raw code value (~148) without it. This is the whole
+    /// point of the module.
     #[test]
     fn a_pq_png_renders_through_the_tone_map_and_a_plain_one_does_not() {
         let plain = png16_flat(pq_signal_for_nits(203.0));
@@ -449,16 +450,23 @@ mod tests {
             (140..=156).contains(&sdr[0]),
             "without cICP the code value is shown as-is: {sdr:?}"
         );
+        let exr_white = crate::decode::color::tone_map_float(&DynamicImage::ImageRgb32F(
+            image::Rgb32FImage::from_pixel(1, 1, image::Rgb([1.0, 1.0, 1.0])),
+        ))
+        .to_rgba8()
+        .get_pixel(0, 0)
+        .0[0];
         assert!(
-            (183..=193).contains(&hdr_px[0]),
-            "with cICP, reference white lands where EXR's 1.0 does: {hdr_px:?}"
+            hdr_px[0].abs_diff(exr_white) <= 2,
+            "with cICP, reference white lands where EXR's 1.0 does ({exr_white}): {hdr_px:?}"
         );
         assert_eq!(hdr_px[0], hdr_px[1]);
         assert_eq!(hdr_px[1], hdr_px[2]);
         assert_eq!(hdr_px[3], 255);
-        // A brighter HDR pixel is brighter still, and never wraps.
+        // A brighter HDR pixel is never darker, and never wraps. (Each flat picture's own
+        // brightest sample is white under extended Reinhard, so both land on 255 here.)
         let bright = with_cicp(&png16_flat(pq_signal_for_nits(1000.0)), 9, 16, true);
         let b = decode_full(&bright).expect("bright").to_rgba8();
-        assert!(b.get_pixel(0, 0).0[0] > hdr_px[0]);
+        assert!(b.get_pixel(0, 0).0[0] >= hdr_px[0]);
     }
 }

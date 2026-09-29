@@ -69,6 +69,7 @@ fn convert_action_records_output_for_reveal() {
 
     // Suppressed reveal: must not spawn Explorer or panic.
     std::env::set_var("ST2K_NO_REVEAL", "1");
+    std::env::set_var("ST2K_NO_MESSAGE_BOX", "1");
     report.reveal(&[]);
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -70,6 +70,13 @@ impl ActionReport {
             Some(n) => msg.push_str(&format!("\n\n{failed} failed: {n}")),
             None => msg.push_str(&format!("\n\n{failed} item{plural} failed.")),
         }
+        // Test runs set `ST2K_NO_MESSAGE_BOX`: a verb test that fails must fail in the test
+        // output, not leave this box on the desktop of whoever ran the suite (it did, on
+        // 2026-09-29, from a Convert test that deleted its folder under the running verb).
+        if std::env::var_os("ST2K_NO_MESSAGE_BOX").is_some() {
+            st2k_base::safety::log(&format!("verb result (message box suppressed): {msg}"));
+            return;
+        }
         let t = st2k_base::host::wide(&msg);
         let c = st2k_base::host::wide("SageThumbs 2K");
         unsafe {

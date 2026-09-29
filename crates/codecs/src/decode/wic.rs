@@ -520,8 +520,8 @@ fn is_wic_float_format(format: &windows::core::GUID) -> bool {
 /// 128bppRGBAFloat, rescales 1.0 from scRGB's 80 nits to the 203-nit reference white every
 /// other HDR source in this module uses, and tone-maps exactly as an EXR or an HDR PNG is.
 /// Measured on the PQ twin fixture (`tests/fixtures/avif`): the grey ramp's 203-nit white
-/// came back from the codec as 2.53 and lands at 187 of 255, where the JPEG XL and PNG twins
-/// of the same scene already land; the 32bppRGBA conversion it replaces read 255 from the
+/// came back from the codec as 2.53 and lands where the JPEG XL and PNG twins of the same
+/// scene do (level with the SDR twin); the 32bppRGBA conversion it replaces read 255 from the
 /// ramp's midpoint upward. No ICC is applied: scRGB is already BT.709-relative linear light,
 /// and a PQ profile on top of it would be the JPEG XL bug of issue #38 over again.
 unsafe fn wic_scrgb_to_srgb(

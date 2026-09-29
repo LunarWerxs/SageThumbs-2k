@@ -118,7 +118,11 @@ foreach ($e in ($exts | Where-Object { $special -notcontains $_ } | Sort-Object 
     $out = "$OutDir\sample.$e"
     $tmp = "$OutDir\_gen.$e"   # _-prefixed: ignored by the harness even if left behind
     Remove-Item $tmp -Force -EA SilentlyContinue
-    $err = (& $magick $base $tmp 2>&1) -join ' '
+    # EXR holds LINEAR light by definition, but ImageMagick writes an sRGB PNG's gamma-encoded
+    # values into it unchanged, so every correct reader showed the sample washed out (limegreen
+    # 50,205,50 read back as 122,232,122) and the corner check blamed the decoder (2026-09-29).
+    $pre = if ($e -eq 'exr') { @('-colorspace', 'RGB') } else { @() }
+    $err = (& $magick $base @pre $tmp 2>&1) -join ' '
     $fake = ($err -match 'no encode delegate') -or
             (($e -notin 'png', 'apng') -and (Test-Path $tmp) -and (Test-IsPng $tmp))
     if (-not $fake -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {

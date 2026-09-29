@@ -672,7 +672,7 @@ pub(super) fn route_isobmff_wic_quirks(
 /// #39) comes back as its raw transfer-encoded signal - magick applies no EOTF - and shown as
 /// sRGB that is a dark, flat picture (the grey ramp's 203-nit white reads 148 of 255). It
 /// goes through the PNG `cICP` conversion and the float tone map, exactly as an HDR JPEG XL
-/// does since #38, and lands at 187 like every other HDR source. Everything else is untouched
+/// does since #38, and lands where every other HDR source does. Everything else is untouched
 /// here except for `icc`: the routed ISOBMFF tier has always applied the container's own
 /// profile afterwards (see its call site), the generic last-resort tier never has, and this
 /// keeps both exactly as they were for every SDR file.
